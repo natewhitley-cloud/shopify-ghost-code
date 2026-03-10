@@ -1,0 +1,59 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vitest:*)",
+      "Bash(npx prettier:*)",
+      "Bash(npx tsc:*)",
+      "Bash(npx prisma:*)",
+      "Bash(shopify:*)",
+      "Bash(npm run:*)",
+      "Bash(npm test:*)",
+      "Bash(npm install:*)",
+      "Bash(bd:*)",
+      "Bash(git status:*)",
+      "Bash(git diff:*)",
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git branch:*)",
+      "Bash(tree:*)",
+      "Bash(ls:*)"
+    ]
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bd prime 2>/dev/null || echo 'Beads context: Run bd ready to see available work'"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bd sync 2>/dev/null || true"
+          },
+          {
+            "type": "command",
+            "command": "mkdir -p memory/sessions && echo '# Pre-Compaction State\n\nAuto-persisted: '$(date -Iseconds) > memory/sessions/pre-compact.md"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "if [[ \"$CLAUDE_FILE_PATH\" == *.ts || \"$CLAUDE_FILE_PATH\" == *.tsx || \"$CLAUDE_FILE_PATH\" == *.js || \"$CLAUDE_FILE_PATH\" == *.jsx || \"$CLAUDE_FILE_PATH\" == *.json || \"$CLAUDE_FILE_PATH\" == *.css ]]; then npx prettier --write \"$CLAUDE_FILE_PATH\" 2>/dev/null || true; fi"
+          }
+        ]
+      }
+    ]
+  }
+}

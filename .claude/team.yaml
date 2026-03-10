@@ -1,0 +1,59 @@
+team: ghost-code
+description: "Ghost Code — Shopify app that scans merchant themes for orphaned code from uninstalled apps. App 1 of Data Integrity Suite."
+
+defaults:
+  model: sonnet
+  budget: 0.50
+  permission-mode: bypassPermissions
+
+members:
+  - name: scaffolder
+    role: "Create new files, wire project structure, Prisma schema and migrations, deployment config"
+    tools: [Read, Write, Edit, Glob, Grep, Bash]
+    owns:
+      - "prisma/**"
+      - "inngest/client.ts"
+      - "inngest/events.ts"
+      - ".github/**"
+      - "Dockerfile"
+      - "*.config.*"
+      - ".env.example"
+      - "shopify.app.toml"
+
+  - name: implementer
+    role: "Write business logic, fill stubs, connect layers — handles both services (backend) and routes/UI (frontend)"
+    tools: [Read, Write, Edit, Glob, Grep, Bash]
+    owns:
+      - "app/services/**"
+      - "app/models/**"
+      - "app/routes/**"
+      - "app/components/**"
+      - "app/lib/**"
+      - "app/data/**"
+      - "inngest/functions/**"
+      - "inngest/middleware.ts"
+
+  - name: tester
+    role: "Write and maintain Vitest tests, mock Shopify/Prisma/Inngest, verify coverage and edge cases"
+    tools: [Read, Write, Edit, Glob, Grep, Bash]
+    owns:
+      - "tests/**"
+      - "*.test.*"
+      - "vitest.config.ts"
+      - "tests/mocks/**"
+
+  - name: reviewer
+    role: "Review changes for correctness, security, Shopify compliance, Polaris patterns, Definition of Done"
+    model: sonnet
+    permission-mode: default
+    tools: [Read, Glob, Grep, Bash]
+    owns:
+      - "*"
+
+  - name: debugger
+    role: "Diagnose and fix bugs, trace error chains, resolve test failures and API errors"
+    tools: [Read, Write, Edit, Glob, Grep, Bash]
+    owns:
+      - "app/**"
+      - "inngest/**"
+      - "prisma/**"
