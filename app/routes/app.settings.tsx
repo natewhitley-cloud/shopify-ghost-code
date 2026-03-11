@@ -3,6 +3,7 @@ import {
   Form,
   useActionData,
   useLoaderData,
+  useNavigation,
 } from "react-router";
 
 import { authenticate } from "../shopify.server";
@@ -71,6 +72,9 @@ export default function Settings() {
   const { shop, features } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
 
+  const navigation = useNavigation();
+  const isSubmitting = navigation.state !== "idle";
+
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
   const isProfessional = shop.plan === PLANS.PROFESSIONAL;
@@ -80,6 +84,12 @@ export default function Settings() {
       <s-link slot="primary-action" href="/app">
         Back to Dashboard
       </s-link>
+
+      {actionData?.error && (
+        <s-banner tone="critical">
+          {actionData.error}
+        </s-banner>
+      )}
 
       {/* Current Plan */}
       <s-card>
@@ -132,7 +142,9 @@ export default function Settings() {
                 </s-unordered-list>
                 <Form method="post">
                   <input type="hidden" name="intent" value="subscribe-standard" />
-                  <button type="submit">Upgrade to Standard</button>
+                  <button type="submit" disabled={isSubmitting}>
+                    {isSubmitting ? "Upgrading..." : "Upgrade to Standard"}
+                  </button>
                 </Form>
               </s-stack>
             )}
@@ -149,8 +161,12 @@ export default function Settings() {
               </s-unordered-list>
               <Form method="post">
                 <input type="hidden" name="intent" value="subscribe-professional" />
-                <button type="submit">
-                  {isStandard ? "Upgrade to Professional" : "Start with Professional"}
+                <button type="submit" disabled={isSubmitting}>
+                  {isSubmitting
+                    ? "Upgrading..."
+                    : isStandard
+                    ? "Upgrade to Professional"
+                    : "Start with Professional"}
                 </button>
               </Form>
             </s-stack>
