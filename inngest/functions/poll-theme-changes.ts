@@ -27,6 +27,7 @@
 import { inngest } from "../client";
 import { ScanStatus } from "@prisma/client";
 import { createScan } from "../../app/models/scan.server";
+import { PLANS } from "../../app/lib/billing.server";
 
 export const pollThemeChanges = inngest.createFunction(
   { id: "poll-theme-changes", name: "Daily Theme Change Poll" },
@@ -39,10 +40,10 @@ export const pollThemeChanges = inngest.createFunction(
       const db = (await import("../../app/db.server")).default;
       // Only Professional-plan shops receive automatic daily re-scans.
       // Free-plan shops must trigger scans manually from the dashboard.
-      // The plan field is stored as a plain string; "professional" matches
-      // the value set during plan upgrade (see billing webhook handler).
+      // Use PLANS.PROFESSIONAL ("Professional") to match the canonical stored value
+      // set during plan upgrade (see billing.server.ts and billing webhook handler).
       return db.shop.findMany({
-        where: { plan: "professional" },
+        where: { plan: PLANS.PROFESSIONAL },
         select: { id: true, domain: true, accessToken: true },
       });
     });
