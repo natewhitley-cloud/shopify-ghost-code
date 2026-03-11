@@ -12,10 +12,9 @@
  *   independent. Both fan out to the same poll-check-shop worker.
  *
  * Schedule:
- *   Sunday 6 AM UTC — offset from the daily poll (also 6 AM UTC on all days)
- *   so the two coordinators never compete for concurrency slots on Sundays.
- *   In practice Inngest queues worker invocations so contention is unlikely,
- *   but the offset is cheap insurance.
+ *   Sunday 6 AM UTC — same time as the daily poll, but the two coordinators
+ *   target disjoint plan cohorts (Standard vs Professional) so their worker
+ *   invocations never overlap. Inngest queues invocations independently.
  *
  * Fan-out pattern (mirrors poll-theme-changes.ts):
  *   1. Coordinator (this function): fast — one DB read + N event sends.

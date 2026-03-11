@@ -6,6 +6,7 @@ describe("getPlanFeatures", () => {
     const features = getPlanFeatures("unknown");
     expect(features.maxScansPerMonth).toBe(1);
     expect(features.showFindingDetails).toBe(false);
+    expect(features.scheduledScan).toBe(false);
   });
 
   it("returns standard features", () => {
@@ -13,6 +14,7 @@ describe("getPlanFeatures", () => {
     expect(features.maxScansPerMonth).toBe(Infinity);
     expect(features.showFindingDetails).toBe(true);
     expect(features.maxThemes).toBe(1);
+    expect(features.scheduledScan).toBe(true);
   });
 
   it("returns professional features", () => {
@@ -20,5 +22,6 @@ describe("getPlanFeatures", () => {
     expect(features.autoRescan).toBe(true);
     expect(features.scanDiffing).toBe(true);
     expect(features.maxThemes).toBe(Infinity);
+    expect(features.scheduledScan).toBe(true);
   });
 });

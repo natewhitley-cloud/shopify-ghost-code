@@ -125,7 +125,10 @@ export const pollCheckShop = inngest.createFunction(
         select: { createdAt: true },
       });
 
-      return latestScan === null || themeUpdatedAt > latestScan.createdAt;
+      return (
+        latestScan === null ||
+        new Date(themeUpdatedAt) > new Date(latestScan.createdAt)
+      );
     });
 
     if (!needsScan) {
