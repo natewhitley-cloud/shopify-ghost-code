@@ -1,0 +1,394 @@
+/**
+ * Static database of known Shopify app signatures.
+ *
+ * Each entry maps a human-readable app name to the set of signals we
+ * look for when scanning theme files:
+ *   - cdnDomains  : External script / stylesheet origins
+ *   - scriptPatterns : RegExp patterns for script src or inline JS identifiers
+ *   - snippetNames   : Liquid snippet/section names the app injects
+ *   - cssPatterns    : RegExp patterns that appear inside CSS `<link>` hrefs or
+ *                      inline `<style>` blocks
+ *
+ * KEEP IN SYNC with app-lookup.server.ts — any new fields added here need a
+ * corresponding lookup function there.
+ */
+
+export type AppSignature = {
+  appName: string;
+  cdnDomains: string[];
+  scriptPatterns: RegExp[];
+  snippetNames: string[];
+  cssPatterns: RegExp[];
+};
+
+export const APP_SIGNATURES: AppSignature[] = [
+  // -------------------------------------------------------------------------
+  // Analytics & Marketing
+  // -------------------------------------------------------------------------
+  {
+    appName: "Klaviyo",
+    cdnDomains: ["static.klaviyo.com", "cdn.klaviyo.com", "a.klaviyo.com"],
+    scriptPatterns: [/klaviyo\.js/, /klaviyo-onsite/, /KlaviyoSubscribe/, /_klOnsite/],
+    snippetNames: ["klaviyo-onsite", "klaviyo-form", "klaviyo-tracking", "klaviyo-bis-form"],
+    cssPatterns: [/klaviyo/],
+  },
+  {
+    appName: "Omnisend",
+    cdnDomains: ["cdn.omnisend.com", "app.omnisend.com"],
+    scriptPatterns: [/omnisend\.js/, /omnisendBeacon/, /window\.omnisend/],
+    snippetNames: ["omnisend-newsletter", "omnisend-snippet"],
+    cssPatterns: [/omnisend/],
+  },
+  {
+    appName: "Privy",
+    cdnDomains: ["widget.privy.com", "cdn.privy.com"],
+    scriptPatterns: [/privy\.js/, /PrivyFactory/, /window\.Privy/],
+    snippetNames: ["privy-widget", "privy-snippet"],
+    cssPatterns: [/privy/],
+  },
+  {
+    appName: "Mailchimp",
+    cdnDomains: ["chimpstatic.com", "cdn-images.mailchimp.com", "s3.amazonaws.com/downloads.mailchimp.com"],
+    scriptPatterns: [/mailchimp\.js/, /mc\.js/, /chimpstatic\.com/],
+    snippetNames: ["mailchimp-popup", "mailchimp-form"],
+    cssPatterns: [/mailchimp/, /chimpstatic/],
+  },
+  {
+    appName: "Google Analytics (UA)",
+    cdnDomains: ["www.google-analytics.com", "ssl.google-analytics.com"],
+    scriptPatterns: [/ga\.js/, /analytics\.js/, /UA-\d{4,}/, /GoogleAnalyticsObject/],
+    snippetNames: ["google-analytics", "ga-tracking"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Google Tag Manager",
+    cdnDomains: ["www.googletagmanager.com"],
+    scriptPatterns: [/gtm\.js/, /GTM-[A-Z0-9]+/, /googletagmanager\.com/],
+    snippetNames: ["google-tag-manager", "gtm-snippet"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Hotjar",
+    cdnDomains: ["static.hotjar.com", "script.hotjar.com", "vars.hotjar.com"],
+    scriptPatterns: [/hotjar\.js/, /hjid[=:]/, /window\.hj\s*=/, /hotjar-\d+/, /h\.hjid/],
+    snippetNames: ["hotjar-tracking", "hotjar-snippet"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Lucky Orange",
+    cdnDomains: ["d10lpsik1i8c69.cloudfront.net", "cdn.luckyorange.com"],
+    scriptPatterns: [/luckyorange\.com/, /window\.__lo_site_id/],
+    snippetNames: ["lucky-orange"],
+    cssPatterns: [/luckyorange/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Reviews
+  // -------------------------------------------------------------------------
+  {
+    appName: "Judge.me",
+    cdnDomains: ["cdn.judge.me", "judge.me"],
+    scriptPatterns: [/judge\.me/, /jdgm\b/, /JudgeMe/],
+    snippetNames: ["judgeme_widgets", "jdgm-widget", "jdgm-review", "jdgm_widgets"],
+    cssPatterns: [/jdgm/, /judge\.me/],
+  },
+  {
+    appName: "Loox",
+    cdnDomains: ["cdn.loox.io", "loox.io"],
+    scriptPatterns: [/loox\.io/, /window\.loox/],
+    snippetNames: ["loox-init", "loox-reviews", "loox_reviews"],
+    cssPatterns: [/loox/],
+  },
+  {
+    appName: "Stamped.io",
+    cdnDomains: ["cdn1.stamped.io", "cdn2.stamped.io", "stamped.io"],
+    scriptPatterns: [/stamped\.io/, /StampedFn/, /window\.StampedSDK/],
+    snippetNames: ["stamped-main-widget", "stamped-reviews-widget"],
+    cssPatterns: [/stamped/],
+  },
+  {
+    appName: "Yotpo",
+    cdnDomains: ["staticw2.yotpo.com", "cdn2.yotpo.com"],
+    scriptPatterns: [/yotpo\.js/, /YotpoWidgetsMap/, /window\.yotpo/, /yotpoWidget/],
+    snippetNames: ["yotpo-bottomline", "yotpo-reviews", "yotpo_reviews"],
+    cssPatterns: [/yotpo/],
+  },
+  {
+    appName: "Shopify Product Reviews",
+    cdnDomains: [],
+    scriptPatterns: [/product-reviews\.shopify/, /SPR\.init/],
+    snippetNames: ["product-reviews", "spr-stars"],
+    cssPatterns: [/spr-container/, /spr-form/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Chat & Support
+  // -------------------------------------------------------------------------
+  {
+    appName: "Gorgias",
+    cdnDomains: ["config.gorgias.chat", "client-builds.gorgias.chat"],
+    scriptPatterns: [/gorgias\.chat/, /window\.GorgiasChat/, /gorgias-web-messenger/],
+    snippetNames: ["gorgias-chat", "gorgias-snippet"],
+    cssPatterns: [/gorgias/],
+  },
+  {
+    appName: "Tidio",
+    cdnDomains: ["code.tidio.co"],
+    scriptPatterns: [/tidio\.co/, /tidioChatCode/, /window\.tidioChatApi/],
+    snippetNames: ["tidio-chat"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Zendesk",
+    cdnDomains: ["static.zdassets.com", "ekr.zdassets.com"],
+    scriptPatterns: [/zdassets\.com/, /ze\('webWidget'/, /ZendeskWidget/],
+    snippetNames: ["zendesk-widget", "zopim"],
+    cssPatterns: [/zdassets/],
+  },
+  {
+    appName: "Intercom",
+    cdnDomains: ["js.intercomcdn.com", "widget.intercom.io"],
+    scriptPatterns: [/intercomcdn\.com/, /window\.Intercom\b/, /intercom\.io\/widget/],
+    snippetNames: ["intercom-snippet"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Drift",
+    cdnDomains: ["js.driftt.com", "cdn.driftt.com"],
+    scriptPatterns: [/driftt\.com/, /window\.drift\b/, /drift\.load/],
+    snippetNames: ["drift-widget"],
+    cssPatterns: [],
+  },
+
+  // -------------------------------------------------------------------------
+  // Loyalty
+  // -------------------------------------------------------------------------
+  {
+    appName: "Smile.io",
+    cdnDomains: ["cdn.smile.io", "d2v9k67syz0xku.cloudfront.net"],
+    scriptPatterns: [/smile\.io/, /sweetTooth/, /window\.SwellAPI/],
+    snippetNames: ["smile-initializer", "smile-ui", "loyalty-lion-initializer"],
+    cssPatterns: [/smile-launcher/],
+  },
+  {
+    appName: "LoyaltyLion",
+    cdnDomains: ["sdk.loyaltylion.net", "loyaltylion.net"],
+    scriptPatterns: [/loyaltylion\.net/, /window\.lion\b/, /LoyaltyLion/],
+    snippetNames: ["loyalty-lion-initializer", "loyalty-lion-footer"],
+    cssPatterns: [/loyaltylion/],
+  },
+  {
+    appName: "Rise.ai",
+    cdnDomains: ["cdn.rise.ai", "api.rise.ai"],
+    scriptPatterns: [/rise\.ai/, /Rise\.init/],
+    snippetNames: ["rise-gift-card", "rise-ai-wallet"],
+    cssPatterns: [/rise-ai/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Upsell & Cross-sell
+  // -------------------------------------------------------------------------
+  {
+    appName: "Bold Commerce",
+    cdnDomains: ["cdn.boldapps.net", "boldapps.net"],
+    scriptPatterns: [/boldapps\.net/, /BOLD\.common/, /BoldCommerce/],
+    snippetNames: ["bold-variant-option", "bold-product-builder", "bold-common"],
+    cssPatterns: [/boldapps/],
+  },
+  {
+    appName: "ReConvert",
+    cdnDomains: ["cdn.reconvert.io", "reconvert.io"],
+    scriptPatterns: [/reconvert\.io/, /ReConvert/],
+    snippetNames: ["reconvert-upsell"],
+    cssPatterns: [/reconvert/],
+  },
+  {
+    appName: "Zipify OneClickUpsell",
+    cdnDomains: ["cdn.zipify.com", "zipify.com"],
+    scriptPatterns: [/zipify\.com/, /ZipifyOCU/, /window\.zipify/],
+    snippetNames: ["zipify-ocu"],
+    cssPatterns: [/zipify/],
+  },
+  {
+    appName: "CartHook",
+    cdnDomains: ["cdn.carthook.com", "carthook.com"],
+    scriptPatterns: [/carthook\.com/, /CartHook/],
+    snippetNames: ["carthook-post-purchase"],
+    cssPatterns: [/carthook/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Social & Pixels
+  // -------------------------------------------------------------------------
+  {
+    appName: "Facebook Pixel (legacy)",
+    cdnDomains: ["connect.facebook.net"],
+    scriptPatterns: [/connect\.facebook\.net/, /fbq\('init'/, /fbevents\.js/],
+    snippetNames: ["facebook-pixel", "fb-pixel"],
+    cssPatterns: [],
+  },
+  {
+    appName: "TikTok Pixel",
+    cdnDomains: ["analytics.tiktok.com"],
+    scriptPatterns: [/analytics\.tiktok\.com/, /ttq\.load/, /TiktokAnalyticsObject/],
+    snippetNames: ["tiktok-pixel", "tiktok-snippet"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Instagram Feed",
+    cdnDomains: ["cdn.lightwidget.com", "instagram.com"],
+    scriptPatterns: [/lightwidget\.com/, /instagramFeed/, /window\.instgrm/],
+    snippetNames: ["instagram-feed", "instafeed"],
+    cssPatterns: [/instagram-feed/, /instafeed/],
+  },
+
+  // -------------------------------------------------------------------------
+  // SEO
+  // -------------------------------------------------------------------------
+  {
+    appName: "SEO Manager",
+    cdnDomains: [],
+    scriptPatterns: [/SEOManager/, /seo-manager/],
+    snippetNames: ["seo-manager", "searchpie"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Plug in SEO",
+    cdnDomains: ["cdn.pluginseo.com"],
+    scriptPatterns: [/pluginseo\.com/, /PlugInSEO/],
+    snippetNames: ["plugin-seo", "plug-in-seo"],
+    cssPatterns: [/pluginseo/],
+  },
+  {
+    appName: "JSON-LD for SEO",
+    cdnDomains: [],
+    scriptPatterns: [/json-ld-for-seo/, /jsonld.*shopify/i],
+    snippetNames: ["json-ld-for-seo", "schema-for-seo"],
+    cssPatterns: [],
+  },
+
+  // -------------------------------------------------------------------------
+  // Shipping
+  // -------------------------------------------------------------------------
+  {
+    appName: "AfterShip",
+    cdnDomains: ["cdn.aftership.com", "assets.aftership.com"],
+    scriptPatterns: [/aftership\.com/, /AfterShip\.init/],
+    snippetNames: ["aftership-tracking", "aftership"],
+    cssPatterns: [/aftership/],
+  },
+  {
+    appName: "ShipStation",
+    cdnDomains: [],
+    scriptPatterns: [/shipstation\.com/, /ShipStation/],
+    snippetNames: ["shipstation"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Shippo",
+    cdnDomains: ["cdn.goshippo.com"],
+    scriptPatterns: [/goshippo\.com/, /Shippo\.init/],
+    snippetNames: ["shippo"],
+    cssPatterns: [],
+  },
+
+  // -------------------------------------------------------------------------
+  // Pop-ups
+  // -------------------------------------------------------------------------
+  {
+    appName: "Justuno",
+    cdnDomains: ["cdn.justuno.com", "app.justuno.com"],
+    scriptPatterns: [/justuno\.com/, /window\.ju_num/],
+    snippetNames: ["justuno"],
+    cssPatterns: [/justuno/],
+  },
+  {
+    appName: "OptiMonk",
+    cdnDomains: ["cdn.optimonk.com"],
+    scriptPatterns: [/optimonk\.com/, /OptiMonk/],
+    snippetNames: ["optimonk", "optimonk-snippet"],
+    cssPatterns: [/optimonk/],
+  },
+  {
+    appName: "Wisepops",
+    cdnDomains: ["wisepops.com", "cdn.wisepops.com"],
+    scriptPatterns: [/wisepops\.com/, /window\.wisepops/],
+    snippetNames: ["wisepops"],
+    cssPatterns: [/wisepops/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Subscriptions
+  // -------------------------------------------------------------------------
+  {
+    appName: "Recharge",
+    cdnDomains: ["cdn.rechargeapps.com", "rechargepayments.com"],
+    scriptPatterns: [/rechargeapps\.com/, /ReCharge\.init/, /window\.ReCharge/],
+    snippetNames: ["recharge-checkout-option", "rc_subscription_widget", "recharge"],
+    cssPatterns: [/recharge/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Page Builders
+  // -------------------------------------------------------------------------
+  {
+    appName: "PageFly",
+    cdnDomains: ["ik.imagekit.io/pagefly", "cdn.pagefly.io"],
+    scriptPatterns: [/pagefly\.io/, /PageFly/],
+    snippetNames: ["pagefly-head", "pagefly-body-end", "pagefly"],
+    cssPatterns: [/pagefly/],
+  },
+  {
+    appName: "Shogun",
+    cdnDomains: ["cdn.getshogun.com", "getshogun.com"],
+    scriptPatterns: [/getshogun\.com/, /window\.ShogunFrontend/, /shogun-root/],
+    snippetNames: ["shogun-head", "shogun-scripts", "shogun"],
+    cssPatterns: [/getshogun/, /shogun-/],
+  },
+  {
+    appName: "GemPages",
+    cdnDomains: ["cdn.ampify.com", "cdn.gempages.net"],
+    scriptPatterns: [/gempages\.net/, /GemPages/],
+    snippetNames: ["gem-app-header-scripts", "gem-app-footer-scripts", "gempages"],
+    cssPatterns: [/gempages/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Misc
+  // -------------------------------------------------------------------------
+  {
+    appName: "PushOwl",
+    cdnDomains: ["cdn.pushowl.com"],
+    scriptPatterns: [/pushowl\.com/, /PushOwl/],
+    snippetNames: ["pushowl"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Recart",
+    cdnDomains: ["cdn.recart.com"],
+    scriptPatterns: [/recart\.com/, /RecartSDK/],
+    snippetNames: ["recart"],
+    cssPatterns: [],
+  },
+  {
+    appName: "Trustpilot",
+    cdnDomains: ["widget.trustpilot.com", "invitejs.trustpilot.com"],
+    scriptPatterns: [/trustpilot\.com/, /window\.Trustpilot/],
+    snippetNames: ["trustpilot-widget", "trustpilot"],
+    cssPatterns: [/trustpilot/],
+  },
+  {
+    appName: "Wheelio / Spin-to-Win",
+    cdnDomains: ["cdn.wheelio-app.com"],
+    scriptPatterns: [/wheelio-app\.com/, /window\.wheelioSettings/],
+    snippetNames: ["wheelio", "spin-to-win"],
+    cssPatterns: [/wheelio/],
+  },
+  {
+    appName: "Searchie / SearchPie",
+    cdnDomains: ["cdn.searchpie.io"],
+    scriptPatterns: [/searchpie\.io/, /SearchPie/],
+    snippetNames: ["searchpie", "searchpie-seo"],
+    cssPatterns: [/searchpie/],
+  },
+];
