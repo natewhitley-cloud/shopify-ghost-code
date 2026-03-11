@@ -7,9 +7,6 @@
  *
  * Local dev: Inngest Dev Server polls this route automatically.
  * Production: Inngest cloud syncs against this endpoint after deploy.
- *
- * TODO(implementer): import each Inngest function from inngest/functions/
- * and add it to the functions array below as they are built.
  */
 import { serve } from "inngest/remix";
 import { inngest } from "../../inngest/client";

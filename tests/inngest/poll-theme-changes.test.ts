@@ -50,9 +50,11 @@ vi.mock("../../inngest/client", () => ({
     // createFunction is called at module load time by poll-theme-changes.ts.
     // We return a real-looking function object with a `.fn` accessor so that
     // pollThemeChanges.fn({ event, step, logger }) still works in tests.
-    createFunction: vi.fn((_config: unknown, _trigger: unknown, handler: (...args: any[]) => any) => ({
-      fn: handler,
-    })),
+    createFunction: vi.fn(
+      (_config: unknown, _trigger: unknown, handler: (...args: any[]) => any) => ({
+        fn: handler,
+      }),
+    ),
   },
 }));
 
@@ -86,7 +88,6 @@ const mockInngestSend = (inngest as any).send as ReturnType<typeof vi.fn>;
 
 const SHOP_ID = "shop-pro-001";
 const SHOP_DOMAIN = "pro-shop.myshopify.com";
-const SHOP_ACCESS_TOKEN = "shpat_test_token";
 
 const THEME_GID = "gid://shopify/Theme/999888777";
 const THEME_NAME = "Impulse";
@@ -94,10 +95,10 @@ const SCAN_ID = "scan-poll-abc";
 
 const MOCK_ADMIN = { graphql: vi.fn() };
 
+// S-14: accessToken removed from select — shop objects no longer carry it.
 const MOCK_PROFESSIONAL_SHOP = {
   id: SHOP_ID,
   domain: SHOP_DOMAIN,
-  accessToken: SHOP_ACCESS_TOKEN,
 };
 
 const MOCK_MAIN_THEME = {
@@ -129,7 +130,9 @@ const mockLogger = {
 // Helper: invoke function handler
 // ---------------------------------------------------------------------------
 
-async function runPollThemeChanges(stepOverrides?: Partial<ReturnType<typeof createMockInngestStep>>) {
+async function runPollThemeChanges(
+  stepOverrides?: Partial<ReturnType<typeof createMockInngestStep>>,
+) {
   const step = { ...createMockInngestStep(), ...stepOverrides };
   const event = { name: "scheduled/daily", data: {}, ts: Date.now(), id: "test-event-poll" };
   return pollThemeChanges.fn({ event, step, logger: mockLogger } as any);
@@ -147,7 +150,7 @@ beforeEach(() => {
   mockUnauthenticated.admin.mockResolvedValue({ admin: MOCK_ADMIN });
   mockFetchMainTheme.mockResolvedValue(MOCK_MAIN_THEME);
   mockDb.scan.findFirst
-    .mockResolvedValueOnce(null)  // no in-progress scan
+    .mockResolvedValueOnce(null) // no in-progress scan
     .mockResolvedValueOnce(null); // no latest scan (so needsScan = true)
   mockCreateScan.mockResolvedValue(MOCK_SCAN);
   mockInngestSend.mockResolvedValue(undefined);
@@ -173,10 +176,11 @@ describe("pollThemeChanges — plan filter (S-02 regression)", () => {
     await runPollThemeChanges();
 
     const callArg = mockDb.shop.findMany.mock.calls[0][0];
+    // S-14: accessToken was removed from the select — unauthenticated.admin()
+    // handles session lookup internally and fails naturally if no session exists.
     expect(callArg.select).toEqual({
       id: true,
       domain: true,
-      accessToken: true,
     });
   });
 });
@@ -277,46 +281,33 @@ describe("pollThemeChanges — no Professional shops", () => {
 // Skip conditions
 // ---------------------------------------------------------------------------
 
-describe("pollThemeChanges — skip: no accessToken", () => {
-  it("returns skipped_no_token outcome for shop with null accessToken", async () => {
-    mockDb.shop.findMany.mockResolvedValue([
-      { id: SHOP_ID, domain: SHOP_DOMAIN, accessToken: null },
-    ]);
+// S-14: The skipped_no_token guard was removed. Shops without a valid session
+// now reach unauthenticated.admin() which throws, producing an "error" outcome.
+// The existing try/catch handles this gracefully — no separate guard needed.
+describe("pollThemeChanges — shop with invalid/missing session (post S-14)", () => {
+  it("returns error outcome when unauthenticated.admin throws for a shop without a session", async () => {
+    mockUnauthenticated.admin.mockRejectedValueOnce(new Error("No session found for domain"));
 
     const result = await runPollThemeChanges();
 
-    expect(result.results[0].outcome).toBe("skipped_no_token");
+    expect(result.results[0].outcome).toBe("error");
+    expect(result.results[0].reason).toContain("No session found for domain");
     expect(result.results[0].domain).toBe(SHOP_DOMAIN);
   });
 
-  it("does not call fetchMainTheme when shop has no accessToken", async () => {
-    mockDb.shop.findMany.mockResolvedValue([
-      { id: SHOP_ID, domain: SHOP_DOMAIN, accessToken: null },
-    ]);
+  it("does not call fetchMainTheme when unauthenticated.admin throws", async () => {
+    mockUnauthenticated.admin.mockRejectedValueOnce(new Error("No session found for domain"));
 
     await runPollThemeChanges();
 
     expect(mockFetchMainTheme).not.toHaveBeenCalled();
   });
 
-  it("does not create a scan when shop has no accessToken", async () => {
-    mockDb.shop.findMany.mockResolvedValue([
-      { id: SHOP_ID, domain: SHOP_DOMAIN, accessToken: null },
-    ]);
+  it("does not create a scan when unauthenticated.admin throws", async () => {
+    mockUnauthenticated.admin.mockRejectedValueOnce(new Error("No session found for domain"));
 
     await runPollThemeChanges();
 
-    expect(mockCreateScan).not.toHaveBeenCalled();
-  });
-
-  it("handles empty string accessToken the same as null", async () => {
-    mockDb.shop.findMany.mockResolvedValue([
-      { id: SHOP_ID, domain: SHOP_DOMAIN, accessToken: "" },
-    ]);
-
-    const result = await runPollThemeChanges();
-
-    expect(result.results[0].outcome).toBe("skipped_no_token");
     expect(mockCreateScan).not.toHaveBeenCalled();
   });
 });
@@ -416,29 +407,32 @@ describe("pollThemeChanges — skip: theme up to date", () => {
 
 describe("pollThemeChanges — multiple shops", () => {
   it("processes each shop independently and returns correct summary", async () => {
-    const shop1 = { id: "shop-1", domain: "shop1.myshopify.com", accessToken: "token1" };
-    const shop2 = { id: "shop-2", domain: "shop2.myshopify.com", accessToken: null }; // no token
-    const shop3 = { id: "shop-3", domain: "shop3.myshopify.com", accessToken: "token3" };
+    // S-14: shops no longer carry accessToken — session validity is checked
+    // lazily by unauthenticated.admin(). shop2 here errors (no session).
+    const shop1 = { id: "shop-1", domain: "shop1.myshopify.com" };
+    const shop2 = { id: "shop-2", domain: "shop2.myshopify.com" }; // will error (no session)
+    const shop3 = { id: "shop-3", domain: "shop3.myshopify.com" };
 
     mockDb.shop.findMany.mockResolvedValue([shop1, shop2, shop3]);
 
     // shop1: will be dispatched (theme stale)
-    // shop2: skipped_no_token (no Shopify calls)
+    // shop2: error outcome — unauthenticated.admin throws (no session)
     // shop3: in-progress scan exists
+
+    mockUnauthenticated.admin
+      .mockResolvedValueOnce({ admin: MOCK_ADMIN }) // for shop1
+      .mockRejectedValueOnce(new Error("No session for shop2")) // for shop2
+      .mockResolvedValueOnce({ admin: MOCK_ADMIN }); // for shop3
 
     mockFetchMainTheme
       .mockResolvedValueOnce(MOCK_MAIN_THEME) // for shop1
       .mockResolvedValueOnce(MOCK_MAIN_THEME); // for shop3
 
-    mockUnauthenticated.admin
-      .mockResolvedValueOnce({ admin: MOCK_ADMIN }) // for shop1
-      .mockResolvedValueOnce({ admin: MOCK_ADMIN }); // for shop3
-
     // Reset scan.findFirst from beforeEach and set the full 3-call sequence
     mockDb.scan.findFirst.mockReset();
     mockDb.scan.findFirst
-      .mockResolvedValueOnce(null)  // shop1: in-progress check → none
-      .mockResolvedValueOnce(null)  // shop1: latest scan check → none → dispatch
+      .mockResolvedValueOnce(null) // shop1: in-progress check → none
+      .mockResolvedValueOnce(null) // shop1: latest scan check → none → dispatch
       .mockResolvedValueOnce({ id: "scan-inprog" }); // shop3: in-progress check → found
 
     mockCreateScan.mockResolvedValue(MOCK_SCAN);
@@ -447,15 +441,21 @@ describe("pollThemeChanges — multiple shops", () => {
 
     expect(result.total).toBe(3);
     expect(result.summary.dispatch_triggered).toBe(1);
-    expect(result.summary.skipped_no_token).toBe(1);
+    expect(result.summary.error).toBe(1);
     expect(result.summary.skipped_in_progress).toBe(1);
 
-    const shop1Result = result.results.find((r: { domain: string }) => r.domain === "shop1.myshopify.com");
-    const shop2Result = result.results.find((r: { domain: string }) => r.domain === "shop2.myshopify.com");
-    const shop3Result = result.results.find((r: { domain: string }) => r.domain === "shop3.myshopify.com");
+    const shop1Result = result.results.find(
+      (r: { domain: string }) => r.domain === "shop1.myshopify.com",
+    );
+    const shop2Result = result.results.find(
+      (r: { domain: string }) => r.domain === "shop2.myshopify.com",
+    );
+    const shop3Result = result.results.find(
+      (r: { domain: string }) => r.domain === "shop3.myshopify.com",
+    );
 
     expect(shop1Result?.outcome).toBe("dispatch_triggered");
-    expect(shop2Result?.outcome).toBe("skipped_no_token");
+    expect(shop2Result?.outcome).toBe("error");
     expect(shop3Result?.outcome).toBe("skipped_in_progress");
   });
 });
@@ -509,19 +509,20 @@ describe("pollThemeChanges — error paths", () => {
   });
 
   it("continues processing remaining shops when one shop errors", async () => {
-    const shop1 = { id: "shop-1", domain: "shop1.myshopify.com", accessToken: "token1" };
-    const shop2 = { id: "shop-2", domain: "shop2.myshopify.com", accessToken: "token2" };
+    // S-14: shops no longer carry accessToken in select
+    const shop1 = { id: "shop-1", domain: "shop1.myshopify.com" };
+    const shop2 = { id: "shop-2", domain: "shop2.myshopify.com" };
 
     mockDb.shop.findMany.mockResolvedValue([shop1, shop2]);
 
     // shop1 errors; shop2 succeeds
     mockUnauthenticated.admin
-      .mockResolvedValueOnce({ admin: MOCK_ADMIN })  // shop1
+      .mockResolvedValueOnce({ admin: MOCK_ADMIN }) // shop1
       .mockResolvedValueOnce({ admin: MOCK_ADMIN }); // shop2
 
     mockFetchMainTheme
       .mockRejectedValueOnce(new Error("shop1 failure")) // shop1 errors
-      .mockResolvedValueOnce(MOCK_MAIN_THEME);           // shop2 succeeds
+      .mockResolvedValueOnce(MOCK_MAIN_THEME); // shop2 succeeds
 
     mockDb.scan.findFirst
       .mockResolvedValueOnce(null) // shop2: no in-progress
@@ -533,8 +534,12 @@ describe("pollThemeChanges — error paths", () => {
 
     expect(result.total).toBe(2);
 
-    const shop1Result = result.results.find((r: { domain: string }) => r.domain === "shop1.myshopify.com");
-    const shop2Result = result.results.find((r: { domain: string }) => r.domain === "shop2.myshopify.com");
+    const shop1Result = result.results.find(
+      (r: { domain: string }) => r.domain === "shop1.myshopify.com",
+    );
+    const shop2Result = result.results.find(
+      (r: { domain: string }) => r.domain === "shop2.myshopify.com",
+    );
 
     expect(shop1Result?.outcome).toBe("error");
     expect(shop2Result?.outcome).toBe("dispatch_triggered");

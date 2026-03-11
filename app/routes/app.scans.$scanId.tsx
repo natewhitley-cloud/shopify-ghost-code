@@ -1,9 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
-import {
-  useLoaderData,
-  useRevalidator,
-} from "react-router";
+import { useLoaderData, useRevalidator } from "react-router";
 
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
@@ -19,9 +16,7 @@ import type { ScanStatus } from "../lib/format";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function severityTone(
-  severity: string,
-): "critical" | "warning" | "info" {
+function severityTone(severity: string): "critical" | "warning" | "info" {
   switch (severity) {
     case "HIGH":
       return "critical";
@@ -44,15 +39,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Scan ID is required", { status: 400 });
   }
 
-  const scan = await getScanById(scanId);
-
-  if (!scan) {
-    throw new Response("Scan not found", { status: 404 });
+  // Verify the authenticated shop exists before fetching the scan.
+  const shop = await getShopByDomain(session.shop);
+  if (!shop) {
+    throw new Response("Not found", { status: 404 });
   }
 
-  // Verify the scan belongs to the authenticated shop.
-  const shop = await getShopByDomain(session.shop);
-  if (!shop || scan.shopId !== shop.id) {
+  const scan = await getScanById(scanId);
+
+  // Verify the scan exists and belongs to the authenticated shop.
+  if (!scan || scan.shopId !== shop.id) {
     throw new Response("Not found", { status: 404 });
   }
 
@@ -67,11 +63,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // but only when the current scan is itself completed and the plan allows it.
   let scanDiff: ScanDiff | null = null;
   if (scan.status === "COMPLETED" && canUseScanDiffing(shop.plan)) {
-    const previousScan = await getPreviousScanForTheme(
-      scan.shopId,
-      scan.themeId,
-      scan.createdAt,
-    );
+    const previousScan = await getPreviousScanForTheme(scan.shopId, scan.themeId, scan.createdAt);
     if (previousScan) {
       scanDiff = diffScans(scan.findings, previousScan.findings);
     }
@@ -102,7 +94,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 const MAX_POLL_COUNT = 200;
 
 // The `shopify` global is injected by Shopify App Bridge in embedded app context.
-declare const shopify: { toast: { show: (msg: string, opts?: { isError?: boolean; duration?: number }) => void } };
+declare const shopify: {
+  toast: { show: (msg: string, opts?: { isError?: boolean; duration?: number }) => void };
+};
 
 export default function ScanDetail() {
   const { scan, findings, findingSummary, canViewDetails, scanDiff } =
@@ -126,8 +120,7 @@ export default function ScanDetail() {
   // this page was open (i.e. mount status was non-terminal, current is terminal).
   useEffect(() => {
     const mountedWhileRunning =
-      statusAtMount.current === "PENDING" ||
-      statusAtMount.current === "IN_PROGRESS";
+      statusAtMount.current === "PENDING" || statusAtMount.current === "IN_PROGRESS";
 
     if (!mountedWhileRunning) return;
 
@@ -139,15 +132,14 @@ export default function ScanDetail() {
         duration: 5000,
       });
     }
-  // We only want this to fire when the status changes.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // We only want this to fire when the status changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scan.status]);
 
   // Poll the loader every 3 seconds while the scan is still running,
   // stopping after MAX_POLL_COUNT polls (~10 minutes).
   useEffect(() => {
-    const isRunning =
-      scan.status === "PENDING" || scan.status === "IN_PROGRESS";
+    const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
 
     if (!isRunning) {
       // Terminal state — reset poll counter so a future navigation back resets cleanly.
@@ -171,9 +163,9 @@ export default function ScanDetail() {
     }, 3000);
 
     return () => clearInterval(interval);
-  // revalidator reference is stable across renders; scan.status and
-  // pollingTimedOut are the real dependencies.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    // revalidator reference is stable across renders; scan.status and
+    // pollingTimedOut are the real dependencies.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scan.status, pollingTimedOut]);
 
   const status = scan.status as ScanStatus;
@@ -188,21 +180,16 @@ export default function ScanDetail() {
       {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
       {pollingTimedOut && (
         <s-banner tone="warning">
-          Scan is taking longer than expected. Refresh the page to check the
-          latest status.
+          Scan is taking longer than expected. Refresh the page to check the latest status.
         </s-banner>
       )}
 
       {/* Scan status header */}
       <s-card>
         <s-stack direction="inline" gap="base">
-          <s-badge tone={statusTone(status)}>
-            {statusLabel(status)}
-          </s-badge>
+          <s-badge tone={statusTone(status)}>{statusLabel(status)}</s-badge>
           <s-text>Started: {formatDate(scan.startedAt ?? scan.createdAt, true)}</s-text>
-          {scan.completedAt && (
-            <s-text>Completed: {formatDate(scan.completedAt, true)}</s-text>
-          )}
+          {scan.completedAt && <s-text>Completed: {formatDate(scan.completedAt, true)}</s-text>}
         </s-stack>
       </s-card>
 
@@ -224,15 +211,9 @@ export default function ScanDetail() {
           <s-stack direction="block" gap="base">
             <s-heading>Changes from Last Scan</s-heading>
             <s-stack direction="inline" gap="base">
-              <s-badge tone="critical">
-                {scanDiff.newFindings.length} New
-              </s-badge>
-              <s-badge tone="success">
-                {scanDiff.resolvedFindings.length} Resolved
-              </s-badge>
-              <s-badge tone="info">
-                {scanDiff.unchangedCount} Unchanged
-              </s-badge>
+              <s-badge tone="critical">{scanDiff.newFindings.length} New</s-badge>
+              <s-badge tone="success">{scanDiff.resolvedFindings.length} Resolved</s-badge>
+              <s-badge tone="info">{scanDiff.unchangedCount} Unchanged</s-badge>
             </s-stack>
           </s-stack>
         </s-card>
@@ -296,9 +277,8 @@ export default function ScanDetail() {
           <s-stack direction="block" gap="base">
             <s-heading>Upgrade to see details</s-heading>
             <s-paragraph>
-              The free plan shows finding counts only. Upgrade to Standard to
-              see full details including file names, line numbers, and code
-              snippets.
+              The free plan shows finding counts only. Upgrade to Standard to see full details
+              including file names, line numbers, and code snippets.
             </s-paragraph>
             <a href="/app/settings">
               <s-button variant="primary">Upgrade Plan</s-button>

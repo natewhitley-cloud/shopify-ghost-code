@@ -1,10 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import {
-  Form,
-  useActionData,
-  useLoaderData,
-  useNavigation,
-} from "react-router";
+import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 
 import { authenticate } from "../shopify.server";
 import { PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
@@ -39,11 +34,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
   }
 
-  // Unknown intent — return a 400 so the caller knows something is wrong.
-  return new Response(JSON.stringify({ error: "Unknown intent" }), {
-    status: 400,
-    headers: { "Content-Type": "application/json" },
-  });
+  // Unknown intent — return a plain object so useActionData receives it.
+  // Non-2xx responses are swallowed by React Router's useActionData, so we
+  // return 200 with an error payload to ensure the error banner renders.
+  return { error: "Unknown intent" };
 };
 
 // ---------------------------------------------------------------------------
@@ -85,11 +79,7 @@ export default function Settings() {
         Back to Dashboard
       </s-link>
 
-      {actionData?.error && (
-        <s-banner tone="critical">
-          {actionData.error}
-        </s-banner>
-      )}
+      {actionData?.error && <s-banner tone="critical">{actionData.error}</s-banner>}
 
       {/* Current Plan */}
       <s-card>
@@ -100,24 +90,17 @@ export default function Settings() {
           </s-paragraph>
           <s-unordered-list>
             <s-list-item>
-              {features.maxScansPerMonth === Infinity
-                ? "Unlimited"
-                : features.maxScansPerMonth}{" "}
+              {features.maxScansPerMonth === Infinity ? "Unlimited" : features.maxScansPerMonth}{" "}
               scans per month
             </s-list-item>
             <s-list-item>
               Finding details: {features.showFindingDetails ? "Yes" : "Count only"}
             </s-list-item>
             <s-list-item>
-              Multiple themes:{" "}
-              {features.maxThemes === Infinity ? "Yes" : "No"}
+              Multiple themes: {features.maxThemes === Infinity ? "Yes" : "No"}
             </s-list-item>
-            <s-list-item>
-              Auto-rescan: {features.autoRescan ? "Yes" : "No"}
-            </s-list-item>
-            <s-list-item>
-              Scan diffing: {features.scanDiffing ? "Yes" : "No"}
-            </s-list-item>
+            <s-list-item>Auto-rescan: {features.autoRescan ? "Yes" : "No"}</s-list-item>
+            <s-list-item>Scan diffing: {features.scanDiffing ? "Yes" : "No"}</s-list-item>
           </s-unordered-list>
         </s-stack>
       </s-card>
@@ -165,8 +148,8 @@ export default function Settings() {
                   {isSubmitting
                     ? "Upgrading..."
                     : isStandard
-                    ? "Upgrade to Professional"
-                    : "Start with Professional"}
+                      ? "Upgrade to Professional"
+                      : "Start with Professional"}
                 </button>
               </Form>
             </s-stack>
@@ -179,9 +162,8 @@ export default function Settings() {
         <s-stack direction="block" gap="base">
           <s-heading>About Ghost Code</s-heading>
           <s-paragraph>
-            Ghost Code scans your Shopify themes for leftover code from
-            uninstalled apps. This orphaned code can slow down your store,
-            break functionality, and create security risks.
+            Ghost Code scans your Shopify themes for leftover code from uninstalled apps. This
+            orphaned code can slow down your store, break functionality, and create security risks.
           </s-paragraph>
           <s-paragraph>
             <s-text>Version: 1.0.0</s-text>

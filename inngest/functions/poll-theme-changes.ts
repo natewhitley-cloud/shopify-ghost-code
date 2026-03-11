@@ -44,7 +44,7 @@ export const pollThemeChanges = inngest.createFunction(
       // set during plan upgrade (see billing.server.ts and billing webhook handler).
       return db.shop.findMany({
         where: { plan: PLANS.PROFESSIONAL },
-        select: { id: true, domain: true, accessToken: true },
+        select: { id: true, domain: true },
       });
     });
 
@@ -52,7 +52,7 @@ export const pollThemeChanges = inngest.createFunction(
 
     const results: {
       domain: string;
-      outcome: "skipped_no_token" | "skipped_in_progress" | "skipped_up_to_date" | "dispatch_triggered" | "error";
+      outcome: "skipped_in_progress" | "skipped_up_to_date" | "dispatch_triggered" | "error";
       reason?: string;
     }[] = [];
 
@@ -65,11 +65,6 @@ export const pollThemeChanges = inngest.createFunction(
       const safeId = shop.domain.replace(/[^a-z0-9-]/gi, "-");
 
       const outcome = await step.run(`check-shop-${safeId}`, async () => {
-        // Guard: incomplete installs — skip shops without an access token.
-        if (!shop.accessToken) {
-          return { outcome: "skipped_no_token" as const, reason: "no accessToken" };
-        }
-
         // Fetch the main theme's id, name, and updatedAt from Shopify.
         let themeId: string;
         let themeName: string;
@@ -122,8 +117,7 @@ export const pollThemeChanges = inngest.createFunction(
           select: { createdAt: true },
         });
 
-        const needsScan =
-          latestScan === null || themeUpdatedAt > latestScan.createdAt;
+        const needsScan = latestScan === null || themeUpdatedAt > latestScan.createdAt;
 
         if (!needsScan) {
           return { outcome: "skipped_up_to_date" as const };
