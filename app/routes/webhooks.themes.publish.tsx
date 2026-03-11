@@ -1,6 +1,6 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import { getShopByDomain } from "../models/shop.server";
+import { getShopByDomain, updateThemePublishTimestamp } from "../models/shop.server";
 import { createScan } from "../models/scan.server";
 import { canUseAutoRescan } from "../lib/plan-gating.server";
 import { inngest } from "../../inngest/client";
@@ -22,9 +22,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 200 });
   }
 
+  // Always record the publish timestamp so the dashboard can surface a nudge
+  // banner (for non-Pro shops). For Pro shops, this also stays up-to-date even
+  // though they get auto-rescan instead of a nudge.
+  await updateThemePublishTimestamp(shop);
+
   // Auto-rescan is a Professional-plan feature. Free and Standard shops get
-  // the webhook but we silently skip the scan rather than returning an error.
+  // the webhook but we only record the timestamp (done above) and return 200.
   if (!canUseAutoRescan(shopRecord.plan)) {
+    logger.info("Theme published — timestamp recorded, auto-rescan skipped (non-Pro plan)", {
+      shop,
+      plan: shopRecord.plan,
+    });
     return new Response(null, { status: 200 });
   }
 

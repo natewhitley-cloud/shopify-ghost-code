@@ -42,12 +42,13 @@ model Session {
 // ---------------------------------------------------------------------------
 
 model Shop {
-  id          String   @id @default(cuid())
-  domain      String   @unique
-  accessToken String
-  installedAt DateTime @default(now())
-  plan        String   @default("free")
-  scans       Scan[]
+  id                  String    @id @default(cuid())
+  domain              String    @unique
+  accessToken         String
+  installedAt         DateTime  @default(now())
+  plan                String    @default("free")
+  lastThemePublishAt  DateTime?
+  scans               Scan[]
 }
 
 model Scan {

@@ -54,6 +54,27 @@ export async function updateShopPlanByDomain(
 }
 
 /**
+ * Record the timestamp of the most recent themes/publish webhook for a shop.
+ * Used by the dashboard to surface a nudge banner when a theme change occurred
+ * since the last completed scan.
+ *
+ * Returns null if the shop domain is not found — callers must still return 200
+ * to Shopify even when no record is updated.
+ */
+export async function updateThemePublishTimestamp(
+  domain: string,
+): Promise<{ id: string; domain: string } | null> {
+  const shop = await db.shop.findUnique({ where: { domain } });
+  if (!shop) return null;
+
+  return db.shop.update({
+    where: { domain },
+    data: { lastThemePublishAt: new Date() },
+    select: { id: true, domain: true },
+  });
+}
+
+/**
  * Hard-delete a shop and all its data atomically inside a single transaction.
  *
  * Deletion order:

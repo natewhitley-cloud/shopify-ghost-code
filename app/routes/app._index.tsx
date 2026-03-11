@@ -40,6 +40,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       healthScore: null,
       previousHealthScore: null,
       showRescanNudge: false,
+      showThemeChangeNudge: false,
     };
   }
 
@@ -99,6 +100,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     latestScan.completedAt !== null &&
     Date.now() - new Date(latestScan.completedAt).getTime() > THIRTY_DAYS_MS;
 
+  // Theme change nudge: show when a theme was published since the last completed
+  // scan, indicating orphaned-code risk may have changed.
+  // Suppressed for Professional plan shops — they get auto-rescan instead.
+  const showThemeChangeNudge =
+    !features.autoRescan &&
+    shop.lastThemePublishAt !== null &&
+    latestScan !== null &&
+    latestScan.status === "COMPLETED" &&
+    latestScan.completedAt !== null &&
+    new Date(shop.lastThemePublishAt) > new Date(latestScan.completedAt);
+
   return {
     shop,
     latestScan,
@@ -109,6 +121,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     healthScore,
     previousHealthScore,
     showRescanNudge,
+    showThemeChangeNudge,
   };
 };
 
@@ -189,6 +202,7 @@ export default function Dashboard() {
     healthScore,
     previousHealthScore,
     showRescanNudge,
+    showThemeChangeNudge,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
@@ -237,6 +251,25 @@ export default function Dashboard() {
             <s-paragraph>
               It's been over 30 days since your last scan. Re-scan your theme to check for new
               orphaned code from recently uninstalled apps.
+            </s-paragraph>
+            <s-button
+              variant="primary"
+              onClick={handleStartScan}
+              {...(isSubmitting ? { loading: true } : {})}
+            >
+              Start New Scan
+            </s-button>
+          </s-stack>
+        </s-banner>
+      )}
+
+      {/* Theme change nudge — shown when a theme was published since the last scan */}
+      {showThemeChangeNudge && (
+        <s-banner tone="info">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              Your theme was recently updated. Scan now to check for new orphaned code from app
+              changes.
             </s-paragraph>
             <s-button
               variant="primary"
