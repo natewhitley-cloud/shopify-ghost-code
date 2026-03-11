@@ -1,6 +1,12 @@
 {
   "permissions": {
     "allow": [
+      "Read",
+      "Write",
+      "Edit",
+      "Glob",
+      "Grep",
+      "Agent",
       "Bash(npx vitest:*)",
       "Bash(npx prettier:*)",
       "Bash(npx tsc:*)",

@@ -216,6 +216,10 @@ PRISMA_CLIENT_ENGINE_TYPE=binary
 
 This forces Prisma to use the binary engine mode, which runs the query engine as a separate process and can work via emulation on Windows ARM64.
 
+## Key References
+
+- [Pricing & Plans](docs/pricing-and-plans.md) — Plan tiers, feature gating, upgrade triggers, billing mechanics, and pricing decision log
+
 ## Resources
 
 React Router:
