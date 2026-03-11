@@ -7,6 +7,9 @@
 - GraphQL queries use cursor-based pagination with `first: 250` and `after` cursor.
 - Rate limiting: 50 points/second for GraphQL. Monitor `extensions.cost.throttleStatus` in responses.
 - Inngest functions in `inngest/functions/` use step functions for multi-step async work.
+- Inngest v3 requires `new Inngest({ schemas: new EventSchemas().fromRecord<Events>() })` — the `Inngest<Events>` generic from v2 is rejected. (added: 2026-03-10, dispatch: .41)
+- InngestMiddleware afterExecution is BlankHook (zero args). Capture timing via closure in onFunctionRun scope, not hook params. (added: 2026-03-10, dispatch: .41)
+- Cron Inngest functions use `{ cron: '0 6 * * *' }` trigger (not event name). Per-shop batch ops: for-loop with `step.run('check-shop-${safeId}')` per iteration for isolation + per-shop retryability. (added: 2026-03-10, dispatch: .41)
 - countScansForShopSince lives in scan.server.ts (model layer) — plan-gating imports it. Keep queries in models, not lib. (added: 2026-03-10, dispatch: .8)
 - For aggregate summaries hitting same table with different groupBy axes, use Promise.all for parallel execution. (added: 2026-03-10, dispatch: .8)
 
@@ -39,3 +42,10 @@
 - Inngest outer try/catch should call updateScanStatus(scanId, 'FAILED') and re-throw — surfaces error state in UI while letting Inngest handle retries. (added: 2026-03-10, dispatch: .14)
 - app/uninstalled webhook fires immediately on uninstall; shop/redact fires 48h later. Both paths must clean up Ghost Code data. (added: 2026-03-10, dispatch: .21)
 - Child route ErrorBoundaries should use isRouteErrorResponse/useRouteError from react-router directly, not the layout-level boundary.error() delegate. (added: 2026-03-10, dispatch: .30)
+- When same GraphQL query needed in loader and action, extract as module-level helper accepting admin client. Avoids duplicating response-parsing logic. (added: 2026-03-10, dispatch: .19)
+- Shopify GraphQL themes() uses roles: MAIN (uppercase enum) to target published theme. Full GID string is the themeId — no parsing needed. (added: 2026-03-10, dispatch: .19)
+- app/installed webhook cannot use authenticate.admin() (no session context). Use authenticate.webhook() + unauthenticated.admin(). To get accessToken, read offline session from db.session. (added: 2026-03-10, dispatch: .29)
+- Webhook handlers must ALWAYS return 200 regardless of business logic. Non-200 causes infinite Shopify retries. Use early return + console.warn for non-happy paths. (added: 2026-03-10, dispatch: .28)
+- getPreviousScanForTheme filters to COMPLETED status + createdAt < current scan. Different from getLatestScanForTheme which returns any status. (added: 2026-03-10, dispatch: .27)
+- Fingerprint-based diffing should use multiset (Map of counts) not Set — handles duplicate findings correctly. (added: 2026-03-10, dispatch: .27)
+- Snippets can render other snippets in Liquid. File reference analyzer must include snippet files in the reference scan pass, not just templates/sections/layout. (added: 2026-03-10, dispatch: .26)

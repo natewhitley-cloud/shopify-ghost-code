@@ -1,38 +1,26 @@
-# Sprint Checkpoint — Wave 4
+# Sprint Checkpoint — Batch 5
 
 ## Status
 - Phase 0: Complete (Light load)
 - Phase 1: Complete (all context loaded)
 - Phase 2: Complete (plan approved)
-- Phase 3: IN PROGRESS (batch 5 ready)
+- Phase 3: IN PROGRESS (batch 5 dispatching — 4 agents running)
 
-## Batch 1 — COMPLETE
-- Scaffolder (.7+.9+.10): DONE — Prisma schema, shopify.app.toml, Inngest setup
-- Implementer (.20+.22): DONE — GDPR webhooks, billing plans
-- Learnings updated, beads closed
+## Batch 5 — IN PROGRESS
+- Implementer (.19+.16+.32): scan trigger + onboarding + billing test mode
+- Implementer (.29+.28): install webhook + theme change webhooks
+- Tester (.35): Inngest scan function integration tests
+- Implementer (.27+.26): scan diffing engine + file reference analyzer
 
-## Batch 2 — COMPLETE
-- Implementer (.8+.23): DONE — data access layer + feature gating
-- Tester (.33): DONE — Vitest setup + mocks
-- Scaffolder (.36+.38): DONE — Railway deployment + ESLint/Prettier
-
-## Batch 3 — COMPLETE
-- Implementer (.11+.12+.13): DONE — theme fetcher, scan engine, app signatures + 92 tests
-- Implementer (.15+.17+.18): DONE — dashboard, scan history, scan detail routes
-- Scaffolder (.37): DONE — GitHub Actions CI/CD
-
-## Batch 4 — COMPLETE
-- Implementer (.14+.21): DONE — Inngest scan-theme function + uninstall webhook
-- Implementer (.24+.30): DONE — settings route + error boundaries
-- Reviewer (.25): DONE — session token audit + CSP verification (all pass)
-
-## Also closed (already done)
-- .6 (scaffold — manual), .31 (indexes — from .7), .34 (tests — from batch 3)
+## Prior Batches (all complete)
+- Batch 1: Scaffolder (.7+.9+.10) + Implementer (.20+.22) — 5 beads
+- Batch 2: Implementer (.8+.23) + Tester (.33) + Scaffolder (.36+.38) — 5 beads
+- Batch 3: Implementer (.11+.12+.13) + Implementer (.15+.17+.18) + Scaffolder (.37) — 7 beads
+- Batch 4: Implementer (.14+.21) + Implementer (.24+.30) + Reviewer (.25) — 5 beads
+- Also closed: .6 (manual), .31, .34 (already done)
 
 ## Beads Closed So Far
-- .6, .7, .8, .9, .10, .11, .12, .13, .14, .15, .17, .18, .20, .21, .22, .23, .24, .25, .30, .31, .33, .34, .36, .37, .38 (25 closed)
+25 total: .6-.15, .17-.25, .30-.31, .33-.34, .36-.38
 
-## Key Learnings from Batch 4
-- Admin clients not serializable across Inngest steps — create inside each step
-- CSP handled by SDK's addDocumentResponseHeaders — no manual config needed
-- app/uninstalled fires immediately, shop/redact fires 48h later — both need cleanup
+## After Batch 5
+Remaining: .39 (app review package — manual), .40 (performance audit — needs running app), .41 (daily polling fallback — P2)

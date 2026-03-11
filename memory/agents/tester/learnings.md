@@ -23,3 +23,6 @@
 ## Cross-Agent Notes
 - Ask implementer for edge cases they considered but couldn't fully handle — those make the best test cases.
 - Report test coverage gaps to reviewer for audit.
+- Inngest function handlers accessible via scanTheme.fn — call directly as fn({ event, step }) to bypass SDK runtime. (added: 2026-03-10, dispatch: .35)
+- vi.mock() hoisting in Vitest correctly intercepts dynamic imports (await import(...)). Mocked modules resolve from mock registry even inside step callbacks. (added: 2026-03-10, dispatch: .35)
+- For best-effort catch blocks, use mockResolvedValueOnce for preceding calls so only the targeted invocation rejects. mockRejectedValue without Once corrupts earlier steps. (added: 2026-03-10, dispatch: .35)
