@@ -29,20 +29,55 @@ function formatDate(date: Date | string | null | undefined): string {
   });
 }
 
+/**
+ * Fetch the shop's MAIN (published) theme and return its GID and name.
+ * Returns null if no MAIN theme is found.
+ */
+async function fetchMainTheme(
+  admin: { graphql: (query: string) => Promise<{ json: () => Promise<unknown> }> }
+): Promise<{ id: string; name: string } | null> {
+  const response = await admin.graphql(`
+    {
+      themes(first: 1, roles: MAIN) {
+        nodes {
+          id
+          name
+        }
+      }
+    }
+  `);
+
+  const body = (await response.json()) as {
+    data?: {
+      themes?: {
+        nodes?: Array<{ id: string; name: string }>;
+      };
+    };
+  };
+
+  const node = body?.data?.themes?.nodes?.[0];
+  if (!node) return null;
+
+  return { id: node.id, name: node.name };
+}
+
 // ---------------------------------------------------------------------------
 // Loader
 // ---------------------------------------------------------------------------
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
   const shop = await getShopByDomain(session.shop);
 
   if (!shop) {
     // Shop hasn't been upserted yet (e.g. install is still in progress).
     // Return minimal data so the page renders without crashing.
-    return { shop: null, latestScan: null, findingSummary: null };
+    return { shop: null, latestScan: null, findingSummary: null, mainTheme: null };
   }
+
+  // Fetch the main theme so the UI can show which theme will be scanned.
+  const mainTheme = await fetchMainTheme(admin);
 
   // getScansForShop returns newest-first; take the first result.
   const [latestScan = null] = await getScansForShop(shop.id, { limit: 1 });
@@ -51,7 +86,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ? await getFindingSummary(latestScan.id)
     : null;
 
-  return { shop, latestScan, findingSummary };
+  return { shop, latestScan, findingSummary, mainTheme };
 };
 
 // ---------------------------------------------------------------------------
@@ -59,7 +94,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { session } = await authenticate.admin(request);
+  const { session, admin } = await authenticate.admin(request);
 
   const shop = await getShopByDomain(session.shop);
   if (!shop) {
@@ -72,11 +107,15 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: gate.reason ?? "Scan limit reached for your current plan." };
   }
 
-  // TODO: Replace hardcoded themeId/themeName with values from a theme-selector
-  // UI once theme listing is implemented. These placeholders allow the record
-  // creation and Inngest dispatch path to be exercised in the meantime.
-  const themeId = "placeholder-theme-id";
-  const themeName = "Active Theme";
+  // Fetch the shop's published (MAIN) theme to get a real themeId and name.
+  const mainTheme = await fetchMainTheme(admin);
+  if (!mainTheme) {
+    return { error: "No published theme found. Please publish a theme before scanning." };
+  }
+
+  // mainTheme.id is already the full GID string (e.g. gid://shopify/Theme/123456).
+  const themeId = mainTheme.id;
+  const themeName = mainTheme.name;
 
   const scan = await createScan(shop.id, themeId, themeName);
 
@@ -93,7 +132,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export default function Dashboard() {
-  const { shop, latestScan, findingSummary } = useLoaderData<typeof loader>();
+  const { shop, latestScan, findingSummary, mainTheme } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
   const isSubmitting =
@@ -115,6 +154,9 @@ export default function Dashboard() {
     LOW: 0,
   };
 
+  // Show onboarding experience when the shop is set up but has never been scanned.
+  const showOnboarding = !!shop && !latestScan;
+
   return (
     <s-page heading="Ghost Code Scanner">
       {/* Error banner — only rendered when the action returns an error */}
@@ -124,44 +166,80 @@ export default function Dashboard() {
         </s-banner>
       )}
 
-      {/* Last scan summary card */}
-      <s-card>
-        <s-stack direction="block" gap="base">
-          <s-heading>Last Scan</s-heading>
-          {latestScan ? (
-            <>
-              <s-paragraph>
-                Scanned <strong>{latestScan.themeName}</strong> on{" "}
-                {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
-              </s-paragraph>
-              <s-stack direction="inline" gap="base">
-                <s-badge tone="critical">{severityCounts.HIGH} High</s-badge>
-                <s-badge tone="warning">{severityCounts.MEDIUM} Medium</s-badge>
-                <s-badge tone="info">{severityCounts.LOW} Low</s-badge>
-              </s-stack>
-            </>
-          ) : (
+      {showOnboarding ? (
+        /* Onboarding card — shown on first install before any scan has run */
+        <s-card>
+          <s-stack direction="block" gap="loose">
+            <s-heading>Welcome to Ghost Code</s-heading>
             <s-paragraph>
-              No scans yet. Run your first scan to detect ghost code.
+              <strong>Ghost Code finds and removes leftover code from uninstalled apps.</strong>{" "}
+              Over time, apps you've removed leave behind scripts, stylesheets, and snippets
+              in your theme — slowing your store and cluttering your code. Ghost Code scans your
+              theme and flags everything that can be safely removed.
             </s-paragraph>
-          )}
-        </s-stack>
-      </s-card>
+            {mainTheme ? (
+              <s-paragraph>
+                Your active theme is <strong>{mainTheme.name}</strong>. Ghost Code will scan
+                that theme for ghost code left behind by uninstalled apps.
+              </s-paragraph>
+            ) : (
+              <s-paragraph>
+                No published theme was detected. Publish a theme in your Shopify admin before
+                starting your first scan.
+              </s-paragraph>
+            )}
+            <s-button
+              variant="primary"
+              onClick={handleStartScan}
+              {...(isSubmitting ? { loading: true } : {})}
+              {...(!mainTheme ? { disabled: true } : {})}
+            >
+              {isSubmitting ? "Starting scan…" : "Start First Scan"}
+            </s-button>
+          </s-stack>
+        </s-card>
+      ) : (
+        <>
+          {/* Last scan summary card */}
+          <s-card>
+            <s-stack direction="block" gap="base">
+              <s-heading>Last Scan</s-heading>
+              {latestScan ? (
+                <>
+                  <s-paragraph>
+                    Scanned <strong>{latestScan.themeName}</strong> on{" "}
+                    {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                  </s-paragraph>
+                  <s-stack direction="inline" gap="base">
+                    <s-badge tone="critical">{severityCounts.HIGH} High</s-badge>
+                    <s-badge tone="warning">{severityCounts.MEDIUM} Medium</s-badge>
+                    <s-badge tone="info">{severityCounts.LOW} Low</s-badge>
+                  </s-stack>
+                </>
+              ) : (
+                <s-paragraph>
+                  No scans yet. Run your first scan to detect ghost code.
+                </s-paragraph>
+              )}
+            </s-stack>
+          </s-card>
 
-      {/* Quick actions card */}
-      <s-card>
-        <s-stack direction="inline" gap="base">
-          <s-button
-            variant="primary"
-            onClick={handleStartScan}
-            {...(isSubmitting ? { loading: true } : {})}
-            {...(!shop ? { disabled: true } : {})}
-          >
-            Start New Scan
-          </s-button>
-          <s-link href="/app/scans">View Scan History</s-link>
-        </s-stack>
-      </s-card>
+          {/* Quick actions card */}
+          <s-card>
+            <s-stack direction="inline" gap="base">
+              <s-button
+                variant="primary"
+                onClick={handleStartScan}
+                {...(isSubmitting ? { loading: true } : {})}
+                {...(!shop ? { disabled: true } : {})}
+              >
+                Start New Scan
+              </s-button>
+              <s-link href="/app/scans">View Scan History</s-link>
+            </s-stack>
+          </s-card>
+        </>
+      )}
     </s-page>
   );
 }
