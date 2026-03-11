@@ -13,8 +13,10 @@ import {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeAdmin(graphqlMock: ReturnType<typeof vi.fn>) {
-  return { graphql: graphqlMock };
+type AdminApiContext = Parameters<typeof fetchMainTheme>[0];
+
+function makeAdmin(graphqlMock: ReturnType<typeof vi.fn>): AdminApiContext {
+  return { graphql: graphqlMock } as unknown as AdminApiContext;
 }
 
 function makeThemeFilesResponse(
