@@ -13,5 +13,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     await db.session.deleteMany({ where: { shop } });
   }
 
+  // Delete all Ghost Code data for this shop.
+  // Finding deletion cascades from Scan deletion via Prisma onDelete: Cascade,
+  // so only scan + shop rows need to be explicitly deleted here.
+  // deleteMany is a no-op when no rows match — safe for repeated delivery.
+  await db.scan.deleteMany({ where: { shop: { domain: shop } } });
+  await db.shop.deleteMany({ where: { domain: shop } });
+
   return new Response();
 };
