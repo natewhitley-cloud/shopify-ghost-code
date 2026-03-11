@@ -129,11 +129,10 @@ export default function Dashboard() {
           {latestScan ? (
             <>
               <s-paragraph>
-                Scanned{" "}
-                <s-text fontWeight="bold">{latestScan.themeName}</s-text> on{" "}
+                Scanned <strong>{latestScan.themeName}</strong> on{" "}
                 {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
               </s-paragraph>
-              <s-stack direction="inline" gap="tight">
+              <s-stack direction="inline" gap="base">
                 <s-badge tone="critical">{severityCounts.HIGH} High</s-badge>
                 <s-badge tone="warning">{severityCounts.MEDIUM} Medium</s-badge>
                 <s-badge tone="info">{severityCounts.LOW} Low</s-badge>

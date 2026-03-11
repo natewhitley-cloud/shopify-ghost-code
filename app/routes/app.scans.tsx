@@ -29,12 +29,12 @@ function formatDate(date: Date | string | null | undefined): string {
 
 function statusTone(
   status: ScanStatus,
-): "info" | "attention" | "success" | "critical" {
+): "info" | "caution" | "success" | "critical" {
   switch (status) {
     case "PENDING":
       return "info";
     case "IN_PROGRESS":
-      return "attention";
+      return "caution";
     case "COMPLETED":
       return "success";
     case "FAILED":

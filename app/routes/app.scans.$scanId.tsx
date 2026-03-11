@@ -32,12 +32,12 @@ function formatDate(date: Date | string | null | undefined): string {
 
 function statusTone(
   status: ScanStatus,
-): "info" | "attention" | "success" | "critical" {
+): "info" | "caution" | "success" | "critical" {
   switch (status) {
     case "PENDING":
       return "info";
     case "IN_PROGRESS":
-      return "attention";
+      return "caution";
     case "COMPLETED":
       return "success";
     case "FAILED":
@@ -211,15 +211,16 @@ export default function ScanDetail() {
                         </td>
                         <td>{finding.findingType.replace(/_/g, " ")}</td>
                         <td>
-                          <s-text variant="code">{finding.filename}</s-text>
+                          <code>{finding.filename}</code>
                         </td>
                         <td>{finding.lineNumber}</td>
                         <td>{finding.appName ?? "—"}</td>
                         <td>
-                          <s-text variant="code">
-                            {finding.codeSnippet.slice(0, 80)}
-                            {finding.codeSnippet.length > 80 ? "…" : ""}
-                          </s-text>
+                          <code>
+                            {finding.codeSnippet.length > 80
+                              ? `${finding.codeSnippet.slice(0, 80)}…`
+                              : finding.codeSnippet}
+                          </code>
                         </td>
                       </tr>
                     ))}
