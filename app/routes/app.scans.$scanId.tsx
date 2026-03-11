@@ -1,4 +1,4 @@
-import { useEffect } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import {
   useLoaderData,
@@ -98,26 +98,83 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 // Component
 // ---------------------------------------------------------------------------
 
+// Maximum number of 3-second polls before we give up (~10 minutes).
+const MAX_POLL_COUNT = 200;
+
+// The `shopify` global is injected by Shopify App Bridge in embedded app context.
+declare const shopify: { toast: { show: (msg: string, opts?: { isError?: boolean; duration?: number }) => void } };
+
 export default function ScanDetail() {
   const { scan, findings, findingSummary, canViewDetails, scanDiff } =
     useLoaderData<typeof loader>();
 
   const revalidator = useRevalidator();
 
-  // Poll the loader every 3 seconds while the scan is still running.
+  // Track how many polls have been fired so we can enforce a timeout ceiling.
+  const pollCount = useRef(0);
+
+  // Whether polling timed out (only true when we hit MAX_POLL_COUNT).
+  const [pollingTimedOut, setPollingTimedOut] = useState(false);
+
+  // Remember the status at mount time so we can detect transitions.
+  // We deliberately want this to stay at the initial value — the ref does not
+  // update on re-render so that we can compare "was it in progress?" vs "is it
+  // now terminal?".
+  const statusAtMount = useRef(scan.status);
+
+  // Toast on completion / failure — but only when the scan transitioned while
+  // this page was open (i.e. mount status was non-terminal, current is terminal).
   useEffect(() => {
-    if (
-      scan.status === "PENDING" ||
-      scan.status === "IN_PROGRESS"
-    ) {
-      const interval = setInterval(() => {
-        revalidator.revalidate();
-      }, 3000);
-      return () => clearInterval(interval);
+    const mountedWhileRunning =
+      statusAtMount.current === "PENDING" ||
+      statusAtMount.current === "IN_PROGRESS";
+
+    if (!mountedWhileRunning) return;
+
+    if (scan.status === "COMPLETED") {
+      shopify.toast.show("Scan completed successfully.", { duration: 5000 });
+    } else if (scan.status === "FAILED") {
+      shopify.toast.show("Scan failed. Please try running it again.", {
+        isError: true,
+        duration: 5000,
+      });
     }
-    // No cleanup needed when the scan is in a terminal state.
-    return undefined;
-  }, [scan.status, revalidator]);
+  // We only want this to fire when the status changes.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scan.status]);
+
+  // Poll the loader every 3 seconds while the scan is still running,
+  // stopping after MAX_POLL_COUNT polls (~10 minutes).
+  useEffect(() => {
+    const isRunning =
+      scan.status === "PENDING" || scan.status === "IN_PROGRESS";
+
+    if (!isRunning) {
+      // Terminal state — reset poll counter so a future navigation back resets cleanly.
+      pollCount.current = 0;
+      return undefined;
+    }
+
+    // Already timed out from a previous render cycle — don't restart polling.
+    if (pollingTimedOut) return undefined;
+
+    const interval = setInterval(() => {
+      pollCount.current += 1;
+
+      if (pollCount.current >= MAX_POLL_COUNT) {
+        clearInterval(interval);
+        setPollingTimedOut(true);
+        return;
+      }
+
+      revalidator.revalidate();
+    }, 3000);
+
+    return () => clearInterval(interval);
+  // revalidator reference is stable across renders; scan.status and
+  // pollingTimedOut are the real dependencies.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scan.status, pollingTimedOut]);
 
   const status = scan.status as ScanStatus;
   const summary = findingSummary.bySeverity;
@@ -127,6 +184,14 @@ export default function ScanDetail() {
       <s-link slot="primary-action" href="/app/scans">
         Back to History
       </s-link>
+
+      {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
+      {pollingTimedOut && (
+        <s-banner tone="warning">
+          Scan is taking longer than expected. Refresh the page to check the
+          latest status.
+        </s-banner>
+      )}
 
       {/* Scan status header */}
       <s-card>
