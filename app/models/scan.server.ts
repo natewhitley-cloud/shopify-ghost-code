@@ -29,14 +29,20 @@ export async function createScan(shopId: string, themeId: string, themeName: str
 }
 
 /**
- * Fetch a single scan by ID, including its findings count (denormalised on
- * the record itself) and the full findings relation for detailed views.
+ * Fetch a single scan by ID.
+ *
+ * Pass `includeFindings: true` (the default) to eager-load the findings
+ * relation. Pass `false` when you know you do not need the findings rows
+ * (e.g. free-tier shops that cannot view finding details) — this skips the
+ * JOIN entirely and avoids an unnecessary DB round-trip.
+ *
  * Returns null when the scan does not exist.
  */
-export async function getScanById(scanId: string) {
+export async function getScanById(scanId: string, options?: { includeFindings?: boolean }) {
+  const includeFindings = options?.includeFindings ?? true;
   return db.scan.findUnique({
     where: { id: scanId },
-    include: { findings: true },
+    ...(includeFindings ? { include: { findings: true } } : {}),
   });
 }
 
@@ -112,12 +118,17 @@ export async function getPreviousScanForTheme(shopId: string, themeId: string, b
 /**
  * Count scans created at or after `since` for a given shop.
  * Used by plan-gating to enforce per-month scan limits on the free tier.
+ *
+ * Only COMPLETED and IN_PROGRESS scans count toward the quota.
+ * FAILED and PENDING scans are excluded so merchants are not penalised for
+ * infrastructure failures or scans that never ran.
  */
 export async function countScansForShopSince(shopId: string, since: Date): Promise<number> {
   return db.scan.count({
     where: {
       shopId,
       createdAt: { gte: since },
+      status: { in: [ScanStatus.COMPLETED, ScanStatus.IN_PROGRESS] },
     },
   });
 }

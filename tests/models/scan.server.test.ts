@@ -149,7 +149,7 @@ describe("getScanById", () => {
     vi.clearAllMocks();
   });
 
-  it("returns the scan with findings when found", async () => {
+  it("returns the scan with findings when found (default includeFindings=true)", async () => {
     const scanWithFindings = { ...baseScan, findings: [] };
     mockDb.scan.findUnique.mockResolvedValue(scanWithFindings);
 
@@ -160,6 +160,30 @@ describe("getScanById", () => {
       include: { findings: true },
     });
     expect(result).toEqual(scanWithFindings);
+  });
+
+  it("includes findings when includeFindings option is explicitly true", async () => {
+    const scanWithFindings = { ...baseScan, findings: [] };
+    mockDb.scan.findUnique.mockResolvedValue(scanWithFindings);
+
+    await getScanById("scan-1", { includeFindings: true });
+
+    expect(mockDb.scan.findUnique).toHaveBeenCalledWith({
+      where: { id: "scan-1" },
+      include: { findings: true },
+    });
+  });
+
+  it("skips the findings JOIN when includeFindings is false", async () => {
+    mockDb.scan.findUnique.mockResolvedValue(baseScan);
+
+    const result = await getScanById("scan-1", { includeFindings: false });
+
+    // Must NOT pass the include clause — this skips the findings JOIN entirely.
+    expect(mockDb.scan.findUnique).toHaveBeenCalledWith({
+      where: { id: "scan-1" },
+    });
+    expect(result).toEqual(baseScan);
   });
 
   it("returns null when the scan does not exist", async () => {
@@ -426,9 +450,22 @@ describe("countScansForShopSince", () => {
       where: {
         shopId: SHOP_ID,
         createdAt: { gte: since },
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.IN_PROGRESS] },
       },
     });
     expect(result).toBe(3);
+  });
+
+  it("filters to only COMPLETED and IN_PROGRESS statuses (excludes FAILED and PENDING)", async () => {
+    mockDb.scan.count.mockResolvedValue(0);
+
+    await countScansForShopSince(SHOP_ID, new Date("2026-01-01T00:00:00Z"));
+
+    const callArg = mockDb.scan.count.mock.calls[0][0];
+    expect(callArg.where.status.in).toContain(ScanStatus.COMPLETED);
+    expect(callArg.where.status.in).toContain(ScanStatus.IN_PROGRESS);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.FAILED);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.PENDING);
   });
 
   it("returns 0 when no scans have been run since the given date", async () => {

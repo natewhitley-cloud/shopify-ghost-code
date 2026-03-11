@@ -14,4 +14,16 @@ export type Events = {
       scanId: string;
     };
   };
+
+  /**
+   * Emitted by the poll-theme-changes coordinator for each Professional-plan
+   * shop. The poll-check-shop worker function processes these events with a
+   * concurrency limit to avoid overwhelming the Shopify API.
+   */
+  "poll/check-shop": {
+    data: {
+      shopId: string;
+      shopDomain: string;
+    };
+  };
 };

@@ -1,9 +1,11 @@
 /**
- * Inngest function: poll-theme-changes
+ * Inngest function: poll-theme-changes (coordinator)
  *
  * Daily cron fallback that guards against webhook delivery failures.
- * Runs once daily at 6 AM UTC and checks every active shop for theme
- * modifications since the last scan.
+ * Runs once daily at 6 AM UTC and fans out a `poll/check-shop` event for
+ * every active Professional-plan shop. The actual per-shop check logic lives
+ * in poll-check-shop.ts (the worker function), which Inngest runs in parallel
+ * with a concurrency cap to avoid overwhelming the Shopify API.
  *
  * Why this exists:
  *   Shopify webhook delivery is best-effort — network blips, Shopify outages,
@@ -11,30 +13,24 @@
  *   shops are never stuck with stale scan data for more than ~24 hours even
  *   when the theme-changed webhook fails to arrive.
  *
- * Processing model:
- *   Each shop is processed in its own step.run() so that a single shop
- *   failure (e.g. expired token, Shopify API error) does not abort the
- *   entire batch. Steps are also individually retryable by Inngest.
+ * Fan-out pattern:
+ *   1. Coordinator (this function): fast — one DB read + N event sends.
+ *   2. Worker (poll-check-shop.ts): one function invocation per shop, up to
+ *      5 running concurrently. Each has independent retry semantics.
  *
- * Rate-limit strategy:
- *   Shops are processed sequentially (one step per shop in a for-loop)
- *   rather than concurrently. This trades latency for safety — with many
- *   shops concurrently hitting the Shopify API we would quickly exhaust
- *   per-shop and global rate budgets. For small-to-medium shop counts
- *   the daily window is more than wide enough for sequential processing.
+ * This replaces the previous sequential for-loop approach, which would not
+ * scale beyond ~100 shops within a single 6 AM window.
  */
 
 import { inngest } from "../client";
-import { ScanStatus } from "@prisma/client";
-import { createScan } from "../../app/models/scan.server";
 import { PLANS } from "../../app/lib/billing.server";
 
 export const pollThemeChanges = inngest.createFunction(
-  { id: "poll-theme-changes", name: "Daily Theme Change Poll" },
+  { id: "poll-theme-changes", name: "Daily Theme Change Poll (Coordinator)" },
   { cron: "0 6 * * *" },
   async ({ step, logger }) => {
     // -------------------------------------------------------------------------
-    // Step 1: Fetch all active shops
+    // Step 1: Fetch all Professional-plan shops
     // -------------------------------------------------------------------------
     const shops = await step.run("fetch-all-shops", async () => {
       const db = (await import("../../app/db.server")).default;
@@ -48,123 +44,35 @@ export const pollThemeChanges = inngest.createFunction(
       });
     });
 
-    logger.info(`[poll-theme-changes] Checking ${shops.length} shops`);
+    logger.info(`[poll-theme-changes] Fanning out ${shops.length} shop checks`);
 
-    const results: {
-      domain: string;
-      outcome: "skipped_in_progress" | "skipped_up_to_date" | "dispatch_triggered" | "error";
-      reason?: string;
-    }[] = [];
-
-    // -------------------------------------------------------------------------
-    // Step 2–4 (per shop): Fetch theme, compare timestamps, dispatch if stale.
-    // Processing sequentially to respect Shopify API rate limits.
-    // -------------------------------------------------------------------------
-    for (const shop of shops) {
-      // Sanitise the domain for use in the step ID (must be stable + URL-safe).
-      const safeId = shop.domain.replace(/[^a-z0-9-]/gi, "-");
-
-      const outcome = await step.run(`check-shop-${safeId}`, async () => {
-        // Fetch the main theme's id, name, and updatedAt from Shopify.
-        let themeId: string;
-        let themeName: string;
-        let themeUpdatedAt: Date;
-
-        try {
-          const { unauthenticated } = await import("../../app/shopify.server");
-          const { admin } = await unauthenticated.admin(shop.domain);
-
-          const { fetchMainTheme } = await import("../../app/services/theme-fetcher.server");
-          const mainTheme = await fetchMainTheme(admin);
-
-          if (!mainTheme) {
-            return {
-              outcome: "error" as const,
-              reason: "no main theme found in Shopify response",
-            };
-          }
-
-          themeId = mainTheme.id;
-          themeName = mainTheme.name;
-          themeUpdatedAt = mainTheme.updatedAt;
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          return { outcome: "error" as const, reason: `Shopify API error: ${message}` };
-        }
-
-        // Check for an active (PENDING or IN_PROGRESS) scan so we don't
-        // double-dispatch. PENDING is included because a queued scan that
-        // hasn't started yet (e.g. Inngest is temporarily down) should still
-        // suppress a new dispatch — otherwise each cron run would create an
-        // orphan PENDING scan while the original one sits idle.
-        const db = (await import("../../app/db.server")).default;
-        const inProgressScan = await db.scan.findFirst({
-          where: {
-            shopId: shop.id,
-            themeId,
-            status: { in: [ScanStatus.PENDING, ScanStatus.IN_PROGRESS] },
-          },
-          select: { id: true },
-        });
-
-        if (inProgressScan) {
-          return {
-            outcome: "skipped_in_progress" as const,
-            reason: `scan ${inProgressScan.id} already in progress`,
-          };
-        }
-
-        // Compare theme's updatedAt against the most recent scan for this theme.
-        const latestScan = await db.scan.findFirst({
-          where: { shopId: shop.id, themeId },
-          orderBy: { createdAt: "desc" },
-          select: { createdAt: true },
-        });
-
-        const needsScan = latestScan === null || themeUpdatedAt > latestScan.createdAt;
-
-        if (!needsScan) {
-          return { outcome: "skipped_up_to_date" as const };
-        }
-
-        // Theme was modified after the last scan — create a scan record and
-        // dispatch the `scan/requested` event to trigger the scan pipeline.
-        // Using createScan() from the model layer so any future model-level
-        // logic (e.g. audit hooks, default fields) applies to cron-created scans.
-        const newScan = await createScan(shop.id, themeId, themeName);
-
-        await (
-          await import("../client")
-        ).inngest.send({
-          name: "scan/requested",
-          data: {
-            shopId: shop.id,
-            themeId,
-            scanId: newScan.id,
-          },
-        });
-
-        return { outcome: "dispatch_triggered" as const };
-      });
-
-      results.push({ domain: shop.domain, ...outcome });
-
-      logger.info(`[poll-theme-changes] ${shop.domain}: ${outcome.outcome}`, {
-        reason: "reason" in outcome ? outcome.reason : undefined,
-      });
+    if (shops.length === 0) {
+      return { total: 0, dispatched: 0 };
     }
 
-    // Summary log for observability.
-    const summary = results.reduce(
-      (acc, r) => {
-        acc[r.outcome] = (acc[r.outcome] ?? 0) + 1;
-        return acc;
-      },
-      {} as Record<string, number>,
-    );
+    // -------------------------------------------------------------------------
+    // Step 2: Send one `poll/check-shop` event per shop.
+    // Inngest batches up to 512 events in a single send() call.
+    // -------------------------------------------------------------------------
+    await step.run("fan-out-shop-events", async () => {
+      await (
+        await import("../client")
+      ).inngest.send(
+        shops.map((shop) => ({
+          name: "poll/check-shop" as const,
+          data: {
+            shopId: shop.id,
+            shopDomain: shop.domain,
+          },
+        })),
+      );
+    });
 
-    logger.info("[poll-theme-changes] Daily poll complete", { summary, total: shops.length });
+    logger.info("[poll-theme-changes] Coordinator complete", {
+      total: shops.length,
+      dispatched: shops.length,
+    });
 
-    return { total: shops.length, summary, results };
+    return { total: shops.length, dispatched: shops.length };
   },
 );

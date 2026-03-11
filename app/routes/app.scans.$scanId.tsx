@@ -3,6 +3,7 @@ import type React from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData, useRevalidator } from "react-router";
 
+import type { Finding } from "@prisma/client";
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
@@ -116,7 +117,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Not found", { status: 404 });
   }
 
-  const scan = await getScanById(scanId);
+  // Determine plan gating before querying the scan so we can skip the
+  // findings JOIN for free-tier shops that cannot view finding details.
+  const canViewDetails = canViewFindingDetails(shop.plan);
+
+  const scan = await getScanById(scanId, { includeFindings: canViewDetails });
 
   // Verify the scan exists and belongs to the authenticated shop.
   if (!scan || scan.shopId !== shop.id) {
@@ -124,7 +129,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   const findingSummary = await getFindingSummary(scanId);
-  const canViewDetails = canViewFindingDetails(shop.plan);
 
   // Compute health score for completed scans. Runs in parallel with other queries.
   let healthScore: HealthScoreResult | null = null;
@@ -133,10 +137,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     healthScore = computeHealthScore(findingSummary.bySeverity, fileCount);
   }
 
-  // For free-tier shops, omit the full findings array from the response
-  // to avoid leaking detail data to the client. Paid users get the full array;
-  // free users get null here (they receive previewFinding instead).
-  const findings = canViewDetails ? scan.findings : [];
+  // For free-tier shops, omit the full findings array from the response to
+  // avoid leaking detail data to the client. Paid users get the full array;
+  // free users get an empty array (they receive previewFinding instead).
+  // When canViewDetails is false, getScanById was called without includeFindings
+  // so scan.findings is undefined — fall through to the empty array default.
+  const findings: Finding[] =
+    canViewDetails && "findings" in scan ? (scan.findings as Finding[]) : [];
 
   // For free-tier shops, expose only the single highest-severity finding so
   // the UI can show a "peek" without leaking the full results.
@@ -144,11 +151,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   // Compute diff against the previous completed scan for the same theme,
   // but only when the current scan is itself completed and the plan allows it.
+  // scanDiffing is only enabled for plans that also have showFindingDetails,
+  // so `findings` is guaranteed to be populated when this branch is reached.
   let scanDiff: ScanDiff | null = null;
   if (scan.status === "COMPLETED" && canUseScanDiffing(shop.plan)) {
     const previousScan = await getPreviousScanForTheme(scan.shopId, scan.themeId, scan.createdAt);
     if (previousScan) {
-      scanDiff = diffScans(scan.findings, previousScan.findings);
+      scanDiff = diffScans(findings, previousScan.findings);
     }
   }
 
@@ -358,7 +367,14 @@ export default function ScanDetail() {
         (canViewDetails ? (
           <s-card>
             <s-stack direction="block" gap="base">
-              <s-heading>Findings</s-heading>
+              <s-stack direction="inline" gap="base">
+                <s-heading>Findings</s-heading>
+                {findings.length > 0 && (
+                  <s-link href={`/app/scans/${scan.id}/export?format=csv`}>
+                    <s-button>Export CSV</s-button>
+                  </s-link>
+                )}
+              </s-stack>
               {findings.length === 0 ? (
                 <s-paragraph>No ghost code detected in this scan.</s-paragraph>
               ) : (

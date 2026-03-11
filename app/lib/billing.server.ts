@@ -16,6 +16,8 @@ type PlanFeatures = {
   maxThemes: number;
   autoRescan: boolean;
   scanDiffing: boolean;
+  /** Whether the plan receives any form of scheduled (automatic) scanning. */
+  scheduledScan: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -27,6 +29,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         maxThemes: 1,
         autoRescan: false,
         scanDiffing: false,
+        scheduledScan: true, // Weekly (Sunday 6 AM UTC) via weekly-scan coordinator
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -35,6 +38,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         maxThemes: Infinity,
         autoRescan: true,
         scanDiffing: true,
+        scheduledScan: true, // Daily via poll-theme-changes coordinator
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -43,6 +47,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         maxThemes: 1,
         autoRescan: false,
         scanDiffing: false,
+        scheduledScan: false,
       };
   }
 }
