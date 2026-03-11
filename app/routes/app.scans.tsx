@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData } from "react-router";
+import { isRouteErrorResponse, useLoaderData, useRouteError } from "react-router";
 
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
@@ -124,6 +124,36 @@ export default function ScanHistory() {
           </s-data-table>
         </s-card>
       )}
+    </s-page>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Error Boundary
+// ---------------------------------------------------------------------------
+
+export function ErrorBoundary() {
+  const error = useRouteError();
+
+  if (isRouteErrorResponse(error)) {
+    return (
+      <s-page heading={`Error ${error.status}`}>
+        <s-card>
+          <s-banner tone="critical">
+            <s-paragraph>{error.statusText || "Something went wrong"}</s-paragraph>
+          </s-banner>
+        </s-card>
+      </s-page>
+    );
+  }
+
+  return (
+    <s-page heading="Error">
+      <s-card>
+        <s-banner tone="critical">
+          <s-paragraph>An unexpected error occurred. Please try again.</s-paragraph>
+        </s-banner>
+      </s-card>
     </s-page>
   );
 }

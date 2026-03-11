@@ -1,6 +1,12 @@
 import { useEffect } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { redirect, useFetcher, useLoaderData } from "react-router";
+import {
+  isRouteErrorResponse,
+  redirect,
+  useFetcher,
+  useLoaderData,
+  useRouteError,
+} from "react-router";
 
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
@@ -155,6 +161,36 @@ export default function Dashboard() {
           </s-button>
           <s-link href="/app/scans">View Scan History</s-link>
         </s-stack>
+      </s-card>
+    </s-page>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Error Boundary
+// ---------------------------------------------------------------------------
+
+export function ErrorBoundary() {
+  const error = useRouteError();
+
+  if (isRouteErrorResponse(error)) {
+    return (
+      <s-page heading={`Error ${error.status}`}>
+        <s-card>
+          <s-banner tone="critical">
+            <s-paragraph>{error.statusText || "Something went wrong"}</s-paragraph>
+          </s-banner>
+        </s-card>
+      </s-page>
+    );
+  }
+
+  return (
+    <s-page heading="Error">
+      <s-card>
+        <s-banner tone="critical">
+          <s-paragraph>An unexpected error occurred. Please try again.</s-paragraph>
+        </s-banner>
       </s-card>
     </s-page>
   );
