@@ -53,6 +53,7 @@ import {
   updateScanStatus,
   getPreviousScanForTheme,
   countScansForShopSince,
+  hasCompletedScans,
 } from "../../app/models/scan.server";
 
 // ---------------------------------------------------------------------------
@@ -442,5 +443,50 @@ describe("countScansForShopSince", () => {
     mockDb.scan.count.mockRejectedValue(new Error("Query failed"));
 
     await expect(countScansForShopSince(SHOP_ID, new Date())).rejects.toThrow("Query failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// hasCompletedScans
+// ---------------------------------------------------------------------------
+
+describe("hasCompletedScans", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns true when the shop has at least one completed scan", async () => {
+    mockDb.scan.count.mockResolvedValue(3);
+
+    const result = await hasCompletedScans(SHOP_ID);
+
+    expect(result).toBe(true);
+  });
+
+  it("returns false when the shop has no completed scans", async () => {
+    mockDb.scan.count.mockResolvedValue(0);
+
+    const result = await hasCompletedScans(SHOP_ID);
+
+    expect(result).toBe(false);
+  });
+
+  it("queries only COMPLETED status scans (not PENDING, IN_PROGRESS, or FAILED)", async () => {
+    mockDb.scan.count.mockResolvedValue(0);
+
+    await hasCompletedScans(SHOP_ID);
+
+    expect(mockDb.scan.count).toHaveBeenCalledWith({
+      where: {
+        shopId: SHOP_ID,
+        status: ScanStatus.COMPLETED,
+      },
+    });
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.scan.count.mockRejectedValue(new Error("DB unavailable"));
+
+    await expect(hasCompletedScans(SHOP_ID)).rejects.toThrow("DB unavailable");
   });
 });

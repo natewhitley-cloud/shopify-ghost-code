@@ -36,6 +36,7 @@ const mockDb = vi.hoisted(() => ({
     createMany: vi.fn(),
     deleteMany: vi.fn(),
     findMany: vi.fn(),
+    findFirst: vi.fn(),
     groupBy: vi.fn(),
   },
   scan: {
@@ -60,6 +61,7 @@ import {
   countFindingsBySeverity,
   getFindingSummary,
   completeScanWithFindings,
+  getHighestSeverityFinding,
   type CreateFindingInput,
 } from "../../app/models/finding.server";
 
@@ -450,5 +452,56 @@ describe("completeScanWithFindings", () => {
 
     const updateCallArg = mockDb.scan.update.mock.calls[0][0];
     expect(updateCallArg.data.findingCount).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getHighestSeverityFinding
+// ---------------------------------------------------------------------------
+
+describe("getHighestSeverityFinding", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the finding when one exists for the scan", async () => {
+    const finding = {
+      id: "finding-1",
+      scanId: SCAN_ID,
+      ...baseFinding,
+      createdAt: new Date("2026-01-15T10:00:00Z"),
+    };
+    mockDb.finding.findFirst.mockResolvedValue(finding);
+
+    const result = await getHighestSeverityFinding(SCAN_ID);
+
+    expect(result).toEqual(finding);
+  });
+
+  it("returns null when the scan has no findings", async () => {
+    mockDb.finding.findFirst.mockResolvedValue(null);
+
+    const result = await getHighestSeverityFinding(SCAN_ID);
+
+    expect(result).toBeNull();
+  });
+
+  it("passes orderBy [{ severity: 'asc' }, { createdAt: 'asc' }] to ensure HIGH comes first", async () => {
+    // Prisma sorts enums by declaration order; the schema declares HIGH, MEDIUM, LOW,
+    // so ascending sort places HIGH first. The secondary createdAt sort is a tiebreaker.
+    mockDb.finding.findFirst.mockResolvedValue(null);
+
+    await getHighestSeverityFinding(SCAN_ID);
+
+    expect(mockDb.finding.findFirst).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID },
+      orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
+    });
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.findFirst.mockRejectedValueOnce(new Error("Connection lost"));
+
+    await expect(getHighestSeverityFinding(SCAN_ID)).rejects.toThrow("Connection lost");
   });
 });
