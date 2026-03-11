@@ -5,7 +5,7 @@ import { useLoaderData, useRevalidator } from "react-router";
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
-import { getFindingSummary } from "../models/finding.server";
+import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.server";
 import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
 import { diffScans } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
@@ -26,6 +26,14 @@ function severityTone(severity: string): "critical" | "warning" | "info" {
       return "info";
   }
 }
+
+const FINDING_TYPE_LABELS: Record<string, string> = {
+  GHOST_SCRIPT: "Scripts",
+  GHOST_STYLE: "Styles",
+  GHOST_SNIPPET: "Snippets",
+  GHOST_SECTION: "Sections",
+  ORPHAN_ASSET: "Orphan Assets",
+};
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -56,8 +64,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const canViewDetails = canViewFindingDetails(shop.plan);
 
   // For free-tier shops, omit the full findings array from the response
-  // to avoid leaking detail data to the client.
+  // to avoid leaking detail data to the client. Paid users get the full array;
+  // free users get null here (they receive previewFinding instead).
   const findings = canViewDetails ? scan.findings : [];
+
+  // For free-tier shops, expose only the single highest-severity finding so
+  // the UI can show a "peek" without leaking the full results.
+  const previewFinding = canViewDetails ? null : await getHighestSeverityFinding(scanId);
 
   // Compute diff against the previous completed scan for the same theme,
   // but only when the current scan is itself completed and the plan allows it.
@@ -80,6 +93,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       findingCount: scan.findingCount,
     },
     findings,
+    previewFinding,
     findingSummary,
     canViewDetails,
     scanDiff,
@@ -99,7 +113,7 @@ declare const shopify: {
 };
 
 export default function ScanDetail() {
-  const { scan, findings, findingSummary, canViewDetails, scanDiff } =
+  const { scan, findings, previewFinding, findingSummary, canViewDetails, scanDiff } =
     useLoaderData<typeof loader>();
 
   const revalidator = useRevalidator();
@@ -308,19 +322,91 @@ export default function ScanDetail() {
               )}
             </s-stack>
           </s-card>
-        ) : (
+        ) : previewFinding === null ? (
+          /* Free tier, no findings at all */
           <s-card>
-            <s-stack direction="block" gap="base">
-              <s-heading>Upgrade to see details</s-heading>
-              <s-paragraph>
-                The free plan shows finding counts only. Upgrade to Standard to see full details
-                including file names, line numbers, and code snippets.
-              </s-paragraph>
-              <a href="/app/settings">
-                <s-button variant="primary">Upgrade Plan</s-button>
-              </a>
-            </s-stack>
+            <s-paragraph>No ghost code detected in this scan.</s-paragraph>
           </s-card>
+        ) : (
+          /* Free tier with findings — show summary + one preview row + upgrade prompt */
+          <>
+            {/* Summary header: total count + category breakdown */}
+            <s-card>
+              <s-stack direction="block" gap="base">
+                <s-heading>{findingSummary.total} findings detected</s-heading>
+                <s-stack direction="inline" gap="base">
+                  {(Object.entries(findingSummary.byType) as [string, number][])
+                    .filter(([, count]) => count > 0)
+                    .map(([type, count]) => (
+                      <s-badge key={type} tone="neutral">
+                        {FINDING_TYPE_LABELS[type] ?? type}: {count}
+                      </s-badge>
+                    ))}
+                </s-stack>
+              </s-stack>
+            </s-card>
+
+            {/* Preview finding — one row shown as a mini data table */}
+            <s-card>
+              <s-stack direction="block" gap="base">
+                <s-heading>Preview: Highest Severity Finding</s-heading>
+                <s-data-table>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Severity</th>
+                        <th>Type</th>
+                        <th>File</th>
+                        <th>Line</th>
+                        <th>App</th>
+                        <th>Snippet</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td>
+                          <s-badge tone={severityTone(previewFinding.severity)}>
+                            {previewFinding.severity}
+                          </s-badge>
+                        </td>
+                        <td>
+                          {FINDING_TYPE_LABELS[previewFinding.findingType] ??
+                            previewFinding.findingType.replace(/_/g, " ")}
+                        </td>
+                        <td>
+                          <code>{previewFinding.filename}</code>
+                        </td>
+                        <td>{previewFinding.lineNumber}</td>
+                        <td>{previewFinding.appName ?? "—"}</td>
+                        <td>
+                          <code>
+                            {previewFinding.codeSnippet.length > 80
+                              ? `${previewFinding.codeSnippet.slice(0, 80)}…`
+                              : previewFinding.codeSnippet}
+                          </code>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </s-data-table>
+
+                {/* Upgrade banner: remaining count and upgrade CTA */}
+                <s-banner tone="info">
+                  <s-stack direction="block" gap="base">
+                    <s-text>
+                      {findingSummary.total - 1} more{" "}
+                      {findingSummary.total - 1 === 1 ? "finding" : "findings"} detected. Upgrade to
+                      Standard to see full details including all file names, line numbers, and code
+                      snippets.
+                    </s-text>
+                    <a href="/app/settings">
+                      <s-button variant="primary">Upgrade Plan</s-button>
+                    </a>
+                  </s-stack>
+                </s-banner>
+              </s-stack>
+            </s-card>
+          </>
         ))}
     </s-page>
   );

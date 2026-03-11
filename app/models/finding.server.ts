@@ -121,6 +121,19 @@ export async function getFindingSummary(scanId: string) {
 }
 
 /**
+ * Return the single highest-severity finding for a scan.
+ * Uses Prisma enum sort order (HIGH → MEDIUM → LOW declared in schema) so
+ * ascending sort gives the highest-severity row first.
+ * Returns null when the scan has no findings.
+ */
+export async function getHighestSeverityFinding(scanId: string) {
+  return db.finding.findFirst({
+    where: { scanId },
+    orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
+  });
+}
+
+/**
  * Atomically persist findings and mark a scan COMPLETED in a single transaction.
  *
  * Why a transaction is required:
