@@ -1,5 +1,6 @@
 import { getPlanFeatures } from "./billing.server";
 import { countScansForShopSince } from "../models/scan.server";
+import db from "../db.server";
 
 /**
  * Check whether a shop is allowed to start a new scan under their current plan.
@@ -13,6 +14,14 @@ export async function canStartScan(
   shopId: string,
   planName: string,
 ): Promise<{ allowed: boolean; reason?: string }> {
+  // Guard against duplicate concurrent scans regardless of plan tier.
+  const activeScans = await db.scan.findFirst({
+    where: { shopId, status: { in: ["PENDING", "IN_PROGRESS"] } },
+  });
+  if (activeScans) {
+    return { allowed: false, reason: "A scan is already in progress." };
+  }
+
   const features = getPlanFeatures(planName);
 
   if (features.maxScansPerMonth === Infinity) {

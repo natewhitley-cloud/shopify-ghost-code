@@ -11,7 +11,7 @@ import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getFindingSummary } from "../models/finding.server";
-import { canViewFindingDetails } from "../lib/plan-gating.server";
+import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
 import { diffScans } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 
@@ -110,9 +110,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const findings = canViewDetails ? scan.findings : [];
 
   // Compute diff against the previous completed scan for the same theme,
-  // but only when the current scan is itself completed.
+  // but only when the current scan is itself completed and the plan allows it.
   let scanDiff: ScanDiff | null = null;
-  if (scan.status === "COMPLETED") {
+  if (scan.status === "COMPLETED" && canUseScanDiffing(shop.plan)) {
     const previousScan = await getPreviousScanForTheme(
       scan.shopId,
       scan.themeId,
@@ -281,7 +281,9 @@ export default function ScanDetail() {
               see full details including file names, line numbers, and code
               snippets.
             </s-paragraph>
-            <s-button variant="primary">Upgrade Plan</s-button>
+            <a href="/app/settings">
+              <s-button variant="primary">Upgrade Plan</s-button>
+            </a>
           </s-stack>
         </s-card>
       )}
