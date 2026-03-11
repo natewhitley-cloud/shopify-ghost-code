@@ -48,7 +48,7 @@ vi.mock("../../app/models/scan.server", () => ({
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
-  createFindings: vi.fn(),
+  completeScanWithFindings: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -62,7 +62,7 @@ import { unauthenticated } from "../../app/shopify.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { updateScanStatus } from "../../app/models/scan.server";
-import { createFindings } from "../../app/models/finding.server";
+import { completeScanWithFindings } from "../../app/models/finding.server";
 import { FindingType, Severity } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
@@ -74,7 +74,7 @@ const mockUnauthenticated = unauthenticated as { admin: ReturnType<typeof vi.fn>
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
-const mockCreateFindings = createFindings as ReturnType<typeof vi.fn>;
+const mockCompleteScanWithFindings = completeScanWithFindings as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -162,7 +162,7 @@ beforeEach(() => {
 
   // Default happy-path wiring for models
   mockUpdateScanStatus.mockResolvedValue(undefined);
-  mockCreateFindings.mockResolvedValue({ count: MOCK_FINDINGS.length });
+  mockCompleteScanWithFindings.mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
@@ -205,15 +205,10 @@ describe("scanTheme — happy path", () => {
     expect(mockScanThemeFiles).toHaveBeenCalledWith(MOCK_FILES);
   });
 
-  it("persists findings and marks scan COMPLETED with finding count", async () => {
+  it("persists findings and marks scan COMPLETED atomically", async () => {
     await runScanTheme();
 
-    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, MOCK_FINDINGS);
-    expect(mockUpdateScanStatus).toHaveBeenCalledWith(
-      SCAN_ID,
-      "COMPLETED",
-      MOCK_FINDINGS.length,
-    );
+    expect(mockCompleteScanWithFindings).toHaveBeenCalledWith(SCAN_ID, MOCK_FINDINGS);
   });
 
   it("executes all 4 steps in the correct order", async () => {
@@ -230,9 +225,8 @@ describe("scanTheme — happy path", () => {
       callOrder.push("scanThemeFiles");
       return MOCK_FINDINGS;
     });
-    mockCreateFindings.mockImplementation(async () => {
-      callOrder.push("createFindings");
-      return { count: MOCK_FINDINGS.length };
+    mockCompleteScanWithFindings.mockImplementation(async () => {
+      callOrder.push("completeScanWithFindings");
     });
 
     await runScanTheme();
@@ -241,8 +235,7 @@ describe("scanTheme — happy path", () => {
       "updateScanStatus:IN_PROGRESS",
       "fetchThemeFiles",
       "scanThemeFiles",
-      "createFindings",
-      "updateScanStatus:COMPLETED",
+      "completeScanWithFindings",
     ]);
   });
 });
@@ -266,16 +259,10 @@ describe("scanTheme — zero findings", () => {
     });
   });
 
-  it("does NOT call createFindings when there are no findings", async () => {
+  it("calls completeScanWithFindings with empty array", async () => {
     await runScanTheme();
 
-    expect(mockCreateFindings).not.toHaveBeenCalled();
-  });
-
-  it("still marks the scan COMPLETED with count 0", async () => {
-    await runScanTheme();
-
-    expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "COMPLETED", 0);
+    expect(mockCompleteScanWithFindings).toHaveBeenCalledWith(SCAN_ID, []);
   });
 });
 
@@ -312,9 +299,9 @@ describe("scanTheme — error paths", () => {
     expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
 
-  it("marks scan FAILED and re-throws when createFindings throws", async () => {
+  it("marks scan FAILED and re-throws when completeScanWithFindings throws", async () => {
     const dbError = new Error("DB write failed");
-    mockCreateFindings.mockRejectedValue(dbError);
+    mockCompleteScanWithFindings.mockRejectedValue(dbError);
 
     await expect(runScanTheme()).rejects.toThrow("DB write failed");
 
@@ -335,12 +322,12 @@ describe("scanTheme — error paths", () => {
     await expect(runScanTheme()).rejects.toThrow("Shopify API unavailable");
   });
 
-  it("does not call createFindings on error paths", async () => {
+  it("does not call completeScanWithFindings on error paths", async () => {
     mockFetchThemeFiles.mockRejectedValue(new Error("network failure"));
 
     await expect(runScanTheme()).rejects.toThrow();
 
-    expect(mockCreateFindings).not.toHaveBeenCalled();
+    expect(mockCompleteScanWithFindings).not.toHaveBeenCalled();
   });
 
   it("marks scan IN_PROGRESS before any failure in step 2", async () => {
