@@ -24,7 +24,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 200 });
   }
 
-  const themeId = String(payload.id);
+  const themeId = `gid://shopify/Theme/${payload.id}`;
   const themeName = String(payload.name ?? "");
 
   const scan = await createScan(shopRecord.id, themeId, themeName);
