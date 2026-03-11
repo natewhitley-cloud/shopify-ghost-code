@@ -10,6 +10,10 @@
 - billing.server.ts getPlanFeatures() is a pure function — ideal smoke test, no mocks needed. (added: 2026-03-10, dispatch: .33)
 
 ## Gotchas
+- completeScanWithFindings uses array-form $transaction (db.$transaction([op1, op2])), not callback-form. Mock with `$transaction: vi.fn(async (ops) => Promise.all(ops))`. (added: 2026-03-10, dispatch: .45)
+- Always use mockRejectedValueOnce (not mockRejectedValue) for error-propagation tests — permanent rejections bleed into sibling tests even with beforeEach clearAllMocks. (added: 2026-03-10, dispatch: .45)
+- canStartScan uses db directly for active-scan guard + delegates to countScansForShopSince from scan model. Both need independent mocks. (added: 2026-03-10, dispatch: .45)
+- analyzeFileReferences scans ALL liquid files (including snippets) for render/include tags — transitive snippet→snippet references are correctly resolved. Tests must account for this. (added: 2026-03-10, dispatch: .45)
 - Shopify's embedded admin has Cloudflare captcha — automated E2E (Playwright/Cypress) is impractical. Focus on unit + integration tests.
 - GraphQL responses from Shopify include `extensions.cost` — mock this in API response fixtures.
 - Inngest function tests need realistic event payloads with shopId, scanId, themeId.

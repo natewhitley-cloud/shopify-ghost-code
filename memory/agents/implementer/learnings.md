@@ -14,6 +14,10 @@
 - For aggregate summaries hitting same table with different groupBy axes, use Promise.all for parallel execution. (added: 2026-03-10, dispatch: .8)
 
 ## Gotchas
+- vi.mock() factory functions are hoisted before variable initializations. Mock objects inside vi.mock() factories MUST use vi.hoisted(() => ...) — plain const declarations throw ReferenceError. (added: 2026-03-10, dispatch: .43)
+- billing.request() throws a redirect response internally — never returns a value. No post-call return handling needed in the action function. (added: 2026-03-10, dispatch: .43)
+- APP_SUBSCRIPTIONS_UPDATE webhook payload: `{ app_subscription: { name, status, admin_graphql_api_id } }`. Status ACTIVE = live; all others (CANCELLED, DECLINED, EXPIRED, FROZEN, PENDING) = revert to free tier. (added: 2026-03-10, dispatch: .43)
+- Webhook handlers receive shop domain, not internal DB ID. Model functions for webhooks need domain-keyed lookups (e.g., updateShopPlanByDomain). (added: 2026-03-10, dispatch: .43)
 - Polaris uses `<s-*>` Web Components (CDN), NOT React imports. No `import { Card } from '@shopify/polaris'`.
 - s-badge tone: info, critical, auto, neutral, success, caution, warning. NOT 'attention'. (added: 2026-03-10, dispatch: .15)
 - s-text has NO fontWeight/variant props — use `<strong>` for bold, `<code>` for mono. (added: 2026-03-10, dispatch: .15)
@@ -32,6 +36,13 @@
 - App signature regex patterns must match BOTH assignment form (hjid=) and object-key form (hjid:). Test against real injected code. (added: 2026-03-10, dispatch: .13)
 - LINK_STYLESHEET_RE needs two capture-group branches for both attribute orderings (rel-first and href-first). (added: 2026-03-10, dispatch: .12)
 - When stubbing inngest.send() with TODO, add `void inngest;` to prevent unused-import lint errors. (added: 2026-03-10, dispatch: .15)
+
+- When extracting shared utilities, compare ALL call sites for behavioral differences before writing the shared version — subtle option differences can silently change behavior if missed. (added: 2026-03-10, dispatch: .42)
+- `export { Foo as Bar }` re-export pattern satisfies framework named-export contracts (React Router's ErrorBoundary) from shared components without wrapper boilerplate. (added: 2026-03-10, dispatch: .42)
+- app/lib/ for client-safe utility modules (no .server.ts), app/components/ for shared UI components. Both patterns established. (added: 2026-03-10, dispatch: .42)
+- When integrating two services with different input shapes ({ filename, content } vs { key, value }), document the adapter inline at the mapping site. (added: 2026-03-10, dispatch: .44)
+- Structure cross-file detection as explicit numbered passes (Pass 1: per-file, Pass 2: cross-file) in code comments and JSDoc. (added: 2026-03-10, dispatch: .44)
+- When new cross-file analysis affects existing integration tests, update fixtures to be self-consistent rather than loosening assertions. (added: 2026-03-10, dispatch: .44)
 
 ## Cross-Agent Notes
 - After implementing, notify tester which edge cases are most important to cover.
