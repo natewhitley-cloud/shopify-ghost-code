@@ -18,5 +18,5 @@
 ## Business Rules
 - Free tier: 1 scan/month, finding count only (no details)
 - Standard ($29/mo): unlimited scans, 1 theme, full findings
-- Professional ($59/mo): unlimited themes, auto-rescan, scan diffing
+- Professional ($49/mo): unlimited themes, auto-rescan, scan diffing
 - All tiers get 7-day free trial on paid plans

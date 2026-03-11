@@ -134,7 +134,7 @@ export default function Settings() {
 
             {/* Professional plan — shown to Free and Standard users */}
             <s-stack direction="block" gap="base">
-              <s-heading>Professional — $59 / month</s-heading>
+              <s-heading>Professional — $49 / month</s-heading>
               <s-unordered-list>
                 <s-list-item>Everything in Standard</s-list-item>
                 <s-list-item>Multiple theme scanning</s-list-item>
