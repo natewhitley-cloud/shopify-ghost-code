@@ -1,345 +1,166 @@
 import { useEffect } from "react";
-import type {
-  ActionFunctionArgs,
-  HeadersFunction,
-  LoaderFunctionArgs,
-} from "react-router";
-import { useFetcher } from "react-router";
-import { useAppBridge } from "@shopify/app-bridge-react";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { redirect, useFetcher, useLoaderData } from "react-router";
+
 import { authenticate } from "../shopify.server";
-import { boundary } from "@shopify/shopify-app-react-router/server";
+import { getShopByDomain } from "../models/shop.server";
+import { getScansForShop, createScan } from "../models/scan.server";
+import { getFindingSummary } from "../models/finding.server";
+import { canStartScan } from "../lib/plan-gating.server";
+import { inngest } from "../../inngest/client";
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+function formatDate(date: Date | string | null | undefined): string {
+  if (!date) return "—";
+  const d = typeof date === "string" ? new Date(date) : date;
+  return d.toLocaleDateString("en-US", {
+    year: "numeric",
+    month: "short",
+    day: "numeric",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Loader
+// ---------------------------------------------------------------------------
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
-  await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
 
-  return null;
+  const shop = await getShopByDomain(session.shop);
+
+  if (!shop) {
+    // Shop hasn't been upserted yet (e.g. install is still in progress).
+    // Return minimal data so the page renders without crashing.
+    return { shop: null, latestScan: null, findingSummary: null };
+  }
+
+  // getScansForShop returns newest-first; take the first result.
+  const [latestScan = null] = await getScansForShop(shop.id, { limit: 1 });
+
+  const findingSummary = latestScan
+    ? await getFindingSummary(latestScan.id)
+    : null;
+
+  return { shop, latestScan, findingSummary };
 };
+
+// ---------------------------------------------------------------------------
+// Action
+// ---------------------------------------------------------------------------
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { admin } = await authenticate.admin(request);
-  const color = ["Red", "Orange", "Yellow", "Green"][
-    Math.floor(Math.random() * 4)
-  ];
-  const response = await admin.graphql(
-    `#graphql
-      mutation populateProduct($product: ProductCreateInput!) {
-        productCreate(product: $product) {
-          product {
-            id
-            title
-            handle
-            status
-            variants(first: 10) {
-              edges {
-                node {
-                  id
-                  price
-                  barcode
-                  createdAt
-                }
-              }
-            }
-            demoInfo: metafield(namespace: "$app", key: "demo_info") {
-              jsonValue
-            }
-          }
-        }
-      }`,
-    {
-      variables: {
-        product: {
-          title: `${color} Snowboard`,
-          metafields: [
-            {
-              namespace: "$app",
-              key: "demo_info",
-              value: "Created by React Router Template",
-            },
-          ],
-        },
-      },
-    },
-  );
-  const responseJson = await response.json();
+  const { session } = await authenticate.admin(request);
 
-  const product = responseJson.data!.productCreate!.product!;
-  const variantId = product.variants.edges[0]!.node!.id!;
+  const shop = await getShopByDomain(session.shop);
+  if (!shop) {
+    return { error: "Shop not found. Please reinstall the app." };
+  }
 
-  const variantResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpdateVariant($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
-      productVariantsBulkUpdate(productId: $productId, variants: $variants) {
-        productVariants {
-          id
-          price
-          barcode
-          createdAt
-        }
-      }
-    }`,
-    {
-      variables: {
-        productId: product.id,
-        variants: [{ id: variantId, price: "100.00" }],
-      },
-    },
-  );
+  // Plan-gate: check if this shop is allowed to start a new scan.
+  const gate = await canStartScan(shop.id, shop.plan);
+  if (!gate.allowed) {
+    return { error: gate.reason ?? "Scan limit reached for your current plan." };
+  }
 
-  const variantResponseJson = await variantResponse.json();
+  // TODO: Replace hardcoded themeId/themeName with values from a theme-selector
+  // UI once theme listing is implemented. These placeholders allow the record
+  // creation and Inngest dispatch path to be exercised in the meantime.
+  const themeId = "placeholder-theme-id";
+  const themeName = "Active Theme";
 
-  const metaobjectResponse = await admin.graphql(
-    `#graphql
-    mutation shopifyReactRouterTemplateUpsertMetaobject($handle: MetaobjectHandleInput!, $metaobject: MetaobjectUpsertInput!) {
-      metaobjectUpsert(handle: $handle, metaobject: $metaobject) {
-        metaobject {
-          id
-          handle
-          title: field(key: "title") {
-            jsonValue
-          }
-          description: field(key: "description") {
-            jsonValue
-          }
-        }
-        userErrors {
-          field
-          message
-        }
-      }
-    }`,
-    {
-      variables: {
-        handle: {
-          type: "$app:example",
-          handle: "demo-entry",
-        },
-        metaobject: {
-          fields: [
-            { key: "title", value: "Demo Entry" },
-            {
-              key: "description",
-              value:
-                "This metaobject was created by the Shopify app template to demonstrate the metaobject API.",
-            },
-          ],
-        },
-      },
-    },
-  );
+  const scan = await createScan(shop.id, themeId, themeName);
 
-  const metaobjectResponseJson = await metaobjectResponse.json();
+  // TODO: Send Inngest event once the scan/requested function is implemented.
+  // Uncomment when inngest/functions/scan-requested.ts exists.
+  //
+  // await inngest.send({
+  //   name: "scan/requested",
+  //   data: { shopId: shop.id, themeId, scanId: scan.id },
+  // });
+  void inngest; // suppress unused-import lint until the send is wired up
 
-  return {
-    product: responseJson!.data!.productCreate!.product,
-    variant:
-      variantResponseJson!.data!.productVariantsBulkUpdate!.productVariants,
-    metaobject:
-      metaobjectResponseJson!.data!.metaobjectUpsert!.metaobject,
-  };
+  return redirect(`/app/scans/${scan.id}`);
 };
 
-export default function Index() {
+// ---------------------------------------------------------------------------
+// Component
+// ---------------------------------------------------------------------------
+
+export default function Dashboard() {
+  const { shop, latestScan, findingSummary } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
-  const shopify = useAppBridge();
-  const isLoading =
-    ["loading", "submitting"].includes(fetcher.state) &&
-    fetcher.formMethod === "POST";
+  const isSubmitting =
+    fetcher.state === "submitting" || fetcher.state === "loading";
 
-  useEffect(() => {
-    if (fetcher.data?.product?.id) {
-      shopify.toast.show("Product created");
-    }
-  }, [fetcher.data?.product?.id, shopify]);
+  const actionError =
+    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
-  const generateProduct = () => fetcher.submit({}, { method: "POST" });
+  // Errors are rendered via inline <s-banner>; no side-effects needed here.
+  useEffect(() => {}, [actionError]);
+
+  const handleStartScan = () => {
+    fetcher.submit({}, { method: "POST" });
+  };
+
+  const severityCounts = findingSummary?.bySeverity ?? {
+    HIGH: 0,
+    MEDIUM: 0,
+    LOW: 0,
+  };
 
   return (
-    <s-page heading="Shopify app template">
-      <s-button slot="primary-action" onClick={generateProduct}>
-        Generate a product
-      </s-button>
+    <s-page heading="Ghost Code Scanner">
+      {/* Error banner — only rendered when the action returns an error */}
+      {actionError && (
+        <s-banner tone="critical">
+          <s-paragraph>{actionError}</s-paragraph>
+        </s-banner>
+      )}
 
-      <s-section heading="Congrats on creating a new Shopify app 🎉">
-        <s-paragraph>
-          This embedded app template uses{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/tools/app-bridge"
-            target="_blank"
-          >
-            App Bridge
-          </s-link>{" "}
-          interface examples like an{" "}
-          <s-link href="/app/additional">additional page in the app nav</s-link>
-          , as well as an{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            Admin GraphQL
-          </s-link>{" "}
-          mutation demo, to provide a starting point for app development.
-        </s-paragraph>
-      </s-section>
-      <s-section heading="Get started with products">
-        <s-paragraph>
-          Generate a product with GraphQL and get the JSON output for that
-          product. Learn more about the{" "}
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql/latest/mutations/productCreate"
-            target="_blank"
-          >
-            productCreate
-          </s-link>{" "}
-          mutation in our API references. Includes a product{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metafields"
-            target="_blank"
-          >
-            metafield
-          </s-link>{" "}
-          and{" "}
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data/metaobjects"
-            target="_blank"
-          >
-            metaobject
-          </s-link>
-          .
-        </s-paragraph>
-        <s-stack direction="inline" gap="base">
-          <s-button
-            onClick={generateProduct}
-            {...(isLoading ? { loading: true } : {})}
-          >
-            Generate a product
-          </s-button>
-          {fetcher.data?.product && (
-            <s-button
-              onClick={() => {
-                shopify.intents.invoke?.("edit:shopify/Product", {
-                  value: fetcher.data?.product?.id,
-                });
-              }}
-              target="_blank"
-              variant="tertiary"
-            >
-              Edit product
-            </s-button>
+      {/* Last scan summary card */}
+      <s-card>
+        <s-stack direction="block" gap="base">
+          <s-heading>Last Scan</s-heading>
+          {latestScan ? (
+            <>
+              <s-paragraph>
+                Scanned{" "}
+                <s-text fontWeight="bold">{latestScan.themeName}</s-text> on{" "}
+                {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+              </s-paragraph>
+              <s-stack direction="inline" gap="tight">
+                <s-badge tone="critical">{severityCounts.HIGH} High</s-badge>
+                <s-badge tone="warning">{severityCounts.MEDIUM} Medium</s-badge>
+                <s-badge tone="info">{severityCounts.LOW} Low</s-badge>
+              </s-stack>
+            </>
+          ) : (
+            <s-paragraph>
+              No scans yet. Run your first scan to detect ghost code.
+            </s-paragraph>
           )}
         </s-stack>
-        {fetcher.data?.product && (
-          <s-section heading="productCreate mutation">
-            <s-stack direction="block" gap="base">
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.product, null, 2)}</code>
-                </pre>
-              </s-box>
+      </s-card>
 
-              <s-heading>productVariantsBulkUpdate mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>{JSON.stringify(fetcher.data.variant, null, 2)}</code>
-                </pre>
-              </s-box>
-
-              <s-heading>metaobjectUpsert mutation</s-heading>
-              <s-box
-                padding="base"
-                borderWidth="base"
-                borderRadius="base"
-                background="subdued"
-              >
-                <pre style={{ margin: 0 }}>
-                  <code>
-                    {JSON.stringify(fetcher.data.metaobject, null, 2)}
-                  </code>
-                </pre>
-              </s-box>
-            </s-stack>
-          </s-section>
-        )}
-      </s-section>
-
-      <s-section slot="aside" heading="App template specs">
-        <s-paragraph>
-          <s-text>Framework: </s-text>
-          <s-link href="https://reactrouter.com/" target="_blank">
-            React Router
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Interface: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/app-home/using-polaris-components"
-            target="_blank"
+      {/* Quick actions card */}
+      <s-card>
+        <s-stack direction="inline" gap="base">
+          <s-button
+            variant="primary"
+            onClick={handleStartScan}
+            {...(isSubmitting ? { loading: true } : {})}
+            {...(!shop ? { disabled: true } : {})}
           >
-            Polaris web components
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>API: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/api/admin-graphql"
-            target="_blank"
-          >
-            GraphQL
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Custom data: </s-text>
-          <s-link
-            href="https://shopify.dev/docs/apps/build/custom-data"
-            target="_blank"
-          >
-            Metafields &amp; metaobjects
-          </s-link>
-        </s-paragraph>
-        <s-paragraph>
-          <s-text>Database: </s-text>
-          <s-link href="https://www.prisma.io/" target="_blank">
-            Prisma
-          </s-link>
-        </s-paragraph>
-      </s-section>
-
-      <s-section slot="aside" heading="Next steps">
-        <s-unordered-list>
-          <s-list-item>
-            Build an{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/getting-started/build-app-example"
-              target="_blank"
-            >
-              example app
-            </s-link>
-          </s-list-item>
-          <s-list-item>
-            Explore Shopify&apos;s API with{" "}
-            <s-link
-              href="https://shopify.dev/docs/apps/tools/graphiql-admin-api"
-              target="_blank"
-            >
-              GraphiQL
-            </s-link>
-          </s-list-item>
-        </s-unordered-list>
-      </s-section>
+            Start New Scan
+          </s-button>
+          <s-link href="/app/scans">View Scan History</s-link>
+        </s-stack>
+      </s-card>
     </s-page>
   );
 }
-
-export const headers: HeadersFunction = (headersArgs) => {
-  return boundary.headers(headersArgs);
-};
