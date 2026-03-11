@@ -171,6 +171,10 @@ export default function ScanDetail() {
   const status = scan.status as ScanStatus;
   const summary = findingSummary.bySeverity;
 
+  const isFailed = scan.status === "FAILED";
+  const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
+  const isCompleted = scan.status === "COMPLETED";
+
   return (
     <s-page heading={`Scan: ${scan.themeName}`}>
       <s-link slot="primary-action" href="/app/scans">
@@ -184,6 +188,13 @@ export default function ScanDetail() {
         </s-banner>
       )}
 
+      {/* FAILED state banner — prominent error message for merchants */}
+      {isFailed && (
+        <s-banner tone="critical">
+          This scan failed to complete. Please try running a new scan from the dashboard.
+        </s-banner>
+      )}
+
       {/* Scan status header */}
       <s-card>
         <s-stack direction="inline" gap="base">
@@ -193,20 +204,48 @@ export default function ScanDetail() {
         </s-stack>
       </s-card>
 
-      {/* Findings summary — always visible regardless of plan */}
-      <s-card>
-        <s-stack direction="block" gap="base">
-          <s-heading>Findings Summary</s-heading>
-          <s-stack direction="inline" gap="base">
-            <s-badge tone="critical">{summary.HIGH} High</s-badge>
-            <s-badge tone="warning">{summary.MEDIUM} Medium</s-badge>
-            <s-badge tone="info">{summary.LOW} Low</s-badge>
+      {/* Findings summary — conditional on scan state */}
+      {isFailed ? (
+        /* FAILED: replace summary with an explanation card */
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-heading>Scan Did Not Complete</s-heading>
+            <s-paragraph>
+              Findings are unavailable because this scan encountered an error before finishing.
+              Start a new scan from the dashboard to get up-to-date results.
+            </s-paragraph>
+            <a href="/app">
+              <s-button variant="primary">Go to Dashboard</s-button>
+            </a>
           </s-stack>
-        </s-stack>
-      </s-card>
+        </s-card>
+      ) : isRunning ? (
+        /* IN_PROGRESS / PENDING: show a loading placeholder instead of zero counts */
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-heading>Scan In Progress</s-heading>
+            <s-paragraph>
+              Your theme is being scanned. Findings will appear here automatically when the scan
+              completes — no need to refresh.
+            </s-paragraph>
+          </s-stack>
+        </s-card>
+      ) : (
+        /* COMPLETED: normal findings summary */
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-heading>Findings Summary</s-heading>
+            <s-stack direction="inline" gap="base">
+              <s-badge tone="critical">{summary.HIGH} High</s-badge>
+              <s-badge tone="warning">{summary.MEDIUM} Medium</s-badge>
+              <s-badge tone="info">{summary.LOW} Low</s-badge>
+            </s-stack>
+          </s-stack>
+        </s-card>
+      )}
 
-      {/* Changes from last scan — only shown when a previous scan exists */}
-      {scanDiff !== null && (
+      {/* Changes from last scan — only shown for completed scans with a diff */}
+      {isCompleted && scanDiff !== null && (
         <s-card>
           <s-stack direction="block" gap="base">
             <s-heading>Changes from Last Scan</s-heading>
@@ -219,73 +258,70 @@ export default function ScanDetail() {
         </s-card>
       )}
 
-      {/* Findings detail table (paid plans) or upgrade prompt (free) */}
-      {canViewDetails ? (
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-heading>Findings</s-heading>
-            {findings.length === 0 ? (
-              <s-paragraph>
-                {scan.status === "COMPLETED"
-                  ? "No ghost code detected in this scan."
-                  : "Findings will appear here once the scan completes."}
-              </s-paragraph>
-            ) : (
-              <s-data-table>
-                <table>
-                  <thead>
-                    <tr>
-                      <th>Severity</th>
-                      <th>Type</th>
-                      <th>File</th>
-                      <th>Line</th>
-                      <th>App</th>
-                      <th>Snippet</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {findings.map((finding) => (
-                      <tr key={finding.id}>
-                        <td>
-                          <s-badge tone={severityTone(finding.severity)}>
-                            {finding.severity}
-                          </s-badge>
-                        </td>
-                        <td>{finding.findingType.replace(/_/g, " ")}</td>
-                        <td>
-                          <code>{finding.filename}</code>
-                        </td>
-                        <td>{finding.lineNumber}</td>
-                        <td>{finding.appName ?? "—"}</td>
-                        <td>
-                          <code>
-                            {finding.codeSnippet.length > 80
-                              ? `${finding.codeSnippet.slice(0, 80)}…`
-                              : finding.codeSnippet}
-                          </code>
-                        </td>
+      {/* Findings detail table — only shown for completed scans */}
+      {isCompleted &&
+        (canViewDetails ? (
+          <s-card>
+            <s-stack direction="block" gap="base">
+              <s-heading>Findings</s-heading>
+              {findings.length === 0 ? (
+                <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+              ) : (
+                <s-data-table>
+                  <table>
+                    <thead>
+                      <tr>
+                        <th>Severity</th>
+                        <th>Type</th>
+                        <th>File</th>
+                        <th>Line</th>
+                        <th>App</th>
+                        <th>Snippet</th>
                       </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </s-data-table>
-            )}
-          </s-stack>
-        </s-card>
-      ) : (
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-heading>Upgrade to see details</s-heading>
-            <s-paragraph>
-              The free plan shows finding counts only. Upgrade to Standard to see full details
-              including file names, line numbers, and code snippets.
-            </s-paragraph>
-            <a href="/app/settings">
-              <s-button variant="primary">Upgrade Plan</s-button>
-            </a>
-          </s-stack>
-        </s-card>
-      )}
+                    </thead>
+                    <tbody>
+                      {findings.map((finding) => (
+                        <tr key={finding.id}>
+                          <td>
+                            <s-badge tone={severityTone(finding.severity)}>
+                              {finding.severity}
+                            </s-badge>
+                          </td>
+                          <td>{finding.findingType.replace(/_/g, " ")}</td>
+                          <td>
+                            <code>{finding.filename}</code>
+                          </td>
+                          <td>{finding.lineNumber}</td>
+                          <td>{finding.appName ?? "—"}</td>
+                          <td>
+                            <code>
+                              {finding.codeSnippet.length > 80
+                                ? `${finding.codeSnippet.slice(0, 80)}…`
+                                : finding.codeSnippet}
+                            </code>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </s-data-table>
+              )}
+            </s-stack>
+          </s-card>
+        ) : (
+          <s-card>
+            <s-stack direction="block" gap="base">
+              <s-heading>Upgrade to see details</s-heading>
+              <s-paragraph>
+                The free plan shows finding counts only. Upgrade to Standard to see full details
+                including file names, line numbers, and code snippets.
+              </s-paragraph>
+              <a href="/app/settings">
+                <s-button variant="primary">Upgrade Plan</s-button>
+              </a>
+            </s-stack>
+          </s-card>
+        ))}
     </s-page>
   );
 }

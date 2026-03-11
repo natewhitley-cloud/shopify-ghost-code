@@ -3,9 +3,10 @@ import { redirect, useFetcher, useLoaderData } from "react-router";
 
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
-import { getScansForShop, createScan } from "../models/scan.server";
+import { getScansForShop, createScan, countScansForShopSince } from "../models/scan.server";
 import { getFindingSummary } from "../models/finding.server";
 import { canStartScan } from "../lib/plan-gating.server";
+import { getPlanFeatures, PLANS } from "../lib/billing.server";
 import { fetchMainTheme } from "../services/theme-fetcher.server";
 import { inngest } from "../../inngest/client";
 import { formatDate } from "../lib/format";
@@ -22,7 +23,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!shop) {
     // Shop hasn't been upserted yet (e.g. install is still in progress).
     // Return minimal data so the page renders without crashing.
-    return { shop: null, latestScan: null, findingSummary: null, mainTheme: null };
+    return { shop: null, latestScan: null, findingSummary: null, mainTheme: null, scanUsage: null };
   }
 
   // Fetch the main theme so the UI can show which theme will be scanned.
@@ -33,7 +34,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const findingSummary = latestScan ? await getFindingSummary(latestScan.id) : null;
 
-  return { shop, latestScan, findingSummary, mainTheme };
+  // Compute scan usage for free-plan shops so the UI can show X of Y scans used.
+  // Paid plans have unlimited scans; return null so the UI omits the indicator.
+  const features = getPlanFeatures(shop.plan);
+  let scanUsage: { used: number; limit: number } | null = null;
+  if (features.maxScansPerMonth !== Infinity) {
+    const now = new Date();
+    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+    const used = await countScansForShopSince(shop.id, monthStart);
+    scanUsage = { used, limit: features.maxScansPerMonth };
+  }
+
+  return { shop, latestScan, findingSummary, mainTheme, scanUsage };
 };
 
 // ---------------------------------------------------------------------------
@@ -89,7 +101,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export default function Dashboard() {
-  const { shop, latestScan, findingSummary, mainTheme } = useLoaderData<typeof loader>();
+  const { shop, latestScan, findingSummary, mainTheme, scanUsage } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
   const isSubmitting = fetcher.state === "submitting" || fetcher.state === "loading";
@@ -107,6 +119,9 @@ export default function Dashboard() {
   const highCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.HIGH ?? 0);
   const mediumCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.MEDIUM ?? 0);
   const lowCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.LOW ?? 0);
+
+  // Whether the free-plan monthly limit has been reached.
+  const scanLimitReached = scanUsage !== null && scanUsage.used >= scanUsage.limit;
 
   // Show onboarding experience when the shop is set up but has never been scanned.
   const showOnboarding = !!shop && !latestScan;
@@ -178,16 +193,33 @@ export default function Dashboard() {
 
           {/* Quick actions card */}
           <s-card>
-            <s-stack direction="inline" gap="base">
-              <s-button
-                variant="primary"
-                onClick={handleStartScan}
-                {...(isSubmitting ? { loading: true } : {})}
-                {...(!shop ? { disabled: true } : {})}
-              >
-                Start New Scan
-              </s-button>
-              <s-link href="/app/scans">View Scan History</s-link>
+            <s-stack direction="block" gap="base">
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  variant="primary"
+                  onClick={handleStartScan}
+                  {...(isSubmitting ? { loading: true } : {})}
+                  {...(!shop || scanLimitReached ? { disabled: true } : {})}
+                >
+                  Start New Scan
+                </s-button>
+                <s-link href="/app/scans">View Scan History</s-link>
+              </s-stack>
+              {/* Free-plan usage indicator — only shown when the plan has a monthly cap */}
+              {scanUsage !== null && (
+                <s-text>
+                  {scanLimitReached ? (
+                    <>
+                      Monthly scan limit reached ({scanUsage.used} of {scanUsage.limit} used).{" "}
+                      <a href="/app/settings">Upgrade for unlimited scans.</a>
+                    </>
+                  ) : (
+                    <>
+                      Scans this month: {scanUsage.used} of {scanUsage.limit}
+                    </>
+                  )}
+                </s-text>
+              )}
             </s-stack>
           </s-card>
         </>

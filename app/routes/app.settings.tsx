@@ -157,6 +157,24 @@ export default function Settings() {
         </s-card>
       )}
 
+      {/* Manage Subscription — shown only to paid-plan users */}
+      {!isFree && (
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-heading>Manage Subscription</s-heading>
+            <s-paragraph>
+              To change or cancel your subscription, visit your Shopify admin billing settings.
+            </s-paragraph>
+            <s-paragraph>
+              <s-text>
+                If you cancel, your plan will revert to Free at the end of your current billing
+                period.
+              </s-text>
+            </s-paragraph>
+          </s-stack>
+        </s-card>
+      )}
+
       {/* About */}
       <s-card>
         <s-stack direction="block" gap="base">
