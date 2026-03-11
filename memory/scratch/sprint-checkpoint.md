@@ -1,7 +1,10 @@
-# Sprint Checkpoint: P2 Audit Findings
+# Sprint Checkpoint: P2 Monetization
 
 ## Status: COMPLETE
 
-All 15 P2 beads dispatched and closed across 5 agent dispatches (4 batches).
-397 tests passing (up from 330). 5 commits on main.
-Learnings persisted: 4 implementer + 3 tester entries.
+All 3 beads dispatched and closed. 401 tests passing (up from 397). 3 learnings persisted to implementer.
+
+## Tasks Completed
+1. shopify-ghost-code-6jo — Pro price $59→$49 in shopify.server.ts + app.settings.tsx
+2. shopify-ghost-code-ek4 — First scan free logic in plan-gating + dashboard UI (4 new tests)
+3. shopify-ghost-code-acw — Free tier preview peek: total count, category breakdown, highest-severity finding, upgrade banner

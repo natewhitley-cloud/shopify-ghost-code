@@ -46,3 +46,6 @@
 - createScan uses callback-form $transaction for atomic TOCTOU guard (check + create in one tx). completeScanWithFindings uses array-form $transaction with deleteMany prepended for idempotency. (added: 2026-03-10, dispatch: .52/.55)
 - Three-state branch pattern (isFailed/isRunning/isCompleted derived booleans before JSX) is cleaner than inline status checks for status-conditional rendering. (added: 2026-03-10, dispatch: .57/.58)
 - app/lib/logger.server.ts provides structured JSON logging. Use `logger.info/warn/error(message, context)` in webhook handlers — not bare console.*. (added: 2026-03-10, dispatch: .60)
+- When updating a price constant, grep for the human-readable string form (e.g., `$59`) in UI routes — settings/pricing pages often duplicate the value as display text. (added: 2026-03-10, dispatch: 6jo)
+- "First scan free" is a gating-layer concept in plan-gating.server.ts, not a plan feature — hasCompletedScans() in scan model detects first-ever scan. (added: 2026-03-10, dispatch: ek4)
+- Free-tier preview pattern: return `previewFinding` (single highest-severity) server-side via getHighestSeverityFinding(), keep full findings array empty. Category breakdown uses findingSummary.byType with display-name mapping in the component. (added: 2026-03-10, dispatch: acw)

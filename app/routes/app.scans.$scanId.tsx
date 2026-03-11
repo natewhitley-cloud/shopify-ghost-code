@@ -390,20 +390,22 @@ export default function ScanDetail() {
                   </table>
                 </s-data-table>
 
-                {/* Upgrade banner: remaining count and upgrade CTA */}
-                <s-banner tone="info">
-                  <s-stack direction="block" gap="base">
-                    <s-text>
-                      {findingSummary.total - 1} more{" "}
-                      {findingSummary.total - 1 === 1 ? "finding" : "findings"} detected. Upgrade to
-                      Standard to see full details including all file names, line numbers, and code
-                      snippets.
-                    </s-text>
-                    <a href="/app/settings">
-                      <s-button variant="primary">Upgrade Plan</s-button>
-                    </a>
-                  </s-stack>
-                </s-banner>
+                {/* Upgrade banner: remaining count and upgrade CTA (hidden when only 1 finding total) */}
+                {findingSummary.total > 1 && (
+                  <s-banner tone="info">
+                    <s-stack direction="block" gap="base">
+                      <s-text>
+                        {findingSummary.total - 1} more{" "}
+                        {findingSummary.total - 1 === 1 ? "finding" : "findings"} detected. Upgrade
+                        to Standard to see full details including all file names, line numbers, and
+                        code snippets.
+                      </s-text>
+                      <a href="/app/settings">
+                        <s-button variant="primary">Upgrade Plan</s-button>
+                      </a>
+                    </s-stack>
+                  </s-banner>
+                )}
               </s-stack>
             </s-card>
           </>
