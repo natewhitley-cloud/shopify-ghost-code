@@ -4,17 +4,21 @@ import { getShopByDomain } from "../models/shop.server";
 import { createScan } from "../models/scan.server";
 import { canUseAutoRescan } from "../lib/plan-gating.server";
 import { inngest } from "../../inngest/client";
+import { logger } from "../lib/logger.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
 
-  console.log(`Received ${topic} webhook for ${shop}`);
+  logger.info("Webhook received", { topic, shop });
 
   const shopRecord = await getShopByDomain(shop);
 
   if (!shopRecord) {
     // Shop not in our DB — no action needed. Return 200 to avoid retries.
-    console.warn(`themes/publish: shop ${shop} not found in DB, skipping`);
+    logger.warn("Shop not found in DB — skipping auto-rescan", {
+      shop,
+      webhook: "themes/publish",
+    });
     return new Response(null, { status: 200 });
   }
 

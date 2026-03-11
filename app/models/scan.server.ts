@@ -44,12 +44,22 @@ export async function getScanById(scanId: string) {
  * Return scans for a shop, ordered newest-first.
  * Only the denormalised findingCount is included here — use getScanById
  * to fetch actual finding rows.
+ *
+ * Supports cursor-based pagination:
+ * - Pass `limit` to cap the number of results returned.
+ * - Pass `cursor` (a scan ID) to fetch the page after that record.
+ *   Internally fetches `limit + 1` rows so the caller can detect whether
+ *   a next page exists without a separate COUNT query.
  */
-export async function getScansForShop(shopId: string, options?: { limit?: number }) {
+export async function getScansForShop(
+  shopId: string,
+  options?: { limit?: number; cursor?: string },
+) {
   return db.scan.findMany({
     where: { shopId },
     orderBy: { createdAt: "desc" },
-    ...(options?.limit !== undefined ? { take: options.limit } : {}),
+    ...(options?.limit !== undefined ? { take: options.limit + 1 } : {}),
+    ...(options?.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
   });
 }
 

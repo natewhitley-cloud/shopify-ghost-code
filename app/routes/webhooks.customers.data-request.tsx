@@ -1,10 +1,11 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
+import { logger } from "../lib/logger.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic } = await authenticate.webhook(request);
 
-  console.log(`Received ${topic} webhook for ${shop}`);
+  logger.info("Webhook received", { topic, shop });
 
   // Ghost Code does not store customer PII — only shop-level scan data about themes.
   // Acknowledge receipt with 200 OK; nothing to report.

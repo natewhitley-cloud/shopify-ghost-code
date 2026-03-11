@@ -4,11 +4,12 @@ import db from "../db.server";
 import { upsertShop } from "../models/shop.server";
 import { createScan } from "../models/scan.server";
 import { inngest } from "../../inngest/client";
+import { logger } from "../lib/logger.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop } = await authenticate.webhook(request);
 
-  console.log(`Received ${topic} webhook for ${shop}`);
+  logger.info("Webhook received", { topic, shop });
 
   // Look up the offline access token that the Shopify SDK stored during OAuth.
   // The Session table is managed by PrismaSessionStorage; offline sessions use
@@ -19,9 +20,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   });
 
   if (!session) {
-    console.error(
-      `app/installed: no offline session found for ${shop} — cannot create shop record`,
-    );
+    logger.error("No offline session found — cannot create shop record", {
+      shop,
+      webhook: "app/installed",
+    });
     // Return 200 so Shopify doesn't retry. The shop record will be created on
     // next authenticate.admin() call from the merchant.
     return new Response(null, { status: 200 });
@@ -34,26 +36,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   try {
     const { admin } = await unauthenticated.admin(shop);
 
-    const response = await admin.graphql(
-      `{
-        themes(first: 1, roles: MAIN) {
-          nodes {
-            id
-            name
-          }
-        }
-      }`,
-    );
-
-    const data = await response.json();
-    const mainTheme = data?.data?.themes?.nodes?.[0];
+    const { fetchMainTheme } = await import("../services/theme-fetcher.server");
+    const mainTheme = await fetchMainTheme(admin);
 
     if (!mainTheme) {
       // No main theme found — create the shop record anyway so the merchant
       // can trigger scans manually from the dashboard.
-      console.error(
-        `app/installed: no main theme found for ${shop}, skipping auto-scan`,
-      );
+      logger.error("No main theme found — skipping auto-scan", {
+        shop,
+        webhook: "app/installed",
+      });
       await upsertShop(shop, session.accessToken);
       return new Response(null, { status: 200 });
     }
@@ -73,10 +65,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       },
     });
   } catch (err) {
-    console.warn(
-      `app/installed: failed to fetch theme or create auto-scan for ${shop} — merchant can scan manually`,
-      err,
-    );
+    logger.warn("Failed to fetch theme or create auto-scan — merchant can scan manually", {
+      shop,
+      webhook: "app/installed",
+      error: err instanceof Error ? err.message : String(err),
+    });
   }
 
   return new Response(null, { status: 200 });

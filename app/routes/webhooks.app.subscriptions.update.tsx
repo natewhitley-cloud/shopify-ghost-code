@@ -3,6 +3,7 @@ import { authenticate } from "../shopify.server";
 import { PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
 import { updateShopPlanByDomain } from "../models/shop.server";
 import { PLANS } from "../lib/billing.server";
+import { logger } from "../lib/logger.server";
 
 // ---------------------------------------------------------------------------
 // Shopify subscription status → internal plan tier mapping
@@ -51,7 +52,7 @@ function resolvePlanFromSubscription(
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
 
-  console.log(`Received ${topic} webhook for ${shop}`);
+  logger.info("Webhook received", { topic, shop });
 
   // The payload shape from Shopify:
   // {
@@ -66,9 +67,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   if (!subscription) {
     // Malformed payload — log but return 200 to avoid Shopify retries.
-    console.error(
-      `app/subscriptions/update: missing app_subscription in payload for ${shop}`,
-    );
+    logger.error("Missing app_subscription in payload", {
+      shop,
+      webhook: "app/subscriptions/update",
+    });
     return new Response(null, { status: 200 });
   }
 
@@ -77,9 +79,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const newPlan = resolvePlanFromSubscription(planName, status);
 
-  console.log(
-    `app/subscriptions/update: shop=${shop} planName=${planName} status=${status} → setting plan=${newPlan}`,
-  );
+  logger.info("Resolving plan from subscription", {
+    shop,
+    webhook: "app/subscriptions/update",
+    planName,
+    status,
+    newPlan,
+  });
 
   const updated = await updateShopPlanByDomain(shop, newPlan);
 
@@ -87,9 +93,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // Shop not found in DB — this can happen if a webhook fires before the
     // shop has been installed (race condition) or after shop/redact. Safe to
     // return 200 since there is nothing to update.
-    console.warn(
-      `app/subscriptions/update: shop ${shop} not found in DB, skipping plan update`,
-    );
+    logger.warn("Shop not found in DB — skipping plan update", {
+      shop,
+      webhook: "app/subscriptions/update",
+    });
   }
 
   // ALWAYS return 200. Non-200 causes Shopify to retry indefinitely.

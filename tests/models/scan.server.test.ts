@@ -198,18 +198,45 @@ describe("getScansForShop", () => {
     expect(result).toEqual(scans);
   });
 
-  it("applies the limit option when provided", async () => {
+  it("applies the limit option when provided (fetches limit+1 for next-page detection)", async () => {
     const scans = [baseScan];
     mockDb.scan.findMany.mockResolvedValue(scans);
 
     const result = await getScansForShop(SHOP_ID, { limit: 5 });
 
+    // The model fetches limit+1 rows so the caller can detect whether a next
+    // page exists without a separate COUNT query.
     expect(mockDb.scan.findMany).toHaveBeenCalledWith({
       where: { shopId: SHOP_ID },
       orderBy: { createdAt: "desc" },
-      take: 5,
+      take: 6,
     });
     expect(result).toEqual(scans);
+  });
+
+  it("applies cursor pagination when cursor is provided", async () => {
+    const scans = [baseScan];
+    mockDb.scan.findMany.mockResolvedValue(scans);
+
+    await getScansForShop(SHOP_ID, { limit: 5, cursor: "cursor-id-123" });
+
+    expect(mockDb.scan.findMany).toHaveBeenCalledWith({
+      where: { shopId: SHOP_ID },
+      orderBy: { createdAt: "desc" },
+      take: 6,
+      cursor: { id: "cursor-id-123" },
+      skip: 1,
+    });
+  });
+
+  it("does not include cursor fields when cursor is undefined", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+
+    await getScansForShop(SHOP_ID, { limit: 5 });
+
+    const callArg = mockDb.scan.findMany.mock.calls[0][0];
+    expect(callArg).not.toHaveProperty("cursor");
+    expect(callArg).not.toHaveProperty("skip");
   });
 
   it("returns an empty array when the shop has no scans", async () => {
