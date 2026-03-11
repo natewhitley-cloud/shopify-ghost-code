@@ -1,24 +1,19 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import db from "../db.server";
+import { deleteShopData } from "../models/shop.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, session, topic } = await authenticate.webhook(request);
+  const { shop, topic } = await authenticate.webhook(request);
 
   console.log(`Received ${topic} webhook for ${shop}`);
 
-  // Webhook requests can trigger multiple times and after an app has already been uninstalled.
-  // If this webhook already ran, the session may have been deleted previously.
-  if (session) {
-    await db.session.deleteMany({ where: { shop } });
+  // Delete all Ghost Code data for this shop atomically.
+  // deleteShopData handles sessions, scans (cascade-deletes findings), and shop
+  // in a single transaction. Returns null if the shop is already gone (idempotent).
+  const deleted = await deleteShopData(shop);
+  if (!deleted) {
+    console.warn(`app/uninstalled: shop ${shop} not found in DB, nothing to delete`);
   }
 
-  // Delete all Ghost Code data for this shop.
-  // Finding deletion cascades from Scan deletion via Prisma onDelete: Cascade,
-  // so only scan + shop rows need to be explicitly deleted here.
-  // deleteMany is a no-op when no rows match — safe for repeated delivery.
-  await db.scan.deleteMany({ where: { shop: { domain: shop } } });
-  await db.shop.deleteMany({ where: { domain: shop } });
-
-  return new Response();
+  return new Response(null, { status: 200 });
 };

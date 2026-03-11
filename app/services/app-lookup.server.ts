@@ -9,7 +9,7 @@
  * Returns the matched appName string or null when no match is found.
  */
 
-import { APP_SIGNATURES, type AppSignature } from "../data/app-signatures";
+import { APP_SIGNATURES, type AppSignature } from "../data/app-signatures.server";
 
 // ---------------------------------------------------------------------------
 // Internal helpers

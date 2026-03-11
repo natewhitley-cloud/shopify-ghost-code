@@ -27,48 +27,57 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 200 });
   }
 
-  // Fetch the main (active) theme via the unauthenticated admin API.
-  // unauthenticated.admin() retrieves the session from storage automatically.
-  const { admin } = await unauthenticated.admin(shop);
+  // Fetch the main (active) theme and kick off the auto-scan.
+  // Wrapped in try/catch because unauthenticated.admin() or admin.graphql()
+  // can fail if the offline session token isn't ready yet. Auto-scan is
+  // best-effort — the merchant can trigger one manually from the dashboard.
+  try {
+    const { admin } = await unauthenticated.admin(shop);
 
-  const response = await admin.graphql(
-    `{
-      themes(first: 1, roles: MAIN) {
-        nodes {
-          id
-          name
+    const response = await admin.graphql(
+      `{
+        themes(first: 1, roles: MAIN) {
+          nodes {
+            id
+            name
+          }
         }
-      }
-    }`,
-  );
-
-  const data = await response.json();
-  const mainTheme = data?.data?.themes?.nodes?.[0];
-
-  if (!mainTheme) {
-    // No main theme found — create the shop record anyway so the merchant can
-    // trigger scans manually from the dashboard. Return 200 to avoid retries.
-    console.error(
-      `app/installed: no main theme found for ${shop}, skipping auto-scan`,
+      }`,
     );
-    await upsertShop(shop, session.accessToken);
-    return new Response(null, { status: 200 });
+
+    const data = await response.json();
+    const mainTheme = data?.data?.themes?.nodes?.[0];
+
+    if (!mainTheme) {
+      // No main theme found — create the shop record anyway so the merchant
+      // can trigger scans manually from the dashboard.
+      console.error(
+        `app/installed: no main theme found for ${shop}, skipping auto-scan`,
+      );
+      await upsertShop(shop, session.accessToken);
+      return new Response(null, { status: 200 });
+    }
+
+    // Create or update the shop row. On re-install the access token may have
+    // rotated, so upsertShop updates it in place.
+    const shopRecord = await upsertShop(shop, session.accessToken);
+
+    const scan = await createScan(shopRecord.id, mainTheme.id, mainTheme.name);
+
+    await inngest.send({
+      name: "scan/requested",
+      data: {
+        shopId: shopRecord.id,
+        themeId: mainTheme.id,
+        scanId: scan.id,
+      },
+    });
+  } catch (err) {
+    console.warn(
+      `app/installed: failed to fetch theme or create auto-scan for ${shop} — merchant can scan manually`,
+      err,
+    );
   }
-
-  // Create or update the shop row. On re-install the access token may have
-  // rotated, so upsertShop updates it in place.
-  const shopRecord = await upsertShop(shop, session.accessToken);
-
-  const scan = await createScan(shopRecord.id, mainTheme.id, mainTheme.name);
-
-  await inngest.send({
-    name: "scan/requested",
-    data: {
-      shopId: shopRecord.id,
-      themeId: mainTheme.id,
-      scanId: scan.id,
-    },
-  });
 
   return new Response(null, { status: 200 });
 };

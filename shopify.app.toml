@@ -38,10 +38,6 @@ api_version = "2026-04"
   uri = "/webhooks/app/installed"
 
   [[webhooks.subscriptions]]
-  topics = ["themes/update"]
-  uri = "/webhooks/themes/update"
-
-  [[webhooks.subscriptions]]
   topics = ["themes/publish"]
   uri = "/webhooks/themes/publish"
 

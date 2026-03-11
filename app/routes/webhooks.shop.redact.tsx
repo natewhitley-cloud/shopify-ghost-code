@@ -1,17 +1,19 @@
 import type { ActionFunctionArgs } from "react-router";
 import { authenticate } from "../shopify.server";
-import db from "../db.server";
+import { deleteShopData } from "../models/shop.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { shop, topic } = await authenticate.webhook(request);
 
   console.log(`Received ${topic} webhook for ${shop}`);
 
-  // Delete all shop data when a merchant requests data deletion (48 hours after uninstall).
-  // Finding deletion cascades from Scan deletion via Prisma onDelete: Cascade.
-  await db.scan.deleteMany({ where: { shop: { domain: shop } } });
-  await db.shop.deleteMany({ where: { domain: shop } });
-  await db.session.deleteMany({ where: { shop } });
+  // Hard-delete all shop data 48 hours after uninstall (GDPR shop/redact).
+  // deleteShopData handles sessions, scans (cascade-deletes findings), and shop
+  // in a single transaction. Returns null if already deleted (idempotent).
+  const deleted = await deleteShopData(shop);
+  if (!deleted) {
+    console.warn(`shop/redact: shop ${shop} not found in DB, nothing to delete`);
+  }
 
   return new Response(null, { status: 200 });
 };
