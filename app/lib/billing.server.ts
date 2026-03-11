@@ -1,6 +1,3 @@
-/** true in development, false in production. Pass to billing.require({ isTest: IS_BILLING_TEST }) */
-export const IS_BILLING_TEST = process.env.SHOPIFY_BILLING_TEST === "true";
-
 // Plan name constants — kept in sync with billing config keys in shopify.server.ts.
 // Use PLANS.STANDARD and PLANS.PROFESSIONAL when calling billing.require() or billing.request().
 // The FREE constant is a sentinel value; no corresponding Shopify subscription plan exists.
@@ -10,10 +7,10 @@ export const PLANS = {
   PROFESSIONAL: "Professional",
 } as const;
 
-export type PlanName = (typeof PLANS)[keyof typeof PLANS];
+type PlanName = (typeof PLANS)[keyof typeof PLANS];
 
 // Feature flags per plan. Used to gate UI and service-layer behavior.
-export type PlanFeatures = {
+type PlanFeatures = {
   maxScansPerMonth: number;
   showFindingDetails: boolean;
   maxThemes: number;

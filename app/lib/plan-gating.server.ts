@@ -60,13 +60,6 @@ export function canViewFindingDetails(planName: string): boolean {
 }
 
 /**
- * Whether the plan supports scanning more than one theme.
- */
-export function canUseMultipleThemes(planName: string): boolean {
-  return getPlanFeatures(planName).maxThemes > 1;
-}
-
-/**
  * Whether the plan includes automatic re-scanning on theme publish events.
  */
 export function canUseAutoRescan(planName: string): boolean {

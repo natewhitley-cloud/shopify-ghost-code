@@ -46,7 +46,6 @@ vi.mock("../../app/models/scan.server", () => ({
 import {
   canStartScan,
   canViewFindingDetails,
-  canUseMultipleThemes,
   canUseAutoRescan,
   canUseScanDiffing,
 } from "../../app/lib/plan-gating.server";
@@ -76,24 +75,6 @@ describe("canViewFindingDetails", () => {
 
   it("defaults to free-tier behavior for unknown plan names", () => {
     expect(canViewFindingDetails("unknown-plan")).toBe(false);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// canUseMultipleThemes — pure, plan-tier tests
-// ---------------------------------------------------------------------------
-
-describe("canUseMultipleThemes", () => {
-  it("returns false for free plan (maxThemes = 1)", () => {
-    expect(canUseMultipleThemes("free")).toBe(false);
-  });
-
-  it("returns false for Standard plan (maxThemes = 1)", () => {
-    expect(canUseMultipleThemes("Standard")).toBe(false);
-  });
-
-  it("returns true for Professional plan (maxThemes = Infinity)", () => {
-    expect(canUseMultipleThemes("Professional")).toBe(true);
   });
 });
 
@@ -270,16 +251,43 @@ describe("canStartScan — Free plan", () => {
 
     await canStartScan(SHOP_ID, "free");
 
-    expect(mockCountScansForShopSince).toHaveBeenCalledWith(
-      SHOP_ID,
-      expect.any(Date),
-    );
+    expect(mockCountScansForShopSince).toHaveBeenCalledWith(SHOP_ID, expect.any(Date));
   });
 
   it("propagates a database error from countScansForShopSince", async () => {
     mockCountScansForShopSince.mockRejectedValue(new Error("DB timeout"));
 
     await expect(canStartScan(SHOP_ID, "free")).rejects.toThrow("DB timeout");
+  });
+
+  it("allows a scan when the only prior scans this month are FAILED (quota count returns 0)", async () => {
+    // countScansForShopSince filters to COMPLETED + IN_PROGRESS only.
+    // A shop with only FAILED scans this month gets count=0, so they can scan again.
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBeUndefined();
+  });
+
+  it("blocks a scan when a COMPLETED scan already exists this month (quota count returns 1)", async () => {
+    mockCountScansForShopSince.mockResolvedValue(1);
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Free plan limit");
+  });
+
+  it("blocks a scan when an IN_PROGRESS scan already exists this month (quota count returns 1)", async () => {
+    // IN_PROGRESS scans count toward quota to prevent concurrent scan spam.
+    mockCountScansForShopSince.mockResolvedValue(1);
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Free plan limit");
   });
 });
 

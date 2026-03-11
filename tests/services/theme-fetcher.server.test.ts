@@ -1,13 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   fetchMainTheme,
-  fetchThemes,
   fetchThemeFiles,
   checkRateLimit,
 } from "../../app/services/theme-fetcher.server";
-import {
-  createMockGraphQLResponse,
-} from "../mocks/shopify";
+import { createMockGraphQLResponse } from "../mocks/shopify";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -116,9 +113,7 @@ describe("fetchMainTheme", () => {
     const graphql = vi.fn().mockResolvedValue(
       createMockGraphQLResponse({
         themes: {
-          nodes: [
-            { id: "gid://shopify/Theme/123", name: "Dawn", updatedAt },
-          ],
+          nodes: [{ id: "gid://shopify/Theme/123", name: "Dawn", updatedAt }],
         },
       }),
     );
@@ -132,71 +127,18 @@ describe("fetchMainTheme", () => {
   });
 
   it("returns null when no MAIN theme is found", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      createMockGraphQLResponse({ themes: { nodes: [] } }),
-    );
+    const graphql = vi.fn().mockResolvedValue(createMockGraphQLResponse({ themes: { nodes: [] } }));
 
     const result = await fetchMainTheme(makeAdmin(graphql));
     expect(result).toBeNull();
   });
 
   it("throws when the response contains GraphQL errors", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      createMockGraphQLResponse(null, [{ message: "ACCESS_DENIED" }]),
-    );
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(createMockGraphQLResponse(null, [{ message: "ACCESS_DENIED" }]));
 
-    await expect(fetchMainTheme(makeAdmin(graphql))).rejects.toThrow(
-      "Failed to fetch main theme",
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// fetchThemes
-// ---------------------------------------------------------------------------
-
-describe("fetchThemes", () => {
-  it("returns mapped theme array on success", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      createMockGraphQLResponse({
-        themes: {
-          nodes: [
-            { id: "gid://shopify/Theme/1", name: "Dawn", role: "MAIN" },
-            { id: "gid://shopify/Theme/2", name: "Backup", role: "UNPUBLISHED" },
-          ],
-        },
-      }),
-    );
-
-    const themes = await fetchThemes(makeAdmin(graphql));
-    expect(themes).toHaveLength(2);
-    expect(themes[0]).toEqual({
-      id: "gid://shopify/Theme/1",
-      name: "Dawn",
-      role: "MAIN",
-    });
-    expect(themes[1]).toEqual({
-      id: "gid://shopify/Theme/2",
-      name: "Backup",
-      role: "UNPUBLISHED",
-    });
-  });
-
-  it("returns empty array when no themes exist", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      createMockGraphQLResponse({ themes: { nodes: [] } }),
-    );
-    const themes = await fetchThemes(makeAdmin(graphql));
-    expect(themes).toHaveLength(0);
-  });
-
-  it("throws when the response contains errors", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      createMockGraphQLResponse(null, [{ message: "ACCESS_DENIED" }]),
-    );
-    await expect(fetchThemes(makeAdmin(graphql))).rejects.toThrow(
-      "Failed to list themes",
-    );
+    await expect(fetchMainTheme(makeAdmin(graphql))).rejects.toThrow("Failed to fetch main theme");
   });
 });
 
@@ -228,16 +170,16 @@ describe("fetchThemeFiles", () => {
     const graphql = vi
       .fn()
       .mockResolvedValueOnce(
-        makeThemeFilesResponse(
-          [{ filename: "layout/theme.liquid", body: { content: "a" } }],
-          { hasNextPage: true, endCursor: "cursor-1" },
-        ),
+        makeThemeFilesResponse([{ filename: "layout/theme.liquid", body: { content: "a" } }], {
+          hasNextPage: true,
+          endCursor: "cursor-1",
+        }),
       )
       .mockResolvedValueOnce(
-        makeThemeFilesResponse(
-          [{ filename: "templates/index.liquid", body: { content: "b" } }],
-          { hasNextPage: false, endCursor: null },
-        ),
+        makeThemeFilesResponse([{ filename: "templates/index.liquid", body: { content: "b" } }], {
+          hasNextPage: false,
+          endCursor: null,
+        }),
       );
 
     const files = await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1");
@@ -253,7 +195,7 @@ describe("fetchThemeFiles", () => {
     const graphql = vi.fn().mockResolvedValue(
       makeThemeFilesResponse(
         [
-          { filename: "assets/image.png", body: {} },          // no content field
+          { filename: "assets/image.png", body: {} }, // no content field
           { filename: "layout/theme.liquid", body: { content: "html" } },
         ],
         { hasNextPage: false, endCursor: null },
@@ -278,19 +220,19 @@ describe("fetchThemeFiles", () => {
   });
 
   it("throws when the response contains GraphQL errors", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      createMockGraphQLResponse(null, [{ message: "Theme not found" }]),
-    );
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(createMockGraphQLResponse(null, [{ message: "Theme not found" }]));
 
-    await expect(
-      fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1"),
-    ).rejects.toThrow("Failed to fetch files for theme");
+    await expect(fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1")).rejects.toThrow(
+      "Failed to fetch files for theme",
+    );
   });
 
   it("passes variables without after cursor on first page", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      makeThemeFilesResponse([], { hasNextPage: false, endCursor: null }),
-    );
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(makeThemeFilesResponse([], { hasNextPage: false, endCursor: null }));
 
     await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/42");
     const call = graphql.mock.calls[0];

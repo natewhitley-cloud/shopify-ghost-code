@@ -21,17 +21,6 @@ export async function upsertShop(domain: string, accessToken: string) {
 }
 
 /**
- * Update the billing plan tier for a shop by ID.
- * Called when a shop ID is already in hand.
- */
-export async function updateShopPlan(shopId: string, plan: string) {
-  return db.shop.update({
-    where: { id: shopId },
-    data: { plan },
-  });
-}
-
-/**
  * Update the billing plan tier for a shop by Shopify domain.
  * Used by the app/subscriptions/update webhook, which provides the domain
  * (not the internal shop ID) in the webhook payload.

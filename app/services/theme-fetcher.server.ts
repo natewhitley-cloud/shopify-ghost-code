@@ -9,13 +9,6 @@
  * back off proportionally when headroom drops below 100 points.
  */
 
-/** Shape returned by the themes list query. */
-export type Theme = {
-  id: string;
-  name: string;
-  role: string;
-};
-
 /** A single theme file with its text content. */
 export type ThemeFile = {
   filename: string;
@@ -24,7 +17,10 @@ export type ThemeFile = {
 
 /** Minimal slice of the Shopify admin context we use in this service. */
 type AdminApiContext = {
-  graphql: (query: string, options?: { variables?: Record<string, unknown> }) => Promise<{ json: () => Promise<unknown> }>;
+  graphql: (
+    query: string,
+    options?: { variables?: Record<string, unknown> },
+  ) => Promise<{ json: () => Promise<unknown> }>;
 };
 
 // ---------------------------------------------------------------------------
@@ -64,18 +60,6 @@ export async function checkRateLimit(extensions: unknown): Promise<number> {
 // ---------------------------------------------------------------------------
 // GraphQL queries
 // ---------------------------------------------------------------------------
-
-const THEMES_QUERY = `
-  {
-    themes(first: 25) {
-      nodes {
-        id
-        name
-        role
-      }
-    }
-  }
-`;
 
 const MAIN_THEME_QUERY = `
   {
@@ -149,30 +133,6 @@ export async function fetchMainTheme(admin: AdminApiContext): Promise<MainTheme 
     name: node.name as string,
     updatedAt: new Date(node.updatedAt as string),
   };
-}
-
-/**
- * List all themes for a shop.
- *
- * Returns themes in GID format (e.g. `gid://shopify/Theme/123`).
- * The caller can pass the GID directly to `fetchThemeFiles` — no parsing needed.
- */
-export async function fetchThemes(admin: AdminApiContext): Promise<Theme[]> {
-  const response = await admin.graphql(THEMES_QUERY);
-  const json = (await response.json()) as any;
-
-  if (json.errors?.length) {
-    throw new Error(
-      `[theme-fetcher] Failed to list themes: ${json.errors[0]?.message ?? "unknown error"}`,
-    );
-  }
-
-  const nodes: any[] = json.data?.themes?.nodes ?? [];
-  return nodes.map((n: any) => ({
-    id: n.id as string,
-    name: n.name as string,
-    role: n.role as string,
-  }));
 }
 
 /**
