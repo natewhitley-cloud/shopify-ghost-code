@@ -14,11 +14,4 @@ export type Events = {
       scanId: string;
     };
   };
-  /** Triggered when Shopify emits a theme_updated webhook for a shop. */
-  "theme/changed": {
-    data: {
-      shopId: string;
-      themeId: string;
-    };
-  };
 };

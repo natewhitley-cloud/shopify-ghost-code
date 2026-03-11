@@ -1,4 +1,3 @@
-import { useEffect } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
   redirect,
@@ -11,40 +10,9 @@ import { getShopByDomain } from "../models/shop.server";
 import { getScansForShop, createScan } from "../models/scan.server";
 import { getFindingSummary } from "../models/finding.server";
 import { canStartScan } from "../lib/plan-gating.server";
+import { fetchMainTheme } from "../services/theme-fetcher.server";
 import { inngest } from "../../inngest/client";
 import { formatDate } from "../lib/format";
-
-/**
- * Fetch the shop's MAIN (published) theme and return its GID and name.
- * Returns null if no MAIN theme is found.
- */
-async function fetchMainTheme(
-  admin: { graphql: (query: string) => Promise<{ json: () => Promise<unknown> }> }
-): Promise<{ id: string; name: string } | null> {
-  const response = await admin.graphql(`
-    {
-      themes(first: 1, roles: MAIN) {
-        nodes {
-          id
-          name
-        }
-      }
-    }
-  `);
-
-  const body = (await response.json()) as {
-    data?: {
-      themes?: {
-        nodes?: Array<{ id: string; name: string }>;
-      };
-    };
-  };
-
-  const node = body?.data?.themes?.nodes?.[0];
-  if (!node) return null;
-
-  return { id: node.id, name: node.name };
-}
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -126,18 +94,18 @@ export default function Dashboard() {
   const actionError =
     fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
-  // Errors are rendered via inline <s-banner>; no side-effects needed here.
-  useEffect(() => {}, [actionError]);
-
   const handleStartScan = () => {
     fetcher.submit({}, { method: "POST" });
   };
 
-  const severityCounts = findingSummary?.bySeverity ?? {
-    HIGH: 0,
-    MEDIUM: 0,
-    LOW: 0,
-  };
+  // Whether the latest scan is still running (findings not yet available).
+  const scanInProgress =
+    latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
+
+  // Show "—" while a scan is in progress; show counts once completed.
+  const highCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.HIGH ?? 0);
+  const mediumCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.MEDIUM ?? 0);
+  const lowCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.LOW ?? 0);
 
   // Show onboarding experience when the shop is set up but has never been scanned.
   const showOnboarding = !!shop && !latestScan;
@@ -196,9 +164,9 @@ export default function Dashboard() {
                     {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
                   </s-paragraph>
                   <s-stack direction="inline" gap="base">
-                    <s-badge tone="critical">{severityCounts.HIGH} High</s-badge>
-                    <s-badge tone="warning">{severityCounts.MEDIUM} Medium</s-badge>
-                    <s-badge tone="info">{severityCounts.LOW} Low</s-badge>
+                    <s-badge tone="critical">{highCount} High</s-badge>
+                    <s-badge tone="warning">{mediumCount} Medium</s-badge>
+                    <s-badge tone="info">{lowCount} Low</s-badge>
                   </s-stack>
                 </>
               ) : (

@@ -41,7 +41,6 @@ import {
   getScanById,
   getScansForShop,
   updateScanStatus,
-  getLatestScanForTheme,
   getPreviousScanForTheme,
   countScansForShopSince,
 } from "../../app/models/scan.server";
@@ -265,36 +264,6 @@ describe("updateScanStatus", () => {
     await expect(updateScanStatus("bad-id", ScanStatus.COMPLETED)).rejects.toThrow(
       "Record not found",
     );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getLatestScanForTheme
-// ---------------------------------------------------------------------------
-
-describe("getLatestScanForTheme", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns the most recent scan for the shop+theme combination", async () => {
-    mockDb.scan.findFirst.mockResolvedValue(baseScan);
-
-    const result = await getLatestScanForTheme(SHOP_ID, THEME_ID);
-
-    expect(mockDb.scan.findFirst).toHaveBeenCalledWith({
-      where: { shopId: SHOP_ID, themeId: THEME_ID },
-      orderBy: { createdAt: "desc" },
-    });
-    expect(result).toEqual(baseScan);
-  });
-
-  it("returns null when no scan exists for the theme", async () => {
-    mockDb.scan.findFirst.mockResolvedValue(null);
-
-    const result = await getLatestScanForTheme(SHOP_ID, "unknown-theme");
-
-    expect(result).toBeNull();
   });
 });
 

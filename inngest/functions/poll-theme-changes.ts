@@ -28,18 +28,6 @@ import { inngest } from "../client";
 import { ScanStatus } from "@prisma/client";
 import { createScan } from "../../app/models/scan.server";
 
-const THEMES_QUERY = `
-  {
-    themes(first: 1, roles: MAIN) {
-      nodes {
-        id
-        name
-        updatedAt
-      }
-    }
-  }
-`;
-
 export const pollThemeChanges = inngest.createFunction(
   { id: "poll-theme-changes", name: "Daily Theme Change Poll" },
   { cron: "0 6 * * *" },
@@ -81,7 +69,7 @@ export const pollThemeChanges = inngest.createFunction(
           return { outcome: "skipped_no_token" as const, reason: "no accessToken" };
         }
 
-        // Fetch the main theme's updatedAt from Shopify.
+        // Fetch the main theme's id, name, and updatedAt from Shopify.
         let themeId: string;
         let themeName: string;
         let themeUpdatedAt: Date;
@@ -90,20 +78,19 @@ export const pollThemeChanges = inngest.createFunction(
           const { unauthenticated } = await import("../../app/shopify.server");
           const { admin } = await unauthenticated.admin(shop.domain);
 
-          const response = await admin.graphql(THEMES_QUERY);
-          const json = await response.json();
+          const { fetchMainTheme } = await import("../../app/services/theme-fetcher.server");
+          const mainTheme = await fetchMainTheme(admin);
 
-          const themeNode = json?.data?.themes?.nodes?.[0];
-          if (!themeNode) {
+          if (!mainTheme) {
             return {
               outcome: "error" as const,
               reason: "no main theme found in Shopify response",
             };
           }
 
-          themeId = themeNode.id as string;
-          themeName = themeNode.name as string;
-          themeUpdatedAt = new Date(themeNode.updatedAt as string);
+          themeId = mainTheme.id;
+          themeName = mainTheme.name;
+          themeUpdatedAt = mainTheme.updatedAt;
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           return { outcome: "error" as const, reason: `Shopify API error: ${message}` };

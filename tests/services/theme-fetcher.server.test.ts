@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
+  fetchMainTheme,
   fetchThemes,
   fetchThemeFiles,
   checkRateLimit,
@@ -100,6 +101,51 @@ describe("checkRateLimit", () => {
 
     // 100 pts needed / 50 pts/sec * 1000 = 2000ms
     expect(sleepDurations[0]).toBe(2000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchMainTheme
+// ---------------------------------------------------------------------------
+
+describe("fetchMainTheme", () => {
+  it("returns id, name, and updatedAt when a MAIN theme exists", async () => {
+    const updatedAt = "2026-01-15T12:00:00Z";
+    const graphql = vi.fn().mockResolvedValue(
+      createMockGraphQLResponse({
+        themes: {
+          nodes: [
+            { id: "gid://shopify/Theme/123", name: "Dawn", updatedAt },
+          ],
+        },
+      }),
+    );
+
+    const result = await fetchMainTheme(makeAdmin(graphql));
+
+    expect(result).not.toBeNull();
+    expect(result!.id).toBe("gid://shopify/Theme/123");
+    expect(result!.name).toBe("Dawn");
+    expect(result!.updatedAt).toEqual(new Date(updatedAt));
+  });
+
+  it("returns null when no MAIN theme is found", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      createMockGraphQLResponse({ themes: { nodes: [] } }),
+    );
+
+    const result = await fetchMainTheme(makeAdmin(graphql));
+    expect(result).toBeNull();
+  });
+
+  it("throws when the response contains GraphQL errors", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      createMockGraphQLResponse(null, [{ message: "ACCESS_DENIED" }]),
+    );
+
+    await expect(fetchMainTheme(makeAdmin(graphql))).rejects.toThrow(
+      "Failed to fetch main theme",
+    );
   });
 });
 

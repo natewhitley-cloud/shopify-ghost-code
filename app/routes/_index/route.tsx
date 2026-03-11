@@ -21,9 +21,9 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>A short heading about [your app]</h1>
+        <h1 className={styles.heading}>Ghost Code</h1>
         <p className={styles.text}>
-          A tagline about [your app] that describes your value proposition.
+          Find and remove leftover code from uninstalled Shopify apps — before it slows down your store.
         </p>
         {showForm && (
           <Form className={styles.form} method="post" action="/auth/login">
@@ -39,16 +39,17 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Scan your live theme.</strong> Ghost Code inspects every file in
+            your published theme for code left behind by apps you've already removed.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>See exactly what's there.</strong> Each finding is mapped to a
+            specific file and line so you know exactly what to review.
           </li>
           <li>
-            <strong>Product feature</strong>. Some detail about your feature and
-            its benefit to your customer.
+            <strong>Stay clean automatically.</strong> Professional plan shops get
+            daily re-scans whenever your theme changes, so ghost code never
+            accumulates unnoticed.
           </li>
         </ul>
       </div>

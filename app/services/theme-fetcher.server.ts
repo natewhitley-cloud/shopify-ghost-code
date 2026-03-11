@@ -77,6 +77,18 @@ const THEMES_QUERY = `
   }
 `;
 
+const MAIN_THEME_QUERY = `
+  {
+    themes(first: 1, roles: MAIN) {
+      nodes {
+        id
+        name
+        updatedAt
+      }
+    }
+  }
+`;
+
 const THEME_FILES_QUERY = `
   query ThemeFiles($themeId: ID!, $first: Int!, $after: String) {
     theme(id: $themeId) {
@@ -101,6 +113,43 @@ const THEME_FILES_QUERY = `
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/** Shape returned by the fetchMainTheme query. */
+export type MainTheme = {
+  id: string;
+  name: string;
+  updatedAt: Date;
+};
+
+/**
+ * Fetch the shop's MAIN (published) theme.
+ *
+ * Returns the theme's GID, display name, and last-updated timestamp.
+ * Returns null if no MAIN theme is found (e.g. no published theme set).
+ *
+ * Both the dashboard loader/action and the daily poll cron use this function
+ * to avoid duplicating the GraphQL query.  The dashboard callers may ignore
+ * `updatedAt`; the cron uses it to detect whether a re-scan is needed.
+ */
+export async function fetchMainTheme(admin: AdminApiContext): Promise<MainTheme | null> {
+  const response = await admin.graphql(MAIN_THEME_QUERY);
+  const json = (await response.json()) as any;
+
+  if (json.errors?.length) {
+    throw new Error(
+      `[theme-fetcher] Failed to fetch main theme: ${json.errors[0]?.message ?? "unknown error"}`,
+    );
+  }
+
+  const node = json.data?.themes?.nodes?.[0];
+  if (!node) return null;
+
+  return {
+    id: node.id as string,
+    name: node.name as string,
+    updatedAt: new Date(node.updatedAt as string),
+  };
+}
 
 /**
  * List all themes for a shop.

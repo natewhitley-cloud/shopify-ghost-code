@@ -74,18 +74,6 @@ export async function updateScanStatus(
 }
 
 /**
- * Return the most recent scan for a given shop + theme combination.
- * Used by the diff engine to compare the new scan against prior results.
- * Returns null if no prior scan exists for the theme.
- */
-export async function getLatestScanForTheme(shopId: string, themeId: string) {
-  return db.scan.findFirst({
-    where: { shopId, themeId },
-    orderBy: { createdAt: "desc" },
-  });
-}
-
-/**
  * Return the most recent COMPLETED scan for a given shop + theme that was
  * created BEFORE `beforeDate`.  Used by the diff engine to find the scan
  * that immediately preceded the current one.

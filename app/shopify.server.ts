@@ -80,11 +80,14 @@ export const sessionStorage = shopify.sessionStorage;
 // routes/app._index.tsx                   | loader: authenticate.admin(), action: authenticate.admin() | OK
 // routes/app.scans.tsx                    | loader: authenticate.admin() | OK
 // routes/app.scans.$scanId.tsx            | loader: authenticate.admin() | OK
+// routes/webhooks.app.installed.tsx       | action: authenticate.webhook() | OK
 // routes/webhooks.app.scopes_update.tsx   | action: authenticate.webhook() | OK
 // routes/webhooks.app.uninstalled.tsx     | action: authenticate.webhook() | OK
+// routes/webhooks.app.subscriptions.update.tsx | action: authenticate.webhook() | OK
 // routes/webhooks.customers.data-request.tsx | action: authenticate.webhook() | OK
 // routes/webhooks.customers.redact.tsx    | action: authenticate.webhook() | OK
 // routes/webhooks.shop.redact.tsx         | action: authenticate.webhook() | OK
+// routes/webhooks.themes.publish.tsx      | action: authenticate.webhook() | OK
 // routes/api.inngest.ts                   | loader+action: Inngest SDK handler (no Shopify admin auth) | OK (Inngest uses its own signing key verification internally)
 //
 // RESULT: All admin routes call authenticate.admin(request). All webhook routes
