@@ -49,3 +49,7 @@
 - When updating a price constant, grep for the human-readable string form (e.g., `$59`) in UI routes — settings/pricing pages often duplicate the value as display text. (added: 2026-03-10, dispatch: 6jo)
 - "First scan free" is a gating-layer concept in plan-gating.server.ts, not a plan feature — hasCompletedScans() in scan model detects first-ever scan. (added: 2026-03-10, dispatch: ek4)
 - Free-tier preview pattern: return `previewFinding` (single highest-severity) server-side via getHighestSeverityFinding(), keep full findings array empty. Category breakdown uses findingSummary.byType with display-name mapping in the component. (added: 2026-03-10, dispatch: acw)
+- File-local component extraction (no new file) is appropriate for route-specific UI patterns that don't need cross-route sharing. (added: 2026-03-10, dispatch: 87m)
+- Health score is a pure function in app/lib/health-score.ts (client-safe, no .server.ts). computeHealthScore takes severity counts + totalFiles, returns { score, label, tone }. (added: 2026-03-10, dispatch: 2oz)
+- Use getPlanFeatures(plan).autoRescan to gate Pro-plan features — avoids hardcoding plan name strings scattered across the codebase. (added: 2026-03-10, dispatch: rol)
+- themes/publish webhook records lastThemePublishAt on Shop model for non-Pro nudge banners. Migration: add-shop-theme-publish-timestamp. (added: 2026-03-10, dispatch: rol)

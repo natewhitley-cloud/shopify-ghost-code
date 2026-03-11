@@ -23,6 +23,7 @@ vi.mock("../../app/shopify.server", () => ({
 
 vi.mock("../../app/models/shop.server", () => ({
   getShopByDomain: vi.fn(),
+  updateThemePublishTimestamp: vi.fn().mockResolvedValue({ id: "shop-1", domain: "test.myshopify.com" }),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
