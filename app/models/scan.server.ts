@@ -86,6 +86,30 @@ export async function getLatestScanForTheme(shopId: string, themeId: string) {
 }
 
 /**
+ * Return the most recent COMPLETED scan for a given shop + theme that was
+ * created BEFORE `beforeDate`.  Used by the diff engine to find the scan
+ * that immediately preceded the current one.
+ *
+ * Returns null when no qualifying prior scan exists.
+ */
+export async function getPreviousScanForTheme(
+  shopId: string,
+  themeId: string,
+  beforeDate: Date,
+) {
+  return db.scan.findFirst({
+    where: {
+      shopId,
+      themeId,
+      status: ScanStatus.COMPLETED,
+      createdAt: { lt: beforeDate },
+    },
+    orderBy: { createdAt: "desc" },
+    include: { findings: true },
+  });
+}
+
+/**
  * Count scans created at or after `since` for a given shop.
  * Used by plan-gating to enforce per-month scan limits on the free tier.
  */

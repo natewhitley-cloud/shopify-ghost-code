@@ -9,9 +9,11 @@ import {
 
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
-import { getScanById } from "../models/scan.server";
+import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getFindingSummary } from "../models/finding.server";
 import { canViewFindingDetails } from "../lib/plan-gating.server";
+import { diffScans } from "../services/scan-differ.server";
+import type { ScanDiff } from "../services/scan-differ.server";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -107,6 +109,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // to avoid leaking detail data to the client.
   const findings = canViewDetails ? scan.findings : [];
 
+  // Compute diff against the previous completed scan for the same theme,
+  // but only when the current scan is itself completed.
+  let scanDiff: ScanDiff | null = null;
+  if (scan.status === "COMPLETED") {
+    const previousScan = await getPreviousScanForTheme(
+      scan.shopId,
+      scan.themeId,
+      scan.createdAt,
+    );
+    if (previousScan) {
+      scanDiff = diffScans(scan.findings, previousScan.findings);
+    }
+  }
+
   return {
     scan: {
       id: scan.id,
@@ -120,6 +136,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     findings,
     findingSummary,
     canViewDetails,
+    scanDiff,
   };
 };
 
@@ -128,7 +145,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export default function ScanDetail() {
-  const { scan, findings, findingSummary, canViewDetails } =
+  const { scan, findings, findingSummary, canViewDetails, scanDiff } =
     useLoaderData<typeof loader>();
 
   const revalidator = useRevalidator();
@@ -181,6 +198,26 @@ export default function ScanDetail() {
           </s-stack>
         </s-stack>
       </s-card>
+
+      {/* Changes from last scan — only shown when a previous scan exists */}
+      {scanDiff !== null && (
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-heading>Changes from Last Scan</s-heading>
+            <s-stack direction="inline" gap="base">
+              <s-badge tone="critical">
+                {scanDiff.newFindings.length} New
+              </s-badge>
+              <s-badge tone="success">
+                {scanDiff.resolvedFindings.length} Resolved
+              </s-badge>
+              <s-badge tone="info">
+                {scanDiff.unchangedCount} Unchanged
+              </s-badge>
+            </s-stack>
+          </s-stack>
+        </s-card>
+      )}
 
       {/* Findings detail table (paid plans) or upgrade prompt (free) */}
       {canViewDetails ? (
