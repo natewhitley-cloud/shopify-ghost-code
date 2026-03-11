@@ -5,9 +5,10 @@
  *   - Pure getter functions (canViewFindingDetails, canUseMultipleThemes,
  *     canUseAutoRescan, canUseScanDiffing) need no mocks — they delegate
  *     to getPlanFeatures which is itself a pure switch.
- *   - canStartScan requires two mocks:
+ *   - canStartScan requires three mocks:
  *       1. db.server (Prisma) — for the active-scan guard (db.scan.findFirst)
- *       2. scan.server.countScansForShopSince — for the free-tier monthly count
+ *       2. scan.server.hasCompletedScans — for the first-scan-free bypass
+ *       3. scan.server.countScansForShopSince — for the free-tier monthly count
  *
  * Note on vi.mock hoisting: vi.mock factory functions run before any top-level
  * variable initializations. Use vi.hoisted() for objects referenced inside a
@@ -27,6 +28,7 @@ const mockDb = vi.hoisted(() => ({
 }));
 
 const mockCountScansForShopSince = vi.hoisted(() => vi.fn());
+const mockHasCompletedScans = vi.hoisted(() => vi.fn());
 
 vi.mock("../../app/db.server", () => ({
   default: mockDb,
@@ -34,6 +36,7 @@ vi.mock("../../app/db.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   countScansForShopSince: mockCountScansForShopSince,
+  hasCompletedScans: mockHasCompletedScans,
 }));
 
 // ---------------------------------------------------------------------------
@@ -217,6 +220,8 @@ describe("canStartScan — Free plan", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDb.scan.findFirst.mockResolvedValue(null); // no active scan
+    // Default: shop has completed a prior scan so normal monthly quota applies.
+    mockHasCompletedScans.mockResolvedValue(true);
   });
 
   it("returns allowed: true when the shop has used 0 scans this month", async () => {
@@ -286,6 +291,8 @@ describe("canStartScan — unknown plan defaults to free-tier limits", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockDb.scan.findFirst.mockResolvedValue(null);
+    // Default: shop has completed a prior scan so normal monthly quota applies.
+    mockHasCompletedScans.mockResolvedValue(true);
   });
 
   it("applies free-tier monthly limit for unrecognised plan names", async () => {
@@ -304,5 +311,53 @@ describe("canStartScan — unknown plan defaults to free-tier limits", () => {
     const result = await canStartScan(SHOP_ID, "legacy-plan");
 
     expect(result.allowed).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canStartScan — first-scan-free (onboarding bypass on free plan)
+// ---------------------------------------------------------------------------
+
+describe("canStartScan — first scan free on free plan", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.scan.findFirst.mockResolvedValue(null); // no active scan
+  });
+
+  it("allows the first scan on the free plan even when monthly quota is 0 remaining", async () => {
+    mockHasCompletedScans.mockResolvedValue(false); // no completed scans ever
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBeUndefined();
+    // Should short-circuit before checking monthly count.
+    expect(mockCountScansForShopSince).not.toHaveBeenCalled();
+  });
+
+  it("does not apply the first-scan bypass to paid plans (Standard has unlimited already)", async () => {
+    mockHasCompletedScans.mockResolvedValue(false);
+
+    const result = await canStartScan(SHOP_ID, "Standard");
+
+    // Standard always allows — hasCompletedScans should not even be called.
+    expect(result.allowed).toBe(true);
+    expect(mockHasCompletedScans).not.toHaveBeenCalled();
+  });
+
+  it("applies normal monthly quota once the shop has at least one completed scan", async () => {
+    mockHasCompletedScans.mockResolvedValue(true); // prior scan exists
+    mockCountScansForShopSince.mockResolvedValue(1); // monthly limit hit
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Free plan limit");
+  });
+
+  it("propagates a database error from hasCompletedScans", async () => {
+    mockHasCompletedScans.mockRejectedValue(new Error("DB timeout"));
+
+    await expect(canStartScan(SHOP_ID, "free")).rejects.toThrow("DB timeout");
   });
 });

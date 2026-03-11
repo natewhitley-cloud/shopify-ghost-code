@@ -3,7 +3,12 @@ import { redirect, useFetcher, useLoaderData } from "react-router";
 
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
-import { getScansForShop, createScan, countScansForShopSince } from "../models/scan.server";
+import {
+  getScansForShop,
+  createScan,
+  countScansForShopSince,
+  hasCompletedScans,
+} from "../models/scan.server";
 import { getFindingSummary } from "../models/finding.server";
 import { canStartScan } from "../lib/plan-gating.server";
 import { getPlanFeatures, PLANS } from "../lib/billing.server";
@@ -23,7 +28,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!shop) {
     // Shop hasn't been upserted yet (e.g. install is still in progress).
     // Return minimal data so the page renders without crashing.
-    return { shop: null, latestScan: null, findingSummary: null, mainTheme: null, scanUsage: null };
+    return {
+      shop: null,
+      latestScan: null,
+      findingSummary: null,
+      mainTheme: null,
+      scanUsage: null,
+      isFirstScan: true,
+    };
   }
 
   // Fetch the main theme so the UI can show which theme will be scanned.
@@ -38,14 +50,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Paid plans have unlimited scans; return null so the UI omits the indicator.
   const features = getPlanFeatures(shop.plan);
   let scanUsage: { used: number; limit: number } | null = null;
+  let isFirstScan = false;
   if (features.maxScansPerMonth !== Infinity) {
-    const now = new Date();
-    const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-    const used = await countScansForShopSince(shop.id, monthStart);
-    scanUsage = { used, limit: features.maxScansPerMonth };
+    const alreadyScanned = await hasCompletedScans(shop.id);
+    isFirstScan = !alreadyScanned;
+    if (!isFirstScan) {
+      // Only show the monthly usage counter after the first scan is complete.
+      // Before that, the onboarding card handles messaging.
+      const now = new Date();
+      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+      const used = await countScansForShopSince(shop.id, monthStart);
+      scanUsage = { used, limit: features.maxScansPerMonth };
+    }
   }
 
-  return { shop, latestScan, findingSummary, mainTheme, scanUsage };
+  return { shop, latestScan, findingSummary, mainTheme, scanUsage, isFirstScan };
 };
 
 // ---------------------------------------------------------------------------
@@ -101,7 +120,8 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export default function Dashboard() {
-  const { shop, latestScan, findingSummary, mainTheme, scanUsage } = useLoaderData<typeof loader>();
+  const { shop, latestScan, findingSummary, mainTheme, scanUsage, isFirstScan } =
+    useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
   const isSubmitting = fetcher.state === "submitting" || fetcher.state === "loading";
@@ -121,7 +141,8 @@ export default function Dashboard() {
   const lowCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.LOW ?? 0);
 
   // Whether the free-plan monthly limit has been reached.
-  const scanLimitReached = scanUsage !== null && scanUsage.used >= scanUsage.limit;
+  // isFirstScan overrides the limit — the first scan is always allowed on the free plan.
+  const scanLimitReached = !isFirstScan && scanUsage !== null && scanUsage.used >= scanUsage.limit;
 
   // Show onboarding experience when the shop is set up but has never been scanned.
   const showOnboarding = !!shop && !latestScan;
@@ -206,7 +227,9 @@ export default function Dashboard() {
                 <s-link href="/app/scans">View Scan History</s-link>
               </s-stack>
               {/* Free-plan usage indicator — only shown when the plan has a monthly cap */}
-              {scanUsage !== null && (
+              {isFirstScan ? (
+                <s-text>Your first scan is free — no limits apply.</s-text>
+              ) : scanUsage !== null ? (
                 <s-text>
                   {scanLimitReached ? (
                     <>
@@ -219,7 +242,7 @@ export default function Dashboard() {
                     </>
                   )}
                 </s-text>
-              )}
+              ) : null}
             </s-stack>
           </s-card>
         </>

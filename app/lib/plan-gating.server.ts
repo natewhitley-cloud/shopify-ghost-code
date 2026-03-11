@@ -1,11 +1,11 @@
 import { getPlanFeatures } from "./billing.server";
-import { countScansForShopSince } from "../models/scan.server";
+import { countScansForShopSince, hasCompletedScans } from "../models/scan.server";
 import db from "../db.server";
 
 /**
  * Check whether a shop is allowed to start a new scan under their current plan.
  *
- * - Free plan: 1 scan per calendar month.
+ * - Free plan: first scan ever is always allowed (onboarding); after that, 1 scan per calendar month.
  * - Standard / Professional: unlimited scans (maxScansPerMonth === Infinity).
  *
  * Returns { allowed: true } or { allowed: false, reason: "<human-readable message>" }.
@@ -25,6 +25,15 @@ export async function canStartScan(
   const features = getPlanFeatures(planName);
 
   if (features.maxScansPerMonth === Infinity) {
+    return { allowed: true };
+  }
+
+  // Free plan: the very first scan is always allowed regardless of the monthly
+  // quota. This is the onboarding moment — merchants need to see a scan result
+  // before they can evaluate the product. Subsequent scans fall under the
+  // normal 1/month cap.
+  const alreadyScanned = await hasCompletedScans(shopId);
+  if (!alreadyScanned) {
     return { allowed: true };
   }
 

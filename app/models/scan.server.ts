@@ -121,3 +121,15 @@ export async function countScansForShopSince(shopId: string, since: Date): Promi
     },
   });
 }
+
+/**
+ * Return true if the shop has at least one COMPLETED scan ever.
+ * Used by plan-gating to detect first-time scanners who are eligible
+ * for the free onboarding scan regardless of the monthly quota.
+ */
+export async function hasCompletedScans(shopId: string): Promise<boolean> {
+  const count = await db.scan.count({
+    where: { shopId, status: ScanStatus.COMPLETED },
+  });
+  return count > 0;
+}
