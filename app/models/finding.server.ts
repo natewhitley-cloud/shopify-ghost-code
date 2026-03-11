@@ -21,10 +21,7 @@ export type CreateFindingInput = {
  * Uses createMany for a single round-trip; skipDuplicates is left false
  * because the scan engine should never produce true duplicates within one scan.
  */
-export async function createFindings(
-  scanId: string,
-  findings: CreateFindingInput[],
-) {
+export async function createFindings(scanId: string, findings: CreateFindingInput[]) {
   if (findings.length === 0) return { count: 0 };
 
   return db.finding.createMany({
@@ -44,12 +41,8 @@ export async function getFindingsForScan(
   return db.finding.findMany({
     where: {
       scanId,
-      ...(filters?.severity !== undefined
-        ? { severity: filters.severity }
-        : {}),
-      ...(filters?.findingType !== undefined
-        ? { findingType: filters.findingType }
-        : {}),
+      ...(filters?.severity !== undefined ? { severity: filters.severity } : {}),
+      ...(filters?.findingType !== undefined ? { findingType: filters.findingType } : {}),
     },
     // Prisma sorts enums by declaration order in the schema, not alphabetically.
     // The Severity enum is declared as HIGH, MEDIUM, LOW — so "asc" produces
@@ -122,9 +115,7 @@ export async function getFindingSummary(scanId: string) {
   }
 
   const total =
-    severityCounts[Severity.HIGH] +
-    severityCounts[Severity.MEDIUM] +
-    severityCounts[Severity.LOW];
+    severityCounts[Severity.HIGH] + severityCounts[Severity.MEDIUM] + severityCounts[Severity.LOW];
 
   return { total, bySeverity: severityCounts, byType: typeCounts };
 }
@@ -143,14 +134,19 @@ export async function getFindingSummary(scanId: string) {
  * Empty-findings case:
  *   When findings is empty we still update status to COMPLETED (with count 0)
  *   so the scan is never left stuck in IN_PROGRESS.
+ *
+ * Idempotency guard:
+ *   A deleteMany is issued before createMany so that Inngest retries are safe.
+ *   If the step commits but Inngest doesn't acknowledge the result, the retry
+ *   will delete any previously-created findings and re-insert them, producing
+ *   the same final state instead of duplicates.
  */
-export async function completeScanWithFindings(
-  scanId: string,
-  findings: CreateFindingInput[],
-) {
+export async function completeScanWithFindings(scanId: string, findings: CreateFindingInput[]) {
   const now = new Date();
 
   return db.$transaction([
+    // Idempotency guard: clear any findings from a previous partial attempt.
+    db.finding.deleteMany({ where: { scanId } }),
     ...(findings.length > 0
       ? [
           db.finding.createMany({

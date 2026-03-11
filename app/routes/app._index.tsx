@@ -1,9 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import {
-  redirect,
-  useFetcher,
-  useLoaderData,
-} from "react-router";
+import { redirect, useFetcher, useLoaderData } from "react-router";
 
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
@@ -35,9 +31,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // getScansForShop returns newest-first; take the first result.
   const [latestScan = null] = await getScansForShop(shop.id, { limit: 1 });
 
-  const findingSummary = latestScan
-    ? await getFindingSummary(latestScan.id)
-    : null;
+  const findingSummary = latestScan ? await getFindingSummary(latestScan.id) : null;
 
   return { shop, latestScan, findingSummary, mainTheme };
 };
@@ -70,7 +64,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const themeId = mainTheme.id;
   const themeName = mainTheme.name;
 
-  const scan = await createScan(shop.id, themeId, themeName);
+  // createScan is atomic: it checks for an active scan and creates in one
+  // transaction. Catch the "already in progress" error so it surfaces cleanly
+  // rather than as an unhandled 500. canStartScan above is an advisory pre-flight
+  // check for UX; createScan is the authoritative atomic guard.
+  let scan: Awaited<ReturnType<typeof createScan>>;
+  try {
+    scan = await createScan(shop.id, themeId, themeName);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Failed to create scan.";
+    return { error: message };
+  }
 
   await inngest.send({
     name: "scan/requested",
@@ -88,19 +92,16 @@ export default function Dashboard() {
   const { shop, latestScan, findingSummary, mainTheme } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
-  const isSubmitting =
-    fetcher.state === "submitting" || fetcher.state === "loading";
+  const isSubmitting = fetcher.state === "submitting" || fetcher.state === "loading";
 
-  const actionError =
-    fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
+  const actionError = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
   const handleStartScan = () => {
     fetcher.submit({}, { method: "POST" });
   };
 
   // Whether the latest scan is still running (findings not yet available).
-  const scanInProgress =
-    latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
+  const scanInProgress = latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
 
   // Show "—" while a scan is in progress; show counts once completed.
   const highCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.HIGH ?? 0);
@@ -126,14 +127,14 @@ export default function Dashboard() {
             <s-heading>Welcome to Ghost Code</s-heading>
             <s-paragraph>
               <strong>Ghost Code finds and removes leftover code from uninstalled apps.</strong>{" "}
-              Over time, apps you've removed leave behind scripts, stylesheets, and snippets
-              in your theme — slowing your store and cluttering your code. Ghost Code scans your
-              theme and flags everything that can be safely removed.
+              Over time, apps you've removed leave behind scripts, stylesheets, and snippets in your
+              theme — slowing your store and cluttering your code. Ghost Code scans your theme and
+              flags everything that can be safely removed.
             </s-paragraph>
             {mainTheme ? (
               <s-paragraph>
-                Your active theme is <strong>{mainTheme.name}</strong>. Ghost Code will scan
-                that theme for ghost code left behind by uninstalled apps.
+                Your active theme is <strong>{mainTheme.name}</strong>. Ghost Code will scan that
+                theme for ghost code left behind by uninstalled apps.
               </s-paragraph>
             ) : (
               <s-paragraph>
@@ -170,9 +171,7 @@ export default function Dashboard() {
                   </s-stack>
                 </>
               ) : (
-                <s-paragraph>
-                  No scans yet. Run your first scan to detect ghost code.
-                </s-paragraph>
+                <s-paragraph>No scans yet. Run your first scan to detect ghost code.</s-paragraph>
               )}
             </s-stack>
           </s-card>

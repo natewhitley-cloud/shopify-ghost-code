@@ -92,13 +92,17 @@ export const pollThemeChanges = inngest.createFunction(
           return { outcome: "error" as const, reason: `Shopify API error: ${message}` };
         }
 
-        // Check for an active in-progress scan so we don't double-dispatch.
+        // Check for an active (PENDING or IN_PROGRESS) scan so we don't
+        // double-dispatch. PENDING is included because a queued scan that
+        // hasn't started yet (e.g. Inngest is temporarily down) should still
+        // suppress a new dispatch — otherwise each cron run would create an
+        // orphan PENDING scan while the original one sits idle.
         const db = (await import("../../app/db.server")).default;
         const inProgressScan = await db.scan.findFirst({
           where: {
             shopId: shop.id,
             themeId,
-            status: ScanStatus.IN_PROGRESS,
+            status: { in: [ScanStatus.PENDING, ScanStatus.IN_PROGRESS] },
           },
           select: { id: true },
         });

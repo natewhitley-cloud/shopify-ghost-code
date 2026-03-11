@@ -53,7 +53,7 @@ model Shop {
 model Scan {
   id           String     @id @default(cuid())
   shopId       String
-  shop         Shop       @relation(fields: [shopId], references: [id])
+  shop         Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
   themeId      String
   themeName    String
   status       ScanStatus @default(PENDING)

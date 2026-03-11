@@ -17,6 +17,14 @@ import { ScanStatus } from "@prisma/client";
 // Module mocks
 // ---------------------------------------------------------------------------
 
+// tx-scoped mock for $transaction callback (used by createScan).
+const mockTx = vi.hoisted(() => ({
+  scan: {
+    findFirst: vi.fn(),
+    create: vi.fn(),
+  },
+}));
+
 const mockDb = vi.hoisted(() => ({
   scan: {
     create: vi.fn(),
@@ -26,6 +34,8 @@ const mockDb = vi.hoisted(() => ({
     update: vi.fn(),
     count: vi.fn(),
   },
+  // Callback-form $transaction: invoke the callback with the tx mock.
+  $transaction: vi.fn(async (fn: (tx: typeof mockTx) => Promise<unknown>) => fn(mockTx)),
 }));
 
 vi.mock("../../app/db.server", () => ({
@@ -65,7 +75,7 @@ const baseScan = {
 };
 
 // ---------------------------------------------------------------------------
-// createScan
+// createScan (S-07: atomic TOCTOU guard via $transaction callback-form)
 // ---------------------------------------------------------------------------
 
 describe("createScan", () => {
@@ -73,24 +83,59 @@ describe("createScan", () => {
     vi.clearAllMocks();
   });
 
-  it("calls db.scan.create with the correct data and returns the created record", async () => {
-    mockDb.scan.create.mockResolvedValue(baseScan);
+  it("creates a scan record when no active scan exists for the shop", async () => {
+    mockTx.scan.findFirst.mockResolvedValue(null); // no active scan
+    mockTx.scan.create.mockResolvedValue(baseScan);
 
     const result = await createScan(SHOP_ID, THEME_ID, "Dawn");
 
-    expect(mockDb.scan.create).toHaveBeenCalledOnce();
-    expect(mockDb.scan.create).toHaveBeenCalledWith({
+    expect(mockDb.$transaction).toHaveBeenCalledOnce();
+    expect(mockTx.scan.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ shopId: SHOP_ID }),
+      }),
+    );
+    expect(mockTx.scan.create).toHaveBeenCalledWith({
       data: { shopId: SHOP_ID, themeId: THEME_ID, themeName: "Dawn" },
     });
     expect(result).toEqual(baseScan);
   });
 
-  it("propagates a database error when create fails", async () => {
-    mockDb.scan.create.mockRejectedValue(new Error("DB constraint violation"));
+  it("throws when a PENDING scan already exists for the shop", async () => {
+    mockTx.scan.findFirst.mockResolvedValue({ id: "existing-pending-scan" });
 
     await expect(createScan(SHOP_ID, THEME_ID, "Dawn")).rejects.toThrow(
-      "DB constraint violation",
+      "A scan is already in progress for this shop.",
     );
+    // Must not proceed to create
+    expect(mockTx.scan.create).not.toHaveBeenCalled();
+  });
+
+  it("throws when an IN_PROGRESS scan already exists for the shop", async () => {
+    mockTx.scan.findFirst.mockResolvedValue({ id: "existing-inprogress-scan" });
+
+    await expect(createScan(SHOP_ID, THEME_ID, "Dawn")).rejects.toThrow(
+      "A scan is already in progress for this shop.",
+    );
+    expect(mockTx.scan.create).not.toHaveBeenCalled();
+  });
+
+  it("checks for both PENDING and IN_PROGRESS statuses in the active-scan guard", async () => {
+    mockTx.scan.findFirst.mockResolvedValue(null);
+    mockTx.scan.create.mockResolvedValue(baseScan);
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn");
+
+    const callArg = mockTx.scan.findFirst.mock.calls[0][0];
+    expect(callArg.where.status.in).toContain("PENDING");
+    expect(callArg.where.status.in).toContain("IN_PROGRESS");
+  });
+
+  it("propagates a database error when create fails", async () => {
+    mockTx.scan.findFirst.mockResolvedValue(null);
+    mockTx.scan.create.mockRejectedValue(new Error("DB constraint violation"));
+
+    await expect(createScan(SHOP_ID, THEME_ID, "Dawn")).rejects.toThrow("DB constraint violation");
   });
 });
 
@@ -369,8 +414,6 @@ describe("countScansForShopSince", () => {
   it("propagates a database error", async () => {
     mockDb.scan.count.mockRejectedValue(new Error("Query failed"));
 
-    await expect(
-      countScansForShopSince(SHOP_ID, new Date()),
-    ).rejects.toThrow("Query failed");
+    await expect(countScansForShopSince(SHOP_ID, new Date())).rejects.toThrow("Query failed");
   });
 });

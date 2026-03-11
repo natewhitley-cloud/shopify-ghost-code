@@ -342,6 +342,41 @@ describe("pollThemeChanges — skip: in-progress scan", () => {
 
     expect(mockInngestSend).not.toHaveBeenCalled();
   });
+
+  // S-08: PENDING scan should suppress dispatch (prevents orphan PENDING scans
+  // when Inngest is temporarily down between cron runs).
+  it("returns skipped_in_progress when a PENDING scan already exists for this theme", async () => {
+    const pendingScanId = "scan-pending-456";
+    mockDb.scan.findFirst.mockReset();
+    mockDb.scan.findFirst.mockResolvedValueOnce({ id: pendingScanId });
+
+    const result = await runPollThemeChanges();
+
+    expect(result.results[0].outcome).toBe("skipped_in_progress");
+    expect(result.results[0].reason).toContain(pendingScanId);
+  });
+
+  it("does not create a new scan when a PENDING scan already exists", async () => {
+    mockDb.scan.findFirst.mockReset();
+    mockDb.scan.findFirst.mockResolvedValueOnce({ id: "scan-pending-456" });
+
+    await runPollThemeChanges();
+
+    expect(mockCreateScan).not.toHaveBeenCalled();
+  });
+
+  it("queries for both PENDING and IN_PROGRESS statuses in the active-scan check", async () => {
+    mockDb.scan.findFirst.mockReset();
+    mockDb.scan.findFirst
+      .mockResolvedValueOnce(null) // active scan check: none
+      .mockResolvedValueOnce(null); // latest scan check: none
+
+    await runPollThemeChanges();
+
+    const activeCheckCallArg = mockDb.scan.findFirst.mock.calls[0][0];
+    expect(activeCheckCallArg.where.status.in).toContain(ScanStatus.PENDING);
+    expect(activeCheckCallArg.where.status.in).toContain(ScanStatus.IN_PROGRESS);
+  });
 });
 
 describe("pollThemeChanges — skip: theme up to date", () => {

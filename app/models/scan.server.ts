@@ -4,14 +4,27 @@ import db from "../db.server";
 /**
  * Create a new scan record in PENDING status.
  * The scan engine will transition it to IN_PROGRESS then COMPLETED/FAILED.
+ *
+ * Atomic TOCTOU guard: the check for an existing active scan and the create
+ * are wrapped in a single transaction. This prevents two concurrent requests
+ * from both passing a pre-flight canStartScan check and both creating scans.
+ *
+ * Throws an Error with message "A scan is already in progress for this shop."
+ * when a PENDING or IN_PROGRESS scan already exists. Callers should catch this
+ * to surface a user-friendly message.
  */
-export async function createScan(
-  shopId: string,
-  themeId: string,
-  themeName: string,
-) {
-  return db.scan.create({
-    data: { shopId, themeId, themeName },
+export async function createScan(shopId: string, themeId: string, themeName: string) {
+  return db.$transaction(async (tx) => {
+    const activeScan = await tx.scan.findFirst({
+      where: { shopId, status: { in: [ScanStatus.PENDING, ScanStatus.IN_PROGRESS] } },
+      select: { id: true },
+    });
+    if (activeScan) {
+      throw new Error("A scan is already in progress for this shop.");
+    }
+    return tx.scan.create({
+      data: { shopId, themeId, themeName },
+    });
   });
 }
 
@@ -32,10 +45,7 @@ export async function getScanById(scanId: string) {
  * Only the denormalised findingCount is included here — use getScanById
  * to fetch actual finding rows.
  */
-export async function getScansForShop(
-  shopId: string,
-  options?: { limit?: number },
-) {
+export async function getScansForShop(shopId: string, options?: { limit?: number }) {
   return db.scan.findMany({
     where: { shopId },
     orderBy: { createdAt: "desc" },
@@ -50,11 +60,7 @@ export async function getScansForShop(
  *
  * Optionally updates findingCount so the two writes are a single round-trip.
  */
-export async function updateScanStatus(
-  scanId: string,
-  status: ScanStatus,
-  findingCount?: number,
-) {
+export async function updateScanStatus(scanId: string, status: ScanStatus, findingCount?: number) {
   const now = new Date();
   const timestampFields =
     status === ScanStatus.IN_PROGRESS
@@ -80,11 +86,7 @@ export async function updateScanStatus(
  *
  * Returns null when no qualifying prior scan exists.
  */
-export async function getPreviousScanForTheme(
-  shopId: string,
-  themeId: string,
-  beforeDate: Date,
-) {
+export async function getPreviousScanForTheme(shopId: string, themeId: string, beforeDate: Date) {
   return db.scan.findFirst({
     where: {
       shopId,
@@ -101,10 +103,7 @@ export async function getPreviousScanForTheme(
  * Count scans created at or after `since` for a given shop.
  * Used by plan-gating to enforce per-month scan limits on the free tier.
  */
-export async function countScansForShopSince(
-  shopId: string,
-  since: Date,
-): Promise<number> {
+export async function countScansForShopSince(shopId: string, since: Date): Promise<number> {
   return db.scan.count({
     where: {
       shopId,
