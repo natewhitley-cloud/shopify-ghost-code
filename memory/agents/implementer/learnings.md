@@ -6,7 +6,8 @@
 - Keep services stateless — pass dependencies as function parameters.
 - Use TypeScript strict types for all Shopify API responses.
 - AdminApiContext typed inline in services (structural interface) — avoids importing full Shopify SDK, keeps services testable. (added: 2026-03-10, dispatch: .11)
-- Polaris `<s-*>` valid prop values: s-badge tone (info/critical/auto/neutral/success/caution/warning, NOT 'attention'), s-text (no fontWeight/variant — use `<strong>`/`<code>`), s-stack gap ('base'/'loose', NOT 'tight'). (added: 2026-03-10, dispatch: .15)
+- Polaris `<s-*>` valid prop values: s-badge tone (info/critical/auto/neutral/success/caution/warning, NOT 'attention'), s-text (no fontWeight/variant — use `<strong>`/`<code>`), s-stack gap ('base'/'loose', NOT 'tight'). s-banner uses `tone="critical"` (NOT `status="critical"`). (updated: 2026-03-10, dispatch: S-04/E-02/E-03)
+- React Router `useActionData` returns `undefined` for non-2xx action responses. To surface errors through `actionData`, return 200 with error payload, or use `useFetcher`. (added: 2026-03-10, dispatch: E-03)
 - Shopify GraphQL returns GID format (e.g., `gid://shopify/Theme/123`). Parse with string splitting, not parseInt.
 - Webhook handlers receive shop domain, not internal DB ID. Model functions for webhooks need domain-keyed lookups (e.g., updateShopPlanByDomain). (added: 2026-03-10, dispatch: .43)
 - app/lib/ for client-safe utility modules (no .server.ts), app/components/ for shared UI components. Both patterns established. (added: 2026-03-10, dispatch: .42)
@@ -36,3 +37,8 @@
 - app/uninstalled fires immediately; shop/redact fires 48h later. Both paths clean up via deleteShopData(). (added: 2026-03-10, dispatch: .21/.29)
 - Fingerprint-based diffing: use multiset (Map of counts) not Set. getPreviousScanForTheme filters to COMPLETED status. (added: 2026-03-10, dispatch: .27)
 - Snippets can render other snippets in Liquid. File reference analyzer must include snippet files in the reference scan pass. (added: 2026-03-10, dispatch: .26)
+- fetchMainTheme is the canonical shared function in app/services/theme-fetcher.server.ts. Returns { id, name, updatedAt }. Do not inline the MAIN theme GraphQL query — import from here. Dynamic import required inside Inngest step.run() callbacks. (added: 2026-03-10, dispatch: .46)
+- When a dashboard shows badge counts for an in-progress scan, render "—" instead of "0" to avoid misleading merchants. (added: 2026-03-10, dispatch: .48)
+- Use useRef for poll counters and mount-time state captures (no re-renders). useState only for values that drive UI updates (e.g. pollingTimedOut for banner). (added: 2026-03-10, dispatch: .47)
+- shopify.toast.show() accepts { isError?: boolean; duration?: number } as second arg. Use isError: true for FAILED state toasts. (added: 2026-03-10, dispatch: .47)
+- Files with $ in the name (e.g. app.scans.$scanId.tsx) must be single-quoted when passed to git add — unquoted, the shell expands $var to empty string. (added: 2026-03-10, dispatch: .47)

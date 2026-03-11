@@ -10,6 +10,9 @@
 - billing.server.ts getPlanFeatures() is a pure function — ideal smoke test, no mocks needed. (added: 2026-03-10, dispatch: .33)
 
 ## Gotchas
+- When mocking `inngest/client` for functions using `inngest.createFunction()` at module load, include `createFunction: vi.fn((_config, _trigger, handler) => ({ fn: handler }))`. Without it, the source module throws at import time. (added: 2026-03-10, dispatch: S-01/S-02)
+- `mockReset()` before per-test `mockResolvedValueOnce` sequences. When `beforeEach` pre-populates a mock with `Once` calls, per-test overrides append rather than replace. Call `mockFn.mockReset()` first. (added: 2026-03-10, dispatch: S-01/S-02)
+- When mocking ESM default exports (`import db from`), the vi.mock factory must use `{ default: { ... } }`. When writing helpers that accept nullable overrides, use ternary (`!== undefined ? value : default`) not `??` — nullish coalescing swallows `null`. (added: 2026-03-10, dispatch: S-04)
 - completeScanWithFindings uses array-form $transaction (db.$transaction([op1, op2])), not callback-form. Mock with `$transaction: vi.fn(async (ops) => Promise.all(ops))`. (added: 2026-03-10, dispatch: .45)
 - Always use mockRejectedValueOnce (not mockRejectedValue) for error-propagation tests — permanent rejections bleed into sibling tests even with beforeEach clearAllMocks. (added: 2026-03-10, dispatch: .45)
 - canStartScan uses db directly for active-scan guard + delegates to countScansForShopSince from scan model. Both need independent mocks. (added: 2026-03-10, dispatch: .45)
@@ -30,3 +33,6 @@
 - Inngest function handlers accessible via scanTheme.fn — call directly as fn({ event, step }) to bypass SDK runtime. (added: 2026-03-10, dispatch: .35)
 - vi.mock() hoisting in Vitest correctly intercepts dynamic imports (await import(...)). Mocked modules resolve from mock registry even inside step callbacks. (added: 2026-03-10, dispatch: .35)
 - For best-effort catch blocks, use mockResolvedValueOnce for preceding calls so only the targeted invocation rejects. mockRejectedValue without Once corrupts earlier steps. (added: 2026-03-10, dispatch: .35)
+- formatDate uses toLocaleDateString('en-US') — ISO string inputs parsed as UTC midnight can shift by one day in negative-UTC-offset envs. Use Date object constructors with local-time args, or noon UTC times + regex matching. (added: 2026-03-10, dispatch: .49)
+- For exhaustive enum coverage, pair individual named tests per value (readability + pinpoint failure) with a loop over all values that asserts set membership (forward-compatibility guard). (added: 2026-03-10, dispatch: .49)
+- (from implementer) fetchMainTheme in theme-fetcher.server.ts has 3 unit tests (success, null, error). Scan detail page now has 3 testable behaviors: polling timeout banner, completion toast, no-toast on initial terminal load. (added: 2026-03-10, dispatch: .46/.47)
