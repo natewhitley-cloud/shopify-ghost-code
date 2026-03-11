@@ -39,6 +39,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       isFirstScan: true,
       healthScore: null,
       previousHealthScore: null,
+      showRescanNudge: false,
     };
   }
 
@@ -88,6 +89,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
+  // Rescan nudge: show for Standard-plan shops whose last completed scan is
+  // older than 30 days and no scan is currently running.
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const showRescanNudge =
+    shop.plan === PLANS.STANDARD &&
+    latestScan !== null &&
+    latestScan.status === "COMPLETED" &&
+    latestScan.completedAt !== null &&
+    Date.now() - new Date(latestScan.completedAt).getTime() > THIRTY_DAYS_MS;
+
   return {
     shop,
     latestScan,
@@ -97,6 +108,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     isFirstScan,
     healthScore,
     previousHealthScore,
+    showRescanNudge,
   };
 };
 
@@ -176,6 +188,7 @@ export default function Dashboard() {
     isFirstScan,
     healthScore,
     previousHealthScore,
+    showRescanNudge,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
@@ -214,6 +227,25 @@ export default function Dashboard() {
       {actionError && (
         <s-banner tone="critical">
           <s-paragraph>{actionError}</s-paragraph>
+        </s-banner>
+      )}
+
+      {/* Rescan nudge — Standard plan only, >30 days since last completed scan */}
+      {showRescanNudge && (
+        <s-banner tone="info">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              It's been over 30 days since your last scan. Re-scan your theme to check for new
+              orphaned code from recently uninstalled apps.
+            </s-paragraph>
+            <s-button
+              variant="primary"
+              onClick={handleStartScan}
+              {...(isSubmitting ? { loading: true } : {})}
+            >
+              Start New Scan
+            </s-button>
+          </s-stack>
         </s-banner>
       )}
 
