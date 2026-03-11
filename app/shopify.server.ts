@@ -13,12 +13,22 @@ import prisma from "./db.server";
 export const PLAN_STANDARD = "Standard";
 export const PLAN_PROFESSIONAL = "Professional";
 
+const apiSecretKey = process.env.SHOPIFY_API_SECRET;
+if (!apiSecretKey) {
+  throw new Error("SHOPIFY_API_SECRET environment variable must be set");
+}
+
+const appUrl = process.env.SHOPIFY_APP_URL;
+if (!appUrl) {
+  throw new Error("SHOPIFY_APP_URL environment variable must be set");
+}
+
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
-  apiSecretKey: process.env.SHOPIFY_API_SECRET || "",
+  apiSecretKey,
   apiVersion: ApiVersion.October25,
   scopes: process.env.SCOPES?.split(","),
-  appUrl: process.env.SHOPIFY_APP_URL || "",
+  appUrl,
   authPathPrefix: "/auth",
   sessionStorage: new PrismaSessionStorage(prisma),
   distribution: AppDistribution.AppStore,
