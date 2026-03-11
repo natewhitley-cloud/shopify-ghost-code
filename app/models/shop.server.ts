@@ -21,13 +21,35 @@ export async function upsertShop(domain: string, accessToken: string) {
 }
 
 /**
- * Update the billing plan tier for a shop.
- * Called by billing webhook handlers when a subscription is activated or cancelled.
+ * Update the billing plan tier for a shop by ID.
+ * Called when a shop ID is already in hand.
  */
 export async function updateShopPlan(shopId: string, plan: string) {
   return db.shop.update({
     where: { id: shopId },
     data: { plan },
+  });
+}
+
+/**
+ * Update the billing plan tier for a shop by Shopify domain.
+ * Used by the app/subscriptions/update webhook, which provides the domain
+ * (not the internal shop ID) in the webhook payload.
+ *
+ * Returns null if the shop is not found — caller is responsible for logging
+ * and still returning 200 to Shopify.
+ */
+export async function updateShopPlanByDomain(
+  domain: string,
+  plan: string,
+): Promise<{ id: string; domain: string; plan: string } | null> {
+  const shop = await db.shop.findUnique({ where: { domain } });
+  if (!shop) return null;
+
+  return db.shop.update({
+    where: { domain },
+    data: { plan },
+    select: { id: true, domain: true, plan: true },
   });
 }
 

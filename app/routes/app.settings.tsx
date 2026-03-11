@@ -1,9 +1,51 @@
-import type { LoaderFunctionArgs } from "react-router";
-import { isRouteErrorResponse, useLoaderData, useRouteError } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import {
+  Form,
+  isRouteErrorResponse,
+  useActionData,
+  useLoaderData,
+  useRouteError,
+} from "react-router";
 
 import { authenticate } from "../shopify.server";
+import { PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
-import { getPlanFeatures } from "../lib/billing.server";
+import { getPlanFeatures, PLANS } from "../lib/billing.server";
+
+// ---------------------------------------------------------------------------
+// Action — initiate a billing subscription request
+// ---------------------------------------------------------------------------
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { billing } = await authenticate.admin(request);
+
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  if (intent === "subscribe-standard") {
+    // Shopify redirects the merchant to the billing confirmation page.
+    // billing.request() never returns — it throws a redirect response.
+    await billing.request({
+      plan: PLAN_STANDARD,
+      isTest: process.env.NODE_ENV !== "production",
+      returnUrl: `${process.env.SHOPIFY_APP_URL}/app/settings`,
+    });
+  }
+
+  if (intent === "subscribe-professional") {
+    await billing.request({
+      plan: PLAN_PROFESSIONAL,
+      isTest: process.env.NODE_ENV !== "production",
+      returnUrl: `${process.env.SHOPIFY_APP_URL}/app/settings`,
+    });
+  }
+
+  // Unknown intent — return a 400 so the caller knows something is wrong.
+  return new Response(JSON.stringify({ error: "Unknown intent" }), {
+    status: 400,
+    headers: { "Content-Type": "application/json" },
+  });
+};
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -29,6 +71,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export default function Settings() {
   const { shop, features } = useLoaderData<typeof loader>();
+  const actionData = useActionData<typeof action>();
+
+  const isFree = shop.plan === PLANS.FREE;
+  const isStandard = shop.plan === PLANS.STANDARD;
+  const isProfessional = shop.plan === PLANS.PROFESSIONAL;
 
   return (
     <s-page heading="Settings">
@@ -66,6 +113,52 @@ export default function Settings() {
           </s-unordered-list>
         </s-stack>
       </s-card>
+
+      {/* Upgrade Plans — only shown when not on Professional */}
+      {!isProfessional && (
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-heading>Upgrade Your Plan</s-heading>
+            <s-paragraph>
+              Unlock more scans, full finding details, and advanced features.
+            </s-paragraph>
+
+            {/* Standard plan — shown to Free users */}
+            {isFree && (
+              <s-stack direction="block" gap="base">
+                <s-heading>Standard — $29 / month</s-heading>
+                <s-unordered-list>
+                  <s-list-item>Unlimited scans</s-list-item>
+                  <s-list-item>Full finding details</s-list-item>
+                  <s-list-item>7-day free trial</s-list-item>
+                </s-unordered-list>
+                <Form method="post">
+                  <input type="hidden" name="intent" value="subscribe-standard" />
+                  <button type="submit">Upgrade to Standard</button>
+                </Form>
+              </s-stack>
+            )}
+
+            {/* Professional plan — shown to Free and Standard users */}
+            <s-stack direction="block" gap="base">
+              <s-heading>Professional — $59 / month</s-heading>
+              <s-unordered-list>
+                <s-list-item>Everything in Standard</s-list-item>
+                <s-list-item>Multiple theme scanning</s-list-item>
+                <s-list-item>Auto-rescan on theme publish</s-list-item>
+                <s-list-item>Scan diffing</s-list-item>
+                <s-list-item>7-day free trial</s-list-item>
+              </s-unordered-list>
+              <Form method="post">
+                <input type="hidden" name="intent" value="subscribe-professional" />
+                <button type="submit">
+                  {isStandard ? "Upgrade to Professional" : "Start with Professional"}
+                </button>
+              </Form>
+            </s-stack>
+          </s-stack>
+        </s-card>
+      )}
 
       {/* About */}
       <s-card>
