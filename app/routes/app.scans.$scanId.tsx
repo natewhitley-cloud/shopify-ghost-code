@@ -309,9 +309,9 @@ export default function ScanDetail() {
               Findings are unavailable because this scan encountered an error before finishing.
               Start a new scan from the dashboard to get up-to-date results.
             </s-paragraph>
-            <a href="/app">
+            <s-link href="/app">
               <s-button variant="primary">Go to Dashboard</s-button>
-            </a>
+            </s-link>
           </s-stack>
         </s-card>
       ) : isRunning ? (
@@ -412,9 +412,9 @@ export default function ScanDetail() {
                         to Standard to see full details including all file names, line numbers, and
                         code snippets.
                       </s-text>
-                      <a href="/app/settings">
+                      <s-link href="/app/settings">
                         <s-button variant="primary">Upgrade Plan</s-button>
-                      </a>
+                      </s-link>
                     </s-stack>
                   </s-banner>
                 )}
