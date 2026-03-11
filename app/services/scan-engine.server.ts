@@ -10,8 +10,8 @@
  *   GHOST_STYLE    — <link rel="stylesheet"> pointing to an external app CDN
  *   GHOST_SNIPPET  — {% render %} / {% include %} referencing a known app snippet
  *   GHOST_SECTION  — {% section %} referencing a known app section
- *
- * Cross-file reference checking (ORPHAN_ASSET) is deferred to ticket .26.
+ *   ORPHAN_ASSET   — snippet files that exist in the theme but are never referenced
+ *                    by any template, section, layout, or other snippet
  */
 
 import { FindingType } from "@prisma/client";
@@ -22,6 +22,7 @@ import {
   identifyAppFromSnippetName,
 } from "./app-lookup.server";
 import { classifySeverity } from "./severity-classifier.server";
+import { analyzeFileReferences } from "./file-reference-analyzer.server";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -234,15 +235,25 @@ export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
 /**
  * Scan a set of theme files for ghost code from uninstalled apps.
  *
- * Only processes scannable Liquid files (templates/, sections/, snippets/,
- * layout/).  Returns findings ready for createFindings().
+ * Performs two passes over the provided files:
  *
- * Note: ORPHAN_ASSET detection requires cross-file analysis and is deferred
- * to ticket .26.
+ *   Pass 1 — per-file pattern detection (existing behaviour, unchanged):
+ *     Processes only scannable Liquid files (templates/, sections/, snippets/,
+ *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET, and
+ *     GHOST_SECTION findings.
+ *
+ *   Pass 2 — cross-file orphan detection (new):
+ *     Runs the file reference analyzer over all Liquid files (not just
+ *     scannable ones) to find snippets that are never referenced by any
+ *     template, section, layout, or other snippet.  Emits ORPHAN_ASSET
+ *     findings for each unreferenced snippet file.
+ *
+ * Returns all findings (both passes) ready for createFindings().
  */
 export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
+  // Pass 1: per-file ghost code detection
   for (const file of files) {
     if (!isScannableFile(file.filename)) continue;
 
@@ -250,6 +261,28 @@ export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
     findings.push(...detectGhostStyles(file));
     findings.push(...detectGhostSnippets(file));
     findings.push(...detectGhostSections(file));
+  }
+
+  // Pass 2: cross-file orphan snippet detection
+  // analyzeFileReferences expects { key, value } — adapt from { filename, content }.
+  const fileReferenceInput = files.map((f) => ({
+    key: f.filename,
+    value: f.content,
+  }));
+
+  const orphans = analyzeFileReferences(fileReferenceInput);
+
+  for (const orphan of orphans) {
+    const severity = classifySeverity(FindingType.ORPHAN_ASSET, "");
+    findings.push({
+      filename: orphan.filename,
+      lineNumber: 1,
+      codeSnippet: "",
+      findingType: FindingType.ORPHAN_ASSET,
+      severity,
+      appName: undefined,
+      description: orphan.reason,
+    });
   }
 
   return findings;
