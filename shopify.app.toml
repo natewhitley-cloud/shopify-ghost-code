@@ -33,6 +33,18 @@ api_version = "2026-04"
   topics = [ "shop/redact" ]
   uri = "/webhooks/shop/redact"
 
+  [[webhooks.subscriptions]]
+  topics = ["app/installed"]
+  uri = "/webhooks/app/installed"
+
+  [[webhooks.subscriptions]]
+  topics = ["themes/update"]
+  uri = "/webhooks/themes/update"
+
+  [[webhooks.subscriptions]]
+  topics = ["themes/publish"]
+  uri = "/webhooks/themes/publish"
+
 [access_scopes]
 # Ghost Code only needs to read themes — no write access required
 scopes = "read_themes"
