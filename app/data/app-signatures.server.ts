@@ -48,7 +48,11 @@ export const APP_SIGNATURES: AppSignature[] = [
   },
   {
     appName: "Mailchimp",
-    cdnDomains: ["chimpstatic.com", "cdn-images.mailchimp.com", "s3.amazonaws.com/downloads.mailchimp.com"],
+    cdnDomains: [
+      "chimpstatic.com",
+      "cdn-images.mailchimp.com",
+      "s3.amazonaws.com/downloads.mailchimp.com",
+    ],
     scriptPatterns: [/mailchimp\.js/, /mc\.js/, /chimpstatic\.com/],
     snippetNames: ["mailchimp-popup", "mailchimp-form"],
     cssPatterns: [/mailchimp/, /chimpstatic/],
@@ -351,6 +355,122 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/gempages\.net/, /GemPages/],
     snippetNames: ["gem-app-header-scripts", "gem-app-footer-scripts", "gempages"],
     cssPatterns: [/gempages/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Wishlist & Social Proof
+  // -------------------------------------------------------------------------
+  {
+    appName: "Wishlist Plus (Swym)",
+    cdnDomains: ["cdn.swymrelay.com", "swymrelay.com", "swym.it"],
+    scriptPatterns: [/swymrelay\.com/, /swym\.it/, /SwymCallbacks/, /window\.swym\b/],
+    snippetNames: ["swym-wishlist", "wishlist-plus"],
+    cssPatterns: [/swym/],
+  },
+  {
+    appName: "FOMO",
+    cdnDomains: ["cdn.fomo.com", "app.fomo.com"],
+    scriptPatterns: [/fomo\.com\/js/, /Fomo\.init/, /window\.fomo\b/],
+    snippetNames: ["fomo-notification"],
+    cssPatterns: [/fomo/],
+  },
+  {
+    appName: "Sales Pop / Hextom",
+    cdnDomains: ["cdn.hextom.com"],
+    scriptPatterns: [/hextom\.com/, /window\.hextom\b/],
+    snippetNames: ["hextom-shipping-bar", "hextom-sales-pop"],
+    cssPatterns: [/hextom/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Currency & Translation
+  // -------------------------------------------------------------------------
+  {
+    appName: "Weglot",
+    cdnDomains: ["cdn.weglot.com"],
+    scriptPatterns: [/weglot\.com/, /Weglot\.initialize/, /window\.Weglot\b/],
+    snippetNames: ["weglot-switcher"],
+    cssPatterns: [/weglot/],
+  },
+  {
+    appName: "Currency Converter (BEST)",
+    cdnDomains: ["cdn.currencyconverterwidget.com"],
+    scriptPatterns: [/currencyconverterwidget\.com/, /currencyconverterwidget/],
+    snippetNames: ["currency-converter"],
+    cssPatterns: [/currencyconverterwidget/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Accessibility
+  // -------------------------------------------------------------------------
+  {
+    appName: "accessiBe",
+    cdnDomains: ["acsbapp.com", "acsbap.com"],
+    scriptPatterns: [/acsbapp\.com/, /acsbap\.com/, /acsb\.js/],
+    snippetNames: ["accessibe"],
+    cssPatterns: [/acsbapp/, /accessiBe/i],
+  },
+
+  // -------------------------------------------------------------------------
+  // Size & Fit
+  // -------------------------------------------------------------------------
+  {
+    appName: "Kiwi Size Chart",
+    cdnDomains: ["cdn.kiwisizing.com"],
+    scriptPatterns: [/kiwisizing\.com/, /KiwiSizing/],
+    snippetNames: ["kiwi-size-chart"],
+    cssPatterns: [/kiwisizing/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Returns
+  // -------------------------------------------------------------------------
+  {
+    appName: "Loop Returns",
+    cdnDomains: ["cdn.loopreturns.com"],
+    scriptPatterns: [/loopreturns\.com/, /LoopReturns/],
+    snippetNames: ["loop-returns"],
+    cssPatterns: [/loopreturns/],
+  },
+  {
+    appName: "Narvar",
+    cdnDomains: ["cdn.narvar.com"],
+    scriptPatterns: [/narvar\.com/, /NarvarWidget/],
+    snippetNames: ["narvar-tracking"],
+    cssPatterns: [/narvar/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Product Bundling
+  // -------------------------------------------------------------------------
+  {
+    appName: "Vitals",
+    cdnDomains: ["cdn.vitals.co"],
+    scriptPatterns: [/vitals\.co/, /VitalsApp/, /window\.vitals\b/],
+    snippetNames: ["vitals-head", "vitals-body"],
+    cssPatterns: [/vitals/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Notifications
+  // -------------------------------------------------------------------------
+  {
+    appName: "Back in Stock (Appikon)",
+    cdnDomains: ["cdn.appikon.com"],
+    scriptPatterns: [/appikon\.com/, /BackInStock/, /window\.BackInStock\b/],
+    snippetNames: ["back-in-stock", "bis-notification"],
+    cssPatterns: [/appikon/, /back-in-stock/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Age Verification
+  // -------------------------------------------------------------------------
+  {
+    appName: "Ageify / Age Verification",
+    cdnDomains: ["cdn.ageify.com"],
+    scriptPatterns: [/ageify\.com/, /AgeVerification/, /window\.ageify\b/],
+    snippetNames: ["ageify", "age-verification"],
+    cssPatterns: [/ageify/, /age-verification/],
   },
 
   // -------------------------------------------------------------------------
