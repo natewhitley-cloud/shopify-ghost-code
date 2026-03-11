@@ -36,16 +36,9 @@
 ## Cross-Agent Notes
 - After implementing, notify tester which edge cases are most important to cover.
 - Flag any Shopify API behavior that differs from documentation for the debugger's learnings.
-- GDPR webhooks use authenticate.webhook(request) for HMAC verification — never skip this even for empty 200 responses. (added: 2026-03-10, dispatch: .20)
-- Inngest functions go in inngest/functions/ and must be imported+registered in app/routes/api.inngest.ts. (added: 2026-03-10, dispatch: .10)
-- Admin clients are NOT serializable across Inngest steps. Create the client inside each step via dynamic import of shopify.server + unauthenticated.admin(shop.domain). (added: 2026-03-10, dispatch: .14)
-- Inngest outer try/catch should call updateScanStatus(scanId, 'FAILED') and re-throw — surfaces error state in UI while letting Inngest handle retries. (added: 2026-03-10, dispatch: .14)
-- app/uninstalled webhook fires immediately on uninstall; shop/redact fires 48h later. Both paths must clean up Ghost Code data. (added: 2026-03-10, dispatch: .21)
-- Child route ErrorBoundaries should use isRouteErrorResponse/useRouteError from react-router directly, not the layout-level boundary.error() delegate. (added: 2026-03-10, dispatch: .30)
-- When same GraphQL query needed in loader and action, extract as module-level helper accepting admin client. Avoids duplicating response-parsing logic. (added: 2026-03-10, dispatch: .19)
-- Shopify GraphQL themes() uses roles: MAIN (uppercase enum) to target published theme. Full GID string is the themeId — no parsing needed. (added: 2026-03-10, dispatch: .19)
-- app/installed webhook cannot use authenticate.admin() (no session context). Use authenticate.webhook() + unauthenticated.admin(). To get accessToken, read offline session from db.session. (added: 2026-03-10, dispatch: .29)
-- Webhook handlers must ALWAYS return 200 regardless of business logic. Non-200 causes infinite Shopify retries. Use early return + console.warn for non-happy paths. (added: 2026-03-10, dispatch: .28)
-- getPreviousScanForTheme filters to COMPLETED status + createdAt < current scan. Different from getLatestScanForTheme which returns any status. (added: 2026-03-10, dispatch: .27)
-- Fingerprint-based diffing should use multiset (Map of counts) not Set — handles duplicate findings correctly. (added: 2026-03-10, dispatch: .27)
-- Snippets can render other snippets in Liquid. File reference analyzer must include snippet files in the reference scan pass, not just templates/sections/layout. (added: 2026-03-10, dispatch: .26)
+- Webhook handlers must ALWAYS return 200. Use authenticate.webhook() for HMAC verification. Non-200 causes infinite Shopify retries. (added: 2026-03-10, dispatch: .20/.28)
+- Inngest functions in inngest/functions/ must be imported+registered in api.inngest.ts. Admin clients NOT serializable across steps — create via dynamic import inside each step. Outer try/catch should mark scan FAILED and re-throw. (added: 2026-03-10, dispatch: .10/.14)
+- app/uninstalled fires immediately; shop/redact fires 48h later. Both paths clean up via deleteShopData(). app/installed uses authenticate.webhook() + unauthenticated.admin() (no session context). (added: 2026-03-10, dispatch: .21/.29)
+- Extract shared GraphQL queries as module-level helpers. themes() uses roles: MAIN (uppercase enum). Full GID string is the themeId. (added: 2026-03-10, dispatch: .19)
+- Fingerprint-based diffing: use multiset (Map of counts) not Set. getPreviousScanForTheme filters to COMPLETED status. (added: 2026-03-10, dispatch: .27)
+- Snippets can render other snippets in Liquid. File reference analyzer must include snippet files in the reference scan pass. (added: 2026-03-10, dispatch: .26)
