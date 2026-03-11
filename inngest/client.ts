@@ -1,4 +1,9 @@
-import { Inngest } from "inngest";
+import { EventSchemas, Inngest } from "inngest";
 import type { Events } from "./events";
+import { loggingMiddleware } from "./middleware";
 
-export const inngest = new Inngest<Events>({ id: "ghost-code" });
+export const inngest = new Inngest({
+  id: "ghost-code",
+  schemas: new EventSchemas().fromRecord<Events>(),
+  middleware: [loggingMiddleware],
+});

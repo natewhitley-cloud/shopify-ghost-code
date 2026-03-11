@@ -15,10 +15,11 @@ import { serve } from "inngest/remix";
 import { inngest } from "../../inngest/client";
 
 import { scanTheme } from "../../inngest/functions/scan-theme";
+import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
 
 const handler = serve({
   client: inngest,
-  functions: [scanTheme],
+  functions: [scanTheme, pollThemeChanges],
 });
 
 export { handler as loader, handler as action };
