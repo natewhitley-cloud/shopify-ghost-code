@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type React from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData, useRevalidator } from "react-router";
 
@@ -34,6 +35,62 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   GHOST_SECTION: "Sections",
   ORPHAN_ASSET: "Orphan Assets",
 };
+
+// ---------------------------------------------------------------------------
+// Shared finding table components
+// ---------------------------------------------------------------------------
+
+interface FindingLike {
+  severity: string;
+  findingType: string;
+  filename: string;
+  lineNumber: number;
+  appName: string | null;
+  codeSnippet: string;
+}
+
+function FindingRow({ finding }: { finding: FindingLike }) {
+  return (
+    <tr>
+      <td>
+        <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
+      </td>
+      <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
+      <td>
+        <code>{finding.filename}</code>
+      </td>
+      <td>{finding.lineNumber}</td>
+      <td>{finding.appName ?? "—"}</td>
+      <td>
+        <code>
+          {finding.codeSnippet.length > 80
+            ? `${finding.codeSnippet.slice(0, 80)}…`
+            : finding.codeSnippet}
+        </code>
+      </td>
+    </tr>
+  );
+}
+
+function FindingsTable({ children }: { children: React.ReactNode }) {
+  return (
+    <s-data-table>
+      <table>
+        <thead>
+          <tr>
+            <th>Severity</th>
+            <th>Type</th>
+            <th>File</th>
+            <th>Line</th>
+            <th>App</th>
+            <th>Snippet</th>
+          </tr>
+        </thead>
+        <tbody>{children}</tbody>
+      </table>
+    </s-data-table>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -281,44 +338,11 @@ export default function ScanDetail() {
               {findings.length === 0 ? (
                 <s-paragraph>No ghost code detected in this scan.</s-paragraph>
               ) : (
-                <s-data-table>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Severity</th>
-                        <th>Type</th>
-                        <th>File</th>
-                        <th>Line</th>
-                        <th>App</th>
-                        <th>Snippet</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {findings.map((finding) => (
-                        <tr key={finding.id}>
-                          <td>
-                            <s-badge tone={severityTone(finding.severity)}>
-                              {finding.severity}
-                            </s-badge>
-                          </td>
-                          <td>{finding.findingType.replace(/_/g, " ")}</td>
-                          <td>
-                            <code>{finding.filename}</code>
-                          </td>
-                          <td>{finding.lineNumber}</td>
-                          <td>{finding.appName ?? "—"}</td>
-                          <td>
-                            <code>
-                              {finding.codeSnippet.length > 80
-                                ? `${finding.codeSnippet.slice(0, 80)}…`
-                                : finding.codeSnippet}
-                            </code>
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </s-data-table>
+                <FindingsTable>
+                  {findings.map((finding) => (
+                    <FindingRow key={finding.id} finding={finding} />
+                  ))}
+                </FindingsTable>
               )}
             </s-stack>
           </s-card>
@@ -350,45 +374,9 @@ export default function ScanDetail() {
             <s-card>
               <s-stack direction="block" gap="base">
                 <s-heading>Preview: Highest Severity Finding</s-heading>
-                <s-data-table>
-                  <table>
-                    <thead>
-                      <tr>
-                        <th>Severity</th>
-                        <th>Type</th>
-                        <th>File</th>
-                        <th>Line</th>
-                        <th>App</th>
-                        <th>Snippet</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      <tr>
-                        <td>
-                          <s-badge tone={severityTone(previewFinding.severity)}>
-                            {previewFinding.severity}
-                          </s-badge>
-                        </td>
-                        <td>
-                          {FINDING_TYPE_LABELS[previewFinding.findingType] ??
-                            previewFinding.findingType.replace(/_/g, " ")}
-                        </td>
-                        <td>
-                          <code>{previewFinding.filename}</code>
-                        </td>
-                        <td>{previewFinding.lineNumber}</td>
-                        <td>{previewFinding.appName ?? "—"}</td>
-                        <td>
-                          <code>
-                            {previewFinding.codeSnippet.length > 80
-                              ? `${previewFinding.codeSnippet.slice(0, 80)}…`
-                              : previewFinding.codeSnippet}
-                          </code>
-                        </td>
-                      </tr>
-                    </tbody>
-                  </table>
-                </s-data-table>
+                <FindingsTable>
+                  <FindingRow finding={previewFinding} />
+                </FindingsTable>
 
                 {/* Upgrade banner: remaining count and upgrade CTA (hidden when only 1 finding total) */}
                 {findingSummary.total > 1 && (
