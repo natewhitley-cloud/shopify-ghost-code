@@ -74,14 +74,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const scan = await createScan(shop.id, themeId, themeName);
 
-  // TODO: Send Inngest event once the scan/requested function is implemented.
-  // Uncomment when inngest/functions/scan-requested.ts exists.
-  //
-  // await inngest.send({
-  //   name: "scan/requested",
-  //   data: { shopId: shop.id, themeId, scanId: scan.id },
-  // });
-  void inngest; // suppress unused-import lint until the send is wired up
+  await inngest.send({
+    name: "scan/requested",
+    data: { shopId: shop.id, themeId, scanId: scan.id },
+  });
 
   return redirect(`/app/scans/${scan.id}`);
 };

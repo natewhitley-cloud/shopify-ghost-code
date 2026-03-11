@@ -14,14 +14,11 @@
 import { serve } from "inngest/remix";
 import { inngest } from "../../inngest/client";
 
-// TODO(implementer): import functions here as they are created, e.g.:
-// import { scanRequested } from "../../inngest/functions/scan-requested";
+import { scanTheme } from "../../inngest/functions/scan-theme";
 
 const handler = serve({
   client: inngest,
-  functions: [
-    // TODO(implementer): add functions here
-  ],
+  functions: [scanTheme],
 });
 
 export { handler as loader, handler as action };
