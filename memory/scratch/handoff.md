@@ -1,4 +1,4 @@
-# Session Handoff — Ghost Code Sprint (Session 2)
+# Session Handoff — Ghost Code Sprint (Session 3)
 
 **Date**: 2026-03-10
 **Project**: ~/shopify-ghost-code
@@ -6,89 +6,68 @@
 
 ## What Was Done This Session
 
-Processed batch 5 results, completed final feature (.41), ran comprehensive audit, and fixed all critical+high issues:
+P1+P2 sprint: 4 tasks completed, 0 rework, 0% fix rate. Plus retro and curate.
 
-- **37 commits** on main (27 feat, 4 fix, 4 chore, 2 test)
-- **35/36 original beads closed** (97%) + 7 new audit beads created (.42-.48)
-- **107 tests passing** (Vitest v4) across 6 test files
-- **11 audit fixes applied** across 3 parallel agents
+- **7 commits** on main (2 feat, 1 test, 1 refactor, 3 chore)
+- **4/4 sprint tasks closed** (.43 billing, .44 ORPHAN_ASSET, .45 test coverage, .42 DRY extraction)
+- **246 tests passing** (up from 107) across 13 test files
+- **Implementer learnings curated**: 51 → 38 lines, 8 passive entries archived
 
-### What's Built (complete)
-- Full scan pipeline: theme-fetcher → scan-engine → severity-classifier → app-lookup (42 signatures)
-- Scan differ + file reference analyzer (orphan detection logic, not yet integrated)
-- Inngest scan-theme step function (4-step retryable pipeline with atomic transaction)
-- Daily polling cron (Professional-plan only, 6 AM UTC)
-- Inngest logging middleware
-- All UI routes: dashboard (with onboarding), scan history, scan detail (with diff), settings
-- Billing config (Standard $29/mo, Professional $59/mo) + plan-gating (canStartScan, canUseScanDiffing, canUseAutoRescan)
-- GDPR webhooks (all 3) + app/installed (auto-first-scan) + themes/publish (auto-rescan)
-- Transactional deleteShopData() used by all webhook cleanup paths
-- In-progress scan guard prevents concurrent scan races
-- Data access layer (shop, scan, finding models)
-- Prisma schema (PostgreSQL, 3 domain models + enums + indexes)
-- Error boundaries on all routes
-- GitHub Actions CI/CD + Railway deployment config
-- Vitest + mock factories (Prisma, Shopify admin, Inngest)
+### What's Built (complete since session 2)
+- Billing flow end-to-end: settings route triggers billing.request(), subscription webhook updates shop plan, downgrade handling, test mode
+- ORPHAN_ASSET detection integrated into scan engine as Pass 2 (cross-file orphan snippet analysis)
+- DRY violations extracted: formatDate/statusTone/statusLabel → app/lib/format.ts, ErrorBoundary → app/components/AppErrorBoundary.tsx
+- 117 new tests: scan model, finding model, scan-differ, file-reference-analyzer, plan-gating
+- 14 billing tests + 8 ORPHAN_ASSET tests from implementer agents
 
-### Audit Fixes Applied (this session)
-1. In-progress scan guard in canStartScan()
-2. canUseScanDiffing() gate wired in scan detail loader
-3. Upgrade Plan button linked to settings
-4. themes/update webhook removed (publish-only)
-5. app-signatures.server.ts renamed
-6. Try/catch in webhooks.app.installed GraphQL call
-7. deleteShopData() transactional + used by both webhooks
-8. Severity sort order documented
-9. poll-theme-changes uses createScan() model function
-10. poll-theme-changes Professional-plan filter
-11. completeScanWithFindings atomic transaction
+### Cumulative Project State
+- **43/51 beads closed** (84%) — all P0 and P1 complete
+- **246 tests** across 13 test files
+- **43 commits** on main
+- All features built: scan pipeline, UI routes, webhooks, billing, ORPHAN_ASSET, diffing, polling, error boundaries, CI/CD
 
 ## What's Next
 
-### Immediate (P1 — revenue blocker)
+### P2 — Manual / Needs Running App
 | Bead | Title | Agent |
 |------|-------|-------|
-| .43 | Wire billing flow end-to-end | Implementer |
+| .39 | Create app review submission package | Manual (screencast, listing copy) |
+| .40 | Run performance + compatibility audit | Tester (needs running app) |
 
-### Short-term (P2 — quality)
+### P3 — Polish Sprint (ready for /sprint)
 | Bead | Title | Agent |
 |------|-------|-------|
-| .42 | Extract DRY violations (formatDate, statusTone, ErrorBoundary) | Implementer |
-| .44 | Integrate ORPHAN_ASSET into scan engine | Implementer |
-| .45 | Add model + service test coverage | Tester |
-
-### Later (P3 — polish)
-| Bead | Title | Agent |
-|------|-------|-------|
-| .46 | Extract shared webhook handler + fetchMainTheme | Implementer |
-| .47 | Scan polling timeout + toast notification | Implementer |
-| .48 | Dead code cleanup + placeholder copy | Implementer |
+| .46 | Extract shared theme webhook handler + centralize fetchMainTheme | Implementer |
+| .47 | Add scan polling timeout + toast notification | Implementer |
+| .48 | Clean up dead code + placeholder copy | Implementer |
+| .49 | Add unit tests for app/lib/format.ts | Tester |
 
 ### Outside beads
-- .39: App review submission package (manual — screencast, listing copy)
-- .40: Performance audit (needs running app)
 - GitHub repo creation + first push (user: natewhitley-cloud)
 - Railway project setup + environment variables
 - Shopify app deployment to dev store for testing
+- Manual QA: billing flow (click Upgrade, confirm Shopify billing page, verify webhook + plan update)
 
 ### Open Decisions
 1. Should the install welcome scan count against the free monthly limit?
 2. Scan history pagination (currently hardcoded to 20)
+3. Extend ORPHAN_ASSET to detect orphan JS/CSS in /assets/ (currently only snippets)
 
 ## Key Context for Next Session
 
-1. **CWD matters**: Work from ~/shopify-ghost-code (not ~/Claude) to enable worktree isolation
-2. **Sprint command**: `cd ~/shopify-ghost-code && /sprint` — team.yaml, all learnings, and epic state are in place
-3. **Billing is the #1 priority**: .43 is the revenue blocker. Need billing.request() route + app/subscriptions/update webhook + shop.plan update logic.
-4. **Typecheck note**: ~50 pre-existing TS errors from Polaris Web Components (no JSX types for `<s-*>`) and test mock casts. Not blocking — tests pass cleanly.
-5. **Tests after API changes**: Fix agent prompts must include "update tests that mock changed functions" — learned from completeScanWithFindings test regression.
+1. **CWD matters**: Start session with `cd ~/shopify-ghost-code` to enable worktree isolation for parallel dispatch
+2. **Sprint command**: `/sprint on P3 items` — team.yaml, all learnings, and epic state are in place
+3. **Implementer learnings curated**: 38 lines, well under cap. Core (14) + Task-Relevant (20). Archive created.
+4. **Polling gap**: No implementer learning covers polling intervals or Polaris toast patterns. Will need one after .47 dispatch.
+5. **Typecheck note**: ~50 pre-existing TS errors from Polaris Web Components (no JSX types for `<s-*>`) and test mock casts. Not blocking — tests pass cleanly.
+6. **Agent commit issue**: Tester agent in this sprint didn't commit its files. Sprint prompts for file-creation tasks should include explicit "git add and commit" instruction.
 
 ## Team State
 
 | Member | Learnings | Lines | Status | Notes |
 |--------|-----------|-------|--------|-------|
-| implementer | 35 entries | 44 | Active | Heaviest use — pruned from 52 |
-| scaffolder | 18 entries | 31 | Active | All infra complete |
-| tester | 15 entries | 29 | Active | 107 tests, 6 files |
-| reviewer | 14 entries | 28 | Active | 2 full audits this session |
-| debugger | 12 entries | 23 | Cold | Never dispatched |
+| implementer | 34 entries | 38 | Active | Curated this session — 8 archived |
+| scaffolder | 21 entries | 30 | Steady | All infra complete |
+| tester | 23 entries | 32 | Active | 246 tests, 13 files |
+| reviewer | 18 entries | 27 | Steady | 2 full audits last session |
+| debugger | 13 entries | 22 | Cold | Never dispatched |
