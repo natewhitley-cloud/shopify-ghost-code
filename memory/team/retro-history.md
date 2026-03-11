@@ -1,5 +1,15 @@
 # Retrospective History
 
+## Retro: 2026-03-10 (session 5 — P2 audit sprint)
+- Tasks completed: 15/15 (100%) — all P2 audit findings (.50–.65) + 9 P1/P3 beads created for tracking
+- Agents dispatched: 5 (4 implementer, 1 tester) — serial, no worktree
+- New learnings: 7 across 2 members (implementer: 4, tester: 3)
+- Test growth: 330 → 397 (+20%, 67 new tests)
+- Fix rate: 0% — zero rework across all 5 commits
+- Key insight: Batching 3-4 related tasks per agent with precise file-level context from orchestrator code reads produces consistently high-confidence results. All 5 agents returned CONFIRMED.
+- Key pattern: Reading source files in the orchestrator before composing dispatch prompts — not just relying on audit descriptions — eliminated ambiguity and produced zero-rework agents.
+- Notable: TOCTOU race fix (S-07) uses application-level $transaction guard. A DB-level partial unique index would be the final backstop but requires raw SQL migration.
+
 ## Retro: 2026-03-10
 - Tasks completed: 25/36 (69%) across 4 batches
 - Agents dispatched: 11 total (2+3+3+3)

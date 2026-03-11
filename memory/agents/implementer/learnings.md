@@ -42,3 +42,7 @@
 - Use useRef for poll counters and mount-time state captures (no re-renders). useState only for values that drive UI updates (e.g. pollingTimedOut for banner). (added: 2026-03-10, dispatch: .47)
 - shopify.toast.show() accepts { isError?: boolean; duration?: number } as second arg. Use isError: true for FAILED state toasts. (added: 2026-03-10, dispatch: .47)
 - Files with $ in the name (e.g. app.scans.$scanId.tsx) must be single-quoted when passed to git add — unquoted, the shell expands $var to empty string. (added: 2026-03-10, dispatch: .47)
+- When removing a guard that produces a named outcome, check whether tests assert that outcome string explicitly — tests need rewriting, not just removal. (added: 2026-03-10, dispatch: .56)
+- createScan uses callback-form $transaction for atomic TOCTOU guard (check + create in one tx). completeScanWithFindings uses array-form $transaction with deleteMany prepended for idempotency. (added: 2026-03-10, dispatch: .52/.55)
+- Three-state branch pattern (isFailed/isRunning/isCompleted derived booleans before JSX) is cleaner than inline status checks for status-conditional rendering. (added: 2026-03-10, dispatch: .57/.58)
+- app/lib/logger.server.ts provides structured JSON logging. Use `logger.info/warn/error(message, context)` in webhook handlers — not bare console.*. (added: 2026-03-10, dispatch: .60)

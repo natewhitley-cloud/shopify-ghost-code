@@ -103,6 +103,10 @@ shopify-ghost-code/
 | Review code | /review |
 | Run a session | /status -> ... -> /retro -> /handoff |
 
+## Reference Docs
+
+Before modifying billing, pricing, or plan-gating logic, review `docs/pricing-and-plans.md` (linked from README under Key References). Update that doc alongside any code changes to keep it in sync.
+
 ## Do Not Modify
 
 - `.beads/` internals (use `bd` commands only)
