@@ -1,4 +1,4 @@
-import { FindingType, Severity } from "@prisma/client";
+import { FindingType, ScanStatus, Severity } from "@prisma/client";
 import db from "../db.server";
 
 /**
@@ -51,6 +51,11 @@ export async function getFindingsForScan(
         ? { findingType: filters.findingType }
         : {}),
     },
+    // Prisma sorts enums by declaration order in the schema, not alphabetically.
+    // The Severity enum is declared as HIGH, MEDIUM, LOW — so "asc" produces
+    // HIGH → MEDIUM → LOW, which is the correct display order (most severe first).
+    // If the schema enum order ever changes this sort will silently break; keep
+    // the declaration order in sync with this comment.
     orderBy: [{ severity: "asc" }, { filename: "asc" }],
   });
 }
@@ -122,4 +127,44 @@ export async function getFindingSummary(scanId: string) {
     severityCounts[Severity.LOW];
 
   return { total, bySeverity: severityCounts, byType: typeCounts };
+}
+
+/**
+ * Atomically persist findings and mark a scan COMPLETED in a single transaction.
+ *
+ * Why a transaction is required:
+ *   createFindings and updateScanStatus are two separate writes. If findings are
+ *   inserted but the status update fails (network blip, DB error), Inngest will
+ *   retry the step and createFindings will run again — producing duplicate rows,
+ *   since the Finding table has no unique constraint per scan. Wrapping both in
+ *   $transaction makes the step idempotency boundary identical to the DB commit
+ *   boundary: either both writes land or neither does, so a retry is always safe.
+ *
+ * Empty-findings case:
+ *   When findings is empty we still update status to COMPLETED (with count 0)
+ *   so the scan is never left stuck in IN_PROGRESS.
+ */
+export async function completeScanWithFindings(
+  scanId: string,
+  findings: CreateFindingInput[],
+) {
+  const now = new Date();
+
+  return db.$transaction([
+    ...(findings.length > 0
+      ? [
+          db.finding.createMany({
+            data: findings.map((f) => ({ ...f, scanId })),
+          }),
+        ]
+      : []),
+    db.scan.update({
+      where: { id: scanId },
+      data: {
+        status: ScanStatus.COMPLETED,
+        completedAt: now,
+        findingCount: findings.length,
+      },
+    }),
+  ]);
 }

@@ -26,6 +26,7 @@
 
 import { inngest } from "../client";
 import { ScanStatus } from "@prisma/client";
+import { createScan } from "../../app/models/scan.server";
 
 const THEMES_QUERY = `
   {
@@ -48,7 +49,12 @@ export const pollThemeChanges = inngest.createFunction(
     // -------------------------------------------------------------------------
     const shops = await step.run("fetch-all-shops", async () => {
       const db = (await import("../../app/db.server")).default;
+      // Only Professional-plan shops receive automatic daily re-scans.
+      // Free-plan shops must trigger scans manually from the dashboard.
+      // The plan field is stored as a plain string; "professional" matches
+      // the value set during plan upgrade (see billing webhook handler).
       return db.shop.findMany({
+        where: { plan: "professional" },
         select: { id: true, domain: true, accessToken: true },
       });
     });
@@ -137,9 +143,9 @@ export const pollThemeChanges = inngest.createFunction(
 
         // Theme was modified after the last scan — create a scan record and
         // dispatch the `scan/requested` event to trigger the scan pipeline.
-        const newScan = await db.scan.create({
-          data: { shopId: shop.id, themeId, themeName },
-        });
+        // Using createScan() from the model layer so any future model-level
+        // logic (e.g. audit hooks, default fields) applies to cron-created scans.
+        const newScan = await createScan(shop.id, themeId, themeName);
 
         await (
           await import("../client")

@@ -22,7 +22,7 @@ import { inngest } from "../client";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { updateScanStatus } from "../../app/models/scan.server";
-import { createFindings } from "../../app/models/finding.server";
+import { completeScanWithFindings } from "../../app/models/finding.server";
 
 export const scanTheme = inngest.createFunction(
   { id: "scan-theme", name: "Scan Theme for Ghost Code" },
@@ -58,11 +58,11 @@ export const scanTheme = inngest.createFunction(
       });
 
       // Step 4: Persist findings and mark scan COMPLETED
+      // Both writes are wrapped in a single $transaction inside completeScanWithFindings.
+      // This prevents the duplicate-finding problem that would occur if Inngest retried
+      // this step after createFindings succeeded but the status update failed.
       await step.run("save-findings", async () => {
-        if (findings.length > 0) {
-          await createFindings(scanId, findings);
-        }
-        await updateScanStatus(scanId, "COMPLETED", findings.length);
+        await completeScanWithFindings(scanId, findings);
       });
 
       return {
