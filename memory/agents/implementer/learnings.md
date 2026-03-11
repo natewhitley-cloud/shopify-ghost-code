@@ -19,9 +19,7 @@
 - APP_SUBSCRIPTIONS_UPDATE webhook payload: `{ app_subscription: { name, status, admin_graphql_api_id } }`. Status ACTIVE = live; all others (CANCELLED, DECLINED, EXPIRED, FROZEN, PENDING) = revert to free tier. (added: 2026-03-10, dispatch: .43)
 - Webhook handlers receive shop domain, not internal DB ID. Model functions for webhooks need domain-keyed lookups (e.g., updateShopPlanByDomain). (added: 2026-03-10, dispatch: .43)
 - Polaris uses `<s-*>` Web Components (CDN), NOT React imports. No `import { Card } from '@shopify/polaris'`.
-- s-badge tone: info, critical, auto, neutral, success, caution, warning. NOT 'attention'. (added: 2026-03-10, dispatch: .15)
-- s-text has NO fontWeight/variant props — use `<strong>` for bold, `<code>` for mono. (added: 2026-03-10, dispatch: .15)
-- s-stack gap: 'base', 'loose' — NOT 'tight'. (added: 2026-03-10, dispatch: .15)
+- Polaris `<s-*>` valid prop values: s-badge tone (info/critical/auto/neutral/success/caution/warning, NOT 'attention'), s-text (no fontWeight/variant — use `<strong>`/`<code>`), s-stack gap ('base'/'loose', NOT 'tight'). (added: 2026-03-10, dispatch: .15)
 - Session tokens, not cookies — never use localStorage or document.cookie for auth.
 - Shopify GraphQL returns GID format (e.g., `gid://shopify/Theme/123`). Parse with string splitting, not parseInt.
 - GDPR webhooks must ALL return 200 even if no data to process. Missing webhooks = automatic app rejection.
@@ -35,8 +33,6 @@
 - AdminApiContext typed inline in services (structural interface) — avoids importing full Shopify SDK, keeps services testable. (added: 2026-03-10, dispatch: .11)
 - App signature regex patterns must match BOTH assignment form (hjid=) and object-key form (hjid:). Test against real injected code. (added: 2026-03-10, dispatch: .13)
 - LINK_STYLESHEET_RE needs two capture-group branches for both attribute orderings (rel-first and href-first). (added: 2026-03-10, dispatch: .12)
-- When stubbing inngest.send() with TODO, add `void inngest;` to prevent unused-import lint errors. (added: 2026-03-10, dispatch: .15)
-
 - When extracting shared utilities, compare ALL call sites for behavioral differences before writing the shared version — subtle option differences can silently change behavior if missed. (added: 2026-03-10, dispatch: .42)
 - `export { Foo as Bar }` re-export pattern satisfies framework named-export contracts (React Router's ErrorBoundary) from shared components without wrapper boilerplate. (added: 2026-03-10, dispatch: .42)
 - app/lib/ for client-safe utility modules (no .server.ts), app/components/ for shared UI components. Both patterns established. (added: 2026-03-10, dispatch: .42)

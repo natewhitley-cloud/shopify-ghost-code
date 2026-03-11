@@ -16,3 +16,12 @@
 - Fix rate: 67% (4 fix commits out of 6 — audit-driven fix batch)
 - Key insight: Dual reviewer dispatch catches unique findings each — second reviewer found billing gap, transaction need, and plan filter miss that first missed. Worth the cost for pre-launch audits.
 - Key risk: Agents that change function APIs (e.g., createFindings → completeScanWithFindings) without updating tests cause downstream failures. Fix agent prompts should explicitly include "update relevant tests."
+
+## Retro: 2026-03-10 (session 3)
+- Tasks completed: 4/4 (100%) — .43 billing, .44 ORPHAN_ASSET, .45 test coverage, .42 DRY extraction
+- Agents dispatched: 4 (3 implementer, 1 tester) — serial, no worktree
+- New learnings: 14 across 2 members (implementer: 10, tester: 4), 3 pruned/merged
+- Fix rate: 0% — clean sprint, no fix commits
+- Test growth: 107 → 246 (+130%)
+- Key insight: Single-task dispatch with detailed context produces high-confidence results (all 4 agents: high). Serial dispatch without worktrees works for 4 tasks but adds ~10min latency vs. parallel.
+- Key risk: Tester agent didn't commit its 5 new test files — orchestrator had to commit manually. Agent prompts need explicit "commit your changes" instruction for file-creation tasks.
