@@ -1,5 +1,16 @@
 # Retrospective History
 
+## Retro: 2026-03-11 (session 7 — P3 polish sprint)
+- Tasks completed: 8/8 (100%) — 1 bug fix, 4 tasks, 3 features
+- Agents dispatched: 8 implementer + 1 Explore (serial, mixed worktree/direct)
+- New learnings: 6 implementer entries added, 7 archived (55→48 lines)
+- Test growth: 439 → 473 (+34 tests, net of 6 removed dead-export tests)
+- Commits on main: 3 (fix, refactor, feat). 5 tasks left uncommitted changes from worktree agents.
+- Fix rate: 0% — zero rework across all agents, all returned CONFIRMED
+- Key insight: Worktree-isolated agents complete work correctly but their changes don't auto-land on main. Orchestrator must track and commit uncommitted diffs before session close.
+- Key pattern: Fan-out coordinator/worker reuse — the same poll-check-shop worker serves both daily (Professional) and weekly (Standard) cron coordinators. Plan filtering belongs in coordinators, not workers.
+- Notable: /review caught 2 warnings (Date serialization in Inngest step.run, misleading cron comment) and 1 test gap (scheduledScan assertions) — all added to backlog as f49, snq, e3v.
+
 ## Retro: 2026-03-10 (session 6 — P2 monetization + engagement)
 - Tasks completed: 9 beads closed (3 monetization, 3 engagement features, 3 review fixes)
 - Agents dispatched: 8 (7 implementer, 1 tester) — serial, no worktree

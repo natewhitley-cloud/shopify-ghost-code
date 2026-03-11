@@ -1,21 +1,27 @@
-# Sprint Checkpoint: P2 Engagement + Review Fixes
+# Sprint Checkpoint: P3 Polish Sprint
 
-## Completed Phases
-- [x] Phase 0: Session Health Gate (Moderate)
-- [x] Phase 1: Load Context
-- [x] Phase 2: Plan Assignments (approved)
-- [ ] Phase 3: Dispatch
-- [ ] Phase 4: Process Results
-- [ ] Phase 5: Sprint Report
+**Phase**: 3 (Dispatch — task 6 of 8)
+**Date**: 2026-03-11
 
-## Tasks (dispatch order)
-1. qvd + 9cc — Fix pricing doc ($59 text + label alignment) → implementer
-2. 87m — DRY: extract shared FindingRow component → implementer
-3. 2oz — Theme Health Score with color bands → implementer
-4. 3nf — Monthly re-scan nudge notification → implementer
-5. rol — App install nudge to re-scan → implementer
+## Completed
+1. .74 — Polaris link fix ✓
+2. l4l — Scan status filter bug ✓ (437 tests)
+3. .68 — Dead exports removed ✓ (437 tests → some removed)
+4. .70 — Lazy-load findings for free plan ✓
+5. .73 — 12 app signatures added (54 total) ✓
 
-## Post-Sprint
-- [ ] Run tests + fix failures
-- [ ] /retro
-- [ ] /handoff
+## Beads in Sprint
+- l4l: countScansForShopSince status filter (bug)
+- .73: Add missing app signatures to pattern DB
+- .74: Replace raw <a> with Polaris link
+- .69: Optimize sequential cron for scale
+- .70: Lazy-load findings for free plan
+- .71: Add findings export functionality
+- .72: Add scheduled scan for Standard plan
+- .68: Remove dead exports
+
+## Context Loaded
+- [x] team.yaml read
+- [x] All 5 member learnings read
+- [x] Epic state loaded
+- [x] Backlog loaded (8 beads)

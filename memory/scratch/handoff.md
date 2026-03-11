@@ -1,84 +1,111 @@
-# Session 6 Handoff: P2 Monetization + Engagement Sprint
+# Session 7 Handoff: P3 Polish Sprint
 
-**Date**: 2026-03-10
+**Date**: 2026-03-11
 **Project**: ~/shopify-ghost-code
 **Epic**: shopify-ghost-code-6gh (Ghost Code MVP)
-**Last commit**: `70bc5ee` (retro)
+**Last commit**: `97319b6` (feat: app signatures) — but 5 tasks' changes uncommitted
 
 ---
 
 ## What Got Done
 
-Two back-to-back sprints: monetization (3 beads) + engagement/review fixes (6 beads). 13 commits, 439 tests (up from 397).
+Full P3 sprint: 8/8 beads closed. 473 tests (up from 439). Zero rework.
 
-### Sprint 1: Monetization
-- **Pro price $59→$49** (6jo): shopify.server.ts + app.settings.tsx
-- **First scan free** (ek4): hasCompletedScans() bypass in plan-gating, dashboard messaging
-- **Free-tier finding preview** (acw): getHighestSeverityFinding(), scan detail shows count + categories + 1 full finding + upgrade banner
+### Quick Wins (3)
+- **.74**: Replaced 2 raw `<a>` tags with Polaris `<s-link>` in scan detail
+- **l4l**: Fixed countScansForShopSince to filter COMPLETED + IN_PROGRESS only (FAILED scans no longer consume free-tier quota)
+- **.68**: Removed 7 dead exports across 6 files (IS_BILLING_TEST, PlanName, PlanFeatures, updateShopPlan, canUseMultipleThemes, Theme, fetchThemes)
 
-### Sprint 2: Engagement + Review Fixes
-- **Pricing doc fixes** (qvd + 9cc): Stale $59 text, category label mismatch
-- **DRY FindingRow** (87m): Extracted shared components in scan detail
-- **Theme Health Score** (2oz): health-score.ts pure function, dashboard hero card + delta, scan detail inline
-- **Monthly rescan nudge** (3nf): Standard plan banner when >30 days since last scan
-- **Theme change nudge** (rol): lastThemePublishAt on Shop, themes/publish records it, dashboard banner
+### Optimizations (2)
+- **.70**: Scan detail loader skips findings JOIN for free-tier shops (getScanById now accepts `{ includeFindings }`)
+- **.69**: Fan-out refactor of poll-theme-changes: coordinator + poll-check-shop worker with concurrency limit 5
 
-### Test Coverage Added
-- 8 tests: hasCompletedScans + getHighestSeverityFinding
-- 30 tests: computeHealthScore (20), getDistinctFileCount (5), updateThemePublishTimestamp (5)
-- 1 test mock fix: themes/publish webhook missing new export
+### Features (2)
+- **.71**: CSV/JSON findings export at `/app/scans/:id/export?format=csv|json` with download button on scan detail
+- **.72**: Weekly scheduled scan for Standard plan (Sunday 6 AM UTC) reusing poll-check-shop worker; `scheduledScan` feature flag added to PlanFeatures
 
-### Cumulative Project State
-- **73/88 beads closed** (83%)
-- **439 tests** across 21 test files
-- **61 commits** on main
+### Data (1)
+- **.73**: 12 new app signatures added (54 total): Swym, FOMO, Hextom, Weglot, Currency Converter, AccessiBe, Kiwi Sizing, Loop Returns, Narvar, Vitals, Appikon, Ageify
+
+### Review Findings (filed as beads)
+- **f49** (P2): Date comparison in poll-check-shop.ts relies on implicit ISO string coercion after Inngest step.run() serialization — wrap in new Date()
+- **snq** (P3): weekly-scan.ts JSDoc claims cron is "offset" from daily but both fire at 06:00 UTC
+- **e3v** (P3): billing.test.ts missing scheduledScan assertions
+
+### Retro
+- Implementer learnings pruned 55→48 (7 archived)
+- 2 new workflow learnings in MEMORY.md (worktree commit gap, Explore agent cost)
 
 ---
 
 ## Key Decisions
 
-1. **First scan free as gating-layer concept**: Lives in plan-gating.server.ts (hasCompletedScans), not in billing PlanFeatures. It's a one-time bypass, not a plan feature.
-2. **Health score computed at display time**: No schema change needed. getDistinctFileCount() + severity counts → pure function. Cheap query, always fresh.
-3. **Theme change nudge via themes/publish**: Shopify doesn't webhook other app installs. themes/publish is the closest proxy. Required adding lastThemePublishAt to Shop schema.
-4. **Upgrade banner suppressed at 1 finding**: "0 more findings" was confusing — when only 1 finding exists, the preview IS the full picture.
+1. **Scan quota filter: COMPLETED + IN_PROGRESS** (l4l): Excludes FAILED (no value delivered) and PENDING (not yet started). IN_PROGRESS prevents concurrent scan spam. User approved Option C.
+2. **Fan-out over sequential loop** (.69): Coordinator sends batch events, worker processes per-shop with concurrency: 5. Trades single-function simplicity for scalability + independent retries.
+3. **Worker reuse for weekly scan** (.72): Standard weekly and Professional daily coordinators both fan out to the same poll-check-shop worker. Plan filtering stays in coordinators.
+4. **Export as resource route** (.71): No UI component — just a loader returning Response with Content-Disposition: attachment. Gated on canViewFindingDetails (Standard+).
 
 ---
 
-## Pending Migration
+## Uncommitted Changes
 
-**CRITICAL**: `prisma/schema.prisma` has `lastThemePublishAt DateTime?` on Shop but migration was NOT applied.
+**CRITICAL**: 5 of 8 sprint tasks left changes uncommitted. These are staged in the working tree but NOT committed to main:
 
-```bash
-npx prisma migrate dev --name add-shop-theme-publish-timestamp
-```
+| Area | Files | From Task |
+|------|-------|-----------|
+| Scan status filter | scan.server.ts, scan.server.test.ts | l4l |
+| Lazy-load findings | scan.server.ts (getScanById), app.scans.$scanId.tsx | .70 |
+| Cron fan-out | poll-theme-changes.ts, poll-check-shop.ts (new), events.ts, api.inngest.ts, tests | .69 |
+| Findings export | app.scans.$scanId.export.tsx (new), tests (new), app.scans.$scanId.tsx (button) | .71 |
+| Weekly scan | weekly-scan.ts (new), tests (new), billing.server.ts, pricing doc | .72 |
 
-The Prisma client was regenerated with dummy DATABASE_URL so types compile, but the column doesn't exist in any database yet. The app will error on `lastThemePublishAt` reads until migration runs.
+**Also uncommitted**: retro outputs (learnings, archive, retro-history, MEMORY.md), sprint checkpoint.
+
+All 473 tests pass. Safe to commit as a batch or per-feature.
+
+---
+
+## Cumulative Project State
+
+- **92 beads**: 81 closed, 10 open (ready), 1 blocked (k82)
+- **473 tests** across 24 test files
+- **~64 commits** on main (3 this session + uncommitted)
+- **App signatures**: 54 known apps
 
 ---
 
 ## What's Next
 
-### P1 — Deploy Blockers (2)
-| Bead | Title | Notes |
-|------|-------|-------|
-| .66 | Update shopify.app.toml with Railway production URL | Needs Railway project first |
-| .67 | Add Sentry error reporting | Deferred by user |
+### Immediate (next session start)
+1. **Commit uncommitted sprint changes** — batch or per-feature commits for the 5 tasks above
 
-### P2 — Pre-Launch (3)
+### P1 — Deploy Blockers (3)
 | Bead | Title | Notes |
 |------|-------|-------|
+| .66 | Update shopify.app.toml with Railway production URL | Needs Railway project setup |
+| .67 | Add Sentry error reporting | Previously deferred by user |
+| k82 | Apply Prisma migration (lastThemePublishAt) | Blocked on .66 |
+
+### P2 — Review Fixes + Pre-Launch (4)
+| Bead | Title | Notes |
+|------|-------|-------|
+| f49 | Fix Date comparison in poll-check-shop.ts | Wrap in new Date() for Inngest serialization safety |
 | rb3 | Active upsell: notify on skipped auto-rescan | Marked post-launch |
 | .39 | Create app review submission package | Manual: screenshots, listing copy |
 | .40 | Run performance + compatibility audit | Needs running app |
 
-### P3 — Polish (8)
-l4l (scan count status filter), sg5 (auto-scan on uninstall), .73 (app signatures), .74 (Polaris link), .69 (cron optimization), .70 (lazy-load findings), .71 (export), .72 (scheduled scan), .68 (dead exports)
+### P3 — Polish (3)
+| Bead | Title | Notes |
+|------|-------|-------|
+| e3v | Add scheduledScan assertions to billing.test.ts | Trivial |
+| snq | Fix misleading offset comment in weekly-scan.ts | Trivial |
+| sg5 | Pro: auto-scan on app uninstall | Feature work |
 
 ---
 
 ## Open Questions
 
-- **countScansForShopSince status filter** (l4l, P3): Counts all statuses toward monthly free quota. FAILED scans consume a free user's scan. Intentional anti-abuse or bug? Decision: does a failed scan = "value delivered"? If no, add `status: COMPLETED` filter.
+None carried forward. The scan quota decision (l4l) was resolved this session.
 
 ---
 
@@ -86,8 +113,8 @@ l4l (scan count status filter), sg5 (auto-scan on uninstall), .73 (app signature
 
 | Member | Lines | Status | Notes |
 |--------|-------|--------|-------|
-| implementer | 49 | active | Pruned 56→49 this session. 5 new entries. |
-| tester | 44 | active | 2 new entries. Approaching 50-line threshold. |
-| scaffolder | 30 | steady | No changes this session |
-| reviewer | 27 | steady | No changes this session |
+| implementer | 48 | active | 6 new, 7 archived this session |
+| tester | 43 | steady | Approaching cap; prune if dispatched next |
+| scaffolder | 30 | steady | No changes |
+| reviewer | 27 | steady | No changes |
 | debugger | 24 | cold | Never dispatched |
