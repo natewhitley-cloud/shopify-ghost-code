@@ -1,11 +1,9 @@
 import { useEffect } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
-  isRouteErrorResponse,
   redirect,
   useFetcher,
   useLoaderData,
-  useRouteError,
 } from "react-router";
 
 import { authenticate } from "../shopify.server";
@@ -14,20 +12,7 @@ import { getScansForShop, createScan } from "../models/scan.server";
 import { getFindingSummary } from "../models/finding.server";
 import { canStartScan } from "../lib/plan-gating.server";
 import { inngest } from "../../inngest/client";
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function formatDate(date: Date | string | null | undefined): string {
-  if (!date) return "—";
-  const d = typeof date === "string" ? new Date(date) : date;
-  return d.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
-}
+import { formatDate } from "../lib/format";
 
 /**
  * Fetch the shop's MAIN (published) theme and return its GID and name.
@@ -248,28 +233,4 @@ export default function Dashboard() {
 // Error Boundary
 // ---------------------------------------------------------------------------
 
-export function ErrorBoundary() {
-  const error = useRouteError();
-
-  if (isRouteErrorResponse(error)) {
-    return (
-      <s-page heading={`Error ${error.status}`}>
-        <s-card>
-          <s-banner tone="critical">
-            <s-paragraph>{error.statusText || "Something went wrong"}</s-paragraph>
-          </s-banner>
-        </s-card>
-      </s-page>
-    );
-  }
-
-  return (
-    <s-page heading="Error">
-      <s-card>
-        <s-banner tone="critical">
-          <s-paragraph>An unexpected error occurred. Please try again.</s-paragraph>
-        </s-banner>
-      </s-card>
-    </s-page>
-  );
-}
+export { AppErrorBoundary as ErrorBoundary } from "../components/AppErrorBoundary";

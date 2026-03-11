@@ -1,10 +1,8 @@
 import { useEffect } from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import {
-  isRouteErrorResponse,
   useLoaderData,
   useRevalidator,
-  useRouteError,
 } from "react-router";
 
 import { authenticate } from "../shopify.server";
@@ -14,56 +12,12 @@ import { getFindingSummary } from "../models/finding.server";
 import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
 import { diffScans } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
-
-// ---------------------------------------------------------------------------
-// Types
-// ---------------------------------------------------------------------------
-
-type ScanStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
+import { formatDate, statusTone, statusLabel } from "../lib/format";
+import type { ScanStatus } from "../lib/format";
 
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function formatDate(date: Date | string | null | undefined): string {
-  if (!date) return "—";
-  const d = typeof date === "string" ? new Date(date) : date;
-  return d.toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function statusTone(
-  status: ScanStatus,
-): "info" | "caution" | "success" | "critical" {
-  switch (status) {
-    case "PENDING":
-      return "info";
-    case "IN_PROGRESS":
-      return "caution";
-    case "COMPLETED":
-      return "success";
-    case "FAILED":
-      return "critical";
-  }
-}
-
-function statusLabel(status: ScanStatus): string {
-  switch (status) {
-    case "PENDING":
-      return "Pending";
-    case "IN_PROGRESS":
-      return "In Progress";
-    case "COMPLETED":
-      return "Completed";
-    case "FAILED":
-      return "Failed";
-  }
-}
 
 function severityTone(
   severity: string,
@@ -180,9 +134,9 @@ export default function ScanDetail() {
           <s-badge tone={statusTone(status)}>
             {statusLabel(status)}
           </s-badge>
-          <s-text>Started: {formatDate(scan.startedAt ?? scan.createdAt)}</s-text>
+          <s-text>Started: {formatDate(scan.startedAt ?? scan.createdAt, true)}</s-text>
           {scan.completedAt && (
-            <s-text>Completed: {formatDate(scan.completedAt)}</s-text>
+            <s-text>Completed: {formatDate(scan.completedAt, true)}</s-text>
           )}
         </s-stack>
       </s-card>
@@ -295,28 +249,4 @@ export default function ScanDetail() {
 // Error Boundary
 // ---------------------------------------------------------------------------
 
-export function ErrorBoundary() {
-  const error = useRouteError();
-
-  if (isRouteErrorResponse(error)) {
-    return (
-      <s-page heading={`Error ${error.status}`}>
-        <s-card>
-          <s-banner tone="critical">
-            <s-paragraph>{error.statusText || "Something went wrong"}</s-paragraph>
-          </s-banner>
-        </s-card>
-      </s-page>
-    );
-  }
-
-  return (
-    <s-page heading="Error">
-      <s-card>
-        <s-banner tone="critical">
-          <s-paragraph>An unexpected error occurred. Please try again.</s-paragraph>
-        </s-banner>
-      </s-card>
-    </s-page>
-  );
-}
+export { AppErrorBoundary as ErrorBoundary } from "../components/AppErrorBoundary";
