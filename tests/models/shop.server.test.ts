@@ -34,7 +34,7 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { updateShopPlanByDomain } from "../../app/models/shop.server";
+import { updateShopPlanByDomain, updateThemePublishTimestamp } from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -124,5 +124,103 @@ describe("updateShopPlanByDomain", () => {
       expect.objectContaining({ data: { plan: "Professional" } }),
     );
     expect(result?.plan).toBe("Professional");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// updateThemePublishTimestamp
+// ---------------------------------------------------------------------------
+
+describe("updateThemePublishTimestamp", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns null when the shop domain is not found in DB", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+
+    const result = await updateThemePublishTimestamp("unknown.myshopify.com");
+
+    expect(result).toBeNull();
+    expect(mockDb.shop.update).not.toHaveBeenCalled();
+  });
+
+  it("calls db.shop.update with lastThemePublishAt set to a Date when shop exists", async () => {
+    const existingShop = {
+      id: "shop-123",
+      domain: "test-shop.myshopify.com",
+      accessToken: "token-abc",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.shop.update.mockResolvedValue({
+      id: "shop-123",
+      domain: "test-shop.myshopify.com",
+    });
+
+    await updateThemePublishTimestamp("test-shop.myshopify.com");
+
+    expect(mockDb.shop.update).toHaveBeenCalledOnce();
+    const callArg = mockDb.shop.update.mock.calls[0][0];
+    expect(callArg.where).toEqual({ domain: "test-shop.myshopify.com" });
+    expect(callArg.data.lastThemePublishAt).toBeInstanceOf(Date);
+  });
+
+  it("returns the updated shop object with id and domain when shop is found", async () => {
+    const existingShop = {
+      id: "shop-456",
+      domain: "another-shop.myshopify.com",
+      accessToken: "token-xyz",
+      plan: "Standard",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.shop.update.mockResolvedValue({
+      id: "shop-456",
+      domain: "another-shop.myshopify.com",
+    });
+
+    const result = await updateThemePublishTimestamp("another-shop.myshopify.com");
+
+    expect(result).toEqual({
+      id: "shop-456",
+      domain: "another-shop.myshopify.com",
+    });
+  });
+
+  it("selects only id and domain in the update call", async () => {
+    const existingShop = {
+      id: "shop-789",
+      domain: "select-test.myshopify.com",
+      accessToken: "token-select",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.shop.update.mockResolvedValue({
+      id: "shop-789",
+      domain: "select-test.myshopify.com",
+    });
+
+    await updateThemePublishTimestamp("select-test.myshopify.com");
+
+    expect(mockDb.shop.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: { id: true, domain: true },
+      }),
+    );
+  });
+
+  it("propagates a database error from update", async () => {
+    const existingShop = {
+      id: "shop-err",
+      domain: "error-shop.myshopify.com",
+      accessToken: "token-err",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.shop.update.mockRejectedValueOnce(new Error("DB write failed"));
+
+    await expect(updateThemePublishTimestamp("error-shop.myshopify.com")).rejects.toThrow(
+      "DB write failed",
+    );
   });
 });

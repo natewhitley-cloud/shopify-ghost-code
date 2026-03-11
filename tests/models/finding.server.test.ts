@@ -62,6 +62,7 @@ import {
   getFindingSummary,
   completeScanWithFindings,
   getHighestSeverityFinding,
+  getDistinctFileCount,
   type CreateFindingInput,
 } from "../../app/models/finding.server";
 
@@ -503,5 +504,66 @@ describe("getHighestSeverityFinding", () => {
     mockDb.finding.findFirst.mockRejectedValueOnce(new Error("Connection lost"));
 
     await expect(getHighestSeverityFinding(SCAN_ID)).rejects.toThrow("Connection lost");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getDistinctFileCount
+// ---------------------------------------------------------------------------
+
+describe("getDistinctFileCount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the count of distinct filenames for a scan", async () => {
+    mockDb.finding.findMany.mockResolvedValue([
+      { filename: "layout/theme.liquid" },
+      { filename: "snippets/app-badge.liquid" },
+      { filename: "assets/app.css" },
+    ]);
+
+    const result = await getDistinctFileCount(SCAN_ID);
+
+    expect(result).toBe(3);
+  });
+
+  it("returns 0 when no findings exist for the scan", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    const result = await getDistinctFileCount(SCAN_ID);
+
+    expect(result).toBe(0);
+  });
+
+  it("passes scanId, distinct on filename, and filename select to findMany", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getDistinctFileCount(SCAN_ID);
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID },
+      select: { filename: true },
+      distinct: ["filename"],
+    });
+  });
+
+  it("counts each unique filename once even when findings share the same file", async () => {
+    // The DB deduplication is handled by Prisma's distinct — the mock returns
+    // already-deduped rows (simulating what Prisma would return).
+    mockDb.finding.findMany.mockResolvedValue([
+      { filename: "layout/theme.liquid" },
+      { filename: "snippets/app-badge.liquid" },
+    ]);
+
+    const result = await getDistinctFileCount(SCAN_ID);
+
+    expect(result).toBe(2);
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.findMany.mockRejectedValueOnce(new Error("Distinct query failed"));
+
+    await expect(getDistinctFileCount(SCAN_ID)).rejects.toThrow("Distinct query failed");
   });
 });
