@@ -134,6 +134,23 @@ export async function getHighestSeverityFinding(scanId: string) {
 }
 
 /**
+ * Return the count of distinct filenames in a scan's findings.
+ * Used to normalize the Health Score deduction so large themes are not
+ * penalized more than small ones simply because they have more files.
+ *
+ * Returns 0 when the scan has no findings (e.g. a clean theme).
+ * The caller (health score computation) handles the 0-file edge case.
+ */
+export async function getDistinctFileCount(scanId: string): Promise<number> {
+  const result = await db.finding.findMany({
+    where: { scanId },
+    select: { filename: true },
+    distinct: ["filename"],
+  });
+  return result.length;
+}
+
+/**
  * Atomically persist findings and mark a scan COMPLETED in a single transaction.
  *
  * Why a transaction is required:

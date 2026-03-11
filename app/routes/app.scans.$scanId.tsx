@@ -6,12 +6,18 @@ import { useLoaderData, useRevalidator } from "react-router";
 import { authenticate } from "../shopify.server";
 import { getShopByDomain } from "../models/shop.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
-import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.server";
+import {
+  getFindingSummary,
+  getHighestSeverityFinding,
+  getDistinctFileCount,
+} from "../models/finding.server";
 import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
 import { diffScans } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
+import { computeHealthScore } from "../lib/health-score";
+import type { HealthScoreResult } from "../lib/health-score";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -120,6 +126,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const findingSummary = await getFindingSummary(scanId);
   const canViewDetails = canViewFindingDetails(shop.plan);
 
+  // Compute health score for completed scans. Runs in parallel with other queries.
+  let healthScore: HealthScoreResult | null = null;
+  if (scan.status === "COMPLETED") {
+    const fileCount = await getDistinctFileCount(scanId);
+    healthScore = computeHealthScore(findingSummary.bySeverity, fileCount);
+  }
+
   // For free-tier shops, omit the full findings array from the response
   // to avoid leaking detail data to the client. Paid users get the full array;
   // free users get null here (they receive previewFinding instead).
@@ -154,6 +167,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     findingSummary,
     canViewDetails,
     scanDiff,
+    healthScore,
   };
 };
 
@@ -170,7 +184,7 @@ declare const shopify: {
 };
 
 export default function ScanDetail() {
-  const { scan, findings, previewFinding, findingSummary, canViewDetails, scanDiff } =
+  const { scan, findings, previewFinding, findingSummary, canViewDetails, scanDiff, healthScore } =
     useLoaderData<typeof loader>();
 
   const revalidator = useRevalidator();
@@ -268,10 +282,20 @@ export default function ScanDetail() {
 
       {/* Scan status header */}
       <s-card>
-        <s-stack direction="inline" gap="base">
-          <s-badge tone={statusTone(status)}>{statusLabel(status)}</s-badge>
-          <s-text>Started: {formatDate(scan.startedAt ?? scan.createdAt, true)}</s-text>
-          {scan.completedAt && <s-text>Completed: {formatDate(scan.completedAt, true)}</s-text>}
+        <s-stack direction="block" gap="base">
+          <s-stack direction="inline" gap="base">
+            <s-badge tone={statusTone(status)}>{statusLabel(status)}</s-badge>
+            <s-text>Started: {formatDate(scan.startedAt ?? scan.createdAt, true)}</s-text>
+            {scan.completedAt && <s-text>Completed: {formatDate(scan.completedAt, true)}</s-text>}
+          </s-stack>
+          {/* Health score — only shown for completed scans */}
+          {isCompleted && healthScore && (
+            <s-stack direction="inline" gap="base">
+              <s-text>Theme Health Score:</s-text>
+              <s-text variant="headingLg">{healthScore.score}</s-text>
+              <s-badge tone={healthScore.tone}>{healthScore.label}</s-badge>
+            </s-stack>
+          )}
         </s-stack>
       </s-card>
 

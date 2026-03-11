@@ -9,12 +9,14 @@ import {
   countScansForShopSince,
   hasCompletedScans,
 } from "../models/scan.server";
-import { getFindingSummary } from "../models/finding.server";
+import { getFindingSummary, getDistinctFileCount } from "../models/finding.server";
 import { canStartScan } from "../lib/plan-gating.server";
 import { getPlanFeatures, PLANS } from "../lib/billing.server";
 import { fetchMainTheme } from "../services/theme-fetcher.server";
 import { inngest } from "../../inngest/client";
 import { formatDate } from "../lib/format";
+import { computeHealthScore } from "../lib/health-score";
+import type { HealthScoreResult } from "../lib/health-score";
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -35,16 +37,38 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       mainTheme: null,
       scanUsage: null,
       isFirstScan: true,
+      healthScore: null,
+      previousHealthScore: null,
     };
   }
 
   // Fetch the main theme so the UI can show which theme will be scanned.
   const mainTheme = await fetchMainTheme(admin);
 
-  // getScansForShop returns newest-first; take the first result.
-  const [latestScan = null] = await getScansForShop(shop.id, { limit: 1 });
+  // Fetch the two most recent scans: [latest, previous?].
+  // getScansForShop applies take: limit + 1 internally, so limit: 2 fetches 3
+  // to detect hasNextPage. We only need 2 real rows, so slice to be safe.
+  const recentScans = await getScansForShop(shop.id, { limit: 2 });
+  const [latestScan = null, previousScan = null] = recentScans;
 
   const findingSummary = latestScan ? await getFindingSummary(latestScan.id) : null;
+
+  // Compute health score for the latest COMPLETED scan.
+  let healthScore: HealthScoreResult | null = null;
+  if (latestScan && latestScan.status === "COMPLETED" && findingSummary) {
+    const fileCount = await getDistinctFileCount(latestScan.id);
+    healthScore = computeHealthScore(findingSummary.bySeverity, fileCount);
+  }
+
+  // Compute health score for the previous COMPLETED scan (for delta display).
+  let previousHealthScore: HealthScoreResult | null = null;
+  if (previousScan && previousScan.status === "COMPLETED") {
+    const [prevSummary, prevFileCount] = await Promise.all([
+      getFindingSummary(previousScan.id),
+      getDistinctFileCount(previousScan.id),
+    ]);
+    previousHealthScore = computeHealthScore(prevSummary.bySeverity, prevFileCount);
+  }
 
   // Compute scan usage for free-plan shops so the UI can show X of Y scans used.
   // Paid plans have unlimited scans; return null so the UI omits the indicator.
@@ -64,7 +88,16 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  return { shop, latestScan, findingSummary, mainTheme, scanUsage, isFirstScan };
+  return {
+    shop,
+    latestScan,
+    findingSummary,
+    mainTheme,
+    scanUsage,
+    isFirstScan,
+    healthScore,
+    previousHealthScore,
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -116,12 +149,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 // ---------------------------------------------------------------------------
+// Component helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * Format a score delta as a signed string, e.g. "+17" or "-5".
+ * Returns null when the delta is zero (no change to display).
+ */
+function formatDelta(current: number, previous: number): string | null {
+  const delta = current - previous;
+  if (delta === 0) return null;
+  return delta > 0 ? `+${delta}` : String(delta);
+}
+
+// ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
 export default function Dashboard() {
-  const { shop, latestScan, findingSummary, mainTheme, scanUsage, isFirstScan } =
-    useLoaderData<typeof loader>();
+  const {
+    shop,
+    latestScan,
+    findingSummary,
+    mainTheme,
+    scanUsage,
+    isFirstScan,
+    healthScore,
+    previousHealthScore,
+  } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
   const isSubmitting = fetcher.state === "submitting" || fetcher.state === "loading";
@@ -146,6 +201,12 @@ export default function Dashboard() {
 
   // Show onboarding experience when the shop is set up but has never been scanned.
   const showOnboarding = !!shop && !latestScan;
+
+  // Score delta: only meaningful when both latest and previous are completed.
+  const scoreDelta =
+    healthScore && previousHealthScore
+      ? formatDelta(healthScore.score, previousHealthScore.score)
+      : null;
 
   return (
     <s-page heading="Ghost Code Scanner">
@@ -190,6 +251,32 @@ export default function Dashboard() {
         </s-card>
       ) : (
         <>
+          {/* Theme Health Score — hero metric card */}
+          <s-card>
+            <s-stack direction="block" gap="base">
+              <s-heading>Theme Health Score</s-heading>
+              {scanInProgress ? (
+                <s-stack direction="inline" gap="base">
+                  <s-text variant="headingXl">—</s-text>
+                  <s-text>Scan in progress. Score will update when complete.</s-text>
+                </s-stack>
+              ) : healthScore ? (
+                <s-stack direction="inline" gap="base">
+                  <s-text variant="headingXl">{healthScore.score}</s-text>
+                  <s-badge tone={healthScore.tone}>{healthScore.label}</s-badge>
+                  {previousHealthScore && (
+                    <s-text>
+                      {previousHealthScore.score} → {healthScore.score}
+                      {scoreDelta ? ` (${scoreDelta})` : " (no change)"}
+                    </s-text>
+                  )}
+                </s-stack>
+              ) : (
+                <s-text>Run your first scan to see your theme health score.</s-text>
+              )}
+            </s-stack>
+          </s-card>
+
           {/* Last scan summary card */}
           <s-card>
             <s-stack direction="block" gap="base">
