@@ -20,7 +20,6 @@
 ## Task-Relevant
 - Inngest functions in `inngest/functions/` use step functions for multi-step async work.
 - Inngest v3 requires `new Inngest({ schemas: new EventSchemas().fromRecord<Events>() })` — the `Inngest<Events>` generic from v2 is rejected. (added: 2026-03-10, dispatch: .41)
-- InngestMiddleware afterExecution is BlankHook (zero args). Capture timing via closure in onFunctionRun scope, not hook params. (added: 2026-03-10, dispatch: .41)
 - Cron Inngest functions use `{ cron: '0 6 * * *' }` trigger (not event name). Per-shop batch ops: for-loop with `step.run('check-shop-${safeId}')` per iteration. (added: 2026-03-10, dispatch: .41)
 - countScansForShopSince lives in scan.server.ts (model layer) — plan-gating imports it. Keep queries in models, not lib. (added: 2026-03-10, dispatch: .8)
 - vi.mock() factory functions are hoisted before variable initializations. Mock objects inside vi.mock() factories MUST use vi.hoisted(() => ...). (added: 2026-03-10, dispatch: .43)
@@ -28,15 +27,10 @@
 - APP_SUBSCRIPTIONS_UPDATE webhook payload: `{ app_subscription: { name, status, admin_graphql_api_id } }`. Status ACTIVE = live; all others = revert to free tier. (added: 2026-03-10, dispatch: .43)
 - isTest is NOT part of the billing plan config in shopifyApp(). Pass it at call sites via `billing.require({ isTest: process.env.NODE_ENV !== "production" })`. (added: 2026-03-10, dispatch: .22)
 - BillingInterval values: OneTime, Every30Days, Annual, Usage. trialDays is top-level on the plan, not on lineItems. (added: 2026-03-10, dispatch: .22)
-- App signature regex patterns must match BOTH assignment form (hjid=) and object-key form (hjid:). (added: 2026-03-10, dispatch: .13)
-- LINK_STYLESHEET_RE needs two capture-group branches for both attribute orderings (rel-first and href-first). (added: 2026-03-10, dispatch: .12)
 - When integrating two services with different input shapes, document the adapter inline at the mapping site. (added: 2026-03-10, dispatch: .44)
-- Structure cross-file detection as explicit numbered passes (Pass 1: per-file, Pass 2: cross-file). (added: 2026-03-10, dispatch: .44)
 - When new cross-file analysis affects existing integration tests, update fixtures to be self-consistent rather than loosening assertions. (added: 2026-03-10, dispatch: .44)
 - Inngest functions must be imported+registered in api.inngest.ts. Admin clients NOT serializable across steps — create via dynamic import inside each step. (added: 2026-03-10, dispatch: .10/.14)
 - app/uninstalled fires immediately; shop/redact fires 48h later. Both paths clean up via deleteShopData(). (added: 2026-03-10, dispatch: .21/.29)
-- Fingerprint-based diffing: use multiset (Map of counts) not Set. getPreviousScanForTheme filters to COMPLETED status. (added: 2026-03-10, dispatch: .27)
-- Snippets can render other snippets in Liquid. File reference analyzer must include snippet files in the reference scan pass. (added: 2026-03-10, dispatch: .26)
 - fetchMainTheme is the canonical shared function in app/services/theme-fetcher.server.ts. Returns { id, name, updatedAt }. Do not inline the MAIN theme GraphQL query — import from here. Dynamic import required inside Inngest step.run() callbacks. (added: 2026-03-10, dispatch: .46)
 - When a dashboard shows badge counts for an in-progress scan, render "—" instead of "0" to avoid misleading merchants. (added: 2026-03-10, dispatch: .48)
 - Use useRef for poll counters and mount-time state captures (no re-renders). useState only for values that drive UI updates (e.g. pollingTimedOut for banner). (added: 2026-03-10, dispatch: .47)

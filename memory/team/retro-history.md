@@ -1,5 +1,15 @@
 # Retrospective History
 
+## Retro: 2026-03-10 (session 6 — P2 monetization + engagement)
+- Tasks completed: 9 beads closed (3 monetization, 3 engagement features, 3 review fixes)
+- Agents dispatched: 8 (7 implementer, 1 tester) — serial, no worktree
+- New learnings: 8 across 2 members (implementer: 5, tester: 2), 7 archived from implementer (pruning from 56→49 lines)
+- Test growth: 397 → 439 (+42 tests: 30 new + 12 from sprint agents)
+- Fix rate: 8% (1 test mock fix out of 12 commits — themes/publish mock missing new export)
+- Key insight: /review after implementation sprints catches test gaps and UX edge cases reliably. The "0 more findings" banner bug would have shipped without it.
+- Key pattern: New module exports break existing test mocks. When an agent adds exports to a module, orchestrator should grep for test mocks of that module and fix them proactively.
+- Notable: Prisma migration for lastThemePublishAt created but not runnable without DATABASE_URL. Prisma generate with dummy URL works for type checking.
+
 ## Retro: 2026-03-10 (session 5 — P2 audit sprint)
 - Tasks completed: 15/15 (100%) — all P2 audit findings (.50–.65) + 9 P1/P3 beads created for tracking
 - Agents dispatched: 5 (4 implementer, 1 tester) — serial, no worktree
