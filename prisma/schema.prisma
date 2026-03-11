@@ -9,10 +9,14 @@ generator client {
 // enough when changing adapters.
 // See https://www.prisma.io/docs/orm/reference/prisma-schema-reference#string for more information
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
+// ---------------------------------------------------------------------------
+// Shopify session storage — keep exactly as-is; used by
+// @shopify/shopify-app-session-storage-prisma
+// ---------------------------------------------------------------------------
 model Session {
   id            String    @id
   shop          String
@@ -31,4 +35,75 @@ model Session {
   emailVerified Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+}
+
+// ---------------------------------------------------------------------------
+// Ghost Code domain models
+// ---------------------------------------------------------------------------
+
+model Shop {
+  id          String   @id @default(cuid())
+  domain      String   @unique
+  accessToken String
+  installedAt DateTime @default(now())
+  plan        String   @default("free")
+  scans       Scan[]
+}
+
+model Scan {
+  id           String     @id @default(cuid())
+  shopId       String
+  shop         Shop       @relation(fields: [shopId], references: [id])
+  themeId      String
+  themeName    String
+  status       ScanStatus @default(PENDING)
+  startedAt    DateTime?
+  completedAt  DateTime?
+  createdAt    DateTime   @default(now())
+  findingCount Int        @default(0)
+  findings     Finding[]
+
+  @@index([shopId, createdAt])
+}
+
+model Finding {
+  id          String      @id @default(cuid())
+  scanId      String
+  scan        Scan        @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  filename    String
+  lineNumber  Int
+  codeSnippet String
+  findingType FindingType
+  severity    Severity
+  appName     String?
+  description String
+  createdAt   DateTime    @default(now())
+
+  @@index([scanId])
+  @@index([severity])
+}
+
+// ---------------------------------------------------------------------------
+// Enums
+// ---------------------------------------------------------------------------
+
+enum ScanStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+enum FindingType {
+  GHOST_SCRIPT
+  GHOST_STYLE
+  GHOST_SNIPPET
+  GHOST_SECTION
+  ORPHAN_ASSET
+}
+
+enum Severity {
+  HIGH
+  MEDIUM
+  LOW
 }
