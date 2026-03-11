@@ -1,11 +1,13 @@
 # Learnings: tester
 
 ## Codebase Patterns
-- Testing framework: Vitest (not Jest). Config in `vitest.config.ts`.
+- Testing framework: Vitest v4 (not Jest). Config in `vitest.config.ts`. Runs cleanly alongside Vite v6.
 - Tests mirror app/ structure in `tests/` directory (e.g., `tests/services/scan-engine.test.ts`).
-- Mock Shopify admin with `vi.mock('../app/shopify.server')` — mock `authenticate.admin()`.
-- Mock Prisma client for database tests — avoid hitting real DB in unit tests.
-- Mock Inngest step tools with `createStepTools` from `inngest/test` (verify SDK version).
+- Mock Shopify admin with `createMockAdmin()` from `tests/mocks/shopify.ts`.
+- Mock Prisma client with `createMockPrismaClient()` from `tests/mocks/prisma.ts`.
+- Mock Inngest step tools with `createMockInngestStep()` from `tests/mocks/inngest.ts`.
+- Use `npx vitest run <path>` for single-file runs without the npm script alias. (added: 2026-03-10, dispatch: .33)
+- billing.server.ts getPlanFeatures() is a pure function — ideal smoke test, no mocks needed. (added: 2026-03-10, dispatch: .33)
 
 ## Gotchas
 - Shopify's embedded admin has Cloudflare captcha — automated E2E (Playwright/Cypress) is impractical. Focus on unit + integration tests.

@@ -10,7 +10,7 @@
 ## Gotchas
 - App review rejections: 60%+ are from broken GDPR webhooks. Always verify these are wired and responding.
 - Session token validation: every route loader/action must call `authenticate.admin(request)`.
-- CSP headers must allow `https://cdn.shopify.com` for Polaris Web Components.
+- CSP headers are handled automatically by the SDK's addDocumentResponseHeaders — no manual CSP config needed. (updated: 2026-03-10, dispatch: .25)
 - Billing API: verify `isTest` flag is environment-driven, not hardcoded.
 
 ## Preferences
@@ -22,3 +22,6 @@
 ## Cross-Agent Notes
 - Send blocking issues to implementer or debugger with specific file:line references.
 - After review, update this learnings file with any new patterns discovered.
+- app.tsx layout loader calls authenticate.admin() but child routes must ALSO call it independently in both loader AND action. Layout loader does not protect child actions. (added: 2026-03-10, dispatch: .25)
+- CSP is handled by SDK's addDocumentResponseHeaders in entry.server.tsx — sets frame-ancestors for Shopify admin domains. No manual CSP config needed for standard embedded apps. (added: 2026-03-10, dispatch: .25)
+- Route files can be flat (app.scans.tsx) or directories (_index/route.tsx). Both valid in React Router v7. (added: 2026-03-10, dispatch: .25)
