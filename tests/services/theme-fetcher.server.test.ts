@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
 import {
   fetchMainTheme,
   fetchThemeFiles,
@@ -88,11 +89,13 @@ describe("checkRateLimit", () => {
 
   it("computes sleep duration proportional to points needed and restore rate", async () => {
     const sleepDurations: number[] = [];
-    vi.spyOn(global, "setTimeout").mockImplementation((fn: any, ms?: number) => {
-      sleepDurations.push(ms ?? 0);
-      fn();
-      return 0 as any;
-    });
+    vi.spyOn(global, "setTimeout").mockImplementation(
+      (fn: (...args: unknown[]) => void, ms?: number) => {
+        sleepDurations.push(ms ?? 0);
+        fn();
+        return 0 as unknown as ReturnType<typeof setTimeout>;
+      },
+    );
 
     await checkRateLimit({
       cost: { throttleStatus: { currentlyAvailable: 0, restoreRate: 50 } },

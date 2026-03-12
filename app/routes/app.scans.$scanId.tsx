@@ -1,24 +1,24 @@
+import type { Finding } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData, useRevalidator } from "react-router";
 
-import type { Finding } from "@prisma/client";
-import { authenticate } from "../shopify.server";
-import { getShopByDomain } from "../models/shop.server";
-import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
+import { formatDate, statusTone, statusLabel } from "../lib/format";
+import type { ScanStatus } from "../lib/format";
+import { computeHealthScore } from "../lib/health-score";
+import type { HealthScoreResult } from "../lib/health-score";
+import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
 import {
   getFindingSummary,
   getHighestSeverityFinding,
   getDistinctFileCount,
 } from "../models/finding.server";
-import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
-import { diffScans } from "../services/scan-differ.server";
+import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
+import { getShopByDomain } from "../models/shop.server";
 import type { ScanDiff } from "../services/scan-differ.server";
-import { formatDate, statusTone, statusLabel } from "../lib/format";
-import type { ScanStatus } from "../lib/format";
-import { computeHealthScore } from "../lib/health-score";
-import type { HealthScoreResult } from "../lib/health-score";
+import { diffScans } from "../services/scan-differ.server";
+import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
 // Helpers

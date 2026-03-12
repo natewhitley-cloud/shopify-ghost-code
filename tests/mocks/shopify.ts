@@ -18,9 +18,7 @@ export function createMockAdmin() {
   };
 }
 
-export function createMockWebhook(
-  overrides?: Partial<{ shop: string; topic: string }>
-) {
+export function createMockWebhook(overrides?: Partial<{ shop: string; topic: string }>) {
   return {
     shop: overrides?.shop ?? "test-shop.myshopify.com",
     topic: overrides?.topic ?? "APP_UNINSTALLED",
@@ -31,7 +29,10 @@ export function createMockWebhook(
 }
 
 // Mock GraphQL response factory — includes the extensions.cost block Shopify always returns.
-export function createMockGraphQLResponse(data: any, errors?: any[]) {
+export function createMockGraphQLResponse(
+  data: unknown,
+  errors?: Array<{ message: string; extensions?: Record<string, unknown> }>,
+) {
   return {
     json: vi.fn().mockResolvedValue({
       data,

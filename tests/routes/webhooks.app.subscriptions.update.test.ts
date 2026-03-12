@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ActionFunctionArgs } from "react-router";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)
@@ -29,9 +30,9 @@ vi.mock("../../app/models/shop.server", () => ({
 // Imports (after mocks are established)
 // ---------------------------------------------------------------------------
 
+import { updateShopPlanByDomain } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.app.subscriptions.update";
 import { authenticate } from "../../app/shopify.server";
-import { updateShopPlanByDomain } from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -45,11 +46,7 @@ function makeRequest() {
   });
 }
 
-function mockWebhookAuth(
-  shop: string,
-  planName: string | undefined,
-  status: string | undefined,
-) {
+function mockWebhookAuth(shop: string, planName: string | undefined, status: string | undefined) {
   const payload =
     planName !== undefined || status !== undefined
       ? { app_subscription: { name: planName, status } }
@@ -81,19 +78,24 @@ describe("webhooks.app.subscriptions.update", () => {
     it("sets plan to Standard when status=ACTIVE and name=Standard", async () => {
       mockWebhookAuth("test-shop.myshopify.com", "Standard", "ACTIVE");
 
-      const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const response = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
-      expect(updateShopPlanByDomain).toHaveBeenCalledWith(
-        "test-shop.myshopify.com",
-        "Standard",
-      );
+      expect(updateShopPlanByDomain).toHaveBeenCalledWith("test-shop.myshopify.com", "Standard");
     });
 
     it("sets plan to Professional when status=ACTIVE and name=Professional", async () => {
       mockWebhookAuth("test-shop.myshopify.com", "Professional", "ACTIVE");
 
-      const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const response = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(updateShopPlanByDomain).toHaveBeenCalledWith(
@@ -105,13 +107,14 @@ describe("webhooks.app.subscriptions.update", () => {
     it("falls back to free for ACTIVE status with unknown plan name", async () => {
       mockWebhookAuth("test-shop.myshopify.com", "UnknownPlan", "ACTIVE");
 
-      const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const response = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
-      expect(updateShopPlanByDomain).toHaveBeenCalledWith(
-        "test-shop.myshopify.com",
-        "free",
-      );
+      expect(updateShopPlanByDomain).toHaveBeenCalledWith("test-shop.myshopify.com", "free");
     });
   });
 
@@ -122,13 +125,14 @@ describe("webhooks.app.subscriptions.update", () => {
       it(`sets plan to free when status=${status}`, async () => {
         mockWebhookAuth("test-shop.myshopify.com", "Standard", status);
 
-        const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+        const response = await action({
+          request: makeRequest(),
+          params: {},
+          context: {},
+        } as unknown as ActionFunctionArgs);
 
         expect(response.status).toBe(200);
-        expect(updateShopPlanByDomain).toHaveBeenCalledWith(
-          "test-shop.myshopify.com",
-          "free",
-        );
+        expect(updateShopPlanByDomain).toHaveBeenCalledWith("test-shop.myshopify.com", "free");
       });
     }
   });
@@ -141,7 +145,11 @@ describe("webhooks.app.subscriptions.update", () => {
         payload: {}, // no app_subscription key
       });
 
-      const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const response = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(updateShopPlanByDomain).not.toHaveBeenCalled();
@@ -151,14 +159,15 @@ describe("webhooks.app.subscriptions.update", () => {
       mockWebhookAuth("unknown-shop.myshopify.com", "Standard", "ACTIVE");
       (updateShopPlanByDomain as ReturnType<typeof vi.fn>).mockResolvedValue(null);
 
-      const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const response = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       // Model was still called — we attempted the update.
-      expect(updateShopPlanByDomain).toHaveBeenCalledWith(
-        "unknown-shop.myshopify.com",
-        "Standard",
-      );
+      expect(updateShopPlanByDomain).toHaveBeenCalledWith("unknown-shop.myshopify.com", "Standard");
     });
   });
 });

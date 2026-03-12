@@ -1,10 +1,9 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 
-import { authenticate } from "../shopify.server";
-import { PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
-import { getShopByDomain } from "../models/shop.server";
 import { getPlanFeatures, PLANS } from "../lib/billing.server";
+import { getShopByDomain } from "../models/shop.server";
+import { authenticate , PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
 // Action — initiate a billing subscription request

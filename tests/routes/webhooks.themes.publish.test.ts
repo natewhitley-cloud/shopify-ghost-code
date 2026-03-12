@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ActionFunctionArgs } from "react-router";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)
@@ -23,7 +24,9 @@ vi.mock("../../app/shopify.server", () => ({
 
 vi.mock("../../app/models/shop.server", () => ({
   getShopByDomain: vi.fn(),
-  updateThemePublishTimestamp: vi.fn().mockResolvedValue({ id: "shop-1", domain: "test.myshopify.com" }),
+  updateThemePublishTimestamp: vi
+    .fn()
+    .mockResolvedValue({ id: "shop-1", domain: "test.myshopify.com" }),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -44,11 +47,11 @@ vi.mock("../../inngest/client", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
+import { canUseAutoRescan } from "../../app/lib/plan-gating.server";
+import { createScan } from "../../app/models/scan.server";
+import { getShopByDomain } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.themes.publish";
 import { authenticate } from "../../app/shopify.server";
-import { getShopByDomain } from "../../app/models/shop.server";
-import { createScan } from "../../app/models/scan.server";
-import { canUseAutoRescan } from "../../app/lib/plan-gating.server";
 import { inngest } from "../../inngest/client";
 
 // ---------------------------------------------------------------------------
@@ -142,13 +145,21 @@ beforeEach(() => {
 
 describe("webhooks.themes.publish — Professional plan (happy path)", () => {
   it("returns 200", async () => {
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
   });
 
   it("creates a scan with a GID-formatted themeId, NOT a bare numeric string", async () => {
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockCreateScan).toHaveBeenCalledOnce();
     const [shopId, themeId, themeName] = mockCreateScan.mock.calls[0];
@@ -163,7 +174,11 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
   });
 
   it("sends a scan/requested event with the GID-formatted themeId", async () => {
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockInngestSend).toHaveBeenCalledOnce();
     const event = mockInngestSend.mock.calls[0][0];
@@ -177,13 +192,21 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
   });
 
   it("looks up the shop by the domain from the webhook", async () => {
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockGetShopByDomain).toHaveBeenCalledWith(SHOP_DOMAIN);
   });
 
   it("checks canUseAutoRescan with the shop's plan", async () => {
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockCanUseAutoRescan).toHaveBeenCalledWith(MOCK_SHOP_PROFESSIONAL.plan);
   });
@@ -193,7 +216,11 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
     setupWebhookAuth({ payload: { id: 987654321, name: "Debut" } });
     mockCreateScan.mockResolvedValue({ ...MOCK_SCAN, themeId: "gid://shopify/Theme/987654321" });
 
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     const [, themeId] = mockCreateScan.mock.calls[0];
     expect(themeId).toBe("gid://shopify/Theme/987654321");
@@ -209,7 +236,11 @@ describe("webhooks.themes.publish — non-Professional plans", () => {
     mockGetShopByDomain.mockResolvedValue(MOCK_SHOP_FREE);
     mockCanUseAutoRescan.mockReturnValue(false);
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
     expect(mockCreateScan).not.toHaveBeenCalled();
@@ -220,7 +251,11 @@ describe("webhooks.themes.publish — non-Professional plans", () => {
     mockGetShopByDomain.mockResolvedValue(MOCK_SHOP_STANDARD);
     mockCanUseAutoRescan.mockReturnValue(false);
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
     expect(mockCreateScan).not.toHaveBeenCalled();
@@ -236,7 +271,11 @@ describe("webhooks.themes.publish — unknown shop", () => {
   it("returns 200 silently when shop is not found in DB", async () => {
     mockGetShopByDomain.mockResolvedValue(null);
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
   });
@@ -244,7 +283,11 @@ describe("webhooks.themes.publish — unknown shop", () => {
   it("does not create a scan when shop is not in DB", async () => {
     mockGetShopByDomain.mockResolvedValue(null);
 
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockCreateScan).not.toHaveBeenCalled();
   });
@@ -252,7 +295,11 @@ describe("webhooks.themes.publish — unknown shop", () => {
   it("does not send an Inngest event when shop is not in DB", async () => {
     mockGetShopByDomain.mockResolvedValue(null);
 
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockInngestSend).not.toHaveBeenCalled();
   });
@@ -260,7 +307,11 @@ describe("webhooks.themes.publish — unknown shop", () => {
   it("does not call canUseAutoRescan when shop is not in DB", async () => {
     mockGetShopByDomain.mockResolvedValue(null);
 
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockCanUseAutoRescan).not.toHaveBeenCalled();
   });
@@ -272,7 +323,11 @@ describe("webhooks.themes.publish — unknown shop", () => {
 
 describe("webhooks.themes.publish — GID format regression (S-01)", () => {
   it("themeId in createScan call is never a plain numeric string", async () => {
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     const [, themeId] = mockCreateScan.mock.calls[0];
     // Must not be just the stringified number
@@ -281,7 +336,11 @@ describe("webhooks.themes.publish — GID format regression (S-01)", () => {
   });
 
   it("themeId in inngest.send event data is never a plain numeric string", async () => {
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     const event = mockInngestSend.mock.calls[0][0];
     expect(event.data.themeId).not.toBe("123456789");
@@ -289,7 +348,11 @@ describe("webhooks.themes.publish — GID format regression (S-01)", () => {
   });
 
   it("themeId in createScan and inngest.send are identical (referential consistency)", async () => {
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     const [, scanThemeId] = mockCreateScan.mock.calls[0];
     const event = mockInngestSend.mock.calls[0][0];

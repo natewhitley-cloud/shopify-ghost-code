@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { getPlanFeatures, PLANS } from "../../app/lib/billing.server";
 
 describe("getPlanFeatures", () => {

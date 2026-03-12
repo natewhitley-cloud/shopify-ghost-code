@@ -9,11 +9,11 @@
  */
 
 import { describe, it, expect } from "vitest";
+
 import {
   fingerprintFinding,
   diffScans,
   type DiffableFinding,
-  type ScanDiff,
 } from "../../app/services/scan-differ.server";
 
 // ---------------------------------------------------------------------------

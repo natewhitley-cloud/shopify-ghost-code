@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+
 import {
   analyzeFileReferences,
   type OrphanFile,

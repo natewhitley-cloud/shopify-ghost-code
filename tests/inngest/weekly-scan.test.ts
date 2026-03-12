@@ -15,6 +15,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+
 import { createMockInngestStep } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
@@ -36,7 +37,7 @@ vi.mock("../../inngest/client", () => ({
     // We return a real-looking function object with a `.fn` accessor so that
     // weeklyScan.fn({ event, step, logger }) still works in tests.
     createFunction: vi.fn(
-      (_config: unknown, _trigger: unknown, handler: (...args: any[]) => any) => ({
+      (_config: unknown, _trigger: unknown, handler: (...args: unknown[]) => unknown) => ({
         fn: handler,
       }),
     ),
@@ -47,9 +48,9 @@ vi.mock("../../inngest/client", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { weeklyScan } from "../../inngest/functions/weekly-scan";
 import db from "../../app/db.server";
 import { inngest } from "../../inngest/client";
+import { weeklyScan } from "../../inngest/functions/weekly-scan";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -58,7 +59,7 @@ import { inngest } from "../../inngest/client";
 const mockDb = db as {
   shop: { findMany: ReturnType<typeof vi.fn> };
 };
-const mockInngestSend = (inngest as any).send as ReturnType<typeof vi.fn>;
+const mockInngestSend = (inngest as unknown as { send: ReturnType<typeof vi.fn> }).send;
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -86,7 +87,9 @@ const mockLogger = {
 async function runWeeklyScan(stepOverrides?: Partial<ReturnType<typeof createMockInngestStep>>) {
   const step = { ...createMockInngestStep(), ...stepOverrides };
   const event = { name: "scheduled/weekly", data: {}, ts: Date.now(), id: "test-event-weekly" };
-  return weeklyScan.fn({ event, step, logger: mockLogger } as any);
+  return weeklyScan.fn({ event, step, logger: mockLogger } as unknown as Parameters<
+    typeof weeklyScan.fn
+  >[0]);
 }
 
 // ---------------------------------------------------------------------------
@@ -179,10 +182,12 @@ describe("weeklyScan coordinator — multiple Standard shops", () => {
     expect(Array.isArray(payload)).toBe(true);
     expect(payload).toHaveLength(3);
 
-    const names = payload.map((e: any) => e.name);
+    const names = payload.map((e: Record<string, unknown>) => e.name);
     expect(names).toEqual(["poll/check-shop", "poll/check-shop", "poll/check-shop"]);
 
-    const shopIds = payload.map((e: any) => e.data.shopId);
+    const shopIds = payload.map(
+      (e: Record<string, unknown>) => (e.data as Record<string, unknown>).shopId,
+    );
     expect(shopIds).toContain(SHOP_STD_1.id);
     expect(shopIds).toContain(SHOP_STD_2.id);
     expect(shopIds).toContain(SHOP_STD_3.id);
@@ -193,7 +198,10 @@ describe("weeklyScan coordinator — multiple Standard shops", () => {
 
     const payload = mockInngestSend.mock.calls[0][0];
     const domainMap = Object.fromEntries(
-      payload.map((e: any) => [e.data.shopId, e.data.shopDomain]),
+      payload.map((e: Record<string, unknown>) => {
+        const data = e.data as Record<string, unknown>;
+        return [data.shopId, data.shopDomain];
+      }),
     );
 
     expect(domainMap[SHOP_STD_1.id]).toBe(SHOP_STD_1.domain);

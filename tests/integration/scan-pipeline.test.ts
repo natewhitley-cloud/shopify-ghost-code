@@ -19,9 +19,11 @@
  * each layer's module under test.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockInngestStep, createMockInngestEvent } from "../mocks/inngest";
+
 import { FindingType, Severity } from "@prisma/client";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ActionFunctionArgs } from "react-router";
 
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted by Vitest before any imports
@@ -71,7 +73,11 @@ vi.mock("../../app/services/scan-engine.server", () => ({
 vi.mock("../../inngest/client", () => ({
   inngest: {
     send: vi.fn(),
-    createFunction: vi.fn((_config: any, _trigger: any, handler: any) => ({ fn: handler })),
+    createFunction: vi.fn(
+      (_config: unknown, _trigger: unknown, handler: (...args: unknown[]) => unknown) => ({
+        fn: handler,
+      }),
+    ),
   },
 }));
 
@@ -88,16 +94,16 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { action } from "../../app/routes/app._index";
-import { authenticate, unauthenticated } from "../../app/shopify.server";
-import { getShopByDomain } from "../../app/models/shop.server";
-import { createScan, updateScanStatus } from "../../app/models/scan.server";
-import { completeScanWithFindings } from "../../app/models/finding.server";
-import { canStartScan } from "../../app/lib/plan-gating.server";
-import { fetchMainTheme, fetchThemeFiles } from "../../app/services/theme-fetcher.server";
-import { scanThemeFiles } from "../../app/services/scan-engine.server";
-import { inngest } from "../../inngest/client";
 import db from "../../app/db.server";
+import { canStartScan } from "../../app/lib/plan-gating.server";
+import { completeScanWithFindings } from "../../app/models/finding.server";
+import { createScan, updateScanStatus } from "../../app/models/scan.server";
+import { getShopByDomain } from "../../app/models/shop.server";
+import { action } from "../../app/routes/app._index";
+import { scanThemeFiles } from "../../app/services/scan-engine.server";
+import { fetchMainTheme, fetchThemeFiles } from "../../app/services/theme-fetcher.server";
+import { authenticate, unauthenticated } from "../../app/shopify.server";
+import { inngest } from "../../inngest/client";
 import { scanTheme } from "../../inngest/functions/scan-theme";
 
 // ---------------------------------------------------------------------------
@@ -115,7 +121,8 @@ const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
-const mockDbShopFindUnique = (db as any).shop.findUnique as ReturnType<typeof vi.fn>;
+const mockDbShopFindUnique = (db as unknown as { shop: { findUnique: ReturnType<typeof vi.fn> } })
+  .shop.findUnique;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -211,7 +218,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
   describe("happy path — full scan creation flow", () => {
     it("redirects to the new scan detail page", async () => {
       // React Router's redirect() returns a 302 Response (does not throw).
-      const result = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const result = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(result instanceof Response).toBe(true);
       expect((result as Response).status).toBe(302);
@@ -219,37 +230,61 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     });
 
     it("authenticates the request with the admin session", async () => {
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockAuthenticateAdmin).toHaveBeenCalledOnce();
     });
 
     it("looks up the shop by domain from the session", async () => {
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockGetShopByDomain).toHaveBeenCalledWith(SHOP_DOMAIN);
     });
 
     it("checks plan gating before creating a scan", async () => {
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockCanStartScan).toHaveBeenCalledWith(SHOP_ID, MOCK_SHOP.plan);
     });
 
     it("fetches the main theme to get the themeId and name", async () => {
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockFetchMainTheme).toHaveBeenCalledWith(MOCK_ADMIN);
     });
 
     it("creates the scan with themeId from fetchMainTheme", async () => {
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockCreateScan).toHaveBeenCalledWith(SHOP_ID, THEME_ID, THEME_NAME);
     });
 
     it("sends an Inngest event with the scan details", async () => {
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockInngestSend).toHaveBeenCalledWith({
         name: "scan/requested",
@@ -272,7 +307,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
         callOrder.push("inngestSend");
       });
 
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(callOrder).toEqual(["createScan", "inngestSend"]);
     });
@@ -282,7 +321,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     it("returns an error payload when shop is not in DB", async () => {
       mockGetShopByDomain.mockResolvedValue(null);
 
-      const result = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const result = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(result).toEqual({ error: "Shop not found. Please reinstall the app." });
     });
@@ -290,7 +333,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     it("does not create a scan when shop is missing", async () => {
       mockGetShopByDomain.mockResolvedValue(null);
 
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockCreateScan).not.toHaveBeenCalled();
       expect(mockInngestSend).not.toHaveBeenCalled();
@@ -305,7 +352,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
           "Free plan limit: 1 scan per month. Upgrade to Standard or Professional for unlimited scans.",
       });
 
-      const result = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const result = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(result).toMatchObject({ error: expect.stringContaining("limit") });
     });
@@ -313,7 +364,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     it("does not create a scan when plan gate blocks", async () => {
       mockCanStartScan.mockResolvedValue({ allowed: false, reason: "Limit reached" });
 
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockCreateScan).not.toHaveBeenCalled();
     });
@@ -323,7 +378,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     it("returns an error payload when fetchMainTheme returns null", async () => {
       mockFetchMainTheme.mockResolvedValue(null);
 
-      const result = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const result = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(result).toEqual({
         error: "No published theme found. Please publish a theme before scanning.",
@@ -333,7 +392,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     it("does not create a scan when no theme is found", async () => {
       mockFetchMainTheme.mockResolvedValue(null);
 
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockCreateScan).not.toHaveBeenCalled();
       expect(mockInngestSend).not.toHaveBeenCalled();
@@ -344,7 +407,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     it("returns an error payload when createScan throws (TOCTOU guard)", async () => {
       mockCreateScan.mockRejectedValue(new Error("A scan is already in progress for this shop."));
 
-      const result = await action({ request: makeRequest(), params: {}, context: {} } as any);
+      const result = await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(result).toEqual({ error: "A scan is already in progress for this shop." });
     });
@@ -352,7 +419,11 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     it("does not send Inngest event when scan creation fails", async () => {
       mockCreateScan.mockRejectedValue(new Error("A scan is already in progress for this shop."));
 
-      await action({ request: makeRequest(), params: {}, context: {} } as any);
+      await action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs);
 
       expect(mockInngestSend).not.toHaveBeenCalled();
     });
@@ -519,7 +590,11 @@ describe("Scan pipeline — handoff: action event matches Inngest function expec
     }
 
     // redirect() returns a Response (does not throw)
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     const sentEvent = mockInngestSend.mock.calls[0][0];
 

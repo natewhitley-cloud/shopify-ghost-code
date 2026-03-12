@@ -1,6 +1,4 @@
-import type { LoaderFunctionArgs } from "react-router";
-
-export const loader = async (_args: LoaderFunctionArgs) => {
+export const loader = async () => {
   return Response.json({
     status: "ok",
     timestamp: new Date().toISOString(),

@@ -16,9 +16,10 @@
  *   - The step mock from createMockInngestStep() executes each callback immediately.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createMockInngestStep } from "../mocks/inngest";
+
 import { ScanStatus } from "@prisma/client";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)
@@ -53,7 +54,7 @@ vi.mock("../../inngest/client", () => ({
     // We return a real-looking function object with a `.fn` accessor so that
     // pollCheckShop.fn({ event, step, logger }) still works in tests.
     createFunction: vi.fn(
-      (_config: unknown, _trigger: unknown, handler: (...args: any[]) => any) => ({
+      (_config: unknown, _trigger: unknown, handler: (...args: unknown[]) => unknown) => ({
         fn: handler,
       }),
     ),
@@ -64,12 +65,12 @@ vi.mock("../../inngest/client", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
 import db from "../../app/db.server";
-import { unauthenticated } from "../../app/shopify.server";
-import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { createScan } from "../../app/models/scan.server";
+import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
+import { unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
+import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -81,7 +82,7 @@ const mockDb = db as {
 const mockUnauthenticated = unauthenticated as { admin: ReturnType<typeof vi.fn> };
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
-const mockInngestSend = (inngest as any).send as ReturnType<typeof vi.fn>;
+const mockInngestSend = (inngest as unknown as { send: ReturnType<typeof vi.fn> }).send;
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -137,7 +138,7 @@ async function runPollCheckShop(
     ts: Date.now(),
     id: "test-event-check-shop",
   };
-  return pollCheckShop.fn({ event, step, logger: mockLogger } as any);
+  return pollCheckShop.fn({ event, step, logger: mockLogger } as unknown as Parameters<typeof pollCheckShop.fn>[0]);
 }
 
 // ---------------------------------------------------------------------------

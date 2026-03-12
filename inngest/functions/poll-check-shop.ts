@@ -22,9 +22,10 @@
  *      `scan/requested` to trigger the scan pipeline.
  */
 
-import { inngest } from "../client";
 import { ScanStatus } from "@prisma/client";
+
 import { createScan } from "../../app/models/scan.server";
+import { inngest } from "../client";
 
 export const pollCheckShop = inngest.createFunction(
   {

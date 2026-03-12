@@ -22,8 +22,8 @@
  * scale beyond ~100 shops within a single 6 AM window.
  */
 
-import { inngest } from "../client";
 import { PLANS } from "../../app/lib/billing.server";
+import { inngest } from "../client";
 
 export const pollThemeChanges = inngest.createFunction(
   { id: "poll-theme-changes", name: "Daily Theme Change Poll (Coordinator)" },

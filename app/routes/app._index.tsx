@@ -1,22 +1,22 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { redirect, useFetcher, useLoaderData } from "react-router";
 
-import { authenticate } from "../shopify.server";
-import { getShopByDomain } from "../models/shop.server";
+import { inngest } from "../../inngest/client";
+import { getPlanFeatures, PLANS } from "../lib/billing.server";
+import { formatDate } from "../lib/format";
+import { computeHealthScore } from "../lib/health-score";
+import type { HealthScoreResult } from "../lib/health-score";
+import { canStartScan } from "../lib/plan-gating.server";
+import { getFindingSummary, getDistinctFileCount } from "../models/finding.server";
 import {
   getScansForShop,
   createScan,
   countScansForShopSince,
   hasCompletedScans,
 } from "../models/scan.server";
-import { getFindingSummary, getDistinctFileCount } from "../models/finding.server";
-import { canStartScan } from "../lib/plan-gating.server";
-import { getPlanFeatures, PLANS } from "../lib/billing.server";
+import { getShopByDomain } from "../models/shop.server";
 import { fetchMainTheme } from "../services/theme-fetcher.server";
-import { inngest } from "../../inngest/client";
-import { formatDate } from "../lib/format";
-import { computeHealthScore } from "../lib/health-score";
-import type { HealthScoreResult } from "../lib/health-score";
+import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
 // Loader

@@ -1,4 +1,5 @@
 import { EventSchemas, Inngest } from "inngest";
+
 import type { Events } from "./events";
 import { loggingMiddleware } from "./middleware";
 

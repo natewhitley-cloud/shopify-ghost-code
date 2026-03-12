@@ -10,6 +10,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { LoaderFunctionArgs } from "react-router";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
@@ -41,12 +42,12 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { canViewFindingDetails } from "../../app/lib/plan-gating.server";
+import { getFindingsForScan } from "../../app/models/finding.server";
+import { getScanById } from "../../app/models/scan.server";
+import { getShopByDomain } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.scans.$scanId.export";
 import { authenticate } from "../../app/shopify.server";
-import { getShopByDomain } from "../../app/models/shop.server";
-import { getScanById } from "../../app/models/scan.server";
-import { getFindingsForScan } from "../../app/models/finding.server";
-import { canViewFindingDetails } from "../../app/lib/plan-gating.server";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -122,7 +123,7 @@ function callLoader(scanId: string, format?: string) {
     request: makeRequest(scanId, format),
     params: { scanId },
     context: {},
-  } as any);
+  } as unknown as LoaderFunctionArgs);
 }
 
 // ---------------------------------------------------------------------------
@@ -394,7 +395,7 @@ describe("missing scanId param", () => {
       request: new Request("https://test-shop.myshopify.com/app/scans//export"),
       params: {}, // no scanId
       context: {},
-    } as any);
+    } as unknown as LoaderFunctionArgs);
 
     expect(response.status).toBe(400);
   });

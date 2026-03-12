@@ -15,14 +15,15 @@
  */
 
 import { FindingType } from "@prisma/client";
-import type { CreateFindingInput } from "../models/finding.server";
+
 import {
   identifyAppFromUrl,
   identifyAppFromCode,
   identifyAppFromSnippetName,
 } from "./app-lookup.server";
-import { classifySeverity } from "./severity-classifier.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
+import { classifySeverity } from "./severity-classifier.server";
+import type { CreateFindingInput } from "../models/finding.server";
 
 // ---------------------------------------------------------------------------
 // Types

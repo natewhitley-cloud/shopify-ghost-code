@@ -20,6 +20,7 @@
  * touching a real database.
  */
 
+import type { ActionFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -40,11 +41,11 @@ vi.mock("../../app/models/shop.server", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { action as shopRedactAction } from "../../app/routes/webhooks.shop.redact";
+import { deleteShopData } from "../../app/models/shop.server";
 import { action as customersDataRequestAction } from "../../app/routes/webhooks.customers.data-request";
 import { action as customersRedactAction } from "../../app/routes/webhooks.customers.redact";
+import { action as shopRedactAction } from "../../app/routes/webhooks.shop.redact";
 import { authenticate } from "../../app/shopify.server";
-import { deleteShopData } from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -135,7 +136,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
     });
@@ -147,7 +148,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(mockDeleteShopData).toHaveBeenCalledOnce();
       expect(mockDeleteShopData).toHaveBeenCalledWith(SHOP_DOMAIN);
@@ -160,7 +161,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(mockDeleteShopData).toHaveBeenCalledTimes(1);
     });
@@ -175,7 +176,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       // Must return 200 — GDPR requires acknowledgment regardless of DB state
       expect(response.status).toBe(200);
@@ -189,7 +190,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       // The handler delegates the not-found check to the model — it does not
       // short-circuit before calling deleteShopData
@@ -206,7 +207,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       // deleteShopData is the single entry point for the cascade:
       //   sessions → scans (cascade findings) → shop
@@ -224,7 +225,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(mockDeleteShopData).toHaveBeenCalledWith(anotherShop);
       expect(mockDeleteShopData).not.toHaveBeenCalledWith(SHOP_DOMAIN);
@@ -245,7 +246,7 @@ describe("GDPR flow — customers/data_request (no-op acknowledgment)", () => {
         request: makeWebhookRequest("webhooks/customers/data-request"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
     });
@@ -257,7 +258,7 @@ describe("GDPR flow — customers/data_request (no-op acknowledgment)", () => {
         request: makeWebhookRequest("webhooks/customers/data-request"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       // Ghost Code stores no customer data — this must be a pure 200 no-op
       expect(mockDeleteShopData).not.toHaveBeenCalled();
@@ -270,7 +271,7 @@ describe("GDPR flow — customers/data_request (no-op acknowledgment)", () => {
         request: makeWebhookRequest("webhooks/customers/data-request"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(mockAuthenticateWebhook).toHaveBeenCalledOnce();
     });
@@ -284,7 +285,7 @@ describe("GDPR flow — customers/data_request (no-op acknowledgment)", () => {
         request: makeWebhookRequest("webhooks/customers/data-request"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(mockDeleteShopData).not.toHaveBeenCalled();
@@ -305,7 +306,7 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
         request: makeWebhookRequest("webhooks/customers/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
     });
@@ -317,7 +318,7 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
         request: makeWebhookRequest("webhooks/customers/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(mockDeleteShopData).not.toHaveBeenCalled();
     });
@@ -329,7 +330,7 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
         request: makeWebhookRequest("webhooks/customers/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(mockAuthenticateWebhook).toHaveBeenCalledOnce();
     });
@@ -356,7 +357,7 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
         request: makeWebhookRequest("webhooks/customers/redact"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(mockDeleteShopData).not.toHaveBeenCalled();
@@ -381,7 +382,7 @@ describe("GDPR compliance invariants", () => {
       request: makeWebhookRequest("webhooks/shop/redact"),
       params: {},
       context: {},
-    } as any);
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
   });
@@ -393,7 +394,7 @@ describe("GDPR compliance invariants", () => {
       request: makeWebhookRequest("webhooks/customers/data-request"),
       params: {},
       context: {},
-    } as any);
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
   });
@@ -405,7 +406,7 @@ describe("GDPR compliance invariants", () => {
       request: makeWebhookRequest("webhooks/customers/redact"),
       params: {},
       context: {},
-    } as any);
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
   });

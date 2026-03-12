@@ -1,4 +1,5 @@
 import { describe, it, expect } from "vitest";
+
 import { formatDate, statusTone, statusLabel } from "../../app/lib/format";
 import type { ScanStatus } from "../../app/lib/format";
 

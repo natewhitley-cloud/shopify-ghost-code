@@ -10,11 +10,12 @@
  */
 
 import type { LoaderFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
-import { getShopByDomain } from "../models/shop.server";
-import { getScanById } from "../models/scan.server";
-import { getFindingsForScan } from "../models/finding.server";
+
 import { canViewFindingDetails } from "../lib/plan-gating.server";
+import { getFindingsForScan } from "../models/finding.server";
+import { getScanById } from "../models/scan.server";
+import { getShopByDomain } from "../models/shop.server";
+import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
 // CSV helpers

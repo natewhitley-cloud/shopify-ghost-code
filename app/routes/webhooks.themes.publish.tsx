@@ -1,10 +1,11 @@
 import type { ActionFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
-import { getShopByDomain, updateThemePublishTimestamp } from "../models/shop.server";
-import { createScan } from "../models/scan.server";
-import { canUseAutoRescan } from "../lib/plan-gating.server";
+
 import { inngest } from "../../inngest/client";
 import { logger } from "../lib/logger.server";
+import { canUseAutoRescan } from "../lib/plan-gating.server";
+import { createScan } from "../models/scan.server";
+import { getShopByDomain, updateThemePublishTimestamp } from "../models/shop.server";
+import { authenticate } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);

@@ -24,6 +24,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ActionFunctionArgs } from "react-router";
 
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted by Vitest before any imports
@@ -47,10 +48,10 @@ vi.mock("../../app/models/shop.server", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
+import { updateShopPlanByDomain } from "../../app/models/shop.server";
 import { action as settingsAction } from "../../app/routes/app.settings";
 import { action as subscriptionWebhookAction } from "../../app/routes/webhooks.app.subscriptions.update";
 import { authenticate } from "../../app/shopify.server";
-import { updateShopPlanByDomain } from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -66,13 +67,6 @@ const mockUpdateShopPlanByDomain = updateShopPlanByDomain as ReturnType<typeof v
 
 const SHOP_DOMAIN = "test-shop.myshopify.com";
 const SHOP_ID = "shop-abc-123";
-
-const MOCK_SHOP_FREE = {
-  id: SHOP_ID,
-  domain: SHOP_DOMAIN,
-  plan: "free",
-  accessToken: "test-token",
-};
 
 const MOCK_BILLING = {
   request: vi.fn(),
@@ -156,7 +150,7 @@ describe("Billing flow — Part A: settings action (subscribe)", () => {
           request: makeSettingsRequest("subscribe-standard"),
           params: {},
           context: {},
-        } as any);
+        } as unknown as ActionFunctionArgs);
       } catch {
         // redirect expected
       }
@@ -175,7 +169,7 @@ describe("Billing flow — Part A: settings action (subscribe)", () => {
           request: makeSettingsRequest("subscribe-standard"),
           params: {},
           context: {},
-        } as any);
+        } as unknown as ActionFunctionArgs);
       } catch (e) {
         threw = true;
         thrownValue = e;
@@ -194,7 +188,7 @@ describe("Billing flow — Part A: settings action (subscribe)", () => {
           request: makeSettingsRequest("subscribe-professional"),
           params: {},
           context: {},
-        } as any);
+        } as unknown as ActionFunctionArgs);
       } catch {
         // redirect expected
       }
@@ -211,7 +205,7 @@ describe("Billing flow — Part A: settings action (subscribe)", () => {
         request: makeSettingsRequest("invalid-intent"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(MOCK_BILLING.request).not.toHaveBeenCalled();
       expect(result).toEqual({ error: "Unknown intent" });
@@ -224,7 +218,7 @@ describe("Billing flow — Part A: settings action (subscribe)", () => {
         request: makeSettingsRequest("bogus"),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       // Must be a plain object — not a Response — so useActionData gets it
       expect(result).not.toBeInstanceOf(Response);
@@ -246,7 +240,7 @@ describe("Billing flow — Part B: APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)"
         request: makeWebhookRequest(),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "Standard");
@@ -259,7 +253,7 @@ describe("Billing flow — Part B: APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)"
         request: makeWebhookRequest(),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "Professional");
@@ -274,7 +268,7 @@ describe("Billing flow — Part B: APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)"
         request: makeWebhookRequest(),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "free");
@@ -287,7 +281,7 @@ describe("Billing flow — Part B: APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)"
         request: makeWebhookRequest(),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "free");
@@ -300,7 +294,7 @@ describe("Billing flow — Part B: APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)"
         request: makeWebhookRequest(),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "free");
@@ -315,7 +309,7 @@ describe("Billing flow — Part B: APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)"
         request: makeWebhookRequest(),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       // Unknown plan names must not silently grant paid features
@@ -335,7 +329,7 @@ describe("Billing flow — Part B: APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)"
         request: makeWebhookRequest(),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       expect(response.status).toBe(200);
       expect(mockUpdateShopPlanByDomain).not.toHaveBeenCalled();
@@ -349,7 +343,7 @@ describe("Billing flow — Part B: APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)"
         request: makeWebhookRequest(),
         params: {},
         context: {},
-      } as any);
+      } as unknown as ActionFunctionArgs);
 
       // Must return 200 — non-200 causes Shopify to retry indefinitely
       expect(response.status).toBe(200);

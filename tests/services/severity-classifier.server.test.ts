@@ -1,6 +1,7 @@
-import { describe, it, expect } from "vitest";
-import { classifySeverity } from "../../app/services/severity-classifier.server";
 import { FindingType, Severity } from "@prisma/client";
+import { describe, it, expect } from "vitest";
+
+import { classifySeverity } from "../../app/services/severity-classifier.server";
 
 describe("classifySeverity", () => {
   // -------------------------------------------------------------------------
@@ -55,7 +56,7 @@ describe("classifySeverity", () => {
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });
 
-  it("downgrades GHOST_STYLE to LOW when stylesheet has media=\'print\' (single quotes)", () => {
+  it("downgrades GHOST_STYLE to LOW when stylesheet has media='print' (single quotes)", () => {
     const snippet = "<link rel='stylesheet' media='print' href='//cdn.klaviyo.com/print.css'>";
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });

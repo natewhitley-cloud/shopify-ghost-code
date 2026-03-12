@@ -1,10 +1,11 @@
 import type { ActionFunctionArgs } from "react-router";
-import { authenticate, unauthenticated } from "../shopify.server";
-import db from "../db.server";
-import { upsertShop } from "../models/shop.server";
-import { createScan } from "../models/scan.server";
+
 import { inngest } from "../../inngest/client";
+import db from "../db.server";
 import { logger } from "../lib/logger.server";
+import { createScan } from "../models/scan.server";
+import { upsertShop } from "../models/shop.server";
+import { authenticate, unauthenticated } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop } = await authenticate.webhook(request);

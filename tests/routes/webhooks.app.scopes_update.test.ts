@@ -9,6 +9,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { ActionFunctionArgs } from "react-router";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)
@@ -32,9 +33,9 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
+import db from "../../app/db.server";
 import { action } from "../../app/routes/webhooks.app.scopes_update";
 import { authenticate } from "../../app/shopify.server";
-import db from "../../app/db.server";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -100,13 +101,21 @@ beforeEach(() => {
 
 describe("webhooks.app.scopes_update — happy path", () => {
   it("returns 200", async () => {
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
   });
 
   it("calls db.session.update with scope as a comma-joined string", async () => {
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockSessionUpdate).toHaveBeenCalledOnce();
     expect(mockSessionUpdate).toHaveBeenCalledWith({
@@ -118,7 +127,11 @@ describe("webhooks.app.scopes_update — happy path", () => {
   it("joins multiple scopes into a comma-separated string (not JSON or other format)", async () => {
     setupWebhookAuth({ payload: { current: ["read_orders", "write_orders", "read_customers"] } });
 
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     const callArg = mockSessionUpdate.mock.calls[0][0];
     expect(callArg.data.scope).toBe("read_orders,write_orders,read_customers");
@@ -128,7 +141,11 @@ describe("webhooks.app.scopes_update — happy path", () => {
     const customSession = { ...MOCK_SESSION, id: "session-custom-999" };
     setupWebhookAuth({ session: customSession });
 
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     const callArg = mockSessionUpdate.mock.calls[0][0];
     expect(callArg.where.id).toBe("session-custom-999");
@@ -143,7 +160,11 @@ describe("webhooks.app.scopes_update — missing or falsy payload.current", () =
   it("returns 200 when payload.current is undefined", async () => {
     setupWebhookAuth({ payload: {} });
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
     expect(mockSessionUpdate).not.toHaveBeenCalled();
@@ -152,7 +173,11 @@ describe("webhooks.app.scopes_update — missing or falsy payload.current", () =
   it("returns 200 when payload.current is null", async () => {
     setupWebhookAuth({ payload: { current: null } });
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
     expect(mockSessionUpdate).not.toHaveBeenCalled();
@@ -161,7 +186,11 @@ describe("webhooks.app.scopes_update — missing or falsy payload.current", () =
   it("returns 200 when payload.current is a plain string (not an array)", async () => {
     setupWebhookAuth({ payload: { current: "read_products" } });
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
     expect(mockSessionUpdate).not.toHaveBeenCalled();
@@ -170,7 +199,11 @@ describe("webhooks.app.scopes_update — missing or falsy payload.current", () =
   it("returns 200 when payload.current is an empty array", async () => {
     setupWebhookAuth({ payload: { current: [] } });
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
     expect(mockSessionUpdate).not.toHaveBeenCalled();
@@ -179,7 +212,11 @@ describe("webhooks.app.scopes_update — missing or falsy payload.current", () =
   it("returns 200 when payload.current is a number", async () => {
     setupWebhookAuth({ payload: { current: 42 } });
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
     expect(mockSessionUpdate).not.toHaveBeenCalled();
@@ -193,7 +230,11 @@ describe("webhooks.app.scopes_update — missing or falsy payload.current", () =
       session: MOCK_SESSION,
     });
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
     expect(mockSessionUpdate).not.toHaveBeenCalled();
@@ -208,7 +249,11 @@ describe("webhooks.app.scopes_update — no session", () => {
   it("returns 200 when session is null", async () => {
     setupWebhookAuth({ session: null });
 
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(response.status).toBe(200);
   });
@@ -216,7 +261,11 @@ describe("webhooks.app.scopes_update — no session", () => {
   it("does not call db.session.update when session is null", async () => {
     setupWebhookAuth({ session: null });
 
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockSessionUpdate).not.toHaveBeenCalled();
   });
@@ -229,7 +278,11 @@ describe("webhooks.app.scopes_update — no session", () => {
       session: undefined,
     });
 
-    await action({ request: makeRequest(), params: {}, context: {} } as any);
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
 
     expect(mockSessionUpdate).not.toHaveBeenCalled();
   });
@@ -241,31 +294,51 @@ describe("webhooks.app.scopes_update — no session", () => {
 
 describe("webhooks.app.scopes_update — always returns 200 (no retry loops)", () => {
   it("returns 200 on the happy path", async () => {
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
     expect(response.status).toBe(200);
   });
 
   it("returns 200 when payload.current is undefined", async () => {
     setupWebhookAuth({ payload: {} });
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
     expect(response.status).toBe(200);
   });
 
   it("returns 200 when payload.current is null", async () => {
     setupWebhookAuth({ payload: { current: null } });
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
     expect(response.status).toBe(200);
   });
 
   it("returns 200 when payload.current is empty array", async () => {
     setupWebhookAuth({ payload: { current: [] } });
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
     expect(response.status).toBe(200);
   });
 
   it("returns 200 when session is null", async () => {
     setupWebhookAuth({ session: null });
-    const response = await action({ request: makeRequest(), params: {}, context: {} } as any);
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
     expect(response.status).toBe(200);
   });
 });

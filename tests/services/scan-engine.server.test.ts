@@ -1,4 +1,6 @@
+import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
+
 import {
   isScannableFile,
   detectGhostScripts,
@@ -7,7 +9,6 @@ import {
   detectGhostSections,
   scanThemeFiles,
 } from "../../app/services/scan-engine.server";
-import { FindingType, Severity } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
 // Helpers

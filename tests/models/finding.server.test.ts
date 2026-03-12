@@ -12,24 +12,12 @@
  * vi.mock factory.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import { FindingType, ScanStatus, Severity } from "@prisma/client";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks
 // ---------------------------------------------------------------------------
-
-// Inner tx-scoped mock — shared between the $transaction callback and assertions.
-// (Not used directly since completeScanWithFindings uses array-form $transaction.)
-const mockTx = vi.hoisted(() => ({
-  finding: {
-    createMany: vi.fn(),
-    deleteMany: vi.fn(),
-  },
-  scan: {
-    update: vi.fn(),
-  },
-}));
 
 const mockDb = vi.hoisted(() => ({
   finding: {

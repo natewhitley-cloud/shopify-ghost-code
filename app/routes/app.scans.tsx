@@ -1,11 +1,11 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 
-import { authenticate } from "../shopify.server";
-import { getShopByDomain } from "../models/shop.server";
-import { getScansForShop } from "../models/scan.server";
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
+import { getScansForShop } from "../models/scan.server";
+import { getShopByDomain } from "../models/shop.server";
+import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
 // Loader

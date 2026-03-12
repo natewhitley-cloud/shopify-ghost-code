@@ -22,8 +22,8 @@
  *      5 running concurrently.
  */
 
-import { inngest } from "../client";
 import { PLANS } from "../../app/lib/billing.server";
+import { inngest } from "../client";
 
 export const weeklyScan = inngest.createFunction(
   { id: "weekly-scan", name: "Weekly Scheduled Scan (Coordinator)" },

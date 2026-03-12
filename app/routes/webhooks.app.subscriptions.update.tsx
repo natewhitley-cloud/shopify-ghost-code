@@ -1,9 +1,9 @@
 import type { ActionFunctionArgs } from "react-router";
-import { authenticate } from "../shopify.server";
-import { PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
-import { updateShopPlanByDomain } from "../models/shop.server";
+
 import { PLANS } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
+import { updateShopPlanByDomain } from "../models/shop.server";
+import { authenticate , PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
 // Shopify subscription status → internal plan tier mapping

@@ -18,11 +18,11 @@
  * terminal errors (e.g. shop not found).
  */
 
-import { inngest } from "../client";
-import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
-import { scanThemeFiles } from "../../app/services/scan-engine.server";
-import { updateScanStatus } from "../../app/models/scan.server";
 import { completeScanWithFindings } from "../../app/models/finding.server";
+import { updateScanStatus } from "../../app/models/scan.server";
+import { scanThemeFiles } from "../../app/services/scan-engine.server";
+import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
+import { inngest } from "../client";
 
 export const scanTheme = inngest.createFunction(
   { id: "scan-theme", name: "Scan Theme for Ghost Code" },

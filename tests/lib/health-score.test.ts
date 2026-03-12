@@ -17,6 +17,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+
 import { computeHealthScore } from "../../app/lib/health-score";
 
 // ---------------------------------------------------------------------------
@@ -139,7 +140,7 @@ describe("computeHealthScore", () => {
       // Use totalFiles = 100, LOW × 3 = 11 → not integer; use totalFiles = 300, MEDIUM × 7 = 33 → 33/300×100 = 11
       // MEDIUM = 33/7 → not integer; try totalFiles = 700, rawDeduction = 77 → score = 89
       // LOW × 3 = 77 → not integer; HIGH × 15 = 75, LOW × 3 = 2 → 77 / 700 × 100 = 11 → 89 ✓
-      const result = computeHealthScore({ HIGH: 5, MEDIUM: 0, LOW: 4 }, 700);
+      computeHealthScore({ HIGH: 5, MEDIUM: 0, LOW: 4 }, 700);
       // rawDeduction = 5×15 + 4×3 = 75 + 12 = 87, normalizedDeduction = 87/700×100 ≈ 12.43, score = round(87.57) = 88
       // Let's pick simpler inputs: totalFiles = 100, we want score = 89
       // normalizedDeduction = 11 → rawDeduction = 11 → LOW = 11/3 not int
