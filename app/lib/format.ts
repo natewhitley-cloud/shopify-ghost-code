@@ -11,10 +11,7 @@ export type ScanStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
  * @param includeTime - When true, appends hour and minute to the output.
  *                      Defaults to false (date only).
  */
-export function formatDate(
-  date: Date | string | null | undefined,
-  includeTime = false,
-): string {
+export function formatDate(date: Date | string | null | undefined, includeTime = false): string {
   if (!date) return "—";
   const d = typeof date === "string" ? new Date(date) : date;
   const options: Intl.DateTimeFormatOptions = {
@@ -30,9 +27,7 @@ export function formatDate(
  * Map a scan status to the corresponding Polaris badge tone.
  * Valid tones: info, caution, success, critical (subset of s-badge tone values).
  */
-export function statusTone(
-  status: ScanStatus,
-): "info" | "caution" | "success" | "critical" {
+export function statusTone(status: ScanStatus): "info" | "caution" | "success" | "critical" {
   switch (status) {
     case "PENDING":
       return "info";

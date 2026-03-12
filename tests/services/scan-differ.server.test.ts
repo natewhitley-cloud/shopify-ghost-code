@@ -112,9 +112,7 @@ describe("diffScans — first scan (no previous findings)", () => {
   });
 
   it("classifies all previous findings as resolved when current is empty", () => {
-    const previous = [
-      makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='x'>"),
-    ];
+    const previous = [makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='x'>")];
 
     const diff = diffScans([], previous);
 
@@ -149,12 +147,8 @@ describe("diffScans — identical scans (no changes)", () => {
 
 describe("diffScans — completely different findings", () => {
   it("reports all current as new and all previous as resolved", () => {
-    const current = [
-      makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "new-script"),
-    ];
-    const previous = [
-      makeFinding("snippets/old.liquid", "GHOST_SNIPPET", "old-snippet"),
-    ];
+    const current = [makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "new-script")];
+    const previous = [makeFinding("snippets/old.liquid", "GHOST_SNIPPET", "old-snippet")];
 
     const diff = diffScans(current, previous);
 
@@ -172,16 +166,8 @@ describe("diffScans — completely different findings", () => {
 
 describe("diffScans — mixed diff (some new, some resolved, some unchanged)", () => {
   it("correctly categorises each finding in a realistic mixed scenario", () => {
-    const shared = makeFinding(
-      "layout/theme.liquid",
-      "GHOST_SCRIPT",
-      "<script src='shared'>",
-    );
-    const newFinding = makeFinding(
-      "sections/new.liquid",
-      "GHOST_STYLE",
-      "<link href='new'>",
-    );
+    const shared = makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='shared'>");
+    const newFinding = makeFinding("sections/new.liquid", "GHOST_STYLE", "<link href='new'>");
     const resolvedFinding = makeFinding(
       "snippets/removed.liquid",
       "GHOST_SNIPPET",
@@ -207,12 +193,11 @@ describe("diffScans — mixed diff (some new, some resolved, some unchanged)", (
 
 describe("diffScans — output shape", () => {
   it("preserves filename, findingType, severity, appName, description on new findings", () => {
-    const finding = makeFinding(
-      "layout/theme.liquid",
-      "GHOST_SCRIPT",
-      "snippet",
-      { severity: "MEDIUM", appName: "SomeApp", description: "Ghost script" },
-    );
+    const finding = makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "snippet", {
+      severity: "MEDIUM",
+      appName: "SomeApp",
+      description: "Ghost script",
+    });
 
     const diff = diffScans([finding], []);
 
@@ -226,12 +211,11 @@ describe("diffScans — output shape", () => {
   });
 
   it("preserves filename, findingType, severity, appName, description on resolved findings", () => {
-    const finding = makeFinding(
-      "snippets/old.liquid",
-      "GHOST_SNIPPET",
-      "snippet",
-      { severity: "LOW", appName: null, description: "Orphaned snippet" },
-    );
+    const finding = makeFinding("snippets/old.liquid", "GHOST_SNIPPET", "snippet", {
+      severity: "LOW",
+      appName: null,
+      description: "Orphaned snippet",
+    });
 
     const diff = diffScans([], [finding]);
 

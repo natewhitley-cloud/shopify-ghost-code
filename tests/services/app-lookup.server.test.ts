@@ -27,9 +27,9 @@ describe("identifyAppFromUrl", () => {
 
   it("falls back to scriptPatterns when hostname does not match CDN list", () => {
     // The UA pattern matches the script path / inline content
-    expect(
-      identifyAppFromUrl("https://example.com/analytics.js?UA-12345-1"),
-    ).toBe("Google Analytics (UA)");
+    expect(identifyAppFromUrl("https://example.com/analytics.js?UA-12345-1")).toBe(
+      "Google Analytics (UA)",
+    );
   });
 
   it("returns null for completely unknown URLs", () => {
@@ -49,9 +49,9 @@ describe("identifyAppFromUrl", () => {
   });
 
   it("identifies GTM by pattern in URL path", () => {
-    expect(
-      identifyAppFromUrl("https://www.googletagmanager.com/gtm.js?id=GTM-ABC123"),
-    ).toBe("Google Tag Manager");
+    expect(identifyAppFromUrl("https://www.googletagmanager.com/gtm.js?id=GTM-ABC123")).toBe(
+      "Google Tag Manager",
+    );
   });
 });
 
@@ -61,11 +61,15 @@ describe("identifyAppFromUrl", () => {
 
 describe("identifyAppFromCode", () => {
   it("identifies Klaviyo from inline JS identifier", () => {
-    expect(identifyAppFromCode('window._klOnsite = window._klOnsite || [];')).toBe("Klaviyo");
+    expect(identifyAppFromCode("window._klOnsite = window._klOnsite || [];")).toBe("Klaviyo");
   });
 
   it("identifies Hotjar from inline script block", () => {
-    expect(identifyAppFromCode('(function(h,o,t,j,a,r){ h.hj=h.hj||function(){(h.hj.q=h.hj.q||[]).push(arguments)}; h.hjid=1234567 })')).toBe("Hotjar");
+    expect(
+      identifyAppFromCode(
+        "(function(h,o,t,j,a,r){ h.hj=h.hj||function(){(h.hj.q=h.hj.q||[]).push(arguments)}; h.hjid=1234567 })",
+      ),
+    ).toBe("Hotjar");
   });
 
   it("identifies Facebook Pixel from fbq init call", () => {

@@ -45,12 +45,7 @@ export type ThemeFile = { filename: string; content: string };
 export function isScannableFile(filename: string): boolean {
   if (!filename.endsWith(".liquid")) return false;
 
-  const SCANNABLE_PREFIXES = [
-    "templates/",
-    "sections/",
-    "snippets/",
-    "layout/",
-  ];
+  const SCANNABLE_PREFIXES = ["templates/", "sections/", "snippets/", "layout/"];
   return SCANNABLE_PREFIXES.some((prefix) => filename.startsWith(prefix));
 }
 
@@ -70,7 +65,7 @@ function lines(content: string): Array<{ lineNumber: number; text: string }> {
  */
 function buildSnippet(content: string, lineNumber: number): string {
   const allLines = content.split("\n");
-  const start = Math.max(0, lineNumber - 2);         // 0-indexed, one line before
+  const start = Math.max(0, lineNumber - 2); // 0-indexed, one line before
   const end = Math.min(allLines.length, lineNumber + 1); // one line after
   return allLines.slice(start, end).join("\n").slice(0, 300);
 }

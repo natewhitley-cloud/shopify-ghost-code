@@ -106,9 +106,7 @@ function extractReferencedSnippetNames(content: string): Set<string> {
  *
  * @returns Orphan files sorted alphabetically by filename.
  */
-export function analyzeFileReferences(
-  files: Array<{ key: string; value: string }>,
-): OrphanFile[] {
+export function analyzeFileReferences(files: Array<{ key: string; value: string }>): OrphanFile[] {
   // Step 1: Partition into snippet files and all-other Liquid files.
   const snippetFiles: Array<{ key: string; value: string }> = [];
   const nonSnippetLiquidFiles: Array<{ key: string; value: string }> = [];

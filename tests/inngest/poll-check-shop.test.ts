@@ -138,7 +138,9 @@ async function runPollCheckShop(
     ts: Date.now(),
     id: "test-event-check-shop",
   };
-  return pollCheckShop.fn({ event, step, logger: mockLogger } as unknown as Parameters<typeof pollCheckShop.fn>[0]);
+  return pollCheckShop.fn({ event, step, logger: mockLogger } as unknown as Parameters<
+    typeof pollCheckShop.fn
+  >[0]);
 }
 
 // ---------------------------------------------------------------------------

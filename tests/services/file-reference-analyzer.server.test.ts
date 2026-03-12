@@ -155,9 +155,7 @@ describe("analyzeFileReferences — unreferenced snippets (orphans)", () => {
   });
 
   it("includes the snippet base name in the reason message", () => {
-    const files = [
-      file("snippets/old-app-widget.liquid", "<div>old</div>"),
-    ];
+    const files = [file("snippets/old-app-widget.liquid", "<div>old</div>")];
     const orphans = analyzeFileReferences(files);
 
     expect(orphans[0].reason).toContain("old-app-widget");
@@ -220,10 +218,7 @@ describe("analyzeFileReferences — variable-based render calls", () => {
     // is unknown, so the snippet remains an orphan from the analyzer's view.
     const files = [
       file("snippets/dynamic.liquid", "<div>dynamic</div>"),
-      file(
-        "sections/header.liquid",
-        "{% assign widget = 'dynamic' %}{% render widget %}",
-      ),
+      file("sections/header.liquid", "{% assign widget = 'dynamic' %}{% render widget %}"),
     ];
     const orphans = analyzeFileReferences(files);
 

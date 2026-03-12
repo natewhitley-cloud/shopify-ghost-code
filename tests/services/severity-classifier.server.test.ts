@@ -9,19 +9,30 @@ describe("classifySeverity", () => {
   // -------------------------------------------------------------------------
 
   it("returns HIGH for GHOST_SCRIPT by default", () => {
-    expect(classifySeverity(FindingType.GHOST_SCRIPT, '<script src="//cdn.klaviyo.com/js/klaviyo.js">')).toBe(Severity.HIGH);
+    expect(
+      classifySeverity(FindingType.GHOST_SCRIPT, '<script src="//cdn.klaviyo.com/js/klaviyo.js">'),
+    ).toBe(Severity.HIGH);
   });
 
   it("returns MEDIUM for GHOST_STYLE by default", () => {
-    expect(classifySeverity(FindingType.GHOST_STYLE, '<link rel="stylesheet" href="//cdn.klaviyo.com/style.css">')).toBe(Severity.MEDIUM);
+    expect(
+      classifySeverity(
+        FindingType.GHOST_STYLE,
+        '<link rel="stylesheet" href="//cdn.klaviyo.com/style.css">',
+      ),
+    ).toBe(Severity.MEDIUM);
   });
 
   it("returns MEDIUM for GHOST_SNIPPET by default", () => {
-    expect(classifySeverity(FindingType.GHOST_SNIPPET, "{% render 'klaviyo-onsite' %}")).toBe(Severity.MEDIUM);
+    expect(classifySeverity(FindingType.GHOST_SNIPPET, "{% render 'klaviyo-onsite' %}")).toBe(
+      Severity.MEDIUM,
+    );
   });
 
   it("returns LOW for GHOST_SECTION by default", () => {
-    expect(classifySeverity(FindingType.GHOST_SECTION, "{% section 'klaviyo-section' %}")).toBe(Severity.LOW);
+    expect(classifySeverity(FindingType.GHOST_SECTION, "{% section 'klaviyo-section' %}")).toBe(
+      Severity.LOW,
+    );
   });
 
   it("returns LOW for ORPHAN_ASSET by default", () => {
@@ -33,12 +44,14 @@ describe("classifySeverity", () => {
   // -------------------------------------------------------------------------
 
   it("downgrades GHOST_SCRIPT to LOW when inside a Liquid comment", () => {
-    const snippet = "{% comment %}\n  <script src=\"//cdn.klaviyo.com/js/klaviyo.js\"></script>\n{% endcomment %}";
+    const snippet =
+      '{% comment %}\n  <script src="//cdn.klaviyo.com/js/klaviyo.js"></script>\n{% endcomment %}';
     expect(classifySeverity(FindingType.GHOST_SCRIPT, snippet)).toBe(Severity.LOW);
   });
 
   it("downgrades GHOST_STYLE to LOW when inside a whitespace-stripping Liquid comment", () => {
-    const snippet = "{%- comment -%}\n  <link rel=\"stylesheet\" href=\"//cdn.loox.io/style.css\">\n{%- endcomment -%}";
+    const snippet =
+      '{%- comment -%}\n  <link rel="stylesheet" href="//cdn.loox.io/style.css">\n{%- endcomment -%}';
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });
 
@@ -51,7 +64,7 @@ describe("classifySeverity", () => {
   // Print-only stylesheet downgrade
   // -------------------------------------------------------------------------
 
-  it("downgrades GHOST_STYLE to LOW when stylesheet has media=\"print\"", () => {
+  it('downgrades GHOST_STYLE to LOW when stylesheet has media="print"', () => {
     const snippet = '<link rel="stylesheet" media="print" href="//cdn.klaviyo.com/print.css">';
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });
@@ -61,13 +74,14 @@ describe("classifySeverity", () => {
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });
 
-  it("does NOT downgrade GHOST_SCRIPT to LOW for media=\"print\" (only applies to GHOST_STYLE)", () => {
+  it('does NOT downgrade GHOST_SCRIPT to LOW for media="print" (only applies to GHOST_STYLE)', () => {
     const snippet = '<script src="//cdn.klaviyo.com/js.js" media="print"></script>';
     expect(classifySeverity(FindingType.GHOST_SCRIPT, snippet)).toBe(Severity.HIGH);
   });
 
   it("liquid comment check takes precedence over print-only check", () => {
-    const snippet = '{% comment %}<link rel="stylesheet" media="print" href="//cdn.x.com/a.css">{% endcomment %}';
+    const snippet =
+      '{% comment %}<link rel="stylesheet" media="print" href="//cdn.x.com/a.css">{% endcomment %}';
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });
 });

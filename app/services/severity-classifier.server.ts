@@ -50,8 +50,10 @@ function isInsideLiquidComment(codeSnippet: string): boolean {
  *   <link href="..." media='print' rel="stylesheet">
  */
 function isPrintOnlyStylesheet(codeSnippet: string): boolean {
-  return /media\s*=\s*["']print["']/i.test(codeSnippet) &&
-    !/media\s*=\s*["'](?!print["'])/.test(codeSnippet);
+  return (
+    /media\s*=\s*["']print["']/i.test(codeSnippet) &&
+    !/media\s*=\s*["'](?!print["'])/.test(codeSnippet)
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -65,10 +67,7 @@ function isPrintOnlyStylesheet(codeSnippet: string): boolean {
  * @param findingType  The category of ghost code detected.
  * @param codeSnippet  The extracted code context for the finding.
  */
-export function classifySeverity(
-  findingType: FindingType,
-  codeSnippet: string,
-): Severity {
+export function classifySeverity(findingType: FindingType, codeSnippet: string): Severity {
   // Liquid comment blocks: anything inside is dead code — downgrade to LOW.
   if (isInsideLiquidComment(codeSnippet)) {
     return Severity.LOW;

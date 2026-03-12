@@ -15,10 +15,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Filter findings by type for cleaner assertions. */
-function findingsOfType(
-  findings: ReturnType<typeof scanThemeFiles>,
-  type: FindingType,
-) {
+function findingsOfType(findings: ReturnType<typeof scanThemeFiles>, type: FindingType) {
   return findings.filter((f) => f.findingType === type);
 }
 
@@ -121,7 +118,8 @@ describe("detectGhostScripts", () => {
   it("downgrades script inside Liquid comment to LOW severity", () => {
     const file = {
       filename: "layout/theme.liquid",
-      content: "{% comment %}\n<script src=\"https://static.klaviyo.com/onsite/js/klaviyo.js\"></script>\n{% endcomment %}",
+      content:
+        '{% comment %}\n<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>\n{% endcomment %}',
     };
     const findings = detectGhostScripts(file);
     // The snippet for line 2 includes line 1 (which has the comment opener)
@@ -189,7 +187,7 @@ describe("detectGhostStyles", () => {
   it("ignores internal stylesheets (relative URLs)", () => {
     const file = {
       filename: "layout/theme.liquid",
-      content: "<link rel=\"stylesheet\" href=\"{{ 'theme.css' | asset_url }}\">",
+      content: '<link rel="stylesheet" href="{{ \'theme.css\' | asset_url }}">',
     };
     const findings = detectGhostStyles(file);
     expect(findings).toHaveLength(0);
@@ -323,9 +321,15 @@ describe("detectGhostSections", () => {
 describe("scanThemeFiles", () => {
   it("processes only scannable liquid files", () => {
     const files = [
-      { filename: "assets/theme.js", content: '<script src="https://static.klaviyo.com/j.js"></script>' },
+      {
+        filename: "assets/theme.js",
+        content: '<script src="https://static.klaviyo.com/j.js"></script>',
+      },
       { filename: "config/settings.json", content: '{% render "klaviyo-onsite" %}' },
-      { filename: "layout/theme.liquid", content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>' },
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>',
+      },
     ];
     const findings = scanThemeFiles(files);
     // Only layout/theme.liquid should be scanned
@@ -452,10 +456,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(2);
     const filenames = orphans.map((f) => f.filename).sort();
-    expect(filenames).toEqual([
-      "snippets/orphan-a.liquid",
-      "snippets/orphan-b.liquid",
-    ]);
+    expect(filenames).toEqual(["snippets/orphan-a.liquid", "snippets/orphan-b.liquid"]);
   });
 
   it("does not produce any ORPHAN_ASSET findings when there are no snippet files", () => {

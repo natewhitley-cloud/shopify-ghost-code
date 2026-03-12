@@ -118,12 +118,7 @@ describe("statusTone", () => {
     // If a new status is added to the union type in the future, this assertion
     // will still pass, but the switch in format.ts will be incomplete — TypeScript
     // will catch it at compile time.
-    const allStatuses: ScanStatus[] = [
-      "PENDING",
-      "IN_PROGRESS",
-      "COMPLETED",
-      "FAILED",
-    ];
+    const allStatuses: ScanStatus[] = ["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"];
     const validTones = new Set(["info", "caution", "success", "critical"]);
     for (const status of allStatuses) {
       expect(validTones.has(statusTone(status))).toBe(true);
@@ -153,12 +148,7 @@ describe("statusLabel", () => {
   });
 
   it("returns a non-empty string for every known ScanStatus value", () => {
-    const allStatuses: ScanStatus[] = [
-      "PENDING",
-      "IN_PROGRESS",
-      "COMPLETED",
-      "FAILED",
-    ];
+    const allStatuses: ScanStatus[] = ["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"];
     for (const status of allStatuses) {
       const label = statusLabel(status);
       expect(typeof label).toBe("string");
