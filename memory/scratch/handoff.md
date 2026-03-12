@@ -1,111 +1,81 @@
-# Session 7 Handoff: P3 Polish Sprint
+# Session 8 Handoff: CI Cleanup + Infra Backlog
 
 **Date**: 2026-03-11
 **Project**: ~/shopify-ghost-code
 **Epic**: shopify-ghost-code-6gh (Ghost Code MVP)
-**Last commit**: `97319b6` (feat: app signatures) — but 5 tasks' changes uncommitted
+**Last commit**: `a6d8814` (chore: run prettier formatting)
 
 ---
 
 ## What Got Done
 
-Full P3 sprint: 8/8 beads closed. 473 tests (up from 439). Zero rework.
-
-### Quick Wins (3)
-- **.74**: Replaced 2 raw `<a>` tags with Polaris `<s-link>` in scan detail
-- **l4l**: Fixed countScansForShopSince to filter COMPLETED + IN_PROGRESS only (FAILED scans no longer consume free-tier quota)
-- **.68**: Removed 7 dead exports across 6 files (IS_BILLING_TEST, PlanName, PlanFeatures, updateShopPlan, canUseMultipleThemes, Theme, fetchThemes)
-
-### Optimizations (2)
-- **.70**: Scan detail loader skips findings JOIN for free-tier shops (getScanById now accepts `{ includeFindings }`)
-- **.69**: Fan-out refactor of poll-theme-changes: coordinator + poll-check-shop worker with concurrency limit 5
-
-### Features (2)
-- **.71**: CSV/JSON findings export at `/app/scans/:id/export?format=csv|json` with download button on scan detail
-- **.72**: Weekly scheduled scan for Standard plan (Sunday 6 AM UTC) reusing poll-check-shop worker; `scheduledScan` feature flag added to PlanFeatures
-
-### Data (1)
-- **.73**: 12 new app signatures added (54 total): Swym, FOMO, Hextom, Weglot, Currency Converter, AccessiBe, Kiwi Sizing, Loop Returns, Narvar, Vitals, Appikon, Ageify
-
-### Review Findings (filed as beads)
-- **f49** (P2): Date comparison in poll-check-shop.ts relies on implicit ISO string coercion after Inngest step.run() serialization — wrap in new Date()
-- **snq** (P3): weekly-scan.ts JSDoc claims cron is "offset" from daily but both fire at 06:00 UTC
-- **e3v** (P3): billing.test.ts missing scheduledScan assertions
-
-### Retro
-- Implementer learnings pruned 55→48 (7 archived)
-- 2 new workflow learnings in MEMORY.md (worktree commit gap, Explore agent cost)
+1. **Committed prior session's uncommitted changes** — already done by session 7's final commits (8e976fc, 257c20d)
+2. **Quick wins (3 beads closed)**: f49 (Date bug), snq (comment fix), e3v (scheduledScan test gap)
+3. **GitHub repo created**: https://github.com/natewhitley-cloud/shopify-ghost-code.git — bead bvh closed
+4. **CI lint cleanup**: Eliminated 114 `no-explicit-any` errors across 19 test files, 112 import ordering warnings, 6 misc errors (unused vars/escapes), Prettier formatting on 20 files
+5. **Infra backlog created**: 5 P0 beads (bvh ✓, oxp, 7mt, 0ba, eis) with dependency chain
 
 ---
 
 ## Key Decisions
 
-1. **Scan quota filter: COMPLETED + IN_PROGRESS** (l4l): Excludes FAILED (no value delivered) and PENDING (not yet started). IN_PROGRESS prevents concurrent scan spam. User approved Option C.
-2. **Fan-out over sequential loop** (.69): Coordinator sends batch events, worker processes per-shop with concurrency: 5. Trades single-function simplicity for scalability + independent retries.
-3. **Worker reuse for weekly scan** (.72): Standard weekly and Professional daily coordinators both fan out to the same poll-check-shop worker. Plan filtering stays in coordinators.
-4. **Export as resource route** (.71): No UI component — just a loader returning Response with Content-Disposition: attachment. Gated on canViewFindingDetails (Standard+).
+1. **Bulk `any` elimination via implementer agent** — dispatched single agent for all 114 errors rather than fixing manually. Completed in ~5 min, zero test breakage. Confirmed this is the right pattern for mechanical bulk fixes.
+2. **Editor configs stay untracked** — `.cursor/`, `.gemini/`, `.mcp.json` are not committed. Should add to `.gitignore` if they keep appearing.
+3. **Deploy workflow left failing** — intentional until Railway secrets are configured. Not worth gating with conditional logic yet.
 
 ---
 
 ## Uncommitted Changes
 
-**CRITICAL**: 5 of 8 sprint tasks left changes uncommitted. These are staged in the working tree but NOT committed to main:
-
-| Area | Files | From Task |
-|------|-------|-----------|
-| Scan status filter | scan.server.ts, scan.server.test.ts | l4l |
-| Lazy-load findings | scan.server.ts (getScanById), app.scans.$scanId.tsx | .70 |
-| Cron fan-out | poll-theme-changes.ts, poll-check-shop.ts (new), events.ts, api.inngest.ts, tests | .69 |
-| Findings export | app.scans.$scanId.export.tsx (new), tests (new), app.scans.$scanId.tsx (button) | .71 |
-| Weekly scan | weekly-scan.ts (new), tests (new), billing.server.ts, pricing doc | .72 |
-
-**Also uncommitted**: retro outputs (learnings, archive, retro-history, MEMORY.md), sprint checkpoint.
-
-All 473 tests pass. Safe to commit as a batch or per-feature.
+- `memory/team/retro-history.md` — updated with session 8 retro entry
+- No code changes uncommitted.
 
 ---
 
-## Cumulative Project State
+## Blocked Work (5 beads)
 
-- **92 beads**: 81 closed, 10 open (ready), 1 blocked (k82)
-- **473 tests** across 24 test files
-- **~64 commits** on main (3 this session + uncommitted)
-- **App signatures**: 54 known apps
+All blocked on Railway setup (oxp):
 
----
-
-## What's Next
-
-### Immediate (next session start)
-1. **Commit uncommitted sprint changes** — batch or per-feature commits for the 5 tasks above
-
-### P1 — Deploy Blockers (3)
-| Bead | Title | Notes |
-|------|-------|-------|
-| .66 | Update shopify.app.toml with Railway production URL | Needs Railway project setup |
-| .67 | Add Sentry error reporting | Previously deferred by user |
-| k82 | Apply Prisma migration (lastThemePublishAt) | Blocked on .66 |
-
-### P2 — Review Fixes + Pre-Launch (4)
-| Bead | Title | Notes |
-|------|-------|-------|
-| f49 | Fix Date comparison in poll-check-shop.ts | Wrap in new Date() for Inngest serialization safety |
-| rb3 | Active upsell: notify on skipped auto-rescan | Marked post-launch |
-| .39 | Create app review submission package | Manual: screenshots, listing copy |
-| .40 | Run performance + compatibility audit | Needs running app |
-
-### P3 — Polish (3)
-| Bead | Title | Notes |
-|------|-------|-------|
-| e3v | Add scheduledScan assertions to billing.test.ts | Trivial |
-| snq | Fix misleading offset comment in weekly-scan.ts | Trivial |
-| sg5 | Pro: auto-scan on app uninstall | Feature work |
+```
+oxp: Set up Railway project with PostgreSQL  ← READY but hitting "Team not found" error
+ ├→ 7mt: Configure Railway env vars  ← blocked on oxp
+ │   └→ eis: Set up Inngest Cloud  ← blocked on 7mt
+ ├→ .66: Update shopify.app.toml  ← blocked on oxp
+ │   └→ k82: Apply Prisma migration  ← blocked on .66
+ └→ 0ba: Configure Shopify Partners app  ← blocked on oxp
+```
 
 ---
 
 ## Open Questions
 
-None carried forward. The scan quota decision (l4l) was resolved this session.
+- **Railway "Team not found" error**: When provisioning PostgreSQL in Railway dashboard, getting "Team not found". Likely causes: (a) need paid Hobby plan ($5/mo), (b) project created under wrong context (team vs personal), (c) new account needs billing setup. User paused to investigate.
+
+---
+
+## Cumulative Project State
+
+- **97 beads**: 85 closed, 12 open (5 blocked, 7 ready)
+- **473 tests** across 24 test files
+- **CI status**: lint ✓, format ✓, tests ✓, deploy ✗ (expected — no Railway secrets)
+- **App signatures**: 54 known apps
+
+---
+
+## Recommended Next Steps
+
+1. **Resolve Railway "Team not found"** — check billing/plan status, try CLI if dashboard fails. This unblocks the entire deploy chain (5 beads).
+2. **Once Railway is up**: `bd update oxp --status=in_progress`, get production URL, then cascade through .66 → k82 → 7mt → eis → 0ba
+3. **After deploy chain**: Sentry (.67), then perf audit (.40) and app review package (.39)
+4. **Code work available now** (not blocked on Railway): rb3 (active upsell), sg5 (auto-scan on uninstall)
+
+---
+
+## Risks & Warnings
+
+- **Deploy workflow runs on every push to main** and will fail until RAILWAY_TOKEN and RAILWAY_SERVICE_ID secrets are set. This is noisy but not harmful.
+- **21 lint warnings remain** (all import/order in test files where imports must follow vi.mock). These are structural to the Vitest mock pattern and won't cause CI failure.
+- **`.cursor/`, `.gemini/`, `.mcp.json` are untracked** — consider adding to `.gitignore` to stop them appearing in `git status`.
 
 ---
 
@@ -113,8 +83,8 @@ None carried forward. The scan quota decision (l4l) was resolved this session.
 
 | Member | Lines | Status | Notes |
 |--------|-------|--------|-------|
-| implementer | 48 | active | 6 new, 7 archived this session |
-| tester | 43 | steady | Approaching cap; prune if dispatched next |
+| implementer | 48 | active | Dispatched this session for bulk any fix |
+| tester | 43 | steady | No changes |
 | scaffolder | 30 | steady | No changes |
 | reviewer | 27 | steady | No changes |
 | debugger | 24 | cold | Never dispatched |

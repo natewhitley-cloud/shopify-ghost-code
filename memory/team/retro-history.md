@@ -1,5 +1,17 @@
 # Retrospective History
 
+## Retro: 2026-03-11 (session 8 — CI cleanup + infra backlog)
+- Tasks completed: 4 beads closed (f49 Date bug, snq comment fix, e3v test gap, bvh GitHub repo)
+- Agents dispatched: 1 implementer (bulk any elimination — 114 errors across 19 files)
+- New learnings: 3 workflow patterns added to MEMORY.md
+- Test growth: 473 → 473 (unchanged — all changes were lint/format fixes)
+- Commits on main: 5 (1 chore + 3 fix + 1 chore formatting)
+- Fix rate: 60% (3 fix commits out of 5 — expected for a lint cleanup session)
+- Files touched: 64 (bulk lint/format sweep)
+- Key insight: First push to GitHub exposed ~220 accumulated lint issues (114 `any` errors + 112 import ordering warnings). Running `npm run lint` and `npm run format:check` locally before first push would have caught these.
+- Key pattern: ESLint `--fix` handles import ordering but NOT Prettier formatting. Always run both before pushing.
+- Key blocker: Railway "Team not found" error when provisioning PostgreSQL — likely a billing/plan issue. Paused for investigation.
+
 ## Retro: 2026-03-11 (session 7 — P3 polish sprint)
 - Tasks completed: 8/8 (100%) — 1 bug fix, 4 tasks, 3 features
 - Agents dispatched: 8 implementer + 1 Explore (serial, mixed worktree/direct)
