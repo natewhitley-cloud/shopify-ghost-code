@@ -1,4 +1,5 @@
 import { ScanStatus } from "@prisma/client";
+
 import db from "../db.server";
 
 /**

@@ -1,9 +1,9 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { redirect, Form, useLoaderData } from "react-router";
 
-import { login } from "../../shopify.server";
-
 import styles from "./styles.module.css";
+
+import { login } from "../../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
@@ -40,10 +40,10 @@ export default function App() {
         <ul className={styles.list}>
           <li>
             <strong>Scan your live theme.</strong> Ghost Code inspects every file in
-            your published theme for code left behind by apps you've already removed.
+            your published theme for code left behind by apps you&apos;ve already removed.
           </li>
           <li>
-            <strong>See exactly what's there.</strong> Each finding is mapped to a
+            <strong>See exactly what&apos;s there.</strong> Each finding is mapped to a
             specific file and line so you know exactly what to review.
           </li>
           <li>

@@ -36,7 +36,11 @@ const RATE_LIMIT_THRESHOLD = 100;
  * @returns           Currently available query-cost points (after any sleep).
  */
 export async function checkRateLimit(extensions: unknown): Promise<number> {
-  const throttle = (extensions as any)?.cost?.throttleStatus;
+  const ext = extensions as Record<string, unknown> | undefined;
+  const cost = ext?.cost as Record<string, unknown> | undefined;
+  const throttle = cost?.throttleStatus as
+    | { currentlyAvailable?: number; restoreRate?: number }
+    | undefined;
 
   if (!throttle) return Infinity;
 
@@ -117,7 +121,10 @@ export type MainTheme = {
  */
 export async function fetchMainTheme(admin: AdminApiContext): Promise<MainTheme | null> {
   const response = await admin.graphql(MAIN_THEME_QUERY);
-  const json = (await response.json()) as any;
+  const json = (await response.json()) as {
+    errors?: Array<{ message: string }>;
+    data?: { themes?: { nodes?: Array<Record<string, unknown>> } };
+  };
 
   if (json.errors?.length) {
     throw new Error(
@@ -163,7 +170,18 @@ export async function fetchThemeFiles(
       },
     });
 
-    const json = (await response.json()) as any;
+    const json = (await response.json()) as {
+      errors?: Array<{ message: string }>;
+      data?: {
+        theme?: {
+          files?: {
+            nodes?: Array<{ filename: string; body?: { content?: string } }>;
+            pageInfo?: { hasNextPage?: boolean; endCursor?: string };
+          };
+        };
+      };
+      extensions?: unknown;
+    };
 
     if (json.errors?.length) {
       throw new Error(
@@ -181,14 +199,14 @@ export async function fetchThemeFiles(
       break;
     }
 
-    const nodes: any[] = themeData.files?.nodes ?? [];
+    const nodes = themeData.files?.nodes ?? [];
     const pageInfo = themeData.files?.pageInfo ?? {};
 
     for (const node of nodes) {
       // body is a union type; only OnlineStoreThemeFileBodyText has content.
       const content: string | undefined = node.body?.content;
       if (typeof content === "string") {
-        files.push({ filename: node.filename as string, content });
+        files.push({ filename: node.filename, content });
       }
     }
 

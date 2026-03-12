@@ -7,8 +7,6 @@ export const PLANS = {
   PROFESSIONAL: "Professional",
 } as const;
 
-type PlanName = (typeof PLANS)[keyof typeof PLANS];
-
 // Feature flags per plan. Used to gate UI and service-layer behavior.
 type PlanFeatures = {
   maxScansPerMonth: number;

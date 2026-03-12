@@ -63,7 +63,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   //     ...
   //   }
   // }
-  const subscription = (payload as any)?.app_subscription;
+  const subscription = (payload as Record<string, unknown>)?.app_subscription as
+    | { name?: string; status?: string }
+    | undefined;
 
   if (!subscription) {
     // Malformed payload — log but return 200 to avoid Shopify retries.

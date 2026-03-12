@@ -9,8 +9,8 @@
  * Production: Inngest cloud syncs against this endpoint after deploy.
  */
 import { serve } from "inngest/remix";
-import { inngest } from "../../inngest/client";
 
+import { inngest } from "../../inngest/client";
 import { scanTheme } from "../../inngest/functions/scan-theme";
 import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";

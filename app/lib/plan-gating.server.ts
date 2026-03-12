@@ -1,6 +1,6 @@
 import { getPlanFeatures } from "./billing.server";
-import { countScansForShopSince, hasCompletedScans } from "../models/scan.server";
 import db from "../db.server";
+import { countScansForShopSince, hasCompletedScans } from "../models/scan.server";
 
 /**
  * Check whether a shop is allowed to start a new scan under their current plan.

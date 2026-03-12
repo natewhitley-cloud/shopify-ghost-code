@@ -249,7 +249,7 @@ export default function Dashboard() {
         <s-banner tone="info">
           <s-stack direction="block" gap="base">
             <s-paragraph>
-              It's been over 30 days since your last scan. Re-scan your theme to check for new
+              It&apos;s been over 30 days since your last scan. Re-scan your theme to check for new
               orphaned code from recently uninstalled apps.
             </s-paragraph>
             <s-button
@@ -289,7 +289,7 @@ export default function Dashboard() {
             <s-heading>Welcome to Ghost Code</s-heading>
             <s-paragraph>
               <strong>Ghost Code finds and removes leftover code from uninstalled apps.</strong>{" "}
-              Over time, apps you've removed leave behind scripts, stylesheets, and snippets in your
+              Over time, apps you&apos;ve removed leave behind scripts, stylesheets, and snippets in your
               theme — slowing your store and cluttering your code. Ghost Code scans your theme and
               flags everything that can be safely removed.
             </s-paragraph>
