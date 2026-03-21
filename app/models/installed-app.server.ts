@@ -25,6 +25,9 @@ export interface UpsertInstalledAppData {
   appName: string;
   appDescription?: string;
   publicCategory?: string;
+  grantedScopes?: string;
+  grantedScopeCount?: number;
+  hasActiveSubscription?: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -59,6 +62,9 @@ export async function upsertInstalledApp(
       appName: data.appName,
       appDescription: data.appDescription ?? null,
       publicCategory: data.publicCategory ?? null,
+      grantedScopes: data.grantedScopes ?? "[]",
+      grantedScopeCount: data.grantedScopeCount ?? 0,
+      hasActiveSubscription: data.hasActiveSubscription ?? false,
       presence: "INSTALLED",
       lastSeenAt: now,
     },
@@ -67,9 +73,28 @@ export async function upsertInstalledApp(
       appName: data.appName,
       appDescription: data.appDescription ?? null,
       publicCategory: data.publicCategory ?? null,
+      grantedScopes: data.grantedScopes ?? "[]",
+      grantedScopeCount: data.grantedScopeCount ?? 0,
+      hasActiveSubscription: data.hasActiveSubscription ?? false,
       presence: "INSTALLED",
       lastSeenAt: now,
       removedAt: null,
+    },
+  });
+}
+
+/**
+ * Mark multiple apps as removed in a single batch operation.
+ * Used by syncInstalledApps to mark apps no longer returned by the API.
+ */
+export async function markAppsRemovedByIds(ids: string[]): Promise<void> {
+  if (ids.length === 0) return;
+
+  await db.installedApp.updateMany({
+    where: { id: { in: ids } },
+    data: {
+      presence: "REMOVED",
+      removedAt: new Date(),
     },
   });
 }

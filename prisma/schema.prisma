@@ -137,6 +137,8 @@ model InstalledApp {
   appDescription        String?
   publicCategory        String?
   presence              AppPresence          @default(INSTALLED)
+  grantedScopes         String               @default("[]")
+  grantedScopeCount     Int                  @default(0)
   firstSeenAt           DateTime             @default(now())
   lastSeenAt            DateTime
   removedAt             DateTime?

@@ -15,9 +15,9 @@ import { getPlanFeatures } from "../lib/billing.server";
 import { riskTone, riskLabel, sensitivityTone } from "../lib/risk-display";
 import type { AppRiskScore } from "../services/permission-scorer.server";
 import { scoreApp } from "../services/permission-scorer.server";
-import { fetchAllInstalledApps, syncInstalledApps } from "../services/permission-fetcher.server";
+// No longer imports fetchAllInstalledApps — detail route reads cached scopes from DB
 import { authenticate } from "../shopify.server";
-import db from "../db.server";
+// db import removed — detail route reads from cached InstalledApp, no direct DB writes
 
 // ---------------------------------------------------------------------------
 // Types
@@ -150,15 +150,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("App not found", { status: 404 });
   }
 
-  // Fetch live scope data from Shopify API
-  const fetchedApps = await fetchAllInstalledApps(admin);
-  if (fetchedApps.length > 0) {
-    await syncInstalledApps(shop.id, fetchedApps, db);
-  }
-
-  const fetchedApp = fetchedApps.find((f) => f.id === installedApp.shopifyAppId);
-  const rawScopes = fetchedApp?.accessScopes ?? [];
-  const scopeHandles = rawScopes.map((s) => s.handle);
+  // Read cached scopes from DB (synced by list route during last visit)
+  const scopeHandles: string[] = JSON.parse(installedApp.grantedScopes || "[]");
 
   // Enrich with category/rating data
   const enrichment = enrichApp(installedApp.appHandle);
@@ -172,12 +165,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     categorySlug !== null ? getUnexpectedScopes(categorySlug, scopeHandles) : [],
   );
 
-  // Build scope details
-  const scopes: ScopeDetail[] = rawScopes.map((s) => ({
-    handle: s.handle,
-    description: getScopeDescription(s.handle, s.description),
-    sensitivity: getScopeSensitivity(s.handle),
-    isExpected: !unexpectedSet.has(s.handle),
+  // Build scope details (scopes come from DB cache, descriptions from fallback map)
+  const scopes: ScopeDetail[] = scopeHandles.map((handle) => ({
+    handle,
+    description: getScopeDescription(handle, null),
+    sensitivity: getScopeSensitivity(handle),
+    isExpected: !unexpectedSet.has(handle),
   }));
 
   // Sort scopes: unexpected first, then by sensitivity (critical > high > medium > low)

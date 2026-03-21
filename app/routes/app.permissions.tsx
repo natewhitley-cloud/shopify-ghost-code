@@ -11,7 +11,7 @@ import { riskTone, riskLabel } from "../lib/risk-display";
 import type { AppRiskScore, StoreRiskScore } from "../services/permission-scorer.server";
 import { scoreApp, scoreStore } from "../services/permission-scorer.server";
 import { authenticate } from "../shopify.server";
-import db from "../db.server";
+// db import removed — syncInstalledApps uses model layer internally
 
 // ---------------------------------------------------------------------------
 // Types
@@ -71,7 +71,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Fetch and sync installed apps
   const fetchedApps = await fetchAllInstalledApps(admin);
   if (fetchedApps.length > 0) {
-    await syncInstalledApps(shop.id, fetchedApps, db);
+    await syncInstalledApps(shop.id, fetchedApps);
   }
 
   const installedApps = await getInstalledApps(shop.id);
@@ -84,15 +84,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const appHandles = installedApps.map((a) => a.appHandle);
   const enrichmentMap = enrichApps(appHandles);
 
-  // Score each app
+  // Score each app using cached scopes from DB
   const scoredApps: ScoredApp[] = installedApps.map((app) => {
     const enrichment = enrichmentMap.get(app.appHandle);
     const categorySlug = enrichment?.categorySlug ?? null;
 
-    // InstalledApp doesn't store scopes directly — we need them from fetchedApps
-    const fetchedApp = fetchedApps.find((f) => f.id === app.shopifyAppId);
-    const scopes = fetchedApp?.accessScopes.map((s) => s.handle) ?? [];
-
+    const scopes: string[] = JSON.parse(app.grantedScopes || "[]");
     const riskScore = scoreApp(scopes, categorySlug);
 
     return {

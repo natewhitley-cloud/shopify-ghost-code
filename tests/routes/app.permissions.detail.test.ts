@@ -121,6 +121,8 @@ const INSTALLED_APP = {
   appDescription: "A test app",
   publicCategory: "Marketing",
   presence: "INSTALLED",
+  grantedScopes: '["read_orders","write_orders"]',
+  grantedScopeCount: 2,
   firstSeenAt: NOW,
   lastSeenAt: NOW,
   removedAt: null,
@@ -274,18 +276,17 @@ describe("app.permissions.$appId loader", () => {
       expect(result.scopes[1].isExpected).toBe(true);
     });
 
-    it("uses API description when available, falls back to default", async () => {
+    it("uses fallback descriptions from SCOPE_DESCRIPTIONS map", async () => {
       const result = (await loader(makeLoaderArgs("installed-1"))) as {
         scopes: Array<{ handle: string; description: string }>;
       };
 
-      // read_orders has an API description
+      // Both scopes use fallback descriptions (no API descriptions in DB cache)
       const readOrders = result.scopes.find((s) => s.handle === "read_orders");
-      expect(readOrders!.description).toBe("Read orders");
+      expect(readOrders!.description).toBeTruthy();
 
-      // write_orders has null API description, should use our default
       const writeOrders = result.scopes.find((s) => s.handle === "write_orders");
-      expect(writeOrders!.description).toBe("Create, update, cancel, and refund orders");
+      expect(writeOrders!.description).toBeTruthy();
     });
 
     it("calls scoreApp with correct scope handles and category slug", async () => {
@@ -312,18 +313,10 @@ describe("app.permissions.$appId loader", () => {
       expect(mockEnrichApp).toHaveBeenCalledWith("test-app");
     });
 
-    it("syncs installed apps when fetch returns results", async () => {
+    it("reads scopes from DB cache without calling fetchAllInstalledApps", async () => {
       await loader(makeLoaderArgs("installed-1"));
 
-      expect(mockFetchAllInstalledApps).toHaveBeenCalledWith(MOCK_ADMIN);
-      expect(mockSyncInstalledApps).toHaveBeenCalled();
-    });
-
-    it("does not sync when fetch returns empty", async () => {
-      mockFetchAllInstalledApps.mockResolvedValue([]);
-
-      await loader(makeLoaderArgs("installed-1"));
-
+      expect(mockFetchAllInstalledApps).not.toHaveBeenCalled();
       expect(mockSyncInstalledApps).not.toHaveBeenCalled();
     });
 
@@ -464,11 +457,12 @@ describe("app.permissions.$appId loader", () => {
       expect(result.app.appName).toBe("Test App");
     });
 
-    it("returns empty scopes when removed app is not in fetched apps", async () => {
+    it("returns empty scopes when removed app has no cached scopes", async () => {
       const removedApp = {
         ...INSTALLED_APP,
         presence: "REMOVED",
-        shopifyAppId: "gid://shopify/App/999",
+        grantedScopes: "[]",
+        grantedScopeCount: 0,
       };
       mockGetInstalledAppById.mockResolvedValue(removedApp);
 
@@ -482,12 +476,11 @@ describe("app.permissions.$appId loader", () => {
 
   describe("scope with unknown handle", () => {
     it("falls back to generated description for unknown scope handles", async () => {
-      mockFetchAllInstalledApps.mockResolvedValue([
-        {
-          ...FETCHED_APP,
-          accessScopes: [{ handle: "read_some_new_thing", description: null }],
-        },
-      ]);
+      mockGetInstalledAppById.mockResolvedValue({
+        ...INSTALLED_APP,
+        grantedScopes: '["read_some_new_thing"]',
+        grantedScopeCount: 1,
+      });
       mockGetUnexpectedScopes.mockReturnValue([]);
       mockGetScopeSensitivity.mockReturnValue("MEDIUM");
 

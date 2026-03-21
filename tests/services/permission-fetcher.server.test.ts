@@ -1,12 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+vi.mock("../../app/models/installed-app.server", () => ({
+  upsertInstalledApp: vi.fn().mockResolvedValue({}),
+  markAppsRemovedByIds: vi.fn().mockResolvedValue(undefined),
+  getInstalledApps: vi.fn().mockResolvedValue([]),
+}));
+
 import {
   fetchAllInstalledApps,
   fetchCurrentAppInstallation,
   syncInstalledApps,
   type FetchedApp,
 } from "../../app/services/permission-fetcher.server";
-import { createMockPrismaClient } from "../mocks/prisma";
+import {
+  upsertInstalledApp,
+  markAppsRemovedByIds,
+  getInstalledApps,
+} from "../../app/models/installed-app.server";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -303,7 +313,9 @@ describe("fetchCurrentAppInstallation", () => {
 // ---------------------------------------------------------------------------
 
 describe("syncInstalledApps", () => {
-  let db: ReturnType<typeof createMockPrismaClient>;
+  const mockUpsert = upsertInstalledApp as ReturnType<typeof vi.fn>;
+  const mockMarkRemoved = markAppsRemovedByIds as ReturnType<typeof vi.fn>;
+  const mockGetApps = getInstalledApps as ReturnType<typeof vi.fn>;
 
   const fetchedApps: FetchedApp[] = [
     {
@@ -327,103 +339,70 @@ describe("syncInstalledApps", () => {
   ];
 
   beforeEach(() => {
-    db = createMockPrismaClient();
-    // Default: no existing apps in DB
-    (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).findMany.mockResolvedValue([]);
+    vi.clearAllMocks();
+    mockGetApps.mockResolvedValue([]);
+    mockUpsert.mockResolvedValue({});
+    mockMarkRemoved.mockResolvedValue(undefined);
   });
 
-  it("upserts each fetched app", async () => {
-    await syncInstalledApps(
+  it("upserts each fetched app via model layer", async () => {
+    await syncInstalledApps("shop-1", fetchedApps);
+
+    expect(mockUpsert).toHaveBeenCalledTimes(2);
+
+    expect(mockUpsert).toHaveBeenCalledWith(
       "shop-1",
-      fetchedApps,
-      db as unknown as import("@prisma/client").PrismaClient,
+      expect.objectContaining({
+        shopifyAppId: "gid://shopify/App/123",
+        appName: "Reviews Pro",
+        appHandle: "reviews-pro",
+        grantedScopes: '["read_products"]',
+        grantedScopeCount: 1,
+        hasActiveSubscription: true,
+      }),
     );
 
-    const upsertMock = (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).upsert;
-    expect(upsertMock).toHaveBeenCalledTimes(2);
-
-    // Verify first upsert call
-    const firstCall = upsertMock.mock.calls[0][0];
-    expect(firstCall.where.shopId_shopifyAppId).toEqual({
-      shopId: "shop-1",
-      shopifyAppId: "gid://shopify/App/123",
-    });
-    expect(firstCall.create.appName).toBe("Reviews Pro");
-    expect(firstCall.create.presence).toBe("INSTALLED");
-    expect(firstCall.update.appName).toBe("Reviews Pro");
-    expect(firstCall.update.presence).toBe("INSTALLED");
-    expect(firstCall.update.removedAt).toBeNull();
+    expect(mockUpsert).toHaveBeenCalledWith(
+      "shop-1",
+      expect.objectContaining({
+        shopifyAppId: "gid://shopify/App/789",
+        appName: "Shipping Helper",
+        grantedScopes: "[]",
+        grantedScopeCount: 0,
+        hasActiveSubscription: false,
+      }),
+    );
   });
 
   it("marks apps not in fetchedApps as REMOVED", async () => {
-    // Simulate an existing app that is no longer in the fetched set
-    (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).findMany.mockResolvedValue([
+    mockGetApps.mockResolvedValue([
       { id: "installed-app-old", shopifyAppId: "gid://shopify/App/999" },
       { id: "installed-app-123", shopifyAppId: "gid://shopify/App/123" },
     ]);
 
-    await syncInstalledApps(
-      "shop-1",
-      fetchedApps,
-      db as unknown as import("@prisma/client").PrismaClient,
-    );
+    await syncInstalledApps("shop-1", fetchedApps);
 
-    const updateManyMock = (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).updateMany;
-    expect(updateManyMock).toHaveBeenCalledTimes(1);
-
-    const updateCall = updateManyMock.mock.calls[0][0];
-    expect(updateCall.where.id.in).toEqual(["installed-app-old"]);
-    expect(updateCall.data.presence).toBe("REMOVED");
-    expect(updateCall.data.removedAt).toBeInstanceOf(Date);
+    expect(mockMarkRemoved).toHaveBeenCalledWith(["installed-app-old"]);
   });
 
-  it("does not call updateMany when no apps are removed", async () => {
-    // All existing apps are in the fetched set
-    (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).findMany.mockResolvedValue([
+  it("does not mark removals when all existing apps are in fetched set", async () => {
+    mockGetApps.mockResolvedValue([
       { id: "installed-app-123", shopifyAppId: "gid://shopify/App/123" },
     ]);
 
-    await syncInstalledApps(
-      "shop-1",
-      fetchedApps,
-      db as unknown as import("@prisma/client").PrismaClient,
-    );
+    await syncInstalledApps("shop-1", fetchedApps);
 
-    const updateManyMock = (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).updateMany;
-    expect(updateManyMock).not.toHaveBeenCalled();
+    expect(mockMarkRemoved).toHaveBeenCalledWith([]);
   });
 
   it("handles empty fetchedApps array", async () => {
-    (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).findMany.mockResolvedValue([
+    mockGetApps.mockResolvedValue([
       { id: "installed-app-1", shopifyAppId: "gid://shopify/App/111" },
     ]);
 
-    await syncInstalledApps("shop-1", [], db as unknown as import("@prisma/client").PrismaClient);
+    await syncInstalledApps("shop-1", []);
 
-    const upsertMock = (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).upsert;
-    expect(upsertMock).not.toHaveBeenCalled();
-
-    // The existing app should be marked as REMOVED
-    const updateManyMock = (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).updateMany;
-    expect(updateManyMock).toHaveBeenCalledTimes(1);
-    expect(updateManyMock.mock.calls[0][0].where.id.in).toEqual(["installed-app-1"]);
-  });
-
-  it("sets hasActiveSubscription correctly in upsert", async () => {
-    await syncInstalledApps(
-      "shop-1",
-      fetchedApps,
-      db as unknown as import("@prisma/client").PrismaClient,
-    );
-
-    const upsertMock = (db.installedApp as Record<string, ReturnType<typeof vi.fn>>).upsert;
-
-    // First app has active subscription
-    expect(upsertMock.mock.calls[0][0].create.hasActiveSubscription).toBe(true);
-    expect(upsertMock.mock.calls[0][0].update.hasActiveSubscription).toBe(true);
-
-    // Second app does not
-    expect(upsertMock.mock.calls[1][0].create.hasActiveSubscription).toBe(false);
-    expect(upsertMock.mock.calls[1][0].update.hasActiveSubscription).toBe(false);
+    expect(mockUpsert).not.toHaveBeenCalled();
+    expect(mockMarkRemoved).toHaveBeenCalledWith(["installed-app-1"]);
   });
 });

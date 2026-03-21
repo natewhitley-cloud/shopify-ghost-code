@@ -282,6 +282,8 @@ describe("app.permissions loader", () => {
           appDescription: "A test app",
           publicCategory: "Marketing",
           presence: "INSTALLED",
+          grantedScopes: '["read_orders","write_orders"]',
+          grantedScopeCount: 2,
           firstSeenAt: new Date(),
           lastSeenAt: new Date(),
           removedAt: null,

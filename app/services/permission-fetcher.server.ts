@@ -13,9 +13,12 @@
  * paginated page and back off when headroom drops below 100 points.
  */
 
-import type { PrismaClient } from "@prisma/client";
-
 import { checkRateLimit } from "./theme-fetcher.server";
+import {
+  upsertInstalledApp,
+  markAppsRemovedByIds,
+  getInstalledApps,
+} from "../models/installed-app.server";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -280,64 +283,30 @@ export async function fetchCurrentAppInstallation(admin: AdminApiContext): Promi
  * - Marks apps that are in the DB but NOT in fetchedApps as REMOVED.
  * - Updates lastSeenAt for apps that are still present.
  */
-export async function syncInstalledApps(
-  shopId: string,
-  fetchedApps: FetchedApp[],
-  db: PrismaClient,
-): Promise<void> {
-  const now = new Date();
+export async function syncInstalledApps(shopId: string, fetchedApps: FetchedApp[]): Promise<void> {
   const fetchedAppIds = new Set(fetchedApps.map((a) => a.id));
 
-  // Upsert each fetched app
+  // Upsert each fetched app via model layer
   for (const app of fetchedApps) {
-    await db.installedApp.upsert({
-      where: {
-        shopId_shopifyAppId: {
-          shopId,
-          shopifyAppId: app.id,
-        },
-      },
-      create: {
-        shopId,
-        shopifyAppId: app.id,
-        appHandle: app.handle,
-        appName: app.title,
-        appDescription: app.description,
-        publicCategory: app.publicCategory,
-        presence: "INSTALLED",
-        lastSeenAt: now,
-        hasActiveSubscription: app.hasActiveSubscription,
-      },
-      update: {
-        appHandle: app.handle,
-        appName: app.title,
-        appDescription: app.description,
-        publicCategory: app.publicCategory,
-        presence: "INSTALLED",
-        lastSeenAt: now,
-        removedAt: null,
-        hasActiveSubscription: app.hasActiveSubscription,
-      },
+    const scopeHandles = app.accessScopes.map((s) => s.handle);
+
+    await upsertInstalledApp(shopId, {
+      shopifyAppId: app.id,
+      appHandle: app.handle,
+      appName: app.title,
+      appDescription: app.description ?? undefined,
+      publicCategory: app.publicCategory ?? undefined,
+      grantedScopes: JSON.stringify(scopeHandles),
+      grantedScopeCount: scopeHandles.length,
+      hasActiveSubscription: app.hasActiveSubscription,
     });
   }
 
   // Mark apps not in the fetched set as REMOVED
-  const existingApps = await db.installedApp.findMany({
-    where: { shopId, presence: "INSTALLED" },
-    select: { id: true, shopifyAppId: true },
-  });
+  const existingApps = await getInstalledApps(shopId);
+  const removedIds = existingApps
+    .filter((a) => !fetchedAppIds.has(a.shopifyAppId))
+    .map((a) => a.id);
 
-  const removedApps = existingApps.filter((a) => !fetchedAppIds.has(a.shopifyAppId));
-
-  if (removedApps.length > 0) {
-    await db.installedApp.updateMany({
-      where: {
-        id: { in: removedApps.map((a) => a.id) },
-      },
-      data: {
-        presence: "REMOVED",
-        removedAt: now,
-      },
-    });
-  }
+  await markAppsRemovedByIds(removedIds);
 }
