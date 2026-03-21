@@ -75,6 +75,8 @@ function buildSnippet(content: string, lineNumber: number): string {
 // ---------------------------------------------------------------------------
 
 // Matches <script src="https://..." or <script src='//...'> (external URLs)
+// IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0 before
+// each use to avoid stale state between calls. See each detector function below.
 const SCRIPT_SRC_RE = /<script[^>]+src\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*>/gi;
 
 export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {

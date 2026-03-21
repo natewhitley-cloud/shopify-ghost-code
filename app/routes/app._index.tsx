@@ -55,34 +55,39 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const findingSummary = latestScan ? await getFindingSummary(latestScan.id) : null;
 
-  // Compute health score for the latest COMPLETED scan.
+  // Gather independent data in parallel to reduce loader latency.
+  const features = getPlanFeatures(shop.plan);
+  const needsUsage = features.maxScansPerMonth !== Infinity;
+
+  // Phase 1: queries that depend only on latestScan/previousScan IDs (parallel)
+  const [latestFileCount, prevResult, completedScanCheck] = await Promise.all([
+    latestScan && latestScan.status === "COMPLETED"
+      ? getDistinctFileCount(latestScan.id)
+      : Promise.resolve(0),
+    previousScan && previousScan.status === "COMPLETED"
+      ? Promise.all([getFindingSummary(previousScan.id), getDistinctFileCount(previousScan.id)])
+      : Promise.resolve(null),
+    needsUsage ? hasCompletedScans(shop.id) : Promise.resolve(false),
+  ]);
+
+  // Compute health scores from parallel results
   let healthScore: HealthScoreResult | null = null;
   if (latestScan && latestScan.status === "COMPLETED" && findingSummary) {
-    const fileCount = await getDistinctFileCount(latestScan.id);
-    healthScore = computeHealthScore(findingSummary.bySeverity, fileCount);
+    healthScore = computeHealthScore(findingSummary.bySeverity, latestFileCount);
   }
 
-  // Compute health score for the previous COMPLETED scan (for delta display).
   let previousHealthScore: HealthScoreResult | null = null;
-  if (previousScan && previousScan.status === "COMPLETED") {
-    const [prevSummary, prevFileCount] = await Promise.all([
-      getFindingSummary(previousScan.id),
-      getDistinctFileCount(previousScan.id),
-    ]);
+  if (prevResult) {
+    const [prevSummary, prevFileCount] = prevResult;
     previousHealthScore = computeHealthScore(prevSummary.bySeverity, prevFileCount);
   }
 
-  // Compute scan usage for free-plan shops so the UI can show X of Y scans used.
-  // Paid plans have unlimited scans; return null so the UI omits the indicator.
-  const features = getPlanFeatures(shop.plan);
+  // Compute scan usage for free-plan shops
   let scanUsage: { used: number; limit: number } | null = null;
   let isFirstScan = false;
-  if (features.maxScansPerMonth !== Infinity) {
-    const alreadyScanned = await hasCompletedScans(shop.id);
-    isFirstScan = !alreadyScanned;
+  if (needsUsage) {
+    isFirstScan = !completedScanCheck;
     if (!isFirstScan) {
-      // Only show the monthly usage counter after the first scan is complete.
-      // Before that, the onboarding card handles messaging.
       const now = new Date();
       const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
       const used = await countScansForShopSince(shop.id, monthStart);

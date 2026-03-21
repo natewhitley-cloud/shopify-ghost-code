@@ -30,6 +30,16 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 200 });
   }
 
+  // Always create/update the shop record first — even if auto-scan fails,
+  // the merchant needs a shop row to use the dashboard.
+  // Re-read the latest session to get the freshest access token (token
+  // rotation is enabled via expiringOfflineAccessTokens).
+  const freshSession = await db.session.findFirst({
+    where: { shop, isOnline: false },
+    orderBy: { expires: "desc" },
+  });
+  const shopRecord = await upsertShop(shop, (freshSession ?? session).accessToken);
+
   // Fetch the main (active) theme and kick off the auto-scan.
   // Wrapped in try/catch because unauthenticated.admin() or admin.graphql()
   // can fail if the offline session token isn't ready yet. Auto-scan is
@@ -41,19 +51,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const mainTheme = await fetchMainTheme(admin);
 
     if (!mainTheme) {
-      // No main theme found — create the shop record anyway so the merchant
-      // can trigger scans manually from the dashboard.
-      logger.error("No main theme found — skipping auto-scan", {
+      logger.warn("No main theme found — skipping auto-scan", {
         shop,
         webhook: "app/installed",
       });
-      await upsertShop(shop, session.accessToken);
       return new Response(null, { status: 200 });
     }
-
-    // Create or update the shop row. On re-install the access token may have
-    // rotated, so upsertShop updates it in place.
-    const shopRecord = await upsertShop(shop, session.accessToken);
 
     const scan = await createScan(shopRecord.id, mainTheme.id, mainTheme.name);
 

@@ -151,7 +151,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   // Read cached scopes from DB (synced by list route during last visit)
-  const scopeHandles: string[] = JSON.parse(installedApp.grantedScopes || "[]");
+  let scopeHandles: string[] = [];
+  try {
+    scopeHandles = JSON.parse(installedApp.grantedScopes || "[]");
+  } catch {
+    // Corrupted JSON in DB — treat as no scopes rather than crashing the page
+  }
 
   // Enrich with category/rating data
   const enrichment = enrichApp(installedApp.appHandle);

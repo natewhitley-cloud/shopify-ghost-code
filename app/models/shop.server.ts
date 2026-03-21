@@ -1,22 +1,28 @@
 import db from "../db.server";
+import { encryptToken, decryptToken } from "../lib/token-encryption.server";
 
 /**
  * Find a shop by its Shopify domain (unique field).
+ * Decrypts the access token before returning.
  * Returns null if no shop exists — callers must handle the null case.
  */
 export async function getShopByDomain(domain: string) {
-  return db.shop.findUnique({ where: { domain } });
+  const shop = await db.shop.findUnique({ where: { domain } });
+  if (!shop) return null;
+  return { ...shop, accessToken: decryptToken(shop.accessToken) };
 }
 
 /**
  * Create or update a shop record on install / re-install.
+ * Encrypts the access token before storing.
  * Updates the accessToken in place so re-installs don't orphan auth state.
  */
 export async function upsertShop(domain: string, accessToken: string) {
+  const encrypted = encryptToken(accessToken);
   return db.shop.upsert({
     where: { domain },
-    create: { domain, accessToken },
-    update: { accessToken },
+    create: { domain, accessToken: encrypted },
+    update: { accessToken: encrypted },
   });
 }
 
@@ -67,9 +73,16 @@ export async function updateThemePublishTimestamp(
  * Hard-delete a shop and all its data atomically inside a single transaction.
  *
  * Deletion order:
- *   1. Sessions  — revokes API access first
- *   2. Scans     — findings are cascade-deleted from scans via onDelete: Cascade
- *   3. Shop      — must be last; sessions and scans reference it
+ *   1. Sessions              — revokes API access first (no FK, plain string match)
+ *   2. PermissionSnapshots   — FK to InstalledApp, must go before InstalledApp
+ *   3. InstalledApps         — FK to Shop
+ *   4. PermissionAuditRuns   — FK to Shop
+ *   5. Scans                 — findings cascade-deleted via onDelete: Cascade
+ *   6. Shop                  — must be last; other tables reference it
+ *
+ * Note: InstalledApp, PermissionAuditRun, and Scan all have onDelete: Cascade
+ * on their Shop FK, so PostgreSQL would cascade-delete them. We delete
+ * explicitly for GDPR audit trail clarity — defense-in-depth.
  *
  * Returns null if the domain is not found, so callers can log and still
  * return 200 without throwing.
@@ -80,6 +93,11 @@ export async function deleteShopData(domain: string) {
 
   await db.$transaction([
     db.session.deleteMany({ where: { shop: domain } }),
+    db.permissionSnapshot.deleteMany({
+      where: { installedApp: { shopId: shop.id } },
+    }),
+    db.installedApp.deleteMany({ where: { shopId: shop.id } }),
+    db.permissionAuditRun.deleteMany({ where: { shopId: shop.id } }),
     db.scan.deleteMany({ where: { shopId: shop.id } }),
     db.shop.delete({ where: { domain } }),
   ]);

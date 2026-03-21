@@ -68,13 +68,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return { state: "scope-request" as const };
   }
 
-  // Fetch and sync installed apps
-  const fetchedApps = await fetchAllInstalledApps(admin);
-  if (fetchedApps.length > 0) {
-    await syncInstalledApps(shop.id, fetchedApps);
+  // Fetch and sync installed apps — skip if data is fresh (synced within last 5 minutes).
+  // This avoids a full Shopify API call + N DB upserts on every page navigation.
+  const STALE_THRESHOLD_MS = 5 * 60 * 1000;
+  const existingApps = await getInstalledApps(shop.id);
+  const lastSync = existingApps.length > 0 ? existingApps[0].lastSeenAt : null;
+  const isStale = !lastSync || Date.now() - new Date(lastSync).getTime() > STALE_THRESHOLD_MS;
+
+  if (isStale) {
+    const fetchedApps = await fetchAllInstalledApps(admin);
+    if (fetchedApps.length > 0) {
+      await syncInstalledApps(shop.id, fetchedApps);
+    }
   }
 
-  const installedApps = await getInstalledApps(shop.id);
+  const installedApps = isStale ? await getInstalledApps(shop.id) : existingApps;
 
   if (installedApps.length === 0) {
     return { state: "onboarding" as const };
@@ -89,7 +97,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const enrichment = enrichmentMap.get(app.appHandle);
     const categorySlug = enrichment?.categorySlug ?? null;
 
-    const scopes: string[] = JSON.parse(app.grantedScopes || "[]");
+    let scopes: string[] = [];
+    try {
+      scopes = JSON.parse(app.grantedScopes || "[]");
+    } catch {
+      // Corrupted JSON in DB — treat as no scopes rather than crashing the page
+    }
     const riskScore = scoreApp(scopes, categorySlug);
 
     return {

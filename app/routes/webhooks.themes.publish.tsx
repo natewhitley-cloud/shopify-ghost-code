@@ -41,16 +41,26 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const themeId = `gid://shopify/Theme/${payload.id}`;
   const themeName = String(payload.name ?? "");
 
-  const scan = await createScan(shopRecord.id, themeId, themeName);
+  try {
+    const scan = await createScan(shopRecord.id, themeId, themeName);
 
-  await inngest.send({
-    name: "scan/requested",
-    data: {
-      shopId: shopRecord.id,
-      themeId,
-      scanId: scan.id,
-    },
-  });
+    await inngest.send({
+      name: "scan/requested",
+      data: {
+        shopId: shopRecord.id,
+        themeId,
+        scanId: scan.id,
+      },
+    });
+  } catch (err) {
+    // createScan throws if a scan is already in progress (TOCTOU guard).
+    // Log and return 200 to prevent Shopify retry storms.
+    logger.warn("Auto-rescan skipped — scan already in progress or creation failed", {
+      shop,
+      webhook: "themes/publish",
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 
   return new Response(null, { status: 200 });
 };

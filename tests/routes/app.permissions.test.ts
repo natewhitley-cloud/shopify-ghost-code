@@ -285,7 +285,7 @@ describe("app.permissions loader", () => {
           grantedScopes: '["read_orders","write_orders"]',
           grantedScopeCount: 2,
           firstSeenAt: new Date(),
-          lastSeenAt: new Date(),
+          lastSeenAt: new Date(Date.now() - 10 * 60 * 1000), // 10 min ago — triggers re-sync
           removedAt: null,
           hasActiveSubscription: true,
           createdAt: new Date(),
