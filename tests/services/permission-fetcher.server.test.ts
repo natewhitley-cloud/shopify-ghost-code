@@ -194,7 +194,7 @@ describe("fetchAllInstalledApps", () => {
     const graphql = vi
       .fn()
       .mockResolvedValue(
-        makeErrorResponse([{ message: "Missing permission to access this resource" }]),
+        makeErrorResponse([{ message: "App does not have the required permissions" }]),
       );
 
     const apps = await fetchAllInstalledApps(makeAdmin(graphql));

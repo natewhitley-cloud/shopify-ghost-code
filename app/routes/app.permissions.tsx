@@ -7,7 +7,8 @@ import { getInstalledApps } from "../models/installed-app.server";
 import { getShopByDomain } from "../models/shop.server";
 import { enrichApps } from "../services/app-enrichment.server";
 import { fetchAllInstalledApps, syncInstalledApps } from "../services/permission-fetcher.server";
-import type { AppRiskScore, StoreRiskScore, RiskLevel } from "../services/permission-scorer.server";
+import { riskTone, riskLabel } from "../lib/risk-display";
+import type { AppRiskScore, StoreRiskScore } from "../services/permission-scorer.server";
 import { scoreApp, scoreStore } from "../services/permission-scorer.server";
 import { authenticate } from "../shopify.server";
 import db from "../db.server";
@@ -39,44 +40,7 @@ type PermissionsLoaderData =
 // Helpers
 // ---------------------------------------------------------------------------
 
-function riskTone(level: RiskLevel): "critical" | "warning" | "info" | "success" {
-  switch (level) {
-    case "critical":
-      return "critical";
-    case "high":
-      return "warning";
-    case "medium":
-      return "info";
-    case "low":
-      return "success";
-  }
-}
-
-function riskLabel(level: RiskLevel): string {
-  switch (level) {
-    case "critical":
-      return "Critical";
-    case "high":
-      return "High";
-    case "medium":
-      return "Medium";
-    case "low":
-      return "Low";
-  }
-}
-
-function storeBannerTone(level: RiskLevel): "critical" | "warning" | "info" | "success" {
-  switch (level) {
-    case "critical":
-      return "critical";
-    case "high":
-      return "warning";
-    case "medium":
-      return "info";
-    case "low":
-      return "success";
-  }
-}
+// riskTone, riskLabel imported from ../lib/risk-display
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -444,7 +408,7 @@ function ActiveAuditState({ apps, storeScore }: { apps: ScoredApp[]; storeScore:
       </s-link>
 
       {/* Store-wide risk score banner */}
-      <s-banner tone={storeBannerTone(storeScore.level)}>
+      <s-banner tone={riskTone(storeScore.level)}>
         <s-stack direction="block" gap="base">
           <s-text>
             <strong>Store Risk Score: {storeScore.score}/100</strong> ({riskLabel(storeScore.level)}

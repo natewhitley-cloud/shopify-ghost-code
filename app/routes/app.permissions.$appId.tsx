@@ -11,7 +11,9 @@ import { getInstalledAppById } from "../models/installed-app.server";
 import { getShopByDomain } from "../models/shop.server";
 import { enrichApp } from "../services/app-enrichment.server";
 import type { AppEnrichment } from "../services/app-enrichment.server";
-import type { AppRiskScore, RiskLevel } from "../services/permission-scorer.server";
+import { getPlanFeatures } from "../lib/billing.server";
+import { riskTone, riskLabel, sensitivityTone } from "../lib/risk-display";
+import type { AppRiskScore } from "../services/permission-scorer.server";
 import { scoreApp } from "../services/permission-scorer.server";
 import { fetchAllInstalledApps, syncInstalledApps } from "../services/permission-fetcher.server";
 import { authenticate } from "../shopify.server";
@@ -106,46 +108,7 @@ const SCOPE_DESCRIPTIONS: Record<string, string> = {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function riskTone(level: RiskLevel): "critical" | "warning" | "info" | "success" {
-  switch (level) {
-    case "critical":
-      return "critical";
-    case "high":
-      return "critical";
-    case "medium":
-      return "warning";
-    case "low":
-      return "success";
-  }
-}
-
-function riskLabel(level: RiskLevel): string {
-  switch (level) {
-    case "critical":
-      return "Critical";
-    case "high":
-      return "High";
-    case "medium":
-      return "Medium";
-    case "low":
-      return "Low";
-  }
-}
-
-function sensitivityTone(
-  sensitivity: ScopeSensitivity,
-): "critical" | "warning" | "info" | "success" {
-  switch (sensitivity) {
-    case "CRITICAL":
-      return "critical";
-    case "HIGH":
-      return "warning";
-    case "MEDIUM":
-      return "info";
-    case "LOW":
-      return "success";
-  }
-}
+// riskTone, riskLabel, sensitivityTone imported from ../lib/risk-display
 
 function getScopeDescription(handle: string, apiDescription: string | null): string {
   if (apiDescription) return apiDescription;
@@ -164,16 +127,27 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("App ID is required", { status: 400 });
   }
 
-  // Look up the app record
-  const installedApp = await getInstalledAppById(appId);
-  if (!installedApp) {
-    throw new Response("App not found", { status: 404 });
+  // Verify the authenticated shop and feature access
+  const shop = await getShopByDomain(session.shop);
+  if (!shop) {
+    throw new Response("Shop not found", { status: 404 });
   }
 
-  // Verify the authenticated shop owns this app record
-  const shop = await getShopByDomain(session.shop);
-  if (!shop || installedApp.shopId !== shop.id) {
-    throw new Response("Not found", { status: 404 });
+  const features = getPlanFeatures(shop.plan);
+  if (!features.permissionAuditEnabled) {
+    throw new Response("Permission Audit is not enabled", { status: 403 });
+  }
+
+  // Check if read_apps scope is granted
+  const grantedScopes = session.scope ? session.scope.split(",") : [];
+  if (!grantedScopes.includes("read_apps")) {
+    throw new Response("read_apps scope not granted", { status: 403 });
+  }
+
+  // Look up the app record
+  const installedApp = await getInstalledAppById(appId);
+  if (!installedApp || installedApp.shopId !== shop.id) {
+    throw new Response("App not found", { status: 404 });
   }
 
   // Fetch live scope data from Shopify API

@@ -106,8 +106,9 @@ function isScopeError(errors: Array<{ message: string }>): boolean {
     (e) =>
       e.message.includes("ACCESS_DENIED") ||
       e.message.includes("access denied") ||
-      e.message.includes("requires") ||
-      e.message.includes("permission"),
+      e.message.includes("missing required scope") ||
+      e.message.includes("does not have the required permissions") ||
+      /\bread_apps\b/.test(e.message),
   );
 }
 

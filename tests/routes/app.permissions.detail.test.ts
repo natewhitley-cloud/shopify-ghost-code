@@ -53,6 +53,10 @@ vi.mock("../../app/data/category-permissions.server", () => ({
   },
 }));
 
+vi.mock("../../app/lib/billing.server", () => ({
+  getPlanFeatures: vi.fn(),
+}));
+
 vi.mock("../../app/db.server", () => ({
   default: {},
 }));
@@ -75,6 +79,7 @@ import {
   getUnexpectedScopes,
 } from "../../app/data/category-permissions.server";
 import { authenticate } from "../../app/shopify.server";
+import { getPlanFeatures } from "../../app/lib/billing.server";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -89,6 +94,7 @@ const mockFetchAllInstalledApps = fetchAllInstalledApps as ReturnType<typeof vi.
 const mockSyncInstalledApps = syncInstalledApps as ReturnType<typeof vi.fn>;
 const mockGetScopeSensitivity = getScopeSensitivity as ReturnType<typeof vi.fn>;
 const mockGetUnexpectedScopes = getUnexpectedScopes as ReturnType<typeof vi.fn>;
+const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -177,11 +183,12 @@ beforeEach(() => {
   vi.clearAllMocks();
 
   mockAuthenticateAdmin.mockResolvedValue({
-    session: { shop: SHOP.domain },
+    session: { shop: SHOP.domain, scope: "read_themes,read_apps" },
     admin: MOCK_ADMIN,
   });
 
   mockGetShopByDomain.mockResolvedValue(SHOP);
+  mockGetPlanFeatures.mockReturnValue({ permissionAuditEnabled: true });
   mockGetInstalledAppById.mockResolvedValue(INSTALLED_APP);
   mockFetchAllInstalledApps.mockResolvedValue([FETCHED_APP]);
   mockSyncInstalledApps.mockResolvedValue(undefined);
