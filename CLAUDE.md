@@ -1,6 +1,6 @@
 # CLAUDE.md
 
-Ghost Code — a Shopify app that scans merchant themes for orphaned code left by uninstalled apps. Part of the Data Integrity Suite (App 1 of 3).
+Ghost Code — a Shopify app that scans merchant themes for orphaned code left by uninstalled apps. Part of a Shopify app portfolio (see `~/shopify/strategy/` for research docs).
 
 ## Operating Mode: Orchestrator
 
@@ -54,7 +54,7 @@ bd create --title="..." --type=task
 ## Project Structure
 
 ```
-shopify-ghost-code/
+ghost-code-app/
 ├── app/
 │   ├── routes/                    # React Router v7 route modules (UI + loaders/actions)
 │   ├── services/                  # Business logic (scanner, theme fetcher, billing)

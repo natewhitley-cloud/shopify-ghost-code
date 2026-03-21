@@ -48,6 +48,8 @@ api_version = "2026-04"
 [access_scopes]
 # Ghost Code only needs to read themes — no write access required
 scopes = "read_themes"
+# Permission Audit feature — requested via App Bridge scopes modal when feature is activated
+optional_scopes = "read_apps"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]

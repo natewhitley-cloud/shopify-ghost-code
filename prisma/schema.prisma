@@ -18,21 +18,21 @@ datasource db {
 // @shopify/shopify-app-session-storage-prisma
 // ---------------------------------------------------------------------------
 model Session {
-  id            String    @id
-  shop          String
-  state         String
-  isOnline      Boolean   @default(false)
-  scope         String?
-  expires       DateTime?
-  accessToken   String
-  userId        BigInt?
-  firstName     String?
-  lastName      String?
-  email         String?
-  accountOwner  Boolean   @default(false)
-  locale        String?
-  collaborator  Boolean?  @default(false)
-  emailVerified Boolean?  @default(false)
+  id                  String    @id
+  shop                String
+  state               String
+  isOnline            Boolean   @default(false)
+  scope               String?
+  expires             DateTime?
+  accessToken         String
+  userId              BigInt?
+  firstName           String?
+  lastName            String?
+  email               String?
+  accountOwner        Boolean   @default(false)
+  locale              String?
+  collaborator        Boolean?  @default(false)
+  emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
 }
@@ -42,13 +42,15 @@ model Session {
 // ---------------------------------------------------------------------------
 
 model Shop {
-  id                  String    @id @default(cuid())
-  domain              String    @unique
+  id                  String               @id @default(cuid())
+  domain              String               @unique
   accessToken         String
-  installedAt         DateTime  @default(now())
-  plan                String    @default("free")
+  installedAt         DateTime             @default(now())
+  plan                String               @default("free")
   lastThemePublishAt  DateTime?
   scans               Scan[]
+  installedApps       InstalledApp[]
+  permissionAuditRuns PermissionAuditRun[]
 }
 
 model Scan {
@@ -107,4 +109,72 @@ enum Severity {
   HIGH
   MEDIUM
   LOW
+}
+
+enum AppPresence {
+  INSTALLED
+  REMOVED
+}
+
+enum AuditRunStatus {
+  PENDING
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
+// ---------------------------------------------------------------------------
+// Permission Audit models
+// ---------------------------------------------------------------------------
+
+model InstalledApp {
+  id                    String               @id @default(cuid())
+  shopId                String
+  shop                  Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  shopifyAppId          String
+  appHandle             String
+  appName               String
+  appDescription        String?
+  publicCategory        String?
+  presence              AppPresence          @default(INSTALLED)
+  firstSeenAt           DateTime             @default(now())
+  lastSeenAt            DateTime
+  removedAt             DateTime?
+  hasActiveSubscription Boolean              @default(false)
+  permissionSnapshots   PermissionSnapshot[]
+
+  @@unique([shopId, shopifyAppId])
+  @@index([shopId])
+  @@index([presence])
+}
+
+model PermissionSnapshot {
+  id                   String             @id @default(cuid())
+  installedAppId       String
+  installedApp         InstalledApp       @relation(fields: [installedAppId], references: [id], onDelete: Cascade)
+  auditRunId           String
+  auditRun             PermissionAuditRun @relation(fields: [auditRunId], references: [id], onDelete: Cascade)
+  grantedScopes        String
+  scopeCount           Int
+  unexpectedScopeCount Int                @default(0)
+  riskScore            Float              @default(0)
+  createdAt            DateTime           @default(now())
+
+  @@index([installedAppId])
+  @@index([auditRunId])
+}
+
+model PermissionAuditRun {
+  id                  String               @id @default(cuid())
+  shopId              String
+  shop                Shop                 @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  status              AuditRunStatus       @default(PENDING)
+  appCount            Int                  @default(0)
+  totalRiskScore      Float                @default(0)
+  startedAt           DateTime?
+  completedAt         DateTime?
+  createdAt           DateTime             @default(now())
+  permissionSnapshots PermissionSnapshot[]
+
+  @@index([shopId, createdAt])
 }

@@ -8,7 +8,7 @@ export const PLANS = {
 } as const;
 
 // Feature flags per plan. Used to gate UI and service-layer behavior.
-type PlanFeatures = {
+export type PlanFeatures = {
   maxScansPerMonth: number;
   showFindingDetails: boolean;
   maxThemes: number;
@@ -16,6 +16,8 @@ type PlanFeatures = {
   scanDiffing: boolean;
   /** Whether the plan receives any form of scheduled (automatic) scanning. */
   scheduledScan: boolean;
+  // Manual feature flag — set to true to enable Permission Audit tab
+  permissionAuditEnabled: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -28,6 +30,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: false,
         scanDiffing: false,
         scheduledScan: true, // Weekly (Sunday 6 AM UTC) via weekly-scan coordinator
+        permissionAuditEnabled: false,
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -37,6 +40,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: true,
         scanDiffing: true,
         scheduledScan: true, // Daily via poll-theme-changes coordinator
+        permissionAuditEnabled: false,
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -46,6 +50,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: false,
         scanDiffing: false,
         scheduledScan: false,
+        permissionAuditEnabled: false,
       };
   }
 }
