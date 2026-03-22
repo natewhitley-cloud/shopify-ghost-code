@@ -7,9 +7,9 @@
 
 import { describe, it, expect } from "vitest";
 
+import type { ScopeSensitivity } from "../../app/data/category-permissions.server";
 import { riskTone, riskLabel, sensitivityTone } from "../../app/lib/risk-display";
 import type { RiskLevel } from "../../app/services/permission-scorer.server";
-import type { ScopeSensitivity } from "../../app/data/category-permissions.server";
 
 // ---------------------------------------------------------------------------
 // riskTone
