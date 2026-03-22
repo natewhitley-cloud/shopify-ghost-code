@@ -107,6 +107,8 @@ ghost-code-app/
 
 Before modifying billing, pricing, or plan-gating logic, review `docs/pricing-and-plans.md` (linked from README under Key References). Update that doc alongside any code changes to keep it in sync.
 
+For product strategy, feature ideas, messaging angles, and positioning research, see `docs/product-strategy.md`. Consult it when scoping new features or writing in-app copy.
+
 ## Do Not Modify
 
 - `.beads/` internals (use `bd` commands only)

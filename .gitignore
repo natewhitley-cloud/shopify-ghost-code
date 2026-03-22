@@ -27,9 +27,12 @@ dist/
 .claude/settings.local.json
 CLAUDE.local.md
 
-# IDE
+# IDE / Editor configs
 .vscode/
 .idea/
+.cursor/
+.gemini/
+.mcp.json
 *.swp
 *.swo
 
