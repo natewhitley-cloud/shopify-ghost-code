@@ -389,10 +389,10 @@ export default function Dashboard() {
               display: flex;
               flex-direction: column;
               align-items: center;
+              justify-content: center;
               padding: 16px 8px;
               border-radius: 12px;
               border: 1px solid #e1e3e5;
-              min-height: 100%;
             }
             .health-score-tile--success {
               border-color: #c8e6c1;
@@ -587,9 +587,11 @@ export default function Dashboard() {
                     </div>
                     {/* Right: findings */}
                     <div style={{ display: "flex", flexDirection: "column" }}>
-                      <s-heading>Most Recent Findings</s-heading>
-                      <div style={{ fontSize: "13px", color: "#6d7175", marginTop: "2px" }}>
-                        Scanned <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong> on {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                      <div style={{ display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
+                        <s-heading>Most Recent Findings</s-heading>
+                        <span style={{ fontSize: "13px", color: "#6d7175" }}>
+                          — <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong>, {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                        </span>
                       </div>
                       <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
                         <div className="finding-stat finding-stat--high">
@@ -692,9 +694,22 @@ export default function Dashboard() {
                   <div style={{ fontSize: "13px", color: "#6d7175" }}>
                     View all past scans and findings
                   </div>
-                  <s-button variant="tertiary" href="/app/scans">
+                  <a
+                    href="/app/scans"
+                    style={{
+                      display: "inline-block",
+                      padding: "8px 24px",
+                      borderRadius: "8px",
+                      background: "#2c6ecb",
+                      color: "#ffffff",
+                      fontSize: "14px",
+                      fontWeight: 600,
+                      textDecoration: "none",
+                      textAlign: "center",
+                    }}
+                  >
                     View Scan History
-                  </s-button>
+                  </a>
                 </div>
               </div>
             </s-stack>
