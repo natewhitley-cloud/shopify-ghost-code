@@ -15,9 +15,19 @@ import { createCipheriv, createDecipheriv, randomBytes } from "crypto";
 const ALGORITHM = "aes-256-gcm";
 const IV_LENGTH = 16;
 
+let warnedMissingKey = false;
+
 function getKey(): Buffer | null {
   const hex = process.env.TOKEN_ENCRYPTION_KEY;
-  if (!hex) return null;
+  if (!hex) {
+    if (!warnedMissingKey) {
+      console.warn(
+        "[security] TOKEN_ENCRYPTION_KEY is not set — tokens will be stored in plaintext",
+      );
+      warnedMissingKey = true;
+    }
+    return null;
+  }
   if (hex.length !== 64) {
     throw new Error(
       "TOKEN_ENCRYPTION_KEY must be 64 hex characters (32 bytes). " +

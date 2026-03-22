@@ -11,6 +11,10 @@
  *
  * KEEP IN SYNC with app-lookup.server.ts — any new fields added here need a
  * corresponding lookup function there.
+ *
+ * NOTE: Do NOT add the /g flag to regex patterns. They are used with .test()
+ * in app-lookup.server.ts, and /g causes stateful lastIndex behavior that
+ * leads to intermittent match failures on repeated .test() calls.
  */
 
 export type AppSignature = {
