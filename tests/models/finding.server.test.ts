@@ -76,7 +76,7 @@ const anotherFinding: CreateFindingInput = {
   codeSnippet: "{% render 'removed-snippet' %}",
   findingType: FindingType.GHOST_SNIPPET,
   severity: Severity.MEDIUM,
-  appName: null,
+  appName: undefined,
   description: "Snippet reference to removed file",
 };
 

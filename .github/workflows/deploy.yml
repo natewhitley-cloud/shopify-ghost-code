@@ -15,6 +15,6 @@ jobs:
     env:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Deploy to Railway
         run: railway up --service=${{ secrets.RAILWAY_SERVICE_ID }}

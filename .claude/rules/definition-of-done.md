@@ -43,4 +43,4 @@ What "done" means for each type of change.
 - [ ] Three GDPR webhooks implemented and responding
 - [ ] Billing API integration working for paid features
 - [ ] App uninstall webhook handled (cleanup shop data)
-- [ ] Privacy policy and terms of service URLs set in shopify.app.toml
+- [ ] Privacy policy and terms of service URLs set in Shopify Partner Dashboard app listing

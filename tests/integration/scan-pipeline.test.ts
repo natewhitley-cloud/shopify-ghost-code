@@ -103,7 +103,7 @@ import { fetchMainTheme, fetchThemeFiles } from "../../app/services/theme-fetche
 import { authenticate, unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 import { scanTheme } from "../../inngest/functions/scan-theme";
-import { createMockInngestStep, createMockInngestEvent } from "../mocks/inngest";
+import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -460,7 +460,7 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
   ) {
     const event = makeScanEvent(eventData);
     const step = { ...createMockInngestStep(), ...stepOverrides };
-    return scanTheme.fn({ event, step });
+    return getInngestHandler(scanTheme)({ event, step });
   }
 
   describe("happy path — complete scan flow", () => {

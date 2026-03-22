@@ -69,16 +69,16 @@ import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
-import { createMockInngestStep } from "../mocks/inngest";
+import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
 // ---------------------------------------------------------------------------
 
-const mockDb = db as {
+const mockDb = db as unknown as {
   scan: { findFirst: ReturnType<typeof vi.fn> };
 };
-const mockUnauthenticated = unauthenticated as { admin: ReturnType<typeof vi.fn> };
+const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
 const mockInngestSend = (inngest as unknown as { send: ReturnType<typeof vi.fn> }).send;
@@ -137,9 +137,7 @@ async function runPollCheckShop(
     ts: Date.now(),
     id: "test-event-check-shop",
   };
-  return pollCheckShop.fn({ event, step, logger: mockLogger } as unknown as Parameters<
-    typeof pollCheckShop.fn
-  >[0]);
+  return getInngestHandler(pollCheckShop)({ event, step, logger: mockLogger });
 }
 
 // ---------------------------------------------------------------------------

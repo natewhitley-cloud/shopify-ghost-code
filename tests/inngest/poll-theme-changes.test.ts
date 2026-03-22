@@ -50,13 +50,13 @@ vi.mock("../../inngest/client", () => ({
 import db from "../../app/db.server";
 import { inngest } from "../../inngest/client";
 import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
-import { createMockInngestStep } from "../mocks/inngest";
+import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
 // ---------------------------------------------------------------------------
 
-const mockDb = db as {
+const mockDb = db as unknown as {
   shop: { findMany: ReturnType<typeof vi.fn> };
 };
 const mockInngestSend = (inngest as unknown as { send: ReturnType<typeof vi.fn> }).send;
@@ -89,9 +89,7 @@ async function runPollThemeChanges(
 ) {
   const step = { ...createMockInngestStep(), ...stepOverrides };
   const event = { name: "scheduled/daily", data: {}, ts: Date.now(), id: "test-event-poll" };
-  return pollThemeChanges.fn({ event, step, logger: mockLogger } as unknown as Parameters<
-    typeof pollThemeChanges.fn
-  >[0]);
+  return getInngestHandler(pollThemeChanges)({ event, step, logger: mockLogger });
 }
 
 // ---------------------------------------------------------------------------

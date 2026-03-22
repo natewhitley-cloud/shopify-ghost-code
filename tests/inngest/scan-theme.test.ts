@@ -62,14 +62,14 @@ import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
 import { scanTheme } from "../../inngest/functions/scan-theme";
-import { createMockInngestStep, createMockInngestEvent } from "../mocks/inngest";
+import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
 // ---------------------------------------------------------------------------
 
-const mockDb = db as { shop: { findUnique: ReturnType<typeof vi.fn> } };
-const mockUnauthenticated = unauthenticated as { admin: ReturnType<typeof vi.fn> };
+const mockDb = db as unknown as { shop: { findUnique: ReturnType<typeof vi.fn> } };
+const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
@@ -141,7 +141,7 @@ async function runScanTheme(
 ) {
   const event = makeScanEvent(eventData);
   const step = { ...createMockInngestStep(), ...stepOverrides };
-  return scanTheme.fn({ event, step });
+  return getInngestHandler(scanTheme)({ event, step });
 }
 
 // ---------------------------------------------------------------------------

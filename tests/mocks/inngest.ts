@@ -1,5 +1,15 @@
 import { vi } from "vitest";
 
+/**
+ * Extract the handler function from an Inngest function for testing.
+ * Inngest marks .fn as private, so we cast through unknown.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getInngestHandler<T = any>(fn: unknown): (...args: any[]) => Promise<T> {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (fn as Record<string, any>).fn as (...args: any[]) => Promise<T>;
+}
+
 export function createMockInngestStep() {
   return {
     run: vi.fn((name: string, fn: () => unknown) => fn()),

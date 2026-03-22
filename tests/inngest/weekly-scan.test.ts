@@ -49,13 +49,13 @@ vi.mock("../../inngest/client", () => ({
 import db from "../../app/db.server";
 import { inngest } from "../../inngest/client";
 import { weeklyScan } from "../../inngest/functions/weekly-scan";
-import { createMockInngestStep } from "../mocks/inngest";
+import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
 // ---------------------------------------------------------------------------
 
-const mockDb = db as {
+const mockDb = db as unknown as {
   shop: { findMany: ReturnType<typeof vi.fn> };
 };
 const mockInngestSend = (inngest as unknown as { send: ReturnType<typeof vi.fn> }).send;
@@ -86,9 +86,7 @@ const mockLogger = {
 async function runWeeklyScan(stepOverrides?: Partial<ReturnType<typeof createMockInngestStep>>) {
   const step = { ...createMockInngestStep(), ...stepOverrides };
   const event = { name: "scheduled/weekly", data: {}, ts: Date.now(), id: "test-event-weekly" };
-  return weeklyScan.fn({ event, step, logger: mockLogger } as unknown as Parameters<
-    typeof weeklyScan.fn
-  >[0]);
+  return getInngestHandler(weeklyScan)({ event, step, logger: mockLogger });
 }
 
 // ---------------------------------------------------------------------------
