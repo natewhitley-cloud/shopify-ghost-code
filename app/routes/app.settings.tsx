@@ -103,6 +103,7 @@ export default function Settings() {
           box-shadow: 0 0 0 1px #2c6ecb;
         }
         .plan-tile__header {
+          height: 100px;
           margin-bottom: 4px;
         }
         .plan-tile__name {
@@ -171,7 +172,6 @@ export default function Settings() {
               <s-list-item>1 scan per week</s-list-item>
               <s-list-item>Full finding details</s-list-item>
               <s-list-item>Single theme</s-list-item>
-              <s-list-item>Weekly scheduled scans</s-list-item>
               <s-list-item>7-day free trial</s-list-item>
             </s-unordered-list>
           </div>
@@ -200,7 +200,7 @@ export default function Settings() {
               <s-list-item>Everything in Standard</s-list-item>
               <s-list-item>Multiple theme scanning</s-list-item>
               <s-list-item>Auto-rescan on theme publish</s-list-item>
-              <s-list-item>Daily scheduled scans</s-list-item>
+              <s-list-item>Automatic daily scans</s-list-item>
               <s-list-item>Scan diffing</s-list-item>
               <s-list-item>7-day free trial</s-list-item>
             </s-unordered-list>
@@ -244,6 +244,11 @@ export default function Settings() {
           <s-paragraph>
             Ghost Code scans your Shopify themes for leftover code from uninstalled apps. This
             orphaned code can slow down your store, break functionality, and create security risks.
+          </s-paragraph>
+          <s-paragraph>
+            Ghost Code also includes <strong>Permission Audit</strong> — review which apps have
+            access to your store data and identify unnecessary permissions that could put your
+            store at risk.
           </s-paragraph>
           <s-paragraph>
             <s-text>Version: 1.0.0</s-text>

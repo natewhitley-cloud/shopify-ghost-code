@@ -26,7 +26,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         maxThemes: 1,
         autoRescan: false,
         scanDiffing: false,
-        scheduledScan: true, // Weekly (Sunday 6 AM UTC) via weekly-scan coordinator
+        scheduledScan: false, // Manual weekly scans only — automation is Professional
         permissionAuditEnabled: false,
       };
     case PLANS.PROFESSIONAL:
