@@ -368,84 +368,247 @@ export default function Dashboard() {
         </s-card>
       ) : (
         <>
+          <style>{`
+            .health-score-hero {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              padding: 24px 16px 16px;
+            }
+            .health-score-number {
+              font-size: 72px;
+              font-weight: 700;
+              line-height: 1;
+              letter-spacing: -2px;
+            }
+            .health-score-number--success { color: #1a8a3f; }
+            .health-score-number--warning { color: #b98900; }
+            .health-score-number--critical { color: #d72c0d; }
+            .health-score-subtitle {
+              font-size: 14px;
+              color: #6d7175;
+              margin-top: 4px;
+            }
+            .health-score-label {
+              display: inline-block;
+              margin-top: 12px;
+              padding: 4px 12px;
+              border-radius: 16px;
+              font-size: 13px;
+              font-weight: 600;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+            }
+            .health-score-label--success {
+              background: #e3f1df;
+              color: #1a8a3f;
+            }
+            .health-score-label--warning {
+              background: #fdf0cd;
+              color: #916a00;
+            }
+            .health-score-label--critical {
+              background: #fde8e8;
+              color: #d72c0d;
+            }
+            .health-score-delta {
+              font-size: 13px;
+              color: #6d7175;
+              margin-top: 8px;
+            }
+            .findings-row {
+              display: grid;
+              grid-template-columns: repeat(3, 1fr);
+              gap: 16px;
+              padding: 4px 0;
+            }
+            .finding-stat {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              padding: 16px 8px;
+              border-radius: 12px;
+              border: 1px solid #e1e3e5;
+            }
+            .finding-stat--high {
+              border-color: #fde8e8;
+              background: #fef6f6;
+            }
+            .finding-stat--medium {
+              border-color: #fdf0cd;
+              background: #fffcf2;
+            }
+            .finding-stat--low {
+              border-color: #dbeafe;
+              background: #f5f8ff;
+            }
+            .finding-stat__count {
+              font-size: 32px;
+              font-weight: 700;
+              line-height: 1;
+            }
+            .finding-stat__count--high { color: #d72c0d; }
+            .finding-stat__count--medium { color: #b98900; }
+            .finding-stat__count--low { color: #2c6ecb; }
+            .finding-stat__label {
+              font-size: 13px;
+              font-weight: 500;
+              color: #6d7175;
+              margin-top: 6px;
+            }
+            .scan-meta {
+              font-size: 13px;
+              color: #6d7175;
+              text-align: center;
+              padding: 4px 0;
+            }
+            .scan-meta strong {
+              color: #202223;
+            }
+            .actions-row {
+              display: flex;
+              align-items: center;
+              gap: 16px;
+            }
+            .usage-bar-container {
+              margin-top: 4px;
+            }
+            .usage-bar-track {
+              height: 8px;
+              background: #e1e3e5;
+              border-radius: 4px;
+              overflow: hidden;
+              max-width: 280px;
+            }
+            .usage-bar-fill {
+              height: 100%;
+              border-radius: 4px;
+              transition: width 0.3s ease;
+            }
+            .usage-bar-fill--normal { background: #2c6ecb; }
+            .usage-bar-fill--full { background: #d72c0d; }
+            .usage-text {
+              font-size: 13px;
+              color: #6d7175;
+              margin-top: 6px;
+            }
+            .scan-progress-container {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              padding: 32px 16px;
+              text-align: center;
+            }
+            .scan-progress-text {
+              font-size: 15px;
+              color: #6d7175;
+              margin-top: 8px;
+              max-width: 360px;
+            }
+            .scan-progress-elapsed {
+              font-size: 13px;
+              color: #8c9196;
+              margin-top: 12px;
+            }
+          `}</style>
+
           {/* Theme Health Score — hero metric card */}
           <s-card>
             <s-stack direction="block" gap="base">
               <s-heading>Theme Health Score</s-heading>
               {scanInProgress ? (
-                <s-stack alignItems="center" gap="base" padding="large">
+                <div className="scan-progress-container">
                   <s-spinner accessibilityLabel="Scanning theme" size="large" />
                   <s-text variant="headingMd">Scanning your theme...</s-text>
-                  <s-text>
+                  <div className="scan-progress-text">
                     Ghost Code is analyzing your theme files for orphaned code.
                     Your health score will appear here when the scan is complete.
-                  </s-text>
-                  {elapsedText && <s-text>Started {elapsedText} ago</s-text>}
-                  <s-text variant="bodySm">
-                    This typically takes 1–3 minutes depending on theme size.
-                  </s-text>
-                </s-stack>
-              ) : healthScore ? (
-                <s-stack direction="inline" gap="base">
-                  <s-text variant="headingXl">{healthScore.score}</s-text>
-                  <s-badge tone={healthScore.tone}>{healthScore.label}</s-badge>
-                  {previousHealthScore && (
-                    <s-text>
-                      {previousHealthScore.score} → {healthScore.score}
-                      {scoreDelta ? ` (${scoreDelta})` : " (no change)"}
-                    </s-text>
+                  </div>
+                  {elapsedText && (
+                    <div className="scan-progress-elapsed">Started {elapsedText} ago</div>
                   )}
-                </s-stack>
+                  <div className="scan-progress-elapsed">
+                    This typically takes 1–3 minutes depending on theme size.
+                  </div>
+                </div>
+              ) : healthScore ? (
+                <div className="health-score-hero">
+                  <div className={`health-score-number health-score-number--${healthScore.tone}`}>
+                    {healthScore.score}
+                  </div>
+                  <div className="health-score-subtitle">out of 100</div>
+                  <div className={`health-score-label health-score-label--${healthScore.tone}`}>
+                    {healthScore.label}
+                  </div>
+                  {previousHealthScore && (
+                    <div className="health-score-delta">
+                      Previous: {previousHealthScore.score}
+                      {scoreDelta ? ` (${scoreDelta})` : " (no change)"}
+                    </div>
+                  )}
+                </div>
               ) : (
                 <s-text>Run your first scan to see your theme health score.</s-text>
               )}
             </s-stack>
           </s-card>
 
-          {/* Last scan summary card */}
+          {/* Findings summary — severity stat cards in a row */}
           <s-card>
             <s-stack direction="block" gap="base">
-              <s-heading>Last Scan</s-heading>
-              {latestScan ? (
-                scanInProgress ? (
-                  <s-stack direction="block" gap="small">
-                    <s-stack direction="inline" alignItems="center" gap="small">
-                      <s-spinner accessibilityLabel="Scan in progress" />
-                      <s-text>
-                        Scanning <strong>{latestScan.themeName}</strong>... Results will appear here
-                        when complete.
-                      </s-text>
-                    </s-stack>
-                    {elapsedText && (
-                      <s-text>Running for {elapsedText}...</s-text>
-                    )}
-                    <s-text variant="bodySm">
-                      This typically takes 1–3 minutes depending on theme size.
+              <s-heading>Findings</s-heading>
+              {scanInProgress ? (
+                <s-stack direction="block" gap="small">
+                  <s-stack direction="inline" alignItems="center" gap="small">
+                    <s-spinner accessibilityLabel="Scan in progress" />
+                    <s-text>
+                      Scanning <strong>{latestScan?.themeName ?? "theme"}</strong>... Results will
+                      appear here when complete.
                     </s-text>
                   </s-stack>
-                ) : (
-                  <>
-                    <s-paragraph>
-                      Scanned <strong>{latestScan.themeName}</strong> on{" "}
-                      {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
-                    </s-paragraph>
-                    <s-stack direction="inline" gap="base">
-                      <s-badge tone="critical">{highCount} High</s-badge>
-                      <s-badge tone="warning">{mediumCount} Medium</s-badge>
-                      <s-badge tone="info">{lowCount} Low</s-badge>
-                    </s-stack>
-                  </>
-                )
+                  {elapsedText && (
+                    <s-text>Running for {elapsedText}...</s-text>
+                  )}
+                </s-stack>
+              ) : latestScan ? (
+                <>
+                  <div className="findings-row">
+                    <div className="finding-stat finding-stat--high">
+                      <div className="finding-stat__count finding-stat__count--high">
+                        {highCount}
+                      </div>
+                      <div className="finding-stat__label">High</div>
+                    </div>
+                    <div className="finding-stat finding-stat--medium">
+                      <div className="finding-stat__count finding-stat__count--medium">
+                        {mediumCount}
+                      </div>
+                      <div className="finding-stat__label">Medium</div>
+                    </div>
+                    <div className="finding-stat finding-stat--low">
+                      <div className="finding-stat__count finding-stat__count--low">
+                        {lowCount}
+                      </div>
+                      <div className="finding-stat__label">Low</div>
+                    </div>
+                  </div>
+                  {/* Last scan metadata — secondary info below findings */}
+                  <div className="scan-meta">
+                    Scanned <strong>{latestScan.themeName}</strong> on{" "}
+                    {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                  </div>
+                </>
               ) : (
                 <s-paragraph>No scans yet. Run your first scan to detect ghost code.</s-paragraph>
               )}
             </s-stack>
           </s-card>
 
-          {/* Quick actions card */}
+          {/* Actions card */}
           <s-card>
             <s-stack direction="block" gap="base">
-              <s-stack direction="inline" gap="base">
+              <s-heading>Actions</s-heading>
+              <div className="actions-row">
                 <s-button
                   variant="primary"
                   onClick={handleStartScan}
@@ -454,24 +617,34 @@ export default function Dashboard() {
                 >
                   Start New Scan
                 </s-button>
-                <s-link href="/app/scans">View Scan History</s-link>
-              </s-stack>
+                <s-button variant="tertiary" href="/app/scans">
+                  View Scan History
+                </s-button>
+              </div>
               {/* Free-plan usage indicator — only shown when the plan has a monthly cap */}
               {isFirstScan ? (
                 <s-text>Your first scan is free — no limits apply.</s-text>
               ) : scanUsage !== null ? (
-                <s-text>
-                  {scanLimitReached ? (
-                    <>
-                      Monthly scan limit reached ({scanUsage.used} of {scanUsage.limit} used).{" "}
-                      <a href="/app/settings">Upgrade for unlimited scans.</a>
-                    </>
-                  ) : (
-                    <>
-                      Scans this month: {scanUsage.used} of {scanUsage.limit}
-                    </>
-                  )}
-                </s-text>
+                <div className="usage-bar-container">
+                  <div className="usage-bar-track">
+                    <div
+                      className={`usage-bar-fill ${scanLimitReached ? "usage-bar-fill--full" : "usage-bar-fill--normal"}`}
+                      style={{ width: `${Math.min((scanUsage.used / scanUsage.limit) * 100, 100)}%` }}
+                    />
+                  </div>
+                  <div className="usage-text">
+                    {scanLimitReached ? (
+                      <>
+                        Monthly scan limit reached ({scanUsage.used} of {scanUsage.limit} used).{" "}
+                        <a href="/app/settings">Upgrade for unlimited scans.</a>
+                      </>
+                    ) : (
+                      <>
+                        {scanUsage.used} of {scanUsage.limit} scans used this month
+                      </>
+                    )}
+                  </div>
+                </div>
               ) : null}
             </s-stack>
           </s-card>
