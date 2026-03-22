@@ -553,8 +553,8 @@ export default function Dashboard() {
                   <s-spinner accessibilityLabel="Scanning theme" size="large" />
                   <s-text variant="headingMd">Scanning your theme...</s-text>
                   <div className="scan-progress-text">
-                    Ghost Code is analyzing your theme files for orphaned code.
-                    Results will appear here when the scan is complete.
+                    Ghost Code is analyzing your theme files for orphaned code. Results will appear
+                    here when the scan is complete.
                   </div>
                   {elapsedText && (
                     <div className="scan-progress-elapsed">Started {elapsedText} ago</div>
@@ -569,12 +569,19 @@ export default function Dashboard() {
                     {/* Left: health score tile */}
                     <div>
                       <s-heading>Theme Health</s-heading>
-                      <div className={`health-score-tile health-score-tile--${healthScore.tone}`} style={{ marginTop: "8px" }}>
-                        <div className={`health-score-number health-score-number--${healthScore.tone}`}>
+                      <div
+                        className={`health-score-tile health-score-tile--${healthScore.tone}`}
+                        style={{ marginTop: "8px" }}
+                      >
+                        <div
+                          className={`health-score-number health-score-number--${healthScore.tone}`}
+                        >
                           {healthScore.score}
                         </div>
                         <div className="health-score-subtitle">out of 100</div>
-                        <div className={`health-score-label health-score-label--${healthScore.tone}`}>
+                        <div
+                          className={`health-score-label health-score-label--${healthScore.tone}`}
+                        >
                           {healthScore.label}
                         </div>
                         {previousHealthScore && (
@@ -587,10 +594,18 @@ export default function Dashboard() {
                     </div>
                     {/* Right: findings */}
                     <div style={{ display: "flex", flexDirection: "column" }}>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: "8px", flexWrap: "wrap" }}>
+                      <div
+                        style={{
+                          display: "flex",
+                          alignItems: "baseline",
+                          gap: "8px",
+                          flexWrap: "wrap",
+                        }}
+                      >
                         <s-heading>Most Recent Findings</s-heading>
                         <span style={{ fontSize: "13px", color: "#6d7175" }}>
-                          — <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong>, {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                          — <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong>,{" "}
+                          {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
                         </span>
                       </div>
                       <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
@@ -630,17 +645,19 @@ export default function Dashboard() {
             <s-stack direction="block" gap="base">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
                 {/* Left: scan action */}
-                <div style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  padding: "20px 16px",
-                  borderRadius: "12px",
-                  border: "1px solid #e1e3e5",
-                  background: scanLimitReached ? "#fafbfb" : "#ffffff",
-                  textAlign: "center",
-                  gap: "12px",
-                }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    padding: "20px 16px",
+                    borderRadius: "12px",
+                    border: "1px solid #e1e3e5",
+                    background: scanLimitReached ? "#fafbfb" : "#ffffff",
+                    textAlign: "center",
+                    gap: "12px",
+                  }}
+                >
                   <s-heading>New Scan</s-heading>
                   {isFirstScan ? (
                     <div style={{ fontSize: "13px", color: "#1a8a3f" }}>
@@ -651,10 +668,15 @@ export default function Dashboard() {
                       <div style={{ fontSize: "13px", color: "#6d7175", marginBottom: "6px" }}>
                         {scanUsage.used} of {scanUsage.limit} used this {scanUsage.period}
                       </div>
-                      <div className="usage-bar-track" style={{ margin: "0 auto", maxWidth: "160px" }}>
+                      <div
+                        className="usage-bar-track"
+                        style={{ margin: "0 auto", maxWidth: "160px" }}
+                      >
                         <div
                           className={`usage-bar-fill ${scanLimitReached ? "usage-bar-fill--full" : "usage-bar-fill--normal"}`}
-                          style={{ width: `${Math.min((scanUsage.used / scanUsage.limit) * 100, 100)}%` }}
+                          style={{
+                            width: `${Math.min((scanUsage.used / scanUsage.limit) * 100, 100)}%`,
+                          }}
                         />
                       </div>
                     </div>
@@ -673,23 +695,27 @@ export default function Dashboard() {
                   </s-button>
                   {scanLimitReached && (
                     <div style={{ fontSize: "12px", color: "#6d7175" }}>
-                      <a href="/app/settings" style={{ color: "#2c6ecb" }}>Upgrade for more scans</a>
+                      <a href="/app/settings" style={{ color: "#2c6ecb" }}>
+                        Upgrade for more scans
+                      </a>
                     </div>
                   )}
                 </div>
                 {/* Right: scan history */}
-                <div style={{
-                  display: "flex",
-                  flexDirection: "column",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  padding: "20px 16px",
-                  borderRadius: "12px",
-                  border: "1px solid #e1e3e5",
-                  background: "#ffffff",
-                  textAlign: "center",
-                  gap: "12px",
-                }}>
+                <div
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    padding: "20px 16px",
+                    borderRadius: "12px",
+                    border: "1px solid #e1e3e5",
+                    background: "#ffffff",
+                    textAlign: "center",
+                    gap: "12px",
+                  }}
+                >
                   <s-heading>Scan History</s-heading>
                   <div style={{ fontSize: "13px", color: "#6d7175" }}>
                     View all past scans and findings

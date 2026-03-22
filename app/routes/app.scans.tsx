@@ -100,7 +100,12 @@ export default function ScanHistory() {
                       </td>
                       <td>{scan.findingCount}</td>
                       <td>
-                        <Link to={`/app/scans/${scan.id}`} style={{ color: "#2c6ecb", textDecoration: "none" }}>View</Link>
+                        <Link
+                          to={`/app/scans/${scan.id}`}
+                          style={{ color: "#2c6ecb", textDecoration: "none" }}
+                        >
+                          View
+                        </Link>
                       </td>
                     </tr>
                   ))}

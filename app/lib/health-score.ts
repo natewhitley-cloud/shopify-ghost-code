@@ -55,9 +55,7 @@ function scoreToBand(score: number): Pick<HealthScoreResult, "label" | "tone"> {
  *
  * The result is clamped to [0, 100].
  */
-export function computeHealthScore(
-  findings: SeverityCounts,
-): HealthScoreResult {
+export function computeHealthScore(findings: SeverityCounts): HealthScoreResult {
   const deduction =
     findings.HIGH * DEDUCTION_WEIGHTS.HIGH +
     findings.MEDIUM * DEDUCTION_WEIGHTS.MEDIUM +

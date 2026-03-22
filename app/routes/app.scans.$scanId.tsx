@@ -9,10 +9,7 @@ import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
-import {
-  getFindingSummary,
-  getHighestSeverityFinding,
-} from "../models/finding.server";
+import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
 import type { ScanDiff } from "../services/scan-differ.server";
