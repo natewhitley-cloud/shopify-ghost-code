@@ -76,4 +76,45 @@ describe("token-encryption", () => {
       expect(() => encryptToken("test")).toThrow("must be 64 hex characters");
     });
   });
+
+  describe("corrupted ciphertext", () => {
+    beforeEach(() => {
+      process.env.TOKEN_ENCRYPTION_KEY = TEST_KEY;
+    });
+
+    it("throws when ciphertext bytes are tampered with", () => {
+      const plaintext = "shpat_abc123_test_token";
+      const encrypted = encryptToken(plaintext);
+
+      // Tamper with the ciphertext portion (third segment after the second colon)
+      const parts = encrypted.split(":");
+      const tampered = parts[2].replace(/^.{4}/, "ffff");
+      const corruptedToken = `${parts[0]}:${parts[1]}:${tampered}`;
+
+      // AES-256-GCM authentication check should cause decryption to throw
+      expect(() => decryptToken(corruptedToken)).toThrow();
+    });
+
+    it("throws when auth tag is tampered with", () => {
+      const plaintext = "shpat_abc123_test_token";
+      const encrypted = encryptToken(plaintext);
+
+      const parts = encrypted.split(":");
+      const tamperedTag = parts[1].replace(/^.{4}/, "ffff");
+      const corruptedToken = `${parts[0]}:${tamperedTag}:${parts[2]}`;
+
+      expect(() => decryptToken(corruptedToken)).toThrow();
+    });
+
+    it("throws when IV is tampered with", () => {
+      const plaintext = "shpat_abc123_test_token";
+      const encrypted = encryptToken(plaintext);
+
+      const parts = encrypted.split(":");
+      const tamperedIv = parts[0].replace(/^.{4}/, "ffff");
+      const corruptedToken = `${tamperedIv}:${parts[1]}:${parts[2]}`;
+
+      expect(() => decryptToken(corruptedToken)).toThrow();
+    });
+  });
 });
