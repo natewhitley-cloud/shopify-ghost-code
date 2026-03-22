@@ -36,7 +36,9 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   GHOST_STYLE: "Styles",
   GHOST_SNIPPET: "Snippets",
   GHOST_SECTION: "Sections",
+  GHOST_HREFLANG: "Hreflang Tags",
   ORPHAN_ASSET: "Orphan Assets",
+  DUPLICATE_META: "Duplicate Meta Tags",
 };
 
 // ---------------------------------------------------------------------------

@@ -23,6 +23,7 @@ export type AppSignature = {
   scriptPatterns: RegExp[];
   snippetNames: string[];
   cssPatterns: RegExp[];
+  hrefLangPatterns?: RegExp[];
 };
 
 export const APP_SIGNATURES: AppSignature[] = [
@@ -395,6 +396,51 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/weglot\.com/, /Weglot\.initialize/, /window\.Weglot\b/],
     snippetNames: ["weglot-switcher"],
     cssPatterns: [/weglot/],
+    hrefLangPatterns: [/weglot\.com/, /^https?:\/\/[a-z]{2}\./],
+  },
+  {
+    appName: "Transcy",
+    cdnDomains: ["cdn.transcy.io"],
+    scriptPatterns: [/transcy\.io/, /Transcy/, /window\.transcy\b/],
+    snippetNames: ["transcy", "transcy-switcher"],
+    cssPatterns: [/transcy/],
+    hrefLangPatterns: [/transcy\.io/],
+  },
+  {
+    appName: "Langify",
+    cdnDomains: ["cdn.langify-app.com"],
+    scriptPatterns: [/langify-app\.com/, /langify/, /window\.langify\b/],
+    snippetNames: ["langify", "langify-switcher"],
+    cssPatterns: [/langify/],
+    hrefLangPatterns: [/langify-app\.com/, /\/a\/l\//],
+  },
+  {
+    appName: "LangShop",
+    cdnDomains: ["cdn.langshop.app"],
+    scriptPatterns: [/langshop\.app/, /LangShop/, /window\.langshop\b/],
+    snippetNames: ["langshop", "langshop-switcher"],
+    cssPatterns: [/langshop/],
+    hrefLangPatterns: [/langshop\.app/],
+  },
+  {
+    appName: "Hextom Translate",
+    cdnDomains: [],
+    scriptPatterns: [/hextom\.com\/.*translate/, /HextomTranslate/],
+    snippetNames: ["hextom-translate", "hextom-translate-switcher"],
+    cssPatterns: [/hextom.*translate/],
+    hrefLangPatterns: [/hextom\.com/],
+  },
+  // Translate & Adapt uses Shopify's built-in locale paths — keep AFTER
+  // domain-specific translation apps so their patterns take priority.
+  {
+    appName: "Translate & Adapt",
+    cdnDomains: [],
+    scriptPatterns: [/shopify-translate-adapt/],
+    snippetNames: ["translate-adapt"],
+    cssPatterns: [],
+    hrefLangPatterns: [
+      /\/(?:fr|de|es|it|pt|ja|ko|zh|nl|ru|ar|pl|sv|da|no|fi|cs|el|tr|th|vi|id|ms|hi|bn|uk|ro|hu|bg|hr|sk|sl|lt|lv|et|sr)(?:\/|$)/,
+    ],
   },
   {
     appName: "Currency Converter (BEST)",

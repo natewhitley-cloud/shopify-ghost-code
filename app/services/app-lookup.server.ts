@@ -91,6 +91,24 @@ export function identifyAppFromCode(code: string): string | null {
 }
 
 /**
+ * Identify an app from an hreflang tag's href URL.
+ *
+ * Checks each signature's hrefLangPatterns array against the full href string.
+ * Returns the first matching appName or null.
+ */
+export function identifyAppFromHrefLang(href: string): string | null {
+  for (const sig of APP_SIGNATURES) {
+    if (!sig.hrefLangPatterns) continue;
+    for (const pattern of sig.hrefLangPatterns) {
+      if (pattern.test(href)) {
+        return sig.appName;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Identify an app from a Liquid snippet or section name (case-insensitive).
  *
  * Checks each signature's snippetNames list for an exact match.

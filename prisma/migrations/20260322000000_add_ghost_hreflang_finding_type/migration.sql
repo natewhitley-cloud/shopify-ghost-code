@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "FindingType" ADD VALUE 'GHOST_HREFLANG';

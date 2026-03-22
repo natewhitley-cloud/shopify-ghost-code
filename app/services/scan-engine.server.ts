@@ -10,8 +10,11 @@
  *   GHOST_STYLE    — <link rel="stylesheet"> pointing to an external app CDN
  *   GHOST_SNIPPET  — {% render %} / {% include %} referencing a known app snippet
  *   GHOST_SECTION  — {% section %} referencing a known app section
+ *   GHOST_HREFLANG — <link rel="alternate" hreflang="..."> left by translation apps
  *   ORPHAN_ASSET   — snippet files that exist in the theme but are never referenced
  *                    by any template, section, layout, or other snippet
+ *   DUPLICATE_META — multiple <meta> tags with the same name or property attribute
+ *                    in a single file (e.g. stacked SEO apps)
  */
 
 import { FindingType } from "@prisma/client";
@@ -20,6 +23,7 @@ import {
   identifyAppFromUrl,
   identifyAppFromCode,
   identifyAppFromSnippetName,
+  identifyAppFromHrefLang,
 } from "./app-lookup.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
@@ -227,6 +231,128 @@ export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Detector: GHOST_HREFLANG
+// ---------------------------------------------------------------------------
+
+// Matches <link ... rel="alternate" ... hreflang="xx" ... href="..." ...>
+// Handles both attribute orderings: hreflang before href and href before hreflang.
+const HREFLANG_RE_1 =
+  /<link[^>]+rel\s*=\s*["']alternate["'][^>]+hreflang\s*=\s*["']([^"']+)["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi;
+const HREFLANG_RE_2 =
+  /<link[^>]+rel\s*=\s*["']alternate["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*hreflang\s*=\s*["']([^"']+)["'][^>]*>/gi;
+
+export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    // Pattern 1: hreflang before href — groups: [1]=lang, [2]=href
+    let match: RegExpExecArray | null;
+    HREFLANG_RE_1.lastIndex = 0;
+
+    while ((match = HREFLANG_RE_1.exec(text)) !== null) {
+      const lang = match[1];
+      const href = match[2];
+      const appName = identifyAppFromHrefLang(href);
+      if (!appName) continue;
+
+      const codeSnippet = buildSnippet(file.content, lineNumber);
+      const severity = classifySeverity(FindingType.GHOST_HREFLANG, codeSnippet);
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_HREFLANG,
+        severity,
+        appName,
+        description: `Orphaned hreflang tag for "${lang}" from ${appName} (${href})`,
+      });
+    }
+
+    // Pattern 2: href before hreflang — groups: [1]=href, [2]=lang
+    HREFLANG_RE_2.lastIndex = 0;
+
+    while ((match = HREFLANG_RE_2.exec(text)) !== null) {
+      const href = match[1];
+      const lang = match[2];
+      const appName = identifyAppFromHrefLang(href);
+      if (!appName) continue;
+
+      const codeSnippet = buildSnippet(file.content, lineNumber);
+      const severity = classifySeverity(FindingType.GHOST_HREFLANG, codeSnippet);
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_HREFLANG,
+        severity,
+        appName,
+        description: `Orphaned hreflang tag for "${lang}" from ${appName} (${href})`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Detector: DUPLICATE_META
+// ---------------------------------------------------------------------------
+
+// Matches <meta ... name="X" ...> or <meta ... property="X" ...>
+// Captures the name/property attribute value regardless of attribute order.
+const META_TAG_RE = /<meta\s+[^>]*(?:name|property)\s*=\s*["']([^"']+)["'][^>]*>/gi;
+
+export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  // Build a map of (name/property value) → array of occurrences
+  const occurrences = new Map<string, Array<{ lineNumber: number; text: string }>>();
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    let match: RegExpExecArray | null;
+    META_TAG_RE.lastIndex = 0;
+
+    while ((match = META_TAG_RE.exec(text)) !== null) {
+      const attrValue = match[1].toLowerCase();
+      if (!occurrences.has(attrValue)) {
+        occurrences.set(attrValue, []);
+      }
+      occurrences.get(attrValue)!.push({ lineNumber, text });
+    }
+  }
+
+  // Emit findings for the 2nd+ occurrence of each duplicated meta tag
+  for (const [attrValue, entries] of occurrences) {
+    if (entries.length < 2) continue;
+
+    const firstLine = entries[0].lineNumber;
+
+    for (let i = 1; i < entries.length; i++) {
+      const entry = entries[i];
+      const codeSnippet = buildSnippet(file.content, entry.lineNumber);
+      const severity = classifySeverity(FindingType.DUPLICATE_META, codeSnippet);
+
+      // Attempt app attribution from the full meta tag text — optional
+      const appName = identifyAppFromCode(entry.text) ?? null;
+
+      findings.push({
+        filename: file.filename,
+        lineNumber: entry.lineNumber,
+        codeSnippet,
+        findingType: FindingType.DUPLICATE_META,
+        severity,
+        appName: appName ?? undefined,
+        description: `Duplicate meta tag '${attrValue}' — also found on line ${firstLine}`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -235,10 +361,10 @@ export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
  *
  * Performs two passes over the provided files:
  *
- *   Pass 1 — per-file pattern detection (existing behaviour, unchanged):
+ *   Pass 1 — per-file pattern detection:
  *     Processes only scannable Liquid files (templates/, sections/, snippets/,
- *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET, and
- *     GHOST_SECTION findings.
+ *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
+ *     GHOST_SECTION, GHOST_HREFLANG, and DUPLICATE_META findings.
  *
  *   Pass 2 — cross-file orphan detection (new):
  *     Runs the file reference analyzer over all Liquid files (not just
@@ -259,6 +385,8 @@ export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
     findings.push(...detectGhostStyles(file));
     findings.push(...detectGhostSnippets(file));
     findings.push(...detectGhostSections(file));
+    findings.push(...detectGhostHrefLang(file));
+    findings.push(...detectDuplicateMetaTags(file));
   }
 
   // Pass 2: cross-file orphan snippet detection
@@ -271,6 +399,13 @@ export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
   const orphans = analyzeFileReferences(fileReferenceInput);
 
   for (const orphan of orphans) {
+    // Extract the bare snippet name from the filename (e.g. "snippets/klaviyo-form.liquid" → "klaviyo-form")
+    // and attempt app attribution. Stock theme snippets (icon-cart, icon-zoom, etc.)
+    // won't match any known app and are filtered out — they aren't ghost code.
+    const baseName = orphan.filename.replace(/^snippets\//, "").replace(/\.liquid$/, "");
+    const appName = identifyAppFromSnippetName(baseName);
+    if (!appName) continue;
+
     const severity = classifySeverity(FindingType.ORPHAN_ASSET, "");
     findings.push({
       filename: orphan.filename,
@@ -278,7 +413,7 @@ export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
       codeSnippet: "",
       findingType: FindingType.ORPHAN_ASSET,
       severity,
-      appName: undefined,
+      appName,
       description: orphan.reason,
     });
   }

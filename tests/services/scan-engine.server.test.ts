@@ -7,6 +7,8 @@ import {
   detectGhostStyles,
   detectGhostSnippets,
   detectGhostSections,
+  detectGhostHrefLang,
+  detectDuplicateMetaTags,
   scanThemeFiles,
 } from "../../app/services/scan-engine.server";
 
@@ -315,6 +317,256 @@ describe("detectGhostSections", () => {
 });
 
 // ---------------------------------------------------------------------------
+// detectGhostHrefLang
+// ---------------------------------------------------------------------------
+
+describe("detectGhostHrefLang", () => {
+  it("detects a Weglot hreflang tag (hreflang before href)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="alternate" hreflang="fr" href="https://fr.example.com/products" />',
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_HREFLANG);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+    expect(findings[0].appName).toBe("Weglot");
+    expect(findings[0].lineNumber).toBe(1);
+    expect(findings[0].description).toContain("fr");
+    expect(findings[0].description).toContain("Weglot");
+  });
+
+  it("detects hreflang tag with href before hreflang", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="alternate" href="https://cdn.weglot.com/fr/page" hreflang="fr" />',
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Weglot");
+    expect(findings[0].description).toContain("fr");
+  });
+
+  it("detects Transcy hreflang tags from transcy.io domain", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="alternate" hreflang="de" href="https://cdn.transcy.io/de/products" />',
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Transcy");
+    expect(findings[0].description).toContain("de");
+  });
+
+  it("detects Langify hreflang tags from domain pattern", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="alternate" hreflang="es" href="https://cdn.langify-app.com/es/page" />',
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Langify");
+  });
+
+  it("detects LangShop hreflang tags from domain pattern", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="alternate" hreflang="ja" href="https://cdn.langshop.app/ja/page" />',
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("LangShop");
+  });
+
+  it("detects multiple hreflang tags on different lines", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<link rel="alternate" hreflang="fr" href="https://fr.example.com/" />',
+        '<link rel="alternate" hreflang="de" href="https://de.example.com/" />',
+      ].join("\n"),
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(2);
+    expect(findings[0].lineNumber).toBe(1);
+    expect(findings[1].lineNumber).toBe(2);
+  });
+
+  it("returns empty array for files with no hreflang tags", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: "<html>{{ content_for_layout }}</html>",
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("ignores hreflang tags with unrecognized href URLs", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="alternate" hreflang="fr" href="https://example.com/" />',
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("downgrades to LOW when inside a Liquid comment", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content:
+        '{% comment %}\n<link rel="alternate" hreflang="fr" href="https://fr.example.com/" />\n{% endcomment %}',
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+
+  it("handles single-quoted attributes", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: "<link rel='alternate' hreflang='fr' href='https://fr.example.com/' />",
+    };
+    const findings = detectGhostHrefLang(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Weglot");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDuplicateMetaTags
+// ---------------------------------------------------------------------------
+
+describe("detectDuplicateMetaTags", () => {
+  it("finds duplicate <meta name='description'> tags in same file", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta name="description" content="First description">',
+        "<p>some content</p>",
+        '<meta name="description" content="Second description">',
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.DUPLICATE_META);
+    expect(findings[0].severity).toBe(Severity.MEDIUM);
+    expect(findings[0].lineNumber).toBe(3);
+    expect(findings[0].description).toContain("description");
+    expect(findings[0].description).toContain("line 1");
+  });
+
+  it("finds duplicate <meta property='og:title'> tags (Open Graph)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta property="og:title" content="First Title">',
+        '<meta property="og:title" content="Second Title">',
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.DUPLICATE_META);
+    expect(findings[0].description).toContain("og:title");
+    expect(findings[0].description).toContain("line 1");
+  });
+
+  it("does NOT flag unique meta tags (no duplicates = no findings)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta name="description" content="My shop">',
+        '<meta property="og:title" content="My Title">',
+        '<meta name="viewport" content="width=device-width">',
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("handles mixed name and property attributes correctly", () => {
+    // name="description" and property="description" should NOT be merged —
+    // they are different attribute types. But two name="description" should match.
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta name="description" content="Name desc">',
+        '<meta property="og:title" content="OG Title 1">',
+        '<meta property="og:title" content="OG Title 2">',
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("og:title");
+  });
+
+  it("returns empty array for files with no meta tags", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: "<html><body>{{ content_for_layout }}</body></html>",
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("correctly identifies which occurrence is the duplicate (2nd+ occurrence)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta name="robots" content="index, follow">',
+        "<p>gap</p>",
+        '<meta name="robots" content="noindex">',
+        "<p>gap</p>",
+        '<meta name="robots" content="nofollow">',
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    // Should flag line 3 and line 5 (2nd and 3rd occurrences), NOT line 1
+    expect(findings).toHaveLength(2);
+    expect(findings[0].lineNumber).toBe(3);
+    expect(findings[0].description).toContain("line 1");
+    expect(findings[1].lineNumber).toBe(5);
+    expect(findings[1].description).toContain("line 1");
+  });
+
+  it("is case-insensitive for attribute values", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta name="Description" content="First">',
+        '<meta name="description" content="Second">',
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(1);
+  });
+
+  it("handles meta tags with attributes in different order", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta name="description" content="First">',
+        '<meta content="Second" name="description">',
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(1);
+  });
+
+  it("returns appName as undefined when no app signature matches", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta name="description" content="plain text">',
+        '<meta name="description" content="another plain text">',
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // scanThemeFiles (integration)
 // ---------------------------------------------------------------------------
 
@@ -369,6 +621,36 @@ describe("scanThemeFiles", () => {
     expect(types.has(FindingType.GHOST_STYLE)).toBe(true);
   });
 
+  it("picks up GHOST_HREFLANG findings from layout files", () => {
+    const files = [
+      {
+        filename: "layout/theme.liquid",
+        content:
+          '<link rel="alternate" hreflang="fr" href="https://fr.example.com/" />\n<link rel="alternate" hreflang="de" href="https://de.example.com/" />',
+      },
+    ];
+    const findings = scanThemeFiles(files);
+    const hreflangFindings = findingsOfType(findings, FindingType.GHOST_HREFLANG);
+    expect(hreflangFindings.length).toBeGreaterThanOrEqual(2);
+    expect(hreflangFindings[0].appName).toBe("Weglot");
+  });
+
+  it("picks up DUPLICATE_META findings from layout files", () => {
+    const files = [
+      {
+        filename: "layout/theme.liquid",
+        content: [
+          '<meta name="description" content="First description">',
+          '<meta name="description" content="Second description">',
+        ].join("\n"),
+      },
+    ];
+    const findings = scanThemeFiles(files);
+    const dupeFindings = findingsOfType(findings, FindingType.DUPLICATE_META);
+    expect(dupeFindings).toHaveLength(1);
+    expect(dupeFindings[0].description).toContain("description");
+  });
+
   it("returns empty array for empty files array", () => {
     expect(scanThemeFiles([])).toHaveLength(0);
   });
@@ -402,18 +684,19 @@ describe("scanThemeFiles", () => {
 // ---------------------------------------------------------------------------
 
 describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
-  it("flags a snippet file that is never referenced by any other file", () => {
+  it("flags an orphan snippet file attributed to a known app", () => {
     const files = [
       { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
-      { filename: "snippets/abandoned-widget.liquid", content: "<div>old widget</div>" },
+      { filename: "snippets/klaviyo-onsite.liquid", content: "<div>old widget</div>" },
     ];
     const findings = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(1);
-    expect(orphans[0].filename).toBe("snippets/abandoned-widget.liquid");
+    expect(orphans[0].filename).toBe("snippets/klaviyo-onsite.liquid");
     expect(orphans[0].findingType).toBe(FindingType.ORPHAN_ASSET);
     expect(orphans[0].severity).toBe(Severity.LOW);
-    expect(orphans[0].description).toContain("abandoned-widget");
+    expect(orphans[0].appName).toBe("Klaviyo");
+    expect(orphans[0].description).toContain("klaviyo-onsite");
   });
 
   it("does not flag a snippet that is rendered by another file", () => {
@@ -446,17 +729,20 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
     expect(orphans).toHaveLength(0);
   });
 
-  it("flags multiple orphan snippets in one scan", () => {
+  it("flags multiple orphan snippets attributed to known apps", () => {
     const files = [
       { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
-      { filename: "snippets/orphan-a.liquid", content: "<div>a</div>" },
-      { filename: "snippets/orphan-b.liquid", content: "<div>b</div>" },
+      { filename: "snippets/klaviyo-form.liquid", content: "<div>a</div>" },
+      { filename: "snippets/omnisend-newsletter.liquid", content: "<div>b</div>" },
     ];
     const findings = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(2);
     const filenames = orphans.map((f) => f.filename).sort();
-    expect(filenames).toEqual(["snippets/orphan-a.liquid", "snippets/orphan-b.liquid"]);
+    expect(filenames).toEqual([
+      "snippets/klaviyo-form.liquid",
+      "snippets/omnisend-newsletter.liquid",
+    ]);
   });
 
   it("does not produce any ORPHAN_ASSET findings when there are no snippet files", () => {
@@ -475,7 +761,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
         filename: "layout/theme.liquid",
         content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>',
       },
-      { filename: "snippets/leftover-app.liquid", content: "<div>unused</div>" },
+      { filename: "snippets/omnisend-snippet.liquid", content: "<div>unused</div>" },
     ];
     const findings = scanThemeFiles(files);
     const ghostScripts = findingsOfType(findings, FindingType.GHOST_SCRIPT);
@@ -487,7 +773,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
   it("produces ORPHAN_ASSET findings with valid CreateFindingInput shape", () => {
     const files = [
       { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
-      { filename: "snippets/orphan-snippet.liquid", content: "<div>orphan</div>" },
+      { filename: "snippets/klaviyo-tracking.liquid", content: "<div>orphan</div>" },
     ];
     const findings = scanThemeFiles(files);
     const orphan = findingsOfType(findings, FindingType.ORPHAN_ASSET)[0];
@@ -496,7 +782,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
     expect(typeof orphan.lineNumber).toBe("number");
     expect(typeof orphan.codeSnippet).toBe("string");
     expect(typeof orphan.description).toBe("string");
-    expect(orphan.appName).toBeUndefined();
+    expect(orphan.appName).toBe("Klaviyo");
   });
 
   it("handles a snippet file referenced via include tag (not just render)", () => {
@@ -510,5 +796,33 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
     const findings = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(0);
+  });
+
+  it("filters out orphan snippets that cannot be attributed to a known app", () => {
+    // Stock theme snippets like icon-cart.liquid are unreferenced but are NOT ghost code.
+    // Without app attribution they should be silently dropped.
+    const files = [
+      { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
+      { filename: "snippets/icon-cart.liquid", content: "<svg>...</svg>" },
+      { filename: "snippets/icon-zoom.liquid", content: "<svg>...</svg>" },
+      { filename: "snippets/custom-helper.liquid", content: "<div>helper</div>" },
+    ];
+    const findings = scanThemeFiles(files);
+    const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
+    expect(orphans).toHaveLength(0);
+  });
+
+  it("keeps attributed orphans and drops unattributed ones in the same scan", () => {
+    // Mix of known-app orphan (should be kept) and stock theme orphan (should be dropped)
+    const files = [
+      { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
+      { filename: "snippets/klaviyo-form.liquid", content: "<div>klaviyo leftover</div>" },
+      { filename: "snippets/icon-cart.liquid", content: "<svg>...</svg>" },
+    ];
+    const findings = scanThemeFiles(files);
+    const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
+    expect(orphans).toHaveLength(1);
+    expect(orphans[0].filename).toBe("snippets/klaviyo-form.liquid");
+    expect(orphans[0].appName).toBe("Klaviyo");
   });
 });

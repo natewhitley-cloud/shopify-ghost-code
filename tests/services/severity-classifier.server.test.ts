@@ -35,8 +35,23 @@ describe("classifySeverity", () => {
     );
   });
 
+  it("returns HIGH for GHOST_HREFLANG by default", () => {
+    expect(
+      classifySeverity(
+        FindingType.GHOST_HREFLANG,
+        '<link rel="alternate" hreflang="fr" href="https://fr.example.com/">',
+      ),
+    ).toBe(Severity.HIGH);
+  });
+
   it("returns LOW for ORPHAN_ASSET by default", () => {
     expect(classifySeverity(FindingType.ORPHAN_ASSET, "some-unused-asset.js")).toBe(Severity.LOW);
+  });
+
+  it("returns MEDIUM for DUPLICATE_META by default", () => {
+    expect(
+      classifySeverity(FindingType.DUPLICATE_META, '<meta name="description" content="duplicate">'),
+    ).toBe(Severity.MEDIUM);
   });
 
   // -------------------------------------------------------------------------
@@ -58,6 +73,18 @@ describe("classifySeverity", () => {
   it("downgrades GHOST_SNIPPET to LOW when inside a Liquid comment", () => {
     const snippet = "{% comment %}\n  {% render 'klaviyo-onsite' %}\n{% endcomment %}";
     expect(classifySeverity(FindingType.GHOST_SNIPPET, snippet)).toBe(Severity.LOW);
+  });
+
+  it("downgrades GHOST_HREFLANG to LOW when inside a Liquid comment", () => {
+    const snippet =
+      '{% comment %}\n  <link rel="alternate" hreflang="fr" href="https://fr.example.com/">\n{% endcomment %}';
+    expect(classifySeverity(FindingType.GHOST_HREFLANG, snippet)).toBe(Severity.LOW);
+  });
+
+  it("downgrades DUPLICATE_META to LOW when inside a Liquid comment", () => {
+    const snippet =
+      '{% comment %}\n  <meta name="description" content="duplicate">\n{% endcomment %}';
+    expect(classifySeverity(FindingType.DUPLICATE_META, snippet)).toBe(Severity.LOW);
   });
 
   // -------------------------------------------------------------------------

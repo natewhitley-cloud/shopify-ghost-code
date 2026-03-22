@@ -20,7 +20,9 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.GHOST_STYLE]: Severity.MEDIUM,
   [FindingType.GHOST_SNIPPET]: Severity.MEDIUM,
   [FindingType.GHOST_SECTION]: Severity.LOW,
+  [FindingType.GHOST_HREFLANG]: Severity.HIGH,
   [FindingType.ORPHAN_ASSET]: Severity.LOW,
+  [FindingType.DUPLICATE_META]: Severity.MEDIUM,
 };
 
 // ---------------------------------------------------------------------------

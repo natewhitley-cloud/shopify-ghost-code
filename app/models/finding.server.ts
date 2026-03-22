@@ -109,7 +109,9 @@ export async function getFindingSummary(scanId: string) {
     [FindingType.GHOST_STYLE]: 0,
     [FindingType.GHOST_SNIPPET]: 0,
     [FindingType.GHOST_SECTION]: 0,
+    [FindingType.GHOST_HREFLANG]: 0,
     [FindingType.ORPHAN_ASSET]: 0,
+    [FindingType.DUPLICATE_META]: 0,
   };
   for (const row of byType) {
     typeCounts[row.findingType] = row._count.findingType;

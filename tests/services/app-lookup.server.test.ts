@@ -4,6 +4,7 @@ import {
   identifyAppFromUrl,
   identifyAppFromCode,
   identifyAppFromSnippetName,
+  identifyAppFromHrefLang,
 } from "../../app/services/app-lookup.server";
 
 // ---------------------------------------------------------------------------
@@ -139,5 +140,48 @@ describe("identifyAppFromSnippetName", () => {
   it("does not match partial snippet names", () => {
     // "klaviyo" alone should NOT match "klaviyo-onsite"
     expect(identifyAppFromSnippetName("klaviyo")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// identifyAppFromHrefLang
+// ---------------------------------------------------------------------------
+
+describe("identifyAppFromHrefLang", () => {
+  it("identifies Weglot from weglot.com domain in href", () => {
+    expect(identifyAppFromHrefLang("https://cdn.weglot.com/fr/products")).toBe("Weglot");
+  });
+
+  it("identifies Weglot from subdomain pattern (fr.example.com)", () => {
+    expect(identifyAppFromHrefLang("https://fr.example.com/products")).toBe("Weglot");
+  });
+
+  it("identifies Transcy from transcy.io domain", () => {
+    expect(identifyAppFromHrefLang("https://cdn.transcy.io/de/products")).toBe("Transcy");
+  });
+
+  it("identifies Langify from langify-app.com domain", () => {
+    expect(identifyAppFromHrefLang("https://cdn.langify-app.com/es/page")).toBe("Langify");
+  });
+
+  it("identifies LangShop from langshop.app domain", () => {
+    expect(identifyAppFromHrefLang("https://cdn.langshop.app/ja/page")).toBe("LangShop");
+  });
+
+  it("identifies Hextom Translate from hextom.com domain", () => {
+    expect(identifyAppFromHrefLang("https://cdn.hextom.com/translate/fr")).toBe("Hextom Translate");
+  });
+
+  it("returns null for URLs with no matching translation app pattern", () => {
+    expect(identifyAppFromHrefLang("https://example.com/")).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(identifyAppFromHrefLang("")).toBeNull();
+  });
+
+  it("skips signatures without hrefLangPatterns", () => {
+    // Klaviyo has no hrefLangPatterns — should not match even though it has CDN patterns
+    expect(identifyAppFromHrefLang("https://static.klaviyo.com/something")).toBeNull();
   });
 });
