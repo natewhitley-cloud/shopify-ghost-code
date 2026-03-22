@@ -378,7 +378,7 @@ export default function Dashboard() {
               display: grid;
               grid-template-columns: 1fr 3fr;
               gap: 16px;
-              align-items: end;
+              align-items: start;
             }
             @media (max-width: 600px) {
               .dashboard-top-row {
@@ -575,6 +575,8 @@ export default function Dashboard() {
                     {/* Left: health score tile */}
                     <div>
                       <h2 className="dashboard-section-title">Theme Health</h2>
+                      {/* Spacer to match the subtitle line height in the right column */}
+                      <div style={{ height: "18px" }} />
                       <div
                         className={`health-score-tile health-score-tile--${healthScore.tone}`}
                         style={{ marginTop: "8px" }}
