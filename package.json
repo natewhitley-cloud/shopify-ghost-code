@@ -22,7 +22,8 @@
     "format:check": "prettier --check \"app/**/*.{ts,tsx}\" \"inngest/**/*.ts\" \"tests/**/*.ts\"",
     "test": "vitest run",
     "test:watch": "vitest",
-    "test:coverage": "vitest run --coverage"
+    "test:coverage": "vitest run --coverage",
+    "prepare": "husky"
   },
   "type": "module",
   "engines": {
@@ -64,6 +65,8 @@
     "eslint-plugin-react": "^7.37.5",
     "eslint-plugin-react-hooks": "^4.6.2",
     "graphql-config": "^5.1.1",
+    "husky": "^9.1.7",
+    "lint-staged": "^16.4.0",
     "prettier": "^3.6.2",
     "typescript": "^5.9.3",
     "vite": "^6.3.6",
@@ -78,5 +81,10 @@
   "overrides": {
     "p-map": "^4.0.0"
   },
-  "author": "nathanwhitley"
+  "author": "nathanwhitley",
+  "lint-staged": {
+    "app/**/*.{ts,tsx}": "prettier --write",
+    "inngest/**/*.ts": "prettier --write",
+    "tests/**/*.ts": "prettier --write"
+  }
 }
