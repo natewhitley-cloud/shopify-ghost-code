@@ -44,6 +44,28 @@ export default function ScanHistory() {
 
   return (
     <s-page heading="Scan History">
+      <style>{`
+        .scan-history-table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+        .scan-history-table th,
+        .scan-history-table td {
+          border: 1px solid #e1e3e5;
+          padding: 12px 16px;
+          text-align: left;
+        }
+        .scan-history-table thead th {
+          background: #f6f6f7;
+          font-weight: 600;
+        }
+        .scan-history-table tbody tr:nth-child(even) {
+          background: #fafbfb;
+        }
+        .scan-history-table tbody tr:hover {
+          background: #f1f2f3;
+        }
+      `}</style>
       <s-link slot="primary-action" href="/app">
         Back to Dashboard
       </s-link>
@@ -56,7 +78,7 @@ export default function ScanHistory() {
         <>
           <s-card>
             <s-data-table>
-              <table>
+              <table className="scan-history-table">
                 <thead>
                   <tr>
                     <th>Date</th>

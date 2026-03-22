@@ -1,4 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { useEffect, useState } from "react";
 import { redirect, useFetcher, useLoaderData } from "react-router";
 
 import { inngest } from "../../inngest/client";
@@ -200,6 +201,21 @@ function formatDelta(current: number, previous: number): string | null {
   return delta > 0 ? `+${delta}` : String(delta);
 }
 
+/**
+ * Format elapsed seconds into a human-readable string.
+ * Examples: "a few seconds", "30 seconds", "1 minute", "2 minutes", "3 minutes 15 seconds"
+ */
+function formatElapsedTime(elapsedSeconds: number): string {
+  if (elapsedSeconds < 10) return "a few seconds";
+  if (elapsedSeconds < 60) return `${Math.floor(elapsedSeconds)} seconds`;
+  const minutes = Math.floor(elapsedSeconds / 60);
+  const remainingSeconds = Math.floor(elapsedSeconds % 60);
+  if (minutes === 1 && remainingSeconds === 0) return "1 minute";
+  if (minutes === 1) return `1 minute ${remainingSeconds} seconds`;
+  if (remainingSeconds === 0) return `${minutes} minutes`;
+  return `${minutes} minutes ${remainingSeconds} seconds`;
+}
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -229,6 +245,29 @@ export default function Dashboard() {
 
   // Whether the latest scan is still running (findings not yet available).
   const scanInProgress = latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
+
+  // Elapsed time timer — updates every 5 seconds while a scan is in progress.
+  const [elapsedText, setElapsedText] = useState<string>("");
+
+  useEffect(() => {
+    if (!scanInProgress || !latestScan?.createdAt) {
+      setElapsedText("");
+      return;
+    }
+
+    const startTime = new Date(latestScan.createdAt).getTime();
+
+    const update = () => {
+      const seconds = (Date.now() - startTime) / 1000;
+      setElapsedText(formatElapsedTime(seconds));
+    };
+
+    // Set initial value immediately.
+    update();
+
+    const interval = setInterval(update, 5_000);
+    return () => clearInterval(interval);
+  }, [scanInProgress, latestScan?.createdAt]);
 
   // Show "—" while a scan is in progress; show counts once completed.
   const highCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.HIGH ?? 0);
@@ -334,9 +373,17 @@ export default function Dashboard() {
             <s-stack direction="block" gap="base">
               <s-heading>Theme Health Score</s-heading>
               {scanInProgress ? (
-                <s-stack direction="inline" gap="base">
-                  <s-text variant="headingXl">—</s-text>
-                  <s-text>Scan in progress. Score will update when complete.</s-text>
+                <s-stack alignItems="center" gap="base" padding="large">
+                  <s-spinner accessibilityLabel="Scanning theme" size="large" />
+                  <s-text variant="headingMd">Scanning your theme...</s-text>
+                  <s-text>
+                    Ghost Code is analyzing your theme files for orphaned code.
+                    Your health score will appear here when the scan is complete.
+                  </s-text>
+                  {elapsedText && <s-text>Started {elapsedText} ago</s-text>}
+                  <s-text variant="bodySm">
+                    This typically takes 1–3 minutes depending on theme size.
+                  </s-text>
                 </s-stack>
               ) : healthScore ? (
                 <s-stack direction="inline" gap="base">
@@ -360,17 +407,35 @@ export default function Dashboard() {
             <s-stack direction="block" gap="base">
               <s-heading>Last Scan</s-heading>
               {latestScan ? (
-                <>
-                  <s-paragraph>
-                    Scanned <strong>{latestScan.themeName}</strong> on{" "}
-                    {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
-                  </s-paragraph>
-                  <s-stack direction="inline" gap="base">
-                    <s-badge tone="critical">{highCount} High</s-badge>
-                    <s-badge tone="warning">{mediumCount} Medium</s-badge>
-                    <s-badge tone="info">{lowCount} Low</s-badge>
+                scanInProgress ? (
+                  <s-stack direction="block" gap="small">
+                    <s-stack direction="inline" alignItems="center" gap="small">
+                      <s-spinner accessibilityLabel="Scan in progress" />
+                      <s-text>
+                        Scanning <strong>{latestScan.themeName}</strong>... Results will appear here
+                        when complete.
+                      </s-text>
+                    </s-stack>
+                    {elapsedText && (
+                      <s-text>Running for {elapsedText}...</s-text>
+                    )}
+                    <s-text variant="bodySm">
+                      This typically takes 1–3 minutes depending on theme size.
+                    </s-text>
                   </s-stack>
-                </>
+                ) : (
+                  <>
+                    <s-paragraph>
+                      Scanned <strong>{latestScan.themeName}</strong> on{" "}
+                      {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                    </s-paragraph>
+                    <s-stack direction="inline" gap="base">
+                      <s-badge tone="critical">{highCount} High</s-badge>
+                      <s-badge tone="warning">{mediumCount} Medium</s-badge>
+                      <s-badge tone="info">{lowCount} Low</s-badge>
+                    </s-stack>
+                  </>
+                )
               ) : (
                 <s-paragraph>No scans yet. Run your first scan to detect ghost code.</s-paragraph>
               )}
