@@ -452,11 +452,13 @@ export default function Dashboard() {
               grid-template-columns: repeat(3, 1fr);
               gap: 16px;
               padding: 4px 0;
+              height: 100%;
             }
             .finding-stat {
               display: flex;
               flex-direction: column;
               align-items: center;
+              justify-content: center;
               padding: 16px 8px;
               border-radius: 12px;
               border: 1px solid #e1e3e5;
@@ -584,9 +586,14 @@ export default function Dashboard() {
                       </div>
                     </div>
                     {/* Right: findings */}
-                    <div>
-                      <s-heading>Findings</s-heading>
-                      <div className="findings-row" style={{ marginTop: "8px" }}>
+                    <div style={{ display: "flex", flexDirection: "column" }}>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
+                        <s-heading>Findings</s-heading>
+                        <span style={{ fontSize: "13px", color: "#6d7175" }}>
+                          ({latestScan.themeName} — {formatDate(latestScan.completedAt ?? latestScan.createdAt)})
+                        </span>
+                      </div>
+                      <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
                         <div className="finding-stat finding-stat--high">
                           <div className="finding-stat__count finding-stat__count--high">
                             {highCount}
@@ -608,10 +615,6 @@ export default function Dashboard() {
                       </div>
                     </div>
                   </div>
-                  <div className="scan-meta">
-                    Scanned <strong>{latestScan.themeName}</strong> on{" "}
-                    {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
-                  </div>
                 </>
               ) : (
                 <s-text>Run your first scan to see your theme health score.</s-text>
@@ -619,7 +622,8 @@ export default function Dashboard() {
             </s-stack>
           </s-card>
 
-          {/* Actions card */}
+          {/* Scan Actions */}
+          <s-heading>Scan Actions</s-heading>
           <s-card>
             <s-stack direction="block" gap="base">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
