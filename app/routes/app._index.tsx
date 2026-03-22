@@ -2,7 +2,8 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { redirect, useFetcher, useLoaderData } from "react-router";
 
 import { inngest } from "../../inngest/client";
-import { getPlanFeatures, PLANS } from "../lib/billing.server";
+import { getPlanFeatures } from "../lib/billing.server";
+import { PLANS } from "../lib/plans";
 import { formatDate } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";

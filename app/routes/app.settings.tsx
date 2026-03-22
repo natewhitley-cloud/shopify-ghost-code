@@ -1,7 +1,8 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
 
-import { getPlanFeatures, PLANS } from "../lib/billing.server";
+import { getPlanFeatures } from "../lib/billing.server";
+import { PLANS } from "../lib/plans";
 import { getShopByDomain } from "../models/shop.server";
 import { authenticate, PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
 

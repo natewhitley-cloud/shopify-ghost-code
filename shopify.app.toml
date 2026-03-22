@@ -7,7 +7,6 @@ embedded = true
 
 [build]
 automatically_update_urls_on_dev = true
-include_config_on_deploy = true
 
 [webhooks]
 api_version = "2026-04"
@@ -20,36 +19,24 @@ api_version = "2026-04"
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
 
-  # GDPR mandatory webhooks
   [[webhooks.subscriptions]]
-  topics = [ "customers/data_request" ]
-  uri = "/webhooks/customers/data_request"
+  topics = [ "app_subscriptions/update" ]
+  uri = "/webhooks/app/subscriptions/update"
 
   [[webhooks.subscriptions]]
-  topics = [ "customers/redact" ]
-  uri = "/webhooks/customers/redact"
-
-  [[webhooks.subscriptions]]
-  topics = [ "shop/redact" ]
-  uri = "/webhooks/shop/redact"
-
-  [[webhooks.subscriptions]]
-  topics = ["app/installed"]
-  uri = "/webhooks/app/installed"
-
-  [[webhooks.subscriptions]]
-  topics = ["themes/publish"]
+  topics = [ "themes/publish" ]
   uri = "/webhooks/themes/publish"
 
+  # GDPR mandatory webhooks
   [[webhooks.subscriptions]]
-  topics = ["app/subscriptions_update"]
-  uri = "/webhooks/app/subscriptions/update"
+  compliance_topics = [ "customers/data_request", "customers/redact", "shop/redact" ]
+  uri = "/webhooks"
 
 [access_scopes]
 # Ghost Code only needs to read themes — no write access required
 scopes = "read_themes"
 # Permission Audit feature — requested via App Bridge scopes modal when feature is activated
-optional_scopes = "read_apps"
+optional_scopes = []
 
 [auth]
 redirect_urls = [ "https://shopify-ghost-code-production.up.railway.app/auth/callback" ]
