@@ -8,8 +8,8 @@
  *     normal app, unknown app, null enrichment, and REMOVED app.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { LoaderFunctionArgs } from "react-router";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
@@ -65,6 +65,11 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import {
+  getScopeSensitivity,
+  getUnexpectedScopes,
+} from "../../app/data/category-permissions.server";
+import { getPlanFeatures } from "../../app/lib/billing.server";
 import { getInstalledAppById } from "../../app/models/installed-app.server";
 import { getShopByDomain } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.permissions.$appId";
@@ -74,12 +79,7 @@ import {
   syncInstalledApps,
 } from "../../app/services/permission-fetcher.server";
 import { scoreApp } from "../../app/services/permission-scorer.server";
-import {
-  getScopeSensitivity,
-  getUnexpectedScopes,
-} from "../../app/data/category-permissions.server";
 import { authenticate } from "../../app/shopify.server";
-import { getPlanFeatures } from "../../app/lib/billing.server";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers

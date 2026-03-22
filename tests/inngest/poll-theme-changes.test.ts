@@ -16,7 +16,6 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createMockInngestStep } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)
@@ -51,6 +50,7 @@ vi.mock("../../inngest/client", () => ({
 import db from "../../app/db.server";
 import { inngest } from "../../inngest/client";
 import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
+import { createMockInngestStep } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers

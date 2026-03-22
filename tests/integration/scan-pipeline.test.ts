@@ -19,11 +19,9 @@
  * each layer's module under test.
  */
 
-import { createMockInngestStep, createMockInngestEvent } from "../mocks/inngest";
-
 import { FindingType, Severity } from "@prisma/client";
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ActionFunctionArgs } from "react-router";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted by Vitest before any imports
@@ -105,6 +103,7 @@ import { fetchMainTheme, fetchThemeFiles } from "../../app/services/theme-fetche
 import { authenticate, unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 import { scanTheme } from "../../inngest/functions/scan-theme";
+import { createMockInngestStep, createMockInngestEvent } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers

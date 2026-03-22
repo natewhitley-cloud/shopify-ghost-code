@@ -296,7 +296,7 @@ export default function ScanDetail() {
           {isCompleted && healthScore && (
             <s-stack direction="inline" gap="base">
               <s-text>Theme Health Score:</s-text>
-              <s-text variant="headingLg">{healthScore.score}</s-text>
+              <s-heading>{healthScore.score}</s-heading>
               <s-badge tone={healthScore.tone}>{healthScore.label}</s-badge>
             </s-stack>
           )}

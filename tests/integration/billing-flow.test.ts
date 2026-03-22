@@ -23,8 +23,8 @@
  * wiring that connects authentication, plan resolution, and DB persistence.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ActionFunctionArgs } from "react-router";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted by Vitest before any imports

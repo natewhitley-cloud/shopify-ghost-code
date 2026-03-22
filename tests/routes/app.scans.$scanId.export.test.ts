@@ -9,8 +9,8 @@
  *     for CSV, JSON, free-plan 403, and missing-scan 404 cases.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { LoaderFunctionArgs } from "react-router";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)

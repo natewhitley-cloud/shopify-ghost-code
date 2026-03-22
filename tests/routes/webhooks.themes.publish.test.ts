@@ -9,8 +9,8 @@
  *     a GID-formatted string ("gid://shopify/Theme/<id>"), NOT the bare numeric id.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ActionFunctionArgs } from "react-router";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)

@@ -7,16 +7,16 @@ vi.mock("../../app/models/installed-app.server", () => ({
 }));
 
 import {
+  upsertInstalledApp,
+  markAppsRemovedByIds,
+  getInstalledApps,
+} from "../../app/models/installed-app.server";
+import {
   fetchAllInstalledApps,
   fetchCurrentAppInstallation,
   syncInstalledApps,
   type FetchedApp,
 } from "../../app/services/permission-fetcher.server";
-import {
-  upsertInstalledApp,
-  markAppsRemovedByIds,
-  getInstalledApps,
-} from "../../app/models/installed-app.server";
 
 // ---------------------------------------------------------------------------
 // Helpers

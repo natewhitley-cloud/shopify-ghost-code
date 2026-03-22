@@ -1,5 +1,5 @@
-import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 import type Database from "better-sqlite3";
+import { describe, it, expect, vi, beforeAll, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // We need the REAL better-sqlite3 for the in-memory test DB, but we also

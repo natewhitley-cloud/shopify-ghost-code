@@ -1,5 +1,5 @@
-import type { RiskLevel } from "../services/permission-scorer.server";
 import type { ScopeSensitivity } from "../data/category-permissions.server";
+import type { RiskLevel } from "../services/permission-scorer.server";
 
 type PolarisStatusTone = "critical" | "warning" | "info" | "success";
 

@@ -1,14 +1,14 @@
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useEffect, useState } from "react";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { redirect, useFetcher, useLoaderData } from "react-router";
 
 import { inngest } from "../../inngest/client";
 import { getPlanFeatures } from "../lib/billing.server";
-import { PLANS } from "../lib/plans";
 import { formatDate } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canStartScan, getWeekStartUTC } from "../lib/plan-gating.server";
+import { PLANS } from "../lib/plans";
 import { getFindingSummary } from "../models/finding.server";
 import {
   getScansForShop,
@@ -342,7 +342,7 @@ export default function Dashboard() {
       {showOnboarding ? (
         /* Onboarding card — shown on first install before any scan has run */
         <s-card>
-          <s-stack direction="block" gap="loose">
+          <s-stack direction="block" gap="large">
             <s-heading>Welcome to Ghost Code</s-heading>
             <s-paragraph>
               <strong>Ghost Code finds and removes leftover code from uninstalled apps.</strong>{" "}
@@ -557,7 +557,7 @@ export default function Dashboard() {
               {scanInProgress ? (
                 <div className="scan-progress-container">
                   <s-spinner accessibilityLabel="Scanning theme" size="large" />
-                  <s-text variant="headingMd">Scanning your theme...</s-text>
+                  <s-heading>Scanning your theme...</s-heading>
                   <div className="scan-progress-text">
                     Ghost Code is analyzing your theme files for orphaned code. Results will appear
                     here when the scan is complete.

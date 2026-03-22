@@ -12,8 +12,8 @@
  *     without any SDK wiring.
  */
 
+import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { createMockInngestStep, createMockInngestEvent } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -55,15 +55,14 @@ vi.mock("../../app/models/finding.server", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { scanTheme } from "../../inngest/functions/scan-theme";
 import db from "../../app/db.server";
-import { unauthenticated } from "../../app/shopify.server";
-import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
-import { scanThemeFiles } from "../../app/services/scan-engine.server";
-import { updateScanStatus } from "../../app/models/scan.server";
 import { completeScanWithFindings } from "../../app/models/finding.server";
-
-import { FindingType, Severity } from "@prisma/client";
+import { updateScanStatus } from "../../app/models/scan.server";
+import { scanThemeFiles } from "../../app/services/scan-engine.server";
+import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
+import { unauthenticated } from "../../app/shopify.server";
+import { scanTheme } from "../../inngest/functions/scan-theme";
+import { createMockInngestStep, createMockInngestEvent } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers

@@ -3,11 +3,11 @@ import type { LoaderFunctionArgs } from "react-router";
 import { useLoaderData } from "react-router";
 
 import { getPlanFeatures } from "../lib/billing.server";
+import { riskTone, riskLabel } from "../lib/risk-display";
 import { getInstalledApps } from "../models/installed-app.server";
 import { getShopByDomain } from "../models/shop.server";
 import { enrichApps } from "../services/app-enrichment.server";
 import { fetchAllInstalledApps, syncInstalledApps } from "../services/permission-fetcher.server";
-import { riskTone, riskLabel } from "../lib/risk-display";
 import type { AppRiskScore, StoreRiskScore } from "../services/permission-scorer.server";
 import { scoreApp, scoreStore } from "../services/permission-scorer.server";
 import { authenticate } from "../shopify.server";

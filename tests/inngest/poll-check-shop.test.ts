@@ -16,8 +16,6 @@
  *   - The step mock from createMockInngestStep() executes each callback immediately.
  */
 
-import { createMockInngestStep } from "../mocks/inngest";
-
 import { ScanStatus } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -71,6 +69,7 @@ import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
+import { createMockInngestStep } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers

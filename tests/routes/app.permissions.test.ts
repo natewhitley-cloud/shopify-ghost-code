@@ -8,8 +8,8 @@
  *     feature-gated, scope-request, onboarding (no apps), and active (apps found).
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { LoaderFunctionArgs } from "react-router";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)

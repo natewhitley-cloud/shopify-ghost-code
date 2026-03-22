@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+
 import { encryptToken, decryptToken } from "../../app/lib/token-encryption.server";
 
 // A valid 32-byte key (64 hex chars)

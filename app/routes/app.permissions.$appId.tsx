@@ -6,12 +6,12 @@ import {
   getScopeSensitivity,
   getUnexpectedScopes,
 } from "../data/category-permissions.server";
+import { getPlanFeatures } from "../lib/billing.server";
 import { formatDate } from "../lib/format";
+import { riskTone, riskLabel, sensitivityTone } from "../lib/risk-display";
 import { getInstalledAppById } from "../models/installed-app.server";
 import { getShopByDomain } from "../models/shop.server";
 import { enrichApp } from "../services/app-enrichment.server";
-import { getPlanFeatures } from "../lib/billing.server";
-import { riskTone, riskLabel, sensitivityTone } from "../lib/risk-display";
 import type { AppRiskScore } from "../services/permission-scorer.server";
 import { scoreApp } from "../services/permission-scorer.server";
 // No longer imports fetchAllInstalledApps — detail route reads cached scopes from DB

@@ -7,8 +7,8 @@
  *   - Verify the handler ALWAYS returns 200, even for error paths.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ActionFunctionArgs } from "react-router";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)

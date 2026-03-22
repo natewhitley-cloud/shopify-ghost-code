@@ -8,8 +8,8 @@
  *     non-empty string array AND a session is present. All paths return 200.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
 import type { ActionFunctionArgs } from "react-router";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)
