@@ -6,12 +6,12 @@
  *
  * Step breakdown:
  *   1. update-status-in-progress — marks the scan as started
- *   2. fetch-theme-files         — pulls all theme files via Shopify Admin API
- *   3. scan-files                — runs the ghost-code detection engine
- *   4. save-findings             — persists findings and marks scan COMPLETED
- *
- * Each step is independently retryable. Admin API clients are created inside
- * the steps that need them — admin contexts are not serializable across steps.
+ *   2. fetch-and-scan            — pulls theme files via Shopify Admin API,
+ *                                  runs the detection engine, and persists findings.
+ *                                  Combined into one step to avoid exceeding
+ *                                  Inngest's 4MB step output size limit (theme
+ *                                  file contents are large and don't need to be
+ *                                  serialized between steps).
  *
  * Error handling: any unhandled step error will trigger Inngest's automatic
  * retry. The outer try/catch marks the scan FAILED only on non-retryable
@@ -36,10 +36,10 @@ export const scanTheme = inngest.createFunction(
         await updateScanStatus(scanId, "IN_PROGRESS");
       });
 
-      // Step 2: Fetch theme files
-      // Admin clients are not serializable, so we create one inside this step
-      // rather than passing it from a prior step.
-      const files = await step.run("fetch-theme-files", async () => {
+      // Step 2: Fetch theme files, scan them, and save findings.
+      // Combined into one step because theme file contents can exceed
+      // Inngest's 4MB step output serialization limit.
+      const findingCount = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
         if (!shop) {
@@ -48,26 +48,23 @@ export const scanTheme = inngest.createFunction(
 
         const { unauthenticated } = await import("../../app/shopify.server");
         const { admin } = await unauthenticated.admin(shop.domain);
-        return fetchThemeFiles(admin, themeId);
-      });
+        const files = await fetchThemeFiles(admin, themeId);
 
-      // Step 3: Run the ghost-code detection engine
-      // Pure CPU work — no DB or network access needed.
-      const findings = await step.run("scan-files", async () => {
-        return scanThemeFiles(files);
-      });
+        const findings = scanThemeFiles(files);
 
-      // Step 4: Persist findings and mark scan COMPLETED
-      // Both writes are wrapped in a single $transaction inside completeScanWithFindings.
-      // This prevents the duplicate-finding problem that would occur if Inngest retried
-      // this step after createFindings succeeded but the status update failed.
-      await step.run("save-findings", async () => {
+        // Both writes are wrapped in a single $transaction inside
+        // completeScanWithFindings. This prevents duplicate findings if
+        // Inngest retries after createFindings succeeds but the status
+        // update fails.
         await completeScanWithFindings(scanId, findings);
+
+        // Return only the count — not the full findings array
+        return findings.length;
       });
 
       return {
         scanId,
-        findingCount: findings.length,
+        findingCount,
         status: "COMPLETED",
       };
     } catch (err) {
