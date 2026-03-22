@@ -35,22 +35,19 @@ export async function canStartScan(
     return { allowed: false, reason: "A scan is already in progress." };
   }
 
-  const features = getPlanFeatures(planName);
+  const usage = await getScanUsage(shopId, planName);
 
-  // Professional plan (or any plan with both limits at Infinity): no cap.
-  if (features.maxScansPerMonth === Infinity && features.maxScansPerWeek === Infinity) {
+  // Professional plan (or any plan with no quota): no cap.
+  if (!usage) {
     return { allowed: true };
   }
 
   // Weekly limit check (Standard plan).
-  if (features.maxScansPerWeek !== Infinity) {
-    const weekStart = getWeekStartUTC();
-    const usedThisWeek = await countScansForShopSince(shopId, weekStart);
-
-    if (usedThisWeek >= features.maxScansPerWeek) {
+  if (usage.period === "week") {
+    if (usage.used >= usage.limit) {
       return {
         allowed: false,
-        reason: `Weekly scan limit reached (${usedThisWeek} of ${features.maxScansPerWeek} used). Upgrade to Professional for unlimited scans.`,
+        reason: `Weekly scan limit reached (${usage.used} of ${usage.limit} used). Upgrade to Professional for unlimited scans.`,
       };
     }
 
@@ -66,18 +63,49 @@ export async function canStartScan(
     return { allowed: true };
   }
 
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-  const usedThisMonth = await countScansForShopSince(shopId, monthStart);
-
-  if (usedThisMonth >= features.maxScansPerMonth) {
+  if (usage.used >= usage.limit) {
     return {
       allowed: false,
-      reason: `Free plan limit: ${features.maxScansPerMonth} scan per month. Upgrade to Standard or Professional for more scans.`,
+      reason: `Free plan limit: ${usage.limit} scan per month. Upgrade to Standard or Professional for more scans.`,
     };
   }
 
   return { allowed: true };
+}
+
+/**
+ * Return the scan usage for a shop under its current plan.
+ *
+ * Computes the billing period start (week for Standard, month for Free),
+ * counts scans in that period, and returns the limit. Both the dashboard
+ * loader and canStartScan delegate here to avoid duplicating the
+ * period/limit calculation.
+ *
+ * Returns null for plans with no quota (Professional / unlimited).
+ */
+export async function getScanUsage(
+  shopId: string,
+  planName: string,
+): Promise<{ used: number; limit: number; period: "week" | "month"; periodStart: Date } | null> {
+  const features = getPlanFeatures(planName);
+
+  // Professional plan (both limits at Infinity): no quota.
+  if (features.maxScansPerMonth === Infinity && features.maxScansPerWeek === Infinity) {
+    return null;
+  }
+
+  if (features.maxScansPerWeek !== Infinity) {
+    // Weekly limit (Standard plan).
+    const periodStart = getWeekStartUTC();
+    const used = await countScansForShopSince(shopId, periodStart);
+    return { used, limit: features.maxScansPerWeek, period: "week", periodStart };
+  }
+
+  // Monthly limit (Free plan).
+  const now = new Date();
+  const periodStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const used = await countScansForShopSince(shopId, periodStart);
+  return { used, limit: features.maxScansPerMonth, period: "month", periodStart };
 }
 
 /**

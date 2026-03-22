@@ -3,18 +3,43 @@ import { ScanStatus } from "@prisma/client";
 import db from "../db.server";
 
 /**
+ * Quota limits to enforce atomically inside the createScan transaction.
+ * When provided, the transaction counts qualifying scans in the relevant
+ * period and rejects if the quota is exceeded — closing the TOCTOU gap
+ * between the advisory canStartScan check and actual scan creation.
+ *
+ * Pass `null` for plans with no quota (Professional / unlimited).
+ */
+export type ScanQuota = {
+  /** Start of the billing period (month start for Free, week start for Standard). */
+  periodStart: Date;
+  /** Maximum scans allowed in the period. */
+  maxScans: number;
+  /** Human-readable period name for error messages. */
+  periodLabel: "week" | "month";
+  /** Whether this is the shop's first-ever scan (bypasses quota on Free plan). */
+  isFirstScan: boolean;
+} | null;
+
+/**
  * Create a new scan record in PENDING status.
  * The scan engine will transition it to IN_PROGRESS then COMPLETED/FAILED.
  *
- * Atomic TOCTOU guard: the check for an existing active scan and the create
- * are wrapped in a single transaction. This prevents two concurrent requests
- * from both passing a pre-flight canStartScan check and both creating scans.
+ * Atomic TOCTOU guard: the check for an existing active scan, the quota
+ * check, and the create are all wrapped in a single transaction. This
+ * prevents two concurrent requests from both passing a pre-flight
+ * canStartScan check and both creating scans.
  *
  * Throws an Error with message "A scan is already in progress for this shop."
  * when a PENDING or IN_PROGRESS scan already exists. Callers should catch this
  * to surface a user-friendly message.
  */
-export async function createScan(shopId: string, themeId: string, themeName: string) {
+export async function createScan(
+  shopId: string,
+  themeId: string,
+  themeName: string,
+  quota?: ScanQuota,
+) {
   return db.$transaction(async (tx) => {
     const activeScan = await tx.scan.findFirst({
       where: { shopId, status: { in: [ScanStatus.PENDING, ScanStatus.IN_PROGRESS] } },
@@ -23,6 +48,23 @@ export async function createScan(shopId: string, themeId: string, themeName: str
     if (activeScan) {
       throw new Error("A scan is already in progress for this shop.");
     }
+
+    // Enforce quota atomically when provided.
+    if (quota && !quota.isFirstScan && quota.maxScans !== Infinity) {
+      const usedInPeriod = await tx.scan.count({
+        where: {
+          shopId,
+          createdAt: { gte: quota.periodStart },
+          status: { in: [ScanStatus.COMPLETED, ScanStatus.IN_PROGRESS] },
+        },
+      });
+      if (usedInPeriod >= quota.maxScans) {
+        throw new Error(
+          `Scan limit reached: ${usedInPeriod} of ${quota.maxScans} scans used this ${quota.periodLabel}.`,
+        );
+      }
+    }
+
     return tx.scan.create({
       data: { shopId, themeId, themeName },
     });

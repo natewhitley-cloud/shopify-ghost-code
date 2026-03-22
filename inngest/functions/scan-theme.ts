@@ -49,8 +49,14 @@ export const scanTheme = inngest.createFunction(
         const { unauthenticated } = await import("../../app/shopify.server");
         const { admin } = await unauthenticated.admin(shop.domain);
         const files = await fetchThemeFiles(admin, themeId);
+        console.log("[scan-theme]", { event: "files_fetched", shopId, fileCount: files.length });
 
         const findings = scanThemeFiles(files);
+        console.log("[scan-theme]", {
+          event: "scan_complete",
+          shopId,
+          findingCount: findings.length,
+        });
 
         // Both writes are wrapped in a single $transaction inside
         // completeScanWithFindings. This prevents duplicate findings if
@@ -62,6 +68,8 @@ export const scanTheme = inngest.createFunction(
         return findings.length;
       });
 
+      console.log("[scan-theme]", { event: "completed", scanId, shopId, findingCount });
+
       return {
         scanId,
         findingCount,
@@ -70,11 +78,21 @@ export const scanTheme = inngest.createFunction(
     } catch (err) {
       // Mark the scan FAILED so the UI can surface an actionable error state
       // rather than leaving the scan stuck in IN_PROGRESS indefinitely.
+      // Guard: if the scan already completed successfully (e.g. Inngest retried
+      // after a transient error following completeScanWithFindings), do not
+      // overwrite the COMPLETED status.
       // Re-throw so Inngest still sees the error and logs it correctly.
-      await updateScanStatus(scanId, "FAILED").catch(() => {
-        // Best-effort — if the status update itself fails we still want to
-        // propagate the original error.
+      const db = (await import("../../app/db.server")).default;
+      const currentScan = await db.scan.findUnique({
+        where: { id: scanId },
+        select: { status: true },
       });
+      if (currentScan && currentScan.status !== "COMPLETED") {
+        await updateScanStatus(scanId, "FAILED").catch(() => {
+          // Best-effort — if the status update itself fails we still want to
+          // propagate the original error.
+        });
+      }
       throw err;
     }
   },

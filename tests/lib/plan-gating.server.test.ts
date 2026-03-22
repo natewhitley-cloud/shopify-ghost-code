@@ -272,10 +272,10 @@ describe("canStartScan — Free plan", () => {
     const after = new Date();
 
     const sinceArg: Date = mockCountScansForShopSince.mock.calls[0][1];
-    expect(sinceArg.getDate()).toBe(1);
-    expect(sinceArg.getMonth()).toBeGreaterThanOrEqual(before.getMonth());
-    expect(sinceArg.getMonth()).toBeLessThanOrEqual(after.getMonth());
-    expect(sinceArg.getFullYear()).toBeGreaterThanOrEqual(before.getFullYear());
+    expect(sinceArg.getUTCDate()).toBe(1);
+    expect(sinceArg.getUTCMonth()).toBeGreaterThanOrEqual(before.getUTCMonth());
+    expect(sinceArg.getUTCMonth()).toBeLessThanOrEqual(after.getUTCMonth());
+    expect(sinceArg.getUTCFullYear()).toBeGreaterThanOrEqual(before.getUTCFullYear());
   });
 
   it("passes the shop ID to countScansForShopSince", async () => {
@@ -366,13 +366,12 @@ describe("canStartScan — first scan free on free plan", () => {
 
   it("allows the first scan on the free plan even when monthly quota is 0 remaining", async () => {
     mockHasCompletedScans.mockResolvedValue(false); // no completed scans ever
+    mockCountScansForShopSince.mockResolvedValue(1); // even if count >= limit
 
     const result = await canStartScan(SHOP_ID, "free");
 
     expect(result.allowed).toBe(true);
     expect(result.reason).toBeUndefined();
-    // Should short-circuit before checking monthly count.
-    expect(mockCountScansForShopSince).not.toHaveBeenCalled();
   });
 
   it("does not apply the first-scan bypass to paid plans (Standard uses weekly limit instead)", async () => {

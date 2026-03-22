@@ -17,12 +17,12 @@ export async function getShopByDomain(domain: string) {
  * Encrypts the access token before storing.
  * Updates the accessToken in place so re-installs don't orphan auth state.
  */
-export async function upsertShop(domain: string, accessToken: string) {
-  const encrypted = encryptToken(accessToken);
+export async function upsertShop(domain: string, accessToken?: string) {
+  const encrypted = accessToken ? encryptToken(accessToken) : undefined;
   return db.shop.upsert({
     where: { domain },
-    create: { domain, accessToken: encrypted },
-    update: { accessToken: encrypted },
+    create: { domain, accessToken: encrypted ?? encryptToken("") },
+    update: encrypted ? { accessToken: encrypted } : {},
   });
 }
 
@@ -91,6 +91,8 @@ export async function deleteShopData(domain: string) {
   const shop = await db.shop.findUnique({ where: { domain } });
   if (!shop) return null;
 
+  console.log("[gdpr]", { event: "delete_shop_data_start", domain, shopId: shop.id });
+
   await db.$transaction([
     db.session.deleteMany({ where: { shop: domain } }),
     db.permissionSnapshot.deleteMany({
@@ -101,6 +103,8 @@ export async function deleteShopData(domain: string) {
     db.scan.deleteMany({ where: { shopId: shop.id } }),
     db.shop.delete({ where: { domain } }),
   ]);
+
+  console.log("[gdpr]", { event: "delete_shop_data_complete", domain, shopId: shop.id });
 
   return shop;
 }

@@ -26,6 +26,9 @@ vi.mock("../../app/db.server", () => ({
     shop: {
       findUnique: vi.fn(),
     },
+    scan: {
+      findUnique: vi.fn(),
+    },
   },
 }));
 
@@ -68,7 +71,10 @@ import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from
 // Typed mock helpers
 // ---------------------------------------------------------------------------
 
-const mockDb = db as unknown as { shop: { findUnique: ReturnType<typeof vi.fn> } };
+const mockDb = db as unknown as {
+  shop: { findUnique: ReturnType<typeof vi.fn> };
+  scan: { findUnique: ReturnType<typeof vi.fn> };
+};
 const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
@@ -153,6 +159,8 @@ beforeEach(() => {
 
   // Default happy-path wiring for db + shopify
   mockDb.shop.findUnique.mockResolvedValue(MOCK_SHOP);
+  // db.scan.findUnique is called in the catch block to check status before marking FAILED
+  mockDb.scan.findUnique.mockResolvedValue({ status: "IN_PROGRESS" });
   mockUnauthenticated.admin.mockResolvedValue({ admin: MOCK_ADMIN });
 
   // Default happy-path wiring for services

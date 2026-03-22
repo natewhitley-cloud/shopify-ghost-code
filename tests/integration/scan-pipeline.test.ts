@@ -47,6 +47,7 @@ vi.mock("../../app/models/scan.server", () => ({
   createScan: vi.fn(),
   getScansForShop: vi.fn(),
   countScansForShopSince: vi.fn(),
+  hasCompletedScans: vi.fn(),
   updateScanStatus: vi.fn(),
 }));
 
@@ -57,6 +58,7 @@ vi.mock("../../app/models/finding.server", () => ({
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canStartScan: vi.fn(),
+  getWeekStartUTC: vi.fn(() => new Date("2024-01-15T00:00:00Z")),
 }));
 
 vi.mock("../../app/services/theme-fetcher.server", () => ({
@@ -85,6 +87,9 @@ vi.mock("../../app/db.server", () => ({
     shop: {
       findUnique: vi.fn(),
     },
+    scan: {
+      findUnique: vi.fn(),
+    },
   },
 }));
 
@@ -95,7 +100,7 @@ vi.mock("../../app/db.server", () => ({
 import db from "../../app/db.server";
 import { canStartScan } from "../../app/lib/plan-gating.server";
 import { completeScanWithFindings } from "../../app/models/finding.server";
-import { createScan, updateScanStatus } from "../../app/models/scan.server";
+import { createScan, hasCompletedScans, updateScanStatus } from "../../app/models/scan.server";
 import { getShopByDomain } from "../../app/models/shop.server";
 import { action } from "../../app/routes/app._index";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
@@ -113,6 +118,7 @@ const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockUnauthenticatedAdmin = unauthenticated.admin as ReturnType<typeof vi.fn>;
 const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
+const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
 const mockCompleteScanWithFindings = completeScanWithFindings as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
@@ -122,6 +128,8 @@ const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
 const mockDbShopFindUnique = (db as unknown as { shop: { findUnique: ReturnType<typeof vi.fn> } })
   .shop.findUnique;
+const mockDbScanFindUnique = (db as unknown as { scan: { findUnique: ReturnType<typeof vi.fn> } })
+  .scan.findUnique;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -201,6 +209,7 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     mockAuthenticateAdmin.mockResolvedValue(MOCK_AUTH_RESULT);
     mockGetShopByDomain.mockResolvedValue(MOCK_SHOP);
     mockCanStartScan.mockResolvedValue({ allowed: true });
+    mockHasCompletedScans.mockResolvedValue(false);
     mockFetchMainTheme.mockResolvedValue(MOCK_MAIN_THEME);
     mockCreateScan.mockResolvedValue(MOCK_SCAN);
     mockInngestSend.mockResolvedValue(undefined);
@@ -275,7 +284,12 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
         context: {},
       } as unknown as ActionFunctionArgs);
 
-      expect(mockCreateScan).toHaveBeenCalledWith(SHOP_ID, THEME_ID, THEME_NAME);
+      expect(mockCreateScan).toHaveBeenCalledWith(
+        SHOP_ID,
+        THEME_ID,
+        THEME_NAME,
+        expect.objectContaining({ periodLabel: "month", isFirstScan: true }),
+      );
     });
 
     it("sends an Inngest event with the scan details", async () => {
@@ -438,6 +452,8 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     // Inngest function uses dynamic import for db and shopify; mock at the module level.
     // db.shop.findUnique is used to look up the shop record inside the Inngest step.
     mockDbShopFindUnique.mockResolvedValue(MOCK_SHOP);
+    // db.scan.findUnique is used in the catch block to check scan status before marking FAILED.
+    mockDbScanFindUnique.mockResolvedValue({ status: "IN_PROGRESS" });
     // unauthenticated.admin is used to create an admin client inside the Inngest step.
     mockUnauthenticatedAdmin.mockResolvedValue({ admin: MOCK_ADMIN });
     mockUpdateScanStatus.mockResolvedValue(undefined);
@@ -574,6 +590,7 @@ describe("Scan pipeline — handoff: action event matches Inngest function expec
     mockAuthenticateAdmin.mockResolvedValue(MOCK_AUTH_RESULT);
     mockGetShopByDomain.mockResolvedValue(MOCK_SHOP);
     mockCanStartScan.mockResolvedValue({ allowed: true });
+    mockHasCompletedScans.mockResolvedValue(false);
     mockFetchMainTheme.mockResolvedValue(MOCK_MAIN_THEME);
     mockCreateScan.mockResolvedValue(MOCK_SCAN);
     mockInngestSend.mockResolvedValue(undefined);

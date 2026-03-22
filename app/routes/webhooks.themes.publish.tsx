@@ -38,6 +38,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 200 });
   }
 
+  // Validate payload.id before constructing the theme GID.
+  // If missing or invalid, log a warning and return 200 (webhooks must always
+  // return 200 to prevent Shopify retry storms).
+  if (!payload.id || (typeof payload.id !== "number" && typeof payload.id !== "string")) {
+    logger.warn("themes/publish webhook missing or invalid payload.id — skipping", {
+      shop,
+      payloadId: payload.id,
+    });
+    return new Response(null, { status: 200 });
+  }
+
   const themeId = `gid://shopify/Theme/${payload.id}`;
   const themeName = String(payload.name ?? "");
 

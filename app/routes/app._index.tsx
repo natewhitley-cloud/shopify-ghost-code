@@ -1,21 +1,17 @@
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { redirect, useFetcher, useLoaderData } from "react-router";
+import { Link, redirect, useFetcher, useLoaderData } from "react-router";
 
 import { inngest } from "../../inngest/client";
 import { getPlanFeatures } from "../lib/billing.server";
 import { formatDate } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
-import { canStartScan, getWeekStartUTC } from "../lib/plan-gating.server";
+import { canStartScan, getScanUsage, getWeekStartUTC } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { getFindingSummary } from "../models/finding.server";
-import {
-  getScansForShop,
-  createScan,
-  countScansForShopSince,
-  hasCompletedScans,
-} from "../models/scan.server";
+import { getScansForShop, createScan, hasCompletedScans } from "../models/scan.server";
+import type { ScanQuota } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
 import { fetchMainTheme } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
@@ -59,15 +55,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Gather independent data in parallel to reduce loader latency.
   const features = getPlanFeatures(shop.plan);
-  const needsUsage =
-    features.maxScansPerMonth !== Infinity || features.maxScansPerWeek !== Infinity;
 
   // Phase 1: queries that depend only on latestScan/previousScan IDs (parallel)
-  const [prevSummary, completedScanCheck] = await Promise.all([
+  const [prevSummary, usage, completedScanCheck] = await Promise.all([
     previousScan && previousScan.status === "COMPLETED"
       ? getFindingSummary(previousScan.id)
       : Promise.resolve(null),
-    needsUsage ? hasCompletedScans(shop.id) : Promise.resolve(false),
+    getScanUsage(shop.id, shop.plan),
+    hasCompletedScans(shop.id),
   ]);
 
   // Compute health scores from parallel results
@@ -82,25 +77,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   // Compute scan usage for plans with caps (Free = monthly, Standard = weekly).
-  let scanUsage: { used: number; limit: number; period: "week" | "month" } | null = null;
-  let isFirstScan = false;
-  if (needsUsage) {
-    isFirstScan = !completedScanCheck;
-    if (!isFirstScan) {
-      if (features.maxScansPerWeek !== Infinity) {
-        // Weekly limit (Standard plan)
-        const weekStart = getWeekStartUTC();
-        const used = await countScansForShopSince(shop.id, weekStart);
-        scanUsage = { used, limit: features.maxScansPerWeek, period: "week" };
-      } else {
-        // Monthly limit (Free plan)
-        const now = new Date();
-        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-        const used = await countScansForShopSince(shop.id, monthStart);
-        scanUsage = { used, limit: features.maxScansPerMonth, period: "month" };
-      }
-    }
-  }
+  const isFirstScan = !completedScanCheck;
+  const scanUsage: { used: number; limit: number; period: "week" | "month" } | null =
+    usage && !isFirstScan ? { used: usage.used, limit: usage.limit, period: usage.period } : null;
 
   // Rescan nudge: show for Standard-plan shops whose last completed scan is
   // older than 30 days and no scan is currently running.
@@ -165,13 +144,37 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const themeId = mainTheme.id;
   const themeName = mainTheme.name;
 
-  // createScan is atomic: it checks for an active scan and creates in one
-  // transaction. Catch the "already in progress" error so it surfaces cleanly
-  // rather than as an unhandled 500. canStartScan above is an advisory pre-flight
-  // check for UX; createScan is the authoritative atomic guard.
+  // Build quota for atomic enforcement inside createScan's transaction.
+  // canStartScan above is an advisory pre-flight check for UX; the
+  // authoritative check is inside the transaction to close the TOCTOU gap.
+  const features = getPlanFeatures(shop.plan);
+  let quota: ScanQuota = null;
+  if (features.maxScansPerMonth !== Infinity || features.maxScansPerWeek !== Infinity) {
+    const isFirstScan = !(await hasCompletedScans(shop.id));
+    if (features.maxScansPerWeek !== Infinity) {
+      quota = {
+        periodStart: getWeekStartUTC(),
+        maxScans: features.maxScansPerWeek,
+        periodLabel: "week",
+        isFirstScan,
+      };
+    } else {
+      const now = new Date();
+      quota = {
+        periodStart: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
+        maxScans: features.maxScansPerMonth,
+        periodLabel: "month",
+        isFirstScan,
+      };
+    }
+  }
+
+  // createScan is atomic: it checks for an active scan and quota in one
+  // transaction. Catch errors so they surface cleanly rather than as
+  // unhandled 500s.
   let scan: Awaited<ReturnType<typeof createScan>>;
   try {
-    scan = await createScan(shop.id, themeId, themeName);
+    scan = await createScan(shop.id, themeId, themeName, quota);
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create scan.";
     return { error: message };
@@ -185,8 +188,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       name: "scan/requested",
       data: { shopId: shop.id, themeId, scanId: scan.id },
     });
-  } catch {
-    // Inngest not configured — scan stays in PENDING state.
+  } catch (inngestErr) {
+    // Inngest not configured or dispatch failed — scan stays in PENDING state.
+    console.error("Inngest dispatch failed", {
+      scanId: scan.id,
+      shopId: shop.id,
+      error: inngestErr instanceof Error ? inngestErr.message : String(inngestErr),
+    });
   }
 
   return redirect(`/app/scans/${scan.id}`);
@@ -553,87 +561,91 @@ export default function Dashboard() {
 
           {/* Theme Health + Findings — combined card */}
           <s-card>
-            <s-stack direction="block" gap="base">
-              {scanInProgress ? (
-                <div className="scan-progress-container">
-                  <s-spinner accessibilityLabel="Scanning theme" size="large" />
-                  <s-heading>Scanning your theme...</s-heading>
-                  <div className="scan-progress-text">
-                    Ghost Code is analyzing your theme files for orphaned code. Results will appear
-                    here when the scan is complete.
-                  </div>
-                  {elapsedText && (
-                    <div className="scan-progress-elapsed">Started {elapsedText} ago</div>
-                  )}
-                  <div className="scan-progress-elapsed">
-                    This typically takes 1–3 minutes depending on theme size.
-                  </div>
-                </div>
-              ) : healthScore && latestScan ? (
-                <>
-                  <div className="dashboard-top-row">
-                    {/* Left: health score tile */}
-                    <div>
-                      <h2 className="dashboard-section-title">Theme Health</h2>
-                      {/* Spacer to match the subtitle line height in the right column */}
-                      <div style={{ height: "18px" }} />
-                      <div
-                        className={`health-score-tile health-score-tile--${healthScore.tone}`}
-                        style={{ marginTop: "8px" }}
-                      >
-                        <div
-                          className={`health-score-number health-score-number--${healthScore.tone}`}
-                        >
-                          {healthScore.score}
-                        </div>
-                        <div className="health-score-subtitle">out of 100</div>
-                        <div
-                          className={`health-score-label health-score-label--${healthScore.tone}`}
-                        >
-                          {healthScore.label}
-                        </div>
-                        {previousHealthScore && (
-                          <div className="health-score-delta">
-                            Prev: {previousHealthScore.score}
-                            {scoreDelta ? ` (${scoreDelta})` : ""}
-                          </div>
-                        )}
-                      </div>
+            {/* aria-live="polite" ensures screen readers announce when scan status changes */}
+            <div aria-live="polite">
+              <s-stack direction="block" gap="base">
+                {scanInProgress ? (
+                  <div className="scan-progress-container">
+                    <s-spinner accessibilityLabel="Scanning theme" size="large" />
+                    <s-heading>Scanning your theme...</s-heading>
+                    <div className="scan-progress-text">
+                      Ghost Code is analyzing your theme files for orphaned code. Results will
+                      appear here when the scan is complete.
                     </div>
-                    {/* Right: findings */}
-                    <div style={{ display: "flex", flexDirection: "column" }}>
-                      <h2 className="dashboard-section-title">Most Recent Findings</h2>
-                      <div style={{ fontSize: "13px", color: "#6d7175", marginTop: "2px" }}>
-                        Scanned <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong>{" "}
-                        on {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
-                      </div>
-                      <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
-                        <div className="finding-stat finding-stat--high">
-                          <div className="finding-stat__count finding-stat__count--high">
-                            {highCount}
-                          </div>
-                          <div className="finding-stat__label">High</div>
-                        </div>
-                        <div className="finding-stat finding-stat--medium">
-                          <div className="finding-stat__count finding-stat__count--medium">
-                            {mediumCount}
-                          </div>
-                          <div className="finding-stat__label">Medium</div>
-                        </div>
-                        <div className="finding-stat finding-stat--low">
-                          <div className="finding-stat__count finding-stat__count--low">
-                            {lowCount}
-                          </div>
-                          <div className="finding-stat__label">Low</div>
-                        </div>
-                      </div>
+                    {elapsedText && (
+                      <div className="scan-progress-elapsed">Started {elapsedText} ago</div>
+                    )}
+                    <div className="scan-progress-elapsed">
+                      This typically takes 1–3 minutes depending on theme size.
                     </div>
                   </div>
-                </>
-              ) : (
-                <s-text>Run your first scan to see your theme health score.</s-text>
-              )}
-            </s-stack>
+                ) : healthScore && latestScan ? (
+                  <>
+                    <div className="dashboard-top-row">
+                      {/* Left: health score tile */}
+                      <div>
+                        <h2 className="dashboard-section-title">Theme Health</h2>
+                        {/* Spacer to match the subtitle line height in the right column */}
+                        <div style={{ height: "18px" }} />
+                        <div
+                          className={`health-score-tile health-score-tile--${healthScore.tone}`}
+                          style={{ marginTop: "8px" }}
+                        >
+                          <div
+                            className={`health-score-number health-score-number--${healthScore.tone}`}
+                          >
+                            {healthScore.score}
+                          </div>
+                          <div className="health-score-subtitle">out of 100</div>
+                          <div
+                            className={`health-score-label health-score-label--${healthScore.tone}`}
+                          >
+                            {healthScore.label}
+                          </div>
+                          {previousHealthScore && (
+                            <div className="health-score-delta">
+                              Prev: {previousHealthScore.score}
+                              {scoreDelta ? ` (${scoreDelta})` : ""}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                      {/* Right: findings */}
+                      <div style={{ display: "flex", flexDirection: "column" }}>
+                        <h2 className="dashboard-section-title">Most Recent Findings</h2>
+                        <div style={{ fontSize: "13px", color: "#6d7175", marginTop: "2px" }}>
+                          Scanned{" "}
+                          <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong> on{" "}
+                          {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                        </div>
+                        <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
+                          <div className="finding-stat finding-stat--high">
+                            <div className="finding-stat__count finding-stat__count--high">
+                              {highCount}
+                            </div>
+                            <div className="finding-stat__label">High</div>
+                          </div>
+                          <div className="finding-stat finding-stat--medium">
+                            <div className="finding-stat__count finding-stat__count--medium">
+                              {mediumCount}
+                            </div>
+                            <div className="finding-stat__label">Medium</div>
+                          </div>
+                          <div className="finding-stat finding-stat--low">
+                            <div className="finding-stat__count finding-stat__count--low">
+                              {lowCount}
+                            </div>
+                            <div className="finding-stat__label">Low</div>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <s-text>Run your first scan to see your theme health score.</s-text>
+                )}
+              </s-stack>
+            </div>
           </s-card>
 
           {/* Scan Actions */}
@@ -694,9 +706,9 @@ export default function Dashboard() {
                   </s-button>
                   {scanLimitReached && (
                     <div style={{ fontSize: "12px", color: "#6d7175" }}>
-                      <a href="/app/settings" style={{ color: "#2c6ecb" }}>
+                      <Link to="/app/settings" style={{ color: "#2c6ecb" }}>
                         Upgrade for more scans
-                      </a>
+                      </Link>
                     </div>
                   )}
                 </div>
@@ -719,8 +731,8 @@ export default function Dashboard() {
                   <div style={{ fontSize: "13px", color: "#6d7175" }}>
                     View all past scans and findings
                   </div>
-                  <a
-                    href="/app/scans"
+                  <Link
+                    to="/app/scans"
                     style={{
                       display: "inline-block",
                       padding: "8px 24px",
@@ -734,7 +746,7 @@ export default function Dashboard() {
                     }}
                   >
                     View Scan History
-                  </a>
+                  </Link>
                 </div>
               </div>
             </s-stack>
