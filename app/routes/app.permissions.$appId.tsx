@@ -10,7 +10,6 @@ import { formatDate } from "../lib/format";
 import { getInstalledAppById } from "../models/installed-app.server";
 import { getShopByDomain } from "../models/shop.server";
 import { enrichApp } from "../services/app-enrichment.server";
-import type { AppEnrichment } from "../services/app-enrichment.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { riskTone, riskLabel, sensitivityTone } from "../lib/risk-display";
 import type { AppRiskScore } from "../services/permission-scorer.server";
@@ -120,7 +119,7 @@ function getScopeDescription(handle: string, apiDescription: string | null): str
 // ---------------------------------------------------------------------------
 
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
-  const { session, admin } = await authenticate.admin(request);
+  const { session } = await authenticate.admin(request);
   const { appId } = params;
 
   if (!appId) {
