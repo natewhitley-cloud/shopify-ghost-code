@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData } from "react-router";
+import { Link, useLoaderData } from "react-router";
 
 import {
   type ScopeSensitivity,
@@ -222,9 +222,9 @@ export default function PermissionDetail() {
 
   return (
     <s-page heading={app.appName}>
-      <s-link slot="primary-action" href="/app/permissions">
+      <Link to="/app/permissions" slot="primary-action">
         Back to Permission Audit
-      </s-link>
+      </Link>
 
       {/* Risk score banner */}
       <s-banner tone={riskTone(riskScore.level)}>

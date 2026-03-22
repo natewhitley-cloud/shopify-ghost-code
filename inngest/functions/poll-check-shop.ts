@@ -46,7 +46,15 @@ export const pollCheckShop = inngest.createFunction(
         const { admin } = await unauthenticated.admin(shopDomain);
 
         const { fetchMainTheme } = await import("../../app/services/theme-fetcher.server");
+        const fetchStart = Date.now();
         const mainTheme = await fetchMainTheme(admin);
+        const fetchMs = Date.now() - fetchStart;
+        console.log("[poll-check-shop]", {
+          event: "fetch_main_theme",
+          shopDomain,
+          durationMs: fetchMs,
+          found: mainTheme !== null,
+        });
 
         if (!mainTheme) {
           return {
@@ -141,6 +149,8 @@ export const pollCheckShop = inngest.createFunction(
     // Step 4: Create a scan record and dispatch the scan pipeline event
     // -------------------------------------------------------------------------
     const newScan = await step.run("dispatch-scan", async () => {
+      const dispatchStart = Date.now();
+
       // Using createScan() from the model layer so any future model-level
       // logic (e.g. audit hooks, default fields) applies to cron-created scans.
       const scan = await createScan(shopId, themeId, themeName);
@@ -154,6 +164,14 @@ export const pollCheckShop = inngest.createFunction(
           themeId,
           scanId: scan.id,
         },
+      });
+
+      const dispatchMs = Date.now() - dispatchStart;
+      console.log("[poll-check-shop]", {
+        event: "dispatch_scan",
+        shopDomain,
+        scanId: scan.id,
+        durationMs: dispatchMs,
       });
 
       return scan;

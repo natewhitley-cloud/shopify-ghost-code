@@ -1,6 +1,6 @@
 import { useCallback, useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData } from "react-router";
+import { Link, useLoaderData } from "react-router";
 
 import { getPlanFeatures } from "../lib/billing.server";
 import { riskTone, riskLabel } from "../lib/risk-display";
@@ -157,9 +157,9 @@ export default function PermissionAudit() {
 function FeatureGatedState() {
   return (
     <s-page heading="Permission Audit">
-      <s-link slot="primary-action" href="/app">
+      <Link to="/app" slot="primary-action">
         Back to Dashboard
-      </s-link>
+      </Link>
 
       <s-card>
         <s-stack direction="block" gap="base">
@@ -214,9 +214,9 @@ function ScopeRequestState() {
 
   return (
     <s-page heading="Permission Audit">
-      <s-link slot="primary-action" href="/app">
+      <Link to="/app" slot="primary-action">
         Back to Dashboard
-      </s-link>
+      </Link>
 
       <s-banner tone="warning">
         Every app you install gets API access to your store. If an app is compromised or its data is
@@ -373,9 +373,9 @@ function ScopeRequestState() {
 function OnboardingState() {
   return (
     <s-page heading="Permission Audit">
-      <s-link slot="primary-action" href="/app">
+      <Link to="/app" slot="primary-action">
         Back to Dashboard
-      </s-link>
+      </Link>
 
       <s-banner tone="info">
         App scanning is enabled, but no installed apps were found. This is unusual — most stores
@@ -413,9 +413,9 @@ function ActiveAuditState({ apps, storeScore }: { apps: ScoredApp[]; storeScore:
 
   return (
     <s-page heading="Permission Audit">
-      <s-link slot="primary-action" href="/app">
+      <Link to="/app" slot="primary-action">
         Back to Dashboard
-      </s-link>
+      </Link>
 
       {/* Store-wide risk score banner */}
       <s-banner tone={riskTone(storeScore.level)}>
@@ -474,7 +474,19 @@ function ActiveAuditState({ apps, storeScore }: { apps: ScoredApp[]; storeScore:
                   <th>Scopes</th>
                   <th>Risk Level</th>
                   <th>Category</th>
-                  <th></th>
+                  <th>
+                    <span
+                      style={{
+                        position: "absolute",
+                        width: "1px",
+                        height: "1px",
+                        overflow: "hidden",
+                        clip: "rect(0,0,0,0)",
+                      }}
+                    >
+                      Actions
+                    </span>
+                  </th>
                 </tr>
               </thead>
               <tbody>
@@ -489,7 +501,7 @@ function ActiveAuditState({ apps, storeScore }: { apps: ScoredApp[]; storeScore:
                     </td>
                     <td>{app.categoryName ?? "—"}</td>
                     <td>
-                      <s-link href={`/app/permissions/${app.id}`}>View Details</s-link>
+                      <Link to={`/app/permissions/${app.id}`}>View Details</Link>
                     </td>
                   </tr>
                 ))}

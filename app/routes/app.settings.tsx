@@ -1,5 +1,5 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Form, useActionData, useLoaderData, useNavigation } from "react-router";
+import { Form, Link, useActionData, useLoaderData, useNavigation } from "react-router";
 
 import { getPlanFeatures } from "../lib/billing.server";
 import { PLANS } from "../lib/plans";
@@ -75,9 +75,9 @@ export default function Settings() {
 
   return (
     <s-page heading="Settings">
-      <s-link slot="primary-action" href="/app">
+      <Link to="/app" slot="primary-action">
         Back to Dashboard
-      </s-link>
+      </Link>
 
       {actionData?.error && <s-banner tone="critical">{actionData.error}</s-banner>}
 

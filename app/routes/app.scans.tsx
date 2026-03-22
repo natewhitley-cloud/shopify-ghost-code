@@ -66,9 +66,9 @@ export default function ScanHistory() {
           background: #f1f2f3;
         }
       `}</style>
-      <s-link slot="primary-action" href="/app">
+      <Link to="/app" slot="primary-action">
         Back to Dashboard
-      </s-link>
+      </Link>
 
       {scans.length === 0 ? (
         <s-empty-state heading="No scans yet">
@@ -117,7 +117,7 @@ export default function ScanHistory() {
           {nextCursor && (
             <s-box padding-block-start="base">
               <s-stack direction="inline" gap="base">
-                <s-link href={`/app/scans?cursor=${nextCursor}`}>Load More</s-link>
+                <Link to={`/app/scans?cursor=${nextCursor}`}>Load More</Link>
               </s-stack>
             </s-box>
           )}

@@ -2,7 +2,7 @@ import type { Finding } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData, useRevalidator } from "react-router";
+import { Link, useLoaderData, useRevalidator } from "react-router";
 
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -266,9 +266,9 @@ export default function ScanDetail() {
 
   return (
     <s-page heading={`Scan: ${scan.themeName}`}>
-      <s-link slot="primary-action" href="/app/scans">
+      <Link to="/app/scans" slot="primary-action">
         Back to History
-      </s-link>
+      </Link>
 
       {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
       {pollingTimedOut && (
@@ -313,9 +313,9 @@ export default function ScanDetail() {
               Findings are unavailable because this scan encountered an error before finishing.
               Start a new scan from the dashboard to get up-to-date results.
             </s-paragraph>
-            <s-link href="/app">
+            <Link to="/app">
               <s-button variant="primary">Go to Dashboard</s-button>
-            </s-link>
+            </Link>
           </s-stack>
         </s-card>
       ) : isRunning ? (
@@ -423,9 +423,9 @@ export default function ScanDetail() {
                         to Standard to see full details including all file names, line numbers, and
                         code snippets.
                       </s-text>
-                      <s-link href="/app/settings">
+                      <Link to="/app/settings">
                         <s-button variant="primary">Upgrade Plan</s-button>
-                      </s-link>
+                      </Link>
                     </s-stack>
                   </s-banner>
                 )}
