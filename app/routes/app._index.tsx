@@ -378,7 +378,7 @@ export default function Dashboard() {
               display: grid;
               grid-template-columns: 1fr 3fr;
               gap: 16px;
-              align-items: start;
+              align-items: stretch;
             }
             @media (max-width: 600px) {
               .dashboard-top-row {
@@ -587,11 +587,9 @@ export default function Dashboard() {
                     </div>
                     {/* Right: findings */}
                     <div style={{ display: "flex", flexDirection: "column" }}>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: "8px" }}>
-                        <s-heading>Findings</s-heading>
-                        <span style={{ fontSize: "13px", color: "#6d7175" }}>
-                          ({latestScan.themeName} — {formatDate(latestScan.completedAt ?? latestScan.createdAt)})
-                        </span>
+                      <s-heading>Most Recent Findings</s-heading>
+                      <div style={{ fontSize: "13px", color: "#6d7175", marginTop: "2px" }}>
+                        Scanned <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong> on {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
                       </div>
                       <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
                         <div className="finding-stat finding-stat--high">
@@ -623,7 +621,9 @@ export default function Dashboard() {
           </s-card>
 
           {/* Scan Actions */}
-          <s-heading>Scan Actions</s-heading>
+          <div style={{ marginTop: "24px" }}>
+            <s-heading>Scan Actions</s-heading>
+          </div>
           <s-card>
             <s-stack direction="block" gap="base">
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
@@ -684,6 +684,7 @@ export default function Dashboard() {
                   padding: "20px 16px",
                   borderRadius: "12px",
                   border: "1px solid #e1e3e5",
+                  background: "#ffffff",
                   textAlign: "center",
                   gap: "12px",
                 }}>
