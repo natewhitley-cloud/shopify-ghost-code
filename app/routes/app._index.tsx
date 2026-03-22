@@ -376,8 +376,8 @@ export default function Dashboard() {
           <style>{`
             .dashboard-top-row {
               display: grid;
-              grid-template-columns: 200px 1fr;
-              gap: 24px;
+              grid-template-columns: 1fr 3fr;
+              gap: 16px;
               align-items: start;
             }
             @media (max-width: 600px) {
@@ -385,14 +385,29 @@ export default function Dashboard() {
                 grid-template-columns: 1fr;
               }
             }
-            .health-score-hero {
+            .health-score-tile {
               display: flex;
               flex-direction: column;
               align-items: center;
-              padding: 8px 16px;
+              padding: 16px 8px;
+              border-radius: 12px;
+              border: 1px solid #e1e3e5;
+              min-height: 100%;
+            }
+            .health-score-tile--success {
+              border-color: #c8e6c1;
+              background: #f1f8ef;
+            }
+            .health-score-tile--warning {
+              border-color: #fdf0cd;
+              background: #fffcf2;
+            }
+            .health-score-tile--critical {
+              border-color: #fde8e8;
+              background: #fef6f6;
             }
             .health-score-number {
-              font-size: 56px;
+              font-size: 48px;
               font-weight: 700;
               line-height: 1;
               letter-spacing: -2px;
@@ -549,21 +564,24 @@ export default function Dashboard() {
               ) : healthScore && latestScan ? (
                 <>
                   <div className="dashboard-top-row">
-                    {/* Left: health score */}
-                    <div className="health-score-hero">
-                      <div className={`health-score-number health-score-number--${healthScore.tone}`}>
-                        {healthScore.score}
-                      </div>
-                      <div className="health-score-subtitle">out of 100</div>
-                      <div className={`health-score-label health-score-label--${healthScore.tone}`}>
-                        {healthScore.label}
-                      </div>
-                      {previousHealthScore && (
-                        <div className="health-score-delta">
-                          Previous: {previousHealthScore.score}
-                          {scoreDelta ? ` (${scoreDelta})` : ""}
+                    {/* Left: health score tile */}
+                    <div>
+                      <s-heading>Theme Health</s-heading>
+                      <div className={`health-score-tile health-score-tile--${healthScore.tone}`} style={{ marginTop: "8px" }}>
+                        <div className={`health-score-number health-score-number--${healthScore.tone}`}>
+                          {healthScore.score}
                         </div>
-                      )}
+                        <div className="health-score-subtitle">out of 100</div>
+                        <div className={`health-score-label health-score-label--${healthScore.tone}`}>
+                          {healthScore.label}
+                        </div>
+                        {previousHealthScore && (
+                          <div className="health-score-delta">
+                            Prev: {previousHealthScore.score}
+                            {scoreDelta ? ` (${scoreDelta})` : ""}
+                          </div>
+                        )}
+                      </div>
                     </div>
                     {/* Right: findings */}
                     <div>
@@ -604,49 +622,76 @@ export default function Dashboard() {
           {/* Actions card */}
           <s-card>
             <s-stack direction="block" gap="base">
-              <s-heading>Actions</s-heading>
-              <div className="actions-row">
-                <s-button
-                  variant="primary"
-                  onClick={handleStartScan}
-                  {...(isSubmitting ? { loading: true } : {})}
-                  {...(!shop || scanLimitReached ? { disabled: true } : {})}
-                >
-                  Start New Scan
-                </s-button>
-                <s-button variant="tertiary" href="/app/scans">
-                  View Scan History
-                </s-button>
-              </div>
-              {/* Usage indicator — shown when the plan has a scan cap (weekly or monthly) */}
-              {isFirstScan ? (
-                <s-text>Your first scan is free — no limits apply.</s-text>
-              ) : scanUsage !== null ? (
-                <div className="usage-bar-container">
-                  <div className="usage-bar-track">
-                    <div
-                      className={`usage-bar-fill ${scanLimitReached ? "usage-bar-fill--full" : "usage-bar-fill--normal"}`}
-                      style={{ width: `${Math.min((scanUsage.used / scanUsage.limit) * 100, 100)}%` }}
-                    />
-                  </div>
-                  <div className="usage-text">
-                    {scanLimitReached ? (
-                      <>
-                        {scanUsage.period === "week" ? "Weekly" : "Monthly"} scan limit reached ({scanUsage.used} of {scanUsage.limit} used).{" "}
-                        <a href="/app/settings">
-                          {scanUsage.period === "week"
-                            ? "Upgrade to Professional for unlimited scans."
-                            : "Upgrade for more scans."}
-                        </a>
-                      </>
-                    ) : (
-                      <>
-                        {scanUsage.used} of {scanUsage.limit} scans used this {scanUsage.period}
-                      </>
-                    )}
-                  </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                {/* Left: scan action */}
+                <div style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  padding: "20px 16px",
+                  borderRadius: "12px",
+                  border: "1px solid #e1e3e5",
+                  background: scanLimitReached ? "#fafbfb" : "#ffffff",
+                  textAlign: "center",
+                  gap: "12px",
+                }}>
+                  <s-heading>New Scan</s-heading>
+                  {isFirstScan ? (
+                    <div style={{ fontSize: "13px", color: "#1a8a3f" }}>
+                      Your first scan is free
+                    </div>
+                  ) : scanUsage !== null ? (
+                    <div style={{ width: "100%" }}>
+                      <div style={{ fontSize: "13px", color: "#6d7175", marginBottom: "6px" }}>
+                        {scanUsage.used} of {scanUsage.limit} used this {scanUsage.period}
+                      </div>
+                      <div className="usage-bar-track" style={{ margin: "0 auto", maxWidth: "160px" }}>
+                        <div
+                          className={`usage-bar-fill ${scanLimitReached ? "usage-bar-fill--full" : "usage-bar-fill--normal"}`}
+                          style={{ width: `${Math.min((scanUsage.used / scanUsage.limit) * 100, 100)}%` }}
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: "13px", color: "#1a8a3f" }}>
+                      Unlimited scans on your plan
+                    </div>
+                  )}
+                  <s-button
+                    variant="primary"
+                    onClick={handleStartScan}
+                    {...(isSubmitting ? { loading: true } : {})}
+                    {...(!shop || scanLimitReached ? { disabled: true } : {})}
+                  >
+                    {isSubmitting ? "Starting..." : "Start New Scan"}
+                  </s-button>
+                  {scanLimitReached && (
+                    <div style={{ fontSize: "12px", color: "#6d7175" }}>
+                      <a href="/app/settings" style={{ color: "#2c6ecb" }}>Upgrade for more scans</a>
+                    </div>
+                  )}
                 </div>
-              ) : null}
+                {/* Right: scan history */}
+                <div style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  alignItems: "center",
+                  justifyContent: "center",
+                  padding: "20px 16px",
+                  borderRadius: "12px",
+                  border: "1px solid #e1e3e5",
+                  textAlign: "center",
+                  gap: "12px",
+                }}>
+                  <s-heading>Scan History</s-heading>
+                  <div style={{ fontSize: "13px", color: "#6d7175" }}>
+                    View all past scans and findings
+                  </div>
+                  <s-button variant="tertiary" href="/app/scans">
+                    View Scan History
+                  </s-button>
+                </div>
+              </div>
             </s-stack>
           </s-card>
         </>

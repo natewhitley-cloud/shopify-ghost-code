@@ -96,7 +96,7 @@ export default function Settings() {
           background: #ffffff;
           display: flex;
           flex-direction: column;
-          min-height: 380px;
+          min-height: 300px;
         }
         .plan-tile--current {
           border: 2px solid #2c6ecb;
@@ -237,6 +237,7 @@ export default function Settings() {
       )}
 
       {/* About */}
+      <div style={{ marginTop: "16px" }} />
       <s-card>
         <s-stack direction="block" gap="base">
           <s-heading>About Ghost Code</s-heading>
