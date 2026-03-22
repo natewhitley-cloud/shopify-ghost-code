@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { useLoaderData } from "react-router";
+import { Link, useLoaderData } from "react-router";
 
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -100,7 +100,7 @@ export default function ScanHistory() {
                       </td>
                       <td>{scan.findingCount}</td>
                       <td>
-                        <a href={`/app/scans/${scan.id}`} style={{ color: "#2c6ecb", textDecoration: "none" }}>View</a>
+                        <Link to={`/app/scans/${scan.id}`} style={{ color: "#2c6ecb", textDecoration: "none" }}>View</Link>
                       </td>
                     </tr>
                   ))}
