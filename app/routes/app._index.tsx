@@ -390,9 +390,15 @@ export default function Dashboard() {
               flex-direction: column;
               align-items: center;
               justify-content: center;
-              padding: 16px 8px;
+              padding: 12px 8px;
               border-radius: 12px;
               border: 1px solid #e1e3e5;
+            }
+            .dashboard-section-title {
+              font-size: 18px;
+              font-weight: 600;
+              color: #202223;
+              margin: 0;
             }
             .health-score-tile--success {
               border-color: #c8e6c1;
@@ -476,7 +482,7 @@ export default function Dashboard() {
               background: #f5f8ff;
             }
             .finding-stat__count {
-              font-size: 32px;
+              font-size: 42px;
               font-weight: 700;
               line-height: 1;
             }
@@ -568,7 +574,7 @@ export default function Dashboard() {
                   <div className="dashboard-top-row">
                     {/* Left: health score tile */}
                     <div>
-                      <s-heading>Theme Health</s-heading>
+                      <h2 className="dashboard-section-title">Theme Health</h2>
                       <div
                         className={`health-score-tile health-score-tile--${healthScore.tone}`}
                         style={{ marginTop: "8px" }}
@@ -602,7 +608,7 @@ export default function Dashboard() {
                           flexWrap: "wrap",
                         }}
                       >
-                        <s-heading>Most Recent Findings</s-heading>
+                        <h2 className="dashboard-section-title">Most Recent Findings</h2>
                         <span style={{ fontSize: "13px", color: "#6d7175" }}>
                           — <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong>,{" "}
                           {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
@@ -639,7 +645,7 @@ export default function Dashboard() {
 
           {/* Scan Actions */}
           <div style={{ marginTop: "24px" }}>
-            <s-heading>Scan Actions</s-heading>
+            <h2 className="dashboard-section-title">Scan Actions</h2>
           </div>
           <s-card>
             <s-stack direction="block" gap="base">
