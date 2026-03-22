@@ -1,5 +1,6 @@
-// Re-export PLANS so existing server imports continue to work.
-export { PLANS } from "./plans";
+// Import PLANS for local use and re-export for existing server imports.
+import { PLANS } from "./plans";
+export { PLANS };
 
 // Feature flags per plan. Used to gate UI and service-layer behavior.
 export type PlanFeatures = {
