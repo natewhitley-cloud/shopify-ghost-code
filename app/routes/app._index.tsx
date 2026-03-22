@@ -171,10 +171,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: message };
   }
 
-  await inngest.send({
-    name: "scan/requested",
-    data: { shopId: shop.id, themeId, scanId: scan.id },
-  });
+  // Dispatch to Inngest for background processing. Best-effort — if Inngest
+  // is not configured (no EVENT_KEY), the scan record still exists and the
+  // merchant can see it in the scan history.
+  try {
+    await inngest.send({
+      name: "scan/requested",
+      data: { shopId: shop.id, themeId, scanId: scan.id },
+    });
+  } catch {
+    // Inngest not configured — scan stays in PENDING state.
+  }
 
   return redirect(`/app/scans/${scan.id}`);
 };
