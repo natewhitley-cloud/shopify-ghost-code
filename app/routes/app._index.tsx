@@ -378,7 +378,7 @@ export default function Dashboard() {
               display: grid;
               grid-template-columns: 1fr 3fr;
               gap: 16px;
-              align-items: stretch;
+              align-items: end;
             }
             @media (max-width: 600px) {
               .dashboard-top-row {
