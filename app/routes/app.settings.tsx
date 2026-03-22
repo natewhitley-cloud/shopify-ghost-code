@@ -82,49 +82,91 @@ export default function Settings() {
       {actionData?.error && <s-banner tone="critical">{actionData.error}</s-banner>}
 
       {/* Plan Tiles — 3 columns, responsive */}
+      <style>{`
+        .plan-grid {
+          display: grid;
+          grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+          gap: 16px;
+          margin-top: 8px;
+        }
+        .plan-tile {
+          border: 1px solid #e1e3e5;
+          border-radius: 12px;
+          padding: 24px;
+          background: #ffffff;
+          display: flex;
+          flex-direction: column;
+          min-height: 380px;
+        }
+        .plan-tile--current {
+          border: 2px solid #2c6ecb;
+          box-shadow: 0 0 0 1px #2c6ecb;
+        }
+        .plan-tile__header {
+          margin-bottom: 4px;
+        }
+        .plan-tile__name {
+          font-size: 22px;
+          font-weight: 700;
+          color: #202223;
+          margin: 0;
+        }
+        .plan-tile__price {
+          font-size: 16px;
+          font-weight: 600;
+          color: #6d7175;
+          margin: 4px 0 0 0;
+        }
+        .plan-tile__badge {
+          display: inline-block;
+          background: #2c6ecb;
+          color: #ffffff;
+          font-size: 12px;
+          font-weight: 600;
+          padding: 3px 10px;
+          border-radius: 12px;
+          margin-top: 8px;
+        }
+        .plan-tile__divider {
+          border: none;
+          border-top: 1px solid #e1e3e5;
+          margin: 16px 0;
+        }
+        .plan-tile__features {
+          flex: 1;
+        }
+        .plan-tile__action {
+          margin-top: 16px;
+        }
+      `}</style>
       <s-heading>Plans</s-heading>
-      <div
-        style={{
-          display: "grid",
-          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
-          gap: "16px",
-          marginTop: "8px",
-        }}
-      >
+      <div className="plan-grid">
         {/* Free Plan */}
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-inline>
-              <s-text fontWeight="bold" fontSize="heading-lg">
-                Free
-              </s-text>
-              {isFree && <s-badge>Current plan</s-badge>}
-            </s-inline>
-            <s-text fontWeight="bold" fontSize="heading-sm">
-              $0 / month
-            </s-text>
-            <s-divider />
+        <div className={`plan-tile${isFree ? " plan-tile--current" : ""}`}>
+          <div className="plan-tile__header">
+            <p className="plan-tile__name">Free</p>
+            <p className="plan-tile__price">$0 / month</p>
+            {isFree && <span className="plan-tile__badge">Current plan</span>}
+          </div>
+          <hr className="plan-tile__divider" />
+          <div className="plan-tile__features">
             <s-unordered-list>
               <s-list-item>1 scan per month</s-list-item>
               <s-list-item>Finding count only</s-list-item>
               <s-list-item>Single theme</s-list-item>
             </s-unordered-list>
-          </s-stack>
-        </s-card>
+          </div>
+        </div>
 
         {/* Standard Plan */}
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-inline>
-              <s-text fontWeight="bold" fontSize="heading-lg">
-                Standard
-              </s-text>
-              {isStandard && <s-badge>Current plan</s-badge>}
-            </s-inline>
-            <s-text fontWeight="bold" fontSize="heading-sm">
-              $29 / month
-            </s-text>
-            <s-divider />
+        <div className={`plan-tile${isStandard ? " plan-tile--current" : ""}`}>
+          <div className="plan-tile__header">
+            <p className="plan-tile__name">Standard</p>
+            <p className="plan-tile__price">$29 / month</p>
+            {isStandard && <span className="plan-tile__badge">Current plan</span>}
+          </div>
+          <hr className="plan-tile__divider" />
+          <div className="plan-tile__features">
             <s-unordered-list>
               <s-list-item>Unlimited scans</s-list-item>
               <s-list-item>Full finding details</s-list-item>
@@ -132,30 +174,28 @@ export default function Settings() {
               <s-list-item>Weekly scheduled scans</s-list-item>
               <s-list-item>7-day free trial</s-list-item>
             </s-unordered-list>
-            {isFree && (
+          </div>
+          {isFree && (
+            <div className="plan-tile__action">
               <Form method="post">
                 <input type="hidden" name="intent" value="subscribe-standard" />
                 <s-button variant="primary" type="submit" disabled={isSubmitting || undefined}>
                   {isSubmitting ? "Upgrading..." : "Upgrade to Standard"}
                 </s-button>
               </Form>
-            )}
-          </s-stack>
-        </s-card>
+            </div>
+          )}
+        </div>
 
         {/* Professional Plan */}
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-inline>
-              <s-text fontWeight="bold" fontSize="heading-lg">
-                Professional
-              </s-text>
-              {isProfessional && <s-badge>Current plan</s-badge>}
-            </s-inline>
-            <s-text fontWeight="bold" fontSize="heading-sm">
-              $49 / month
-            </s-text>
-            <s-divider />
+        <div className={`plan-tile${isProfessional ? " plan-tile--current" : ""}`}>
+          <div className="plan-tile__header">
+            <p className="plan-tile__name">Professional</p>
+            <p className="plan-tile__price">$49 / month</p>
+            {isProfessional && <span className="plan-tile__badge">Current plan</span>}
+          </div>
+          <hr className="plan-tile__divider" />
+          <div className="plan-tile__features">
             <s-unordered-list>
               <s-list-item>Everything in Standard</s-list-item>
               <s-list-item>Multiple theme scanning</s-list-item>
@@ -164,47 +204,19 @@ export default function Settings() {
               <s-list-item>Scan diffing</s-list-item>
               <s-list-item>7-day free trial</s-list-item>
             </s-unordered-list>
-            {!isProfessional && (
+          </div>
+          {!isProfessional && (
+            <div className="plan-tile__action">
               <Form method="post">
                 <input type="hidden" name="intent" value="subscribe-professional" />
                 <s-button variant="primary" type="submit" disabled={isSubmitting || undefined}>
-                  {isSubmitting
-                    ? "Upgrading..."
-                    : isStandard
-                      ? "Upgrade to Professional"
-                      : "Start with Professional"}
+                  {isSubmitting ? "Upgrading..." : "Upgrade to Professional"}
                 </s-button>
               </Form>
-            )}
-          </s-stack>
-        </s-card>
+            </div>
+          )}
+        </div>
       </div>
-
-      {/* Current Plan Details */}
-      <s-card>
-        <s-stack direction="block" gap="base">
-          <s-heading>Your Plan Details</s-heading>
-          <s-paragraph>
-            You are on the <strong>{shop.plan}</strong> plan.
-          </s-paragraph>
-          <s-unordered-list>
-            <s-list-item>
-              {features.maxScansPerMonth === Infinity
-                ? "Unlimited"
-                : features.maxScansPerMonth}{" "}
-              {features.maxScansPerMonth === 1 ? "scan" : "scans"} per month
-            </s-list-item>
-            <s-list-item>
-              Finding details: {features.showFindingDetails ? "Yes" : "Count only"}
-            </s-list-item>
-            <s-list-item>
-              Multiple themes: {features.maxThemes === Infinity ? "Yes" : "No"}
-            </s-list-item>
-            <s-list-item>Auto-rescan: {features.autoRescan ? "Yes" : "No"}</s-list-item>
-            <s-list-item>Scan diffing: {features.scanDiffing ? "Yes" : "No"}</s-list-item>
-          </s-unordered-list>
-        </s-stack>
-      </s-card>
 
       {/* Manage Subscription — shown only to paid-plan users */}
       {!isFree && (
