@@ -81,17 +81,118 @@ export default function Settings() {
 
       {actionData?.error && <s-banner tone="critical">{actionData.error}</s-banner>}
 
-      {/* Current Plan */}
+      {/* Plan Tiles — 3 columns, responsive */}
+      <s-heading>Plans</s-heading>
+      <div
+        style={{
+          display: "grid",
+          gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))",
+          gap: "16px",
+          marginTop: "8px",
+        }}
+      >
+        {/* Free Plan */}
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-inline>
+              <s-text fontWeight="bold" fontSize="heading-lg">
+                Free
+              </s-text>
+              {isFree && <s-badge>Current plan</s-badge>}
+            </s-inline>
+            <s-text fontWeight="bold" fontSize="heading-sm">
+              $0 / month
+            </s-text>
+            <s-divider />
+            <s-unordered-list>
+              <s-list-item>1 scan per month</s-list-item>
+              <s-list-item>Finding count only</s-list-item>
+              <s-list-item>Single theme</s-list-item>
+            </s-unordered-list>
+          </s-stack>
+        </s-card>
+
+        {/* Standard Plan */}
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-inline>
+              <s-text fontWeight="bold" fontSize="heading-lg">
+                Standard
+              </s-text>
+              {isStandard && <s-badge>Current plan</s-badge>}
+            </s-inline>
+            <s-text fontWeight="bold" fontSize="heading-sm">
+              $29 / month
+            </s-text>
+            <s-divider />
+            <s-unordered-list>
+              <s-list-item>Unlimited scans</s-list-item>
+              <s-list-item>Full finding details</s-list-item>
+              <s-list-item>Single theme</s-list-item>
+              <s-list-item>Weekly scheduled scans</s-list-item>
+              <s-list-item>7-day free trial</s-list-item>
+            </s-unordered-list>
+            {isFree && (
+              <Form method="post">
+                <input type="hidden" name="intent" value="subscribe-standard" />
+                <s-button variant="primary" type="submit" disabled={isSubmitting || undefined}>
+                  {isSubmitting ? "Upgrading..." : "Upgrade to Standard"}
+                </s-button>
+              </Form>
+            )}
+          </s-stack>
+        </s-card>
+
+        {/* Professional Plan */}
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-inline>
+              <s-text fontWeight="bold" fontSize="heading-lg">
+                Professional
+              </s-text>
+              {isProfessional && <s-badge>Current plan</s-badge>}
+            </s-inline>
+            <s-text fontWeight="bold" fontSize="heading-sm">
+              $49 / month
+            </s-text>
+            <s-divider />
+            <s-unordered-list>
+              <s-list-item>Everything in Standard</s-list-item>
+              <s-list-item>Multiple theme scanning</s-list-item>
+              <s-list-item>Auto-rescan on theme publish</s-list-item>
+              <s-list-item>Daily scheduled scans</s-list-item>
+              <s-list-item>Scan diffing</s-list-item>
+              <s-list-item>7-day free trial</s-list-item>
+            </s-unordered-list>
+            {!isProfessional && (
+              <Form method="post">
+                <input type="hidden" name="intent" value="subscribe-professional" />
+                <s-button variant="primary" type="submit" disabled={isSubmitting || undefined}>
+                  {isSubmitting
+                    ? "Upgrading..."
+                    : isStandard
+                      ? "Upgrade to Professional"
+                      : "Start with Professional"}
+                </s-button>
+              </Form>
+            )}
+          </s-stack>
+        </s-card>
+      </div>
+
+      {/* Current Plan Details */}
       <s-card>
         <s-stack direction="block" gap="base">
-          <s-heading>Current Plan</s-heading>
+          <s-heading>Your Plan Details</s-heading>
           <s-paragraph>
             You are on the <strong>{shop.plan}</strong> plan.
           </s-paragraph>
           <s-unordered-list>
             <s-list-item>
-              {features.maxScansPerMonth === Infinity ? "Unlimited" : features.maxScansPerMonth}{" "}
-              scans per month
+              {features.maxScansPerMonth === Infinity
+                ? "Unlimited"
+                : features.maxScansPerMonth}{" "}
+              {features.maxScansPerMonth === 1 ? "scan" : "scans"} per month
             </s-list-item>
             <s-list-item>
               Finding details: {features.showFindingDetails ? "Yes" : "Count only"}
@@ -104,58 +205,6 @@ export default function Settings() {
           </s-unordered-list>
         </s-stack>
       </s-card>
-
-      {/* Upgrade Plans — only shown when not on Professional */}
-      {!isProfessional && (
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-heading>Upgrade Your Plan</s-heading>
-            <s-paragraph>
-              Unlock more scans, full finding details, and advanced features.
-            </s-paragraph>
-
-            {/* Standard plan — shown to Free users */}
-            {isFree && (
-              <s-stack direction="block" gap="base">
-                <s-heading>Standard — $29 / month</s-heading>
-                <s-unordered-list>
-                  <s-list-item>Unlimited scans</s-list-item>
-                  <s-list-item>Full finding details</s-list-item>
-                  <s-list-item>7-day free trial</s-list-item>
-                </s-unordered-list>
-                <Form method="post">
-                  <input type="hidden" name="intent" value="subscribe-standard" />
-                  <button type="submit" disabled={isSubmitting}>
-                    {isSubmitting ? "Upgrading..." : "Upgrade to Standard"}
-                  </button>
-                </Form>
-              </s-stack>
-            )}
-
-            {/* Professional plan — shown to Free and Standard users */}
-            <s-stack direction="block" gap="base">
-              <s-heading>Professional — $49 / month</s-heading>
-              <s-unordered-list>
-                <s-list-item>Everything in Standard</s-list-item>
-                <s-list-item>Multiple theme scanning</s-list-item>
-                <s-list-item>Auto-rescan on theme publish</s-list-item>
-                <s-list-item>Scan diffing</s-list-item>
-                <s-list-item>7-day free trial</s-list-item>
-              </s-unordered-list>
-              <Form method="post">
-                <input type="hidden" name="intent" value="subscribe-professional" />
-                <button type="submit" disabled={isSubmitting}>
-                  {isSubmitting
-                    ? "Upgrading..."
-                    : isStandard
-                      ? "Upgrade to Professional"
-                      : "Start with Professional"}
-                </button>
-              </Form>
-            </s-stack>
-          </s-stack>
-        </s-card>
-      )}
 
       {/* Manage Subscription — shown only to paid-plan users */}
       {!isFree && (
