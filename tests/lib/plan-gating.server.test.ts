@@ -156,7 +156,7 @@ describe("canStartScan — active scan guard", () => {
 });
 
 // ---------------------------------------------------------------------------
-// canStartScan — Standard plan (unlimited scans)
+// canStartScan — Standard plan (1 scan per week)
 // ---------------------------------------------------------------------------
 
 describe("canStartScan — Standard plan", () => {
@@ -165,13 +165,45 @@ describe("canStartScan — Standard plan", () => {
     mockDb.scan.findFirst.mockResolvedValue(null); // no active scan
   });
 
-  it("returns allowed: true without checking monthly count for Standard plan", async () => {
+  it("returns allowed: true when the shop has used 0 scans this week", async () => {
+    mockCountScansForShopSince.mockResolvedValue(0);
+
     const result = await canStartScan(SHOP_ID, "Standard");
 
     expect(result.allowed).toBe(true);
     expect(result.reason).toBeUndefined();
-    // Standard has unlimited scans — no need to count monthly usage.
-    expect(mockCountScansForShopSince).not.toHaveBeenCalled();
+  });
+
+  it("returns allowed: false when the shop has used 1 scan this week (at limit)", async () => {
+    mockCountScansForShopSince.mockResolvedValue(1);
+
+    const result = await canStartScan(SHOP_ID, "Standard");
+
+    expect(result.allowed).toBe(false);
+    expect(result.reason).toContain("Weekly scan limit reached");
+    expect(result.reason).toContain("Upgrade to Professional");
+  });
+
+  it("passes the start of the current ISO week (Monday 00:00 UTC) as the since date", async () => {
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    await canStartScan(SHOP_ID, "Standard");
+
+    const sinceArg: Date = mockCountScansForShopSince.mock.calls[0][1];
+    // The since date should be a Monday.
+    expect(sinceArg.getUTCDay()).toBe(1); // Monday = 1
+    expect(sinceArg.getUTCHours()).toBe(0);
+    expect(sinceArg.getUTCMinutes()).toBe(0);
+    expect(sinceArg.getUTCSeconds()).toBe(0);
+  });
+
+  it("does not check monthly count or hasCompletedScans", async () => {
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    await canStartScan(SHOP_ID, "Standard");
+
+    // Standard uses weekly check, not monthly — hasCompletedScans should not be called.
+    expect(mockHasCompletedScans).not.toHaveBeenCalled();
   });
 });
 
@@ -343,12 +375,12 @@ describe("canStartScan — first scan free on free plan", () => {
     expect(mockCountScansForShopSince).not.toHaveBeenCalled();
   });
 
-  it("does not apply the first-scan bypass to paid plans (Standard has unlimited already)", async () => {
-    mockHasCompletedScans.mockResolvedValue(false);
+  it("does not apply the first-scan bypass to paid plans (Standard uses weekly limit instead)", async () => {
+    mockCountScansForShopSince.mockResolvedValue(0);
 
     const result = await canStartScan(SHOP_ID, "Standard");
 
-    // Standard always allows — hasCompletedScans should not even be called.
+    // Standard uses weekly check — hasCompletedScans should not be called.
     expect(result.allowed).toBe(true);
     expect(mockHasCompletedScans).not.toHaveBeenCalled();
   });

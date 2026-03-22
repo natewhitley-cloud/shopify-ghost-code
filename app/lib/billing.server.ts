@@ -5,6 +5,7 @@ export { PLANS };
 // Feature flags per plan. Used to gate UI and service-layer behavior.
 export type PlanFeatures = {
   maxScansPerMonth: number;
+  maxScansPerWeek: number;
   showFindingDetails: boolean;
   maxThemes: number;
   autoRescan: boolean;
@@ -20,6 +21,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
     case PLANS.STANDARD:
       return {
         maxScansPerMonth: Infinity,
+        maxScansPerWeek: 1,
         showFindingDetails: true,
         maxThemes: 1,
         autoRescan: false,
@@ -30,6 +32,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
     case PLANS.PROFESSIONAL:
       return {
         maxScansPerMonth: Infinity,
+        maxScansPerWeek: Infinity,
         showFindingDetails: true,
         maxThemes: Infinity,
         autoRescan: true,
@@ -40,6 +43,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
     default: // FREE — no active Shopify subscription
       return {
         maxScansPerMonth: 1,
+        maxScansPerWeek: Infinity,
         showFindingDetails: false,
         maxThemes: 1,
         autoRescan: false,

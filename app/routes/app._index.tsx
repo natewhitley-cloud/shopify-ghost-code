@@ -8,8 +8,8 @@ import { PLANS } from "../lib/plans";
 import { formatDate } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
-import { canStartScan } from "../lib/plan-gating.server";
-import { getFindingSummary, getDistinctFileCount } from "../models/finding.server";
+import { canStartScan, getWeekStartUTC } from "../lib/plan-gating.server";
+import { getFindingSummary } from "../models/finding.server";
 import {
   getScansForShop,
   createScan,
@@ -59,15 +59,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Gather independent data in parallel to reduce loader latency.
   const features = getPlanFeatures(shop.plan);
-  const needsUsage = features.maxScansPerMonth !== Infinity;
+  const needsUsage =
+    features.maxScansPerMonth !== Infinity || features.maxScansPerWeek !== Infinity;
 
   // Phase 1: queries that depend only on latestScan/previousScan IDs (parallel)
-  const [latestFileCount, prevResult, completedScanCheck] = await Promise.all([
-    latestScan && latestScan.status === "COMPLETED"
-      ? getDistinctFileCount(latestScan.id)
-      : Promise.resolve(0),
+  const [prevSummary, completedScanCheck] = await Promise.all([
     previousScan && previousScan.status === "COMPLETED"
-      ? Promise.all([getFindingSummary(previousScan.id), getDistinctFileCount(previousScan.id)])
+      ? getFindingSummary(previousScan.id)
       : Promise.resolve(null),
     needsUsage ? hasCompletedScans(shop.id) : Promise.resolve(false),
   ]);
@@ -75,25 +73,32 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Compute health scores from parallel results
   let healthScore: HealthScoreResult | null = null;
   if (latestScan && latestScan.status === "COMPLETED" && findingSummary) {
-    healthScore = computeHealthScore(findingSummary.bySeverity, latestFileCount);
+    healthScore = computeHealthScore(findingSummary.bySeverity);
   }
 
   let previousHealthScore: HealthScoreResult | null = null;
-  if (prevResult) {
-    const [prevSummary, prevFileCount] = prevResult;
-    previousHealthScore = computeHealthScore(prevSummary.bySeverity, prevFileCount);
+  if (prevSummary) {
+    previousHealthScore = computeHealthScore(prevSummary.bySeverity);
   }
 
-  // Compute scan usage for free-plan shops
-  let scanUsage: { used: number; limit: number } | null = null;
+  // Compute scan usage for plans with caps (Free = monthly, Standard = weekly).
+  let scanUsage: { used: number; limit: number; period: "week" | "month" } | null = null;
   let isFirstScan = false;
   if (needsUsage) {
     isFirstScan = !completedScanCheck;
     if (!isFirstScan) {
-      const now = new Date();
-      const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
-      const used = await countScansForShopSince(shop.id, monthStart);
-      scanUsage = { used, limit: features.maxScansPerMonth };
+      if (features.maxScansPerWeek !== Infinity) {
+        // Weekly limit (Standard plan)
+        const weekStart = getWeekStartUTC();
+        const used = await countScansForShopSince(shop.id, weekStart);
+        scanUsage = { used, limit: features.maxScansPerWeek, period: "week" };
+      } else {
+        // Monthly limit (Free plan)
+        const now = new Date();
+        const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
+        const used = await countScansForShopSince(shop.id, monthStart);
+        scanUsage = { used, limit: features.maxScansPerMonth, period: "month" };
+      }
     }
   }
 
@@ -274,7 +279,7 @@ export default function Dashboard() {
   const mediumCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.MEDIUM ?? 0);
   const lowCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.LOW ?? 0);
 
-  // Whether the free-plan monthly limit has been reached.
+  // Whether the plan's scan limit (weekly or monthly) has been reached.
   // isFirstScan overrides the limit — the first scan is always allowed on the free plan.
   const scanLimitReached = !isFirstScan && scanUsage !== null && scanUsage.used >= scanUsage.limit;
 
@@ -369,14 +374,25 @@ export default function Dashboard() {
       ) : (
         <>
           <style>{`
+            .dashboard-top-row {
+              display: grid;
+              grid-template-columns: 200px 1fr;
+              gap: 24px;
+              align-items: start;
+            }
+            @media (max-width: 600px) {
+              .dashboard-top-row {
+                grid-template-columns: 1fr;
+              }
+            }
             .health-score-hero {
               display: flex;
               flex-direction: column;
               align-items: center;
-              padding: 24px 16px 16px;
+              padding: 8px 16px;
             }
             .health-score-number {
-              font-size: 72px;
+              font-size: 56px;
               font-weight: 700;
               line-height: 1;
               letter-spacing: -2px;
@@ -512,17 +528,16 @@ export default function Dashboard() {
             }
           `}</style>
 
-          {/* Theme Health Score — hero metric card */}
+          {/* Theme Health + Findings — combined card */}
           <s-card>
             <s-stack direction="block" gap="base">
-              <s-heading>Theme Health Score</s-heading>
               {scanInProgress ? (
                 <div className="scan-progress-container">
                   <s-spinner accessibilityLabel="Scanning theme" size="large" />
                   <s-text variant="headingMd">Scanning your theme...</s-text>
                   <div className="scan-progress-text">
                     Ghost Code is analyzing your theme files for orphaned code.
-                    Your health score will appear here when the scan is complete.
+                    Results will appear here when the scan is complete.
                   </div>
                   {elapsedText && (
                     <div className="scan-progress-elapsed">Started {elapsedText} ago</div>
@@ -531,75 +546,57 @@ export default function Dashboard() {
                     This typically takes 1–3 minutes depending on theme size.
                   </div>
                 </div>
-              ) : healthScore ? (
-                <div className="health-score-hero">
-                  <div className={`health-score-number health-score-number--${healthScore.tone}`}>
-                    {healthScore.score}
-                  </div>
-                  <div className="health-score-subtitle">out of 100</div>
-                  <div className={`health-score-label health-score-label--${healthScore.tone}`}>
-                    {healthScore.label}
-                  </div>
-                  {previousHealthScore && (
-                    <div className="health-score-delta">
-                      Previous: {previousHealthScore.score}
-                      {scoreDelta ? ` (${scoreDelta})` : " (no change)"}
-                    </div>
-                  )}
-                </div>
-              ) : (
-                <s-text>Run your first scan to see your theme health score.</s-text>
-              )}
-            </s-stack>
-          </s-card>
-
-          {/* Findings summary — severity stat cards in a row */}
-          <s-card>
-            <s-stack direction="block" gap="base">
-              <s-heading>Findings</s-heading>
-              {scanInProgress ? (
-                <s-stack direction="block" gap="small">
-                  <s-stack direction="inline" alignItems="center" gap="small">
-                    <s-spinner accessibilityLabel="Scan in progress" />
-                    <s-text>
-                      Scanning <strong>{latestScan?.themeName ?? "theme"}</strong>... Results will
-                      appear here when complete.
-                    </s-text>
-                  </s-stack>
-                  {elapsedText && (
-                    <s-text>Running for {elapsedText}...</s-text>
-                  )}
-                </s-stack>
-              ) : latestScan ? (
+              ) : healthScore && latestScan ? (
                 <>
-                  <div className="findings-row">
-                    <div className="finding-stat finding-stat--high">
-                      <div className="finding-stat__count finding-stat__count--high">
-                        {highCount}
+                  <div className="dashboard-top-row">
+                    {/* Left: health score */}
+                    <div className="health-score-hero">
+                      <div className={`health-score-number health-score-number--${healthScore.tone}`}>
+                        {healthScore.score}
                       </div>
-                      <div className="finding-stat__label">High</div>
+                      <div className="health-score-subtitle">out of 100</div>
+                      <div className={`health-score-label health-score-label--${healthScore.tone}`}>
+                        {healthScore.label}
+                      </div>
+                      {previousHealthScore && (
+                        <div className="health-score-delta">
+                          Previous: {previousHealthScore.score}
+                          {scoreDelta ? ` (${scoreDelta})` : ""}
+                        </div>
+                      )}
                     </div>
-                    <div className="finding-stat finding-stat--medium">
-                      <div className="finding-stat__count finding-stat__count--medium">
-                        {mediumCount}
+                    {/* Right: findings */}
+                    <div>
+                      <s-heading>Findings</s-heading>
+                      <div className="findings-row" style={{ marginTop: "8px" }}>
+                        <div className="finding-stat finding-stat--high">
+                          <div className="finding-stat__count finding-stat__count--high">
+                            {highCount}
+                          </div>
+                          <div className="finding-stat__label">High</div>
+                        </div>
+                        <div className="finding-stat finding-stat--medium">
+                          <div className="finding-stat__count finding-stat__count--medium">
+                            {mediumCount}
+                          </div>
+                          <div className="finding-stat__label">Medium</div>
+                        </div>
+                        <div className="finding-stat finding-stat--low">
+                          <div className="finding-stat__count finding-stat__count--low">
+                            {lowCount}
+                          </div>
+                          <div className="finding-stat__label">Low</div>
+                        </div>
                       </div>
-                      <div className="finding-stat__label">Medium</div>
-                    </div>
-                    <div className="finding-stat finding-stat--low">
-                      <div className="finding-stat__count finding-stat__count--low">
-                        {lowCount}
-                      </div>
-                      <div className="finding-stat__label">Low</div>
                     </div>
                   </div>
-                  {/* Last scan metadata — secondary info below findings */}
                   <div className="scan-meta">
                     Scanned <strong>{latestScan.themeName}</strong> on{" "}
                     {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
                   </div>
                 </>
               ) : (
-                <s-paragraph>No scans yet. Run your first scan to detect ghost code.</s-paragraph>
+                <s-text>Run your first scan to see your theme health score.</s-text>
               )}
             </s-stack>
           </s-card>
@@ -621,7 +618,7 @@ export default function Dashboard() {
                   View Scan History
                 </s-button>
               </div>
-              {/* Free-plan usage indicator — only shown when the plan has a monthly cap */}
+              {/* Usage indicator — shown when the plan has a scan cap (weekly or monthly) */}
               {isFirstScan ? (
                 <s-text>Your first scan is free — no limits apply.</s-text>
               ) : scanUsage !== null ? (
@@ -635,12 +632,16 @@ export default function Dashboard() {
                   <div className="usage-text">
                     {scanLimitReached ? (
                       <>
-                        Monthly scan limit reached ({scanUsage.used} of {scanUsage.limit} used).{" "}
-                        <a href="/app/settings">Upgrade for unlimited scans.</a>
+                        {scanUsage.period === "week" ? "Weekly" : "Monthly"} scan limit reached ({scanUsage.used} of {scanUsage.limit} used).{" "}
+                        <a href="/app/settings">
+                          {scanUsage.period === "week"
+                            ? "Upgrade to Professional for unlimited scans."
+                            : "Upgrade for more scans."}
+                        </a>
                       </>
                     ) : (
                       <>
-                        {scanUsage.used} of {scanUsage.limit} scans used this month
+                        {scanUsage.used} of {scanUsage.limit} scans used this {scanUsage.period}
                       </>
                     )}
                   </div>

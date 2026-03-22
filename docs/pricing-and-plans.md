@@ -24,7 +24,7 @@
 
 | Feature                | Limit                                           |
 | ---------------------- | ----------------------------------------------- |
-| Scans per month        | Unlimited                                       |
+| Scans                  | 1 per week (resets Monday 00:00 UTC)            |
 | Finding details        | Full (file, line number, code snippet)          |
 | Theme Health Score     | Yes (score + color band + delta between scans)  |
 | Weekly scheduled scan  | Yes (automatic scan every Sunday 6 AM UTC)      |
@@ -34,7 +34,7 @@
 | Auto-rescan on publish | No                                              |
 | Scan diffing           | No                                              |
 
-**Purpose:** The workhorse tier. Merchants can scan freely, see exactly what needs cleaning up, and track their theme health over time. The weekly scheduled scan ensures no one falls behind even if they forget to scan manually.
+**Purpose:** The mid-tier workhorse. Merchants get full finding details and weekly cadence — enough to stay on top of orphaned code without unlimited manual scans. The weekly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap creates clear daylight between Standard and Professional (unlimited).
 
 ### Professional ($49/mo, 7-day free trial)
 
@@ -59,9 +59,10 @@
 
 ### Standard → Professional
 
-3. **Auto-rescan skipped** — Theme publish webhooks arrive but scans are silently skipped on non-Pro plans. Standard shops get a weekly scheduled scan but miss same-day feedback when they publish a theme. Passive trigger (user doesn't see it unless they notice scans aren't auto-running).
-4. **Scan diffing unavailable** — Standard users don't see "New / Resolved / Unchanged" diff badges. Pro users get change tracking.
-5. **Multi-theme gating** — Defined in code (`canUseMultipleThemes()`) but not yet enforced in UI. Future feature.
+3. **Scan limit hit on Standard** — Standard plan allows 1 manual scan per week (resets Monday 00:00 UTC). Weekly limit reached surfaces an upgrade prompt to Professional (unlimited). Combined with auto-rescan being Pro-only, this creates meaningful upgrade pressure for active merchants.
+4. **Auto-rescan skipped** — Theme publish webhooks arrive but scans are silently skipped on non-Pro plans. Standard shops get a weekly scheduled scan but miss same-day feedback when they publish a theme. Passive trigger (user doesn't see it unless they notice scans aren't auto-running).
+5. **Scan diffing unavailable** — Standard users don't see "New / Resolved / Unchanged" diff badges. Pro users get change tracking.
+6. **Multi-theme gating** — Defined in code (`canUseMultipleThemes()`) but not yet enforced in UI. Future feature.
 
 ---
 
@@ -126,3 +127,4 @@
 | 2026-03-10 | Free tier: show highest-severity finding in full + count + category breakdown | "Peek" architecture outperforms pure gating per SaaS research. Count creates urgency; category breakdown signals comprehensiveness; single full finding makes the problem tangible.                          |
 | 2026-03-11 | Standard: weekly scheduled scan (Sunday 6 AM UTC)                             | Differentiates Standard from Free without encroaching on Pro's daily auto-rescan. Reuses the existing poll-check-shop worker — no new per-shop logic needed. `scheduledScan: boolean` added to PlanFeatures. |
 | 2026-03-10 | Pro price: $49/mo (down from $59)                                             | $49 better fits market comparables and reduces the Standard→Pro gap. Monitor post-launch — raise to $59 if willingness-to-pay signals support it.                                                            |
+| 2026-03-22 | Standard: 1 scan/week (down from unlimited)                                   | Creates clear upgrade path to Professional (unlimited). Weekly cadence matches the scheduled scan rhythm. Prevents unlimited-scan abuse on mid-tier while keeping the plan useful for most merchants.         |

@@ -3,13 +3,11 @@
  *
  * Pure, client-safe module — no DB access, no server imports.
  *
- * Formula:
- *   rawDeduction = HIGH × 15 + MEDIUM × 7 + LOW × 3
- *   normalizedDeduction = rawDeduction / totalFilesScanned × 100
- *   score = max(0, min(100, 100 - normalizedDeduction))
+ * Formula (simple deduction, no normalization):
+ *   score = max(0, 100 - (HIGH × 10 + MEDIUM × 5 + LOW × 1))
  *
- * When totalFilesScanned === 0, there is nothing to deduct from, so we
- * return 100 (a theme with no files has no ghost code by definition).
+ * Each finding deducts a fixed number of points based on its severity.
+ * The score floors at 0 — it cannot go negative.
  */
 
 export type HealthScoreResult = {
@@ -26,9 +24,9 @@ type SeverityCounts = {
 };
 
 const DEDUCTION_WEIGHTS = {
-  HIGH: 15,
-  MEDIUM: 7,
-  LOW: 3,
+  HIGH: 10,
+  MEDIUM: 5,
+  LOW: 1,
 } as const;
 
 /**
@@ -50,31 +48,22 @@ function scoreToBand(score: number): Pick<HealthScoreResult, "label" | "tone"> {
 }
 
 /**
- * Compute the Theme Health Score from finding severity counts and the total
- * number of files scanned.
+ * Compute the Theme Health Score from finding severity counts.
  *
- * Edge cases:
- * - totalFilesScanned === 0: returns score 100 (no files = no ghost code possible)
- * - all finding counts === 0: returns score 100 (clean theme)
- * - rawDeduction > totalFilesScanned × 100: floored at 0
+ * Each finding deducts points from a perfect 100:
+ *   HIGH × 10 + MEDIUM × 5 + LOW × 1
+ *
+ * The result is clamped to [0, 100].
  */
 export function computeHealthScore(
   findings: SeverityCounts,
-  totalFilesScanned: number,
 ): HealthScoreResult {
-  if (totalFilesScanned === 0) {
-    return { score: 100, ...scoreToBand(100) };
-  }
-
-  const rawDeduction =
+  const deduction =
     findings.HIGH * DEDUCTION_WEIGHTS.HIGH +
     findings.MEDIUM * DEDUCTION_WEIGHTS.MEDIUM +
     findings.LOW * DEDUCTION_WEIGHTS.LOW;
 
-  // Normalize by file count so large themes aren't unfairly penalized.
-  const normalizedDeduction = (rawDeduction / totalFilesScanned) * 100;
-
-  const score = Math.max(0, Math.min(100, Math.round(100 - normalizedDeduction)));
+  const score = Math.max(0, 100 - deduction);
 
   return { score, ...scoreToBand(score) };
 }

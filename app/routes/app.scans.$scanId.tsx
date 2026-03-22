@@ -12,7 +12,6 @@ import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.ser
 import {
   getFindingSummary,
   getHighestSeverityFinding,
-  getDistinctFileCount,
 } from "../models/finding.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
@@ -130,11 +129,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   const findingSummary = await getFindingSummary(scanId);
 
-  // Compute health score for completed scans. Runs in parallel with other queries.
+  // Compute health score for completed scans.
   let healthScore: HealthScoreResult | null = null;
   if (scan.status === "COMPLETED") {
-    const fileCount = await getDistinctFileCount(scanId);
-    healthScore = computeHealthScore(findingSummary.bySeverity, fileCount);
+    healthScore = computeHealthScore(findingSummary.bySeverity);
   }
 
   // For free-tier shops, omit the full findings array from the response to

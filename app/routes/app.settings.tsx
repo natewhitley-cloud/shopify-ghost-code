@@ -63,7 +63,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export default function Settings() {
-  const { shop, features } = useLoaderData<typeof loader>();
+  const { shop } = useLoaderData<typeof loader>();
   const actionData = useActionData<typeof action>();
 
   const navigation = useNavigation();
@@ -168,7 +168,7 @@ export default function Settings() {
           <hr className="plan-tile__divider" />
           <div className="plan-tile__features">
             <s-unordered-list>
-              <s-list-item>Unlimited scans</s-list-item>
+              <s-list-item>1 scan per week</s-list-item>
               <s-list-item>Full finding details</s-list-item>
               <s-list-item>Single theme</s-list-item>
               <s-list-item>Weekly scheduled scans</s-list-item>
