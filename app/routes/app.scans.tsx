@@ -77,41 +77,39 @@ export default function ScanHistory() {
       ) : (
         <>
           <s-card>
-            <s-data-table>
-              <table className="scan-history-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Theme</th>
-                    <th>Status</th>
-                    <th>Findings</th>
-                    <th>Actions</th>
+            <table className="scan-history-table">
+              <thead>
+                <tr>
+                  <th>Date</th>
+                  <th>Theme</th>
+                  <th>Status</th>
+                  <th>Findings</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {scans.map((scan) => (
+                  <tr key={scan.id}>
+                    <td>{formatDate(scan.createdAt, true)}</td>
+                    <td>{scan.themeName}</td>
+                    <td>
+                      <s-badge tone={statusTone(scan.status as ScanStatus)}>
+                        {statusLabel(scan.status as ScanStatus)}
+                      </s-badge>
+                    </td>
+                    <td>{scan.findingCount}</td>
+                    <td>
+                      <Link
+                        to={`/app/scans/${scan.id}`}
+                        style={{ color: "#2c6ecb", textDecoration: "none" }}
+                      >
+                        View
+                      </Link>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {scans.map((scan) => (
-                    <tr key={scan.id}>
-                      <td>{formatDate(scan.createdAt, true)}</td>
-                      <td>{scan.themeName}</td>
-                      <td>
-                        <s-badge tone={statusTone(scan.status as ScanStatus)}>
-                          {statusLabel(scan.status as ScanStatus)}
-                        </s-badge>
-                      </td>
-                      <td>{scan.findingCount}</td>
-                      <td>
-                        <Link
-                          to={`/app/scans/${scan.id}`}
-                          style={{ color: "#2c6ecb", textDecoration: "none" }}
-                        >
-                          View
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </s-data-table>
+                ))}
+              </tbody>
+            </table>
           </s-card>
 
           {nextCursor && (
