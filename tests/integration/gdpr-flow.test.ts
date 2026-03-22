@@ -42,9 +42,7 @@ vi.mock("../../app/models/shop.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { deleteShopData } from "../../app/models/shop.server";
-import { action as customersDataRequestAction } from "../../app/routes/webhooks.customers.data-request";
-import { action as customersRedactAction } from "../../app/routes/webhooks.customers.redact";
-import { action as shopRedactAction } from "../../app/routes/webhooks.shop.redact";
+import { action as webhookAction } from "../../app/routes/webhooks";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -132,7 +130,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
     it("returns 200", async () => {
       mockShopRedactWebhook();
 
-      const response = await shopRedactAction({
+      const response = await webhookAction({
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
@@ -144,7 +142,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
     it("calls deleteShopData with the shop domain from the webhook", async () => {
       mockShopRedactWebhook();
 
-      await shopRedactAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
@@ -157,7 +155,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
     it("calls deleteShopData exactly once per webhook invocation", async () => {
       mockShopRedactWebhook();
 
-      await shopRedactAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
@@ -172,7 +170,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
       mockShopRedactWebhook(UNKNOWN_SHOP_DOMAIN);
       mockDeleteShopData.mockResolvedValue(null);
 
-      const response = await shopRedactAction({
+      const response = await webhookAction({
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
@@ -186,7 +184,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
       mockShopRedactWebhook(UNKNOWN_SHOP_DOMAIN);
       mockDeleteShopData.mockResolvedValue(null);
 
-      await shopRedactAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
@@ -203,7 +201,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
       const specificDomain = "merchant-store.myshopify.com";
       mockShopRedactWebhook(specificDomain);
 
-      await shopRedactAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
@@ -221,7 +219,7 @@ describe("GDPR flow — shop/redact (data deletion)", () => {
       const anotherShop = "another-merchant.myshopify.com";
       mockShopRedactWebhook(anotherShop);
 
-      await shopRedactAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/shop/redact"),
         params: {},
         context: {},
@@ -242,7 +240,7 @@ describe("GDPR flow — customers/data_request (no-op acknowledgment)", () => {
     it("returns 200", async () => {
       mockCustomersDataRequestWebhook();
 
-      const response = await customersDataRequestAction({
+      const response = await webhookAction({
         request: makeWebhookRequest("webhooks/customers/data-request"),
         params: {},
         context: {},
@@ -254,7 +252,7 @@ describe("GDPR flow — customers/data_request (no-op acknowledgment)", () => {
     it("does not perform any DB operations (no customer PII stored)", async () => {
       mockCustomersDataRequestWebhook();
 
-      await customersDataRequestAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/customers/data-request"),
         params: {},
         context: {},
@@ -267,7 +265,7 @@ describe("GDPR flow — customers/data_request (no-op acknowledgment)", () => {
     it("authenticates the webhook before returning", async () => {
       mockCustomersDataRequestWebhook();
 
-      await customersDataRequestAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/customers/data-request"),
         params: {},
         context: {},
@@ -281,7 +279,7 @@ describe("GDPR flow — customers/data_request (no-op acknowledgment)", () => {
     it("returns 200 for any shop domain without performing writes", async () => {
       mockCustomersDataRequestWebhook("big-store.myshopify.com");
 
-      const response = await customersDataRequestAction({
+      const response = await webhookAction({
         request: makeWebhookRequest("webhooks/customers/data-request"),
         params: {},
         context: {},
@@ -302,7 +300,7 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
     it("returns 200", async () => {
       mockCustomersRedactWebhook();
 
-      const response = await customersRedactAction({
+      const response = await webhookAction({
         request: makeWebhookRequest("webhooks/customers/redact"),
         params: {},
         context: {},
@@ -314,7 +312,7 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
     it("does not perform any DB operations (no customer PII to redact)", async () => {
       mockCustomersRedactWebhook();
 
-      await customersRedactAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/customers/redact"),
         params: {},
         context: {},
@@ -326,7 +324,7 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
     it("authenticates the webhook before returning", async () => {
       mockCustomersRedactWebhook();
 
-      await customersRedactAction({
+      await webhookAction({
         request: makeWebhookRequest("webhooks/customers/redact"),
         params: {},
         context: {},
@@ -353,7 +351,7 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
         },
       });
 
-      const response = await customersRedactAction({
+      const response = await webhookAction({
         request: makeWebhookRequest("webhooks/customers/redact"),
         params: {},
         context: {},
@@ -378,7 +376,7 @@ describe("GDPR compliance invariants", () => {
     mockShopRedactWebhook();
     mockDeleteShopData.mockResolvedValue(MOCK_DELETED_SHOP);
 
-    const response = await shopRedactAction({
+    const response = await webhookAction({
       request: makeWebhookRequest("webhooks/shop/redact"),
       params: {},
       context: {},
@@ -390,7 +388,7 @@ describe("GDPR compliance invariants", () => {
   it("customers/data_request always returns 200", async () => {
     mockCustomersDataRequestWebhook();
 
-    const response = await customersDataRequestAction({
+    const response = await webhookAction({
       request: makeWebhookRequest("webhooks/customers/data-request"),
       params: {},
       context: {},
@@ -402,7 +400,7 @@ describe("GDPR compliance invariants", () => {
   it("customers/redact always returns 200", async () => {
     mockCustomersRedactWebhook();
 
-    const response = await customersRedactAction({
+    const response = await webhookAction({
       request: makeWebhookRequest("webhooks/customers/redact"),
       params: {},
       context: {},

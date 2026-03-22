@@ -91,13 +91,10 @@ export const sessionStorage = shopify.sessionStorage;
 // routes/app._index.tsx                   | loader: authenticate.admin(), action: authenticate.admin() | OK
 // routes/app.scans.tsx                    | loader: authenticate.admin() | OK
 // routes/app.scans.$scanId.tsx            | loader: authenticate.admin() | OK
-// routes/webhooks.app.installed.tsx       | action: authenticate.webhook() | OK
+// routes/webhooks.tsx                     | action: authenticate.webhook() | OK (catch-all for GDPR compliance_topics)
 // routes/webhooks.app.scopes_update.tsx   | action: authenticate.webhook() | OK
 // routes/webhooks.app.uninstalled.tsx     | action: authenticate.webhook() | OK
 // routes/webhooks.app.subscriptions.update.tsx | action: authenticate.webhook() | OK
-// routes/webhooks.customers.data-request.tsx | action: authenticate.webhook() | OK
-// routes/webhooks.customers.redact.tsx    | action: authenticate.webhook() | OK
-// routes/webhooks.shop.redact.tsx         | action: authenticate.webhook() | OK
 // routes/webhooks.themes.publish.tsx      | action: authenticate.webhook() | OK
 // routes/api.inngest.ts                   | loader+action: Inngest SDK handler (no Shopify admin auth) | OK (Inngest uses its own signing key verification internally)
 //
@@ -138,8 +135,8 @@ export const sessionStorage = shopify.sessionStorage;
 //
 // PART 3: GDPR Webhook Completeness
 // -----------------------------------
-// All 3 required GDPR webhooks are present and return 200 OK:
-//   - customers/data_request -> webhooks.customers.data-request.tsx  OK
-//   - customers/redact       -> webhooks.customers.redact.tsx         OK
-//   - shop/redact            -> webhooks.shop.redact.tsx              OK (cascades scan + finding + session deletion)
+// All 3 required GDPR webhooks are handled by the catch-all webhooks.tsx route:
+//   - customers/data_request -> webhooks.tsx (CUSTOMERS_DATA_REQUEST)  OK (no-op, no PII)
+//   - customers/redact       -> webhooks.tsx (CUSTOMERS_REDACT)        OK (no-op, no PII)
+//   - shop/redact            -> webhooks.tsx (SHOP_REDACT)             OK (cascades scan + finding + session deletion)
 // =============================================================================
