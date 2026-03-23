@@ -23,7 +23,7 @@ All Polaris Web Components use the `<s-*>` prefix:
     <s-layout-section>
       <s-card>
         <s-text variant="headingMd">Scan Results</s-text>
-        <s-button variant="primary" onClick={handleScan}>Start Scan</s-button>
+        <s-button variant="primary" onClick="{handleScan}">Start Scan</s-button>
       </s-card>
     </s-layout-section>
   </s-layout>
@@ -32,18 +32,18 @@ All Polaris Web Components use the `<s-*>` prefix:
 
 ## Common Components
 
-| React Polaris (DON'T) | Web Component (DO) |
-|---|---|
-| `<Page>` | `<s-page>` |
-| `<Card>` | `<s-card>` |
-| `<Button>` | `<s-button>` |
-| `<Text>` | `<s-text>` |
-| `<Layout>` | `<s-layout>` |
-| `<Banner>` | `<s-banner>` |
-| `<Badge>` | `<s-badge>` |
-| `<DataTable>` | `<s-data-table>` |
-| `<ResourceList>` | `<s-resource-list>` |
-| `<Modal>` | `<s-modal>` |
+| React Polaris (DON'T) | Web Component (DO)  |
+| --------------------- | ------------------- |
+| `<Page>`              | `<s-page>`          |
+| `<Card>`              | `<s-card>`          |
+| `<Button>`            | `<s-button>`        |
+| `<Text>`              | `<s-text>`          |
+| `<Layout>`            | `<s-layout>`        |
+| `<Banner>`            | `<s-banner>`        |
+| `<Badge>`             | `<s-badge>`         |
+| `<DataTable>`         | `<s-data-table>`    |
+| `<ResourceList>`      | `<s-resource-list>` |
+| `<Modal>`             | `<s-modal>`         |
 
 ## TypeScript
 

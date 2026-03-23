@@ -1,6 +1,20 @@
 # Retrospective History
 
+## Retro: 2026-03-22 (session 15 — scanner expansion + UI overhaul)
+
+- Tasks completed: 3 beads closed (GC-xn0 JSON-LD, GC-8la prettier hook, GC-zse permission audit epic), 2 new beads created (GC-xn0, GC-icb)
+- Agents dispatched: ~12 (signature audit, orphan filter, hreflang, duplicate meta, JSON-LD, tile redesign, sort+PageFly, various UI fixes)
+- New learnings: 1 implementer entry (multiline regex offset-to-line helper)
+- Test growth: 657 → 715 (+58 tests, 8 finding types now)
+- Commits: 23 (11 feat, 10 fix, 2 chore/refactor)
+- Fix rate: 43% — mostly UI iteration with live feedback, not bugs. One real debugging cycle (View button: 3 attempts).
+- Key insight: Live user testing in dev store drove 3 new scanner finding types (hreflang, duplicate meta, JSON-LD). Testing revealed modern Shopify apps use clean-uninstall patterns (Theme App Extensions auto-cleaned) — orphaned code skews toward older apps and direct theme edits like PageFly.
+- Key pattern: "Skip Liquid template tags" heuristic for JSON-LD detection cleanly separates native theme JSON-LD from app-injected orphans — native Dawn blocks always use `{{` variables.
+- Key bug: `app.scans.tsx` was an unintended layout route (React Router v7 flat file convention) — renaming to `app.scans._index.tsx` fixed View button. Shadow DOM theory was wrong.
+- Key UI lesson: Never put inline `style` on Polaris `<s-*>` Web Components — wrap in plain `<div>` instead.
+
 ## Retro: 2026-03-11 (session 8 — CI cleanup + infra backlog)
+
 - Tasks completed: 4 beads closed (f49 Date bug, snq comment fix, e3v test gap, bvh GitHub repo)
 - Agents dispatched: 1 implementer (bulk any elimination — 114 errors across 19 files)
 - New learnings: 3 workflow patterns added to MEMORY.md
@@ -13,6 +27,7 @@
 - Key blocker: Railway "Team not found" error when provisioning PostgreSQL — likely a billing/plan issue. Paused for investigation.
 
 ## Retro: 2026-03-11 (session 7 — P3 polish sprint)
+
 - Tasks completed: 8/8 (100%) — 1 bug fix, 4 tasks, 3 features
 - Agents dispatched: 8 implementer + 1 Explore (serial, mixed worktree/direct)
 - New learnings: 6 implementer entries added, 7 archived (55→48 lines)
@@ -24,6 +39,7 @@
 - Notable: /review caught 2 warnings (Date serialization in Inngest step.run, misleading cron comment) and 1 test gap (scheduledScan assertions) — all added to backlog as f49, snq, e3v.
 
 ## Retro: 2026-03-10 (session 6 — P2 monetization + engagement)
+
 - Tasks completed: 9 beads closed (3 monetization, 3 engagement features, 3 review fixes)
 - Agents dispatched: 8 (7 implementer, 1 tester) — serial, no worktree
 - New learnings: 8 across 2 members (implementer: 5, tester: 2), 7 archived from implementer (pruning from 56→49 lines)
@@ -34,6 +50,7 @@
 - Notable: Prisma migration for lastThemePublishAt created but not runnable without DATABASE_URL. Prisma generate with dummy URL works for type checking.
 
 ## Retro: 2026-03-10 (session 5 — P2 audit sprint)
+
 - Tasks completed: 15/15 (100%) — all P2 audit findings (.50–.65) + 9 P1/P3 beads created for tracking
 - Agents dispatched: 5 (4 implementer, 1 tester) — serial, no worktree
 - New learnings: 7 across 2 members (implementer: 4, tester: 3)
@@ -44,6 +61,7 @@
 - Notable: TOCTOU race fix (S-07) uses application-level $transaction guard. A DB-level partial unique index would be the final backstop but requires raw SQL migration.
 
 ## Retro: 2026-03-10
+
 - Tasks completed: 25/36 (69%) across 4 batches
 - Agents dispatched: 11 total (2+3+3+3)
 - New learnings: 30 across 4 members (implementer: 16, scaffolder: 9, reviewer: 3, tester: 2)
@@ -53,6 +71,7 @@
 - Key risk: Polaris Web Component prop restrictions are underdocumented. First encounter always produces invalid props. The learning loop self-corrects by batch N+1.
 
 ## Retro: 2026-03-10 (session 2)
+
 - Tasks completed: batch 5 (8 beads) + .41 + 11 audit fixes = 20 items
 - Agents dispatched: 6 (1 implementer, 2 reviewers, 3 fix agents)
 - New learnings: 3 implementer entries (from .41), 8 pruned via merge
@@ -61,6 +80,7 @@
 - Key risk: Agents that change function APIs (e.g., createFindings → completeScanWithFindings) without updating tests cause downstream failures. Fix agent prompts should explicitly include "update relevant tests."
 
 ## Retro: 2026-03-10 (session 4 — pre-launch audit)
+
 - Tasks completed: 6 P0+P1 fixes across 2 sprints + 31-finding audit report
 - Agents dispatched: 7 (2 audit reviewers + 2 P0 fix + 1 P1 fix debugger + 1 P1 fix implementer + 1 tester)
 - New learnings: 4 across 3 members (debugger: 1, implementer: 2, tester: 1)
@@ -71,6 +91,7 @@
 - Deferred: E-01 (blocked on Railway URL), E-07 (Sentry deferred by user)
 
 ## Retro: 2026-03-10 (session 3)
+
 - Tasks completed: 4/4 (100%) — .43 billing, .44 ORPHAN_ASSET, .45 test coverage, .42 DRY extraction
 - Agents dispatched: 4 (3 implementer, 1 tester) — serial, no worktree
 - New learnings: 14 across 2 members (implementer: 10, tester: 4), 3 pruned/merged

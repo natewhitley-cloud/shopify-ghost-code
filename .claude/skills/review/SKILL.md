@@ -38,14 +38,14 @@ Gather: Determine scope + read changes
 
 Interpret `$ARGUMENTS` to determine what to review:
 
-| Input | Interpretation |
-|-------|---------------|
-| *(empty)* | Staged changes: `git diff --cached` |
-| A file path | Changes in that specific file |
-| A commit hash | That single commit: `git show <hash>` |
+| Input                             | Interpretation                           |
+| --------------------------------- | ---------------------------------------- |
+| _(empty)_                         | Staged changes: `git diff --cached`      |
+| A file path                       | Changes in that specific file            |
+| A commit hash                     | That single commit: `git show <hash>`    |
 | A commit range (e.g., `abc..def`) | All commits in range: `git diff <range>` |
-| A PR number (e.g., `#123`) | PR changes: `gh pr diff <number>` |
-| `HEAD~N` | Last N commits: `git diff HEAD~N..HEAD` |
+| A PR number (e.g., `#123`)        | PR changes: `gh pr diff <number>`        |
+| `HEAD~N`                          | Last N commits: `git diff HEAD~N..HEAD`  |
 
 ### 1b. Fetch the Diff
 
@@ -60,6 +60,7 @@ gh pr diff <number>        # PR
 ### 1c. Identify Affected Files
 
 List all files touched and categorize them:
+
 - **New files**: Need full review
 - **Modified files**: Focus on changed lines + surrounding context
 - **Deleted files**: Verify no remaining references
@@ -98,6 +99,7 @@ For every file in the diff, read the full file (not just the diff hunks). Unders
 ### 2b. Trace the Change
 
 For each logical change:
+
 - What is the intent? (bug fix, new feature, refactor, etc.)
 - What code paths are affected?
 - Who calls the changed code?
@@ -194,12 +196,12 @@ Emit all findings as a pipe-format Items list, then apply the /filter pattern to
 
 ### Severity Levels (Assess Rubric)
 
-| Severity | Meaning | Action |
-|----------|---------|--------|
-| **CRITICAL** | Bug, security flaw, data loss risk, or correctness issue | Must fix before merge |
-| **WARNING** | Likely problem, missing validation, or fragile pattern | Should fix before merge |
-| **SUGGESTION** | Better approach exists, readability improvement | Consider for this or follow-up |
-| **NITPICK** | Style preference, minor inconsistency | Optional, author's discretion |
+| Severity       | Meaning                                                  | Action                         |
+| -------------- | -------------------------------------------------------- | ------------------------------ |
+| **CRITICAL**   | Bug, security flaw, data loss risk, or correctness issue | Must fix before merge          |
+| **WARNING**    | Likely problem, missing validation, or fragile pattern   | Should fix before merge        |
+| **SUGGESTION** | Better approach exists, readability improvement          | Consider for this or follow-up |
+| **NITPICK**    | Style preference, minor inconsistency                    | Optional, author's discretion  |
 
 ### Finding Format (Pipe Format Items)
 
@@ -245,11 +247,12 @@ Emit the full review in pipe format:
 
 ### Verdict
 
-| Verdict | Files Reviewed | Critical | Warning | Suggestion | Nitpick |
-|---------|---------------|----------|---------|------------|---------|
-| [PASS / PASS WITH CONDITIONS / FAIL] | N | C | W | S | N |
+| Verdict                              | Files Reviewed | Critical | Warning | Suggestion | Nitpick |
+| ------------------------------------ | -------------- | -------- | ------- | ---------- | ------- |
+| [PASS / PASS WITH CONDITIONS / FAIL] | N              | C        | W       | S          | N       |
 
 **Conditions** (if applicable):
+
 - [ ] [condition that must be met before merge]
 
 ### What Looks Good
@@ -264,11 +267,11 @@ and recommended next actions.]
 
 ### Verdict Criteria
 
-| Verdict | When |
-|---------|------|
-| **PASS** | No critical or warning findings |
+| Verdict                  | When                                                 |
+| ------------------------ | ---------------------------------------------------- |
+| **PASS**                 | No critical or warning findings                      |
 | **PASS WITH CONDITIONS** | No critical findings, warnings exist but are fixable |
-| **FAIL** | One or more critical findings |
+| **FAIL**                 | One or more critical findings                        |
 
 ### 5b. Create Tasks for Findings
 

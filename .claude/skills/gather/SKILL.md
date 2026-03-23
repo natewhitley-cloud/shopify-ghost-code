@@ -58,6 +58,7 @@ Each finding must have a source. Use confidence levels when claims are uncertain
 1. Dispatch 2-3 background Task agents, each focused on one source type. Launch all at once (`run_in_background: true`):
 
    **Codebase agent** — searches implementation files, tests, and inline docs:
+
    ```
    Task({
      subagent_type: "Explore",
@@ -68,6 +69,7 @@ Each finding must have a source. Use confidence levels when claims are uncertain
    ```
 
    **Web/docs agent** — searches external documentation and references:
+
    ```
    Task({
      subagent_type: "Explore",
@@ -78,6 +80,7 @@ Each finding must have a source. Use confidence levels when claims are uncertain
    ```
 
    **Config/settings agent** — searches environment variables, deployment config, and project-level settings (only when config is a distinct source type for this topic):
+
    ```
    Task({
      subagent_type: "Explore",
@@ -97,11 +100,11 @@ Each finding must have a source. Use confidence levels when claims are uncertain
 
 This primitive has one implicit secondary behavior:
 
-| Behavior | Description |
-|----------|-------------|
-| **Confidence labeling** | Every finding gets a CONFIRMED/LIKELY/POSSIBLE label. This is a lightweight /assess operation embedded in gather's output. |
+| Behavior                          | Description                                                                                                                            |
+| --------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| **Confidence labeling**           | Every finding gets a CONFIRMED/LIKELY/POSSIBLE label. This is a lightweight /assess operation embedded in gather's output.             |
 | **Code-first priority** (default) | Search order: codebase first, web second. This is a domain bias optimized for software engineering, not a user-configurable parameter. |
-| **Parallel collection** (opt-in) | When 3+ distinct source types are identified, dispatch concurrent agents per source type and merge results. |
+| **Parallel collection** (opt-in)  | When 3+ distinct source types are identified, dispatch concurrent agents per source type and merge results.                            |
 
 Confidence labeling is embedded by design — separating it would require a `/gather -> /assess` chain for every collection, adding overhead without value. The code-first priority reflects the target domain; for non-code topics, web results will still be used when codebase results are insufficient.
 

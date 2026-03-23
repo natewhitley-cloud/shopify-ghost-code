@@ -36,10 +36,10 @@ You are running the **distill** primitive — reducing verbose input to essentia
 
 This primitive operates in two modes depending on `$ARGUMENTS`:
 
-| Mode | Trigger | Behavior |
-|------|---------|----------|
-| **Compress** | `$ARGUMENTS` is a count or format (e.g., "to 5 bullets", "to 1 paragraph") | Reduces all items, preserving scope. Pure distill — single operation. |
-| **Topic-filter + compress** | `$ARGUMENTS` is a topic (e.g., "auth", "security") | First filters items by topic relevance, then compresses the survivors. Embeds /filter behavior before compressing. |
+| Mode                        | Trigger                                                                    | Behavior                                                                                                           |
+| --------------------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| **Compress**                | `$ARGUMENTS` is a count or format (e.g., "to 5 bullets", "to 1 paragraph") | Reduces all items, preserving scope. Pure distill — single operation.                                              |
+| **Topic-filter + compress** | `$ARGUMENTS` is a topic (e.g., "auth", "security")                         | First filters items by topic relevance, then compresses the survivors. Embeds /filter behavior before compressing. |
 
 In topic mode, distill silently performs a filter pass. If you are composing a pipeline and have already called `/filter`, calling `/distill <topic>` will double-filter. Use `/distill to N bullets` instead to avoid redundant filtering.
 

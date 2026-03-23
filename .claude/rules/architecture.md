@@ -41,6 +41,7 @@ Inngest (inngest/)            <- Background job definitions
 ## Server-Only Code
 
 Files with `.server.ts` suffix are never bundled to the client. Use this for:
+
 - Database access (Prisma calls)
 - Shopify API calls (access tokens)
 - Business logic that should not leak to the browser

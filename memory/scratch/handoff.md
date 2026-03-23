@@ -81,10 +81,10 @@ oxp: Set up Railway project with PostgreSQL  ← READY but hitting "Team not fou
 
 ## Team State
 
-| Member | Lines | Status | Notes |
-|--------|-------|--------|-------|
-| implementer | 48 | active | Dispatched this session for bulk any fix |
-| tester | 43 | steady | No changes |
-| scaffolder | 30 | steady | No changes |
-| reviewer | 27 | steady | No changes |
-| debugger | 24 | cold | Never dispatched |
+| Member      | Lines | Status | Notes                                    |
+| ----------- | ----- | ------ | ---------------------------------------- |
+| implementer | 48    | active | Dispatched this session for bulk any fix |
+| tester      | 43    | steady | No changes                               |
+| scaffolder  | 30    | steady | No changes                               |
+| reviewer    | 27    | steady | No changes                               |
+| debugger    | 24    | cold   | Never dispatched                         |

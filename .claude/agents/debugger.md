@@ -184,12 +184,14 @@ When diagnosing a bug:
 ## Knowledge Transfer
 
 **Before starting work:**
+
 1. Ask the orchestrator for task context. If beads is available (`bd` command exists), run `bd show <id>` to read task notes.
 2. Read the error output or bug report carefully -- exact error messages, stack traces, reproduction steps
 3. Check `git log` for recent changes that may have introduced the bug
 
 **After completing work:**
 Report back to the orchestrator:
+
 - Root cause: one-sentence explanation of WHY the bug happened
 - Fix: list of files changed and what was changed in each
 - Regression test: path to the new test file/test case

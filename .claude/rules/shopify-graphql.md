@@ -34,9 +34,16 @@ query GetThemeAssets($themeId: ID!) {
     files(first: 250) {
       nodes {
         filename
-        body { ... on OnlineStoreThemeFileBodyText { content } }
+        body {
+          ... on OnlineStoreThemeFileBodyText {
+            content
+          }
+        }
       }
-      pageInfo { hasNextPage endCursor }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
     }
   }
 }
@@ -47,7 +54,11 @@ query GetThemeAssets($themeId: ID!) {
 ```graphql
 query GetActiveTheme {
   themes(first: 1, roles: MAIN) {
-    nodes { id name role }
+    nodes {
+      id
+      name
+      role
+    }
   }
 }
 ```

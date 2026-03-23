@@ -1,10 +1,12 @@
 # @shopify/shopify-app-template-react-router
 
 ## 2026.02.09
+
 - Add declarative product metafield definition and demonstrate metafield usage in the product creation flow
 - Add declarative metaobject definition and demonstrate metaobject upsert in the product creation flow
 
 ## 2026.01.08
+
 - [#170](https://github.com/Shopify/shopify-app-template-react-router/pull/170) - Update React Router minimum version to v7.12.0
 
 ## 2025.12.11
@@ -31,7 +33,7 @@
 
 ## 2025.08.17
 
-- [#58](https://github.com/Shopify/shopify-app-template-react-router/pull/58) Update Shopify & React Router dependencies.  Use Shopify React Router in graphqlrc, not shopify-api
+- [#58](https://github.com/Shopify/shopify-app-template-react-router/pull/58) Update Shopify & React Router dependencies. Use Shopify React Router in graphqlrc, not shopify-api
 - [#57](https://github.com/Shopify/shopify-app-template-react-router/pull/57) Update Webhook API version in `shopify.app.toml` to `2025-07`
 - [#56](https://github.com/Shopify/shopify-app-template-react-router/pull/56) Remove local CLI from package.json in favor of global CLI installation
 - [#53](https://github.com/Shopify/shopify-app-template-react-router/pull/53) Add the Shopify Dev MCP to the template
@@ -74,9 +76,11 @@ Forked the [shopify-app-template repo](https://github.com/Shopify/shopify-app-te
 
 - [#904](https://github.com/Shopify/shopify-app-template-remix/pull/904) bump `@shopify/app-bridge-react` to latest
 -
+
 ## 2024.12.18
 
 - [875](https://github.com/Shopify/shopify-app-template-remix/pull/875) Add Scopes Update Webhook
+
 ## 2024.12.05
 
 - [#910](https://github.com/Shopify/shopify-app-template-remix/pull/910) Install `openssl` in Docker image to fix Prisma (see [#25817](https://github.com/prisma/prisma/issues/25817#issuecomment-2538544254))

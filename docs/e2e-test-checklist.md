@@ -79,17 +79,17 @@ Manual end-to-end verification against the Shopify dev store. Run through this b
 
 ## Results
 
-| Section | Pass/Fail | Notes |
-|---------|-----------|-------|
-| Install & Auth | | |
-| Dashboard & Navigation | | |
-| Theme Scan | | |
-| Billing | | |
-| Webhooks | | |
-| Scan Limits | | |
-| Error Handling | | |
-| Re-install | | |
+| Section                | Pass/Fail | Notes |
+| ---------------------- | --------- | ----- |
+| Install & Auth         |           |       |
+| Dashboard & Navigation |           |       |
+| Theme Scan             |           |       |
+| Billing                |           |       |
+| Webhooks               |           |       |
+| Scan Limits            |           |       |
+| Error Handling         |           |       |
+| Re-install             |           |       |
 
-**Tested by**: ___
-**Date**: ___
-**Build**: ___
+**Tested by**: **\_
+**Date**: \_**
+**Build**: \_\_\_

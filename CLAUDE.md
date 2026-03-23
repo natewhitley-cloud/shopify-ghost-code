@@ -16,6 +16,7 @@ Ghost Code — a Shopify app that scans merchant themes for orphaned code left b
 ### Serialized Dispatching
 
 **Dispatch tasks one at a time, not in parallel.** This approach:
+
 - Avoids API throttling, enabling longer uninterrupted work sessions
 - Allows learning from each task's output before starting the next
 - Reduces context bloat from concurrent agent results
@@ -96,12 +97,12 @@ ghost-code-app/
 
 ## Skill Quick Reference
 
-| I want to... | Use |
-|---|---|
-| Explore something unknown | /blossom |
-| Research + prioritize | /gather -> /distill -> /rank |
-| Review code | /review |
-| Run a session | /status -> ... -> /retro -> /handoff |
+| I want to...              | Use                                  |
+| ------------------------- | ------------------------------------ |
+| Explore something unknown | /blossom                             |
+| Research + prioritize     | /gather -> /distill -> /rank         |
+| Review code               | /review                              |
+| Run a session             | /status -> ... -> /retro -> /handoff |
 
 ## Reference Docs
 

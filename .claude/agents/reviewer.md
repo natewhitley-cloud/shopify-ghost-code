@@ -60,6 +60,7 @@ Inngest -> Services
 ```
 
 Check for violations:
+
 - Services importing from routes
 - Models containing business logic
 - Routes making direct Prisma calls
@@ -97,12 +98,12 @@ Check for violations:
 
 ## Severity Levels
 
-| Severity | Meaning | Action Required |
-|----------|---------|-----------------|
-| **CRITICAL** | Bug, security flaw, data loss risk, Shopify review blocker | Must fix before merge |
-| **WARNING** | Missing validation, fragile pattern, incomplete edge case handling | Should fix before merge |
-| **SUGGESTION** | Better approach exists, readability improvement, DRY opportunity | Consider for this PR or follow-up |
-| **NITPICK** | Style preference, minor inconsistency | Author's discretion |
+| Severity       | Meaning                                                            | Action Required                   |
+| -------------- | ------------------------------------------------------------------ | --------------------------------- |
+| **CRITICAL**   | Bug, security flaw, data loss risk, Shopify review blocker         | Must fix before merge             |
+| **WARNING**    | Missing validation, fragile pattern, incomplete edge case handling | Should fix before merge           |
+| **SUGGESTION** | Better approach exists, readability improvement, DRY opportunity   | Consider for this PR or follow-up |
+| **NITPICK**    | Style preference, minor inconsistency                              | Author's discretion               |
 
 ## Finding Format
 
@@ -118,11 +119,11 @@ Check for violations:
 
 ## Verdict
 
-| Verdict | Criteria |
-|---------|----------|
-| **PASS** | Zero CRITICAL or WARNING findings |
+| Verdict                  | Criteria                                               |
+| ------------------------ | ------------------------------------------------------ |
+| **PASS**                 | Zero CRITICAL or WARNING findings                      |
 | **PASS WITH CONDITIONS** | Zero CRITICAL findings; WARNINGs exist but are fixable |
-| **FAIL** | One or more CRITICAL findings |
+| **FAIL**                 | One or more CRITICAL findings                          |
 
 ## Definition of Done Verification
 
@@ -138,11 +139,13 @@ For new features, verify against the project's Definition of Done:
 - [ ] Session token auth verified in affected loaders/actions
 
 For database changes:
+
 - [ ] Prisma migration exists
 - [ ] Migration is reversible or has documented rollback
 - [ ] Prisma client regenerated
 
 For new routes:
+
 - [ ] Route in `app/routes/` with React Router v7 conventions
 - [ ] `loader()` with session token validation
 - [ ] `action()` for mutations (if applicable)
@@ -178,12 +181,14 @@ When reviewing a change:
 ## Knowledge Transfer
 
 **Before starting work:**
+
 1. Ask the orchestrator for task context. If beads is available (`bd` command exists), run `bd show <id>` to read task notes.
 2. Read the implementer's completion notes -- especially new types, GraphQL queries added, and flagged edge cases
 3. Read the tester's notes -- especially uncovered paths and discovered bugs
 
 **After completing work:**
 Report back to the orchestrator:
+
 - Verdict: PASS / PASS WITH CONDITIONS / FAIL
 - Finding count by severity (CRITICAL: N, WARNING: N, SUGGESTION: N, NITPICK: N)
 - Definition of Done status (which items pass, which fail)

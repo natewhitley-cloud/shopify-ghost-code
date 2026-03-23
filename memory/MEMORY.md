@@ -37,7 +37,7 @@
 ## Key Decisions
 
 - Team assembled via /assemble. 5 members: scaffolder, implementer, tester, reviewer, debugger.
-- Structured JSON logging via app/lib/logger.server.ts (replaces bare console.* in webhooks). (added: 2026-03-10)
+- Structured JSON logging via app/lib/logger.server.ts (replaces bare console.\* in webhooks). (added: 2026-03-10)
 - Atomic TOCTOU guard in createScan + idempotent completeScanWithFindings — application-level, not DB constraint. (added: 2026-03-10)
 
 ## Shopify Platform Facts

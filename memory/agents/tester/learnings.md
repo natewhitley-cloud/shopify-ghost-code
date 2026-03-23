@@ -1,6 +1,7 @@
 # Learnings: tester
 
 ## Codebase Patterns
+
 - Testing framework: Vitest v4 (not Jest). Config in `vitest.config.ts`. Runs cleanly alongside Vite v6.
 - Tests mirror app/ structure in `tests/` directory (e.g., `tests/services/scan-engine.test.ts`).
 - Mock Shopify admin with `createMockAdmin()` from `tests/mocks/shopify.ts`.
@@ -10,6 +11,7 @@
 - billing.server.ts getPlanFeatures() is a pure function — ideal smoke test, no mocks needed. (added: 2026-03-10, dispatch: .33)
 
 ## Gotchas
+
 - When mocking `inngest/client` for functions using `inngest.createFunction()` at module load, include `createFunction: vi.fn((_config, _trigger, handler) => ({ fn: handler }))`. Without it, the source module throws at import time. (added: 2026-03-10, dispatch: S-01/S-02)
 - `mockReset()` before per-test `mockResolvedValueOnce` sequences. When `beforeEach` pre-populates a mock with `Once` calls, per-test overrides append rather than replace. Call `mockFn.mockReset()` first. (added: 2026-03-10, dispatch: S-01/S-02)
 - When mocking ESM default exports (`import db from`), the vi.mock factory must use `{ default: { ... } }`. When writing helpers that accept nullable overrides, use ternary (`!== undefined ? value : default`) not `??` — nullish coalescing swallows `null`. (added: 2026-03-10, dispatch: S-04)
@@ -23,11 +25,13 @@
 - Theme file content in test fixtures should use real Liquid syntax with known ghost code patterns.
 
 ## Preferences
+
 - Test the scan engine with realistic fixtures: actual Liquid templates containing orphaned script tags, broken snippet includes, CSS imports.
 - Prefer testing behavior (what the function returns) over implementation details (which internal method was called).
 - Every service function should have both happy-path and error-path tests.
 
 ## Cross-Agent Notes
+
 - Ask implementer for edge cases they considered but couldn't fully handle — those make the best test cases.
 - Report test coverage gaps to reviewer for audit.
 - Inngest function handlers accessible via scanTheme.fn — call directly as fn({ event, step }) to bypass SDK runtime. (added: 2026-03-10, dispatch: .35)

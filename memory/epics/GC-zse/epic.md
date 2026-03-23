@@ -8,7 +8,7 @@
 ## Key Constraints Discovered
 
 1. **`read_apps` scope is restricted** — requires Shopify Support approval via Partner Dashboard. Cannot just declare it in shopify.app.toml. Security/compliance use case (Disputifier breach reference) is the strongest justification.
-2. **API exposes granted scopes, not used scopes** — feature must be positioned as "what each app *can* access," not what it actually does.
+2. **API exposes granted scopes, not used scopes** — feature must be positioned as "what each app _can_ access," not what it actually does.
 3. **No install date, last-call timestamp, or active/inactive status** in AppInstallation object — must track install date ourselves via webhooks going forward.
 4. **Market-research DB has 5,247 apps but NO permission data** — category taxonomy (100 categories) is useful for expected-permission baselines.
 5. **Architecture maps cleanly** — self-contained module boundary confirmed (no coupling to Scan/Finding models).
@@ -126,21 +126,21 @@
 
 ## Task IDs
 
-| BD ID | Title | Priority | Status | Assigned Agent |
-|-------|-------|----------|--------|----------------|
-| GC-zse.8 | Submit read_apps scope approval request | P1 | open | human (Nathan) |
-| GC-zse.7 | Design for missing AppInstallation fields | P2 | open | designer/architect |
-| GC-zse.4 | Build category-to-expected-permissions mapping | P2 | open | implementer |
-| GC-zse.5 | Create app enrichment lookup from market-research DB | P2 | open | implementer |
-| GC-zse.10 | Design merchant-guided initial audit flow | P2 | open | designer |
-| GC-zse.12 | Design and create Prisma models | P1 | open | implementer |
-| GC-zse.14 | Design permission risk scoring algorithm | P2 | open | designer/implementer |
-| GC-zse.13 | Build permission-fetcher service | P1 | open | implementer |
-| GC-zse.9 | Build webhook-based app inventory | P1 | open | implementer |
-| GC-zse.11 | Add Permission Audit nav tab and route shell | P1 | open | implementer |
-| GC-zse.15 | Add permissionAudit flag to PlanFeatures | P2 | open | implementer |
-| GC-zse.16 | Build Permission Audit detail view | P2 | open | implementer |
-| GC-zse.17 | Write tests for Permission Audit | P2 | open | implementer |
+| BD ID     | Title                                                | Priority | Status | Assigned Agent       |
+| --------- | ---------------------------------------------------- | -------- | ------ | -------------------- |
+| GC-zse.8  | Submit read_apps scope approval request              | P1       | open   | human (Nathan)       |
+| GC-zse.7  | Design for missing AppInstallation fields            | P2       | open   | designer/architect   |
+| GC-zse.4  | Build category-to-expected-permissions mapping       | P2       | open   | implementer          |
+| GC-zse.5  | Create app enrichment lookup from market-research DB | P2       | open   | implementer          |
+| GC-zse.10 | Design merchant-guided initial audit flow            | P2       | open   | designer             |
+| GC-zse.12 | Design and create Prisma models                      | P1       | open   | implementer          |
+| GC-zse.14 | Design permission risk scoring algorithm             | P2       | open   | designer/implementer |
+| GC-zse.13 | Build permission-fetcher service                     | P1       | open   | implementer          |
+| GC-zse.9  | Build webhook-based app inventory                    | P1       | open   | implementer          |
+| GC-zse.11 | Add Permission Audit nav tab and route shell         | P1       | open   | implementer          |
+| GC-zse.15 | Add permissionAudit flag to PlanFeatures             | P2       | open   | implementer          |
+| GC-zse.16 | Build Permission Audit detail view                   | P2       | open   | implementer          |
+| GC-zse.17 | Write tests for Permission Audit                     | P2       | open   | implementer          |
 
 ## Critical Path
 

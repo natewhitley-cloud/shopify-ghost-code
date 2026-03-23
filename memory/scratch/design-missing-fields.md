@@ -14,14 +14,16 @@ Shopify's `AppInstallation` GraphQL object lacks three fields merchants would ex
 
 **What Shopify provides:** Nothing.
 
-**Decision:** Track install dates going forward via the `app/installed` and `app/uninstalled` webhooks that other apps fire. However, Ghost Code only receives webhooks for *its own* installs — it cannot receive webhooks when *other* apps are installed on the merchant's store. Therefore, the only viable approach is to record a `firstSeenAt` timestamp when Ghost Code first discovers an app via the `AppInstallation` API query.
+**Decision:** Track install dates going forward via the `app/installed` and `app/uninstalled` webhooks that other apps fire. However, Ghost Code only receives webhooks for _its own_ installs — it cannot receive webhooks when _other_ apps are installed on the merchant's store. Therefore, the only viable approach is to record a `firstSeenAt` timestamp when Ghost Code first discovers an app via the `AppInstallation` API query.
 
 **Model field:**
+
 ```
 firstSeenAt  DateTime  @default(now())  // when Ghost Code first saw this app installed
 ```
 
 **UX approach:**
+
 - Do NOT label this as "Installed on" — that would be dishonest.
 - Display: "First seen [date]" with a tooltip: "The date Ghost Code first detected this app on your store. The actual install date may be earlier."
 - For apps discovered on the merchant's first Permission Audit run, all will share the same `firstSeenAt`. This is expected and honest.
@@ -44,6 +46,7 @@ firstSeenAt  DateTime  @default(now())  // when Ghost Code first saw this app in
 2. **Ghost code cross-reference** — if Ghost Code's existing scan findings attribute orphaned code to an app name (`Finding.appName`), and that app is still installed, surface this: "This app is installed AND has ghost code findings — it may have been partially uninstalled or updated." This is a unique insight only Ghost Code can provide.
 
 **Model fields:**
+
 ```
 hasActiveSubscription  Boolean?   // null = unknown/not yet fetched
 subscriptionPlanName   String?    // e.g. "Pro Plan" if available
@@ -69,6 +72,7 @@ enum AppPresence {
 ```
 
 **Model field:**
+
 ```
 presence     AppPresence  @default(INSTALLED)
 lastSeenAt   DateTime     @default(now())  // updated each time the audit runs and finds the app still installed
@@ -77,6 +81,7 @@ lastSeenAt   DateTime     @default(now())  // updated each time the audit runs a
 When a Permission Audit runs, any previously-tracked app not found in the current `AppInstallation` results gets marked `REMOVED` with its `lastSeenAt` unchanged (preserving when we last confirmed it was present).
 
 **UX approach:**
+
 - Installed apps: show normally.
 - Removed apps: show in a separate "Previously installed" section with: "Last confirmed installed on [lastSeenAt]. This app is no longer on your store but may have left behind code or settings."
 - This naturally connects to Ghost Code's core value prop: linking removed apps to orphaned code findings.
@@ -125,24 +130,24 @@ enum AppPresence {
 
 ### What we say
 
-| Data point | Label | Copy |
-|---|---|---|
-| `firstSeenAt` | "First seen" | "Mar 21, 2026" with tooltip "Date Ghost Code first detected this app" |
-| `presence` = INSTALLED | Badge | "Installed" (neutral tone) |
-| `presence` = REMOVED | Badge | "Removed" |
-| `hasActiveSubscription` = true | Subscription | "Active subscription: [planName]" |
-| `hasActiveSubscription` = false | Subscription | "No active subscription" |
-| `hasActiveSubscription` = null | Subscription | Omit entirely (don't show "Unknown") |
-| Cross-ref with findings | Inline note | "Ghost Code found orphaned code attributed to this app" with link to findings |
+| Data point                      | Label        | Copy                                                                          |
+| ------------------------------- | ------------ | ----------------------------------------------------------------------------- |
+| `firstSeenAt`                   | "First seen" | "Mar 21, 2026" with tooltip "Date Ghost Code first detected this app"         |
+| `presence` = INSTALLED          | Badge        | "Installed" (neutral tone)                                                    |
+| `presence` = REMOVED            | Badge        | "Removed"                                                                     |
+| `hasActiveSubscription` = true  | Subscription | "Active subscription: [planName]"                                             |
+| `hasActiveSubscription` = false | Subscription | "No active subscription"                                                      |
+| `hasActiveSubscription` = null  | Subscription | Omit entirely (don't show "Unknown")                                          |
+| Cross-ref with findings         | Inline note  | "Ghost Code found orphaned code attributed to this app" with link to findings |
 
 ### What we never say
 
-| Tempting claim | Why we omit it |
-|---|---|
-| "Installed on [date]" | We don't know the actual install date |
-| "Last active [date]" | No API call tracking exists |
-| "Inactive app" / "Dormant" | We can't determine app activity |
-| "This app is unused" | Subscription status is not a reliable usage signal |
+| Tempting claim                         | Why we omit it                                         |
+| -------------------------------------- | ------------------------------------------------------ |
+| "Installed on [date]"                  | We don't know the actual install date                  |
+| "Last active [date]"                   | No API call tracking exists                            |
+| "Inactive app" / "Dormant"             | We can't determine app activity                        |
+| "This app is unused"                   | Subscription status is not a reliable usage signal     |
 | "Risk: app hasn't been used in X days" | Fabricating risk signals from absent data erodes trust |
 
 ### Overall positioning

@@ -112,7 +112,7 @@ export const jobName = inngest.createFunction(
   async ({ event, step }) => {
     // Fetch data inside the job -- never pass large payloads in event data
     // Use step functions for retryable operations
-  }
+  },
 );
 ```
 
@@ -156,16 +156,16 @@ When modifying `prisma/schema.prisma`:
 All UI must use CDN-delivered `<s-*>` Web Components. Never import from `@shopify/polaris`.
 
 | Wrong (React Polaris) | Correct (Web Component) |
-|---|---|
-| `<Page>` | `<s-page>` |
-| `<Card>` | `<s-card>` |
-| `<Button>` | `<s-button>` |
-| `<Text>` | `<s-text>` |
-| `<Layout>` | `<s-layout>` |
-| `<Banner>` | `<s-banner>` |
-| `<Badge>` | `<s-badge>` |
-| `<DataTable>` | `<s-data-table>` |
-| `<Modal>` | `<s-modal>` |
+| --------------------- | ----------------------- |
+| `<Page>`              | `<s-page>`              |
+| `<Card>`              | `<s-card>`              |
+| `<Button>`            | `<s-button>`            |
+| `<Text>`              | `<s-text>`              |
+| `<Layout>`            | `<s-layout>`            |
+| `<Banner>`            | `<s-banner>`            |
+| `<Badge>`             | `<s-badge>`             |
+| `<DataTable>`         | `<s-data-table>`        |
+| `<Modal>`             | `<s-modal>`             |
 
 ## What NOT To Do
 
@@ -197,11 +197,13 @@ When scaffolding new files:
 ## Knowledge Transfer
 
 **Before starting work:**
+
 1. Ask the orchestrator for task context. If beads is available (`bd` command exists), run `bd show <id>` to read task notes.
 2. Check if similar files already exist in the target layer -- do not duplicate.
 
 **After completing work:**
 Report back to the orchestrator:
+
 - List of files created (absolute paths)
 - Any TODOs left for the implementer
 - Import/wiring connections established

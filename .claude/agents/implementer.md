@@ -153,7 +153,7 @@ export const scanTheme = inngest.createFunction(
     await step.run("store-findings", async () => {
       return findingModel.createMany(shopId, themeId, findings);
     });
-  }
+  },
 );
 ```
 
@@ -173,13 +173,20 @@ All webhooks MUST verify HMAC signature before processing. Use the Shopify app t
 mutation CreateSubscription($name: String!, $price: Decimal!, $returnUrl: URL!) {
   appSubscriptionCreate(
     name: $name
-    lineItems: [{ plan: { appRecurringPricingDetails: { price: { amount: $price, currencyCode: USD } } } }]
+    lineItems: [
+      { plan: { appRecurringPricingDetails: { price: { amount: $price, currencyCode: USD } } } }
+    ]
     returnUrl: $returnUrl
-    test: true  # Remove for production
+    test: true # Remove for production
   ) {
-    appSubscription { id }
+    appSubscription {
+      id
+    }
     confirmationUrl
-    userErrors { field message }
+    userErrors {
+      field
+      message
+    }
   }
 }
 ```
@@ -231,12 +238,14 @@ When implementing a feature:
 ## Knowledge Transfer
 
 **Before starting work:**
+
 1. Ask the orchestrator for task context. If beads is available (`bd` command exists), run `bd show <id>` to read task notes.
 2. Check if the scaffolder has already created file stubs for this task -- read those first
 3. Check `memory/agents/` for notes from prior implementation sessions
 
 **After completing work:**
 Report back to the orchestrator:
+
 - List of files modified with a one-line summary of what changed in each
 - Any new types or interfaces introduced that other agents should know about
 - GraphQL queries/mutations added (query name, scope required)

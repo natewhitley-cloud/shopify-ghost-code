@@ -62,6 +62,7 @@ Note how many tasks were completed, what types they were, and whether any were c
 ### 1c. Conversation Context
 
 Review the current conversation for:
+
 - **Pivots**: Points where the plan changed direction
 - **Blockers**: Things that stalled progress (API errors, unclear requirements, missing tools)
 - **Rework**: Tasks that had to be redone or corrected
@@ -132,6 +133,7 @@ Every "could improve" or "try next time" item MUST pass through this gate before
 3. **Make it assignable** — could an agent implement this in one session without design decisions?
 
 If an observation fails the gate, sharpen it:
+
 - "Testing could be better" → fails all 3
 - "gl-renderer.ts has 2 manual blend enable/disable blocks that will be missed on new draw calls" → passes #1
 - "Add GLRenderer.drawWithAlpha(alpha, drawFn) that wraps blend state, replace the 2 existing manual blocks in gl-renderer.ts" → passes all 3
@@ -147,6 +149,7 @@ Drop observations you cannot sharpen — they are not actionable yet. If the roo
 ### 4a. Read Team Learnings
 
 Read all `memory/agents/*/learnings.md` files. For each member, assess:
+
 - **Total entries**: Count of non-empty bullet points
 - **Recent additions**: Entries with dates in the last 7 days
 - **Staleness**: Days since the last entry was added
@@ -156,6 +159,7 @@ Read all `memory/agents/*/learnings.md` files. For each member, assess:
 ### 4b. Prune Bloated Files
 
 If any learnings file exceeds 50 lines (warning threshold) or 60 lines (hard cap):
+
 1. **Merge similar entries** — Combine entries that say the same thing differently
 2. **Archive stale entries** — Move entries older than 21 days (with no recent references) to `memory/agents/<name>/archive.md`
 3. **Note promotion candidates** — Do not promote entries inline. Instead, note entries that appear durable and cross-agent, and recommend running `/promote` or `/tend` after this retro to evaluate them with full graduation criteria
@@ -165,6 +169,7 @@ If any learnings file exceeds 50 lines (warning threshold) or 60 lines (hard cap
 ### 4c. Assess Learning Velocity
 
 For each member:
+
 - **Growing**: 3+ new learnings in last 7 days → agent is actively learning
 - **Steady**: 1-2 new learnings in last 7 days → normal pace
 - **Stale**: No new learnings in 7+ days → agent may need richer tasks or the role may be inactive
@@ -174,10 +179,11 @@ For each member:
 
 ```markdown
 ### Team Learning Health
-| Member | Entries | Recent | Status | Action Needed |
-|--------|---------|--------|--------|--------------|
+
+| Member | Entries | Recent   | Status   | Action Needed                |
+| ------ | ------- | -------- | -------- | ---------------------------- |
 | [name] | [total] | [recent] | [status] | [prune/archive/promote/none] |
-| ... | ... | ... | ... | ... |
+| ...    | ...     | ...      | ...      | ...                          |
 
 **Cross-agent notes delivered this session**: [count]
 **Entries pruned/archived**: [count]
@@ -190,6 +196,7 @@ Append a summary to `memory/team/retro-history.md`:
 
 ```markdown
 ## Retro: [date]
+
 - Tasks completed: [count]
 - New learnings: [count] across [members] members
 - Pruned/archived: [count] entries
@@ -213,11 +220,13 @@ Read the current MEMORY.md:
 Determine which learnings are **durable** (useful across sessions) vs. **ephemeral** (only relevant to this session). Only persist durable learnings.
 
 Durable examples:
+
 - "Agent teams work well for parallel audits but add overhead for < 5 tasks"
 - "Always read existing skill files before writing new ones to match format"
 - "Use --parent for epic hierarchy: bd create --parent=<epic-id>, not bd dep add"
 
 Ephemeral examples (do NOT persist):
+
 - "Completed 8 tasks today"
 - "Session started at 2pm"
 - "User seemed happy with the output"
@@ -227,14 +236,17 @@ When adding new learnings, include the `dispatch:` field for provenance tracking
 ### 4c. Apply Updates
 
 Using Write or Edit, update MEMORY.md:
+
 - Add new durable learnings under appropriate sections with dispatch provenance
 - Update existing entries if new evidence confirms, refutes, or refines them
 - Remove entries that are no longer accurate
 - Keep the file under 200 lines (it is loaded into the system prompt)
 
 Example format for new learnings entries:
+
 ```markdown
 ## Workflow Patterns
+
 - /blossom → /sprint pipeline: spike-driven discovery feeds execution naturally (added: 2026-02-13, dispatch: retro-session)
 ```
 
@@ -271,27 +283,34 @@ Present a structured retrospective report:
 ## Session Retrospective
 
 ### Summary
+
 [1-2 sentence summary of what this session accomplished and its overall character]
 
 ### Git Session Stats
+
 [If git activity data was gathered in Phase 1a, include:]
+
 - **Commits**: [total] ([feat] feat, [fix] fix, [chore] chore, [docs] docs, [refactor] refactor)
 - **Fix rate**: [percentage]% [interpretation: low/normal/high]
 - **Top churning files**: [list top 2-3 with change volume]
 
 ### What Went Well
+
 - [specific item with evidence]
 - [specific item with evidence]
 
 ### What Could Improve
+
 - [specific item with evidence and suggested change]
 - [specific item with evidence and suggested change]
 
 ### Action Items
+
 - [ ] [bead ID]: [title] (P[priority])
 - [ ] [bead ID]: [title] (P[priority])
 
 ### Memory Updates
+
 - [list each change made to MEMORY.md: added, updated, or removed]
 ```
 

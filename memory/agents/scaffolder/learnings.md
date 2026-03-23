@@ -1,6 +1,7 @@
 # Learnings: scaffolder
 
 ## Codebase Patterns
+
 - Project uses React Router v7 (Shopify official template, NOT Remix). Scaffolded via `shopify app init`.
 - Railway deploy in CI: use `ghcr.io/railwayapp/cli:latest` container (official), not third-party actions. Avoids supply-chain risk. (added: 2026-03-10, dispatch: .37)
 - `npx prisma generate` must run before typecheck and test in CI — no DATABASE_URL needed for generate. (added: 2026-03-10, dispatch: .37)
@@ -10,6 +11,7 @@
 - Shopify config lives in `shopify.app.toml` — scopes, webhooks, app metadata.
 
 ## Gotchas
+
 - `shopify app init` defaults to SQLite. Must change Prisma provider to `postgresql` immediately after scaffold.
 - Most Shopify tutorials reference Remix — this project uses React Router v7 (Remix merged into React Router).
 - Polaris is Web Components via CDN (`<s-*>` tags), NOT the npm `@shopify/polaris` React package.
@@ -18,12 +20,14 @@
 - `npx prisma validate` always requires DATABASE_URL to be set. Use `DATABASE_URL=postgresql://x@localhost:5432/x npx prisma validate` as the validation command. (added: 2026-03-10, dispatch: .7)
 
 ## Preferences
+
 - Keep file structure matching CLAUDE.md project structure section exactly.
 - Name files with kebab-case (e.g., `scan-engine.server.ts`, not `scanEngine.server.ts`).
 - Always re-read package.json before editing — other agents modify it frequently and task brief snapshots go stale. (added: 2026-03-10, dispatch: .36/.38)
 - tsconfig.json strict:true was already set by the scaffold template — check before adding. (added: 2026-03-10, dispatch: .38)
 
 ## Cross-Agent Notes
+
 - After scaffolding new files, leave TODO comments for the implementer to fill in business logic.
 - Always run `npx prisma validate` AND `npx prisma generate` after schema changes before handing off. (from implementer: generate is required for tsc to accept model-typed code downstream) (added: 2026-03-10, dispatch: .8)
 - Inngest serve endpoint lives at app/routes/api.inngest.ts. New functions go in inngest/functions/ and must be imported+registered in api.inngest.ts. (added: 2026-03-10, dispatch: .10)

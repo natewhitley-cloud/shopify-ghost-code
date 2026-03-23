@@ -38,16 +38,17 @@ Seed epic (identify spike areas, count determines dispatch mode)
 Before dispatching spikes, check that the session has enough capacity for the work ahead. Do this inline — do not invoke `/session-health` as a subagent.
 
 **Assess the current session:**
+
 - Roughly how many files have you read this session?
 - How many agents have you dispatched?
 - How many distinct codebase areas have you touched?
 
-| Load Level | Files Read | Agents Dispatched | Signal |
-|------------|-----------|-------------------|--------|
-| Light | <10 | 0-1 | Healthy — proceed |
-| Moderate | 10-25 | 2-4 | Proceed, watch quality |
-| Heavy | 25-50 | 5+ | Warn user before dispatching |
-| Overloaded | 50+ | 8+ | Recommend handoff |
+| Load Level | Files Read | Agents Dispatched | Signal                       |
+| ---------- | ---------- | ----------------- | ---------------------------- |
+| Light      | <10        | 0-1               | Healthy — proceed            |
+| Moderate   | 10-25      | 2-4               | Proceed, watch quality       |
+| Heavy      | 25-50      | 5+                | Warn user before dispatching |
+| Overloaded | 50+        | 8+                | Recommend handoff            |
 
 **If load is Heavy or Overloaded:** Warn the user:
 
@@ -96,6 +97,7 @@ bd create --title="SPIKE: [specific area to investigate]" --type=task --priority
 The `--parent` flag establishes the epic-child hierarchy, enabling `bd children`, `bd epic status`, and `bd epic close-eligible`.
 
 **If `.beads/` does not exist**, add each spike as a checkbox under the epic heading in `TODO.md`:
+
 ```
 - [ ] SPIKE: [specific area to investigate]
 ```
@@ -228,7 +230,6 @@ Each spike agent (whether background Task or team teammate) receives these instr
 ### After Each Spike Completes
 
 1. **Review the spike report** for quality. Run through these explicit checks before accepting the report:
-
    - [ ] Response contains pipe-format structure: a `##` heading, a `**Source**:` line, and a `### Items` section
    - [ ] At least one `CONFIRMED`, `LIKELY`, or `POSSIBLE` confidence tag is present in the Items section
    - [ ] At least one `file:line` citation is present (evidence from actual code reading, not speculation)
@@ -240,30 +241,36 @@ Each spike agent (whether background Task or team teammate) receives these instr
 2. **Create firm task beads** as children of the epic:
 
    **If `.beads/` exists:**
+
    ```bash
    bd create --title="[title from spike report]" --type=task --priority=[P level as 0-4] \
      --parent=<epic-id> \
      --description="[confidence level]. [evidence and scope from spike report]"
    ```
+
    **If `.beads/` does not exist:** Add to `TODO.md` under the epic heading as `- [ ] [title from spike report]`.
 
 3. **Create new spike beads** as children of the epic:
 
    **If `.beads/` exists:**
+
    ```bash
    bd create --title="SPIKE: [deeper area]" --type=task --priority=2 \
      --parent=<epic-id> \
      --description="Deeper discovery spike spawned from SPIKE: [parent spike]. Reason: [why from report]. Look for: [specific questions]"
    ```
+
    **If `.beads/` does not exist:** Add to `TODO.md` as `- [ ] SPIKE: [deeper area]`.
 
 4. **Close the completed spike** with findings summary:
 
    **If `.beads/` exists:**
+
    ```bash
    bd close <spike-id>
    bd update <spike-id> --notes="Completed. Found N firm tasks (X confirmed, Y likely), M deeper spikes needed. Key findings: [1-2 sentence summary]"
    ```
+
    **If `.beads/` does not exist:** Mark the spike as done in `TODO.md` by checking its checkbox (`- [x] SPIKE: ...`) and appending a findings note inline.
 
 ### Recursion
@@ -311,6 +318,7 @@ Task({
 > Run these steps in order:
 >
 > **1. Survey:**
+>
 > ```bash
 > bd stats
 > bd list --status=open
@@ -336,6 +344,7 @@ When the consolidator's report arrives, review it and proceed to Phase 3b.
 After consolidation, tag each firm task with grounded agent assignment notes. The sharpening gate: name specific files the agent will touch (from spike findings), state concrete skills/knowledge needed (not just a role), and make it dispatchable.
 
 **If `.beads/` exists:**
+
 ```bash
 bd update <task-id> --notes="Recommended agent: <role> — touches <file-list>. Requires: <specific-skills>"
 ```
@@ -358,9 +367,11 @@ After consolidation completes and agent hints are assigned, shut down all teamma
 ### Cross-Task Dependencies
 
 **If `.beads/` exists**, wire dependencies where order matters:
+
 ```bash
 bd dep add <downstream> <upstream>
 ```
+
 Inner layers before outer layers, interfaces before implementations, shared files sequenced. Think bottom-up through the dependency graph.
 
 **If `.beads/` does not exist**, note ordering constraints in `TODO.md` as inline comments next to each task item (e.g., `<!-- depends on: [task name] -->`).
@@ -376,6 +387,7 @@ Adjust priorities now that the full picture is visible. Upgrade tasks that block
 ## Phase 5: Verify
 
 **If `.beads/` exists**, run `bd swarm validate <epic-id>` to check the epic structure. This validates:
+
 - Dependency cycles (and reports them)
 - Orphaned tasks (children with no dependencies wired)
 - Disconnected subgraphs
@@ -491,10 +503,10 @@ Write `memory/epics/<epic-id>/epic.md` with this structure:
 
 ## Task IDs
 
-| BD ID | Title | Priority | Status | Assigned Agent |
-|-------|-------|----------|--------|----------------|
-| [id]  | [title] | P[N]  | open   | [agent hint]   |
-| ...   | ...   | ...      | ...    | ...            |
+| BD ID | Title   | Priority | Status | Assigned Agent |
+| ----- | ------- | -------- | ------ | -------------- |
+| [id]  | [title] | P[N]     | open   | [agent hint]   |
+| ...   | ...     | ...      | ...    | ...            |
 
 ## Critical Path
 

@@ -4,23 +4,23 @@ Quick reference for which agent to dispatch for each task type. All agents are i
 
 ## Agent Summary
 
-| Agent | Purpose | Model | Invoke When |
-|-------|---------|-------|-------------|
-| scaffolder | Create new files and wire them into the project structure | sonnet | Task requires new route, service, model, Inngest job, or Prisma schema change |
-| implementer | Write business logic, fill stubs, connect layers | sonnet | Scaffolding exists (or is simple enough to skip), task requires real logic |
-| tester | Write and maintain Vitest tests, verify coverage | sonnet | Implementation complete, tests needed for new or changed code |
-| reviewer | Review changes for quality, security, Shopify compliance | sonnet | After implementation and testing, before merge or commit |
-| debugger | Diagnose and fix bugs, trace error chains | sonnet | Something is broken, root cause unknown, test failures |
+| Agent       | Purpose                                                   | Model  | Invoke When                                                                   |
+| ----------- | --------------------------------------------------------- | ------ | ----------------------------------------------------------------------------- |
+| scaffolder  | Create new files and wire them into the project structure | sonnet | Task requires new route, service, model, Inngest job, or Prisma schema change |
+| implementer | Write business logic, fill stubs, connect layers          | sonnet | Scaffolding exists (or is simple enough to skip), task requires real logic    |
+| tester      | Write and maintain Vitest tests, verify coverage          | sonnet | Implementation complete, tests needed for new or changed code                 |
+| reviewer    | Review changes for quality, security, Shopify compliance  | sonnet | After implementation and testing, before merge or commit                      |
+| debugger    | Diagnose and fix bugs, trace error chains                 | sonnet | Something is broken, root cause unknown, test failures                        |
 
 ## Agent Capabilities Matrix
 
-| Agent | Reads Code | Writes Code | Runs Tests | Runs Type Check | Runs Prisma | Permission Mode |
-|-------|-----------|-------------|-----------|----------------|-------------|-----------------|
-| scaffolder | Y | Y | N | Y | Y | bypassPermissions |
-| implementer | Y | Y | Y | Y | Y | bypassPermissions |
-| tester | Y | Y (tests only) | Y | Y | N | bypassPermissions |
-| reviewer | Y | N | Y | Y | N | default |
-| debugger | Y | Y | Y | Y | Y | bypassPermissions |
+| Agent       | Reads Code | Writes Code    | Runs Tests | Runs Type Check | Runs Prisma | Permission Mode   |
+| ----------- | ---------- | -------------- | ---------- | --------------- | ----------- | ----------------- |
+| scaffolder  | Y          | Y              | N          | Y               | Y           | bypassPermissions |
+| implementer | Y          | Y              | Y          | Y               | Y           | bypassPermissions |
+| tester      | Y          | Y (tests only) | Y          | Y               | N           | bypassPermissions |
+| reviewer    | Y          | N              | Y          | Y               | N           | default           |
+| debugger    | Y          | Y              | Y          | Y               | Y           | bypassPermissions |
 
 ## Dispatch Decision Tree
 
@@ -100,11 +100,11 @@ All agents should be aware of these constraints:
 
 ## Related Skills
 
-| Skill | Use For |
-|-------|---------|
-| /blossom | Explore and plan work for new epics |
-| /review | Structured code review (the skill, not the agent) |
-| /status | Session status check |
-| /handoff | Session handoff with context preservation |
-| /retro | Post-session retrospective |
-| /gather -> /distill -> /rank | Research and prioritize |
+| Skill                        | Use For                                           |
+| ---------------------------- | ------------------------------------------------- |
+| /blossom                     | Explore and plan work for new epics               |
+| /review                      | Structured code review (the skill, not the agent) |
+| /status                      | Session status check                              |
+| /handoff                     | Session handoff with context preservation         |
+| /retro                       | Post-session retrospective                        |
+| /gather -> /distill -> /rank | Research and prioritize                           |

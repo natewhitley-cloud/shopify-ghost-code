@@ -13,6 +13,7 @@ The Permission Audit tab has three possible states depending on feature availabi
 **Goal:** Build anticipation, signal competence, avoid making timeline promises.
 
 **Information hierarchy:**
+
 1. Feature name and one-sentence value prop
 2. Brief context on why this matters (without being alarmist)
 3. Signup for notification (optional, stretch — can omit for v1)
@@ -45,6 +46,7 @@ The Permission Audit tab has three possible states depending on feature availabi
 ```
 
 **Notes:**
+
 - No timeline language ("coming in Q2", "launching soon"). Just "Coming Soon" in the heading.
 - No email capture in v1 — adds complexity for marginal value at current install volume.
 - The manual review nudge provides immediate value even in this gated state.
@@ -58,6 +60,7 @@ The Permission Audit tab has three possible states depending on feature availabi
 **Goal:** Educate on WHY this matters (with a real breach example), then guide the merchant through a manual review with a concrete checklist.
 
 **Information hierarchy:**
+
 1. Why permission auditing matters (the hook)
 2. Real-world breach example (credibility + urgency)
 3. Step-by-step manual review guide
@@ -191,6 +194,7 @@ The Permission Audit tab has three possible states depending on feature availabi
 ```
 
 **Notes:**
+
 - The warning banner at the top sets urgency without being alarmist. Tone is "this is worth your time" not "you're in danger."
 - The Disputifier example is real and specific — this builds trust. We name the app and the dollar amount, both publicly reported.
 - The checklist is ordered by risk, critical first. The table uses the same `<s-badge tone="...">` pattern the app already uses for scan severity.
@@ -206,6 +210,7 @@ The Permission Audit tab has three possible states depending on feature availabi
 **Goal:** Show the automated audit results alongside education that helps merchants interpret what they're seeing.
 
 **Information hierarchy:**
+
 1. Audit summary (apps scanned, issues found)
 2. App-by-app permission breakdown with risk ratings
 3. Educational context (granted vs. used scopes, sensitivity explainer)
@@ -313,6 +318,7 @@ The Permission Audit tab has three possible states depending on feature availabi
 ```
 
 **Notes:**
+
 - The transparency banner is critical. We must not imply that a "critical" permission means the app is doing something wrong. "Granted" vs. "used" is the most important conceptual distinction for merchants to understand.
 - Apps are listed one card per app, sorted by worst permission severity (critical apps first). This matches the scan findings pattern where highest-severity items surface first.
 - The education footer uses the same severity language as the scan detail view (`critical`, `warning`, `info` tones) for consistency.
@@ -322,17 +328,17 @@ The Permission Audit tab has three possible states depending on feature availabi
 
 ## Component Pattern Summary
 
-| Pattern | Polaris Web Component | Existing Precedent |
-|---|---|---|
-| Page container | `<s-page heading="...">` | All routes |
-| Navigation back | `<s-link slot="primary-action" href="/app">` | Settings, scan detail |
-| Content sections | `<s-card>` with `<s-stack direction="block">` | Dashboard, settings |
-| Severity/risk badges | `<s-badge tone="critical|warning|info">` | Scan detail findings |
-| Alert/context banners | `<s-banner tone="warning|info|critical">` | Dashboard nudges, scan detail errors |
-| Data tables | `<s-data-table>` wrapping `<table>` | Scan detail findings table |
-| Ordered steps | `<s-ordered-list>` with `<s-list-item>` | (new, but consistent with `<s-unordered-list>` in settings) |
-| Feature lists | `<s-unordered-list>` with `<s-list-item>` | Settings plan features |
-| Inline code | `<code>` tags inside `<s-text>` / `<s-paragraph>` | Scan detail file/snippet display |
+| Pattern               | Polaris Web Component                             | Existing Precedent                                          |
+| --------------------- | ------------------------------------------------- | ----------------------------------------------------------- | ----------- | ------------------------------------ |
+| Page container        | `<s-page heading="...">`                          | All routes                                                  |
+| Navigation back       | `<s-link slot="primary-action" href="/app">`      | Settings, scan detail                                       |
+| Content sections      | `<s-card>` with `<s-stack direction="block">`     | Dashboard, settings                                         |
+| Severity/risk badges  | `<s-badge tone="critical                          | warning                                                     | info">`     | Scan detail findings                 |
+| Alert/context banners | `<s-banner tone="warning                          | info                                                        | critical">` | Dashboard nudges, scan detail errors |
+| Data tables           | `<s-data-table>` wrapping `<table>`               | Scan detail findings table                                  |
+| Ordered steps         | `<s-ordered-list>` with `<s-list-item>`           | (new, but consistent with `<s-unordered-list>` in settings) |
+| Feature lists         | `<s-unordered-list>` with `<s-list-item>`         | Settings plan features                                      |
+| Inline code           | `<code>` tags inside `<s-text>` / `<s-paragraph>` | Scan detail file/snippet display                            |
 
 ---
 
@@ -353,6 +359,7 @@ The feature flag is an admin-controlled value (database row or env var), not a p
 ## Tone Guide
 
 The existing app copy is:
+
 - **Direct and concise** — short paragraphs, no filler language
 - **Empowering, not alarming** — "flags everything that can be safely removed" not "your store is at risk"
 - **Technical but accessible** — uses terms like "scripts" and "snippets" without over-explaining

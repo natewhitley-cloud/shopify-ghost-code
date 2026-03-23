@@ -4,7 +4,17 @@ description: "Show unified system status: backlog, recent activity, team health,
 argument-hint: "[focus area]"
 disable-model-invocation: false
 user-invocable: true
-allowed-tools: [Read, Glob, Grep, TaskList, "Bash(bd:*)", "Bash(git status:*)", "Bash(git log:*)", "Bash(git branch:*)"]
+allowed-tools:
+  [
+    Read,
+    Glob,
+    Grep,
+    TaskList,
+    "Bash(bd:*)",
+    "Bash(git status:*)",
+    "Bash(git log:*)",
+    "Bash(git branch:*)",
+  ]
 context: inline
 ---
 
@@ -107,31 +117,37 @@ Present all collected data in this structure. Do not add commentary or analysis 
 **Date**: [today]
 
 ### Last Session
+
 [Contents of memory/sessions/last.md — include verbatim, trimmed to first 20 lines if longer]
 [Or: "No previous session data."]
 
 ### Backlog
+
 [bd stats output, formatted]
 [bd ready output — show task titles, max 5]
 [Or: "Beads not configured."]
 
 ### Epic Progress
+
 [bd epic status output — show each epic with completion %]
 [Omit section if no epics exist or beads not configured]
 
 ### Recent Activity
+
 [git log --oneline -5 output]
 
 **Working tree**: [clean | N files modified/untracked]
 [If dirty, show git status --short output]
 
 ### Team
+
 [Team name and member table:]
 | Member | Role | Learnings | Health |
 |--------|------|-----------|--------|
 | [name] | [role from team.yaml] | [N lines] | [see below] |
 
 Health values (mechanical):
+
 - **active**: learnings file exists, >0 lines
 - **cold**: learnings file missing or empty
 - **bloated**: learnings file >120 lines
@@ -139,10 +155,11 @@ Health values (mechanical):
 [Or: "No team configured."]
 
 ### Live Agents
+
 [Only present when TaskList returned results.]
 
-| Agent | Task | Status |
-|-------|------|--------|
+| Agent        | Task               | Status                                |
+| ------------ | ------------------ | ------------------------------------- |
 | [agent name] | [task description] | running / completed (awaiting review) |
 
 Idle agents (in team.yaml but no active or recent task): [list or "none"]
@@ -150,6 +167,7 @@ Idle agents (in team.yaml but no active or recent task): [list or "none"]
 [Omit this section entirely when TaskList returns no results.]
 
 ### Suggested Actions
+
 [Numbered list, derived mechanically from the data above]
 ```
 
@@ -159,19 +177,19 @@ Idle agents (in team.yaml but no active or recent task): [list or "none"]
 
 Generate 1-5 suggestions based purely on observed state. Use these rules:
 
-| Condition | Suggestion |
-|-----------|------------|
-| Working tree is dirty | "Commit or stash uncommitted changes" |
-| Ready tasks exist (beads) | "Work on: [top 3 ready task titles]" |
-| Blocked tasks exist | "Unblock: [blocked task titles]" |
-| Any team member is bloated (>120 lines) | "Run `/retro` to consolidate [member] learnings" |
-| Any team member is cold | "Dispatch work to [member] to build learnings" |
-| No last session file | "First session — review backlog and pick a starting task" |
-| In-progress tasks exist | "Resume in-progress work: [task titles]" |
-| Epics with all children complete | "Run `bd epic close-eligible` to auto-close completed epics" |
-| Everything is clean and no ready tasks | "Backlog is clear — create new tasks or run `/blossom` to explore" |
-| Completed tasks awaiting review (from TaskList) | "Review results from [agent name]: [task description]" |
-| Idle agents with ready backlog tasks | "Dispatch [agent name] to: [top ready task title]" |
+| Condition                                       | Suggestion                                                         |
+| ----------------------------------------------- | ------------------------------------------------------------------ |
+| Working tree is dirty                           | "Commit or stash uncommitted changes"                              |
+| Ready tasks exist (beads)                       | "Work on: [top 3 ready task titles]"                               |
+| Blocked tasks exist                             | "Unblock: [blocked task titles]"                                   |
+| Any team member is bloated (>120 lines)         | "Run `/retro` to consolidate [member] learnings"                   |
+| Any team member is cold                         | "Dispatch work to [member] to build learnings"                     |
+| No last session file                            | "First session — review backlog and pick a starting task"          |
+| In-progress tasks exist                         | "Resume in-progress work: [task titles]"                           |
+| Epics with all children complete                | "Run `bd epic close-eligible` to auto-close completed epics"       |
+| Everything is clean and no ready tasks          | "Backlog is clear — create new tasks or run `/blossom` to explore" |
+| Completed tasks awaiting review (from TaskList) | "Review results from [agent name]: [task description]"             |
+| Idle agents with ready backlog tasks            | "Dispatch [agent name] to: [top ready task title]"                 |
 
 Only include suggestions that match the current state. Do not invent conditions.
 

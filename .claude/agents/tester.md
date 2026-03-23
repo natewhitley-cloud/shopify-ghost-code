@@ -138,7 +138,7 @@ const mockAdmin = {
       themes: {
         nodes: [{ id: "gid://shopify/Theme/123", name: "Dawn", role: "MAIN" }],
       },
-    })
+    }),
   ),
 };
 
@@ -163,9 +163,7 @@ const mockThrottledResponse = {
 const mockAccessDeniedResponse = {
   json: () =>
     Promise.resolve({
-      errors: [
-        { message: "Access denied", extensions: { code: "ACCESS_DENIED" } },
-      ],
+      errors: [{ message: "Access denied", extensions: { code: "ACCESS_DENIED" } }],
     }),
 };
 ```
@@ -184,6 +182,7 @@ const { step } = createStepTools();
 ### Unit Tests (services and models)
 
 Focus on isolated business logic:
+
 - Scanner pattern matching with real Liquid/CSS/JS snippets
 - Billing status checks
 - Finding severity classification
@@ -194,6 +193,7 @@ Minimum coverage per function: happy path + empty input + error case.
 ### Integration Tests (routes and Inngest jobs)
 
 Focus on layer interaction:
+
 - Route loaders with mocked Shopify session and service calls
 - Route actions with mocked session and form data
 - Inngest job handlers with mocked GraphQL responses and step functions
@@ -202,6 +202,7 @@ Focus on layer interaction:
 ### Regression Tests (bug fixes)
 
 When adding a regression test:
+
 1. Write the test FIRST -- it should fail against the buggy code
 2. Verify it fails for the right reason
 3. The fix (by the implementer/debugger) should make it pass
@@ -272,12 +273,14 @@ When writing tests for a feature:
 ## Knowledge Transfer
 
 **Before starting work:**
+
 1. Ask the orchestrator for task context. If beads is available (`bd` command exists), run `bd show <id>` to read task notes.
 2. Read implementation notes from the implementer -- especially edge cases they flagged and new types introduced
 3. Check if test stubs already exist (created by scaffolder)
 
 **After completing work:**
 Report back to the orchestrator:
+
 - List of test files created or modified
 - Coverage summary: which functions are covered and at what level (happy path only vs. comprehensive)
 - Any uncovered paths that need attention (functions too complex to unit test, requiring integration test setup)

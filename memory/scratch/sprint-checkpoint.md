@@ -1,27 +1,15 @@
-# Sprint Checkpoint: P3 Polish Sprint
+# Sprint B Checkpoint — Security Headers & Auth Tightening
 
-**Phase**: 3 (Dispatch — task 6 of 8)
-**Date**: 2026-03-11
+**Phase**: 3 (Dispatch)
+**Date**: 2026-03-12
+**Project**: /Users/nathanwhitley/book-quiz
 
-## Completed
-1. .74 — Polaris link fix ✓
-2. l4l — Scan status filter bug ✓ (437 tests)
-3. .68 — Dead exports removed ✓ (437 tests → some removed)
-4. .70 — Lazy-load findings for free plan ✓
-5. .73 — 12 app signatures added (54 total) ✓
+## Tasks
 
-## Beads in Sprint
-- l4l: countScansForShopSince status filter (bug)
-- .73: Add missing app signatures to pattern DB
-- .74: Replace raw <a> with Polaris link
-- .69: Optimize sequential cron for scale
-- .70: Lazy-load findings for free plan
-- .71: Add findings export functionality
-- .72: Add scheduled scan for Standard plan
-- .68: Remove dead exports
+1. rq-h7r: Security headers middleware — DISPATCHING (parallel)
+2. rq-5td: Harden rate limiter — DISPATCHING (parallel)
+3. rq-42f + rq-wpt: API key timing fix + audit logging — DISPATCHING (parallel)
 
-## Context Loaded
-- [x] team.yaml read
-- [x] All 5 member learnings read
-- [x] Epic state loaded
-- [x] Backlog loaded (8 beads)
+## Epic: rq-kyp (in_progress)
+
+## Agent Trailer: backend@829c7fc
