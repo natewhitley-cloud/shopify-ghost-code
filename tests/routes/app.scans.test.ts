@@ -1,5 +1,5 @@
 /**
- * Tests for app/routes/app.scans.tsx (scan history)
+ * Tests for app/routes/app.scans._index.tsx (scan history)
  *
  * Strategy:
  *   - Mock authenticate.admin() to control the session.
@@ -44,7 +44,7 @@ vi.mock("../../app/lib/format", () => ({
 
 import { getScansForShop } from "../../app/models/scan.server";
 import { getShopByDomain } from "../../app/models/shop.server";
-import { loader } from "../../app/routes/app.scans";
+import { loader } from "../../app/routes/app.scans._index";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
