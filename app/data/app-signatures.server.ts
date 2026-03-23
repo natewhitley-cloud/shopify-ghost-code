@@ -107,6 +107,40 @@ export const APP_SIGNATURES: AppSignature[] = [
   },
 
   // -------------------------------------------------------------------------
+  // Analytics & Tracking
+  // -------------------------------------------------------------------------
+  {
+    appName: "Elevar",
+    cdnDomains: ["getelevar.com"],
+    scriptPatterns: [/getelevar\.com/, /window\.ElevarDataLayer/, /ElevarInvalidateContext/],
+    snippetNames: [
+      "elevar-head",
+      "elevar-head-listener",
+      "elevar-body-end",
+      "elevar-checkout-end",
+      "elevar-checkout-additional-scripts",
+    ],
+    cssPatterns: [],
+    isTracker: true,
+  },
+  {
+    appName: "Triple Whale",
+    cdnDomains: ["api.triplewhale.com", "cdn.triplewhale.com"],
+    scriptPatterns: [/triplewhale\.com/, /TriplePixel/, /TriplePixelData/, /window\.TriplePixel\b/],
+    snippetNames: ["triple-whale-pixel", "triple-whale"],
+    cssPatterns: [],
+    isTracker: true,
+  },
+  {
+    appName: "Littledata",
+    cdnDomains: ["cdn.littledata.io", "app.littledata.io"],
+    scriptPatterns: [/littledata\.io/, /LittledataLayer/, /window\.LittledataLayer\b/],
+    snippetNames: ["LittledataLayer"],
+    cssPatterns: [],
+    isTracker: true,
+  },
+
+  // -------------------------------------------------------------------------
   // Reviews
   // -------------------------------------------------------------------------
   {
@@ -172,6 +206,14 @@ export const APP_SIGNATURES: AppSignature[] = [
     textPatterns: [/\bokendo-reviews-widget\b/, /\bdata-oke-widget\b/],
   },
   {
+    appName: "Fera Reviews",
+    cdnDomains: ["cdn.fera.ai", "app-cdn.fera.ai", "app.fera.ai"],
+    scriptPatterns: [/fera\.ai/, /window\.fera\b/, /feraAppId/],
+    snippetNames: ["fera-reviews", "fera-widget"],
+    cssPatterns: [/fera/],
+    jsonLdPatterns: [/fera\.ai/i],
+  },
+  {
     appName: "Shopify Product Reviews",
     cdnDomains: [],
     scriptPatterns: [/product-reviews\.shopify/, /SPR\.init/],
@@ -231,6 +273,13 @@ export const APP_SIGNATURES: AppSignature[] = [
   // Loyalty
   // -------------------------------------------------------------------------
   {
+    appName: "Rivo Loyalty",
+    cdnDomains: ["cdn.rivo.io", "app.rivo.io"],
+    scriptPatterns: [/rivo\.io/, /window\.rivo\b/, /RivoJS/],
+    snippetNames: ["rivo-loyalty", "rivo-widget"],
+    cssPatterns: [/rivo/],
+  },
+  {
     appName: "Smile.io",
     cdnDomains: ["cdn.smile.io", "d2v9k67syz0xku.cloudfront.net"],
     scriptPatterns: [/smile\.io/, /sweetTooth/, /window\.SwellAPI/],
@@ -255,6 +304,41 @@ export const APP_SIGNATURES: AppSignature[] = [
   // -------------------------------------------------------------------------
   // Upsell & Cross-sell
   // -------------------------------------------------------------------------
+  {
+    appName: "Rebuy",
+    cdnDomains: ["cdn.rebuyengine.com"],
+    scriptPatterns: [/rebuyengine\.com/, /rebuy\.js/, /window\.Rebuy\b/],
+    snippetNames: ["rebuy-templates", "rebuy-cart-template", "rebuy-widget"],
+    cssPatterns: [/rebuy/],
+  },
+  {
+    appName: "Frequently Bought Together",
+    cdnDomains: ["codeblackbelt.com", "web.codeblackbelt.com"],
+    scriptPatterns: [/codeblackbelt\.com/, /frequentlyBoughtTogether/, /CBBFbt/],
+    snippetNames: ["cbb-frequently-bought-together", "frequently-bought-together"],
+    cssPatterns: [/cbb-fbt/, /codeblackbelt/],
+  },
+  {
+    appName: "Candy Rack",
+    cdnDomains: ["cdn.digismoothie.com"],
+    scriptPatterns: [/digismoothie\.com/, /candyrack/i, /CandyRack/],
+    snippetNames: ["candy-rack", "candyrack"],
+    cssPatterns: [/candyrack/, /candy-rack/],
+  },
+  {
+    appName: "Wiser AI Recommendations",
+    cdnDomains: ["cdn.getwiser.ai", "getwiser.ai"],
+    scriptPatterns: [/getwiser\.ai/, /wiser-widget/],
+    snippetNames: ["wiser-widget", "wiser-recommendations"],
+    cssPatterns: [/wiser/, /getwiser/],
+  },
+  {
+    appName: "Selleasy",
+    cdnDomains: ["cdn.logbase.io", "logbase.io"],
+    scriptPatterns: [/logbase\.io/, /selleasy/i],
+    snippetNames: ["selleasy", "selleasy-widget"],
+    cssPatterns: [/selleasy/],
+  },
   {
     appName: "Bold Commerce",
     cdnDomains: ["cdn.boldapps.net", "boldapps.net"],
@@ -288,6 +372,22 @@ export const APP_SIGNATURES: AppSignature[] = [
   // Social & Pixels
   // -------------------------------------------------------------------------
   {
+    appName: "Pinterest Pixel",
+    cdnDomains: ["s.pinimg.com", "ct.pinterest.com"],
+    scriptPatterns: [/s\.pinimg\.com/, /pintrk\(/, /ct\.pinterest\.com/, /PinterestTag/],
+    snippetNames: ["pinterest-pixel", "pinterest-tag"],
+    cssPatterns: [],
+    isTracker: true,
+  },
+  {
+    appName: "Snapchat Pixel",
+    cdnDomains: ["sc-static.net", "tr.snapchat.com"],
+    scriptPatterns: [/sc-static\.net/, /snaptr\(/, /tr\.snapchat\.com/, /scevent\.min\.js/],
+    snippetNames: ["snapchat-pixel", "snap-pixel"],
+    cssPatterns: [],
+    isTracker: true,
+  },
+  {
     appName: "Facebook Pixel (legacy)",
     cdnDomains: ["connect.facebook.net"],
     scriptPatterns: [/connect\.facebook\.net/, /fbq\('init'/, /fbevents\.js/],
@@ -309,6 +409,35 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/lightwidget\.com/, /instagramFeed/, /window\.instgrm/],
     snippetNames: ["instagram-feed", "instafeed"],
     cssPatterns: [/instagram-feed/, /instafeed/],
+  },
+
+  // -------------------------------------------------------------------------
+  // Search & Filter
+  // -------------------------------------------------------------------------
+  {
+    appName: "Boost AI Search",
+    cdnDomains: ["services.mybcapps.com"],
+    scriptPatterns: [
+      /boostcommerce\.net/,
+      /boost-pfs/,
+      /boost-sd/,
+      /bc-sf-filter/,
+      /window\.boostSDTaeUtils/,
+    ],
+    snippetNames: ["boost-pfs", "boost-pfs-filter-html", "boost-sd-app", "bc-sf-filter"],
+    cssPatterns: [/boost-pfs/, /boost-sd/, /bc-sf-filter/],
+  },
+  {
+    appName: "Searchanise",
+    cdnDomains: ["searchserverapi.com", "searchanise.com"],
+    scriptPatterns: [
+      /searchserverapi\.com/,
+      /searchanise\.com/,
+      /Searchanise/,
+      /SearchaniseSearchResults/,
+    ],
+    snippetNames: ["searchanise", "searchanise-search-results"],
+    cssPatterns: [/searchanise/],
   },
 
   // -------------------------------------------------------------------------
@@ -380,6 +509,13 @@ export const APP_SIGNATURES: AppSignature[] = [
   // -------------------------------------------------------------------------
   // Pop-ups
   // -------------------------------------------------------------------------
+  {
+    appName: "Sumo / BDOW!",
+    cdnDomains: ["load.sumo.com", "load.sumome.com"],
+    scriptPatterns: [/load\.sumo\.com/, /load\.sumome\.com/, /sumo-site-id/, /window\.sumo\b/],
+    snippetNames: ["sumo", "sumome"],
+    cssPatterns: [/sumo/],
+  },
   {
     appName: "Pop Convert",
     cdnDomains: ["cdn.popconvert.com"],
@@ -459,6 +595,13 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/gempages\.net/, /GemPages/],
     snippetNames: ["gem-app-header-scripts", "gem-app-footer-scripts", "gempages"],
     cssPatterns: [/gempages/],
+  },
+  {
+    appName: "EComposer",
+    cdnDomains: ["cdn.ecomposer.io", "ecomposer.io"],
+    scriptPatterns: [/ecomposer\.io/, /EComposer/],
+    snippetNames: ["ecomposer", "ecomposer-head", "ecomposer-body"],
+    cssPatterns: [/ecomposer/],
   },
 
   // -------------------------------------------------------------------------
@@ -579,6 +722,34 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/pandectes\.io/, /Pandectes/, /pandectes-consent/],
     snippetNames: ["pandectes-cookie", "pandectes-consent"],
     cssPatterns: [/pandectes/],
+  },
+  {
+    appName: "CookieYes",
+    cdnDomains: ["cdn-cookieyes.com"],
+    scriptPatterns: [/cdn-cookieyes\.com/, /cookieyes/, /CookieYes/],
+    snippetNames: ["cookieyes", "cookie-consent"],
+    cssPatterns: [/cookieyes/],
+  },
+  {
+    appName: "Cookiebot",
+    cdnDomains: ["consent.cookiebot.com", "consentcdn.cookiebot.com"],
+    scriptPatterns: [/consent\.cookiebot\.com/, /Cookiebot/, /CookiebotOnConsentReady/],
+    snippetNames: ["cookiebot"],
+    cssPatterns: [/cookiebot/],
+  },
+  {
+    appName: "iubenda",
+    cdnDomains: ["cdn.iubenda.com"],
+    scriptPatterns: [/cdn\.iubenda\.com/, /iubenda_cs\.js/, /window\._iub\b/],
+    snippetNames: ["iubenda", "iubenda-cookie"],
+    cssPatterns: [/iubenda/],
+  },
+  {
+    appName: "Consentmo",
+    cdnDomains: ["cdn.consentmo.com"],
+    scriptPatterns: [/consentmo/i, /consentmoGDPR/, /consentmo-gcm-blocking/],
+    snippetNames: ["gcm-integration-script", "consentmo-cookie"],
+    cssPatterns: [/consentmo/],
   },
 
   // -------------------------------------------------------------------------

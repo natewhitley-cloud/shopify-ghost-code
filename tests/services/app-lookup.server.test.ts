@@ -346,6 +346,70 @@ describe("new app signatures", () => {
   it("identifies Microsoft Clarity from snippet name", () => {
     expect(identifyAppFromSnippetName("microsoft-clarity")).toBe("Microsoft Clarity");
   });
+
+  // Rebuy — CDN domain match
+  it("identifies Rebuy from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.rebuyengine.com/sdk.js")).toBe("Rebuy");
+  });
+
+  // Boost AI Search — script pattern match (3 generations)
+  it("identifies Boost AI Search from bc-sf-filter script pattern", () => {
+    expect(identifyAppFromCode("var bc-sf-filter = {};")).toBe("Boost AI Search");
+  });
+  it("identifies Boost AI Search from boost-pfs script pattern", () => {
+    expect(identifyAppFromCode("boost-pfs.init();")).toBe("Boost AI Search");
+  });
+  it("identifies Boost AI Search from boost-sd script pattern", () => {
+    expect(identifyAppFromCode("boost-sd.render();")).toBe("Boost AI Search");
+  });
+
+  // Sumo — CDN domain match
+  it("identifies Sumo / BDOW! from CDN URL", () => {
+    expect(identifyAppFromUrl("https://load.sumo.com/sumo.js")).toBe("Sumo / BDOW!");
+  });
+
+  // Elevar — snippet name match + isTracker
+  it("identifies Elevar from snippet name", () => {
+    expect(identifyAppFromSnippetName("elevar-head")).toBe("Elevar");
+  });
+  it("marks Elevar as tracker", () => {
+    expect(isTrackerApp("Elevar")).toBe(true);
+  });
+
+  // CookieYes — CDN domain match
+  it("identifies CookieYes from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn-cookieyes.com/client_data.js")).toBe("CookieYes");
+  });
+
+  // Cookiebot — script pattern match
+  it("identifies Cookiebot from script pattern", () => {
+    expect(identifyAppFromCode("consent.cookiebot.com/uc.js")).toBe("Cookiebot");
+  });
+
+  // Pinterest Pixel — CDN domain match + isTracker
+  it("identifies Pinterest Pixel from CDN URL", () => {
+    expect(identifyAppFromUrl("https://s.pinimg.com/ct/core.js")).toBe("Pinterest Pixel");
+  });
+  it("marks Pinterest Pixel as tracker", () => {
+    expect(isTrackerApp("Pinterest Pixel")).toBe(true);
+  });
+
+  // Frequently Bought Together — snippet name match
+  it("identifies Frequently Bought Together from snippet name", () => {
+    expect(identifyAppFromSnippetName("cbb-frequently-bought-together")).toBe(
+      "Frequently Bought Together",
+    );
+  });
+
+  // Triple Whale — script pattern match
+  it("identifies Triple Whale from script pattern", () => {
+    expect(identifyAppFromCode("window.TriplePixel('init');")).toBe("Triple Whale");
+  });
+
+  // Consentmo — snippet name match
+  it("identifies Consentmo from snippet name", () => {
+    expect(identifyAppFromSnippetName("gcm-integration-script")).toBe("Consentmo");
+  });
 });
 
 // ---------------------------------------------------------------------------
