@@ -24,12 +24,16 @@ export function createMockPrismaClient(): Record<string, unknown> {
     shop: { ...modelMethods },
     scan: { ...modelMethods },
     finding: { ...modelMethods },
+    unknownScript: { ...modelMethods },
+    signatureSubmission: { ...modelMethods },
     $transaction: vi.fn((fn) =>
       fn({
         session: { ...modelMethods },
         shop: { ...modelMethods },
         scan: { ...modelMethods },
         finding: { ...modelMethods },
+        unknownScript: { ...modelMethods },
+        signatureSubmission: { ...modelMethods },
       }),
     ),
   };

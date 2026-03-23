@@ -69,20 +69,20 @@ The Disputifier breach ($12K in unauthorized refunds, 108↑ Reddit) primed merc
 
 ## What v1 detects
 
-Ghost Code v1 ships with 8 finding types across 56+ app signatures (715 tests):
+Ghost Code v1 ships with 10 finding types across 94 app signatures (705 tests):
 
 | Finding Type | Severity | Description |
 |---|---|---|
 | GHOST_SCRIPT | HIGH | External `<script src>` tags from app CDNs |
 | GHOST_HREFLANG | HIGH | Orphaned `<link rel="alternate" hreflang>` from translation apps |
+| GHOST_TEXT | HIGH | Orphaned widget markup (review widgets, trust badges, wishlist buttons) |
 | GHOST_STYLE | MEDIUM | External `<link rel="stylesheet">` tags |
 | GHOST_SNIPPET | MEDIUM | `{% render %}` / `{% include %}` of known app snippets |
 | DUPLICATE_META | MEDIUM | Duplicate meta tags with same name/property from stacked SEO apps |
 | GHOST_JSON_LD | MEDIUM | Orphaned `<script type="application/ld+json">` blocks from review/FAQ/SEO apps |
+| GHOST_TRANSLATION | MEDIUM | Orphaned translations via Shopify Translations API (cross-refs installed apps) |
 | GHOST_SECTION | LOW | `{% section %}` of known app sections |
 | ORPHAN_ASSET | LOW | Unreferenced snippet files (requires app attribution to avoid false positives) |
-
-**Known gap (post-launch):** Translation metafields left by Shopify Translate & Adapt require GraphQL API queries, not theme file scanning. Tracked as GC-icb (P3).
 
 ---
 
@@ -101,7 +101,7 @@ Modern Shopify apps that use Theme App Extensions (introduced ~2023) get auto-cl
 
 ## Signature expansion strategy
 
-The scanner currently has 64 hardcoded app signatures. Three paths to expand coverage:
+The scanner currently has 94 hardcoded app signatures across 15 categories. Three paths to expand coverage:
 
 ### Community-driven learning loop (v1.1 — the flywheel)
 
@@ -125,21 +125,21 @@ Cleanify Code (the only prior competitor) was delisted — reviews mentioned fal
 
 ### v1.1 — Quick wins from existing data
 
-| Feature | Effort | Description |
-|---|---|---|
-| **App Code Attribution Map** | Low | New UI view: which theme files each installed/former app touched. Data already exists from scan results — just a presentation layer. Merchants explicitly request "a tool that tells me which theme files each app touched." |
-| **Tracking Script Privacy Callout** | Low | Sub-classify existing GHOST_SCRIPT findings: if CDN domain is a known tracker (Meta Pixel, TikTok, Snapchat, etc.), flag as "Privacy: this script may still be collecting visitor data." No new scanning logic — label on existing findings. High emotional impact given Disputifier anxiety. |
-| **Unknown Finding Feedback Loop** | Medium | "Do you know which app left this?" input on unattributed findings. Stores submissions for manual signature curation. The flywheel that makes every scan improve future scans. |
-| **Theme Performance Impact Score** | Medium | Sum external script/stylesheet weight from scan data (already parsed). Show "apps are adding X KB of external resources to every page load." Not a full Lighthouse audit — a proxy metric computed for free from existing data. |
+| Feature | Effort | Status | Description |
+|---|---|---|---|
+| **App Code Attribution Map** | Low | **Shipped** (App Impact Map) | UI view showing which theme files each app touched, with finding counts and types. Data derived from existing scan results. |
+| **Tracking Script Privacy Callout** | Low | **Shipped** | Sub-classify existing GHOST_SCRIPT findings: if CDN domain is a known tracker (Meta Pixel, TikTok, Snapchat, etc.), flag as "Privacy: this script may still be collecting visitor data." |
+| **Unknown Finding Feedback Loop** | Medium | Not started | "Do you know which app left this?" input on unattributed findings. Stores submissions for manual signature curation. The flywheel that makes every scan improve future scans. |
+| **Theme Performance Impact Score** | Medium | **Shipped** | Sum external script/stylesheet weight from scan data. Shows "apps are adding X KB of external resources to every page load." |
 
 ### v1.2 — New detection capabilities
 
-| Feature | Effort | Description |
-|---|---|---|
-| **Orphaned Webhook Detection** | Medium | New finding type. Query `webhookSubscriptions` via GraphQL, cross-reference with installed apps. Flag webhooks pointing to domains of apps no longer installed. Direct extension of "your store is running things you didn't install" — webhooks are literally that. |
-| **Persistent UI Text Fragments** | Medium | New finding type. Pattern-match Liquid templates for known widget text left by uninstalled apps (payment badges, review widgets, countdown timers). Higher false-positive risk than script detection — requires curated pattern library and app attribution before surfacing. |
-| **Translation Metafield Detection** | Medium | Tracked as GC-icb. Query translation metafields via GraphQL API (not theme files). Shopify Translate & Adapt confirmed it leaves these after uninstall — strongest single pain point in research data. |
-| **Market Research DB Signature Expansion** | Low | One-time cross-reference of signature DB against market research data. Identify high-complaint, high-install apps missing from signatures. |
+| Feature | Effort | Status | Description |
+|---|---|---|---|
+| **Orphaned Webhook Detection** | Medium | Not started | New finding type. Query `webhookSubscriptions` via GraphQL, cross-reference with installed apps. Flag webhooks pointing to domains of apps no longer installed. Direct extension of "your store is running things you didn't install" — webhooks are literally that. |
+| **Persistent UI Text Fragments** | Medium | **Shipped** (GHOST_TEXT) | Pattern-match Liquid templates for known widget text left by uninstalled apps (review widgets, trust badges, wishlist buttons). 10 apps covered. |
+| **Translation Metafield Detection** | Medium | **Shipped** (GHOST_TRANSLATION) | Query translations via Shopify Translations API, cross-reference with installed apps. `read_translations` optional scope. Heuristic detection — no creator attribution on Translation objects. |
+| **Market Research DB Signature Expansion** | Low | Partially done | Signature DB expanded from 56 to 94 apps across 15 categories. Further expansion possible via market research cross-reference. |
 
 ### Future ideas (unscheduled)
 
@@ -155,8 +155,8 @@ Beyond what v1 detects, merchants report these persistent artifacts after app un
 
 | Artifact | Evidence | Detection feasibility |
 |---|---|---|
-| **Translation metafields** | Shopify Translate & Adapt confirmed; 166K bad Google crawls | GraphQL API query — planned for v1.2 |
-| **Persistent UI text fragments** | Payment badge text appearing 2 years post-uninstall, across theme switches | Liquid template pattern matching — planned for v1.2, needs curated patterns |
+| **Translation metafields** | Shopify Translate & Adapt confirmed; 166K bad Google crawls | **Shipped** as GHOST_TRANSLATION — Translations API with cross-ref heuristic |
+| **Persistent UI text fragments** | Payment badge text appearing 2 years post-uninstall, across theme switches | **Shipped** as GHOST_TEXT — 10 apps covered |
 | **Orphaned webhooks** | Architectural: apps lose API access on uninstall but webhook subscriptions may persist | GraphQL `webhookSubscriptions` query — planned for v1.2 |
 | **Custom tags on products/orders** | "Some apps leave behind meta fields, Tags or code" | Would need `read_products` scope (new scope request) — post-launch evaluation |
 | **Discount/pricing data** | BOLD Discounts: "Sales are STUCK ON MY PRODUCTS" | Not detectable via theme scanning; would need pricing API access |

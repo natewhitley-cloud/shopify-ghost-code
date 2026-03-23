@@ -88,14 +88,17 @@ model UnknownScript {
 }
 
 model SignatureSubmission {
-  id               String        @id @default(cuid())
+  id               String           @id @default(cuid())
   unknownScriptId  String
-  unknownScript    UnknownScript @relation(fields: [unknownScriptId], references: [id], onDelete: Cascade)
+  unknownScript    UnknownScript    @relation(fields: [unknownScriptId], references: [id], onDelete: Cascade)
   shopId           String
   suggestedAppName String
-  createdAt        DateTime      @default(now())
+  status           SubmissionStatus @default(PENDING)
+  reviewedAt       DateTime?
+  createdAt        DateTime         @default(now())
 
   @@index([unknownScriptId])
+  @@index([status])
 }
 
 model Finding {
@@ -137,6 +140,12 @@ enum FindingType {
   GHOST_JSON_LD
   GHOST_TEXT
   GHOST_TRANSLATION
+}
+
+enum SubmissionStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
 }
 
 enum Severity {
