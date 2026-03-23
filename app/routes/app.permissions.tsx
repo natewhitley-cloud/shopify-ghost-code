@@ -1,4 +1,3 @@
-import { useCallback, useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData } from "react-router";
 
@@ -30,7 +29,6 @@ interface ScoredApp {
 
 type PermissionsLoaderData =
   | { state: "feature-gated" }
-  | { state: "scope-request" }
   | { state: "onboarding" }
   | {
       state: "active";
@@ -68,13 +66,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return { state: "feature-gated" as const };
   }
 
-  // Check if the read_apps optional scope has been granted
-  const grantedScopes = session.scope ? session.scope.split(",") : [];
-  const hasReadAppsScope = grantedScopes.includes("read_apps");
-
-  if (!hasReadAppsScope) {
-    return { state: "scope-request" as const };
-  }
+  // No special scope needed — appInstallation queries work with read_themes
 
   // Fetch and sync installed apps — skip if data is fresh (synced within last 5 minutes).
   // This avoids a full Shopify API call + N DB upserts on every page navigation.
@@ -158,10 +150,6 @@ export default function PermissionAudit() {
     return <FeatureGatedState />;
   }
 
-  if (data.state === "scope-request") {
-    return <ScopeRequestState />;
-  }
-
   if (data.state === "onboarding") {
     return <OnboardingState />;
   }
@@ -208,191 +196,7 @@ function FeatureGatedState() {
 }
 
 // ---------------------------------------------------------------------------
-// State 2: Scope Request (feature enabled, but read_apps scope not granted)
-// ---------------------------------------------------------------------------
-
-function ScopeRequestState() {
-  const [declined, setDeclined] = useState(false);
-
-  const handleRequestScope = useCallback(async () => {
-    try {
-      // shopify global is injected by App Bridge CDN in embedded apps
-      const result = await (
-        window as unknown as {
-          shopify: {
-            scopes: { request: (opts: { scopes: string[] }) => Promise<{ granted: boolean }> };
-          };
-        }
-      ).shopify.scopes.request({
-        scopes: ["read_apps"],
-      });
-      if (result.granted) {
-        window.location.reload();
-      } else {
-        setDeclined(true);
-      }
-    } catch (error) {
-      console.error("Scope request failed:", error);
-      setDeclined(true);
-    }
-  }, []);
-
-  return (
-    <s-page heading="Permission Audit">
-      <Link to="/app" slot="primary-action">
-        Back to Dashboard
-      </Link>
-
-      <s-banner tone="warning">
-        Every app you install gets API access to your store. If an app is compromised or its data is
-        leaked, those permissions become attack vectors. Most merchants never review what access
-        they&apos;ve granted.
-      </s-banner>
-
-      <s-card>
-        <s-stack direction="block" gap="base">
-          <s-heading>Why This Matters: A Real Example</s-heading>
-          <s-paragraph>
-            In 2024, a popular chargeback management app (Disputifier) suffered an API credential
-            leak. Because the app had <strong>write access to orders</strong>, attackers were able
-            to issue unauthorized refunds — some merchants reported losses exceeding $12,000 before
-            the breach was contained.
-          </s-paragraph>
-          <s-paragraph>
-            The root issue was not the breach itself — breaches happen. The issue was that merchants
-            had no visibility into what permissions the app held, and no habit of reviewing them.
-          </s-paragraph>
-        </s-stack>
-      </s-card>
-
-      <s-card>
-        <s-stack direction="block" gap="base">
-          <s-heading>Enable Automated App Scanning</s-heading>
-          <s-paragraph>
-            To scan your installed apps and audit their permissions, Ghost Code needs read-only
-            access to your app list. This permission lets us see which apps are installed and what
-            access scopes they hold — we cannot modify or uninstall anything.
-          </s-paragraph>
-          <s-paragraph>
-            <s-text>
-              Click the button below to grant the <code>read_apps</code> permission. Shopify will
-              show a confirmation dialog — review it and approve to enable automated scanning.
-            </s-text>
-          </s-paragraph>
-          <s-button variant="primary" onClick={handleRequestScope}>
-            Enable App Scanning
-          </s-button>
-          {declined && (
-            <s-banner tone="info">
-              You can still review your app permissions manually. Go to{" "}
-              <strong>Settings &gt; Apps and sales channels</strong> in your Shopify admin, click
-              any app, and review its &quot;Store access&quot; section. You can enable automated
-              scanning at any time by revisiting this page.
-            </s-banner>
-          )}
-          {!declined && (
-            <s-paragraph>
-              <s-text>
-                If you prefer not to grant this permission, you can still review your app
-                permissions manually. Go to <strong>Settings &gt; Apps and sales channels</strong>{" "}
-                in your Shopify admin, click any app, and review its &quot;Store access&quot;
-                section.
-              </s-text>
-            </s-paragraph>
-          )}
-        </s-stack>
-      </s-card>
-
-      <s-card>
-        <s-stack direction="block" gap="base">
-          <s-heading>Permissions That Deserve Scrutiny</s-heading>
-          <s-paragraph>
-            Not all permissions are equal. These carry the most risk if an app is compromised:
-          </s-paragraph>
-
-          <s-data-table>
-            <table>
-              <thead>
-                <tr>
-                  <th>Permission</th>
-                  <th>Risk Level</th>
-                  <th>What It Means</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr>
-                  <td>
-                    <code>write_orders</code>
-                  </td>
-                  <td>
-                    <s-badge tone="critical">Critical</s-badge>
-                  </td>
-                  <td>Can create, edit, or refund orders — direct financial risk</td>
-                </tr>
-                <tr>
-                  <td>
-                    <code>write_customers</code>
-                  </td>
-                  <td>
-                    <s-badge tone="critical">Critical</s-badge>
-                  </td>
-                  <td>Can modify or export customer PII — privacy and compliance risk</td>
-                </tr>
-                <tr>
-                  <td>
-                    <code>read_all_orders</code>
-                  </td>
-                  <td>
-                    <s-badge tone="critical">Critical</s-badge>
-                  </td>
-                  <td>Access to full order history, not just last 60 days</td>
-                </tr>
-                <tr>
-                  <td>
-                    <code>write_products</code>
-                  </td>
-                  <td>
-                    <s-badge tone="warning">High</s-badge>
-                  </td>
-                  <td>Can modify product listings, prices, and inventory</td>
-                </tr>
-                <tr>
-                  <td>
-                    <code>write_themes</code>
-                  </td>
-                  <td>
-                    <s-badge tone="warning">High</s-badge>
-                  </td>
-                  <td>Can inject code into your storefront theme</td>
-                </tr>
-                <tr>
-                  <td>
-                    <code>read_analytics</code>
-                  </td>
-                  <td>
-                    <s-badge tone="info">Low</s-badge>
-                  </td>
-                  <td>Read-only access to store analytics — limited risk</td>
-                </tr>
-              </tbody>
-            </table>
-          </s-data-table>
-
-          <s-paragraph>
-            <s-text>
-              Ask yourself: does this app actually need this permission for what it does? A reviews
-              app should not need <code>write_orders</code>. A shipping app should not need{" "}
-              <code>write_customers</code>.
-            </s-text>
-          </s-paragraph>
-        </s-stack>
-      </s-card>
-    </s-page>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// State 3: Onboarding (scope granted but no apps found)
+// State 2: Onboarding (scope granted but no apps found)
 // ---------------------------------------------------------------------------
 
 function OnboardingState() {

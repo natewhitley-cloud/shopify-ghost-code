@@ -139,11 +139,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Permission Audit is not enabled", { status: 403 });
   }
 
-  // Check if read_apps scope is granted
-  const grantedScopes = session.scope ? session.scope.split(",") : [];
-  if (!grantedScopes.includes("read_apps")) {
-    throw new Response("read_apps scope not granted", { status: 403 });
-  }
+  // No special scope needed — appInstallation queries work with read_themes
 
   // Look up the app record
   const installedApp = await getInstalledAppById(appId);

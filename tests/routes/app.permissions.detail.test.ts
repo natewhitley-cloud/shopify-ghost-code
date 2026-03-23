@@ -185,7 +185,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 
   mockAuthenticateAdmin.mockResolvedValue({
-    session: { shop: SHOP.domain, scope: "read_themes,read_apps" },
+    session: { shop: SHOP.domain, scope: "read_themes" },
     admin: MOCK_ADMIN,
   });
 

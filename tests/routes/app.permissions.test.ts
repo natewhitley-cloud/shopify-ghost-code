@@ -5,7 +5,7 @@
  *   - Mock authenticate.admin() to control the session and admin context.
  *   - Mock billing, models, and services to avoid real DB/API calls.
  *   - Verify loader returns the correct state for each scenario:
- *     feature-gated, scope-request, onboarding (no apps), and active (apps found).
+ *     feature-gated, onboarding (no apps), and active (apps found).
  */
 
 import type { LoaderFunctionArgs } from "react-router";
@@ -148,75 +148,10 @@ describe("app.permissions loader", () => {
     });
   });
 
-  describe("scope-request state", () => {
-    it("returns scope-request when read_apps scope is not granted", async () => {
-      mockGetPlanFeatures.mockReturnValue({
-        permissionAuditEnabled: true,
-        maxScansPerMonth: Infinity,
-        showFindingDetails: true,
-        maxThemes: 1,
-        autoRescan: false,
-        scanDiffing: false,
-        scheduledScan: true,
-      });
-
-      // Default session has scope: "read_themes" (no read_apps)
-      const result = await loader(makeLoaderArgs());
-
-      expect(result).toEqual({ state: "scope-request" });
-      // Should not call any downstream services
-      expect(mockFetchAllInstalledApps).not.toHaveBeenCalled();
-      expect(mockGetInstalledApps).not.toHaveBeenCalled();
-      expect(mockScoreApp).not.toHaveBeenCalled();
-    });
-
-    it("returns scope-request when session scope is null", async () => {
-      mockAuthenticateAdmin.mockResolvedValue({
-        session: { shop: SHOP.domain, scope: null },
-        admin: MOCK_ADMIN,
-      });
-
-      mockGetPlanFeatures.mockReturnValue({
-        permissionAuditEnabled: true,
-        maxScansPerMonth: Infinity,
-        showFindingDetails: true,
-        maxThemes: 1,
-        autoRescan: false,
-        scanDiffing: false,
-        scheduledScan: true,
-      });
-
-      const result = await loader(makeLoaderArgs());
-
-      expect(result).toEqual({ state: "scope-request" });
-    });
-
-    it("returns scope-request when session scope is undefined", async () => {
-      mockAuthenticateAdmin.mockResolvedValue({
-        session: { shop: SHOP.domain },
-        admin: MOCK_ADMIN,
-      });
-
-      mockGetPlanFeatures.mockReturnValue({
-        permissionAuditEnabled: true,
-        maxScansPerMonth: Infinity,
-        showFindingDetails: true,
-        maxThemes: 1,
-        autoRescan: false,
-        scanDiffing: false,
-        scheduledScan: true,
-      });
-
-      const result = await loader(makeLoaderArgs());
-
-      expect(result).toEqual({ state: "scope-request" });
-    });
-  });
-
   describe("onboarding state", () => {
     it("returns onboarding when scope is granted but no apps are found", async () => {
       mockAuthenticateAdmin.mockResolvedValue({
-        session: { shop: SHOP.domain, scope: "read_themes,read_apps" },
+        session: { shop: SHOP.domain, scope: "read_themes" },
         admin: MOCK_ADMIN,
       });
 
@@ -245,7 +180,7 @@ describe("app.permissions loader", () => {
   describe("active state", () => {
     it("returns scored apps and store score when apps are found", async () => {
       mockAuthenticateAdmin.mockResolvedValue({
-        session: { shop: SHOP.domain, scope: "read_themes,read_apps" },
+        session: { shop: SHOP.domain, scope: "read_themes" },
         admin: MOCK_ADMIN,
       });
 
