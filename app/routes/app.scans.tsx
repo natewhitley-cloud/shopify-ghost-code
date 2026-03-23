@@ -1,5 +1,5 @@
 import type { LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData } from "react-router";
+import { Link, useLoaderData, useNavigate } from "react-router";
 
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -41,6 +41,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export default function ScanHistory() {
   const { scans, nextCursor } = useLoaderData<typeof loader>();
+  const navigate = useNavigate();
 
   return (
     <s-page heading="Scan History">
@@ -99,12 +100,21 @@ export default function ScanHistory() {
                     </td>
                     <td>{scan.findingCount}</td>
                     <td>
-                      <Link
-                        to={`/app/scans/${scan.id}`}
-                        style={{ color: "#2c6ecb", textDecoration: "none" }}
+                      <button
+                        type="button"
+                        onClick={() => navigate(`/app/scans/${scan.id}`)}
+                        style={{
+                          color: "#2c6ecb",
+                          textDecoration: "none",
+                          background: "none",
+                          border: "none",
+                          cursor: "pointer",
+                          padding: 0,
+                          font: "inherit",
+                        }}
                       >
                         View
-                      </Link>
+                      </button>
                     </td>
                   </tr>
                 ))}
