@@ -142,3 +142,11 @@ export function identifyAppFromSnippetName(snippetName: string): string | null {
   }
   return null;
 }
+
+/**
+ * Check whether a given app name corresponds to a known tracking/analytics app.
+ * Used to add privacy callouts on findings from tracker scripts.
+ */
+export function isTrackerApp(appName: string): boolean {
+  return APP_SIGNATURES.some((sig) => sig.appName === appName && sig.isTracker === true);
+}

@@ -6,6 +6,7 @@ import {
   identifyAppFromSnippetName,
   identifyAppFromHrefLang,
   identifyAppFromJsonLd,
+  isTrackerApp,
 } from "../../app/services/app-lookup.server";
 
 // ---------------------------------------------------------------------------
@@ -198,8 +199,8 @@ describe("identifyAppFromJsonLd", () => {
     );
   });
 
-  it("identifies Judge.me from reviewCount pattern", () => {
-    expect(identifyAppFromJsonLd('{"@type":"Product","reviewCount":"42"}')).toBe("Judge.me");
+  it("identifies Judge.me from jdgm reference in JSON-LD content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","provider":"jdgm-widget"}')).toBe("Judge.me");
   });
 
   it("identifies Loox from loox.io domain in content", () => {
@@ -233,5 +234,161 @@ describe("identifyAppFromJsonLd", () => {
   it("skips signatures without jsonLdPatterns", () => {
     // Klaviyo has no jsonLdPatterns — should not match
     expect(identifyAppFromJsonLd("klaviyo something")).toBeNull();
+  });
+
+  it("identifies Air Reviews from airreviews.io domain in content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","url":"https://airreviews.io/widget"}')).toBe(
+      "Air Reviews",
+    );
+  });
+
+  it("identifies Okendo from okendo.io domain in content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","url":"https://okendo.io/review"}')).toBe(
+      "Okendo",
+    );
+  });
+
+  it("identifies Growave from growave.io domain in content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","url":"https://growave.io/review"}')).toBe(
+      "Growave",
+    );
+  });
+
+  it("identifies Avada SEO Suite from avada.io domain in content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","url":"https://avada.io/seo"}')).toBe(
+      "Avada SEO Suite",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// New app signature tests
+// ---------------------------------------------------------------------------
+
+describe("new app signatures", () => {
+  // Pop Convert
+  it("identifies Pop Convert from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.popconvert.com/widget.js")).toBe("Pop Convert");
+  });
+  it("identifies Pop Convert from snippet name", () => {
+    expect(identifyAppFromSnippetName("pop-convert")).toBe("Pop Convert");
+  });
+
+  // EcomSend
+  it("identifies EcomSend from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.ecomsend.com/popup.js")).toBe("EcomSend");
+  });
+  it("identifies EcomSend from snippet name", () => {
+    expect(identifyAppFromSnippetName("ecomsend-popup")).toBe("EcomSend");
+  });
+
+  // Avada SEO Suite
+  it("identifies Avada SEO Suite from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.avada.io/seo.js")).toBe("Avada SEO Suite");
+  });
+  it("identifies Avada SEO Suite from snippet name", () => {
+    expect(identifyAppFromSnippetName("avada-seo")).toBe("Avada SEO Suite");
+  });
+
+  // BOOSTER SEO
+  it("identifies BOOSTER SEO from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.boosterapps.com/seo.js")).toBe("BOOSTER SEO");
+  });
+  it("identifies BOOSTER SEO from snippet name", () => {
+    expect(identifyAppFromSnippetName("booster-seo")).toBe("BOOSTER SEO");
+  });
+
+  // Pandectes GDPR
+  it("identifies Pandectes GDPR from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.pandectes.io/consent.js")).toBe("Pandectes GDPR");
+  });
+  it("identifies Pandectes GDPR from snippet name", () => {
+    expect(identifyAppFromSnippetName("pandectes-consent")).toBe("Pandectes GDPR");
+  });
+
+  // Air Reviews
+  it("identifies Air Reviews from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.airreviews.io/widget.js")).toBe("Air Reviews");
+  });
+  it("identifies Air Reviews from snippet name", () => {
+    expect(identifyAppFromSnippetName("air-reviews")).toBe("Air Reviews");
+  });
+
+  // Okendo
+  it("identifies Okendo from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.okendo.io/reviews.js")).toBe("Okendo");
+  });
+  it("identifies Okendo from snippet name", () => {
+    expect(identifyAppFromSnippetName("okendo-reviews")).toBe("Okendo");
+  });
+
+  // Growave
+  it("identifies Growave from CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.growave.io/widget.js")).toBe("Growave");
+  });
+  it("identifies Growave from snippet name", () => {
+    expect(identifyAppFromSnippetName("growave-init")).toBe("Growave");
+  });
+
+  // tawk.to
+  it("identifies tawk.to from CDN URL", () => {
+    expect(identifyAppFromUrl("https://embed.tawk.to/abc123/default")).toBe("tawk.to");
+  });
+  it("identifies tawk.to from snippet name", () => {
+    expect(identifyAppFromSnippetName("tawk-to")).toBe("tawk.to");
+  });
+
+  // Microsoft Clarity
+  it("identifies Microsoft Clarity from CDN URL", () => {
+    expect(identifyAppFromUrl("https://clarity.ms/tag/abc123")).toBe("Microsoft Clarity");
+  });
+  it("identifies Microsoft Clarity from snippet name", () => {
+    expect(identifyAppFromSnippetName("microsoft-clarity")).toBe("Microsoft Clarity");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isTrackerApp
+// ---------------------------------------------------------------------------
+
+describe("isTrackerApp", () => {
+  it("returns true for Google Analytics (UA)", () => {
+    expect(isTrackerApp("Google Analytics (UA)")).toBe(true);
+  });
+
+  it("returns true for Google Tag Manager", () => {
+    expect(isTrackerApp("Google Tag Manager")).toBe(true);
+  });
+
+  it("returns true for Hotjar", () => {
+    expect(isTrackerApp("Hotjar")).toBe(true);
+  });
+
+  it("returns true for Lucky Orange", () => {
+    expect(isTrackerApp("Lucky Orange")).toBe(true);
+  });
+
+  it("returns true for Facebook Pixel (legacy)", () => {
+    expect(isTrackerApp("Facebook Pixel (legacy)")).toBe(true);
+  });
+
+  it("returns true for TikTok Pixel", () => {
+    expect(isTrackerApp("TikTok Pixel")).toBe(true);
+  });
+
+  it("returns true for Microsoft Clarity", () => {
+    expect(isTrackerApp("Microsoft Clarity")).toBe(true);
+  });
+
+  it("returns false for Klaviyo", () => {
+    expect(isTrackerApp("Klaviyo")).toBe(false);
+  });
+
+  it("returns false for Judge.me", () => {
+    expect(isTrackerApp("Judge.me")).toBe(false);
+  });
+
+  it("returns false for unknown app name", () => {
+    expect(isTrackerApp("Unknown App")).toBe(false);
   });
 });

@@ -25,6 +25,7 @@ export type AppSignature = {
   cssPatterns: RegExp[];
   hrefLangPatterns?: RegExp[];
   jsonLdPatterns?: RegExp[];
+  isTracker?: boolean;
 };
 
 export const APP_SIGNATURES: AppSignature[] = [
@@ -69,6 +70,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/ga\.js/, /analytics\.js/, /UA-\d{4,}/, /GoogleAnalyticsObject/],
     snippetNames: ["google-analytics", "ga-tracking"],
     cssPatterns: [],
+    isTracker: true,
   },
   {
     appName: "Google Tag Manager",
@@ -76,6 +78,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/gtm\.js/, /GTM-[A-Z0-9]+/, /googletagmanager\.com/],
     snippetNames: ["google-tag-manager", "gtm-snippet"],
     cssPatterns: [],
+    isTracker: true,
   },
   {
     appName: "Hotjar",
@@ -83,6 +86,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/hotjar\.js/, /hjid[=:]/, /window\.hj\s*=/, /hotjar-\d+/, /h\.hjid/],
     snippetNames: ["hotjar-tracking", "hotjar-snippet"],
     cssPatterns: [],
+    isTracker: true,
   },
   {
     appName: "Lucky Orange",
@@ -90,6 +94,15 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/luckyorange\.com/, /window\.__lo_site_id/],
     snippetNames: ["lucky-orange"],
     cssPatterns: [/luckyorange/],
+    isTracker: true,
+  },
+  {
+    appName: "Microsoft Clarity",
+    cdnDomains: ["clarity.ms", "www.clarity.ms"],
+    scriptPatterns: [/clarity\.ms/, /window\.clarity\b/, /clarity\("set"/],
+    snippetNames: ["microsoft-clarity", "clarity"],
+    cssPatterns: [],
+    isTracker: true,
   },
 
   // -------------------------------------------------------------------------
@@ -126,6 +139,22 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["yotpo-bottomline", "yotpo-reviews", "yotpo_reviews"],
     cssPatterns: [/yotpo/],
     jsonLdPatterns: [/yotpo\.com/i, /yotpo/i],
+  },
+  {
+    appName: "Air Reviews",
+    cdnDomains: ["cdn.airreviews.io"],
+    scriptPatterns: [/airreviews\.io/, /AirReviews/],
+    snippetNames: ["air-reviews", "air-reviews-widget"],
+    cssPatterns: [/airreviews/, /air-reviews/],
+    jsonLdPatterns: [/airreviews\.io/i, /air-reviews/i],
+  },
+  {
+    appName: "Okendo",
+    cdnDomains: ["cdn.okendo.io", "d3hw6dc1ow8pp2.cloudfront.net"],
+    scriptPatterns: [/okendo\.io/, /OkendoReviews/, /window\.okendo\b/],
+    snippetNames: ["okendo-reviews", "okendo-widget"],
+    cssPatterns: [/okendo/],
+    jsonLdPatterns: [/okendo\.io/i, /okendo/i],
   },
   {
     appName: "Shopify Product Reviews",
@@ -173,6 +202,13 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/driftt\.com/, /window\.drift\b/, /drift\.load/],
     snippetNames: ["drift-widget"],
     cssPatterns: [],
+  },
+  {
+    appName: "tawk.to",
+    cdnDomains: ["embed.tawk.to"],
+    scriptPatterns: [/tawk\.to/, /Tawk_API/, /window\.Tawk_API/],
+    snippetNames: ["tawk-to", "tawk-chat"],
+    cssPatterns: [/tawk/],
   },
 
   // -------------------------------------------------------------------------
@@ -241,6 +277,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/connect\.facebook\.net/, /fbq\('init'/, /fbevents\.js/],
     snippetNames: ["facebook-pixel", "fb-pixel"],
     cssPatterns: [],
+    isTracker: true,
   },
   {
     appName: "TikTok Pixel",
@@ -248,6 +285,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/analytics\.tiktok\.com/, /ttq\.load/, /TiktokAnalyticsObject/],
     snippetNames: ["tiktok-pixel", "tiktok-snippet"],
     cssPatterns: [],
+    isTracker: true,
   },
   {
     appName: "Instagram Feed",
@@ -260,6 +298,21 @@ export const APP_SIGNATURES: AppSignature[] = [
   // -------------------------------------------------------------------------
   // SEO
   // -------------------------------------------------------------------------
+  {
+    appName: "Avada SEO Suite",
+    cdnDomains: ["cdn.avada.io"],
+    scriptPatterns: [/avada\.io/, /AvadaSEO/, /avada-seo/],
+    snippetNames: ["avada-seo", "avada-seo-suite"],
+    cssPatterns: [/avada/],
+    jsonLdPatterns: [/avada\.io/i, /avada/i],
+  },
+  {
+    appName: "BOOSTER SEO",
+    cdnDomains: ["cdn.boosterapps.com"],
+    scriptPatterns: [/boosterapps\.com/, /BoosterSEO/, /booster-seo/],
+    snippetNames: ["booster-seo", "booster-apps-seo"],
+    cssPatterns: [/boosterapps/, /booster-seo/],
+  },
   {
     appName: "SEO Manager",
     cdnDomains: [],
@@ -311,6 +364,20 @@ export const APP_SIGNATURES: AppSignature[] = [
   // -------------------------------------------------------------------------
   // Pop-ups
   // -------------------------------------------------------------------------
+  {
+    appName: "Pop Convert",
+    cdnDomains: ["cdn.popconvert.com"],
+    scriptPatterns: [/popconvert\.com/, /PopConvert/],
+    snippetNames: ["popconvert", "pop-convert"],
+    cssPatterns: [/popconvert/],
+  },
+  {
+    appName: "EcomSend",
+    cdnDomains: ["cdn.ecomsend.com"],
+    scriptPatterns: [/ecomsend\.com/, /EcomSend/],
+    snippetNames: ["ecomsend", "ecomsend-popup"],
+    cssPatterns: [/ecomsend/],
+  },
   {
     appName: "Justuno",
     cdnDomains: ["cdn.justuno.com", "app.justuno.com"],
@@ -381,6 +448,14 @@ export const APP_SIGNATURES: AppSignature[] = [
   // -------------------------------------------------------------------------
   // Wishlist & Social Proof
   // -------------------------------------------------------------------------
+  {
+    appName: "Growave",
+    cdnDomains: ["cdn.growave.io"],
+    scriptPatterns: [/growave\.io/, /Growave/, /window\.growave\b/],
+    snippetNames: ["growave-init", "growave-widget"],
+    cssPatterns: [/growave/],
+    jsonLdPatterns: [/growave\.io/i, /growave/i],
+  },
   {
     appName: "Wishlist Plus (Swym)",
     cdnDomains: ["cdn.swymrelay.com", "swymrelay.com", "swym.it"],
@@ -475,6 +550,17 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/acsbapp\.com/, /acsbap\.com/, /acsb\.js/],
     snippetNames: ["accessibe"],
     cssPatterns: [/acsbapp/, /accessiBe/i],
+  },
+
+  // -------------------------------------------------------------------------
+  // Cookie Consent
+  // -------------------------------------------------------------------------
+  {
+    appName: "Pandectes GDPR",
+    cdnDomains: ["cdn.pandectes.io"],
+    scriptPatterns: [/pandectes\.io/, /Pandectes/, /pandectes-consent/],
+    snippetNames: ["pandectes-cookie", "pandectes-consent"],
+    cssPatterns: [/pandectes/],
   },
 
   // -------------------------------------------------------------------------
