@@ -23,6 +23,7 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.GHOST_HREFLANG]: Severity.HIGH,
   [FindingType.ORPHAN_ASSET]: Severity.LOW,
   [FindingType.DUPLICATE_META]: Severity.MEDIUM,
+  [FindingType.GHOST_JSON_LD]: Severity.MEDIUM,
 };
 
 // ---------------------------------------------------------------------------

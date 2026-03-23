@@ -15,6 +15,8 @@
  *                    by any template, section, layout, or other snippet
  *   DUPLICATE_META — multiple <meta> tags with the same name or property attribute
  *                    in a single file (e.g. stacked SEO apps)
+ *   GHOST_JSON_LD  — orphaned <script type="application/ld+json"> blocks left by
+ *                    review, FAQ, or SEO apps after uninstall
  */
 
 import { FindingType } from "@prisma/client";
@@ -24,6 +26,7 @@ import {
   identifyAppFromCode,
   identifyAppFromSnippetName,
   identifyAppFromHrefLang,
+  identifyAppFromJsonLd,
 } from "./app-lookup.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
@@ -353,6 +356,87 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Detector: GHOST_JSON_LD
+// ---------------------------------------------------------------------------
+
+// Multiline regex to extract <script type="application/ld+json">...</script> blocks.
+const JSON_LD_BLOCK_RE =
+  /<script\s+type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+
+// Regex to detect app-only @type values that Shopify themes never inject natively.
+const APP_ONLY_TYPE_RE =
+  /["']@type["']\s*:\s*["'](FAQPage|AggregateRating|Review|BreadcrumbList|LocalBusiness)["']/;
+
+// Regex to detect Liquid template tags ({{ or {%).
+const LIQUID_TAG_RE = /\{\{|\{%/;
+
+/**
+ * Compute the 1-based line number where `offset` falls within `content`.
+ */
+function lineNumberAtOffset(content: string, offset: number): number {
+  let line = 1;
+  for (let i = 0; i < offset && i < content.length; i++) {
+    if (content[i] === "\n") line++;
+  }
+  return line;
+}
+
+export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  let match: RegExpExecArray | null;
+  JSON_LD_BLOCK_RE.lastIndex = 0;
+
+  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
+    const blockContent = match[1];
+
+    // Skip blocks containing Liquid template tags — these are native theme
+    // blocks rendered by the theme engine, not orphaned static injections.
+    if (LIQUID_TAG_RE.test(blockContent)) continue;
+
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+
+    // Try app attribution via signature patterns first.
+    const appName = identifyAppFromJsonLd(blockContent);
+    if (appName) {
+      const severity = classifySeverity(FindingType.GHOST_JSON_LD, codeSnippet);
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_JSON_LD,
+        severity,
+        appName,
+        description: `Orphaned JSON-LD schema markup from ${appName}`,
+      });
+      continue;
+    }
+
+    // Check for app-only @type values that Shopify themes don't inject natively.
+    const typeMatch = APP_ONLY_TYPE_RE.exec(blockContent);
+    if (typeMatch) {
+      const typeName = typeMatch[1];
+      const severity = classifySeverity(FindingType.GHOST_JSON_LD, codeSnippet);
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_JSON_LD,
+        severity,
+        appName: undefined,
+        description: `Orphaned JSON-LD schema with app-only @type "${typeName}" — likely left by an uninstalled app`,
+      });
+      continue;
+    }
+
+    // No app match and no app-only @type — skip (legitimate static JSON-LD).
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -364,7 +448,7 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
  *   Pass 1 — per-file pattern detection:
  *     Processes only scannable Liquid files (templates/, sections/, snippets/,
  *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
- *     GHOST_SECTION, GHOST_HREFLANG, and DUPLICATE_META findings.
+ *     GHOST_SECTION, GHOST_HREFLANG, DUPLICATE_META, and GHOST_JSON_LD findings.
  *
  *   Pass 2 — cross-file orphan detection (new):
  *     Runs the file reference analyzer over all Liquid files (not just
@@ -387,6 +471,7 @@ export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
     findings.push(...detectGhostSections(file));
     findings.push(...detectGhostHrefLang(file));
     findings.push(...detectDuplicateMetaTags(file));
+    findings.push(...detectGhostJsonLd(file));
   }
 
   // Pass 2: cross-file orphan snippet detection

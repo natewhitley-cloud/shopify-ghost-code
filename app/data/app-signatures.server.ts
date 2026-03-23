@@ -24,6 +24,7 @@ export type AppSignature = {
   snippetNames: string[];
   cssPatterns: RegExp[];
   hrefLangPatterns?: RegExp[];
+  jsonLdPatterns?: RegExp[];
 };
 
 export const APP_SIGNATURES: AppSignature[] = [
@@ -100,6 +101,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/judge\.me/, /jdgm\b/, /JudgeMe/],
     snippetNames: ["judgeme_widgets", "jdgm-widget", "jdgm-review", "jdgm_widgets"],
     cssPatterns: [/jdgm/, /judge\.me/],
+    jsonLdPatterns: [/judge\.me/i, /"reviewCount"/],
   },
   {
     appName: "Loox",
@@ -107,6 +109,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/loox\.io/, /window\.loox/],
     snippetNames: ["loox-init", "loox-reviews", "loox_reviews"],
     cssPatterns: [/loox/],
+    jsonLdPatterns: [/loox\.io/i, /loox/i],
   },
   {
     appName: "Stamped.io",
@@ -114,6 +117,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/stamped\.io/, /StampedFn/, /window\.StampedSDK/],
     snippetNames: ["stamped-main-widget", "stamped-reviews-widget"],
     cssPatterns: [/stamped/],
+    jsonLdPatterns: [/stamped\.io/i, /stamped/i],
   },
   {
     appName: "Yotpo",
@@ -121,6 +125,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/yotpo\.js/, /YotpoWidgetsMap/, /window\.yotpo/, /yotpoWidget/],
     snippetNames: ["yotpo-bottomline", "yotpo-reviews", "yotpo_reviews"],
     cssPatterns: [/yotpo/],
+    jsonLdPatterns: [/yotpo\.com/i, /yotpo/i],
   },
   {
     appName: "Shopify Product Reviews",
@@ -128,6 +133,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/product-reviews\.shopify/, /SPR\.init/],
     snippetNames: ["product-reviews", "spr-stars"],
     cssPatterns: [/spr-container/, /spr-form/],
+    jsonLdPatterns: [/spr/i, /product-reviews/i],
   },
 
   // -------------------------------------------------------------------------
@@ -274,6 +280,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/json-ld-for-seo/, /jsonld.*shopify/i],
     snippetNames: ["json-ld-for-seo", "schema-for-seo"],
     cssPatterns: [],
+    jsonLdPatterns: [/json-ld-for-seo/i],
   },
 
   // -------------------------------------------------------------------------
@@ -555,6 +562,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/trustpilot\.com/, /window\.Trustpilot/],
     snippetNames: ["trustpilot-widget", "trustpilot"],
     cssPatterns: [/trustpilot/],
+    jsonLdPatterns: [/trustpilot\.com/i, /trustpilot/i],
   },
   {
     appName: "Wheelio / Spin-to-Win",

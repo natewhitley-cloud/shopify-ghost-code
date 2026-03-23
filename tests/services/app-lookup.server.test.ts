@@ -5,6 +5,7 @@ import {
   identifyAppFromCode,
   identifyAppFromSnippetName,
   identifyAppFromHrefLang,
+  identifyAppFromJsonLd,
 } from "../../app/services/app-lookup.server";
 
 // ---------------------------------------------------------------------------
@@ -183,5 +184,54 @@ describe("identifyAppFromHrefLang", () => {
   it("skips signatures without hrefLangPatterns", () => {
     // Klaviyo has no hrefLangPatterns — should not match even though it has CDN patterns
     expect(identifyAppFromHrefLang("https://static.klaviyo.com/something")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// identifyAppFromJsonLd
+// ---------------------------------------------------------------------------
+
+describe("identifyAppFromJsonLd", () => {
+  it("identifies Judge.me from judge.me URL in JSON-LD content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","url":"https://judge.me/reviews"}')).toBe(
+      "Judge.me",
+    );
+  });
+
+  it("identifies Judge.me from reviewCount pattern", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","reviewCount":"42"}')).toBe("Judge.me");
+  });
+
+  it("identifies Loox from loox.io domain in content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","url":"https://loox.io/widget"}')).toBe(
+      "Loox",
+    );
+  });
+
+  it("identifies Yotpo from yotpo reference in content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","provider":"yotpo.com/api"}')).toBe("Yotpo");
+  });
+
+  it("identifies Stamped.io from stamped reference in content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","source":"stamped.io"}')).toBe("Stamped.io");
+  });
+
+  it("identifies Trustpilot from trustpilot reference in content", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Product","url":"https://trustpilot.com/review"}')).toBe(
+      "Trustpilot",
+    );
+  });
+
+  it("returns null for content with no matching patterns", () => {
+    expect(identifyAppFromJsonLd('{"@type":"Organization","name":"My Store"}')).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(identifyAppFromJsonLd("")).toBeNull();
+  });
+
+  it("skips signatures without jsonLdPatterns", () => {
+    // Klaviyo has no jsonLdPatterns — should not match
+    expect(identifyAppFromJsonLd("klaviyo something")).toBeNull();
   });
 });

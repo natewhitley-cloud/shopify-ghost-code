@@ -9,6 +9,7 @@ import {
   detectGhostSections,
   detectGhostHrefLang,
   detectDuplicateMetaTags,
+  detectGhostJsonLd,
   scanThemeFiles,
 } from "../../app/services/scan-engine.server";
 
@@ -567,6 +568,174 @@ describe("detectDuplicateMetaTags", () => {
 });
 
 // ---------------------------------------------------------------------------
+// detectGhostJsonLd
+// ---------------------------------------------------------------------------
+
+describe("detectGhostJsonLd", () => {
+  it("detects JSON-LD with Judge.me patterns", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "Product",
+  "reviewCount": "42",
+  "url": "https://judge.me/reviews/product123"
+}
+</script>`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_JSON_LD);
+    expect(findings[0].severity).toBe(Severity.MEDIUM);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[0].description).toContain("Judge.me");
+  });
+
+  it("detects JSON-LD with Loox patterns", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "Product",
+  "url": "https://loox.io/reviews/widget"
+}
+</script>`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Loox");
+  });
+
+  it("detects JSON-LD with FAQPage @type (no app match)", () => {
+    const file = {
+      filename: "sections/faq.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "FAQPage",
+  "mainEntity": []
+}
+</script>`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_JSON_LD);
+    expect(findings[0].appName).toBeUndefined();
+    expect(findings[0].description).toContain("FAQPage");
+  });
+
+  it("detects JSON-LD with AggregateRating @type", () => {
+    const file = {
+      filename: "sections/product.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "AggregateRating",
+  "ratingValue": "4.5"
+}
+</script>`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("AggregateRating");
+  });
+
+  it("skips JSON-LD blocks containing Liquid {{ template tags", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "Product",
+  "name": "{{ product.title }}",
+  "reviewCount": "42"
+}
+</script>`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips JSON-LD blocks containing Liquid {% template tags", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "Product",
+  {% if product.reviews_count > 0 %}
+  "reviewCount": "42"
+  {% endif %}
+}
+</script>`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips legitimate static JSON-LD with no app patterns and no app-only @type", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "Organization",
+  "name": "My Store",
+  "url": "https://mystore.com"
+}
+</script>`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("returns empty array for files with no JSON-LD", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: "<html>{{ content_for_layout }}</html>",
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("finds multiple JSON-LD blocks in one file independently", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "Product",
+  "url": "https://judge.me/reviews"
+}
+</script>
+<p>Some content</p>
+<script type="application/ld+json">
+{
+  "@type": "FAQPage",
+  "mainEntity": []
+}
+</script>`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(2);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[1].appName).toBeUndefined();
+    expect(findings[1].description).toContain("FAQPage");
+  });
+
+  it("downgrades to LOW when inside a Liquid comment", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `{% comment %}
+<script type="application/ld+json">
+{
+  "@type": "Product",
+  "url": "https://judge.me/reviews"
+}
+</script>
+{% endcomment %}`,
+    };
+    const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // scanThemeFiles (integration)
 // ---------------------------------------------------------------------------
 
@@ -633,6 +802,24 @@ describe("scanThemeFiles", () => {
     const hreflangFindings = findingsOfType(findings, FindingType.GHOST_HREFLANG);
     expect(hreflangFindings.length).toBeGreaterThanOrEqual(2);
     expect(hreflangFindings[0].appName).toBe("Weglot");
+  });
+
+  it("picks up GHOST_JSON_LD findings from layout files", () => {
+    const files = [
+      {
+        filename: "layout/theme.liquid",
+        content: `<script type="application/ld+json">
+{
+  "@type": "Product",
+  "url": "https://judge.me/reviews"
+}
+</script>`,
+      },
+    ];
+    const findings = scanThemeFiles(files);
+    const jsonLdFindings = findingsOfType(findings, FindingType.GHOST_JSON_LD);
+    expect(jsonLdFindings).toHaveLength(1);
+    expect(jsonLdFindings[0].appName).toBe("Judge.me");
   });
 
   it("picks up DUPLICATE_META findings from layout files", () => {

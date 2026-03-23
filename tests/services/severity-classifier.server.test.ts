@@ -54,6 +54,15 @@ describe("classifySeverity", () => {
     ).toBe(Severity.MEDIUM);
   });
 
+  it("returns MEDIUM for GHOST_JSON_LD by default", () => {
+    expect(
+      classifySeverity(
+        FindingType.GHOST_JSON_LD,
+        '<script type="application/ld+json">{"@type":"Product"}</script>',
+      ),
+    ).toBe(Severity.MEDIUM);
+  });
+
   // -------------------------------------------------------------------------
   // Liquid comment downgrade
   // -------------------------------------------------------------------------
@@ -85,6 +94,12 @@ describe("classifySeverity", () => {
     const snippet =
       '{% comment %}\n  <meta name="description" content="duplicate">\n{% endcomment %}';
     expect(classifySeverity(FindingType.DUPLICATE_META, snippet)).toBe(Severity.LOW);
+  });
+
+  it("downgrades GHOST_JSON_LD to LOW when inside a Liquid comment", () => {
+    const snippet =
+      '{% comment %}\n  <script type="application/ld+json">{"@type":"Product"}</script>\n{% endcomment %}';
+    expect(classifySeverity(FindingType.GHOST_JSON_LD, snippet)).toBe(Severity.LOW);
   });
 
   // -------------------------------------------------------------------------

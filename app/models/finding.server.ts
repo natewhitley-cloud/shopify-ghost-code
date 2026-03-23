@@ -112,6 +112,7 @@ export async function getFindingSummary(scanId: string) {
     [FindingType.GHOST_HREFLANG]: 0,
     [FindingType.ORPHAN_ASSET]: 0,
     [FindingType.DUPLICATE_META]: 0,
+    [FindingType.GHOST_JSON_LD]: 0,
   };
   for (const row of byType) {
     typeCounts[row.findingType] = row._count.findingType;

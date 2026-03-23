@@ -109,6 +109,24 @@ export function identifyAppFromHrefLang(href: string): string | null {
 }
 
 /**
+ * Identify an app from JSON-LD schema markup content.
+ *
+ * Checks each signature's jsonLdPatterns array against the full JSON-LD block
+ * content. Returns the first matching appName or null.
+ */
+export function identifyAppFromJsonLd(content: string): string | null {
+  for (const sig of APP_SIGNATURES) {
+    if (!sig.jsonLdPatterns) continue;
+    for (const pattern of sig.jsonLdPatterns) {
+      if (pattern.test(content)) {
+        return sig.appName;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Identify an app from a Liquid snippet or section name (case-insensitive).
  *
  * Checks each signature's snippetNames list for an exact match.
