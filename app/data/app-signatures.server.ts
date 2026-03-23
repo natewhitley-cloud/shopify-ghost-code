@@ -343,9 +343,18 @@ export const APP_SIGNATURES: AppSignature[] = [
   {
     appName: "PageFly",
     cdnDomains: ["ik.imagekit.io/pagefly", "cdn.pagefly.io"],
-    scriptPatterns: [/pagefly\.io/, /PageFly/],
-    snippetNames: ["pagefly-head", "pagefly-body-end", "pagefly"],
-    cssPatterns: [/pagefly/],
+    scriptPatterns: [/pagefly/i, /PageFly/],
+    snippetNames: [
+      "pagefly-head",
+      "pagefly-body-end",
+      "pagefly",
+      "pagefly-main-js",
+      "pf-style",
+      "pf-head",
+      "pf-body",
+      "pf-footer",
+    ],
+    cssPatterns: [/pagefly/i],
   },
   {
     appName: "Shogun",

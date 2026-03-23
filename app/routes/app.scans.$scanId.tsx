@@ -7,6 +7,7 @@ import { Link, useLoaderData, useRevalidator } from "react-router";
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
+import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
 import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.server";
@@ -142,6 +143,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const findings: Finding[] =
     canViewDetails && "findings" in scan ? (scan.findings as Finding[]) : [];
 
+  // Sort findings by severity (HIGH → MEDIUM → LOW), then by type, file, line.
+  sortFindingsBySeverity(findings);
+
   // For free-tier shops, expose only the single highest-severity finding so
   // the UI can show a "peek" without leaking the full results.
   const previewFinding = canViewDetails ? null : await getHighestSeverityFinding(scanId);
@@ -155,6 +159,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     const previousScan = await getPreviousScanForTheme(scan.shopId, scan.themeId, scan.createdAt);
     if (previousScan) {
       scanDiff = diffScans(findings, previousScan.findings);
+      // Sort diff finding arrays by severity for consistent display order.
+      sortDiffFindingsBySeverity(scanDiff.newFindings);
+      sortDiffFindingsBySeverity(scanDiff.resolvedFindings);
     }
   }
 
