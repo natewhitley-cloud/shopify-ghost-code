@@ -77,7 +77,7 @@ export default function ScanHistory() {
         </s-empty-state>
       ) : (
         <>
-          <s-card>
+          <div>
             <table className="scan-history-table">
               <thead>
                 <tr>
@@ -120,7 +120,7 @@ export default function ScanHistory() {
                 ))}
               </tbody>
             </table>
-          </s-card>
+          </div>
 
           {nextCursor && (
             <s-box padding-block-start="base">
