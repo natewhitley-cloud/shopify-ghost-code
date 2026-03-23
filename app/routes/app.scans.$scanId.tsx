@@ -4,22 +4,22 @@ import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData, useRevalidator, useFetcher } from "react-router";
 
+import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
-import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
 import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
-import type { ScanDiff } from "../services/scan-differ.server";
-import { diffScans } from "../services/scan-differ.server";
-import { isTrackerApp } from "../services/app-lookup.server";
 import {
   getUnknownScriptsForScan,
   submitSignatureSuggestion,
 } from "../models/unknown-script.server";
+import { isTrackerApp } from "../services/app-lookup.server";
+import type { ScanDiff } from "../services/scan-differ.server";
+import { diffScans } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -286,7 +286,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 // Action — handles merchant feedback on unknown scripts
 // ---------------------------------------------------------------------------
 
-export const action = async ({ request, params }: ActionFunctionArgs) => {
+export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const shop = await getShopByDomain(session.shop);
   if (!shop) throw new Response("Not found", { status: 404 });

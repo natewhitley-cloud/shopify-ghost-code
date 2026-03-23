@@ -6,6 +6,7 @@
  * error type. React-router hooks are mocked to simulate different error states.
  */
 
+import { isRouteErrorResponse, useRouteError } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -16,12 +17,6 @@ vi.mock("react-router", () => ({
   useRouteError: vi.fn(),
   isRouteErrorResponse: vi.fn(),
 }));
-
-// ---------------------------------------------------------------------------
-// Imports (after mocks are registered)
-// ---------------------------------------------------------------------------
-
-import { isRouteErrorResponse, useRouteError } from "react-router";
 
 import { AppErrorBoundary } from "../../app/components/AppErrorBoundary";
 
