@@ -97,6 +97,7 @@ const FINDINGS_TABLE_STYLES = `
     white-space: nowrap;
     position: sticky;
     top: 0;
+    border-bottom: 2px solid #d2d5d8;
   }
   .findings-table tbody tr:nth-child(even) {
     background: #fafbfb;
@@ -363,6 +364,12 @@ export default function ScanDetail() {
         .scan-status-bar__separator {
           color: #c9cccf;
         }
+        .scan-section-title {
+          font-size: 18px;
+          font-weight: 600;
+          color: #202223;
+          margin: 0;
+        }
         .scan-tiles-row {
           display: grid;
           grid-template-columns: 1fr 1fr 1fr;
@@ -536,85 +543,99 @@ export default function ScanDetail() {
         <div className="scan-tiles-row">
           {/* Tile 1: Health Score */}
           {healthScore && (
-            <div className={`scan-tile scan-tile--health-${healthToneModifier(healthScore.tone)}`}>
+            <div>
+              <h2 className="scan-section-title">Theme Health</h2>
               <div
-                className={`scan-tile__big-number scan-tile__big-number--${healthToneModifier(healthScore.tone)}`}
+                className={`scan-tile scan-tile--health-${healthToneModifier(healthScore.tone)}`}
+                style={{ marginTop: "8px" }}
               >
-                {healthScore.score}
-              </div>
-              <div className="scan-tile__subtitle">out of 100</div>
-              <div
-                className={`scan-tile__label scan-tile__label--${healthToneModifier(healthScore.tone)}`}
-              >
-                {healthScore.label}
+                <div
+                  className={`scan-tile__big-number scan-tile__big-number--${healthToneModifier(healthScore.tone)}`}
+                >
+                  {healthScore.score}
+                </div>
+                <div className="scan-tile__subtitle">out of 100</div>
+                <div
+                  className={`scan-tile__label scan-tile__label--${healthToneModifier(healthScore.tone)}`}
+                >
+                  {healthScore.label}
+                </div>
               </div>
             </div>
           )}
 
           {/* Tile 2: Total Findings */}
-          <div className="scan-tile">
-            <div className="scan-tile__big-number scan-tile__big-number--neutral">
-              {totalFindings}
-            </div>
-            <div className="scan-tile__subtitle">findings detected</div>
-            {scanDiff && (totalNew > 0 || totalResolved > 0) && (
-              <div
-                className={`scan-tile__diff ${
-                  totalNew > totalResolved
-                    ? "scan-tile__diff--positive"
-                    : totalResolved > totalNew
-                      ? "scan-tile__diff--negative"
-                      : "scan-tile__diff--neutral"
-                }`}
-              >
-                {totalNew > 0 && <span style={{ color: "#d72c0d" }}>+{totalNew} new</span>}
-                {totalNew > 0 && totalResolved > 0 && " / "}
-                {totalResolved > 0 && (
-                  <span style={{ color: "#1a8a3f" }}>-{totalResolved} resolved</span>
-                )}
+          <div>
+            <h2 className="scan-section-title">Total Findings</h2>
+            <div className="scan-tile" style={{ marginTop: "8px" }}>
+              <div className="scan-tile__big-number scan-tile__big-number--neutral">
+                {totalFindings}
               </div>
-            )}
-            {scanDiff && totalNew === 0 && totalResolved === 0 && (
-              <div className="scan-tile__diff scan-tile__diff--neutral">no change</div>
-            )}
+              <div className="scan-tile__subtitle">findings detected</div>
+              {scanDiff && (totalNew > 0 || totalResolved > 0) && (
+                <div
+                  className={`scan-tile__diff ${
+                    totalNew > totalResolved
+                      ? "scan-tile__diff--positive"
+                      : totalResolved > totalNew
+                        ? "scan-tile__diff--negative"
+                        : "scan-tile__diff--neutral"
+                  }`}
+                >
+                  {totalNew > 0 && <span style={{ color: "#d72c0d" }}>+{totalNew} new</span>}
+                  {totalNew > 0 && totalResolved > 0 && " / "}
+                  {totalResolved > 0 && (
+                    <span style={{ color: "#1a8a3f" }}>-{totalResolved} resolved</span>
+                  )}
+                </div>
+              )}
+              {scanDiff && totalNew === 0 && totalResolved === 0 && (
+                <div className="scan-tile__diff scan-tile__diff--neutral">no change</div>
+              )}
+            </div>
           </div>
 
           {/* Tile 3: Severity Breakdown */}
-          <div className="scan-tile">
-            <div className="severity-breakdown">
-              {(
-                [
-                  { key: "HIGH", label: "High", mod: "high" },
-                  { key: "MEDIUM", label: "Medium", mod: "medium" },
-                  { key: "LOW", label: "Low", mod: "low" },
-                ] as const
-              ).map(({ key, label, mod }) => {
-                const count = summary[key];
-                const net = severityNet ? severityNet[key] : null;
-                return (
-                  <div key={key} className="severity-row">
-                    <div className="severity-row__left">
-                      <span className={`severity-row__dot severity-row__dot--${mod}`} />
-                      <span className={`severity-row__count severity-row__count--${mod}`}>
-                        {count}
-                      </span>
-                      <span className="severity-row__label">{label}</span>
+          <div>
+            <h2 className="scan-section-title">Severity Breakdown</h2>
+            <div className="scan-tile" style={{ marginTop: "8px" }}>
+              <div className="severity-breakdown">
+                {(
+                  [
+                    { key: "HIGH", label: "High", mod: "high" },
+                    { key: "MEDIUM", label: "Medium", mod: "medium" },
+                    { key: "LOW", label: "Low", mod: "low" },
+                  ] as const
+                ).map(({ key, label, mod }) => {
+                  const count = summary[key];
+                  const net = severityNet ? severityNet[key] : null;
+                  return (
+                    <div key={key} className="severity-row">
+                      <div className="severity-row__left">
+                        <span className={`severity-row__dot severity-row__dot--${mod}`} />
+                        <span className={`severity-row__count severity-row__count--${mod}`}>
+                          {count}
+                        </span>
+                        <span className="severity-row__label">{label}</span>
+                      </div>
+                      {net !== null && net !== 0 && (
+                        <span
+                          className={`severity-row__diff ${
+                            net > 0
+                              ? "severity-row__diff--positive"
+                              : "severity-row__diff--negative"
+                          }`}
+                        >
+                          {net > 0 ? `+${net}` : String(net)}
+                        </span>
+                      )}
+                      {net !== null && net === 0 && (
+                        <span className="severity-row__diff severity-row__diff--neutral">—</span>
+                      )}
                     </div>
-                    {net !== null && net !== 0 && (
-                      <span
-                        className={`severity-row__diff ${
-                          net > 0 ? "severity-row__diff--positive" : "severity-row__diff--negative"
-                        }`}
-                      >
-                        {net > 0 ? `+${net}` : String(net)}
-                      </span>
-                    )}
-                    {net !== null && net === 0 && (
-                      <span className="severity-row__diff severity-row__diff--neutral">—</span>
-                    )}
-                  </div>
-                );
-              })}
+                  );
+                })}
+              </div>
             </div>
           </div>
         </div>
@@ -623,64 +644,66 @@ export default function ScanDetail() {
       {/* Findings detail table — only shown for completed scans */}
       {isCompleted &&
         (canViewDetails ? (
-          <s-card>
-            <s-stack direction="block" gap="base">
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "center",
-                }}
-              >
-                <s-heading>Findings</s-heading>
-                {findings.length > 0 && (
-                  <a
-                    href={`/app/scans/${scan.id}/export?format=csv`}
-                    download
-                    style={{
-                      display: "inline-flex",
-                      alignItems: "center",
-                      gap: "6px",
-                      padding: "6px 12px",
-                      borderRadius: "6px",
-                      border: "1px solid #c9cccf",
-                      background: "#ffffff",
-                      color: "#6d7175",
-                      fontSize: "13px",
-                      textDecoration: "none",
-                      cursor: "pointer",
-                    }}
-                  >
-                    <svg
-                      width="14"
-                      height="14"
-                      viewBox="0 0 20 20"
-                      fill="none"
-                      xmlns="http://www.w3.org/2000/svg"
+          <div style={{ marginTop: "32px" }}>
+            <s-card>
+              <s-stack direction="block" gap="base">
+                <div
+                  style={{
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                  }}
+                >
+                  <h2 className="scan-section-title">Findings</h2>
+                  {findings.length > 0 && (
+                    <a
+                      href={`/app/scans/${scan.id}/export?format=csv`}
+                      download
+                      style={{
+                        display: "inline-flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        padding: "6px 12px",
+                        borderRadius: "6px",
+                        border: "1px solid #c9cccf",
+                        background: "#ffffff",
+                        color: "#6d7175",
+                        fontSize: "13px",
+                        textDecoration: "none",
+                        cursor: "pointer",
+                      }}
                     >
-                      <path
-                        d="M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 17h12"
-                        stroke="currentColor"
-                        strokeWidth="1.5"
-                        strokeLinecap="round"
-                        strokeLinejoin="round"
-                      />
-                    </svg>
-                    Export CSV
-                  </a>
+                      <svg
+                        width="14"
+                        height="14"
+                        viewBox="0 0 20 20"
+                        fill="none"
+                        xmlns="http://www.w3.org/2000/svg"
+                      >
+                        <path
+                          d="M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 17h12"
+                          stroke="currentColor"
+                          strokeWidth="1.5"
+                          strokeLinecap="round"
+                          strokeLinejoin="round"
+                        />
+                      </svg>
+                      Export CSV
+                    </a>
+                  )}
+                </div>
+                {findings.length === 0 ? (
+                  <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+                ) : (
+                  <FindingsTable>
+                    {findings.map((finding) => (
+                      <FindingRow key={finding.id} finding={finding} />
+                    ))}
+                  </FindingsTable>
                 )}
-              </div>
-              {findings.length === 0 ? (
-                <s-paragraph>No ghost code detected in this scan.</s-paragraph>
-              ) : (
-                <FindingsTable>
-                  {findings.map((finding) => (
-                    <FindingRow key={finding.id} finding={finding} />
-                  ))}
-                </FindingsTable>
-              )}
-            </s-stack>
-          </s-card>
+              </s-stack>
+            </s-card>
+          </div>
         ) : previewFinding === null ? (
           /* Free tier, no findings at all */
           <s-card>
