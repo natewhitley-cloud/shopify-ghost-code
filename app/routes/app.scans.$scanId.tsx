@@ -406,14 +406,51 @@ export default function ScanDetail() {
         (canViewDetails ? (
           <s-card>
             <s-stack direction="block" gap="base">
-              <s-stack direction="inline" gap="base">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                }}
+              >
                 <s-heading>Findings</s-heading>
                 {findings.length > 0 && (
-                  <s-link href={`/app/scans/${scan.id}/export?format=csv`}>
-                    <s-button>Export CSV</s-button>
-                  </s-link>
+                  <a
+                    href={`/app/scans/${scan.id}/export?format=csv`}
+                    download
+                    style={{
+                      display: "inline-flex",
+                      alignItems: "center",
+                      gap: "6px",
+                      padding: "6px 12px",
+                      borderRadius: "6px",
+                      border: "1px solid #c9cccf",
+                      background: "#ffffff",
+                      color: "#6d7175",
+                      fontSize: "13px",
+                      textDecoration: "none",
+                      cursor: "pointer",
+                    }}
+                  >
+                    <svg
+                      width="14"
+                      height="14"
+                      viewBox="0 0 20 20"
+                      fill="none"
+                      xmlns="http://www.w3.org/2000/svg"
+                    >
+                      <path
+                        d="M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 17h12"
+                        stroke="currentColor"
+                        strokeWidth="1.5"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                    Export CSV
+                  </a>
                 )}
-              </s-stack>
+              </div>
               {findings.length === 0 ? (
                 <s-paragraph>No ghost code detected in this scan.</s-paragraph>
               ) : (
