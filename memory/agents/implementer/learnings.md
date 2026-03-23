@@ -1,6 +1,7 @@
 # Learnings: implementer
 
 ## Core
+
 - Shopify admin access in routes: `const { admin } = await authenticate.admin(request);`
 - Explicit error handling over try/catch-all. Name specific error conditions.
 - Keep services stateless — pass dependencies as function parameters.
@@ -17,6 +18,7 @@
 - Flag any Shopify API behavior that differs from documentation for the debugger's learnings.
 
 ## Task-Relevant
+
 - Inngest functions in `inngest/functions/` use step functions for multi-step async work.
 - Inngest v3 requires `new Inngest({ schemas: new EventSchemas().fromRecord<Events>() })` — the `Inngest<Events>` generic from v2 is rejected. (added: 2026-03-10, dispatch: .41)
 - Cron Inngest functions use `{ cron: '0 6 * * *' }` trigger (not event name). Fan-out pattern: coordinator fetches shops + sends batch events, worker function processes per-shop with concurrency limit. (updated: 2026-03-11, dispatch: .69)
@@ -33,7 +35,7 @@
 - Files with $ in the name (e.g. app.scans.$scanId.tsx) must be single-quoted when passed to git add — unquoted, the shell expands $var to empty string. (added: 2026-03-10, dispatch: .47)
 - When removing a guard that produces a named outcome, check whether tests assert that outcome string explicitly — tests need rewriting, not just removal. (added: 2026-03-10, dispatch: .56)
 - createScan uses callback-form $transaction for atomic TOCTOU guard (check + create in one tx). completeScanWithFindings uses array-form $transaction with deleteMany prepended for idempotency. (added: 2026-03-10, dispatch: .52/.55)
-- app/lib/logger.server.ts provides structured JSON logging. Use `logger.info/warn/error(message, context)` in webhook handlers — not bare console.*. (added: 2026-03-10, dispatch: .60)
+- app/lib/logger.server.ts provides structured JSON logging. Use `logger.info/warn/error(message, context)` in webhook handlers — not bare console.\*. (added: 2026-03-10, dispatch: .60)
 - When updating a price constant, grep for the human-readable string form (e.g., `$59`) in UI routes — settings/pricing pages often duplicate the value as display text. (added: 2026-03-10, dispatch: 6jo)
 - "First scan free" is a gating-layer concept in plan-gating.server.ts, not a plan feature — hasCompletedScans() in scan model detects first-ever scan. (added: 2026-03-10, dispatch: ek4)
 - Free-tier preview pattern: return `previewFinding` (single highest-severity) server-side via getHighestSeverityFinding(), keep full findings array empty. Category breakdown uses findingSummary.byType with display-name mapping in the component. (added: 2026-03-10, dispatch: acw)
@@ -46,3 +48,4 @@
 - Static data files (app-signatures.server.ts) are append-only with zero coupling risk — skip dependency tracing, just verify with tsc. (added: 2026-03-11, dispatch: .73)
 - Resource routes (no default export) return Response directly from loader — use Content-Type + Content-Disposition headers for file downloads. Polaris `<s-link>` doesn't support `download` attribute; rely on Content-Disposition: attachment. (added: 2026-03-11, dispatch: .71)
 - Fan-out worker reuse: Standard weekly scan and Professional daily scan both fan out to the same poll-check-shop worker. Plan filtering belongs in the coordinator, not the worker. (added: 2026-03-11, dispatch: .72)
+- When a detector needs to match multiline content (like JSON-LD blocks), use a multiline regex on full file content with an offset-to-line-number helper (lineNumberAtOffset), rather than forcing line-by-line iteration. (added: 2026-03-22, dispatch: GC-xn0)
