@@ -6,6 +6,7 @@ import {
   identifyAppFromSnippetName,
   identifyAppFromHrefLang,
   identifyAppFromJsonLd,
+  identifyAppFromTextFragment,
   isTrackerApp,
 } from "../../app/services/app-lookup.server";
 
@@ -344,6 +345,28 @@ describe("new app signatures", () => {
   });
   it("identifies Microsoft Clarity from snippet name", () => {
     expect(identifyAppFromSnippetName("microsoft-clarity")).toBe("Microsoft Clarity");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// identifyAppFromTextFragment
+// ---------------------------------------------------------------------------
+
+describe("identifyAppFromTextFragment", () => {
+  it("matches known Judge.me text pattern", () => {
+    expect(identifyAppFromTextFragment('<div id="jdgm-widget">')).toBe("Judge.me");
+  });
+
+  it("matches Yotpo data attribute", () => {
+    expect(identifyAppFromTextFragment('<div data-yotpo-product-id="123">')).toBe("Yotpo");
+  });
+
+  it("returns null for unknown text", () => {
+    expect(identifyAppFromTextFragment('<div class="my-custom-widget">')).toBeNull();
+  });
+
+  it("returns null for empty string", () => {
+    expect(identifyAppFromTextFragment("")).toBeNull();
   });
 });
 

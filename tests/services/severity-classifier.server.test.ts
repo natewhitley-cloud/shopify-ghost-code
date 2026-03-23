@@ -63,6 +63,10 @@ describe("classifySeverity", () => {
     ).toBe(Severity.MEDIUM);
   });
 
+  it("returns MEDIUM for GHOST_TRANSLATION by default", () => {
+    expect(classifySeverity(FindingType.GHOST_TRANSLATION, 'title: "Titre"')).toBe(Severity.MEDIUM);
+  });
+
   // -------------------------------------------------------------------------
   // Liquid comment downgrade
   // -------------------------------------------------------------------------

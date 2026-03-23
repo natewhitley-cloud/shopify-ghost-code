@@ -11,6 +11,7 @@ import {
   detectGhostHrefLang,
   detectDuplicateMetaTags,
   detectGhostJsonLd,
+  detectGhostTextFragments,
   scanThemeFiles,
 } from "../../app/services/scan-engine.server";
 
@@ -731,6 +732,117 @@ describe("detectGhostJsonLd", () => {
 {% endcomment %}`,
     };
     const findings = detectGhostJsonLd(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostTextFragments
+// ---------------------------------------------------------------------------
+
+describe("detectGhostTextFragments", () => {
+  it("detects Judge.me widget markup", () => {
+    const file = {
+      filename: "sections/product.liquid",
+      content: '<div id="jdgm-widget" class="review-widget"></div>',
+    };
+    const findings = detectGhostTextFragments(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TEXT);
+    expect(findings[0].appName).toBe("Judge.me");
+  });
+
+  it("detects Yotpo data attribute", () => {
+    const file = {
+      filename: "sections/product.liquid",
+      content: '<div data-yotpo-product-id="123"></div>',
+    };
+    const findings = detectGhostTextFragments(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TEXT);
+    expect(findings[0].appName).toBe("Yotpo");
+  });
+
+  it("detects Stamped widget", () => {
+    const file = {
+      filename: "sections/product.liquid",
+      content: '<div class="stamped-reviews-widget"></div>',
+    };
+    const findings = detectGhostTextFragments(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TEXT);
+    expect(findings[0].appName).toBe("Stamped.io");
+  });
+
+  it("ignores lines with script tags", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.judge.me/jdgm-widget.js"></script>',
+    };
+    const findings = detectGhostTextFragments(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("ignores lines with render tags", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: "{% render 'jdgm-widget' %}",
+    };
+    const findings = detectGhostTextFragments(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("ignores unknown text patterns", () => {
+    const file = {
+      filename: "sections/product.liquid",
+      content: '<div class="my-custom-widget"></div>',
+    };
+    const findings = detectGhostTextFragments(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("detects multiple apps in same file", () => {
+    const file = {
+      filename: "sections/product.liquid",
+      content: ['<div id="jdgm-widget"></div>', '<div data-yotpo-product-id="456"></div>'].join(
+        "\n",
+      ),
+    };
+    const findings = detectGhostTextFragments(file);
+    expect(findings).toHaveLength(2);
+    const apps = findings.map((f) => f.appName).sort();
+    expect(apps).toEqual(["Judge.me", "Yotpo"]);
+  });
+
+  it("assigns LOW severity by default", () => {
+    const file = {
+      filename: "sections/product.liquid",
+      content: '<div id="jdgm-widget"></div>',
+    };
+    const findings = detectGhostTextFragments(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+
+  it("skips non-scannable files via scanThemeFiles", () => {
+    const files = [
+      {
+        filename: "assets/theme.js",
+        content: '<div id="jdgm-widget"></div>',
+      },
+    ];
+    const { findings } = scanThemeFiles(files);
+    const textFindings = findingsOfType(findings, FindingType.GHOST_TEXT);
+    expect(textFindings).toHaveLength(0);
+  });
+
+  it("downgraded to LOW inside liquid comment", () => {
+    const file = {
+      filename: "sections/product.liquid",
+      content: ["{% comment %}", '<div id="jdgm-widget"></div>', "{% endcomment %}"].join("\n"),
+    };
+    const findings = detectGhostTextFragments(file);
     expect(findings).toHaveLength(1);
     expect(findings[0].severity).toBe(Severity.LOW);
   });

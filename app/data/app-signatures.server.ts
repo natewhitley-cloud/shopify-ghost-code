@@ -25,6 +25,7 @@ export type AppSignature = {
   cssPatterns: RegExp[];
   hrefLangPatterns?: RegExp[];
   jsonLdPatterns?: RegExp[];
+  textPatterns?: RegExp[];
   isTracker?: boolean;
 };
 
@@ -115,6 +116,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["judgeme_widgets", "jdgm-widget", "jdgm-review", "jdgm_widgets"],
     cssPatterns: [/jdgm/, /judge\.me/],
     jsonLdPatterns: [/judge\.me/i, /jdgm/i],
+    textPatterns: [/\bjdgm-widget\b/, /\bjdgm-review-widget\b/, /\bdata-jdgm-widget\b/],
   },
   {
     appName: "Loox",
@@ -123,6 +125,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["loox-init", "loox-reviews", "loox_reviews"],
     cssPatterns: [/loox/],
     jsonLdPatterns: [/loox\.io/i, /loox/i],
+    textPatterns: [/\bloox-reviews-default\b/, /\bdata-loox-product-id\b/],
   },
   {
     appName: "Stamped.io",
@@ -131,6 +134,11 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["stamped-main-widget", "stamped-reviews-widget"],
     cssPatterns: [/stamped/],
     jsonLdPatterns: [/stamped\.io/i, /stamped/i],
+    textPatterns: [
+      /\bstamped-reviews-widget\b/,
+      /\bdata-stamped-product\b/,
+      /\bstamped-main-widget\b/,
+    ],
   },
   {
     appName: "Yotpo",
@@ -139,6 +147,11 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["yotpo-bottomline", "yotpo-reviews", "yotpo_reviews"],
     cssPatterns: [/yotpo/],
     jsonLdPatterns: [/yotpo\.com/i, /yotpo/i],
+    textPatterns: [
+      /\byotpo-widget-instance\b/,
+      /\bdata-yotpo-product-id\b/,
+      /\byotpo-bottomline\b/,
+    ],
   },
   {
     appName: "Air Reviews",
@@ -147,6 +160,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["air-reviews", "air-reviews-widget"],
     cssPatterns: [/airreviews/, /air-reviews/],
     jsonLdPatterns: [/airreviews\.io/i, /air-reviews/i],
+    textPatterns: [/\bdata-air-review\b/],
   },
   {
     appName: "Okendo",
@@ -155,6 +169,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["okendo-reviews", "okendo-widget"],
     cssPatterns: [/okendo/],
     jsonLdPatterns: [/okendo\.io/i, /okendo/i],
+    textPatterns: [/\bokendo-reviews-widget\b/, /\bdata-oke-widget\b/],
   },
   {
     appName: "Shopify Product Reviews",
@@ -163,6 +178,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["product-reviews", "spr-stars"],
     cssPatterns: [/spr-container/, /spr-form/],
     jsonLdPatterns: [/spr/i, /product-reviews/i],
+    textPatterns: [/\bspr-container\b/, /\bspr-badge\b/],
   },
 
   // -------------------------------------------------------------------------
@@ -462,6 +478,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/swymrelay\.com/, /swym\.it/, /SwymCallbacks/, /window\.swym\b/],
     snippetNames: ["swym-wishlist", "wishlist-plus"],
     cssPatterns: [/swym/],
+    textPatterns: [/\bswym-wishlist\b/, /\bdata-swym-collection\b/, /\bswym-button\b/],
   },
   {
     appName: "FOMO",
@@ -476,6 +493,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/hextom\.com/, /window\.hextom\b/],
     snippetNames: ["hextom-shipping-bar", "hextom-sales-pop"],
     cssPatterns: [/hextom/],
+    textPatterns: [/\bhextom_(?:qab|fsb|ctb)_\w+\b/, /\bhextom-[a-z]+-bar\b/],
   },
 
   // -------------------------------------------------------------------------
@@ -572,6 +590,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/kiwisizing\.com/, /KiwiSizing/],
     snippetNames: ["kiwi-size-chart"],
     cssPatterns: [/kiwisizing/],
+    textPatterns: [/\bkiwi-sizing-chart\b/, /\bdata-kiwi-size-chart\b/],
   },
 
   // -------------------------------------------------------------------------

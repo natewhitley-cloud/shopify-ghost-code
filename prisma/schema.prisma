@@ -137,6 +137,8 @@ enum FindingType {
   ORPHAN_ASSET
   DUPLICATE_META
   GHOST_JSON_LD
+  GHOST_TEXT
+  GHOST_TRANSLATION
 }
 
 enum Severity {

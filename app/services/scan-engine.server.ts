@@ -17,6 +17,9 @@
  *                    in a single file (e.g. stacked SEO apps)
  *   GHOST_JSON_LD  — orphaned <script type="application/ld+json"> blocks left by
  *                    review, FAQ, or SEO apps after uninstall
+ *   GHOST_TEXT     — persistent UI text fragments (widget placeholders, trust
+ *                    badges, data attributes) left in Liquid markup by
+ *                    uninstalled apps
  */
 
 import { FindingType } from "@prisma/client";
@@ -27,6 +30,7 @@ import {
   identifyAppFromSnippetName,
   identifyAppFromHrefLang,
   identifyAppFromJsonLd,
+  identifyAppFromTextFragment,
 } from "./app-lookup.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
@@ -450,6 +454,37 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Detector: GHOST_TEXT
+// ---------------------------------------------------------------------------
+
+export function detectGhostTextFragments(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    // Skip lines that other detectors already handle
+    if (/<script[\s>]/i.test(text) || /\{%-?\s*(?:render|include|section)\s+/i.test(text)) continue;
+
+    const appName = identifyAppFromTextFragment(text);
+    if (!appName) continue;
+
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+    const severity = classifySeverity(FindingType.GHOST_TEXT, codeSnippet);
+
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_TEXT,
+      severity,
+      appName,
+      description: `Orphaned UI widget markup from ${appName}`,
+    });
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Collector: unknown external scripts (unrecognized CDN URLs)
 // ---------------------------------------------------------------------------
 
@@ -539,7 +574,8 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
  *   Pass 1 — per-file pattern detection:
  *     Processes only scannable Liquid files (templates/, sections/, snippets/,
  *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
- *     GHOST_SECTION, GHOST_HREFLANG, DUPLICATE_META, and GHOST_JSON_LD findings.
+ *     GHOST_SECTION, GHOST_HREFLANG, DUPLICATE_META, GHOST_JSON_LD, and
+ *     GHOST_TEXT findings.
  *
  *   Pass 2 — cross-file orphan detection (new):
  *     Runs the file reference analyzer over all Liquid files (not just
@@ -564,6 +600,7 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     findings.push(...detectGhostHrefLang(file));
     findings.push(...detectDuplicateMetaTags(file));
     findings.push(...detectGhostJsonLd(file));
+    findings.push(...detectGhostTextFragments(file));
 
     // Collect unrecognized external resources
     unknownScripts.push(...collectUnknownScripts(file));

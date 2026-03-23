@@ -127,6 +127,25 @@ export function identifyAppFromJsonLd(content: string): string | null {
 }
 
 /**
+ * Identify an app from a text fragment (class name, data attribute, or widget
+ * placeholder text left in Liquid markup by an uninstalled app).
+ *
+ * Checks each signature's textPatterns array against the provided text.
+ * Returns the first matching appName or null.
+ */
+export function identifyAppFromTextFragment(text: string): string | null {
+  for (const sig of APP_SIGNATURES) {
+    if (!sig.textPatterns) continue;
+    for (const pattern of sig.textPatterns) {
+      if (pattern.test(text)) {
+        return sig.appName;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Identify an app from a Liquid snippet or section name (case-insensitive).
  *
  * Checks each signature's snippetNames list for an exact match.
