@@ -12,6 +12,9 @@
  *                                  Inngest's 4MB step output size limit (theme
  *                                  file contents are large and don't need to be
  *                                  serialized between steps).
+ *   3. translation-audit         — (optional) queries the Translations API for
+ *                                  orphaned translations. Skipped if the
+ *                                  read_translations scope is not granted.
  *
  * Error handling: any unhandled step error will trigger Inngest's automatic
  * retry. The outer try/catch marks the scan FAILED only on non-retryable
@@ -74,11 +77,87 @@ export const scanTheme = inngest.createFunction(
         return findings.length;
       });
 
-      console.log("[scan-theme]", { event: "completed", scanId, shopId, findingCount });
+      // Step 3: Translation audit (optional — requires read_translations scope)
+      const translationFindingCount = await step.run("translation-audit", async () => {
+        const db = (await import("../../app/db.server")).default;
+        const shop = await db.shop.findUnique({ where: { id: shopId } });
+        if (!shop) return 0;
+
+        const { unauthenticated } = await import("../../app/shopify.server");
+        const { admin } = await unauthenticated.admin(shop.domain);
+
+        const { hasTranslationScope, auditTranslations } =
+          await import("../../app/services/translation-fetcher.server");
+
+        const hasScope = await hasTranslationScope(admin);
+        if (!hasScope) {
+          console.log(
+            "[scan-theme] read_translations scope not available — skipping translation audit",
+          );
+          return 0;
+        }
+
+        const audit = await auditTranslations(admin);
+        if (audit.totalTranslations === 0) {
+          console.log("[scan-theme] No translations found — skipping translation detection");
+          return 0;
+        }
+
+        // Get installed app names for cross-reference
+        const { getInstalledApps } = await import("../../app/models/installed-app.server");
+        const installedApps = await getInstalledApps(shopId);
+        const installedAppNames = installedApps.map((a) => a.appName);
+
+        const { detectOrphanedTranslations } =
+          await import("../../app/services/translation-detector.server");
+        const translationFindings = detectOrphanedTranslations(audit, installedAppNames);
+
+        if (translationFindings.length > 0) {
+          // Idempotency guard: delete any previous translation findings before
+          // inserting, so Inngest retries don't create duplicates.
+          await db.finding.deleteMany({
+            where: { scanId, findingType: "GHOST_TRANSLATION" },
+          });
+
+          const { createFindings } = await import("../../app/models/finding.server");
+          await createFindings(scanId, translationFindings);
+
+          // Update the scan's finding count to include translation findings
+          const scan = await db.scan.findUnique({
+            where: { id: scanId },
+            select: { findingCount: true },
+          });
+          if (scan) {
+            // Recount all findings to be accurate (avoids drift from retries)
+            const totalCount = await db.finding.count({ where: { scanId } });
+            await db.scan.update({
+              where: { id: scanId },
+              data: { findingCount: totalCount },
+            });
+          }
+
+          console.log("[scan-theme]", {
+            event: "translation_findings",
+            shopId,
+            count: translationFindings.length,
+          });
+        }
+
+        return translationFindings.length;
+      });
+
+      const totalFindings = findingCount + translationFindingCount;
+      console.log("[scan-theme]", {
+        event: "completed",
+        scanId,
+        shopId,
+        findingCount: totalFindings,
+        translationFindings: translationFindingCount,
+      });
 
       return {
         scanId,
-        findingCount,
+        findingCount: totalFindings,
         status: "COMPLETED",
       };
     } catch (err) {
