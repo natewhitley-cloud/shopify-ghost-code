@@ -129,7 +129,7 @@ Cleanify Code (the only prior competitor) was delisted — reviews mentioned fal
 |---|---|---|---|
 | **App Code Attribution Map** | Low | **Shipped** (App Impact Map) | UI view showing which theme files each app touched, with finding counts and types. Data derived from existing scan results. |
 | **Tracking Script Privacy Callout** | Low | **Shipped** | Sub-classify existing GHOST_SCRIPT findings: if CDN domain is a known tracker (Meta Pixel, TikTok, Snapchat, etc.), flag as "Privacy: this script may still be collecting visitor data." |
-| **Unknown Finding Feedback Loop** | Medium | Not started | "Do you know which app left this?" input on unattributed findings. Stores submissions for manual signature curation. The flywheel that makes every scan improve future scans. |
+| **Unknown Finding Feedback Loop** | Medium | **Shipped** | "Do you know which app left this?" inline input on unattributed findings. Submissions stored with review status tracking. CLI curation script at `scripts/review-submissions.ts`. |
 | **Theme Performance Impact Score** | Medium | **Shipped** | Sum external script/stylesheet weight from scan data. Shows "apps are adding X KB of external resources to every page load." |
 
 ### v1.2 — New detection capabilities

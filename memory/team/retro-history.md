@@ -10,6 +10,7 @@
 - Lines removed: 5,471
 - Key insight: `appInstallations` GraphQL query is restricted to Shopify-internal apps — no third-party scope exists. Third feature killed by API restrictions (after Ember + Tax Integrity Monitor). New portfolio-level memory created to enforce query-level feasibility testing before feature work.
 - Key pattern: `/spec` → `/sprint` pipeline for surgical removal worked cleanly. Spec identified 17 files + 8 cross-cutting refs; agents caught 2 additional refs via grep sweep.
+- Bonus: After removal, pivoted to Unknown Finding Feedback Loop curation pipeline (GC-e8u). 2 more agents (scaffolder + implementer), +20 tests, CLI review script. All v1.1 roadmap items now shipped.
 
 ## Retro: 2026-03-23 (session 18 — signatures, theme testing, E2E scan)
 

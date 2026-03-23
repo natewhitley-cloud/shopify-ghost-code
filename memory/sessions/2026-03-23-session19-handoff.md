@@ -1,42 +1,40 @@
-## Session Handoff: 2026-03-23 (session 19) — Permission Audit Removal
+## Session Handoff: 2026-03-23 (session 19) — Permission Audit Removal + Feedback Loop
 
 ### What Got Done
 
 1. **Diagnosed Permission Audit scope-request bug** — "Enable App Scanning" button silently failed because `read_apps` was never declared in `optional_scopes`. Fixed the immediate gate by removing the bogus scope check (commit `e1784ab`).
 2. **Discovered `read_apps` is not a valid Shopify scope** — Shopify rejected it as both optional and required scope. Confirmed via official docs + community forums that `appInstallations` query is restricted to Shopify-internal apps only.
 3. **Removed Permission Audit feature entirely** — Spec'd the removal (`/spec`), executed via `/sprint` with implementer + scaffolder agents. Deleted 17 files (9 source, 8 test), cleaned 10 cross-cutting references, dropped 3 Prisma models + 2 enums. -5,471 lines. Commit `a3dd824`.
-4. **Created portfolio-level feasibility memory** — `feedback_scope_feasibility.md` in portfolio memory requires testing actual API queries in dev store before feature work. Third feature killed by API restrictions (Ember, Tax Integrity Monitor, Permission Audit).
-5. **GC-iw0 closed.**
+4. **Built Unknown Finding Feedback Loop curation pipeline** — SubmissionStatus enum, 4 model aggregation queries, CLI review script (`scripts/review-submissions.ts`), 20 new tests. Commit `cca08a8`.
+5. **Updated product strategy doc** — Marked all shipped v1.1 and v1.2 items (Attribution Map, Privacy Callout, Performance Score, Feedback Loop, GHOST_TEXT, GHOST_TRANSLATION, signature expansion).
+6. **Created portfolio-level feasibility memory** — `feedback_scope_feasibility.md` requires testing actual API queries in dev store before feature work.
+7. **GC-iw0 closed, GC-e8u closed.**
 
 ### Key Decisions
 
-- **Remove rather than pivot Permission Audit**: Considered pivoting to `currentAppInstallation` (only returns Ghost Code's own scopes) but that's useless as a feature. Clean removal chosen to avoid dead code before app store submission.
-- **Keep `read_translations` optional scope**: It serves the GHOST_TRANSLATION finding type, not Permission Audit. Comment in toml updated.
-- **Portfolio-level memory, not Ghost Code-specific**: The scope feasibility lesson applies to all three apps, so memory was written at `~/.claude/projects/.../memory/` level.
+- **Remove rather than pivot Permission Audit**: `currentAppInstallation` only returns Ghost Code's own scopes — useless as a feature. Clean removal chosen.
+- **Keep `read_translations` optional scope**: It serves GHOST_TRANSLATION, not Permission Audit.
+- **CLI-only curation for feedback loop**: No admin UI — `npx tsx scripts/review-submissions.ts` is sufficient at current scale.
 
 ### DB Migrations
 
-- `20260323193334_remove_permission_audit` — drops InstalledApp, PermissionSnapshot, PermissionAuditRun tables + AppPresence, AuditRunStatus enums. Applied locally. Will auto-apply on Railway via `prisma migrate deploy`.
+- `20260323193334_remove_permission_audit` — drops InstalledApp, PermissionSnapshot, PermissionAuditRun + enums
+- `20260323224453_add_submission_status` — adds SubmissionStatus enum, status/reviewedAt fields to SignatureSubmission
+- Both will auto-apply on Railway via `prisma migrate deploy`
 
 ### Test Count
 
-- 833 → 705 (-128 tests removed with feature)
-- 35 test files, all passing
+- 725 tests, 36 test files, all passing
 - Zero TypeScript errors
 
 ### Commits
 
 | Hash | Description |
 |------|-------------|
-| `e1784ab` | fix(permissions): remove bogus read_apps scope gate blocking Permission Audit |
+| `e1784ab` | fix(permissions): remove bogus read_apps scope gate |
 | `a3dd824` | refactor: remove Permission Audit feature |
-
-### Uncommitted Files
-
-- `memory/agents/implementer/learnings.md` — 1 new entry (grep inngest/ during removal)
-- `memory/team/retro-history.md` — session 19 retro entry
-- `.specs/remove-permission-audit.md` — spec doc (can commit or leave)
-- `.claude/tackline/` session files — internal tracking
+| `a186177` | docs: session 19 retro, handoff, and spec |
+| `cca08a8` | feat(scanner): add submission curation pipeline |
 
 ### Open Backlog (8 beads)
 
@@ -59,8 +57,8 @@
 
 ### Risks & Warnings
 
-- **Railway migration pending** — `remove_permission_audit` migration will auto-run on next deploy (already pushed). Verify it applied cleanly via `railway logs`.
-- **Dev store theme has synthetic artifacts** — must clean before real E2E or app review (carried from session 18)
+- **Two Railway migrations pending** — `remove_permission_audit` + `add_submission_status` will auto-run on next deploy. Verify via `railway logs`.
+- **Dev store theme has synthetic artifacts** — must clean before real E2E or app review
 - **Legal pages use placeholder email** — `support@ghostcode.app` doesn't exist yet
-- **`read_translations` scope has no UI flow** — no merchant-facing optional scope grant for translation detection
-- **Scanner now passes empty `installedAppNames` to translation detector** — all translations treated as potentially orphaned (no "skip if translation app installed" check). Functionally correct but less precise.
+- **`read_translations` scope has no UI flow** — no merchant-facing optional scope grant
+- **All v1.1 items shipped** — product strategy roadmap needs a v1.3 or post-launch section if new features are planned
