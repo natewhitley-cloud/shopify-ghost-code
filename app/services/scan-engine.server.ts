@@ -38,6 +38,19 @@ import type { CreateFindingInput } from "../models/finding.server";
 
 export type ThemeFile = { filename: string; content: string };
 
+export type UnknownExternalResource = {
+  filename: string;
+  lineNumber: number;
+  url: string;
+  resourceType: "script" | "stylesheet";
+  codeSnippet: string;
+};
+
+export type ScanResult = {
+  findings: CreateFindingInput[];
+  unknownScripts: UnknownExternalResource[];
+};
+
 // ---------------------------------------------------------------------------
 // File filtering
 // ---------------------------------------------------------------------------
@@ -437,6 +450,84 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Collector: unknown external scripts (unrecognized CDN URLs)
+// ---------------------------------------------------------------------------
+
+const SHOPIFY_FIRST_PARTY_RE = /\.(shopify\.com|shopifycdn\.com|myshopify\.com)$/;
+
+export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[] {
+  const unknowns: UnknownExternalResource[] = [];
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    let match: RegExpExecArray | null;
+    SCRIPT_SRC_RE.lastIndex = 0;
+
+    while ((match = SCRIPT_SRC_RE.exec(text)) !== null) {
+      const url = match[1];
+      const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
+      if (appName) continue; // Already identified — skip
+
+      // Filter out first-party Shopify CDN URLs that are not app artifacts
+      try {
+        const hostname = new URL(url).hostname;
+        if (SHOPIFY_FIRST_PARTY_RE.test(hostname)) continue;
+      } catch {
+        continue; // Malformed URL — skip
+      }
+
+      unknowns.push({
+        filename: file.filename,
+        lineNumber,
+        url,
+        resourceType: "script",
+        codeSnippet: buildSnippet(file.content, lineNumber),
+      });
+    }
+  }
+
+  return unknowns;
+}
+
+// ---------------------------------------------------------------------------
+// Collector: unknown external stylesheets (unrecognized CDN URLs)
+// ---------------------------------------------------------------------------
+
+export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResource[] {
+  const unknowns: UnknownExternalResource[] = [];
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    let match: RegExpExecArray | null;
+    LINK_STYLESHEET_RE.lastIndex = 0;
+
+    while ((match = LINK_STYLESHEET_RE.exec(text)) !== null) {
+      const url = match[1] ?? match[3];
+      if (!url) continue;
+
+      const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
+      if (appName) continue; // Already identified — skip
+
+      // Filter out first-party Shopify CDN URLs
+      try {
+        const hostname = new URL(url).hostname;
+        if (SHOPIFY_FIRST_PARTY_RE.test(hostname)) continue;
+      } catch {
+        continue; // Malformed URL — skip
+      }
+
+      unknowns.push({
+        filename: file.filename,
+        lineNumber,
+        url,
+        resourceType: "stylesheet",
+        codeSnippet: buildSnippet(file.content, lineNumber),
+      });
+    }
+  }
+
+  return unknowns;
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -458,8 +549,9 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
  *
  * Returns all findings (both passes) ready for createFindings().
  */
-export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
+export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   const findings: CreateFindingInput[] = [];
+  const unknownScripts: UnknownExternalResource[] = [];
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
@@ -472,6 +564,10 @@ export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
     findings.push(...detectGhostHrefLang(file));
     findings.push(...detectDuplicateMetaTags(file));
     findings.push(...detectGhostJsonLd(file));
+
+    // Collect unrecognized external resources
+    unknownScripts.push(...collectUnknownScripts(file));
+    unknownScripts.push(...collectUnknownStylesheets(file));
   }
 
   // Pass 2: cross-file orphan snippet detection
@@ -503,5 +599,5 @@ export function scanThemeFiles(files: ThemeFile[]): CreateFindingInput[] {
     });
   }
 
-  return findings;
+  return { findings, unknownScripts };
 }

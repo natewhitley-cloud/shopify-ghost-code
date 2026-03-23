@@ -46,6 +46,10 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
 }));
 
+vi.mock("../../app/models/unknown-script.server", () => ({
+  createUnknownScripts: vi.fn(),
+}));
+
 vi.mock("../../app/models/scan.server", () => ({
   updateScanStatus: vi.fn(),
 }));
@@ -61,6 +65,7 @@ vi.mock("../../app/models/finding.server", () => ({
 import db from "../../app/db.server";
 import { completeScanWithFindings } from "../../app/models/finding.server";
 import { updateScanStatus } from "../../app/models/scan.server";
+import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
@@ -80,6 +85,7 @@ const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
 const mockCompleteScanWithFindings = completeScanWithFindings as ReturnType<typeof vi.fn>;
+const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -165,11 +171,12 @@ beforeEach(() => {
 
   // Default happy-path wiring for services
   mockFetchThemeFiles.mockResolvedValue(MOCK_FILES);
-  mockScanThemeFiles.mockReturnValue(MOCK_FINDINGS);
+  mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
 
   // Default happy-path wiring for models
   mockUpdateScanStatus.mockResolvedValue(undefined);
   mockCompleteScanWithFindings.mockResolvedValue(undefined);
+  mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
 });
 
 // ---------------------------------------------------------------------------
@@ -230,7 +237,7 @@ describe("scanTheme — happy path", () => {
     });
     mockScanThemeFiles.mockImplementation(() => {
       callOrder.push("scanThemeFiles");
-      return MOCK_FINDINGS;
+      return { findings: MOCK_FINDINGS, unknownScripts: [] };
     });
     mockCompleteScanWithFindings.mockImplementation(async () => {
       callOrder.push("completeScanWithFindings");
@@ -253,7 +260,7 @@ describe("scanTheme — happy path", () => {
 
 describe("scanTheme — zero findings", () => {
   beforeEach(() => {
-    mockScanThemeFiles.mockReturnValue([]);
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
   });
 
   it("returns findingCount of 0 and COMPLETED status", async () => {

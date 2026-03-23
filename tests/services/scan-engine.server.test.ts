@@ -1,6 +1,7 @@
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
+import type { CreateFindingInput } from "../../app/models/finding.server";
 import {
   isScannableFile,
   detectGhostScripts,
@@ -18,7 +19,7 @@ import {
 // ---------------------------------------------------------------------------
 
 /** Filter findings by type for cleaner assertions. */
-function findingsOfType(findings: ReturnType<typeof scanThemeFiles>, type: FindingType) {
+function findingsOfType(findings: CreateFindingInput[], type: FindingType) {
   return findings.filter((f) => f.findingType === type);
 }
 
@@ -752,7 +753,7 @@ describe("scanThemeFiles", () => {
         content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>',
       },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     // Only layout/theme.liquid should be scanned
     expect(findings.every((f) => f.filename === "layout/theme.liquid")).toBe(true);
   });
@@ -761,7 +762,7 @@ describe("scanThemeFiles", () => {
     const files = [
       { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
     ];
-    expect(scanThemeFiles(files)).toHaveLength(0);
+    expect(scanThemeFiles(files).findings).toHaveLength(0);
   });
 
   it("aggregates findings across multiple file types", () => {
@@ -782,7 +783,7 @@ describe("scanThemeFiles", () => {
         content: '<link rel="stylesheet" href="https://cdn.judge.me/assets/v4/widget.css">',
       },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     expect(findings.length).toBeGreaterThanOrEqual(3);
     const types = new Set(findings.map((f) => f.findingType));
     expect(types.has(FindingType.GHOST_SCRIPT)).toBe(true);
@@ -798,7 +799,7 @@ describe("scanThemeFiles", () => {
           '<link rel="alternate" hreflang="fr" href="https://fr.example.com/" />\n<link rel="alternate" hreflang="de" href="https://de.example.com/" />',
       },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const hreflangFindings = findingsOfType(findings, FindingType.GHOST_HREFLANG);
     expect(hreflangFindings.length).toBeGreaterThanOrEqual(2);
     expect(hreflangFindings[0].appName).toBe("Weglot");
@@ -816,7 +817,7 @@ describe("scanThemeFiles", () => {
 </script>`,
       },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const jsonLdFindings = findingsOfType(findings, FindingType.GHOST_JSON_LD);
     expect(jsonLdFindings).toHaveLength(1);
     expect(jsonLdFindings[0].appName).toBe("Judge.me");
@@ -832,19 +833,19 @@ describe("scanThemeFiles", () => {
         ].join("\n"),
       },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const dupeFindings = findingsOfType(findings, FindingType.DUPLICATE_META);
     expect(dupeFindings).toHaveLength(1);
     expect(dupeFindings[0].description).toContain("description");
   });
 
   it("returns empty array for empty files array", () => {
-    expect(scanThemeFiles([])).toHaveLength(0);
+    expect(scanThemeFiles([]).findings).toHaveLength(0);
   });
 
   it("returns empty array for files with no content", () => {
     const files = [{ filename: "layout/theme.liquid", content: "" }];
-    expect(scanThemeFiles(files)).toHaveLength(0);
+    expect(scanThemeFiles(files).findings).toHaveLength(0);
   });
 
   it("produces finding inputs that satisfy the CreateFindingInput shape", () => {
@@ -854,7 +855,7 @@ describe("scanThemeFiles", () => {
         content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>',
       },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     expect(findings).toHaveLength(1);
     const f = findings[0];
     expect(typeof f.filename).toBe("string");
@@ -876,7 +877,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
       { filename: "snippets/klaviyo-onsite.liquid", content: "<div>old widget</div>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(1);
     expect(orphans[0].filename).toBe("snippets/klaviyo-onsite.liquid");
@@ -894,7 +895,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       },
       { filename: "snippets/my-widget.liquid", content: "<div>widget</div>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(0);
   });
@@ -911,7 +912,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       },
       { filename: "snippets/child-snippet.liquid", content: "<p>content</p>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(0);
   });
@@ -922,7 +923,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       { filename: "snippets/klaviyo-form.liquid", content: "<div>a</div>" },
       { filename: "snippets/omnisend-newsletter.liquid", content: "<div>b</div>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(2);
     const filenames = orphans.map((f) => f.filename).sort();
@@ -937,7 +938,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
       { filename: "sections/header.liquid", content: "<header></header>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(0);
   });
@@ -950,7 +951,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       },
       { filename: "snippets/omnisend-snippet.liquid", content: "<div>unused</div>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const ghostScripts = findingsOfType(findings, FindingType.GHOST_SCRIPT);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(ghostScripts).toHaveLength(1);
@@ -962,7 +963,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
       { filename: "snippets/klaviyo-tracking.liquid", content: "<div>orphan</div>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphan = findingsOfType(findings, FindingType.ORPHAN_ASSET)[0];
     expect(orphan).toBeDefined();
     expect(typeof orphan.filename).toBe("string");
@@ -980,7 +981,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       },
       { filename: "snippets/legacy-widget.liquid", content: "<div>legacy</div>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(0);
   });
@@ -994,7 +995,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       { filename: "snippets/icon-zoom.liquid", content: "<svg>...</svg>" },
       { filename: "snippets/custom-helper.liquid", content: "<div>helper</div>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(0);
   });
@@ -1006,7 +1007,7 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
       { filename: "snippets/klaviyo-form.liquid", content: "<div>klaviyo leftover</div>" },
       { filename: "snippets/icon-cart.liquid", content: "<svg>...</svg>" },
     ];
-    const findings = scanThemeFiles(files);
+    const { findings } = scanThemeFiles(files);
     const orphans = findingsOfType(findings, FindingType.ORPHAN_ASSET);
     expect(orphans).toHaveLength(1);
     expect(orphans[0].filename).toBe("snippets/klaviyo-form.liquid");

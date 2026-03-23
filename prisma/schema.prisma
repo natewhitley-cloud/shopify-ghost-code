@@ -54,19 +54,50 @@ model Shop {
 }
 
 model Scan {
-  id           String     @id @default(cuid())
-  shopId       String
-  shop         Shop       @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  themeId      String
-  themeName    String
-  status       ScanStatus @default(PENDING)
-  startedAt    DateTime?
-  completedAt  DateTime?
-  createdAt    DateTime   @default(now())
-  findingCount Int        @default(0)
-  findings     Finding[]
+  id             String          @id @default(cuid())
+  shopId         String
+  shop           Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  themeId        String
+  themeName      String
+  status         ScanStatus      @default(PENDING)
+  startedAt      DateTime?
+  completedAt    DateTime?
+  createdAt      DateTime        @default(now())
+  findingCount   Int             @default(0)
+  findings       Finding[]
+  unknownScripts UnknownScript[]
 
   @@index([shopId, createdAt])
+}
+
+// ---------------------------------------------------------------------------
+// Unknown script collection + merchant feedback for signature expansion
+// ---------------------------------------------------------------------------
+
+model UnknownScript {
+  id           String                @id @default(cuid())
+  scanId       String
+  scan         Scan                  @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  filename     String
+  lineNumber   Int
+  url          String
+  resourceType String
+  codeSnippet  String
+  createdAt    DateTime              @default(now())
+  submissions  SignatureSubmission[]
+
+  @@index([scanId])
+}
+
+model SignatureSubmission {
+  id               String        @id @default(cuid())
+  unknownScriptId  String
+  unknownScript    UnknownScript @relation(fields: [unknownScriptId], references: [id], onDelete: Cascade)
+  shopId           String
+  suggestedAppName String
+  createdAt        DateTime      @default(now())
+
+  @@index([unknownScriptId])
 }
 
 model Finding {

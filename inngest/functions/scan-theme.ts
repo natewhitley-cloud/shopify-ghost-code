@@ -20,6 +20,7 @@
 
 import { completeScanWithFindings } from "../../app/models/finding.server";
 import { updateScanStatus } from "../../app/models/scan.server";
+import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import { inngest } from "../client";
@@ -51,11 +52,12 @@ export const scanTheme = inngest.createFunction(
         const files = await fetchThemeFiles(admin, themeId);
         console.log("[scan-theme]", { event: "files_fetched", shopId, fileCount: files.length });
 
-        const findings = scanThemeFiles(files);
+        const { findings, unknownScripts } = scanThemeFiles(files);
         console.log("[scan-theme]", {
           event: "scan_complete",
           shopId,
           findingCount: findings.length,
+          unknownScriptCount: unknownScripts.length,
         });
 
         // Both writes are wrapped in a single $transaction inside
@@ -63,6 +65,10 @@ export const scanTheme = inngest.createFunction(
         // Inngest retries after createFindings succeeds but the status
         // update fails.
         await completeScanWithFindings(scanId, findings);
+
+        // Persist unknown scripts separately (not part of the transaction —
+        // these are informational and don't affect scan correctness).
+        await createUnknownScripts(scanId, unknownScripts);
 
         // Return only the count — not the full findings array
         return findings.length;

@@ -70,6 +70,10 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
 }));
 
+vi.mock("../../app/models/unknown-script.server", () => ({
+  createUnknownScripts: vi.fn(),
+}));
+
 vi.mock("../../inngest/client", () => ({
   inngest: {
     send: vi.fn(),
@@ -103,6 +107,7 @@ import { completeScanWithFindings } from "../../app/models/finding.server";
 import { createScan, hasCompletedScans, updateScanStatus } from "../../app/models/scan.server";
 import { getShopByDomain } from "../../app/models/shop.server";
 import { action } from "../../app/routes/app._index";
+import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchMainTheme, fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import { authenticate, unauthenticated } from "../../app/shopify.server";
@@ -125,6 +130,7 @@ const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
+const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
 const mockDbShopFindUnique = (db as unknown as { shop: { findUnique: ReturnType<typeof vi.fn> } })
   .shop.findUnique;
@@ -458,8 +464,9 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     mockUnauthenticatedAdmin.mockResolvedValue({ admin: MOCK_ADMIN });
     mockUpdateScanStatus.mockResolvedValue(undefined);
     mockFetchThemeFiles.mockResolvedValue(MOCK_FILES);
-    mockScanThemeFiles.mockReturnValue(MOCK_FINDINGS);
+    mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
     mockCompleteScanWithFindings.mockResolvedValue(undefined);
+    mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
   });
 
   function makeScanEvent(overrides?: Partial<{ shopId: string; themeId: string; scanId: string }>) {
@@ -524,7 +531,7 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
 
   describe("happy path — zero findings (clean theme)", () => {
     it("returns COMPLETED with findingCount of 0", async () => {
-      mockScanThemeFiles.mockReturnValue([]);
+      mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
 
       const result = await runScanThemeFn();
 
@@ -532,7 +539,7 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     });
 
     it("persists an empty findings array (idempotent deleteMany + no createMany)", async () => {
-      mockScanThemeFiles.mockReturnValue([]);
+      mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
 
       await runScanThemeFn();
 
