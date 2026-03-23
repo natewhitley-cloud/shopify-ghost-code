@@ -308,11 +308,178 @@ export default function ScanDetail() {
   const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
   const isCompleted = scan.status === "COMPLETED";
 
+  // Compute per-severity diff counts from scanDiff arrays.
+  const severityDiff = scanDiff
+    ? {
+        newHigh: scanDiff.newFindings.filter((f) => f.severity === "HIGH").length,
+        newMedium: scanDiff.newFindings.filter((f) => f.severity === "MEDIUM").length,
+        newLow: scanDiff.newFindings.filter((f) => f.severity === "LOW").length,
+        resolvedHigh: scanDiff.resolvedFindings.filter((f) => f.severity === "HIGH").length,
+        resolvedMedium: scanDiff.resolvedFindings.filter((f) => f.severity === "MEDIUM").length,
+        resolvedLow: scanDiff.resolvedFindings.filter((f) => f.severity === "LOW").length,
+      }
+    : null;
+
+  // Net change per severity: positive = worse (more findings), negative = better.
+  const severityNet = severityDiff
+    ? {
+        HIGH: severityDiff.newHigh - severityDiff.resolvedHigh,
+        MEDIUM: severityDiff.newMedium - severityDiff.resolvedMedium,
+        LOW: severityDiff.newLow - severityDiff.resolvedLow,
+      }
+    : null;
+
+  const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
+  const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
+  const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
+
+  /**
+   * Map HealthScoreResult tone to the CSS modifier used in tile classes.
+   * The health score tone can be "success", "warning", "critical", "caution", or "info".
+   * We map caution/info to warning for tile styling since we only have three visual tiers.
+   */
+  function healthToneModifier(tone: string): "success" | "warning" | "critical" {
+    if (tone === "success") return "success";
+    if (tone === "critical") return "critical";
+    return "warning";
+  }
+
   return (
     <s-page heading={`Scan: ${scan.themeName}`}>
       <Link to="/app/scans" slot="primary-action">
         Back to History
       </Link>
+
+      <style>{`
+        .scan-status-bar {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          font-size: 13px;
+          color: #6d7175;
+          padding: 8px 0;
+          flex-wrap: wrap;
+        }
+        .scan-status-bar__separator {
+          color: #c9cccf;
+        }
+        .scan-tiles-row {
+          display: grid;
+          grid-template-columns: 1fr 1fr 1fr;
+          gap: 16px;
+          margin-top: 8px;
+        }
+        @media (max-width: 640px) {
+          .scan-tiles-row {
+            grid-template-columns: 1fr;
+          }
+        }
+        .scan-tile {
+          display: flex;
+          flex-direction: column;
+          align-items: center;
+          justify-content: center;
+          padding: 24px;
+          border-radius: 12px;
+          border: 1px solid #e1e3e5;
+          background: #ffffff;
+        }
+        .scan-tile--health-success {
+          border-color: #c8e6c1;
+          background: #f1f8ef;
+        }
+        .scan-tile--health-warning {
+          border-color: #fdf0cd;
+          background: #fffcf2;
+        }
+        .scan-tile--health-critical {
+          border-color: #fde8e8;
+          background: #fef6f6;
+        }
+        .scan-tile__big-number {
+          font-size: 48px;
+          font-weight: 700;
+          line-height: 1;
+          letter-spacing: -2px;
+        }
+        .scan-tile__big-number--success { color: #1a8a3f; }
+        .scan-tile__big-number--warning { color: #b98900; }
+        .scan-tile__big-number--critical { color: #d72c0d; }
+        .scan-tile__big-number--neutral { color: #202223; }
+        .scan-tile__subtitle {
+          font-size: 14px;
+          color: #6d7175;
+          margin-top: 4px;
+        }
+        .scan-tile__label {
+          display: inline-block;
+          margin-top: 12px;
+          padding: 4px 12px;
+          border-radius: 16px;
+          font-size: 13px;
+          font-weight: 600;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
+        .scan-tile__label--success { background: #e3f1df; color: #1a8a3f; }
+        .scan-tile__label--warning { background: #fdf0cd; color: #916a00; }
+        .scan-tile__label--critical { background: #fde8e8; color: #d72c0d; }
+        .scan-tile__diff {
+          font-size: 13px;
+          margin-top: 8px;
+        }
+        .scan-tile__diff--positive { color: #d72c0d; }
+        .scan-tile__diff--negative { color: #1a8a3f; }
+        .scan-tile__diff--neutral { color: #6d7175; }
+        .severity-breakdown {
+          display: flex;
+          flex-direction: column;
+          gap: 12px;
+          width: 100%;
+        }
+        .severity-row {
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 8px;
+        }
+        .severity-row__left {
+          display: flex;
+          align-items: center;
+          gap: 8px;
+        }
+        .severity-row__count {
+          font-size: 24px;
+          font-weight: 700;
+          line-height: 1;
+          min-width: 32px;
+        }
+        .severity-row__count--high { color: #d72c0d; }
+        .severity-row__count--medium { color: #b98900; }
+        .severity-row__count--low { color: #2c6ecb; }
+        .severity-row__label {
+          font-size: 14px;
+          font-weight: 500;
+          color: #6d7175;
+        }
+        .severity-row__dot {
+          width: 8px;
+          height: 8px;
+          border-radius: 50%;
+          flex-shrink: 0;
+        }
+        .severity-row__dot--high { background: #d72c0d; }
+        .severity-row__dot--medium { background: #b98900; }
+        .severity-row__dot--low { background: #2c6ecb; }
+        .severity-row__diff {
+          font-size: 12px;
+          font-weight: 500;
+          white-space: nowrap;
+        }
+        .severity-row__diff--positive { color: #d72c0d; }
+        .severity-row__diff--negative { color: #1a8a3f; }
+        .severity-row__diff--neutral { color: #8c9196; }
+      `}</style>
 
       {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
       {pollingTimedOut && (
@@ -328,28 +495,21 @@ export default function ScanDetail() {
         </s-banner>
       )}
 
-      {/* Scan status header */}
-      <s-card>
-        <s-stack direction="block" gap="base">
-          <s-stack direction="inline" gap="base">
-            <s-badge tone={statusTone(status)}>{statusLabel(status)}</s-badge>
-            <s-text>Started: {formatDate(scan.startedAt ?? scan.createdAt, true)}</s-text>
-            {scan.completedAt && <s-text>Completed: {formatDate(scan.completedAt, true)}</s-text>}
-          </s-stack>
-          {/* Health score — only shown for completed scans */}
-          {isCompleted && healthScore && (
-            <s-stack direction="inline" gap="base">
-              <s-text>Theme Health Score:</s-text>
-              <s-heading>{healthScore.score}</s-heading>
-              <s-badge tone={healthScore.tone}>{healthScore.label}</s-badge>
-            </s-stack>
-          )}
-        </s-stack>
-      </s-card>
+      {/* Row 1: Status bar — compact metadata line */}
+      <div className="scan-status-bar">
+        <s-badge tone={statusTone(status)}>{statusLabel(status)}</s-badge>
+        <span className="scan-status-bar__separator">|</span>
+        <span>Started {formatDate(scan.startedAt ?? scan.createdAt, true)}</span>
+        {scan.completedAt && (
+          <>
+            <span className="scan-status-bar__separator">|</span>
+            <span>Completed {formatDate(scan.completedAt, true)}</span>
+          </>
+        )}
+      </div>
 
-      {/* Findings summary — conditional on scan state */}
+      {/* Row 2: Summary tiles — conditional on scan state */}
       {isFailed ? (
-        /* FAILED: replace summary with an explanation card */
         <s-card>
           <s-stack direction="block" gap="base">
             <s-heading>Scan Did Not Complete</s-heading>
@@ -363,7 +523,6 @@ export default function ScanDetail() {
           </s-stack>
         </s-card>
       ) : isRunning ? (
-        /* IN_PROGRESS / PENDING: show a loading placeholder instead of zero counts */
         <s-card>
           <s-stack direction="block" gap="base">
             <s-heading>Scan In Progress</s-heading>
@@ -374,31 +533,91 @@ export default function ScanDetail() {
           </s-stack>
         </s-card>
       ) : (
-        /* COMPLETED: normal findings summary */
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-heading>Findings Summary</s-heading>
-            <s-stack direction="inline" gap="base">
-              <s-badge tone="critical">{summary.HIGH} High</s-badge>
-              <s-badge tone="warning">{summary.MEDIUM} Medium</s-badge>
-              <s-badge tone="info">{summary.LOW} Low</s-badge>
-            </s-stack>
-          </s-stack>
-        </s-card>
-      )}
+        <div className="scan-tiles-row">
+          {/* Tile 1: Health Score */}
+          {healthScore && (
+            <div className={`scan-tile scan-tile--health-${healthToneModifier(healthScore.tone)}`}>
+              <div
+                className={`scan-tile__big-number scan-tile__big-number--${healthToneModifier(healthScore.tone)}`}
+              >
+                {healthScore.score}
+              </div>
+              <div className="scan-tile__subtitle">out of 100</div>
+              <div
+                className={`scan-tile__label scan-tile__label--${healthToneModifier(healthScore.tone)}`}
+              >
+                {healthScore.label}
+              </div>
+            </div>
+          )}
 
-      {/* Changes from last scan — only shown for completed scans with a diff */}
-      {isCompleted && scanDiff !== null && (
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-heading>Changes from Last Scan</s-heading>
-            <s-stack direction="inline" gap="base">
-              <s-badge tone="critical">{scanDiff.newFindings.length} New</s-badge>
-              <s-badge tone="success">{scanDiff.resolvedFindings.length} Resolved</s-badge>
-              <s-badge tone="info">{scanDiff.unchangedCount} Unchanged</s-badge>
-            </s-stack>
-          </s-stack>
-        </s-card>
+          {/* Tile 2: Total Findings */}
+          <div className="scan-tile">
+            <div className="scan-tile__big-number scan-tile__big-number--neutral">
+              {totalFindings}
+            </div>
+            <div className="scan-tile__subtitle">findings detected</div>
+            {scanDiff && (totalNew > 0 || totalResolved > 0) && (
+              <div
+                className={`scan-tile__diff ${
+                  totalNew > totalResolved
+                    ? "scan-tile__diff--positive"
+                    : totalResolved > totalNew
+                      ? "scan-tile__diff--negative"
+                      : "scan-tile__diff--neutral"
+                }`}
+              >
+                {totalNew > 0 && <span style={{ color: "#d72c0d" }}>+{totalNew} new</span>}
+                {totalNew > 0 && totalResolved > 0 && " / "}
+                {totalResolved > 0 && (
+                  <span style={{ color: "#1a8a3f" }}>-{totalResolved} resolved</span>
+                )}
+              </div>
+            )}
+            {scanDiff && totalNew === 0 && totalResolved === 0 && (
+              <div className="scan-tile__diff scan-tile__diff--neutral">no change</div>
+            )}
+          </div>
+
+          {/* Tile 3: Severity Breakdown */}
+          <div className="scan-tile">
+            <div className="severity-breakdown">
+              {(
+                [
+                  { key: "HIGH", label: "High", mod: "high" },
+                  { key: "MEDIUM", label: "Medium", mod: "medium" },
+                  { key: "LOW", label: "Low", mod: "low" },
+                ] as const
+              ).map(({ key, label, mod }) => {
+                const count = summary[key];
+                const net = severityNet ? severityNet[key] : null;
+                return (
+                  <div key={key} className="severity-row">
+                    <div className="severity-row__left">
+                      <span className={`severity-row__dot severity-row__dot--${mod}`} />
+                      <span className={`severity-row__count severity-row__count--${mod}`}>
+                        {count}
+                      </span>
+                      <span className="severity-row__label">{label}</span>
+                    </div>
+                    {net !== null && net !== 0 && (
+                      <span
+                        className={`severity-row__diff ${
+                          net > 0 ? "severity-row__diff--positive" : "severity-row__diff--negative"
+                        }`}
+                      >
+                        {net > 0 ? `+${net}` : String(net)}
+                      </span>
+                    )}
+                    {net !== null && net === 0 && (
+                      <span className="severity-row__diff severity-row__diff--neutral">—</span>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        </div>
       )}
 
       {/* Findings detail table — only shown for completed scans */}
