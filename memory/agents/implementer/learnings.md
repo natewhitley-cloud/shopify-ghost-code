@@ -49,3 +49,4 @@
 - Resource routes (no default export) return Response directly from loader — use Content-Type + Content-Disposition headers for file downloads. Polaris `<s-link>` doesn't support `download` attribute; rely on Content-Disposition: attachment. (added: 2026-03-11, dispatch: .71)
 - Fan-out worker reuse: Standard weekly scan and Professional daily scan both fan out to the same poll-check-shop worker. Plan filtering belongs in the coordinator, not the worker. (added: 2026-03-11, dispatch: .72)
 - When a detector needs to match multiline content (like JSON-LD blocks), use a multiline regex on full file content with an offset-to-line-number helper (lineNumberAtOffset), rather than forcing line-by-line iteration. (added: 2026-03-22, dispatch: GC-xn0)
+- When removing a feature, grep `inngest/` too — Inngest functions may have dynamic imports of models not visible in the feature's own route/service files. (added: 2026-03-23, dispatch: GC-iw0)

@@ -1,5 +1,16 @@
 # Retrospective History
 
+## Retro: 2026-03-23 (session 19 — Permission Audit removal)
+
+- Tasks completed: 1 bead closed (GC-iw0 Permission Audit removal)
+- Agents dispatched: 2 (1 implementer, 1 scaffolder) — serial, no worktree
+- New learnings: 1 implementer entry (grep inngest/ during feature removal)
+- Test delta: 833 → 705 (-128 tests removed with feature)
+- Commits: 2 (1 fix scope gate, 1 refactor full removal)
+- Lines removed: 5,471
+- Key insight: `appInstallations` GraphQL query is restricted to Shopify-internal apps — no third-party scope exists. Third feature killed by API restrictions (after Ember + Tax Integrity Monitor). New portfolio-level memory created to enforce query-level feasibility testing before feature work.
+- Key pattern: `/spec` → `/sprint` pipeline for surgical removal worked cleanly. Spec identified 17 files + 8 cross-cutting refs; agents caught 2 additional refs via grep sweep.
+
 ## Retro: 2026-03-23 (session 18 — signatures, theme testing, E2E scan)
 
 - Tasks completed: 20 app signatures added, E2E scan verified (41 findings), theme testing automated, GC-nmc created
