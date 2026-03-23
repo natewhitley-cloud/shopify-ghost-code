@@ -220,7 +220,7 @@ export default function Settings() {
 
       {/* Manage Subscription — shown only to paid-plan users */}
       {!isFree && (
-        <s-card>
+        <s-card style={{ marginTop: "24px" }}>
           <s-stack direction="block" gap="base">
             <s-heading>Manage Subscription</s-heading>
             <s-paragraph>
