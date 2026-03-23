@@ -1,5 +1,18 @@
 # Retrospective History
 
+## Retro: 2026-03-23 (session 17 — GC-5n8 + GC-icb feature sprint)
+
+- Tasks completed: 2 features (GHOST_TEXT, GHOST_TRANSLATION), 3 CI lint fixes, 1 metadata commit
+- Agents dispatched: 3 (1 explore, 1 research spike, 2 implementer)
+- New learnings: 0 agent entries (orchestrator-direct session)
+- Test growth: 778 → 819 (+41 tests, 10 finding types now, 43 test files)
+- Commits: 5 (2 feat, 2 fix, 1 chore)
+- Fix rate: 40% — both fixes were CI lint (unused vars/imports), not logic bugs
+- Key insight: Background research spike for translation API ran while text fragment feature was implemented in foreground — zero idle time, research directly shaped implementation.
+- Key pattern: Subagent-written code has a lint blind spot — pre-commit hooks only check staged files, and agents don't run full eslint. Two consecutive sessions with post-push CI lint failures.
+- Key decision: Translation detection uses heuristic orphan detection (cross-ref installed apps) because Shopify's Translations API has no creator attribution on Translation objects.
+- Migrations: 2 new (add_ghost_text_finding_type, add_ghost_translation_finding_type). Optional scope `read_translations` registered.
+
 ## Retro: 2026-03-22 (session 15 — scanner expansion + UI overhaul)
 
 - Tasks completed: 3 beads closed (GC-xn0 JSON-LD, GC-8la prettier hook, GC-zse permission audit epic), 2 new beads created (GC-xn0, GC-icb)
