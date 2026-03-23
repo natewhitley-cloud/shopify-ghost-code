@@ -1,0 +1,198 @@
+{% comment %}
+  GHOST CODE TEST FIXTURES
+
+  Paste the contents of each section into the corresponding theme file
+  in your dev store theme editor to create test data for all 10 finding types.
+
+  After testing, remove these blocks to clean the theme.
+
+  Last updated: 2026-03-23 — covers all 10 finding types
+{% endcomment %}
+
+
+{%- comment -%}
+  =========================================================================
+  SECTION 1: layout/theme.liquid — paste BEFORE </head>
+
+  Triggers: GHOST_SCRIPT (3), GHOST_STYLE (2), GHOST_HREFLANG (2),
+            DUPLICATE_META (1), GHOST_JSON_LD (2), GHOST_TEXT (3)
+  =========================================================================
+{%- endcomment -%}
+
+<!-- ===== GHOST CODE TEST: GHOST_SCRIPT (3 findings) ===== -->
+<!-- Klaviyo orphaned script — HIGH severity -->
+<script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=TEST123"></script>
+
+<!-- Hotjar orphaned script — HIGH severity, TRACKER badge -->
+<script src="https://static.hotjar.com/c/hotjar-12345.js?sv=6"></script>
+
+<!-- Tidio chat orphaned script — HIGH severity -->
+<script src="https://code.tidio.co/test123abc.js"></script>
+
+<!-- ===== GHOST CODE TEST: GHOST_STYLE (2 findings) ===== -->
+<!-- Judge.me orphaned stylesheet — MEDIUM severity -->
+<link rel="stylesheet" href="https://cdn.judge.me/widget_preloader.css">
+
+<!-- Growave orphaned stylesheet — MEDIUM severity -->
+<link rel="stylesheet" href="https://cdn.growave.io/css/growave-widget.css">
+
+<!-- ===== GHOST CODE TEST: GHOST_HREFLANG (2 findings) ===== -->
+<!-- Weglot orphaned hreflang — HIGH severity -->
+<link rel="alternate" hreflang="fr" href="https://weglot.com/fr/test-store">
+<!-- Transcy orphaned hreflang — HIGH severity -->
+<link rel="alternate" hreflang="es" href="https://transcy.io/es/test-store">
+
+<!-- ===== GHOST CODE TEST: DUPLICATE_META (1 finding) ===== -->
+<!-- Two og:description tags — stacked SEO apps, MEDIUM severity -->
+<meta property="og:description" content="Original description from theme">
+<meta property="og:description" content="Duplicate description from old SEO app">
+
+<!-- ===== GHOST CODE TEST: GHOST_JSON_LD (2 findings) ===== -->
+<!-- Judge.me orphaned JSON-LD review schema -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "AggregateRating",
+  "ratingValue": "4.8",
+  "reviewCount": "142",
+  "itemReviewed": {
+    "@type": "Product",
+    "name": "Test Product",
+    "url": "https://judge.me/reviews/test"
+  }
+}
+</script>
+
+<!-- FAQPage JSON-LD from unknown SEO app (app-only @type, no attribution) -->
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [{
+    "@type": "Question",
+    "name": "What is your return policy?",
+    "acceptedAnswer": {
+      "@type": "Answer",
+      "text": "30 day returns on all products."
+    }
+  }]
+}
+</script>
+
+<!-- ===== GHOST CODE TEST: GHOST_TEXT (3 findings) ===== -->
+<!-- Judge.me widget markup — LOW severity -->
+<div id="jdgm-widget" data-jdgm-widget class="jdgm-review-widget"></div>
+
+<!-- Yotpo widget markup — LOW severity -->
+<div class="yotpo-widget-instance" data-yotpo-product-id="987654321"></div>
+
+<!-- Stamped.io widget markup — LOW severity -->
+<div class="stamped-reviews-widget" data-stamped-product="test-product"></div>
+
+
+{%- comment -%}
+  =========================================================================
+  SECTION 2: templates/product.liquid or sections/main-product.liquid
+             — paste inside the product template
+
+  Triggers: GHOST_SNIPPET (2), GHOST_SECTION (1)
+  =========================================================================
+{%- endcomment -%}
+
+<!-- ===== GHOST CODE TEST: GHOST_SNIPPET (2 findings) ===== -->
+<!-- Loox reviews orphaned render — MEDIUM severity -->
+{% render 'loox-reviews' %}
+
+<!-- PageFly orphaned render — MEDIUM severity -->
+{% render 'pagefly-head' %}
+
+<!-- ===== GHOST CODE TEST: GHOST_SECTION (1 finding) ===== -->
+<!-- Shogun orphaned section — LOW severity -->
+{% section 'shogun-scripts' %}
+
+
+{%- comment -%}
+  =========================================================================
+  SECTION 3: Create these snippet files (empty or with minimal content)
+             to trigger ORPHAN_ASSET findings
+
+  In theme editor: Add new snippet → paste the name → add minimal content
+
+  Triggers: ORPHAN_ASSET (2 findings)
+  =========================================================================
+{%- endcomment -%}
+
+{%- comment -%}
+  snippets/klaviyo-bis-form.liquid
+  (create this file with the content below)
+{%- endcomment -%}
+<!-- Klaviyo back-in-stock form — orphaned snippet file, never rendered -->
+<div class="klaviyo-bis-trigger">Notify me when available</div>
+
+{%- comment -%}
+  snippets/omnisend-newsletter.liquid
+  (create this file with the content below)
+{%- endcomment -%}
+<!-- Omnisend newsletter form — orphaned snippet file, never rendered -->
+<div class="omnisend-form-container">Subscribe to our newsletter</div>
+
+
+{%- comment -%}
+  =========================================================================
+  SECTION 4: GHOST_TRANSLATION test plan
+
+  This finding type queries the Translations API, not theme files.
+  You need actual translation data in the store with no translation
+  app installed.
+
+  Option A — Manual via Shopify Admin:
+    1. Go to Settings > Languages in your dev store
+    2. Add a secondary language (e.g., French)
+    3. Go to a product and add French translations for title/description
+    4. Leave the translations in place
+    5. Make sure NO translation app is installed
+    6. Run a Ghost Code scan — should detect GHOST_TRANSLATION findings
+
+  Option B — Via GraphQL (Admin API):
+    1. Enable a locale: mutation { shopLocaleEnable(locale: "fr") { ... } }
+    2. Register translations via translationsRegister mutation
+    3. Ensure no translation app is installed
+    4. Run scan
+
+  Note: Ghost Code needs read_translations scope granted by the merchant.
+  In your dev store, re-install the app or trigger the scope request flow.
+  =========================================================================
+{%- endcomment -%}
+
+
+{%- comment -%}
+  =========================================================================
+  EXPECTED SCAN RESULTS (16+ findings from theme files)
+
+  | Type             | Count | Severity | Source                    |
+  |------------------|-------|----------|---------------------------|
+  | GHOST_SCRIPT     | 3     | HIGH     | Klaviyo, Hotjar, Tidio    |
+  | GHOST_HREFLANG   | 2     | HIGH     | Weglot, Transcy           |
+  | GHOST_STYLE      | 2     | MEDIUM   | Judge.me, Growave         |
+  | GHOST_SNIPPET    | 2     | MEDIUM   | Loox, PageFly             |
+  | DUPLICATE_META   | 1     | MEDIUM   | og:description duplicate  |
+  | GHOST_JSON_LD    | 2     | MEDIUM   | Judge.me, FAQPage unknown |
+  | GHOST_TEXT        | 3     | LOW      | Judge.me, Yotpo, Stamped  |
+  | GHOST_SECTION    | 1     | LOW      | Shogun                    |
+  | ORPHAN_ASSET     | 2     | LOW      | Klaviyo, Omnisend files   |
+  |                  |       |          |                           |
+  | GHOST_TRANSLATION| varies| MEDIUM   | Only if translations exist|
+
+  Total: 18+ findings (HIGH: 5, MEDIUM: 7, LOW: 6)
+  Plus GHOST_TRANSLATION if Option A/B is set up.
+
+  Additional features to verify:
+  - Hotjar finding should show TRACKING badge (isTracker)
+  - Performance Impact Score tile should show 5 external resources
+  - App Impact Map should group by: Klaviyo, Hotjar, Tidio, Judge.me,
+    Growave, Weglot, Transcy, Loox, PageFly, Shogun, Yotpo, Stamped
+  - Unknown scripts collector: if you add an unrecognized external
+    script (e.g., <script src="https://example.com/mystery.js">),
+    it should appear in the Unknown Scripts section
+  =========================================================================
+{%- endcomment -%}

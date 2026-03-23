@@ -1,5 +1,15 @@
 # Retrospective History
 
+## Retro: 2026-03-23 (session 18 — signatures, theme testing, E2E scan)
+
+- Tasks completed: 20 app signatures added, E2E scan verified (41 findings), theme testing automated, GC-nmc created
+- Agents dispatched: 2 (1 implementer for signatures, 1 research for missing apps)
+- Test growth: 819 → 833 (+14 tests for new signatures)
+- Commits: 2 (1 feat signatures, 1 docs retro/handoff from prior session)
+- Key insight: Shopify CLI `theme push --allow-live` eliminates manual copy/paste for theme testing. Pull → edit → push is fully scriptable.
+- Key gap filled: Cookie consent category had only Pandectes; now has 5 apps. Search & Filter was empty; now has 2.
+- Signature DB: 74 → 94 apps across 15 categories.
+
 ## Retro: 2026-03-23 (session 17 — GC-5n8 + GC-icb feature sprint)
 
 - Tasks completed: 2 features (GHOST_TEXT, GHOST_TRANSLATION), 3 CI lint fixes, 1 metadata commit
