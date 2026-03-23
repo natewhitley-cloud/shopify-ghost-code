@@ -74,15 +74,12 @@ export async function updateThemePublishTimestamp(
  *
  * Deletion order:
  *   1. Sessions              — revokes API access first (no FK, plain string match)
- *   2. PermissionSnapshots   — FK to InstalledApp, must go before InstalledApp
- *   3. InstalledApps         — FK to Shop
- *   4. PermissionAuditRuns   — FK to Shop
- *   5. Scans                 — findings cascade-deleted via onDelete: Cascade
- *   6. Shop                  — must be last; other tables reference it
+ *   2. Scans                 — findings cascade-deleted via onDelete: Cascade
+ *   3. Shop                  — must be last; other tables reference it
  *
- * Note: InstalledApp, PermissionAuditRun, and Scan all have onDelete: Cascade
- * on their Shop FK, so PostgreSQL would cascade-delete them. We delete
- * explicitly for GDPR audit trail clarity — defense-in-depth.
+ * Note: Scan has onDelete: Cascade on its Shop FK, so PostgreSQL would
+ * cascade-delete it. We delete explicitly for GDPR audit trail clarity —
+ * defense-in-depth.
  *
  * Returns null if the domain is not found, so callers can log and still
  * return 200 without throwing.
@@ -95,11 +92,6 @@ export async function deleteShopData(domain: string) {
 
   await db.$transaction([
     db.session.deleteMany({ where: { shop: domain } }),
-    db.permissionSnapshot.deleteMany({
-      where: { installedApp: { shopId: shop.id } },
-    }),
-    db.installedApp.deleteMany({ where: { shopId: shop.id } }),
-    db.permissionAuditRun.deleteMany({ where: { shopId: shop.id } }),
     db.scan.deleteMany({ where: { shopId: shop.id } }),
     db.shop.delete({ where: { domain } }),
   ]);

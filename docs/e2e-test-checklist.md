@@ -21,7 +21,6 @@ Manual end-to-end verification against the Shopify dev store. Run through this b
 - [ ] Navigate to Scan History — no full-page reload (React Router Link)
 - [ ] Navigate to Settings — plan tiles render correctly
 - [ ] Navigate back to Dashboard — state preserved
-- [ ] About section renders with Permission Audit description
 
 ## 3. Theme Scan
 

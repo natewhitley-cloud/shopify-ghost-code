@@ -248,11 +248,6 @@ export default function Settings() {
             orphaned code can slow down your store, break functionality, and create security risks.
           </s-paragraph>
           <s-paragraph>
-            Ghost Code also includes <strong>Permission Audit</strong>, which lets you review which
-            apps have access to your store data and identify unnecessary permissions that could put
-            your store at risk.
-          </s-paragraph>
-          <s-paragraph>
             <s-text>Version: 1.0.0</s-text>
           </s-paragraph>
         </s-stack>

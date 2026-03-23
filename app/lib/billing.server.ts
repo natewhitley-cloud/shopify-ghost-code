@@ -12,8 +12,6 @@ export type PlanFeatures = {
   scanDiffing: boolean;
   /** Whether the plan receives any form of scheduled (automatic) scanning. */
   scheduledScan: boolean;
-  // Manual feature flag — set to true to enable Permission Audit tab
-  permissionAuditEnabled: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -27,7 +25,6 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: false,
         scanDiffing: false,
         scheduledScan: false, // Manual weekly scans only — automation is Professional
-        permissionAuditEnabled: true,
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -38,7 +35,6 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: true,
         scanDiffing: true,
         scheduledScan: true, // Daily via poll-theme-changes coordinator
-        permissionAuditEnabled: true,
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -49,7 +45,6 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: false,
         scanDiffing: false,
         scheduledScan: false,
-        permissionAuditEnabled: true,
       };
   }
 }

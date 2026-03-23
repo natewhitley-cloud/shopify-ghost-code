@@ -103,10 +103,10 @@ export const scanTheme = inngest.createFunction(
           return 0;
         }
 
-        // Get installed app names for cross-reference
-        const { getInstalledApps } = await import("../../app/models/installed-app.server");
-        const installedApps = await getInstalledApps(shopId);
-        const installedAppNames = installedApps.map((a) => a.appName);
+        // No installed-app data available (Permission Audit removed — appInstallations
+        // query is restricted to Shopify-internal apps). Pass empty array so translation
+        // detector treats all translations as potentially orphaned.
+        const installedAppNames: string[] = [];
 
         const { detectOrphanedTranslations } =
           await import("../../app/services/translation-detector.server");

@@ -192,7 +192,6 @@ beforeEach(() => {
     autoRescan: false,
     scanDiffing: false,
     scheduledScan: false,
-    permissionAuditEnabled: false,
   });
   mockGetScanUsage.mockResolvedValue({
     used: 0,
@@ -263,7 +262,6 @@ describe("app._index loader", () => {
         autoRescan: false,
         scanDiffing: false,
         scheduledScan: false,
-        permissionAuditEnabled: false,
       });
       mockGetScanUsage.mockResolvedValue({
         used: 1,
@@ -289,7 +287,6 @@ describe("app._index loader", () => {
         autoRescan: true,
         scanDiffing: true,
         scheduledScan: true,
-        permissionAuditEnabled: false,
       });
       mockGetScanUsage.mockResolvedValue(null);
 

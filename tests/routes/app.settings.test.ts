@@ -74,7 +74,6 @@ const FREE_FEATURES = {
   autoRescan: false,
   scanDiffing: false,
   scheduledScan: false,
-  permissionAuditEnabled: false,
 };
 
 const mockBillingRequest = vi.fn();

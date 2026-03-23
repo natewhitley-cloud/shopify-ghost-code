@@ -63,7 +63,7 @@ Additionally: there is no Shopify App Store policy requiring developers to clean
 
 ### Security anxiety as a trigger (Disputifier breach, Jan 2026)
 
-The Disputifier breach ($12K in unauthorized refunds, 108↑ Reddit) primed merchants to ask _"what apps are still running on my store?"_ This is the best acquisition moment in Ghost Code's history. Top community comment was literally: _"audit your apps and what permissions you've granted them."_ App Permission Audit tab is the direct product response.
+The Disputifier breach ($12K in unauthorized refunds, 108↑ Reddit) primed merchants to ask _"what apps are still running on my store?"_ This is the best acquisition moment in Ghost Code's history. Top community comment was literally: _"audit your apps and what permissions you've granted them."_
 
 ---
 
@@ -81,8 +81,6 @@ Ghost Code v1 ships with 8 finding types across 56+ app signatures (715 tests):
 | GHOST_JSON_LD | MEDIUM | Orphaned `<script type="application/ld+json">` blocks from review/FAQ/SEO apps |
 | GHOST_SECTION | LOW | `{% section %}` of known app sections |
 | ORPHAN_ASSET | LOW | Unreferenced snippet files (requires app attribution to avoid false positives) |
-
-**App Permission Audit** is also shipped and enabled for all plans. Shows what permissions each installed app has requested. Key constraint: Shopify API exposes what apps _requested_, not what they _used_ — scoped as "what each app can access." See `docs/architecture-spec.md` for details.
 
 **Known gap (post-launch):** Translation metafields left by Shopify Translate & Adapt require GraphQL API queries, not theme file scanning. Tracked as GC-icb (P3).
 
@@ -141,7 +139,6 @@ Cleanify Code (the only prior competitor) was delisted — reviews mentioned fal
 | **Orphaned Webhook Detection** | Medium | New finding type. Query `webhookSubscriptions` via GraphQL, cross-reference with installed apps. Flag webhooks pointing to domains of apps no longer installed. Direct extension of "your store is running things you didn't install" — webhooks are literally that. |
 | **Persistent UI Text Fragments** | Medium | New finding type. Pattern-match Liquid templates for known widget text left by uninstalled apps (payment badges, review widgets, countdown timers). Higher false-positive risk than script detection — requires curated pattern library and app attribution before surfacing. |
 | **Translation Metafield Detection** | Medium | Tracked as GC-icb. Query translation metafields via GraphQL API (not theme files). Shopify Translate & Adapt confirmed it leaves these after uninstall — strongest single pain point in research data. |
-| **Deeper Permission Audit** | Medium | Flag apps with sensitive scopes (read_customers, read_orders, write_checkouts) that haven't been opened recently. "This app can read all your customer data and you last opened it 6 months ago." Disputifier anxiety is a lasting tailwind. |
 | **Market Research DB Signature Expansion** | Low | One-time cross-reference of signature DB against market research data. Identify high-complaint, high-install apps missing from signatures. |
 
 ### Future ideas (unscheduled)
@@ -200,4 +197,4 @@ Ghost Code has no natural Shopify App Store category — neither "orphaned code"
 - `~/shopify/strategy/market-research/reports/2026-03-21-reddit-community-sentiment.md`
 - `~/shopify/strategy/market-research/reports/2026-03-22-deep-dive-analysis.md`
 - `~/shopify/strategy/market-research/community-forum-pain-points-2026-03.md` (community forum threads — live correctness failures, workaround inventory, Shopify staff quotes)
-- `~/shopify/strategy/app-ideas-tracker.md` (Ghost Code entry + Permission Audit entry)
+- `~/shopify/strategy/app-ideas-tracker.md` (Ghost Code entry)
