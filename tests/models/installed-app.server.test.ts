@@ -39,6 +39,7 @@ import {
   markAppRemoved,
   getInstalledApps,
   getInstalledAppByHandle,
+  getRemovedApps,
 } from "../../app/models/installed-app.server";
 
 // ---------------------------------------------------------------------------
@@ -294,5 +295,52 @@ describe("getInstalledAppByHandle", () => {
       },
     });
     expect(result?.presence).toBe("REMOVED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getRemovedApps
+// ---------------------------------------------------------------------------
+
+describe("getRemovedApps", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns only REMOVED apps for the given shop", async () => {
+    const apps = [
+      makeInstalledApp({
+        id: "ia-1",
+        appName: "Old App",
+        presence: "REMOVED",
+        removedAt: new Date("2026-03-20"),
+      }),
+      makeInstalledApp({
+        id: "ia-2",
+        appName: "Older App",
+        presence: "REMOVED",
+        removedAt: new Date("2026-03-15"),
+      }),
+    ];
+    mockDb.installedApp.findMany.mockResolvedValue(apps);
+
+    const result = await getRemovedApps(SHOP_ID);
+
+    expect(mockDb.installedApp.findMany).toHaveBeenCalledWith({
+      where: {
+        shopId: SHOP_ID,
+        presence: "REMOVED",
+      },
+      orderBy: { removedAt: "desc" },
+    });
+    expect(result).toHaveLength(2);
+  });
+
+  it("returns an empty array when no removed apps exist", async () => {
+    mockDb.installedApp.findMany.mockResolvedValue([]);
+
+    const result = await getRemovedApps(SHOP_ID);
+
+    expect(result).toEqual([]);
   });
 });

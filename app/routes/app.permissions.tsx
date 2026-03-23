@@ -4,7 +4,8 @@ import { Link, useLoaderData } from "react-router";
 
 import { getPlanFeatures } from "../lib/billing.server";
 import { riskTone, riskLabel } from "../lib/risk-display";
-import { getInstalledApps } from "../models/installed-app.server";
+import { hasPiiAccess } from "../lib/sensitive-scope-alerts.server";
+import { getInstalledApps, getRemovedApps } from "../models/installed-app.server";
 import { getShopByDomain } from "../models/shop.server";
 import { enrichApps } from "../services/app-enrichment.server";
 import { fetchAllInstalledApps, syncInstalledApps } from "../services/permission-fetcher.server";
@@ -24,6 +25,7 @@ interface ScoredApp {
   scopeCount: number;
   riskScore: AppRiskScore;
   categoryName: string | null;
+  hasPiiAccess: boolean;
 }
 
 type PermissionsLoaderData =
@@ -34,6 +36,12 @@ type PermissionsLoaderData =
       state: "active";
       apps: ScoredApp[];
       storeScore: StoreRiskScore;
+      removedApps: Array<{
+        id: string;
+        appName: string;
+        grantedScopes: string;
+        removedAt: string | null;
+      }>;
     };
 
 // ---------------------------------------------------------------------------
@@ -112,6 +120,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       scopeCount: scopes.length,
       riskScore,
       categoryName: enrichment?.categoryName ?? app.publicCategory ?? null,
+      hasPiiAccess: hasPiiAccess(scopes),
     };
   });
 
@@ -121,10 +130,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const appScores = scoredApps.map((a) => a.riskScore);
   const storeScore = scoreStore(appScores);
 
+  // Fetch removed apps for the "Previously Installed" section
+  const removedAppsRaw = await getRemovedApps(shop.id);
+  const removedApps = removedAppsRaw.map((app) => ({
+    id: app.id,
+    appName: app.appName,
+    grantedScopes: app.grantedScopes,
+    removedAt: app.removedAt ? app.removedAt.toISOString() : null,
+  }));
+
   return {
     state: "active" as const,
     apps: scoredApps,
     storeScore,
+    removedApps,
   };
 };
 
@@ -147,7 +166,13 @@ export default function PermissionAudit() {
     return <OnboardingState />;
   }
 
-  return <ActiveAuditState apps={data.apps} storeScore={data.storeScore} />;
+  return (
+    <ActiveAuditState
+      apps={data.apps}
+      storeScore={data.storeScore}
+      removedApps={data.removedApps}
+    />
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -407,7 +432,20 @@ function OnboardingState() {
 // State 4: Active Audit (apps found)
 // ---------------------------------------------------------------------------
 
-function ActiveAuditState({ apps, storeScore }: { apps: ScoredApp[]; storeScore: StoreRiskScore }) {
+function ActiveAuditState({
+  apps,
+  storeScore,
+  removedApps,
+}: {
+  apps: ScoredApp[];
+  storeScore: StoreRiskScore;
+  removedApps: Array<{
+    id: string;
+    appName: string;
+    grantedScopes: string;
+    removedAt: string | null;
+  }>;
+}) {
   const criticalCount = apps.filter((a) => a.riskScore.level === "critical").length;
   const highCount = apps.filter((a) => a.riskScore.level === "high").length;
 
@@ -492,7 +530,14 @@ function ActiveAuditState({ apps, storeScore }: { apps: ScoredApp[]; storeScore:
               <tbody>
                 {apps.map((app) => (
                   <tr key={app.id}>
-                    <td>{app.appName}</td>
+                    <td>
+                      <span>{app.appName}</span>
+                      {app.hasPiiAccess && (
+                        <span style={{ marginLeft: "8px" }}>
+                          <s-badge tone="warning">PII access</s-badge>
+                        </span>
+                      )}
+                    </td>
                     <td>{app.scopeCount}</td>
                     <td>
                       <s-badge tone={riskTone(app.riskScore.level)}>
@@ -510,6 +555,91 @@ function ActiveAuditState({ apps, storeScore }: { apps: ScoredApp[]; storeScore:
           </s-data-table>
         </s-stack>
       </s-card>
+
+      {/* Previously installed (removed) apps */}
+      {removedApps.length > 0 && (
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <h2 style={{ fontSize: "18px", fontWeight: 600, color: "#202223", margin: 0 }}>
+              Previously Installed Apps
+            </h2>
+            <s-paragraph>
+              These apps have been uninstalled but may have left behind webhooks, metafields, or
+              other data. Shopify does not automatically clean up all app data on uninstall. Check
+              Settings &gt; Notifications to verify no orphaned webhooks remain.
+            </s-paragraph>
+            <style>{`
+              .removed-apps-table {
+                width: 100%;
+                border-collapse: collapse;
+                font-size: 13px;
+              }
+              .removed-apps-table th,
+              .removed-apps-table td {
+                border: 1px solid #e1e3e5;
+                padding: 8px 12px;
+                text-align: left;
+                vertical-align: top;
+              }
+              .removed-apps-table thead th {
+                background: #edeeef;
+                font-weight: 600;
+              }
+              .removed-apps-table tbody tr:nth-child(even) {
+                background: #fafbfb;
+              }
+            `}</style>
+            <table className="removed-apps-table">
+              <thead>
+                <tr>
+                  <th>App</th>
+                  <th>Former Access</th>
+                  <th>Removed</th>
+                  <th>Risk Note</th>
+                </tr>
+              </thead>
+              <tbody>
+                {removedApps.map((app) => {
+                  let scopes: string[] = [];
+                  try {
+                    scopes = JSON.parse(app.grantedScopes || "[]");
+                  } catch {
+                    // Corrupted JSON — treat as no scopes
+                  }
+                  const hasSensitiveScopes = scopes.some((s) =>
+                    [
+                      "read_customers",
+                      "read_orders",
+                      "write_orders",
+                      "read_all_orders",
+                      "write_checkouts",
+                      "read_customer_payment_methods",
+                    ].includes(s),
+                  );
+                  return (
+                    <tr key={app.id}>
+                      <td style={{ fontWeight: 600 }}>{app.appName}</td>
+                      <td>
+                        {scopes.length} scope{scopes.length !== 1 ? "s" : ""}
+                      </td>
+                      <td>
+                        {app.removedAt ? new Date(app.removedAt).toLocaleDateString() : "Unknown"}
+                      </td>
+                      <td>
+                        {hasSensitiveScopes ? (
+                          <s-badge tone="warning">Had PII access</s-badge>
+                        ) : (
+                          <span style={{ color: "#8c9196" }}>&mdash;</span>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </s-stack>
+        </s-card>
+      )}
 
       {/* Education footer */}
       <s-card>

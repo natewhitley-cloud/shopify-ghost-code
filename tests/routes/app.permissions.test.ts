@@ -31,6 +31,7 @@ vi.mock("../../app/lib/billing.server", () => ({
 
 vi.mock("../../app/models/installed-app.server", () => ({
   getInstalledApps: vi.fn(),
+  getRemovedApps: vi.fn(),
 }));
 
 vi.mock("../../app/services/permission-fetcher.server", () => ({
@@ -56,7 +57,7 @@ vi.mock("../../app/db.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { getPlanFeatures } from "../../app/lib/billing.server";
-import { getInstalledApps } from "../../app/models/installed-app.server";
+import { getInstalledApps, getRemovedApps } from "../../app/models/installed-app.server";
 import { getShopByDomain } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.permissions";
 import { enrichApps } from "../../app/services/app-enrichment.server";
@@ -75,6 +76,7 @@ const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockGetInstalledApps = getInstalledApps as ReturnType<typeof vi.fn>;
+const mockGetRemovedApps = getRemovedApps as ReturnType<typeof vi.fn>;
 const mockFetchAllInstalledApps = fetchAllInstalledApps as ReturnType<typeof vi.fn>;
 const mockSyncInstalledApps = syncInstalledApps as ReturnType<typeof vi.fn>;
 const mockScoreApp = scoreApp as ReturnType<typeof vi.fn>;
@@ -311,6 +313,7 @@ describe("app.permissions loader", () => {
       mockFetchAllInstalledApps.mockResolvedValue(fetchedApps);
       mockSyncInstalledApps.mockResolvedValue(undefined);
       mockGetInstalledApps.mockResolvedValue(installedApps);
+      mockGetRemovedApps.mockResolvedValue([]);
       mockEnrichApps.mockReturnValue(
         new Map([
           [

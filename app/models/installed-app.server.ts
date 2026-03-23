@@ -171,6 +171,20 @@ export async function getInstalledAppByHandle(
 }
 
 /**
+ * Return all apps that have been removed from the store (presence=REMOVED).
+ * Ordered by removal date descending (most recently removed first).
+ */
+export async function getRemovedApps(shopId: string): Promise<InstalledApp[]> {
+  return db.installedApp.findMany({
+    where: {
+      shopId,
+      presence: "REMOVED",
+    },
+    orderBy: { removedAt: "desc" },
+  });
+}
+
+/**
  * Look up a single installed app by its primary key ID.
  * Returns null if not found. Does not filter by presence — callers can
  * display details for removed apps too.

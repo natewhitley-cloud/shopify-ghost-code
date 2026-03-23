@@ -9,6 +9,7 @@ import {
 import { getPlanFeatures } from "../lib/billing.server";
 import { formatDate } from "../lib/format";
 import { riskTone, riskLabel, sensitivityTone } from "../lib/risk-display";
+import { type SensitiveAlert, generateSensitiveAlerts } from "../lib/sensitive-scope-alerts.server";
 import { getInstalledAppById } from "../models/installed-app.server";
 import { getShopByDomain } from "../models/shop.server";
 import { enrichApp } from "../services/app-enrichment.server";
@@ -46,6 +47,7 @@ interface PermissionDetailLoaderData {
   };
   riskScore: AppRiskScore;
   scopes: ScopeDetail[];
+  sensitiveAlerts: SensitiveAlert[];
 }
 
 // ---------------------------------------------------------------------------
@@ -189,6 +191,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     return (sensitivityOrder[a.sensitivity] ?? 99) - (sensitivityOrder[b.sensitivity] ?? 99);
   });
 
+  // Generate sensitive scope alerts for PII/modification warnings
+  const sensitiveAlerts = generateSensitiveAlerts(scopeHandles);
+
   const data: PermissionDetailLoaderData = {
     app: {
       id: installedApp.id,
@@ -206,6 +211,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
     riskScore,
     scopes,
+    sensitiveAlerts,
   };
 
   return data;
@@ -216,7 +222,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 export default function PermissionDetail() {
-  const { app, enrichment, riskScore, scopes } = useLoaderData<
+  const { app, enrichment, riskScore, scopes, sensitiveAlerts } = useLoaderData<
     typeof loader
   >() as PermissionDetailLoaderData;
 
@@ -279,6 +285,49 @@ export default function PermissionDetail() {
           </s-data-table>
         </s-stack>
       </s-card>
+
+      {/* Privacy & Security Alerts */}
+      {sensitiveAlerts.length > 0 && (
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <h2 style={{ fontSize: "18px", fontWeight: 600, color: "#202223", margin: 0 }}>
+              Privacy &amp; Security Alerts
+            </h2>
+            {sensitiveAlerts.filter((a) => a.category === "pii").length > 0 && (
+              <s-banner tone="warning">
+                <s-stack direction="block" gap="small-200">
+                  <s-text>
+                    <strong>This app can access personal customer data</strong>
+                  </s-text>
+                  {sensitiveAlerts
+                    .filter((a) => a.category === "pii")
+                    .map((alert) => (
+                      <s-text key={alert.scope}>
+                        <code>{alert.scope}</code> &mdash; {alert.message}
+                      </s-text>
+                    ))}
+                </s-stack>
+              </s-banner>
+            )}
+            {sensitiveAlerts.filter((a) => a.category === "store-modification").length > 0 && (
+              <s-banner tone="info">
+                <s-stack direction="block" gap="small-200">
+                  <s-text>
+                    <strong>This app can modify your store</strong>
+                  </s-text>
+                  {sensitiveAlerts
+                    .filter((a) => a.category === "store-modification")
+                    .map((alert) => (
+                      <s-text key={alert.scope}>
+                        <code>{alert.scope}</code> &mdash; {alert.message}
+                      </s-text>
+                    ))}
+                </s-stack>
+              </s-banner>
+            )}
+          </s-stack>
+        </s-card>
+      )}
 
       {/* Granted scopes card */}
       <s-card>
