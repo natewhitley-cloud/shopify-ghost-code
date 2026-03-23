@@ -9,11 +9,12 @@ Updated from market research (2026-03-22). Source data: `~/shopify/strategy/mark
 
 **Primary pain:** Apps leave code, data, and metadata behind after uninstall. Merchants don't know it's there, can't find it, and are being hurt by it — in page speed, SEO rankings, and Google crawl budget.
 
-**Tagline candidate:** *"Your store is running things you didn't install."*
+**Tagline candidate:** _"Your store is running things you didn't install."_
 
 **Portfolio framing (Data Integrity Suite):**
-> Ghost Code = *what your apps left behind in your store*
-> Bot Analytics = *what fake traffic left behind in your data*
+
+> Ghost Code = _what your apps left behind in your store_
+> Bot Analytics = _what fake traffic left behind in your data_
 > Together: "Clean what you can see, and clean what you can't."
 
 ---
@@ -24,12 +25,12 @@ Updated from market research (2026-03-22). Source data: `~/shopify/strategy/mark
 
 Documented across pricing, wholesale, SEO, search, and translation categories:
 
-- **Transcy (translation):** Generated 743 hreflang conflicts still active after removal. Merchant explicitly used the phrase *"Orphaned 'Ghost Code'"* in their review. The term is already in merchant vocabulary — no education needed.
-- **Shopify Translate & Adapt (Shopify's own app):** Leaves translation data in metafields after uninstall. Merchant: *"I have been crawled 166,583 times in the last year by [Google] and all of it has layers of old and outdated and partial translation."* Shopify support confirmed on record: *"You're absolutely right — translation data persists after uninstall."*
-- **AI Search & Product Filter:** *"DANGER, do not install... I had to pay someone to remove the code that was left AFTER the uninstall."* — Merchant incurred direct developer cost after 25 minutes of use.
-- **Hyperspeed (speed optimization):** After uninstalling, merchant's Lighthouse score *improved by 30 points*. Speed optimization apps can themselves be net-negative for performance.
-- **BOLD Discounts:** *"Sales are STUCK ON MY PRODUCTS even without the app installed."* — Discount data, not just scripts, persists after removal.
-- **BSS B2B:** *"App messes with the code of your site... had to rebuild theme from scratch."*
+- **Transcy (translation):** Generated 743 hreflang conflicts still active after removal. Merchant explicitly used the phrase _"Orphaned 'Ghost Code'"_ in their review. The term is already in merchant vocabulary — no education needed.
+- **Shopify Translate & Adapt (Shopify's own app):** Leaves translation data in metafields after uninstall. Merchant: _"I have been crawled 166,583 times in the last year by [Google] and all of it has layers of old and outdated and partial translation."_ Shopify support confirmed on record: _"You're absolutely right — translation data persists after uninstall."_
+- **AI Search & Product Filter:** _"DANGER, do not install... I had to pay someone to remove the code that was left AFTER the uninstall."_ — Merchant incurred direct developer cost after 25 minutes of use.
+- **Hyperspeed (speed optimization):** After uninstalling, merchant's Lighthouse score _improved by 30 points_. Speed optimization apps can themselves be net-negative for performance.
+- **BOLD Discounts:** _"Sales are STUCK ON MY PRODUCTS even without the app installed."_ — Discount data, not just scripts, persists after removal.
+- **BSS B2B:** _"App messes with the code of your site... had to rebuild theme from scratch."_
 
 ### Paid developer cleanup is the measurable cost
 
@@ -44,6 +45,7 @@ This is the highest-severity use case and should feature in onboarding and App S
 ### Manual workarounds Ghost Code eliminates
 
 From community forum threads — what merchants are currently doing without Ghost Code:
+
 1. Manually scanning `theme.liquid`, `footer.liquid`, sections, and snippets file by file
 2. Searching for `{% comment %}` blocks containing app names
 3. Grepping for JS patterns like `window.BOLD = window.BOLD || {}`
@@ -55,56 +57,126 @@ Ghost Code eliminates all six steps in a single scan. Frame this explicitly in o
 
 ### Shopify staff on-record confirmation
 
-Shopify support confirmed in a community thread: *"When you delete an app, it instantly loses access to your store, so it cannot clean up the code."* This is the architectural root cause, acknowledged by Shopify — and also confirmation that Shopify will not fix this at the platform level. Use in positioning: "Even Shopify acknowledges the architecture leaves this behind. We built the tool they didn't."
+Shopify support confirmed in a community thread: _"When you delete an app, it instantly loses access to your store, so it cannot clean up the code."_ This is the architectural root cause, acknowledged by Shopify — and also confirmation that Shopify will not fix this at the platform level. Use in positioning: "Even Shopify acknowledges the architecture leaves this behind. We built the tool they didn't."
 
 Additionally: there is no Shopify App Store policy requiring developers to clean up theme code on uninstall. The review process doesn't audit cleanup behavior. This is structural and permanent.
 
 ### Security anxiety as a trigger (Disputifier breach, Jan 2026)
 
-The Disputifier breach ($12K in unauthorized refunds, 108↑ Reddit) primed merchants to ask *"what apps are still running on my store?"* This is the best acquisition moment in Ghost Code's history. Top community comment was literally: *"audit your apps and what permissions you've granted them."* App Permission Audit tab is the direct product response.
+The Disputifier breach ($12K in unauthorized refunds, 108↑ Reddit) primed merchants to ask _"what apps are still running on my store?"_ This is the best acquisition moment in Ghost Code's history. Top community comment was literally: _"audit your apps and what permissions you've granted them."_ App Permission Audit tab is the direct product response.
 
 ---
 
-## Feature roadmap signals
+## What v1 detects
 
-### 1. SEO damage scanner (high priority — underserved angle)
+Ghost Code v1 ships with 8 finding types across 56+ app signatures (715 tests):
 
-The speed angle is *weaker* than the SEO angle. Expand detection beyond JavaScript orphans to:
+| Finding Type | Severity | Description |
+|---|---|---|
+| GHOST_SCRIPT | HIGH | External `<script src>` tags from app CDNs |
+| GHOST_HREFLANG | HIGH | Orphaned `<link rel="alternate" hreflang>` from translation apps |
+| GHOST_STYLE | MEDIUM | External `<link rel="stylesheet">` tags |
+| GHOST_SNIPPET | MEDIUM | `{% render %}` / `{% include %}` of known app snippets |
+| DUPLICATE_META | MEDIUM | Duplicate meta tags with same name/property from stacked SEO apps |
+| GHOST_JSON_LD | MEDIUM | Orphaned `<script type="application/ld+json">` blocks from review/FAQ/SEO apps |
+| GHOST_SECTION | LOW | `{% section %}` of known app sections |
+| ORPHAN_ASSET | LOW | Unreferenced snippet files (requires app attribution to avoid false positives) |
 
-- **Orphaned hreflang tags** — translation apps leave these; causes Google to receive contradictory language signals across all URLs
-- **Translation metafields** — Shopify Translate & Adapt confirmed it leaves these after uninstall; causes mass URL crawling on bad content
-- **Duplicate/conflicting meta tags** — multiple SEO apps installed over time each inject meta; stacking creates conflicts
-- **Orphaned schema markup** — structured data snippets injected by review, product, or FAQ apps
+**App Permission Audit** is also shipped and enabled for all plans. Shows what permissions each installed app has requested. Key constraint: Shopify API exposes what apps _requested_, not what they _used_ — scoped as "what each app can access." See `docs/architecture-spec.md` for details.
 
-**Positioning:** "Your store has invisible SEO damage from apps you already removed." More alarming than load time, harder to ignore, directly affects ad spend efficiency.
+**Known gap (post-launch):** Translation metafields left by Shopify Translate & Adapt require GraphQL API queries, not theme file scanning. Tracked as GC-icb (P3).
 
-### 2. "Before you uninstall" scan mode (differentiated workflow)
+---
 
-Ghost Code is currently reactive — it finds damage after it's done. A proactive scan *before* removing an app to show what it will leave behind is a completely different use case. Solves the "I tried it for 25 minutes and it trashed my theme" pattern. Particularly useful for merchants going through app trial cycles.
+## The cleanup gap is structural — and already baked in
 
-### 3. Speed optimizer paradox detection
+Modern Shopify apps that use Theme App Extensions (introduced ~2023) get auto-cleaned by Shopify on uninstall. Apps like Transcy, BOLD Discounts, and newer installs leave nothing behind. This is good news for the platform but does _not_ eliminate Ghost Code's market:
 
-When an installed "performance" app is net-negative for store speed (adds more weight than it removes), surface it explicitly. The Hyperspeed finding is the proof of concept — Lighthouse improved 30 points on uninstall. Counter-intuitive, shareable, and directly actionable.
+1. **The damage is already done.** Most growth-stage merchants have 3–5 years of app install/uninstall history. The orphaned code from older apps (pre-Theme App Extensions) is already in their themes. Ghost Code cleans what's already there.
+2. **Many popular apps still inject directly.** PageFly creates `layout/theme.pagefly.liquid` (a full theme copy), `sections/pagefly-section.liquid`, and `snippets/pagefly-main-js.liquid`. These are not Theme App Extensions — they're direct theme file edits that persist forever after uninstall.
+3. **Theme App Extensions are opt-in, not enforced.** Shopify does not require developers to use them. There is no App Store policy mandating cleanup on uninstall, and the review process doesn't audit cleanup behavior. Apps that modify theme files directly will continue to ship.
+4. **The long tail is massive.** The Shopify App Store has 13,000+ apps. Theme App Extension adoption is concentrated in top apps with active development. Thousands of smaller, older, or abandoned apps still use direct theme injection.
 
-### 4. App Permission Audit tab (in progress)
+**Positioning implication:** Ghost Code is not selling prevention — it's selling remediation. The problem is already in the store. Frame it as "clean up what's already there" rather than "protect against future damage." This also makes the market self-qualifying: merchants who have tried many apps over time are the exact right audience.
 
-See `docs/architecture-spec.md` for implementation details and API constraints. Key constraint: Shopify API exposes what permissions apps *requested*, not what they *used* — scope as "what each app can access."
+---
 
-### 5. Checkout Extensibility compatibility check (time-bound)
+## Signature expansion strategy
 
-August 2024 mandate (main checkout) + August 2025 mandate (Thank You/Order Status pages). Flag apps not yet migrated from checkout.liquid. Window closing — most useful as Ghost Code feature tab within 6 months of launch; standalone app opportunity has passed.
+The scanner currently has 64 hardcoded app signatures. Three paths to expand coverage:
+
+### Community-driven learning loop (v1.1 — the flywheel)
+
+When a scan finds unattributed ghost code (e.g., an external `<script src>` we can't match to a known app), surface it in an "Unknown Findings" section. Add a "Do you know which app left this?" input. Store submissions in a new table (`signature_submissions`: url/pattern, merchant-provided app name, shop_id, timestamp). Review submissions manually, validate, and promote to the signature DB.
+
+Every merchant who scans teaches the system something. No ML, no automation risk — human-curated pipeline fed by real data. Start manual, automate later if volume justifies it.
+
+### Market research DB cross-reference (v1.2 — prioritization)
+
+Cross-reference existing 64 signatures against the 2,008 apps in the market research DB (`~/shopify/strategy/market-research/data/shopify_apps.db`) to find high-install-count, high-complaint apps we're missing. The DB has app names, pricing, reviews, and categories — no technical signals (CDN domains, script URLs), so it can't auto-generate signatures, but it tells us _where to look next_.
+
+Also: query 1-2 star reviews for "uninstall," "leftover," "code," "broken" to surface apps merchants explicitly complain about. One-time effort, likely nets 5-10 new high-confidence signatures.
+
+### Why not auto-removal?
+
+Cleanify Code (the only prior competitor) was delisted — reviews mentioned false positive suggestions. Auto-removal amplifies every false positive from an annoyance into a production incident. Merchants already duplicate themes before manual edits out of fear. Ghost Code's value is _detection_, not modification. Make scan reports actionable enough (exact file, line, code block) that removal is easy for merchants or their devs. Revisit only after 500+ installs with zero false-positive reports.
+
+---
+
+## Post-launch roadmap
+
+### v1.1 — Quick wins from existing data
+
+| Feature | Effort | Description |
+|---|---|---|
+| **App Code Attribution Map** | Low | New UI view: which theme files each installed/former app touched. Data already exists from scan results — just a presentation layer. Merchants explicitly request "a tool that tells me which theme files each app touched." |
+| **Tracking Script Privacy Callout** | Low | Sub-classify existing GHOST_SCRIPT findings: if CDN domain is a known tracker (Meta Pixel, TikTok, Snapchat, etc.), flag as "Privacy: this script may still be collecting visitor data." No new scanning logic — label on existing findings. High emotional impact given Disputifier anxiety. |
+| **Unknown Finding Feedback Loop** | Medium | "Do you know which app left this?" input on unattributed findings. Stores submissions for manual signature curation. The flywheel that makes every scan improve future scans. |
+| **Theme Performance Impact Score** | Medium | Sum external script/stylesheet weight from scan data (already parsed). Show "apps are adding X KB of external resources to every page load." Not a full Lighthouse audit — a proxy metric computed for free from existing data. |
+
+### v1.2 — New detection capabilities
+
+| Feature | Effort | Description |
+|---|---|---|
+| **Orphaned Webhook Detection** | Medium | New finding type. Query `webhookSubscriptions` via GraphQL, cross-reference with installed apps. Flag webhooks pointing to domains of apps no longer installed. Direct extension of "your store is running things you didn't install" — webhooks are literally that. |
+| **Persistent UI Text Fragments** | Medium | New finding type. Pattern-match Liquid templates for known widget text left by uninstalled apps (payment badges, review widgets, countdown timers). Higher false-positive risk than script detection — requires curated pattern library and app attribution before surfacing. |
+| **Translation Metafield Detection** | Medium | Tracked as GC-icb. Query translation metafields via GraphQL API (not theme files). Shopify Translate & Adapt confirmed it leaves these after uninstall — strongest single pain point in research data. |
+| **Deeper Permission Audit** | Medium | Flag apps with sensitive scopes (read_customers, read_orders, write_checkouts) that haven't been opened recently. "This app can read all your customer data and you last opened it 6 months ago." Disputifier anxiety is a lasting tailwind. |
+| **Market Research DB Signature Expansion** | Low | One-time cross-reference of signature DB against market research data. Identify high-complaint, high-install apps missing from signatures. |
+
+### Future ideas (unscheduled)
+
+**"Before you uninstall" scan mode:** Proactive scan _before_ removing an app to show what it will leave behind. Different use case from current reactive scanning. Solves "I tried it for 25 minutes and it trashed my theme." Useful for merchants in app trial cycles.
+
+**Speed optimizer paradox detection:** When an installed "performance" app is net-negative for store speed (adds more weight than it removes), surface it explicitly. Hyperspeed finding is the proof of concept — Lighthouse improved 30 points on uninstall. Counter-intuitive, shareable, directly actionable.
+
+---
+
+## Other leftover artifact types (research inventory)
+
+Beyond what v1 detects, merchants report these persistent artifacts after app uninstall:
+
+| Artifact | Evidence | Detection feasibility |
+|---|---|---|
+| **Translation metafields** | Shopify Translate & Adapt confirmed; 166K bad Google crawls | GraphQL API query — planned for v1.2 |
+| **Persistent UI text fragments** | Payment badge text appearing 2 years post-uninstall, across theme switches | Liquid template pattern matching — planned for v1.2, needs curated patterns |
+| **Orphaned webhooks** | Architectural: apps lose API access on uninstall but webhook subscriptions may persist | GraphQL `webhookSubscriptions` query — planned for v1.2 |
+| **Custom tags on products/orders** | "Some apps leave behind meta fields, Tags or code" | Would need `read_products` scope (new scope request) — post-launch evaluation |
+| **Discount/pricing data** | BOLD Discounts: "Sales are STUCK ON MY PRODUCTS" | Not detectable via theme scanning; would need pricing API access |
+| **SEO sabotage code** | SearchPie: rankings flatlined to 0 within 2 days of uninstall | Partially detectable (meta/robots directives); server-side redirects not visible |
+| **Tracking pixels (sneaky persistence)** | "The number of sneaky tracking scripts were beyond astonishing" | Already detected as GHOST_SCRIPT; privacy callout planned for v1.1 |
 
 ---
 
 ## Messaging angles (ranked by potency)
 
-| Message | Why it works |
-|---|---|
-| "You're paying a developer to clean up what your apps left behind." | Puts a dollar figure on the pain. Developer quotes are $200–500+. |
-| "Even Shopify's own apps leave data behind." | Removes the "only bad apps do this" objection. Translate & Adapt is the proof. |
-| "Ghost code is costing you Google rankings, not just load time." | SEO damage → lost revenue. More specific than speed. |
-| "743 hreflang conflicts from an app you uninstalled months ago." | Specific number from real review. Specificity = credibility. |
-| "Your store is running things you didn't install." | Core brand statement. Taps the Disputifier-primed anxiety. |
+| Message                                                             | Why it works                                                                   |
+| ------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| "You're paying a developer to clean up what your apps left behind." | Puts a dollar figure on the pain. Developer quotes are $200–500+.              |
+| "Even Shopify's own apps leave data behind."                        | Removes the "only bad apps do this" objection. Translate & Adapt is the proof. |
+| "Ghost code is costing you Google rankings, not just load time."    | SEO damage → lost revenue. v1 detects hreflang, meta, and JSON-LD — this is backed by shipped features, not vaporware. |
+| "743 hreflang conflicts from an app you uninstalled months ago."    | Specific number from real review. Specificity = credibility.                   |
+| "Your store is running things you didn't install."                  | Core brand statement. Taps the Disputifier-primed anxiety.                     |
 
 ---
 
