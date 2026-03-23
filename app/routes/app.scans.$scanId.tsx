@@ -375,11 +375,16 @@ export default function ScanDetail() {
           grid-template-columns: 1fr 1fr 1fr;
           gap: 16px;
           margin-top: 8px;
+          align-items: stretch;
         }
         @media (max-width: 640px) {
           .scan-tiles-row {
             grid-template-columns: 1fr;
           }
+        }
+        .scan-tile-wrapper {
+          display: flex;
+          flex-direction: column;
         }
         .scan-tile {
           display: flex;
@@ -390,6 +395,7 @@ export default function ScanDetail() {
           border-radius: 12px;
           border: 1px solid #e1e3e5;
           background: #ffffff;
+          flex: 1;
         }
         .scan-tile--health-success {
           border-color: #c8e6c1;
@@ -556,7 +562,7 @@ export default function ScanDetail() {
         <div className="scan-tiles-row">
           {/* Tile 1: Health Score */}
           {healthScore && (
-            <div>
+            <div className="scan-tile-wrapper">
               <h2 className="scan-section-title">Theme Health</h2>
               <div
                 className={`scan-tile scan-tile--health-${healthToneModifier(healthScore.tone)}`}
@@ -578,7 +584,7 @@ export default function ScanDetail() {
           )}
 
           {/* Tile 2: Total Findings */}
-          <div>
+          <div className="scan-tile-wrapper">
             <h2 className="scan-section-title">Total Findings</h2>
             <div className="scan-tile" style={{ marginTop: "8px" }}>
               <div className="scan-tile__big-number scan-tile__big-number--neutral">
@@ -609,7 +615,7 @@ export default function ScanDetail() {
           </div>
 
           {/* Tile 3: Severity Breakdown */}
-          <div>
+          <div className="scan-tile-wrapper">
             <h2 className="scan-section-title">Severity Breakdown</h2>
             <div className="scan-tile" style={{ marginTop: "8px" }}>
               <div className="severity-breakdown">
