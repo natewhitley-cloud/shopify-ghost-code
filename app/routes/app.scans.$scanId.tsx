@@ -92,12 +92,12 @@ const FINDINGS_TABLE_STYLES = `
     vertical-align: top;
   }
   .findings-table thead th {
-    background: #f6f6f7;
+    background: #edeeef;
     font-weight: 600;
     white-space: nowrap;
     position: sticky;
     top: 0;
-    border-bottom: 2px solid #d2d5d8;
+    border-bottom: 2px solid #c9cccf;
   }
   .findings-table tbody tr:nth-child(even) {
     background: #fafbfb;
@@ -441,10 +441,23 @@ export default function ScanDetail() {
         .severity-breakdown {
           display: flex;
           flex-direction: column;
-          gap: 12px;
+          gap: 0;
           width: 100%;
         }
+        .severity-breakdown__header {
+          display: flex;
+          justify-content: space-between;
+          padding-bottom: 8px;
+          margin-bottom: 12px;
+          border-bottom: 1px solid #e1e3e5;
+          font-size: 11px;
+          font-weight: 600;
+          color: #8c9196;
+          text-transform: uppercase;
+          letter-spacing: 0.5px;
+        }
         .severity-row {
+          margin-bottom: 12px;
           display: flex;
           align-items: center;
           justify-content: space-between;
@@ -600,6 +613,10 @@ export default function ScanDetail() {
             <h2 className="scan-section-title">Severity Breakdown</h2>
             <div className="scan-tile" style={{ marginTop: "8px" }}>
               <div className="severity-breakdown">
+                <div className="severity-breakdown__header">
+                  <span>Severity</span>
+                  <span>Change</span>
+                </div>
                 {(
                   [
                     { key: "HIGH", label: "High", mod: "high" },
