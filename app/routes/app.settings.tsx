@@ -74,7 +74,7 @@ export default function Settings() {
   const isProfessional = shop.plan === PLANS.PROFESSIONAL;
 
   return (
-    <s-page heading="Settings">
+    <s-page heading="Billing">
       <Link to="/app" slot="primary-action">
         Back to Dashboard
       </Link>
