@@ -63,12 +63,12 @@ function FindingRow({ finding }: { finding: FindingLike }) {
       </td>
       <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
       <td>
-        <code>{finding.filename}</code>
+        <code style={{ fontSize: "12px" }}>{finding.filename}</code>
       </td>
-      <td>{finding.lineNumber}</td>
+      <td style={{ textAlign: "center" }}>{finding.lineNumber}</td>
       <td>{finding.appName ?? "—"}</td>
       <td>
-        <code>
+        <code style={{ fontSize: "12px", wordBreak: "break-word" }}>
           {finding.codeSnippet.length > 80
             ? `${finding.codeSnippet.slice(0, 80)}…`
             : finding.codeSnippet}
@@ -78,10 +78,45 @@ function FindingRow({ finding }: { finding: FindingLike }) {
   );
 }
 
+const FINDINGS_TABLE_STYLES = `
+  .findings-table {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .findings-table th,
+  .findings-table td {
+    border: 1px solid #e1e3e5;
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .findings-table thead th {
+    background: #f6f6f7;
+    font-weight: 600;
+    white-space: nowrap;
+    position: sticky;
+    top: 0;
+  }
+  .findings-table tbody tr:nth-child(even) {
+    background: #fafbfb;
+  }
+  .findings-table tbody tr:hover {
+    background: #f1f2f3;
+  }
+  .findings-table td:nth-child(1) { width: 80px; }
+  .findings-table td:nth-child(2) { width: 100px; white-space: nowrap; }
+  .findings-table td:nth-child(3) { width: 200px; }
+  .findings-table td:nth-child(4) { width: 50px; text-align: center; }
+  .findings-table td:nth-child(5) { width: 100px; }
+  .findings-table td:nth-child(6) { max-width: 400px; overflow: hidden; text-overflow: ellipsis; }
+`;
+
 function FindingsTable({ children }: { children: React.ReactNode }) {
   return (
-    <s-data-table>
-      <table>
+    <>
+      <style>{FINDINGS_TABLE_STYLES}</style>
+      <table className="findings-table">
         <thead>
           <tr>
             <th>Severity</th>
@@ -94,7 +129,7 @@ function FindingsTable({ children }: { children: React.ReactNode }) {
         </thead>
         <tbody>{children}</tbody>
       </table>
-    </s-data-table>
+    </>
   );
 }
 
