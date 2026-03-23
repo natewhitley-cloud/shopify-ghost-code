@@ -1,8 +1,8 @@
 import type { Finding } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
-import type { LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData, useRevalidator } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { Link, useLoaderData, useRevalidator, useFetcher } from "react-router";
 
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -15,6 +15,11 @@ import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { diffScans } from "../services/scan-differ.server";
+import { isTrackerApp } from "../services/app-lookup.server";
+import {
+  getUnknownScriptsForScan,
+  submitSignatureSuggestion,
+} from "../models/unknown-script.server";
 import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -54,6 +59,7 @@ interface FindingLike {
   lineNumber: number;
   appName: string | null;
   codeSnippet: string;
+  isTracker?: boolean;
 }
 
 function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean }) {
@@ -78,6 +84,24 @@ function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean 
               }}
             >
               NEW
+            </span>
+          )}
+          {finding.isTracker && (
+            <span
+              style={{
+                display: "inline-block",
+                padding: "1px 6px",
+                borderRadius: "4px",
+                background: "#fde8e8",
+                color: "#d72c0d",
+                fontSize: "10px",
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                lineHeight: "16px",
+              }}
+            >
+              TRACKING
             </span>
           )}
         </div>
@@ -203,9 +227,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Sort findings by severity (HIGH → MEDIUM → LOW), then by type, file, line.
   sortFindingsBySeverity(findings);
 
+  // Enrich findings with tracker flag for privacy callout badges.
+  const enrichedFindings = (findings ?? []).map((f) => ({
+    ...f,
+    isTracker: f.appName ? isTrackerApp(f.appName) : false,
+  }));
+
   // For free-tier shops, expose only the single highest-severity finding so
   // the UI can show a "peek" without leaking the full results.
-  const previewFinding = canViewDetails ? null : await getHighestSeverityFinding(scanId);
+  const rawPreviewFinding = canViewDetails ? null : await getHighestSeverityFinding(scanId);
+  const previewFinding = rawPreviewFinding
+    ? {
+        ...rawPreviewFinding,
+        isTracker: rawPreviewFinding.appName ? isTrackerApp(rawPreviewFinding.appName) : false,
+      }
+    : null;
 
   // Compute diff against the previous completed scan for the same theme,
   // but only when the current scan is itself completed and the plan allows it.
@@ -222,6 +258,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     }
   }
 
+  // Fetch unknown scripts for completed scans when the user can view details.
+  const unknownScripts =
+    scan.status === "COMPLETED" && canViewDetails ? await getUnknownScriptsForScan(scanId) : [];
+
   return {
     scan: {
       id: scan.id,
@@ -232,13 +272,35 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       createdAt: scan.createdAt,
       findingCount: scan.findingCount,
     },
-    findings,
+    findings: enrichedFindings,
     previewFinding,
     findingSummary,
     canViewDetails,
     scanDiff,
     healthScore,
+    unknownScripts,
   };
+};
+
+// ---------------------------------------------------------------------------
+// Action — handles merchant feedback on unknown scripts
+// ---------------------------------------------------------------------------
+
+export const action = async ({ request, params }: ActionFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+  const shop = await getShopByDomain(session.shop);
+  if (!shop) throw new Response("Not found", { status: 404 });
+
+  const formData = await request.formData();
+  const unknownScriptId = formData.get("unknownScriptId") as string;
+  const suggestedAppName = formData.get("suggestedAppName") as string;
+
+  if (!unknownScriptId || !suggestedAppName?.trim()) {
+    return { error: "App name is required" };
+  }
+
+  await submitSignatureSuggestion(unknownScriptId, shop.id, suggestedAppName.trim());
+  return { success: true, unknownScriptId };
 };
 
 // ---------------------------------------------------------------------------
@@ -253,9 +315,95 @@ declare const shopify: {
   toast: { show: (msg: string, opts?: { isError?: boolean; duration?: number }) => void };
 };
 
+// ---------------------------------------------------------------------------
+// Unknown script feedback row (each row has its own fetcher for independent
+// submission state)
+// ---------------------------------------------------------------------------
+
+type UnknownScriptData = {
+  id: string;
+  filename: string;
+  url: string;
+  resourceType: string;
+  submissions: Array<{ suggestedAppName: string }>;
+};
+
+function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
+  const fetcher = useFetcher<{ success?: boolean; unknownScriptId?: string }>();
+  const isSubmitted = fetcher.data?.unknownScriptId === script.id || script.submissions.length > 0;
+  const submittedName =
+    script.submissions.length > 0
+      ? script.submissions[0].suggestedAppName
+      : (fetcher.formData?.get("suggestedAppName") as string | null);
+
+  return (
+    <tr>
+      <td>
+        <s-badge tone="neutral">
+          {script.resourceType === "script" ? "Script" : "Stylesheet"}
+        </s-badge>
+      </td>
+      <td>
+        <code style={{ fontSize: "12px" }}>{script.filename}</code>
+      </td>
+      <td>
+        <code style={{ fontSize: "12px", wordBreak: "break-all" }}>
+          {script.url.length > 60 ? `${script.url.slice(0, 60)}...` : script.url}
+        </code>
+      </td>
+      <td>
+        {isSubmitted ? (
+          <span style={{ color: "#1a8a3f", fontWeight: 500 }}>
+            Submitted{submittedName ? ` — ${submittedName}` : ""} — thank you!
+          </span>
+        ) : (
+          <fetcher.Form method="post" style={{ display: "flex", gap: "4px" }}>
+            <input type="hidden" name="unknownScriptId" value={script.id} />
+            <input
+              type="text"
+              name="suggestedAppName"
+              placeholder="App name..."
+              required
+              style={{
+                padding: "4px 8px",
+                border: "1px solid #c9cccf",
+                borderRadius: "4px",
+                fontSize: "12px",
+                width: "120px",
+              }}
+            />
+            <button
+              type="submit"
+              disabled={fetcher.state !== "idle"}
+              style={{
+                padding: "4px 8px",
+                border: "1px solid #c9cccf",
+                borderRadius: "4px",
+                fontSize: "12px",
+                background: "#f6f6f7",
+                cursor: "pointer",
+              }}
+            >
+              {fetcher.state !== "idle" ? "..." : "Submit"}
+            </button>
+          </fetcher.Form>
+        )}
+      </td>
+    </tr>
+  );
+}
+
 export default function ScanDetail() {
-  const { scan, findings, previewFinding, findingSummary, canViewDetails, scanDiff, healthScore } =
-    useLoaderData<typeof loader>();
+  const {
+    scan,
+    findings,
+    previewFinding,
+    findingSummary,
+    canViewDetails,
+    scanDiff,
+    healthScore,
+    unknownScripts,
+  } = useLoaderData<typeof loader>();
 
   const revalidator = useRevalidator();
 
@@ -355,6 +503,29 @@ export default function ScanDetail() {
   const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
   const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
 
+  // Performance impact: count external resources from uninstalled apps.
+  const externalResourceCount = findings.filter(
+    (f) => f.findingType === "GHOST_SCRIPT" || f.findingType === "GHOST_STYLE",
+  ).length;
+  const scriptCount = findings.filter((f) => f.findingType === "GHOST_SCRIPT").length;
+  const styleCount = findings.filter((f) => f.findingType === "GHOST_STYLE").length;
+
+  // Build app attribution map: appName -> { files, findingCount, findingTypes }
+  const appAttribution = new Map<
+    string,
+    { files: Set<string>; count: number; types: Set<string> }
+  >();
+  for (const f of findings) {
+    if (!f.appName) continue;
+    if (!appAttribution.has(f.appName)) {
+      appAttribution.set(f.appName, { files: new Set(), count: 0, types: new Set() });
+    }
+    const entry = appAttribution.get(f.appName)!;
+    entry.files.add(f.filename);
+    entry.count++;
+    entry.types.add(f.findingType);
+  }
+
   // Build a Set of fingerprints for new findings so we can tag rows in the table.
   const newFindingKeys = new Set(
     scanDiff
@@ -402,7 +573,7 @@ export default function ScanDetail() {
         }
         .scan-tiles-row {
           display: grid;
-          grid-template-columns: 1fr 1fr 1fr;
+          grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
           gap: 16px;
           margin-top: 8px;
           align-items: stretch;
@@ -691,6 +862,40 @@ export default function ScanDetail() {
               </div>
             </div>
           </div>
+
+          {/* Tile 4: Performance Impact (conditional) */}
+          {externalResourceCount > 0 && (
+            <div className="scan-tile-wrapper">
+              <h2 className="scan-section-title">Performance Impact</h2>
+              <div className="scan-tile" style={{ marginTop: "8px" }}>
+                <div
+                  className={`scan-tile__big-number ${externalResourceCount > 3 ? "scan-tile__big-number--critical" : externalResourceCount > 1 ? "scan-tile__big-number--warning" : "scan-tile__big-number--neutral"}`}
+                >
+                  {externalResourceCount}
+                </div>
+                <div className="scan-tile__subtitle">external resources loading</div>
+                <div
+                  style={{
+                    marginTop: "8px",
+                    fontSize: "13px",
+                    color: "#6d7175",
+                    textAlign: "center",
+                  }}
+                >
+                  {scriptCount > 0 && (
+                    <div>
+                      {scriptCount} script{scriptCount !== 1 ? "s" : ""}
+                    </div>
+                  )}
+                  {styleCount > 0 && (
+                    <div>
+                      {styleCount} stylesheet{styleCount !== 1 ? "s" : ""}
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -745,6 +950,12 @@ export default function ScanDetail() {
                     </a>
                   )}
                 </div>
+                {findings.some((f) => f.isTracker) && (
+                  <s-banner tone="warning">
+                    Findings marked TRACKING are from analytics or advertising scripts that may
+                    still be collecting visitor data even though the app has been uninstalled.
+                  </s-banner>
+                )}
                 {findings.length === 0 ? (
                   <s-paragraph>No ghost code detected in this scan.</s-paragraph>
                 ) : (
@@ -815,6 +1026,129 @@ export default function ScanDetail() {
             </s-card>
           </>
         ))}
+
+      {/* App Impact Map — groups findings by app to show which files each app touched */}
+      {isCompleted && canViewDetails && appAttribution.size > 0 && (
+        <div style={{ marginTop: "32px" }}>
+          <s-card>
+            <s-stack direction="block" gap="base">
+              <h2 className="scan-section-title">App Impact Map</h2>
+              <s-paragraph>
+                Shows which theme files were modified by each app that left code behind.
+              </s-paragraph>
+              <style>{`
+                .app-map-table {
+                  width: 100%;
+                  border-collapse: collapse;
+                  font-size: 13px;
+                }
+                .app-map-table th,
+                .app-map-table td {
+                  border: 1px solid #e1e3e5;
+                  padding: 8px 12px;
+                  text-align: left;
+                  vertical-align: top;
+                }
+                .app-map-table thead th {
+                  background: #edeeef;
+                  font-weight: 600;
+                  white-space: nowrap;
+                }
+                .app-map-table tbody tr:nth-child(even) {
+                  background: #fafbfb;
+                }
+              `}</style>
+              <table className="app-map-table">
+                <thead>
+                  <tr>
+                    <th>App</th>
+                    <th>Findings</th>
+                    <th>Types</th>
+                    <th>Files Affected</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {[...appAttribution.entries()]
+                    .sort((a, b) => b[1].count - a[1].count)
+                    .map(([appName, data]) => (
+                      <tr key={appName}>
+                        <td style={{ fontWeight: 600 }}>{appName}</td>
+                        <td style={{ textAlign: "center" }}>{data.count}</td>
+                        <td>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                            {[...data.types].map((t) => (
+                              <div key={t}>
+                                <s-badge tone="neutral">{FINDING_TYPE_LABELS[t] ?? t}</s-badge>
+                              </div>
+                            ))}
+                          </div>
+                        </td>
+                        <td>
+                          {[...data.files].map((f) => (
+                            <div key={f}>
+                              <code style={{ fontSize: "12px" }}>{f}</code>
+                            </div>
+                          ))}
+                        </td>
+                      </tr>
+                    ))}
+                </tbody>
+              </table>
+            </s-stack>
+          </s-card>
+        </div>
+      )}
+      {/* Unrecognized Scripts — merchant feedback loop for unknown external resources */}
+      {isCompleted && canViewDetails && unknownScripts.length > 0 && (
+        <div style={{ marginTop: "32px" }}>
+          <s-card>
+            <s-stack direction="block" gap="base">
+              <h2 className="scan-section-title">Unrecognized Scripts</h2>
+              <s-paragraph>
+                These external scripts were found in your theme but could not be matched to a known
+                app. If you recognize which app left these behind, let us know — it helps improve
+                detection for everyone.
+              </s-paragraph>
+              <style>{`
+                .unknown-scripts-table {
+                  width: 100%;
+                  border-collapse: collapse;
+                  font-size: 13px;
+                }
+                .unknown-scripts-table th,
+                .unknown-scripts-table td {
+                  border: 1px solid #e1e3e5;
+                  padding: 8px 12px;
+                  text-align: left;
+                  vertical-align: top;
+                }
+                .unknown-scripts-table thead th {
+                  background: #edeeef;
+                  font-weight: 600;
+                }
+                .unknown-scripts-table tbody tr:nth-child(even) {
+                  background: #fafbfb;
+                }
+              `}</style>
+              <table className="unknown-scripts-table">
+                <thead>
+                  <tr>
+                    <th>Type</th>
+                    <th>File</th>
+                    <th>URL</th>
+                    <th>Which app left this?</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {unknownScripts.map((script) => (
+                    <UnknownScriptRow key={script.id} script={script} />
+                  ))}
+                </tbody>
+              </table>
+            </s-stack>
+          </s-card>
+        </div>
+      )}
     </s-page>
   );
 }

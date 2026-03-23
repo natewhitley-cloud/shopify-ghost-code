@@ -52,6 +52,11 @@ vi.mock("../../app/services/scan-differ.server", () => ({
   diffScans: vi.fn(),
 }));
 
+vi.mock("../../app/models/unknown-script.server", () => ({
+  getUnknownScriptsForScan: vi.fn(),
+  submitSignatureSuggestion: vi.fn(),
+}));
+
 vi.mock("../../app/lib/format", () => ({
   formatDate: vi.fn().mockReturnValue("2026-03-22"),
   statusTone: vi.fn().mockReturnValue("info"),
@@ -67,6 +72,7 @@ import { canViewFindingDetails, canUseScanDiffing } from "../../app/lib/plan-gat
 import { getFindingSummary, getHighestSeverityFinding } from "../../app/models/finding.server";
 import { getScanById, getPreviousScanForTheme } from "../../app/models/scan.server";
 import { getShopByDomain } from "../../app/models/shop.server";
+import { getUnknownScriptsForScan } from "../../app/models/unknown-script.server";
 import { loader } from "../../app/routes/app.scans.$scanId";
 import { diffScans } from "../../app/services/scan-differ.server";
 import { authenticate } from "../../app/shopify.server";
@@ -163,6 +169,7 @@ beforeEach(() => {
   mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetHighestSeverityFinding.mockResolvedValue(null);
   mockGetPreviousScanForTheme.mockResolvedValue(null);
+  (getUnknownScriptsForScan as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -227,7 +234,7 @@ describe("app.scans.$scanId loader", () => {
 
       expect(result.findings).toHaveLength(0);
       expect(result.canViewDetails).toBe(false);
-      expect(result.previewFinding).toEqual(previewFinding);
+      expect(result.previewFinding).toEqual({ ...previewFinding, isTracker: false });
     });
 
     it("calls getScanById with includeFindings: false for free plans", async () => {
