@@ -101,7 +101,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/judge\.me/, /jdgm\b/, /JudgeMe/],
     snippetNames: ["judgeme_widgets", "jdgm-widget", "jdgm-review", "jdgm_widgets"],
     cssPatterns: [/jdgm/, /judge\.me/],
-    jsonLdPatterns: [/judge\.me/i, /"reviewCount"/],
+    jsonLdPatterns: [/judge\.me/i, /jdgm/i],
   },
   {
     appName: "Loox",

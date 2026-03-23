@@ -56,11 +56,31 @@ interface FindingLike {
   codeSnippet: string;
 }
 
-function FindingRow({ finding }: { finding: FindingLike }) {
+function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean }) {
   return (
     <tr>
       <td>
-        <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
+        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+          <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
+          {isNew && (
+            <span
+              style={{
+                display: "inline-block",
+                padding: "1px 6px",
+                borderRadius: "4px",
+                background: "#e3f1df",
+                color: "#1a8a3f",
+                fontSize: "10px",
+                fontWeight: 700,
+                textTransform: "uppercase",
+                letterSpacing: "0.5px",
+                lineHeight: "16px",
+              }}
+            >
+              NEW
+            </span>
+          )}
+        </div>
       </td>
       <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
       <td>
@@ -334,6 +354,15 @@ export default function ScanDetail() {
   const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
   const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
   const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
+
+  // Build a Set of fingerprints for new findings so we can tag rows in the table.
+  const newFindingKeys = new Set(
+    scanDiff
+      ? scanDiff.newFindings.map(
+          (f) => `${f.findingType}|${f.filename}|${f.severity}|${f.appName ?? ""}`,
+        )
+      : [],
+  );
 
   /**
    * Map HealthScoreResult tone to the CSS modifier used in tile classes.
@@ -721,7 +750,13 @@ export default function ScanDetail() {
                 ) : (
                   <FindingsTable>
                     {findings.map((finding) => (
-                      <FindingRow key={finding.id} finding={finding} />
+                      <FindingRow
+                        key={finding.id}
+                        finding={finding}
+                        isNew={newFindingKeys.has(
+                          `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
+                        )}
+                      />
                     ))}
                   </FindingsTable>
                 )}
