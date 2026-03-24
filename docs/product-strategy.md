@@ -73,33 +73,33 @@ Ghost Code v1 ships with 20 finding types across 94+ app signatures (915 tests):
 
 ### Theme-file detectors (read_themes scope)
 
-| Finding Type | Severity | Description |
-|---|---|---|
-| GHOST_SCRIPT | HIGH | External `<script src>` tags from app CDNs |
-| GHOST_PIXEL | HIGH | Inline tracking code (fbq, gtag, ttq, pintrk, etc.) — 12 tracker patterns |
-| GHOST_ROBOTS | HIGH | Orphaned `<meta name="robots" content="noindex">` directives blocking SEO |
-| GHOST_HREFLANG | HIGH | Orphaned `<link rel="alternate" hreflang>` from translation apps |
-| JSON_LD_CONFLICT | HIGH | Conflicting JSON-LD blocks — same @type, different data on same page |
-| GHOST_TEXT | HIGH | Orphaned widget markup (review widgets, trust badges, wishlist buttons) |
-| GHOST_STYLE | MEDIUM | External `<link rel="stylesheet">` tags |
-| GHOST_SNIPPET | MEDIUM | `{% render %}` / `{% include %}` of known app snippets |
-| DUPLICATE_META | MEDIUM | Duplicate meta tags with same name/property from stacked SEO apps |
-| GHOST_JSON_LD | MEDIUM | Orphaned `<script type="application/ld+json">` blocks from review/FAQ/SEO apps |
-| GHOST_LAYOUT | MEDIUM | Orphaned page builder layout files (theme.pagefly.liquid, etc.) |
-| GHOST_TRANSLATION | MEDIUM | Orphaned translations via Shopify Translations API |
-| GHOST_SECTION | LOW | `{% section %}` of known app sections |
-| ORPHAN_ASSET | LOW | Unreferenced snippet files (requires app attribution) |
-| SETTINGS_DRIFT | LOW | Stale section references in settings_data.json pointing to nonexistent files |
+| Finding Type      | Severity | Description                                                                    |
+| ----------------- | -------- | ------------------------------------------------------------------------------ |
+| GHOST_SCRIPT      | HIGH     | External `<script src>` tags from app CDNs                                     |
+| GHOST_PIXEL       | HIGH     | Inline tracking code (fbq, gtag, ttq, pintrk, etc.) — 12 tracker patterns      |
+| GHOST_ROBOTS      | HIGH     | Orphaned `<meta name="robots" content="noindex">` directives blocking SEO      |
+| GHOST_HREFLANG    | HIGH     | Orphaned `<link rel="alternate" hreflang>` from translation apps               |
+| JSON_LD_CONFLICT  | HIGH     | Conflicting JSON-LD blocks — same @type, different data on same page           |
+| GHOST_TEXT        | HIGH     | Orphaned widget markup (review widgets, trust badges, wishlist buttons)        |
+| GHOST_STYLE       | MEDIUM   | External `<link rel="stylesheet">` tags                                        |
+| GHOST_SNIPPET     | MEDIUM   | `{% render %}` / `{% include %}` of known app snippets                         |
+| DUPLICATE_META    | MEDIUM   | Duplicate meta tags with same name/property from stacked SEO apps              |
+| GHOST_JSON_LD     | MEDIUM   | Orphaned `<script type="application/ld+json">` blocks from review/FAQ/SEO apps |
+| GHOST_LAYOUT      | MEDIUM   | Orphaned page builder layout files (theme.pagefly.liquid, etc.)                |
+| GHOST_TRANSLATION | MEDIUM   | Orphaned translations via Shopify Translations API                             |
+| GHOST_SECTION     | LOW      | `{% section %}` of known app sections                                          |
+| ORPHAN_ASSET      | LOW      | Unreferenced snippet files (requires app attribution)                          |
+| SETTINGS_DRIFT    | LOW      | Stale section references in settings_data.json pointing to nonexistent files   |
 
 ### API-based detectors (optional scopes — graceful degradation when not granted)
 
-| Finding Type | Severity | Scope | Description |
-|---|---|---|---|
-| GHOST_PRICE | HIGH | read_products | Persistent compare-at pricing left by uninstalled discount apps — direct revenue impact |
-| GHOST_REDIRECT | MEDIUM | read_online_store_navigation | Orphaned URL redirects from SEO apps (pattern + bulk detection) |
-| GHOST_PAGE | MEDIUM | read_content | Orphaned pages created by apps (pagefly-*, gempages-*, etc.) |
-| GHOST_TAG | LOW | read_products | Orphaned product tags from apps (__bold, loyalty-, recharge-, etc.) |
-| GHOST_METAFIELD | LOW | read_products | Orphaned metafields in known app namespaces (app-owned metafields invisible) |
+| Finding Type    | Severity | Scope                        | Description                                                                             |
+| --------------- | -------- | ---------------------------- | --------------------------------------------------------------------------------------- |
+| GHOST_PRICE     | HIGH     | read_products                | Persistent compare-at pricing left by uninstalled discount apps — direct revenue impact |
+| GHOST_REDIRECT  | MEDIUM   | read_online_store_navigation | Orphaned URL redirects from SEO apps (pattern + bulk detection)                         |
+| GHOST_PAGE      | MEDIUM   | read_content                 | Orphaned pages created by apps (pagefly-_, gempages-_, etc.)                            |
+| GHOST_TAG       | LOW      | read_products                | Orphaned product tags from apps (\_\_bold, loyalty-, recharge-, etc.)                   |
+| GHOST_METAFIELD | LOW      | read_products                | Orphaned metafields in known app namespaces (app-owned metafields invisible)            |
 
 ---
 
@@ -142,41 +142,41 @@ Cleanify Code (the only prior competitor) was delisted — reviews mentioned fal
 
 ### v1.1 — Quick wins from existing data
 
-| Feature | Effort | Status | Description |
-|---|---|---|---|
-| **App Code Attribution Map** | Low | **Shipped** (App Impact Map) | UI view showing which theme files each app touched, with finding counts and types. Data derived from existing scan results. |
-| **Tracking Script Privacy Callout** | Low | **Shipped** | Sub-classify existing GHOST_SCRIPT findings: if CDN domain is a known tracker (Meta Pixel, TikTok, Snapchat, etc.), flag as "Privacy: this script may still be collecting visitor data." |
-| **Unknown Finding Feedback Loop** | Medium | **Shipped** | "Do you know which app left this?" inline input on unattributed findings. Submissions stored with review status tracking. CLI curation script at `scripts/review-submissions.ts`. |
-| **Theme Performance Impact Score** | Medium | **Shipped** | Sum external script/stylesheet weight from scan data. Shows "apps are adding X KB of external resources to every page load." |
+| Feature                             | Effort | Status                       | Description                                                                                                                                                                              |
+| ----------------------------------- | ------ | ---------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **App Code Attribution Map**        | Low    | **Shipped** (App Impact Map) | UI view showing which theme files each app touched, with finding counts and types. Data derived from existing scan results.                                                              |
+| **Tracking Script Privacy Callout** | Low    | **Shipped**                  | Sub-classify existing GHOST_SCRIPT findings: if CDN domain is a known tracker (Meta Pixel, TikTok, Snapchat, etc.), flag as "Privacy: this script may still be collecting visitor data." |
+| **Unknown Finding Feedback Loop**   | Medium | **Shipped**                  | "Do you know which app left this?" inline input on unattributed findings. Submissions stored with review status tracking. CLI curation script at `scripts/review-submissions.ts`.        |
+| **Theme Performance Impact Score**  | Medium | **Shipped**                  | Sum external script/stylesheet weight from scan data. Shows "apps are adding X KB of external resources to every page load."                                                             |
 
 ### v1.2 — New detection capabilities
 
-| Feature | Effort | Status | Description |
-|---|---|---|---|
-| **Orphaned Webhook Detection** | Medium | **Not feasible** | Shopify isolates webhook subscriptions per-app — each app can only see its own webhooks. Same architectural blocker as Permission Audit. |
-| **Persistent UI Text Fragments** | Medium | **Shipped** (GHOST_TEXT) | Pattern-match Liquid templates for known widget text left by uninstalled apps. |
-| **Translation Metafield Detection** | Medium | **Shipped** (GHOST_TRANSLATION) | Query translations via Shopify Translations API. `read_translations` optional scope. |
-| **Market Research DB Signature Expansion** | Low | Partially done | Signature DB expanded from 56 to 94 apps across 15 categories. |
-| **Settings Data Drift** | Low | **Shipped** (SETTINGS_DRIFT) | Stale section refs in settings_data.json pointing to nonexistent section files. |
-| **Inline Tracking Pixel Detection** | Low | **Shipped** (GHOST_PIXEL) | Inline fbq, gtag, ttq, pintrk, etc. — 12 tracker patterns with per-file dedup. |
-| **JSON-LD Conflict Detection** | Low | **Shipped** (JSON_LD_CONFLICT) | Same @type with different data = conflicting signals for Google. |
-| **Page Builder Layout Detection** | Low | **Shipped** (GHOST_LAYOUT) | Orphaned theme.pagefly.liquid, theme.gempages.liquid, etc. |
-| **Orphaned Robots Directives** | Low | **Shipped** (GHOST_ROBOTS) | Static noindex/nofollow meta robots left by SEO apps. |
-| **Orphaned Product Tags** | Medium | **Shipped** (GHOST_TAG) | App-prefixed tags (__bold, loyalty-, recharge-). `read_products` optional scope. |
-| **Persistent Discount Prices** | Medium | **Shipped** (GHOST_PRICE) | Compare-at pricing left by discount apps. `read_products` optional scope. |
-| **Orphaned Pages** | Medium | **Shipped** (GHOST_PAGE) | App-created pages (pagefly-*, gempages-*). `read_content` optional scope. |
-| **Orphaned Metafields** | Medium | **Shipped** (GHOST_METAFIELD) | Known app namespaces on products. `read_products` optional scope. |
-| **Orphaned Redirects** | Medium | **Shipped** (GHOST_REDIRECT) | SEO app redirect patterns + bulk detection. `read_online_store_navigation` optional scope. |
+| Feature                                    | Effort | Status                          | Description                                                                                                                              |
+| ------------------------------------------ | ------ | ------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| **Orphaned Webhook Detection**             | Medium | **Not feasible**                | Shopify isolates webhook subscriptions per-app — each app can only see its own webhooks. Same architectural blocker as Permission Audit. |
+| **Persistent UI Text Fragments**           | Medium | **Shipped** (GHOST_TEXT)        | Pattern-match Liquid templates for known widget text left by uninstalled apps.                                                           |
+| **Translation Metafield Detection**        | Medium | **Shipped** (GHOST_TRANSLATION) | Query translations via Shopify Translations API. `read_translations` optional scope.                                                     |
+| **Market Research DB Signature Expansion** | Low    | Partially done                  | Signature DB expanded from 56 to 94 apps across 15 categories.                                                                           |
+| **Settings Data Drift**                    | Low    | **Shipped** (SETTINGS_DRIFT)    | Stale section refs in settings_data.json pointing to nonexistent section files.                                                          |
+| **Inline Tracking Pixel Detection**        | Low    | **Shipped** (GHOST_PIXEL)       | Inline fbq, gtag, ttq, pintrk, etc. — 12 tracker patterns with per-file dedup.                                                           |
+| **JSON-LD Conflict Detection**             | Low    | **Shipped** (JSON_LD_CONFLICT)  | Same @type with different data = conflicting signals for Google.                                                                         |
+| **Page Builder Layout Detection**          | Low    | **Shipped** (GHOST_LAYOUT)      | Orphaned theme.pagefly.liquid, theme.gempages.liquid, etc.                                                                               |
+| **Orphaned Robots Directives**             | Low    | **Shipped** (GHOST_ROBOTS)      | Static noindex/nofollow meta robots left by SEO apps.                                                                                    |
+| **Orphaned Product Tags**                  | Medium | **Shipped** (GHOST_TAG)         | App-prefixed tags (\_\_bold, loyalty-, recharge-). `read_products` optional scope.                                                       |
+| **Persistent Discount Prices**             | Medium | **Shipped** (GHOST_PRICE)       | Compare-at pricing left by discount apps. `read_products` optional scope.                                                                |
+| **Orphaned Pages**                         | Medium | **Shipped** (GHOST_PAGE)        | App-created pages (pagefly-_, gempages-_). `read_content` optional scope.                                                                |
+| **Orphaned Metafields**                    | Medium | **Shipped** (GHOST_METAFIELD)   | Known app namespaces on products. `read_products` optional scope.                                                                        |
+| **Orphaned Redirects**                     | Medium | **Shipped** (GHOST_REDIRECT)    | SEO app redirect patterns + bulk detection. `read_online_store_navigation` optional scope.                                               |
 
 ### v1.3 — SEO integrity detection (next sprint)
 
 Critical SEO detectors using existing `read_themes` scope — no new scopes needed. These target the most damaging SEO problems caused by orphaned app code.
 
-| Feature | Effort | Impact | Description |
-|---|---|---|---|
-| **GHOST_CANONICAL** | Medium | **Critical** | SEO apps override `<link rel="canonical">` in theme layouts. After uninstall, orphaned logic outputs malformed/missing canonical URLs → Google indexes wrong URL variants, causing duplicate content. Broken canonicals are the single most damaging SEO problem possible. Community threads document merchants losing organic traffic after uninstalling SEO apps because canonical signals became inconsistent. |
-| **GHOST_TITLE** | Medium | **Critical** | SEO apps override `<title>` tags with custom logic. After uninstall, titles become blank or show raw Liquid variables (e.g., `{{ seo_title_format }}`). Google displays store URLs instead of proper titles in search results. Shopify Community: _"the page title tag in the tab headers used for SEO isn't showing"_ after uninstalling an SEO app. Title tags are the single most important on-page SEO element. |
-| **GHOST_OG** | Medium | **High** | Social/SEO apps inject Open Graph + Twitter Card meta tags via snippets in `theme.liquid`. After uninstall, broken/empty OG tags → Facebook/Twitter show wrong images, blank descriptions, or fallback previews. Directly impacts click-through from social channels. Detection: find duplicate/conflicting `og:*` and `twitter:*` properties, OG tags referencing undefined Liquid variables, orphaned snippet includes for social meta. |
+| Feature             | Effort | Impact       | Description                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| ------------------- | ------ | ------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **GHOST_CANONICAL** | Medium | **Critical** | SEO apps override `<link rel="canonical">` in theme layouts. After uninstall, orphaned logic outputs malformed/missing canonical URLs → Google indexes wrong URL variants, causing duplicate content. Broken canonicals are the single most damaging SEO problem possible. Community threads document merchants losing organic traffic after uninstalling SEO apps because canonical signals became inconsistent.                         |
+| **GHOST_TITLE**     | Medium | **Critical** | SEO apps override `<title>` tags with custom logic. After uninstall, titles become blank or show raw Liquid variables (e.g., `{{ seo_title_format }}`). Google displays store URLs instead of proper titles in search results. Shopify Community: _"the page title tag in the tab headers used for SEO isn't showing"_ after uninstalling an SEO app. Title tags are the single most important on-page SEO element.                       |
+| **GHOST_OG**        | Medium | **High**     | Social/SEO apps inject Open Graph + Twitter Card meta tags via snippets in `theme.liquid`. After uninstall, broken/empty OG tags → Facebook/Twitter show wrong images, blank descriptions, or fallback previews. Directly impacts click-through from social channels. Detection: find duplicate/conflicting `og:*` and `twitter:*` properties, OG tags referencing undefined Liquid variables, orphaned snippet includes for social meta. |
 
 **Why this tier matters:** These three detectors address the gap between "your store is slow" (current detection) and "your store is invisible to Google" (what merchants fear most). Together with existing GHOST_ROBOTS, DUPLICATE_META, JSON_LD_CONFLICT, and GHOST_REDIRECT, they complete Ghost Code's SEO integrity story.
 
@@ -184,11 +184,11 @@ Critical SEO detectors using existing `read_themes` scope — no new scopes need
 
 Resource-level performance detectors. All use `read_themes` scope.
 
-| Feature | Effort | Impact | Description |
-|---|---|---|---|
-| **GHOST_PRECONNECT** | Low | **Medium** | Apps add `<link rel="preconnect">`, `<link rel="dns-prefetch">`, `<link rel="preload">` for their CDNs. After uninstall, browser wastes connection slots on defunct domains. Shopify's own perf docs warn about excessive preconnect hints stealing priority from legitimate resources. Detection: cross-reference preconnect domains against known app CDNs. |
-| **GHOST_FONT** | Medium | **Medium** | Apps load custom fonts via `@font-face` or Google Fonts links. After uninstall, 100-500ms of wasted download + CLS from font-display issues. Detection: find `@font-face` declarations and font service links whose `font-family` is never referenced in active CSS. |
-| **GHOST_AJAX** | Medium | **Medium-High** | App JavaScript makes `fetch()`/`XMLHttpRequest` calls to defunct app servers. Wasted network requests on every page load + privacy concern (data leaking to old endpoints). Detection: parse inline/external JS for fetch/XHR patterns pointing to known app API domains. Combines performance impact with privacy angle. |
+| Feature              | Effort | Impact          | Description                                                                                                                                                                                                                                                                                                                                                   |
+| -------------------- | ------ | --------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **GHOST_PRECONNECT** | Low    | **Medium**      | Apps add `<link rel="preconnect">`, `<link rel="dns-prefetch">`, `<link rel="preload">` for their CDNs. After uninstall, browser wastes connection slots on defunct domains. Shopify's own perf docs warn about excessive preconnect hints stealing priority from legitimate resources. Detection: cross-reference preconnect domains against known app CDNs. |
+| **GHOST_FONT**       | Medium | **Medium**      | Apps load custom fonts via `@font-face` or Google Fonts links. After uninstall, 100-500ms of wasted download + CLS from font-display issues. Detection: find `@font-face` declarations and font service links whose `font-family` is never referenced in active CSS.                                                                                          |
+| **GHOST_AJAX**       | Medium | **Medium-High** | App JavaScript makes `fetch()`/`XMLHttpRequest` calls to defunct app servers. Wasted network requests on every page load + privacy concern (data leaking to old endpoints). Detection: parse inline/external JS for fetch/XHR patterns pointing to known app API domains. Combines performance impact with privacy angle.                                     |
 
 ### Future ideas (unscheduled)
 
@@ -206,32 +206,32 @@ Resource-level performance detectors. All use `read_themes` scope.
 
 Merchant-reported persistent artifacts after app uninstall — status of detection coverage:
 
-| Artifact | Evidence | Status |
-|---|---|---|
-| **Translation metafields** | Shopify Translate & Adapt confirmed; 166K bad Google crawls | **Shipped** — GHOST_TRANSLATION |
-| **Persistent UI text fragments** | Payment badge text appearing 2 years post-uninstall | **Shipped** — GHOST_TEXT |
-| **Custom tags on products/orders** | "Some apps leave behind meta fields, Tags or code" | **Shipped** — GHOST_TAG (read_products optional scope) |
-| **Discount/pricing data** | BOLD Discounts: "Sales are STUCK ON MY PRODUCTS" | **Shipped** — GHOST_PRICE (read_products optional scope) |
-| **SEO sabotage code** | SearchPie: rankings flatlined to 0 within 2 days | **Partially shipped** — GHOST_ROBOTS, DUPLICATE_META, JSON_LD_CONFLICT, GHOST_REDIRECT cover theme + redirect side. Canonical/title tag overrides planned for v1.3. Server-side redirects not visible. |
-| **Tracking pixels (sneaky persistence)** | "The number of sneaky tracking scripts were beyond astonishing" | **Shipped** — GHOST_SCRIPT (external) + GHOST_PIXEL (inline, 12 tracker patterns) |
-| **Orphaned webhooks** | Apps lose API access on uninstall but webhooks may persist | **Not feasible** — Shopify isolates webhook subscriptions per-app |
-| **Orphaned canonical/title overrides** | SEO apps override canonical + title tags; orphaned logic after uninstall | **Planned** — v1.3 (GHOST_CANONICAL, GHOST_TITLE) |
-| **Orphaned Open Graph tags** | Social apps inject OG/Twitter Card meta; broken after uninstall | **Planned** — v1.3 (GHOST_OG) |
-| **Orphaned resource hints** | Apps add preconnect/preload for their CDNs; wastes connections after uninstall | **Planned** — v1.4 (GHOST_PRECONNECT) |
-| **Orphaned font declarations** | Apps load custom fonts; persist after uninstall (100-500ms wasted) | **Planned** — v1.4 (GHOST_FONT) |
-| **Orphaned AJAX calls** | App JS makes fetch/XHR to defunct app servers | **Planned** — v1.4 (GHOST_AJAX) |
+| Artifact                                 | Evidence                                                                       | Status                                                                                                                                                                                                 |
+| ---------------------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Translation metafields**               | Shopify Translate & Adapt confirmed; 166K bad Google crawls                    | **Shipped** — GHOST_TRANSLATION                                                                                                                                                                        |
+| **Persistent UI text fragments**         | Payment badge text appearing 2 years post-uninstall                            | **Shipped** — GHOST_TEXT                                                                                                                                                                               |
+| **Custom tags on products/orders**       | "Some apps leave behind meta fields, Tags or code"                             | **Shipped** — GHOST_TAG (read_products optional scope)                                                                                                                                                 |
+| **Discount/pricing data**                | BOLD Discounts: "Sales are STUCK ON MY PRODUCTS"                               | **Shipped** — GHOST_PRICE (read_products optional scope)                                                                                                                                               |
+| **SEO sabotage code**                    | SearchPie: rankings flatlined to 0 within 2 days                               | **Partially shipped** — GHOST_ROBOTS, DUPLICATE_META, JSON_LD_CONFLICT, GHOST_REDIRECT cover theme + redirect side. Canonical/title tag overrides planned for v1.3. Server-side redirects not visible. |
+| **Tracking pixels (sneaky persistence)** | "The number of sneaky tracking scripts were beyond astonishing"                | **Shipped** — GHOST_SCRIPT (external) + GHOST_PIXEL (inline, 12 tracker patterns)                                                                                                                      |
+| **Orphaned webhooks**                    | Apps lose API access on uninstall but webhooks may persist                     | **Not feasible** — Shopify isolates webhook subscriptions per-app                                                                                                                                      |
+| **Orphaned canonical/title overrides**   | SEO apps override canonical + title tags; orphaned logic after uninstall       | **Planned** — v1.3 (GHOST_CANONICAL, GHOST_TITLE)                                                                                                                                                      |
+| **Orphaned Open Graph tags**             | Social apps inject OG/Twitter Card meta; broken after uninstall                | **Planned** — v1.3 (GHOST_OG)                                                                                                                                                                          |
+| **Orphaned resource hints**              | Apps add preconnect/preload for their CDNs; wastes connections after uninstall | **Planned** — v1.4 (GHOST_PRECONNECT)                                                                                                                                                                  |
+| **Orphaned font declarations**           | Apps load custom fonts; persist after uninstall (100-500ms wasted)             | **Planned** — v1.4 (GHOST_FONT)                                                                                                                                                                        |
+| **Orphaned AJAX calls**                  | App JS makes fetch/XHR to defunct app servers                                  | **Planned** — v1.4 (GHOST_AJAX)                                                                                                                                                                        |
 
 ---
 
 ## Messaging angles (ranked by potency)
 
-| Message                                                             | Why it works                                                                   |
-| ------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| "You're paying a developer to clean up what your apps left behind." | Puts a dollar figure on the pain. Developer quotes are $200–500+.              |
-| "Even Shopify's own apps leave data behind."                        | Removes the "only bad apps do this" objection. Translate & Adapt is the proof. |
+| Message                                                             | Why it works                                                                                                           |
+| ------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| "You're paying a developer to clean up what your apps left behind." | Puts a dollar figure on the pain. Developer quotes are $200–500+.                                                      |
+| "Even Shopify's own apps leave data behind."                        | Removes the "only bad apps do this" objection. Translate & Adapt is the proof.                                         |
 | "Ghost code is costing you Google rankings, not just load time."    | SEO damage → lost revenue. v1 detects hreflang, meta, and JSON-LD — this is backed by shipped features, not vaporware. |
-| "743 hreflang conflicts from an app you uninstalled months ago."    | Specific number from real review. Specificity = credibility.                   |
-| "Your store is running things you didn't install."                  | Core brand statement. Taps the Disputifier-primed anxiety.                     |
+| "743 hreflang conflicts from an app you uninstalled months ago."    | Specific number from real review. Specificity = credibility.                                                           |
+| "Your store is running things you didn't install."                  | Core brand statement. Taps the Disputifier-primed anxiety.                                                             |
 
 ---
 
