@@ -1,5 +1,16 @@
 # Retrospective History
 
+## Retro: 2026-03-24 (session 21 — File cleanup + v1.4 GHOST_FONT/GHOST_AJAX)
+
+- Tasks completed: Uncommitted file cleanup (3 commits), v1.4 detectors (1 commit)
+- Agents dispatched: 1 implementer (GHOST_FONT + GHOST_AJAX)
+- Test delta: 998 → 1026 (+28 tests)
+- Commits: 4 (3 docs/chore, 1 feat)
+- Lines added: ~1100 net
+- Key insight: Housekeeping commits should be done periodically, not accumulated across 5+ sessions. 14 modified/untracked files creates merge risk.
+- Key pattern: Single subagent dispatch for paired detectors (FONT + AJAX) worked cleanly — both operate on `<head>`/`<script>` content with identical patterns.
+- Scanner now at 22 finding types, 96+ signatures, 1026 tests. v1.4 performance tier complete.
+
 ## Retro: 2026-03-23 (session 19 — Permission Audit removal)
 
 - Tasks completed: 1 bead closed (GC-iw0 Permission Audit removal)
