@@ -17,6 +17,10 @@ import {
   detectSettingsDrift,
   detectGhostLayouts,
   detectGhostRobots,
+  detectGhostCanonical,
+  detectGhostTitle,
+  detectGhostOg,
+  detectGhostPreconnect,
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
@@ -2111,5 +2115,887 @@ describe("detectGhostRobots", () => {
     const result = scanThemeFiles(files);
     const robotsFindings = findingsOfType(result.findings, FindingType.GHOST_ROBOTS);
     expect(robotsFindings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostCanonical
+// ---------------------------------------------------------------------------
+
+describe("detectGhostCanonical", () => {
+  // --- Detection cases ---
+
+  it("detects empty canonical href", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="canonical" href="">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_CANONICAL);
+    expect(findings[0].description).toContain("Empty canonical href");
+  });
+
+  it("detects whitespace-only canonical href", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="canonical" href="   ">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_CANONICAL);
+    expect(findings[0].description).toContain("Empty canonical href");
+  });
+
+  it("detects unresolved Liquid variable in href", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="canonical" href="{{ seo_canonical_url }}">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_CANONICAL);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("detects unresolved complex Liquid variable with filter", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="canonical" href="{{ canonical_override | strip }}">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_CANONICAL);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("detects duplicate canonical tags in same file (flags 2nd)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<link rel="canonical" href="{{ canonical_url }}">',
+        '<link rel="canonical" href="{{ canonical_url }}">',
+      ].join("\n"),
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_CANONICAL);
+    expect(findings[0].description).toContain("Duplicate canonical tag");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("detects app-attributed canonical via code context", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<!-- avada-seo canonical override -->",
+        '<link rel="canonical" href="https://mystore.com/products/thing">',
+      ].join("\n"),
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_CANONICAL);
+    expect(findings[0].appName).toBe("Avada SEO Suite");
+    expect(findings[0].description).toContain("App-attributed canonical");
+  });
+
+  it("detects reversed attribute order (href before rel)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link href="" rel="canonical">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_CANONICAL);
+    expect(findings[0].description).toContain("Empty canonical href");
+  });
+
+  // --- False positive avoidance ---
+
+  it("does NOT flag native Shopify canonical_url", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="canonical" href="{{ canonical_url }}">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag native canonical_url with filter", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="canonical" href="{{ canonical_url | strip }}">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag canonical inside Liquid conditional", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '{% if template == \'product\' %}<link rel="canonical" href="">{%endif%}',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag canonical inside Liquid comment block", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '{% comment %}<link rel="canonical" href="">{% endcomment %}',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag single valid hardcoded canonical URL", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="canonical" href="https://mystore.com/">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag valid Liquid variables: request.path, shop.url, page_url", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<link rel="canonical" href="{{ request.path }}">',
+        '<link rel="canonical" href="{{ shop.url }}">',
+        '<link rel="canonical" href="{{ page_url }}">',
+      ].join("\n"),
+    };
+    const findings = detectGhostCanonical(file);
+    // 3 tags total, but all use safe vars — should only get duplicate findings for lines 2+
+    // since the safe vars are not flagged as unresolved.
+    // Actually: 3 canonicals means line 2 and 3 are duplicates.
+    const unresolvedFindings = findings.filter((f) => f.description.includes("Unresolved"));
+    expect(unresolvedFindings).toHaveLength(0);
+  });
+
+  it("returns empty for file with no canonical tags", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<head><title>Hello</title></head>",
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  // --- Severity ---
+
+  it("severity is HIGH by default", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="canonical" href="">',
+    };
+    const findings = detectGhostCanonical(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  // --- Integration ---
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<link rel="canonical" href="">',
+      },
+    ];
+    const result = scanThemeFiles(files);
+    const canonicalFindings = findingsOfType(result.findings, FindingType.GHOST_CANONICAL);
+    expect(canonicalFindings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostTitle
+// ---------------------------------------------------------------------------
+
+describe("detectGhostTitle", () => {
+  // --- Detection cases ---
+
+  it("detects empty title in layout file", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title></title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].description).toContain("Empty title tag");
+  });
+
+  it("detects whitespace-only title in layout file", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title>   </title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].description).toContain("Empty title tag");
+  });
+
+  it("detects unresolved Liquid variable in title", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title>{{ seo_title_format }}</title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("detects unresolved variable mixed with valid page_title (HIGH severity — unresolved var is the issue)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title>{{ page_title }} | {{ seo_suffix }}</title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  it("detects app-attributed title via code context", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<!-- booster-seo title override -->", "<title>{{ page_title }}</title>"].join(
+        "\n",
+      ),
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].appName).toBe("BOOSTER SEO");
+    expect(findings[0].description).toContain("App-attributed title");
+  });
+
+  it("detects duplicate title tags in same layout file", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<title>{{ page_title }}</title>", "<title>{{ page_title }}</title>"].join("\n"),
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].description).toContain("Duplicate title tag");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("detects title with known-app render as app-attributed", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<!-- seo-manager title -->", "<title>My Store</title>"].join("\n"),
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].appName).toBe("SEO Manager");
+  });
+
+  // --- False positive avoidance ---
+
+  it("does NOT flag native Dawn title with page_title and shop.name", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title>{{ page_title }} &ndash; {{ shop.name }}</title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag title with only safe variables", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        "<title>{{ page_title }}{% unless page_title contains shop.name %} - {{ shop.name }}{% endunless %}</title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag title inside a Liquid conditional", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "{% if template == 'product' %}<title></title>{% endif %}",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag title inside a Liquid comment", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "{% comment %}<title></title>{% endcomment %}",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag empty title in a non-layout file", () => {
+    const file: ThemeFile = {
+      filename: "templates/404.liquid",
+      content: "<title></title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag title with content_for_header or content_for_* variables", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title>{{ content_for_header }}</title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("returns empty for file with no title tags", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<head><link rel="canonical" href="{{ canonical_url }}"></head>',
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  // --- Severity ---
+
+  it("severity is HIGH by default", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title></title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  // --- Integration ---
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: "<title></title>",
+      },
+    ];
+    const result = scanThemeFiles(files);
+    const titleFindings = findingsOfType(result.findings, FindingType.GHOST_TITLE);
+    expect(titleFindings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostOg
+// ---------------------------------------------------------------------------
+
+describe("detectGhostOg", () => {
+  // --- Detections (should fire) ---
+
+  it("detects empty og:title content", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:title" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_OG);
+    expect(findings[0].description).toContain("og:title");
+    expect(findings[0].description).toContain("Empty");
+  });
+
+  it("detects empty og:image content and upgrades to HIGH severity", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:image" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_OG);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+    expect(findings[0].description).toContain("og:image");
+  });
+
+  it("detects empty twitter:description content", () => {
+    const file: ThemeFile = {
+      filename: "sections/header.liquid",
+      content: '<meta name="twitter:description" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_OG);
+    expect(findings[0].description).toContain("twitter:description");
+  });
+
+  it("detects unresolved variable in og:title content", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:title" content="{{ seo_og_title }}">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_OG);
+    expect(findings[0].description).toContain("Unresolved");
+    expect(findings[0].description).toContain("og:title");
+  });
+
+  it("detects unresolved variable in og:image content", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:image" content="{{ app_social_image }}">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Unresolved");
+    expect(findings[0].description).toContain("og:image");
+  });
+
+  it("detects app-attributed OG tag via identifyAppFromCode", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<!-- avada-seo social tags -->",
+        '<meta property="og:title" content="{{ page_title }}">',
+      ].join("\n"),
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_OG);
+    expect(findings[0].appName).toBe("Avada SEO Suite");
+    expect(findings[0].description).toContain("App-attributed");
+  });
+
+  it("detects whitespace-only content on og:description", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:description" content="   ">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Empty");
+    expect(findings[0].description).toContain("og:description");
+  });
+
+  // --- False positive avoidance (should NOT fire) ---
+
+  it("does NOT flag native Dawn og:title with page_title", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:title" content="{{ page_title }}">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag native og:image with filter (img_url)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<meta property="og:image" content="{{ product.featured_image | img_url: \'1200x630\' }}">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag native twitter:card with static valid content", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta name="twitter:card" content="summary_large_image">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag OG tag inside Liquid conditional", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '{% if template == "product" %}<meta property="og:title" content="">{% endif %}',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag OG tag inside Liquid comment", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '{% comment %}\n<meta property="og:title" content="">\n{% endcomment %}',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag low-impact empty property og:locale", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:locale" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("returns empty for file with no OG tags", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<head><title>{{ page_title }}</title></head>",
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag duplicate og:title (handled by DUPLICATE_META)", () => {
+    // GHOST_OG should not re-detect duplicates — that's DUPLICATE_META's job.
+    // Two identical og:title tags with valid content should not produce GHOST_OG findings.
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta property="og:title" content="{{ page_title }}">',
+        '<meta property="og:title" content="{{ page_title }}">',
+      ].join("\n"),
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag static valid og:type content", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:type" content="website">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  // --- Additional edge cases ---
+
+  it("does NOT flag og:description with strip_html filter", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<meta property="og:description" content="{{ page_description | strip_html | truncate: 200 }}">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag empty og:site_name (low-impact property)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:site_name" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag empty twitter:site (low-impact property)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta name="twitter:site" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag empty fb:app_id (low-impact property)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="fb:app_id" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag og:image with collection.image safe variable", () => {
+    const file: ThemeFile = {
+      filename: "sections/collection.liquid",
+      content:
+        '<meta property="og:image" content="{{ collection.image | img_url: \'1200x630\' }}">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("detects multiple broken OG tags in same file", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta property="og:title" content="">',
+        '<meta property="og:description" content="">',
+        '<meta property="og:image" content="">',
+      ].join("\n"),
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(3);
+  });
+
+  // --- Severity ---
+
+  it("severity is MEDIUM by default for non-og:image", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:title" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.MEDIUM);
+  });
+
+  it("severity is HIGH for empty og:image", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<meta property="og:image" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  // --- Integration ---
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<meta property="og:title" content="">',
+      },
+    ];
+    const result = scanThemeFiles(files);
+    const ogFindings = findingsOfType(result.findings, FindingType.GHOST_OG);
+    expect(ogFindings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostPreconnect
+// ---------------------------------------------------------------------------
+
+describe("detectGhostPreconnect", () => {
+  // --- Detections (should fire) ---
+
+  it("detects preconnect to known app CDN", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://cdn.judge.me">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_PRECONNECT);
+    expect(findings[0].severity).toBe(Severity.MEDIUM);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[0].lineNumber).toBe(1);
+    expect(findings[0].filename).toBe("layout/theme.liquid");
+    expect(findings[0].description).toContain("preconnect");
+    expect(findings[0].description).toContain("cdn.judge.me");
+  });
+
+  it("detects dns-prefetch to known app CDN", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="dns-prefetch" href="//cdn.loox.io">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_PRECONNECT);
+    expect(findings[0].appName).toBe("Loox");
+    expect(findings[0].description).toContain("dns-prefetch");
+  });
+
+  it("detects preload to known app CDN", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preload" href="https://cdn.pagefly.io/pagefly.js" as="script">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_PRECONNECT);
+    expect(findings[0].appName).toBe("PageFly");
+    expect(findings[0].description).toContain("preload");
+  });
+
+  it("detects reversed attribute order (href before rel)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link href="https://cdn.judge.me" rel="preconnect">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+  });
+
+  it("attributes app from surrounding code context", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<!-- Judge.me reviews widget -->",
+        '<link rel="preconnect" href="https://judge.me">',
+      ].join("\n"),
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+  });
+
+  it("detects multiple preconnect hints on different lines", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<link rel="preconnect" href="https://cdn.judge.me">',
+        "<p>Some content</p>",
+        '<link rel="dns-prefetch" href="//cdn.loox.io">',
+      ].join("\n"),
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(2);
+    expect(findings[0].lineNumber).toBe(1);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[1].lineNumber).toBe(3);
+    expect(findings[1].appName).toBe("Loox");
+  });
+
+  // --- False positive avoidance (should NOT fire) ---
+
+  it("does not flag preconnect to Shopify CDN", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://cdn.shopify.com">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect to cdn.shopifycdn.net", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://cdn.shopifycdn.net">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect to monorail-edge.shopifysvc.com", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://monorail-edge.shopifysvc.com">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect to *.myshopify.com", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://my-store.myshopify.com">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect to Google Fonts", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://fonts.googleapis.com">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect to fonts.gstatic.com", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://fonts.gstatic.com">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect to generic CDN (cdnjs.cloudflare.com)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://cdnjs.cloudflare.com">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect to cdn.jsdelivr.net", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://cdn.jsdelivr.net">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect inside Liquid conditional", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '{% if settings.enable_reviews %}<link rel="preconnect" href="https://cdn.judge.me">{% endif %}',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect inside Liquid comment block", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        '<link rel="preconnect" href="https://cdn.judge.me">',
+        "{% endcomment %}",
+      ].join("\n"),
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag preconnect inside whitespace-stripping Liquid comment", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{%- comment -%}",
+        '<link rel="preconnect" href="https://cdn.judge.me">',
+        "{%- endcomment -%}",
+      ].join("\n"),
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag unknown domain not in app signatures", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="preconnect" href="https://custom-api.example.com">',
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("returns empty array for file with no resource hint tags", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<html><head><title>My Store</title></head></html>",
+    };
+    const findings = detectGhostPreconnect(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<link rel="preconnect" href="https://cdn.judge.me">',
+      },
+    ];
+    const result = scanThemeFiles(files);
+    const preconnectFindings = findingsOfType(result.findings, FindingType.GHOST_PRECONNECT);
+    expect(preconnectFindings).toHaveLength(1);
+    expect(preconnectFindings[0].appName).toBe("Judge.me");
   });
 });

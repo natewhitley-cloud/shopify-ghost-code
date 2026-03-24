@@ -32,8 +32,20 @@
  *                    by page builder apps after uninstall
  *   GHOST_ROBOTS   — orphaned <meta name="robots" content="noindex/nofollow">
  *                    directives injected by SEO apps into theme files
+ *   GHOST_CANONICAL— orphaned <link rel="canonical"> overrides left by SEO apps
+ *                    after uninstall (empty href, unresolved Liquid vars,
+ *                    duplicates, or app-attributed canonicals)
+ *   GHOST_TITLE    — orphaned <title> tag overrides left by SEO apps after
+ *                    uninstall (empty titles in layout files, unresolved
+ *                    Liquid vars, duplicates, or app-attributed titles)
+ *   GHOST_OG       — orphaned Open Graph (og:*) and Twitter Card (twitter:*)
+ *                    meta tags with empty/broken content values or app
+ *                    attribution from uninstalled social/SEO apps
  *   GHOST_REDIRECT — orphaned URL redirects left by SEO apps (detected via
  *                    separate API-based redirect-detector service)
+ *   GHOST_PRECONNECT — orphaned <link rel="preconnect|dns-prefetch|preload">
+ *                    hints pointing to known app CDN domains, wasting browser
+ *                    connection slots after the app is uninstalled
  */
 
 import { FindingType } from "@prisma/client";
@@ -1011,6 +1023,633 @@ export function detectGhostLayouts(files: ThemeFile[]): CreateFindingInput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Detector: GHOST_CANONICAL
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches <link rel="canonical" href="..."> with either attribute ordering:
+ *   - rel before href
+ *   - href before rel
+ * Captures the href value for analysis.
+ */
+const CANONICAL_RE =
+  /<link[^>]+rel\s*=\s*["']canonical["'][^>]*href\s*=\s*["']([^"']*)["'][^>]*>|<link[^>]+href\s*=\s*["']([^"']*)["'][^>]*rel\s*=\s*["']canonical["'][^>]*>/gi;
+
+/**
+ * Known safe Shopify-native Liquid variables used in canonical hrefs.
+ * These resolve to valid URLs and should not trigger an "unresolved variable" finding.
+ */
+const SAFE_CANONICAL_VARS_RE =
+  /\{\{\s*(canonical_url|request\.path|shop\.url|page_url|url)\s*(\|[^}]*)?\}\}/;
+
+/**
+ * Matches any Liquid variable expression in a string.
+ */
+const LIQUID_VAR_RE = /\{\{[^}]*\}\}/;
+
+/**
+ * Matches a plain absolute URL with a valid-looking domain.
+ */
+const ABSOLUTE_URL_RE = /^https?:\/\/[a-z0-9.-]+\.[a-z]{2,}/i;
+
+/**
+ * Detect orphaned <link rel="canonical"> overrides left by SEO apps.
+ *
+ * Trigger conditions:
+ *   1. Empty or whitespace-only href
+ *   2. Unresolved Liquid variables in href (excluding safe Shopify vars)
+ *   3. Duplicate canonical tags in the same file (flag 2nd+)
+ *   4. App-attributed canonical via identifyAppFromCode()
+ *
+ * False positive boundaries:
+ *   - Skips native {{ canonical_url }} pattern
+ *   - Skips canonicals inside Liquid conditionals
+ *   - Skips single valid hardcoded URLs (unless app-attributed)
+ */
+export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  // Collect all canonical occurrences for duplicate detection
+  const allCanonicals: Array<{ lineNumber: number; href: string }> = [];
+
+  let insideComment = false;
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    // Track Liquid comment blocks
+    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
+    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
+      insideComment = false;
+      continue;
+    }
+    if (insideComment) continue;
+
+    // Skip lines with Liquid conditionals — these are theme-native logic
+    if (LIQUID_CONDITIONAL_RE.test(text)) continue;
+
+    let match: RegExpExecArray | null;
+    CANONICAL_RE.lastIndex = 0;
+
+    while ((match = CANONICAL_RE.exec(text)) !== null) {
+      // Group 1 captures href when rel comes first; group 2 when href comes first.
+      const href = match[1] ?? match[2] ?? "";
+      allCanonicals.push({ lineNumber, href });
+    }
+  }
+
+  // Track which lines already have a finding to avoid double-reporting
+  const reportedLines = new Set<number>();
+
+  for (let i = 0; i < allCanonicals.length; i++) {
+    const { lineNumber, href } = allCanonicals[i];
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+
+    // Check 1: Empty or whitespace-only href
+    if (/^\s*$/.test(href)) {
+      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_CANONICAL,
+        severity,
+        appName,
+        description: "Empty canonical href — may cause search engines to index wrong URL variant",
+      });
+      reportedLines.add(lineNumber);
+      continue;
+    }
+
+    // Check 2: Unresolved Liquid variables in href
+    if (LIQUID_VAR_RE.test(href) && !SAFE_CANONICAL_VARS_RE.test(href)) {
+      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_CANONICAL,
+        severity,
+        appName,
+        description: `Unresolved Liquid variable in canonical href "${href}"`,
+      });
+      reportedLines.add(lineNumber);
+      continue;
+    }
+
+    // Check 3: App-attributed canonical (even if href looks valid)
+    const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+    if (appName) {
+      const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_CANONICAL,
+        severity,
+        appName,
+        description: `App-attributed canonical tag from ${appName}`,
+      });
+      reportedLines.add(lineNumber);
+      continue;
+    }
+
+    // Check 4 (false positive boundary): Single valid hardcoded URL — skip
+    if (ABSOLUTE_URL_RE.test(href)) continue;
+  }
+
+  // Check 5: Duplicate canonical tags — flag 2nd+ occurrence
+  if (allCanonicals.length > 1) {
+    const firstLine = allCanonicals[0].lineNumber;
+    for (let i = 1; i < allCanonicals.length; i++) {
+      const { lineNumber } = allCanonicals[i];
+      if (reportedLines.has(lineNumber)) continue; // Already reported for another reason
+
+      const codeSnippet = buildSnippet(file.content, lineNumber);
+      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_CANONICAL,
+        severity,
+        appName,
+        description: `Duplicate canonical tag — also found on line ${firstLine}`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Detector: GHOST_TITLE
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches <title>...</title> tags, capturing the inner content (may span lines).
+ */
+const TITLE_TAG_RE = /<title[^>]*>([\s\S]*?)<\/title>/gi;
+
+/**
+ * Known safe Shopify-native Liquid variables used in title tags.
+ * These resolve to valid values and should not trigger a finding.
+ */
+const SAFE_TITLE_VARS_RE =
+  /\{\{\s*(page_title|shop\.name|page_description|product\.title|collection\.title|article\.title|blog\.title|template|content_for_\w+)(\s*\|[^}]*)?\s*\}\}/;
+
+/**
+ * Detect orphaned <title> tag overrides left by SEO apps.
+ *
+ * Trigger conditions:
+ *   1. Empty or whitespace-only title content (layout files only)
+ *   2. Unresolved Liquid variables (excluding safe Shopify vars)
+ *   3. App-attributed title via identifyAppFromCode()
+ *   4. Multiple title tags in same file (flag 2nd+)
+ *
+ * False positive boundaries:
+ *   - Skips native Dawn title containing page_title
+ *   - Skips titles inside Liquid conditionals
+ *   - Skips empty titles in non-layout files
+ */
+export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+  const isLayoutFile = file.filename.startsWith("layout/");
+  const contentLines = file.content.split("\n");
+
+  // Build a set of line numbers inside Liquid comment blocks
+  const commentedLines = new Set<number>();
+  let insideComment = false;
+  for (let i = 0; i < contentLines.length; i++) {
+    const line = contentLines[i];
+    if (/\{%-?\s*comment\s*-?%\}/.test(line)) insideComment = true;
+    if (insideComment) commentedLines.add(i + 1); // 1-indexed
+    if (/\{%-?\s*endcomment\s*-?%\}/.test(line)) insideComment = false;
+  }
+
+  // Collect all title occurrences for duplicate detection
+  const allTitles: Array<{
+    lineNumber: number;
+    innerContent: string;
+    offset: number;
+  }> = [];
+
+  let match: RegExpExecArray | null;
+  TITLE_TAG_RE.lastIndex = 0;
+
+  while ((match = TITLE_TAG_RE.exec(file.content)) !== null) {
+    const innerContent = match[1];
+    const matchLineNumber = lineNumberAtOffset(file.content, match.index);
+
+    // Skip titles inside Liquid comment blocks
+    if (commentedLines.has(matchLineNumber)) continue;
+
+    // Skip titles inside Liquid conditionals
+    const matchLine = contentLines[matchLineNumber - 1] ?? "";
+    if (LIQUID_CONDITIONAL_RE.test(matchLine)) continue;
+
+    allTitles.push({
+      lineNumber: matchLineNumber,
+      innerContent,
+      offset: match.index,
+    });
+  }
+
+  // Track which entries already have a finding to avoid double-reporting
+  const reportedIndices = new Set<number>();
+
+  for (let i = 0; i < allTitles.length; i++) {
+    const { lineNumber, innerContent } = allTitles[i];
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+
+    // Check 1: Empty or whitespace-only title content (layout files only)
+    if (/^\s*$/.test(innerContent) && isLayoutFile) {
+      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const description =
+        "Empty title tag — search engines will display the URL instead of a descriptive title";
+      const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_TITLE,
+        severity,
+        appName,
+        description,
+      });
+      reportedIndices.add(i);
+      continue;
+    }
+
+    // Check 2: Unresolved Liquid variables in title
+    // Extract all {{ ... }} expressions and check if any are NOT safe
+    if (LIQUID_VAR_RE.test(innerContent)) {
+      // If ALL Liquid vars in the title are safe, skip
+      const allVarsInTitle = innerContent.match(/\{\{[^}]*\}\}/g) ?? [];
+      const hasUnsafeVar = allVarsInTitle.some((v) => !SAFE_TITLE_VARS_RE.test(v));
+
+      if (hasUnsafeVar) {
+        const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+        const description = `Unresolved Liquid variable in title tag`;
+        const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
+        findings.push({
+          filename: file.filename,
+          lineNumber,
+          codeSnippet,
+          findingType: FindingType.GHOST_TITLE,
+          severity,
+          appName,
+          description,
+        });
+        reportedIndices.add(i);
+        continue;
+      }
+    }
+
+    // Check 3: App-attributed title (even if content looks valid)
+    const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+    if (appName) {
+      const description = `App-attributed title tag from ${appName}`;
+      const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_TITLE,
+        severity,
+        appName,
+        description,
+      });
+      reportedIndices.add(i);
+      continue;
+    }
+  }
+
+  // Check 4: Duplicate title tags — flag 2nd+ occurrence
+  if (allTitles.length > 1) {
+    const firstLine = allTitles[0].lineNumber;
+    for (let i = 1; i < allTitles.length; i++) {
+      if (reportedIndices.has(i)) continue; // Already reported for another reason
+
+      const { lineNumber } = allTitles[i];
+      const codeSnippet = buildSnippet(file.content, lineNumber);
+      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const description = `Duplicate title tag — also found on line ${firstLine}`;
+      const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_TITLE,
+        severity,
+        appName,
+        description,
+      });
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Detector: GHOST_OG
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches <meta> tags with property="og:*" or name="twitter:*".
+ * Captures the OG/Twitter property name.
+ */
+const OG_META_RE =
+  /<meta\s+[^>]*(?:property\s*=\s*["'](og:[^"']+)["']|name\s*=\s*["'](twitter:[^"']+)["'])[^>]*>/gi;
+
+/**
+ * Extracts the content attribute value from a meta tag.
+ */
+const META_CONTENT_RE = /content\s*=\s*["']([^"']*)["']/i;
+
+/**
+ * High-value OG/Twitter properties worth flagging when empty.
+ * Low-impact properties (og:locale, og:site_name, fb:app_id, twitter:site,
+ * twitter:creator) are intentionally excluded to avoid false positives.
+ */
+const HIGH_VALUE_OG_PROPERTIES = new Set([
+  "og:title",
+  "og:description",
+  "og:image",
+  "og:url",
+  "og:type",
+  "twitter:title",
+  "twitter:description",
+  "twitter:image",
+  "twitter:card",
+]);
+
+/**
+ * Known safe Shopify-native Liquid variables used in OG/Twitter meta tags.
+ * Extends the GHOST_TITLE safe list with image/description/collection/article vars.
+ */
+const SAFE_OG_VARS_RE =
+  /\{\{\s*(page_title|shop\.name|page_description|product\.title|product\.description|product\.featured_image|collection\.title|collection\.image|collection\.description|article\.title|article\.image|article\.excerpt|page\.title|page\.content|blog\.title|template)(\s*\|[^}]*)?\s*\}\}/;
+
+/**
+ * OG-specific safe filter patterns. Variables using these filters are applied
+ * to real Shopify objects and should not trigger findings.
+ */
+const SAFE_OG_FILTER_RE = /\|\s*(img_url|img_tag|strip_html|truncate)/;
+
+/**
+ * Detect orphaned Open Graph and Twitter Card meta tags left by social/SEO apps.
+ *
+ * Trigger conditions:
+ *   1. Empty or whitespace-only content on high-value OG/Twitter properties
+ *   2. Unresolved Liquid variables in content (excluding safe Shopify vars)
+ *   3. App-attributed OG tags via identifyAppFromCode()
+ *
+ * False positive boundaries:
+ *   - Skips native Shopify OG patterns using safe variables
+ *   - Skips OG tags inside Liquid conditionals or comments
+ *   - Skips low-impact empty properties (og:locale, og:site_name, etc.)
+ *   - Does NOT re-detect duplicates (handled by DUPLICATE_META)
+ */
+export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+  const contentLines = file.content.split("\n");
+
+  // Build a set of line numbers inside Liquid comment blocks
+  const commentedLines = new Set<number>();
+  let insideComment = false;
+  for (let i = 0; i < contentLines.length; i++) {
+    const line = contentLines[i];
+    if (/\{%-?\s*comment\s*-?%\}/.test(line)) insideComment = true;
+    if (insideComment) commentedLines.add(i + 1); // 1-indexed
+    if (/\{%-?\s*endcomment\s*-?%\}/.test(line)) insideComment = false;
+  }
+
+  let match: RegExpExecArray | null;
+  OG_META_RE.lastIndex = 0;
+
+  while ((match = OG_META_RE.exec(file.content)) !== null) {
+    // Group 1 captures og:* via property, group 2 captures twitter:* via name
+    const property = match[1] ?? match[2];
+    if (!property) continue;
+
+    const matchLineNumber = lineNumberAtOffset(file.content, match.index);
+
+    // Skip OG tags inside Liquid comment blocks
+    if (commentedLines.has(matchLineNumber)) continue;
+
+    const matchLine = contentLines[matchLineNumber - 1] ?? "";
+
+    // Skip OG tags inside Liquid conditionals
+    if (LIQUID_CONDITIONAL_RE.test(matchLine)) continue;
+
+    const fullTag = match[0];
+    const contentMatch = META_CONTENT_RE.exec(fullTag);
+    const contentValue = contentMatch ? contentMatch[1] : "";
+
+    const codeSnippet = buildSnippet(file.content, matchLineNumber);
+
+    // Check 1: Empty or whitespace-only content on high-value properties
+    if (/^\s*$/.test(contentValue) && HIGH_VALUE_OG_PROPERTIES.has(property)) {
+      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const description = `Empty ${property} meta tag — social platforms will use fallback or show nothing`;
+      const severity = classifySeverity(FindingType.GHOST_OG, codeSnippet, description);
+      findings.push({
+        filename: file.filename,
+        lineNumber: matchLineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_OG,
+        severity,
+        appName,
+        description,
+      });
+      continue;
+    }
+
+    // Check 2: Unresolved Liquid variables in content
+    if (LIQUID_VAR_RE.test(contentValue)) {
+      const allVars = contentValue.match(/\{\{[^}]*\}\}/g) ?? [];
+      const hasUnsafeVar = allVars.some(
+        (v) => !SAFE_OG_VARS_RE.test(v) && !SAFE_OG_FILTER_RE.test(v),
+      );
+
+      if (hasUnsafeVar) {
+        const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+        const description = `Unresolved Liquid variable in ${property} content`;
+        const severity = classifySeverity(FindingType.GHOST_OG, codeSnippet, description);
+        findings.push({
+          filename: file.filename,
+          lineNumber: matchLineNumber,
+          codeSnippet,
+          findingType: FindingType.GHOST_OG,
+          severity,
+          appName,
+          description,
+        });
+        continue;
+      }
+    }
+
+    // Check 3: App-attributed OG tag (even if content looks valid)
+    const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+    if (appName) {
+      const description = `App-attributed ${property} meta tag from ${appName}`;
+      const severity = classifySeverity(FindingType.GHOST_OG, codeSnippet, description);
+      findings.push({
+        filename: file.filename,
+        lineNumber: matchLineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_OG,
+        severity,
+        appName,
+        description,
+      });
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Detector: GHOST_PRECONNECT
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches <link rel="preconnect|dns-prefetch|preload" href="..."> and the
+ * reversed attribute order (href before rel).
+ * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
+ * before each use.
+ */
+const PRECONNECT_RE =
+  /<link[^>]+rel\s*=\s*["'](preconnect|dns-prefetch|preload)["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["']([^"']+)["'][^>]+rel\s*=\s*["'](preconnect|dns-prefetch|preload)["'][^>]*>/gi;
+
+/**
+ * Shopify-owned domains that should never be flagged as ghost preconnect hints.
+ */
+const SHOPIFY_DOMAINS = ["cdn.shopify.com", "cdn.shopifycdn.net", "monorail-edge.shopifysvc.com"];
+
+/**
+ * Major shared CDNs commonly used by themes directly — not app-specific.
+ */
+const SHARED_CDN_DOMAINS = [
+  "fonts.googleapis.com",
+  "fonts.gstatic.com",
+  "cdnjs.cloudflare.com",
+  "cdn.jsdelivr.net",
+];
+
+/**
+ * Extract the hostname from a URL string, handling protocol-relative URLs.
+ * Returns null if parsing fails.
+ */
+function extractDomain(href: string): string | null {
+  try {
+    // Handle protocol-relative URLs like //cdn.judge.me
+    const normalized = href.startsWith("//") ? `https:${href}` : href;
+    return new URL(normalized).hostname;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Returns true if the given hostname matches a Shopify-owned domain or
+ * a *.myshopify.com subdomain.
+ */
+function isShopifyDomain(hostname: string): boolean {
+  if (SHOPIFY_DOMAINS.includes(hostname)) return true;
+  if (hostname.endsWith(".myshopify.com")) return true;
+  return false;
+}
+
+/**
+ * Returns true if the given hostname matches a major shared CDN.
+ */
+function isSharedCdnDomain(hostname: string): boolean {
+  return SHARED_CDN_DOMAINS.includes(hostname);
+}
+
+/**
+ * Detect orphaned <link rel="preconnect|dns-prefetch|preload"> hints pointing
+ * to known app CDN domains. After an app is uninstalled, these waste browser
+ * connection slots on defunct domains.
+ *
+ * Detection rules:
+ *   1. Match <link rel="preconnect|dns-prefetch|preload" href="..."> tags
+ *   2. Extract the domain from the href
+ *   3. Cross-reference against cdnDomains from APP_SIGNATURES
+ *   4. Also use identifyAppFromCode() on surrounding snippet for attribution
+ *
+ * False positive boundaries:
+ *   - Skips Shopify-owned domains (cdn.shopify.com, cdn.shopifycdn.net, etc.)
+ *   - Skips major shared CDNs (Google Fonts, cdnjs, jsdelivr)
+ *   - Skips lines inside Liquid conditionals or comment blocks
+ *   - Skips unknown domains not in app signatures
+ */
+export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  let insideComment = false;
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    // Track Liquid comment blocks
+    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
+    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
+      insideComment = false;
+      continue;
+    }
+    if (insideComment) continue;
+
+    // Skip lines with Liquid conditionals — these are theme-native logic
+    if (LIQUID_CONDITIONAL_RE.test(text)) continue;
+
+    let match: RegExpExecArray | null;
+    PRECONNECT_RE.lastIndex = 0;
+
+    while ((match = PRECONNECT_RE.exec(text)) !== null) {
+      // Group 2 captures href when rel comes first; group 3 when href comes first.
+      const href = match[2] ?? match[3];
+      if (!href) continue;
+
+      const hostname = extractDomain(href);
+      if (!hostname) continue;
+
+      // Skip Shopify-owned domains
+      if (isShopifyDomain(hostname)) continue;
+
+      // Skip major shared CDNs
+      if (isSharedCdnDomain(hostname)) continue;
+
+      const codeSnippet = buildSnippet(file.content, lineNumber);
+
+      // Cross-reference against known app CDN domains
+      const appName = identifyAppFromUrl(href) ?? identifyAppFromCode(codeSnippet) ?? undefined;
+
+      // Only flag if we can attribute to a known app
+      if (!appName) continue;
+
+      const relType = match[1] ?? match[4]; // "preconnect", "dns-prefetch", or "preload"
+      const severity = classifySeverity(FindingType.GHOST_PRECONNECT, codeSnippet);
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_PRECONNECT,
+        severity,
+        appName,
+        description: `Orphaned ${relType} hint to ${appName} CDN (${hostname})`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -1023,7 +1662,8 @@ export function detectGhostLayouts(files: ThemeFile[]): CreateFindingInput[] {
  *     Processes only scannable Liquid files (templates/, sections/, snippets/,
  *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
  *     GHOST_SECTION, GHOST_HREFLANG, DUPLICATE_META, GHOST_JSON_LD,
- *     JSON_LD_CONFLICT, GHOST_TEXT, GHOST_PIXEL, and GHOST_ROBOTS findings.
+ *     JSON_LD_CONFLICT, GHOST_TEXT, GHOST_PIXEL, GHOST_ROBOTS,
+ *     GHOST_CANONICAL, GHOST_TITLE, GHOST_OG, and GHOST_PRECONNECT findings.
  *
  *   Pass 2 — cross-file orphan detection:
  *     Runs the file reference analyzer over all Liquid files (not just
@@ -1063,6 +1703,10 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     findings.push(...detectGhostTextFragments(file));
     findings.push(...detectGhostPixels(file));
     findings.push(...detectGhostRobots(file));
+    findings.push(...detectGhostCanonical(file));
+    findings.push(...detectGhostTitle(file));
+    findings.push(...detectGhostOg(file));
+    findings.push(...detectGhostPreconnect(file));
 
     // Collect unrecognized external resources
     unknownScripts.push(...collectUnknownScripts(file));

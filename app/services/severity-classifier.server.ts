@@ -36,6 +36,10 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.GHOST_METAFIELD]: Severity.LOW,
   [FindingType.GHOST_REDIRECT]: Severity.MEDIUM,
   [FindingType.GHOST_ROBOTS]: Severity.HIGH,
+  [FindingType.GHOST_CANONICAL]: Severity.HIGH,
+  [FindingType.GHOST_TITLE]: Severity.HIGH,
+  [FindingType.GHOST_OG]: Severity.MEDIUM,
+  [FindingType.GHOST_PRECONNECT]: Severity.MEDIUM,
 };
 
 // ---------------------------------------------------------------------------
@@ -81,8 +85,13 @@ function isPrintOnlyStylesheet(codeSnippet: string): boolean {
  *
  * @param findingType  The category of ghost code detected.
  * @param codeSnippet  The extracted code context for the finding.
+ * @param description  The finding's description text (used for type-specific nuance).
  */
-export function classifySeverity(findingType: FindingType, codeSnippet: string): Severity {
+export function classifySeverity(
+  findingType: FindingType,
+  codeSnippet: string,
+  description?: string,
+): Severity {
   // Liquid comment blocks: anything inside is dead code — downgrade to LOW.
   if (isInsideLiquidComment(codeSnippet)) {
     return Severity.LOW;
@@ -91,6 +100,16 @@ export function classifySeverity(findingType: FindingType, codeSnippet: string):
   // Print-only stylesheets have no page-load impact — downgrade to LOW.
   if (findingType === FindingType.GHOST_STYLE && isPrintOnlyStylesheet(codeSnippet)) {
     return Severity.LOW;
+  }
+
+  // GHOST_TITLE with page_title in description still renders something useful — downgrade to MEDIUM.
+  if (findingType === FindingType.GHOST_TITLE && description && /page_title/.test(description)) {
+    return Severity.MEDIUM;
+  }
+
+  // GHOST_OG with og:image in description is the most visible social sharing failure — upgrade to HIGH.
+  if (findingType === FindingType.GHOST_OG && description && /og:image/.test(description)) {
+    return Severity.HIGH;
   }
 
   return DEFAULT_SEVERITY[findingType];

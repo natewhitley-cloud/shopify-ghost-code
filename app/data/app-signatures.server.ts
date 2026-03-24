@@ -854,4 +854,18 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["searchpie", "searchpie-seo"],
     cssPatterns: [/searchpie/],
   },
+  {
+    appName: "Socialhead",
+    cdnDomains: ["cdn.socialhead.io"],
+    scriptPatterns: [/socialhead\.io/, /SocialHead/],
+    snippetNames: ["socialhead-og", "socialhead-social", "socialhead"],
+    cssPatterns: [/socialhead/],
+  },
+  {
+    appName: "SEO King",
+    cdnDomains: [],
+    scriptPatterns: [/seo-king/, /SEOKing/],
+    snippetNames: ["seo-king-meta", "seo-king-og", "seo-king"],
+    cssPatterns: [],
+  },
 ];

@@ -125,6 +125,61 @@ describe("classifySeverity", () => {
     expect(classifySeverity(FindingType.GHOST_SCRIPT, snippet)).toBe(Severity.HIGH);
   });
 
+  // -------------------------------------------------------------------------
+  // GHOST_TITLE nuance: page_title downgrade
+  // -------------------------------------------------------------------------
+
+  it("returns HIGH for GHOST_TITLE by default", () => {
+    const snippet = "<title>{{ shop.name }} — Buy Now</title>";
+    expect(classifySeverity(FindingType.GHOST_TITLE, snippet, "Empty title tag")).toBe(
+      Severity.HIGH,
+    );
+  });
+
+  it("downgrades GHOST_TITLE to MEDIUM when description contains page_title", () => {
+    const snippet = "<title>{{ page_title }} — {{ shop.name }}</title>";
+    expect(
+      classifySeverity(
+        FindingType.GHOST_TITLE,
+        snippet,
+        "Unresolved Liquid variable in title tag with page_title",
+      ),
+    ).toBe(Severity.MEDIUM);
+  });
+
+  it("does NOT downgrade GHOST_TITLE when page_title is in snippet but not description", () => {
+    const snippet = "<title>{{ page_title }} — {{ shop.name }}</title>";
+    expect(classifySeverity(FindingType.GHOST_TITLE, snippet, "Empty title tag")).toBe(
+      Severity.HIGH,
+    );
+  });
+
+  // -------------------------------------------------------------------------
+  // GHOST_OG nuance: og:image upgrade
+  // -------------------------------------------------------------------------
+
+  it("returns MEDIUM for GHOST_OG by default", () => {
+    const snippet = '<meta property="og:title" content="{{ page_title }}">';
+    expect(classifySeverity(FindingType.GHOST_OG, snippet, "Empty og:title meta tag")).toBe(
+      Severity.MEDIUM,
+    );
+  });
+
+  it("upgrades GHOST_OG to HIGH when description contains og:image", () => {
+    const snippet = '<meta property="og:image" content="{{ product.featured_image | img_url }}">';
+    expect(classifySeverity(FindingType.GHOST_OG, snippet, "Empty og:image meta tag")).toBe(
+      Severity.HIGH,
+    );
+  });
+
+  it("does NOT upgrade GHOST_OG when og:image is in snippet but not description", () => {
+    const snippet =
+      '<meta property="og:title" content="">\n<meta property="og:image" content="{{ product.featured_image }}">';
+    expect(classifySeverity(FindingType.GHOST_OG, snippet, "Empty og:title meta tag")).toBe(
+      Severity.MEDIUM,
+    );
+  });
+
   it("liquid comment check takes precedence over print-only check", () => {
     const snippet =
       '{% comment %}<link rel="stylesheet" media="print" href="//cdn.x.com/a.css">{% endcomment %}';

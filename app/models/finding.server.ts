@@ -125,6 +125,10 @@ export async function getFindingSummary(scanId: string) {
     [FindingType.GHOST_METAFIELD]: 0,
     [FindingType.GHOST_REDIRECT]: 0,
     [FindingType.GHOST_ROBOTS]: 0,
+    [FindingType.GHOST_CANONICAL]: 0,
+    [FindingType.GHOST_TITLE]: 0,
+    [FindingType.GHOST_OG]: 0,
+    [FindingType.GHOST_PRECONNECT]: 0,
   };
   for (const row of byType) {
     typeCounts[row.findingType] = row._count.findingType;
