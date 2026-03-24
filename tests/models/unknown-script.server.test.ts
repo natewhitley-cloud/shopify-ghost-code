@@ -39,9 +39,6 @@ vi.mock("../../app/db.server", () => ({
 // ---------------------------------------------------------------------------
 
 import {
-  createUnknownScripts,
-  getUnknownScriptsForScan,
-  submitSignatureSuggestion,
   getSubmissionsByDomain,
   updateSubmissionStatus,
   acceptSubmissionsForDomain,

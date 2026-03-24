@@ -1,4 +1,5 @@
-import type { SubmissionStatus, SignatureSubmission } from "@prisma/client";
+import type { SignatureSubmission, SubmissionStatus } from "@prisma/client";
+
 import db from "../db.server";
 
 export type CreateUnknownScriptInput = {
