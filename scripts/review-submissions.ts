@@ -16,10 +16,7 @@ import { PrismaClient, SubmissionStatus } from "@prisma/client";
 // monkey-patch the module. Instead, we import the functions directly since
 // they already import db internally.
 // ---------------------------------------------------------------------------
-import {
-  getSubmissionsByDomain,
-  getSubmissionStats,
-} from "../app/models/unknown-script.server";
+import { getSubmissionsByDomain, getSubmissionStats } from "../app/models/unknown-script.server";
 
 // ---------------------------------------------------------------------------
 // CLI arg parsing
@@ -41,9 +38,7 @@ function parseArgs(): { minCount: number; status?: SubmissionStatus } {
     } else if (arg.startsWith("--status=")) {
       const val = arg.split("=")[1].toUpperCase();
       if (!["PENDING", "ACCEPTED", "REJECTED"].includes(val)) {
-        console.error(
-          `Invalid --status value: ${val}. Must be PENDING, ACCEPTED, or REJECTED.`,
-        );
+        console.error(`Invalid --status value: ${val}. Must be PENDING, ACCEPTED, or REJECTED.`);
         process.exit(1);
       }
       status = val as SubmissionStatus;
@@ -72,9 +67,7 @@ function padRight(str: string, len: number): string {
   return str.length >= len ? str.substring(0, len) : str + " ".repeat(len - str.length);
 }
 
-function formatTable(
-  domains: Awaited<ReturnType<typeof getSubmissionsByDomain>>,
-): void {
+function formatTable(domains: Awaited<ReturnType<typeof getSubmissionsByDomain>>): void {
   if (domains.length === 0) {
     console.log("  No submissions match the given filters.\n");
     return;
@@ -125,7 +118,9 @@ function generateSignatureTemplates(
     // Use the top suggested name (most agreed-upon)
     const topName = group.suggestedNames[0];
 
-    console.log(`  // ${group.domain} — ${group.submissionCount} submissions, ${topName.count} agree on "${topName.name}"`);
+    console.log(
+      `  // ${group.domain} — ${group.submissionCount} submissions, ${topName.count} agree on "${topName.name}"`,
+    );
     console.log(`  {`);
     console.log(`    appName: "${topName.name}",`);
     console.log(`    cdnDomains: ["${group.domain}"],`);
@@ -155,10 +150,9 @@ async function main(): Promise<void> {
   console.log();
 
   // Domain breakdown
-  const filterDesc = [
-    status ? `status=${status}` : "status=PENDING",
-    `minCount=${minCount}`,
-  ].join(", ");
+  const filterDesc = [status ? `status=${status}` : "status=PENDING", `minCount=${minCount}`].join(
+    ", ",
+  );
   console.log(`Submissions by Domain (${filterDesc}):\n`);
 
   const domains = await getSubmissionsByDomain({

@@ -25,6 +25,7 @@ The feature is fundamentally broken: the `appInstallations` GraphQL query it rel
 The Permission Audit feature spans 9 source files, 7 test files, 3 Prisma models, 2 enums, billing config flags, a nav link, and references in `shopify.app.toml`.
 
 **Source files (9 — all exclusively used by Permission Audit):**
+
 - `app/routes/app.permissions.tsx` — list route (installed apps + risk scores)
 - `app/routes/app.permissions.$appId.tsx` — detail route (per-app scope breakdown)
 - `app/services/permission-fetcher.server.ts` — GraphQL fetcher + sync logic
@@ -36,6 +37,7 @@ The Permission Audit feature spans 9 source files, 7 test files, 3 Prisma models
 - `app/data/category-permissions.server.ts` — expected scopes per app category
 
 **Test files (8):**
+
 - `tests/routes/app.permissions.test.ts`
 - `tests/routes/app.permissions.detail.test.ts`
 - `tests/services/permission-fetcher.server.test.ts`
@@ -46,6 +48,7 @@ The Permission Audit feature spans 9 source files, 7 test files, 3 Prisma models
 - `tests/models/installed-app.server.test.ts`
 
 **Prisma models (3) + enums (2):**
+
 - `InstalledApp` — tracks third-party apps on a store
 - `PermissionSnapshot` — historical scope snapshots per audit run
 - `PermissionAuditRun` — audit execution records
@@ -53,6 +56,7 @@ The Permission Audit feature spans 9 source files, 7 test files, 3 Prisma models
 - `AuditRunStatus` enum — PENDING/IN_PROGRESS/COMPLETED/FAILED
 
 **Cross-cutting references:**
+
 - `app/lib/billing.server.ts` — `permissionAuditEnabled` flag in `PlanFeatures` type and all plan branches
 - `app/routes/app.tsx` — conditional nav link for Permission Audit + `permissionAuditEnabled` in loader return
 - `app/models/shop.server.ts` — GDPR `deleteShopData()` function explicitly deletes `permissionSnapshot`, `installedApp`, and `permissionAuditRun` records (lines 98-102)
@@ -87,6 +91,7 @@ This is a feature removal, not a feature addition. The relevant prior art is the
 ### Strategy: Surgical Removal
 
 Remove all Permission Audit code in a single coordinated change. The approach is straightforward because:
+
 1. All 9 source files are exclusively consumed by Permission Audit routes (no shared dependencies with core scanner features)
 2. No production data exists that needs preservation
 3. The feature was cleanly isolated behind a feature flag
@@ -115,10 +120,12 @@ Remove all Permission Audit code in a single coordinated change. The approach is
 This is a removal — no new public surfaces are created.
 
 **Removed routes:**
+
 - `GET /app/permissions` — Permission Audit list page (was served by `app.permissions.tsx` loader + component)
 - `GET /app/permissions/:appId` — Permission Audit detail page (was served by `app.permissions.$appId.tsx` loader + component)
 
 **Modified route:**
+
 - `GET /app` (layout) — `app.tsx` loader no longer returns `permissionAuditEnabled`; nav no longer renders Permission Audit link
 
 **No API endpoints, webhooks, or Inngest functions are affected** — Permission Audit had no background job integration.
@@ -129,28 +136,29 @@ This is a removal — no new public surfaces are created.
 
 ### Removed Models
 
-| Model | Tables Dropped | Indexes Dropped |
-|---|---|---|
-| `InstalledApp` | `InstalledApp` | `InstalledApp_shopId_idx`, `InstalledApp_presence_idx`, `InstalledApp_shopId_shopifyAppId_key` |
-| `PermissionSnapshot` | `PermissionSnapshot` | `PermissionSnapshot_installedAppId_idx`, `PermissionSnapshot_auditRunId_idx` |
-| `PermissionAuditRun` | `PermissionAuditRun` | `PermissionAuditRun_shopId_createdAt_idx` |
+| Model                | Tables Dropped       | Indexes Dropped                                                                                |
+| -------------------- | -------------------- | ---------------------------------------------------------------------------------------------- |
+| `InstalledApp`       | `InstalledApp`       | `InstalledApp_shopId_idx`, `InstalledApp_presence_idx`, `InstalledApp_shopId_shopifyAppId_key` |
+| `PermissionSnapshot` | `PermissionSnapshot` | `PermissionSnapshot_installedAppId_idx`, `PermissionSnapshot_auditRunId_idx`                   |
+| `PermissionAuditRun` | `PermissionAuditRun` | `PermissionAuditRun_shopId_createdAt_idx`                                                      |
 
 ### Removed Enums
 
-| Enum | Values |
-|---|---|
-| `AppPresence` | INSTALLED, REMOVED |
+| Enum             | Values                                  |
+| ---------------- | --------------------------------------- |
+| `AppPresence`    | INSTALLED, REMOVED                      |
 | `AuditRunStatus` | PENDING, IN_PROGRESS, COMPLETED, FAILED |
 
 ### Modified Models
 
-| Model | Change |
-|---|---|
+| Model  | Change                                                                                         |
+| ------ | ---------------------------------------------------------------------------------------------- |
 | `Shop` | Remove `installedApps InstalledApp[]` and `permissionAuditRuns PermissionAuditRun[]` relations |
 
 ### Migration
 
 A new Prisma migration will drop foreign keys, tables, and enums in dependency order:
+
 1. Drop `PermissionSnapshot` (depends on both `InstalledApp` and `PermissionAuditRun`)
 2. Drop `InstalledApp` (depends on `Shop`)
 3. Drop `PermissionAuditRun` (depends on `Shop`)

@@ -85,14 +85,14 @@ The curation workflow is:
 
 ### Component Changes
 
-| Component | Change | Status |
-|---|---|---|
-| `prisma/schema.prisma` | Add `status` enum + field to `SignatureSubmission` | New |
-| `app/models/unknown-script.server.ts` | Add aggregation/listing queries | New |
-| `scripts/review-submissions.ts` | CLI script for curation review | New |
-| `app/routes/app.scans.$scanId.tsx` | No changes needed | Already built |
-| `app/services/scan-engine.server.ts` | No changes needed | Already built |
-| `inngest/functions/scan-theme.ts` | No changes needed | Already built |
+| Component                             | Change                                             | Status        |
+| ------------------------------------- | -------------------------------------------------- | ------------- |
+| `prisma/schema.prisma`                | Add `status` enum + field to `SignatureSubmission` | New           |
+| `app/models/unknown-script.server.ts` | Add aggregation/listing queries                    | New           |
+| `scripts/review-submissions.ts`       | CLI script for curation review                     | New           |
+| `app/routes/app.scans.$scanId.tsx`    | No changes needed                                  | Already built |
+| `app/services/scan-engine.server.ts`  | No changes needed                                  | Already built |
+| `inngest/functions/scan-theme.ts`     | No changes needed                                  | Already built |
 
 ---
 
@@ -108,28 +108,28 @@ The curation workflow is:
 export async function getSubmissionsByDomain(options?: {
   status?: SubmissionStatus;
   minCount?: number;
-}): Promise<Array<{
-  domain: string;
-  submissionCount: number;
-  suggestedNames: Array<{ name: string; count: number }>;
-  sampleUrls: string[];
-}>>;
+}): Promise<
+  Array<{
+    domain: string;
+    submissionCount: number;
+    suggestedNames: Array<{ name: string; count: number }>;
+    sampleUrls: string[];
+  }>
+>;
 
 /**
  * Update the status of a submission (ACCEPTED, REJECTED).
  */
 export async function updateSubmissionStatus(
   submissionId: string,
-  status: "ACCEPTED" | "REJECTED"
+  status: "ACCEPTED" | "REJECTED",
 ): Promise<SignatureSubmission>;
 
 /**
  * Batch-update status for all submissions matching a URL domain.
  * Used after promoting a domain to the signature DB.
  */
-export async function acceptSubmissionsForDomain(
-  domain: string
-): Promise<{ count: number }>;
+export async function acceptSubmissionsForDomain(domain: string): Promise<{ count: number }>;
 
 /**
  * Get total submission counts for dashboard metrics.
@@ -189,6 +189,7 @@ model SignatureSubmission {
 ### Migration
 
 A new Prisma migration adds:
+
 1. `SubmissionStatus` enum (`PENDING`, `ACCEPTED`, `REJECTED`).
 2. `status` column on `SignatureSubmission` with default `PENDING`.
 3. `reviewedAt` nullable timestamp column.
