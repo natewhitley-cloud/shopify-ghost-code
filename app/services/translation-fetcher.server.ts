@@ -12,18 +12,11 @@
  */
 
 import { checkRateLimit } from "./theme-fetcher.server";
+import type { AdminApiContext } from "../types/shopify";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
-
-/** Minimal slice of the Shopify admin context we use in this service. */
-type AdminApiContext = {
-  graphql: (
-    query: string,
-    options?: { variables?: Record<string, unknown> },
-  ) => Promise<{ json: () => Promise<unknown> }>;
-};
 
 export type ShopLocale = {
   locale: string;

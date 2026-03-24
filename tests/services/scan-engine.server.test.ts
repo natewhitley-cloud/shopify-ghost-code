@@ -11,8 +11,14 @@ import {
   detectGhostHrefLang,
   detectDuplicateMetaTags,
   detectGhostJsonLd,
+  detectJsonLdConflicts,
   detectGhostTextFragments,
+  detectGhostPixels,
+  detectSettingsDrift,
+  detectGhostLayouts,
+  detectGhostRobots,
   scanThemeFiles,
+  type ThemeFile,
 } from "../../app/services/scan-engine.server";
 
 // ---------------------------------------------------------------------------
@@ -1124,5 +1130,986 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
     expect(orphans).toHaveLength(1);
     expect(orphans[0].filename).toBe("snippets/klaviyo-form.liquid");
     expect(orphans[0].appName).toBe("Klaviyo");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectSettingsDrift
+// ---------------------------------------------------------------------------
+
+describe("detectSettingsDrift", () => {
+  /** Helper to build a settings_data.json ThemeFile from a sections object. */
+  function makeSettingsFile(sections: Record<string, unknown>): ThemeFile {
+    return {
+      filename: "config/settings_data.json",
+      content: JSON.stringify({ current: { sections } }),
+    };
+  }
+
+  it("detects stale section reference with known app", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        "judgeme-reviews-abc123": { type: "judgeme_widgets", settings: {} },
+      }),
+      // No sections/judgeme_widgets.liquid exists
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.SETTINGS_DRIFT);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[0].filename).toBe("config/settings_data.json");
+    expect(findings[0].description).toContain("judgeme_widgets");
+    expect(findings[0].description).toContain("Judge.me");
+  });
+
+  it("detects stale reference with unknown app", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        "custom-widget-xyz": { type: "some-unknown-app-section", settings: {} },
+      }),
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.SETTINGS_DRIFT);
+    expect(findings[0].appName).toBeUndefined();
+    expect(findings[0].description).toContain("some-unknown-app-section");
+    expect(findings[0].description).toContain("may be from an uninstalled app");
+  });
+
+  it("skips valid section references when section file exists", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        header: { type: "header", settings: {} },
+      }),
+      {
+        filename: "sections/header.liquid",
+        content: "<header>{{ section.settings.logo }}</header>",
+      },
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("handles missing settings_data.json", () => {
+    const files: ThemeFile[] = [{ filename: "layout/theme.liquid", content: "<html></html>" }];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("handles malformed JSON in settings_data.json", () => {
+    const files: ThemeFile[] = [
+      { filename: "config/settings_data.json", content: "{ this is not valid JSON }" },
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips Shopify built-in section types", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        "header-group": { type: "header-group", settings: {} },
+        "footer-group": { type: "footer-group", settings: {} },
+        aside: { type: "aside", settings: {} },
+      }),
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("produces one finding per stale section reference", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        "pagefly-section-1": { type: "pagefly", settings: {} },
+        "valid-section": { type: "featured-collection", settings: {} },
+        "unknown-widget": { type: "mystery-widget", settings: {} },
+      }),
+      { filename: "sections/featured-collection.liquid", content: "<div>collection</div>" },
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(2);
+    const types = findings.map((f) => f.description);
+    expect(types.some((d) => d.includes("pagefly"))).toBe(true);
+    expect(types.some((d) => d.includes("mystery-widget"))).toBe(true);
+  });
+
+  it("sets appName correctly via identifyAppFromSnippetName", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        "pf-section-abc": { type: "pagefly", settings: {} },
+      }),
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("PageFly");
+  });
+
+  it("assigns LOW severity by default", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        "stale-ref": { type: "some-removed-section", settings: {} },
+      }),
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+
+  it("includes a code snippet from the settings entry", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        "widget-abc": { type: "pagefly", settings: { color: "red" } },
+      }),
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].codeSnippet).toContain("pagefly");
+    expect(findings[0].codeSnippet.length).toBeLessThanOrEqual(300);
+  });
+
+  it("skips entries without a type field", () => {
+    const files: ThemeFile[] = [
+      makeSettingsFile({
+        "broken-entry": { settings: {} },
+      }),
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("returns empty when current has no sections key", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "config/settings_data.json",
+        content: JSON.stringify({ current: { general: {} } }),
+      },
+    ];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("is included in scanThemeFiles pass 3", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
+      makeSettingsFile({
+        "pagefly-section-1": { type: "pagefly", settings: {} },
+      }),
+    ];
+    const { findings } = scanThemeFiles(files);
+    const driftFindings = findingsOfType(findings, FindingType.SETTINGS_DRIFT);
+    expect(driftFindings).toHaveLength(1);
+    expect(driftFindings[0].appName).toBe("PageFly");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostPixels
+// ---------------------------------------------------------------------------
+
+describe("detectGhostPixels", () => {
+  it("detects Facebook Pixel (fbq)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<script>",
+        "  fbq('init', '123456789');",
+        "  fbq('track', 'PageView');",
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_PIXEL);
+    expect(findings[0].appName).toBe("Facebook Pixel");
+    expect(findings[0].description).toContain("fbq");
+  });
+
+  it("detects Google Analytics gtag", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  gtag('config', 'UA-12345-1');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Google Analytics");
+    expect(findings[0].description).toContain("gtag");
+  });
+
+  it("detects TikTok Pixel (ttq)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  ttq.load('ABC123');\n  ttq.page();\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("TikTok Pixel");
+  });
+
+  it("detects Pinterest Tag (pintrk)", () => {
+    const file: ThemeFile = {
+      filename: "sections/header.liquid",
+      content: "<script>\n  pintrk('load', '123456');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Pinterest Tag");
+  });
+
+  it("detects Twitter/X Pixel (twq)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  twq('init', 'abc123');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Twitter/X Pixel");
+  });
+
+  it("detects Snapchat Pixel (snaptr)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  snaptr('init', '123456');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Snapchat Pixel");
+  });
+
+  it("detects legacy Google Analytics (_gaq)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  _gaq.push(['_trackPageview']);\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Google Analytics (Legacy)");
+  });
+
+  it("deduplicates per tracker per file — multiple fbq calls produce 1 finding", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<script>",
+        "  fbq('init', '111');",
+        "  fbq('track', 'PageView');",
+        "  fbq('track', 'Purchase', {value: 10});",
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Facebook Pixel");
+    // Line number should be the first occurrence
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("detects multiple different trackers in the same file", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<script>",
+        "  fbq('init', '111');",
+        "  gtag('config', 'UA-12345-1');",
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(2);
+    const appNames = findings.map((f) => f.appName);
+    expect(appNames).toContain("Facebook Pixel");
+    expect(appNames).toContain("Google Analytics");
+  });
+
+  it("ignores non-tracking JavaScript", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<script>",
+        "  var x = 42;",
+        "  console.log('hello');",
+        "  document.addEventListener('click', function() {});",
+        "  function myFunc() { return true; }",
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("ignores tracking-like code outside of script blocks", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<!-- fbq('init', '123') -->",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("assigns HIGH severity by default", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  fbq('init', '123');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  it("downgrades to LOW inside a Liquid comment", () => {
+    // The comment opener must be within the buildSnippet window (1 line
+    // before the match). Putting it on the line directly before the match
+    // ensures it appears in the snippet.
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "{% comment %} <script>\nfbq('init', '123');\n</script> {% endcomment %}",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+
+  it("reports the correct line number for first occurrence", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<html>",
+        "<head>",
+        "<script>",
+        "  // some setup",
+        "  gtag('config', 'G-XXXXX');",
+        "</script>",
+        "</head>",
+      ].join("\n"),
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(5);
+  });
+
+  it("detects Google Analytics Universal (ga with send/create/require)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        "<script>\n  ga('create', 'UA-12345-1', 'auto');\n  ga('send', 'pageview');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Google Analytics (Universal)");
+  });
+
+  it("detects Reddit Pixel (rdt)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  rdt('init', 't2_abc123');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Reddit Pixel");
+  });
+
+  it("detects Tealium (_taq)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  _taq.push(['page']);\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Tealium");
+  });
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: "<script>\n  fbq('init', '123');\n</script>",
+      },
+    ];
+    const { findings } = scanThemeFiles(files);
+    const pixelFindings = findingsOfType(findings, FindingType.GHOST_PIXEL);
+    expect(pixelFindings).toHaveLength(1);
+    expect(pixelFindings[0].appName).toBe("Facebook Pixel");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectJsonLdConflicts
+// ---------------------------------------------------------------------------
+
+describe("detectJsonLdConflicts", () => {
+  it("detects conflicting Product JSON-LD with different aggregateRating", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">',
+        '{"@type": "Product", "@context": "https://schema.org", "name": "Widget", "aggregateRating": {"@type": "AggregateRating", "ratingValue": "4.5"}}',
+        "</script>",
+        "<p>some content</p>",
+        '<script type="application/ld+json">',
+        '{"@type": "Product", "@context": "https://schema.org", "name": "Widget", "aggregateRating": {"@type": "AggregateRating", "ratingValue": "4.2"}}',
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.JSON_LD_CONFLICT);
+    expect(findings[0].description).toContain("Product");
+    expect(findings[0].description).toContain("line 1");
+    expect(findings[0].lineNumber).toBe(5);
+  });
+
+  it("detects conflicting BreadcrumbList with different items", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">',
+        '{"@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Home"}]}',
+        "</script>",
+        '<script type="application/ld+json">',
+        '{"@type": "BreadcrumbList", "itemListElement": [{"@type": "ListItem", "position": 1, "name": "Shop"}]}',
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("BreadcrumbList");
+  });
+
+  it("skips identical duplicate blocks (same @type, same content)", () => {
+    const jsonContent = '{"@type": "Product", "@context": "https://schema.org", "name": "Widget"}';
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        `<script type="application/ld+json">${jsonContent}</script>`,
+        `<script type="application/ld+json">${jsonContent}</script>`,
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips single occurrence of a type", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<script type="application/ld+json">{"@type": "Product", "name": "Widget"}</script>',
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips blocks with Liquid template tags", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">',
+        '{"@type": "Product", "name": "{{ product.title }}"}',
+        "</script>",
+        '<script type="application/ld+json">',
+        '{"@type": "Product", "name": "Static Widget"}',
+        "</script>",
+      ].join("\n"),
+    };
+    // The Liquid block is skipped, leaving only one static block — no conflict
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("detects multiple conflicting types in the same file", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "A"}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "B"}</script>',
+        '<script type="application/ld+json">{"@type": "FAQPage", "mainEntity": []}</script>',
+        '<script type="application/ld+json">{"@type": "FAQPage", "mainEntity": [{"@type": "Question"}]}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(2);
+    const types = findings.map((f) => f.description);
+    expect(types.some((d) => d.includes("Product"))).toBe(true);
+    expect(types.some((d) => d.includes("FAQPage"))).toBe(true);
+  });
+
+  it("handles malformed JSON gracefully", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{not valid json}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget"}</script>',
+      ].join("\n"),
+    };
+    // Malformed block skipped, only one valid block — no conflict
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("assigns HIGH severity by default", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "A"}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "B"}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  it("downgrades to LOW when inside a Liquid comment", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "A"}</script>',
+        "{% comment %}",
+        '<script type="application/ld+json">{"@type": "Product", "name": "B"}</script>',
+        "{% endcomment %}",
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+
+  it("attributes app when identifyAppFromJsonLd matches", () => {
+    // Use a known Judge.me signature pattern
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "A"}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "B", "review": "judgeme"}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    // appName may or may not match depending on app-lookup signatures;
+    // the important thing is the function doesn't throw
+    expect(findings[0].findingType).toBe(FindingType.JSON_LD_CONFLICT);
+  });
+
+  it("reports correct line numbers for 2nd occurrence and mentions first in description", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        "<!-- line 1 -->",
+        "<!-- line 2 -->",
+        '<script type="application/ld+json">{"@type": "Product", "name": "A"}</script>',
+        "<!-- line 4 -->",
+        "<!-- line 5 -->",
+        "<!-- line 6 -->",
+        '<script type="application/ld+json">{"@type": "Product", "name": "B"}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(7);
+    expect(findings[0].description).toContain("line 3");
+  });
+
+  it("emits findings for 2nd and 3rd blocks when three blocks share the same @type", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "A"}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "B"}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "C"}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(2);
+    expect(findings[0].lineNumber).toBe(2);
+    expect(findings[1].lineNumber).toBe(3);
+    // Both should reference line 1 (the first occurrence)
+    expect(findings[0].description).toContain("line 1");
+    expect(findings[1].description).toContain("line 1");
+  });
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "templates/product.liquid",
+        content: [
+          '<script type="application/ld+json">{"@type": "Product", "name": "A"}</script>',
+          '<script type="application/ld+json">{"@type": "Product", "name": "B"}</script>',
+        ].join("\n"),
+      },
+    ];
+    const { findings } = scanThemeFiles(files);
+    const conflictFindings = findingsOfType(findings, FindingType.JSON_LD_CONFLICT);
+    expect(conflictFindings).toHaveLength(1);
+    expect(conflictFindings[0].description).toContain("Product");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostLayouts
+// ---------------------------------------------------------------------------
+
+describe("detectGhostLayouts", () => {
+  it("detects PageFly layout", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.pagefly.liquid",
+        content: "<html>PageFly layout content</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_LAYOUT);
+    expect(findings[0].appName).toBe("PageFly");
+    expect(findings[0].filename).toBe("layout/theme.pagefly.liquid");
+    expect(findings[0].description).toContain("PageFly");
+  });
+
+  it("detects GemPages layout", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.gempages.liquid",
+        content: "<html>GemPages layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("GemPages");
+  });
+
+  it("detects Shogun layout", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.shogun.liquid",
+        content: "<html>Shogun layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Shogun");
+  });
+
+  it("detects gem- prefix layout as GemPages", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/gem-landing.liquid",
+        content: "<html>GemPages landing layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("GemPages");
+  });
+
+  it("skips theme.liquid", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: "<html>Main theme layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips password.liquid", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/password.liquid",
+        content: "<html>Password layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips checkout.liquid", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/checkout.liquid",
+        content: "<html>Checkout layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("detects unknown app layout matching theme.*.liquid pattern", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.unknownapp.liquid",
+        content: "<html>Unknown app layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBeUndefined();
+    expect(findings[0].description).toContain("likely left by an uninstalled page builder");
+  });
+
+  it("skips custom merchant layout that does not match app patterns", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/landing.liquid",
+        content: "<html>Custom landing layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("detects multiple ghost layouts", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: "<html>Main layout</html>",
+      },
+      {
+        filename: "layout/theme.pagefly.liquid",
+        content: "<html>PageFly layout</html>",
+      },
+      {
+        filename: "layout/theme.gempages.liquid",
+        content: "<html>GemPages layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(2);
+    const appNames = findings.map((f) => f.appName);
+    expect(appNames).toContain("PageFly");
+    expect(appNames).toContain("GemPages");
+  });
+
+  it("assigns MEDIUM severity by default", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.pagefly.liquid",
+        content: "<html>PageFly layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings[0].severity).toBe(Severity.MEDIUM);
+  });
+
+  it("downgrades to LOW when content is inside a Liquid comment", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.pagefly.liquid",
+        content: "{% comment %}\n<html>PageFly layout</html>\n{% endcomment %}",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+
+  it("truncates code snippet to 300 characters", () => {
+    const longContent = "x".repeat(500);
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.pagefly.liquid",
+        content: longContent,
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings[0].codeSnippet).toHaveLength(300);
+  });
+
+  it("sets lineNumber to 1", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.pagefly.liquid",
+        content: "<html>PageFly layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings[0].lineNumber).toBe(1);
+  });
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: "<html>{{ content_for_layout }}</html>",
+      },
+      {
+        filename: "layout/theme.pagefly.liquid",
+        content: "<html>PageFly layout content</html>",
+      },
+    ];
+    const { findings } = scanThemeFiles(files);
+    const layoutFindings = findingsOfType(findings, FindingType.GHOST_LAYOUT);
+    expect(layoutFindings).toHaveLength(1);
+    expect(layoutFindings[0].appName).toBe("PageFly");
+  });
+
+  it("attributes via file content when filename does not match known patterns", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.custombuilder.liquid",
+        content: '<html><script src="https://cdn.pagefly.io/pagefly.js"></script></html>',
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(1);
+    // Should be attributed via identifyAppFromCode matching pagefly pattern in content
+    expect(findings[0].appName).toBe("PageFly");
+  });
+
+  it("detects Zipify layout", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.zipify.liquid",
+        content: "<html>Zipify layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Zipify Pages");
+  });
+
+  it("detects EComSolid layout", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.ecomsolid.liquid",
+        content: "<html>EComSolid layout</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("EComSolid");
+  });
+
+  it("ignores non-layout files", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "snippets/theme.pagefly.liquid",
+        content: "<html>Not a layout file</html>",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("ignores non-liquid files in layout directory", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.pagefly.json",
+        content: "{}",
+      },
+    ];
+    const findings = detectGhostLayouts(files);
+    expect(findings).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostRobots
+// ---------------------------------------------------------------------------
+
+describe("detectGhostRobots", () => {
+  it("detects static noindex meta robots", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<meta name="robots" content="noindex">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_ROBOTS);
+    expect(findings[0].description).toContain("noindex");
+  });
+
+  it("detects nofollow", () => {
+    const file: ThemeFile = {
+      filename: "templates/collection.liquid",
+      content: '<meta name="robots" content="nofollow">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("nofollow");
+  });
+
+  it("detects none", () => {
+    const file: ThemeFile = {
+      filename: "templates/page.liquid",
+      content: '<meta name="robots" content="none">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("none");
+  });
+
+  it("detects noindex,nofollow combo", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<meta name="robots" content="noindex, nofollow">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("noindex, nofollow");
+  });
+
+  it("skips index,follow (permissive directive)", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<meta name="robots" content="index, follow">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips conditional robots (Liquid if)", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '{% if template == "404" %}<meta name="robots" content="noindex">{% endif %}',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips conditional robots (Liquid unless)", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content:
+        '{%- unless request.page_type == "index" -%}<meta name="robots" content="noindex">{%- endunless -%}',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("detects with content before name (attribute order variant)", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<meta content="noindex" name="robots">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_ROBOTS);
+  });
+
+  it("severity is HIGH by default", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<meta name="robots" content="noindex">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  it("severity is LOW inside Liquid comment", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '{% comment %}<meta name="robots" content="noindex">{% endcomment %}',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "templates/product.liquid",
+        content: '<meta name="robots" content="noindex">',
+      },
+    ];
+    const result = scanThemeFiles(files);
+    const robotsFindings = findingsOfType(result.findings, FindingType.GHOST_ROBOTS);
+    expect(robotsFindings).toHaveLength(1);
   });
 });

@@ -83,8 +83,8 @@
   },
   "author": "nathanwhitley",
   "lint-staged": {
-    "app/**/*.{ts,tsx}": "prettier --write",
-    "inngest/**/*.ts": "prettier --write",
-    "tests/**/*.ts": "prettier --write"
+    "app/**/*.{ts,tsx}": ["eslint --max-warnings 0", "prettier --write"],
+    "inngest/**/*.ts": ["eslint --max-warnings 0", "prettier --write"],
+    "tests/**/*.ts": ["eslint --max-warnings 0", "prettier --write"]
   }
 }

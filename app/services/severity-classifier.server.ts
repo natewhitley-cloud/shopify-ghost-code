@@ -26,6 +26,16 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.GHOST_JSON_LD]: Severity.MEDIUM,
   [FindingType.GHOST_TEXT]: Severity.LOW,
   [FindingType.GHOST_TRANSLATION]: Severity.MEDIUM,
+  [FindingType.SETTINGS_DRIFT]: Severity.LOW,
+  [FindingType.GHOST_PIXEL]: Severity.HIGH,
+  [FindingType.JSON_LD_CONFLICT]: Severity.HIGH,
+  [FindingType.GHOST_LAYOUT]: Severity.MEDIUM,
+  [FindingType.GHOST_TAG]: Severity.LOW,
+  [FindingType.GHOST_PRICE]: Severity.HIGH,
+  [FindingType.GHOST_PAGE]: Severity.MEDIUM,
+  [FindingType.GHOST_METAFIELD]: Severity.LOW,
+  [FindingType.GHOST_REDIRECT]: Severity.MEDIUM,
+  [FindingType.GHOST_ROBOTS]: Severity.HIGH,
 };
 
 // ---------------------------------------------------------------------------

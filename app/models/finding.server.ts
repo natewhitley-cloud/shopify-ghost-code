@@ -115,6 +115,16 @@ export async function getFindingSummary(scanId: string) {
     [FindingType.GHOST_JSON_LD]: 0,
     [FindingType.GHOST_TEXT]: 0,
     [FindingType.GHOST_TRANSLATION]: 0,
+    [FindingType.SETTINGS_DRIFT]: 0,
+    [FindingType.GHOST_PIXEL]: 0,
+    [FindingType.JSON_LD_CONFLICT]: 0,
+    [FindingType.GHOST_LAYOUT]: 0,
+    [FindingType.GHOST_TAG]: 0,
+    [FindingType.GHOST_PRICE]: 0,
+    [FindingType.GHOST_PAGE]: 0,
+    [FindingType.GHOST_METAFIELD]: 0,
+    [FindingType.GHOST_REDIRECT]: 0,
+    [FindingType.GHOST_ROBOTS]: 0,
   };
   for (const row of byType) {
     typeCounts[row.findingType] = row._count.findingType;

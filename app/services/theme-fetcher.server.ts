@@ -9,18 +9,12 @@
  * back off proportionally when headroom drops below 100 points.
  */
 
+import type { AdminApiContext } from "../types/shopify";
+
 /** A single theme file with its text content. */
 export type ThemeFile = {
   filename: string;
   content: string;
-};
-
-/** Minimal slice of the Shopify admin context we use in this service. */
-type AdminApiContext = {
-  graphql: (
-    query: string,
-    options?: { variables?: Record<string, unknown> },
-  ) => Promise<{ json: () => Promise<unknown> }>;
 };
 
 // ---------------------------------------------------------------------------
