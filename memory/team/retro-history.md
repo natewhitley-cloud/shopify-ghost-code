@@ -11,6 +11,8 @@
 - Key insight: `appInstallations` GraphQL query is restricted to Shopify-internal apps — no third-party scope exists. Third feature killed by API restrictions (after Ember + Tax Integrity Monitor). New portfolio-level memory created to enforce query-level feasibility testing before feature work.
 - Key pattern: `/spec` → `/sprint` pipeline for surgical removal worked cleanly. Spec identified 17 files + 8 cross-cutting refs; agents caught 2 additional refs via grep sweep.
 - Bonus: After removal, pivoted to Unknown Finding Feedback Loop curation pipeline (GC-e8u). 2 more agents (scaffolder + implementer), +20 tests, CLI review script. All v1.1 roadmap items now shipped.
+- Extended session: Killed orphaned webhook detection (same API isolation blocker). Ran opportunity scan across all existing research — identified 9 new features. Feasibility-checked 3 scope-dependent items (read_products, read_content confirmed; read_metafields partially feasible). 9 new beads created.
+- Ongoing issue: Third consecutive session with post-push CI lint failures from agent code. Need eslint pre-commit hook.
 
 ## Retro: 2026-03-23 (session 18 — signatures, theme testing, E2E scan)
 

@@ -136,7 +136,7 @@ Cleanify Code (the only prior competitor) was delisted — reviews mentioned fal
 
 | Feature | Effort | Status | Description |
 |---|---|---|---|
-| **Orphaned Webhook Detection** | Medium | Not started | New finding type. Query `webhookSubscriptions` via GraphQL, cross-reference with installed apps. Flag webhooks pointing to domains of apps no longer installed. Direct extension of "your store is running things you didn't install" — webhooks are literally that. |
+| **Orphaned Webhook Detection** | Medium | **Not feasible** | Shopify isolates webhook subscriptions per-app — each app can only see its own webhooks. No API surface exists to list other apps' webhook subscriptions. Same architectural blocker as Permission Audit. |
 | **Persistent UI Text Fragments** | Medium | **Shipped** (GHOST_TEXT) | Pattern-match Liquid templates for known widget text left by uninstalled apps (review widgets, trust badges, wishlist buttons). 10 apps covered. |
 | **Translation Metafield Detection** | Medium | **Shipped** (GHOST_TRANSLATION) | Query translations via Shopify Translations API, cross-reference with installed apps. `read_translations` optional scope. Heuristic detection — no creator attribution on Translation objects. |
 | **Market Research DB Signature Expansion** | Low | Partially done | Signature DB expanded from 56 to 94 apps across 15 categories. Further expansion possible via market research cross-reference. |
@@ -157,7 +157,7 @@ Beyond what v1 detects, merchants report these persistent artifacts after app un
 |---|---|---|
 | **Translation metafields** | Shopify Translate & Adapt confirmed; 166K bad Google crawls | **Shipped** as GHOST_TRANSLATION — Translations API with cross-ref heuristic |
 | **Persistent UI text fragments** | Payment badge text appearing 2 years post-uninstall, across theme switches | **Shipped** as GHOST_TEXT — 10 apps covered |
-| **Orphaned webhooks** | Architectural: apps lose API access on uninstall but webhook subscriptions may persist | GraphQL `webhookSubscriptions` query — planned for v1.2 |
+| **Orphaned webhooks** | Architectural: apps lose API access on uninstall but webhook subscriptions may persist | **Not feasible** — Shopify isolates webhook subscriptions per-app; no cross-app visibility |
 | **Custom tags on products/orders** | "Some apps leave behind meta fields, Tags or code" | Would need `read_products` scope (new scope request) — post-launch evaluation |
 | **Discount/pricing data** | BOLD Discounts: "Sales are STUCK ON MY PRODUCTS" | Not detectable via theme scanning; would need pricing API access |
 | **SEO sabotage code** | SearchPie: rankings flatlined to 0 within 2 days of uninstall | Partially detectable (meta/robots directives); server-side redirects not visible |
