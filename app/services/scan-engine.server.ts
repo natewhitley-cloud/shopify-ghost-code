@@ -46,6 +46,12 @@
  *   GHOST_PRECONNECT — orphaned <link rel="preconnect|dns-prefetch|preload">
  *                    hints pointing to known app CDN domains, wasting browser
  *                    connection slots after the app is uninstalled
+ *   GHOST_FONT     — orphaned @font-face declarations or font service <link>
+ *                    tags left by uninstalled apps, causing wasted downloads
+ *                    and CLS from font-display issues
+ *   GHOST_AJAX     — orphaned fetch()/XMLHttpRequest/jQuery AJAX calls to
+ *                    defunct app servers, wasting network requests and leaking
+ *                    data to third-party domains
  */
 
 import { FindingType } from "@prisma/client";
@@ -1650,6 +1656,217 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Detector: GHOST_FONT
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches @font-face declarations in inline styles.
+ * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
+ * before each use.
+ */
+const FONT_FACE_RE = /@font-face\s*\{[^}]*font-family\s*:\s*["']?([^"';}\n]+)["']?/gi;
+
+/**
+ * Matches <link> tags loading from font services (Google Fonts, etc.).
+ * Handles both attribute orderings (href before rel and rel before href).
+ * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
+ * before each use.
+ */
+const FONT_LINK_RE =
+  /<link[^>]+href\s*=\s*["'](https?:\/\/fonts\.googleapis\.com\/[^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["'](https?:\/\/[^"']*font[^"']*)["'][^>]*>/gi;
+
+/**
+ * Detect orphaned font declarations left by uninstalled apps.
+ *
+ * Detection rules:
+ *   1. @font-face declarations in inline <style> blocks whose surrounding
+ *      code context can be attributed to a known app
+ *   2. <link> tags loading Google Fonts or other font service URLs that can
+ *      be attributed to a known app via surrounding code context
+ *
+ * False positive boundaries:
+ *   - Only flags when app-attributed (no unknown font flagging)
+ *   - Skips lines inside Liquid conditionals or comment blocks
+ */
+export function detectGhostFont(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  let insideComment = false;
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    // Track Liquid comment blocks
+    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
+    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
+      insideComment = false;
+      continue;
+    }
+    if (insideComment) continue;
+
+    // Skip lines with Liquid conditionals — these are theme-native logic
+    if (LIQUID_CONDITIONAL_RE.test(text)) continue;
+
+    // Check for @font-face declarations
+    let match: RegExpExecArray | null;
+    FONT_FACE_RE.lastIndex = 0;
+
+    while ((match = FONT_FACE_RE.exec(text)) !== null) {
+      const codeSnippet = buildSnippet(file.content, lineNumber);
+
+      // Only flag if we can attribute to a known app
+      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      if (!appName) continue;
+
+      const fontFamily = match[1]?.trim();
+      const severity = classifySeverity(FindingType.GHOST_FONT, codeSnippet);
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_FONT,
+        severity,
+        appName,
+        description: `Orphaned @font-face declaration for "${fontFamily}" from ${appName}`,
+      });
+    }
+
+    // Check for font service <link> tags
+    FONT_LINK_RE.lastIndex = 0;
+
+    while ((match = FONT_LINK_RE.exec(text)) !== null) {
+      const href = match[1] ?? match[2];
+      if (!href) continue;
+
+      const codeSnippet = buildSnippet(file.content, lineNumber);
+
+      // Cross-reference against known app CDN domains + code context
+      const appName = identifyAppFromUrl(href) ?? identifyAppFromCode(codeSnippet) ?? undefined;
+      if (!appName) continue;
+
+      const severity = classifySeverity(FindingType.GHOST_FONT, codeSnippet);
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_FONT,
+        severity,
+        appName,
+        description: `Orphaned font link to ${appName} (${href})`,
+      });
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Detector: GHOST_AJAX
+// ---------------------------------------------------------------------------
+
+/**
+ * Matches fetch() calls with URL strings.
+ * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
+ * before each use.
+ */
+const FETCH_RE = /fetch\s*\(\s*["'](https?:\/\/[^"']+)["']/gi;
+
+/**
+ * Matches jQuery AJAX patterns: $.ajax({url: "..."}), $.get("..."), $.post("...")
+ * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
+ * before each use.
+ */
+const JQUERY_AJAX_RE =
+  /\$\s*\.\s*(?:ajax|get|post|getJSON)\s*\(\s*(?:\{\s*url\s*:\s*)?["'](https?:\/\/[^"']+)["']/gi;
+
+/**
+ * Matches XMLHttpRequest .open() calls with URL strings.
+ * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
+ * before each use.
+ */
+const XHR_OPEN_RE = /\.open\s*\(\s*["'][A-Z]+["']\s*,\s*["'](https?:\/\/[^"']+)["']/gi;
+
+/**
+ * Detect orphaned AJAX/fetch calls to defunct app servers left by uninstalled apps.
+ *
+ * Detection rules:
+ *   1. fetch("https://...") calls pointing to known app API domains
+ *   2. $.ajax / $.get / $.post jQuery patterns pointing to known app domains
+ *   3. XMLHttpRequest .open() calls pointing to known app domains
+ *
+ * False positive boundaries:
+ *   - Skips Shopify-owned domains (cdn.shopify.com, etc.)
+ *   - Skips lines inside Liquid conditionals or comment blocks
+ *   - Only flags if the target URL can be attributed to a known app
+ */
+export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  let insideComment = false;
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    // Track Liquid comment blocks
+    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
+    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
+      insideComment = false;
+      continue;
+    }
+    if (insideComment) continue;
+
+    // Skip lines with Liquid conditionals — these are theme-native logic
+    if (LIQUID_CONDITIONAL_RE.test(text)) continue;
+
+    // Helper to process a matched URL
+    const processUrl = (url: string, pattern: string) => {
+      const hostname = extractDomain(url);
+      if (!hostname) return;
+
+      // Skip Shopify-owned domains
+      if (isShopifyDomain(hostname)) return;
+
+      const codeSnippet = buildSnippet(file.content, lineNumber);
+
+      // Cross-reference against known app CDN domains + code context
+      const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(codeSnippet) ?? undefined;
+      if (!appName) return;
+
+      const severity = classifySeverity(FindingType.GHOST_AJAX, codeSnippet);
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet,
+        findingType: FindingType.GHOST_AJAX,
+        severity,
+        appName,
+        description: `Orphaned ${pattern} call to ${appName} API (${hostname})`,
+      });
+    };
+
+    // Check fetch() calls
+    let match: RegExpExecArray | null;
+    FETCH_RE.lastIndex = 0;
+    while ((match = FETCH_RE.exec(text)) !== null) {
+      processUrl(match[1], "fetch");
+    }
+
+    // Check jQuery AJAX patterns
+    JQUERY_AJAX_RE.lastIndex = 0;
+    while ((match = JQUERY_AJAX_RE.exec(text)) !== null) {
+      processUrl(match[1], "jQuery AJAX");
+    }
+
+    // Check XMLHttpRequest .open() calls
+    XHR_OPEN_RE.lastIndex = 0;
+    while ((match = XHR_OPEN_RE.exec(text)) !== null) {
+      processUrl(match[1], "XMLHttpRequest");
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Public entry point
 // ---------------------------------------------------------------------------
 
@@ -1663,7 +1880,8 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
  *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
  *     GHOST_SECTION, GHOST_HREFLANG, DUPLICATE_META, GHOST_JSON_LD,
  *     JSON_LD_CONFLICT, GHOST_TEXT, GHOST_PIXEL, GHOST_ROBOTS,
- *     GHOST_CANONICAL, GHOST_TITLE, GHOST_OG, and GHOST_PRECONNECT findings.
+ *     GHOST_CANONICAL, GHOST_TITLE, GHOST_OG, GHOST_PRECONNECT, GHOST_FONT,
+ *     and GHOST_AJAX findings.
  *
  *   Pass 2 — cross-file orphan detection:
  *     Runs the file reference analyzer over all Liquid files (not just
@@ -1707,6 +1925,8 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     findings.push(...detectGhostTitle(file));
     findings.push(...detectGhostOg(file));
     findings.push(...detectGhostPreconnect(file));
+    findings.push(...detectGhostFont(file));
+    findings.push(...detectGhostAjax(file));
 
     // Collect unrecognized external resources
     unknownScripts.push(...collectUnknownScripts(file));

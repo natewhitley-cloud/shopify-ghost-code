@@ -154,6 +154,8 @@ enum FindingType {
   GHOST_TITLE
   GHOST_OG
   GHOST_PRECONNECT
+  GHOST_FONT
+  GHOST_AJAX
 }
 
 enum SubmissionStatus {

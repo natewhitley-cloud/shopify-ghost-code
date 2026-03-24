@@ -40,6 +40,8 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.GHOST_TITLE]: Severity.HIGH,
   [FindingType.GHOST_OG]: Severity.MEDIUM,
   [FindingType.GHOST_PRECONNECT]: Severity.MEDIUM,
+  [FindingType.GHOST_FONT]: Severity.MEDIUM,
+  [FindingType.GHOST_AJAX]: Severity.HIGH,
 };
 
 // ---------------------------------------------------------------------------

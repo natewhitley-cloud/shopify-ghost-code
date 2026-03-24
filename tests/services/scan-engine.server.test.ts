@@ -21,6 +21,8 @@ import {
   detectGhostTitle,
   detectGhostOg,
   detectGhostPreconnect,
+  detectGhostFont,
+  detectGhostAjax,
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
@@ -2997,5 +2999,393 @@ describe("detectGhostPreconnect", () => {
     const preconnectFindings = findingsOfType(result.findings, FindingType.GHOST_PRECONNECT);
     expect(preconnectFindings).toHaveLength(1);
     expect(preconnectFindings[0].appName).toBe("Judge.me");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostFont
+// ---------------------------------------------------------------------------
+
+describe("detectGhostFont", () => {
+  // --- Detections (should fire) ---
+
+  it("detects @font-face attributed to known app via code context", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<!-- Judge.me reviews widget -->",
+        "<style>",
+        '@font-face { font-family: "JudgeReviewFont"; src: url("https://cdn.judge.me/fonts/review.woff2"); }',
+        "</style>",
+      ].join("\n"),
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_FONT);
+    expect(findings[0].severity).toBe(Severity.MEDIUM);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[0].description).toContain("@font-face");
+    expect(findings[0].description).toContain("JudgeReviewFont");
+  });
+
+  it("detects Google Fonts link attributed to known app via code context", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<!-- klaviyo form widget styles -->",
+        '<link href="https://fonts.googleapis.com/css?family=Roboto" rel="stylesheet">',
+      ].join("\n"),
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_FONT);
+    expect(findings[0].appName).toBe("Klaviyo");
+    expect(findings[0].description).toContain("font link");
+  });
+
+  it("detects font link attributed via URL to known app CDN", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link href="https://cdn.judge.me/fonts/widget-font.css" rel="stylesheet">',
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_FONT);
+    expect(findings[0].appName).toBe("Judge.me");
+  });
+
+  it("detects @font-face with single-quoted font-family", () => {
+    const file: ThemeFile = {
+      filename: "snippets/loox-widget.liquid",
+      content: [
+        "<!-- Loox reviews -->",
+        "<style>",
+        "@font-face { font-family: 'LooxIcons'; src: url('https://cdn.loox.io/fonts/icons.woff2'); }",
+        "</style>",
+      ].join("\n"),
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Loox");
+    expect(findings[0].description).toContain("LooxIcons");
+  });
+
+  it("detects multiple @font-face declarations on different lines", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<!-- jdgm-widget judge.me styles -->",
+        "<style>",
+        '@font-face { font-family: "JudgeFont1"; src: url("https://cdn.judge.me/font1.woff2"); }',
+        "p { color: red; }",
+        '@font-face { font-family: "JudgeFont2"; src: url("https://cdn.judge.me/font2.woff2"); }',
+        "</style>",
+      ].join("\n"),
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(2);
+  });
+
+  // --- False positive avoidance (should NOT fire) ---
+
+  it("does not flag @font-face without app attribution", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<style>",
+        '@font-face { font-family: "MyCustomFont"; src: url("/assets/custom.woff2"); }',
+        "</style>",
+      ].join("\n"),
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag Google Fonts link without app attribution", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<link href="https://fonts.googleapis.com/css?family=Open+Sans" rel="stylesheet">',
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag @font-face inside Liquid comment block", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        "<!-- Judge.me widget -->",
+        '<style>@font-face { font-family: "JudgeFont"; src: url("font.woff2"); }</style>',
+        "{% endcomment %}",
+      ].join("\n"),
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag @font-face inside whitespace-stripping Liquid comment", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{%- comment -%}",
+        "<!-- Judge.me widget -->",
+        '<style>@font-face { font-family: "JudgeFont"; src: url("font.woff2"); }</style>',
+        "{%- endcomment -%}",
+      ].join("\n"),
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag font link inside Liquid conditional", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '{% if settings.enable_reviews %}<link href="https://cdn.judge.me/fonts/widget.css" rel="stylesheet">{% endif %}',
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("returns empty array for file with no font declarations", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<html><head><title>My Store</title></head></html>",
+    };
+    const findings = detectGhostFont(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: [
+          "<!-- Judge.me reviews widget -->",
+          "<style>",
+          '@font-face { font-family: "JudgeFont"; src: url("https://cdn.judge.me/fonts/review.woff2"); }',
+          "</style>",
+        ].join("\n"),
+      },
+    ];
+    const result = scanThemeFiles(files);
+    const fontFindings = findingsOfType(result.findings, FindingType.GHOST_FONT);
+    expect(fontFindings).toHaveLength(1);
+    expect(fontFindings[0].appName).toBe("Judge.me");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostAjax
+// ---------------------------------------------------------------------------
+
+describe("detectGhostAjax", () => {
+  // --- Detections (should fire) ---
+
+  it("detects fetch() call to known app domain", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<script>", 'fetch("https://cdn.judge.me/api/reviews");', "</script>"].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_AJAX);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[0].description).toContain("fetch");
+    expect(findings[0].description).toContain("cdn.judge.me");
+  });
+
+  it("detects fetch() with single quotes", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<script>", "fetch('https://cdn.judge.me/api/reviews');", "</script>"].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+  });
+
+  it("detects $.get() jQuery pattern to known app domain", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<script>", '$.get("https://cdn.loox.io/api/widgets");', "</script>"].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_AJAX);
+    expect(findings[0].appName).toBe("Loox");
+    expect(findings[0].description).toContain("jQuery AJAX");
+  });
+
+  it("detects $.post() jQuery pattern to known app domain", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<script>", '$.post("https://cdn.judge.me/api/submit");', "</script>"].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+  });
+
+  it("detects $.ajax() with url property to known app domain", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<script>", '$.ajax({url: "https://cdn.judge.me/api/data"});', "</script>"].join(
+        "\n",
+      ),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+  });
+
+  it("detects XMLHttpRequest .open() to known app domain", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<script>",
+        "var xhr = new XMLHttpRequest();",
+        'xhr.open("GET", "https://static.klaviyo.com/api/track");',
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_AJAX);
+    expect(findings[0].appName).toBe("Klaviyo");
+    expect(findings[0].description).toContain("XMLHttpRequest");
+  });
+
+  it("detects fetch() attributed via code context", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<!-- Judge.me reviews API -->",
+        "<script>",
+        'fetch("https://judge.me/api/v1/reviews");',
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+  });
+
+  it("detects multiple AJAX calls on different lines", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<script>",
+        'fetch("https://cdn.judge.me/api/reviews");',
+        "var x = 1;",
+        'fetch("https://static.klaviyo.com/api/track");',
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(2);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[1].appName).toBe("Klaviyo");
+  });
+
+  // --- False positive avoidance (should NOT fire) ---
+
+  it("does not flag fetch() to Shopify CDN", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<script>", 'fetch("https://cdn.shopify.com/api/something");', "</script>"].join(
+        "\n",
+      ),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag fetch() to *.myshopify.com", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<script>",
+        'fetch("https://my-store.myshopify.com/api/cart.js");',
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag fetch() to unknown domain not in app signatures", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<script>", 'fetch("https://api.unknown-service.com/data");', "</script>"].join(
+        "\n",
+      ),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag fetch() inside Liquid comment block", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        "<script>",
+        'fetch("https://cdn.judge.me/api/reviews");',
+        "</script>",
+        "{% endcomment %}",
+      ].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag fetch() inside whitespace-stripping Liquid comment", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{%- comment -%}",
+        "<script>",
+        'fetch("https://cdn.judge.me/api/reviews");',
+        "</script>",
+        "{%- endcomment -%}",
+      ].join("\n"),
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag fetch() inside Liquid conditional", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '{% if settings.enable_reviews %}fetch("https://cdn.judge.me/api/reviews"){% endif %}',
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("returns empty array for file with no AJAX calls", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<html><head><title>My Store</title></head></html>",
+    };
+    const findings = detectGhostAjax(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("is included in scanThemeFiles results", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: ["<script>", 'fetch("https://cdn.judge.me/api/reviews");', "</script>"].join("\n"),
+      },
+    ];
+    const result = scanThemeFiles(files);
+    const ajaxFindings = findingsOfType(result.findings, FindingType.GHOST_AJAX);
+    expect(ajaxFindings).toHaveLength(1);
+    expect(ajaxFindings[0].appName).toBe("Judge.me");
   });
 });
