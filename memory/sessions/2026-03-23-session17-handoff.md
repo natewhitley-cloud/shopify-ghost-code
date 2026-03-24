@@ -9,6 +9,7 @@
 2. **GHOST_TRANSLATION finding type (GC-icb)**: Detects orphaned translation data via Shopify Translations API. Queries `translatableResources` for 5 resource types across all non-primary locales. Cross-references with 10 known translation app names — only flags when no translation app installed. Runs as Step 3 in Inngest scan pipeline. Gracefully skips if `read_translations` scope not granted. MEDIUM severity. 27 new tests.
 
 **Also done:**
+
 - Pushed all accumulated metadata (agents, skills, rules, session history) — 59 files
 - Fixed 2 CI lint issues (unused param, import ordering) from prior session
 - Fixed 1 CI lint issue (unused import) from this session
@@ -44,13 +45,13 @@
 
 ### Commits
 
-| Hash | Description |
-|------|-------------|
-| `171baa6` | fix: resolve CI lint errors — unused param and import ordering |
-| `14f707e` | chore: update agents, skills, rules, memory, and project config |
-| `2cf1ed4` | feat(scanner): add persistent UI text fragment detection (GC-5n8) |
+| Hash      | Description                                                                     |
+| --------- | ------------------------------------------------------------------------------- |
+| `171baa6` | fix: resolve CI lint errors — unused param and import ordering                  |
+| `14f707e` | chore: update agents, skills, rules, memory, and project config                 |
+| `2cf1ed4` | feat(scanner): add persistent UI text fragment detection (GC-5n8)               |
 | `e1e2e7f` | feat(scanner): add orphaned translation detection via Translations API (GC-icb) |
-| `7e58475` | fix: remove unused beforeEach import in translation-fetcher test |
+| `7e58475` | fix: remove unused beforeEach import in translation-fetcher test                |
 
 ### Open Backlog (7 beads)
 

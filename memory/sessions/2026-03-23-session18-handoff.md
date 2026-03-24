@@ -30,15 +30,15 @@
 
 ### Commits
 
-| Hash | Description |
-|------|-------------|
-| `171baa6` | fix: resolve CI lint errors — unused param and import ordering |
-| `14f707e` | chore: update agents, skills, rules, memory, and project config |
-| `2cf1ed4` | feat(scanner): add persistent UI text fragment detection (GC-5n8) |
+| Hash      | Description                                                                     |
+| --------- | ------------------------------------------------------------------------------- |
+| `171baa6` | fix: resolve CI lint errors — unused param and import ordering                  |
+| `14f707e` | chore: update agents, skills, rules, memory, and project config                 |
+| `2cf1ed4` | feat(scanner): add persistent UI text fragment detection (GC-5n8)               |
 | `e1e2e7f` | feat(scanner): add orphaned translation detection via Translations API (GC-icb) |
-| `7e58475` | fix: remove unused beforeEach import in translation-fetcher test |
-| `e56729a` | docs: session 17 retro and handoff |
-| `21bc162` | feat(scanner): add 20 app signatures |
+| `7e58475` | fix: remove unused beforeEach import in translation-fetcher test                |
+| `e56729a` | docs: session 17 retro and handoff                                              |
+| `21bc162` | feat(scanner): add 20 app signatures                                            |
 
 ### Uncommitted Files
 

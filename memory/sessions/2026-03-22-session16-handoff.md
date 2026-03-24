@@ -13,6 +13,7 @@
 7. **Sensitive scope alerts (GC-tob)**: New Privacy & Security Alerts card on app detail page. Human-readable warnings for PII scopes (read_customers, read_orders) and store-modification scopes (write_checkouts, write_themes). PII access badge added to permission audit app list.
 
 **Also done:**
+
 - Product strategy doc updated with shipped v1 capabilities, post-launch roadmap, cleanup gap analysis, and artifact research inventory
 - Fixed pre-existing broken Judge.me JSON-LD test
 - 8 backlog items created, 7 closed this session
@@ -44,13 +45,13 @@
 
 ### Commits
 
-| Hash | Description |
-|------|-------------|
-| `32d0946` | feat(scanner): add 10 app signatures and tracker privacy classification |
+| Hash      | Description                                                                  |
+| --------- | ---------------------------------------------------------------------------- |
+| `32d0946` | feat(scanner): add 10 app signatures and tracker privacy classification      |
 | `443d9cf` | feat(ui): add tracker privacy callout, app impact map, and performance score |
-| `bf27cd0` | feat(scanner): add unknown script collection and feedback loop |
-| `211d17d` | feat(permissions): add removed apps section and sensitive scope alerts |
-| `6fef228` | docs: update product strategy with shipped features and post-launch roadmap |
+| `bf27cd0` | feat(scanner): add unknown script collection and feedback loop               |
+| `211d17d` | feat(permissions): add removed apps section and sensitive scope alerts       |
+| `6fef228` | docs: update product strategy with shipped features and post-launch roadmap  |
 
 ### Open Backlog (9 beads)
 
