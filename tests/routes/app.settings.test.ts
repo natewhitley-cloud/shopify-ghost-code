@@ -181,6 +181,22 @@ describe("app.settings action", () => {
     );
   });
 
+  it("calls billing.request with Standard plan for downgrade-standard intent", async () => {
+    // billing.request throws a redirect response (never returns normally).
+    // downgrade-standard uses the same plan name as subscribe-standard but is a
+    // distinct intent — this test confirms the downgrade code path is reachable.
+    mockBillingRequest.mockRejectedValue(new Response(null, { status: 302 }));
+
+    await expect(action(makeActionArgs("downgrade-standard"))).rejects.toThrow();
+
+    expect(mockBillingRequest).toHaveBeenCalledTimes(1);
+    expect(mockBillingRequest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        plan: "Standard",
+      }),
+    );
+  });
+
   it("returns error for unknown intent", async () => {
     const result = (await action(makeActionArgs("unknown-intent"))) as {
       error: string;
