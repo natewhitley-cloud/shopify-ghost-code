@@ -4,7 +4,6 @@ import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData, useRevalidator, useFetcher } from "react-router";
 
-import db from "../db.server";
 import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -15,6 +14,7 @@ import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
 import {
+  findUnknownScriptForShop,
   getUnknownScriptsForScan,
   submitSignatureSuggestion,
 } from "../models/unknown-script.server";
@@ -49,6 +49,22 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   GHOST_JSON_LD: "JSON-LD Schema",
   GHOST_TEXT: "Widget Text",
   GHOST_TRANSLATION: "Translations",
+  SETTINGS_DRIFT: "Settings Drift",
+  GHOST_PIXEL: "Tracking Pixels",
+  JSON_LD_CONFLICT: "JSON-LD Conflicts",
+  GHOST_LAYOUT: "Layout Code",
+  GHOST_TAG: "Theme Tags",
+  GHOST_PRICE: "Price Markup",
+  GHOST_PAGE: "Page Templates",
+  GHOST_METAFIELD: "Metafields",
+  GHOST_REDIRECT: "Redirects",
+  GHOST_ROBOTS: "Robots.txt Rules",
+  GHOST_CANONICAL: "Canonical Tags",
+  GHOST_TITLE: "Title Tags",
+  GHOST_OG: "Open Graph Tags",
+  GHOST_PRECONNECT: "Preconnect Hints",
+  GHOST_FONT: "Font References",
+  GHOST_AJAX: "AJAX Requests",
 };
 
 // ---------------------------------------------------------------------------
@@ -211,8 +227,22 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     throw new Response("Not found", { status: 404 });
   }
 
-  const findingSummary = await getFindingSummary(scanId);
+  // Group 1: independent queries that only require `scan` to be resolved.
+  const [findingSummary, rawPreviewFinding, previousScan, unknownScripts] = await Promise.all([
+    getFindingSummary(scanId),
+    // Free-tier only: fetch a single preview finding (paid users get full array).
+    canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
+    // Diff: only needed for completed scans on plans that support diffing.
+    scan.status === "COMPLETED" && canUseScanDiffing(shop.plan)
+      ? getPreviousScanForTheme(scan.shopId, scan.themeId, scan.createdAt)
+      : Promise.resolve(null),
+    // Unknown scripts: only for completed scans when user can view details.
+    scan.status === "COMPLETED" && canViewDetails
+      ? getUnknownScriptsForScan(scanId)
+      : Promise.resolve([]),
+  ]);
 
+  // Group 2: depends on findingSummary from Group 1.
   // Compute health score for completed scans.
   let healthScore: HealthScoreResult | null = null;
   if (scan.status === "COMPLETED") {
@@ -236,9 +266,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
 
-  // For free-tier shops, expose only the single highest-severity finding so
-  // the UI can show a "peek" without leaking the full results.
-  const rawPreviewFinding = canViewDetails ? null : await getHighestSeverityFinding(scanId);
+  // Enrich the preview finding with tracker flag (free-tier only).
   const previewFinding = rawPreviewFinding
     ? {
         ...rawPreviewFinding,
@@ -246,24 +274,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       }
     : null;
 
-  // Compute diff against the previous completed scan for the same theme,
-  // but only when the current scan is itself completed and the plan allows it.
+  // Compute diff against the previous completed scan for the same theme.
   // scanDiffing is only enabled for plans that also have showFindingDetails,
   // so `findings` is guaranteed to be populated when this branch is reached.
   let scanDiff: ScanDiff | null = null;
-  if (scan.status === "COMPLETED" && canUseScanDiffing(shop.plan)) {
-    const previousScan = await getPreviousScanForTheme(scan.shopId, scan.themeId, scan.createdAt);
-    if (previousScan) {
-      scanDiff = diffScans(findings, previousScan.findings);
-      // Sort diff finding arrays by severity for consistent display order.
-      sortDiffFindingsBySeverity(scanDiff.newFindings);
-      sortDiffFindingsBySeverity(scanDiff.resolvedFindings);
-    }
+  if (previousScan) {
+    scanDiff = diffScans(findings, previousScan.findings);
+    // Sort diff finding arrays by severity for consistent display order.
+    sortDiffFindingsBySeverity(scanDiff.newFindings);
+    sortDiffFindingsBySeverity(scanDiff.resolvedFindings);
   }
-
-  // Fetch unknown scripts for completed scans when the user can view details.
-  const unknownScripts =
-    scan.status === "COMPLETED" && canViewDetails ? await getUnknownScriptsForScan(scanId) : [];
 
   return {
     scan: {
@@ -308,9 +328,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // Verify the unknown script belongs to a scan owned by this shop
-  const unknownScript = await db.unknownScript.findFirst({
-    where: { id: unknownScriptId, scan: { shopId: shop.id } },
-  });
+  const unknownScript = await findUnknownScriptForShop(unknownScriptId, shop.id);
   if (!unknownScript) {
     return { error: "Unknown script not found" };
   }

@@ -72,7 +72,7 @@ export const login = shopify.login;
 export const registerWebhooks = shopify.registerWebhooks;
 export const sessionStorage = shopify.sessionStorage;
 // Note: billing checks are performed via `const { billing } = await authenticate.admin(request)`.
-// Pass isTest: process.env.NODE_ENV !== "production" at call sites.
+// Pass isTest: process.env.SHOPIFY_BILLING_TEST === "true" at call sites.
 
 // =============================================================================
 // SECURITY AUDIT: Session Token + CSP Review  (task .25 — reviewer@a62bf81)

@@ -32,6 +32,7 @@ const mockDb = vi.hoisted(() => ({
     findMany: vi.fn(),
     findFirst: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
     count: vi.fn(),
   },
   // Callback-form $transaction: invoke the callback with the tx mock.
@@ -48,6 +49,7 @@ vi.mock("../../app/db.server", () => ({
 
 import {
   createScan,
+  expireStaleScans,
   getScanById,
   getScansForShop,
   updateScanStatus,
@@ -525,5 +527,92 @@ describe("hasCompletedScans", () => {
     mockDb.scan.count.mockRejectedValue(new Error("DB unavailable"));
 
     await expect(hasCompletedScans(SHOP_ID)).rejects.toThrow("DB unavailable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// expireStaleScans
+// ---------------------------------------------------------------------------
+
+describe("expireStaleScans", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("marks PENDING scans older than the cutoff as FAILED and returns the count", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 2 });
+
+    const result = await expireStaleScans();
+
+    expect(mockDb.scan.updateMany).toHaveBeenCalledOnce();
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    expect(callArg.where.status.in).toContain(ScanStatus.PENDING);
+    expect(callArg.data.status).toBe(ScanStatus.FAILED);
+    expect(callArg.data).toHaveProperty("completedAt");
+    expect(result).toBe(2);
+  });
+
+  it("marks IN_PROGRESS scans older than the cutoff as FAILED", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await expireStaleScans();
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    expect(callArg.where.status.in).toContain(ScanStatus.IN_PROGRESS);
+  });
+
+  it("uses a createdAt < cutoff filter so recent scans are not touched", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+
+    const before = new Date();
+    await expireStaleScans(30);
+    const after = new Date();
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    const cutoff: Date = callArg.where.createdAt.lt;
+    // cutoff should be ~30 minutes before now
+    const expectedMin = new Date(before.getTime() - 30 * 60 * 1000);
+    const expectedMax = new Date(after.getTime() - 30 * 60 * 1000);
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(expectedMin.getTime());
+    expect(cutoff.getTime()).toBeLessThanOrEqual(expectedMax.getTime());
+  });
+
+  it("respects a custom maxAgeMinutes parameter", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+
+    const before = new Date();
+    await expireStaleScans(60);
+    const after = new Date();
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    const cutoff: Date = callArg.where.createdAt.lt;
+    const expectedMin = new Date(before.getTime() - 60 * 60 * 1000);
+    const expectedMax = new Date(after.getTime() - 60 * 60 * 1000);
+    expect(cutoff.getTime()).toBeGreaterThanOrEqual(expectedMin.getTime());
+    expect(cutoff.getTime()).toBeLessThanOrEqual(expectedMax.getTime());
+  });
+
+  it("does not include COMPLETED or FAILED scans in the status filter", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+
+    await expireStaleScans();
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    expect(callArg.where.status.in).not.toContain(ScanStatus.COMPLETED);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.FAILED);
+  });
+
+  it("returns 0 when no stale scans exist", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await expireStaleScans();
+
+    expect(result).toBe(0);
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.scan.updateMany.mockRejectedValue(new Error("DB connection lost"));
+
+    await expect(expireStaleScans()).rejects.toThrow("DB connection lost");
   });
 });

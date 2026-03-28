@@ -21,7 +21,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // billing.request() never returns — it throws a redirect response.
     await billing.request({
       plan: PLAN_STANDARD,
-      isTest: process.env.NODE_ENV !== "production",
+      isTest: process.env.SHOPIFY_BILLING_TEST === "true",
       returnUrl: `${process.env.SHOPIFY_APP_URL}/app/settings`,
     });
   }
@@ -29,7 +29,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (intent === "subscribe-professional") {
     await billing.request({
       plan: PLAN_PROFESSIONAL,
-      isTest: process.env.NODE_ENV !== "production",
+      isTest: process.env.SHOPIFY_BILLING_TEST === "true",
       returnUrl: `${process.env.SHOPIFY_APP_URL}/app/settings`,
     });
   }

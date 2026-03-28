@@ -169,12 +169,15 @@ export async function updateSubmissionStatus(
  * Used after promoting a domain to the signature DB.
  */
 export async function acceptSubmissionsForDomain(domain: string): Promise<{ count: number }> {
-  // Find all unknown scripts whose URL matches the domain
+  // Filter at the DB level using a URL contains check on the domain.
+  // This avoids fetching every unknown script into memory.
   const unknownScripts = await db.unknownScript.findMany({
-    where: {},
+    where: { url: { contains: domain } },
     select: { id: true, url: true },
   });
 
+  // Refine in JS to ensure exact domain match (contains is a substring match,
+  // so "example.com" would also match "notexample.com").
   const matchingScriptIds = unknownScripts
     .filter((s) => extractDomain(s.url) === domain)
     .map((s) => s.id);
@@ -191,6 +194,16 @@ export async function acceptSubmissionsForDomain(domain: string): Promise<{ coun
       status: "ACCEPTED",
       reviewedAt: new Date(),
     },
+  });
+}
+
+/**
+ * Find an unknown script by ID, scoped to a specific shop.
+ * Returns null if not found or not owned by the shop.
+ */
+export async function findUnknownScriptForShop(unknownScriptId: string, shopId: string) {
+  return db.unknownScript.findFirst({
+    where: { id: unknownScriptId, scan: { shopId } },
   });
 }
 

@@ -43,6 +43,14 @@ vi.mock("../../inngest/client", () => ({
   },
 }));
 
+vi.mock("../../app/lib/logger.server", () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
@@ -358,5 +366,83 @@ describe("webhooks.themes.publish — GID format regression (S-01)", () => {
     const event = mockInngestSend.mock.calls[0][0];
 
     expect(scanThemeId).toBe(event.data.themeId);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Invalid payload — missing or non-numeric/non-string id
+// ---------------------------------------------------------------------------
+
+describe("webhooks.themes.publish — invalid payload", () => {
+  it("returns 200 when payload.id is missing", async () => {
+    setupWebhookAuth({ payload: { name: "Dawn" } });
+
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 200 when payload.id is null", async () => {
+    setupWebhookAuth({ payload: { id: null, name: "Dawn" } });
+
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 200 when payload.id is undefined", async () => {
+    setupWebhookAuth({ payload: { id: undefined, name: "Dawn" } });
+
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(response.status).toBe(200);
+  });
+
+  it("returns 200 when payload.id is a boolean", async () => {
+    setupWebhookAuth({ payload: { id: true, name: "Dawn" } });
+
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(response.status).toBe(200);
+  });
+
+  it("does not create a scan for any invalid payload.id", async () => {
+    setupWebhookAuth({ payload: { id: true, name: "Dawn" } });
+
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(mockCreateScan).not.toHaveBeenCalled();
+  });
+
+  it("does not send an Inngest event for invalid payload.id", async () => {
+    setupWebhookAuth({ payload: { id: true, name: "Dawn" } });
+
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(mockInngestSend).not.toHaveBeenCalled();
   });
 });

@@ -340,11 +340,37 @@ export const APP_SIGNATURES: AppSignature[] = [
     cssPatterns: [/selleasy/],
   },
   {
-    appName: "Bold Commerce",
+    appName: "Bold Product Options",
     cdnDomains: ["cdn.boldapps.net", "boldapps.net"],
-    scriptPatterns: [/boldapps\.net/, /BOLD\.common/, /BoldCommerce/],
-    snippetNames: ["bold-variant-option", "bold-product-builder", "bold-common"],
-    cssPatterns: [/boldapps/],
+    scriptPatterns: [/boldapps\.net/, /BOLD\.common/, /BoldCommerce/, /bold-options/i],
+    snippetNames: [
+      "bold-common",
+      "bold-variant-option",
+      "bold-product-options",
+      "bold-options-css",
+      "bold-options-shared",
+    ],
+    cssPatterns: [/boldapps/, /bold-options/],
+  },
+  {
+    appName: "Bold Upsell",
+    cdnDomains: ["cdn.boldapps.net", "boldapps.net"],
+    scriptPatterns: [/boldapps\.net/, /BOLD\.common/, /BoldCommerce/, /bold-upsell/i],
+    snippetNames: ["bold-common", "bold-upsell", "bold-upsell-custom"],
+    cssPatterns: [/boldapps/, /bold-upsell/],
+  },
+  {
+    appName: "Bold Discounts",
+    cdnDomains: ["cdn.boldapps.net", "boldapps.net"],
+    scriptPatterns: [
+      /boldapps\.net/,
+      /BOLD\.common/,
+      /BoldCommerce/,
+      /bold-discount/i,
+      /shappify/i,
+    ],
+    snippetNames: ["bold-common", "bold-discount", "shappify-sales-clock"],
+    cssPatterns: [/boldapps/, /bold-discount/, /shappify/],
   },
   {
     appName: "ReConvert",
@@ -479,6 +505,30 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["json-ld-for-seo", "schema-for-seo"],
     cssPatterns: [],
     jsonLdPatterns: [/json-ld-for-seo/i],
+  },
+  {
+    appName: "Smart SEO",
+    cdnDomains: [],
+    scriptPatterns: [/smart-seo/, /smartseo/i],
+    snippetNames: ["smartseo-head", "smartseo-jsonld", "smart-seo", "smartseo"],
+    cssPatterns: [],
+    jsonLdPatterns: [/smartseo/i],
+  },
+  {
+    appName: "Schema Plus for SEO",
+    cdnDomains: ["cdn.schemaplus.io", "schemaplus.io"],
+    scriptPatterns: [/schemaplus\.io/, /SchemaPlus/],
+    snippetNames: ["schema-plus", "schemaplus", "schema-plus-json-ld"],
+    cssPatterns: [],
+    jsonLdPatterns: [/schemaplus/i, /schema-plus/i],
+  },
+  {
+    appName: "Yoast SEO for Shopify",
+    cdnDomains: ["cdn.yoast.com"],
+    scriptPatterns: [/yoast/i, /yoast-seo/],
+    snippetNames: ["yoast-seo", "yoast-schema", "yoast-jsonld"],
+    cssPatterns: [/yoast/],
+    jsonLdPatterns: [/yoast/i],
   },
 
   // -------------------------------------------------------------------------
@@ -813,6 +863,17 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/ageify\.com/, /AgeVerification/, /window\.ageify\b/],
     snippetNames: ["ageify", "age-verification"],
     cssPatterns: [/ageify/, /age-verification/],
+  },
+
+  // -------------------------------------------------------------------------
+  // A/B Testing
+  // -------------------------------------------------------------------------
+  {
+    appName: "ShopLift",
+    cdnDomains: ["cdn.shoplift.com", "shoplift.com"],
+    scriptPatterns: [/shoplift\.com/, /ShopLift/, /shoplift-ab/i],
+    snippetNames: ["shoplift", "shoplift-ab", "shoplift-split"],
+    cssPatterns: [/shoplift/],
   },
 
   // -------------------------------------------------------------------------

@@ -30,6 +30,20 @@ export const pollThemeChanges = inngest.createFunction(
   { cron: "0 6 * * *" },
   async ({ step, logger }) => {
     // -------------------------------------------------------------------------
+    // Step 0: Expire stale scans stuck in PENDING/IN_PROGRESS for > 30 min.
+    // This unblocks shops whose scan jobs crashed or timed out before we fan
+    // out new per-shop checks — otherwise createScan will throw on the next run.
+    // -------------------------------------------------------------------------
+    const expiredCount = await step.run("expire-stale-scans", async () => {
+      const { expireStaleScans } = await import("../../app/models/scan.server");
+      return expireStaleScans();
+    });
+
+    if (expiredCount > 0) {
+      logger.warn(`[poll-theme-changes] expired ${expiredCount} stale scan(s)`);
+    }
+
+    // -------------------------------------------------------------------------
     // Step 1: Fetch all Professional-plan shops
     // -------------------------------------------------------------------------
     const shops = await step.run("fetch-all-shops", async () => {

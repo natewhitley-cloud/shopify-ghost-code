@@ -231,6 +231,57 @@ describe("CSV export", () => {
     expect(body).toContain('""value""');
   });
 
+  it("handles fields containing commas without breaking columns", async () => {
+    mockGetFindingsForScan.mockResolvedValue([
+      {
+        ...FINDINGS[0],
+        codeSnippet: "color: red, green, blue;",
+      },
+    ]);
+
+    const response = await callLoader("scan-abc", "csv");
+    const body = await response.text();
+
+    // The comma-containing value should be inside double-quotes, keeping it as one field
+    expect(body).toContain('"color: red, green, blue;"');
+    // Data row should still have the correct number of comma-separated fields
+    const dataRow = body.split("\r\n")[1];
+    // Split on commas that are NOT inside quotes to count fields
+    // Since all fields are quoted, we can count by splitting on ","
+    const fields = dataRow.match(/"[^"]*(?:""[^"]*)*"/g);
+    expect(fields).toHaveLength(6); // Severity, Type, File, Line, App, Code Snippet
+  });
+
+  it("handles fields containing newlines within quoted values", async () => {
+    mockGetFindingsForScan.mockResolvedValue([
+      {
+        ...FINDINGS[0],
+        codeSnippet: "line1\nline2\nline3",
+      },
+    ]);
+
+    const response = await callLoader("scan-abc", "csv");
+    const body = await response.text();
+
+    // Newlines inside quoted fields are valid CSV — the field should contain them
+    expect(body).toContain('"line1\nline2\nline3"');
+  });
+
+  it("handles fields with both commas and double-quotes", async () => {
+    mockGetFindingsForScan.mockResolvedValue([
+      {
+        ...FINDINGS[0],
+        codeSnippet: 'attr="val1,val2"',
+      },
+    ]);
+
+    const response = await callLoader("scan-abc", "csv");
+    const body = await response.text();
+
+    // Quotes should be doubled, commas preserved inside the quoted field
+    expect(body).toContain('"attr=""val1,val2"""');
+  });
+
   it("uses empty string for null appName fields", async () => {
     const response = await callLoader("scan-abc", "csv");
     const body = await response.text();

@@ -177,6 +177,31 @@ export async function countScansForShopSince(shopId: string, since: Date): Promi
 }
 
 /**
+ * Mark stale scans as FAILED.  A scan is "stale" if it has been PENDING or
+ * IN_PROGRESS for longer than `maxAgeMinutes` (default 30).
+ *
+ * This is called by the daily cron coordinator before fanning out per-shop
+ * checks so that shops whose scan jobs crashed or timed out are unblocked
+ * before new scans are attempted.
+ *
+ * Returns the number of scans cleaned up.
+ */
+export async function expireStaleScans(maxAgeMinutes = 30): Promise<number> {
+  const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+  const result = await db.scan.updateMany({
+    where: {
+      status: { in: [ScanStatus.PENDING, ScanStatus.IN_PROGRESS] },
+      createdAt: { lt: cutoff },
+    },
+    data: {
+      status: ScanStatus.FAILED,
+      completedAt: new Date(),
+    },
+  });
+  return result.count;
+}
+
+/**
  * Return true if the shop has at least one COMPLETED scan ever.
  * Used by plan-gating to detect first-time scanners who are eligible
  * for the free onboarding scan regardless of the monthly quota.

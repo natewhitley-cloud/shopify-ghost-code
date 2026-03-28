@@ -29,6 +29,13 @@ vi.mock("../../app/db.server", () => ({
   },
 }));
 
+// Stub expireStaleScans so the coordinator's Step 0 does not reach through to
+// a real Prisma client.  Tests that need to verify the cleanup step behaviour
+// live in tests/models/scan.server.test.ts.
+vi.mock("../../app/models/scan.server", () => ({
+  expireStaleScans: vi.fn().mockResolvedValue(0),
+}));
+
 vi.mock("../../inngest/client", () => ({
   inngest: {
     send: vi.fn(),

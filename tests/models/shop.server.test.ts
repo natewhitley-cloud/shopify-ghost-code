@@ -23,7 +23,16 @@ const mockDb = vi.hoisted(() => ({
   shop: {
     findUnique: vi.fn(),
     update: vi.fn(),
+    delete: vi.fn(),
   },
+  session: {
+    deleteMany: vi.fn(),
+  },
+  scan: {
+    deleteMany: vi.fn(),
+  },
+  // Array-form $transaction: resolve each staged operation in parallel.
+  $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
 }));
 
 vi.mock("../../app/db.server", () => ({
@@ -34,7 +43,11 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { updateShopPlanByDomain, updateThemePublishTimestamp } from "../../app/models/shop.server";
+import {
+  updateShopPlanByDomain,
+  updateThemePublishTimestamp,
+  deleteShopData,
+} from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -221,6 +234,139 @@ describe("updateThemePublishTimestamp", () => {
 
     await expect(updateThemePublishTimestamp("error-shop.myshopify.com")).rejects.toThrow(
       "DB write failed",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// deleteShopData
+// ---------------------------------------------------------------------------
+
+describe("deleteShopData", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns null when the shop domain is not found in DB", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+
+    const result = await deleteShopData("ghost.myshopify.com");
+
+    expect(result).toBeNull();
+    expect(mockDb.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("does not call $transaction when shop is not found", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+
+    await deleteShopData("ghost.myshopify.com");
+
+    expect(mockDb.$transaction).not.toHaveBeenCalled();
+  });
+
+  it("calls $transaction when the shop exists", async () => {
+    const existingShop = {
+      id: "shop-gdpr-1",
+      domain: "delete-me.myshopify.com",
+      accessToken: "token-gdpr",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 2 });
+    mockDb.scan.deleteMany.mockResolvedValue({ count: 3 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    expect(mockDb.$transaction).toHaveBeenCalledOnce();
+  });
+
+  it("calls session.deleteMany with the domain string (not shopId)", async () => {
+    const existingShop = {
+      id: "shop-gdpr-2",
+      domain: "delete-me.myshopify.com",
+      accessToken: "token-gdpr",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 1 });
+    mockDb.scan.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    expect(mockDb.session.deleteMany).toHaveBeenCalledWith({
+      where: { shop: "delete-me.myshopify.com" },
+    });
+  });
+
+  it("calls scan.deleteMany with the shopId (not domain)", async () => {
+    const existingShop = {
+      id: "shop-gdpr-3",
+      domain: "delete-me.myshopify.com",
+      accessToken: "token-gdpr",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.scan.deleteMany.mockResolvedValue({ count: 5 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    expect(mockDb.scan.deleteMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-gdpr-3" },
+    });
+  });
+
+  it("calls shop.delete with the domain", async () => {
+    const existingShop = {
+      id: "shop-gdpr-4",
+      domain: "delete-me.myshopify.com",
+      accessToken: "token-gdpr",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.scan.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    expect(mockDb.shop.delete).toHaveBeenCalledWith({
+      where: { domain: "delete-me.myshopify.com" },
+    });
+  });
+
+  it("returns the shop object (pre-deletion snapshot) on success", async () => {
+    const existingShop = {
+      id: "shop-gdpr-5",
+      domain: "delete-me.myshopify.com",
+      accessToken: "token-gdpr",
+      plan: "Standard",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 1 });
+    mockDb.scan.deleteMany.mockResolvedValue({ count: 2 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    const result = await deleteShopData("delete-me.myshopify.com");
+
+    expect(result).toEqual(existingShop);
+  });
+
+  it("propagates a $transaction error", async () => {
+    const existingShop = {
+      id: "shop-gdpr-err",
+      domain: "error-shop.myshopify.com",
+      accessToken: "token-err",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.$transaction.mockRejectedValueOnce(new Error("Transaction rolled back"));
+
+    await expect(deleteShopData("error-shop.myshopify.com")).rejects.toThrow(
+      "Transaction rolled back",
     );
   });
 });
