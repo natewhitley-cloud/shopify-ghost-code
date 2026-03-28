@@ -519,7 +519,7 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     it("fetches theme files using the admin client for the correct theme", async () => {
       await runScanThemeFn();
 
-      expect(mockFetchThemeFiles).toHaveBeenCalledWith(expect.anything(), THEME_ID);
+      expect(mockFetchThemeFiles).toHaveBeenCalledWith(expect.anything(), THEME_ID, SHOP_DOMAIN);
     });
 
     it("passes the fetched files to the scan engine", async () => {

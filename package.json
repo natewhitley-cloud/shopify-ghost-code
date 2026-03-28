@@ -35,6 +35,7 @@
     "@react-router/fs-routes": "^7.12.0",
     "@react-router/node": "^7.12.0",
     "@react-router/serve": "^7.12.0",
+    "@sentry/node": "^10.46.0",
     "@shopify/app-bridge-react": "^4.2.4",
     "@shopify/shopify-app-react-router": "^1.1.0",
     "@shopify/shopify-app-session-storage-prisma": "^8.0.0",
@@ -83,8 +84,17 @@
   },
   "author": "nathanwhitley",
   "lint-staged": {
-    "app/**/*.{ts,tsx}": ["eslint --max-warnings 0", "prettier --write"],
-    "inngest/**/*.ts": ["eslint --max-warnings 0", "prettier --write"],
-    "tests/**/*.ts": ["eslint --max-warnings 0", "prettier --write"]
+    "app/**/*.{ts,tsx}": [
+      "eslint --max-warnings 0",
+      "prettier --write"
+    ],
+    "inngest/**/*.ts": [
+      "eslint --max-warnings 0",
+      "prettier --write"
+    ],
+    "tests/**/*.ts": [
+      "eslint --max-warnings 0",
+      "prettier --write"
+    ]
   }
 }

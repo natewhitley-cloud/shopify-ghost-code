@@ -5,12 +5,17 @@
  * (and other log aggregators) can parse log levels and context fields
  * without regex-scraping raw strings.
  *
+ * Error-level log calls also forward to Sentry when SENTRY_DSN is configured.
+ * Sentry capture is additive — existing log output is unchanged.
+ *
  * Usage:
  *   import { logger } from "../lib/logger.server";
  *   logger.info("Webhook received", { topic, shop });
  *   logger.warn("Shop not found", { shop });
  *   logger.error("GraphQL error", { shop, error: err.message });
  */
+
+import { captureMessage } from "./sentry.server";
 
 type LogLevel = "info" | "warn" | "error";
 
@@ -24,6 +29,9 @@ function log(level: LogLevel, message: string, context?: Record<string, unknown>
   // Route warn/error to stderr so Railway surfaces them at the correct severity.
   if (level === "error") {
     console.error(JSON.stringify(entry));
+    // Forward error-level events to Sentry. captureMessage is a no-op when
+    // SENTRY_DSN is not configured, so this never affects app behaviour.
+    captureMessage(message, "error", context);
   } else if (level === "warn") {
     console.warn(JSON.stringify(entry));
   } else {

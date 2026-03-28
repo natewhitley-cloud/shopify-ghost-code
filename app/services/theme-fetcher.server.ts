@@ -9,6 +9,7 @@
  * back off proportionally when headroom drops below 100 points.
  */
 
+import { checkThrottleStatusFromExtensions } from "../lib/rate-limit-monitor.server";
 import type { AdminApiContext } from "../types/shopify";
 
 /** A single theme file with its text content. */
@@ -149,6 +150,7 @@ export async function fetchMainTheme(admin: AdminApiContext): Promise<MainTheme 
 export async function fetchThemeFiles(
   admin: AdminApiContext,
   themeId: string,
+  shopDomain?: string,
 ): Promise<ThemeFile[]> {
   const files: ThemeFile[] = [];
   let cursor: string | null = null;
@@ -209,6 +211,12 @@ export async function fetchThemeFiles(
 
     // Check rate limits after each page; sleep if needed before continuing.
     await checkRateLimit(json.extensions);
+
+    // Log a structured warning/error if the shop is approaching its rate limit.
+    // Non-blocking — does not change pagination or error handling behavior.
+    if (shopDomain) {
+      checkThrottleStatusFromExtensions(shopDomain, json.extensions);
+    }
   }
 
   return files;

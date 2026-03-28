@@ -212,3 +212,38 @@ export async function hasCompletedScans(shopId: string): Promise<boolean> {
   });
   return count > 0;
 }
+
+/**
+ * Compute scan failure rate stats over a trailing time window.
+ *
+ * "Completed" means a terminal status (COMPLETED or FAILED) — scans still
+ * in PENDING or IN_PROGRESS are excluded because they have not yet had a
+ * chance to succeed or fail.
+ *
+ * @param hours - trailing window in hours (default 24)
+ * @returns `{ total, failed, rate }` where `rate` is a 0–1 decimal.
+ *   When `total` is 0 (no scans ran in the window), `rate` is 0.
+ */
+export async function getFailureRateStats(
+  hours = 24,
+): Promise<{ total: number; failed: number; rate: number }> {
+  const since = new Date(Date.now() - hours * 60 * 60 * 1000);
+
+  const [total, failed] = await Promise.all([
+    db.scan.count({
+      where: {
+        createdAt: { gte: since },
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.FAILED] },
+      },
+    }),
+    db.scan.count({
+      where: {
+        createdAt: { gte: since },
+        status: ScanStatus.FAILED,
+      },
+    }),
+  ]);
+
+  const rate = total === 0 ? 0 : failed / total;
+  return { total, failed, rate };
+}

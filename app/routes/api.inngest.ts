@@ -11,6 +11,7 @@
 import { serve } from "inngest/remix";
 
 import { inngest } from "../../inngest/client";
+import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failures";
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
 import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
 import { scanTheme } from "../../inngest/functions/scan-theme";
@@ -18,7 +19,7 @@ import { weeklyScan } from "../../inngest/functions/weekly-scan";
 
 const handler = serve({
   client: inngest,
-  functions: [scanTheme, pollThemeChanges, pollCheckShop, weeklyScan],
+  functions: [scanTheme, pollThemeChanges, pollCheckShop, weeklyScan, monitorScanFailures],
 });
 
 export { handler as loader, handler as action };

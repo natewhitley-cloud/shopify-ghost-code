@@ -210,7 +210,7 @@ describe("scanTheme — happy path", () => {
       where: { id: SHOP_ID },
     });
     expect(mockUnauthenticated.admin).toHaveBeenCalledWith(MOCK_SHOP.domain);
-    expect(mockFetchThemeFiles).toHaveBeenCalledWith(MOCK_ADMIN, THEME_ID);
+    expect(mockFetchThemeFiles).toHaveBeenCalledWith(MOCK_ADMIN, THEME_ID, MOCK_SHOP.domain);
   });
 
   it("passes fetched files to the scan engine", async () => {

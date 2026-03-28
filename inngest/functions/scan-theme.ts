@@ -126,7 +126,7 @@ export const scanTheme = inngest.createFunction(
 
         const { unauthenticated } = await import("../../app/shopify.server");
         const { admin } = await unauthenticated.admin(shop.domain);
-        const files = await fetchThemeFiles(admin, themeId);
+        const files = await fetchThemeFiles(admin, themeId, shop.domain);
         console.log("[scan-theme]", { event: "files_fetched", shopId, fileCount: files.length });
 
         const { findings, unknownScripts } = scanThemeFiles(files);

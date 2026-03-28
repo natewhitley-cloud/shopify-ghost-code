@@ -50,6 +50,7 @@ vi.mock("../../app/db.server", () => ({
 import {
   createScan,
   expireStaleScans,
+  getFailureRateStats,
   getScanById,
   getScansForShop,
   updateScanStatus,
@@ -614,5 +615,114 @@ describe("expireStaleScans", () => {
     mockDb.scan.updateMany.mockRejectedValue(new Error("DB connection lost"));
 
     await expect(expireStaleScans()).rejects.toThrow("DB connection lost");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFailureRateStats
+// ---------------------------------------------------------------------------
+
+describe("getFailureRateStats", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns { total: 0, failed: 0, rate: 0 } when no terminal scans exist in the window", async () => {
+    // Both count calls return 0 (no COMPLETED or FAILED scans in the window)
+    mockDb.scan.count.mockResolvedValueOnce(0).mockResolvedValueOnce(0);
+
+    const result = await getFailureRateStats();
+
+    expect(result).toEqual({ total: 0, failed: 0, rate: 0 });
+  });
+
+  it("returns rate 0 when all scans completed successfully", async () => {
+    // First count = total (COMPLETED + FAILED) = 5, second count = FAILED = 0
+    mockDb.scan.count.mockResolvedValueOnce(5).mockResolvedValueOnce(0);
+
+    const result = await getFailureRateStats();
+
+    expect(result).toEqual({ total: 5, failed: 0, rate: 0 });
+  });
+
+  it("returns rate 1 when all terminal scans failed", async () => {
+    mockDb.scan.count.mockResolvedValueOnce(4).mockResolvedValueOnce(4);
+
+    const result = await getFailureRateStats();
+
+    expect(result).toEqual({ total: 4, failed: 4, rate: 1 });
+  });
+
+  it("returns the correct fractional rate for mixed COMPLETED and FAILED scans", async () => {
+    // 2 failed out of 10 total = 0.2 rate
+    mockDb.scan.count.mockResolvedValueOnce(10).mockResolvedValueOnce(2);
+
+    const result = await getFailureRateStats();
+
+    expect(result.total).toBe(10);
+    expect(result.failed).toBe(2);
+    expect(result.rate).toBeCloseTo(0.2);
+  });
+
+  it("queries only COMPLETED and FAILED scans for the total count (excludes PENDING and IN_PROGRESS)", async () => {
+    mockDb.scan.count.mockResolvedValue(0);
+
+    await getFailureRateStats(24);
+
+    // First count call should filter by status COMPLETED and FAILED
+    const firstCallArg = mockDb.scan.count.mock.calls[0][0];
+    expect(firstCallArg.where.status.in).toContain(ScanStatus.COMPLETED);
+    expect(firstCallArg.where.status.in).toContain(ScanStatus.FAILED);
+    expect(firstCallArg.where.status.in).not.toContain(ScanStatus.PENDING);
+    expect(firstCallArg.where.status.in).not.toContain(ScanStatus.IN_PROGRESS);
+  });
+
+  it("queries only FAILED scans for the failed count", async () => {
+    mockDb.scan.count.mockResolvedValue(0);
+
+    await getFailureRateStats(24);
+
+    // Second count call should filter by status FAILED only
+    const secondCallArg = mockDb.scan.count.mock.calls[1][0];
+    expect(secondCallArg.where.status).toBe(ScanStatus.FAILED);
+  });
+
+  it("uses a trailing time window based on the hours parameter", async () => {
+    mockDb.scan.count.mockResolvedValue(0);
+
+    const before = new Date();
+    await getFailureRateStats(6);
+    const after = new Date();
+
+    const firstCallArg = mockDb.scan.count.mock.calls[0][0];
+    const since: Date = firstCallArg.where.createdAt.gte;
+
+    // since should be ~6 hours before now
+    const expectedMin = new Date(before.getTime() - 6 * 60 * 60 * 1000);
+    const expectedMax = new Date(after.getTime() - 6 * 60 * 60 * 1000);
+    expect(since.getTime()).toBeGreaterThanOrEqual(expectedMin.getTime());
+    expect(since.getTime()).toBeLessThanOrEqual(expectedMax.getTime());
+  });
+
+  it("defaults to a 24-hour window when hours is not specified", async () => {
+    mockDb.scan.count.mockResolvedValue(0);
+
+    const before = new Date();
+    await getFailureRateStats();
+    const after = new Date();
+
+    const firstCallArg = mockDb.scan.count.mock.calls[0][0];
+    const since: Date = firstCallArg.where.createdAt.gte;
+
+    const expectedMin = new Date(before.getTime() - 24 * 60 * 60 * 1000);
+    const expectedMax = new Date(after.getTime() - 24 * 60 * 60 * 1000);
+    expect(since.getTime()).toBeGreaterThanOrEqual(expectedMin.getTime());
+    expect(since.getTime()).toBeLessThanOrEqual(expectedMax.getTime());
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.scan.count.mockRejectedValue(new Error("DB unavailable"));
+
+    await expect(getFailureRateStats()).rejects.toThrow("DB unavailable");
   });
 });
