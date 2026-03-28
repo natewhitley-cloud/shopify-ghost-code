@@ -1,5 +1,16 @@
 # Retrospective History
 
+## Retro: 2026-03-28 (session 23 — Signatures + code review + fixes + test coverage)
+
+- Tasks completed: 12 beads closed (1 feature: 6 signatures, 6 bugs, 5 test tasks; 1 already covered)
+- Agents dispatched: 8 (5 implementer, 2 tester, 1 explorer pair)
+- New learnings: 3 durable learnings added to MEMORY.md
+- Test growth: 1026 → 1050 (+24 tests)
+- Fix rate: 0% — zero rework commits, all agent output correct on first pass
+- Key insight: /review → sprint pipeline on a mature codebase produces surgical fixes. 11 beads completed in ~45 min serialized dispatch. Market research cross-referenced with signature DB identified highest-value gaps (SEO apps, ShopLift).
+- Key decision: Billing isTest switched from NODE_ENV to dedicated SHOPIFY_BILLING_TEST env var for explicit control.
+- Monitoring backlog: 5 observability beads deferred (Sentry, scan failure rate, billing metrics, rate limit alerting, Inngest notifications).
+
 ## Retro: 2026-03-24 (session 21 — File cleanup + v1.4 GHOST_FONT/GHOST_AJAX)
 
 - Tasks completed: Uncommitted file cleanup (3 commits), v1.4 detectors (1 commit)
