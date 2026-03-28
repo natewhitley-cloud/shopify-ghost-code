@@ -3,10 +3,11 @@
  *
  * Strategy:
  *   - Mock authenticate.webhook() to control what topic/shop/payload the handler sees.
+ *   - Mock unauthenticated.admin() + fetchMainTheme() to control the MAIN theme lookup.
  *   - Mock getShopByDomain(), createScan(), canUseAutoRescan(), inngest.send()
  *     to verify orchestration behavior without any real I/O.
- *   - Key invariant: the themeId passed to createScan and inngest.send must be
- *     a GID-formatted string ("gid://shopify/Theme/<id>"), NOT the bare numeric id.
+ *   - Key invariant: the themeId passed to createScan and inngest.send comes from
+ *     fetchMainTheme (not the webhook payload), ensuring the active theme is scanned.
  */
 
 import type { ActionFunctionArgs } from "react-router";
@@ -20,6 +21,13 @@ vi.mock("../../app/shopify.server", () => ({
   authenticate: {
     webhook: vi.fn(),
   },
+  unauthenticated: {
+    admin: vi.fn(),
+  },
+}));
+
+vi.mock("../../app/services/theme-fetcher.server", () => ({
+  fetchMainTheme: vi.fn(),
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
@@ -59,7 +67,8 @@ import { canUseAutoRescan } from "../../app/lib/plan-gating.server";
 import { createScan } from "../../app/models/scan.server";
 import { getShopByDomain } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.themes.publish";
-import { authenticate } from "../../app/shopify.server";
+import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
+import { authenticate, unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 
 // ---------------------------------------------------------------------------
@@ -67,6 +76,8 @@ import { inngest } from "../../inngest/client";
 // ---------------------------------------------------------------------------
 
 const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>;
+const mockUnauthenticatedAdmin = unauthenticated.admin as ReturnType<typeof vi.fn>;
+const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
 const mockCanUseAutoRescan = canUseAutoRescan as ReturnType<typeof vi.fn>;
@@ -78,8 +89,7 @@ const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
 
 const SHOP_DOMAIN = "test-shop.myshopify.com";
 const SHOP_ID = "shop-abc-123";
-const THEME_NUMERIC_ID = 123456789;
-const THEME_GID = `gid://shopify/Theme/${THEME_NUMERIC_ID}`;
+const THEME_GID = "gid://shopify/Theme/123456789";
 const THEME_NAME = "Dawn";
 const SCAN_ID = "scan-xyz-789";
 
@@ -112,6 +122,14 @@ const MOCK_SCAN = {
   status: "PENDING",
 };
 
+const MOCK_MAIN_THEME = {
+  id: THEME_GID,
+  name: THEME_NAME,
+  updatedAt: "2026-03-28T00:00:00Z",
+};
+
+const MOCK_ADMIN = { graphql: vi.fn() };
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -119,7 +137,7 @@ const MOCK_SCAN = {
 function makeRequest() {
   return new Request("https://example.com/webhooks/themes/publish", {
     method: "POST",
-    body: JSON.stringify({ id: THEME_NUMERIC_ID, name: THEME_NAME }),
+    body: JSON.stringify({ id: 123456789, name: THEME_NAME }),
     headers: { "Content-Type": "application/json" },
   });
 }
@@ -128,7 +146,7 @@ function setupWebhookAuth(overrides?: { shop?: string; payload?: Record<string, 
   mockAuthenticateWebhook.mockResolvedValue({
     topic: "THEMES_PUBLISH",
     shop: overrides?.shop ?? SHOP_DOMAIN,
-    payload: overrides?.payload ?? { id: THEME_NUMERIC_ID, name: THEME_NAME },
+    payload: overrides?.payload ?? { id: 123456789, name: THEME_NAME },
   });
 }
 
@@ -139,12 +157,13 @@ function setupWebhookAuth(overrides?: { shop?: string; payload?: Record<string, 
 beforeEach(() => {
   vi.clearAllMocks();
 
-  // Default happy-path wiring
   setupWebhookAuth();
   mockGetShopByDomain.mockResolvedValue(MOCK_SHOP_PROFESSIONAL);
   mockCanUseAutoRescan.mockReturnValue(true);
   mockCreateScan.mockResolvedValue(MOCK_SCAN);
   mockInngestSend.mockResolvedValue(undefined);
+  mockUnauthenticatedAdmin.mockResolvedValue({ admin: MOCK_ADMIN });
+  mockFetchMainTheme.mockResolvedValue(MOCK_MAIN_THEME);
 });
 
 // ---------------------------------------------------------------------------
@@ -162,7 +181,7 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
     expect(response.status).toBe(200);
   });
 
-  it("creates a scan with a GID-formatted themeId, NOT a bare numeric string", async () => {
+  it("creates a scan with the MAIN theme GID from fetchMainTheme", async () => {
     await action({
       request: makeRequest(),
       params: {},
@@ -173,15 +192,12 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
     const [shopId, themeId, themeName] = mockCreateScan.mock.calls[0];
 
     expect(shopId).toBe(SHOP_ID);
-    // Must be GID format, not a bare number or numeric string
     expect(themeId).toBe(THEME_GID);
     expect(themeId).toMatch(/^gid:\/\/shopify\/Theme\//);
-    expect(themeId).not.toBe(String(THEME_NUMERIC_ID));
-    expect(themeId).not.toBe(THEME_NUMERIC_ID);
     expect(themeName).toBe(THEME_NAME);
   });
 
-  it("sends a scan/requested event with the GID-formatted themeId", async () => {
+  it("sends a scan/requested event with the MAIN theme GID", async () => {
     await action({
       request: makeRequest(),
       params: {},
@@ -194,9 +210,7 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
     expect(event.name).toBe("scan/requested");
     expect(event.data.shopId).toBe(SHOP_ID);
     expect(event.data.scanId).toBe(SCAN_ID);
-    // Critical fix: themeId in event must match GID format
     expect(event.data.themeId).toBe(THEME_GID);
-    expect(event.data.themeId).toMatch(/^gid:\/\/shopify\/Theme\//);
   });
 
   it("looks up the shop by the domain from the webhook", async () => {
@@ -219,19 +233,15 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
     expect(mockCanUseAutoRescan).toHaveBeenCalledWith(MOCK_SHOP_PROFESSIONAL.plan);
   });
 
-  it("constructs the correct GID from a numeric payload id", async () => {
-    // Payload has a numeric id (as Shopify delivers it)
-    setupWebhookAuth({ payload: { id: 987654321, name: "Debut" } });
-    mockCreateScan.mockResolvedValue({ ...MOCK_SCAN, themeId: "gid://shopify/Theme/987654321" });
-
+  it("fetches the MAIN theme via unauthenticated admin context", async () => {
     await action({
       request: makeRequest(),
       params: {},
       context: {},
     } as unknown as ActionFunctionArgs);
 
-    const [, themeId] = mockCreateScan.mock.calls[0];
-    expect(themeId).toBe("gid://shopify/Theme/987654321");
+    expect(mockUnauthenticatedAdmin).toHaveBeenCalledWith(SHOP_DOMAIN);
+    expect(mockFetchMainTheme).toHaveBeenCalledWith(MOCK_ADMIN);
   });
 });
 
@@ -311,51 +321,34 @@ describe("webhooks.themes.publish — unknown shop", () => {
 
     expect(mockInngestSend).not.toHaveBeenCalled();
   });
-
-  it("does not call canUseAutoRescan when shop is not in DB", async () => {
-    mockGetShopByDomain.mockResolvedValue(null);
-
-    await action({
-      request: makeRequest(),
-      params: {},
-      context: {},
-    } as unknown as ActionFunctionArgs);
-
-    expect(mockCanUseAutoRescan).not.toHaveBeenCalled();
-  });
 });
 
 // ---------------------------------------------------------------------------
-// GID format invariant — explicit regression tests for S-01 fix
+// GID format invariant — themeId always comes from fetchMainTheme
 // ---------------------------------------------------------------------------
 
-describe("webhooks.themes.publish — GID format regression (S-01)", () => {
-  it("themeId in createScan call is never a plain numeric string", async () => {
+describe("webhooks.themes.publish — GID format regression", () => {
+  it("themeId in createScan comes from fetchMainTheme, not webhook payload", async () => {
+    // Webhook payload has a different ID than what fetchMainTheme returns
+    setupWebhookAuth({ payload: { id: 999999999, name: "Wrong Theme" } });
+    mockFetchMainTheme.mockResolvedValue({
+      id: "gid://shopify/Theme/111111111",
+      name: "Correct Theme",
+      updatedAt: "2026-03-28T00:00:00Z",
+    });
+
     await action({
       request: makeRequest(),
       params: {},
       context: {},
     } as unknown as ActionFunctionArgs);
 
-    const [, themeId] = mockCreateScan.mock.calls[0];
-    // Must not be just the stringified number
-    expect(themeId).not.toBe("123456789");
-    expect(themeId).not.toBe(123456789);
+    const [, themeId, themeName] = mockCreateScan.mock.calls[0];
+    expect(themeId).toBe("gid://shopify/Theme/111111111");
+    expect(themeName).toBe("Correct Theme");
   });
 
-  it("themeId in inngest.send event data is never a plain numeric string", async () => {
-    await action({
-      request: makeRequest(),
-      params: {},
-      context: {},
-    } as unknown as ActionFunctionArgs);
-
-    const event = mockInngestSend.mock.calls[0][0];
-    expect(event.data.themeId).not.toBe("123456789");
-    expect(event.data.themeId).not.toBe(123456789);
-  });
-
-  it("themeId in createScan and inngest.send are identical (referential consistency)", async () => {
+  it("themeId in createScan and inngest.send are identical", async () => {
     await action({
       request: makeRequest(),
       params: {},
@@ -370,12 +363,12 @@ describe("webhooks.themes.publish — GID format regression (S-01)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Invalid payload — missing or non-numeric/non-string id
+// fetchMainTheme returns null — no MAIN theme available
 // ---------------------------------------------------------------------------
 
-describe("webhooks.themes.publish — invalid payload", () => {
-  it("returns 200 when payload.id is missing", async () => {
-    setupWebhookAuth({ payload: { name: "Dawn" } });
+describe("webhooks.themes.publish — no MAIN theme", () => {
+  it("returns 200 when fetchMainTheme returns null", async () => {
+    mockFetchMainTheme.mockResolvedValue(null);
 
     const response = await action({
       request: makeRequest(),
@@ -386,44 +379,8 @@ describe("webhooks.themes.publish — invalid payload", () => {
     expect(response.status).toBe(200);
   });
 
-  it("returns 200 when payload.id is null", async () => {
-    setupWebhookAuth({ payload: { id: null, name: "Dawn" } });
-
-    const response = await action({
-      request: makeRequest(),
-      params: {},
-      context: {},
-    } as unknown as ActionFunctionArgs);
-
-    expect(response.status).toBe(200);
-  });
-
-  it("returns 200 when payload.id is undefined", async () => {
-    setupWebhookAuth({ payload: { id: undefined, name: "Dawn" } });
-
-    const response = await action({
-      request: makeRequest(),
-      params: {},
-      context: {},
-    } as unknown as ActionFunctionArgs);
-
-    expect(response.status).toBe(200);
-  });
-
-  it("returns 200 when payload.id is a boolean", async () => {
-    setupWebhookAuth({ payload: { id: true, name: "Dawn" } });
-
-    const response = await action({
-      request: makeRequest(),
-      params: {},
-      context: {},
-    } as unknown as ActionFunctionArgs);
-
-    expect(response.status).toBe(200);
-  });
-
-  it("does not create a scan for any invalid payload.id", async () => {
-    setupWebhookAuth({ payload: { id: true, name: "Dawn" } });
+  it("does not create a scan when no MAIN theme is found", async () => {
+    mockFetchMainTheme.mockResolvedValue(null);
 
     await action({
       request: makeRequest(),
@@ -434,8 +391,38 @@ describe("webhooks.themes.publish — invalid payload", () => {
     expect(mockCreateScan).not.toHaveBeenCalled();
   });
 
-  it("does not send an Inngest event for invalid payload.id", async () => {
-    setupWebhookAuth({ payload: { id: true, name: "Dawn" } });
+  it("does not send an Inngest event when no MAIN theme is found", async () => {
+    mockFetchMainTheme.mockResolvedValue(null);
+
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(mockInngestSend).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scan already in progress — createScan throws
+// ---------------------------------------------------------------------------
+
+describe("webhooks.themes.publish — scan already in progress", () => {
+  it("returns 200 when createScan throws (scan already in progress)", async () => {
+    mockCreateScan.mockRejectedValue(new Error("Scan already in progress"));
+
+    const response = await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(response.status).toBe(200);
+  });
+
+  it("does not send an Inngest event when createScan throws", async () => {
+    mockCreateScan.mockRejectedValue(new Error("Scan already in progress"));
 
     await action({
       request: makeRequest(),

@@ -5,7 +5,8 @@ import { logger } from "../lib/logger.server";
 import { canUseAutoRescan } from "../lib/plan-gating.server";
 import { createScan } from "../models/scan.server";
 import { getShopByDomain, updateThemePublishTimestamp } from "../models/shop.server";
-import { authenticate } from "../shopify.server";
+import { fetchMainTheme } from "../services/theme-fetcher.server";
+import { authenticate, unauthenticated } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { topic, shop, payload } = await authenticate.webhook(request);
@@ -38,19 +39,24 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 200 });
   }
 
-  // Validate payload.id before constructing the theme GID.
-  // If missing or invalid, log a warning and return 200 (webhooks must always
-  // return 200 to prevent Shopify retry storms).
-  if (!payload.id || (typeof payload.id !== "number" && typeof payload.id !== "string")) {
-    logger.warn("themes/publish webhook missing or invalid payload.id — skipping", {
+  // Fetch the current MAIN theme via GraphQL instead of relying on the webhook
+  // payload.id. The webhook fires for the theme being published, but the payload
+  // ID may not be immediately queryable via the theme files API (e.g. theme store
+  // themes with delayed asset availability). Querying MAIN guarantees we get the
+  // theme Shopify considers active and whose files are accessible.
+  const { admin } = await unauthenticated.admin(shop);
+  const mainTheme = await fetchMainTheme(admin);
+
+  if (!mainTheme) {
+    logger.warn("themes/publish webhook — no MAIN theme found via API, skipping auto-rescan", {
       shop,
-      payloadId: payload.id,
+      webhookThemeId: payload.id,
     });
     return new Response(null, { status: 200 });
   }
 
-  const themeId = `gid://shopify/Theme/${payload.id}`;
-  const themeName = String(payload.name ?? "");
+  const themeId = mainTheme.id;
+  const themeName = mainTheme.name;
 
   try {
     const scan = await createScan(shopRecord.id, themeId, themeName);
