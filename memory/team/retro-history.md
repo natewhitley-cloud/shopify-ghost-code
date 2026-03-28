@@ -1,5 +1,17 @@
 # Retrospective History
 
+## Retro: 2026-03-28 (session 24 — Monitoring sprint + downgrade billing)
+
+- Tasks completed: 6 beads closed (5 monitoring features + 1 billing fix)
+- Agents dispatched: 7 (2 scaffolder, 3 implementer, 2 tester) — all serialized
+- New learnings: 9 across 3 members (implementer: 4, scaffolder: 2, tester: 2) + 2 MEMORY.md entries
+- Test growth: 1050 → 1113 (+63 tests, 48 files)
+- Fix rate: 0% — zero rework commits, all agent output correct on first pass
+- Key insight: Cross-portfolio learning transfer caught a real gap — bot-analytics billing sprint surfaced missing downgrade path, fix was one agent dispatch because pattern was proven.
+- Key pattern: Batching tester after full sprint (not per-task) fixed all 11 mock breaks + wrote 62 new tests in one efficient pass.
+- Observability stack: Sentry scaffold, scan failure rate cron, BillingEvent DB, rate limit alerting, Inngest failure middleware.
+- Team health: implementer at 58 lines (approaching 60-line cap, needs /curate next session).
+
 ## Retro: 2026-03-28 (session 23 — Signatures + code review + fixes + test coverage)
 
 - Tasks completed: 12 beads closed (1 feature: 6 signatures, 6 bugs, 5 test tasks; 1 already covered)
