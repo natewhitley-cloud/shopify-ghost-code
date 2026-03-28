@@ -2,7 +2,7 @@
 
 client_id = "3e80de5fa6065400e94de3f1fe7f0c8b"
 name = "ghost-code"
-application_url = "https://shopify-ghost-code-production.up.railway.app"
+application_url = "https://app.alpenglowsoftware.com"
 embedded = true
 
 [build]
@@ -39,4 +39,4 @@ scopes = "read_themes"
 optional_scopes = ["read_translations", "read_products", "read_content", "read_online_store_navigation"]
 
 [auth]
-redirect_urls = [ "https://shopify-ghost-code-production.up.railway.app/auth/callback" ]
+redirect_urls = [ "https://app.alpenglowsoftware.com/auth/callback" ]
