@@ -30,13 +30,14 @@
 
 ### Commits
 
-| Hash      | Description                                                        |
-| --------- | ------------------------------------------------------------------ |
+| Hash      | Description                                                             |
+| --------- | ----------------------------------------------------------------------- |
 | `e287bbe` | feat(scanner): add SEO integrity and performance detectors (v1.3+v1.4a) |
 
 ### Uncommitted Changes
 
 Accumulated from prior sessions — not committed this session:
+
 - `.specs/` modifications
 - `scripts/review-submissions.ts` modifications
 - `docs/product-strategy.md` updates

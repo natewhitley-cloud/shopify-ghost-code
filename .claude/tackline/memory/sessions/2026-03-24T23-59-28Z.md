@@ -1,6 +1,7 @@
 ## Session: 2026-03-24T23-59-28Z
 
 ### Commits
+
 edef159 docs: session 21 handoff
 1c33d78 docs: add session 21 retro entry
 dd973f8 feat(scanner): add GHOST_FONT and GHOST_AJAX detectors (v1.4)
@@ -13,4 +14,5 @@ e287bbe feat(scanner): add SEO integrity and performance detectors (v1.3+v1.4a)
 2cd3f52 docs: final session 19 handoff — scanner expansion backlog and feasibility results
 
 ### Working Tree
+
 ?? .claude/tackline/memory/sessions/2026-03-24T23-59-28Z.md

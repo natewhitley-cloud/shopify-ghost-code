@@ -17,6 +17,7 @@
 ### DB Migrations (pending on Railway)
 
 Two migrations may be pending:
+
 1. `20260324040259_add_seo_performance_finding_types` (from session 20)
 2. `20260324123631_add_font_ajax_finding_types` (this session)
 
@@ -29,13 +30,13 @@ User ran `railway logs` during session — Inngest polls running fine, deploys h
 
 ### Commits
 
-| Hash      | Description                                                            |
-| --------- | ---------------------------------------------------------------------- |
-| `c35361e` | docs: update product strategy with shipped/killed status               |
-| `c2cc4e2` | docs: add session 15-20 handoffs and retros                            |
+| Hash      | Description                                                             |
+| --------- | ----------------------------------------------------------------------- |
+| `c35361e` | docs: update product strategy with shipped/killed status                |
+| `c2cc4e2` | docs: add session 15-20 handoffs and retros                             |
 | `d940ef9` | chore: update specs, submission curation script, and scratch checkpoint |
-| `dd973f8` | feat(scanner): add GHOST_FONT and GHOST_AJAX detectors (v1.4)         |
-| `1c33d78` | docs: add session 21 retro entry                                       |
+| `dd973f8` | feat(scanner): add GHOST_FONT and GHOST_AJAX detectors (v1.4)           |
+| `1c33d78` | docs: add session 21 retro entry                                        |
 
 ### Uncommitted Changes
 
