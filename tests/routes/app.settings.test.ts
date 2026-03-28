@@ -2,13 +2,14 @@
  * Tests for app/routes/app.settings.tsx
  *
  * Strategy:
- *   - Mock authenticate.admin() to control session and billing context.
+ *   - Mock authenticate.admin() to control session context.
  *   - Mock getShopByDomain and getPlanFeatures.
  *   - Verify loader returns correct plan and feature info.
- *   - Verify action calls billing.request with correct amounts per intent.
+ *   - No action tests — billing is handled via Managed Pricing in the
+ *     Partner Dashboard, so the settings route has no action export.
  */
 
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import type { LoaderFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -45,7 +46,7 @@ vi.mock("../../app/lib/plans", () => ({
 
 import { getPlanFeatures } from "../../app/lib/billing.server";
 import { getShopByDomain } from "../../app/models/shop.server";
-import { loader, action } from "../../app/routes/app.settings";
+import { loader } from "../../app/routes/app.settings";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -76,8 +77,6 @@ const FREE_FEATURES = {
   scheduledScan: false,
 };
 
-const mockBillingRequest = vi.fn();
-
 function makeLoaderArgs(overrides?: Partial<LoaderFunctionArgs>): LoaderFunctionArgs {
   return {
     request: new Request("https://test-shop.myshopify.com/app/settings"),
@@ -85,25 +84,6 @@ function makeLoaderArgs(overrides?: Partial<LoaderFunctionArgs>): LoaderFunction
     context: {},
     ...overrides,
   } as LoaderFunctionArgs;
-}
-
-function makeActionArgs(
-  intent: string,
-  overrides?: Partial<ActionFunctionArgs>,
-): ActionFunctionArgs {
-  const formData = new URLSearchParams();
-  formData.set("intent", intent);
-
-  return {
-    request: new Request("https://test-shop.myshopify.com/app/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: formData.toString(),
-    }),
-    params: {},
-    context: {},
-    ...overrides,
-  } as ActionFunctionArgs;
 }
 
 // ---------------------------------------------------------------------------
@@ -115,7 +95,6 @@ beforeEach(() => {
 
   mockAuthenticateAdmin.mockResolvedValue({
     session: { shop: SHOP.domain },
-    billing: { request: mockBillingRequest },
   });
 
   mockGetShopByDomain.mockResolvedValue(SHOP);
@@ -148,78 +127,5 @@ describe("app.settings loader", () => {
       expect(e).toBeInstanceOf(Response);
       expect((e as Response).status).toBe(404);
     }
-  });
-});
-
-// ---------------------------------------------------------------------------
-// Action Tests
-// ---------------------------------------------------------------------------
-
-describe("app.settings action", () => {
-  it("calls billing.request with Standard plan for subscribe-standard intent", async () => {
-    // billing.request throws a redirect response (never returns normally)
-    mockBillingRequest.mockRejectedValue(new Response(null, { status: 302 }));
-
-    await expect(action(makeActionArgs("subscribe-standard"))).rejects.toThrow();
-
-    expect(mockBillingRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        plan: "Standard",
-      }),
-    );
-  });
-
-  it("calls billing.request with Professional plan for subscribe-professional intent", async () => {
-    mockBillingRequest.mockRejectedValue(new Response(null, { status: 302 }));
-
-    await expect(action(makeActionArgs("subscribe-professional"))).rejects.toThrow();
-
-    expect(mockBillingRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        plan: "Professional",
-      }),
-    );
-  });
-
-  it("calls billing.request with Standard plan for downgrade-standard intent", async () => {
-    // billing.request throws a redirect response (never returns normally).
-    // downgrade-standard uses the same plan name as subscribe-standard but is a
-    // distinct intent — this test confirms the downgrade code path is reachable.
-    mockBillingRequest.mockRejectedValue(new Response(null, { status: 302 }));
-
-    await expect(action(makeActionArgs("downgrade-standard"))).rejects.toThrow();
-
-    expect(mockBillingRequest).toHaveBeenCalledTimes(1);
-    expect(mockBillingRequest).toHaveBeenCalledWith(
-      expect.objectContaining({
-        plan: "Standard",
-      }),
-    );
-  });
-
-  it("returns error for unknown intent", async () => {
-    const result = (await action(makeActionArgs("unknown-intent"))) as {
-      error: string;
-    };
-
-    expect(result.error).toBe("Unknown intent");
-    expect(mockBillingRequest).not.toHaveBeenCalled();
-  });
-
-  it("returns error for missing intent (empty form)", async () => {
-    const args: ActionFunctionArgs = {
-      request: new Request("https://test-shop.myshopify.com/app/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded" },
-        body: "",
-      }),
-      params: {},
-      context: {},
-    } as ActionFunctionArgs;
-
-    const result = (await action(args)) as { error: string };
-
-    expect(result.error).toBe("Unknown intent");
-    expect(mockBillingRequest).not.toHaveBeenCalled();
   });
 });

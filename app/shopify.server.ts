@@ -1,17 +1,12 @@
 import "@shopify/shopify-app-react-router/adapters/node";
-import {
-  ApiVersion,
-  AppDistribution,
-  BillingInterval,
-  BillingReplacementBehavior,
-  shopifyApp,
-} from "@shopify/shopify-app-react-router/server";
+import { ApiVersion, AppDistribution, shopifyApp } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 
 import prisma from "./db.server";
 
-// Plan name constants — must match keys in the billing config below.
-// Import from app/lib/billing.server.ts for feature-flag lookups.
+// Plan name constants — used by APP_SUBSCRIPTIONS_UPDATE webhook to map
+// Shopify plan names to internal plan strings. Managed Pricing handles
+// billing through the App Store; these constants are for webhook matching only.
 export const PLAN_STANDARD = "Standard";
 export const PLAN_PROFESSIONAL = "Professional";
 
@@ -37,33 +32,9 @@ const shopify = shopifyApp({
   future: {
     expiringOfflineAccessTokens: true,
   },
-  billing: {
-    [PLAN_STANDARD]: {
-      trialDays: 7,
-      // When a merchant downgrades from Professional to Standard, apply the
-      // change at the end of the current billing cycle so they don't lose
-      // access to paid features immediately. For new Standard subscriptions
-      // (upgrading from Free), replacementBehavior is a no-op.
-      replacementBehavior: BillingReplacementBehavior.ApplyOnNextBillingCycle,
-      lineItems: [
-        {
-          amount: 29,
-          currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-        },
-      ],
-    },
-    [PLAN_PROFESSIONAL]: {
-      trialDays: 7,
-      lineItems: [
-        {
-          amount: 49,
-          currencyCode: "USD",
-          interval: BillingInterval.Every30Days,
-        },
-      ],
-    },
-  },
+  // Billing is handled via Managed Pricing in the Partner Dashboard.
+  // Plan changes arrive via APP_SUBSCRIPTIONS_UPDATE webhook.
+  // No billing config needed here — Shopify manages the checkout flow.
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
     : {}),

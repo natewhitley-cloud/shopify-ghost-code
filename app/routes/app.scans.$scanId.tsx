@@ -948,9 +948,26 @@ export default function ScanDetail() {
                 >
                   <h2 className="scan-section-title">Findings</h2>
                   {findings.length > 0 && (
-                    <a
-                      href={`/app/scans/${scan.id}/export?format=csv`}
-                      download
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        // Use authenticated fetch (App Bridge intercepts fetch in
+                        // embedded apps and adds the session token automatically).
+                        const res = await fetch(`/app/scans/${scan.id}/export?format=csv`);
+                        if (!res.ok) {
+                          shopify.toast.show("Export failed", { isError: true });
+                          return;
+                        }
+                        const blob = await res.blob();
+                        const url = URL.createObjectURL(blob);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = `ghost-code-scan-${scan.id}.csv`;
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        URL.revokeObjectURL(url);
+                      }}
                       style={{
                         display: "inline-flex",
                         alignItems: "center",
@@ -961,7 +978,6 @@ export default function ScanDetail() {
                         background: "#ffffff",
                         color: "#6d7175",
                         fontSize: "13px",
-                        textDecoration: "none",
                         cursor: "pointer",
                       }}
                     >
@@ -981,7 +997,7 @@ export default function ScanDetail() {
                         />
                       </svg>
                       Export CSV
-                    </a>
+                    </button>
                   )}
                 </div>
                 {findings.some((f) => f.isTracker) && (

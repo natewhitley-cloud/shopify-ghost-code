@@ -1,56 +1,10 @@
-import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Form, Link, useActionData, useLoaderData, useNavigation } from "react-router";
+import type { LoaderFunctionArgs } from "react-router";
+import { Link, useLoaderData } from "react-router";
 
 import { getPlanFeatures } from "../lib/billing.server";
 import { PLANS } from "../lib/plans";
 import { getShopByDomain } from "../models/shop.server";
-import { authenticate, PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
-
-// ---------------------------------------------------------------------------
-// Action — initiate a billing subscription request
-// ---------------------------------------------------------------------------
-
-export const action = async ({ request }: ActionFunctionArgs) => {
-  const { billing } = await authenticate.admin(request);
-
-  const formData = await request.formData();
-  const intent = formData.get("intent");
-
-  if (intent === "subscribe-standard") {
-    // Shopify redirects the merchant to the billing confirmation page.
-    // billing.request() never returns — it throws a redirect response.
-    await billing.request({
-      plan: PLAN_STANDARD,
-      isTest: process.env.SHOPIFY_BILLING_TEST === "true",
-      returnUrl: `${process.env.SHOPIFY_APP_URL}/app/settings`,
-    });
-  }
-
-  if (intent === "subscribe-professional") {
-    await billing.request({
-      plan: PLAN_PROFESSIONAL,
-      isTest: process.env.SHOPIFY_BILLING_TEST === "true",
-      returnUrl: `${process.env.SHOPIFY_APP_URL}/app/settings`,
-    });
-  }
-
-  if (intent === "downgrade-standard") {
-    // billing.request() throws a redirect — never returns a value.
-    // The Standard plan is configured with replacementBehavior APPLY_ON_NEXT_BILLING_CYCLE
-    // in shopify.server.ts so the merchant keeps Professional features until the
-    // current billing period ends before switching to Standard.
-    await billing.request({
-      plan: PLAN_STANDARD,
-      isTest: process.env.SHOPIFY_BILLING_TEST === "true",
-      returnUrl: `${process.env.SHOPIFY_APP_URL}/app/settings`,
-    });
-  }
-
-  // Unknown intent — return a plain object so useActionData receives it.
-  // Non-2xx responses are swallowed by React Router's useActionData, so we
-  // return 200 with an error payload to ensure the error banner renders.
-  return { error: "Unknown intent" };
-};
+import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -76,10 +30,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
 export default function Settings() {
   const { shop } = useLoaderData<typeof loader>();
-  const actionData = useActionData<typeof action>();
-
-  const navigation = useNavigation();
-  const isSubmitting = navigation.state !== "idle";
 
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
@@ -90,8 +40,6 @@ export default function Settings() {
       <Link to="/app" slot="primary-action">
         Back to Dashboard
       </Link>
-
-      {actionData?.error && <s-banner tone="critical">{actionData.error}</s-banner>}
 
       {/* Plan Tiles — 3 columns, responsive */}
       <style>{`
@@ -148,9 +96,6 @@ export default function Settings() {
         .plan-tile__features {
           flex: 1;
         }
-        .plan-tile__action {
-          margin-top: 16px;
-        }
       `}</style>
       <s-heading>Plans</s-heading>
       <div className="plan-grid">
@@ -182,31 +127,12 @@ export default function Settings() {
           <div className="plan-tile__features">
             <s-unordered-list>
               <s-list-item>1 scan per week</s-list-item>
-              <s-list-item>Full finding details</s-list-item>
+              <s-list-item>Full finding details with code</s-list-item>
+              <s-list-item>Theme Health Score + delta</s-list-item>
               <s-list-item>Single theme</s-list-item>
               <s-list-item>7-day free trial</s-list-item>
             </s-unordered-list>
           </div>
-          {isFree && (
-            <div className="plan-tile__action">
-              <Form method="post">
-                <input type="hidden" name="intent" value="subscribe-standard" />
-                <s-button variant="primary" type="submit" disabled={isSubmitting || undefined}>
-                  {isSubmitting ? "Upgrading..." : "Upgrade to Standard"}
-                </s-button>
-              </Form>
-            </div>
-          )}
-          {isProfessional && (
-            <div className="plan-tile__action">
-              <Form method="post">
-                <input type="hidden" name="intent" value="downgrade-standard" />
-                <s-button variant="secondary" type="submit" disabled={isSubmitting || undefined}>
-                  {isSubmitting ? "Switching..." : "Switch to Standard"}
-                </s-button>
-              </Form>
-            </div>
-          )}
         </div>
 
         {/* Professional Plan */}
@@ -227,36 +153,24 @@ export default function Settings() {
               <s-list-item>7-day free trial</s-list-item>
             </s-unordered-list>
           </div>
-          {!isProfessional && (
-            <div className="plan-tile__action">
-              <Form method="post">
-                <input type="hidden" name="intent" value="subscribe-professional" />
-                <s-button variant="primary" type="submit" disabled={isSubmitting || undefined}>
-                  {isSubmitting ? "Upgrading..." : "Upgrade to Professional"}
-                </s-button>
-              </Form>
-            </div>
-          )}
         </div>
       </div>
 
-      {/* Manage Subscription — shown only to paid-plan users */}
-      {!isFree && (
-        <div style={{ marginTop: "32px" }}>
-          <s-card>
-            <s-stack direction="block" gap="base">
-              <s-heading>Manage Subscription</s-heading>
-              <s-paragraph>
-                To cancel your subscription, visit your Shopify admin billing settings. Your
-                features will continue until the end of your current billing period.
-              </s-paragraph>
-              <s-paragraph>
-                <a href="shopify://admin/settings/billing">Cancel subscription in Shopify Admin</a>
-              </s-paragraph>
-            </s-stack>
-          </s-card>
-        </div>
-      )}
+      {/* Manage Subscription */}
+      <div style={{ marginTop: "32px" }}>
+        <s-card>
+          <s-stack direction="block" gap="base">
+            <s-heading>Manage Subscription</s-heading>
+            <s-paragraph>
+              Plan changes are managed through the Shopify App Store. To upgrade, downgrade, or
+              cancel your subscription, visit your Shopify admin billing settings.
+            </s-paragraph>
+            <s-paragraph>
+              <a href="shopify://admin/settings/billing">Manage subscription in Shopify Admin</a>
+            </s-paragraph>
+          </s-stack>
+        </s-card>
+      </div>
 
       {/* About */}
       <div style={{ marginTop: "16px" }} />

@@ -1,6 +1,6 @@
 # Ghost Code — Pricing & Plans
 
-> **Last updated:** 2026-03-10
+> **Last updated:** 2026-03-28
 > **Source of truth for:** plan tiers, feature gating, upgrade triggers, pricing decisions.
 > Update this file when billing logic, plan features, or pricing changes.
 
@@ -20,6 +20,13 @@
 
 **Purpose:** Let merchants discover they have a problem. The first scan is the marketing moment — generous on surface, tight on actionability. Showing the worst finding with full detail (file, line, snippet) creates maximum urgency while keeping the rest locked behind upgrade.
 
+**App listing features (max 40 chars each):**
+1. First scan always free
+2. 1 scan per month after first
+3. Severity counts + category breakdown
+4. Preview of top finding in full
+5. Single theme scanning
+
 ### Standard ($29/mo, 7-day free trial)
 
 | Feature                | Limit                                           |
@@ -36,6 +43,13 @@
 
 **Purpose:** The mid-tier workhorse. Merchants get full finding details and weekly cadence — enough to stay on top of orphaned code without unlimited manual scans. The weekly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap creates clear daylight between Standard and Professional (unlimited).
 
+**App listing features (max 40 chars each):**
+1. All features in Free
+2. Full finding details with code
+3. 1 manual scan per week
+4. Theme Health Score + delta
+5. 7-day free trial
+
 ### Professional ($49/mo, 7-day free trial)
 
 | Feature                | Limit                                          |
@@ -47,6 +61,23 @@
 | Scan diffing           | Yes (new / resolved / unchanged between scans) |
 
 **Purpose:** "Set it and forget it" for multi-theme stores. Continuous monitoring with change tracking.
+
+**App listing features (max 40 chars each):**
+1. All features in Standard
+2. Unlimited scans
+3. Unlimited theme scanning
+4. Auto-rescan on theme publish
+5. Scan diffing (New/Resolved)
+6. Daily automatic scans
+7. 7-day free trial
+
+---
+
+## Downgrade & Cancellation
+
+- **Professional → Standard**: In-app "Switch to Standard" button on settings page. Uses `replacementBehavior: APPLY_ON_NEXT_BILLING_CYCLE` — merchant keeps Professional features until current billing cycle ends.
+- **Paid → Free**: Cancel link to `shopify://admin/settings/billing`. Shopify handles cancellation; `APP_SUBSCRIPTIONS_UPDATE` webhook sets plan to free.
+- **Billing events tracked**: All upgrades, downgrades, and cancellations recorded in `BillingEvent` table for analytics.
 
 ---
 
@@ -85,6 +116,7 @@
 | `app/shopify.server.ts`                            | Billing config with Shopify (prices, trial days)             |
 | `app/routes/app.settings.tsx`                      | Settings UI with upgrade buttons                             |
 | `app/routes/webhooks.app.subscriptions.update.tsx` | Webhook handler for plan changes                             |
+| `app/models/billing-event.server.ts`               | BillingEvent recording and query functions                   |
 | `tests/lib/plan-gating.server.test.ts`             | Comprehensive gating tests                                   |
 | `inngest/functions/weekly-scan.ts`                 | Weekly scan coordinator (Standard plan, Sunday 6 AM UTC)     |
 | `inngest/functions/poll-theme-changes.ts`          | Daily scan coordinator (Professional plan)                   |
