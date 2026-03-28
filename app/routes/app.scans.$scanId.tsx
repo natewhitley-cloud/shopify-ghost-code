@@ -4,6 +4,7 @@ import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData, useRevalidator, useFetcher } from "react-router";
 
+import db from "../db.server";
 import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -301,7 +302,20 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "App name is required" };
   }
 
-  await submitSignatureSuggestion(unknownScriptId, shop.id, suggestedAppName.trim());
+  const trimmed = suggestedAppName.trim();
+  if (trimmed.length > 200) {
+    return { error: "App name is too long" };
+  }
+
+  // Verify the unknown script belongs to a scan owned by this shop
+  const unknownScript = await db.unknownScript.findFirst({
+    where: { id: unknownScriptId, scan: { shopId: shop.id } },
+  });
+  if (!unknownScript) {
+    return { error: "Unknown script not found" };
+  }
+
+  await submitSignatureSuggestion(unknownScriptId, shop.id, trimmed);
   return { success: true, unknownScriptId };
 };
 

@@ -20,6 +20,12 @@ let warnedMissingKey = false;
 function getKey(): Buffer | null {
   const hex = process.env.TOKEN_ENCRYPTION_KEY;
   if (!hex) {
+    if (process.env.NODE_ENV === "production") {
+      throw new Error(
+        "TOKEN_ENCRYPTION_KEY is required in production. " +
+          "Generate with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
+      );
+    }
     if (!warnedMissingKey) {
       console.warn(
         "[security] TOKEN_ENCRYPTION_KEY is not set — tokens will be stored in plaintext",
