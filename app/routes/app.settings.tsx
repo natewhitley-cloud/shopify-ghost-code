@@ -34,6 +34,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     });
   }
 
+  if (intent === "downgrade-standard") {
+    // billing.request() throws a redirect — never returns a value.
+    // The Standard plan is configured with replacementBehavior APPLY_ON_NEXT_BILLING_CYCLE
+    // in shopify.server.ts so the merchant keeps Professional features until the
+    // current billing period ends before switching to Standard.
+    await billing.request({
+      plan: PLAN_STANDARD,
+      isTest: process.env.SHOPIFY_BILLING_TEST === "true",
+      returnUrl: `${process.env.SHOPIFY_APP_URL}/app/settings`,
+    });
+  }
+
   // Unknown intent — return a plain object so useActionData receives it.
   // Non-2xx responses are swallowed by React Router's useActionData, so we
   // return 200 with an error payload to ensure the error banner renders.
@@ -185,6 +197,16 @@ export default function Settings() {
               </Form>
             </div>
           )}
+          {isProfessional && (
+            <div className="plan-tile__action">
+              <Form method="post">
+                <input type="hidden" name="intent" value="downgrade-standard" />
+                <s-button variant="secondary" type="submit" disabled={isSubmitting || undefined}>
+                  {isSubmitting ? "Switching..." : "Switch to Standard"}
+                </s-button>
+              </Form>
+            </div>
+          )}
         </div>
 
         {/* Professional Plan */}
@@ -225,13 +247,11 @@ export default function Settings() {
             <s-stack direction="block" gap="base">
               <s-heading>Manage Subscription</s-heading>
               <s-paragraph>
-                To change or cancel your subscription, visit your Shopify admin billing settings.
+                To cancel your subscription, visit your Shopify admin billing settings. Your
+                features will continue until the end of your current billing period.
               </s-paragraph>
               <s-paragraph>
-                <s-text>
-                  If you cancel, your plan will revert to Free at the end of your current billing
-                  period.
-                </s-text>
+                <a href="shopify://admin/settings/billing">Cancel subscription in Shopify Admin</a>
               </s-paragraph>
             </s-stack>
           </s-card>

@@ -3,6 +3,7 @@ import {
   ApiVersion,
   AppDistribution,
   BillingInterval,
+  BillingReplacementBehavior,
   shopifyApp,
 } from "@shopify/shopify-app-react-router/server";
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
@@ -39,6 +40,11 @@ const shopify = shopifyApp({
   billing: {
     [PLAN_STANDARD]: {
       trialDays: 7,
+      // When a merchant downgrades from Professional to Standard, apply the
+      // change at the end of the current billing cycle so they don't lose
+      // access to paid features immediately. For new Standard subscriptions
+      // (upgrading from Free), replacementBehavior is a no-op.
+      replacementBehavior: BillingReplacementBehavior.ApplyOnNextBillingCycle,
       lineItems: [
         {
           amount: 29,
