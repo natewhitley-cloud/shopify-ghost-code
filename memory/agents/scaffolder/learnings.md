@@ -26,6 +26,11 @@
 - Always re-read package.json before editing — other agents modify it frequently and task brief snapshots go stale. (added: 2026-03-10, dispatch: .36/.38)
 - tsconfig.json strict:true was already set by the scaffold template — check before adding. (added: 2026-03-10, dispatch: .38)
 
+- `inngest/` files import from `app/` using `../app/<path>` prefix — not a `~` alias — because the `~` tsconfig alias resolves relative to `app/` itself. (added: 2026-03-28, dispatch: GC-rqt)
+- When adding cross-cutting concerns (error tracking, metrics), wire through the logger rather than call-site instrumentation — existing code gets coverage without changes. (added: 2026-03-28, dispatch: GC-rqt)
+
+- Inngest `fn.id()` is a method call returning the stable kebab-case function ID; `fn.name` is the display label. Use `id()` for logging/alerting identifiers. (added: 2026-03-28, dispatch: GC-cxr)
+
 ## Cross-Agent Notes
 
 - After scaffolding new files, leave TODO comments for the implementer to fill in business logic.
