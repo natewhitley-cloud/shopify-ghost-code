@@ -1,15 +1,18 @@
 # Retrospective History
 
-## Retro: 2026-03-28 (session 24 — Monitoring sprint + downgrade billing)
+## Retro: 2026-03-28 (session 24 — Monitoring sprint + managed pricing + E2E testing)
 
-- Tasks completed: 6 beads closed (5 monitoring features + 1 billing fix)
-- Agents dispatched: 7 (2 scaffolder, 3 implementer, 2 tester) — all serialized
-- New learnings: 9 across 3 members (implementer: 4, scaffolder: 2, tester: 2) + 2 MEMORY.md entries
-- Test growth: 1050 → 1113 (+63 tests, 48 files)
-- Fix rate: 0% — zero rework commits, all agent output correct on first pass
-- Key insight: Cross-portfolio learning transfer caught a real gap — bot-analytics billing sprint surfaced missing downgrade path, fix was one agent dispatch because pattern was proven.
-- Key pattern: Batching tester after full sprint (not per-task) fixed all 11 mock breaks + wrote 62 new tests in one efficient pass.
+- Tasks completed: 8 beads closed (5 monitoring + 1 downgrade billing + 1 managed pricing refactor + 1 auto-rescan bug fix)
+- Agents dispatched: 9 (2 scaffolder, 4 implementer, 3 tester) — all serialized
+- New learnings: 12 across 3 members + 5 MEMORY.md entries
+- Test growth: 1050 → 1100 (+50 tests, 48 files)
+- Commits: 11 (3 feat, 2 fix, 1 refactor, 3 docs, 2 agent)
+- Fix rate: 18% (2 fix commits out of 11 — both real bugs found during E2E)
+- Key insight: E2E testing on dev store caught 3 bugs that unit tests couldn't: Managed Pricing incompatibility with billing.request(), CSV export losing auth in iframe, auto-rescan using stale theme ID. Always E2E before submission.
+- Key pivot: Discovered Managed Pricing is active (Partner Dashboard pricing set) — removed all in-app billing.request() calls and reworked settings page to be informational only. Cross-portfolio learning stored for bot-analytics + ember.
+- Key bug: themes/publish webhook payload.id references a theme the GraphQL files API rejects when publishing a different theme. Fixed by using fetchMainTheme() instead.
 - Observability stack: Sentry scaffold, scan failure rate cron, BillingEvent DB, rate limit alerting, Inngest failure middleware.
+- Submission status: Screenshots + feature media uploaded. Only screencast URL remains.
 - Team health: implementer at 58 lines (approaching 60-line cap, needs /curate next session).
 
 ## Retro: 2026-03-28 (session 23 — Signatures + code review + fixes + test coverage)
