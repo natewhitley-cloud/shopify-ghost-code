@@ -49,6 +49,22 @@ model Shop {
   plan                String               @default("free")
   lastThemePublishAt  DateTime?
   scans               Scan[]
+  billingEvents       BillingEvent[]
+}
+
+model BillingEvent {
+  id        String   @id @default(cuid())
+  shopId    String
+  shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  eventType String   // "upgrade" | "downgrade" | "cancellation" | "reactivation"
+  fromPlan  String?  // null for first subscription
+  toPlan    String?  // null for cancellation
+  amount    Float?   // monthly price of toPlan, null for cancellation
+  createdAt DateTime @default(now())
+
+  @@index([shopId])
+  @@index([createdAt])
+  @@index([eventType])
 }
 
 model Scan {

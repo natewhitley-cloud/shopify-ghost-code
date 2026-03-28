@@ -2,8 +2,20 @@ import type { ActionFunctionArgs } from "react-router";
 
 import { PLANS } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
-import { updateShopPlanByDomain } from "../models/shop.server";
+import { type BillingEventType, recordBillingEvent } from "../models/billing-event.server";
+import { getShopByDomain, updateShopPlanByDomain } from "../models/shop.server";
 import { authenticate, PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
+
+// ---------------------------------------------------------------------------
+// Plan price table — amounts match billing config in shopify.server.ts.
+// Used to populate BillingEvent.amount for upgrade/reactivation events.
+// ---------------------------------------------------------------------------
+
+const PLAN_AMOUNTS: Record<string, number | undefined> = {
+  [PLANS.STANDARD]: 29,
+  [PLANS.PROFESSIONAL]: 49,
+  // FREE has no recurring charge amount
+};
 
 // ---------------------------------------------------------------------------
 // Shopify subscription status → internal plan tier mapping
@@ -18,6 +30,13 @@ import { authenticate, PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.serve
 // All non-ACTIVE statuses revert the shop to FREE.
 
 const SHOPIFY_SUBSCRIPTION_ACTIVE = "ACTIVE";
+
+// Plan rank for upgrade/downgrade detection. Higher rank = higher tier.
+const PLAN_RANK: Record<string, number> = {
+  [PLANS.FREE]: 0,
+  [PLANS.STANDARD]: 1,
+  [PLANS.PROFESSIONAL]: 2,
+};
 
 /**
  * Map a Shopify plan name + status to the internal plan string stored on Shop.
@@ -43,6 +62,40 @@ function resolvePlanFromSubscription(
       // granting paid features. Logs below will surface this for investigation.
       return PLANS.FREE;
   }
+}
+
+/**
+ * Determine the billing event type by comparing old and new plan tiers.
+ *
+ * Rules:
+ *   - new plan is FREE and old plan was FREE → no meaningful event, return null
+ *   - new plan is paid, old plan was FREE (including first install) → upgrade
+ *   - new plan is FREE, old plan was paid → cancellation
+ *   - new plan rank > old plan rank → upgrade
+ *   - new plan rank < old plan rank → downgrade
+ *   - same rank → null (no-op, e.g. ACTIVE webhook for unchanged plan)
+ *
+ * "Reactivation" occurs when a shop returns to ANY paid plan after being on
+ * FREE. Because we can't distinguish "first subscribe" from "reactivate after
+ * cancellation" without a full billing history query, we classify both as
+ * "upgrade" here — the distinction is cosmetic and the tester can refine
+ * this logic later with additional DB context if needed.
+ */
+function determineBillingEventType(fromPlan: string, toPlan: string): BillingEventType | null {
+  const fromRank = PLAN_RANK[fromPlan] ?? 0;
+  const toRank = PLAN_RANK[toPlan] ?? 0;
+
+  if (fromRank === toRank) return null;
+
+  if (toPlan === PLANS.FREE) {
+    return "cancellation";
+  }
+
+  if (fromPlan === PLANS.FREE) {
+    return "upgrade";
+  }
+
+  return toRank > fromRank ? "upgrade" : "downgrade";
 }
 
 // ---------------------------------------------------------------------------
@@ -89,6 +142,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     newPlan,
   });
 
+  // Fetch the current shop record to capture the old plan before updating.
+  // We need the old plan to classify the billing event type correctly.
+  const existingShop = await getShopByDomain(shop);
+
   const updated = await updateShopPlanByDomain(shop, newPlan);
 
   if (!updated) {
@@ -99,6 +156,48 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       shop,
       webhook: "app/subscriptions/update",
     });
+    // ALWAYS return 200. Non-200 causes Shopify to retry indefinitely.
+    return new Response(null, { status: 200 });
+  }
+
+  // ---------------------------------------------------------------------------
+  // Record billing event — non-blocking: failures must not break the webhook.
+  // ---------------------------------------------------------------------------
+
+  if (existingShop) {
+    const fromPlan = existingShop.plan;
+    const eventType = determineBillingEventType(fromPlan, newPlan);
+
+    if (eventType !== null) {
+      const amount = PLAN_AMOUNTS[newPlan] ?? null;
+
+      recordBillingEvent({
+        shopId: updated.id,
+        eventType,
+        fromPlan,
+        toPlan: newPlan === PLANS.FREE ? null : newPlan,
+        amount,
+      })
+        .then(() => {
+          logger.info("billing-event-recorded", {
+            shopId: updated.id,
+            eventType,
+            fromPlan,
+            toPlan: newPlan === PLANS.FREE ? null : newPlan,
+          });
+        })
+        .catch((err: unknown) => {
+          // Log the error but do NOT re-throw — billing event recording is
+          // observability infrastructure and must never interrupt the plan update.
+          logger.error("Failed to record billing event", {
+            shopId: updated.id,
+            eventType,
+            fromPlan,
+            toPlan: newPlan,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        });
+    }
   }
 
   // ALWAYS return 200. Non-200 causes Shopify to retry indefinitely.
