@@ -3,6 +3,11 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, redirect, useFetcher, useLoaderData } from "react-router";
 
 import { inngest } from "../../inngest/client";
+import {
+  HealthScoreTrendChart,
+  HealthScoreTrendEmptyState,
+} from "../components/HealthScoreTrendChart";
+import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { getPlanFeatures } from "../lib/billing.server";
 import { formatDate } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
@@ -110,18 +115,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Compute health score trend — paid plans only, requires >= 3 completed scans.
   // completedScansForTrend is newest-first; we reverse to oldest-first for the chart.
-  type TrendScoreEntry = {
-    scanId: string;
-    score: number;
-    tone: string;
-    label: string;
-    completedAt: string;
-    themeName: string;
-  };
-  type HealthScoreTrend = {
-    scores: TrendScoreEntry[];
-    direction: "improving" | "declining" | "stable";
-  };
+  // Types TrendScoreEntry and HealthScoreTrend are imported from HealthScoreTrendChart.
 
   const showTrendEmptyState = shouldFetchTrendScans && completedScansForTrend.length < 3;
   const scansNeeded = showTrendEmptyState ? Math.max(0, 3 - completedScansForTrend.length) : 0;
@@ -318,15 +312,6 @@ function formatDelta(current: number, previous: number): string | null {
   const delta = current - previous;
   if (delta === 0) return null;
   return delta > 0 ? `+${delta}` : String(delta);
-}
-
-/**
- * Format an ISO date string as an abbreviated month + day label for chart axes.
- * Example: "2024-03-15T12:00:00Z" -> "Mar 15"
- */
-function formatShortDate(iso: string): string {
-  const d = new Date(iso);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
 }
 
 /**
@@ -726,46 +711,6 @@ export default function Dashboard() {
             .theme-picker-nudge a {
               color: #2c6ecb;
             }
-            .trend-chart-card {
-              margin-top: 16px;
-            }
-            .trend-chart-heading {
-              font-size: 18px;
-              font-weight: 600;
-              color: #202223;
-              margin: 0 0 4px 0;
-            }
-            .trend-chart-direction--improving {
-              color: #1a8a3f;
-            }
-            .trend-chart-direction--declining {
-              color: #b98900;
-            }
-            .trend-chart-direction--stable {
-              color: #6d7175;
-            }
-            .trend-chart-svg-container {
-              margin-top: 12px;
-              width: 100%;
-            }
-            .trend-chart-empty {
-              background: #fafbfb;
-              border: 1px solid #e1e3e5;
-              border-radius: 12px;
-              padding: 24px 20px;
-              margin-top: 16px;
-            }
-            .trend-chart-empty-heading {
-              font-size: 16px;
-              font-weight: 600;
-              color: #202223;
-              margin: 0 0 8px 0;
-            }
-            .trend-chart-empty-text {
-              font-size: 14px;
-              color: #6d7175;
-              margin: 0 0 16px 0;
-            }
           `}</style>
 
           {/* Theme Health + Findings — combined card */}
@@ -858,121 +803,20 @@ export default function Dashboard() {
           </s-card>
 
           {/* Health Score Trend — feature-flagged, paid plans only */}
-          {trendChartEnabled &&
-            healthScoreTrend !== null &&
-            (() => {
-              const toneColors: Record<string, string> = {
-                success: "#1a8a3f",
-                warning: "#b98900",
-                critical: "#d72c0d",
-                info: "#2c6ecb",
-                caution: "#e67e22",
-              };
-              const scores = healthScoreTrend.scores;
-              const barCount = scores.length;
-              // SVG coordinate system: viewBox 0 0 700 250
-              // Reserve top 30px for score labels, bottom 30px for date labels,
-              // leaving 190px for the bars themselves.
-              const viewBoxWidth = 700;
-              const viewBoxHeight = 250;
-              const chartTop = 30;
-              const chartBottom = viewBoxHeight - 30;
-              const chartHeight = chartBottom - chartTop; // 190
-              const totalGap = barCount + 1; // gaps on both sides and between each bar
-              const barWidth = Math.floor((viewBoxWidth - totalGap * 10) / barCount);
-              const barX = (i: number) => 10 + i * (barWidth + 10);
-              const barH = (score: number) => Math.round((score / 100) * chartHeight);
-              const barY = (score: number) => chartBottom - barH(score);
-
-              const directionClass = `trend-chart-direction--${healthScoreTrend.direction}`;
-              const directionLabel =
-                healthScoreTrend.direction === "improving"
-                  ? "Improving"
-                  : healthScoreTrend.direction === "declining"
-                    ? "Declining"
-                    : "Stable";
-
-              return (
-                <div className="trend-chart-card">
-                  <s-card>
-                    <h2 className="trend-chart-heading">
-                      Health Score Trend: <span className={directionClass}>{directionLabel}</span>
-                    </h2>
-                    <div className="trend-chart-svg-container">
-                      <svg
-                        viewBox={`0 0 ${viewBoxWidth} ${viewBoxHeight}`}
-                        width="100%"
-                        preserveAspectRatio="xMidYMid meet"
-                        role="img"
-                        aria-label="Health score trend bar chart"
-                      >
-                        {scores.map((entry, i) => {
-                          const x = barX(i);
-                          const h = barH(entry.score);
-                          const y = barY(entry.score);
-                          const fill = toneColors[entry.tone] ?? "#2c6ecb";
-                          const dateLabel = formatShortDate(entry.completedAt);
-                          return (
-                            <g key={entry.scanId}>
-                              {/* Score label above bar */}
-                              <text
-                                x={x + barWidth / 2}
-                                y={y - 6}
-                                textAnchor="middle"
-                                fontSize="12"
-                                fill="#202223"
-                                fontWeight="600"
-                              >
-                                {entry.score}
-                              </text>
-                              {/* Bar */}
-                              <rect
-                                x={x}
-                                y={y}
-                                width={barWidth}
-                                height={h}
-                                fill={fill}
-                                rx="4"
-                                aria-label={`Score ${entry.score}, ${entry.label}, scanned ${dateLabel}`}
-                              />
-                              {/* Date label below chart area */}
-                              <text
-                                x={x + barWidth / 2}
-                                y={chartBottom + 18}
-                                textAnchor="middle"
-                                fontSize="11"
-                                fill="#6d7175"
-                              >
-                                {dateLabel}
-                              </text>
-                            </g>
-                          );
-                        })}
-                      </svg>
-                    </div>
-                  </s-card>
-                </div>
-              );
-            })()}
+          <HealthScoreTrendChart
+            trendChartEnabled={trendChartEnabled}
+            healthScoreTrend={healthScoreTrend}
+          />
 
           {/* Trend empty state — paid plan, fewer than 3 completed scans */}
-          {trendChartEnabled && showTrendEmptyState && (
-            <div className="trend-chart-empty">
-              <h2 className="trend-chart-empty-heading">Health Score Trend</h2>
-              <p className="trend-chart-empty-text">
-                Complete {scansNeeded} more scan{scansNeeded !== 1 ? "s" : ""} to see your health
-                score trend.
-              </p>
-              <s-button
-                variant="secondary"
-                onClick={handleStartScan}
-                {...(isSubmitting ? { loading: true } : {})}
-                {...(!shop || scanLimitReached ? { disabled: true } : {})}
-              >
-                {isSubmitting ? "Starting..." : "Start New Scan"}
-              </s-button>
-            </div>
-          )}
+          <HealthScoreTrendEmptyState
+            trendChartEnabled={trendChartEnabled}
+            showTrendEmptyState={showTrendEmptyState}
+            scansNeeded={scansNeeded}
+            onStartScan={handleStartScan}
+            isSubmitting={isSubmitting}
+            scanDisabled={!shop || scanLimitReached}
+          />
 
           {/* Scan Actions */}
           <div style={{ marginTop: "24px", marginBottom: "8px" }}>
