@@ -214,6 +214,34 @@ export async function hasCompletedScans(shopId: string): Promise<boolean> {
 }
 
 /**
+ * Fetch the N most recent COMPLETED scans for a shop, newest first.
+ * Used by the dashboard trend chart — only returns completed scans
+ * since in-progress/failed scans have no health score.
+ *
+ * `completedAt` is non-null for all COMPLETED scans by construction
+ * (updateScanStatus sets it when transitioning to COMPLETED), but the
+ * schema column is nullable, so rows where it is somehow null are
+ * filtered out rather than returned with a misleading cast.
+ */
+export async function getCompletedScansForShop(
+  shopId: string,
+  options?: { limit?: number },
+): Promise<Array<{ id: string; completedAt: Date; themeName: string }>> {
+  const limit = options?.limit ?? 7;
+
+  const rows = await db.scan.findMany({
+    where: { shopId, status: ScanStatus.COMPLETED },
+    orderBy: { completedAt: "desc" },
+    take: limit,
+    select: { id: true, completedAt: true, themeName: true },
+  });
+
+  return rows.filter(
+    (row): row is { id: string; completedAt: Date; themeName: string } => row.completedAt !== null,
+  );
+}
+
+/**
  * Compute scan failure rate stats over a trailing time window.
  *
  * "Completed" means a terminal status (COMPLETED or FAILED) — scans still

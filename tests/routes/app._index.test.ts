@@ -9,7 +9,7 @@
  */
 
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
@@ -33,6 +33,7 @@ vi.mock("../../app/models/scan.server", () => ({
   getScansForShop: vi.fn(),
   createScan: vi.fn(),
   hasCompletedScans: vi.fn(),
+  getCompletedScansForShop: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
@@ -80,7 +81,12 @@ import { getPlanFeatures } from "../../app/lib/billing.server";
 import { computeHealthScore } from "../../app/lib/health-score";
 import { canStartScan, getScanUsage, getWeekStartUTC } from "../../app/lib/plan-gating.server";
 import { getFindingSummary } from "../../app/models/finding.server";
-import { getScansForShop, createScan, hasCompletedScans } from "../../app/models/scan.server";
+import {
+  getScansForShop,
+  createScan,
+  hasCompletedScans,
+  getCompletedScansForShop,
+} from "../../app/models/scan.server";
 import { getShopByDomain } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
@@ -105,6 +111,7 @@ const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockFetchAllThemes = fetchAllThemes as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
 const mockGetWeekStartUTC = getWeekStartUTC as ReturnType<typeof vi.fn>;
+const mockGetCompletedScansForShop = getCompletedScansForShop as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -207,6 +214,7 @@ beforeEach(() => {
   mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetWeekStartUTC.mockReturnValue(new Date("2026-03-16T00:00:00Z"));
   mockFetchAllThemes.mockResolvedValue([]);
+  mockGetCompletedScansForShop.mockResolvedValue([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -779,6 +787,380 @@ describe("app._index action — theme picker", () => {
         "Dawn",
         expect.anything(),
       );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Loader: health score trend chart
+// ---------------------------------------------------------------------------
+
+// Fixtures for trend chart tests
+const TREND_SCAN_NEWEST = {
+  id: "trend-scan-3",
+  completedAt: new Date("2026-03-20T10:00:00Z"),
+  themeName: "Dawn",
+};
+const TREND_SCAN_MIDDLE = {
+  id: "trend-scan-2",
+  completedAt: new Date("2026-03-13T10:00:00Z"),
+  themeName: "Dawn",
+};
+const TREND_SCAN_OLDEST = {
+  id: "trend-scan-1",
+  completedAt: new Date("2026-03-06T10:00:00Z"),
+  themeName: "Dawn",
+};
+
+// getCompletedScansForShop returns newest-first; the loader reverses for display.
+const THREE_TREND_SCANS = [TREND_SCAN_NEWEST, TREND_SCAN_MIDDLE, TREND_SCAN_OLDEST];
+
+const TREND_FINDING_SUMMARY_NEWEST = {
+  total: 2,
+  bySeverity: { HIGH: 0, MEDIUM: 1, LOW: 2 },
+  byType: {},
+};
+const TREND_FINDING_SUMMARY_MIDDLE = {
+  total: 5,
+  bySeverity: { HIGH: 1, MEDIUM: 2, LOW: 0 },
+  byType: {},
+};
+const TREND_FINDING_SUMMARY_OLDEST = {
+  total: 8,
+  bySeverity: { HIGH: 2, MEDIUM: 3, LOW: 1 },
+  byType: {},
+};
+
+describe("app._index loader — health score trend chart", () => {
+  afterEach(() => {
+    delete process.env.ENABLE_TREND_CHART;
+  });
+
+  describe("feature flag off (ENABLE_TREND_CHART not set)", () => {
+    it("returns trendChartEnabled: false", async () => {
+      // process.env.ENABLE_TREND_CHART is not set (deleted in afterEach)
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.trendChartEnabled).toBe(false);
+    });
+
+    it("returns healthScoreTrend: null", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.healthScoreTrend).toBeNull();
+    });
+
+    it("returns showTrendEmptyState: false", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.showTrendEmptyState).toBe(false);
+    });
+
+    it("does not call getCompletedScansForShop (zero extra DB cost)", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+
+      await loader(makeLoaderArgs());
+
+      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("feature flag off (ENABLE_TREND_CHART set to non-true value)", () => {
+    it("returns trendChartEnabled: false when set to 'false'", async () => {
+      process.env.ENABLE_TREND_CHART = "false";
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.trendChartEnabled).toBe(false);
+      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("feature flag on, Free plan", () => {
+    beforeEach(() => {
+      process.env.ENABLE_TREND_CHART = "true";
+      // SHOP fixture has plan: "Free" — no override needed
+    });
+
+    it("returns healthScoreTrend: null (Free plan excluded)", async () => {
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.healthScoreTrend).toBeNull();
+    });
+
+    it("returns showTrendEmptyState: false (Free plan does not get empty state)", async () => {
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.showTrendEmptyState).toBe(false);
+    });
+
+    it("does not call getCompletedScansForShop (Free plan excluded from trend)", async () => {
+      await loader(makeLoaderArgs());
+
+      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("feature flag on, Standard plan, fewer than 3 completed scans", () => {
+    beforeEach(() => {
+      process.env.ENABLE_TREND_CHART = "true";
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+      mockGetScanUsage.mockResolvedValue({
+        used: 0,
+        limit: 1,
+        period: "week" as const,
+        periodStart: new Date("2026-03-16T00:00:00Z"),
+      });
+    });
+
+    it("returns healthScoreTrend: null when 2 completed scans exist", async () => {
+      mockGetCompletedScansForShop.mockResolvedValue([TREND_SCAN_NEWEST, TREND_SCAN_MIDDLE]);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.healthScoreTrend).toBeNull();
+    });
+
+    it("returns showTrendEmptyState: true when fewer than 3 completed scans", async () => {
+      mockGetCompletedScansForShop.mockResolvedValue([TREND_SCAN_NEWEST, TREND_SCAN_MIDDLE]);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.showTrendEmptyState).toBe(true);
+    });
+
+    it("returns scansNeeded: 1 when 2 scans completed (needs 1 more)", async () => {
+      mockGetCompletedScansForShop.mockResolvedValue([TREND_SCAN_NEWEST, TREND_SCAN_MIDDLE]);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.scansNeeded).toBe(1);
+    });
+
+    it("returns scansNeeded: 3 when 0 scans completed", async () => {
+      mockGetCompletedScansForShop.mockResolvedValue([]);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.scansNeeded).toBe(3);
+    });
+
+    it("returns scansNeeded: 2 when 1 scan completed", async () => {
+      mockGetCompletedScansForShop.mockResolvedValue([TREND_SCAN_NEWEST]);
+
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.scansNeeded).toBe(2);
+    });
+  });
+
+  describe("feature flag on, Standard plan, 3+ completed scans", () => {
+    beforeEach(() => {
+      process.env.ENABLE_TREND_CHART = "true";
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+      mockGetScanUsage.mockResolvedValue({
+        used: 0,
+        limit: 1,
+        period: "week" as const,
+        periodStart: new Date("2026-03-16T00:00:00Z"),
+      });
+      mockGetCompletedScansForShop.mockResolvedValue(THREE_TREND_SCANS);
+      // The loader calls getFindingSummary for latestScan first (from recentScans),
+      // then for each trend scan in parallel. Set up summary returns:
+      // - first call: latestScan summary (FINDING_SUMMARY)
+      // - then 3 trend scan summaries (newest, middle, oldest order from getCompletedScansForShop)
+      mockGetFindingSummary
+        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
+        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_NEWEST) // trend scan 1 (newest)
+        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_MIDDLE) // trend scan 2 (middle)
+        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_OLDEST); // trend scan 3 (oldest)
+    });
+
+    it("returns healthScoreTrend that is not null", async () => {
+      // computeHealthScore is a vi.fn() — let it return HEALTH_SCORE for all calls
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.healthScoreTrend).not.toBeNull();
+    });
+
+    it("returns healthScoreTrend.scores with length equal to number of trend scans", async () => {
+      const result = (await loader(makeLoaderArgs())) as {
+        healthScoreTrend: { scores: unknown[]; direction: string } | null;
+      };
+
+      expect(result.healthScoreTrend?.scores).toHaveLength(3);
+    });
+
+    it("returns showTrendEmptyState: false when 3+ scans exist", async () => {
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.showTrendEmptyState).toBe(false);
+    });
+
+    it("returns scores sorted oldest-first (chronological for chart display)", async () => {
+      const result = (await loader(makeLoaderArgs())) as {
+        healthScoreTrend: {
+          scores: Array<{ scanId: string; completedAt: string }>;
+          direction: string;
+        } | null;
+      };
+
+      const scores = result.healthScoreTrend?.scores ?? [];
+      // oldest scan was TREND_SCAN_OLDEST (2026-03-06), newest was TREND_SCAN_NEWEST (2026-03-20)
+      expect(scores[0].scanId).toBe(TREND_SCAN_OLDEST.id);
+      expect(scores[scores.length - 1].scanId).toBe(TREND_SCAN_NEWEST.id);
+    });
+
+    it("returns direction: improving when newest score exceeds oldest by more than 3", async () => {
+      mockComputeHealthScore
+        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score (recentScans path)
+        .mockReturnValueOnce({ score: 70, label: "Good", tone: "info" as const }) // trend newest
+        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend middle
+        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend oldest
+        // After reverse: oldest=60, middle=60, newest=70 → delta = 70 - 60 = 10 > 3 → "improving"
+        .mockReturnValue(HEALTH_SCORE); // fallback for any other calls
+
+      const result = (await loader(makeLoaderArgs())) as {
+        healthScoreTrend: { scores: unknown[]; direction: string } | null;
+      };
+
+      expect(result.healthScoreTrend?.direction).toBe("improving");
+    });
+
+    it("returns direction: declining when newest score is more than 3 below oldest", async () => {
+      mockComputeHealthScore
+        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score
+        .mockReturnValueOnce({ score: 55, label: "Fair", tone: "warning" as const }) // trend newest
+        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend middle
+        .mockReturnValueOnce({ score: 65, label: "Good", tone: "info" as const }) // trend oldest
+        // After reverse: oldest=65, middle=60, newest=55 → delta = 55 - 65 = -10 < -3 → "declining"
+        .mockReturnValue(HEALTH_SCORE);
+
+      const result = (await loader(makeLoaderArgs())) as {
+        healthScoreTrend: { scores: unknown[]; direction: string } | null;
+      };
+
+      expect(result.healthScoreTrend?.direction).toBe("declining");
+    });
+
+    it("returns direction: stable when delta is within +/- 3", async () => {
+      mockComputeHealthScore
+        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score
+        .mockReturnValueOnce({ score: 62, label: "Fair", tone: "warning" as const }) // trend newest
+        .mockReturnValueOnce({ score: 61, label: "Fair", tone: "warning" as const }) // trend middle
+        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend oldest
+        // After reverse: oldest=60, newest=62 → delta = 2, within +/-3 → "stable"
+        .mockReturnValue(HEALTH_SCORE);
+
+      const result = (await loader(makeLoaderArgs())) as {
+        healthScoreTrend: { scores: unknown[]; direction: string } | null;
+      };
+
+      expect(result.healthScoreTrend?.direction).toBe("stable");
+    });
+
+    it("returns direction: stable when delta is exactly +3 (boundary: not > 3)", async () => {
+      mockComputeHealthScore
+        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score
+        .mockReturnValueOnce({ score: 63, label: "Fair", tone: "warning" as const }) // trend newest
+        .mockReturnValueOnce({ score: 61, label: "Fair", tone: "warning" as const }) // trend middle
+        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend oldest
+        // After reverse: oldest=60, newest=63 → delta = 3, not > 3 → "stable"
+        .mockReturnValue(HEALTH_SCORE);
+
+      const result = (await loader(makeLoaderArgs())) as {
+        healthScoreTrend: { scores: unknown[]; direction: string } | null;
+      };
+
+      expect(result.healthScoreTrend?.direction).toBe("stable");
+    });
+
+    it("returns direction: stable when delta is exactly -3 (boundary: not < -3)", async () => {
+      mockComputeHealthScore
+        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score
+        .mockReturnValueOnce({ score: 57, label: "Fair", tone: "warning" as const }) // trend newest
+        .mockReturnValueOnce({ score: 58, label: "Fair", tone: "warning" as const }) // trend middle
+        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend oldest
+        // After reverse: oldest=60, newest=57 → delta = -3, not < -3 → "stable"
+        .mockReturnValue(HEALTH_SCORE);
+
+      const result = (await loader(makeLoaderArgs())) as {
+        healthScoreTrend: { scores: unknown[]; direction: string } | null;
+      };
+
+      expect(result.healthScoreTrend?.direction).toBe("stable");
+    });
+  });
+
+  describe("feature flag on, Professional plan, 3+ completed scans", () => {
+    beforeEach(() => {
+      process.env.ENABLE_TREND_CHART = "true";
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      mockGetScanUsage.mockResolvedValue(null);
+      mockGetCompletedScansForShop.mockResolvedValue(THREE_TREND_SCANS);
+      mockGetFindingSummary
+        .mockResolvedValueOnce(FINDING_SUMMARY)
+        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_NEWEST)
+        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_MIDDLE)
+        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_OLDEST);
+    });
+
+    it("returns healthScoreTrend that is not null (Pro plan also gets trend)", async () => {
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.healthScoreTrend).not.toBeNull();
+    });
+
+    it("calls getCompletedScansForShop with the shop id and limit 7", async () => {
+      await loader(makeLoaderArgs());
+
+      expect(mockGetCompletedScansForShop).toHaveBeenCalledWith("shop-1", { limit: 7 });
+    });
+  });
+
+  describe("null shop early return with feature flag on", () => {
+    beforeEach(() => {
+      process.env.ENABLE_TREND_CHART = "true";
+      mockGetShopByDomain.mockResolvedValue(null);
+    });
+
+    it("returns healthScoreTrend: null", async () => {
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.healthScoreTrend).toBeNull();
+    });
+
+    it("returns trendChartEnabled: false", async () => {
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.trendChartEnabled).toBe(false);
+    });
+
+    it("returns showTrendEmptyState: false", async () => {
+      const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
+
+      expect(result.showTrendEmptyState).toBe(false);
+    });
+
+    it("does not call getCompletedScansForShop", async () => {
+      await loader(makeLoaderArgs());
+
+      expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
     });
   });
 });

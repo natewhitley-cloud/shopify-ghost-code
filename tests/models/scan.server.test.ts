@@ -57,6 +57,7 @@ import {
   getPreviousScanForTheme,
   countScansForShopSince,
   hasCompletedScans,
+  getCompletedScansForShop,
 } from "../../app/models/scan.server";
 
 // ---------------------------------------------------------------------------
@@ -724,5 +725,106 @@ describe("getFailureRateStats", () => {
     mockDb.scan.count.mockRejectedValue(new Error("DB unavailable"));
 
     await expect(getFailureRateStats()).rejects.toThrow("DB unavailable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getCompletedScansForShop
+// ---------------------------------------------------------------------------
+
+describe("getCompletedScansForShop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns only COMPLETED scans (status filter)", async () => {
+    const rows = [
+      { id: "scan-3", completedAt: new Date("2026-03-20T10:00:00Z"), themeName: "Dawn" },
+    ];
+    mockDb.scan.findMany.mockResolvedValue(rows);
+
+    await getCompletedScansForShop(SHOP_ID);
+
+    const callArg = mockDb.scan.findMany.mock.calls[0][0];
+    expect(callArg.where.status).toBe(ScanStatus.COMPLETED);
+    expect(callArg.where.shopId).toBe(SHOP_ID);
+  });
+
+  it("orders by completedAt descending (newest first)", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+
+    await getCompletedScansForShop(SHOP_ID);
+
+    const callArg = mockDb.scan.findMany.mock.calls[0][0];
+    expect(callArg.orderBy).toEqual({ completedAt: "desc" });
+  });
+
+  it("applies the limit parameter when provided", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+
+    await getCompletedScansForShop(SHOP_ID, { limit: 5 });
+
+    const callArg = mockDb.scan.findMany.mock.calls[0][0];
+    expect(callArg.take).toBe(5);
+  });
+
+  it("defaults to limit of 7 when no limit is specified", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+
+    await getCompletedScansForShop(SHOP_ID);
+
+    const callArg = mockDb.scan.findMany.mock.calls[0][0];
+    expect(callArg.take).toBe(7);
+  });
+
+  it("selects only id, completedAt, and themeName fields", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+
+    await getCompletedScansForShop(SHOP_ID);
+
+    const callArg = mockDb.scan.findMany.mock.calls[0][0];
+    expect(callArg.select).toEqual({ id: true, completedAt: true, themeName: true });
+  });
+
+  it("returns an empty array when no completed scans exist", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+
+    const result = await getCompletedScansForShop(SHOP_ID);
+
+    expect(result).toEqual([]);
+  });
+
+  it("returns the scans array when completed scans exist", async () => {
+    const rows = [
+      { id: "scan-3", completedAt: new Date("2026-03-20T10:00:00Z"), themeName: "Dawn" },
+      { id: "scan-2", completedAt: new Date("2026-03-10T10:00:00Z"), themeName: "Craft" },
+    ];
+    mockDb.scan.findMany.mockResolvedValue(rows);
+
+    const result = await getCompletedScansForShop(SHOP_ID);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual(rows[0]);
+    expect(result[1]).toEqual(rows[1]);
+  });
+
+  it("filters out rows where completedAt is null (guards against unexpected null column values)", async () => {
+    const rows = [
+      { id: "scan-3", completedAt: new Date("2026-03-20T10:00:00Z"), themeName: "Dawn" },
+      // Simulate a row where completedAt is unexpectedly null despite COMPLETED status.
+      { id: "scan-bad", completedAt: null, themeName: "Broken" },
+    ];
+    mockDb.scan.findMany.mockResolvedValue(rows);
+
+    const result = await getCompletedScansForShop(SHOP_ID);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe("scan-3");
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.scan.findMany.mockRejectedValue(new Error("Connection refused"));
+
+    await expect(getCompletedScansForShop(SHOP_ID)).rejects.toThrow("Connection refused");
   });
 });
