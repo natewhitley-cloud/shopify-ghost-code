@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import {
   fetchMainTheme,
   fetchThemeFiles,
+  fetchAllThemes,
   checkRateLimit,
 } from "../../app/services/theme-fetcher.server";
 import { createMockGraphQLResponse } from "../mocks/shopify";
@@ -243,5 +244,215 @@ describe("fetchThemeFiles", () => {
     expect(call[1].variables.after).toBeUndefined();
     expect(call[1].variables.first).toBe(250);
     expect(call[1].variables.themeId).toBe("gid://shopify/Theme/42");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// fetchAllThemes helpers
+// ---------------------------------------------------------------------------
+
+type ThemeNode = { id: string; name: string; role: string; updatedAt: string };
+
+function makeAllThemesResponse(
+  nodes: ThemeNode[],
+  pageInfo: { hasNextPage: boolean; endCursor: string | null },
+) {
+  return {
+    json: vi.fn().mockResolvedValue({
+      data: {
+        themes: { nodes, pageInfo },
+      },
+      extensions: {
+        cost: {
+          throttleStatus: { maximumAvailable: 2000, currentlyAvailable: 1800, restoreRate: 100 },
+        },
+      },
+    }),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// fetchAllThemes
+// ---------------------------------------------------------------------------
+
+describe("fetchAllThemes", () => {
+  it("returns themes from a single page including role field", async () => {
+    const nodes: ThemeNode[] = [
+      {
+        id: "gid://shopify/Theme/1",
+        name: "Dawn",
+        role: "MAIN",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "gid://shopify/Theme/2",
+        name: "Craft",
+        role: "UNPUBLISHED",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+    ];
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(makeAllThemesResponse(nodes, { hasNextPage: false, endCursor: null }));
+
+    const result = await fetchAllThemes(makeAdmin(graphql));
+
+    expect(result).toHaveLength(2);
+    // Every returned object must carry the role field
+    for (const theme of result) {
+      expect(theme).toHaveProperty("role");
+    }
+  });
+
+  it("sorts MAIN theme first, then remaining themes alphabetically", async () => {
+    const nodes: ThemeNode[] = [
+      {
+        id: "gid://shopify/Theme/3",
+        name: "Zephyr",
+        role: "UNPUBLISHED",
+        updatedAt: "2026-01-03T00:00:00Z",
+      },
+      {
+        id: "gid://shopify/Theme/1",
+        name: "Aurora",
+        role: "UNPUBLISHED",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "gid://shopify/Theme/2",
+        name: "Midnight",
+        role: "MAIN",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+    ];
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(makeAllThemesResponse(nodes, { hasNextPage: false, endCursor: null }));
+
+    const result = await fetchAllThemes(makeAdmin(graphql));
+
+    expect(result[0].role).toBe("MAIN");
+    expect(result[0].name).toBe("Midnight");
+    expect(result[1].name).toBe("Aurora");
+    expect(result[2].name).toBe("Zephyr");
+  });
+
+  it("handles pagination by fetching all pages and concatenating results", async () => {
+    const page1Nodes: ThemeNode[] = [
+      {
+        id: "gid://shopify/Theme/1",
+        name: "Beta",
+        role: "UNPUBLISHED",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+    ];
+    const page2Nodes: ThemeNode[] = [
+      {
+        id: "gid://shopify/Theme/2",
+        name: "Alpha",
+        role: "MAIN",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+    ];
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeAllThemesResponse(page1Nodes, { hasNextPage: true, endCursor: "cursor-page-1" }),
+      )
+      .mockResolvedValueOnce(
+        makeAllThemesResponse(page2Nodes, { hasNextPage: false, endCursor: null }),
+      );
+
+    const result = await fetchAllThemes(makeAdmin(graphql));
+
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(result).toHaveLength(2);
+    // Second call must include the cursor from the first page
+    expect(graphql.mock.calls[1][1]).toMatchObject({ variables: { after: "cursor-page-1" } });
+  });
+
+  it("does not include after variable on the first page request", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(makeAllThemesResponse([], { hasNextPage: false, endCursor: null }));
+
+    await fetchAllThemes(makeAdmin(graphql));
+
+    expect(graphql.mock.calls[0][1].variables.after).toBeUndefined();
+  });
+
+  it("returns empty array when the shop has no themes", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(makeAllThemesResponse([], { hasNextPage: false, endCursor: null }));
+
+    const result = await fetchAllThemes(makeAdmin(graphql));
+
+    expect(result).toEqual([]);
+  });
+
+  it("throws when the response contains GraphQL errors", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(createMockGraphQLResponse(null, [{ message: "ACCESS_DENIED" }]));
+
+    await expect(fetchAllThemes(makeAdmin(graphql))).rejects.toThrow("Failed to fetch themes");
+  });
+
+  it("includes all required fields (id, name, role, updatedAt) on each returned theme", async () => {
+    const node: ThemeNode = {
+      id: "gid://shopify/Theme/99",
+      name: "Sense",
+      role: "MAIN",
+      updatedAt: "2026-03-01T12:00:00Z",
+    };
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(makeAllThemesResponse([node], { hasNextPage: false, endCursor: null }));
+
+    const result = await fetchAllThemes(makeAdmin(graphql));
+
+    expect(result[0]).toEqual({
+      id: "gid://shopify/Theme/99",
+      name: "Sense",
+      role: "MAIN",
+      updatedAt: "2026-03-01T12:00:00Z",
+    });
+  });
+
+  it("sorts multiple non-MAIN themes alphabetically after MAIN", async () => {
+    const nodes: ThemeNode[] = [
+      {
+        id: "gid://shopify/Theme/4",
+        name: "Zebra",
+        role: "UNPUBLISHED",
+        updatedAt: "2026-01-04T00:00:00Z",
+      },
+      {
+        id: "gid://shopify/Theme/1",
+        name: "Dawn",
+        role: "MAIN",
+        updatedAt: "2026-01-01T00:00:00Z",
+      },
+      {
+        id: "gid://shopify/Theme/3",
+        name: "Craft",
+        role: "UNPUBLISHED",
+        updatedAt: "2026-01-03T00:00:00Z",
+      },
+      {
+        id: "gid://shopify/Theme/2",
+        name: "Aurora",
+        role: "UNPUBLISHED",
+        updatedAt: "2026-01-02T00:00:00Z",
+      },
+    ];
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(makeAllThemesResponse(nodes, { hasNextPage: false, endCursor: null }));
+
+    const result = await fetchAllThemes(makeAdmin(graphql));
+
+    expect(result.map((t) => t.name)).toEqual(["Dawn", "Aurora", "Craft", "Zebra"]);
   });
 });

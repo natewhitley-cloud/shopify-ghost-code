@@ -72,6 +72,23 @@ const MAIN_THEME_QUERY = `
   }
 `;
 
+const ALL_THEMES_QUERY = `
+  query GetAllThemes($first: Int!, $after: String) {
+    themes(first: $first, after: $after) {
+      nodes {
+        id
+        name
+        role
+        updatedAt
+      }
+      pageInfo {
+        hasNextPage
+        endCursor
+      }
+    }
+  }
+`;
+
 const THEME_FILES_QUERY = `
   query ThemeFiles($themeId: ID!, $first: Int!, $after: String) {
     theme(id: $themeId) {
@@ -135,6 +152,83 @@ export async function fetchMainTheme(admin: AdminApiContext): Promise<MainTheme 
     name: node.name as string,
     updatedAt: new Date(node.updatedAt as string),
   };
+}
+
+/** A theme listing entry returned by fetchAllThemes. */
+export type ThemeSummary = {
+  id: string;
+  name: string;
+  role: string;
+  updatedAt: string;
+};
+
+/**
+ * Fetch all themes for a shop, handling cursor-based pagination.
+ *
+ * Returns themes sorted with MAIN first, then alphabetically by name.
+ * Most stores have fewer than 20 themes so this will typically complete
+ * in a single page, but pagination is handled for correctness.
+ *
+ * @param admin  Shopify admin API context (from authenticate.admin or offline token).
+ */
+export async function fetchAllThemes(admin: AdminApiContext): Promise<ThemeSummary[]> {
+  const themes: ThemeSummary[] = [];
+  let cursor: string | null = null;
+  let hasNextPage = true;
+  // Most stores have fewer than 20 themes; 50 per page is sufficient while keeping GraphQL cost low.
+  const PAGE_SIZE = 50;
+
+  while (hasNextPage) {
+    const response = await admin.graphql(ALL_THEMES_QUERY, {
+      variables: {
+        first: PAGE_SIZE,
+        ...(cursor !== null ? { after: cursor } : {}),
+      },
+    });
+
+    const json = (await response.json()) as {
+      errors?: Array<{ message: string }>;
+      data?: {
+        themes?: {
+          nodes?: Array<{ id: string; name: string; role: string; updatedAt: string }>;
+          pageInfo?: { hasNextPage?: boolean; endCursor?: string };
+        };
+      };
+      extensions?: unknown;
+    };
+
+    if (json.errors?.length) {
+      throw new Error(
+        `[theme-fetcher] Failed to fetch themes: ${json.errors[0]?.message ?? "unknown error"}`,
+      );
+    }
+
+    const nodes = json.data?.themes?.nodes ?? [];
+    const pageInfo = json.data?.themes?.pageInfo ?? {};
+
+    for (const node of nodes) {
+      themes.push({
+        id: node.id,
+        name: node.name,
+        role: node.role,
+        updatedAt: node.updatedAt,
+      });
+    }
+
+    hasNextPage = Boolean(pageInfo.hasNextPage);
+    cursor = pageInfo.endCursor ?? null;
+
+    await checkRateLimit(json.extensions);
+  }
+
+  // Sort: MAIN role first, then alphabetically by name.
+  themes.sort((a, b) => {
+    if (a.role === "MAIN" && b.role !== "MAIN") return -1;
+    if (a.role !== "MAIN" && b.role === "MAIN") return 1;
+    return a.name.localeCompare(b.name);
+  });
+
+  return themes;
 }
 
 /**

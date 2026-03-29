@@ -55,6 +55,7 @@ vi.mock("../../app/lib/health-score", () => ({
 
 vi.mock("../../app/services/theme-fetcher.server", () => ({
   fetchMainTheme: vi.fn(),
+  fetchAllThemes: vi.fn(),
 }));
 
 vi.mock("../../inngest/client", () => ({
@@ -82,7 +83,7 @@ import { getFindingSummary } from "../../app/models/finding.server";
 import { getScansForShop, createScan, hasCompletedScans } from "../../app/models/scan.server";
 import { getShopByDomain } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
-import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
+import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
 import { authenticate } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 
@@ -101,6 +102,7 @@ const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockGetScanUsage = getScanUsage as ReturnType<typeof vi.fn>;
 const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
+const mockFetchAllThemes = fetchAllThemes as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
 const mockGetWeekStartUTC = getWeekStartUTC as ReturnType<typeof vi.fn>;
 
@@ -161,6 +163,8 @@ function makeActionArgs(overrides?: Partial<ActionFunctionArgs>): ActionFunction
   return {
     request: new Request("https://test-shop.myshopify.com/app", {
       method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "",
     }),
     params: {},
     context: {},
@@ -202,6 +206,7 @@ beforeEach(() => {
   mockHasCompletedScans.mockResolvedValue(true);
   mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetWeekStartUTC.mockReturnValue(new Date("2026-03-16T00:00:00Z"));
+  mockFetchAllThemes.mockResolvedValue([]);
 });
 
 // ---------------------------------------------------------------------------
@@ -470,6 +475,310 @@ describe("app._index action", () => {
 
       expect(result.error).toBe("A scan is already in progress for this shop.");
       expect(mockInngestSend).not.toHaveBeenCalled();
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Theme picker fixtures
+// ---------------------------------------------------------------------------
+
+const ALL_THEMES = [
+  {
+    id: "gid://shopify/Theme/123456",
+    name: "Dawn",
+    role: "MAIN",
+    updatedAt: "2026-01-01T00:00:00Z",
+  },
+  {
+    id: "gid://shopify/Theme/789",
+    name: "Craft",
+    role: "UNPUBLISHED",
+    updatedAt: "2026-01-02T00:00:00Z",
+  },
+];
+
+const PRO_FEATURES = {
+  maxScansPerMonth: Infinity,
+  maxScansPerWeek: Infinity,
+  showFindingDetails: true,
+  maxThemes: Infinity,
+  autoRescan: true,
+  scanDiffing: true,
+  scheduledScan: true,
+};
+
+const STANDARD_FEATURES = {
+  maxScansPerMonth: Infinity,
+  maxScansPerWeek: 1,
+  showFindingDetails: true,
+  maxThemes: 1,
+  autoRescan: false,
+  scanDiffing: false,
+  scheduledScan: false,
+};
+
+// ---------------------------------------------------------------------------
+// Loader: theme picker data
+// ---------------------------------------------------------------------------
+
+describe("app._index loader — theme picker", () => {
+  describe("allThemes population", () => {
+    it("returns non-empty allThemes for Standard plan", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+      mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
+      mockGetScanUsage.mockResolvedValue({
+        used: 0,
+        limit: 1,
+        period: "week" as const,
+        periodStart: new Date("2026-03-16T00:00:00Z"),
+      });
+
+      const result = (await loader(makeLoaderArgs())) as {
+        allThemes: typeof ALL_THEMES;
+      };
+
+      expect(mockFetchAllThemes).toHaveBeenCalledTimes(1);
+      expect(result.allThemes).toEqual(ALL_THEMES);
+    });
+
+    it("returns non-empty allThemes for Professional plan", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
+      mockGetScanUsage.mockResolvedValue(null);
+
+      const result = (await loader(makeLoaderArgs())) as {
+        allThemes: typeof ALL_THEMES;
+      };
+
+      expect(mockFetchAllThemes).toHaveBeenCalledTimes(1);
+      expect(result.allThemes).toEqual(ALL_THEMES);
+    });
+
+    it("returns empty allThemes for Free plan and does not call fetchAllThemes", async () => {
+      // Default SHOP fixture has plan: "Free" — no override needed
+      mockFetchAllThemes.mockResolvedValue(ALL_THEMES); // would be non-empty if called
+
+      const result = (await loader(makeLoaderArgs())) as {
+        allThemes: unknown[];
+      };
+
+      expect(mockFetchAllThemes).not.toHaveBeenCalled();
+      expect(result.allThemes).toEqual([]);
+    });
+  });
+
+  describe("canSelectTheme flag", () => {
+    it("returns canSelectTheme: true for Professional plan (maxThemes > 1)", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      mockGetScanUsage.mockResolvedValue(null);
+
+      const result = (await loader(makeLoaderArgs())) as {
+        canSelectTheme: boolean;
+      };
+
+      expect(result.canSelectTheme).toBe(true);
+    });
+
+    it("returns canSelectTheme: false for Standard plan (maxThemes: 1)", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+      mockGetScanUsage.mockResolvedValue({
+        used: 0,
+        limit: 1,
+        period: "week" as const,
+        periodStart: new Date("2026-03-16T00:00:00Z"),
+      });
+
+      const result = (await loader(makeLoaderArgs())) as {
+        canSelectTheme: boolean;
+      };
+
+      expect(result.canSelectTheme).toBe(false);
+    });
+
+    it("returns canSelectTheme: false for Free plan (maxThemes: 1)", async () => {
+      // Default SHOP fixture + default getPlanFeatures mock (maxThemes: 1)
+
+      const result = (await loader(makeLoaderArgs())) as {
+        canSelectTheme: boolean;
+      };
+
+      expect(result.canSelectTheme).toBe(false);
+    });
+  });
+
+  describe("null shop early return", () => {
+    it("includes allThemes: [] and canSelectTheme: false when shop is null", async () => {
+      mockGetShopByDomain.mockResolvedValue(null);
+
+      const result = (await loader(makeLoaderArgs())) as {
+        allThemes: unknown[];
+        canSelectTheme: boolean;
+      };
+
+      expect(result.allThemes).toEqual([]);
+      expect(result.canSelectTheme).toBe(false);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Action: theme picker
+// ---------------------------------------------------------------------------
+
+describe("app._index action — theme picker", () => {
+  beforeEach(() => {
+    mockCanStartScan.mockResolvedValue({ allowed: true });
+    mockCreateScan.mockResolvedValue({ id: "scan-new", shopId: "shop-1" });
+    mockInngestSend.mockResolvedValue(undefined);
+    mockHasCompletedScans.mockResolvedValue(false);
+  });
+
+  describe("no themeId in form body", () => {
+    it("falls back to MAIN theme when no themeId is submitted", async () => {
+      // Default action args have no form body with themeId
+
+      const result = await action(makeActionArgs());
+
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).status).toBe(302);
+      expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
+      expect(mockFetchAllThemes).not.toHaveBeenCalled();
+      expect(mockCreateScan).toHaveBeenCalledWith(
+        "shop-1",
+        "gid://shopify/Theme/123456",
+        "Dawn",
+        expect.anything(),
+      );
+    });
+
+    it("falls back to MAIN theme when themeId is an empty string", async () => {
+      const request = new Request("https://test-shop.myshopify.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ themeId: "" }),
+      });
+
+      const result = await action(makeActionArgs({ request }));
+
+      expect(result).toBeInstanceOf(Response);
+      expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
+      expect(mockFetchAllThemes).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("valid themeId on Professional plan", () => {
+    it("uses the selected theme and scans it instead of the MAIN theme", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
+
+      const request = new Request("https://test-shop.myshopify.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ themeId: "gid://shopify/Theme/789" }),
+      });
+
+      const result = await action(makeActionArgs({ request }));
+
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).status).toBe(302);
+      // fetchAllThemes validates the selection; fetchMainTheme should not be called
+      expect(mockFetchAllThemes).toHaveBeenCalledTimes(1);
+      expect(mockFetchMainTheme).not.toHaveBeenCalled();
+      // Professional plan has no scan quota (Infinity limits), so quota is null
+      expect(mockCreateScan).toHaveBeenCalledWith(
+        "shop-1",
+        "gid://shopify/Theme/789",
+        "Craft",
+        null,
+      );
+      expect(mockInngestSend).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ themeId: "gid://shopify/Theme/789" }),
+        }),
+      );
+    });
+  });
+
+  describe("invalid themeId on Professional plan", () => {
+    it("returns error when submitted themeId is not found in shop theme list", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      // Return themes list that does NOT contain the submitted ID
+      mockFetchAllThemes.mockResolvedValue([
+        {
+          id: "gid://shopify/Theme/123456",
+          name: "Dawn",
+          role: "MAIN",
+          updatedAt: "2026-01-01T00:00:00Z",
+        },
+      ]);
+
+      const request = new Request("https://test-shop.myshopify.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ themeId: "gid://shopify/Theme/SPOOFED" }),
+      });
+
+      const result = (await action(makeActionArgs({ request }))) as { error: string };
+
+      expect(result.error).toBe(
+        "The selected theme could not be found. Please refresh and try again.",
+      );
+      expect(mockCreateScan).not.toHaveBeenCalled();
+      expect(mockInngestSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("themeId on Free plan (downgrade protection)", () => {
+    it("ignores submitted themeId and uses MAIN theme when plan is Free", async () => {
+      // Default SHOP has plan: "Free"; default getPlanFeatures returns maxThemes: 1
+      const request = new Request("https://test-shop.myshopify.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ themeId: "gid://shopify/Theme/789" }),
+      });
+
+      const result = await action(makeActionArgs({ request }));
+
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).status).toBe(302);
+      // Selection ignored — should NOT validate via fetchAllThemes
+      expect(mockFetchAllThemes).not.toHaveBeenCalled();
+      // Should fall back to MAIN theme
+      expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
+      expect(mockCreateScan).toHaveBeenCalledWith(
+        "shop-1",
+        "gid://shopify/Theme/123456",
+        "Dawn",
+        expect.anything(),
+      );
+    });
+  });
+
+  describe("themeId on Standard plan (downgrade protection)", () => {
+    it("ignores submitted themeId and uses MAIN theme when plan is Standard", async () => {
+      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+
+      const request = new Request("https://test-shop.myshopify.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ themeId: "gid://shopify/Theme/789" }),
+      });
+
+      const result = await action(makeActionArgs({ request }));
+
+      expect(result).toBeInstanceOf(Response);
+      expect((result as Response).status).toBe(302);
+      expect(mockFetchAllThemes).not.toHaveBeenCalled();
+      expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
+      expect(mockCreateScan).toHaveBeenCalledWith(
+        "shop-1",
+        "gid://shopify/Theme/123456",
+        "Dawn",
+        expect.anything(),
+      );
     });
   });
 });

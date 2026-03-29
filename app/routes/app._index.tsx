@@ -13,7 +13,8 @@ import { getFindingSummary } from "../models/finding.server";
 import { getScansForShop, createScan, hasCompletedScans } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
-import { fetchMainTheme } from "../services/theme-fetcher.server";
+import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
+import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -33,6 +34,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       latestScan: null,
       findingSummary: null,
       mainTheme: null,
+      allThemes: [] as ThemeSummary[],
+      canSelectTheme: false,
       scanUsage: null,
       isFirstScan: true,
       healthScore: null,
@@ -42,19 +45,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     };
   }
 
-  // Fetch the main theme so the UI can show which theme will be scanned.
-  const mainTheme = await fetchMainTheme(admin);
+  const features = getPlanFeatures(shop.plan);
+  const canSelectTheme = features.maxThemes > 1;
 
-  // Fetch the two most recent scans: [latest, previous?].
-  // getScansForShop applies take: limit + 1 internally, so limit: 2 fetches 3
-  // to detect hasNextPage. We only need 2 real rows, so slice to be safe.
-  const recentScans = await getScansForShop(shop.id, { limit: 2 });
+  // Fetch all themes for Standard and Professional so the picker has options to
+  // display even when disabled (Standard teaser). Skip the API call on Free plan
+  // since the picker is completely hidden there.
+  const shouldFetchThemes = shop.plan === PLANS.STANDARD || shop.plan === PLANS.PROFESSIONAL;
+
+  // Phase 0: fetch theme metadata and recent scans in parallel — none depend on each other.
+  const [mainTheme, allThemes, recentScans] = await Promise.all([
+    fetchMainTheme(admin),
+    shouldFetchThemes ? fetchAllThemes(admin) : Promise.resolve([] as ThemeSummary[]),
+    getScansForShop(shop.id, { limit: 2 }),
+  ]);
+
   const [latestScan = null, previousScan = null] = recentScans;
 
   const findingSummary = latestScan ? await getFindingSummary(latestScan.id) : null;
-
-  // Gather independent data in parallel to reduce loader latency.
-  const features = getPlanFeatures(shop.plan);
 
   // Phase 1: queries that depend only on latestScan/previousScan IDs (parallel)
   const [prevSummary, usage, completedScanCheck] = await Promise.all([
@@ -107,6 +115,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     latestScan,
     findingSummary,
     mainTheme,
+    allThemes,
+    canSelectTheme,
     scanUsage,
     isFirstScan,
     healthScore,
@@ -134,27 +144,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: gate.reason ?? "Scan limit reached for your current plan." };
   }
 
-  // Fetch the shop's published (MAIN) theme to get a real themeId and name.
-  const mainTheme = await fetchMainTheme(admin);
-  if (!mainTheme) {
-    return { error: "No published theme found. Please publish a theme before scanning." };
-  }
+  // Parse optional theme selection from the form body.
+  const formData = await request.formData();
+  const selectedThemeId = formData.get("themeId") as string | null;
 
-  // mainTheme.id is already the full GID string (e.g. gid://shopify/Theme/123456).
-  const themeId = mainTheme.id;
-  const themeName = mainTheme.name;
+  const actionFeatures = getPlanFeatures(shop.plan);
+  const allowThemeSelection = actionFeatures.maxThemes > 1;
+
+  let themeId: string;
+  let themeName: string;
+
+  if (selectedThemeId && allowThemeSelection) {
+    // Validate the submitted themeId by confirming it exists in the shop's theme list.
+    // This prevents spoofed themeIds from being scanned by merchants without the feature.
+    const allThemes = await fetchAllThemes(admin);
+    const matched = allThemes.find((t) => t.id === selectedThemeId);
+    if (!matched) {
+      return {
+        error: "The selected theme could not be found. Please refresh and try again.",
+      };
+    }
+    themeId = matched.id;
+    themeName = matched.name;
+  } else {
+    // Default: fetch the shop's published (MAIN) theme.
+    const mainTheme = await fetchMainTheme(admin);
+    if (!mainTheme) {
+      return { error: "No published theme found. Please publish a theme before scanning." };
+    }
+    // mainTheme.id is already the full GID string (e.g. gid://shopify/Theme/123456).
+    themeId = mainTheme.id;
+    themeName = mainTheme.name;
+  }
 
   // Build quota for atomic enforcement inside createScan's transaction.
   // canStartScan above is an advisory pre-flight check for UX; the
   // authoritative check is inside the transaction to close the TOCTOU gap.
-  const features = getPlanFeatures(shop.plan);
   let quota: ScanQuota = null;
-  if (features.maxScansPerMonth !== Infinity || features.maxScansPerWeek !== Infinity) {
+  if (actionFeatures.maxScansPerMonth !== Infinity || actionFeatures.maxScansPerWeek !== Infinity) {
     const isFirstScan = !(await hasCompletedScans(shop.id));
-    if (features.maxScansPerWeek !== Infinity) {
+    if (actionFeatures.maxScansPerWeek !== Infinity) {
       quota = {
         periodStart: getWeekStartUTC(),
-        maxScans: features.maxScansPerWeek,
+        maxScans: actionFeatures.maxScansPerWeek,
         periodLabel: "week",
         isFirstScan,
       };
@@ -162,7 +194,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       const now = new Date();
       quota = {
         periodStart: new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1)),
-        maxScans: features.maxScansPerMonth,
+        maxScans: actionFeatures.maxScansPerMonth,
         periodLabel: "month",
         isFirstScan,
       };
@@ -239,6 +271,8 @@ export default function Dashboard() {
     latestScan,
     findingSummary,
     mainTheme,
+    allThemes,
+    canSelectTheme,
     scanUsage,
     isFirstScan,
     healthScore,
@@ -248,12 +282,23 @@ export default function Dashboard() {
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
 
+  // Default the picker to the MAIN theme id. Falls back to empty string when
+  // mainTheme is null (no published theme) — the scan button will be disabled.
+  const mainThemeId = mainTheme?.id ?? "";
+  const [selectedThemeId, setSelectedThemeId] = useState<string>(mainThemeId);
+
+  // Sync selectedThemeId when the loader data changes (e.g. user navigates away
+  // and back, or the published theme changes between navigations).
+  useEffect(() => {
+    setSelectedThemeId(mainThemeId);
+  }, [mainThemeId]);
+
   const isSubmitting = fetcher.state === "submitting" || fetcher.state === "loading";
 
   const actionError = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
   const handleStartScan = () => {
-    fetcher.submit({}, { method: "POST" });
+    fetcher.submit({ themeId: selectedThemeId }, { method: "POST" });
   };
 
   // Whether the latest scan is still running (findings not yet available).
@@ -557,6 +602,43 @@ export default function Dashboard() {
               color: #8c9196;
               margin-top: 12px;
             }
+            .theme-picker-label {
+              font-size: 13px;
+              font-weight: 500;
+              color: #202223;
+              margin-bottom: 4px;
+              display: block;
+            }
+            .theme-picker-select {
+              width: 100%;
+              padding: 7px 10px;
+              border-radius: 8px;
+              border: 1px solid #c9cccf;
+              background: #ffffff;
+              font-size: 14px;
+              color: #202223;
+              outline: none;
+              cursor: pointer;
+              appearance: auto;
+            }
+            .theme-picker-select:focus {
+              border-color: #2c6ecb;
+              box-shadow: 0 0 0 2px rgba(44, 110, 203, 0.2);
+            }
+            .theme-picker-select:disabled {
+              background: #f6f6f7;
+              color: #8c9196;
+              cursor: not-allowed;
+              border-color: #e1e3e5;
+            }
+            .theme-picker-nudge {
+              font-size: 12px;
+              color: #6d7175;
+              margin-top: 4px;
+            }
+            .theme-picker-nudge a {
+              color: #2c6ecb;
+            }
           `}</style>
 
           {/* Theme Health + Findings — combined card */}
@@ -696,6 +778,37 @@ export default function Dashboard() {
                       Unlimited scans on your plan
                     </div>
                   )}
+                  {/* Theme picker — hidden on Free, disabled on Standard, active on Professional.
+                      allThemes is only populated for Standard and Professional (loader skips
+                      the fetch on Free), so checking length > 0 is sufficient to gate display. */}
+                  {allThemes.length > 0 ? (
+                    <div style={{ width: "100%", textAlign: "left" }}>
+                      <label htmlFor="theme-picker" className="theme-picker-label">
+                        Select theme to scan
+                      </label>
+                      {/* Native <select> used because Polaris Web Components do not expose <s-select> */}
+                      <select
+                        id="theme-picker"
+                        className="theme-picker-select"
+                        value={selectedThemeId}
+                        onChange={(e) => setSelectedThemeId(e.target.value)}
+                        disabled={!canSelectTheme || isSubmitting}
+                        aria-label="Select theme to scan"
+                      >
+                        {allThemes.map((theme) => (
+                          <option key={theme.id} value={theme.id}>
+                            {theme.name}
+                            {theme.role === "MAIN" ? " (Published)" : " (Draft)"}
+                          </option>
+                        ))}
+                      </select>
+                      {!canSelectTheme && (
+                        <div className="theme-picker-nudge">
+                          <a href="/app/settings">Upgrade to Professional</a> to scan any theme
+                        </div>
+                      )}
+                    </div>
+                  ) : null}
                   <s-button
                     variant="primary"
                     onClick={handleStartScan}
