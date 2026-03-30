@@ -10,6 +10,15 @@
  * loader can use them for typing the loader return value.
  */
 
+import {
+  COLOR_CRITICAL,
+  COLOR_INFO,
+  COLOR_WARNING,
+  STATUS_TINTS,
+  TEXT_PRIMARY,
+  TEXT_SUBDUED,
+} from "../styles/shared";
+
 // ---------------------------------------------------------------------------
 // Types (exported for use in the route loader)
 // ---------------------------------------------------------------------------
@@ -72,10 +81,10 @@ export function HealthScoreTrendChart({
   }
 
   const toneColors: Record<string, string> = {
-    success: "#1a8a3f",
-    warning: "#b98900",
-    critical: "#d72c0d",
-    info: "#2c6ecb",
+    success: STATUS_TINTS.success.text,
+    warning: COLOR_WARNING,
+    critical: COLOR_CRITICAL,
+    info: COLOR_INFO,
     caution: "#e67e22",
   };
   const scores = healthScoreTrend.scores;
@@ -145,7 +154,7 @@ export function HealthScoreTrendChart({
                 const x = barX(i);
                 const h = barH(entry.score);
                 const y = barY(entry.score);
-                const fill = toneColors[entry.tone] ?? "#2c6ecb";
+                const fill = toneColors[entry.tone] ?? COLOR_INFO;
                 const dateLabel = formatShortDate(entry.completedAt);
                 return (
                   <g key={entry.scanId}>
@@ -155,7 +164,7 @@ export function HealthScoreTrendChart({
                       y={y - 6}
                       textAnchor="middle"
                       fontSize="12"
-                      fill="#202223"
+                      fill={TEXT_PRIMARY}
                       fontWeight="600"
                     >
                       {entry.score}
@@ -176,7 +185,7 @@ export function HealthScoreTrendChart({
                       y={chartBottom + 18}
                       textAnchor="middle"
                       fontSize="11"
-                      fill="#6d7175"
+                      fill={TEXT_SUBDUED}
                     >
                       {dateLabel}
                     </text>

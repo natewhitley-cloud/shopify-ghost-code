@@ -6,6 +6,7 @@ import type { ScanStatus } from "../lib/format";
 import { getScansForShop } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
+import { COLOR_INFO } from "../styles/shared";
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -101,7 +102,7 @@ export default function ScanHistory() {
                     <td>
                       <Link
                         to={`/app/scans/${scan.id}`}
-                        style={{ color: "#2c6ecb", textDecoration: "none" }}
+                        style={{ color: COLOR_INFO, textDecoration: "none" }}
                       >
                         View
                       </Link>

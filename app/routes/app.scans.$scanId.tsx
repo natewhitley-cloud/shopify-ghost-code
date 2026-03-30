@@ -22,6 +22,14 @@ import { isTrackerApp } from "../services/app-lookup.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { diffScans } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
+import {
+  BG_SURFACE,
+  BG_WHITE,
+  COLOR_CRITICAL,
+  STATUS_TINTS,
+  TEXT_SUBDUED,
+  styles,
+} from "../styles/shared";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -87,42 +95,8 @@ function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean 
       <td>
         <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
           <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
-          {isNew && (
-            <span
-              style={{
-                display: "inline-block",
-                padding: "1px 6px",
-                borderRadius: "4px",
-                background: "#e3f1df",
-                color: "#1a8a3f",
-                fontSize: "10px",
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.5px",
-                lineHeight: "16px",
-              }}
-            >
-              NEW
-            </span>
-          )}
-          {finding.isTracker && (
-            <span
-              style={{
-                display: "inline-block",
-                padding: "1px 6px",
-                borderRadius: "4px",
-                background: "#fde8e8",
-                color: "#d72c0d",
-                fontSize: "10px",
-                fontWeight: 700,
-                textTransform: "uppercase",
-                letterSpacing: "0.5px",
-                lineHeight: "16px",
-              }}
-            >
-              TRACKING
-            </span>
-          )}
+          {isNew && <span style={styles.newBadge}>NEW</span>}
+          {finding.isTracker && <span style={styles.trackerBadge}>TRACKING</span>}
         </div>
       </td>
       <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
@@ -387,7 +361,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
       </td>
       <td>
         {isSubmitted ? (
-          <span style={{ color: "#1a8a3f", fontWeight: 500 }}>
+          <span style={{ color: STATUS_TINTS.success.text, fontWeight: 500 }}>
             Submitted{submittedName ? ` — ${submittedName}` : ""} — thank you!
           </span>
         ) : (
@@ -414,7 +388,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
                 border: "1px solid #c9cccf",
                 borderRadius: "4px",
                 fontSize: "12px",
-                background: "#f6f6f7",
+                background: BG_SURFACE,
                 cursor: "pointer",
               }}
             >
@@ -836,10 +810,12 @@ export default function ScanDetail() {
                         : "scan-tile__diff--neutral"
                   }`}
                 >
-                  {totalNew > 0 && <span style={{ color: "#d72c0d" }}>+{totalNew} new</span>}
+                  {totalNew > 0 && <span style={{ color: COLOR_CRITICAL }}>+{totalNew} new</span>}
                   {totalNew > 0 && totalResolved > 0 && " / "}
                   {totalResolved > 0 && (
-                    <span style={{ color: "#1a8a3f" }}>-{totalResolved} resolved</span>
+                    <span style={{ color: STATUS_TINTS.success.text }}>
+                      -{totalResolved} resolved
+                    </span>
                   )}
                 </div>
               )}
@@ -912,7 +888,7 @@ export default function ScanDetail() {
                   style={{
                     marginTop: "8px",
                     fontSize: "13px",
-                    color: "#6d7175",
+                    color: TEXT_SUBDUED,
                     textAlign: "center",
                   }}
                 >
@@ -975,8 +951,8 @@ export default function ScanDetail() {
                         padding: "6px 12px",
                         borderRadius: "6px",
                         border: "1px solid #c9cccf",
-                        background: "#ffffff",
-                        color: "#6d7175",
+                        background: BG_WHITE,
+                        color: TEXT_SUBDUED,
                         fontSize: "13px",
                         cursor: "pointer",
                       }}

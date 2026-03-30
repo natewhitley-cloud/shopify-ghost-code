@@ -26,6 +26,14 @@ import { getShopByDomain } from "../models/shop.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
+import {
+  BG_WHITE,
+  COLOR_INFO,
+  STATUS_TINTS,
+  TEXT_PRIMARY,
+  TEXT_SUBDUED,
+  BORDER_DEFAULT,
+} from "../styles/shared";
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -767,9 +775,9 @@ export default function Dashboard() {
                       {/* Right: findings */}
                       <div style={{ display: "flex", flexDirection: "column" }}>
                         <h2 className="dashboard-section-title">Most Recent Findings</h2>
-                        <div style={{ fontSize: "13px", color: "#6d7175", marginTop: "2px" }}>
+                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
                           Scanned{" "}
-                          <strong style={{ color: "#202223" }}>{latestScan.themeName}</strong> on{" "}
+                          <strong style={{ color: TEXT_PRIMARY }}>{latestScan.themeName}</strong> on{" "}
                           {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
                         </div>
                         <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
@@ -833,20 +841,20 @@ export default function Dashboard() {
                     alignItems: "center",
                     padding: "20px 16px",
                     borderRadius: "12px",
-                    border: "1px solid #e1e3e5",
-                    background: scanLimitReached ? "#fafbfb" : "#ffffff",
+                    border: `1px solid ${BORDER_DEFAULT}`,
+                    background: scanLimitReached ? "#fafbfb" : BG_WHITE,
                     textAlign: "center",
                     gap: "12px",
                   }}
                 >
                   <s-heading>New Scan</s-heading>
                   {isFirstScan ? (
-                    <div style={{ fontSize: "13px", color: "#1a8a3f" }}>
+                    <div style={{ fontSize: "13px", color: STATUS_TINTS.success.text }}>
                       Your first scan is free
                     </div>
                   ) : scanUsage !== null ? (
                     <div style={{ width: "100%" }}>
-                      <div style={{ fontSize: "13px", color: "#6d7175", marginBottom: "6px" }}>
+                      <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginBottom: "6px" }}>
                         {scanUsage.used} of {scanUsage.limit} used this {scanUsage.period}
                       </div>
                       <div
@@ -862,7 +870,7 @@ export default function Dashboard() {
                       </div>
                     </div>
                   ) : (
-                    <div style={{ fontSize: "13px", color: "#1a8a3f" }}>
+                    <div style={{ fontSize: "13px", color: STATUS_TINTS.success.text }}>
                       Unlimited scans on your plan
                     </div>
                   )}
@@ -906,8 +914,8 @@ export default function Dashboard() {
                     {isSubmitting ? "Starting..." : "Start New Scan"}
                   </s-button>
                   {scanLimitReached && (
-                    <div style={{ fontSize: "12px", color: "#6d7175" }}>
-                      <Link to="/app/settings" style={{ color: "#2c6ecb" }}>
+                    <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
+                      <Link to="/app/settings" style={{ color: COLOR_INFO }}>
                         Upgrade for more scans
                       </Link>
                     </div>
@@ -922,14 +930,14 @@ export default function Dashboard() {
                     justifyContent: "center",
                     padding: "20px 16px",
                     borderRadius: "12px",
-                    border: "1px solid #e1e3e5",
-                    background: "#ffffff",
+                    border: `1px solid ${BORDER_DEFAULT}`,
+                    background: BG_WHITE,
                     textAlign: "center",
                     gap: "12px",
                   }}
                 >
                   <s-heading>Scan History</s-heading>
-                  <div style={{ fontSize: "13px", color: "#6d7175" }}>
+                  <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
                     View all past scans and findings
                   </div>
                   <Link
@@ -938,8 +946,8 @@ export default function Dashboard() {
                       display: "inline-block",
                       padding: "8px 24px",
                       borderRadius: "8px",
-                      background: "#2c6ecb",
-                      color: "#ffffff",
+                      background: COLOR_INFO,
+                      color: BG_WHITE,
                       fontSize: "14px",
                       fontWeight: 600,
                       textDecoration: "none",
