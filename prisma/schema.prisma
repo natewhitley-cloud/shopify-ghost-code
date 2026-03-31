@@ -42,14 +42,15 @@ model Session {
 // ---------------------------------------------------------------------------
 
 model Shop {
-  id                  String               @id @default(cuid())
-  domain              String               @unique
-  accessToken         String
-  installedAt         DateTime             @default(now())
-  plan                String               @default("free")
-  lastThemePublishAt  DateTime?
-  scans               Scan[]
-  billingEvents       BillingEvent[]
+  id                    String               @id @default(cuid())
+  domain                String               @unique
+  accessToken           String
+  installedAt           DateTime             @default(now())
+  plan                  String               @default("free")
+  lastThemePublishAt    DateTime?
+  hasSeenReviewPrompt   Boolean              @default(false)
+  scans                 Scan[]
+  billingEvents         BillingEvent[]
 }
 
 model BillingEvent {

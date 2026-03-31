@@ -70,6 +70,23 @@ export async function updateThemePublishTimestamp(
 }
 
 /**
+ * Permanently mark that a shop has seen (and dismissed) the App Store review prompt.
+ * Once set to true, the banner will never be shown again for this shop.
+ *
+ * Returns null if the shop is not found — callers must handle the null case.
+ */
+export async function dismissReviewPrompt(shopId: string): Promise<{ id: string } | null> {
+  const shop = await db.shop.findUnique({ where: { id: shopId } });
+  if (!shop) return null;
+
+  return db.shop.update({
+    where: { id: shopId },
+    data: { hasSeenReviewPrompt: true },
+    select: { id: true },
+  });
+}
+
+/**
  * Hard-delete a shop and all its data atomically inside a single transaction.
  *
  * Deletion order:

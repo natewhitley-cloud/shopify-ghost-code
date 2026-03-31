@@ -22,7 +22,7 @@ import {
   getCompletedScansForShop,
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
-import { getShopByDomain } from "../models/shop.server";
+import { dismissReviewPrompt, getShopByDomain } from "../models/shop.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
@@ -62,6 +62,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       previousHealthScore: null,
       showRescanNudge: false,
       showThemeChangeNudge: false,
+      showReviewPrompt: false,
       healthScoreTrend: null,
       showTrendEmptyState: false,
       scansNeeded: 0,
@@ -182,6 +183,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     latestScan.completedAt !== null &&
     new Date(shop.lastThemePublishAt) > new Date(latestScan.completedAt);
 
+  // Review prompt: show once after the first completed scan with 4+ findings.
+  // Permanently dismissed when the merchant clicks "Dismiss" (sets hasSeenReviewPrompt).
+  const REVIEW_PROMPT_MIN_FINDINGS = 4;
+  const showReviewPrompt =
+    latestScan !== null &&
+    latestScan.status === "COMPLETED" &&
+    latestScan.findingCount >= REVIEW_PROMPT_MIN_FINDINGS &&
+    !shop.hasSeenReviewPrompt;
+
   return {
     shop,
     latestScan,
@@ -195,6 +205,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     previousHealthScore,
     showRescanNudge,
     showThemeChangeNudge,
+    showReviewPrompt,
     healthScoreTrend,
     showTrendEmptyState,
     scansNeeded,
@@ -214,14 +225,22 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "Shop not found. Please reinstall the app." };
   }
 
+  // Parse the form body early so we can branch on intent before gating.
+  const formData = await request.formData();
+  const intent = formData.get("intent") as string | null;
+
+  // Handle review prompt dismissal — no plan gating needed.
+  if (intent === "dismiss-review-prompt") {
+    await dismissReviewPrompt(shop.id);
+    return { dismissed: true };
+  }
+
   // Plan-gate: check if this shop is allowed to start a new scan.
   const gate = await canStartScan(shop.id, shop.plan);
   if (!gate.allowed) {
     return { error: gate.reason ?? "Scan limit reached for your current plan." };
   }
 
-  // Parse optional theme selection from the form body.
-  const formData = await request.formData();
   const selectedThemeId = formData.get("themeId") as string | null;
 
   const actionFeatures = getPlanFeatures(shop.plan);
@@ -355,12 +374,24 @@ export default function Dashboard() {
     previousHealthScore,
     showRescanNudge,
     showThemeChangeNudge,
+    showReviewPrompt,
     healthScoreTrend,
     showTrendEmptyState,
     scansNeeded,
     trendChartEnabled,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
+  const dismissFetcher = useFetcher<typeof action>();
+
+  // Optimistically hide the review prompt once the merchant clicks Dismiss,
+  // so it disappears immediately without waiting for the server round-trip.
+  const [reviewPromptDismissed, setReviewPromptDismissed] = useState(false);
+  const showReviewBanner = showReviewPrompt && !reviewPromptDismissed;
+
+  const handleDismissReviewPrompt = () => {
+    setReviewPromptDismissed(true);
+    dismissFetcher.submit({ intent: "dismiss-review-prompt" }, { method: "POST" });
+  };
 
   // Default the picker to the MAIN theme id. Falls back to empty string when
   // mainTheme is null (no published theme) — the scan button will be disabled.
@@ -468,6 +499,29 @@ export default function Dashboard() {
             >
               Start New Scan
             </s-button>
+          </s-stack>
+        </s-banner>
+      )}
+
+      {/* App Store review prompt — shown once after first scan with 4+ findings */}
+      {showReviewBanner && (
+        <s-banner tone="info">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              Ghost Code found {latestScan?.findingCount} issues in your theme. If this was helpful,
+              we&apos;d love a quick review on the App Store.
+            </s-paragraph>
+            <s-stack direction="inline" gap="base">
+              <s-button
+                variant="primary"
+                onClick={() => window.open("https://apps.shopify.com/ghost-code#reviews", "_blank")}
+              >
+                Leave a Review
+              </s-button>
+              <s-button variant="secondary" onClick={handleDismissReviewPrompt}>
+                Dismiss
+              </s-button>
+            </s-stack>
           </s-stack>
         </s-banner>
       )}
