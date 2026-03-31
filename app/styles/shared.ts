@@ -308,4 +308,22 @@ export const styles = {
     letterSpacing: "0.5px",
     lineHeight: "16px",
   } as React.CSSProperties,
+
+  /**
+   * "VISUAL" badge used in the findings table for findings that produce
+   * visible elements in the storefront (things shoppers can see).
+   * Warm amber background to contrast with the red TRACKING badge.
+   */
+  visualBadge: {
+    display: "inline-block",
+    padding: "1px 6px",
+    borderRadius: "4px",
+    background: STATUS_TINTS.warning.border,
+    color: STATUS_TINTS.warning.text,
+    fontSize: "10px",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+    lineHeight: "16px",
+  } as React.CSSProperties,
 } as const;
