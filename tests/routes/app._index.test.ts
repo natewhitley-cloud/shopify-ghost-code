@@ -27,6 +27,7 @@ vi.mock("../../app/db.server", () => ({
 
 vi.mock("../../app/models/shop.server", () => ({
   getShopByDomain: vi.fn(),
+  dismissReviewPrompt: vi.fn(),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -87,7 +88,7 @@ import {
   hasCompletedScans,
   getCompletedScansForShop,
 } from "../../app/models/scan.server";
-import { getShopByDomain } from "../../app/models/shop.server";
+import { getShopByDomain, dismissReviewPrompt } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
 import { authenticate } from "../../app/shopify.server";
@@ -112,6 +113,7 @@ const mockFetchAllThemes = fetchAllThemes as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
 const mockGetWeekStartUTC = getWeekStartUTC as ReturnType<typeof vi.fn>;
 const mockGetCompletedScansForShop = getCompletedScansForShop as ReturnType<typeof vi.fn>;
+const mockDismissReviewPrompt = dismissReviewPrompt as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -122,6 +124,7 @@ const SHOP = {
   domain: "test-shop.myshopify.com",
   plan: "Free",
   lastThemePublishAt: null,
+  hasSeenReviewPrompt: false,
 };
 
 const MOCK_ADMIN = {
@@ -327,6 +330,7 @@ describe("app._index loader", () => {
       expect(result.previousHealthScore).toBeNull();
       expect(result.showRescanNudge).toBe(false);
       expect(result.showThemeChangeNudge).toBe(false);
+      expect(result.showReviewPrompt).toBe(false);
     });
 
     it("does not call downstream services when shop is null", async () => {
@@ -383,6 +387,62 @@ describe("app._index loader", () => {
 
       expect(result.previousHealthScore).toEqual(prevScore);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Loader: review prompt
+// ---------------------------------------------------------------------------
+
+describe("app._index loader — review prompt", () => {
+  it("returns showReviewPrompt: true when scan completed with 4+ findings and not dismissed", async () => {
+    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
+
+    // Default SHOP has hasSeenReviewPrompt: false
+    // Default COMPLETED_SCAN has findingCount: 5 and status: "COMPLETED"
+    expect(result.showReviewPrompt).toBe(true);
+  });
+
+  it("returns showReviewPrompt: false when hasSeenReviewPrompt is true", async () => {
+    mockGetShopByDomain.mockResolvedValue({ ...SHOP, hasSeenReviewPrompt: true });
+
+    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
+
+    expect(result.showReviewPrompt).toBe(false);
+  });
+
+  it("returns showReviewPrompt: false when findingCount is below threshold (< 4)", async () => {
+    mockGetScansForShop.mockResolvedValue([{ ...COMPLETED_SCAN, findingCount: 3 }]);
+
+    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
+
+    expect(result.showReviewPrompt).toBe(false);
+  });
+
+  it("returns showReviewPrompt: true when findingCount is exactly 4 (boundary)", async () => {
+    mockGetScansForShop.mockResolvedValue([{ ...COMPLETED_SCAN, findingCount: 4 }]);
+
+    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
+
+    expect(result.showReviewPrompt).toBe(true);
+  });
+
+  it("returns showReviewPrompt: false when scan is not completed", async () => {
+    mockGetScansForShop.mockResolvedValue([
+      { ...COMPLETED_SCAN, status: "IN_PROGRESS", findingCount: 10 },
+    ]);
+
+    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
+
+    expect(result.showReviewPrompt).toBe(false);
+  });
+
+  it("returns showReviewPrompt: false when no scans exist", async () => {
+    mockGetScansForShop.mockResolvedValue([]);
+
+    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
+
+    expect(result.showReviewPrompt).toBe(false);
   });
 });
 
@@ -482,6 +542,47 @@ describe("app._index action", () => {
       const result = (await action(makeActionArgs())) as { error: string };
 
       expect(result.error).toBe("A scan is already in progress for this shop.");
+      expect(mockInngestSend).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("dismiss-review-prompt intent", () => {
+    beforeEach(() => {
+      mockDismissReviewPrompt.mockResolvedValue({ id: "shop-1" });
+    });
+
+    it("calls dismissReviewPrompt and returns { dismissed: true }", async () => {
+      const request = new Request("https://test-shop.myshopify.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ intent: "dismiss-review-prompt" }),
+      });
+
+      const result = (await action(makeActionArgs({ request }))) as { dismissed: boolean };
+
+      expect(result.dismissed).toBe(true);
+      expect(mockDismissReviewPrompt).toHaveBeenCalledWith("shop-1");
+    });
+
+    it("does not check plan gating for dismiss intent", async () => {
+      const request = new Request("https://test-shop.myshopify.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ intent: "dismiss-review-prompt" }),
+      });
+
+      await action(makeActionArgs({ request }));
+
+      expect(mockCanStartScan).not.toHaveBeenCalled();
+      expect(mockCreateScan).not.toHaveBeenCalled();
+    });
+
+    it("does not dispatch to Inngest for dismiss intent", async () => {
+      const request = new Request("https://test-shop.myshopify.com/app", {
+        method: "POST",
+        body: new URLSearchParams({ intent: "dismiss-review-prompt" }),
+      });
+
+      await action(makeActionArgs({ request }));
+
       expect(mockInngestSend).not.toHaveBeenCalled();
     });
   });
