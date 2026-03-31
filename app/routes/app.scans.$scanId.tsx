@@ -4,6 +4,7 @@ import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData, useRevalidator, useFetcher } from "react-router";
 
+import { hasVisualImpact } from "../lib/finding-classification";
 import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -87,9 +88,11 @@ interface FindingLike {
   appName: string | null;
   codeSnippet: string;
   isTracker?: boolean;
+  isVisual?: boolean;
 }
 
 function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean }) {
+  const isVisual = finding.isVisual ?? hasVisualImpact(finding.findingType);
   return (
     <tr>
       <td>
@@ -97,6 +100,7 @@ function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean 
           <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
           {isNew && <span style={styles.newBadge}>NEW</span>}
           {finding.isTracker && <span style={styles.trackerBadge}>TRACKING</span>}
+          {isVisual && <span style={styles.visualBadge}>VISUAL</span>}
         </div>
       </td>
       <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
