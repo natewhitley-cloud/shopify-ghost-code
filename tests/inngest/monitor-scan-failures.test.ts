@@ -167,7 +167,7 @@ describe("monitorScanFailures — elevated rate (>10% and <=25%)", () => {
   it("passes total, failed, rate, and windowHours to logger.warn", async () => {
     await runMonitorScanFailures();
 
-    const [_message, context] = mockLoggerWarn.mock.calls[0];
+    const context = mockLoggerWarn.mock.calls[0][1];
     expect(context).toMatchObject({ total: 100, failed: 20, rate: 0.2, windowHours: 24 });
   });
 });
@@ -197,7 +197,7 @@ describe("monitorScanFailures — critical rate (>25%)", () => {
   it("passes total, failed, rate, and windowHours to logger.error", async () => {
     await runMonitorScanFailures();
 
-    const [_message, context] = mockLoggerError.mock.calls[0];
+    const context = mockLoggerError.mock.calls[0][1];
     expect(context).toMatchObject({ total: 100, failed: 30, rate: 0.3, windowHours: 24 });
   });
 });
