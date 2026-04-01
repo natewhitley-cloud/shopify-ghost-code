@@ -380,7 +380,7 @@ describe("deleteShopData", () => {
     });
   });
 
-  it("calls scan.deleteMany with the shopId (not domain)", async () => {
+  it("does not call scan.deleteMany (cascade handles it via onDelete: Cascade on Shop FK)", async () => {
     const existingShop = {
       id: "shop-gdpr-3",
       domain: "delete-me.myshopify.com",
@@ -389,14 +389,11 @@ describe("deleteShopData", () => {
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
     mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
-    mockDb.scan.deleteMany.mockResolvedValue({ count: 5 });
     mockDb.shop.delete.mockResolvedValue(existingShop);
 
     await deleteShopData("delete-me.myshopify.com");
 
-    expect(mockDb.scan.deleteMany).toHaveBeenCalledWith({
-      where: { shopId: "shop-gdpr-3" },
-    });
+    expect(mockDb.scan.deleteMany).not.toHaveBeenCalled();
   });
 
   it("calls shop.delete with the domain", async () => {

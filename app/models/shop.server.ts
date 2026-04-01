@@ -16,13 +16,27 @@ export async function getShopByDomain(domain: string) {
  * Create or update a shop record on install / re-install.
  * Encrypts the access token before storing.
  * Updates the accessToken in place so re-installs don't orphan auth state.
+ *
+ * Throws if no accessToken is provided and the shop does not yet exist —
+ * a new shop record always requires a token (the schema field is non-nullable).
+ *
+ * Re-install without a new token (accessToken omitted) is safe for existing
+ * shops: the update is a no-op that leaves the stored token unchanged.
  */
 export async function upsertShop(domain: string, accessToken?: string) {
   const encrypted = accessToken ? encryptToken(accessToken) : undefined;
+  if (!encrypted) {
+    // Update-only path: re-install without a new token (edge case, but safe).
+    const existing = await db.shop.findUnique({ where: { domain } });
+    if (!existing) {
+      throw new Error(`Cannot create shop ${domain} without an access token`);
+    }
+    return db.shop.update({ where: { domain }, data: {} });
+  }
   return db.shop.upsert({
     where: { domain },
-    create: { domain, accessToken: encrypted ?? encryptToken("") },
-    update: encrypted ? { accessToken: encrypted } : {},
+    create: { domain, accessToken: encrypted },
+    update: { accessToken: encrypted },
   });
 }
 
@@ -90,13 +104,13 @@ export async function dismissReviewPrompt(shopId: string): Promise<{ id: string 
  * Hard-delete a shop and all its data atomically inside a single transaction.
  *
  * Deletion order:
- *   1. Sessions              — revokes API access first (no FK, plain string match)
- *   2. Scans                 — findings cascade-deleted via onDelete: Cascade
- *   3. Shop                  — must be last; other tables reference it
+ *   1. Sessions  — no FK to Shop (plain string `shop` field), must be deleted explicitly.
+ *   2. Shop      — PostgreSQL cascades handle all child tables automatically.
  *
- * Note: Scan has onDelete: Cascade on its Shop FK, so PostgreSQL would
- * cascade-delete it. We delete explicitly for GDPR audit trail clarity —
- * defense-in-depth.
+ * Cascade map (all have onDelete: Cascade on their Shop or Scan FK):
+ *   Shop → Scans → Findings
+ *   Shop → Scans → UnknownScripts → SignatureSubmissions
+ *   Shop → BillingEvents
  *
  * Returns null if the domain is not found, so callers can log and still
  * return 200 without throwing.
@@ -108,8 +122,10 @@ export async function deleteShopData(domain: string) {
   console.log("[gdpr]", { event: "delete_shop_data_start", domain, shopId: shop.id });
 
   await db.$transaction([
+    // Sessions use a plain string `shop` field (no FK) — must delete explicitly.
     db.session.deleteMany({ where: { shop: domain } }),
-    db.scan.deleteMany({ where: { shopId: shop.id } }),
+    // Shop delete cascades to: Scans → Findings, UnknownScripts → SignatureSubmissions,
+    // and BillingEvents (all have onDelete: Cascade on their Shop/Scan FK).
     db.shop.delete({ where: { domain } }),
   ]);
 

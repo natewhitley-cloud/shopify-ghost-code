@@ -350,16 +350,20 @@ export const scanTheme = inngest.createFunction(
       // after a transient error following completeScanWithFindings), do not
       // overwrite the COMPLETED status.
       // Re-throw so Inngest still sees the error and logs it correctly.
-      const db = (await import("../../app/db.server")).default;
-      const currentScan = await db.scan.findUnique({
-        where: { id: scanId },
-        select: { status: true },
-      });
-      if (currentScan && currentScan.status !== "COMPLETED") {
-        await updateScanStatus(scanId, "FAILED").catch(() => {
-          // Best-effort — if the status update itself fails we still want to
-          // propagate the original error.
+      try {
+        const db = (await import("../../app/db.server")).default;
+        const currentScan = await db.scan.findUnique({
+          where: { id: scanId },
+          select: { status: true },
         });
+        if (currentScan && currentScan.status !== "COMPLETED") {
+          await updateScanStatus(scanId, "FAILED").catch(() => {
+            // Best-effort — if the status update itself fails we still want to
+            // propagate the original error.
+          });
+        }
+      } catch {
+        // If DB access fails in the error handler, still propagate the original error.
       }
       throw err;
     }

@@ -39,6 +39,8 @@ export function getPlanFeatures(planName: string): PlanFeatures {
     default: // FREE — no active Shopify subscription
       return {
         maxScansPerMonth: 1,
+        // Infinity signals "no weekly cap" — getScanUsage skips the weekly
+        // check and falls through to the monthly limit instead.
         maxScansPerWeek: Infinity,
         showFindingDetails: false,
         maxThemes: 1,

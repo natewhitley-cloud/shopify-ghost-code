@@ -30,9 +30,17 @@ const mockDb = vi.hoisted(() => ({
   scan: {
     update: vi.fn(),
   },
-  // $transaction receives an array of operations in completeScanWithFindings,
-  // so we simulate the array-form: resolve with the resolved values of each operation.
-  $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
+  // $transaction supports both the interactive (callback) and array forms.
+  // completeScanWithFindings uses the interactive form: pass a tx-scoped client
+  // to the callback so the inner awaits execute against the same mockDb.
+  $transaction: vi.fn(
+    async (arg: ((tx: typeof mockDb) => Promise<unknown>) | Promise<unknown>[]) => {
+      if (typeof arg === "function") {
+        return arg(mockDb);
+      }
+      return Promise.all(arg);
+    },
+  ),
 }));
 
 vi.mock("../../app/db.server", () => ({

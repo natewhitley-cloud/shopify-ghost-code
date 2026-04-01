@@ -196,23 +196,23 @@ export async function getDistinctFileCount(scanId: string): Promise<number> {
 export async function completeScanWithFindings(scanId: string, findings: CreateFindingInput[]) {
   const now = new Date();
 
-  return db.$transaction([
+  return db.$transaction(async (tx) => {
     // Idempotency guard: clear any findings from a previous partial attempt.
-    db.finding.deleteMany({ where: { scanId } }),
-    ...(findings.length > 0
-      ? [
-          db.finding.createMany({
-            data: findings.map((f) => ({ ...f, scanId })),
-          }),
-        ]
-      : []),
-    db.scan.update({
+    await tx.finding.deleteMany({ where: { scanId } });
+
+    if (findings.length > 0) {
+      await tx.finding.createMany({
+        data: findings.map((f) => ({ ...f, scanId })),
+      });
+    }
+
+    await tx.scan.update({
       where: { id: scanId },
       data: {
         status: ScanStatus.COMPLETED,
         completedAt: now,
         findingCount: findings.length,
       },
-    }),
-  ]);
+    });
+  });
 }
