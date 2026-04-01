@@ -187,3 +187,22 @@ enum Severity {
   LOW
 }
 
+// ---------------------------------------------------------------------------
+// Admin metrics snapshots — one per day, computed by daily cron
+// ---------------------------------------------------------------------------
+
+model MetricSnapshot {
+  id                 String   @id @default(cuid())
+  snapshotDate       DateTime @unique // one per day
+  totalShops         Int
+  activeShops        Int // shops with a scan in last 30 days
+  shopsByPlan        Json // { free: N, professional: N, business: N }
+  totalScans         Int // all-time
+  scansLast7d        Int
+  scansLast30d       Int
+  completionRate     Float // completed / (completed + failed) last 30d
+  totalFindings      Int // all-time
+  avgFindingsPerScan Float
+  createdAt          DateTime @default(now())
+}
+

@@ -15,6 +15,7 @@ import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failur
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
 import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
 import { scanTheme } from "../../inngest/functions/scan-theme";
+import { snapshotMetrics } from "../../inngest/functions/snapshot-metrics";
 import { watchStaleScans } from "../../inngest/functions/watch-stale-scans";
 import { weeklyScan } from "../../inngest/functions/weekly-scan";
 
@@ -27,6 +28,7 @@ const handler = serve({
     weeklyScan,
     monitorScanFailures,
     watchStaleScans,
+    snapshotMetrics,
   ],
 });
 
