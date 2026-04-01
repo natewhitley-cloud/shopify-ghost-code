@@ -57,8 +57,6 @@ vi.mock("../../app/lib/format", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { authenticate } from "../../app/shopify.server";
-import { getShopMetadata } from "../../app/models/shop.server";
 import { isAdminShop } from "../../app/lib/admin-gate.server";
 import {
   getLatestSnapshot,
@@ -66,7 +64,9 @@ import {
   computeCurrentMetrics,
   createMetricSnapshot,
 } from "../../app/models/metric-snapshot.server";
+import { getShopMetadata } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app.admin.metrics";
+import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers

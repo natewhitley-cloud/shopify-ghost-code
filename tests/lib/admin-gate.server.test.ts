@@ -6,7 +6,7 @@
  *   - Test case-insensitivity, whitespace handling, absent env var, empty list.
  */
 
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, afterEach, vi } from "vitest";
 
 import { isAdminShop } from "../../app/lib/admin-gate.server";
 

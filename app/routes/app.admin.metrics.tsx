@@ -36,9 +36,6 @@ import {
   BG_WHITE,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
-  TABLE_BG_HEADER,
-  TABLE_BORDER,
-  TABLE_BORDER_LIGHT,
   STATUS_TINTS,
   sectionCard,
   sectionHeader,
@@ -175,7 +172,7 @@ export default function AdminMetrics() {
 
       {!snap && (
         <s-banner tone="info">
-          No snapshots yet. Click "Refresh Now" to compute the first snapshot.
+          No snapshots yet. Click &quot;Refresh Now&quot; to compute the first snapshot.
         </s-banner>
       )}
 

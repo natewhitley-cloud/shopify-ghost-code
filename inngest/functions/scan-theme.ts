@@ -23,11 +23,11 @@
 
 import { FindingType } from "@prisma/client";
 
+import { logger } from "../../app/lib/logger.server";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { completeScanWithFindings } from "../../app/models/finding.server";
 import { updateScanStatus } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
-import { logger } from "../../app/lib/logger.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
