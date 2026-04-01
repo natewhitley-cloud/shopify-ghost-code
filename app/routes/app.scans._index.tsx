@@ -6,7 +6,7 @@ import type { ScanStatus } from "../lib/format";
 import { getScansForShop } from "../models/scan.server";
 import { getShopByDomain } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
-import { COLOR_INFO } from "../styles/shared";
+import { BORDER_DEFAULT, BG_HOVER, BG_SURFACE, BG_SURFACE_ALT, COLOR_INFO } from "../styles/shared";
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -24,7 +24,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   const url = new URL(request.url);
-  const cursor = url.searchParams.get("cursor") ?? undefined;
+  const cursor = url.searchParams.get("cursor") || undefined;
 
   // Fetch one extra row to determine whether a next page exists.
   const rows = await getScansForShop(shop.id, { limit: PAGE_SIZE, cursor });
@@ -52,19 +52,19 @@ export default function ScanHistory() {
         }
         .scan-history-table th,
         .scan-history-table td {
-          border: 1px solid #e1e3e5;
+          border: 1px solid ${BORDER_DEFAULT};
           padding: 12px 16px;
           text-align: left;
         }
         .scan-history-table thead th {
-          background: #f6f6f7;
+          background: ${BG_SURFACE};
           font-weight: 600;
         }
         .scan-history-table tbody tr:nth-child(even) {
-          background: #fafbfb;
+          background: ${BG_SURFACE_ALT};
         }
         .scan-history-table tbody tr:hover {
-          background: #f1f2f3;
+          background: ${BG_HOVER};
         }
       `}</style>
       <Link to="/app" slot="primary-action">

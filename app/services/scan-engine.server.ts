@@ -345,7 +345,16 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
     }
   }
 
-  return findings;
+  // Deduplicate findings from overlapping regex patterns.
+  // A tag that matches both HREFLANG_RE_1 and HREFLANG_RE_2 (different attribute
+  // orderings) would otherwise produce two findings for the same location.
+  const seen = new Set<string>();
+  return findings.filter((f) => {
+    const key = `${f.filename}:${f.lineNumber}:${f.appName}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 // ---------------------------------------------------------------------------

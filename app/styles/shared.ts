@@ -48,6 +48,8 @@ export const BG_HOVER = "#f1f2f3";
 
 export const TABLE_BG_HEADER = "#f6f6f7";
 export const TABLE_BG_STRIPE = "#fafafa";
+/** Alternate table row background — slightly off-white, used for even-row striping */
+export const BG_SURFACE_ALT = "#fafbfb";
 /** Card borders, table header bottom borders, dividers */
 export const TABLE_BORDER = "#e1e3e5";
 /** Table cell separators, subtle dividers */

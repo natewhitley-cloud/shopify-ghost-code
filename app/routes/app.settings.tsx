@@ -5,6 +5,7 @@ import { getPlanFeatures } from "../lib/billing.server";
 import { PLANS } from "../lib/plans";
 import { getShopByDomain } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
+import { BORDER_DEFAULT, BG_WHITE, COLOR_INFO, TEXT_PRIMARY, TEXT_SUBDUED } from "../styles/shared";
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -50,17 +51,17 @@ export default function Settings() {
           margin-top: 8px;
         }
         .plan-tile {
-          border: 1px solid #e1e3e5;
+          border: 1px solid ${BORDER_DEFAULT};
           border-radius: 12px;
           padding: 24px;
-          background: #ffffff;
+          background: ${BG_WHITE};
           display: flex;
           flex-direction: column;
           min-height: 300px;
         }
         .plan-tile--current {
-          border: 2px solid #2c6ecb;
-          box-shadow: 0 0 0 1px #2c6ecb;
+          border: 2px solid ${COLOR_INFO};
+          box-shadow: 0 0 0 1px ${COLOR_INFO};
         }
         .plan-tile__header {
           height: 100px;
@@ -69,19 +70,19 @@ export default function Settings() {
         .plan-tile__name {
           font-size: 22px;
           font-weight: 700;
-          color: #202223;
+          color: ${TEXT_PRIMARY};
           margin: 0;
         }
         .plan-tile__price {
           font-size: 16px;
           font-weight: 600;
-          color: #6d7175;
+          color: ${TEXT_SUBDUED};
           margin: 4px 0 0 0;
         }
         .plan-tile__badge {
           display: inline-block;
-          background: #2c6ecb;
-          color: #ffffff;
+          background: ${COLOR_INFO};
+          color: ${BG_WHITE};
           font-size: 12px;
           font-weight: 600;
           padding: 3px 10px;
@@ -90,7 +91,7 @@ export default function Settings() {
         }
         .plan-tile__divider {
           border: none;
-          border-top: 1px solid #e1e3e5;
+          border-top: 1px solid ${BORDER_DEFAULT};
           margin: 16px 0;
         }
         .plan-tile__features {
