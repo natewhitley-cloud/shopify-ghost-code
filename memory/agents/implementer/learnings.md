@@ -37,3 +37,4 @@
 - When an action handles multiple intents (scan start vs dismiss), read formData before any plan-gating checks so non-scan intents don't get blocked by quota checks. (added: 2026-03-31, dispatch: GC-04d)
 - Optimistic local state + fetcher.submit is the right pattern for instant UI feedback on dismiss/toggle actions in embedded Shopify apps. (added: 2026-03-31, dispatch: GC-04d)
 - Flag any Shopify API behavior that differs from documentation for the debugger's learnings.
+- Static import of logger.server.ts works at Inngest function module level — .server.ts suffix is a Vite/Remix bundler concern, Inngest runs server-side only. Use dynamic import only inside step.run() callbacks. (added: 2026-04-01, dispatch: GC-yej)
