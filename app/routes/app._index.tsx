@@ -96,20 +96,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const [latestScan = null, previousScan = null] = recentScans.items;
 
-  const findingSummary = latestScan ? await getFindingSummary(latestScan.id) : null;
-
-  // Phase 1: queries that depend only on latestScan/previousScan IDs (parallel)
-  const [prevSummary, usage, completedScanCheck, trendSummaries] = await Promise.all([
-    previousScan && previousScan.status === "COMPLETED"
-      ? getFindingSummary(previousScan.id)
-      : Promise.resolve(null),
-    getScanUsage(shop.id, shop.plan),
-    hasCompletedScans(shop.id),
-    // Fetch finding summaries for all trend scans in parallel.
-    completedScansForTrend.length > 0
-      ? Promise.all(completedScansForTrend.map((s) => getFindingSummary(s.id)))
-      : Promise.resolve([] as Awaited<ReturnType<typeof getFindingSummary>>[]),
-  ]);
+  // Phase 1: queries that depend only on latestScan/previousScan IDs (parallel).
+  // getFindingSummary for latestScan is included here — it only needs latestScan.id
+  // which is available from Phase 0, so it can run concurrently with the other queries.
+  const [findingSummary, prevSummary, usage, completedScanCheck, trendSummaries] =
+    await Promise.all([
+      latestScan ? getFindingSummary(latestScan.id) : Promise.resolve(null),
+      previousScan && previousScan.status === "COMPLETED"
+        ? getFindingSummary(previousScan.id)
+        : Promise.resolve(null),
+      getScanUsage(shop.id, shop.plan),
+      hasCompletedScans(shop.id),
+      // Fetch finding summaries for all trend scans in parallel.
+      completedScansForTrend.length > 0
+        ? Promise.all(completedScansForTrend.map((s) => getFindingSummary(s.id)))
+        : Promise.resolve([] as Awaited<ReturnType<typeof getFindingSummary>>[]),
+    ]);
 
   // Compute health scores from parallel results
   let healthScore: HealthScoreResult | null = null;
