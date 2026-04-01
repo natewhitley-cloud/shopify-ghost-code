@@ -1,5 +1,13 @@
 # Retrospective History
 
+## Retro: 2026-04-01 (session 31 — Lint fixes + pre-push hook)
+
+- Tasks completed: 0 beads (quick-fix session)
+- Commits: 2 (1 fix, 1 chore), 6 files touched
+- Tests: 1308 (unchanged)
+- Key insight: lint-staged only checks staged files — recurring CI lint failures were caused by errors in files committed earlier or via --no-verify. Pre-push hook running full lint + typecheck closes this gap.
+- Process note: Short, focused session — identified root cause, fixed all 10 issues, added structural prevention, committed, pushed, verified. No scope drift.
+
 ## Retro: 2026-04-01 (session 30 — Handoff review + tester curation)
 
 - Tasks completed: 0 beads (maintenance session)
