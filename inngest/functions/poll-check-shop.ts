@@ -49,7 +49,9 @@ export const pollCheckShop = inngest.createFunction(
         const fetchStart = Date.now();
         const mainTheme = await fetchMainTheme(admin);
         const fetchMs = Date.now() - fetchStart;
-        console.log("[poll-check-shop]", {
+        const { logger } = await import("../../app/lib/logger.server");
+        logger.info("main theme fetched", {
+          function: "poll-check-shop",
           event: "fetch_main_theme",
           shopDomain,
           durationMs: fetchMs,
@@ -167,7 +169,9 @@ export const pollCheckShop = inngest.createFunction(
       });
 
       const dispatchMs = Date.now() - dispatchStart;
-      console.log("[poll-check-shop]", {
+      const { logger } = await import("../../app/lib/logger.server");
+      logger.info("scan dispatched", {
+        function: "poll-check-shop",
         event: "dispatch_scan",
         shopDomain,
         scanId: scan.id,

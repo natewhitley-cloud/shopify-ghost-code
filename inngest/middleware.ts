@@ -26,6 +26,7 @@
 
 import { InngestMiddleware } from "inngest";
 
+import { logger } from "../app/lib/logger.server";
 import { notifyFunctionFailure } from "../app/lib/notifications.server";
 import { captureException } from "../app/lib/sentry.server";
 
@@ -38,7 +39,7 @@ export const loggingMiddleware = new InngestMiddleware({
         return {
           afterExecution() {
             const duration = Date.now() - startTime;
-            console.log(`[inngest] ${fn.name} completed in ${duration}ms`);
+            logger.info("inngest function completed", { function: fn.name, durationMs: duration });
           },
         };
       },

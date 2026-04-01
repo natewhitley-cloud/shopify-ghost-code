@@ -27,6 +27,7 @@ import type { CreateFindingInput } from "../../app/models/finding.server";
 import { completeScanWithFindings } from "../../app/models/finding.server";
 import { updateScanStatus } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
+import { logger } from "../../app/lib/logger.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
@@ -66,7 +67,12 @@ async function runAuditStep(opts: {
 
   const hasScope = await opts.checkScope(admin);
   if (!hasScope) {
-    console.log(`[scan-theme] scope not available — skipping ${opts.stepName}`);
+    const { logger } = await import("../../app/lib/logger.server");
+    logger.info("scope not available — skipping audit step", {
+      function: "scan-theme",
+      stepName: opts.stepName,
+      shopId: opts.shopId,
+    });
     return 0;
   }
 
@@ -88,7 +94,9 @@ async function runAuditStep(opts: {
       data: { findingCount: totalCount },
     });
 
-    console.log("[scan-theme]", {
+    const { logger } = await import("../../app/lib/logger.server");
+    logger.info("audit step findings persisted", {
+      function: "scan-theme",
       event: `${opts.stepName}_findings`,
       shopId: opts.shopId,
       count: findings.length,
@@ -127,10 +135,17 @@ export const scanTheme = inngest.createFunction(
         const { unauthenticated } = await import("../../app/shopify.server");
         const { admin } = await unauthenticated.admin(shop.domain);
         const files = await fetchThemeFiles(admin, themeId, shop.domain);
-        console.log("[scan-theme]", { event: "files_fetched", shopId, fileCount: files.length });
+        const { logger } = await import("../../app/lib/logger.server");
+        logger.info("theme files fetched", {
+          function: "scan-theme",
+          event: "files_fetched",
+          shopId,
+          fileCount: files.length,
+        });
 
         const { findings, unknownScripts } = scanThemeFiles(files);
-        console.log("[scan-theme]", {
+        logger.info("theme scan complete", {
+          function: "scan-theme",
           event: "scan_complete",
           shopId,
           findingCount: findings.length,
@@ -165,17 +180,25 @@ export const scanTheme = inngest.createFunction(
         const { hasTranslationScope, auditTranslations } =
           await import("../../app/services/translation-fetcher.server");
 
+        const { logger } = await import("../../app/lib/logger.server");
+
         const hasScope = await hasTranslationScope(admin);
         if (!hasScope) {
-          console.log(
-            "[scan-theme] read_translations scope not available — skipping translation audit",
-          );
+          logger.info("read_translations scope not available — skipping translation audit", {
+            function: "scan-theme",
+            stepName: "translation-audit",
+            shopId,
+          });
           return 0;
         }
 
         const audit = await auditTranslations(admin);
         if (audit.totalTranslations === 0) {
-          console.log("[scan-theme] No translations found — skipping translation detection");
+          logger.info("no translations found — skipping translation detection", {
+            function: "scan-theme",
+            stepName: "translation-audit",
+            shopId,
+          });
           return 0;
         }
 
@@ -202,7 +225,8 @@ export const scanTheme = inngest.createFunction(
             data: { findingCount: totalCount },
           });
 
-          console.log("[scan-theme]", {
+          logger.info("translation findings persisted", {
+            function: "scan-theme",
             event: "translation_findings",
             shopId,
             count: translationFindings.length,
@@ -325,7 +349,8 @@ export const scanTheme = inngest.createFunction(
         metafieldFindingCount +
         redirectFindingCount;
 
-      console.log("[scan-theme]", {
+      logger.info("scan completed", {
+        function: "scan-theme",
         event: "completed",
         scanId,
         shopId,
