@@ -3,13 +3,13 @@ import { boundary } from "@shopify/shopify-app-react-router/server";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Outlet, useLoaderData, useRouteError } from "react-router";
 
-import { getShopByDomain, upsertShop } from "../models/shop.server";
+import { getShopMetadata, upsertShop } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
-  let shop = await getShopByDomain(session.shop);
+  let shop = await getShopMetadata(session.shop);
   if (!shop) {
     // Shop record doesn't exist yet — create it on first authenticated visit.
     // This covers the case where the app/installed webhook isn't available.

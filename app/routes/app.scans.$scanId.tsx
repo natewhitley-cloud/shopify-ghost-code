@@ -13,7 +13,7 @@ import type { HealthScoreResult } from "../lib/health-score";
 import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
 import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
-import { getShopByDomain } from "../models/shop.server";
+import { getShopMetadata } from "../models/shop.server";
 import {
   findUnknownScriptForShop,
   getUnknownScriptsForScan,
@@ -189,7 +189,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   // Verify the authenticated shop exists before fetching the scan.
-  const shop = await getShopByDomain(session.shop);
+  const shop = await getShopMetadata(session.shop);
   if (!shop) {
     throw new Response("Not found", { status: 404 });
   }
@@ -289,7 +289,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
-  const shop = await getShopByDomain(session.shop);
+  const shop = await getShopMetadata(session.shop);
   if (!shop) throw new Response("Not found", { status: 404 });
 
   const formData = await request.formData();

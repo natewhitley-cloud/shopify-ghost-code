@@ -34,7 +34,7 @@ vi.mock("../../app/shopify.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
   updateShopPlanByDomain: vi.fn(),
 }));
 
@@ -54,7 +54,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { getShopByDomain, updateShopPlanByDomain } from "../../app/models/shop.server";
+import { getShopMetadata, updateShopPlanByDomain } from "../../app/models/shop.server";
 import { action as subscriptionWebhookAction } from "../../app/routes/webhooks.app.subscriptions.update";
 import { authenticate } from "../../app/shopify.server";
 
@@ -64,7 +64,7 @@ import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>;
 const mockUpdateShopPlanByDomain = updateShopPlanByDomain as ReturnType<typeof vi.fn>;
-const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
+const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -112,7 +112,7 @@ beforeEach(() => {
     plan: "Standard",
   });
 
-  mockGetShopByDomain.mockResolvedValue({
+  mockGetShopMetadata.mockResolvedValue({
     id: SHOP_ID,
     domain: SHOP_DOMAIN,
     plan: "Free",

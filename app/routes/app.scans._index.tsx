@@ -4,7 +4,7 @@ import { Link, useLoaderData } from "react-router";
 import { formatDate, statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { getScansForShop } from "../models/scan.server";
-import { getShopByDomain } from "../models/shop.server";
+import { getShopMetadata } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
 import { BORDER_DEFAULT, BG_HOVER, BG_SURFACE, BG_SURFACE_ALT, COLOR_INFO } from "../styles/shared";
 
@@ -17,7 +17,7 @@ const PAGE_SIZE = 20;
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
-  const shop = await getShopByDomain(session.shop);
+  const shop = await getShopMetadata(session.shop);
 
   if (!shop) {
     return { scans: [], nextCursor: null };

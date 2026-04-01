@@ -22,7 +22,7 @@ import {
   getCompletedScansForShop,
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
-import { dismissReviewPrompt, getShopByDomain } from "../models/shop.server";
+import { dismissReviewPrompt, getShopMetadata } from "../models/shop.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
@@ -42,7 +42,7 @@ import {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
 
-  const shop = await getShopByDomain(session.shop);
+  const shop = await getShopMetadata(session.shop);
 
   const trendChartEnabled = process.env.ENABLE_TREND_CHART === "true";
 
@@ -220,7 +220,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
 
-  const shop = await getShopByDomain(session.shop);
+  const shop = await getShopMetadata(session.shop);
   if (!shop) {
     return { error: "Shop not found. Please reinstall the app." };
   }

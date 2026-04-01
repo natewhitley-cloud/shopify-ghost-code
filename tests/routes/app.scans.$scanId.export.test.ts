@@ -3,7 +3,7 @@
  *
  * Strategy:
  *   - Mock authenticate.admin() to control the session shop domain.
- *   - Mock getShopByDomain, getScanById, getFindingsForScan, and canViewFindingDetails
+ *   - Mock getShopMetadata, getScanById, getFindingsForScan, and canViewFindingDetails
  *     to avoid any real DB or Shopify API calls.
  *   - Verify response status, Content-Type, Content-Disposition, and body shape
  *     for CSV, JSON, free-plan 403, and missing-scan 404 cases.
@@ -23,7 +23,7 @@ vi.mock("../../app/shopify.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -45,7 +45,7 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
 import { canViewFindingDetails } from "../../app/lib/plan-gating.server";
 import { getFindingsForScan } from "../../app/models/finding.server";
 import { getScanById } from "../../app/models/scan.server";
-import { getShopByDomain } from "../../app/models/shop.server";
+import { getShopMetadata } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.scans.$scanId.export";
 import { authenticate } from "../../app/shopify.server";
 
@@ -54,7 +54,7 @@ import { authenticate } from "../../app/shopify.server";
 // ---------------------------------------------------------------------------
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
-const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
+const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
 const mockCanViewFindingDetails = canViewFindingDetails as ReturnType<typeof vi.fn>;
@@ -137,7 +137,7 @@ beforeEach(() => {
   mockAuthenticateAdmin.mockResolvedValue({
     session: { shop: "test-shop.myshopify.com" },
   });
-  mockGetShopByDomain.mockResolvedValue(SHOP);
+  mockGetShopMetadata.mockResolvedValue(SHOP);
   mockCanViewFindingDetails.mockReturnValue(true);
   mockGetScanById.mockResolvedValue(SCAN);
   mockGetFindingsForScan.mockResolvedValue(FINDINGS);
@@ -427,8 +427,8 @@ describe("missing scan", () => {
 // ---------------------------------------------------------------------------
 
 describe("missing shop", () => {
-  it("returns 404 when getShopByDomain returns null", async () => {
-    mockGetShopByDomain.mockResolvedValue(null);
+  it("returns 404 when getShopMetadata returns null", async () => {
+    mockGetShopMetadata.mockResolvedValue(null);
 
     const response = await callLoader("scan-abc", "csv");
 

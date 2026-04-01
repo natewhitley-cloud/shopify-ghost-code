@@ -2,9 +2,48 @@ import db from "../db.server";
 import { encryptToken, decryptToken } from "../lib/token-encryption.server";
 
 /**
+ * The subset of shop fields returned by getShopMetadata.
+ * Excludes the encrypted accessToken — use getShopByDomain when the token is needed.
+ */
+export type ShopMetadata = {
+  id: string;
+  domain: string;
+  plan: string;
+  installedAt: Date;
+  lastThemePublishAt: Date | null;
+  hasSeenReviewPrompt: boolean;
+};
+
+/**
+ * Lightweight shop lookup that returns all metadata fields but excludes
+ * the accessToken entirely (no Prisma select, no decryption).
+ * Use this for plan checks, feature gating, review prompts, and any
+ * caller that only needs shop identity or settings — not Shopify API access.
+ *
+ * Returns null if no shop exists — callers must handle the null case.
+ */
+export async function getShopMetadata(domain: string): Promise<ShopMetadata | null> {
+  return db.shop.findUnique({
+    where: { domain },
+    select: {
+      id: true,
+      domain: true,
+      plan: true,
+      installedAt: true,
+      lastThemePublishAt: true,
+      hasSeenReviewPrompt: true,
+    },
+  });
+}
+
+/**
  * Find a shop by its Shopify domain (unique field).
  * Decrypts the access token before returning.
  * Returns null if no shop exists — callers must handle the null case.
+ *
+ * Use this only when the decrypted access token is needed (e.g. unauthenticated
+ * Shopify API calls from background jobs). For all other callers, prefer
+ * getShopMetadata to avoid unnecessary crypto overhead.
  */
 export async function getShopByDomain(domain: string) {
   const shop = await db.shop.findUnique({ where: { domain } });

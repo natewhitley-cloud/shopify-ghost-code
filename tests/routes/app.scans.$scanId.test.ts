@@ -26,7 +26,7 @@ vi.mock("../../app/db.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -71,7 +71,7 @@ import { computeHealthScore } from "../../app/lib/health-score";
 import { canViewFindingDetails, canUseScanDiffing } from "../../app/lib/plan-gating.server";
 import { getFindingSummary, getHighestSeverityFinding } from "../../app/models/finding.server";
 import { getScanById, getPreviousScanForTheme } from "../../app/models/scan.server";
-import { getShopByDomain } from "../../app/models/shop.server";
+import { getShopMetadata } from "../../app/models/shop.server";
 import { getUnknownScriptsForScan } from "../../app/models/unknown-script.server";
 import { loader } from "../../app/routes/app.scans.$scanId";
 import { diffScans } from "../../app/services/scan-differ.server";
@@ -82,7 +82,7 @@ import { authenticate } from "../../app/shopify.server";
 // ---------------------------------------------------------------------------
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
-const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
+const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetPreviousScanForTheme = getPreviousScanForTheme as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
@@ -161,7 +161,7 @@ beforeEach(() => {
     session: { shop: SHOP.domain },
   });
 
-  mockGetShopByDomain.mockResolvedValue(SHOP);
+  mockGetShopMetadata.mockResolvedValue(SHOP);
   mockGetScanById.mockResolvedValue(SCAN);
   mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
   mockCanViewFindingDetails.mockReturnValue(true);
@@ -205,7 +205,7 @@ describe("app.scans.$scanId loader", () => {
 
   describe("free plan — limited/preview finding", () => {
     beforeEach(() => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Free" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Free" });
       mockCanViewFindingDetails.mockReturnValue(false);
       // When includeFindings is false, scan.findings is not present
       mockGetScanById.mockResolvedValue({
@@ -301,7 +301,7 @@ describe("app.scans.$scanId loader", () => {
     });
 
     it("throws 404 when shop not found", async () => {
-      mockGetShopByDomain.mockResolvedValue(null);
+      mockGetShopMetadata.mockResolvedValue(null);
 
       await expect(loader(makeLoaderArgs("scan-1"))).rejects.toThrow();
       try {

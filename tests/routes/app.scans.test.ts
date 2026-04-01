@@ -3,7 +3,7 @@
  *
  * Strategy:
  *   - Mock authenticate.admin() to control the session.
- *   - Mock getShopByDomain and getScansForShop to verify pagination logic.
+ *   - Mock getShopMetadata and getScansForShop to verify pagination logic.
  *   - Verify the loader returns scans and correct pagination cursors.
  */
 
@@ -25,7 +25,7 @@ vi.mock("../../app/db.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -43,7 +43,7 @@ vi.mock("../../app/lib/format", () => ({
 // ---------------------------------------------------------------------------
 
 import { getScansForShop } from "../../app/models/scan.server";
-import { getShopByDomain } from "../../app/models/shop.server";
+import { getShopMetadata } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.scans._index";
 import { authenticate } from "../../app/shopify.server";
 
@@ -52,7 +52,7 @@ import { authenticate } from "../../app/shopify.server";
 // ---------------------------------------------------------------------------
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
-const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
+const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
@@ -104,7 +104,7 @@ beforeEach(() => {
     session: { shop: SHOP.domain },
   });
 
-  mockGetShopByDomain.mockResolvedValue(SHOP);
+  mockGetShopMetadata.mockResolvedValue(SHOP);
 });
 
 // ---------------------------------------------------------------------------
@@ -142,7 +142,7 @@ describe("app.scans loader", () => {
   });
 
   it("returns empty scans and null cursor when shop not found", async () => {
-    mockGetShopByDomain.mockResolvedValue(null);
+    mockGetShopMetadata.mockResolvedValue(null);
 
     const result = (await loader(makeLoaderArgs())) as {
       scans: unknown[];

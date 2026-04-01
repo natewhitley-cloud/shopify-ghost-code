@@ -26,7 +26,7 @@ vi.mock("../../app/db.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
   dismissReviewPrompt: vi.fn(),
 }));
 
@@ -88,7 +88,7 @@ import {
   hasCompletedScans,
   getCompletedScansForShop,
 } from "../../app/models/scan.server";
-import { getShopByDomain, dismissReviewPrompt } from "../../app/models/shop.server";
+import { getShopMetadata, dismissReviewPrompt } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
 import { authenticate } from "../../app/shopify.server";
@@ -99,7 +99,7 @@ import { inngest } from "../../inngest/client";
 // ---------------------------------------------------------------------------
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
-const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
+const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
@@ -194,7 +194,7 @@ beforeEach(() => {
     admin: MOCK_ADMIN,
   });
 
-  mockGetShopByDomain.mockResolvedValue(SHOP);
+  mockGetShopMetadata.mockResolvedValue(SHOP);
   mockFetchMainTheme.mockResolvedValue(MAIN_THEME);
   mockGetScansForShop.mockResolvedValue({ items: [COMPLETED_SCAN], hasNextPage: false });
   mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
@@ -269,7 +269,7 @@ describe("app._index loader", () => {
     });
 
     it("returns scanUsage for Standard plan (weekly)", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue({
         maxScansPerMonth: Infinity,
         maxScansPerWeek: 1,
@@ -294,7 +294,7 @@ describe("app._index loader", () => {
     });
 
     it("returns null scanUsage for Professional plan (unlimited)", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue({
         maxScansPerMonth: Infinity,
         maxScansPerWeek: Infinity,
@@ -316,7 +316,7 @@ describe("app._index loader", () => {
 
   describe("shop not found", () => {
     it("returns minimal data when shop is not found", async () => {
-      mockGetShopByDomain.mockResolvedValue(null);
+      mockGetShopMetadata.mockResolvedValue(null);
 
       const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
 
@@ -334,7 +334,7 @@ describe("app._index loader", () => {
     });
 
     it("does not call downstream services when shop is null", async () => {
-      mockGetShopByDomain.mockResolvedValue(null);
+      mockGetShopMetadata.mockResolvedValue(null);
 
       await loader(makeLoaderArgs());
 
@@ -407,7 +407,7 @@ describe("app._index loader — review prompt", () => {
   });
 
   it("returns showReviewPrompt: false when hasSeenReviewPrompt is true", async () => {
-    mockGetShopByDomain.mockResolvedValue({ ...SHOP, hasSeenReviewPrompt: true });
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, hasSeenReviewPrompt: true });
 
     const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
 
@@ -509,7 +509,7 @@ describe("app._index action", () => {
     });
 
     it("returns error when shop not found", async () => {
-      mockGetShopByDomain.mockResolvedValue(null);
+      mockGetShopMetadata.mockResolvedValue(null);
 
       const result = (await action(makeActionArgs())) as { error: string };
 
@@ -644,7 +644,7 @@ const STANDARD_FEATURES = {
 describe("app._index loader — theme picker", () => {
   describe("allThemes population", () => {
     it("returns non-empty allThemes for Standard plan", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
       mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
       mockGetScanUsage.mockResolvedValue({
@@ -663,7 +663,7 @@ describe("app._index loader — theme picker", () => {
     });
 
     it("returns non-empty allThemes for Professional plan", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
       mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
       mockGetScanUsage.mockResolvedValue(null);
@@ -691,7 +691,7 @@ describe("app._index loader — theme picker", () => {
 
   describe("canSelectTheme flag", () => {
     it("returns canSelectTheme: true for Professional plan (maxThemes > 1)", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
       mockGetScanUsage.mockResolvedValue(null);
 
@@ -703,7 +703,7 @@ describe("app._index loader — theme picker", () => {
     });
 
     it("returns canSelectTheme: false for Standard plan (maxThemes: 1)", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
       mockGetScanUsage.mockResolvedValue({
         used: 0,
@@ -732,7 +732,7 @@ describe("app._index loader — theme picker", () => {
 
   describe("null shop early return", () => {
     it("includes allThemes: [] and canSelectTheme: false when shop is null", async () => {
-      mockGetShopByDomain.mockResolvedValue(null);
+      mockGetShopMetadata.mockResolvedValue(null);
 
       const result = (await loader(makeLoaderArgs())) as {
         allThemes: unknown[];
@@ -791,7 +791,7 @@ describe("app._index action — theme picker", () => {
 
   describe("valid themeId on Professional plan", () => {
     it("uses the selected theme and scans it instead of the MAIN theme", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
       mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
 
@@ -824,7 +824,7 @@ describe("app._index action — theme picker", () => {
 
   describe("invalid themeId on Professional plan", () => {
     it("returns error when submitted themeId is not found in shop theme list", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
       // Return themes list that does NOT contain the submitted ID
       mockFetchAllThemes.mockResolvedValue([
@@ -878,7 +878,7 @@ describe("app._index action — theme picker", () => {
 
   describe("themeId on Standard plan (downgrade protection)", () => {
     it("ignores submitted themeId and uses MAIN theme when plan is Standard", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
 
       const request = new Request("https://test-shop.myshopify.com/app", {
@@ -950,7 +950,7 @@ describe("app._index loader — health score trend chart", () => {
   describe("feature flag off (ENABLE_TREND_CHART not set)", () => {
     it("returns trendChartEnabled: false", async () => {
       // process.env.ENABLE_TREND_CHART is not set (deleted in afterEach)
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
 
       const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
@@ -959,7 +959,7 @@ describe("app._index loader — health score trend chart", () => {
     });
 
     it("returns healthScoreTrend: null", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
 
       const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
@@ -968,7 +968,7 @@ describe("app._index loader — health score trend chart", () => {
     });
 
     it("returns showTrendEmptyState: false", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
 
       const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
@@ -977,7 +977,7 @@ describe("app._index loader — health score trend chart", () => {
     });
 
     it("does not call getCompletedScansForShop (zero extra DB cost)", async () => {
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
 
       await loader(makeLoaderArgs());
@@ -989,7 +989,7 @@ describe("app._index loader — health score trend chart", () => {
   describe("feature flag off (ENABLE_TREND_CHART set to non-true value)", () => {
     it("returns trendChartEnabled: false when set to 'false'", async () => {
       process.env.ENABLE_TREND_CHART = "false";
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
 
       const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
@@ -1027,7 +1027,7 @@ describe("app._index loader — health score trend chart", () => {
   describe("feature flag on, Standard plan, fewer than 3 completed scans", () => {
     beforeEach(() => {
       process.env.ENABLE_TREND_CHART = "true";
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
       mockGetScanUsage.mockResolvedValue({
         used: 0,
@@ -1081,7 +1081,7 @@ describe("app._index loader — health score trend chart", () => {
   describe("feature flag on, Standard plan, 3+ completed scans", () => {
     beforeEach(() => {
       process.env.ENABLE_TREND_CHART = "true";
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
       mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
       mockGetScanUsage.mockResolvedValue({
         used: 0,
@@ -1220,7 +1220,7 @@ describe("app._index loader — health score trend chart", () => {
   describe("feature flag on, Professional plan, 3+ completed scans", () => {
     beforeEach(() => {
       process.env.ENABLE_TREND_CHART = "true";
-      mockGetShopByDomain.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
       mockGetScanUsage.mockResolvedValue(null);
       mockGetCompletedScansForShop.mockResolvedValue(THREE_TREND_SCANS);
@@ -1247,7 +1247,7 @@ describe("app._index loader — health score trend chart", () => {
   describe("null shop early return with feature flag on", () => {
     beforeEach(() => {
       process.env.ENABLE_TREND_CHART = "true";
-      mockGetShopByDomain.mockResolvedValue(null);
+      mockGetShopMetadata.mockResolvedValue(null);
     });
 
     it("returns healthScoreTrend: null", async () => {

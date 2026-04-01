@@ -40,7 +40,7 @@ vi.mock("../../app/shopify.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -105,7 +105,7 @@ import db from "../../app/db.server";
 import { canStartScan } from "../../app/lib/plan-gating.server";
 import { completeScanWithFindings } from "../../app/models/finding.server";
 import { createScan, hasCompletedScans, updateScanStatus } from "../../app/models/scan.server";
-import { getShopByDomain } from "../../app/models/shop.server";
+import { getShopMetadata } from "../../app/models/shop.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { action } from "../../app/routes/app._index";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
@@ -121,7 +121,7 @@ import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockUnauthenticatedAdmin = unauthenticated.admin as ReturnType<typeof vi.fn>;
-const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
+const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
@@ -213,7 +213,7 @@ beforeEach(() => {
 describe("Scan pipeline — Part A: dashboard action (create → queue)", () => {
   beforeEach(() => {
     mockAuthenticateAdmin.mockResolvedValue(MOCK_AUTH_RESULT);
-    mockGetShopByDomain.mockResolvedValue(MOCK_SHOP);
+    mockGetShopMetadata.mockResolvedValue(MOCK_SHOP);
     mockCanStartScan.mockResolvedValue({ allowed: true });
     mockHasCompletedScans.mockResolvedValue(false);
     mockFetchMainTheme.mockResolvedValue(MOCK_MAIN_THEME);
@@ -260,7 +260,7 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
         context: {},
       } as unknown as ActionFunctionArgs);
 
-      expect(mockGetShopByDomain).toHaveBeenCalledWith(SHOP_DOMAIN);
+      expect(mockGetShopMetadata).toHaveBeenCalledWith(SHOP_DOMAIN);
     });
 
     it("checks plan gating before creating a scan", async () => {
@@ -338,7 +338,7 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
 
   describe("error path — shop not found", () => {
     it("returns an error payload when shop is not in DB", async () => {
-      mockGetShopByDomain.mockResolvedValue(null);
+      mockGetShopMetadata.mockResolvedValue(null);
 
       const result = await action({
         request: makeRequest(),
@@ -350,7 +350,7 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
     });
 
     it("does not create a scan when shop is missing", async () => {
-      mockGetShopByDomain.mockResolvedValue(null);
+      mockGetShopMetadata.mockResolvedValue(null);
 
       await action({
         request: makeRequest(),
@@ -595,7 +595,7 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
 describe("Scan pipeline — handoff: action event matches Inngest function expectations", () => {
   beforeEach(() => {
     mockAuthenticateAdmin.mockResolvedValue(MOCK_AUTH_RESULT);
-    mockGetShopByDomain.mockResolvedValue(MOCK_SHOP);
+    mockGetShopMetadata.mockResolvedValue(MOCK_SHOP);
     mockCanStartScan.mockResolvedValue({ allowed: true });
     mockHasCompletedScans.mockResolvedValue(false);
     mockFetchMainTheme.mockResolvedValue(MOCK_MAIN_THEME);

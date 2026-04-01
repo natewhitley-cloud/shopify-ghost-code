@@ -44,6 +44,7 @@ vi.mock("../../app/db.server", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  getShopMetadata,
   updateShopPlanByDomain,
   updateThemePublishTimestamp,
   dismissReviewPrompt,
@@ -53,6 +54,89 @@ import {
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
+
+describe("getShopMetadata", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns null when the shop domain is not found in DB", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+
+    const result = await getShopMetadata("unknown.myshopify.com");
+
+    expect(result).toBeNull();
+  });
+
+  it("queries with a select that excludes accessToken", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+
+    await getShopMetadata("test-shop.myshopify.com");
+
+    expect(mockDb.shop.findUnique).toHaveBeenCalledWith({
+      where: { domain: "test-shop.myshopify.com" },
+      select: {
+        id: true,
+        domain: true,
+        plan: true,
+        installedAt: true,
+        lastThemePublishAt: true,
+        hasSeenReviewPrompt: true,
+      },
+    });
+  });
+
+  it("returns all metadata fields when shop is found", async () => {
+    const installedAt = new Date("2026-01-01T00:00:00Z");
+    const lastThemePublishAt = new Date("2026-03-01T00:00:00Z");
+    const shopMetadata = {
+      id: "shop-123",
+      domain: "test-shop.myshopify.com",
+      plan: "Standard",
+      installedAt,
+      lastThemePublishAt,
+      hasSeenReviewPrompt: false,
+    };
+    mockDb.shop.findUnique.mockResolvedValue(shopMetadata);
+
+    const result = await getShopMetadata("test-shop.myshopify.com");
+
+    expect(result).toEqual(shopMetadata);
+  });
+
+  it("returns null for lastThemePublishAt when field is null", async () => {
+    const shopMetadata = {
+      id: "shop-new",
+      domain: "new-shop.myshopify.com",
+      plan: "free",
+      installedAt: new Date("2026-01-01T00:00:00Z"),
+      lastThemePublishAt: null,
+      hasSeenReviewPrompt: false,
+    };
+    mockDb.shop.findUnique.mockResolvedValue(shopMetadata);
+
+    const result = await getShopMetadata("new-shop.myshopify.com");
+
+    expect(result?.lastThemePublishAt).toBeNull();
+  });
+
+  it("does not include accessToken in the returned object", async () => {
+    // Simulate Prisma returning only the selected fields (no accessToken)
+    const shopMetadata = {
+      id: "shop-123",
+      domain: "test-shop.myshopify.com",
+      plan: "free",
+      installedAt: new Date("2026-01-01T00:00:00Z"),
+      lastThemePublishAt: null,
+      hasSeenReviewPrompt: false,
+    };
+    mockDb.shop.findUnique.mockResolvedValue(shopMetadata);
+
+    const result = await getShopMetadata("test-shop.myshopify.com");
+
+    expect(result).not.toHaveProperty("accessToken");
+  });
+});
 
 describe("updateShopPlanByDomain", () => {
   beforeEach(() => {

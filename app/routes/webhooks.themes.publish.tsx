@@ -4,7 +4,7 @@ import { inngest } from "../../inngest/client";
 import { logger } from "../lib/logger.server";
 import { canUseAutoRescan } from "../lib/plan-gating.server";
 import { createScan } from "../models/scan.server";
-import { getShopByDomain, updateThemePublishTimestamp } from "../models/shop.server";
+import { getShopMetadata, updateThemePublishTimestamp } from "../models/shop.server";
 import { fetchMainTheme } from "../services/theme-fetcher.server";
 import { authenticate, unauthenticated } from "../shopify.server";
 
@@ -13,7 +13,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   logger.info("Webhook received", { topic, shop });
 
-  const shopRecord = await getShopByDomain(shop);
+  const shopRecord = await getShopMetadata(shop);
 
   if (!shopRecord) {
     // Shop not in our DB — no action needed. Return 200 to avoid retries.

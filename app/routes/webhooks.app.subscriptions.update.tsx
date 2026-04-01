@@ -3,7 +3,7 @@ import type { ActionFunctionArgs } from "react-router";
 import { PLANS } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { type BillingEventType, recordBillingEvent } from "../models/billing-event.server";
-import { getShopByDomain, updateShopPlanByDomain } from "../models/shop.server";
+import { getShopMetadata, updateShopPlanByDomain } from "../models/shop.server";
 import { authenticate, PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -144,7 +144,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // Fetch the current shop record to capture the old plan before updating.
   // We need the old plan to classify the billing event type correctly.
-  const existingShop = await getShopByDomain(shop);
+  const existingShop = await getShopMetadata(shop);
 
   const updated = await updateShopPlanByDomain(shop, newPlan);
 

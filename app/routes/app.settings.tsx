@@ -3,7 +3,7 @@ import { Link, useLoaderData } from "react-router";
 
 import { getPlanFeatures } from "../lib/billing.server";
 import { PLANS } from "../lib/plans";
-import { getShopByDomain } from "../models/shop.server";
+import { getShopMetadata } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
 import { BORDER_DEFAULT, BG_WHITE, COLOR_INFO, TEXT_PRIMARY, TEXT_SUBDUED } from "../styles/shared";
 
@@ -14,7 +14,7 @@ import { BORDER_DEFAULT, BG_WHITE, COLOR_INFO, TEXT_PRIMARY, TEXT_SUBDUED } from
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
-  const shop = await getShopByDomain(session.shop);
+  const shop = await getShopMetadata(session.shop);
 
   if (!shop) {
     throw new Response("Shop not found", { status: 404 });

@@ -14,7 +14,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import { canViewFindingDetails } from "../lib/plan-gating.server";
 import { getFindingsForScan } from "../models/finding.server";
 import { getScanById } from "../models/scan.server";
-import { getShopByDomain } from "../models/shop.server";
+import { getShopMetadata } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -57,7 +57,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   // Step 2: Verify the shop exists.
-  const shop = await getShopByDomain(session.shop);
+  const shop = await getShopMetadata(session.shop);
   if (!shop) {
     return new Response("Not found", { status: 404 });
   }

@@ -3,7 +3,7 @@
  *
  * Strategy:
  *   - Mock authenticate.admin() to control session context.
- *   - Mock getShopByDomain and getPlanFeatures.
+ *   - Mock getShopMetadata and getPlanFeatures.
  *   - Verify loader returns correct plan and feature info.
  *   - No action tests — billing is handled via Managed Pricing in the
  *     Partner Dashboard, so the settings route has no action export.
@@ -29,7 +29,7 @@ vi.mock("../../app/db.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
 }));
 
 vi.mock("../../app/lib/billing.server", () => ({
@@ -45,7 +45,7 @@ vi.mock("../../app/lib/plans", () => ({
 // ---------------------------------------------------------------------------
 
 import { getPlanFeatures } from "../../app/lib/billing.server";
-import { getShopByDomain } from "../../app/models/shop.server";
+import { getShopMetadata } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.settings";
 import { authenticate } from "../../app/shopify.server";
 
@@ -54,7 +54,7 @@ import { authenticate } from "../../app/shopify.server";
 // ---------------------------------------------------------------------------
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
-const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
+const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
@@ -97,7 +97,7 @@ beforeEach(() => {
     session: { shop: SHOP.domain },
   });
 
-  mockGetShopByDomain.mockResolvedValue(SHOP);
+  mockGetShopMetadata.mockResolvedValue(SHOP);
   mockGetPlanFeatures.mockReturnValue(FREE_FEATURES);
 });
 
@@ -118,7 +118,7 @@ describe("app.settings loader", () => {
   });
 
   it("throws 404 when shop not found", async () => {
-    mockGetShopByDomain.mockResolvedValue(null);
+    mockGetShopMetadata.mockResolvedValue(null);
 
     await expect(loader(makeLoaderArgs())).rejects.toThrow();
     try {

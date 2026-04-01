@@ -4,7 +4,7 @@
  * Strategy:
  *   - Mock authenticate.webhook() to control what topic/shop/payload the handler sees.
  *   - Mock unauthenticated.admin() + fetchMainTheme() to control the MAIN theme lookup.
- *   - Mock getShopByDomain(), createScan(), canUseAutoRescan(), inngest.send()
+ *   - Mock getShopMetadata(), createScan(), canUseAutoRescan(), inngest.send()
  *     to verify orchestration behavior without any real I/O.
  *   - Key invariant: the themeId passed to createScan and inngest.send comes from
  *     fetchMainTheme (not the webhook payload), ensuring the active theme is scanned.
@@ -31,7 +31,7 @@ vi.mock("../../app/services/theme-fetcher.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
   updateThemePublishTimestamp: vi
     .fn()
     .mockResolvedValue({ id: "shop-1", domain: "test.myshopify.com" }),
@@ -65,7 +65,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 
 import { canUseAutoRescan } from "../../app/lib/plan-gating.server";
 import { createScan } from "../../app/models/scan.server";
-import { getShopByDomain } from "../../app/models/shop.server";
+import { getShopMetadata } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.themes.publish";
 import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { authenticate, unauthenticated } from "../../app/shopify.server";
@@ -78,7 +78,7 @@ import { inngest } from "../../inngest/client";
 const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>;
 const mockUnauthenticatedAdmin = unauthenticated.admin as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
-const mockGetShopByDomain = getShopByDomain as ReturnType<typeof vi.fn>;
+const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
 const mockCanUseAutoRescan = canUseAutoRescan as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
@@ -158,7 +158,7 @@ beforeEach(() => {
   vi.clearAllMocks();
 
   setupWebhookAuth();
-  mockGetShopByDomain.mockResolvedValue(MOCK_SHOP_PROFESSIONAL);
+  mockGetShopMetadata.mockResolvedValue(MOCK_SHOP_PROFESSIONAL);
   mockCanUseAutoRescan.mockReturnValue(true);
   mockCreateScan.mockResolvedValue(MOCK_SCAN);
   mockInngestSend.mockResolvedValue(undefined);
@@ -220,7 +220,7 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
       context: {},
     } as unknown as ActionFunctionArgs);
 
-    expect(mockGetShopByDomain).toHaveBeenCalledWith(SHOP_DOMAIN);
+    expect(mockGetShopMetadata).toHaveBeenCalledWith(SHOP_DOMAIN);
   });
 
   it("checks canUseAutoRescan with the shop's plan", async () => {
@@ -251,7 +251,7 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
 
 describe("webhooks.themes.publish — non-Professional plans", () => {
   it("returns 200 silently for a Free-plan shop (no scan, no event)", async () => {
-    mockGetShopByDomain.mockResolvedValue(MOCK_SHOP_FREE);
+    mockGetShopMetadata.mockResolvedValue(MOCK_SHOP_FREE);
     mockCanUseAutoRescan.mockReturnValue(false);
 
     const response = await action({
@@ -266,7 +266,7 @@ describe("webhooks.themes.publish — non-Professional plans", () => {
   });
 
   it("returns 200 silently for a Standard-plan shop (no scan, no event)", async () => {
-    mockGetShopByDomain.mockResolvedValue(MOCK_SHOP_STANDARD);
+    mockGetShopMetadata.mockResolvedValue(MOCK_SHOP_STANDARD);
     mockCanUseAutoRescan.mockReturnValue(false);
 
     const response = await action({
@@ -287,7 +287,7 @@ describe("webhooks.themes.publish — non-Professional plans", () => {
 
 describe("webhooks.themes.publish — unknown shop", () => {
   it("returns 200 silently when shop is not found in DB", async () => {
-    mockGetShopByDomain.mockResolvedValue(null);
+    mockGetShopMetadata.mockResolvedValue(null);
 
     const response = await action({
       request: makeRequest(),
@@ -299,7 +299,7 @@ describe("webhooks.themes.publish — unknown shop", () => {
   });
 
   it("does not create a scan when shop is not in DB", async () => {
-    mockGetShopByDomain.mockResolvedValue(null);
+    mockGetShopMetadata.mockResolvedValue(null);
 
     await action({
       request: makeRequest(),
@@ -311,7 +311,7 @@ describe("webhooks.themes.publish — unknown shop", () => {
   });
 
   it("does not send an Inngest event when shop is not in DB", async () => {
-    mockGetShopByDomain.mockResolvedValue(null);
+    mockGetShopMetadata.mockResolvedValue(null);
 
     await action({
       request: makeRequest(),

@@ -23,7 +23,7 @@ vi.mock("../../app/shopify.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopByDomain: vi.fn(),
+  getShopMetadata: vi.fn(),
   updateShopPlanByDomain: vi.fn(),
 }));
 
@@ -35,7 +35,7 @@ vi.mock("../../app/models/billing-event.server", () => ({
 // Imports (after mocks are established)
 // ---------------------------------------------------------------------------
 
-import { getShopByDomain, updateShopPlanByDomain } from "../../app/models/shop.server";
+import { getShopMetadata, updateShopPlanByDomain } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.app.subscriptions.update";
 import { authenticate } from "../../app/shopify.server";
 
@@ -72,7 +72,7 @@ describe("webhooks.app.subscriptions.update", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     // Default: shop exists with free plan (for billing event comparison).
-    (getShopByDomain as ReturnType<typeof vi.fn>).mockResolvedValue({
+    (getShopMetadata as ReturnType<typeof vi.fn>).mockResolvedValue({
       id: "shop-1",
       domain: "test-shop.myshopify.com",
       plan: "free",
