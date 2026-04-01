@@ -1,5 +1,40 @@
 # Retrospective History
 
+## Retro: 2026-04-01 (session 30 — Handoff review + tester curation)
+
+- Tasks completed: 0 beads (maintenance session)
+- Tester learnings curated: 50 → 35 lines (6 archived, 1 was incorrect — stale $transaction mock)
+- Portfolio memory updated: Bot Analytics (App 2) submitted for review
+- All agent learnings healthy (28-40 lines, all under warning threshold)
+- Key catch: /curate identified an actively wrong tester entry that would have caused broken mocks on next dispatch
+
+## Retro: 2026-04-01 (session 29 — Learnings curation + P4 sprint + admin metrics dashboard)
+
+- Tasks completed: 6 beads closed (1 P2 feature: admin metrics dashboard, 4 P4 refactors from review, 1 P4 doc)
+- Agents dispatched: 5 implementer (serialized worktree)
+- New learnings: 1 implementer entry, 2 MEMORY.md workflow entries
+- Implementer learnings curated: 62 → 40 lines (22 archived)
+- Test growth: 1249 → 1308 (+59 tests, 56 files)
+- Commits: 8 (1 feat, 1 fix, 4 refactor, 1 perf, 1 chore)
+- Fix rate: 12.5% (1 intentional lint fix)
+- Key insight: /curate before sprint produces leaner agent context and zero-rework dispatches.
+- Key feature: Admin metrics dashboard — new Prisma model, model layer, admin-gated route, Inngest daily cron, 51 new tests.
+- Key near-miss: `git add -A` staged worktree dirs — caught and reset before push.
+- Team health: implementer at 40 lines (healthy after curation), tester at 49 lines (approaching warning, has stale entry)
+
+## Retro: 2026-03-31 (session 28 — Features + full codebase review + fixes)
+
+- Tasks completed: 14 beads closed (2 features, 2 stale housekeeping, 1 critical fix, 4 warning fixes, 5 P3 fixes). 16 beads created from review.
+- Agents dispatched: 5 implementer (serialized worktree) + 1 /review (inline)
+- New learnings: 3 implementer entries, 4 MEMORY.md entries
+- Test growth: 1194 → 1249 (+55 tests, 52 files)
+- Commits: 8 (2 feat, 1 merge, 1 test, 1 CI fix, 3 fix)
+- Fix rate: 0% on feature work, 100% intentional on fix commits
+- Key insight: Full codebase /review → bead creation → sprint fix pipeline: 16 findings surfaced, 14 fixed in one session. Batching fix beads then dispatching implementer with the full list is efficient.
+- Key discovery: Shopify Partner Dashboard locks listing content during app review.
+- Key process issue: Worktree agents sometimes don't commit — changes appear as uncommitted diffs. Orchestrator must verify worktree commit status before merging.
+- Team health: implementer at 62 lines (2 over cap, needs /curate next session)
+
 ## Retro: 2026-03-28 (session 24 — Monitoring sprint + managed pricing + E2E testing)
 
 - Tasks completed: 8 beads closed (5 monitoring + 1 downgrade billing + 1 managed pricing refactor + 1 auto-rescan bug fix)
