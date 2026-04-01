@@ -26,11 +26,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const cursor = url.searchParams.get("cursor") || undefined;
 
-  // Fetch one extra row to determine whether a next page exists.
-  const rows = await getScansForShop(shop.id, { limit: PAGE_SIZE, cursor });
+  const { items: scans, hasNextPage } = await getScansForShop(shop.id, {
+    limit: PAGE_SIZE,
+    cursor,
+  });
 
-  const hasNextPage = rows.length > PAGE_SIZE;
-  const scans = hasNextPage ? rows.slice(0, PAGE_SIZE) : rows;
   const nextCursor = hasNextPage ? scans[scans.length - 1].id : null;
 
   return { scans, nextCursor };

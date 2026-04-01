@@ -224,7 +224,17 @@ describe("getScansForShop", () => {
       where: { shopId: SHOP_ID },
       orderBy: { createdAt: "desc" },
     });
-    expect(result).toEqual(scans);
+    expect(result).toEqual({ items: scans, hasNextPage: false });
+  });
+
+  it("returns hasNextPage: false when no limit is provided (no over-fetch)", async () => {
+    const scans = [baseScan];
+    mockDb.scan.findMany.mockResolvedValue(scans);
+
+    const result = await getScansForShop(SHOP_ID);
+
+    expect(result.hasNextPage).toBe(false);
+    expect(result.items).toEqual(scans);
   });
 
   it("applies the limit option when provided (fetches limit+1 for next-page detection)", async () => {
@@ -233,14 +243,35 @@ describe("getScansForShop", () => {
 
     const result = await getScansForShop(SHOP_ID, { limit: 5 });
 
-    // The model fetches limit+1 rows so the caller can detect whether a next
-    // page exists without a separate COUNT query.
+    // The model fetches limit+1 rows internally for next-page detection.
     expect(mockDb.scan.findMany).toHaveBeenCalledWith({
       where: { shopId: SHOP_ID },
       orderBy: { createdAt: "desc" },
       take: 6,
     });
-    expect(result).toEqual(scans);
+    expect(result).toEqual({ items: scans, hasNextPage: false });
+  });
+
+  it("returns hasNextPage: true and slices items when DB returns limit+1 rows", async () => {
+    // Simulate DB returning 6 rows when limit=5 — signals a next page exists.
+    const scans = Array.from({ length: 6 }, (_, i) => ({ ...baseScan, id: `scan-${i}` }));
+    mockDb.scan.findMany.mockResolvedValue(scans);
+
+    const result = await getScansForShop(SHOP_ID, { limit: 5 });
+
+    expect(result.hasNextPage).toBe(true);
+    expect(result.items).toHaveLength(5);
+    expect(result.items).toEqual(scans.slice(0, 5));
+  });
+
+  it("returns hasNextPage: false when DB returns exactly limit rows", async () => {
+    const scans = Array.from({ length: 5 }, (_, i) => ({ ...baseScan, id: `scan-${i}` }));
+    mockDb.scan.findMany.mockResolvedValue(scans);
+
+    const result = await getScansForShop(SHOP_ID, { limit: 5 });
+
+    expect(result.hasNextPage).toBe(false);
+    expect(result.items).toHaveLength(5);
   });
 
   it("applies cursor pagination when cursor is provided", async () => {
@@ -268,12 +299,12 @@ describe("getScansForShop", () => {
     expect(callArg).not.toHaveProperty("skip");
   });
 
-  it("returns an empty array when the shop has no scans", async () => {
+  it("returns empty items and hasNextPage: false when the shop has no scans", async () => {
     mockDb.scan.findMany.mockResolvedValue([]);
 
     const result = await getScansForShop(SHOP_ID);
 
-    expect(result).toEqual([]);
+    expect(result).toEqual({ items: [], hasNextPage: false });
   });
 
   it("does not include 'take' when limit is undefined", async () => {

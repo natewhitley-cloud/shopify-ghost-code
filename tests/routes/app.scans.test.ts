@@ -114,7 +114,7 @@ beforeEach(() => {
 describe("app.scans loader", () => {
   it("returns scans for the authenticated shop", async () => {
     const scans = [makeScan("scan-1"), makeScan("scan-2")];
-    mockGetScansForShop.mockResolvedValue(scans);
+    mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
 
     const result = (await loader(makeLoaderArgs())) as {
       scans: typeof scans;
@@ -130,7 +130,7 @@ describe("app.scans loader", () => {
   });
 
   it("handles empty scan list", async () => {
-    mockGetScansForShop.mockResolvedValue([]);
+    mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
 
     const result = (await loader(makeLoaderArgs())) as {
       scans: unknown[];
@@ -155,10 +155,10 @@ describe("app.scans loader", () => {
   });
 
   describe("pagination", () => {
-    it("returns hasMore=true via nextCursor when more results exist", async () => {
-      // getScansForShop returns PAGE_SIZE + 1 rows to signal more pages
-      const scans = Array.from({ length: PAGE_SIZE + 1 }, (_, i) => makeScan(`scan-${i}`));
-      mockGetScansForShop.mockResolvedValue(scans);
+    it("returns hasMore=true via nextCursor when model signals next page", async () => {
+      // The model now handles the over-fetch internally and returns { items, hasNextPage }.
+      const scans = Array.from({ length: PAGE_SIZE }, (_, i) => makeScan(`scan-${i}`));
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: true });
 
       const result = (await loader(makeLoaderArgs())) as {
         scans: unknown[];
@@ -171,7 +171,7 @@ describe("app.scans loader", () => {
 
     it("returns hasMore=false (null nextCursor) on last page", async () => {
       const scans = [makeScan("scan-1"), makeScan("scan-2")];
-      mockGetScansForShop.mockResolvedValue(scans);
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
 
       const result = (await loader(makeLoaderArgs())) as {
         scans: unknown[];
@@ -182,23 +182,21 @@ describe("app.scans loader", () => {
       expect(result.nextCursor).toBeNull();
     });
 
-    it("boundary: exactly PAGE_SIZE results means no more pages", async () => {
+    it("boundary: exactly PAGE_SIZE results with hasNextPage false means no more pages", async () => {
       const scans = Array.from({ length: PAGE_SIZE }, (_, i) => makeScan(`scan-${i}`));
-      mockGetScansForShop.mockResolvedValue(scans);
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
 
       const result = (await loader(makeLoaderArgs())) as {
         scans: unknown[];
         nextCursor: string | null;
       };
 
-      // Exactly PAGE_SIZE rows means the server did NOT return the extra row,
-      // so there are no more pages.
       expect(result.scans).toHaveLength(PAGE_SIZE);
       expect(result.nextCursor).toBeNull();
     });
 
     it("passes cursor from URL search params to getScansForShop", async () => {
-      mockGetScansForShop.mockResolvedValue([]);
+      mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
 
       await loader(makeLoaderArgs("https://test-shop.myshopify.com/app/scans?cursor=scan-20"));
 

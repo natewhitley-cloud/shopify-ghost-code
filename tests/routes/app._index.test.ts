@@ -196,7 +196,7 @@ beforeEach(() => {
 
   mockGetShopByDomain.mockResolvedValue(SHOP);
   mockFetchMainTheme.mockResolvedValue(MAIN_THEME);
-  mockGetScansForShop.mockResolvedValue([COMPLETED_SCAN]);
+  mockGetScansForShop.mockResolvedValue({ items: [COMPLETED_SCAN], hasNextPage: false });
   mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
   mockGetPlanFeatures.mockReturnValue({
     maxScansPerMonth: 1,
@@ -354,7 +354,7 @@ describe("app._index loader", () => {
     });
 
     it("returns null healthScore when no scans exist", async () => {
-      mockGetScansForShop.mockResolvedValue([]);
+      mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
 
       const result = (await loader(makeLoaderArgs())) as {
         latestScan: null;
@@ -372,7 +372,10 @@ describe("app._index loader", () => {
         status: "COMPLETED",
         completedAt: new Date("2026-03-19T10:05:00Z"),
       };
-      mockGetScansForShop.mockResolvedValue([COMPLETED_SCAN, previousScan]);
+      mockGetScansForShop.mockResolvedValue({
+        items: [COMPLETED_SCAN, previousScan],
+        hasNextPage: false,
+      });
       mockGetFindingSummary.mockResolvedValueOnce(FINDING_SUMMARY).mockResolvedValueOnce({
         total: 10,
         bySeverity: { HIGH: 5, MEDIUM: 3, LOW: 2 },
@@ -412,7 +415,10 @@ describe("app._index loader — review prompt", () => {
   });
 
   it("returns showReviewPrompt: false when findingCount is below threshold (< 4)", async () => {
-    mockGetScansForShop.mockResolvedValue([{ ...COMPLETED_SCAN, findingCount: 3 }]);
+    mockGetScansForShop.mockResolvedValue({
+      items: [{ ...COMPLETED_SCAN, findingCount: 3 }],
+      hasNextPage: false,
+    });
 
     const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
 
@@ -420,7 +426,10 @@ describe("app._index loader — review prompt", () => {
   });
 
   it("returns showReviewPrompt: true when findingCount is exactly 4 (boundary)", async () => {
-    mockGetScansForShop.mockResolvedValue([{ ...COMPLETED_SCAN, findingCount: 4 }]);
+    mockGetScansForShop.mockResolvedValue({
+      items: [{ ...COMPLETED_SCAN, findingCount: 4 }],
+      hasNextPage: false,
+    });
 
     const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
 
@@ -428,9 +437,10 @@ describe("app._index loader — review prompt", () => {
   });
 
   it("returns showReviewPrompt: false when scan is not completed", async () => {
-    mockGetScansForShop.mockResolvedValue([
-      { ...COMPLETED_SCAN, status: "IN_PROGRESS", findingCount: 10 },
-    ]);
+    mockGetScansForShop.mockResolvedValue({
+      items: [{ ...COMPLETED_SCAN, status: "IN_PROGRESS", findingCount: 10 }],
+      hasNextPage: false,
+    });
 
     const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
 
@@ -438,7 +448,7 @@ describe("app._index loader — review prompt", () => {
   });
 
   it("returns showReviewPrompt: false when no scans exist", async () => {
-    mockGetScansForShop.mockResolvedValue([]);
+    mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
 
     const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
 

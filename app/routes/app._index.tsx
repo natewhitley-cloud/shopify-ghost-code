@@ -94,7 +94,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       : Promise.resolve([] as Array<{ id: string; completedAt: Date; themeName: string }>),
   ]);
 
-  const [latestScan = null, previousScan = null] = recentScans;
+  const [latestScan = null, previousScan = null] = recentScans.items;
 
   const findingSummary = latestScan ? await getFindingSummary(latestScan.id) : null;
 

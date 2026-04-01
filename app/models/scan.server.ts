@@ -97,19 +97,31 @@ export async function getScanById(scanId: string, options?: { includeFindings?: 
  * Supports cursor-based pagination:
  * - Pass `limit` to cap the number of results returned.
  * - Pass `cursor` (a scan ID) to fetch the page after that record.
- *   Internally fetches `limit + 1` rows so the caller can detect whether
- *   a next page exists without a separate COUNT query.
+ *
+ * Returns `{ items, hasNextPage }` so callers do not need to know about
+ * the limit+1 over-fetch trick. When `limit` is not provided, `hasNextPage`
+ * is always false and `items` contains all scans for the shop.
  */
 export async function getScansForShop(
   shopId: string,
   options?: { limit?: number; cursor?: string },
-) {
-  return db.scan.findMany({
+): Promise<{ items: Awaited<ReturnType<typeof db.scan.findMany>>; hasNextPage: boolean }> {
+  const { limit, cursor } = options ?? {};
+
+  const rows = await db.scan.findMany({
     where: { shopId },
     orderBy: { createdAt: "desc" },
-    ...(options?.limit !== undefined ? { take: options.limit + 1 } : {}),
-    ...(options?.cursor ? { cursor: { id: options.cursor }, skip: 1 } : {}),
+    ...(limit !== undefined ? { take: limit + 1 } : {}),
+    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
   });
+
+  if (limit === undefined) {
+    return { items: rows, hasNextPage: false };
+  }
+
+  const hasNextPage = rows.length > limit;
+  const items = hasNextPage ? rows.slice(0, limit) : rows;
+  return { items, hasNextPage };
 }
 
 /**
