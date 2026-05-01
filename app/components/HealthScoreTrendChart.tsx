@@ -87,15 +87,16 @@ export function HealthScoreTrendChart({
   const viewBoxWidth = 700;
   const viewBoxHeight = 270;
   const chartTop = 30;
-  const chartBottom = viewBoxHeight - 50; // extra bottom room for legend
+  const chartBottom = viewBoxHeight - 50;
   const chartHeight = chartBottom - chartTop;
-  const totalGap = barCount + 1;
-  const barWidth = Math.floor((viewBoxWidth - totalGap * 10) / barCount);
-  const barX = (i: number) => 10 + i * (barWidth + 10);
+  // Thin bars: each section gets equal width, bar occupies ~30% of its section, centered
+  const sectionWidth = viewBoxWidth / barCount;
+  const barWidth = Math.floor(sectionWidth * 0.3);
+  const barX = (i: number) => Math.floor(sectionWidth * i + (sectionWidth - barWidth) / 2);
   const maxTotal = Math.max(...scores.map((s) => s.highCount + s.mediumCount + s.lowCount), 1);
   const minBarH = 4;
-  const segH = (count: number, total: number) =>
-    total === 0 ? 0 : Math.max(minBarH, Math.round((count / maxTotal) * chartHeight));
+  const segH = (count: number) =>
+    count === 0 ? 0 : Math.max(minBarH, Math.round((count / maxTotal) * chartHeight));
 
   const directionClass = `trend-chart-direction--${healthScoreTrend.direction}`;
   const directionLabel =
@@ -144,18 +145,38 @@ export function HealthScoreTrendChart({
             >
               {scores.map((entry, i) => {
                 const x = barX(i);
+                const cx = x + barWidth / 2;
                 const total = entry.highCount + entry.mediumCount + entry.lowCount;
-                const hH = segH(entry.highCount, total);
-                const mH = segH(entry.mediumCount, total);
-                const lH = segH(entry.lowCount, total);
-                const totalH = hH + mH + lH || minBarH;
+                // Order from top: Low, Medium, High
+                const lH = segH(entry.lowCount);
+                const mH = segH(entry.mediumCount);
+                const hH = segH(entry.highCount);
+                const totalH = lH + mH + hH || minBarH;
                 const topY = chartBottom - totalH;
                 const dateLabel = formatShortDate(entry.completedAt);
+                // Segment y positions
+                const lowY = topY;
+                const medY = topY + lH;
+                const highY = topY + lH + mH;
+                // Show count inside a segment if it's tall enough
+                const labelIfFits = (count: number, y: number, h: number) =>
+                  h >= 16 ? (
+                    <text
+                      x={cx}
+                      y={y + h / 2 + 4}
+                      textAnchor="middle"
+                      fontSize="11"
+                      fill="white"
+                      fontWeight="600"
+                    >
+                      {count}
+                    </text>
+                  ) : null;
                 return (
                   <g key={entry.scanId}>
                     {/* Total label above bar */}
                     <text
-                      x={x + barWidth / 2}
+                      x={cx}
                       y={topY - 6}
                       textAnchor="middle"
                       fontSize="12"
@@ -164,39 +185,49 @@ export function HealthScoreTrendChart({
                     >
                       {total}
                     </text>
-                    {/* High segment (top) */}
-                    {entry.highCount > 0 && (
-                      <rect
-                        x={x}
-                        y={topY}
-                        width={barWidth}
-                        height={hH}
-                        fill={HIGH_COLOR}
-                        rx="4"
-                        aria-label={`${entry.highCount} high`}
-                      />
+                    {/* Low segment (top) */}
+                    {entry.lowCount > 0 && (
+                      <>
+                        <rect
+                          x={x}
+                          y={lowY}
+                          width={barWidth}
+                          height={lH}
+                          fill={LOW_COLOR}
+                          rx="4"
+                          aria-label={`${entry.lowCount} low`}
+                        />
+                        {labelIfFits(entry.lowCount, lowY, lH)}
+                      </>
                     )}
                     {/* Medium segment */}
                     {entry.mediumCount > 0 && (
-                      <rect
-                        x={x}
-                        y={topY + hH}
-                        width={barWidth}
-                        height={mH}
-                        fill={MEDIUM_COLOR}
-                        aria-label={`${entry.mediumCount} medium`}
-                      />
+                      <>
+                        <rect
+                          x={x}
+                          y={medY}
+                          width={barWidth}
+                          height={mH}
+                          fill={MEDIUM_COLOR}
+                          aria-label={`${entry.mediumCount} medium`}
+                        />
+                        {labelIfFits(entry.mediumCount, medY, mH)}
+                      </>
                     )}
-                    {/* Low segment (bottom) */}
-                    {entry.lowCount > 0 && (
-                      <rect
-                        x={x}
-                        y={topY + hH + mH}
-                        width={barWidth}
-                        height={lH}
-                        fill={LOW_COLOR}
-                        aria-label={`${entry.lowCount} low`}
-                      />
+                    {/* High segment (bottom) */}
+                    {entry.highCount > 0 && (
+                      <>
+                        <rect
+                          x={x}
+                          y={highY}
+                          width={barWidth}
+                          height={hH}
+                          fill={HIGH_COLOR}
+                          rx="4"
+                          aria-label={`${entry.highCount} high`}
+                        />
+                        {labelIfFits(entry.highCount, highY, hH)}
+                      </>
                     )}
                     {/* Empty bar placeholder when no findings */}
                     {total === 0 && (
@@ -209,9 +240,9 @@ export function HealthScoreTrendChart({
                         rx="4"
                       />
                     )}
-                    {/* Date label */}
+                    {/* Date label centered in section */}
                     <text
-                      x={x + barWidth / 2}
+                      x={sectionWidth * i + sectionWidth / 2}
                       y={chartBottom + 16}
                       textAnchor="middle"
                       fontSize="11"
