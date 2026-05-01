@@ -172,8 +172,15 @@ export function HealthScoreTrendChart({
                       {count}
                     </text>
                   ) : null;
+                const clipId = `bar-clip-${i}`;
                 return (
                   <g key={entry.scanId}>
+                    {/* Clip path rounds the outer corners of the whole stacked bar */}
+                    <defs>
+                      <clipPath id={clipId}>
+                        <rect x={x} y={topY} width={barWidth} height={totalH} rx="4" />
+                      </clipPath>
+                    </defs>
                     {/* Total label above bar */}
                     <text
                       x={cx}
@@ -185,24 +192,19 @@ export function HealthScoreTrendChart({
                     >
                       {total}
                     </text>
-                    {/* Low segment (top) */}
-                    {entry.lowCount > 0 && (
-                      <>
+                    {/* Stacked segments — no rx; clip path handles rounding */}
+                    <g clipPath={`url(#${clipId})`} aria-label={`${total} total findings`}>
+                      {entry.lowCount > 0 && (
                         <rect
                           x={x}
                           y={lowY}
                           width={barWidth}
                           height={lH}
                           fill={LOW_COLOR}
-                          rx="4"
                           aria-label={`${entry.lowCount} low`}
                         />
-                        {labelIfFits(entry.lowCount, lowY, lH)}
-                      </>
-                    )}
-                    {/* Medium segment */}
-                    {entry.mediumCount > 0 && (
-                      <>
+                      )}
+                      {entry.mediumCount > 0 && (
                         <rect
                           x={x}
                           y={medY}
@@ -211,35 +213,31 @@ export function HealthScoreTrendChart({
                           fill={MEDIUM_COLOR}
                           aria-label={`${entry.mediumCount} medium`}
                         />
-                        {labelIfFits(entry.mediumCount, medY, mH)}
-                      </>
-                    )}
-                    {/* High segment (bottom) */}
-                    {entry.highCount > 0 && (
-                      <>
+                      )}
+                      {entry.highCount > 0 && (
                         <rect
                           x={x}
                           y={highY}
                           width={barWidth}
                           height={hH}
                           fill={HIGH_COLOR}
-                          rx="4"
                           aria-label={`${entry.highCount} high`}
                         />
-                        {labelIfFits(entry.highCount, highY, hH)}
-                      </>
-                    )}
-                    {/* Empty bar placeholder when no findings */}
-                    {total === 0 && (
-                      <rect
-                        x={x}
-                        y={chartBottom - minBarH}
-                        width={barWidth}
-                        height={minBarH}
-                        fill="#e1e3e5"
-                        rx="4"
-                      />
-                    )}
+                      )}
+                      {total === 0 && (
+                        <rect
+                          x={x}
+                          y={chartBottom - minBarH}
+                          width={barWidth}
+                          height={minBarH}
+                          fill="#e1e3e5"
+                        />
+                      )}
+                    </g>
+                    {/* Segment count labels rendered outside clip so text isn't cut off */}
+                    {labelIfFits(entry.lowCount, lowY, lH)}
+                    {labelIfFits(entry.mediumCount, medY, mH)}
+                    {labelIfFits(entry.highCount, highY, hH)}
                     {/* Date label centered in section */}
                     <text
                       x={sectionWidth * i + sectionWidth / 2}
