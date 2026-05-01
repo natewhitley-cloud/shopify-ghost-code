@@ -26,6 +26,9 @@ function makeEntry(
     label: string;
     completedAt: string;
     themeName: string;
+    highCount: number;
+    mediumCount: number;
+    lowCount: number;
   }> = {},
 ) {
   return {
@@ -35,6 +38,9 @@ function makeEntry(
     label: "Good",
     completedAt: "2026-03-01T12:00:00Z",
     themeName: "Dawn",
+    highCount: 2,
+    mediumCount: 3,
+    lowCount: 5,
     ...overrides,
   };
 }

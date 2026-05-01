@@ -14,7 +14,6 @@ import {
   COLOR_CRITICAL,
   COLOR_INFO,
   COLOR_WARNING,
-  STATUS_TINTS,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
 } from "../styles/shared";
@@ -30,6 +29,9 @@ export type TrendScoreEntry = {
   label: string;
   completedAt: string;
   themeName: string;
+  highCount: number;
+  mediumCount: number;
+  lowCount: number;
 };
 
 export type HealthScoreTrend = {
@@ -80,28 +82,20 @@ export function HealthScoreTrendChart({
     return null;
   }
 
-  const toneColors: Record<string, string> = {
-    success: STATUS_TINTS.success.text,
-    warning: COLOR_WARNING,
-    critical: COLOR_CRITICAL,
-    info: COLOR_INFO,
-    caution: "#e67e22",
-  };
   const scores = healthScoreTrend.scores;
   const barCount = scores.length;
-  // SVG coordinate system: viewBox 0 0 700 250
-  // Reserve top 30px for score labels, bottom 30px for date labels,
-  // leaving 190px for the bars themselves.
   const viewBoxWidth = 700;
-  const viewBoxHeight = 250;
+  const viewBoxHeight = 270;
   const chartTop = 30;
-  const chartBottom = viewBoxHeight - 30;
-  const chartHeight = chartBottom - chartTop; // 190
-  const totalGap = barCount + 1; // gaps on both sides and between each bar
+  const chartBottom = viewBoxHeight - 50; // extra bottom room for legend
+  const chartHeight = chartBottom - chartTop;
+  const totalGap = barCount + 1;
   const barWidth = Math.floor((viewBoxWidth - totalGap * 10) / barCount);
   const barX = (i: number) => 10 + i * (barWidth + 10);
-  const barH = (score: number) => Math.round((score / 100) * chartHeight);
-  const barY = (score: number) => chartBottom - barH(score);
+  const maxTotal = Math.max(...scores.map((s) => s.highCount + s.mediumCount + s.lowCount), 1);
+  const minBarH = 4;
+  const segH = (count: number, total: number) =>
+    total === 0 ? 0 : Math.max(minBarH, Math.round((count / maxTotal) * chartHeight));
 
   const directionClass = `trend-chart-direction--${healthScoreTrend.direction}`;
   const directionLabel =
@@ -110,6 +104,10 @@ export function HealthScoreTrendChart({
       : healthScoreTrend.direction === "declining"
         ? "Declining"
         : "Stable";
+
+  const HIGH_COLOR = COLOR_CRITICAL;
+  const MEDIUM_COLOR = COLOR_WARNING;
+  const LOW_COLOR = COLOR_INFO;
 
   return (
     <>
@@ -123,15 +121,9 @@ export function HealthScoreTrendChart({
           color: #202223;
           margin: 0 0 4px 0;
         }
-        .trend-chart-direction--improving {
-          color: #1a8a3f;
-        }
-        .trend-chart-direction--declining {
-          color: #b98900;
-        }
-        .trend-chart-direction--stable {
-          color: #6d7175;
-        }
+        .trend-chart-direction--improving { color: #1a8a3f; }
+        .trend-chart-direction--declining { color: #b98900; }
+        .trend-chart-direction--stable { color: #6d7175; }
         .trend-chart-svg-container {
           margin-top: 12px;
           width: 100%;
@@ -140,7 +132,7 @@ export function HealthScoreTrendChart({
       <div className="trend-chart-card">
         <s-card>
           <h2 className="trend-chart-heading">
-            Health Score Trend: <span className={directionClass}>{directionLabel}</span>
+            Findings Trend: <span className={directionClass}>{directionLabel}</span>
           </h2>
           <div className="trend-chart-svg-container">
             <svg
@@ -148,41 +140,79 @@ export function HealthScoreTrendChart({
               width="100%"
               preserveAspectRatio="xMidYMid meet"
               role="img"
-              aria-label="Health score trend bar chart"
+              aria-label="Findings trend stacked bar chart"
             >
               {scores.map((entry, i) => {
                 const x = barX(i);
-                const h = barH(entry.score);
-                const y = barY(entry.score);
-                const fill = toneColors[entry.tone] ?? COLOR_INFO;
+                const total = entry.highCount + entry.mediumCount + entry.lowCount;
+                const hH = segH(entry.highCount, total);
+                const mH = segH(entry.mediumCount, total);
+                const lH = segH(entry.lowCount, total);
+                const totalH = hH + mH + lH || minBarH;
+                const topY = chartBottom - totalH;
                 const dateLabel = formatShortDate(entry.completedAt);
                 return (
                   <g key={entry.scanId}>
-                    {/* Score label above bar */}
+                    {/* Total label above bar */}
                     <text
                       x={x + barWidth / 2}
-                      y={y - 6}
+                      y={topY - 6}
                       textAnchor="middle"
                       fontSize="12"
                       fill={TEXT_PRIMARY}
                       fontWeight="600"
                     >
-                      {entry.score}
+                      {total}
                     </text>
-                    {/* Bar */}
-                    <rect
-                      x={x}
-                      y={y}
-                      width={barWidth}
-                      height={h}
-                      fill={fill}
-                      rx="4"
-                      aria-label={`Score ${entry.score}, ${entry.label}, scanned ${dateLabel}`}
-                    />
-                    {/* Date label below chart area */}
+                    {/* High segment (top) */}
+                    {entry.highCount > 0 && (
+                      <rect
+                        x={x}
+                        y={topY}
+                        width={barWidth}
+                        height={hH}
+                        fill={HIGH_COLOR}
+                        rx="4"
+                        aria-label={`${entry.highCount} high`}
+                      />
+                    )}
+                    {/* Medium segment */}
+                    {entry.mediumCount > 0 && (
+                      <rect
+                        x={x}
+                        y={topY + hH}
+                        width={barWidth}
+                        height={mH}
+                        fill={MEDIUM_COLOR}
+                        aria-label={`${entry.mediumCount} medium`}
+                      />
+                    )}
+                    {/* Low segment (bottom) */}
+                    {entry.lowCount > 0 && (
+                      <rect
+                        x={x}
+                        y={topY + hH + mH}
+                        width={barWidth}
+                        height={lH}
+                        fill={LOW_COLOR}
+                        aria-label={`${entry.lowCount} low`}
+                      />
+                    )}
+                    {/* Empty bar placeholder when no findings */}
+                    {total === 0 && (
+                      <rect
+                        x={x}
+                        y={chartBottom - minBarH}
+                        width={barWidth}
+                        height={minBarH}
+                        fill="#e1e3e5"
+                        rx="4"
+                      />
+                    )}
+                    {/* Date label */}
                     <text
                       x={x + barWidth / 2}
-                      y={chartBottom + 18}
+                      y={chartBottom + 16}
                       textAnchor="middle"
                       fontSize="11"
                       fill={TEXT_SUBDUED}
@@ -192,6 +222,21 @@ export function HealthScoreTrendChart({
                   </g>
                 );
               })}
+              {/* Legend */}
+              <g transform={`translate(10, ${viewBoxHeight - 18})`}>
+                <rect width="10" height="10" fill={HIGH_COLOR} rx="2" />
+                <text x="14" y="9" fontSize="10" fill={TEXT_SUBDUED}>
+                  High
+                </text>
+                <rect x="50" width="10" height="10" fill={MEDIUM_COLOR} rx="2" />
+                <text x="64" y="9" fontSize="10" fill={TEXT_SUBDUED}>
+                  Medium
+                </text>
+                <rect x="120" width="10" height="10" fill={LOW_COLOR} rx="2" />
+                <text x="134" y="9" fontSize="10" fill={TEXT_SUBDUED}>
+                  Low
+                </text>
+              </g>
             </svg>
           </div>
         </s-card>

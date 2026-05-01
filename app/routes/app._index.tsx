@@ -139,6 +139,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       .map((scan, i) => {
         const summary = trendSummaries[i];
         const { score, tone, label } = computeHealthScore(summary.bySeverity);
+        const highCount = summary.bySeverity.HIGH ?? 0;
+        const mediumCount = summary.bySeverity.MEDIUM ?? 0;
+        const lowCount = summary.bySeverity.LOW ?? 0;
         return {
           scanId: scan.id,
           score,
@@ -146,13 +149,20 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           label,
           completedAt: scan.completedAt.toISOString(),
           themeName: scan.themeName,
+          highCount,
+          mediumCount,
+          lowCount,
         };
       })
       .reverse();
 
-    const oldest = scores[0].score;
-    const newest = scores[scores.length - 1].score;
-    const delta = newest - oldest;
+    const oldestTotal = scores[0].highCount + scores[0].mediumCount + scores[0].lowCount;
+    const newestTotal =
+      scores[scores.length - 1].highCount +
+      scores[scores.length - 1].mediumCount +
+      scores[scores.length - 1].lowCount;
+    // Fewer findings = improving
+    const delta = oldestTotal - newestTotal;
     const direction: "improving" | "declining" | "stable" =
       delta > 3 ? "improving" : delta < -3 ? "declining" : "stable";
 
