@@ -1136,14 +1136,18 @@ describe("app._index loader — health score trend chart", () => {
       expect(scores[scores.length - 1].scanId).toBe(TREND_SCAN_NEWEST.id);
     });
 
-    it("returns direction: improving when newest score exceeds oldest by more than 3", async () => {
-      mockComputeHealthScore
-        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score (recentScans path)
-        .mockReturnValueOnce({ score: 70, label: "Good", tone: "info" as const }) // trend newest
-        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend middle
-        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend oldest
-        // After reverse: oldest=60, middle=60, newest=70 → delta = 70 - 60 = 10 > 3 → "improving"
-        .mockReturnValue(HEALTH_SCORE); // fallback for any other calls
+    it("returns direction: improving when newest total findings is more than 3 below oldest", async () => {
+      // oldest total=10, newest total=3 → delta = 10-3 = 7 > 3 → "improving"
+      mockGetFindingSummary.mockReset();
+      mockGetFindingSummary
+        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
+        .mockResolvedValueOnce({ total: 3, bySeverity: { HIGH: 1, MEDIUM: 1, LOW: 1 }, byType: {} }) // newest
+        .mockResolvedValueOnce({ total: 6, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 2 }, byType: {} }) // middle
+        .mockResolvedValueOnce({
+          total: 10,
+          bySeverity: { HIGH: 4, MEDIUM: 4, LOW: 2 },
+          byType: {},
+        }); // oldest
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1152,14 +1156,22 @@ describe("app._index loader — health score trend chart", () => {
       expect(result.healthScoreTrend?.direction).toBe("improving");
     });
 
-    it("returns direction: declining when newest score is more than 3 below oldest", async () => {
-      mockComputeHealthScore
-        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score
-        .mockReturnValueOnce({ score: 55, label: "Fair", tone: "warning" as const }) // trend newest
-        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend middle
-        .mockReturnValueOnce({ score: 65, label: "Good", tone: "info" as const }) // trend oldest
-        // After reverse: oldest=65, middle=60, newest=55 → delta = 55 - 65 = -10 < -3 → "declining"
-        .mockReturnValue(HEALTH_SCORE);
+    it("returns direction: declining when newest total findings is more than 3 above oldest", async () => {
+      // oldest total=3, newest total=10 → delta = 3-10 = -7 < -3 → "declining"
+      mockGetFindingSummary.mockReset();
+      mockGetFindingSummary
+        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
+        .mockResolvedValueOnce({
+          total: 10,
+          bySeverity: { HIGH: 4, MEDIUM: 4, LOW: 2 },
+          byType: {},
+        }) // newest
+        .mockResolvedValueOnce({ total: 6, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 2 }, byType: {} }) // middle
+        .mockResolvedValueOnce({
+          total: 3,
+          bySeverity: { HIGH: 1, MEDIUM: 1, LOW: 1 },
+          byType: {},
+        }); // oldest
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1169,13 +1181,16 @@ describe("app._index loader — health score trend chart", () => {
     });
 
     it("returns direction: stable when delta is within +/- 3", async () => {
-      mockComputeHealthScore
-        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score
-        .mockReturnValueOnce({ score: 62, label: "Fair", tone: "warning" as const }) // trend newest
-        .mockReturnValueOnce({ score: 61, label: "Fair", tone: "warning" as const }) // trend middle
-        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend oldest
-        // After reverse: oldest=60, newest=62 → delta = 2, within +/-3 → "stable"
-        .mockReturnValue(HEALTH_SCORE);
+      // oldest total=6, newest total=5 → delta = 1, within +/-3 → "stable"
+      mockGetFindingSummary
+        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
+        .mockResolvedValueOnce({ total: 5, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 }, byType: {} }) // newest
+        .mockResolvedValueOnce({ total: 5, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 }, byType: {} }) // middle
+        .mockResolvedValueOnce({
+          total: 6,
+          bySeverity: { HIGH: 2, MEDIUM: 3, LOW: 1 },
+          byType: {},
+        }); // oldest
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1185,13 +1200,16 @@ describe("app._index loader — health score trend chart", () => {
     });
 
     it("returns direction: stable when delta is exactly +3 (boundary: not > 3)", async () => {
-      mockComputeHealthScore
-        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score
-        .mockReturnValueOnce({ score: 63, label: "Fair", tone: "warning" as const }) // trend newest
-        .mockReturnValueOnce({ score: 61, label: "Fair", tone: "warning" as const }) // trend middle
-        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend oldest
-        // After reverse: oldest=60, newest=63 → delta = 3, not > 3 → "stable"
-        .mockReturnValue(HEALTH_SCORE);
+      // oldest total=8, newest total=5 → delta = 3, not > 3 → "stable"
+      mockGetFindingSummary
+        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
+        .mockResolvedValueOnce({ total: 5, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 }, byType: {} }) // newest
+        .mockResolvedValueOnce({ total: 6, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 2 }, byType: {} }) // middle
+        .mockResolvedValueOnce({
+          total: 8,
+          bySeverity: { HIGH: 3, MEDIUM: 3, LOW: 2 },
+          byType: {},
+        }); // oldest
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1201,13 +1219,16 @@ describe("app._index loader — health score trend chart", () => {
     });
 
     it("returns direction: stable when delta is exactly -3 (boundary: not < -3)", async () => {
-      mockComputeHealthScore
-        .mockReturnValueOnce(HEALTH_SCORE) // latestScan health score
-        .mockReturnValueOnce({ score: 57, label: "Fair", tone: "warning" as const }) // trend newest
-        .mockReturnValueOnce({ score: 58, label: "Fair", tone: "warning" as const }) // trend middle
-        .mockReturnValueOnce({ score: 60, label: "Fair", tone: "warning" as const }) // trend oldest
-        // After reverse: oldest=60, newest=57 → delta = -3, not < -3 → "stable"
-        .mockReturnValue(HEALTH_SCORE);
+      // oldest total=5, newest total=8 → delta = -3, not < -3 → "stable"
+      mockGetFindingSummary
+        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
+        .mockResolvedValueOnce({ total: 8, bySeverity: { HIGH: 3, MEDIUM: 3, LOW: 2 }, byType: {} }) // newest
+        .mockResolvedValueOnce({ total: 6, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 2 }, byType: {} }) // middle
+        .mockResolvedValueOnce({
+          total: 5,
+          bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 },
+          byType: {},
+        }); // oldest
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
