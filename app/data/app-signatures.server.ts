@@ -1011,4 +1011,36 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["reamaze-widget", "reamaze"],
     cssPatterns: [/reamaze/],
   },
+  {
+    appName: "EmbedSocial",
+    cdnDomains: ["embedsocial.com"],
+    scriptPatterns: [
+      /embedsocial\.com\/cdn/,
+      /EmbedSocialHashtagScript/,
+      /EmbedSocialReviewsScript/,
+      /EmbedSocialAlbumsScript/,
+    ],
+    snippetNames: ["embedsocial", "embedsocial-widget", "embedsocial-feed"],
+    cssPatterns: [/embedsocial/],
+    textPatterns: [
+      /\bembedSocial-hashtag\b/,
+      /\bembedSocial-reviews\b/,
+      /\bembedSocial-albums\b/,
+      /\bdata-ref\b[^>]*embedsocial/i,
+    ],
+  },
+  {
+    appName: "SEO Booster (Secomapp / SearchPie)",
+    cdnDomains: ["sb.secomapp.com", "cdn.searchpie.io"],
+    scriptPatterns: [/secomapp\.com/, /searchpie\.io/, /sb\.secomapp/],
+    snippetNames: [
+      "SEO-with-JSON-LD-Article-Collection",
+      "seo-booster",
+      "secomapp-seo",
+      "searchpie",
+      "searchpie-seo",
+    ],
+    cssPatterns: [/secomapp/, /searchpie/],
+    jsonLdPatterns: [/secomapp/i, /searchpie/i],
+  },
 ];
