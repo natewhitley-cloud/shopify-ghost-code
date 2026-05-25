@@ -4,9 +4,9 @@
  * Strategy:
  *   - Mock authenticate.admin() to control session context.
  *   - Mock getShopMetadata and getPlanFeatures.
- *   - Verify loader returns correct plan and feature info.
- *   - No action tests — billing is handled via Managed Pricing in the
- *     Partner Dashboard, so the settings route has no action export.
+ *   - Verify loader returns correct plan, feature info, and shopDomain.
+ *   - No action tests — billing uses Shopify Managed Pricing; plan changes
+ *     happen on Shopify's native pricing_plans page, not via an in-app action.
  */
 
 import type { LoaderFunctionArgs } from "react-router";
@@ -37,7 +37,7 @@ vi.mock("../../app/lib/billing.server", () => ({
 }));
 
 vi.mock("../../app/lib/plans", () => ({
-  PLANS: { FREE: "Free", STANDARD: "Standard", PROFESSIONAL: "Professional" },
+  PLANS: { FREE: "free", STANDARD: "Standard", PROFESSIONAL: "Professional" },
 }));
 
 // ---------------------------------------------------------------------------
@@ -61,10 +61,12 @@ const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 // Fixtures
 // ---------------------------------------------------------------------------
 
+const SHOP_DOMAIN = "test-shop.myshopify.com";
+
 const SHOP = {
   id: "shop-1",
-  domain: "test-shop.myshopify.com",
-  plan: "Free",
+  domain: SHOP_DOMAIN,
+  plan: "free",
 };
 
 const FREE_FEATURES = {
@@ -79,7 +81,7 @@ const FREE_FEATURES = {
 
 function makeLoaderArgs(overrides?: Partial<LoaderFunctionArgs>): LoaderFunctionArgs {
   return {
-    request: new Request("https://test-shop.myshopify.com/app/settings"),
+    request: new Request(`https://${SHOP_DOMAIN}/app/settings`),
     params: {},
     context: {},
     ...overrides,
@@ -94,7 +96,7 @@ beforeEach(() => {
   vi.resetAllMocks();
 
   mockAuthenticateAdmin.mockResolvedValue({
-    session: { shop: SHOP.domain },
+    session: { shop: SHOP_DOMAIN },
   });
 
   mockGetShopMetadata.mockResolvedValue(SHOP);
@@ -106,14 +108,16 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("app.settings loader", () => {
-  it("returns current plan and feature info", async () => {
+  it("returns current plan, feature info, and shopDomain", async () => {
     const result = (await loader(makeLoaderArgs())) as {
       shop: { plan: string; domain: string };
       features: typeof FREE_FEATURES;
+      shopDomain: string;
     };
 
-    expect(result.shop.plan).toBe("Free");
-    expect(result.shop.domain).toBe("test-shop.myshopify.com");
+    expect(result.shop.plan).toBe("free");
+    expect(result.shop.domain).toBe(SHOP_DOMAIN);
+    expect(result.shopDomain).toBe(SHOP_DOMAIN);
     expect(result.features).toEqual(FREE_FEATURES);
   });
 

@@ -22,19 +22,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const features = getPlanFeatures(shop.plan);
 
-  return { shop: { plan: shop.plan, domain: shop.domain }, features };
+  return { shop: { plan: shop.plan, domain: shop.domain }, features, shopDomain: session.shop };
 };
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
+// Charge ID from the Shopify Partner Dashboard (Partners → Apps → Ghost Code → Pricing).
+const GHOST_CODE_CHARGE_ID = "3e80de5fa6065400e94de3f1fe7f0c8b";
+
 export default function Settings() {
-  const { shop } = useLoaderData<typeof loader>();
+  const { shop, shopDomain } = useLoaderData<typeof loader>();
 
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
   const isProfessional = shop.plan === PLANS.PROFESSIONAL;
+
+  // Shopify Managed Pricing — plan changes happen on Shopify's native UI.
+  const pricingPlansUrl = `https://${shopDomain}/admin/charges/${GHOST_CODE_CHARGE_ID}/pricing_plans`;
+
+  function planButton(label: string, variant: "primary" | "secondary" = "primary") {
+    return (
+      <div style={{ marginTop: "16px" }}>
+        <a href={pricingPlansUrl} target="_top" rel="noreferrer">
+          <s-button variant={variant}>{label}</s-button>
+        </a>
+      </div>
+    );
+  }
 
   return (
     <s-page heading="Billing">
@@ -134,6 +150,11 @@ export default function Settings() {
               <s-list-item>7-day free trial</s-list-item>
             </s-unordered-list>
           </div>
+          {!isStandard &&
+            planButton(
+              isFree ? "Start Free Trial" : isProfessional ? "Downgrade to Standard" : "Select",
+              isProfessional ? "secondary" : "primary",
+            )}
         </div>
 
         {/* Professional Plan */}
@@ -154,21 +175,24 @@ export default function Settings() {
               <s-list-item>7-day free trial</s-list-item>
             </s-unordered-list>
           </div>
+          {!isProfessional && planButton(isFree ? "Start Free Trial" : "Upgrade to Professional")}
         </div>
       </div>
 
-      {/* Manage Subscription */}
+      {/* Manage subscription */}
       <div style={{ marginTop: "32px" }}>
         <s-card>
           <s-stack direction="block" gap="base">
             <s-heading>Manage Subscription</s-heading>
             <s-paragraph>
-              Plan changes are managed through the Shopify App Store. To upgrade, downgrade, or
-              cancel your subscription, visit your Shopify admin billing settings.
+              Select a plan above to upgrade or downgrade. To cancel your subscription and return to
+              the Free plan, use the link below.
             </s-paragraph>
-            <s-paragraph>
-              <a href="shopify://admin/settings/billing">Manage subscription in Shopify Admin</a>
-            </s-paragraph>
+            <div>
+              <a href={pricingPlansUrl} target="_top" rel="noreferrer">
+                <s-button>Manage subscription in Shopify</s-button>
+              </a>
+            </div>
           </s-stack>
         </s-card>
       </div>
