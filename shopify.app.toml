@@ -36,7 +36,7 @@ api_version = "2026-04"
 # Ghost Code only needs to read themes — no write access required
 scopes = "read_themes"
 # Optional scopes — requested via App Bridge scopes modal
-optional_scopes = ["read_translations", "read_products", "read_content", "read_online_store_navigation"]
+optional_scopes = ["read_translations", "read_products", "read_content", "read_url_redirects"]
 
 [auth]
 redirect_urls = [ "https://app.alpenglowsoftware.com/auth/callback" ]

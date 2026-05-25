@@ -2,7 +2,7 @@
  * URL redirect fetcher service.
  *
  * Queries Shopify Admin API for URL redirects.
- * Requires `read_online_store_navigation` scope.
+ * Requires `read_url_redirects` scope.
  */
 
 import { checkRateLimit } from "./theme-fetcher.server";
