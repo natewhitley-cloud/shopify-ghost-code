@@ -966,7 +966,7 @@ export default function Dashboard() {
                       </select>
                       {!canSelectTheme && (
                         <div className="theme-picker-nudge">
-                          <a href="/app/settings">Upgrade to Professional</a> to scan any theme
+                          <Link to="/app/settings">Upgrade to Professional</Link> to scan any theme
                         </div>
                       )}
                     </div>
