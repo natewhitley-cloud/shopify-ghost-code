@@ -58,6 +58,7 @@ vi.mock("../../app/models/unknown-script.server", () => ({
 vi.mock("../../app/models/scan.server", () => ({
   updateScanStatus: vi.fn(),
   finalizeScan: vi.fn(),
+  getPreviousScanForTheme: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
@@ -123,7 +124,11 @@ vi.mock("../../app/services/redirect-detector.server", () => ({
 import db from "../../app/db.server";
 import { TransientScopeCheckError } from "../../app/lib/scope-check.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
-import { finalizeScan, updateScanStatus } from "../../app/models/scan.server";
+import {
+  finalizeScan,
+  updateScanStatus,
+  getPreviousScanForTheme,
+} from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.server";
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
@@ -163,6 +168,7 @@ const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
 const mockFinalizeScan = finalizeScan as ReturnType<typeof vi.fn>;
+const mockGetPreviousScanForTheme = getPreviousScanForTheme as ReturnType<typeof vi.fn>;
 const mockSaveThemeFindings = saveThemeFindings as ReturnType<typeof vi.fn>;
 const mockCreateFindings = createFindings as ReturnType<typeof vi.fn>;
 const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
@@ -281,6 +287,9 @@ beforeEach(() => {
   // Default happy-path wiring for models
   mockUpdateScanStatus.mockResolvedValue(undefined);
   mockFinalizeScan.mockResolvedValue(undefined);
+  // No prior scan by default — the zero-file sanity guard is a no-op unless a
+  // test wires up a prior successful scan that had findings.
+  mockGetPreviousScanForTheme.mockResolvedValue(null);
   mockSaveThemeFindings.mockResolvedValue(undefined);
   mockCreateFindings.mockResolvedValue({ count: 0 });
   mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
@@ -700,5 +709,80 @@ describe("scanTheme — optional audit steps", () => {
       expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
       expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Zero-file sanity guard (LOG-5)
+//
+// A theme fetch that returns ZERO files is suspicious for any real theme. If the
+// most recent prior successful scan had findings, completing the scan as clean
+// would wipe those findings and the diff would falsely mark them all "resolved".
+// The guard fails the scan in that case; otherwise scans complete normally.
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
+  beforeEach(() => {
+    // Simulate a soft-failed / empty theme fetch: no files, no theme findings.
+    mockFetchThemeFiles.mockResolvedValue([]);
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+  });
+
+  it("fails the scan when 0 files are fetched but the prior successful scan had findings", async () => {
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+    });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prior-scan-1",
+      findingCount: 5,
+    });
+
+    await expect(runScanTheme()).rejects.toThrow(/fetched 0 theme files/);
+
+    // The prior scan was looked up using this scan's createdAt as the boundary.
+    expect(mockGetPreviousScanForTheme).toHaveBeenCalledWith(
+      SHOP_ID,
+      THEME_ID,
+      new Date("2026-06-15T00:00:00Z"),
+    );
+    // The scan must be marked FAILED, never finalized COMPLETED/PARTIAL.
+    expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
+    expect(mockFinalizeScan).not.toHaveBeenCalled();
+  });
+
+  it("completes normally when 0 files are fetched and there is no prior scan", async () => {
+    mockGetPreviousScanForTheme.mockResolvedValue(null);
+
+    const result = await runScanTheme();
+
+    expect(result).toEqual({ scanId: SCAN_ID, findingCount: 0, status: "COMPLETED" });
+    expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+      status: "COMPLETED",
+      findingCount: 0,
+      skippedCategories: [],
+    });
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+
+  it("completes normally when 0 files are fetched and the prior scan had zero findings", async () => {
+    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prior-scan-clean", findingCount: 0 });
+
+    const result = await runScanTheme();
+
+    expect(result).toEqual({ scanId: SCAN_ID, findingCount: 0, status: "COMPLETED" });
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+
+  it("does NOT run the guard (or look up a prior scan) when files were fetched", async () => {
+    mockFetchThemeFiles.mockResolvedValue(MOCK_FILES);
+    mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
+    // Even if a prior scan with findings exists, a non-empty fetch is trusted.
+    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prior", findingCount: 5 });
+
+    const result = await runScanTheme();
+
+    expect(mockGetPreviousScanForTheme).not.toHaveBeenCalled();
+    expect(result.status).toBe("COMPLETED");
   });
 });

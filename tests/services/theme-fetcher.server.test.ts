@@ -212,7 +212,10 @@ describe("fetchThemeFiles", () => {
     expect(files[0].filename).toBe("layout/theme.liquid");
   });
 
-  it("returns empty array and logs when theme data is missing", async () => {
+  // LOG-5: previously this returned an empty array (break-and-return), which let
+  // a transient soft-failure complete a scan as "clean" and wipe prior findings.
+  // It must now throw so the scan is retried and ultimately marked FAILED.
+  it("throws (including the themeId) when theme data is null without a GraphQL errors array", async () => {
     const graphql = vi.fn().mockResolvedValue({
       json: vi.fn().mockResolvedValue({
         data: { theme: null },
@@ -220,8 +223,39 @@ describe("fetchThemeFiles", () => {
       }),
     });
 
-    const files = await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/999");
-    expect(files).toHaveLength(0);
+    await expect(fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/999")).rejects.toThrow(
+      "No theme data returned for theme gid://shopify/Theme/999",
+    );
+  });
+
+  it("throws when theme data is undefined (missing data block entirely)", async () => {
+    const graphql = vi.fn().mockResolvedValue({
+      json: vi.fn().mockResolvedValue({ data: {}, extensions: {} }),
+    });
+
+    await expect(fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1")).rejects.toThrow(
+      "No theme data returned for theme gid://shopify/Theme/1",
+    );
+  });
+
+  // LOG-5: theme data disappearing mid-pagination must also throw — a retry is
+  // safer than persisting the partial file list accumulated from earlier pages.
+  it("throws when theme data disappears mid-pagination instead of returning a partial list", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeThemeFilesResponse([{ filename: "layout/theme.liquid", body: { content: "a" } }], {
+          hasNextPage: true,
+          endCursor: "cursor-1",
+        }),
+      )
+      .mockResolvedValueOnce({
+        json: vi.fn().mockResolvedValue({ data: { theme: null }, extensions: {} }),
+      });
+
+    await expect(fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/7")).rejects.toThrow(
+      "No theme data returned for theme gid://shopify/Theme/7",
+    );
   });
 
   it("throws when the response contains GraphQL errors", async () => {
