@@ -231,6 +231,9 @@ function makeProductPricesResponse(
         compareAtPrice: string | null;
       }>;
     };
+    metafields?: {
+      nodes: Array<{ namespace: string; key: string }>;
+    };
   }>,
   pageInfo: { hasNextPage: boolean; endCursor: string | null } = {
     hasNextPage: false,
@@ -320,6 +323,50 @@ describe("fetchProductPrices", () => {
     expect(products[0].variants).toHaveLength(2);
     expect(products[0].variants[0].price).toBe("10.00");
     expect(products[0].variants[0].compareAtPrice).toBe("20.00");
+  });
+
+  it("captures product metafields alongside pricing data", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      makeProductPricesResponse([
+        {
+          id: "gid://shopify/Product/1",
+          title: "On Sale",
+          variants: {
+            nodes: [{ id: "v1", title: "Default", price: "19.99", compareAtPrice: "29.99" }],
+          },
+          metafields: {
+            nodes: [{ namespace: "inventory", key: "ShappifySale" }],
+          },
+        },
+      ]),
+    );
+    const admin = makeAdmin(graphql);
+
+    const products = await fetchProductPrices(admin);
+
+    expect(products).toHaveLength(1);
+    expect(products[0].metafields).toEqual([{ namespace: "inventory", key: "ShappifySale" }]);
+  });
+
+  it("defaults metafields to an empty array when the field is absent", async () => {
+    // Older/partial responses may omit the metafields connection entirely.
+    const graphql = vi.fn().mockResolvedValue(
+      makeProductPricesResponse([
+        {
+          id: "gid://shopify/Product/1",
+          title: "No Metafields",
+          variants: {
+            nodes: [{ id: "v1", title: "Default", price: "19.99", compareAtPrice: "29.99" }],
+          },
+        },
+      ]),
+    );
+    const admin = makeAdmin(graphql);
+
+    const products = await fetchProductPrices(admin);
+
+    expect(products).toHaveLength(1);
+    expect(products[0].metafields).toEqual([]);
   });
 
   it("filters out products with no compareAtPrice set", async () => {

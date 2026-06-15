@@ -28,6 +28,12 @@ export type ProductPriceData = {
     price: string;
     compareAtPrice: string | null;
   }>;
+  // Merchant-visible product metafields, used by the price detector to
+  // corroborate that a persistent compare-at price was left by an uninstalled
+  // discount/sale app (rather than being an intentional merchant sale).
+  // App-owned (app--{id}--*) metafields are invisible to third-party apps and
+  // are therefore never present here.
+  metafields: Array<{ namespace: string; key: string }>;
 };
 
 export type ProductMetafieldData = {
@@ -57,6 +63,12 @@ const PRODUCT_PRICES_QUERY = `
             title
             price
             compareAtPrice
+          }
+        }
+        metafields(first: 50) {
+          nodes {
+            namespace
+            key
           }
         }
       }
@@ -227,6 +239,9 @@ export async function fetchProductPrices(
                 compareAtPrice: string | null;
               }>;
             };
+            metafields?: {
+              nodes?: Array<{ namespace: string; key: string }>;
+            };
           }>;
           pageInfo?: { hasNextPage?: boolean; endCursor?: string };
         };
@@ -252,6 +267,10 @@ export async function fetchProductPrices(
           id: node.id,
           title: node.title,
           variants,
+          metafields: (node.metafields?.nodes ?? []).map((m) => ({
+            namespace: m.namespace,
+            key: m.key,
+          })),
         });
       }
     }

@@ -20,11 +20,20 @@ function makeVariant(
   };
 }
 
+// Bold Discounts' canonical orphan marker: activating a sale writes
+// `inventory.ShappifySale` and is left behind when the app is uninstalled.
+const BOLD_EVIDENCE: ProductPriceData["metafields"] = [
+  { namespace: "inventory", key: "ShappifySale" },
+];
+
 function makeProduct(overrides: Partial<ProductPriceData> = {}): ProductPriceData {
   return {
     id: "gid://shopify/Product/1",
     title: "Test Product",
     variants: [makeVariant()],
+    // Default to orphan evidence present so pricing-shape tests stay focused on
+    // the variant logic; tests covering the "no evidence" path override this.
+    metafields: BOLD_EVIDENCE,
     ...overrides,
   };
 }
@@ -34,17 +43,83 @@ function makeProduct(overrides: Partial<ProductPriceData> = {}): ProductPriceDat
 // ---------------------------------------------------------------------------
 
 describe("detectPersistentDiscounts", () => {
-  it("detects product with compare-at pricing on 1 variant", () => {
+  // -------------------------------------------------------------------------
+  // Orphan-evidence gating (LOG-2): the core behavior change.
+  // -------------------------------------------------------------------------
+
+  it("does NOT flag a normal active sale with no orphan evidence", () => {
+    // Compare-at set and greater than price — a legitimate, running sale — but
+    // no leftover discount-app metafield. This must not be flagged.
     const products = [
       makeProduct({
         variants: [makeVariant({ price: "19.99", compareAtPrice: "29.99" })],
+        metafields: [],
+      }),
+    ];
+    const findings = detectPersistentDiscounts(products);
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does NOT flag when only unrelated (non-pricing) app metafields exist", () => {
+    // A reviews-app metafield says nothing about pricing, so it is not orphan
+    // corroboration for a compare-at price.
+    const products = [
+      makeProduct({
+        variants: [makeVariant({ price: "19.99", compareAtPrice: "29.99" })],
+        metafields: [{ namespace: "judgeme", key: "review_count" }],
+      }),
+    ];
+    const findings = detectPersistentDiscounts(products);
+
+    expect(findings).toEqual([]);
+  });
+
+  it("flags a persistent discount corroborated by a Bold Discounts metafield", () => {
+    const products = [
+      makeProduct({
+        variants: [makeVariant({ price: "19.99", compareAtPrice: "29.99" })],
+        metafields: BOLD_EVIDENCE,
       }),
     ];
     const findings = detectPersistentDiscounts(products);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].findingType).toBe(FindingType.GHOST_PRICE);
+    expect(findings[0].appName).toBe("Bold Discounts");
+    expect(findings[0].description).toContain("Bold Discounts");
+    expect(findings[0].description).toContain("inventory.ShappifySale");
   });
+
+  it("flags via Bold's branded namespace even without a key match", () => {
+    const products = [
+      makeProduct({
+        variants: [makeVariant({ price: "10.00", compareAtPrice: "20.00" })],
+        metafields: [{ namespace: "shappify", key: "anything" }],
+      }),
+    ];
+    const findings = detectPersistentDiscounts(products);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Bold Discounts");
+  });
+
+  it("does NOT flag when the inventory namespace key is not the Bold marker", () => {
+    // `inventory` is a generic namespace — only the Bold-specific key corroborates.
+    const products = [
+      makeProduct({
+        variants: [makeVariant({ price: "19.99", compareAtPrice: "29.99" })],
+        metafields: [{ namespace: "inventory", key: "warehouse_location" }],
+      }),
+    ];
+    const findings = detectPersistentDiscounts(products);
+
+    expect(findings).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Pricing-shape logic (evidence present in all of the following).
+  // -------------------------------------------------------------------------
 
   it("shows up to 3 affected variants in snippet", () => {
     const products = [
@@ -84,10 +159,11 @@ describe("detectPersistentDiscounts", () => {
     expect(findings[0].codeSnippet.split("\n")).toHaveLength(3);
   });
 
-  it("skips products where compareAtPrice is null", () => {
+  it("skips products where compareAtPrice is null (even with orphan evidence)", () => {
     const products = [
       makeProduct({
         variants: [makeVariant({ price: "29.99", compareAtPrice: null })],
+        metafields: BOLD_EVIDENCE,
       }),
     ];
     const findings = detectPersistentDiscounts(products);
@@ -99,6 +175,19 @@ describe("detectPersistentDiscounts", () => {
     const products = [
       makeProduct({
         variants: [makeVariant({ price: "39.99", compareAtPrice: "29.99" })],
+        metafields: BOLD_EVIDENCE,
+      }),
+    ];
+    const findings = detectPersistentDiscounts(products);
+
+    expect(findings).toEqual([]);
+  });
+
+  it("does not flag when compareAtPrice equals price (no discount shown)", () => {
+    const products = [
+      makeProduct({
+        variants: [makeVariant({ price: "29.99", compareAtPrice: "29.99" })],
+        metafields: BOLD_EVIDENCE,
       }),
     ];
     const findings = detectPersistentDiscounts(products);
@@ -132,6 +221,29 @@ describe("detectPersistentDiscounts", () => {
     expect(findings[2].description).toContain("Product C");
   });
 
+  it("flags only the corroborated products in a mixed batch", () => {
+    // A real store: one product is an orphaned Bold discount, the other is a
+    // legitimate merchant sale. Only the first should be flagged.
+    const products = [
+      makeProduct({
+        id: "gid://shopify/Product/1",
+        title: "Orphaned",
+        variants: [makeVariant({ price: "10.00", compareAtPrice: "20.00" })],
+        metafields: BOLD_EVIDENCE,
+      }),
+      makeProduct({
+        id: "gid://shopify/Product/2",
+        title: "Legit Sale",
+        variants: [makeVariant({ price: "15.00", compareAtPrice: "25.00" })],
+        metafields: [],
+      }),
+    ];
+    const findings = detectPersistentDiscounts(products);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Orphaned");
+  });
+
   it("returns empty array for empty products input", () => {
     const findings = detectPersistentDiscounts([]);
 
@@ -149,7 +261,7 @@ describe("detectPersistentDiscounts", () => {
     expect(findings[0].severity).toBe(Severity.HIGH);
   });
 
-  it("sets appName to undefined (cannot attribute from price data)", () => {
+  it("attributes the finding to the corroborating app", () => {
     const products = [
       makeProduct({
         variants: [makeVariant({ price: "10.00", compareAtPrice: "20.00" })],
@@ -157,7 +269,7 @@ describe("detectPersistentDiscounts", () => {
     ];
     const findings = detectPersistentDiscounts(products);
 
-    expect(findings[0].appName).toBeUndefined();
+    expect(findings[0].appName).toBe("Bold Discounts");
   });
 
   it("uses products/{id} format for filename", () => {
@@ -195,17 +307,6 @@ describe("detectPersistentDiscounts", () => {
     expect(findings[0].codeSnippet).toContain("Affected");
     expect(findings[0].codeSnippet).toContain("Also Affected");
     expect(findings[0].codeSnippet).not.toContain("Normal");
-  });
-
-  it("does not flag when compareAtPrice equals price (no discount shown)", () => {
-    const products = [
-      makeProduct({
-        variants: [makeVariant({ price: "29.99", compareAtPrice: "29.99" })],
-      }),
-    ];
-    const findings = detectPersistentDiscounts(products);
-
-    expect(findings).toEqual([]);
   });
 
   it("sets lineNumber to 0", () => {
