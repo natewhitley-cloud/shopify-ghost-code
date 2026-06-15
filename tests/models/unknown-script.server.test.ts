@@ -20,6 +20,7 @@ const mockDb = vi.hoisted(() => ({
   unknownScript: {
     createMany: vi.fn(),
     findMany: vi.fn(),
+    findFirst: vi.fn(),
   },
   signatureSubmission: {
     create: vi.fn(),
@@ -43,7 +44,11 @@ import {
   updateSubmissionStatus,
   acceptSubmissionsForDomain,
   getSubmissionStats,
+  findUnknownScriptForShop,
+  createUnknownScripts,
+  submitSignatureSuggestion,
 } from "../../app/models/unknown-script.server";
+import type { CreateUnknownScriptInput } from "../../app/models/unknown-script.server";
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -413,5 +418,137 @@ describe("getSubmissionStats", () => {
     mockDb.signatureSubmission.count.mockRejectedValue(new Error("DB unavailable"));
 
     await expect(getSubmissionStats()).rejects.toThrow("DB unavailable");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// findUnknownScriptForShop
+// ---------------------------------------------------------------------------
+
+describe("findUnknownScriptForShop", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("queries findFirst with the shop-scoped where clause (tenant isolation)", async () => {
+    const record = { id: "us-1", scanId: "scan-1", url: "https://cdn.example.com/a.js" };
+    mockDb.unknownScript.findFirst.mockResolvedValue(record);
+
+    const result = await findUnknownScriptForShop("us-1", "shop-1");
+
+    // The `scan: { shopId }` filter is the tenant-isolation contract: a script
+    // is only returned if its parent scan belongs to the requesting shop.
+    expect(mockDb.unknownScript.findFirst).toHaveBeenCalledWith({
+      where: { id: "us-1", scan: { shopId: "shop-1" } },
+    });
+    expect(result).toEqual(record);
+  });
+
+  it("returns null when no script matches the id + shop scope", async () => {
+    mockDb.unknownScript.findFirst.mockResolvedValue(null);
+
+    const result = await findUnknownScriptForShop("us-missing", "shop-1");
+
+    expect(result).toBeNull();
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.unknownScript.findFirst.mockRejectedValue(new Error("Connection reset"));
+
+    await expect(findUnknownScriptForShop("us-1", "shop-1")).rejects.toThrow("Connection reset");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createUnknownScripts
+// ---------------------------------------------------------------------------
+
+describe("createUnknownScripts", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  function makeScript(overrides?: Partial<CreateUnknownScriptInput>): CreateUnknownScriptInput {
+    return {
+      filename: "layout/theme.liquid",
+      lineNumber: 42,
+      url: "https://cdn.example.com/widget.js",
+      resourceType: "script",
+      codeSnippet: '<script src="https://cdn.example.com/widget.js"></script>',
+      ...overrides,
+    };
+  }
+
+  it("short-circuits on empty input without calling createMany", async () => {
+    const result = await createUnknownScripts("scan-1", []);
+
+    expect(result).toEqual({ count: 0 });
+    expect(mockDb.unknownScript.createMany).not.toHaveBeenCalled();
+  });
+
+  it("stamps each record with the scanId and calls createMany", async () => {
+    mockDb.unknownScript.createMany.mockResolvedValue({ count: 2 });
+    const scripts = [
+      makeScript({ filename: "a.liquid", lineNumber: 1 }),
+      makeScript({ filename: "b.liquid", lineNumber: 2 }),
+    ];
+
+    const result = await createUnknownScripts("scan-99", scripts);
+
+    expect(mockDb.unknownScript.createMany).toHaveBeenCalledWith({
+      data: [
+        { ...scripts[0], scanId: "scan-99" },
+        { ...scripts[1], scanId: "scan-99" },
+      ],
+    });
+    expect(result).toEqual({ count: 2 });
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.unknownScript.createMany.mockRejectedValue(new Error("Unique constraint"));
+
+    await expect(createUnknownScripts("scan-1", [makeScript()])).rejects.toThrow(
+      "Unique constraint",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// submitSignatureSuggestion
+// ---------------------------------------------------------------------------
+
+describe("submitSignatureSuggestion", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("creates a signature submission with the provided fields", async () => {
+    const created = {
+      id: "sub-1",
+      unknownScriptId: "us-1",
+      shopId: "shop-1",
+      suggestedAppName: "Klaviyo",
+      status: "PENDING",
+    };
+    mockDb.signatureSubmission.create.mockResolvedValue(created);
+
+    const result = await submitSignatureSuggestion("us-1", "shop-1", "Klaviyo");
+
+    expect(mockDb.signatureSubmission.create).toHaveBeenCalledWith({
+      data: {
+        unknownScriptId: "us-1",
+        shopId: "shop-1",
+        suggestedAppName: "Klaviyo",
+      },
+    });
+    expect(result).toEqual(created);
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.signatureSubmission.create.mockRejectedValue(new Error("FK violation"));
+
+    await expect(submitSignatureSuggestion("us-1", "shop-1", "Klaviyo")).rejects.toThrow(
+      "FK violation",
+    );
   });
 });
