@@ -33,8 +33,9 @@ export function initSentry(): void {
   Sentry.init({
     dsn,
     environment: process.env.NODE_ENV ?? "production",
-    // TODO: Set release to the deployed git SHA (e.g. process.env.RAILWAY_GIT_COMMIT_SHA)
-    // release: process.env.RAILWAY_GIT_COMMIT_SHA,
+    // Ties errors to the deployed commit. Undefined when the env var is absent
+    // (e.g. local dev) — Sentry simply omits the release in that case.
+    release: process.env.RAILWAY_GIT_COMMIT_SHA,
     tracesSampleRate: 0,
   });
   initialized = true;

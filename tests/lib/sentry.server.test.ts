@@ -130,6 +130,51 @@ describe("captureException", () => {
 });
 
 // ---------------------------------------------------------------------------
+// initSentry — release wiring
+// ---------------------------------------------------------------------------
+
+describe("initSentry", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    delete process.env.SENTRY_DSN;
+    delete process.env.RAILWAY_GIT_COMMIT_SHA;
+    vi.resetModules();
+  });
+
+  it("sets release from RAILWAY_GIT_COMMIT_SHA when present", async () => {
+    process.env.SENTRY_DSN = "https://fake-dsn@o0.ingest.sentry.io/0";
+    process.env.RAILWAY_GIT_COMMIT_SHA = "abc1234";
+
+    // Eager init runs on import.
+    await importSentry();
+
+    expect(mockSentryInit).toHaveBeenCalledOnce();
+    expect(mockSentryInit).toHaveBeenCalledWith(expect.objectContaining({ release: "abc1234" }));
+  });
+
+  it("leaves release undefined when RAILWAY_GIT_COMMIT_SHA is absent", async () => {
+    process.env.SENTRY_DSN = "https://fake-dsn@o0.ingest.sentry.io/0";
+    delete process.env.RAILWAY_GIT_COMMIT_SHA;
+
+    await importSentry();
+
+    expect(mockSentryInit).toHaveBeenCalledOnce();
+    expect(mockSentryInit).toHaveBeenCalledWith(expect.objectContaining({ release: undefined }));
+  });
+
+  it("does not initialize Sentry when DSN is absent", async () => {
+    delete process.env.SENTRY_DSN;
+
+    await importSentry();
+
+    expect(mockSentryInit).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // captureMessage
 // ---------------------------------------------------------------------------
 
