@@ -15,7 +15,7 @@ describe("getPlanFeatures", () => {
     expect(features.maxScansPerMonth).toBe(Infinity);
     expect(features.showFindingDetails).toBe(true);
     expect(features.maxThemes).toBe(1);
-    expect(features.scheduledScan).toBe(false);
+    expect(features.scheduledScan).toBe(true);
   });
 
   it("returns professional features", () => {

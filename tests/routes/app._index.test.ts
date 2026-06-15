@@ -300,7 +300,7 @@ describe("app._index loader", () => {
         maxThemes: 1,
         autoRescan: false,
         scanDiffing: false,
-        scheduledScan: false,
+        scheduledScan: true,
       });
       mockGetScanUsage.mockResolvedValue({
         used: 1,
@@ -647,7 +647,7 @@ const STANDARD_FEATURES = {
   maxThemes: 1,
   autoRescan: false,
   scanDiffing: false,
-  scheduledScan: false,
+  scheduledScan: true,
 };
 
 // ---------------------------------------------------------------------------
