@@ -26,7 +26,7 @@ import {
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
-import { REFERENCE_THEMES, DAWN_TITLE } from "../fixtures/reference-themes";
+import { REFERENCE_THEMES, DAWN_TITLE, DAWN_META_TAGS } from "../fixtures/reference-themes";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3549,5 +3549,343 @@ describe("detectGhostAjax", () => {
     const ajaxFindings = findingsOfType(result.findings, FindingType.GHOST_AJAX);
     expect(ajaxFindings).toHaveLength(1);
     expect(ajaxFindings[0].appName).toBe("Judge.me");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LOG-11: Multi-line tag detection (false negatives fixed)
+// ---------------------------------------------------------------------------
+
+describe("LOG-11 — multi-line HTML tag detection", () => {
+  describe("detectGhostScripts — multi-line <script> tag", () => {
+    it("detects a Klaviyo script tag split across multiple lines (prettier-formatted)", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "<head>",
+          "<script",
+          '  src="https://static.klaviyo.com/onsite/js/klaviyo.js"',
+          "></script>",
+          "</head>",
+        ].join("\n"),
+      };
+      const findings = detectGhostScripts(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Klaviyo");
+      // Line number should point to the opening <script tag line
+      expect(findings[0].lineNumber).toBe(2);
+    });
+
+    it("single-line <script> tag still detected (no regression)", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>',
+      };
+      const findings = detectGhostScripts(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].lineNumber).toBe(1);
+    });
+  });
+
+  describe("detectGhostStyles — multi-line <link rel='stylesheet'> tag", () => {
+    it("detects a Judge.me stylesheet split across multiple lines", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "<head>",
+          "<link",
+          '  rel="stylesheet"',
+          '  href="https://cdn.judge.me/assets/v4/widget.css"',
+          ">",
+          "</head>",
+        ].join("\n"),
+      };
+      const findings = detectGhostStyles(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Judge.me");
+      expect(findings[0].lineNumber).toBe(2);
+    });
+
+    it("single-line <link rel='stylesheet'> still detected (no regression)", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: '<link rel="stylesheet" href="https://cdn.judge.me/assets/v4/widget.css">',
+      };
+      const findings = detectGhostStyles(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].lineNumber).toBe(1);
+    });
+  });
+
+  describe("detectGhostHrefLang — multi-line <link rel='alternate'> tag", () => {
+    it("detects a Weglot hreflang tag split across multiple lines", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "<head>",
+          '<link rel="alternate"',
+          '  hreflang="fr"',
+          '  href="https://fr.example.com/">',
+          "</head>",
+        ].join("\n"),
+      };
+      const findings = detectGhostHrefLang(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Weglot");
+      expect(findings[0].lineNumber).toBe(2);
+    });
+  });
+
+  describe("detectGhostPreconnect — multi-line <link rel='preconnect'> tag", () => {
+    it("detects a Klaviyo preconnect hint split across multiple lines", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "<head>",
+          '<link rel="preconnect"',
+          '  href="https://static.klaviyo.com">',
+          "</head>",
+        ].join("\n"),
+      };
+      const findings = detectGhostPreconnect(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Klaviyo");
+      expect(findings[0].lineNumber).toBe(2);
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LOG-11: {% liquid %} block render reference detection
+// ---------------------------------------------------------------------------
+
+describe("LOG-11 — {% liquid %} block render references", () => {
+  describe("detectGhostSnippets — bare render inside {% liquid %} block", () => {
+    it("detects a known app snippet rendered via bare render inside {% liquid %} block", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "{%- liquid",
+          "  assign show_form = true",
+          "  render 'klaviyo-onsite'",
+          "-%}",
+        ].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.GHOST_SNIPPET);
+      expect(findings[0].appName).toBe("Klaviyo");
+    });
+
+    it("detects bare include inside {% liquid %} block", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["{% liquid", '  include "klaviyo-form"', "%}"].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Klaviyo");
+    });
+
+    it("standard {% render %} tag still detected (no regression)", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: "{% render 'klaviyo-onsite' %}",
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Klaviyo");
+    });
+
+    it("does NOT flag bare render inside {% comment %} block (no false positive)", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["{% comment %}", "  render 'klaviyo-onsite'", "{% endcomment %}"].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("does not flag unknown snippet names inside {% liquid %} block", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["{% liquid", "  render 'my-custom-snippet'", "%}"].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(0);
+    });
+  });
+
+  describe("ORPHAN_ASSET — snippet only rendered inside {% liquid %} block", () => {
+    it("does NOT flag a snippet as ORPHAN_ASSET when it is rendered only inside a {% liquid %} block", () => {
+      // snippets/klaviyo-onsite.liquid is referenced by a bare render inside
+      // a {% liquid %} block — the file-reference-analyzer must count it as
+      // referenced so scanThemeFiles does NOT emit an ORPHAN_ASSET finding.
+      const files: ThemeFile[] = [
+        {
+          filename: "snippets/klaviyo-onsite.liquid",
+          content: "<!-- klaviyo onsite form -->",
+        },
+        {
+          filename: "layout/theme.liquid",
+          content: ["{% liquid", "  render 'klaviyo-onsite'", "%}"].join("\n"),
+        },
+      ];
+      const result = scanThemeFiles(files);
+      const orphans = findingsOfType(result.findings, FindingType.ORPHAN_ASSET);
+      expect(orphans).toHaveLength(0);
+    });
+
+    it("still flags a snippet as ORPHAN_ASSET when it is truly unreferenced", () => {
+      const files: ThemeFile[] = [
+        {
+          filename: "snippets/klaviyo-onsite.liquid",
+          content: "<!-- klaviyo onsite form -->",
+        },
+        {
+          filename: "layout/theme.liquid",
+          content: "{{ content_for_layout }}",
+        },
+      ];
+      const result = scanThemeFiles(files);
+      const orphans = findingsOfType(result.findings, FindingType.ORPHAN_ASSET);
+      expect(orphans).toHaveLength(1);
+      expect(orphans[0].filename).toBe("snippets/klaviyo-onsite.liquid");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LOG-12: detectDuplicateMetaTags — Liquid-conditional and repeatable-property awareness
+// ---------------------------------------------------------------------------
+
+describe("LOG-12 — detectDuplicateMetaTags false positive fixes", () => {
+  describe("Liquid conditional branch awareness", () => {
+    it("does NOT flag og:type in mutually-exclusive if/else branches as a duplicate", () => {
+      // Renders exactly one og:type at runtime depending on template.
+      // Counting both as duplicates is a false positive.
+      const file: ThemeFile = {
+        filename: "snippets/meta-tags.liquid",
+        content: [
+          "{%- if request.page_type == 'product' -%}",
+          '<meta property="og:type" content="product">',
+          "{%- else -%}",
+          '<meta property="og:type" content="website">',
+          "{%- endif -%}",
+        ].join("\n"),
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("does NOT flag meta tags on the same line as Liquid conditionals (single-line form)", () => {
+      const file: ThemeFile = {
+        filename: "snippets/meta-tags.liquid",
+        content: [
+          '{% if template == \'product\' %}<meta property="og:type" content="product">{% else %}<meta property="og:type" content="website">{% endif %}',
+        ].join("\n"),
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("does NOT count meta tags inside comment blocks as duplicates", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          '<meta name="description" content="Active description">',
+          "{% comment %}",
+          '<meta name="description" content="Commented out description">',
+          "{% endcomment %}",
+        ].join("\n"),
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(0);
+    });
+  });
+
+  describe("Repeatable OG property allowlist", () => {
+    it("does NOT flag repeated og:image tags (repeatable per OG spec)", () => {
+      const file: ThemeFile = {
+        filename: "snippets/meta-tags.liquid",
+        content: [
+          '<meta property="og:image" content="https://cdn.shopify.com/image1.jpg">',
+          '<meta property="og:image" content="https://cdn.shopify.com/image2.jpg">',
+        ].join("\n"),
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("does NOT flag repeated og:image:secure_url (repeatable sub-property)", () => {
+      const file: ThemeFile = {
+        filename: "snippets/meta-tags.liquid",
+        content: [
+          '<meta property="og:image:secure_url" content="https://cdn.shopify.com/image1.jpg">',
+          '<meta property="og:image:secure_url" content="https://cdn.shopify.com/image2.jpg">',
+        ].join("\n"),
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("does NOT flag repeated article:tag (explicitly repeatable per OG spec)", () => {
+      const file: ThemeFile = {
+        filename: "snippets/meta-tags.liquid",
+        content: [
+          '<meta property="article:tag" content="shoes">',
+          '<meta property="article:tag" content="sneakers">',
+          '<meta property="article:tag" content="sale">',
+        ].join("\n"),
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(0);
+    });
+  });
+
+  describe("True duplicates still flagged (true positive preserved)", () => {
+    it("still flags two unconditional identical <meta name='description'> tags", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          '<meta name="description" content="SEO description from app">',
+          "<p>some content</p>",
+          '<meta name="description" content="Native description">',
+        ].join("\n"),
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.DUPLICATE_META);
+      expect(findings[0].lineNumber).toBe(3);
+      expect(findings[0].description).toContain("line 1");
+    });
+
+    it("still flags two unconditional duplicate og:title tags", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          '<meta property="og:title" content="Title from App 1">',
+          '<meta property="og:title" content="Title from App 2">',
+        ].join("\n"),
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].description).toContain("og:title");
+    });
+  });
+
+  describe("Dawn meta-tags.liquid fixture — no false positives on stock theme", () => {
+    it("emits zero DUPLICATE_META findings on Dawn's snippets/meta-tags.liquid", () => {
+      // Dawn's meta-tags.liquid uses og:type inside a conditional (via {% liquid %}),
+      // og:image / og:image:secure_url inside {%- if page_image -%} block, and
+      // og:price:amount inside {%- if request.page_type == 'product' -%}.
+      // None of these should be flagged as duplicates.
+      const file: ThemeFile = {
+        filename: "snippets/meta-tags.liquid",
+        content: DAWN_META_TAGS,
+      };
+      const findings = detectDuplicateMetaTags(file);
+      expect(findings).toHaveLength(0);
+    });
   });
 });

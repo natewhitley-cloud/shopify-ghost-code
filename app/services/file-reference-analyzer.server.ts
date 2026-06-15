@@ -48,6 +48,23 @@ const LIQUID_EXTENSION = ".liquid";
 const RENDER_SINGLE_RE = /\{%-?\s*(?:render|include)\s+'([^']+)'/g;
 const RENDER_DOUBLE_RE = /\{%-?\s*(?:render|include)\s+"([^"]+)"/g;
 
+// Matches bare render/include statements inside {% liquid %} blocks.
+// In a {% liquid %} block each statement starts at the beginning of a line
+// (after optional whitespace) WITHOUT the {% %} tag delimiters:
+//
+//   {% liquid
+//     render 'product-form'      ← matched by these patterns
+//     assign foo = 'bar'
+//   %}
+//
+// The ^ anchor (with /m flag) restricts matches to line starts, preventing
+// false matches against arbitrary text containing the word "render".
+// Does NOT overlap with RENDER_SINGLE/DOUBLE_RE because those require {%-?
+// before the keyword; a line starting with only whitespace + render/include
+// cannot match the {%- prefix requirement.
+const RENDER_BARE_SINGLE_RE = /^[ \t]*(?:render|include)\s+'([^']+)'/gm;
+const RENDER_BARE_DOUBLE_RE = /^[ \t]*(?:render|include)\s+"([^"]+)"/gm;
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -74,12 +91,17 @@ function snippetBaseName(key: string): string {
 /**
  * Extract all statically-resolvable snippet names referenced in a Liquid file.
  * Returns bare names (without path prefix or extension).
+ *
+ * Covers two forms:
+ *   1. Standard tag: {% render 'name' %} / {% include "name" %}
+ *   2. Bare statement inside {% liquid %} blocks: render 'name' at line start
  */
 function extractReferencedSnippetNames(content: string): Set<string> {
   const referenced = new Set<string>();
 
   let match: RegExpExecArray | null;
 
+  // Standard {% render/include 'x' %} form
   RENDER_SINGLE_RE.lastIndex = 0;
   while ((match = RENDER_SINGLE_RE.exec(content)) !== null) {
     referenced.add(match[1]);
@@ -87,6 +109,17 @@ function extractReferencedSnippetNames(content: string): Set<string> {
 
   RENDER_DOUBLE_RE.lastIndex = 0;
   while ((match = RENDER_DOUBLE_RE.exec(content)) !== null) {
+    referenced.add(match[1]);
+  }
+
+  // Bare render/include inside {% liquid %} blocks
+  RENDER_BARE_SINGLE_RE.lastIndex = 0;
+  while ((match = RENDER_BARE_SINGLE_RE.exec(content)) !== null) {
+    referenced.add(match[1]);
+  }
+
+  RENDER_BARE_DOUBLE_RE.lastIndex = 0;
+  while ((match = RENDER_BARE_DOUBLE_RE.exec(content)) !== null) {
     referenced.add(match[1]);
   }
 
