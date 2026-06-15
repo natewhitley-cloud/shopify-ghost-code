@@ -3742,6 +3742,102 @@ describe("LOG-11 — multi-line HTML tag detection", () => {
       expect(findings[0].lineNumber).toBe(2);
     });
   });
+
+  describe("detectGhostSections — multi-line {% section %} tag", () => {
+    it("detects a PageFly section reference split across multiple lines (prettier-wrapped)", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["<body>", "{%-", "  section 'pagefly-head'", "-%}"].join("\n"),
+      };
+      const findings = detectGhostSections(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("PageFly");
+      // Line number points to the opening {%- of the tag.
+      expect(findings[0].lineNumber).toBe(2);
+    });
+
+    it("emits exactly one finding per tag when single-line and multi-line section tags coexist", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["{% section 'shogun-head' %}", "{%-", "  section 'pagefly-head'", "-%}"].join(
+          "\n",
+        ),
+      };
+      const findings = detectGhostSections(file);
+      // One tag-form + one multi-line tag = exactly TWO findings, no double-count.
+      expect(findings).toHaveLength(2);
+      expect(findings.map((f) => f.appName).sort()).toEqual(["PageFly", "Shogun"]);
+    });
+  });
+
+  describe("detectGhostCanonical — multi-line <link rel='canonical'> tag", () => {
+    it("detects an empty canonical href split across multiple lines", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["<head>", "<link", '  rel="canonical"', '  href="">', "</head>"].join("\n"),
+      };
+      const findings = detectGhostCanonical(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.GHOST_CANONICAL);
+      expect(findings[0].description).toContain("Empty canonical href");
+      // Line number points to the opening <link of the tag.
+      expect(findings[0].lineNumber).toBe(2);
+    });
+
+    it("emits exactly one finding per tag when single-line and multi-line canonical tags coexist", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          '<link rel="canonical" href="">',
+          "<link",
+          '  rel="canonical"',
+          '  href="">',
+        ].join("\n"),
+      };
+      const findings = detectGhostCanonical(file);
+      // Two distinct empty-canonical tags = exactly TWO findings, no double-count.
+      expect(findings).toHaveLength(2);
+    });
+  });
+
+  describe("detectGhostAjax — multi-line fetch()/AJAX call", () => {
+    it("detects a Judge.me fetch() call split across multiple lines", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "<script>",
+          "fetch(",
+          '  "https://cdn.judge.me/api/reviews"',
+          ");",
+          "</script>",
+        ].join("\n"),
+      };
+      const findings = detectGhostAjax(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.GHOST_AJAX);
+      expect(findings[0].appName).toBe("Judge.me");
+      // Line number points to the opening fetch( of the call.
+      expect(findings[0].lineNumber).toBe(2);
+    });
+
+    it("emits exactly one finding per call when single-line and multi-line AJAX calls coexist", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "<script>",
+          'fetch("https://cdn.judge.me/api/reviews");',
+          "$.get(",
+          '  "https://cdn.loox.io/api/widgets"',
+          ");",
+          "</script>",
+        ].join("\n"),
+      };
+      const findings = detectGhostAjax(file);
+      // One single-line fetch + one multi-line jQuery call = exactly TWO findings.
+      expect(findings).toHaveLength(2);
+      expect(findings.map((f) => f.appName).sort()).toEqual(["Judge.me", "Loox"]);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

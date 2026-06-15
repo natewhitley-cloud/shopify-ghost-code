@@ -318,28 +318,34 @@ const SECTION_RE = /\{%-?\s*section\s+["']([^"']+)["']/gi;
 export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  for (const { lineNumber, text } of lines(file.content)) {
-    let match: RegExpExecArray | null;
-    SECTION_RE.lastIndex = 0;
+  // Run against full file content so multi-line tags like:
+  //   {%
+  //     section 'pagefly-head'
+  //   %}
+  // (e.g. prettier-wrapped) are matched. lineNumberAtOffset maps the match
+  // position back to a line. SECTION_RE is a single regex, so each tag yields
+  // exactly one match — no double-count risk.
+  let match: RegExpExecArray | null;
+  SECTION_RE.lastIndex = 0;
 
-    while ((match = SECTION_RE.exec(text)) !== null) {
-      const sectionName = match[1];
-      const appName = identifyAppFromSnippetName(sectionName);
-      if (!appName) continue;
+  while ((match = SECTION_RE.exec(file.content)) !== null) {
+    const sectionName = match[1];
+    const appName = identifyAppFromSnippetName(sectionName);
+    if (!appName) continue;
 
-      const codeSnippet = buildSnippet(file.content, lineNumber);
-      const severity = classifySeverity(FindingType.GHOST_SECTION, codeSnippet);
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+    const severity = classifySeverity(FindingType.GHOST_SECTION, codeSnippet);
 
-      findings.push({
-        filename: file.filename,
-        lineNumber,
-        codeSnippet,
-        findingType: FindingType.GHOST_SECTION,
-        severity,
-        appName,
-        description: `Liquid section reference to known ${appName} section '${sectionName}'`,
-      });
-    }
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_SECTION,
+      severity,
+      appName,
+      description: `Liquid section reference to known ${appName} section '${sectionName}'`,
+    });
   }
 
   return findings;
@@ -1216,28 +1222,32 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   // Collect all canonical occurrences for duplicate detection
   const allCanonicals: Array<{ lineNumber: number; href: string }> = [];
 
-  let insideComment = false;
-
+  // Precompute the lines to skip from a single line pass, then run CANONICAL_RE
+  // against the FULL file content so multi-line / prettier-wrapped tags like:
+  //   <link
+  //     rel="canonical"
+  //     href="">
+  // are matched. lineNumberAtOffset maps each match offset back to a line, and
+  // a match is skipped if its start line falls inside a {% comment %} block or
+  // contains a Liquid conditional — preserving the prior per-line semantics.
+  // CANONICAL_RE is a single regex (rel-first | href-first alternation), so each
+  // tag yields exactly one match — no double-count risk.
+  const commentSkipLines = buildCommentSkipLines(file.content);
+  const conditionalLines = new Set<number>();
   for (const { lineNumber, text } of lines(file.content)) {
-    // Track Liquid comment blocks
-    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
-      insideComment = false;
-      continue;
-    }
-    if (insideComment) continue;
+    if (LIQUID_CONDITIONAL_RE.test(text)) conditionalLines.add(lineNumber);
+  }
 
-    // Skip lines with Liquid conditionals — these are theme-native logic
-    if (LIQUID_CONDITIONAL_RE.test(text)) continue;
+  let collectMatch: RegExpExecArray | null;
+  CANONICAL_RE.lastIndex = 0;
+  while ((collectMatch = CANONICAL_RE.exec(file.content)) !== null) {
+    const lineNumber = lineNumberAtOffset(file.content, collectMatch.index);
+    if (commentSkipLines.has(lineNumber)) continue; // inside {% comment %} block
+    if (conditionalLines.has(lineNumber)) continue; // theme-native conditional logic
 
-    let match: RegExpExecArray | null;
-    CANONICAL_RE.lastIndex = 0;
-
-    while ((match = CANONICAL_RE.exec(text)) !== null) {
-      // Group 1 captures href when rel comes first; group 2 when href comes first.
-      const href = match[1] ?? match[2] ?? "";
-      allCanonicals.push({ lineNumber, href });
-    }
+    // Group 1 captures href when rel comes first; group 2 when href comes first.
+    const href = collectMatch[1] ?? collectMatch[2] ?? "";
+    allCanonicals.push({ lineNumber, href });
   }
 
   // Track which lines already have a finding to avoid double-reporting
@@ -2034,65 +2044,71 @@ const XHR_OPEN_RE = /\.open\s*\(\s*["'][A-Z]+["']\s*,\s*["'](https?:\/\/[^"']+)[
 export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  let insideComment = false;
-
+  // Precompute the lines to skip from a single line pass, then run each pattern
+  // against the FULL file content so multi-line / prettier-wrapped calls like:
+  //   fetch(
+  //     "https://cdn.judge.me/api/reviews"
+  //   )
+  // are matched. lineNumberAtOffset maps each match offset back to a line, and a
+  // match is skipped if its start line falls inside a {% comment %} block or
+  // contains a Liquid conditional — preserving the prior per-line semantics.
+  // The three patterns target distinct syntaxes (fetch / jQuery / XHR) so they
+  // never match the same token — no double-count risk.
+  const commentSkipLines = buildCommentSkipLines(file.content);
+  const conditionalLines = new Set<number>();
   for (const { lineNumber, text } of lines(file.content)) {
-    // Track Liquid comment blocks
-    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
-      insideComment = false;
-      continue;
-    }
-    if (insideComment) continue;
+    if (LIQUID_CONDITIONAL_RE.test(text)) conditionalLines.add(lineNumber);
+  }
 
-    // Skip lines with Liquid conditionals — these are theme-native logic
-    if (LIQUID_CONDITIONAL_RE.test(text)) continue;
+  // Helper to process a matched URL at a given byte offset.
+  const processUrl = (url: string, offset: number, pattern: string) => {
+    const lineNumber = lineNumberAtOffset(file.content, offset);
+    if (commentSkipLines.has(lineNumber)) return; // inside {% comment %} block
+    if (conditionalLines.has(lineNumber)) return; // theme-native conditional logic
 
-    // Helper to process a matched URL
-    const processUrl = (url: string, pattern: string) => {
-      const hostname = extractDomain(url);
-      if (!hostname) return;
+    const hostname = extractDomain(url);
+    if (!hostname) return;
 
-      // Skip Shopify-owned domains
-      if (isShopifyDomain(hostname)) return;
+    // Skip Shopify-owned domains
+    if (isShopifyDomain(hostname)) return;
 
-      const codeSnippet = buildSnippet(file.content, lineNumber);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
 
-      // Cross-reference against known app CDN domains + code context
-      const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(codeSnippet) ?? undefined;
-      if (!appName) return;
+    // Cross-reference against known app CDN domains + code context
+    const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(codeSnippet) ?? undefined;
+    if (!appName) return;
 
-      const severity = classifySeverity(FindingType.GHOST_AJAX, codeSnippet);
+    const severity = classifySeverity(FindingType.GHOST_AJAX, codeSnippet);
 
-      findings.push({
-        filename: file.filename,
-        lineNumber,
-        codeSnippet,
-        findingType: FindingType.GHOST_AJAX,
-        severity,
-        appName,
-        description: `Orphaned ${pattern} call to ${appName} API (${hostname})`,
-      });
-    };
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_AJAX,
+      severity,
+      appName,
+      description: `Orphaned ${pattern} call to ${appName} API (${hostname})`,
+    });
+  };
 
-    // Check fetch() calls
-    let match: RegExpExecArray | null;
-    FETCH_RE.lastIndex = 0;
-    while ((match = FETCH_RE.exec(text)) !== null) {
-      processUrl(match[1], "fetch");
-    }
+  let match: RegExpExecArray | null;
 
-    // Check jQuery AJAX patterns
-    JQUERY_AJAX_RE.lastIndex = 0;
-    while ((match = JQUERY_AJAX_RE.exec(text)) !== null) {
-      processUrl(match[1], "jQuery AJAX");
-    }
+  // Check fetch() calls
+  FETCH_RE.lastIndex = 0;
+  while ((match = FETCH_RE.exec(file.content)) !== null) {
+    processUrl(match[1], match.index, "fetch");
+  }
 
-    // Check XMLHttpRequest .open() calls
-    XHR_OPEN_RE.lastIndex = 0;
-    while ((match = XHR_OPEN_RE.exec(text)) !== null) {
-      processUrl(match[1], "XMLHttpRequest");
-    }
+  // Check jQuery AJAX patterns
+  JQUERY_AJAX_RE.lastIndex = 0;
+  while ((match = JQUERY_AJAX_RE.exec(file.content)) !== null) {
+    processUrl(match[1], match.index, "jQuery AJAX");
+  }
+
+  // Check XMLHttpRequest .open() calls
+  XHR_OPEN_RE.lastIndex = 0;
+  while ((match = XHR_OPEN_RE.exec(file.content)) !== null) {
+    processUrl(match[1], match.index, "XMLHttpRequest");
   }
 
   return findings;
