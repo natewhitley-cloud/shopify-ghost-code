@@ -8,7 +8,7 @@
  *     checks, 404s, and scan diffing.
  */
 
-import type { LoaderFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -55,6 +55,7 @@ vi.mock("../../app/services/scan-differ.server", () => ({
 vi.mock("../../app/models/unknown-script.server", () => ({
   getUnknownScriptsForScan: vi.fn(),
   submitSignatureSuggestion: vi.fn(),
+  findUnknownScriptForShop: vi.fn(),
 }));
 
 vi.mock("../../app/lib/format", () => ({
@@ -75,8 +76,12 @@ import { canViewFindingDetails, canUseScanDiffing } from "../../app/lib/plan-gat
 import { getFindingSummary, getHighestSeverityFinding } from "../../app/models/finding.server";
 import { getScanById, getPreviousScanForTheme } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
-import { getUnknownScriptsForScan } from "../../app/models/unknown-script.server";
-import { loader } from "../../app/routes/app.scans.$scanId";
+import {
+  getUnknownScriptsForScan,
+  findUnknownScriptForShop,
+  submitSignatureSuggestion,
+} from "../../app/models/unknown-script.server";
+import { action, loader } from "../../app/routes/app.scans.$scanId";
 import { diffScans } from "../../app/services/scan-differ.server";
 import { authenticate } from "../../app/shopify.server";
 
@@ -94,6 +99,8 @@ const mockCanViewFindingDetails = canViewFindingDetails as ReturnType<typeof vi.
 const mockCanUseScanDiffing = canUseScanDiffing as ReturnType<typeof vi.fn>;
 const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
 const mockDiffScans = diffScans as ReturnType<typeof vi.fn>;
+const mockFindUnknownScriptForShop = findUnknownScriptForShop as ReturnType<typeof vi.fn>;
+const mockSubmitSignatureSuggestion = submitSignatureSuggestion as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -151,6 +158,23 @@ function makeLoaderArgs(
     context: {},
     ...overrides,
   } as LoaderFunctionArgs;
+}
+
+function makeActionArgs(fields: Record<string, string>): ActionFunctionArgs {
+  const body = new URLSearchParams();
+  for (const [key, value] of Object.entries(fields)) {
+    body.set(key, value);
+  }
+
+  return {
+    request: new Request("https://test-shop.myshopify.com/app/scans/scan-1", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: body.toString(),
+    }),
+    params: { scanId: "scan-1" },
+    context: {},
+  } as unknown as ActionFunctionArgs;
 }
 
 // ---------------------------------------------------------------------------
@@ -410,5 +434,112 @@ describe("app.scans.$scanId loader", () => {
         skippedCategories: ["GHOST_TAG"],
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Action — merchant feedback on unknown scripts (untrusted input + tenant
+// isolation). The action RETURNS validation errors as `{ error }` (HTTP 200)
+// but THROWS a 404 Response when the shop cannot be resolved.
+// ---------------------------------------------------------------------------
+
+describe("app.scans.$scanId action", () => {
+  const UNKNOWN_SCRIPT = {
+    id: "us-1",
+    scanId: "scan-1",
+    url: "https://cdn.example.com/widget.js",
+  };
+
+  it("submits a valid suggestion with the trimmed name and returns success", async () => {
+    mockFindUnknownScriptForShop.mockResolvedValue(UNKNOWN_SCRIPT);
+    mockSubmitSignatureSuggestion.mockResolvedValue({ id: "sub-1" });
+
+    const result = await action(
+      makeActionArgs({
+        unknownScriptId: "us-1",
+        // Leading/trailing whitespace must be stripped before persisting.
+        suggestedAppName: "  Klaviyo  ",
+      }),
+    );
+
+    expect(mockFindUnknownScriptForShop).toHaveBeenCalledWith("us-1", SHOP.id);
+    // The TRIMMED name is what gets persisted, scoped to the resolved shop id.
+    expect(mockSubmitSignatureSuggestion).toHaveBeenCalledWith("us-1", SHOP.id, "Klaviyo");
+    expect(result).toEqual({ success: true, unknownScriptId: "us-1" });
+  });
+
+  it("returns an error and does not write when unknownScriptId is missing", async () => {
+    const result = await action(makeActionArgs({ suggestedAppName: "Klaviyo" }));
+
+    expect(result).toEqual({ error: "App name is required" });
+    expect(mockSubmitSignatureSuggestion).not.toHaveBeenCalled();
+    expect(mockFindUnknownScriptForShop).not.toHaveBeenCalled();
+  });
+
+  it("returns an error and does not write when suggestedAppName is whitespace-only", async () => {
+    const result = await action(
+      makeActionArgs({ unknownScriptId: "us-1", suggestedAppName: "   " }),
+    );
+
+    expect(result).toEqual({ error: "App name is required" });
+    expect(mockSubmitSignatureSuggestion).not.toHaveBeenCalled();
+    expect(mockFindUnknownScriptForShop).not.toHaveBeenCalled();
+  });
+
+  it("returns an error and does not write when the name exceeds 200 chars", async () => {
+    // Pad with whitespace to also prove the length check runs on the TRIMMED
+    // value (201 non-space chars + surrounding spaces).
+    const longName = "a".repeat(201);
+    const result = await action(
+      makeActionArgs({ unknownScriptId: "us-1", suggestedAppName: `  ${longName}  ` }),
+    );
+
+    expect(result).toEqual({ error: "App name is too long" });
+    expect(mockSubmitSignatureSuggestion).not.toHaveBeenCalled();
+    expect(mockFindUnknownScriptForShop).not.toHaveBeenCalled();
+  });
+
+  it("accepts a name that is exactly 200 chars after trimming", async () => {
+    const exactName = "a".repeat(200);
+    mockFindUnknownScriptForShop.mockResolvedValue(UNKNOWN_SCRIPT);
+    mockSubmitSignatureSuggestion.mockResolvedValue({ id: "sub-1" });
+
+    const result = await action(
+      makeActionArgs({ unknownScriptId: "us-1", suggestedAppName: `  ${exactName}  ` }),
+    );
+
+    expect(mockSubmitSignatureSuggestion).toHaveBeenCalledWith("us-1", SHOP.id, exactName);
+    expect(result).toEqual({ success: true, unknownScriptId: "us-1" });
+  });
+
+  it("does NOT write when the script belongs to another shop (tenant isolation)", async () => {
+    // findUnknownScriptForShop enforces ownership via its scoped where clause;
+    // a cross-shop script id resolves to null, so no submission may be written.
+    mockFindUnknownScriptForShop.mockResolvedValue(null);
+
+    const result = await action(
+      makeActionArgs({ unknownScriptId: "other-shops-script", suggestedAppName: "Klaviyo" }),
+    );
+
+    expect(mockFindUnknownScriptForShop).toHaveBeenCalledWith("other-shops-script", SHOP.id);
+    expect(result).toEqual({ error: "Unknown script not found" });
+    expect(mockSubmitSignatureSuggestion).not.toHaveBeenCalled();
+  });
+
+  it("throws a 404 Response when the shop cannot be resolved", async () => {
+    mockGetShopMetadata.mockResolvedValue(null);
+
+    await expect(
+      action(makeActionArgs({ unknownScriptId: "us-1", suggestedAppName: "Klaviyo" })),
+    ).rejects.toBeInstanceOf(Response);
+
+    try {
+      await action(makeActionArgs({ unknownScriptId: "us-1", suggestedAppName: "Klaviyo" }));
+    } catch (e) {
+      expect(e).toBeInstanceOf(Response);
+      expect((e as Response).status).toBe(404);
+    }
+
+    expect(mockSubmitSignatureSuggestion).not.toHaveBeenCalled();
   });
 });
