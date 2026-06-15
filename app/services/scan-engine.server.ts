@@ -126,6 +126,27 @@ function buildSnippet(content: string, lineNumber: number): string {
   return allLines.slice(start, end).join("\n").slice(0, 300);
 }
 
+/**
+ * Returns a Set of 1-based line numbers that fall inside Liquid comment blocks.
+ * Includes the {% comment %} opener line, all body lines, and the {% endcomment %}
+ * closing line, so callers can uniformly skip any line in the set.
+ *
+ * Used by detectGhostSnippets, detectGhostPreconnect, and detectDuplicateMetaTags
+ * to avoid false positives from commented-out code. Each of those detectors has
+ * additional skip logic (conditional-line skipping or depth tracking) that differs
+ * between them and therefore stays inline rather than being unified here.
+ */
+function buildCommentSkipLines(content: string): Set<number> {
+  const skipLines = new Set<number>();
+  let insideComment = false;
+  for (const { lineNumber, text } of lines(content)) {
+    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
+    if (insideComment) skipLines.add(lineNumber);
+    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) insideComment = false;
+  }
+  return skipLines;
+}
+
 // ---------------------------------------------------------------------------
 // Detector: GHOST_SCRIPT
 // ---------------------------------------------------------------------------
@@ -138,28 +159,31 @@ const SCRIPT_SRC_RE = /<script[^>]+src\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*
 export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  for (const { lineNumber, text } of lines(file.content)) {
-    let match: RegExpExecArray | null;
-    SCRIPT_SRC_RE.lastIndex = 0;
+  // Run against full file content so multi-line tags like:
+  //   <script
+  //     src="https://static.klaviyo.com/...">
+  // are matched. lineNumberAtOffset maps the match position back to a line.
+  let match: RegExpExecArray | null;
+  SCRIPT_SRC_RE.lastIndex = 0;
 
-    while ((match = SCRIPT_SRC_RE.exec(text)) !== null) {
-      const url = match[1];
-      const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
-      if (!appName) continue;
+  while ((match = SCRIPT_SRC_RE.exec(file.content)) !== null) {
+    const url = match[1];
+    const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
+    if (!appName) continue;
 
-      const codeSnippet = buildSnippet(file.content, lineNumber);
-      const severity = classifySeverity(FindingType.GHOST_SCRIPT, codeSnippet);
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+    const severity = classifySeverity(FindingType.GHOST_SCRIPT, codeSnippet);
 
-      findings.push({
-        filename: file.filename,
-        lineNumber,
-        codeSnippet,
-        findingType: FindingType.GHOST_SCRIPT,
-        severity,
-        appName,
-        description: `External script from ${appName} (${url})`,
-      });
-    }
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_SCRIPT,
+      severity,
+      appName,
+      description: `External script from ${appName} (${url})`,
+    });
   }
 
   return findings;
@@ -177,31 +201,35 @@ const LINK_STYLESHEET_RE =
 export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  for (const { lineNumber, text } of lines(file.content)) {
-    let match: RegExpExecArray | null;
-    LINK_STYLESHEET_RE.lastIndex = 0;
+  // Run against full file content so multi-line tags like:
+  //   <link
+  //     rel="stylesheet"
+  //     href="https://cdn.judge.me/...">
+  // are matched. lineNumberAtOffset maps the match position back to a line.
+  let match: RegExpExecArray | null;
+  LINK_STYLESHEET_RE.lastIndex = 0;
 
-    while ((match = LINK_STYLESHEET_RE.exec(text)) !== null) {
-      // Group 1 captures href when rel comes first; group 3 when href comes first.
-      const url = match[1] ?? match[3];
-      if (!url) continue;
+  while ((match = LINK_STYLESHEET_RE.exec(file.content)) !== null) {
+    // Group 1 captures href when rel comes first; group 3 when href comes first.
+    const url = match[1] ?? match[3];
+    if (!url) continue;
 
-      const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
-      if (!appName) continue;
+    const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
+    if (!appName) continue;
 
-      const codeSnippet = buildSnippet(file.content, lineNumber);
-      const severity = classifySeverity(FindingType.GHOST_STYLE, codeSnippet);
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+    const severity = classifySeverity(FindingType.GHOST_STYLE, codeSnippet);
 
-      findings.push({
-        filename: file.filename,
-        lineNumber,
-        codeSnippet,
-        findingType: FindingType.GHOST_STYLE,
-        severity,
-        appName,
-        description: `External stylesheet from ${appName} (${url})`,
-      });
-    }
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_STYLE,
+      severity,
+      appName,
+      description: `External stylesheet from ${appName} (${url})`,
+    });
   }
 
   return findings;
@@ -213,33 +241,68 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
 
 // Matches {% render 'name' %}, {% render "name" %}, {% include 'name' %}, {% include "name" %}
 // Also handles optional whitespace-stripping dashes: {%- render ... -%}
+// Run against the FULL file content so multi-line tags are matched.
 const RENDER_RE = /\{%-?\s*(?:render|include)\s+["']([^"']+)["']/gi;
+
+// Matches bare render/include inside {% liquid %} blocks, where each statement
+// appears at the start of a line without tag delimiters:
+//   {% liquid
+//     render 'snippet-name'
+//   %}
+// The ^ anchor with /m flag restricts matches to line starts (after optional
+// whitespace), avoiding false matches against arbitrary text containing "render".
+// Does NOT overlap with RENDER_RE because RENDER_RE requires a preceding {%.
+const RENDER_LIQUID_BLOCK_RE = /^[ \t]*(?:render|include)\s+["']([^"']+)["']/gim;
 
 export function detectGhostSnippets(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  for (const { lineNumber, text } of lines(file.content)) {
-    let match: RegExpExecArray | null;
-    RENDER_RE.lastIndex = 0;
+  // Precompute lines inside Liquid comment blocks so bare `render 'app-snippet'`
+  // statements inside {% comment %} blocks are not flagged as GHOST_SNIPPET.
+  const commentSkipLines = buildCommentSkipLines(file.content);
 
-    while ((match = RENDER_RE.exec(text)) !== null) {
-      const snippetName = match[1];
-      const appName = identifyAppFromSnippetName(snippetName);
-      if (!appName) continue;
+  const processSnippetMatch = (snippetName: string, matchIndex: number) => {
+    const lineNumber = lineNumberAtOffset(file.content, matchIndex);
+    if (commentSkipLines.has(lineNumber)) return; // inside {% comment %} block
 
-      const codeSnippet = buildSnippet(file.content, lineNumber);
-      const severity = classifySeverity(FindingType.GHOST_SNIPPET, codeSnippet);
+    const appName = identifyAppFromSnippetName(snippetName);
+    if (!appName) return;
 
-      findings.push({
-        filename: file.filename,
-        lineNumber,
-        codeSnippet,
-        findingType: FindingType.GHOST_SNIPPET,
-        severity,
-        appName,
-        description: `Liquid render/include of known ${appName} snippet '${snippetName}'`,
-      });
-    }
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+    const severity = classifySeverity(FindingType.GHOST_SNIPPET, codeSnippet);
+
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_SNIPPET,
+      severity,
+      appName,
+      description: `Liquid render/include of known ${appName} snippet '${snippetName}'`,
+    });
+  };
+
+  // Standard form: {% render 'name' %} — may span multiple lines.
+  // Record the full byte range of each match so the bare-form pass below can
+  // skip RENDER_LIQUID_BLOCK_RE hits that fall inside an already-claimed tag
+  // (e.g. the `render 'x'` keyword on line 2 of a multi-line {%- render ... -%}).
+  const claimedRanges: Array<[number, number]> = [];
+  let match: RegExpExecArray | null;
+  RENDER_RE.lastIndex = 0;
+  while ((match = RENDER_RE.exec(file.content)) !== null) {
+    claimedRanges.push([match.index, match.index + match[0].length]);
+    processSnippetMatch(match[1], match.index);
+  }
+
+  // Bare form: render 'name' at line start inside {% liquid %} blocks.
+  // Skip any match whose offset falls inside a range already claimed by RENDER_RE
+  // to prevent a multi-line {% render %} tag from producing two findings.
+  RENDER_LIQUID_BLOCK_RE.lastIndex = 0;
+  while ((match = RENDER_LIQUID_BLOCK_RE.exec(file.content)) !== null) {
+    const offset = match.index;
+    const insideTaggedForm = claimedRanges.some(([start, end]) => offset > start && offset < end);
+    if (insideTaggedForm) continue;
+    processSnippetMatch(match[1], offset);
   }
 
   return findings;
@@ -296,53 +359,54 @@ const HREFLANG_RE_2 =
 export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  for (const { lineNumber, text } of lines(file.content)) {
-    // Pattern 1: hreflang before href — groups: [1]=lang, [2]=href
-    let match: RegExpExecArray | null;
-    HREFLANG_RE_1.lastIndex = 0;
+  // Run against full file content so multi-line <link> tags are matched.
+  // lineNumberAtOffset maps each match offset back to a 1-based line number.
+  let match: RegExpExecArray | null;
 
-    while ((match = HREFLANG_RE_1.exec(text)) !== null) {
-      const lang = match[1];
-      const href = match[2];
-      const appName = identifyAppFromHrefLang(href);
-      if (!appName) continue;
+  // Pattern 1: hreflang before href — groups: [1]=lang, [2]=href
+  HREFLANG_RE_1.lastIndex = 0;
+  while ((match = HREFLANG_RE_1.exec(file.content)) !== null) {
+    const lang = match[1];
+    const href = match[2];
+    const appName = identifyAppFromHrefLang(href);
+    if (!appName) continue;
 
-      const codeSnippet = buildSnippet(file.content, lineNumber);
-      const severity = classifySeverity(FindingType.GHOST_HREFLANG, codeSnippet);
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+    const severity = classifySeverity(FindingType.GHOST_HREFLANG, codeSnippet);
 
-      findings.push({
-        filename: file.filename,
-        lineNumber,
-        codeSnippet,
-        findingType: FindingType.GHOST_HREFLANG,
-        severity,
-        appName,
-        description: `Orphaned hreflang tag for "${lang}" from ${appName} (${href})`,
-      });
-    }
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_HREFLANG,
+      severity,
+      appName,
+      description: `Orphaned hreflang tag for "${lang}" from ${appName} (${href})`,
+    });
+  }
 
-    // Pattern 2: href before hreflang — groups: [1]=href, [2]=lang
-    HREFLANG_RE_2.lastIndex = 0;
+  // Pattern 2: href before hreflang — groups: [1]=href, [2]=lang
+  HREFLANG_RE_2.lastIndex = 0;
+  while ((match = HREFLANG_RE_2.exec(file.content)) !== null) {
+    const href = match[1];
+    const lang = match[2];
+    const appName = identifyAppFromHrefLang(href);
+    if (!appName) continue;
 
-    while ((match = HREFLANG_RE_2.exec(text)) !== null) {
-      const href = match[1];
-      const lang = match[2];
-      const appName = identifyAppFromHrefLang(href);
-      if (!appName) continue;
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+    const severity = classifySeverity(FindingType.GHOST_HREFLANG, codeSnippet);
 
-      const codeSnippet = buildSnippet(file.content, lineNumber);
-      const severity = classifySeverity(FindingType.GHOST_HREFLANG, codeSnippet);
-
-      findings.push({
-        filename: file.filename,
-        lineNumber,
-        codeSnippet,
-        findingType: FindingType.GHOST_HREFLANG,
-        severity,
-        appName,
-        description: `Orphaned hreflang tag for "${lang}" from ${appName} (${href})`,
-      });
-    }
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_HREFLANG,
+      severity,
+      appName,
+      description: `Orphaned hreflang tag for "${lang}" from ${appName} (${href})`,
+    });
   }
 
   // Deduplicate findings from overlapping regex patterns.
@@ -365,18 +429,83 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
 // Captures the name/property attribute value regardless of attribute order.
 const META_TAG_RE = /<meta\s+[^>]*(?:name|property)\s*=\s*["']([^"']+)["'][^>]*>/gi;
 
+/**
+ * OG / structured-data properties that the Open Graph spec explicitly allows to
+ * repeat within a single page (e.g. multiple images, multiple article tags).
+ * Repeating these is intentional and must NOT be flagged as a duplicate.
+ *
+ * Sources: ogp.me §Array properties; article.tag, book.tag spec.
+ */
+const REPEATABLE_META_PROPS = new Set([
+  // og:image and all its structured sub-properties (one set per image)
+  "og:image",
+  "og:image:url",
+  "og:image:secure_url",
+  "og:image:type",
+  "og:image:width",
+  "og:image:height",
+  "og:image:alt",
+  // og:video and structured sub-properties
+  "og:video",
+  "og:video:url",
+  "og:video:secure_url",
+  "og:video:type",
+  "og:video:width",
+  "og:video:height",
+  // og:audio and structured sub-properties
+  "og:audio",
+  "og:audio:secure_url",
+  "og:audio:type",
+  // Alternate locales
+  "og:locale:alternate",
+  // Content tags (explicitly repeatable per spec)
+  "article:tag",
+  "book:tag",
+]);
+
 export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  // Build a map of (name/property value) → array of occurrences
+  // Build a map of (name/property value) → array of occurrences.
+  // Only count meta tags that are NOT inside Liquid comment blocks and NOT
+  // inside Liquid conditional blocks (if/unless/case…endif). Tags inside
+  // conditional branches render exclusively at runtime (e.g. og:type varies
+  // by template), so they must not be counted as duplicates of each other.
   const occurrences = new Map<string, Array<{ lineNumber: number; text: string }>>();
 
+  // Precompute lines inside Liquid comment blocks via shared helper.
+  // Conditional-depth tracking differs from sibling detectors (it uses a depth
+  // counter for nested if/unless/case rather than a flat line-skip set), so it
+  // stays inline below rather than being unified into buildCommentSkipLines.
+  const commentSkipLines = buildCommentSkipLines(file.content);
+  let conditionalDepth = 0;
+
   for (const { lineNumber, text } of lines(file.content)) {
+    // --- Comment block tracking ---
+    if (commentSkipLines.has(lineNumber)) continue;
+
+    // --- Conditional block depth tracking ---
+    // Opening tags increment depth; closing tags decrement. The depth check
+    // runs AFTER updating depth so the `{% if %}` line itself is also skipped
+    // (LIQUID_CONDITIONAL_RE catches it if the meta is on the same line as if).
+    if (/\{%-?\s*(?:if|unless|case)\b/.test(text)) conditionalDepth++;
+    if (/\{%-?\s*(?:endif|endunless|endcase)\b/.test(text)) {
+      conditionalDepth = Math.max(0, conditionalDepth - 1);
+    }
+
+    // Skip lines inside a conditional block, or lines that contain a
+    // conditional keyword (handles the single-line `{% if %}...<meta>...{% endif %}` pattern)
+    if (conditionalDepth > 0 || LIQUID_CONDITIONAL_RE.test(text)) continue;
+
     let match: RegExpExecArray | null;
     META_TAG_RE.lastIndex = 0;
 
     while ((match = META_TAG_RE.exec(text)) !== null) {
       const attrValue = match[1].toLowerCase();
+
+      // Skip properties that are intentionally repeatable per the OG spec
+      if (REPEATABLE_META_PROPS.has(attrValue)) continue;
+
       if (!occurrences.has(attrValue)) {
         occurrences.set(attrValue, []);
       }
@@ -1699,58 +1828,60 @@ function isSharedCdnDomain(hostname: string): boolean {
 export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  let insideComment = false;
-
+  // Precompute which line numbers to skip (inside comment blocks or on
+  // conditional lines) so we can run the regex against the full file content
+  // and still honour the same false-positive boundaries as before.
+  // Comment-line tracking is delegated to the shared helper; conditional-line
+  // tracking differs from detectDuplicateMetaTags (flat line skip vs depth
+  // counter) so it stays inline here.
+  const skipLines = buildCommentSkipLines(file.content);
   for (const { lineNumber, text } of lines(file.content)) {
-    // Track Liquid comment blocks
-    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
-      insideComment = false;
-      continue;
-    }
-    if (insideComment) continue;
+    if (LIQUID_CONDITIONAL_RE.test(text)) skipLines.add(lineNumber);
+  }
 
-    // Skip lines with Liquid conditionals — these are theme-native logic
-    if (LIQUID_CONDITIONAL_RE.test(text)) continue;
+  // Run against full file content so multi-line <link> tags (e.g. from
+  // Prettier-formatted theme files) are matched. lineNumberAtOffset maps each
+  // match offset back to a 1-based line number for skip-set checking.
+  let match: RegExpExecArray | null;
+  PRECONNECT_RE.lastIndex = 0;
 
-    let match: RegExpExecArray | null;
-    PRECONNECT_RE.lastIndex = 0;
+  while ((match = PRECONNECT_RE.exec(file.content)) !== null) {
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    if (skipLines.has(lineNumber)) continue;
 
-    while ((match = PRECONNECT_RE.exec(text)) !== null) {
-      // Group 2 captures href when rel comes first; group 3 when href comes first.
-      const href = match[2] ?? match[3];
-      if (!href) continue;
+    // Group 2 captures href when rel comes first; group 3 when href comes first.
+    const href = match[2] ?? match[3];
+    if (!href) continue;
 
-      const hostname = extractDomain(href);
-      if (!hostname) continue;
+    const hostname = extractDomain(href);
+    if (!hostname) continue;
 
-      // Skip Shopify-owned domains
-      if (isShopifyDomain(hostname)) continue;
+    // Skip Shopify-owned domains
+    if (isShopifyDomain(hostname)) continue;
 
-      // Skip major shared CDNs
-      if (isSharedCdnDomain(hostname)) continue;
+    // Skip major shared CDNs
+    if (isSharedCdnDomain(hostname)) continue;
 
-      const codeSnippet = buildSnippet(file.content, lineNumber);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
 
-      // Cross-reference against known app CDN domains
-      const appName = identifyAppFromUrl(href) ?? identifyAppFromCode(codeSnippet) ?? undefined;
+    // Cross-reference against known app CDN domains
+    const appName = identifyAppFromUrl(href) ?? identifyAppFromCode(codeSnippet) ?? undefined;
 
-      // Only flag if we can attribute to a known app
-      if (!appName) continue;
+    // Only flag if we can attribute to a known app
+    if (!appName) continue;
 
-      const relType = match[1] ?? match[4]; // "preconnect", "dns-prefetch", or "preload"
-      const severity = classifySeverity(FindingType.GHOST_PRECONNECT, codeSnippet);
+    const relType = match[1] ?? match[4]; // "preconnect", "dns-prefetch", or "preload"
+    const severity = classifySeverity(FindingType.GHOST_PRECONNECT, codeSnippet);
 
-      findings.push({
-        filename: file.filename,
-        lineNumber,
-        codeSnippet,
-        findingType: FindingType.GHOST_PRECONNECT,
-        severity,
-        appName,
-        description: `Orphaned ${relType} hint to ${appName} CDN (${hostname})`,
-      });
-    }
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.GHOST_PRECONNECT,
+      severity,
+      appName,
+      description: `Orphaned ${relType} hint to ${appName} CDN (${hostname})`,
+    });
   }
 
   return findings;

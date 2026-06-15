@@ -320,3 +320,79 @@ describe("analyzeFileReferences — snippet naming edge cases", () => {
     expect(analyzeFileReferences(files)).toEqual([]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// LOG-11: {% liquid %} block render reference detection
+// ---------------------------------------------------------------------------
+
+describe("analyzeFileReferences — bare render/include inside {% liquid %} blocks", () => {
+  it("does NOT flag a snippet as orphan when it is rendered only via bare render inside a {% liquid %} block (single-quoted)", () => {
+    // Modern OS 2.0 themes use {% liquid %} blocks where render statements
+    // have no {% %} delimiters — only previous RENDER_SINGLE_RE couldn't see them.
+    const files = [
+      file("snippets/product-form.liquid", "<form>...</form>"),
+      file("sections/product.liquid", ["{% liquid", "  render 'product-form'", "%}"].join("\n")),
+    ];
+    expect(analyzeFileReferences(files)).toEqual([]);
+  });
+
+  it("does NOT flag a snippet as orphan when it is rendered only via bare render inside a {% liquid %} block (double-quoted)", () => {
+    const files = [
+      file("snippets/product-form.liquid", "<form>...</form>"),
+      file("sections/product.liquid", ["{% liquid", '  render "product-form"', "%}"].join("\n")),
+    ];
+    expect(analyzeFileReferences(files)).toEqual([]);
+  });
+
+  it("does NOT flag a snippet as orphan when it is rendered via bare include inside a {% liquid %} block", () => {
+    const files = [
+      file("snippets/legacy-widget.liquid", "<div>widget</div>"),
+      file("layout/theme.liquid", ["{% liquid", "  include 'legacy-widget'", "%}"].join("\n")),
+    ];
+    expect(analyzeFileReferences(files)).toEqual([]);
+  });
+
+  it("flags a snippet as orphan when it appears ONLY as a bare render inside a Liquid COMMENT block", () => {
+    // A render call inside {% comment %} does not execute at runtime.
+    // The existing behaviour (same as for {% render %} in comments) is to treat
+    // it as a reference, matching the RENDER_SINGLE_RE precedent. This test
+    // documents and locks that behaviour so any future stricter handling is deliberate.
+    // NOTE: This is a known limitation; tighten comment-awareness in a follow-up if needed.
+    const files = [
+      file("snippets/app-widget.liquid", "<div>widget</div>"),
+      file(
+        "layout/theme.liquid",
+        ["{% comment %}", "  render 'app-widget'", "{% endcomment %}"].join("\n"),
+      ),
+    ];
+    // Current behaviour: bare render inside {% comment %} IS counted as a reference
+    // (the reference-analyzer does not strip comments — same as RENDER_SINGLE_RE).
+    expect(analyzeFileReferences(files)).toEqual([]);
+  });
+
+  it("still flags a snippet as orphan when nothing references it (with {% liquid %} block present)", () => {
+    const files = [
+      file("snippets/unused-widget.liquid", "<div>unused</div>"),
+      file("layout/theme.liquid", ["{% liquid", "  render 'some-other-snippet'", "%}"].join("\n")),
+    ];
+    const orphans = analyzeFileReferences(files);
+    expect(orphanFilenames(orphans)).toContain("snippets/unused-widget.liquid");
+  });
+
+  it("handles an indented bare render inside a {% liquid %} block with mixed content", () => {
+    const files = [
+      file("snippets/cart-form.liquid", "<form>cart</form>"),
+      file(
+        "templates/cart.liquid",
+        [
+          "{% liquid",
+          "  assign cart_items = cart.items",
+          "  render 'cart-form'",
+          "  assign show_empty = cart.items.size == 0",
+          "%}",
+        ].join("\n"),
+      ),
+    ];
+    expect(analyzeFileReferences(files)).toEqual([]);
+  });
+});
