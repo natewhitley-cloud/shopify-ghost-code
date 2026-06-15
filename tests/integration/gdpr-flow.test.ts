@@ -5,8 +5,15 @@
  *     The handler calls deleteShopData(shop) which runs a $transaction that
  *     deletes sessions, scans (cascade-deletes findings), and the shop record.
  *     We verify the model is called with the correct domain and that the handler
- *     always returns 200 (required by Shopify GDPR policy), including when the
- *     shop doesn't exist (idempotent).
+ *     returns 200 on success — including when the shop doesn't exist (idempotent).
+ *
+ *     Failure-mode contract (deliberate): the handler does NOT wrap
+ *     deleteShopData in try/catch. If the deletion fails (e.g. a transient DB
+ *     error) the rejection propagates out of the action so Shopify receives a
+ *     5xx and RETRIES the webhook. This is the correct GDPR posture — better to
+ *     fail loudly and let Shopify retry than to swallow the error and falsely
+ *     confirm a deletion that never happened. Likewise an invalid-HMAC request
+ *     (authenticate.webhook throws a Response) propagates before any DB work.
  *
  *   Flow 2 — customers/data_request: webhook fires → 200 no-op
  *     Ghost Code stores no customer PII — only shop-level theme scan data.
@@ -368,21 +375,47 @@ describe("GDPR flow — customers/redact (no-op acknowledgment)", () => {
 // ---------------------------------------------------------------------------
 
 describe("GDPR compliance invariants", () => {
-  it("shop/redact always returns 200 — never 4xx or 5xx", async () => {
-    // Even if deleteShopData rejects unexpectedly, Shopify requires 200 for
-    // GDPR webhooks to avoid infinite retries. This test documents the contract.
-    // Note: the current implementation does not wrap deleteShopData in try/catch,
-    // so a DB error would propagate. This test verifies the normal-path guarantee.
+  it("shop/redact propagates a 5xx when deleteShopData fails, relying on Shopify retry", async () => {
+    // Deliberate contract: the handler does NOT wrap deleteShopData in
+    // try/catch. When the deletion fails, the rejection propagates out of the
+    // action (the returned promise rejects, surfacing as a 5xx to Shopify) so
+    // Shopify retries the webhook. We must NOT swallow the error and return 200,
+    // which would falsely confirm a deletion that never happened. Use
+    // mockRejectedValueOnce so the rejection is scoped to this invocation only.
     mockShopRedactWebhook();
-    mockDeleteShopData.mockResolvedValue(MOCK_DELETED_SHOP);
+    const dbError = new Error("transient DB failure during shop/redact");
+    mockDeleteShopData.mockRejectedValueOnce(dbError);
 
-    const response = await webhookAction({
-      request: makeWebhookRequest("webhooks/shop/redact"),
-      params: {},
-      context: {},
-    } as unknown as ActionFunctionArgs);
+    await expect(
+      webhookAction({
+        request: makeWebhookRequest("webhooks/shop/redact"),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs),
+    ).rejects.toThrow("transient DB failure during shop/redact");
 
-    expect(response.status).toBe(200);
+    // The delete was attempted — we are not short-circuiting before the DB call.
+    expect(mockDeleteShopData).toHaveBeenCalledWith(SHOP_DOMAIN);
+  });
+
+  it("shop/redact propagates the thrown Response on invalid HMAC and never touches the DB", async () => {
+    // Shopify's authenticate.webhook throws a Response (not a plain Error) when
+    // HMAC verification fails. That Response must propagate unchanged, and
+    // deleteShopData must NOT be called — we never delete data for a request we
+    // could not authenticate. Use mockRejectedValueOnce so the rejection is
+    // scoped to this invocation only.
+    const unauthorized = new Response("Unauthorized", { status: 401 });
+    mockAuthenticateWebhook.mockRejectedValueOnce(unauthorized);
+
+    await expect(
+      webhookAction({
+        request: makeWebhookRequest("webhooks/shop/redact"),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs),
+    ).rejects.toBe(unauthorized);
+
+    expect(mockDeleteShopData).not.toHaveBeenCalled();
   });
 
   it("customers/data_request always returns 200", async () => {

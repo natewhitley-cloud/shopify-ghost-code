@@ -105,4 +105,34 @@ describe("webhooks.app.uninstalled action", () => {
     expect((result as Response).status).toBe(200);
     expect(mockDeleteShopData).toHaveBeenCalledWith("test-shop.myshopify.com");
   });
+
+  it("propagates the rejection when deleteShopData fails, relying on Shopify retry", async () => {
+    // Deliberate contract: the handler does NOT wrap deleteShopData in
+    // try/catch. When cleanup fails, the rejection propagates out of the action
+    // (the returned promise rejects, surfacing as a 5xx) so Shopify retries the
+    // uninstall webhook rather than us silently dropping the deletion. Use
+    // mockRejectedValueOnce so the rejection is scoped to this invocation only.
+    const dbError = new Error("transient DB failure during app/uninstalled");
+    mockDeleteShopData.mockRejectedValueOnce(dbError);
+
+    await expect(action(makeActionArgs())).rejects.toThrow(
+      "transient DB failure during app/uninstalled",
+    );
+
+    expect(mockDeleteShopData).toHaveBeenCalledWith("test-shop.myshopify.com");
+  });
+
+  it("propagates the thrown Response on invalid HMAC and never touches the DB", async () => {
+    // Shopify's authenticate.webhook throws a Response (not a plain Error) when
+    // HMAC verification fails. That Response must propagate unchanged, and
+    // deleteShopData must NOT be called — we never delete data for a request we
+    // could not authenticate. Use mockRejectedValueOnce so the rejection is
+    // scoped to this invocation only.
+    const unauthorized = new Response("Unauthorized", { status: 401 });
+    mockAuthenticateWebhook.mockRejectedValueOnce(unauthorized);
+
+    await expect(action(makeActionArgs())).rejects.toBe(unauthorized);
+
+    expect(mockDeleteShopData).not.toHaveBeenCalled();
+  });
 });
