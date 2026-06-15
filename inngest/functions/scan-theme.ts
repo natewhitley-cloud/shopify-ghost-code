@@ -65,6 +65,54 @@ import { inngest } from "../client";
 type AuditStepResult = { findingCount: number; skipped: boolean };
 
 /**
+ * Persist a batch of audit findings with the delete-then-create idempotency
+ * guard, then recount the scan total and log the result.
+ *
+ * Shared by `runAuditStep` (the generic optional audits) and the bespoke
+ * translation-audit step, which both end with the identical persist/recount/log
+ * tail. Only the `findingType`, `event`, and `logMessage` vary by call site, so
+ * those are parameters — everything else is byte-for-byte identical.
+ *
+ * No-ops when `findings` is empty: an audit that found nothing must leave the
+ * scan record (and its findingCount) untouched.
+ */
+async function persistAuditFindings(opts: {
+  scanId: string;
+  shopId: string;
+  findingType: FindingType;
+  findings: CreateFindingInput[];
+  event: string;
+  logMessage: string;
+}): Promise<void> {
+  if (opts.findings.length === 0) return;
+
+  const db = (await import("../../app/db.server")).default;
+
+  // Idempotency guard: delete any previous findings of this type before
+  // inserting, so Inngest retries don't create duplicates.
+  await db.finding.deleteMany({
+    where: { scanId: opts.scanId, findingType: opts.findingType },
+  });
+  const { createFindings } = await import("../../app/models/finding.server");
+  await createFindings(opts.scanId, opts.findings);
+
+  // Recount all findings to be accurate (avoids drift from retries)
+  const totalCount = await db.finding.count({ where: { scanId: opts.scanId } });
+  await db.scan.update({
+    where: { id: opts.scanId },
+    data: { findingCount: totalCount },
+  });
+
+  const { logger } = await import("../../app/lib/logger.server");
+  logger.info(opts.logMessage, {
+    function: "scan-theme",
+    event: opts.event,
+    shopId: opts.shopId,
+    count: opts.findings.length,
+  });
+}
+
+/**
  * Generic audit step: check scope → fetch data → detect findings → persist.
  *
  * Handles the common pattern shared by all optional API-based detectors:
@@ -108,30 +156,14 @@ async function runAuditStep(opts: {
 
   const findings = await opts.fetchAndDetect(admin);
 
-  if (findings.length > 0) {
-    // Idempotency guard: delete any previous findings of this type before
-    // inserting, so Inngest retries don't create duplicates.
-    await db.finding.deleteMany({
-      where: { scanId: opts.scanId, findingType: opts.findingType },
-    });
-    const { createFindings } = await import("../../app/models/finding.server");
-    await createFindings(opts.scanId, findings);
-
-    // Recount all findings to be accurate (avoids drift from retries)
-    const totalCount = await db.finding.count({ where: { scanId: opts.scanId } });
-    await db.scan.update({
-      where: { id: opts.scanId },
-      data: { findingCount: totalCount },
-    });
-
-    const { logger } = await import("../../app/lib/logger.server");
-    logger.info("audit step findings persisted", {
-      function: "scan-theme",
-      event: `${opts.stepName}_findings`,
-      shopId: opts.shopId,
-      count: findings.length,
-    });
-  }
+  await persistAuditFindings({
+    scanId: opts.scanId,
+    shopId: opts.shopId,
+    findingType: opts.findingType,
+    findings,
+    event: `${opts.stepName}_findings`,
+    logMessage: "audit step findings persisted",
+  });
 
   return { findingCount: findings.length, skipped: false };
 }
@@ -247,27 +279,14 @@ export const scanTheme = inngest.createFunction(
           await import("../../app/services/translation-detector.server");
         const translationFindings = detectTranslationContent(audit);
 
-        if (translationFindings.length > 0) {
-          await db.finding.deleteMany({
-            where: { scanId, findingType: "GHOST_TRANSLATION" },
-          });
-
-          const { createFindings } = await import("../../app/models/finding.server");
-          await createFindings(scanId, translationFindings);
-
-          const totalCount = await db.finding.count({ where: { scanId } });
-          await db.scan.update({
-            where: { id: scanId },
-            data: { findingCount: totalCount },
-          });
-
-          logger.info("translation findings persisted", {
-            function: "scan-theme",
-            event: "translation_findings",
-            shopId,
-            count: translationFindings.length,
-          });
-        }
+        await persistAuditFindings({
+          scanId,
+          shopId,
+          findingType: FindingType.GHOST_TRANSLATION,
+          findings: translationFindings,
+          event: "translation_findings",
+          logMessage: "translation findings persisted",
+        });
 
         return { findingCount: translationFindings.length, skipped: false };
       });

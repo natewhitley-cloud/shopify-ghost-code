@@ -593,6 +593,77 @@ describe("scanTheme — optional audit steps", () => {
     });
   });
 
+  describe("translation persistence — shared helper from the translation step", () => {
+    // The translation-audit step has bespoke pre-logic but ends with the same
+    // persist/recount/log tail as runAuditStep (extracted into persistAuditFindings).
+    // These lock in that second call site: correct GHOST_TRANSLATION findingType,
+    // delete-then-create ordering, recount, and retry idempotency.
+    const TRANSLATION_AUDIT = {
+      locales: ["fr"],
+      summaries: [],
+      totalTranslations: 5,
+      totalOutdated: 0,
+    };
+
+    it("persists translation findings via the same delete-then-create + recount tail", async () => {
+      const translationFinding = makeAuditFinding(FindingType.GHOST_TRANSLATION);
+      mockAuditTranslations.mockResolvedValue(TRANSLATION_AUDIT);
+      mockDetectTranslationContent.mockReturnValue([translationFinding]);
+      mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length + 1);
+
+      const result = await runScanTheme();
+
+      // Idempotency guard runs for the GHOST_TRANSLATION type before insert.
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+        where: { scanId: SCAN_ID, findingType: FindingType.GHOST_TRANSLATION },
+      });
+      expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [translationFinding]);
+
+      // deleteMany must run BEFORE createFindings.
+      const deleteOrder = mockDb.finding.deleteMany.mock.invocationCallOrder[0];
+      const createOrder = mockCreateFindings.mock.invocationCallOrder[0];
+      expect(deleteOrder).toBeLessThan(createOrder);
+
+      // Recount keeps the scan.findingCount authoritative (no retry drift).
+      expect(mockDb.scan.update).toHaveBeenCalledWith({
+        where: { id: SCAN_ID },
+        data: { findingCount: MOCK_FINDINGS.length + 1 },
+      });
+
+      expect(result).toEqual({
+        scanId: SCAN_ID,
+        findingCount: MOCK_FINDINGS.length + 1,
+        status: "COMPLETED",
+      });
+    });
+
+    it("delete-then-create keeps exactly one copy of translation findings across two runs", async () => {
+      const translationFinding = makeAuditFinding(FindingType.GHOST_TRANSLATION);
+      mockAuditTranslations.mockResolvedValue(TRANSLATION_AUDIT);
+      mockDetectTranslationContent.mockReturnValue([translationFinding]);
+
+      // Stateful fake table for GHOST_TRANSLATION findings: deleteMany clears it,
+      // createFindings appends. Running the step twice must leave one copy.
+      let persisted: unknown[] = [];
+      mockDb.finding.deleteMany.mockImplementation(
+        async ({ where }: { where: { findingType: FindingType } }) => {
+          if (where.findingType === FindingType.GHOST_TRANSLATION) persisted = [];
+          return { count: 0 };
+        },
+      );
+      mockCreateFindings.mockImplementation(async (_scanId: string, findings: unknown[]) => {
+        persisted.push(...findings);
+        return { count: findings.length };
+      });
+
+      await runScanTheme();
+      await runScanTheme();
+
+      // No duplication despite two runs (simulating an Inngest retry).
+      expect(persisted).toEqual([translationFinding]);
+    });
+  });
+
   describe("retry idempotency — running an audit twice does not duplicate", () => {
     it("delete-then-create keeps exactly one copy of the findings after two runs", async () => {
       const tagFinding = makeAuditFinding(FindingType.GHOST_TAG);
