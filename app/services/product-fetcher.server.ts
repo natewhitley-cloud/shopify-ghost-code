@@ -6,6 +6,7 @@
  */
 
 import { checkRateLimit } from "./theme-fetcher.server";
+import { probeScope } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
 // ---------------------------------------------------------------------------
@@ -27,6 +28,12 @@ export type ProductPriceData = {
     price: string;
     compareAtPrice: string | null;
   }>;
+  // Merchant-visible product metafields, used by the price detector to
+  // corroborate that a persistent compare-at price was left by an uninstalled
+  // discount/sale app (rather than being an intentional merchant sale).
+  // App-owned (app--{id}--*) metafields are invisible to third-party apps and
+  // are therefore never present here.
+  metafields: Array<{ namespace: string; key: string }>;
 };
 
 export type ProductMetafieldData = {
@@ -56,6 +63,12 @@ const PRODUCT_PRICES_QUERY = `
             title
             price
             compareAtPrice
+          }
+        }
+        metafields(first: 50) {
+          nodes {
+            namespace
+            key
           }
         }
       }
@@ -111,20 +124,15 @@ const PRODUCT_TAGS_QUERY = `
 // ---------------------------------------------------------------------------
 
 /**
- * Check if read_products scope is available by attempting a lightweight query.
- * Returns false on ACCESS_DENIED or any error.
+ * Check if the read_products scope is available by attempting a lightweight query.
+ *
+ * Returns false ONLY on a genuine ACCESS_DENIED (scope not granted). Transient
+ * failures (THROTTLED, network, 5xx, timeout) throw a TransientScopeCheckError
+ * so the caller retries instead of silently treating the scope as missing.
+ * See app/lib/scope-check.server.ts (LOG-9).
  */
 export async function hasProductScope(admin: AdminApiContext): Promise<boolean> {
-  try {
-    const response = await admin.graphql(`{ products(first: 1) { nodes { id } } }`);
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: unknown;
-    };
-    return !json.errors?.length;
-  } catch {
-    return false;
-  }
+  return probeScope(admin, `{ products(first: 1) { nodes { id } } }`, "read_products");
 }
 
 // ---------------------------------------------------------------------------
@@ -231,6 +239,9 @@ export async function fetchProductPrices(
                 compareAtPrice: string | null;
               }>;
             };
+            metafields?: {
+              nodes?: Array<{ namespace: string; key: string }>;
+            };
           }>;
           pageInfo?: { hasNextPage?: boolean; endCursor?: string };
         };
@@ -256,6 +267,10 @@ export async function fetchProductPrices(
           id: node.id,
           title: node.title,
           variants,
+          metafields: (node.metafields?.nodes ?? []).map((m) => ({
+            namespace: m.namespace,
+            key: m.key,
+          })),
         });
       }
     }

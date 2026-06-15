@@ -10,6 +10,7 @@
 import { ScanStatus } from "@prisma/client";
 
 import db from "../db.server";
+import { SUCCESSFUL_SCAN_STATUSES } from "./scan.server";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -136,11 +137,13 @@ export async function computeCurrentMetrics(
       where: { createdAt: { gte: thirtyDaysAgo } },
     }),
 
-    // Completed scans in last 30 days (for completion rate numerator)
+    // Successful scans in last 30 days (for completion rate numerator).
+    // PARTIAL counts as a success — the core scan ran; only optional categories
+    // were skipped for missing scope.
     prismaClient.scan.count({
       where: {
         createdAt: { gte: thirtyDaysAgo },
-        status: ScanStatus.COMPLETED,
+        status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
       },
     }),
 
@@ -155,12 +158,12 @@ export async function computeCurrentMetrics(
     // All-time finding count
     prismaClient.finding.count(),
 
-    // Completed scans that have at least one finding — for avg calculation
+    // Successful scans — for avg findings calculation.
     // We use the denormalized findingCount on Scan to avoid a heavy JOIN.
     prismaClient.scan.aggregate({
       _avg: { findingCount: true },
       _count: true,
-      where: { status: ScanStatus.COMPLETED },
+      where: { status: { in: [...SUCCESSFUL_SCAN_STATUSES] } },
     }),
 
     // Active shops: distinct shopIds with at least one scan in last 30 days

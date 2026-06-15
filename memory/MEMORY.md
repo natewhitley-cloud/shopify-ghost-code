@@ -17,7 +17,8 @@
 - Theme file API is paginated (250 files per page) — always handle pagination
 - Rate limiting is cost-based (50 points/sec) — batch GraphQL queries where possible
 - Polaris Web Components docs are sparse — check Shopify changelog and GitHub for examples
-- ~50 pre-existing TS errors from Polaris Web Components (no JSX types for `<s-*>`) and test mock casts. Not blocking — tests pass cleanly.
+- `npm run typecheck` (react-router typegen + tsc) is the canonical check and passes clean — prefer it over bare `tsc --noEmit`, which can report stale errors without fresh route typegen. (updated: 2026-06-15, dispatch: retro-session)
+- Dependency hazard: bumping `react-router` can pull a DUPLICATE `@shopify/shopify-api` (adapter `shopify-app-react-router` wants ^13, `shopify-app-session-storage-prisma` ^12) → `PrismaSessionStorage` TS2322. Keep both packages on a matching shopify-api major (session-storage-prisma@9 ↔ shopify-api@13). (added: 2026-06-15, dispatch: bead-GC-q4k)
 
 ## Agent Selection
 
@@ -33,12 +34,19 @@
 - Serial dispatch per CLAUDE.md rules avoids API throttling and enables learning carry-forward between batches. (added: 2026-03-10, dispatch: retro-session)
 - Audit → sprint pipeline produces zero-rework fix sprints. Audit findings with file:line precision make downstream agents surgical. (added: 2026-03-10, dispatch: retro-session)
 - Tester agent dispatched LAST in a sprint covers the final state of all fixes. Integration tests belong at the end. (added: 2026-03-10, dispatch: retro-session)
+- ALWAYS independently re-run `npm run typecheck` + `npx vitest run` in the orchestrator before closing a dispatched ticket — do not trust the subagent's "all green" report. This session agents reported passing twice while the committed tree actually had failures (a 9A dep regression surfaced via 1A; a flaky run). Cheap insurance, caught real issues. (added: 2026-06-15, dispatch: retro-session)
+- Subagents can die mid-task on API socket errors leaving UNCOMMITTED work in the tree. Recover by assessing `git status` + `git diff`, then finishing the job (a fresh agent reading the diff is more reliable than resuming the crashed one) rather than restarting from scratch. (added: 2026-06-15, dispatch: retro-session)
+- When a subagent hits an ambiguous design call (no defensible signal, a product fork), instruct it to STOP and report rather than ship a heuristic. 3A correctly stopped on translations; that surfaced a real product decision. (added: 2026-06-15, dispatch: retro-session)
 
 ## Key Decisions
 
 - Team assembled via /assemble. 5 members: scaffolder, implementer, tester, reviewer, debugger.
 - Structured JSON logging via app/lib/logger.server.ts (replaces bare console.\* in webhooks). (added: 2026-03-10)
-- Atomic TOCTOU guard in createScan + idempotent completeScanWithFindings — application-level, not DB constraint. (added: 2026-03-10)
+- Atomic TOCTOU guard in createScan + idempotent persistence — application-level, not DB constraint. (added: 2026-03-10)
+- Scan completion model (LOG-4, 2026-06-15): `saveThemeFindings` persists findings + stays IN_PROGRESS; `finalizeScan` sets the terminal status ONLY after all audit steps. `ScanStatus.PARTIAL` = core scan OK but ≥1 optional audit skipped for missing scope; `Scan.skippedCategories` drives PARTIAL and makes the differ exclude un-audited categories from "resolved" (prevents false-resolved). `completeScanWithFindings` no longer exists. (added: 2026-06-15, dispatch: bead-GC-fp2)
+- Scope checks go through `app/lib/scope-check.server.ts` (`probeScope`): ACCESS_DENIED → skip cleanly; transient/throttle/network → throw `TransientScopeCheckError` → Inngest retry → scan FAILED (never silently false-clean). (added: 2026-06-15, dispatch: bead-GC-i8c)
+- GHOST_TRANSLATION orphan detection is INFEASIBLE (Shopify exposes no translation provenance; disabled-locale translations are auto-deleted; native keys aren't app-owned). Kept as LOW-severity informational "review these" — do NOT re-attempt orphan detection. (added: 2026-06-15, dispatch: bead-GC-y92)
+- GHOST_PRICE requires corroborating orphan evidence (discount-app-specific metafield, e.g. Bold `inventory.ShappifySale`) — compare-at>price alone is a normal sale, never flag it bare. (added: 2026-06-15, dispatch: bead-GC-wsn)
 
 ## Shopify Platform Facts
 

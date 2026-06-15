@@ -1,9 +1,7 @@
 import db from "../db.server";
-import { encryptToken, decryptToken } from "../lib/token-encryption.server";
 
 /**
  * The subset of shop fields returned by getShopMetadata.
- * Excludes the encrypted accessToken — use getShopByDomain when the token is needed.
  */
 export type ShopMetadata = {
   id: string;
@@ -15,10 +13,9 @@ export type ShopMetadata = {
 };
 
 /**
- * Lightweight shop lookup that returns all metadata fields but excludes
- * the accessToken entirely (no Prisma select, no decryption).
+ * Lightweight shop lookup that returns all shop metadata fields.
  * Use this for plan checks, feature gating, review prompts, and any
- * caller that only needs shop identity or settings — not Shopify API access.
+ * caller that only needs shop identity or settings.
  *
  * Returns null if no shop exists — callers must handle the null case.
  */
@@ -37,45 +34,21 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
 }
 
 /**
- * Find a shop by its Shopify domain (unique field).
- * Decrypts the access token before returning.
- * Returns null if no shop exists — callers must handle the null case.
+ * Create a shop record on install, or no-op update if it already exists.
  *
- * Use this only when the decrypted access token is needed (e.g. unauthenticated
- * Shopify API calls from background jobs). For all other callers, prefer
- * getShopMetadata to avoid unnecessary crypto overhead.
+ * The Shopify access token is NOT stored here: the operative offline token
+ * lives in the Session table (managed by PrismaSessionStorage) and is read by
+ * every background job and webhook via `unauthenticated.admin()`. This function
+ * only persists shop identity/settings (domain, plan, installedAt, etc.).
+ *
+ * Idempotent: safe to call on every authenticated visit. On re-install for an
+ * existing shop, the create is skipped and existing metadata is preserved.
  */
-export async function getShopByDomain(domain: string) {
-  const shop = await db.shop.findUnique({ where: { domain } });
-  if (!shop) return null;
-  return { ...shop, accessToken: decryptToken(shop.accessToken) };
-}
-
-/**
- * Create or update a shop record on install / re-install.
- * Encrypts the access token before storing.
- * Updates the accessToken in place so re-installs don't orphan auth state.
- *
- * Throws if no accessToken is provided and the shop does not yet exist —
- * a new shop record always requires a token (the schema field is non-nullable).
- *
- * Re-install without a new token (accessToken omitted) is safe for existing
- * shops: the update is a no-op that leaves the stored token unchanged.
- */
-export async function upsertShop(domain: string, accessToken?: string) {
-  const encrypted = accessToken ? encryptToken(accessToken) : undefined;
-  if (!encrypted) {
-    // Update-only path: re-install without a new token (edge case, but safe).
-    const existing = await db.shop.findUnique({ where: { domain } });
-    if (!existing) {
-      throw new Error(`Cannot create shop ${domain} without an access token`);
-    }
-    return db.shop.update({ where: { domain }, data: {} });
-  }
+export async function upsertShop(domain: string) {
   return db.shop.upsert({
     where: { domain },
-    create: { domain, accessToken: encrypted },
-    update: { accessToken: encrypted },
+    create: { domain },
+    update: {},
   });
 }
 

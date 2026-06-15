@@ -49,11 +49,12 @@ vi.mock("../../app/models/scan.server", () => ({
   countScansForShopSince: vi.fn(),
   hasCompletedScans: vi.fn(),
   updateScanStatus: vi.fn(),
+  finalizeScan: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
   getFindingSummary: vi.fn(),
-  completeScanWithFindings: vi.fn(),
+  saveThemeFindings: vi.fn(),
 }));
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
@@ -72,6 +73,33 @@ vi.mock("../../app/services/scan-engine.server", () => ({
 
 vi.mock("../../app/models/unknown-script.server", () => ({
   createUnknownScripts: vi.fn(),
+}));
+
+// Optional-audit service boundaries. The scan-theme function probes each
+// optional scope; mock them so the audit steps run deterministically instead
+// of hitting the (unmocked) admin client and throwing. Part B keeps every
+// scope ungranted, so the audits skip cleanly and the theme scan is the only
+// contributor to the finding count.
+vi.mock("../../app/services/translation-fetcher.server", () => ({
+  hasTranslationScope: vi.fn(),
+  auditTranslations: vi.fn(),
+}));
+
+vi.mock("../../app/services/product-fetcher.server", () => ({
+  hasProductScope: vi.fn(),
+  fetchProductTags: vi.fn(),
+  fetchProductPrices: vi.fn(),
+  fetchProductMetafields: vi.fn(),
+}));
+
+vi.mock("../../app/services/content-fetcher.server", () => ({
+  hasContentScope: vi.fn(),
+  fetchPages: vi.fn(),
+}));
+
+vi.mock("../../app/services/redirect-fetcher.server", () => ({
+  hasNavigationScope: vi.fn(),
+  fetchRedirects: vi.fn(),
 }));
 
 vi.mock("../../inngest/client", () => ({
@@ -103,13 +131,22 @@ vi.mock("../../app/db.server", () => ({
 
 import db from "../../app/db.server";
 import { canStartScan } from "../../app/lib/plan-gating.server";
-import { completeScanWithFindings } from "../../app/models/finding.server";
-import { createScan, hasCompletedScans, updateScanStatus } from "../../app/models/scan.server";
+import { saveThemeFindings } from "../../app/models/finding.server";
+import {
+  createScan,
+  finalizeScan,
+  hasCompletedScans,
+  updateScanStatus,
+} from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { action } from "../../app/routes/app._index";
+import { hasContentScope } from "../../app/services/content-fetcher.server";
+import { hasProductScope } from "../../app/services/product-fetcher.server";
+import { hasNavigationScope } from "../../app/services/redirect-fetcher.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchMainTheme, fetchThemeFiles } from "../../app/services/theme-fetcher.server";
+import { hasTranslationScope } from "../../app/services/translation-fetcher.server";
 import { authenticate, unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 import { scanTheme } from "../../inngest/functions/scan-theme";
@@ -125,13 +162,18 @@ const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
-const mockCompleteScanWithFindings = completeScanWithFindings as ReturnType<typeof vi.fn>;
+const mockFinalizeScan = finalizeScan as ReturnType<typeof vi.fn>;
+const mockSaveThemeFindings = saveThemeFindings as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
+const mockHasTranslationScope = hasTranslationScope as ReturnType<typeof vi.fn>;
+const mockHasProductScope = hasProductScope as ReturnType<typeof vi.fn>;
+const mockHasContentScope = hasContentScope as ReturnType<typeof vi.fn>;
+const mockHasNavigationScope = hasNavigationScope as ReturnType<typeof vi.fn>;
 const mockDbShopFindUnique = (db as unknown as { shop: { findUnique: ReturnType<typeof vi.fn> } })
   .shop.findUnique;
 const mockDbScanFindUnique = (db as unknown as { scan: { findUnique: ReturnType<typeof vi.fn> } })
@@ -463,10 +505,19 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     // unauthenticated.admin is used to create an admin client inside the Inngest step.
     mockUnauthenticatedAdmin.mockResolvedValue({ admin: MOCK_ADMIN });
     mockUpdateScanStatus.mockResolvedValue(undefined);
+    mockFinalizeScan.mockResolvedValue(undefined);
     mockFetchThemeFiles.mockResolvedValue(MOCK_FILES);
     mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
-    mockCompleteScanWithFindings.mockResolvedValue(undefined);
+    mockSaveThemeFindings.mockResolvedValue(undefined);
     mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
+
+    // Every optional scope is ungranted here, so all six optional audit
+    // categories are skipped-for-scope → the scan finalizes as PARTIAL (LOG-4),
+    // and only the theme scan contributes findings.
+    mockHasTranslationScope.mockResolvedValue(false);
+    mockHasProductScope.mockResolvedValue(false);
+    mockHasContentScope.mockResolvedValue(false);
+    mockHasNavigationScope.mockResolvedValue(false);
   });
 
   function makeScanEvent(overrides?: Partial<{ shopId: string; themeId: string; scanId: string }>) {
@@ -487,17 +538,17 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
   }
 
   describe("happy path — complete scan flow", () => {
-    it("returns COMPLETED status and the correct finding count", async () => {
+    it("returns PARTIAL status (optional scopes ungranted) and the correct finding count", async () => {
       const result = await runScanThemeFn();
 
       expect(result).toEqual({
         scanId: SCAN_ID,
         findingCount: MOCK_FINDINGS.length,
-        status: "COMPLETED",
+        status: "PARTIAL",
       });
     });
 
-    it("transitions scan to IN_PROGRESS then COMPLETED in order", async () => {
+    it("marks IN_PROGRESS first, then finalizes the terminal status separately (LOG-4)", async () => {
       const statusCalls: string[] = [];
       mockUpdateScanStatus.mockImplementation(async (_id: string, status: string) => {
         statusCalls.push(status);
@@ -505,15 +556,23 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
 
       await runScanThemeFn();
 
-      expect(statusCalls[0]).toBe("IN_PROGRESS");
-      // COMPLETED is set inside completeScanWithFindings (not updateScanStatus directly)
-      // so we only verify IN_PROGRESS here; COMPLETED is covered by the return value
+      // Only IN_PROGRESS goes through updateScanStatus; the terminal status is
+      // set via finalizeScan after every audit step runs.
+      expect(statusCalls).toEqual(["IN_PROGRESS"]);
+      expect(mockFinalizeScan).toHaveBeenCalledWith(
+        SCAN_ID,
+        expect.objectContaining({ status: "PARTIAL", findingCount: MOCK_FINDINGS.length }),
+      );
     });
 
-    it("calls completeScanWithFindings with the scan id and detected findings", async () => {
+    it("persists theme findings via saveThemeFindings (status stays IN_PROGRESS)", async () => {
       await runScanThemeFn();
 
-      expect(mockCompleteScanWithFindings).toHaveBeenCalledWith(SCAN_ID, MOCK_FINDINGS);
+      expect(mockSaveThemeFindings).toHaveBeenCalledWith(SCAN_ID, MOCK_FINDINGS);
+      // saveThemeFindings runs before the terminal status is set.
+      const saveOrder = mockSaveThemeFindings.mock.invocationCallOrder[0];
+      const finalizeOrder = mockFinalizeScan.mock.invocationCallOrder[0];
+      expect(saveOrder).toBeLessThan(finalizeOrder);
     });
 
     it("fetches theme files using the admin client for the correct theme", async () => {
@@ -530,12 +589,12 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
   });
 
   describe("happy path — zero findings (clean theme)", () => {
-    it("returns COMPLETED with findingCount of 0", async () => {
+    it("returns PARTIAL with findingCount of 0 (optional scopes ungranted)", async () => {
       mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
 
       const result = await runScanThemeFn();
 
-      expect(result).toEqual({ scanId: SCAN_ID, findingCount: 0, status: "COMPLETED" });
+      expect(result).toEqual({ scanId: SCAN_ID, findingCount: 0, status: "PARTIAL" });
     });
 
     it("persists an empty findings array (idempotent deleteMany + no createMany)", async () => {
@@ -543,7 +602,7 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
 
       await runScanThemeFn();
 
-      expect(mockCompleteScanWithFindings).toHaveBeenCalledWith(SCAN_ID, []);
+      expect(mockSaveThemeFindings).toHaveBeenCalledWith(SCAN_ID, []);
     });
   });
 
@@ -556,12 +615,12 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
       expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
     });
 
-    it("does not call completeScanWithFindings when shop lookup fails", async () => {
+    it("does not call saveThemeFindings when shop lookup fails", async () => {
       mockDbShopFindUnique.mockResolvedValue(null);
 
       await expect(runScanThemeFn()).rejects.toThrow();
 
-      expect(mockCompleteScanWithFindings).not.toHaveBeenCalled();
+      expect(mockSaveThemeFindings).not.toHaveBeenCalled();
     });
   });
 

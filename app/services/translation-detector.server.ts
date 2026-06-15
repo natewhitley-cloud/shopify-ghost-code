@@ -5,8 +5,13 @@
  * equivalent of scan-engine for translations — it takes raw API data and
  * produces structured findings for the scan results.
  *
- * Detection strategy: if translations exist but no translation app is
- * currently installed, the translations are orphaned and flagged.
+ * Framing: there is NO reliable way to prove translation content is genuinely
+ * orphaned. Translations use Shopify-standard keys (not app namespaces),
+ * disabled-locale translations are auto-deleted by Shopify, the Translation
+ * object carries no provenance field, and translation apps (e.g. Translate &
+ * Adapt) leave no theme artifacts. So we do NOT claim these are ghost code.
+ * Instead each locale's translation content is surfaced as a LOW-severity
+ * informational item for the merchant to review and confirm.
  */
 
 import { FindingType } from "@prisma/client";
@@ -16,59 +21,22 @@ import type { TranslationAuditResult } from "./translation-fetcher.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
 // ---------------------------------------------------------------------------
-// Known translation apps
-// ---------------------------------------------------------------------------
-
-/** Known translation app names — used to cross-reference with installed apps. */
-const TRANSLATION_APP_NAMES = [
-  "Translate & Adapt",
-  "Transcy",
-  "Langify",
-  "LangShop",
-  "Weglot",
-  "Hextom Translate",
-  "T Lab",
-  "Bablic",
-  "ConveyThis",
-  "GTranslate",
-];
-
-// ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
 
 /**
- * Check whether any installed app is a known translation app.
+ * Convert a translation audit result into informational findings.
  *
- * Uses case-insensitive substring matching so that variations like
- * "Transcy: AI Language Translate" still match.
+ * Each locale+resourceType combination that has translation content gets one
+ * finding summarizing what was found, so the merchant can review it. Individual
+ * translations are not surfaced as separate findings (too noisy — a store could
+ * have thousands).
+ *
+ * These findings are review prompts, not defect attributions: we cannot detect
+ * whether translation content is genuinely orphaned, so we never assert that it
+ * was left behind by an uninstalled app.
  */
-export function hasInstalledTranslationApp(installedAppNames: string[]): boolean {
-  const lowerInstalled = installedAppNames.map((n) => n.toLowerCase());
-  return TRANSLATION_APP_NAMES.some((name) =>
-    lowerInstalled.some((installed) => installed.includes(name.toLowerCase())),
-  );
-}
-
-/**
- * Convert a translation audit result into findings.
- *
- * Only generates findings if no translation app is currently installed —
- * if a translation app is present, the translations are presumably managed.
- *
- * Each locale with translations gets one finding summarizing the orphaned
- * translation data. Individual translations are not surfaced as separate
- * findings (too noisy — a store could have thousands).
- */
-export function detectOrphanedTranslations(
-  audit: TranslationAuditResult,
-  installedAppNames: string[],
-): CreateFindingInput[] {
-  // If a translation app is installed, translations are actively managed — skip.
-  if (hasInstalledTranslationApp(installedAppNames)) {
-    return [];
-  }
-
+export function detectTranslationContent(audit: TranslationAuditResult): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   for (const summary of audit.summaries) {
@@ -81,7 +49,8 @@ export function detectOrphanedTranslations(
 
     const severity = classifySeverity(FindingType.GHOST_TRANSLATION, codeSnippet);
 
-    const outdatedNote = summary.outdatedCount > 0 ? ` (${summary.outdatedCount} outdated)` : "";
+    const entryLabel = summary.translatedCount === 1 ? "entry" : "entries";
+    const outdatedNote = summary.outdatedCount > 0 ? `, ${summary.outdatedCount} outdated` : "";
 
     findings.push({
       filename: `translations/${summary.locale}/${summary.resourceType.toLowerCase()}`,
@@ -91,9 +60,10 @@ export function detectOrphanedTranslations(
       severity,
       appName: undefined,
       description:
-        `${summary.translatedCount} orphaned translations${outdatedNote} for ` +
-        `${summary.localeName} (${summary.locale}) on ${summary.resourceType.toLowerCase()} ` +
-        `resources — no translation app is currently installed`,
+        `Translation content found for ${summary.localeName} (${summary.locale}) on ` +
+        `${summary.resourceType.toLowerCase()} resources — ${summary.translatedCount} ` +
+        `${entryLabel}${outdatedNote}. Review and confirm this belongs to a translation app ` +
+        `you still use; remove it if it was left behind by an app you no longer have installed.`,
     });
   }
 

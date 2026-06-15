@@ -6,6 +6,7 @@
  */
 
 import { checkRateLimit } from "./theme-fetcher.server";
+import { probeScope } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
 // ---------------------------------------------------------------------------
@@ -49,20 +50,15 @@ const PAGES_QUERY = `
 // ---------------------------------------------------------------------------
 
 /**
- * Check if read_content scope is available by attempting a lightweight query.
- * Returns false on ACCESS_DENIED or any error.
+ * Check if the read_content scope is available by attempting a lightweight query.
+ *
+ * Returns false ONLY on a genuine ACCESS_DENIED (scope not granted). Transient
+ * failures (THROTTLED, network, 5xx, timeout) throw a TransientScopeCheckError
+ * so the caller retries instead of silently treating the scope as missing.
+ * See app/lib/scope-check.server.ts (LOG-9).
  */
 export async function hasContentScope(admin: AdminApiContext): Promise<boolean> {
-  try {
-    const response = await admin.graphql(`{ pages(first: 1) { nodes { id } } }`);
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: unknown;
-    };
-    return !json.errors?.length;
-  } catch {
-    return false;
-  }
+  return probeScope(admin, `{ pages(first: 1) { nodes { id } } }`, "read_content");
 }
 
 // ---------------------------------------------------------------------------

@@ -2,7 +2,19 @@
 // Shared formatting utilities — client-safe (no .server.ts suffix)
 // ---------------------------------------------------------------------------
 
-export type ScanStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "FAILED";
+export type ScanStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "PARTIAL" | "FAILED";
+
+/**
+ * True for terminal statuses where the scan succeeded and is usable.
+ *
+ * PARTIAL is a success: the core theme audit ran; only optional categories
+ * whose scope was not granted were skipped. The UI treats PARTIAL like
+ * COMPLETED (findings, diffing, health score) — mirrored server-side by
+ * SUCCESSFUL_SCAN_STATUSES in scan.server.ts.
+ */
+export function isSuccessfulScan(status: ScanStatus | string): boolean {
+  return status === "COMPLETED" || status === "PARTIAL";
+}
 
 /**
  * Format a date value as a human-readable string.
@@ -35,6 +47,8 @@ export function statusTone(status: ScanStatus): "info" | "caution" | "success" |
       return "caution";
     case "COMPLETED":
       return "success";
+    case "PARTIAL":
+      return "caution";
     case "FAILED":
       return "critical";
   }
@@ -51,6 +65,8 @@ export function statusLabel(status: ScanStatus): string {
       return "In Progress";
     case "COMPLETED":
       return "Completed";
+    case "PARTIAL":
+      return "Partial";
     case "FAILED":
       return "Failed";
   }

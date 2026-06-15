@@ -1,10 +1,7 @@
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
-import {
-  hasInstalledTranslationApp,
-  detectOrphanedTranslations,
-} from "../../app/services/translation-detector.server";
+import { detectTranslationContent } from "../../app/services/translation-detector.server";
 import type { TranslationAuditResult } from "../../app/services/translation-fetcher.server";
 
 // ---------------------------------------------------------------------------
@@ -44,64 +41,60 @@ function makeSummary(overrides: Partial<TranslationAuditResult["summaries"][0]> 
   };
 }
 
-// ---------------------------------------------------------------------------
-// hasInstalledTranslationApp
-// ---------------------------------------------------------------------------
-
-describe("hasInstalledTranslationApp", () => {
-  it("returns true when Transcy is installed", () => {
-    expect(hasInstalledTranslationApp(["Transcy: AI Language Translate"])).toBe(true);
-  });
-
-  it('returns true when "Translate & Adapt" is installed (case-insensitive)', () => {
-    expect(hasInstalledTranslationApp(["translate & adapt"])).toBe(true);
-  });
-
-  it("returns true when Weglot is installed among other apps", () => {
-    expect(hasInstalledTranslationApp(["Klaviyo", "Weglot Translate", "Loox"])).toBe(true);
-  });
-
-  it("returns false when no translation app installed", () => {
-    expect(hasInstalledTranslationApp(["Klaviyo", "Loox", "Judge.me"])).toBe(false);
-  });
-
-  it("returns false for empty array", () => {
-    expect(hasInstalledTranslationApp([])).toBe(false);
-  });
-});
+// Words that would frame the finding as a proven defect rather than a review
+// prompt. The reframed copy (LOG-3) must not assert any of these as fact.
+const ACCUSATORY_TERMS = [/orphan/i, /\bghost\b/i, /uninstalled/i];
 
 // ---------------------------------------------------------------------------
-// detectOrphanedTranslations
+// detectTranslationContent
 // ---------------------------------------------------------------------------
 
-describe("detectOrphanedTranslations", () => {
-  it("returns findings when translations exist but no translation app installed", () => {
+describe("detectTranslationContent", () => {
+  it("returns one informational finding per locale+resourceType with content", () => {
     const audit = makeAuditResult({
       summaries: [makeSummary()],
       totalTranslations: 5,
     });
 
-    const findings = detectOrphanedTranslations(audit, ["Klaviyo", "Loox"]);
+    const findings = detectTranslationContent(audit);
 
     expect(findings).toHaveLength(1);
     expect(findings[0].findingType).toBe(FindingType.GHOST_TRANSLATION);
     expect(findings[0].filename).toBe("translations/fr/product");
     expect(findings[0].lineNumber).toBe(0);
-    expect(findings[0].description).toContain("5 orphaned translations");
     expect(findings[0].description).toContain("French (fr)");
     expect(findings[0].description).toContain("product resources");
-    expect(findings[0].description).toContain("no translation app is currently installed");
+    expect(findings[0].description).toContain("5 entries");
   });
 
-  it("returns empty when a translation app is installed", () => {
+  it("classifies translation findings as LOW severity (informational)", () => {
     const audit = makeAuditResult({
       summaries: [makeSummary()],
       totalTranslations: 5,
     });
 
-    const findings = detectOrphanedTranslations(audit, ["Transcy: AI Language Translate"]);
+    const findings = detectTranslationContent(audit);
 
-    expect(findings).toEqual([]);
+    expect(findings[0].severity).toBe(Severity.LOW);
+  });
+
+  it("frames the description as a review prompt, not an accusatory defect attribution", () => {
+    const audit = makeAuditResult({
+      summaries: [makeSummary()],
+      totalTranslations: 5,
+    });
+
+    const findings = detectTranslationContent(audit);
+    const description = findings[0].description;
+
+    // Must read as a review prompt the merchant can act on...
+    expect(description).toMatch(/review/i);
+    expect(description).toContain("Translation content found");
+    // ...and must NOT assert that the content is orphaned/ghost/left by an
+    // uninstalled app as established fact.
+    for (const term of ACCUSATORY_TERMS) {
+      expect(description).not.toMatch(term);
+    }
   });
 
   it("returns empty when no translations exist", () => {
@@ -110,31 +103,32 @@ describe("detectOrphanedTranslations", () => {
       totalTranslations: 0,
     });
 
-    const findings = detectOrphanedTranslations(audit, []);
+    const findings = detectTranslationContent(audit);
 
     expect(findings).toEqual([]);
   });
 
-  it("includes outdated count in description", () => {
+  it("notes the outdated count in the description", () => {
     const audit = makeAuditResult({
       summaries: [makeSummary({ outdatedCount: 3 })],
       totalTranslations: 5,
     });
 
-    const findings = detectOrphanedTranslations(audit, []);
+    const findings = detectTranslationContent(audit);
 
-    expect(findings[0].description).toContain("(3 outdated)");
+    expect(findings[0].description).toContain("3 outdated");
   });
 
-  it("uses MEDIUM severity", () => {
+  it("uses singular 'entry' for a single translation", () => {
     const audit = makeAuditResult({
-      summaries: [makeSummary()],
-      totalTranslations: 5,
+      summaries: [makeSummary({ translatedCount: 1 })],
+      totalTranslations: 1,
     });
 
-    const findings = detectOrphanedTranslations(audit, []);
+    const findings = detectTranslationContent(audit);
 
-    expect(findings[0].severity).toBe(Severity.MEDIUM);
+    expect(findings[0].description).toContain("1 entry");
+    expect(findings[0].description).not.toContain("1 entries");
   });
 
   it("generates one finding per locale+resourceType combination", () => {
@@ -147,7 +141,7 @@ describe("detectOrphanedTranslations", () => {
       totalTranslations: 15,
     });
 
-    const findings = detectOrphanedTranslations(audit, []);
+    const findings = detectTranslationContent(audit);
 
     expect(findings).toHaveLength(3);
     expect(findings[0].filename).toBe("translations/fr/product");
@@ -178,7 +172,7 @@ describe("detectOrphanedTranslations", () => {
       totalTranslations: 5,
     });
 
-    const findings = detectOrphanedTranslations(audit, []);
+    const findings = detectTranslationContent(audit);
 
     expect(findings[0].codeSnippet).toContain('title: "Titre"');
     expect(findings[0].codeSnippet).toContain('body_html: "Description" [outdated]');
@@ -190,9 +184,9 @@ describe("detectOrphanedTranslations", () => {
       totalTranslations: 3,
     });
 
-    const findings = detectOrphanedTranslations(audit, []);
+    const findings = detectTranslationContent(audit);
 
     expect(findings).toHaveLength(1);
-    expect(findings[0].description).toContain("3 orphaned translations");
+    expect(findings[0].description).toContain("3 entries");
   });
 });

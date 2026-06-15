@@ -83,15 +83,33 @@ export function fingerprintFinding(
  * within a scan), each occurrence is counted independently.  In practice the
  * scan engine should not produce true duplicates within a single scan, but we
  * handle the case explicitly to avoid silent under-counting.
+ *
+ * Un-audited categories (LOG-4):
+ *   `opts.skippedCategories` is the set of FindingType categories the CURRENT
+ *   scan did NOT audit because their optional scope was not granted. Prior
+ *   findings in those categories are excluded entirely from the diff — they are
+ *   neither "resolved" (we did not re-check them, so we cannot claim they are
+ *   gone) nor "unchanged". Without this guard, a missing optional scope would
+ *   silently turn every prior finding in that category into a false "resolved".
  */
 export function diffScans(
   currentFindings: DiffableFinding[],
   previousFindings: DiffableFinding[],
+  opts?: { skippedCategories?: Iterable<string> },
 ): ScanDiff {
+  // Drop prior findings whose category was not audited this run so they can
+  // never be miscounted as resolved. Current findings only ever exist for
+  // audited categories, so no symmetric filter is needed on `currentFindings`.
+  const skipped = opts?.skippedCategories ? new Set(opts.skippedCategories) : null;
+  const effectivePrevious =
+    skipped && skipped.size > 0
+      ? previousFindings.filter((f) => !skipped.has(f.findingType))
+      : previousFindings;
+
   // Build a multiset (Map<fingerprint, count>) for the previous findings so
   // we can handle duplicates correctly.
   const previousCounts = new Map<string, number>();
-  for (const f of previousFindings) {
+  for (const f of effectivePrevious) {
     const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet);
     previousCounts.set(fp, (previousCounts.get(fp) ?? 0) + 1);
   }
@@ -126,7 +144,7 @@ export function diffScans(
 
   // Any previous findings that were not consumed are resolved.
   const resolvedFindings: ScanDiff["resolvedFindings"] = [];
-  for (const f of previousFindings) {
+  for (const f of effectivePrevious) {
     const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet);
     const remaining = remainingPrevious.get(fp) ?? 0;
     if (remaining > 0) {
