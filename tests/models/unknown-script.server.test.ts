@@ -19,6 +19,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDb = vi.hoisted(() => ({
   unknownScript: {
     createMany: vi.fn(),
+    deleteMany: vi.fn(),
     findMany: vi.fn(),
     findFirst: vi.fn(),
   },
@@ -29,6 +30,17 @@ const mockDb = vi.hoisted(() => ({
     updateMany: vi.fn(),
     count: vi.fn(),
   },
+  // $transaction supports both the interactive (callback) and array forms.
+  // createUnknownScripts uses the interactive form: pass a tx-scoped client to
+  // the callback so the inner awaits execute against the same mockDb.
+  $transaction: vi.fn(
+    async (arg: ((tx: typeof mockDb) => Promise<unknown>) | Promise<unknown>[]) => {
+      if (typeof arg === "function") {
+        return arg(mockDb);
+      }
+      return Promise.all(arg);
+    },
+  ),
 }));
 
 vi.mock("../../app/db.server", () => ({
@@ -479,14 +491,34 @@ describe("createUnknownScripts", () => {
     };
   }
 
-  it("short-circuits on empty input without calling createMany", async () => {
+  it("clears stale rows on empty input without calling createMany", async () => {
+    // Idempotency guard: even with no scripts, the deleteMany must run so a
+    // retry carrying zero scripts clears rows left by a prior partial attempt.
+    mockDb.unknownScript.deleteMany.mockResolvedValue({ count: 0 });
+
     const result = await createUnknownScripts("scan-1", []);
 
     expect(result).toEqual({ count: 0 });
+    expect(mockDb.unknownScript.deleteMany).toHaveBeenCalledWith({ where: { scanId: "scan-1" } });
     expect(mockDb.unknownScript.createMany).not.toHaveBeenCalled();
   });
 
+  it("deletes existing rows before inserting (idempotency guard)", async () => {
+    mockDb.unknownScript.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.unknownScript.createMany.mockResolvedValue({ count: 1 });
+
+    await createUnknownScripts("scan-7", [makeScript()]);
+
+    // Both writes go through $transaction, and deleteMany precedes createMany.
+    expect(mockDb.$transaction).toHaveBeenCalledOnce();
+    expect(mockDb.unknownScript.deleteMany).toHaveBeenCalledWith({ where: { scanId: "scan-7" } });
+    const deleteOrder = mockDb.unknownScript.deleteMany.mock.invocationCallOrder[0];
+    const createOrder = mockDb.unknownScript.createMany.mock.invocationCallOrder[0];
+    expect(deleteOrder).toBeLessThan(createOrder);
+  });
+
   it("stamps each record with the scanId and calls createMany", async () => {
+    mockDb.unknownScript.deleteMany.mockResolvedValue({ count: 0 });
     mockDb.unknownScript.createMany.mockResolvedValue({ count: 2 });
     const scripts = [
       makeScript({ filename: "a.liquid", lineNumber: 1 }),
@@ -504,7 +536,40 @@ describe("createUnknownScripts", () => {
     expect(result).toEqual({ count: 2 });
   });
 
+  it("does not duplicate rows when called twice with the same scanId + scripts (Inngest retry regression)", async () => {
+    // Regression for LOG-14 / GC-mus: the Inngest fetch-and-scan step re-runs the
+    // whole step on retry. A bare createMany inserted a second copy of every row.
+    // Simulate persistent DB state across two identical calls and assert the row
+    // set is unchanged after the second call (deleteMany clears, createMany re-adds).
+    const scripts = [
+      makeScript({ filename: "a.liquid", lineNumber: 1 }),
+      makeScript({ filename: "b.liquid", lineNumber: 2 }),
+    ];
+
+    let stored: Array<CreateUnknownScriptInput & { scanId: string }> = [];
+    mockDb.unknownScript.deleteMany.mockImplementation(async ({ where }) => {
+      const before = stored.length;
+      stored = stored.filter((row) => row.scanId !== where.scanId);
+      return { count: before - stored.length };
+    });
+    mockDb.unknownScript.createMany.mockImplementation(async ({ data }) => {
+      stored.push(...data);
+      return { count: data.length };
+    });
+
+    await createUnknownScripts("scan-retry", scripts);
+    expect(stored).toHaveLength(2);
+
+    // Step retry: identical inputs run again.
+    await createUnknownScripts("scan-retry", scripts);
+
+    // Exactly one copy survives — not four.
+    expect(stored).toHaveLength(2);
+    expect(stored.filter((r) => r.scanId === "scan-retry")).toHaveLength(2);
+  });
+
   it("propagates a database error", async () => {
+    mockDb.unknownScript.deleteMany.mockResolvedValue({ count: 0 });
     mockDb.unknownScript.createMany.mockRejectedValue(new Error("Unique constraint"));
 
     await expect(createUnknownScripts("scan-1", [makeScript()])).rejects.toThrow(

@@ -26,12 +26,34 @@ export type SubmissionStats = {
 
 /**
  * Batch-insert unknown scripts for a completed scan.
+ *
+ * Idempotency guard:
+ *   This runs inside the single `fetch-and-scan` Inngest step. Inngest re-runs
+ *   the whole step on retry, so a bare createMany would insert a second copy of
+ *   every row if the step retried after this write committed. Mirroring
+ *   saveThemeFindings, a deleteMany is issued before createMany inside a
+ *   $transaction: a retry deletes any previously-created rows and re-inserts
+ *   them, producing the same final state instead of duplicates.
+ *
+ *   The deleteMany runs unconditionally (even for empty input) so that a retry
+ *   carrying fewer/zero scripts than a prior partial attempt still clears stale
+ *   rows. This is safe because unknown scripts are only ever written here during
+ *   the scan step, before any merchant SignatureSubmission can exist — so the
+ *   `onDelete: Cascade` from SignatureSubmission -> UnknownScript never wipes
+ *   real submission data in practice.
  */
 export async function createUnknownScripts(scanId: string, scripts: CreateUnknownScriptInput[]) {
-  if (scripts.length === 0) return { count: 0 };
+  return db.$transaction(async (tx) => {
+    // Idempotency guard: clear any rows from a previous partial attempt.
+    await tx.unknownScript.deleteMany({ where: { scanId } });
 
-  return db.unknownScript.createMany({
-    data: scripts.map((s) => ({ ...s, scanId })),
+    if (scripts.length === 0) {
+      return { count: 0 };
+    }
+
+    return tx.unknownScript.createMany({
+      data: scripts.map((s) => ({ ...s, scanId })),
+    });
   });
 }
 
