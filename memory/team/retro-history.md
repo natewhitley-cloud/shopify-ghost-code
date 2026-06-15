@@ -249,3 +249,13 @@
 - Key insight: reviewer's "live-execute the regex with node -e, don't read it" learning held — independently reproduced GC-9vj's no-double-count claim rather than accepting it.
 - Recurring friction: pre-commit `eslint import/order` rejected the tester's first commit (reorder-and-recommit). Bit an agent again → promotion candidate to a project rule.
 - Open follow-up: GC-jjb (detectGhostSections comment-skip parity). Owner-blocked unchanged: deploy retry, 4A (dev store), 7A (app handle).
+
+## Retro: 2026-06-15 (session 9)
+- Tasks completed: 8 commits (2 fix, 2 docs, 2 chore, 1 test, 1 refactor); 11 beads closed (3 sprint, QLT-7, 5 pre-done dupes, CMP-3, 1 moot).
+- Fix rate: 25% — normal; low rework. One subagent crashed mid-task (socket error) — recovered by dispatching a fresh agent to finish from the partial on-disk state.
+- New learnings: implementer +3, tester +2, reviewer +1; 1 global memory (verify-findings-against-code-before-filing-beads).
+- Backlog: filed ~43 new beads from review-2026-06-12 (clusters C5-C15, C8 deferred); reconciled 34 via 7 read-only verifiers (none fully done beyond the 5 dupes; 9 PARTIAL scope-reduced).
+- KEY INSIGHT (repeat of session-8 lesson, now at triage scale): filed 41 beads off the stale review doc cross-referencing only CLOSED BEADS — missed a batch of unbeaded direct-PR fixes (#3-#7: LOG-5/6/7/8/10). The session-8 retro already said "verify against live code, not the handoff/review doc" but it was applied to dispatch, NOT to bead-filing. Promote to a rule.
+- WIN: read-only verifier fan-out (7 agents, one per cluster) reconciled a large filed set fast with concrete evidence; trust their evidence (one correctly reported a fix already existed — I wrongly doubted it first).
+- WIN: CMP-3 — checked docs/pricing-and-plans.md before a billing change; found the flag was dead/stale, not a behavioral bug. The project rule (review pricing doc before plan-gating changes) paid off.
+- implementer learnings at 50 lines (warning threshold) — run /curate next session.
