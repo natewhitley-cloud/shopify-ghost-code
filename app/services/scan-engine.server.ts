@@ -126,6 +126,27 @@ function buildSnippet(content: string, lineNumber: number): string {
   return allLines.slice(start, end).join("\n").slice(0, 300);
 }
 
+/**
+ * Returns a Set of 1-based line numbers that fall inside Liquid comment blocks.
+ * Includes the {% comment %} opener line, all body lines, and the {% endcomment %}
+ * closing line, so callers can uniformly skip any line in the set.
+ *
+ * Used by detectGhostSnippets, detectGhostPreconnect, and detectDuplicateMetaTags
+ * to avoid false positives from commented-out code. Each of those detectors has
+ * additional skip logic (conditional-line skipping or depth tracking) that differs
+ * between them and therefore stays inline rather than being unified here.
+ */
+function buildCommentSkipLines(content: string): Set<number> {
+  const skipLines = new Set<number>();
+  let insideComment = false;
+  for (const { lineNumber, text } of lines(content)) {
+    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
+    if (insideComment) skipLines.add(lineNumber);
+    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) insideComment = false;
+  }
+  return skipLines;
+}
+
 // ---------------------------------------------------------------------------
 // Detector: GHOST_SCRIPT
 // ---------------------------------------------------------------------------
@@ -238,19 +259,11 @@ export function detectGhostSnippets(file: ThemeFile): CreateFindingInput[] {
 
   // Precompute lines inside Liquid comment blocks so bare `render 'app-snippet'`
   // statements inside {% comment %} blocks are not flagged as GHOST_SNIPPET.
-  const commentedLines = new Set<number>();
-  {
-    let insideComment = false;
-    for (const { lineNumber, text } of lines(file.content)) {
-      if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-      if (insideComment) commentedLines.add(lineNumber);
-      if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) insideComment = false;
-    }
-  }
+  const commentSkipLines = buildCommentSkipLines(file.content);
 
   const processSnippetMatch = (snippetName: string, matchIndex: number) => {
     const lineNumber = lineNumberAtOffset(file.content, matchIndex);
-    if (commentedLines.has(lineNumber)) return; // inside {% comment %} block
+    if (commentSkipLines.has(lineNumber)) return; // inside {% comment %} block
 
     const appName = identifyAppFromSnippetName(snippetName);
     if (!appName) return;
@@ -269,17 +282,27 @@ export function detectGhostSnippets(file: ThemeFile): CreateFindingInput[] {
     });
   };
 
-  // Standard form: {% render 'name' %} — may span multiple lines
+  // Standard form: {% render 'name' %} — may span multiple lines.
+  // Record the full byte range of each match so the bare-form pass below can
+  // skip RENDER_LIQUID_BLOCK_RE hits that fall inside an already-claimed tag
+  // (e.g. the `render 'x'` keyword on line 2 of a multi-line {%- render ... -%}).
+  const claimedRanges: Array<[number, number]> = [];
   let match: RegExpExecArray | null;
   RENDER_RE.lastIndex = 0;
   while ((match = RENDER_RE.exec(file.content)) !== null) {
+    claimedRanges.push([match.index, match.index + match[0].length]);
     processSnippetMatch(match[1], match.index);
   }
 
-  // Bare form: render 'name' at line start inside {% liquid %} blocks
+  // Bare form: render 'name' at line start inside {% liquid %} blocks.
+  // Skip any match whose offset falls inside a range already claimed by RENDER_RE
+  // to prevent a multi-line {% render %} tag from producing two findings.
   RENDER_LIQUID_BLOCK_RE.lastIndex = 0;
   while ((match = RENDER_LIQUID_BLOCK_RE.exec(file.content)) !== null) {
-    processSnippetMatch(match[1], match.index);
+    const offset = match.index;
+    const insideTaggedForm = claimedRanges.some(([start, end]) => offset > start && offset < end);
+    if (insideTaggedForm) continue;
+    processSnippetMatch(match[1], offset);
   }
 
   return findings;
@@ -450,17 +473,16 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
   // by template), so they must not be counted as duplicates of each other.
   const occurrences = new Map<string, Array<{ lineNumber: number; text: string }>>();
 
-  let insideComment = false;
+  // Precompute lines inside Liquid comment blocks via shared helper.
+  // Conditional-depth tracking differs from sibling detectors (it uses a depth
+  // counter for nested if/unless/case rather than a flat line-skip set), so it
+  // stays inline below rather than being unified into buildCommentSkipLines.
+  const commentSkipLines = buildCommentSkipLines(file.content);
   let conditionalDepth = 0;
 
   for (const { lineNumber, text } of lines(file.content)) {
     // --- Comment block tracking ---
-    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
-      insideComment = false;
-      continue; // skip the endcomment line itself (mirrors sibling detectors)
-    }
-    if (insideComment) continue;
+    if (commentSkipLines.has(lineNumber)) continue;
 
     // --- Conditional block depth tracking ---
     // Opening tags increment depth; closing tags decrement. The depth check
@@ -1809,19 +1831,12 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
   // Precompute which line numbers to skip (inside comment blocks or on
   // conditional lines) so we can run the regex against the full file content
   // and still honour the same false-positive boundaries as before.
-  const skipLines = new Set<number>();
-  {
-    let insideComment = false;
-    for (const { lineNumber, text } of lines(file.content)) {
-      if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-      if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
-        insideComment = false;
-        skipLines.add(lineNumber); // endcomment line itself is skipped
-        continue;
-      }
-      if (insideComment) skipLines.add(lineNumber);
-      if (LIQUID_CONDITIONAL_RE.test(text)) skipLines.add(lineNumber);
-    }
+  // Comment-line tracking is delegated to the shared helper; conditional-line
+  // tracking differs from detectDuplicateMetaTags (flat line skip vs depth
+  // counter) so it stays inline here.
+  const skipLines = buildCommentSkipLines(file.content);
+  for (const { lineNumber, text } of lines(file.content)) {
+    if (LIQUID_CONDITIONAL_RE.test(text)) skipLines.add(lineNumber);
   }
 
   // Run against full file content so multi-line <link> tags (e.g. from

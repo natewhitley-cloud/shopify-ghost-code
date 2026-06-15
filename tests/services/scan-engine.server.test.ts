@@ -284,6 +284,43 @@ describe("detectGhostSnippets", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("Recharge");
   });
+
+  it("does NOT emit two findings when a {% render %} tag spans multiple lines", () => {
+    // Regression for BLOCKING-1: RENDER_RE (full-content, \s* matches newlines)
+    // and RENDER_LIQUID_BLOCK_RE (line-anchored) both matched multi-line render
+    // tags, producing a duplicate GHOST_SNIPPET finding.
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "{%-\n  render 'klaviyo-onsite'\n-%}",
+    };
+    const findings = detectGhostSnippets(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Klaviyo");
+  });
+
+  it("still detects bare render inside {% liquid %} block as exactly one finding", () => {
+    // Ensure RENDER_LIQUID_BLOCK_RE still fires for genuine bare-form calls
+    // that are NOT inside a {% render %} tag (i.e., inside a {% liquid %} block).
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "{% liquid\n  render 'klaviyo-onsite'\n%}",
+    };
+    const findings = detectGhostSnippets(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Klaviyo");
+  });
+
+  it("emits two findings for two genuinely different render calls (no false dedup)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "{% render 'klaviyo-onsite' %}\n{% render 'recharge-checkout-option' %}",
+    };
+    const findings = detectGhostSnippets(file);
+    expect(findings).toHaveLength(2);
+    const appNames = findings.map((f) => f.appName);
+    expect(appNames).toContain("Klaviyo");
+    expect(appNames).toContain("Recharge");
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -579,6 +616,58 @@ describe("detectDuplicateMetaTags", () => {
     const findings = detectDuplicateMetaTags(file);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBeUndefined();
+  });
+
+  it("does NOT flag duplicate metas inside {% unless %}/{% endunless %} block", () => {
+    // Metas inside an unless block are mutually exclusive with the surrounding
+    // context — they only render at runtime when the condition is false.
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% unless template == 'product' %}",
+        '<meta name="description" content="First">',
+        '<meta name="description" content="Second">',
+        "{% endunless %}",
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag duplicate metas inside nested {% if %} blocks (depth > 1)", () => {
+    // Tags inside deeply nested conditionals are branch-exclusive and must not
+    // be counted against each other regardless of nesting depth.
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% if template == 'product' %}",
+        "  {% if product.available %}",
+        '  <meta name="description" content="Available product">',
+        "  {% else %}",
+        '  <meta name="description" content="Sold out product">',
+        "  {% endif %}",
+        "{% endif %}",
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does NOT flag duplicate metas in different {% case %}/{% when %} branches", () => {
+    // Each {% when %} branch is mutually exclusive — only one executes at runtime.
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% case template %}",
+        "{% when 'product' %}",
+        '<meta name="description" content="Product page">',
+        "{% when 'collection' %}",
+        '<meta name="description" content="Collection page">',
+        "{% endcase %}",
+      ].join("\n"),
+    };
+    const findings = detectDuplicateMetaTags(file);
+    expect(findings).toHaveLength(0);
   });
 });
 
