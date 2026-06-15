@@ -12,6 +12,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   fingerprintFinding,
+  normalizeForFingerprint,
   diffScans,
   type DiffableFinding,
 } from "../../app/services/scan-differ.server";
@@ -30,10 +31,31 @@ function makeFinding(
     filename,
     findingType,
     codeSnippet,
+    // Default to 1 (a single-line, no-leading-context snippet) so callers that
+    // only care about filename/type/snippet behave like the old 3-field hash.
+    lineNumber: 1,
     severity: "HIGH",
     appName: null,
     description: `Finding in ${filename}`,
     ...overrides,
+  };
+}
+
+/**
+ * Mirrors buildSnippet (scan-engine.server.ts): the matched line plus one line
+ * of context before and after, capped at 300 chars. Returns the snippet and the
+ * 1-based lineNumber of the matched line, ready to feed a DiffableFinding.
+ */
+function buildSnippetFixture(
+  before: string,
+  matched: string,
+  after: string,
+): { codeSnippet: string; lineNumber: number } {
+  // The matched line is the 2nd of three; with a leading context line its
+  // 1-based file line number is >= 2 (we use 2 here).
+  return {
+    codeSnippet: [before, matched, after].join("\n").slice(0, 300),
+    lineNumber: 2,
   };
 }
 
@@ -43,45 +65,99 @@ function makeFinding(
 
 describe("fingerprintFinding", () => {
   it("returns the same fingerprint for identical inputs (determinism)", () => {
-    const fp1 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='x'>");
-    const fp2 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='x'>");
+    const fp1 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='x'>", 1);
+    const fp2 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='x'>", 1);
     expect(fp1).toBe(fp2);
   });
 
   it("returns different fingerprints when filename differs", () => {
-    const fp1 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='x'>");
-    const fp2 = fingerprintFinding("sections/header.liquid", "GHOST_SCRIPT", "<script src='x'>");
+    const fp1 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "<script src='x'>", 1);
+    const fp2 = fingerprintFinding("sections/header.liquid", "GHOST_SCRIPT", "<script src='x'>", 1);
     expect(fp1).not.toBe(fp2);
   });
 
   it("returns different fingerprints when findingType differs", () => {
-    const fp1 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "code");
-    const fp2 = fingerprintFinding("layout/theme.liquid", "GHOST_STYLE", "code");
+    const fp1 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "code", 1);
+    const fp2 = fingerprintFinding("layout/theme.liquid", "GHOST_STYLE", "code", 1);
     expect(fp1).not.toBe(fp2);
   });
 
-  it("returns different fingerprints when codeSnippet differs", () => {
-    const fp1 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "snippet A");
-    const fp2 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "snippet B");
+  it("returns different fingerprints when the matched line differs", () => {
+    const fp1 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "snippet A", 1);
+    const fp2 = fingerprintFinding("layout/theme.liquid", "GHOST_SCRIPT", "snippet B", 1);
     expect(fp1).not.toBe(fp2);
   });
 
   it("returns an 8-character hex string", () => {
-    const fp = fingerprintFinding("file.liquid", "GHOST_SCRIPT", "code");
+    const fp = fingerprintFinding("file.liquid", "GHOST_SCRIPT", "code", 1);
     expect(fp).toMatch(/^[0-9a-f]{8}$/);
   });
 
   it("handles empty string inputs without throwing", () => {
-    expect(() => fingerprintFinding("", "", "")).not.toThrow();
-    const fp = fingerprintFinding("", "", "");
+    expect(() => fingerprintFinding("", "", "", 0)).not.toThrow();
+    const fp = fingerprintFinding("", "", "", 0);
     expect(fp).toMatch(/^[0-9a-f]{8}$/);
   });
 
   it("treats delimiter position as significant — filename\\0type\\0snippet vs filename\\0snippet\\0type differ", () => {
     // The raw concat is "a\0b\0c" — changing order should change the hash.
-    const fp1 = fingerprintFinding("a", "b", "c");
-    const fp2 = fingerprintFinding("a", "c", "b");
+    const fp1 = fingerprintFinding("a", "b", "c", 1);
+    const fp2 = fingerprintFinding("a", "c", "b", 1);
     expect(fp1).not.toBe(fp2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// normalizeForFingerprint — LOG-10 matched-line normalization
+//
+// The fingerprint hashes a normalized matched line instead of the raw display
+// snippet so that edits which don't touch the finding (adjacent context lines,
+// volatile bulk-redirect counts/samples) no longer flip an unchanged finding to
+// resolved + new. These tests pin the normalization rule directly; the
+// fingerprintFinding and diffScans suites below exercise it end-to-end.
+// ---------------------------------------------------------------------------
+
+describe("normalizeForFingerprint (LOG-10)", () => {
+  it("extracts the matched line (index 1) when a leading context line exists (lineNumber >= 2)", () => {
+    const snippet =
+      "<div>before</div>\n<script src='//cdn.app.com/x.js'></script>\n<div>after</div>";
+    expect(normalizeForFingerprint(snippet, 10)).toBe("<script src='//cdn.app.com/x.js'></script>");
+  });
+
+  it("extracts the first line (index 0) when there is no leading context (lineNumber 1)", () => {
+    const snippet = "<script src='//cdn.app.com/x.js'></script>\n<div>after</div>";
+    expect(normalizeForFingerprint(snippet, 1)).toBe("<script src='//cdn.app.com/x.js'></script>");
+  });
+
+  it("extracts the first line for synthetic snippets (lineNumber 0)", () => {
+    const snippet = "Page: Summer Sale\nHandle: /pagefly-summer\nContent: hello";
+    expect(normalizeForFingerprint(snippet, 0)).toBe("Page: Summer Sale");
+  });
+
+  it("collapses internal whitespace and trims so reindentation does not churn", () => {
+    expect(normalizeForFingerprint("    {%  render   'x'  %}   ", 1)).toBe("{% render 'x' %}");
+  });
+
+  it("falls back to the first line when the matched index is absent (single-line snippet)", () => {
+    // A 300-char cap can truncate a buildSnippet down to its leading line only.
+    expect(normalizeForFingerprint("only-one-line", 5)).toBe("only-one-line");
+  });
+
+  it("strips the leading volatile count from a bulk-redirect snippet", () => {
+    const snippet =
+      "84 redirects under /collections:\n  /collections/a → /b\n  /collections/c → /d";
+    expect(normalizeForFingerprint(snippet, 0)).toBe("redirects under /collections:");
+  });
+
+  it("does NOT strip a leading number from an unrelated matched line", () => {
+    // Guard against over-normalization: only the bulk-redirect shape is stripped.
+    expect(normalizeForFingerprint("3 reviews left by Loox widget", 1)).toBe(
+      "3 reviews left by Loox widget",
+    );
+  });
+
+  it("handles an empty snippet without throwing", () => {
+    expect(normalizeForFingerprint("", 0)).toBe("");
   });
 });
 
@@ -341,5 +417,144 @@ describe("diffScans — skipped categories (LOG-4 un-audited exclusion)", () => 
     // Empty skip set must not suppress a genuine resolved finding.
     expect(withEmpty.resolvedFindings).toHaveLength(1);
     expect(without.resolvedFindings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LOG-10 — fingerprint stability across non-substantive snippet changes
+//
+// These are the acceptance criteria: a finding's identity must survive edits
+// that don't touch it (adjacent context lines; bulk-redirect counts/samples),
+// while genuinely different findings must keep distinct fingerprints.
+// ---------------------------------------------------------------------------
+
+describe("fingerprintFinding — LOG-10 stability", () => {
+  it("is UNCHANGED when only an adjacent context line of a buildSnippet finding changes", () => {
+    const matched = "<script src='//cdn.app.com/ghost.js'></script>";
+    const before = buildSnippetFixture("<div class='hero'>", matched, "</div>");
+    const after = buildSnippetFixture("<div class='hero promo'>", matched, "</div>");
+
+    const fpBefore = fingerprintFinding(
+      "sections/header.liquid",
+      "GHOST_SCRIPT",
+      before.codeSnippet,
+      before.lineNumber,
+    );
+    const fpAfter = fingerprintFinding(
+      "sections/header.liquid",
+      "GHOST_SCRIPT",
+      after.codeSnippet,
+      after.lineNumber,
+    );
+
+    expect(fpAfter).toBe(fpBefore);
+  });
+
+  it("is UNCHANGED for a bulk redirect with the same prefix but a different count and samples", () => {
+    const filename = "redirects/bulk/_collections";
+    const earlier =
+      "84 redirects under /collections:\n  /collections/a → /x\n  /collections/b → /y";
+    const later = "85 redirects under /collections:\n  /collections/c → /z\n  /collections/d → /w";
+
+    const fpEarlier = fingerprintFinding(filename, "GHOST_REDIRECT", earlier, 0);
+    const fpLater = fingerprintFinding(filename, "GHOST_REDIRECT", later, 0);
+
+    expect(fpLater).toBe(fpEarlier);
+  });
+
+  it("is DIFFERENT for two buildSnippet findings whose matched lines differ", () => {
+    const a = buildSnippetFixture(
+      "<head>",
+      "<script src='//cdn.app.com/a.js'></script>",
+      "</head>",
+    );
+    const b = buildSnippetFixture(
+      "<head>",
+      "<script src='//cdn.app.com/b.js'></script>",
+      "</head>",
+    );
+
+    const fpA = fingerprintFinding(
+      "layout/theme.liquid",
+      "GHOST_SCRIPT",
+      a.codeSnippet,
+      a.lineNumber,
+    );
+    const fpB = fingerprintFinding(
+      "layout/theme.liquid",
+      "GHOST_SCRIPT",
+      b.codeSnippet,
+      b.lineNumber,
+    );
+
+    expect(fpA).not.toBe(fpB);
+  });
+
+  it("is DIFFERENT for two bulk redirects under different prefixes", () => {
+    // Note: filenames already differ by prefix; this asserts the normalized
+    // matched line stays distinct too, so neither layer can collide them.
+    const collections = "60 redirects under /collections:\n  /collections/a → /x";
+    const pages = "60 redirects under /pages:\n  /pages/a → /x";
+
+    const fpCollections = fingerprintFinding(
+      "redirects/bulk/_collections",
+      "GHOST_REDIRECT",
+      collections,
+      0,
+    );
+    const fpPages = fingerprintFinding("redirects/bulk/_pages", "GHOST_REDIRECT", pages, 0);
+
+    expect(fpCollections).not.toBe(fpPages);
+  });
+});
+
+describe("diffScans — LOG-10 stability (end-to-end)", () => {
+  it("counts a finding as unchanged when only its adjacent context line changed between scans", () => {
+    const matched = "<script src='//cdn.app.com/ghost.js'></script>";
+    const previousSnippet = buildSnippetFixture("<div class='a'>", matched, "</div>");
+    const currentSnippet = buildSnippetFixture("<div class='a changed'>", matched, "</div>");
+
+    const previous = [
+      makeFinding("sections/header.liquid", "GHOST_SCRIPT", previousSnippet.codeSnippet, {
+        lineNumber: previousSnippet.lineNumber,
+      }),
+    ];
+    const current = [
+      makeFinding("sections/header.liquid", "GHOST_SCRIPT", currentSnippet.codeSnippet, {
+        lineNumber: currentSnippet.lineNumber,
+      }),
+    ];
+
+    const diff = diffScans(current, previous);
+
+    expect(diff.unchangedCount).toBe(1);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.resolvedFindings).toHaveLength(0);
+  });
+
+  it("counts a bulk redirect as unchanged when only its count and samples grew", () => {
+    const filename = "redirects/bulk/_collections";
+    const previous = [
+      makeFinding(
+        filename,
+        "GHOST_REDIRECT",
+        "84 redirects under /collections:\n  /collections/a → /x\n  /collections/b → /y",
+        { lineNumber: 0, appName: null },
+      ),
+    ];
+    const current = [
+      makeFinding(
+        filename,
+        "GHOST_REDIRECT",
+        "85 redirects under /collections:\n  /collections/c → /z\n  /collections/d → /w",
+        { lineNumber: 0, appName: null },
+      ),
+    ];
+
+    const diff = diffScans(current, previous);
+
+    expect(diff.unchangedCount).toBe(1);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.resolvedFindings).toHaveLength(0);
   });
 });
