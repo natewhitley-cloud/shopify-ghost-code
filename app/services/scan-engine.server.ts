@@ -1209,11 +1209,65 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
 const TITLE_TAG_RE = /<title[^>]*>([\s\S]*?)<\/title>/gi;
 
 /**
- * Known safe Shopify-native Liquid variables used in title tags.
- * These resolve to valid values and should not trigger a finding.
+ * Build a "safe Liquid variable" matcher for a single `{{ ... }}` expression.
+ *
+ * Each entry in `tokens` is a regex fragment describing an allowed leading
+ * variable; the expression may end with an arbitrary filter chain. We only ever
+ * call `.test()` on the result, so the groups are non-capturing.
+ *
+ *   buildSafeVarRe(["page_title", "shop(?:\\.\\w+)*"])
+ *     matches:  {{ page_title }}   {{ shop.name | escape }}
  */
-const SAFE_TITLE_VARS_RE =
-  /\{\{\s*(page_title|shop\.name|page_description|product\.title|collection\.title|article\.title|blog\.title|template|content_for_\w+)(\s*\|[^}]*)?\s*\}\}/;
+function buildSafeVarRe(tokens: string[]): RegExp {
+  return new RegExp(`\\{\\{\\s*(?:${tokens.join("|")})(?:\\s*\\|[^}]*)?\\s*\\}\\}`);
+}
+
+/**
+ * Native Shopify global Liquid objects. Any sub-property of these is real,
+ * theme-rendered data (e.g. `shop.name`, `product.featured_image`,
+ * `cart.currency.iso_code`, `request.origin`) — never orphaned app code.
+ * `(?:\.\w+)*` covers the bare object plus arbitrarily nested properties.
+ *
+ * Shared by the GHOST_TITLE and GHOST_OG safe-variable allowlists so the two
+ * detectors stay in sync as Shopify's free reference themes evolve.
+ */
+const SHOPIFY_GLOBAL_OBJECTS = [
+  "shop",
+  "product",
+  "collection",
+  "article",
+  "blog",
+  "page",
+  "cart",
+  "request",
+  "settings",
+  "media",
+].map((object) => `${object}(?:\\.\\w+)*`);
+
+/**
+ * Known safe Liquid variables that legitimately appear inside stock-theme
+ * `<title>` blocks (Dawn, Sense, Refresh, Craft, Spotlight all share the same
+ * markup). These resolve to valid values and must not trigger a finding.
+ *
+ * Dawn's title block, for reference:
+ *   {{ page_title }}
+ *   {%- if current_tags %} ... {{ current_tags | join: ', ' }}{% endif -%}
+ *   {%- if current_page != 1 %} ... Page {{ current_page }}{% endif -%}
+ *   {%- unless page_title contains shop.name %} ... {{ shop.name }}{% endunless -%}
+ */
+const SAFE_TITLE_VARS_RE = buildSafeVarRe([
+  // Per-page SEO globals Shopify injects on every request
+  "page_title",
+  "page_description",
+  // Pagination / tag context used by stock theme title blocks
+  "current_tags",
+  "current_page",
+  // Template name + Online Store header injection
+  "template",
+  "content_for_\\w+",
+  // Native Shopify objects (any property): shop.name, product.title, ...
+  ...SHOPIFY_GLOBAL_OBJECTS,
+]);
 
 /**
  * Detect orphaned <title> tag overrides left by SEO apps.
@@ -1403,17 +1457,55 @@ const HIGH_VALUE_OG_PROPERTIES = new Set([
 ]);
 
 /**
- * Known safe Shopify-native Liquid variables used in OG/Twitter meta tags.
- * Extends the GHOST_TITLE safe list with image/description/collection/article vars.
+ * Known safe Liquid variables that legitimately appear inside stock-theme
+ * Open Graph / Twitter meta tags. Mirrors Shopify's free reference themes
+ * (Dawn, Sense, Refresh, Craft, Spotlight), whose shared `meta-tags.liquid`
+ * computes local `og_*` assigns and renders native objects + `page_image`.
+ *
+ * Reference (Dawn snippets/meta-tags.liquid):
+ *   assign og_title = page_title | default: shop.name
+ *   assign og_url = canonical_url | default: request.origin
+ *   assign og_description = page_description | default: shop.description ...
+ *   <meta property="og:url" content="{{ og_url }}">
+ *   <meta property="og:image" content="http:{{ page_image | image_url }}">
+ *   <meta property="og:image:width" content="{{ page_image.width }}">
+ *   <meta property="og:price:amount" content="{{ product.price | ... }}">
+ *   <meta name="twitter:site" content="{{ settings.social_twitter_link | ... }}">
  */
-const SAFE_OG_VARS_RE =
-  /\{\{\s*(page_title|shop\.name|page_description|product\.title|product\.description|product\.featured_image|collection\.title|collection\.image|collection\.description|article\.title|article\.image|article\.excerpt|page\.title|page\.content|blog\.title|template)(\s*\|[^}]*)?\s*\}\}/;
+const SAFE_OG_VARS_RE = buildSafeVarRe([
+  // Per-page SEO globals Shopify injects on every request
+  "page_title",
+  "page_description",
+  "page_image(?:\\.\\w+)*", // page_image, page_image.width, page_image.height
+  "canonical_url",
+  "current_tags",
+  "current_page",
+  "template",
+  "content_for_\\w+",
+  // Local assigns computed in stock meta-tags.liquid
+  "og_title",
+  "og_url",
+  "og_type",
+  "og_description",
+  // Native Shopify objects (any property): shop.name, product.featured_image, ...
+  ...SHOPIFY_GLOBAL_OBJECTS,
+]);
 
 /**
- * OG-specific safe filter patterns. Variables using these filters are applied
- * to real Shopify objects and should not trigger findings.
+ * OG-specific safe filter patterns: a `{{ ... }}` expression whose value flows
+ * through one of these filters is native theme output and must not be flagged,
+ * even when the leading variable is not in SAFE_OG_VARS_RE.
+ *
+ * The translation (`t`/`translate`) and `default` filters are critical: stock
+ * themes localize meta text and always supply a fallback, so the rendered value
+ * is never empty/broken — the exact failure mode this detector targets.
+ *
+ * Note on over-correction: only filters with no useful argument-less abuse are
+ * listed, and the trailing `\b` stops short alternatives (e.g. `t`) from
+ * matching inside an unrelated app filter name (e.g. `| toxicapp_meta`).
  */
-const SAFE_OG_FILTER_RE = /\|\s*(img_url|img_tag|strip_html|truncate)/;
+const SAFE_OG_FILTER_RE =
+  /\|\s*(?:img_url|img_tag|image_url|asset_url|asset_img_url|strip_html|escape|truncate|truncatewords|t|translate|default|money|money_with_currency|money_without_currency)\b/;
 
 /**
  * Detect orphaned Open Graph and Twitter Card meta tags left by social/SEO apps.

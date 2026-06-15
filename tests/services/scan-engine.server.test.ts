@@ -26,6 +26,7 @@ import {
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
+import { REFERENCE_THEMES, DAWN_TITLE } from "../fixtures/reference-themes";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -2770,6 +2771,167 @@ describe("detectGhostOg", () => {
     const result = scanThemeFiles(files);
     const ogFindings = findingsOfType(result.findings, FindingType.GHOST_OG);
     expect(ogFindings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Golden-file regression: stock Shopify free reference themes (LOG-1 / GC-s47)
+//
+// Legitimate Dawn-family theme markup must produce ZERO GHOST_TITLE / GHOST_OG
+// findings. Each theme is asserted by name so a future regression points at the
+// exact theme whose head markup broke. These tests guard the safe-variable
+// allowlists against silently narrowing.
+// ---------------------------------------------------------------------------
+
+describe("reference-theme golden files — no GHOST_TITLE/GHOST_OG false positives", () => {
+  for (const theme of REFERENCE_THEMES) {
+    it(`does NOT flag ${theme.name} <title> markup`, () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: theme.title,
+      };
+      expect(detectGhostTitle(file)).toHaveLength(0);
+    });
+
+    it(`does NOT flag ${theme.name} meta-tags.liquid OG/Twitter markup`, () => {
+      const file: ThemeFile = {
+        filename: "snippets/meta-tags.liquid",
+        content: theme.metaTags,
+      };
+      expect(detectGhostOg(file)).toHaveLength(0);
+    });
+
+    it(`does NOT flag ${theme.name} full head via scanThemeFiles`, () => {
+      const files: ThemeFile[] = [
+        {
+          filename: "layout/theme.liquid",
+          content: `<head>\n${theme.title}\n</head>`,
+        },
+        { filename: "snippets/meta-tags.liquid", content: theme.metaTags },
+      ];
+      const { findings } = scanThemeFiles(files);
+      expect(findingsOfType(findings, FindingType.GHOST_TITLE)).toHaveLength(0);
+      expect(findingsOfType(findings, FindingType.GHOST_OG)).toHaveLength(0);
+    });
+  }
+
+  // Spot-check the specific variables/filters that previously false-positived,
+  // so a narrowing of any one allowlist entry fails loudly and specifically.
+  it("does NOT flag Dawn local og_* assigns (og_title/og_url/og_type/og_description)", () => {
+    const file: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: [
+        '<meta property="og:url" content="{{ og_url }}">',
+        '<meta property="og:title" content="{{ og_title | escape }}">',
+        '<meta property="og:type" content="{{ og_type }}">',
+        '<meta property="og:description" content="{{ og_description | escape }}">',
+      ].join("\n"),
+    };
+    expect(detectGhostOg(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag page_image / page_image.width / page_image.height", () => {
+    const file: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: [
+        '<meta property="og:image" content="http:{{ page_image | image_url }}">',
+        '<meta property="og:image:width" content="{{ page_image.width }}">',
+        '<meta property="og:image:height" content="{{ page_image.height }}">',
+      ].join("\n"),
+    };
+    expect(detectGhostOg(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag request.* / settings.* / cart.* native objects", () => {
+    const file: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: [
+        '<meta property="og:url" content="{{ request.origin }}">',
+        '<meta property="og:price:currency" content="{{ cart.currency.iso_code }}">',
+        '<meta name="twitter:site" content="{{ settings.social_twitter_link | split: \'/\' | last }}">',
+      ].join("\n"),
+    };
+    expect(detectGhostOg(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag the | t (translate) or | default filters on otherwise-unknown vars", () => {
+    const file: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: [
+        '<meta property="og:title" content="{{ \'general.meta.title\' | t }}">',
+        '<meta property="og:description" content="{{ meta_blurb | default: shop.name }}">',
+      ].join("\n"),
+    };
+    expect(detectGhostOg(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag Dawn <title> current_tags / current_page pagination vars", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: DAWN_TITLE,
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Anti-over-correction: the expanded allowlists must NOT blind the detector to
+// genuine ghost code. Truly orphaned / app-injected markup is STILL flagged.
+// ---------------------------------------------------------------------------
+
+describe("allowlist expansion still catches real GHOST_TITLE/GHOST_OG findings", () => {
+  it("STILL flags an empty title in a layout file", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<head>\n<title></title>\n</head>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].description).toContain("Empty title tag");
+  });
+
+  it("STILL flags a broken app-attributed unresolved title variable", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title>{{ seoapp_meta_title }}</title>",
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_TITLE);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("STILL flags an orphaned unresolved OG variable from an uninstalled app", () => {
+    const file: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: '<meta property="og:title" content="{{ seoapp_meta_title }}">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_OG);
+    expect(findings[0].description).toContain("Unresolved");
+  });
+
+  it("STILL flags an empty high-value OG image left behind by an app", () => {
+    const file: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: '<meta property="og:image" content="">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_OG);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  it("STILL flags an unknown var even when a known-safe var is also present", () => {
+    const file: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: '<meta property="og:title" content="{{ page_title }} {{ seoapp_suffix }}">',
+    };
+    const findings = detectGhostOg(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Unresolved");
   });
 });
 
