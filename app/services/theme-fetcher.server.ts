@@ -282,11 +282,19 @@ export async function fetchThemeFiles(
 
     const themeData = json.data?.theme;
     if (!themeData) {
-      // Theme not found or access denied — return what we have so far.
-      console.log(
-        `[theme-fetcher] No theme data returned for themeId ${themeId}. Stopping pagination.`,
+      // Theme data is null/undefined without a top-level errors array — the
+      // theme was deleted, access was denied, or the response was malformed.
+      // Returning the files accumulated so far (usually an empty array on the
+      // first page) would let the caller complete the scan as "clean" and wipe
+      // every prior finding, making a transient soft-failure indistinguishable
+      // from a genuinely clean theme (LOG-5). Throw instead so Inngest retries
+      // and ultimately marks the scan FAILED rather than falsely COMPLETED.
+      // Throwing mid-pagination is deliberate: a retry is safer than persisting
+      // a partial file list.
+      throw new Error(
+        `[theme-fetcher] No theme data returned for theme ${themeId} ` +
+          `(deleted, access denied, or malformed response). Aborting fetch to avoid a false-clean scan.`,
       );
-      break;
     }
 
     const nodes = themeData.files?.nodes ?? [];

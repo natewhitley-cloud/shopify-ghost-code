@@ -39,7 +39,11 @@ import { FindingType, ScanStatus } from "@prisma/client";
 import { logger } from "../../app/lib/logger.server";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { saveThemeFindings } from "../../app/models/finding.server";
-import { finalizeScan, updateScanStatus } from "../../app/models/scan.server";
+import {
+  finalizeScan,
+  getPreviousScanForTheme,
+  updateScanStatus,
+} from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
@@ -151,7 +155,7 @@ export const scanTheme = inngest.createFunction(
       // Step 2: Fetch theme files, scan them, and save findings.
       // Combined into one step because theme file contents can exceed
       // Inngest's 4MB step output serialization limit.
-      const findingCount = await step.run("fetch-and-scan", async () => {
+      const { findingCount, fileCount } = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
         if (!shop) {
@@ -189,8 +193,9 @@ export const scanTheme = inngest.createFunction(
         // these are informational and don't affect scan correctness).
         await createUnknownScripts(scanId, unknownScripts);
 
-        // Return only the count — not the full findings array
-        return findings.length;
+        // Return only the counts — not the full findings array (Inngest's 4MB
+        // step-output limit). fileCount drives the zero-file sanity guard below.
+        return { findingCount: findings.length, fileCount: files.length };
       });
 
       // Step 3: Translation audit (optional — requires read_translations scope)
@@ -394,6 +399,36 @@ export const scanTheme = inngest.createFunction(
       ]
         .filter(([skipped]) => skipped)
         .map(([, category]) => category as string);
+
+      // Zero-file sanity guard (LOG-5): a theme fetch that returns ZERO files is
+      // suspicious for any real theme. If the most recent prior successful scan
+      // for this shop+theme had findings, an empty fetch is almost certainly a
+      // transient API soft-failure or a theme that vanished mid-pipeline — NOT a
+      // genuinely clean theme. Completing the scan here would delete the prior
+      // findings and the scan-detail diff would falsely report them all as
+      // "resolved". Throw instead so the scan is marked FAILED (and Inngest
+      // retries the transient case first). This is a defensive backstop beyond
+      // the null-themeData throw in fetchThemeFiles. A legitimately empty theme
+      // with no prior findings still completes normally.
+      if (fileCount === 0) {
+        await step.run("zero-file-sanity-guard", async () => {
+          const db = (await import("../../app/db.server")).default;
+          const currentScan = await db.scan.findUnique({
+            where: { id: scanId },
+            select: { createdAt: true },
+          });
+          const priorScan = currentScan
+            ? await getPreviousScanForTheme(shopId, themeId, currentScan.createdAt)
+            : null;
+          if (priorScan && priorScan.findingCount > 0) {
+            throw new Error(
+              `Refusing to complete scan ${scanId} as clean: fetched 0 theme files for ` +
+                `theme ${themeId}, but the prior successful scan had ${priorScan.findingCount} ` +
+                `finding(s). Treating the empty fetch as a transient failure to avoid wiping prior findings.`,
+            );
+          }
+        });
+      }
 
       // PARTIAL when one or more optional categories were skipped for missing
       // scope; COMPLETED when every category was audited (a full audit).
