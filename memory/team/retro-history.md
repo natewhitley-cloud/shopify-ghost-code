@@ -237,3 +237,15 @@
 - Key insight: a subagent died mid-task (socket error) with uncommitted work; a fresh agent reading the diff finished it cleanly (58 test reconciliations).
 - Key product finding: GHOST_TRANSLATION orphan detection is infeasible; owner chose informational reframe. GHOST_PRICE now needs real orphan evidence. These materially improve scanner credibility.
 - Deferred/open: 4A (GC-eis, needs dev store), 7A (GC-25u, needs app handle), 10A (GC-664, needs Railway), esbuild (GC-e8a), test flakiness (GC-9x2).
+
+## Retro: 2026-06-15 (session 8 — GC-9vj + Cluster 3 observability + Cluster 4 test backfill)
+
+- Tasks completed: 6/6 (100%) — GC-9vj (LOG-11 finish), GC-be2 (OPS-3/SEC-3), GC-c09 (OPS-4/OPS-8), GC-s14 (TST-5), GC-wex (TST-3), GC-f6w (TST-4). All merged to main @ 97ced6b, pushed.
+- Dispatch: /sprint team, SERIAL (per project orchestrator rule), 6 implementing agents + 1 reviewer verify pass. Inline verification (git + targeted vitest/tsc) for low-risk items instead of dispatching reviewer — saved context budget.
+- Commits: 13 (6 impl + 6 merge-commits + 1 chore-learnings). Test suite 1442 → 1486 (+44). tsc clean throughout.
+- Fix rate (rework): 0% — every task passed first-pass; every review/verification passed. No corrections.
+- New learnings: 11 across 4 members (implementer +4, tester +5, reviewer +1, debugger +1). 1 cross-agent note (debugger→tester boot-guard test technique) delivered + used same session. 0 pruned (all files <50 lines).
+- Key insight: orchestrator-side scoping verification BEFORE dispatch prevented redundant work (TST-2 already done via 6A → dropped) and a dead-file chase (review's `token-encryption.server.ts` exemplar was deleted in 8A → steered debugger to the live `shopify.server.ts` pattern). Verify each item against live code, don't trust the handoff/review doc verbatim.
+- Key insight: reviewer's "live-execute the regex with node -e, don't read it" learning held — independently reproduced GC-9vj's no-double-count claim rather than accepting it.
+- Recurring friction: pre-commit `eslint import/order` rejected the tester's first commit (reorder-and-recommit). Bit an agent again → promotion candidate to a project rule.
+- Open follow-up: GC-jjb (detectGhostSections comment-skip parity). Owner-blocked unchanged: deploy retry, 4A (dev store), 7A (app handle).
