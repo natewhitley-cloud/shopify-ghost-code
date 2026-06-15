@@ -15,7 +15,7 @@
  * vi.mock factory.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -49,6 +49,13 @@ import {
   canUseAutoRescan,
   canUseScanDiffing,
 } from "../../app/lib/plan-gating.server";
+
+// Restore real timers after every test so fake-timer usage in one test cannot
+// bleed into siblings. Calling useRealTimers() when real timers are already
+// active is a no-op, so this is safe for tests that don't call useFakeTimers.
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -265,17 +272,23 @@ describe("canStartScan — Free plan", () => {
   });
 
   it("passes the first day of the current month as the 'since' date", async () => {
-    mockCountScansForShopSince.mockResolvedValue(0);
+    // Pin the clock so the production code's `new Date()` is deterministic.
+    // Using noon-UTC on a mid-month date avoids any UTC-offset day-shift edge
+    // cases. With the clock fixed at 2026-06-15T12:00:00Z the expected period
+    // start is 2026-06-01T00:00:00.000Z (June 1, 2026 — UTC midnight).
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-06-15T12:00:00.000Z"));
 
-    const before = new Date();
+    mockCountScansForShopSince.mockResolvedValue(0);
     await canStartScan(SHOP_ID, "free");
-    const after = new Date();
 
     const sinceArg: Date = mockCountScansForShopSince.mock.calls[0][1];
     expect(sinceArg.getUTCDate()).toBe(1);
-    expect(sinceArg.getUTCMonth()).toBeGreaterThanOrEqual(before.getUTCMonth());
-    expect(sinceArg.getUTCMonth()).toBeLessThanOrEqual(after.getUTCMonth());
-    expect(sinceArg.getUTCFullYear()).toBeGreaterThanOrEqual(before.getUTCFullYear());
+    expect(sinceArg.getUTCMonth()).toBe(5); // June (0-indexed)
+    expect(sinceArg.getUTCFullYear()).toBe(2026);
+    expect(sinceArg.getUTCHours()).toBe(0);
+    expect(sinceArg.getUTCMinutes()).toBe(0);
+    expect(sinceArg.getUTCSeconds()).toBe(0);
   });
 
   it("passes the shop ID to countScansForShopSince", async () => {
