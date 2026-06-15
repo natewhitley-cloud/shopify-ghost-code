@@ -216,3 +216,14 @@
 - Test growth: 107 → 246 (+130%)
 - Key insight: Single-task dispatch with detailed context produces high-confidence results (all 4 agents: high). Serial dispatch without worktrees works for 4 tasks but adds ~10min latency vs. parallel.
 - Key risk: Tester agent didn't commit its 5 new test files — orchestrator had to commit manually. Agent prompts need explicit "commit your changes" instruction for file-creation tasks.
+
+## Retro: 2026-06-15 (session 6 — top-10 remediation from full code review)
+
+- Tasks completed: 6/7 actionable top-10 fixes (9A, 1A, 6A, 5A, 2A, 3A, 8A); 4A deferred to a focused dev-store session by owner choice.
+- Dispatch: ad-hoc Agent dispatches (not /sprint team), serial; two review workflows (76 agents) produced the source findings.
+- Commits: 9 on branch `code-review-2026-06-12` (7 fix, 2 docs/deps). Test suite 1308 → 1367 passing, typecheck clean throughout.
+- Fix rate within session: one dep-bump (9A) introduced a duplicate-shopify-api regression caught during 1A verification and fixed (df8a0ae) — net positive (caught before merge).
+- Key insight: independent orchestrator verification (re-run typecheck + vitest before closing) caught TWO false "all green" agent reports. Non-negotiable going forward.
+- Key insight: a subagent died mid-task (socket error) with uncommitted work; a fresh agent reading the diff finished it cleanly (58 test reconciliations).
+- Key product finding: GHOST_TRANSLATION orphan detection is infeasible; owner chose informational reframe. GHOST_PRICE now needs real orphan evidence. These materially improve scanner credibility.
+- Deferred/open: 4A (GC-eis, needs dev store), 7A (GC-25u, needs app handle), 10A (GC-664, needs Railway), esbuild (GC-e8a), test flakiness (GC-9x2).
