@@ -74,6 +74,33 @@ vi.mock("../../app/models/unknown-script.server", () => ({
   createUnknownScripts: vi.fn(),
 }));
 
+// Optional-audit service boundaries. The scan-theme function probes each
+// optional scope; mock them so the audit steps run deterministically instead
+// of hitting the (unmocked) admin client and throwing. Part B keeps every
+// scope ungranted, so the audits skip cleanly and the theme scan is the only
+// contributor to the finding count.
+vi.mock("../../app/services/translation-fetcher.server", () => ({
+  hasTranslationScope: vi.fn(),
+  auditTranslations: vi.fn(),
+}));
+
+vi.mock("../../app/services/product-fetcher.server", () => ({
+  hasProductScope: vi.fn(),
+  fetchProductTags: vi.fn(),
+  fetchProductPrices: vi.fn(),
+  fetchProductMetafields: vi.fn(),
+}));
+
+vi.mock("../../app/services/content-fetcher.server", () => ({
+  hasContentScope: vi.fn(),
+  fetchPages: vi.fn(),
+}));
+
+vi.mock("../../app/services/redirect-fetcher.server", () => ({
+  hasNavigationScope: vi.fn(),
+  fetchRedirects: vi.fn(),
+}));
+
 vi.mock("../../inngest/client", () => ({
   inngest: {
     send: vi.fn(),
@@ -108,8 +135,12 @@ import { createScan, hasCompletedScans, updateScanStatus } from "../../app/model
 import { getShopMetadata } from "../../app/models/shop.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { action } from "../../app/routes/app._index";
+import { hasContentScope } from "../../app/services/content-fetcher.server";
+import { hasProductScope } from "../../app/services/product-fetcher.server";
+import { hasNavigationScope } from "../../app/services/redirect-fetcher.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchMainTheme, fetchThemeFiles } from "../../app/services/theme-fetcher.server";
+import { hasTranslationScope } from "../../app/services/translation-fetcher.server";
 import { authenticate, unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 import { scanTheme } from "../../inngest/functions/scan-theme";
@@ -132,6 +163,10 @@ const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
+const mockHasTranslationScope = hasTranslationScope as ReturnType<typeof vi.fn>;
+const mockHasProductScope = hasProductScope as ReturnType<typeof vi.fn>;
+const mockHasContentScope = hasContentScope as ReturnType<typeof vi.fn>;
+const mockHasNavigationScope = hasNavigationScope as ReturnType<typeof vi.fn>;
 const mockDbShopFindUnique = (db as unknown as { shop: { findUnique: ReturnType<typeof vi.fn> } })
   .shop.findUnique;
 const mockDbScanFindUnique = (db as unknown as { scan: { findUnique: ReturnType<typeof vi.fn> } })
@@ -467,6 +502,13 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
     mockCompleteScanWithFindings.mockResolvedValue(undefined);
     mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
+
+    // Every optional scope is ungranted here, so the audit steps skip cleanly
+    // and only the theme scan contributes findings.
+    mockHasTranslationScope.mockResolvedValue(false);
+    mockHasProductScope.mockResolvedValue(false);
+    mockHasContentScope.mockResolvedValue(false);
+    mockHasNavigationScope.mockResolvedValue(false);
   });
 
   function makeScanEvent(overrides?: Partial<{ shopId: string; themeId: string; scanId: string }>) {

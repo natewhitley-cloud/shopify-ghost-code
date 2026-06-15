@@ -32,20 +32,29 @@ describe("hasNavigationScope", () => {
     expect(result).toBe(true);
   });
 
-  it("returns false when query returns errors", async () => {
+  it("returns false when query returns an access-denied error", async () => {
     const admin = mockAdmin([{ errors: [{ message: "Access denied" }] }]);
     const result = await hasNavigationScope(admin);
     expect(result).toBe(false);
   });
 
-  it("returns false when query throws", async () => {
+  // LOG-9: a transient transport failure must NOT be swallowed as "scope
+  // missing" — it must throw so the Inngest step retries.
+  it("throws when the query throws (transient, not scope-missing)", async () => {
     const admin = {
       graphql: vi.fn(async () => {
         throw new Error("Network error");
       }),
     };
-    const result = await hasNavigationScope(admin);
-    expect(result).toBe(false);
+    await expect(hasNavigationScope(admin)).rejects.toThrow(/transient/i);
+  });
+
+  // LOG-9: a THROTTLED GraphQL error must throw, not be treated as scope-missing.
+  it("throws on THROTTLED (transient, not scope-missing)", async () => {
+    const admin = mockAdmin([
+      { errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] },
+    ]);
+    await expect(hasNavigationScope(admin)).rejects.toThrow(/transient/i);
   });
 });
 

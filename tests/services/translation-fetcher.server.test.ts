@@ -99,11 +99,26 @@ describe("hasTranslationScope", () => {
     expect(await hasTranslationScope(admin)).toBe(false);
   });
 
-  it("returns false on network error", async () => {
+  // LOG-9: a transient transport failure must NOT be swallowed as "scope
+  // missing" — it must throw so the Inngest step retries.
+  it("throws on network error (transient, not scope-missing)", async () => {
     const graphql = vi.fn().mockRejectedValue(new Error("Network error"));
     const admin = makeAdmin(graphql);
 
-    expect(await hasTranslationScope(admin)).toBe(false);
+    await expect(hasTranslationScope(admin)).rejects.toThrow(/transient/i);
+  });
+
+  // LOG-9: a THROTTLED GraphQL error must throw, not be treated as scope-missing.
+  it("throws on THROTTLED (transient, not scope-missing)", async () => {
+    const graphql = vi.fn().mockResolvedValue({
+      json: vi.fn().mockResolvedValue({
+        errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }],
+        data: null,
+      }),
+    });
+    const admin = makeAdmin(graphql);
+
+    await expect(hasTranslationScope(admin)).rejects.toThrow(/transient/i);
   });
 });
 

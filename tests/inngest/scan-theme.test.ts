@@ -28,6 +28,11 @@ vi.mock("../../app/db.server", () => ({
     },
     scan: {
       findUnique: vi.fn(),
+      update: vi.fn(),
+    },
+    finding: {
+      deleteMany: vi.fn(),
+      count: vi.fn(),
     },
   },
 }));
@@ -56,6 +61,58 @@ vi.mock("../../app/models/scan.server", () => ({
 
 vi.mock("../../app/models/finding.server", () => ({
   completeScanWithFindings: vi.fn(),
+  createFindings: vi.fn(),
+}));
+
+// Audit service boundaries — mocked so the optional audit steps actually run
+// with controllable scope + data (TST-2). Previously these were left unmocked,
+// so every scope probe threw, the error was swallowed (LOG-9), and each audit
+// short-circuited to 0 — masking whether the audits ran at all.
+
+vi.mock("../../app/services/translation-fetcher.server", () => ({
+  hasTranslationScope: vi.fn(),
+  auditTranslations: vi.fn(),
+}));
+
+vi.mock("../../app/services/translation-detector.server", () => ({
+  detectOrphanedTranslations: vi.fn(),
+}));
+
+vi.mock("../../app/services/product-fetcher.server", () => ({
+  hasProductScope: vi.fn(),
+  fetchProductTags: vi.fn(),
+  fetchProductPrices: vi.fn(),
+  fetchProductMetafields: vi.fn(),
+}));
+
+vi.mock("../../app/services/product-tag-detector.server", () => ({
+  detectOrphanedProductTags: vi.fn(),
+}));
+
+vi.mock("../../app/services/price-detector.server", () => ({
+  detectPersistentDiscounts: vi.fn(),
+}));
+
+vi.mock("../../app/services/content-fetcher.server", () => ({
+  hasContentScope: vi.fn(),
+  fetchPages: vi.fn(),
+}));
+
+vi.mock("../../app/services/page-detector.server", () => ({
+  detectOrphanedPages: vi.fn(),
+}));
+
+vi.mock("../../app/services/metafield-detector.server", () => ({
+  detectOrphanedMetafields: vi.fn(),
+}));
+
+vi.mock("../../app/services/redirect-fetcher.server", () => ({
+  hasNavigationScope: vi.fn(),
+  fetchRedirects: vi.fn(),
+}));
+
+vi.mock("../../app/services/redirect-detector.server", () => ({
+  detectOrphanedRedirects: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -63,11 +120,30 @@ vi.mock("../../app/models/finding.server", () => ({
 // ---------------------------------------------------------------------------
 
 import db from "../../app/db.server";
-import { completeScanWithFindings } from "../../app/models/finding.server";
+import { TransientScopeCheckError } from "../../app/lib/scope-check.server";
+import { completeScanWithFindings, createFindings } from "../../app/models/finding.server";
 import { updateScanStatus } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
+import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.server";
+import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
+import { detectOrphanedPages } from "../../app/services/page-detector.server";
+import { detectPersistentDiscounts } from "../../app/services/price-detector.server";
+import {
+  hasProductScope,
+  fetchProductTags,
+  fetchProductPrices,
+  fetchProductMetafields,
+} from "../../app/services/product-fetcher.server";
+import { detectOrphanedProductTags } from "../../app/services/product-tag-detector.server";
+import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
+import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
+import { detectOrphanedTranslations } from "../../app/services/translation-detector.server";
+import {
+  hasTranslationScope,
+  auditTranslations,
+} from "../../app/services/translation-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
 import { scanTheme } from "../../inngest/functions/scan-theme";
 import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from "../mocks/inngest";
@@ -78,14 +154,38 @@ import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from
 
 const mockDb = db as unknown as {
   shop: { findUnique: ReturnType<typeof vi.fn> };
-  scan: { findUnique: ReturnType<typeof vi.fn> };
+  scan: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
+  finding: { deleteMany: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
 };
 const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
 const mockCompleteScanWithFindings = completeScanWithFindings as ReturnType<typeof vi.fn>;
+const mockCreateFindings = createFindings as ReturnType<typeof vi.fn>;
 const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
+
+// Audit scope checks
+const mockHasTranslationScope = hasTranslationScope as ReturnType<typeof vi.fn>;
+const mockHasProductScope = hasProductScope as ReturnType<typeof vi.fn>;
+const mockHasContentScope = hasContentScope as ReturnType<typeof vi.fn>;
+const mockHasNavigationScope = hasNavigationScope as ReturnType<typeof vi.fn>;
+
+// Audit fetchers
+const mockAuditTranslations = auditTranslations as ReturnType<typeof vi.fn>;
+const mockFetchProductTags = fetchProductTags as ReturnType<typeof vi.fn>;
+const mockFetchProductPrices = fetchProductPrices as ReturnType<typeof vi.fn>;
+const mockFetchProductMetafields = fetchProductMetafields as ReturnType<typeof vi.fn>;
+const mockFetchPages = fetchPages as ReturnType<typeof vi.fn>;
+const mockFetchRedirects = fetchRedirects as ReturnType<typeof vi.fn>;
+
+// Audit detectors
+const mockDetectOrphanedTranslations = detectOrphanedTranslations as ReturnType<typeof vi.fn>;
+const mockDetectOrphanedProductTags = detectOrphanedProductTags as ReturnType<typeof vi.fn>;
+const mockDetectPersistentDiscounts = detectPersistentDiscounts as ReturnType<typeof vi.fn>;
+const mockDetectOrphanedPages = detectOrphanedPages as ReturnType<typeof vi.fn>;
+const mockDetectOrphanedMetafields = detectOrphanedMetafields as ReturnType<typeof vi.fn>;
+const mockDetectOrphanedRedirects = detectOrphanedRedirects as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -167,6 +267,9 @@ beforeEach(() => {
   mockDb.shop.findUnique.mockResolvedValue(MOCK_SHOP);
   // db.scan.findUnique is called in the catch block to check status before marking FAILED
   mockDb.scan.findUnique.mockResolvedValue({ status: "IN_PROGRESS" });
+  mockDb.scan.update.mockResolvedValue(undefined);
+  mockDb.finding.deleteMany.mockResolvedValue({ count: 0 });
+  mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length);
   mockUnauthenticated.admin.mockResolvedValue({ admin: MOCK_ADMIN });
 
   // Default happy-path wiring for services
@@ -176,8 +279,55 @@ beforeEach(() => {
   // Default happy-path wiring for models
   mockUpdateScanStatus.mockResolvedValue(undefined);
   mockCompleteScanWithFindings.mockResolvedValue(undefined);
+  mockCreateFindings.mockResolvedValue({ count: 0 });
   mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
+
+  // Default audit wiring: every scope IS granted, but the detectors find
+  // nothing. This makes the audit steps genuinely run end-to-end (scope probe
+  // → fetch → detect → persist) on the happy path while contributing 0
+  // findings, so the theme-scan count is the only contributor.
+  mockHasTranslationScope.mockResolvedValue(true);
+  mockHasProductScope.mockResolvedValue(true);
+  mockHasContentScope.mockResolvedValue(true);
+  mockHasNavigationScope.mockResolvedValue(true);
+
+  // Translation audit returns no translations by default (early-returns 0).
+  mockAuditTranslations.mockResolvedValue({
+    locales: [],
+    summaries: [],
+    totalTranslations: 0,
+    totalOutdated: 0,
+  });
+  mockDetectOrphanedTranslations.mockReturnValue([]);
+
+  mockFetchProductTags.mockResolvedValue([]);
+  mockFetchProductPrices.mockResolvedValue([]);
+  mockFetchProductMetafields.mockResolvedValue([]);
+  mockFetchPages.mockResolvedValue([]);
+  mockFetchRedirects.mockResolvedValue([]);
+
+  mockDetectOrphanedProductTags.mockReturnValue([]);
+  mockDetectPersistentDiscounts.mockReturnValue([]);
+  mockDetectOrphanedPages.mockReturnValue([]);
+  mockDetectOrphanedMetafields.mockReturnValue([]);
+  mockDetectOrphanedRedirects.mockReturnValue([]);
 });
+
+// ---------------------------------------------------------------------------
+// Helper: build an audit finding
+// ---------------------------------------------------------------------------
+
+function makeAuditFinding(findingType: FindingType, overrides?: Record<string, unknown>) {
+  return {
+    filename: "n/a",
+    lineNumber: 0,
+    codeSnippet: "orphaned-resource",
+    findingType,
+    severity: Severity.MEDIUM,
+    description: `Orphaned ${findingType}`,
+    ...overrides,
+  };
+}
 
 // ---------------------------------------------------------------------------
 // Happy path
@@ -351,5 +501,156 @@ describe("scanTheme — error paths", () => {
 
     // Step 1 (IN_PROGRESS) should still have been called
     expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Optional audit steps (TST-2 / LOG-9)
+//
+// These prove the audit steps genuinely execute — the scope probe is consulted,
+// findings are persisted with the delete-then-create idempotency guard, a
+// genuine ACCESS_DENIED skips cleanly, and a transient error is NOT swallowed
+// as "scope missing" (so a flaky API can never produce a false-clean scan).
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — optional audit steps", () => {
+  it("consults every optional scope check on the happy path", async () => {
+    await runScanTheme();
+
+    // If a future regression silently swallowed a probe error and returned
+    // false, these assertions would still pass — but they document that the
+    // probe is part of the happy path, and the dedicated transient/access-
+    // denied tests below lock in the distinct behaviors.
+    expect(mockHasTranslationScope).toHaveBeenCalledWith(MOCK_ADMIN);
+    expect(mockHasProductScope).toHaveBeenCalledWith(MOCK_ADMIN);
+    expect(mockHasContentScope).toHaveBeenCalledWith(MOCK_ADMIN);
+    expect(mockHasNavigationScope).toHaveBeenCalledWith(MOCK_ADMIN);
+  });
+
+  describe("persistence — finds and stores findings", () => {
+    it("deletes prior findings, creates new ones, and recounts the total", async () => {
+      const tagFinding = makeAuditFinding(FindingType.GHOST_TAG);
+      mockFetchProductTags.mockResolvedValue([{ id: "gid://shopify/Product/1" }]);
+      mockDetectOrphanedProductTags.mockReturnValue([tagFinding]);
+      // Recount returns the authoritative total across all finding types.
+      mockDb.finding.count.mockResolvedValue(3);
+
+      const result = await runScanTheme();
+
+      // Idempotency guard: delete this finding type before inserting.
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+        where: { scanId: SCAN_ID, findingType: FindingType.GHOST_TAG },
+      });
+      expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [tagFinding]);
+
+      // deleteMany must run BEFORE createFindings.
+      const deleteOrder = mockDb.finding.deleteMany.mock.invocationCallOrder[0];
+      const createOrder = mockCreateFindings.mock.invocationCallOrder[0];
+      expect(deleteOrder).toBeLessThan(createOrder);
+
+      // Recount keeps the scan.findingCount authoritative (no retry drift).
+      expect(mockDb.scan.update).toHaveBeenCalledWith({
+        where: { id: SCAN_ID },
+        data: { findingCount: 3 },
+      });
+
+      // Total returned = theme findings (2) + tag finding (1).
+      expect(result).toEqual({
+        scanId: SCAN_ID,
+        findingCount: MOCK_FINDINGS.length + 1,
+        status: "COMPLETED",
+      });
+    });
+  });
+
+  describe("retry idempotency — running an audit twice does not duplicate", () => {
+    it("delete-then-create keeps exactly one copy of the findings after two runs", async () => {
+      const tagFinding = makeAuditFinding(FindingType.GHOST_TAG);
+      mockFetchProductTags.mockResolvedValue([{ id: "gid://shopify/Product/1" }]);
+      mockDetectOrphanedProductTags.mockReturnValue([tagFinding]);
+
+      // Stateful fake table for GHOST_TAG findings: deleteMany clears it,
+      // createFindings appends. Running the step twice must leave one copy.
+      let persistedTagFindings: unknown[] = [];
+      mockDb.finding.deleteMany.mockImplementation(
+        async ({ where }: { where: { findingType: FindingType } }) => {
+          if (where.findingType === FindingType.GHOST_TAG) persistedTagFindings = [];
+          return { count: 0 };
+        },
+      );
+      mockCreateFindings.mockImplementation(async (_scanId: string, findings: unknown[]) => {
+        persistedTagFindings.push(...findings);
+        return { count: findings.length };
+      });
+
+      await runScanTheme();
+      await runScanTheme();
+
+      // The guard runs every time — once per run for the one type with findings.
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledTimes(2);
+      // No duplication despite two runs (simulating an Inngest retry).
+      expect(persistedTagFindings).toEqual([tagFinding]);
+    });
+  });
+
+  describe("genuine ACCESS_DENIED — scope not granted", () => {
+    it("skips the product-backed audits cleanly with 0, scan still COMPLETED", async () => {
+      // hasProductScope reports the scope is genuinely missing.
+      mockHasProductScope.mockResolvedValue(false);
+      // Even though data + detector would yield findings, the audit must skip.
+      mockFetchProductTags.mockResolvedValue([{ id: "gid://shopify/Product/1" }]);
+      mockDetectOrphanedProductTags.mockReturnValue([makeAuditFinding(FindingType.GHOST_TAG)]);
+
+      const result = await runScanTheme();
+
+      // Skipped before fetching / persisting anything for those audits.
+      expect(mockFetchProductTags).not.toHaveBeenCalled();
+      expect(mockFetchProductPrices).not.toHaveBeenCalled();
+      expect(mockFetchProductMetafields).not.toHaveBeenCalled();
+      expect(mockCreateFindings).not.toHaveBeenCalled();
+      expect(mockDb.finding.deleteMany).not.toHaveBeenCalled();
+
+      // The scan completes normally with only the theme findings — no false
+      // data, no failure.
+      expect(result).toEqual({
+        scanId: SCAN_ID,
+        findingCount: MOCK_FINDINGS.length,
+        status: "COMPLETED",
+      });
+    });
+  });
+
+  describe("transient error during an audit — must NOT be swallowed", () => {
+    it("propagates the transient scope error and marks the scan FAILED", async () => {
+      mockHasProductScope.mockRejectedValue(
+        new TransientScopeCheckError("read_products", new Error("Throttled")),
+      );
+
+      // The transient error must surface (so Inngest retries) — it must NOT be
+      // silently treated as "scope missing" and skipped.
+      await expect(runScanTheme()).rejects.toThrow(TransientScopeCheckError);
+
+      expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
+      // It must not falsely persist a clean/resolved result for the audit.
+      expect(mockCreateFindings).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("catch-block COMPLETED guard", () => {
+    it("does not overwrite a COMPLETED scan when a late audit error fires", async () => {
+      // Simulate a late transient failure after the scan already completed
+      // (e.g. an Inngest retry that re-ran past the persisted COMPLETED state).
+      mockHasProductScope.mockRejectedValue(
+        new TransientScopeCheckError("read_products", new Error("Throttled")),
+      );
+      mockDb.scan.findUnique.mockResolvedValue({ status: "COMPLETED" });
+
+      await expect(runScanTheme()).rejects.toThrow(TransientScopeCheckError);
+
+      // The guard must prevent a FAILED overwrite of a COMPLETED scan...
+      expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
+      // ...while step 1 still ran.
+      expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
+    });
   });
 });
