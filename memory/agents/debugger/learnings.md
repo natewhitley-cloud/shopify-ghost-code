@@ -15,6 +15,7 @@
 - Theme deletion mid-scan causes NOT_FOUND on file fetch — scan function must handle gracefully.
 - Prisma type misalignment after schema changes — run `npx prisma generate` to sync client types.
 - Startup assertions over `|| ""` fallbacks for security-critical env vars (`SHOPIFY_API_SECRET`, `SHOPIFY_APP_URL`). An empty string silently changes security semantics. `if (!val) throw` also satisfies TypeScript narrowing. (added: 2026-03-10, dispatch: S-03)
+- For SDKs that read credentials from env IMPLICITLY (Inngest reads `INNGEST_EVENT_KEY`/`INNGEST_SIGNING_KEY`), the implicit read hides the dependency and degrades silently if missing — no boot error, jobs just never run. Fix BOTH ways: a production-gated fail-fast boot guard (`if (NODE_ENV==='production' && !key) throw`, dev-permissive, in the central module loaded at boot e.g. `inngest/client.ts`) AND pass the credential explicitly at the call site (`signingKey`/`eventKey`) so the dependency is visible in code. Mirrors `shopify.server.ts` + the SENTRY_DSN optional-in-dev philosophy. (added: 2026-06-15, dispatch: GC-be2)
 
 ## Preferences
 
