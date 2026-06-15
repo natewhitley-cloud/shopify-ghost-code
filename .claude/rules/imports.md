@@ -30,8 +30,8 @@ Within each group, imports are sorted **A–Z, case-insensitive**. This is what 
 import { readFile } from "node:fs";
 
 // external (blank line before)
-import { json } from "@remix-run/node";
 import { authenticate } from "@shopify/shopify-app-remix/server";
+import { useLoaderData } from "react-router";
 
 // internal ~/  (blank line before)
 import { prisma } from "~/db.server";
