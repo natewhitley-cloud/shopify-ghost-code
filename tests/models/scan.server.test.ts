@@ -43,13 +43,25 @@ vi.mock("../../app/db.server", () => ({
   default: mockDb,
 }));
 
+vi.mock("../../app/lib/logger.server", () => ({
+  logger: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+  },
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { logger } from "../../app/lib/logger.server";
 import {
+  buildStaleScanWhere,
   createScan,
+  DEFAULT_STALE_SCAN_THRESHOLDS,
   expireStaleScans,
+  finalizeScan,
   getFailureRateStats,
   getScanById,
   getScansForShop,
@@ -60,6 +72,8 @@ import {
   hasCompletedScans,
   getCompletedScansForShop,
 } from "../../app/models/scan.server";
+
+const mockLoggerWarn = (logger as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
 
 // ---------------------------------------------------------------------------
 // Shared fixtures
@@ -628,7 +642,95 @@ describe("hasCompletedScans", () => {
 });
 
 // ---------------------------------------------------------------------------
-// expireStaleScans
+// buildStaleScanWhere (LOG-6, #2-A) — per-status staleness predicate
+//
+// These replace the old single-`createdAt`-cutoff expireStaleScans tests. The
+// previous behaviour aged BOTH PENDING and IN_PROGRESS scans from createdAt with
+// one threshold, which falsely expired legitimately long-running IN_PROGRESS
+// scans (the LOG-6 bug). The new predicate ages IN_PROGRESS from startedAt.
+// ---------------------------------------------------------------------------
+
+describe("buildStaleScanWhere", () => {
+  const THRESHOLDS = { pendingMaxAgeMinutes: 15, inProgressMaxAgeMinutes: 30 };
+
+  /** The PENDING branch of the OR predicate. */
+  function pendingBranch(where: ReturnType<typeof buildStaleScanWhere>) {
+    return (where.OR as Array<Record<string, unknown>>).find(
+      (b) => b.status === ScanStatus.PENDING,
+    ) as { status: ScanStatus; createdAt: { lt: Date } };
+  }
+
+  /** The IN_PROGRESS branch of the OR predicate. */
+  function inProgressBranch(where: ReturnType<typeof buildStaleScanWhere>) {
+    return (where.OR as Array<Record<string, unknown>>).find(
+      (b) => b.status === ScanStatus.IN_PROGRESS,
+    ) as {
+      status: ScanStatus;
+      OR: [{ startedAt: { lt: Date } }, { startedAt: null; createdAt: { lt: Date } }];
+    };
+  }
+
+  it("ORs exactly two status-specific branches (PENDING and IN_PROGRESS)", () => {
+    const where = buildStaleScanWhere(THRESHOLDS);
+    expect(where.OR).toHaveLength(2);
+    expect(pendingBranch(where)).toBeDefined();
+    expect(inProgressBranch(where)).toBeDefined();
+  });
+
+  it("ages PENDING scans from createdAt using the pending threshold", () => {
+    vi.setSystemTime(1_700_000_000_000);
+    const where = buildStaleScanWhere(THRESHOLDS);
+    const branch = pendingBranch(where);
+    expect(branch.createdAt.lt).toEqual(new Date(1_700_000_000_000 - 15 * 60 * 1000));
+    // PENDING must NOT be keyed off startedAt (a PENDING scan has none).
+    expect(branch).not.toHaveProperty("startedAt");
+    vi.useRealTimers();
+  });
+
+  it("ages IN_PROGRESS scans from startedAt, NOT createdAt (the core LOG-6 regression)", () => {
+    vi.setSystemTime(1_700_000_000_000);
+    const where = buildStaleScanWhere(THRESHOLDS);
+    const branch = inProgressBranch(where);
+    const expectedCutoff = new Date(1_700_000_000_000 - 30 * 60 * 1000);
+
+    // Primary condition: startedAt older than the in-progress cutoff. This is
+    // what lets an IN_PROGRESS scan with an old createdAt but a recent startedAt
+    // survive — the regression the LOG-6 fix is about.
+    expect(branch.OR[0]).toEqual({ startedAt: { lt: expectedCutoff } });
+    vi.useRealTimers();
+  });
+
+  it("falls back to createdAt for IN_PROGRESS rows whose startedAt is null", () => {
+    vi.setSystemTime(1_700_000_000_000);
+    const where = buildStaleScanWhere(THRESHOLDS);
+    const branch = inProgressBranch(where);
+    const expectedCutoff = new Date(1_700_000_000_000 - 30 * 60 * 1000);
+
+    expect(branch.OR[1]).toEqual({ startedAt: null, createdAt: { lt: expectedCutoff } });
+    vi.useRealTimers();
+  });
+
+  it("uses a longer cutoff for IN_PROGRESS than for PENDING", () => {
+    vi.setSystemTime(1_700_000_000_000);
+    const where = buildStaleScanWhere(THRESHOLDS);
+    const pendingCutoff = pendingBranch(where).createdAt.lt.getTime();
+    const inProgressCutoff = inProgressBranch(where).OR[0].startedAt.lt.getTime();
+    // A longer threshold means the cutoff is further in the past (smaller epoch).
+    expect(inProgressCutoff).toBeLessThan(pendingCutoff);
+    vi.useRealTimers();
+  });
+
+  it("never matches COMPLETED, PARTIAL, or FAILED scans (no such branch)", () => {
+    const where = buildStaleScanWhere(THRESHOLDS);
+    const statuses = (where.OR as Array<{ status: ScanStatus }>).map((b) => b.status);
+    expect(statuses).not.toContain(ScanStatus.COMPLETED);
+    expect(statuses).not.toContain(ScanStatus.PARTIAL);
+    expect(statuses).not.toContain(ScanStatus.FAILED);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// expireStaleScans (LOG-6, #2-A) — now takes per-status thresholds
 // ---------------------------------------------------------------------------
 
 describe("expireStaleScans", () => {
@@ -636,73 +738,35 @@ describe("expireStaleScans", () => {
     vi.clearAllMocks();
   });
 
-  it("marks PENDING scans older than the cutoff as FAILED and returns the count", async () => {
+  it("issues an updateMany using exactly the buildStaleScanWhere predicate", async () => {
+    vi.setSystemTime(1_700_000_000_000);
     mockDb.scan.updateMany.mockResolvedValue({ count: 2 });
 
-    const result = await expireStaleScans();
+    const result = await expireStaleScans(DEFAULT_STALE_SCAN_THRESHOLDS);
 
     expect(mockDb.scan.updateMany).toHaveBeenCalledOnce();
     const callArg = mockDb.scan.updateMany.mock.calls[0][0];
-    expect(callArg.where.status.in).toContain(ScanStatus.PENDING);
-    expect(callArg.data.status).toBe(ScanStatus.FAILED);
-    expect(callArg.data).toHaveProperty("completedAt");
+    // The UPDATE predicate must equal the count predicate (DRY: shared builder).
+    // Time is frozen so both produce identical Date cutoffs.
+    expect(callArg.where).toEqual(buildStaleScanWhere(DEFAULT_STALE_SCAN_THRESHOLDS));
     expect(result).toBe(2);
+    vi.useRealTimers();
   });
 
-  it("marks IN_PROGRESS scans older than the cutoff as FAILED", async () => {
+  it("marks matched scans FAILED and stamps completedAt", async () => {
     mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
 
-    await expireStaleScans();
+    await expireStaleScans(DEFAULT_STALE_SCAN_THRESHOLDS);
 
     const callArg = mockDb.scan.updateMany.mock.calls[0][0];
-    expect(callArg.where.status.in).toContain(ScanStatus.IN_PROGRESS);
-  });
-
-  it("uses a createdAt < cutoff filter so recent scans are not touched", async () => {
-    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
-
-    const before = new Date();
-    await expireStaleScans(30);
-    const after = new Date();
-
-    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
-    const cutoff: Date = callArg.where.createdAt.lt;
-    // cutoff should be ~30 minutes before now
-    const expectedMin = new Date(before.getTime() - 30 * 60 * 1000);
-    const expectedMax = new Date(after.getTime() - 30 * 60 * 1000);
-    expect(cutoff.getTime()).toBeGreaterThanOrEqual(expectedMin.getTime());
-    expect(cutoff.getTime()).toBeLessThanOrEqual(expectedMax.getTime());
-  });
-
-  it("respects a custom maxAgeMinutes parameter", async () => {
-    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
-
-    const before = new Date();
-    await expireStaleScans(60);
-    const after = new Date();
-
-    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
-    const cutoff: Date = callArg.where.createdAt.lt;
-    const expectedMin = new Date(before.getTime() - 60 * 60 * 1000);
-    const expectedMax = new Date(after.getTime() - 60 * 60 * 1000);
-    expect(cutoff.getTime()).toBeGreaterThanOrEqual(expectedMin.getTime());
-    expect(cutoff.getTime()).toBeLessThanOrEqual(expectedMax.getTime());
-  });
-
-  it("does not include COMPLETED or FAILED scans in the status filter", async () => {
-    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
-
-    await expireStaleScans();
-
-    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
-    expect(callArg.where.status.in).not.toContain(ScanStatus.COMPLETED);
-    expect(callArg.where.status.in).not.toContain(ScanStatus.FAILED);
+    expect(callArg.data.status).toBe(ScanStatus.FAILED);
+    expect(callArg.data).toHaveProperty("completedAt");
   });
 
   it("returns 0 when no stale scans exist", async () => {
     mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
 
-    const result = await expireStaleScans();
+    const result = await expireStaleScans(DEFAULT_STALE_SCAN_THRESHOLDS);
 
     expect(result).toBe(0);
   });
@@ -710,7 +774,115 @@ describe("expireStaleScans", () => {
   it("propagates a database error", async () => {
     mockDb.scan.updateMany.mockRejectedValue(new Error("DB connection lost"));
 
-    await expect(expireStaleScans()).rejects.toThrow("DB connection lost");
+    await expect(expireStaleScans(DEFAULT_STALE_SCAN_THRESHOLDS)).rejects.toThrow(
+      "DB connection lost",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// finalizeScan resurrection guard (LOG-6, #2-A)
+// ---------------------------------------------------------------------------
+
+describe("finalizeScan", () => {
+  const FINALIZE_ARGS = {
+    status: ScanStatus.COMPLETED as typeof ScanStatus.COMPLETED,
+    findingCount: 3,
+    skippedCategories: [],
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("finalizes an IN_PROGRESS scan via a conditional updateMany (happy path)", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await finalizeScan("scan-1", FINALIZE_ARGS);
+
+    expect(mockDb.scan.updateMany).toHaveBeenCalledOnce();
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    // Guard is in the WHERE: only an IN_PROGRESS row may be transitioned.
+    expect(callArg.where).toEqual({ id: "scan-1", status: ScanStatus.IN_PROGRESS });
+    expect(callArg.data.status).toBe(ScanStatus.COMPLETED);
+    expect(callArg.data.findingCount).toBe(3);
+    expect(callArg.data.skippedCategories).toEqual([]);
+    expect(callArg.data).toHaveProperty("completedAt");
+    expect(result).toEqual({ finalized: true });
+  });
+
+  it("persists PARTIAL status and skippedCategories on the happy path", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", {
+      status: ScanStatus.PARTIAL,
+      findingCount: 5,
+      skippedCategories: ["GHOST_TAG", "GHOST_PRICE"],
+    });
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    expect(callArg.data.status).toBe(ScanStatus.PARTIAL);
+    expect(callArg.data.skippedCategories).toEqual(["GHOST_TAG", "GHOST_PRICE"]);
+  });
+
+  it("does NOT revive a scan the watchdog already marked FAILED", async () => {
+    // updateMany matches zero rows because the scan is no longer IN_PROGRESS.
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.scan.findUnique.mockResolvedValue({ status: ScanStatus.FAILED });
+
+    const result = await finalizeScan("scan-1", FINALIZE_ARGS);
+
+    // Returns finalized:false (no throw → no Inngest retry storm) and never
+    // issues a second, unconditional write that could resurrect the scan.
+    expect(result).toEqual({ finalized: false });
+    expect(mockDb.scan.update).not.toHaveBeenCalled();
+  });
+
+  it("logs a warning with the scan id and current status when the guard blocks the write", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.scan.findUnique.mockResolvedValue({ status: ScanStatus.FAILED });
+
+    await finalizeScan("scan-1", FINALIZE_ARGS);
+
+    expect(mockLoggerWarn).toHaveBeenCalledOnce();
+    const [message, context] = mockLoggerWarn.mock.calls[0];
+    expect(message).toContain("finalizeScan skipped");
+    expect(context).toMatchObject({
+      scanId: "scan-1",
+      attemptedStatus: ScanStatus.COMPLETED,
+      currentStatus: ScanStatus.FAILED,
+    });
+  });
+
+  it("logs currentStatus MISSING when the scan row has vanished", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.scan.findUnique.mockResolvedValue(null);
+
+    const result = await finalizeScan("scan-1", FINALIZE_ARGS);
+
+    expect(result).toEqual({ finalized: false });
+    expect(mockLoggerWarn.mock.calls[0][1]).toMatchObject({ currentStatus: "MISSING" });
+  });
+
+  it("is race-safe: only one of two concurrent finalize attempts wins", async () => {
+    // Simulate the DB awarding the IN_PROGRESS row to the first writer only.
+    mockDb.scan.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+    mockDb.scan.findUnique.mockResolvedValue({ status: ScanStatus.COMPLETED });
+
+    const [first, second] = await Promise.all([
+      finalizeScan("scan-1", FINALIZE_ARGS),
+      finalizeScan("scan-1", FINALIZE_ARGS),
+    ]);
+
+    const finalizedFlags = [first.finalized, second.finalized];
+    expect(finalizedFlags.filter(Boolean)).toHaveLength(1);
+    expect(finalizedFlags.filter((f) => f === false)).toHaveLength(1);
+  });
+
+  it("propagates a database error from the conditional write", async () => {
+    mockDb.scan.updateMany.mockRejectedValue(new Error("DB write failed"));
+
+    await expect(finalizeScan("scan-1", FINALIZE_ARGS)).rejects.toThrow("DB write failed");
   });
 });
 
