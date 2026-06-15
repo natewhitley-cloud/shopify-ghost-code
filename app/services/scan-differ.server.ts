@@ -18,6 +18,13 @@ export interface DiffableFinding {
   filename: string;
   findingType: string;
   codeSnippet: string;
+  /**
+   * 1-based line number of the matched line within the source file, or 0 for
+   * synthetic findings (bulk redirects, pages, metafields) whose snippet is not
+   * drawn from a file. Used by the fingerprint to locate the matched line inside
+   * the stored multi-line `codeSnippet` (LOG-10). Not displayed by the differ.
+   */
+  lineNumber: number;
   severity: string;
   appName: string | null;
   description: string;
@@ -46,19 +53,80 @@ export interface ScanDiff {
 // ---------------------------------------------------------------------------
 
 /**
+ * Matches the volatile leading count in a bulk-redirect snippet's first line,
+ * e.g. "84 redirects under /collections:" → capture group "redirects under
+ * /collections:". The count and the sample paths that follow change every time
+ * a single redirect is added under the same prefix, but the prefix-based
+ * identity ("redirects under <prefix>") is stable. Scoped narrowly to the
+ * bulk-redirect shape so it never strips a leading number from an unrelated
+ * matched line (which would risk collapsing genuinely distinct findings).
+ *
+ * See redirect-detector.server.ts (Strategy 2 / bulk pattern).
+ */
+const BULK_REDIRECT_COUNT_RE = /^\d+\s+(redirects?\s+under\s+.+)$/i;
+
+/**
+ * Reduce a stored display snippet to the stable identity of the matched line,
+ * so the fingerprint survives edits that don't touch the finding itself (LOG-10).
+ *
+ * Two instabilities motivated this:
+ *   1. buildSnippet (scan-engine.server.ts) stores the matched line PLUS one
+ *      line of context before and after. Editing an unrelated adjacent line
+ *      changed the stored snippet, flipping an untouched finding to
+ *      resolved + new on the next diff.
+ *   2. The bulk-redirect detector embeds a volatile count and sample paths in
+ *      the snippet ("<N> redirects under <prefix>:\n  <samples>"). Adding one
+ *      redirect under the same prefix changed the count and samples, flipping
+ *      the same persistent pattern to resolved + new.
+ *
+ * Normalization:
+ *   - Extract ONLY the matched line. Within a buildSnippet snippet the matched
+ *     line sits at index 1 when there is a leading context line (lineNumber >= 2)
+ *     and at index 0 otherwise (lineNumber 0 or 1). This drops the adjacent
+ *     context lines (instability #1) and, for the multi-line synthetic snippets
+ *     (bulk redirect, page, metafield — all lineNumber 0), drops the trailing
+ *     sample/body lines (instability #2). Falls back to the first line if that
+ *     index is absent (e.g. a snippet truncated to a single line by the 300-char
+ *     cap).
+ *   - Collapse internal whitespace runs and trim, so a pure reindentation of the
+ *     matched line does not churn.
+ *   - Strip the leading volatile count from the bulk-redirect shape, leaving the
+ *     stable prefix-based identity.
+ *
+ * Distinct findings stay distinct: different matched lines (URLs, snippet names,
+ * meta properties, namespace.key pairs) and different redirect prefixes all
+ * normalize to different strings.
+ */
+export function normalizeForFingerprint(codeSnippet: string, lineNumber: number): string {
+  const snippetLines = codeSnippet.split("\n");
+  const matchedIndex = lineNumber >= 2 ? 1 : 0;
+  const matchedLine = snippetLines[matchedIndex] ?? snippetLines[0] ?? "";
+
+  const collapsed = matchedLine.replace(/\s+/g, " ").trim();
+
+  const bulkRedirect = BULK_REDIRECT_COUNT_RE.exec(collapsed);
+  return bulkRedirect ? bulkRedirect[1] : collapsed;
+}
+
+/**
  * Produce a stable numeric fingerprint for a finding.
  *
  * Uses a djb2 hash over the concatenation of the three fields that together
- * uniquely locate a finding: filename, findingType, and the code snippet.
- * The result is converted to an unsigned 32-bit hex string for readability
- * and to avoid negative-number edge cases.
+ * uniquely identify a finding: filename, findingType, and a NORMALIZED matched
+ * line derived from the stored snippet and its line number (see
+ * normalizeForFingerprint). The full display `codeSnippet` is intentionally NOT
+ * hashed — it carries adjacent context and volatile counts that change without
+ * the finding changing (LOG-10). The result is converted to an unsigned 32-bit
+ * hex string for readability and to avoid negative-number edge cases.
  */
 export function fingerprintFinding(
   filename: string,
   findingType: string,
   codeSnippet: string,
+  lineNumber: number,
 ): string {
-  const raw = `${filename}\0${findingType}\0${codeSnippet}`;
+  const matched = normalizeForFingerprint(codeSnippet, lineNumber);
+  const raw = `${filename}\0${findingType}\0${matched}`;
   let hash = 5381;
   for (let i = 0; i < raw.length; i++) {
     // djb2: hash = ((hash << 5) + hash) + charCode
@@ -110,7 +178,7 @@ export function diffScans(
   // we can handle duplicates correctly.
   const previousCounts = new Map<string, number>();
   for (const f of effectivePrevious) {
-    const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet);
+    const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
     previousCounts.set(fp, (previousCounts.get(fp) ?? 0) + 1);
   }
 
@@ -121,7 +189,7 @@ export function diffScans(
   const remainingPrevious = new Map<string, number>(previousCounts);
 
   for (const f of currentFindings) {
-    const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet);
+    const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
     const prevCount = remainingPrevious.get(fp) ?? 0;
 
     if (prevCount > 0) {
@@ -145,7 +213,7 @@ export function diffScans(
   // Any previous findings that were not consumed are resolved.
   const resolvedFindings: ScanDiff["resolvedFindings"] = [];
   for (const f of effectivePrevious) {
-    const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet);
+    const fp = fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
     const remaining = remainingPrevious.get(fp) ?? 0;
     if (remaining > 0) {
       resolvedFindings.push({
