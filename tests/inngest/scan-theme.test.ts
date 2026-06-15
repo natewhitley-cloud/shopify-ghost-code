@@ -76,7 +76,7 @@ vi.mock("../../app/services/translation-fetcher.server", () => ({
 }));
 
 vi.mock("../../app/services/translation-detector.server", () => ({
-  detectOrphanedTranslations: vi.fn(),
+  detectTranslationContent: vi.fn(),
 }));
 
 vi.mock("../../app/services/product-fetcher.server", () => ({
@@ -140,7 +140,7 @@ import { detectOrphanedRedirects } from "../../app/services/redirect-detector.se
 import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
 import { scanThemeFiles } from "../../app/services/scan-engine.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
-import { detectOrphanedTranslations } from "../../app/services/translation-detector.server";
+import { detectTranslationContent } from "../../app/services/translation-detector.server";
 import {
   hasTranslationScope,
   auditTranslations,
@@ -182,7 +182,7 @@ const mockFetchPages = fetchPages as ReturnType<typeof vi.fn>;
 const mockFetchRedirects = fetchRedirects as ReturnType<typeof vi.fn>;
 
 // Audit detectors
-const mockDetectOrphanedTranslations = detectOrphanedTranslations as ReturnType<typeof vi.fn>;
+const mockDetectTranslationContent = detectTranslationContent as ReturnType<typeof vi.fn>;
 const mockDetectOrphanedProductTags = detectOrphanedProductTags as ReturnType<typeof vi.fn>;
 const mockDetectPersistentDiscounts = detectPersistentDiscounts as ReturnType<typeof vi.fn>;
 const mockDetectOrphanedPages = detectOrphanedPages as ReturnType<typeof vi.fn>;
@@ -301,7 +301,7 @@ beforeEach(() => {
     totalTranslations: 0,
     totalOutdated: 0,
   });
-  mockDetectOrphanedTranslations.mockReturnValue([]);
+  mockDetectTranslationContent.mockReturnValue([]);
 
   mockFetchProductTags.mockResolvedValue([]);
   mockFetchProductPrices.mockResolvedValue([]);

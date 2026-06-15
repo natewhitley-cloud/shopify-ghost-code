@@ -195,7 +195,8 @@ export const scanTheme = inngest.createFunction(
 
       // Step 3: Translation audit (optional — requires read_translations scope)
       // Slightly different from generic audit steps because it has extra logic
-      // (empty-translations check, installed-app list pass-through).
+      // (empty-translations check). When scope is genuinely missing it reports
+      // skipped:true so the scan finalizes PARTIAL.
       const translationResult: AuditStepResult = await step.run("translation-audit", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -232,14 +233,14 @@ export const scanTheme = inngest.createFunction(
           return { findingCount: 0, skipped: false };
         }
 
-        // No installed-app data available (Permission Audit removed — appInstallations
-        // query is restricted to Shopify-internal apps). Pass empty array so translation
-        // detector treats all translations as potentially orphaned.
-        const installedAppNames: string[] = [];
-
-        const { detectOrphanedTranslations } =
+        // There is no reliable signal that translation content is genuinely
+        // orphaned (no provenance on the Translation object, app-installation
+        // data is restricted), so the detector surfaces it informationally for
+        // the merchant to review rather than pretending to filter by installed
+        // apps.
+        const { detectTranslationContent } =
           await import("../../app/services/translation-detector.server");
-        const translationFindings = detectOrphanedTranslations(audit, installedAppNames);
+        const translationFindings = detectTranslationContent(audit);
 
         if (translationFindings.length > 0) {
           await db.finding.deleteMany({

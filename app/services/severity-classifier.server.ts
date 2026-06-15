@@ -25,7 +25,12 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.DUPLICATE_META]: Severity.MEDIUM,
   [FindingType.GHOST_JSON_LD]: Severity.MEDIUM,
   [FindingType.GHOST_TEXT]: Severity.LOW,
-  [FindingType.GHOST_TRANSLATION]: Severity.MEDIUM,
+  // GHOST_TRANSLATION is informational only: there is no reliable signal that
+  // translation content is genuinely orphaned (translations use Shopify-standard
+  // keys, carry no provenance, and translation apps leave no theme artifacts).
+  // It surfaces content for the merchant to review, so it is always LOW and is
+  // never escalated by any nuance rule below.
+  [FindingType.GHOST_TRANSLATION]: Severity.LOW,
   [FindingType.SETTINGS_DRIFT]: Severity.LOW,
   [FindingType.GHOST_PIXEL]: Severity.HIGH,
   [FindingType.JSON_LD_CONFLICT]: Severity.HIGH,

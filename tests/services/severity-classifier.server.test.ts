@@ -63,8 +63,16 @@ describe("classifySeverity", () => {
     ).toBe(Severity.MEDIUM);
   });
 
-  it("returns MEDIUM for GHOST_TRANSLATION by default", () => {
-    expect(classifySeverity(FindingType.GHOST_TRANSLATION, 'title: "Titre"')).toBe(Severity.MEDIUM);
+  it("returns LOW for GHOST_TRANSLATION (informational — no reliable orphan signal)", () => {
+    expect(classifySeverity(FindingType.GHOST_TRANSLATION, 'title: "Titre"')).toBe(Severity.LOW);
+  });
+
+  it("never escalates GHOST_TRANSLATION above LOW regardless of description", () => {
+    // The only escalation rules are gated on GHOST_TITLE / GHOST_OG, so even a
+    // description echoing those triggers must not raise a translation finding.
+    expect(
+      classifySeverity(FindingType.GHOST_TRANSLATION, 'og:image: "x"', "og:image page_title"),
+    ).toBe(Severity.LOW);
   });
 
   // -------------------------------------------------------------------------
