@@ -1,5 +1,15 @@
 # Retrospective History
 
+## Retro: 2026-06-15 (session 7 — deploy unblock + Cluster 2 & 1 review remediation)
+
+- Tasks completed: merged PR #1 (prior session's top-10 work); fixed deploy blocker (PR #2, dead better-sqlite3 native build); Cluster 2 scan-integrity (PRs #3-#6: LOG-5/7/8/6/10); Cluster 1 detector false-positives via /sprint (PR #7: LOG-11/12). 7 PRs merged this session. Suite 1367 → 1442.
+- Dispatch: serial Agent dispatches for Cluster 2 (one finding/PR, orchestrator reviewed each diff + CI before merge); /sprint team loop for Cluster 1 (implementer → reviewer → implementer fix).
+- Commits on main: 10 fix, 2 chore, 1 refactor. Genuine rework: 1 (Cluster 1 BLOCKING-1), caught by the team reviewer BEFORE merge — never reached main.
+- Key insight: the /sprint adversarial reviewer caught a self-inflicted false-positive regression (per-line→full-content regex conversion made `\s*` match `\n`, double-counting multi-line `{% render %}` tags). Live-executing the regexes found it. This is the exact failure the cluster targets — the review loop paid for itself.
+- Key insight: subagent telemetry can under-report (a fix dispatch showed "1 tool use" for real multi-file work). ALWAYS verify branch state with git grep before trusting an agent's completion report.
+- Honest gap found in retro: LOG-11 only converted 5 of 8 named detectors; Sections/Canonical/Ajax still per-line → filed GC follow-up bead.
+- Deploy still pending owner: retry Railway build; 2 migrations auto-apply; remove TOKEN_ENCRYPTION_KEY.
+
 ## Retro: 2026-04-01 (session 31 — Lint fixes + pre-push hook)
 
 - Tasks completed: 0 beads (quick-fix session)
