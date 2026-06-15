@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, redirect, useFetcher, useLoaderData } from "react-router";
 
-import { inngest } from "../../inngest/client";
 import {
   HealthScoreTrendChart,
   HealthScoreTrendEmptyState,
@@ -17,12 +16,12 @@ import { PLANS } from "../lib/plans";
 import { getFindingSummary } from "../models/finding.server";
 import {
   getScansForShop,
-  createScan,
   hasCompletedScans,
   getCompletedScansForShop,
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
 import { dismissReviewPrompt, getShopMetadata } from "../models/shop.server";
+import { dispatchScan } from "../services/scan-dispatch.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
@@ -308,32 +307,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     }
   }
 
-  // createScan is atomic: it checks for an active scan and quota in one
-  // transaction. Catch errors so they surface cleanly rather than as
-  // unhandled 500s.
-  let scan: Awaited<ReturnType<typeof createScan>>;
+  // dispatchScan atomically creates the scan (TOCTOU-safe transaction) then
+  // fires scan/requested. createScan errors (active scan, quota exceeded) are
+  // propagated and surface as user-facing error strings below. inngest.send
+  // failures are logged inside dispatchScan (best-effort) — the scan stays
+  // PENDING for the watchdog to expire, but we still redirect so the merchant
+  // can see the queued scan in their history.
+  let scan: { id: string };
   try {
-    scan = await createScan(shop.id, themeId, themeName, quota);
+    ({ scan } = await dispatchScan(shop.id, themeId, themeName, { quota }));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create scan.";
     return { error: message };
-  }
-
-  // Dispatch to Inngest for background processing. Best-effort — if Inngest
-  // is not configured (no EVENT_KEY), the scan record still exists and the
-  // merchant can see it in the scan history.
-  try {
-    await inngest.send({
-      name: "scan/requested",
-      data: { shopId: shop.id, themeId, scanId: scan.id },
-    });
-  } catch (inngestErr) {
-    // Inngest not configured or dispatch failed — scan stays in PENDING state.
-    console.error("Inngest dispatch failed", {
-      scanId: scan.id,
-      shopId: shop.id,
-      error: inngestErr instanceof Error ? inngestErr.message : String(inngestErr),
-    });
   }
 
   return redirect(`/app/scans/${scan.id}`);

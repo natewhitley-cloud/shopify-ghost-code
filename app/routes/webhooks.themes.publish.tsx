@@ -1,10 +1,9 @@
 import type { ActionFunctionArgs } from "react-router";
 
-import { inngest } from "../../inngest/client";
 import { logger } from "../lib/logger.server";
 import { canUseAutoRescan } from "../lib/plan-gating.server";
-import { createScan } from "../models/scan.server";
 import { getShopMetadata, updateThemePublishTimestamp } from "../models/shop.server";
+import { dispatchScan } from "../services/scan-dispatch.server";
 import { fetchMainTheme } from "../services/theme-fetcher.server";
 import { authenticate, unauthenticated } from "../shopify.server";
 
@@ -59,18 +58,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const themeName = mainTheme.name;
 
   try {
-    const scan = await createScan(shopRecord.id, themeId, themeName);
-
-    await inngest.send({
-      name: "scan/requested",
-      data: {
-        shopId: shopRecord.id,
-        themeId,
-        scanId: scan.id,
-      },
-    });
+    // dispatchScan creates the scan record and fires scan/requested. A createScan
+    // failure (active scan, quota exceeded) is propagated here; inngest.send
+    // failures are logged inside dispatchScan (best-effort) and do NOT reach
+    // this catch, preventing Shopify retry storms caused by transient send errors.
+    await dispatchScan(shopRecord.id, themeId, themeName);
   } catch (err) {
-    // createScan throws if a scan is already in progress (TOCTOU guard).
+    // createScan threw — scan already in progress or quota exceeded.
     // Log and return 200 to prevent Shopify retry storms.
     logger.warn("Auto-rescan skipped — scan already in progress or creation failed", {
       shop,

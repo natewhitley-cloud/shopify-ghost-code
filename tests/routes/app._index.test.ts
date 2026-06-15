@@ -32,9 +32,12 @@ vi.mock("../../app/models/shop.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   getScansForShop: vi.fn(),
-  createScan: vi.fn(),
   hasCompletedScans: vi.fn(),
   getCompletedScansForShop: vi.fn(),
+}));
+
+vi.mock("../../app/services/scan-dispatch.server", () => ({
+  dispatchScan: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
@@ -60,6 +63,9 @@ vi.mock("../../app/services/theme-fetcher.server", () => ({
   fetchAllThemes: vi.fn(),
 }));
 
+// inngest/client is no longer imported directly by the route — dispatch
+// goes through dispatchScan (scan-dispatch.server), which is mocked above.
+// The inngest mock below keeps any transitive imports from erroring.
 vi.mock("../../inngest/client", () => ({
   inngest: {
     send: vi.fn(),
@@ -87,15 +93,14 @@ import { canStartScan, getScanUsage, getWeekStartUTC } from "../../app/lib/plan-
 import { getFindingSummary } from "../../app/models/finding.server";
 import {
   getScansForShop,
-  createScan,
   hasCompletedScans,
   getCompletedScansForShop,
 } from "../../app/models/scan.server";
 import { getShopMetadata, dismissReviewPrompt } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
+import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
 import { authenticate } from "../../app/shopify.server";
-import { inngest } from "../../inngest/client";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -104,7 +109,7 @@ import { inngest } from "../../inngest/client";
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
-const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
+const mockDispatchScan = dispatchScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
@@ -113,7 +118,6 @@ const mockGetScanUsage = getScanUsage as ReturnType<typeof vi.fn>;
 const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockFetchAllThemes = fetchAllThemes as ReturnType<typeof vi.fn>;
-const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
 const mockGetWeekStartUTC = getWeekStartUTC as ReturnType<typeof vi.fn>;
 const mockGetCompletedScansForShop = getCompletedScansForShop as ReturnType<typeof vi.fn>;
 const mockDismissReviewPrompt = dismissReviewPrompt as ReturnType<typeof vi.fn>;
@@ -482,34 +486,25 @@ describe("app._index loader — review prompt", () => {
 describe("app._index action", () => {
   beforeEach(() => {
     mockCanStartScan.mockResolvedValue({ allowed: true });
-    mockCreateScan.mockResolvedValue({ id: "scan-new", shopId: "shop-1" });
-    mockInngestSend.mockResolvedValue(undefined);
+    mockDispatchScan.mockResolvedValue({ scan: { id: "scan-new", shopId: "shop-1" } });
     mockHasCompletedScans.mockResolvedValue(false);
   });
 
   describe("successful scan creation", () => {
-    it("creates scan and dispatches to Inngest, then redirects", async () => {
+    it("calls dispatchScan and redirects to the new scan page", async () => {
       const result = await action(makeActionArgs());
 
-      // action returns redirect() which throws a Response
+      // action returns redirect() which is a Response with 302
       expect(result).toBeInstanceOf(Response);
       expect((result as Response).status).toBe(302);
       expect((result as Response).headers.get("Location")).toBe("/app/scans/scan-new");
 
-      expect(mockCreateScan).toHaveBeenCalledWith(
+      expect(mockDispatchScan).toHaveBeenCalledWith(
         "shop-1",
         "gid://shopify/Theme/123456",
         "Dawn",
-        expect.anything(),
+        expect.objectContaining({ quota: expect.anything() }),
       );
-      expect(mockInngestSend).toHaveBeenCalledWith({
-        name: "scan/requested",
-        data: {
-          shopId: "shop-1",
-          themeId: "gid://shopify/Theme/123456",
-          scanId: "scan-new",
-        },
-      });
     });
   });
 
@@ -523,8 +518,7 @@ describe("app._index action", () => {
       const result = (await action(makeActionArgs())) as { error: string };
 
       expect(result.error).toBe("Weekly scan limit reached.");
-      expect(mockCreateScan).not.toHaveBeenCalled();
-      expect(mockInngestSend).not.toHaveBeenCalled();
+      expect(mockDispatchScan).not.toHaveBeenCalled();
     });
 
     it("returns error when shop not found", async () => {
@@ -533,7 +527,7 @@ describe("app._index action", () => {
       const result = (await action(makeActionArgs())) as { error: string };
 
       expect(result.error).toBe("Shop not found. Please reinstall the app.");
-      expect(mockCreateScan).not.toHaveBeenCalled();
+      expect(mockDispatchScan).not.toHaveBeenCalled();
     });
 
     it("returns error when no published theme found", async () => {
@@ -544,34 +538,34 @@ describe("app._index action", () => {
       expect(result.error).toBe(
         "No published theme found. Please publish a theme before scanning.",
       );
-      expect(mockCreateScan).not.toHaveBeenCalled();
+      expect(mockDispatchScan).not.toHaveBeenCalled();
     });
   });
 
-  describe("Inngest dispatch failure", () => {
-    it("still redirects to scan when Inngest dispatch fails", async () => {
-      mockInngestSend.mockRejectedValue(new Error("Inngest unreachable"));
+  describe("Inngest dispatch failure swallowed by dispatchScan", () => {
+    it("redirects to scan page even when inngest.send fails (dispatchScan swallows send errors)", async () => {
+      // dispatchScan swallows inngest.send failures internally — it always resolves
+      // with { scan } unless createScan itself throws. The send-failure path is
+      // tested in detail in tests/services/scan-dispatch.server.test.ts.
+      // From the route's perspective, dispatchScan always resolves on send failure.
+      mockDispatchScan.mockResolvedValue({ scan: { id: "scan-new", shopId: "shop-1" } });
 
       const result = await action(makeActionArgs());
 
-      // Scan was created — redirect should still happen
       expect(result).toBeInstanceOf(Response);
       expect((result as Response).status).toBe(302);
       expect((result as Response).headers.get("Location")).toBe("/app/scans/scan-new");
-
-      // Scan was created even though dispatch failed
-      expect(mockCreateScan).toHaveBeenCalled();
+      expect(mockDispatchScan).toHaveBeenCalled();
     });
   });
 
-  describe("createScan failure", () => {
-    it("returns error when createScan throws (e.g., active scan exists)", async () => {
-      mockCreateScan.mockRejectedValue(new Error("A scan is already in progress for this shop."));
+  describe("dispatchScan failure (createScan throws)", () => {
+    it("returns error when dispatchScan throws (e.g., active scan exists)", async () => {
+      mockDispatchScan.mockRejectedValue(new Error("A scan is already in progress for this shop."));
 
       const result = (await action(makeActionArgs())) as { error: string };
 
       expect(result.error).toBe("A scan is already in progress for this shop.");
-      expect(mockInngestSend).not.toHaveBeenCalled();
     });
   });
 
@@ -601,10 +595,10 @@ describe("app._index action", () => {
       await action(makeActionArgs({ request }));
 
       expect(mockCanStartScan).not.toHaveBeenCalled();
-      expect(mockCreateScan).not.toHaveBeenCalled();
+      expect(mockDispatchScan).not.toHaveBeenCalled();
     });
 
-    it("does not dispatch to Inngest for dismiss intent", async () => {
+    it("does not call dispatchScan for dismiss intent", async () => {
       const request = new Request("https://test-shop.myshopify.com/app", {
         method: "POST",
         body: new URLSearchParams({ intent: "dismiss-review-prompt" }),
@@ -612,7 +606,7 @@ describe("app._index action", () => {
 
       await action(makeActionArgs({ request }));
 
-      expect(mockInngestSend).not.toHaveBeenCalled();
+      expect(mockDispatchScan).not.toHaveBeenCalled();
     });
   });
 });
@@ -771,8 +765,7 @@ describe("app._index loader — theme picker", () => {
 describe("app._index action — theme picker", () => {
   beforeEach(() => {
     mockCanStartScan.mockResolvedValue({ allowed: true });
-    mockCreateScan.mockResolvedValue({ id: "scan-new", shopId: "shop-1" });
-    mockInngestSend.mockResolvedValue(undefined);
+    mockDispatchScan.mockResolvedValue({ scan: { id: "scan-new", shopId: "shop-1" } });
     mockHasCompletedScans.mockResolvedValue(false);
   });
 
@@ -786,11 +779,11 @@ describe("app._index action — theme picker", () => {
       expect((result as Response).status).toBe(302);
       expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
       expect(mockFetchAllThemes).not.toHaveBeenCalled();
-      expect(mockCreateScan).toHaveBeenCalledWith(
+      expect(mockDispatchScan).toHaveBeenCalledWith(
         "shop-1",
         "gid://shopify/Theme/123456",
         "Dawn",
-        expect.anything(),
+        expect.objectContaining({ quota: expect.anything() }),
       );
     });
 
@@ -827,17 +820,9 @@ describe("app._index action — theme picker", () => {
       expect(mockFetchAllThemes).toHaveBeenCalledTimes(1);
       expect(mockFetchMainTheme).not.toHaveBeenCalled();
       // Professional plan has no scan quota (Infinity limits), so quota is null
-      expect(mockCreateScan).toHaveBeenCalledWith(
-        "shop-1",
-        "gid://shopify/Theme/789",
-        "Craft",
-        null,
-      );
-      expect(mockInngestSend).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({ themeId: "gid://shopify/Theme/789" }),
-        }),
-      );
+      expect(mockDispatchScan).toHaveBeenCalledWith("shop-1", "gid://shopify/Theme/789", "Craft", {
+        quota: null,
+      });
     });
   });
 
@@ -865,8 +850,7 @@ describe("app._index action — theme picker", () => {
       expect(result.error).toBe(
         "The selected theme could not be found. Please refresh and try again.",
       );
-      expect(mockCreateScan).not.toHaveBeenCalled();
-      expect(mockInngestSend).not.toHaveBeenCalled();
+      expect(mockDispatchScan).not.toHaveBeenCalled();
     });
   });
 
@@ -886,11 +870,11 @@ describe("app._index action — theme picker", () => {
       expect(mockFetchAllThemes).not.toHaveBeenCalled();
       // Should fall back to MAIN theme
       expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
-      expect(mockCreateScan).toHaveBeenCalledWith(
+      expect(mockDispatchScan).toHaveBeenCalledWith(
         "shop-1",
         "gid://shopify/Theme/123456",
         "Dawn",
-        expect.anything(),
+        expect.objectContaining({ quota: expect.anything() }),
       );
     });
   });
@@ -911,11 +895,11 @@ describe("app._index action — theme picker", () => {
       expect((result as Response).status).toBe(302);
       expect(mockFetchAllThemes).not.toHaveBeenCalled();
       expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
-      expect(mockCreateScan).toHaveBeenCalledWith(
+      expect(mockDispatchScan).toHaveBeenCalledWith(
         "shop-1",
         "gid://shopify/Theme/123456",
         "Dawn",
-        expect.anything(),
+        expect.objectContaining({ quota: expect.anything() }),
       );
     });
   });
