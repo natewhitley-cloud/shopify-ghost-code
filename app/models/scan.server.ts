@@ -227,6 +227,35 @@ export async function getPreviousScanForTheme(shopId: string, themeId: string, b
 }
 
 /**
+ * Return the most recent SUCCESSFUL (COMPLETED or PARTIAL) scan for a given
+ * shop + theme, or null when none exists.
+ *
+ * Used by the poll-check-shop worker's staleness check (LOG-7). It must ignore
+ * FAILED and PENDING/IN_PROGRESS scans: a FAILED scan's createdAt is always
+ * after the theme update that triggered it, so including it would make the
+ * staleness comparison conclude "up to date" forever and a shop whose last
+ * scheduled scan failed would never be auto-re-scanned. Filtering to successful
+ * statuses (mirroring getPreviousScanForTheme) means a FAILED latest scan is
+ * treated the same as "no scan yet" — a re-scan is needed.
+ *
+ * Only `createdAt` is selected since that is all the staleness comparison needs.
+ */
+export async function getLatestSuccessfulScanForTheme(
+  shopId: string,
+  themeId: string,
+): Promise<{ createdAt: Date } | null> {
+  return db.scan.findFirst({
+    where: {
+      shopId,
+      themeId,
+      status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+    },
+    orderBy: { createdAt: "desc" },
+    select: { createdAt: true },
+  });
+}
+
+/**
  * Count scans created at or after `since` for a given shop.
  * Used by plan-gating to enforce per-month scan limits on the free tier.
  *

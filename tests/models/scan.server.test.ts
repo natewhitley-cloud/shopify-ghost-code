@@ -55,6 +55,7 @@ import {
   getScansForShop,
   updateScanStatus,
   getPreviousScanForTheme,
+  getLatestSuccessfulScanForTheme,
   countScansForShopSince,
   hasCompletedScans,
   getCompletedScansForShop,
@@ -467,6 +468,64 @@ describe("getPreviousScanForTheme", () => {
 
     const callArg = mockDb.scan.findFirst.mock.calls[0][0];
     expect(callArg.include).toEqual({ findings: true });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLatestSuccessfulScanForTheme (LOG-7)
+// ---------------------------------------------------------------------------
+
+describe("getLatestSuccessfulScanForTheme", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the createdAt of the most recent successful scan for the theme", async () => {
+    const createdAt = new Date("2026-03-10T08:00:00Z");
+    mockDb.scan.findFirst.mockResolvedValue({ createdAt });
+
+    const result = await getLatestSuccessfulScanForTheme(SHOP_ID, THEME_ID);
+
+    expect(mockDb.scan.findFirst).toHaveBeenCalledWith({
+      where: {
+        shopId: SHOP_ID,
+        themeId: THEME_ID,
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL] },
+      },
+      orderBy: { createdAt: "desc" },
+      select: { createdAt: true },
+    });
+    expect(result).toEqual({ createdAt });
+  });
+
+  it("returns null when no successful scan exists (e.g. only a FAILED scan)", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+
+    const result = await getLatestSuccessfulScanForTheme(SHOP_ID, THEME_ID);
+
+    expect(result).toBeNull();
+  });
+
+  it("filters to COMPLETED + PARTIAL only, excluding PENDING/IN_PROGRESS/FAILED", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+
+    await getLatestSuccessfulScanForTheme(SHOP_ID, THEME_ID);
+
+    const callArg = mockDb.scan.findFirst.mock.calls[0][0];
+    expect(callArg.where.status.in).toContain(ScanStatus.COMPLETED);
+    expect(callArg.where.status.in).toContain(ScanStatus.PARTIAL);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.PENDING);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.IN_PROGRESS);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.FAILED);
+  });
+
+  it("orders newest-first so the latest successful scan is returned", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+
+    await getLatestSuccessfulScanForTheme(SHOP_ID, THEME_ID);
+
+    const callArg = mockDb.scan.findFirst.mock.calls[0][0];
+    expect(callArg.orderBy).toEqual({ createdAt: "desc" });
   });
 });
 

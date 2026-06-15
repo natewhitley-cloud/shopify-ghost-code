@@ -5,9 +5,11 @@
  * poll-theme-changes coordinator). It handles per-shop theme-change detection:
  *   1. Fetch the shop's main theme from Shopify (updatedAt).
  *   2. Check for an active (PENDING or IN_PROGRESS) scan → skip if found.
- *   3. Compare theme updatedAt against the latest scan's createdAt.
- *   4. If stale (or no prior scan), create a scan record + dispatch
- *      `scan/requested` to trigger the scan pipeline.
+ *   3. Compare theme updatedAt against the latest SUCCESSFUL scan's createdAt
+ *      (FAILED scans ignored — LOG-7).
+ *   4. If stale (or no prior successful scan), create a scan record in a
+ *      `create-scan` step, then dispatch `scan/requested` via step.sendEvent in
+ *      a separate step so each is idempotent on retry (LOG-8).
  *
  * Strategy:
  *   - Mock all I/O boundaries (db.server, shopify.server, theme-fetcher.server,
@@ -43,6 +45,7 @@ vi.mock("../../app/services/theme-fetcher.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   createScan: vi.fn(),
+  getLatestSuccessfulScanForTheme: vi.fn(),
 }));
 
 vi.mock("../../inngest/client", () => ({
@@ -64,7 +67,7 @@ vi.mock("../../inngest/client", () => ({
 // ---------------------------------------------------------------------------
 
 import db from "../../app/db.server";
-import { createScan } from "../../app/models/scan.server";
+import { createScan, getLatestSuccessfulScanForTheme } from "../../app/models/scan.server";
 import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
@@ -81,6 +84,9 @@ const mockDb = db as unknown as {
 const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
+const mockGetLatestSuccessfulScan = getLatestSuccessfulScanForTheme as ReturnType<typeof vi.fn>;
+// inngest.send is no longer used by the function (dispatch goes through
+// step.sendEvent now — LOG-8). Kept here only to assert it is NOT called.
 const mockInngestSend = (inngest as unknown as { send: ReturnType<typeof vi.fn> }).send;
 
 // ---------------------------------------------------------------------------
@@ -125,12 +131,18 @@ const mockLogger = {
 // Helper: invoke function handler
 // ---------------------------------------------------------------------------
 
+// Holds the step mock from the most recent runPollCheckShop call so tests can
+// assert on step.sendEvent (the function dispatches via step.sendEvent, not
+// inngest.send — LOG-8). Reassigned on every run.
+let lastStep: ReturnType<typeof createMockInngestStep>;
+
 async function runPollCheckShop(
   shopId = SHOP_ID,
   shopDomain = SHOP_DOMAIN,
   stepOverrides?: Partial<ReturnType<typeof createMockInngestStep>>,
 ) {
   const step = { ...createMockInngestStep(), ...stepOverrides };
+  lastStep = step;
   const event = {
     name: "poll/check-shop",
     data: { shopId, shopDomain },
@@ -147,12 +159,13 @@ async function runPollCheckShop(
 beforeEach(() => {
   vi.clearAllMocks();
 
-  // Default happy-path wiring: stale theme → dispatch scan
+  // Default happy-path wiring: stale theme → dispatch scan.
+  // Step 2 (active-scan check) uses db.scan.findFirst; Step 3 (staleness) uses
+  // the getLatestSuccessfulScanForTheme model helper.
   mockUnauthenticated.admin.mockResolvedValue({ admin: MOCK_ADMIN });
   mockFetchMainTheme.mockResolvedValue(MOCK_MAIN_THEME);
-  mockDb.scan.findFirst
-    .mockResolvedValueOnce(null) // no in-progress scan
-    .mockResolvedValueOnce(null); // no latest scan → needsScan = true
+  mockDb.scan.findFirst.mockResolvedValue(null); // no in-progress scan
+  mockGetLatestSuccessfulScan.mockResolvedValue(null); // no successful scan → needsScan = true
   mockCreateScan.mockResolvedValue(MOCK_SCAN);
   mockInngestSend.mockResolvedValue(undefined);
 });
@@ -183,26 +196,26 @@ describe("pollCheckShop — happy path", () => {
     expect(mockCreateScan).toHaveBeenCalledWith(SHOP_ID, THEME_GID, THEME_NAME);
   });
 
-  it("dispatches a scan/requested event after creating the scan", async () => {
+  it("dispatches a scan/requested event via step.sendEvent after creating the scan", async () => {
     await runPollCheckShop();
 
-    expect(mockInngestSend).toHaveBeenCalledOnce();
-    const sentEvent = mockInngestSend.mock.calls[0][0];
+    // LOG-8: dispatch goes through the idempotent step.sendEvent primitive,
+    // not inngest.send inside a step.run.
+    expect(mockInngestSend).not.toHaveBeenCalled();
+    expect(lastStep.sendEvent).toHaveBeenCalledOnce();
 
+    const [stepId, sentEvent] = lastStep.sendEvent.mock.calls[0];
+    expect(stepId).toBe("send-scan-requested");
     expect(sentEvent.name).toBe("scan/requested");
     expect(sentEvent.data.shopId).toBe(SHOP_ID);
     expect(sentEvent.data.themeId).toBe(THEME_GID);
     expect(sentEvent.data.scanId).toBe(SCAN_ID);
   });
 
-  it("triggers a scan when the theme was updated after the last scan", async () => {
+  it("triggers a scan when the theme was updated after the last successful scan", async () => {
     const lastScanDate = new Date("2026-03-09T00:00:00Z"); // yesterday
     // theme was updated at 2026-03-10T08:00:00Z which is AFTER lastScanDate
-
-    mockDb.scan.findFirst.mockReset();
-    mockDb.scan.findFirst
-      .mockResolvedValueOnce(null) // in-progress check: none
-      .mockResolvedValueOnce({ createdAt: lastScanDate }); // last scan older than theme
+    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: lastScanDate });
 
     const result = await runPollCheckShop();
 
@@ -210,11 +223,8 @@ describe("pollCheckShop — happy path", () => {
     expect(mockCreateScan).toHaveBeenCalled();
   });
 
-  it("triggers a scan when there is no previous scan at all (latestScan === null)", async () => {
-    mockDb.scan.findFirst.mockReset();
-    mockDb.scan.findFirst
-      .mockResolvedValueOnce(null) // in-progress check: none
-      .mockResolvedValueOnce(null); // no latest scan → needsScan = true
+  it("triggers a scan when there is no previous successful scan at all", async () => {
+    mockGetLatestSuccessfulScan.mockResolvedValue(null);
 
     const result = await runPollCheckShop();
 
@@ -256,6 +266,7 @@ describe("pollCheckShop — skip: in-progress scan", () => {
 
     await runPollCheckShop();
 
+    expect(lastStep.sendEvent).not.toHaveBeenCalled();
     expect(mockInngestSend).not.toHaveBeenCalled();
   });
 
@@ -301,14 +312,11 @@ describe("pollCheckShop — skip: in-progress scan", () => {
 // ---------------------------------------------------------------------------
 
 describe("pollCheckShop — skip: theme up to date", () => {
-  it("returns skipped_up_to_date when theme updatedAt is older than last scan createdAt", async () => {
-    const lastScanDate = new Date("2026-03-11T00:00:00Z"); // newer than theme updatedAt
-    // theme updatedAt = 2026-03-10T08:00:00Z (from MOCK_MAIN_THEME)
+  // theme updatedAt = 2026-03-10T08:00:00Z (from MOCK_MAIN_THEME)
+  const COMPLETED_AFTER_THEME = new Date("2026-03-11T00:00:00Z"); // newer than theme
 
-    mockDb.scan.findFirst.mockReset();
-    mockDb.scan.findFirst
-      .mockResolvedValueOnce(null) // in-progress check: none
-      .mockResolvedValueOnce({ createdAt: lastScanDate }); // latest scan: newer than theme
+  it("returns skipped_up_to_date when theme updatedAt is older than the latest successful scan", async () => {
+    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: COMPLETED_AFTER_THEME });
 
     const result = await runPollCheckShop();
 
@@ -316,13 +324,19 @@ describe("pollCheckShop — skip: theme up to date", () => {
     expect(result.domain).toBe(SHOP_DOMAIN);
   });
 
-  it("does not create a scan when theme is up to date", async () => {
-    const lastScanDate = new Date("2026-03-11T00:00:00Z");
+  // LOG-7: a PARTIAL scan is a legitimate successful result, so a recent
+  // PARTIAL scan newer than the theme update also suppresses a re-scan.
+  it("returns skipped_up_to_date when a PARTIAL scan newer than the theme update exists", async () => {
+    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: COMPLETED_AFTER_THEME });
 
-    mockDb.scan.findFirst.mockReset();
-    mockDb.scan.findFirst
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ createdAt: lastScanDate });
+    const result = await runPollCheckShop();
+
+    expect(result.outcome).toBe("skipped_up_to_date");
+    expect(mockCreateScan).not.toHaveBeenCalled();
+  });
+
+  it("does not create a scan when theme is up to date", async () => {
+    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: COMPLETED_AFTER_THEME });
 
     await runPollCheckShop();
 
@@ -330,15 +344,11 @@ describe("pollCheckShop — skip: theme up to date", () => {
   });
 
   it("does not dispatch an event when theme is up to date", async () => {
-    const lastScanDate = new Date("2026-03-11T00:00:00Z");
-
-    mockDb.scan.findFirst.mockReset();
-    mockDb.scan.findFirst
-      .mockResolvedValueOnce(null)
-      .mockResolvedValueOnce({ createdAt: lastScanDate });
+    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: COMPLETED_AFTER_THEME });
 
     await runPollCheckShop();
 
+    expect(lastStep.sendEvent).not.toHaveBeenCalled();
     expect(mockInngestSend).not.toHaveBeenCalled();
   });
 });
@@ -397,6 +407,7 @@ describe("pollCheckShop — error paths", () => {
 
     await runPollCheckShop();
 
+    expect(lastStep.sendEvent).not.toHaveBeenCalled();
     expect(mockInngestSend).not.toHaveBeenCalled();
   });
 
@@ -407,5 +418,115 @@ describe("pollCheckShop — error paths", () => {
 
     expect(result.outcome).toBe("error");
     expect(result.reason).toContain("string error");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LOG-7: a FAILED last scan must not permanently suppress re-scans
+// ---------------------------------------------------------------------------
+
+describe("pollCheckShop — LOG-7: failed scan does not suppress re-scan", () => {
+  it("uses getLatestSuccessfulScanForTheme (status-filtered) for the staleness check", async () => {
+    await runPollCheckShop();
+
+    expect(mockGetLatestSuccessfulScan).toHaveBeenCalledWith(SHOP_ID, THEME_GID);
+    // Only the active-scan check should hit db.scan.findFirst directly — the
+    // staleness query goes through the model helper, never an unfiltered query.
+    expect(mockDb.scan.findFirst).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-scans when there is no successful scan (e.g. the latest scan FAILED)", async () => {
+    // getLatestSuccessfulScanForTheme filters to COMPLETED/PARTIAL, so a shop
+    // whose most recent scan FAILED has no successful baseline and the helper
+    // returns null → a re-scan must be dispatched. Previously the unfiltered
+    // query returned the FAILED scan's createdAt (always after the theme
+    // update that triggered it) and suppressed re-scans indefinitely.
+    mockGetLatestSuccessfulScan.mockResolvedValue(null);
+
+    const result = await runPollCheckShop();
+
+    expect(result.outcome).toBe("dispatch_triggered");
+    expect(mockCreateScan).toHaveBeenCalled();
+    expect(lastStep.sendEvent).toHaveBeenCalledOnce();
+  });
+
+  it("re-scans when the theme was updated after the last successful scan", async () => {
+    // theme updatedAt = 2026-03-10T08:00:00Z; last success predates it.
+    mockGetLatestSuccessfulScan.mockResolvedValue({
+      createdAt: new Date("2026-03-09T00:00:00Z"),
+    });
+
+    const result = await runPollCheckShop();
+
+    expect(result.outcome).toBe("dispatch_triggered");
+    expect(mockCreateScan).toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// LOG-8: dispatch is split into two idempotent steps (create-scan + sendEvent)
+// ---------------------------------------------------------------------------
+
+describe("pollCheckShop — LOG-8: idempotent dispatch on send failure", () => {
+  it("creates the scan and dispatches via step.sendEvent (not inngest.send)", async () => {
+    await runPollCheckShop();
+
+    expect(lastStep.run).toHaveBeenCalledWith("create-scan", expect.any(Function));
+    expect(mockCreateScan).toHaveBeenCalledOnce();
+    expect(lastStep.sendEvent).toHaveBeenCalledWith(
+      "send-scan-requested",
+      expect.objectContaining({
+        name: "scan/requested",
+        data: expect.objectContaining({ scanId: SCAN_ID }),
+      }),
+    );
+    expect(mockInngestSend).not.toHaveBeenCalled();
+  });
+
+  it("does not re-run createScan when the event-send step fails and retries", async () => {
+    // Stateful step mock that memoizes step.run output by step id, mirroring
+    // Inngest's real behavior: a step that already succeeded is not re-executed
+    // when a LATER step is retried. step.sendEvent fails once, then succeeds.
+    const memo = new Map<string, unknown>();
+    const memoizingStep = {
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        if (memo.has(name)) return memo.get(name);
+        const out = await fn();
+        memo.set(name, out);
+        return out;
+      }),
+      sendEvent: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("transient Inngest send failure"))
+        .mockResolvedValueOnce(undefined),
+      sleep: vi.fn(),
+      sleepUntil: vi.fn(),
+      waitForEvent: vi.fn(),
+      invoke: vi.fn(),
+    };
+
+    // createScan succeeds once; if it were ever called again (the old bug, where
+    // create + send shared one step) it would throw the deterministic
+    // "already in progress" error against the PENDING row it just created.
+    mockCreateScan.mockReset();
+    mockCreateScan
+      .mockResolvedValueOnce(MOCK_SCAN)
+      .mockRejectedValue(new Error("A scan is already in progress for this shop."));
+
+    // First invocation: create-scan runs and is memoized, then the send step
+    // throws → the invocation rejects (Inngest would retry it).
+    await expect(runPollCheckShop(SHOP_ID, SHOP_DOMAIN, memoizingStep)).rejects.toThrow(
+      "transient Inngest send failure",
+    );
+
+    // Retry: same step instance (memo + sendEvent state preserved). create-scan
+    // is NOT re-run (its output is memoized), so createScan stays at one call,
+    // no "already in progress" error occurs, and the send succeeds this time.
+    const result = await runPollCheckShop(SHOP_ID, SHOP_DOMAIN, memoizingStep);
+
+    expect(result.outcome).toBe("dispatch_triggered");
+    expect(result.scanId).toBe(SCAN_ID);
+    expect(mockCreateScan).toHaveBeenCalledTimes(1);
+    expect(memoizingStep.sendEvent).toHaveBeenCalledTimes(2);
   });
 });

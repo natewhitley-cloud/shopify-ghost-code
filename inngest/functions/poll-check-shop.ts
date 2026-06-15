@@ -17,14 +17,17 @@
  * Per-shop logic:
  *   1. Fetch the main theme from Shopify (updatedAt timestamp).
  *   2. Check for an active (PENDING or IN_PROGRESS) scan → skip if found.
- *   3. Compare theme updatedAt against the latest scan's createdAt.
- *   4. If stale (or no prior scan), create a scan record and dispatch
- *      `scan/requested` to trigger the scan pipeline.
+ *   3. Compare theme updatedAt against the latest SUCCESSFUL scan's createdAt
+ *      (FAILED scans are ignored so a failed scan never suppresses re-scans).
+ *   4. If stale (or no prior successful scan), create a scan record.
+ *   5. Dispatch `scan/requested` to trigger the scan pipeline. Steps 4 and 5
+ *      are separate so each is idempotent on retry (a send failure never
+ *      re-runs createScan).
  */
 
 import { ScanStatus } from "@prisma/client";
 
-import { createScan } from "../../app/models/scan.server";
+import { createScan, getLatestSuccessfulScanForTheme } from "../../app/models/scan.server";
 import { inngest } from "../client";
 
 export const pollCheckShop = inngest.createFunction(
@@ -126,17 +129,23 @@ export const pollCheckShop = inngest.createFunction(
     }
 
     // -------------------------------------------------------------------------
-    // Step 3: Compare theme updatedAt against the latest scan's createdAt
+    // Step 3: Compare theme updatedAt against the latest SUCCESSFUL scan
+    //
+    // Only COMPLETED/PARTIAL scans count as a baseline here (LOG-7). A FAILED
+    // latest scan is ignored — otherwise its createdAt (always after the theme
+    // update that triggered it) would make this conclude "up to date" forever,
+    // and a shop whose last scheduled scan failed would never be auto-re-scanned
+    // until the merchant next edited the theme. Treating a FAILED (or absent)
+    // latest successful scan as "needs scan" lets the watchdog-expired case
+    // recover on the next poll.
     // -------------------------------------------------------------------------
     const needsScan = await step.run("check-theme-staleness", async () => {
-      const db = (await import("../../app/db.server")).default;
-      const latestScan = await db.scan.findFirst({
-        where: { shopId, themeId },
-        orderBy: { createdAt: "desc" },
-        select: { createdAt: true },
-      });
+      const latestSuccessfulScan = await getLatestSuccessfulScanForTheme(shopId, themeId);
 
-      return latestScan === null || new Date(themeUpdatedAt) > new Date(latestScan.createdAt);
+      return (
+        latestSuccessfulScan === null ||
+        new Date(themeUpdatedAt) > new Date(latestSuccessfulScan.createdAt)
+      );
     });
 
     if (!needsScan) {
@@ -148,45 +157,58 @@ export const pollCheckShop = inngest.createFunction(
     }
 
     // -------------------------------------------------------------------------
-    // Step 4: Create a scan record and dispatch the scan pipeline event
+    // Step 4: Create the scan record (idempotent on retry)
+    //
+    // Split from the event-send below so each step is independently idempotent
+    // (LOG-8). Inngest memoizes a step's successful output, so once this step
+    // commits the scan row and returns its id, a failure/retry of the
+    // event-send step will NOT re-run createScan — avoiding the deterministic
+    // "A scan is already in progress for this shop." error that a retried
+    // create-then-send-in-one-step would hit against the PENDING row it just
+    // created, and the orphan PENDING scan that previously blocked the shop.
+    //
+    // Using createScan() from the model layer so any future model-level
+    // logic (e.g. audit hooks, default fields) applies to cron-created scans.
     // -------------------------------------------------------------------------
-    const newScan = await step.run("dispatch-scan", async () => {
-      const dispatchStart = Date.now();
-
-      // Using createScan() from the model layer so any future model-level
-      // logic (e.g. audit hooks, default fields) applies to cron-created scans.
+    const scanId = await step.run("create-scan", async () => {
+      const createStart = Date.now();
       const scan = await createScan(shopId, themeId, themeName);
 
-      await (
-        await import("../client")
-      ).inngest.send({
-        name: "scan/requested",
-        data: {
-          shopId,
-          themeId,
-          scanId: scan.id,
-        },
-      });
-
-      const dispatchMs = Date.now() - dispatchStart;
+      const createMs = Date.now() - createStart;
       const { logger } = await import("../../app/lib/logger.server");
-      logger.info("scan dispatched", {
+      logger.info("scan created", {
         function: "poll-check-shop",
-        event: "dispatch_scan",
+        event: "create_scan",
         shopDomain,
         scanId: scan.id,
-        durationMs: dispatchMs,
+        durationMs: createMs,
       });
 
-      return scan;
+      return scan.id;
     });
 
-    logger.info(`[poll-check-shop] ${shopDomain}: dispatch_triggered — scan ${newScan.id}`);
+    // -------------------------------------------------------------------------
+    // Step 5: Dispatch the scan pipeline event
+    //
+    // step.sendEvent is Inngest's idempotent event-send primitive: it is a
+    // first-class step, so a transient failure retries ONLY the send (the
+    // memoized scanId from Step 4 is reused) rather than re-running createScan.
+    // -------------------------------------------------------------------------
+    await step.sendEvent("send-scan-requested", {
+      name: "scan/requested",
+      data: {
+        shopId,
+        themeId,
+        scanId,
+      },
+    });
+
+    logger.info(`[poll-check-shop] ${shopDomain}: dispatch_triggered — scan ${scanId}`);
 
     return {
       domain: shopDomain,
       outcome: "dispatch_triggered" as const,
-      scanId: newScan.id,
+      scanId,
     };
   },
 );
