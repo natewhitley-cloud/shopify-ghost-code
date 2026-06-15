@@ -38,7 +38,7 @@
     "@sentry/node": "^10.46.0",
     "@shopify/app-bridge-react": "^4.2.4",
     "@shopify/shopify-app-react-router": "^1.1.0",
-    "@shopify/shopify-app-session-storage-prisma": "^8.0.0",
+    "@shopify/shopify-app-session-storage-prisma": "^9.0.0",
     "better-sqlite3": "^12.8.0",
     "inngest": "^3.54.0",
     "isbot": "^5.1.31",
