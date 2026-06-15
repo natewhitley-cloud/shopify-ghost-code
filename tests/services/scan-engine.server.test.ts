@@ -367,6 +367,47 @@ describe("detectGhostSections", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("PageFly");
   });
+
+  it("does not flag a section tag inside a {% comment %} block", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        "  Old PageFly integration — removed 2024-01-15",
+        "  {% section 'pagefly-head' %}",
+        "{% endcomment %}",
+        "<div>real content</div>",
+      ].join("\n"),
+    };
+    const findings = detectGhostSections(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not flag a section tag on a line that also contains a Liquid conditional", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: "{% if settings.enable_shogun %}{% section 'shogun-head' %}{% endif %}",
+    };
+    const findings = detectGhostSections(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("still flags a real ghost section tag that is outside any comment or conditional", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        "  {% section 'shogun-head' %}",
+        "{% endcomment %}",
+        "{% section 'pagefly-head' %}",
+      ].join("\n"),
+    };
+    const findings = detectGhostSections(file);
+    // Only the one outside the comment block should be flagged
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("PageFly");
+    expect(findings[0].lineNumber).toBe(4);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -318,22 +318,34 @@ const SECTION_RE = /\{%-?\s*section\s+["']([^"']+)["']/gi;
 export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  // Run against full file content so multi-line tags like:
-  //   {%
+  // Precompute lines to skip from a single lines() pass, then run SECTION_RE
+  // against the FULL file content so multi-line tags like:
+  //   {%-
   //     section 'pagefly-head'
-  //   %}
-  // (e.g. prettier-wrapped) are matched. lineNumberAtOffset maps the match
-  // position back to a line. SECTION_RE is a single regex, so each tag yields
-  // exactly one match — no double-count risk.
+  //   -%}
+  // are matched. lineNumberAtOffset maps each match offset back to a line, and
+  // a match is skipped if its start line falls inside a {% comment %} block or
+  // contains a Liquid conditional — avoiding false positives from commented-out
+  // or conditionally-rendered section references. SECTION_RE is a single regex,
+  // so each tag yields exactly one match — no double-count risk.
+  const commentSkipLines = buildCommentSkipLines(file.content);
+  const conditionalLines = new Set<number>();
+  for (const { lineNumber, text } of lines(file.content)) {
+    if (LIQUID_CONDITIONAL_RE.test(text)) conditionalLines.add(lineNumber);
+  }
+
   let match: RegExpExecArray | null;
   SECTION_RE.lastIndex = 0;
 
   while ((match = SECTION_RE.exec(file.content)) !== null) {
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    if (commentSkipLines.has(lineNumber)) continue; // inside {% comment %} block
+    if (conditionalLines.has(lineNumber)) continue; // theme-native conditional logic
+
     const sectionName = match[1];
     const appName = identifyAppFromSnippetName(sectionName);
     if (!appName) continue;
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_SECTION, codeSnippet);
 
