@@ -13,7 +13,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (!shop) {
     // Shop record doesn't exist yet — create it on first authenticated visit.
     // This covers the case where the app/installed webhook isn't available.
-    shop = await upsertShop(session.shop, session.accessToken || undefined);
+    shop = await upsertShop(session.shop);
   }
 
   // eslint-disable-next-line no-undef

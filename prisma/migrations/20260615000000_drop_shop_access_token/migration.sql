@@ -1,0 +1,26 @@
+-- SEC-1 / GC-ruo: remove the dead Shop.accessToken encryption surface.
+--
+-- Shop.accessToken was a never-read duplicate of the operative Shopify offline
+-- token. The live token lives in the Session table (managed by
+-- PrismaSessionStorage) and is used by every background job and webhook via
+-- `unauthenticated.admin()`. The only reader of Shop.accessToken
+-- (getShopByDomain) had zero callers, so this column protected nothing and
+-- only retained a stale copy. We now rely on Railway Postgres at-rest
+-- encryption for the Session-table token.
+--
+-- This migration:
+--   1. Drops the Shop.accessToken column.
+--
+-- Reversibility / manual rollback:
+--   - Shop.accessToken was a NOT NULL column with no default. Re-adding it to a
+--     populated table cannot be done as a single NOT NULL ADD COLUMN (existing
+--     rows would have no value). To roll back, add it nullable first, backfill
+--     if a source of truth exists (there is none — the data was a dead copy),
+--     then enforce NOT NULL:
+--         ALTER TABLE "Shop" ADD COLUMN "accessToken" TEXT;
+--         -- (no backfill source: column was never read; leave NULL or drop the
+--         --  NOT NULL re-enforcement step below)
+--         -- ALTER TABLE "Shop" ALTER COLUMN "accessToken" SET NOT NULL;
+
+-- AlterTable
+ALTER TABLE "Shop" DROP COLUMN "accessToken";

@@ -22,6 +22,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDb = vi.hoisted(() => ({
   shop: {
     findUnique: vi.fn(),
+    upsert: vi.fn(),
     update: vi.fn(),
     delete: vi.fn(),
   },
@@ -45,6 +46,7 @@ vi.mock("../../app/db.server", () => ({
 
 import {
   getShopMetadata,
+  upsertShop,
   updateShopPlanByDomain,
   updateThemePublishTimestamp,
   dismissReviewPrompt,
@@ -138,6 +140,82 @@ describe("getShopMetadata", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// upsertShop
+// ---------------------------------------------------------------------------
+
+describe("upsertShop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("upserts by domain with create:{domain} and an empty update (no token)", async () => {
+    mockDb.shop.upsert.mockResolvedValue({
+      id: "shop-new",
+      domain: "new-shop.myshopify.com",
+      plan: "free",
+    });
+
+    await upsertShop("new-shop.myshopify.com");
+
+    expect(mockDb.shop.upsert).toHaveBeenCalledWith({
+      where: { domain: "new-shop.myshopify.com" },
+      create: { domain: "new-shop.myshopify.com" },
+      update: {},
+    });
+  });
+
+  it("returns the created shop record on first install", async () => {
+    const created = {
+      id: "shop-created",
+      domain: "first-install.myshopify.com",
+      plan: "free",
+      installedAt: new Date("2026-06-15T00:00:00Z"),
+      lastThemePublishAt: null,
+      hasSeenReviewPrompt: false,
+    };
+    mockDb.shop.upsert.mockResolvedValue(created);
+
+    const result = await upsertShop("first-install.myshopify.com");
+
+    expect(result).toEqual(created);
+  });
+
+  it("returns the existing record on re-install without mutating metadata (update is a no-op)", async () => {
+    const existing = {
+      id: "shop-existing",
+      domain: "re-install.myshopify.com",
+      plan: "Professional",
+      installedAt: new Date("2026-01-01T00:00:00Z"),
+      lastThemePublishAt: new Date("2026-05-01T00:00:00Z"),
+      hasSeenReviewPrompt: true,
+    };
+    mockDb.shop.upsert.mockResolvedValue(existing);
+
+    const result = await upsertShop("re-install.myshopify.com");
+
+    // The update clause is empty, so an existing shop's plan/flags are preserved.
+    expect(mockDb.shop.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: {} }));
+    expect(result).toEqual(existing);
+  });
+
+  it("does not pass an accessToken in the create or update clause", async () => {
+    mockDb.shop.upsert.mockResolvedValue({ id: "shop-x", domain: "x.myshopify.com" });
+
+    await upsertShop("x.myshopify.com");
+
+    const callArg = mockDb.shop.upsert.mock.calls[0][0];
+    expect(callArg.create).not.toHaveProperty("accessToken");
+    expect(callArg.update).not.toHaveProperty("accessToken");
+  });
+
+  it("propagates a database error from upsert", async () => {
+    mockDb.shop.upsert.mockRejectedValueOnce(new Error("DB write failed"));
+
+    await expect(upsertShop("err.myshopify.com")).rejects.toThrow("DB write failed");
+  });
+});
+
 describe("updateShopPlanByDomain", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -156,7 +234,6 @@ describe("updateShopPlanByDomain", () => {
     const existingShop = {
       id: "shop-123",
       domain: "test-shop.myshopify.com",
-      accessToken: "token-abc",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -184,7 +261,6 @@ describe("updateShopPlanByDomain", () => {
     const existingShop = {
       id: "shop-456",
       domain: "another-shop.myshopify.com",
-      accessToken: "token-xyz",
       plan: "Standard",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -206,7 +282,6 @@ describe("updateShopPlanByDomain", () => {
     const existingShop = {
       id: "shop-789",
       domain: "pro-shop.myshopify.com",
-      accessToken: "token-pro",
       plan: "Standard",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -247,7 +322,6 @@ describe("updateThemePublishTimestamp", () => {
     const existingShop = {
       id: "shop-123",
       domain: "test-shop.myshopify.com",
-      accessToken: "token-abc",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -268,7 +342,6 @@ describe("updateThemePublishTimestamp", () => {
     const existingShop = {
       id: "shop-456",
       domain: "another-shop.myshopify.com",
-      accessToken: "token-xyz",
       plan: "Standard",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -289,7 +362,6 @@ describe("updateThemePublishTimestamp", () => {
     const existingShop = {
       id: "shop-789",
       domain: "select-test.myshopify.com",
-      accessToken: "token-select",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -311,7 +383,6 @@ describe("updateThemePublishTimestamp", () => {
     const existingShop = {
       id: "shop-err",
       domain: "error-shop.myshopify.com",
-      accessToken: "token-err",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -345,7 +416,6 @@ describe("dismissReviewPrompt", () => {
     const existingShop = {
       id: "shop-review-1",
       domain: "review-shop.myshopify.com",
-      accessToken: "token-abc",
       plan: "free",
       hasSeenReviewPrompt: false,
     };
@@ -365,7 +435,6 @@ describe("dismissReviewPrompt", () => {
     const existingShop = {
       id: "shop-review-2",
       domain: "review-shop-2.myshopify.com",
-      accessToken: "token-xyz",
       plan: "Standard",
       hasSeenReviewPrompt: false,
     };
@@ -391,7 +460,6 @@ describe("dismissReviewPrompt", () => {
     const existingShop = {
       id: "shop-review-err",
       domain: "error-shop.myshopify.com",
-      accessToken: "token-err",
       plan: "free",
       hasSeenReviewPrompt: false,
     };
@@ -432,7 +500,6 @@ describe("deleteShopData", () => {
     const existingShop = {
       id: "shop-gdpr-1",
       domain: "delete-me.myshopify.com",
-      accessToken: "token-gdpr",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -449,7 +516,6 @@ describe("deleteShopData", () => {
     const existingShop = {
       id: "shop-gdpr-2",
       domain: "delete-me.myshopify.com",
-      accessToken: "token-gdpr",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -468,7 +534,6 @@ describe("deleteShopData", () => {
     const existingShop = {
       id: "shop-gdpr-3",
       domain: "delete-me.myshopify.com",
-      accessToken: "token-gdpr",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -484,7 +549,6 @@ describe("deleteShopData", () => {
     const existingShop = {
       id: "shop-gdpr-4",
       domain: "delete-me.myshopify.com",
-      accessToken: "token-gdpr",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -503,7 +567,6 @@ describe("deleteShopData", () => {
     const existingShop = {
       id: "shop-gdpr-5",
       domain: "delete-me.myshopify.com",
-      accessToken: "token-gdpr",
       plan: "Standard",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -520,7 +583,6 @@ describe("deleteShopData", () => {
     const existingShop = {
       id: "shop-gdpr-err",
       domain: "error-shop.myshopify.com",
-      accessToken: "token-err",
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
