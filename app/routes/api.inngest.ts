@@ -21,6 +21,11 @@ import { weeklyScan } from "../../inngest/functions/weekly-scan";
 
 const handler = serve({
   client: inngest,
+  // Pass the signing key explicitly so signature enforcement does not depend
+  // solely on the SDK's implicit cloud-mode detection. inngest@3.54 skips
+  // signature validation entirely when it does not infer cloud mode; wiring the
+  // key in directly closes that gap and fails closed if it is missing.
+  signingKey: process.env.INNGEST_SIGNING_KEY,
   functions: [
     scanTheme,
     pollThemeChanges,
