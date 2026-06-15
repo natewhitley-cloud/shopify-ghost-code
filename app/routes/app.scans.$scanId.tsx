@@ -6,7 +6,7 @@ import { Link, useLoaderData, useRevalidator, useFetcher } from "react-router";
 
 import { hasVisualImpact } from "../lib/finding-classification";
 import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
-import { formatDate, statusTone, statusLabel } from "../lib/format";
+import { formatDate, statusTone, statusLabel, isSuccessfulScan } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
@@ -210,20 +210,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     getFindingSummary(scanId),
     // Free-tier only: fetch a single preview finding (paid users get full array).
     canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
-    // Diff: only needed for completed scans on plans that support diffing.
-    scan.status === "COMPLETED" && canUseScanDiffing(shop.plan)
+    // Diff: only needed for successful scans on plans that support diffing.
+    isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan)
       ? getPreviousScanForTheme(scan.shopId, scan.themeId, scan.createdAt)
       : Promise.resolve(null),
-    // Unknown scripts: only for completed scans when user can view details.
-    scan.status === "COMPLETED" && canViewDetails
+    // Unknown scripts: only for successful scans when user can view details.
+    isSuccessfulScan(scan.status) && canViewDetails
       ? getUnknownScriptsForScan(scanId)
       : Promise.resolve([]),
   ]);
 
   // Group 2: depends on findingSummary from Group 1.
-  // Compute health score for completed scans.
+  // Compute health score for successful scans (COMPLETED or PARTIAL).
   let healthScore: HealthScoreResult | null = null;
-  if (scan.status === "COMPLETED") {
+  if (isSuccessfulScan(scan.status)) {
     healthScore = computeHealthScore(findingSummary.bySeverity);
   }
 
@@ -257,7 +257,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // so `findings` is guaranteed to be populated when this branch is reached.
   let scanDiff: ScanDiff | null = null;
   if (previousScan) {
-    scanDiff = diffScans(findings, previousScan.findings);
+    // Exclude prior findings in categories THIS scan skipped for missing scope,
+    // so an un-audited category is never reported as falsely "resolved" (LOG-4).
+    scanDiff = diffScans(findings, previousScan.findings, {
+      skippedCategories: scan.skippedCategories,
+    });
     // Sort diff finding arrays by severity for consistent display order.
     sortDiffFindingsBySeverity(scanDiff.newFindings);
     sortDiffFindingsBySeverity(scanDiff.resolvedFindings);
@@ -439,7 +443,7 @@ export default function ScanDetail() {
 
     if (!mountedWhileRunning) return;
 
-    if (scan.status === "COMPLETED") {
+    if (isSuccessfulScan(scan.status)) {
       shopify.toast.show("Scan completed successfully.", { duration: 5000 });
     } else if (scan.status === "FAILED") {
       shopify.toast.show("Scan failed. Please try running it again.", {
@@ -488,7 +492,7 @@ export default function ScanDetail() {
 
   const isFailed = scan.status === "FAILED";
   const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
-  const isCompleted = scan.status === "COMPLETED";
+  const isCompleted = isSuccessfulScan(scan.status);
 
   // Compute per-severity diff counts from scanDiff arrays.
   const severityDiff = scanDiff

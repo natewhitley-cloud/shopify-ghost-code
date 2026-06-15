@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 
-import { formatDate, statusTone, statusLabel } from "../../app/lib/format";
+import { formatDate, statusTone, statusLabel, isSuccessfulScan } from "../../app/lib/format";
 import type { ScanStatus } from "../../app/lib/format";
 
 // ---------------------------------------------------------------------------
@@ -110,15 +110,19 @@ describe("statusTone", () => {
     expect(statusTone("COMPLETED")).toBe("success");
   });
 
+  it("returns 'caution' for PARTIAL", () => {
+    expect(statusTone("PARTIAL")).toBe("caution");
+  });
+
   it("returns 'critical' for FAILED", () => {
     expect(statusTone("FAILED")).toBe("critical");
   });
 
-  it("covers all four ScanStatus values exhaustively", () => {
+  it("covers all five ScanStatus values exhaustively", () => {
     // If a new status is added to the union type in the future, this assertion
     // will still pass, but the switch in format.ts will be incomplete — TypeScript
     // will catch it at compile time.
-    const allStatuses: ScanStatus[] = ["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"];
+    const allStatuses: ScanStatus[] = ["PENDING", "IN_PROGRESS", "COMPLETED", "PARTIAL", "FAILED"];
     const validTones = new Set(["info", "caution", "success", "critical"]);
     for (const status of allStatuses) {
       expect(validTones.has(statusTone(status))).toBe(true);
@@ -143,16 +147,40 @@ describe("statusLabel", () => {
     expect(statusLabel("COMPLETED")).toBe("Completed");
   });
 
+  it("returns 'Partial' for PARTIAL", () => {
+    expect(statusLabel("PARTIAL")).toBe("Partial");
+  });
+
   it("returns 'Failed' for FAILED", () => {
     expect(statusLabel("FAILED")).toBe("Failed");
   });
 
   it("returns a non-empty string for every known ScanStatus value", () => {
-    const allStatuses: ScanStatus[] = ["PENDING", "IN_PROGRESS", "COMPLETED", "FAILED"];
+    const allStatuses: ScanStatus[] = ["PENDING", "IN_PROGRESS", "COMPLETED", "PARTIAL", "FAILED"];
     for (const status of allStatuses) {
       const label = statusLabel(status);
       expect(typeof label).toBe("string");
       expect(label.length).toBeGreaterThan(0);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isSuccessfulScan
+// ---------------------------------------------------------------------------
+
+describe("isSuccessfulScan", () => {
+  it("returns true for COMPLETED", () => {
+    expect(isSuccessfulScan("COMPLETED")).toBe(true);
+  });
+
+  it("returns true for PARTIAL (a successful, usable terminal status)", () => {
+    expect(isSuccessfulScan("PARTIAL")).toBe(true);
+  });
+
+  it("returns false for PENDING, IN_PROGRESS, and FAILED", () => {
+    expect(isSuccessfulScan("PENDING")).toBe(false);
+    expect(isSuccessfulScan("IN_PROGRESS")).toBe(false);
+    expect(isSuccessfulScan("FAILED")).toBe(false);
   });
 });

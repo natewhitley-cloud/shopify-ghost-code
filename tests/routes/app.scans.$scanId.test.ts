@@ -61,6 +61,9 @@ vi.mock("../../app/lib/format", () => ({
   formatDate: vi.fn().mockReturnValue("2026-03-22"),
   statusTone: vi.fn().mockReturnValue("info"),
   statusLabel: vi.fn().mockReturnValue("Completed"),
+  // Pure helper — mirror the real implementation so loader gating on
+  // successful (COMPLETED or PARTIAL) scans behaves correctly under test.
+  isSuccessfulScan: (status: string) => status === "COMPLETED" || status === "PARTIAL",
 }));
 
 // ---------------------------------------------------------------------------
@@ -380,6 +383,32 @@ describe("app.scans.$scanId loader", () => {
 
       expect(result.scanDiff).toBeNull();
       expect(mockDiffScans).not.toHaveBeenCalled();
+    });
+
+    it("treats a PARTIAL scan as successful and forwards skippedCategories to the differ (LOG-4)", async () => {
+      // A PARTIAL scan skipped GHOST_TAG for missing scope. The route must still
+      // compute a diff (PARTIAL is usable) AND pass the skipped categories so the
+      // differ never reports an un-audited category as falsely resolved.
+      mockCanUseScanDiffing.mockReturnValue(true);
+      mockGetScanById.mockResolvedValue({
+        ...SCAN,
+        status: "PARTIAL",
+        skippedCategories: ["GHOST_TAG"],
+      });
+      const previousScan = { ...SCAN, id: "scan-0", findings: [] };
+      mockGetPreviousScanForTheme.mockResolvedValue(previousScan);
+      mockDiffScans.mockReturnValue({
+        newFindings: [],
+        resolvedFindings: [],
+        unchangedCount: 0,
+      });
+
+      await loader(makeLoaderArgs("scan-1"));
+
+      expect(mockGetPreviousScanForTheme).toHaveBeenCalled();
+      expect(mockDiffScans).toHaveBeenCalledWith(SCAN.findings, previousScan.findings, {
+        skippedCategories: ["GHOST_TAG"],
+      });
     });
   });
 });

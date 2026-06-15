@@ -408,7 +408,7 @@ describe("getPreviousScanForTheme", () => {
     vi.clearAllMocks();
   });
 
-  it("returns the most recent COMPLETED scan before the given date", async () => {
+  it("returns the most recent successful (COMPLETED or PARTIAL) scan before the given date", async () => {
     const previousScan = {
       ...baseScan,
       id: "scan-0",
@@ -424,7 +424,7 @@ describe("getPreviousScanForTheme", () => {
       where: {
         shopId: SHOP_ID,
         themeId: THEME_ID,
-        status: ScanStatus.COMPLETED,
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL] },
         createdAt: { lt: beforeDate },
       },
       orderBy: { createdAt: "desc" },
@@ -445,14 +445,18 @@ describe("getPreviousScanForTheme", () => {
     expect(result).toBeNull();
   });
 
-  it("does not return PENDING or IN_PROGRESS scans (status filter)", async () => {
-    // The function filters by status=COMPLETED — verify the where clause is correct.
+  it("filters to successful (COMPLETED + PARTIAL) scans, excluding PENDING/IN_PROGRESS/FAILED", async () => {
+    // The function filters by status in [COMPLETED, PARTIAL] — verify the where clause.
     mockDb.scan.findFirst.mockResolvedValue(null);
 
     await getPreviousScanForTheme(SHOP_ID, THEME_ID, new Date());
 
     const callArg = mockDb.scan.findFirst.mock.calls[0][0];
-    expect(callArg.where.status).toBe(ScanStatus.COMPLETED);
+    expect(callArg.where.status.in).toContain(ScanStatus.COMPLETED);
+    expect(callArg.where.status.in).toContain(ScanStatus.PARTIAL);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.PENDING);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.IN_PROGRESS);
+    expect(callArg.where.status.in).not.toContain(ScanStatus.FAILED);
   });
 
   it("includes findings in the returned scan", async () => {
@@ -485,19 +489,20 @@ describe("countScansForShopSince", () => {
       where: {
         shopId: SHOP_ID,
         createdAt: { gte: since },
-        status: { in: [ScanStatus.COMPLETED, ScanStatus.IN_PROGRESS] },
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL, ScanStatus.IN_PROGRESS] },
       },
     });
     expect(result).toBe(3);
   });
 
-  it("filters to only COMPLETED and IN_PROGRESS statuses (excludes FAILED and PENDING)", async () => {
+  it("filters to COMPLETED, PARTIAL, and IN_PROGRESS statuses (excludes FAILED and PENDING)", async () => {
     mockDb.scan.count.mockResolvedValue(0);
 
     await countScansForShopSince(SHOP_ID, new Date("2026-01-01T00:00:00Z"));
 
     const callArg = mockDb.scan.count.mock.calls[0][0];
     expect(callArg.where.status.in).toContain(ScanStatus.COMPLETED);
+    expect(callArg.where.status.in).toContain(ScanStatus.PARTIAL);
     expect(callArg.where.status.in).toContain(ScanStatus.IN_PROGRESS);
     expect(callArg.where.status.in).not.toContain(ScanStatus.FAILED);
     expect(callArg.where.status.in).not.toContain(ScanStatus.PENDING);
@@ -543,7 +548,7 @@ describe("hasCompletedScans", () => {
     expect(result).toBe(false);
   });
 
-  it("queries only COMPLETED status scans (not PENDING, IN_PROGRESS, or FAILED)", async () => {
+  it("queries successful (COMPLETED + PARTIAL) scans (not PENDING, IN_PROGRESS, or FAILED)", async () => {
     mockDb.scan.count.mockResolvedValue(0);
 
     await hasCompletedScans(SHOP_ID);
@@ -551,7 +556,7 @@ describe("hasCompletedScans", () => {
     expect(mockDb.scan.count).toHaveBeenCalledWith({
       where: {
         shopId: SHOP_ID,
-        status: ScanStatus.COMPLETED,
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL] },
       },
     });
   });
@@ -704,6 +709,7 @@ describe("getFailureRateStats", () => {
     // First count call should filter by status COMPLETED and FAILED
     const firstCallArg = mockDb.scan.count.mock.calls[0][0];
     expect(firstCallArg.where.status.in).toContain(ScanStatus.COMPLETED);
+    expect(firstCallArg.where.status.in).toContain(ScanStatus.PARTIAL);
     expect(firstCallArg.where.status.in).toContain(ScanStatus.FAILED);
     expect(firstCallArg.where.status.in).not.toContain(ScanStatus.PENDING);
     expect(firstCallArg.where.status.in).not.toContain(ScanStatus.IN_PROGRESS);
@@ -768,7 +774,7 @@ describe("getCompletedScansForShop", () => {
     vi.clearAllMocks();
   });
 
-  it("returns only COMPLETED scans (status filter)", async () => {
+  it("returns successful (COMPLETED + PARTIAL) scans (status filter)", async () => {
     const rows = [
       { id: "scan-3", completedAt: new Date("2026-03-20T10:00:00Z"), themeName: "Dawn" },
     ];
@@ -777,7 +783,8 @@ describe("getCompletedScansForShop", () => {
     await getCompletedScansForShop(SHOP_ID);
 
     const callArg = mockDb.scan.findMany.mock.calls[0][0];
-    expect(callArg.where.status).toBe(ScanStatus.COMPLETED);
+    expect(callArg.where.status.in).toContain(ScanStatus.COMPLETED);
+    expect(callArg.where.status.in).toContain(ScanStatus.PARTIAL);
     expect(callArg.where.shopId).toBe(SHOP_ID);
   });
 

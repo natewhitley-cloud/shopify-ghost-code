@@ -68,6 +68,9 @@ vi.mock("../../inngest/client", () => ({
 
 vi.mock("../../app/lib/format", () => ({
   formatDate: vi.fn().mockReturnValue("2026-03-22"),
+  // Pure helper — mirror the real implementation so loader gating on
+  // successful (COMPLETED or PARTIAL) scans behaves correctly under test.
+  isSuccessfulScan: (status: string) => status === "COMPLETED" || status === "PARTIAL",
 }));
 
 vi.mock("../../app/lib/plans", () => ({
@@ -250,6 +253,22 @@ describe("app._index loader", () => {
     });
 
     it("returns healthScore from computeHealthScore when scan is completed", async () => {
+      const result = (await loader(makeLoaderArgs())) as {
+        healthScore: typeof HEALTH_SCORE;
+      };
+
+      expect(result.healthScore).toEqual(HEALTH_SCORE);
+      expect(mockComputeHealthScore).toHaveBeenCalledWith(FINDING_SUMMARY.bySeverity);
+    });
+
+    it("computes a healthScore for a PARTIAL scan (treated like COMPLETED) — LOG-4", async () => {
+      // PARTIAL is a successful, usable terminal status: the dashboard must
+      // still surface a health score for the categories that were audited.
+      mockGetScansForShop.mockResolvedValue({
+        items: [{ ...COMPLETED_SCAN, status: "PARTIAL", skippedCategories: ["GHOST_TAG"] }],
+        hasNextPage: false,
+      });
+
       const result = (await loader(makeLoaderArgs())) as {
         healthScore: typeof HEALTH_SCORE;
       };

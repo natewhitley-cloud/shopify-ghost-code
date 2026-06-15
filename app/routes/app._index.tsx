@@ -9,7 +9,7 @@ import {
 } from "../components/HealthScoreTrendChart";
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { getPlanFeatures } from "../lib/billing.server";
-import { formatDate } from "../lib/format";
+import { formatDate, isSuccessfulScan } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canStartScan, getScanUsage, getWeekStartUTC } from "../lib/plan-gating.server";
@@ -102,7 +102,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const [findingSummary, prevSummary, usage, completedScanCheck, trendSummaries] =
     await Promise.all([
       latestScan ? getFindingSummary(latestScan.id) : Promise.resolve(null),
-      previousScan && previousScan.status === "COMPLETED"
+      previousScan && isSuccessfulScan(previousScan.status)
         ? getFindingSummary(previousScan.id)
         : Promise.resolve(null),
       getScanUsage(shop.id, shop.plan),
@@ -115,7 +115,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Compute health scores from parallel results
   let healthScore: HealthScoreResult | null = null;
-  if (latestScan && latestScan.status === "COMPLETED" && findingSummary) {
+  if (latestScan && isSuccessfulScan(latestScan.status) && findingSummary) {
     healthScore = computeHealthScore(findingSummary.bySeverity);
   }
 
@@ -180,7 +180,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const showRescanNudge =
     shop.plan === PLANS.STANDARD &&
     latestScan !== null &&
-    latestScan.status === "COMPLETED" &&
+    isSuccessfulScan(latestScan.status) &&
     latestScan.completedAt !== null &&
     Date.now() - new Date(latestScan.completedAt).getTime() > THIRTY_DAYS_MS;
 
@@ -191,7 +191,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     !features.autoRescan &&
     shop.lastThemePublishAt !== null &&
     latestScan !== null &&
-    latestScan.status === "COMPLETED" &&
+    isSuccessfulScan(latestScan.status) &&
     latestScan.completedAt !== null &&
     new Date(shop.lastThemePublishAt) > new Date(latestScan.completedAt);
 
@@ -200,7 +200,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const REVIEW_PROMPT_MIN_FINDINGS = 4;
   const showReviewPrompt =
     latestScan !== null &&
-    latestScan.status === "COMPLETED" &&
+    isSuccessfulScan(latestScan.status) &&
     latestScan.findingCount >= REVIEW_PROMPT_MIN_FINDINGS &&
     !shop.hasSeenReviewPrompt;
 

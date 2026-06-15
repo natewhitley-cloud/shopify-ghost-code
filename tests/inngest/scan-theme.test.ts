@@ -57,10 +57,11 @@ vi.mock("../../app/models/unknown-script.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   updateScanStatus: vi.fn(),
+  finalizeScan: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
-  completeScanWithFindings: vi.fn(),
+  saveThemeFindings: vi.fn(),
   createFindings: vi.fn(),
 }));
 
@@ -121,8 +122,8 @@ vi.mock("../../app/services/redirect-detector.server", () => ({
 
 import db from "../../app/db.server";
 import { TransientScopeCheckError } from "../../app/lib/scope-check.server";
-import { completeScanWithFindings, createFindings } from "../../app/models/finding.server";
-import { updateScanStatus } from "../../app/models/scan.server";
+import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
+import { finalizeScan, updateScanStatus } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.server";
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
@@ -161,7 +162,8 @@ const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<ty
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
-const mockCompleteScanWithFindings = completeScanWithFindings as ReturnType<typeof vi.fn>;
+const mockFinalizeScan = finalizeScan as ReturnType<typeof vi.fn>;
+const mockSaveThemeFindings = saveThemeFindings as ReturnType<typeof vi.fn>;
 const mockCreateFindings = createFindings as ReturnType<typeof vi.fn>;
 const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
 
@@ -278,7 +280,8 @@ beforeEach(() => {
 
   // Default happy-path wiring for models
   mockUpdateScanStatus.mockResolvedValue(undefined);
-  mockCompleteScanWithFindings.mockResolvedValue(undefined);
+  mockFinalizeScan.mockResolvedValue(undefined);
+  mockSaveThemeFindings.mockResolvedValue(undefined);
   mockCreateFindings.mockResolvedValue({ count: 0 });
   mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
 
@@ -369,13 +372,25 @@ describe("scanTheme — happy path", () => {
     expect(mockScanThemeFiles).toHaveBeenCalledWith(MOCK_FILES);
   });
 
-  it("persists findings and marks scan COMPLETED atomically", async () => {
+  it("persists theme findings at step 2 but leaves the scan IN_PROGRESS", async () => {
     await runScanTheme();
 
-    expect(mockCompleteScanWithFindings).toHaveBeenCalledWith(SCAN_ID, MOCK_FINDINGS);
+    // Persistence no longer marks the scan terminal — finalizeScan does, after
+    // all audit steps (LOG-4). Step 2 only saves the theme findings.
+    expect(mockSaveThemeFindings).toHaveBeenCalledWith(SCAN_ID, MOCK_FINDINGS);
   });
 
-  it("executes all 4 steps in the correct order", async () => {
+  it("marks the scan COMPLETED via finalizeScan after all audits when nothing was skipped", async () => {
+    await runScanTheme();
+
+    expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+      status: "COMPLETED",
+      findingCount: MOCK_FINDINGS.length,
+      skippedCategories: [],
+    });
+  });
+
+  it("executes the core steps in order: IN_PROGRESS, fetch, scan, save, then finalize last", async () => {
     const callOrder: string[] = [];
 
     mockUpdateScanStatus.mockImplementation(async (_id: string, status: string) => {
@@ -389,17 +404,23 @@ describe("scanTheme — happy path", () => {
       callOrder.push("scanThemeFiles");
       return { findings: MOCK_FINDINGS, unknownScripts: [] };
     });
-    mockCompleteScanWithFindings.mockImplementation(async () => {
-      callOrder.push("completeScanWithFindings");
+    mockSaveThemeFindings.mockImplementation(async () => {
+      callOrder.push("saveThemeFindings");
+    });
+    mockFinalizeScan.mockImplementation(async () => {
+      callOrder.push("finalizeScan");
     });
 
     await runScanTheme();
 
+    // finalizeScan must come AFTER saveThemeFindings (and after the audit steps,
+    // which are not instrumented here) — the core LOG-4 guarantee.
     expect(callOrder).toEqual([
       "updateScanStatus:IN_PROGRESS",
       "fetchThemeFiles",
       "scanThemeFiles",
-      "completeScanWithFindings",
+      "saveThemeFindings",
+      "finalizeScan",
     ]);
   });
 });
@@ -423,10 +444,10 @@ describe("scanTheme — zero findings", () => {
     });
   });
 
-  it("calls completeScanWithFindings with empty array", async () => {
+  it("calls saveThemeFindings with empty array", async () => {
     await runScanTheme();
 
-    expect(mockCompleteScanWithFindings).toHaveBeenCalledWith(SCAN_ID, []);
+    expect(mockSaveThemeFindings).toHaveBeenCalledWith(SCAN_ID, []);
   });
 });
 
@@ -463,9 +484,9 @@ describe("scanTheme — error paths", () => {
     expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
 
-  it("marks scan FAILED and re-throws when completeScanWithFindings throws", async () => {
+  it("marks scan FAILED and re-throws when saveThemeFindings throws", async () => {
     const dbError = new Error("DB write failed");
-    mockCompleteScanWithFindings.mockRejectedValue(dbError);
+    mockSaveThemeFindings.mockRejectedValue(dbError);
 
     await expect(runScanTheme()).rejects.toThrow("DB write failed");
 
@@ -486,12 +507,12 @@ describe("scanTheme — error paths", () => {
     await expect(runScanTheme()).rejects.toThrow("Shopify API unavailable");
   });
 
-  it("does not call completeScanWithFindings on error paths", async () => {
+  it("does not call saveThemeFindings on error paths", async () => {
     mockFetchThemeFiles.mockRejectedValue(new Error("network failure"));
 
     await expect(runScanTheme()).rejects.toThrow();
 
-    expect(mockCompleteScanWithFindings).not.toHaveBeenCalled();
+    expect(mockSaveThemeFindings).not.toHaveBeenCalled();
   });
 
   it("marks scan IN_PROGRESS before any failure in step 2", async () => {
@@ -594,8 +615,9 @@ describe("scanTheme — optional audit steps", () => {
   });
 
   describe("genuine ACCESS_DENIED — scope not granted", () => {
-    it("skips the product-backed audits cleanly with 0, scan still COMPLETED", async () => {
-      // hasProductScope reports the scope is genuinely missing.
+    it("skips the product-backed audits cleanly and finalizes the scan PARTIAL with those categories", async () => {
+      // hasProductScope reports the scope is genuinely missing. The three
+      // product-backed audits (tag, price, metafield) all gate on it.
       mockHasProductScope.mockResolvedValue(false);
       // Even though data + detector would yield findings, the audit must skip.
       mockFetchProductTags.mockResolvedValue([{ id: "gid://shopify/Product/1" }]);
@@ -610,12 +632,24 @@ describe("scanTheme — optional audit steps", () => {
       expect(mockCreateFindings).not.toHaveBeenCalled();
       expect(mockDb.finding.deleteMany).not.toHaveBeenCalled();
 
-      // The scan completes normally with only the theme findings — no false
-      // data, no failure.
+      // The core scan succeeded, so the scan is usable — but because three
+      // optional categories were skipped for missing scope, it is PARTIAL, not
+      // COMPLETED, and those categories are recorded so the differ never marks
+      // their prior findings as falsely "resolved" (LOG-4).
+      expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+        status: "PARTIAL",
+        findingCount: MOCK_FINDINGS.length,
+        skippedCategories: [
+          FindingType.GHOST_TAG,
+          FindingType.GHOST_PRICE,
+          FindingType.GHOST_METAFIELD,
+        ],
+      });
+
       expect(result).toEqual({
         scanId: SCAN_ID,
         findingCount: MOCK_FINDINGS.length,
-        status: "COMPLETED",
+        status: "PARTIAL",
       });
     });
   });
@@ -650,6 +684,20 @@ describe("scanTheme — optional audit steps", () => {
       // The guard must prevent a FAILED overwrite of a COMPLETED scan...
       expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
       // ...while step 1 still ran.
+      expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
+    });
+
+    it("does not overwrite a PARTIAL scan when a late audit error fires", async () => {
+      // PARTIAL is a successful terminal status — a late retry that errors must
+      // not clobber it with FAILED (LOG-4).
+      mockHasProductScope.mockRejectedValue(
+        new TransientScopeCheckError("read_products", new Error("Throttled")),
+      );
+      mockDb.scan.findUnique.mockResolvedValue({ status: "PARTIAL" });
+
+      await expect(runScanTheme()).rejects.toThrow(TransientScopeCheckError);
+
+      expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
       expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
     });
   });

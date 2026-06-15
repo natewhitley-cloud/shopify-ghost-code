@@ -79,6 +79,11 @@ model Scan {
   completedAt    DateTime?
   createdAt      DateTime        @default(now())
   findingCount   Int             @default(0)
+  // FindingType categories whose OPTIONAL audit was skipped this run because the
+  // required Shopify scope was not granted (ACCESS_DENIED). Drives PARTIAL status
+  // and prevents the diff engine from falsely marking un-audited categories as
+  // "resolved" (LOG-4). Empty for fully-audited scans and all legacy scans.
+  skippedCategories String[]     @default([])
   findings       Finding[]
   unknownScripts UnknownScript[]
 
@@ -143,6 +148,11 @@ enum ScanStatus {
   PENDING
   IN_PROGRESS
   COMPLETED
+  // The core theme scan succeeded and the scan is usable, but one or more
+  // OPTIONAL audit categories were skipped because their Shopify scope was not
+  // granted (ACCESS_DENIED) — i.e. not a full audit. Treated as a successful,
+  // usable terminal status everywhere COMPLETED is (quota, dashboard, diffing).
+  PARTIAL
   FAILED
 }
 

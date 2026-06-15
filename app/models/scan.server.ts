@@ -3,6 +3,17 @@ import { ScanStatus } from "@prisma/client";
 import db from "../db.server";
 
 /**
+ * Terminal statuses that represent a successful, usable scan.
+ *
+ * PARTIAL is included alongside COMPLETED everywhere a scan is treated as
+ * "succeeded and usable": quota counting, onboarding eligibility, the dashboard
+ * trend chart, and the diff baseline. A PARTIAL scan ran the core theme audit
+ * successfully; it merely skipped one or more optional categories whose scope
+ * was not granted (see ScanStatus enum / LOG-4).
+ */
+export const SUCCESSFUL_SCAN_STATUSES = [ScanStatus.COMPLETED, ScanStatus.PARTIAL] as const;
+
+/**
  * Quota limits to enforce atomically inside the createScan transaction.
  * When provided, the transaction counts qualifying scans in the relevant
  * period and rejects if the quota is exceeded — closing the TOCTOU gap
@@ -55,7 +66,7 @@ export async function createScan(
         where: {
           shopId,
           createdAt: { gte: quota.periodStart },
-          status: { in: [ScanStatus.COMPLETED, ScanStatus.IN_PROGRESS] },
+          status: { in: [...SUCCESSFUL_SCAN_STATUSES, ScanStatus.IN_PROGRESS] },
         },
       });
       if (usedInPeriod >= quota.maxScans) {
@@ -124,10 +135,17 @@ export async function getScansForShop(
   return { items, hasNextPage };
 }
 
+/** True for terminal statuses where completedAt should be stamped. */
+function isTerminalStatus(status: ScanStatus): boolean {
+  return (
+    status === ScanStatus.COMPLETED || status === ScanStatus.PARTIAL || status === ScanStatus.FAILED
+  );
+}
+
 /**
  * Transition a scan's status.  Automatically sets:
  *   - startedAt when moving to IN_PROGRESS
- *   - completedAt when moving to COMPLETED or FAILED
+ *   - completedAt when moving to a terminal status (COMPLETED, PARTIAL, FAILED)
  *
  * Optionally updates findingCount so the two writes are a single round-trip.
  */
@@ -136,7 +154,7 @@ export async function updateScanStatus(scanId: string, status: ScanStatus, findi
   const timestampFields =
     status === ScanStatus.IN_PROGRESS
       ? { startedAt: now }
-      : status === ScanStatus.COMPLETED || status === ScanStatus.FAILED
+      : isTerminalStatus(status)
         ? { completedAt: now }
         : {};
 
@@ -151,9 +169,47 @@ export async function updateScanStatus(scanId: string, status: ScanStatus, findi
 }
 
 /**
- * Return the most recent COMPLETED scan for a given shop + theme that was
+ * Mark a scan with its final, terminal status after ALL audit steps have run
+ * (LOG-4). This is the single point at which a scan becomes COMPLETED or
+ * PARTIAL — the core theme step (saveThemeFindings) deliberately leaves it
+ * IN_PROGRESS so a late audit failure can still mark it FAILED.
+ *
+ * Decides nothing itself: the caller (the scan-theme finalize step) passes the
+ * already-decided status, the authoritative findingCount, and the set of
+ * optional categories that were skipped for missing scope. skippedCategories is
+ * persisted so the diff engine never treats an un-audited category's prior
+ * findings as "resolved".
+ *
+ * Idempotent: a single scan.update, safe to re-run on an Inngest retry.
+ */
+export async function finalizeScan(
+  scanId: string,
+  args: {
+    status: typeof ScanStatus.COMPLETED | typeof ScanStatus.PARTIAL;
+    findingCount: number;
+    skippedCategories: string[];
+  },
+) {
+  return db.scan.update({
+    where: { id: scanId },
+    data: {
+      status: args.status,
+      completedAt: new Date(),
+      findingCount: args.findingCount,
+      skippedCategories: args.skippedCategories,
+    },
+  });
+}
+
+/**
+ * Return the most recent successful scan for a given shop + theme that was
  * created BEFORE `beforeDate`.  Used by the diff engine to find the scan
  * that immediately preceded the current one.
+ *
+ * PARTIAL scans qualify as baselines: a PARTIAL scan is a legitimate prior
+ * state for every category it DID audit. The differ separately filters out the
+ * categories the *current* scan skipped, so a category missing from a PARTIAL
+ * baseline simply yields no prior findings (never a false "resolved").
  *
  * Returns null when no qualifying prior scan exists.
  */
@@ -162,7 +218,7 @@ export async function getPreviousScanForTheme(shopId: string, themeId: string, b
     where: {
       shopId,
       themeId,
-      status: ScanStatus.COMPLETED,
+      status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
       createdAt: { lt: beforeDate },
     },
     orderBy: { createdAt: "desc" },
@@ -174,16 +230,16 @@ export async function getPreviousScanForTheme(shopId: string, themeId: string, b
  * Count scans created at or after `since` for a given shop.
  * Used by plan-gating to enforce per-month scan limits on the free tier.
  *
- * Only COMPLETED and IN_PROGRESS scans count toward the quota.
- * FAILED and PENDING scans are excluded so merchants are not penalised for
- * infrastructure failures or scans that never ran.
+ * Only successful (COMPLETED / PARTIAL) and IN_PROGRESS scans count toward the
+ * quota. FAILED and PENDING scans are excluded so merchants are not penalised
+ * for infrastructure failures or scans that never ran.
  */
 export async function countScansForShopSince(shopId: string, since: Date): Promise<number> {
   return db.scan.count({
     where: {
       shopId,
       createdAt: { gte: since },
-      status: { in: [ScanStatus.COMPLETED, ScanStatus.IN_PROGRESS] },
+      status: { in: [...SUCCESSFUL_SCAN_STATUSES, ScanStatus.IN_PROGRESS] },
     },
   });
 }
@@ -214,26 +270,30 @@ export async function expireStaleScans(maxAgeMinutes = 30): Promise<number> {
 }
 
 /**
- * Return true if the shop has at least one COMPLETED scan ever.
- * Used by plan-gating to detect first-time scanners who are eligible
- * for the free onboarding scan regardless of the monthly quota.
+ * Return true if the shop has at least one successful (COMPLETED or PARTIAL)
+ * scan ever. Used by plan-gating to detect first-time scanners who are eligible
+ * for the free onboarding scan regardless of the monthly quota. A PARTIAL scan
+ * still delivered a usable result, so it disqualifies the shop from a second
+ * "first scan".
  */
 export async function hasCompletedScans(shopId: string): Promise<boolean> {
   const count = await db.scan.count({
-    where: { shopId, status: ScanStatus.COMPLETED },
+    where: { shopId, status: { in: [...SUCCESSFUL_SCAN_STATUSES] } },
   });
   return count > 0;
 }
 
 /**
- * Fetch the N most recent COMPLETED scans for a shop, newest first.
- * Used by the dashboard trend chart — only returns completed scans
- * since in-progress/failed scans have no health score.
+ * Fetch the N most recent successful (COMPLETED or PARTIAL) scans for a shop,
+ * newest first. Used by the dashboard trend chart — only returns successful
+ * scans since in-progress/failed scans have no health score. PARTIAL scans have
+ * a real health score for the categories they audited, so they belong on the
+ * trend.
  *
- * `completedAt` is non-null for all COMPLETED scans by construction
- * (updateScanStatus sets it when transitioning to COMPLETED), but the
- * schema column is nullable, so rows where it is somehow null are
- * filtered out rather than returned with a misleading cast.
+ * `completedAt` is non-null for all terminal scans by construction
+ * (finalizeScan / updateScanStatus stamp it), but the schema column is
+ * nullable, so rows where it is somehow null are filtered out rather than
+ * returned with a misleading cast.
  */
 export async function getCompletedScansForShop(
   shopId: string,
@@ -242,7 +302,7 @@ export async function getCompletedScansForShop(
   const limit = options?.limit ?? 7;
 
   const rows = await db.scan.findMany({
-    where: { shopId, status: ScanStatus.COMPLETED },
+    where: { shopId, status: { in: [...SUCCESSFUL_SCAN_STATUSES] } },
     orderBy: { completedAt: "desc" },
     take: limit,
     select: { id: true, completedAt: true, themeName: true },
@@ -256,9 +316,10 @@ export async function getCompletedScansForShop(
 /**
  * Compute scan failure rate stats over a trailing time window.
  *
- * "Completed" means a terminal status (COMPLETED or FAILED) — scans still
- * in PENDING or IN_PROGRESS are excluded because they have not yet had a
- * chance to succeed or fail.
+ * "Terminal" means COMPLETED, PARTIAL, or FAILED — scans still in PENDING or
+ * IN_PROGRESS are excluded because they have not yet had a chance to succeed or
+ * fail. PARTIAL counts as a success (it appears in the denominator, not the
+ * failed numerator).
  *
  * @param hours - trailing window in hours (default 24)
  * @returns `{ total, failed, rate }` where `rate` is a 0–1 decimal.
@@ -273,7 +334,7 @@ export async function getFailureRateStats(
     db.scan.count({
       where: {
         createdAt: { gte: since },
-        status: { in: [ScanStatus.COMPLETED, ScanStatus.FAILED] },
+        status: { in: [...SUCCESSFUL_SCAN_STATUSES, ScanStatus.FAILED] },
       },
     }),
     db.scan.count({

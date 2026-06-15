@@ -1,4 +1,4 @@
-import { FindingType, ScanStatus, Severity } from "@prisma/client";
+import { FindingType, Severity } from "@prisma/client";
 
 import db from "../db.server";
 
@@ -173,29 +173,29 @@ export async function getDistinctFileCount(scanId: string): Promise<number> {
 }
 
 /**
- * Atomically persist findings and mark a scan COMPLETED in a single transaction.
+ * Atomically persist the core theme-scan findings for a scan, WITHOUT marking
+ * it terminal. The scan deliberately stays IN_PROGRESS so that the optional
+ * audit steps (3–8) can still run and a late failure can still mark the scan
+ * FAILED. The terminal status (COMPLETED / PARTIAL) is set only after all audit
+ * steps finish — see finalizeScan() in scan.server.ts (LOG-4).
  *
  * Why a transaction is required:
- *   createFindings and updateScanStatus are two separate writes. If findings are
- *   inserted but the status update fails (network blip, DB error), Inngest will
- *   retry the step and createFindings will run again — producing duplicate rows,
- *   since the Finding table has no unique constraint per scan. Wrapping both in
- *   $transaction makes the step idempotency boundary identical to the DB commit
- *   boundary: either both writes land or neither does, so a retry is always safe.
- *
- * Empty-findings case:
- *   When findings is empty we still update status to COMPLETED (with count 0)
- *   so the scan is never left stuck in IN_PROGRESS.
+ *   The findings write and the findingCount update are two writes. If the
+ *   findings are inserted but the count update fails (network blip, DB error),
+ *   Inngest will retry the step and the insert will run again — producing
+ *   duplicate rows, since the Finding table has no unique constraint per scan.
+ *   Wrapping both in $transaction makes the step idempotency boundary identical
+ *   to the DB commit boundary: either both writes land or neither does, so a
+ *   retry is always safe.
  *
  * Idempotency guard:
  *   A deleteMany is issued before createMany so that Inngest retries are safe.
  *   If the step commits but Inngest doesn't acknowledge the result, the retry
  *   will delete any previously-created findings and re-insert them, producing
- *   the same final state instead of duplicates.
+ *   the same final state instead of duplicates. This step runs before any audit
+ *   step, so clearing all findings for the scan can never wipe audit findings.
  */
-export async function completeScanWithFindings(scanId: string, findings: CreateFindingInput[]) {
-  const now = new Date();
-
+export async function saveThemeFindings(scanId: string, findings: CreateFindingInput[]) {
   return db.$transaction(async (tx) => {
     // Idempotency guard: clear any findings from a previous partial attempt.
     await tx.finding.deleteMany({ where: { scanId } });
@@ -206,13 +206,11 @@ export async function completeScanWithFindings(scanId: string, findings: CreateF
       });
     }
 
+    // Keep findingCount accurate for in-progress display, but do NOT set a
+    // terminal status here — the scan stays IN_PROGRESS until finalizeScan().
     await tx.scan.update({
       where: { id: scanId },
-      data: {
-        status: ScanStatus.COMPLETED,
-        completedAt: now,
-        findingCount: findings.length,
-      },
+      data: { findingCount: findings.length },
     });
   });
 }

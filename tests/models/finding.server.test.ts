@@ -4,7 +4,7 @@
  * Strategy:
  *   - Mock db.server (Prisma client) to control DB responses.
  *   - Test each exported function in isolation.
- *   - completeScanWithFindings wraps a $transaction — the mock factory calls
+ *   - saveThemeFindings wraps a $transaction — the mock factory calls
  *     the callback immediately with a tx-scoped mock client.
  *
  * Note on vi.mock hoisting: vi.mock factory functions run before any top-level
@@ -12,7 +12,7 @@
  * vi.mock factory.
  */
 
-import { FindingType, ScanStatus, Severity } from "@prisma/client";
+import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -31,7 +31,7 @@ const mockDb = vi.hoisted(() => ({
     update: vi.fn(),
   },
   // $transaction supports both the interactive (callback) and array forms.
-  // completeScanWithFindings uses the interactive form: pass a tx-scoped client
+  // saveThemeFindings uses the interactive form: pass a tx-scoped client
   // to the callback so the inner awaits execute against the same mockDb.
   $transaction: vi.fn(
     async (arg: ((tx: typeof mockDb) => Promise<unknown>) | Promise<unknown>[]) => {
@@ -56,7 +56,7 @@ import {
   getFindingsForScan,
   countFindingsBySeverity,
   getFindingSummary,
-  completeScanWithFindings,
+  saveThemeFindings,
   getHighestSeverityFinding,
   getDistinctFileCount,
   type CreateFindingInput,
@@ -341,101 +341,89 @@ describe("getFindingSummary", () => {
 });
 
 // ---------------------------------------------------------------------------
-// completeScanWithFindings
+// saveThemeFindings
+//
+// LOG-4: persistence is decoupled from completion. saveThemeFindings writes the
+// theme findings and updates findingCount but deliberately leaves the scan
+// IN_PROGRESS — it must NOT set a terminal status or completedAt. The terminal
+// status is set later by finalizeScan() after all audit steps run.
 // ---------------------------------------------------------------------------
 
-describe("completeScanWithFindings", () => {
+describe("saveThemeFindings", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("calls $transaction with deleteMany + finding createMany + scan update when findings are non-empty", async () => {
-    // The function passes an array of promise-returning calls to $transaction.
-    // Our mock resolves each element individually.
+  it("calls $transaction with deleteMany + finding createMany + findingCount update when findings are non-empty", async () => {
     mockDb.finding.deleteMany.mockResolvedValue({ count: 0 });
     mockDb.finding.createMany.mockResolvedValue({ count: 1 });
-    mockDb.scan.update.mockResolvedValue({ id: SCAN_ID, status: ScanStatus.COMPLETED });
+    mockDb.scan.update.mockResolvedValue({ id: SCAN_ID });
 
-    await completeScanWithFindings(SCAN_ID, [baseFinding]);
+    await saveThemeFindings(SCAN_ID, [baseFinding]);
 
     expect(mockDb.$transaction).toHaveBeenCalledOnce();
     // Idempotency guard: deleteMany must be called first (clearing prior findings).
     expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({ where: { scanId: SCAN_ID } });
-    // Verify that both the finding insert and the scan update were staged.
     expect(mockDb.finding.createMany).toHaveBeenCalledWith({
       data: [{ ...baseFinding, scanId: SCAN_ID }],
     });
-    expect(mockDb.scan.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: SCAN_ID },
-        data: expect.objectContaining({
-          status: ScanStatus.COMPLETED,
-          findingCount: 1,
-        }),
-      }),
-    );
+    expect(mockDb.scan.update).toHaveBeenCalledWith({
+      where: { id: SCAN_ID },
+      data: { findingCount: 1 },
+    });
+  });
+
+  it("does NOT set a terminal status or completedAt (scan stays IN_PROGRESS)", async () => {
+    mockDb.finding.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.finding.createMany.mockResolvedValue({ count: 1 });
+    mockDb.scan.update.mockResolvedValue({ id: SCAN_ID });
+
+    await saveThemeFindings(SCAN_ID, [baseFinding]);
+
+    const updateCallArg = mockDb.scan.update.mock.calls[0][0];
+    // The whole point of LOG-4: no status, no completedAt at the persistence step.
+    expect(updateCallArg.data).not.toHaveProperty("status");
+    expect(updateCallArg.data).not.toHaveProperty("completedAt");
   });
 
   it("calls deleteMany even when findings array is empty (idempotency guard always runs)", async () => {
     mockDb.finding.deleteMany.mockResolvedValue({ count: 0 });
-    mockDb.scan.update.mockResolvedValue({ id: SCAN_ID, status: ScanStatus.COMPLETED });
+    mockDb.scan.update.mockResolvedValue({ id: SCAN_ID });
 
-    await completeScanWithFindings(SCAN_ID, []);
+    await saveThemeFindings(SCAN_ID, []);
 
     expect(mockDb.$transaction).toHaveBeenCalledOnce();
     // deleteMany must still be called even with no findings.
     expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({ where: { scanId: SCAN_ID } });
     // No findings — createMany should not have been called.
     expect(mockDb.finding.createMany).not.toHaveBeenCalled();
-    // But the scan must still be marked COMPLETED with count 0.
-    expect(mockDb.scan.update).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { id: SCAN_ID },
-        data: expect.objectContaining({
-          status: ScanStatus.COMPLETED,
-          findingCount: 0,
-        }),
-      }),
-    );
+    // findingCount is still updated to 0 (no status change).
+    expect(mockDb.scan.update).toHaveBeenCalledWith({
+      where: { id: SCAN_ID },
+      data: { findingCount: 0 },
+    });
   });
 
   it("is idempotent: calling twice produces the same result (deleteMany clears prior findings)", async () => {
-    // Simulate two calls. The deleteMany in the second call clears the first
-    // call's findings before re-inserting them — no duplicates.
     mockDb.finding.deleteMany.mockResolvedValue({ count: 1 }); // second call clears 1 prior finding
     mockDb.finding.createMany.mockResolvedValue({ count: 1 });
-    mockDb.scan.update.mockResolvedValue({ id: SCAN_ID, status: ScanStatus.COMPLETED });
+    mockDb.scan.update.mockResolvedValue({ id: SCAN_ID });
 
-    // First call
-    await completeScanWithFindings(SCAN_ID, [baseFinding]);
-    // Second call (Inngest retry scenario)
-    await completeScanWithFindings(SCAN_ID, [baseFinding]);
+    // First call, then a second call (Inngest retry scenario).
+    await saveThemeFindings(SCAN_ID, [baseFinding]);
+    await saveThemeFindings(SCAN_ID, [baseFinding]);
 
-    // deleteMany called twice (once per invocation)
     expect(mockDb.finding.deleteMany).toHaveBeenCalledTimes(2);
-    // createMany called twice (once per invocation)
     expect(mockDb.finding.createMany).toHaveBeenCalledTimes(2);
-    // Both createMany calls should produce the same finding data
     const firstCallData = mockDb.finding.createMany.mock.calls[0][0];
     const secondCallData = mockDb.finding.createMany.mock.calls[1][0];
     expect(firstCallData).toEqual(secondCallData);
   });
 
-  it("sets completedAt timestamp on the scan update", async () => {
-    mockDb.finding.deleteMany.mockResolvedValue({ count: 0 });
-    mockDb.scan.update.mockResolvedValue({ id: SCAN_ID });
-
-    await completeScanWithFindings(SCAN_ID, []);
-
-    const updateCallArg = mockDb.scan.update.mock.calls[0][0];
-    expect(updateCallArg.data).toHaveProperty("completedAt");
-    expect(updateCallArg.data.completedAt).toBeInstanceOf(Date);
-  });
-
   it("propagates a $transaction error", async () => {
     mockDb.$transaction.mockRejectedValueOnce(new Error("Transaction rolled back"));
 
-    await expect(completeScanWithFindings(SCAN_ID, [baseFinding])).rejects.toThrow(
+    await expect(saveThemeFindings(SCAN_ID, [baseFinding])).rejects.toThrow(
       "Transaction rolled back",
     );
   });
@@ -445,7 +433,7 @@ describe("completeScanWithFindings", () => {
     mockDb.finding.createMany.mockResolvedValue({ count: 3 });
     mockDb.scan.update.mockResolvedValue({ id: SCAN_ID });
 
-    await completeScanWithFindings(SCAN_ID, [baseFinding, anotherFinding, baseFinding]);
+    await saveThemeFindings(SCAN_ID, [baseFinding, anotherFinding, baseFinding]);
 
     const updateCallArg = mockDb.scan.update.mock.calls[0][0];
     expect(updateCallArg.data.findingCount).toBe(3);
