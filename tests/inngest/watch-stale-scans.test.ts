@@ -2,18 +2,22 @@
  * Tests for the watch-stale-scans Inngest cron function.
  *
  * This function runs every 10 minutes and expires scans stuck in PENDING or
- * IN_PROGRESS status for longer than 15 minutes.
+ * IN_PROGRESS status past their per-status thresholds (LOG-6, #2-A): PENDING aged
+ * from createdAt (15 min), IN_PROGRESS aged from startedAt (30 min).
  *
  * Strategy:
- *   - Mock db.server (for the count query in step 1) and scan.server
- *     (for expireStaleScans in step 2) so the function is tested in isolation.
+ *   - Mock db.server (for the count query in step 1).
+ *   - Use the REAL buildStaleScanWhere from scan.server so the test exercises the
+ *     actual predicate, but mock expireStaleScans (step 2) so no UPDATE runs.
  *   - The Inngest client mock records the handler at createFunction time so
  *     getInngestHandler() can retrieve it for direct invocation.
  *
  * Key invariants under test:
  *   - No stale scans: expireStaleScans is NOT called; returns { staleCount: 0, expiredCount: 0 }
- *   - Stale scans exist: expireStaleScans IS called with 15; returns correct counts
- *   - Scans under 15 min: count query uses correct cutoff; count = 0 → no-op
+ *   - Stale scans exist: expireStaleScans IS called with the shared thresholds
+ *   - The count predicate and the update predicate AGREE (both come from the same
+ *     buildStaleScanWhere(thresholds) — the DRY invariant that keeps the
+ *     early-exit honest).
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -30,9 +34,16 @@ vi.mock("../../app/db.server", () => ({
   },
 }));
 
-vi.mock("../../app/models/scan.server", () => ({
-  expireStaleScans: vi.fn(),
-}));
+// Partial mock: keep the real buildStaleScanWhere + DEFAULT_STALE_SCAN_THRESHOLDS
+// (pure, no DB) so the count step uses the genuine predicate; stub only the
+// expireStaleScans UPDATE.
+vi.mock("../../app/models/scan.server", async (importActual) => {
+  const actual = await importActual<typeof import("../../app/models/scan.server")>();
+  return {
+    ...actual,
+    expireStaleScans: vi.fn(),
+  };
+});
 
 vi.mock("../../app/lib/logger.server", () => ({
   logger: {
@@ -58,7 +69,11 @@ vi.mock("../../inngest/client", () => ({
 
 import db from "../../app/db.server";
 import { logger } from "../../app/lib/logger.server";
-import { expireStaleScans } from "../../app/models/scan.server";
+import {
+  buildStaleScanWhere,
+  DEFAULT_STALE_SCAN_THRESHOLDS,
+  expireStaleScans,
+} from "../../app/models/scan.server";
 import { watchStaleScans } from "../../inngest/functions/watch-stale-scans";
 import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
@@ -142,20 +157,25 @@ describe("watchStaleScans — stale scans found", () => {
     expect(result).toEqual({ staleCount: 3, expiredCount: 3 });
   });
 
-  it("calls expireStaleScans with maxAgeMinutes = 15", async () => {
+  it("calls expireStaleScans with the shared per-status thresholds", async () => {
     await runWatchStaleScans();
 
     expect(mockExpireStaleScans).toHaveBeenCalledOnce();
-    expect(mockExpireStaleScans).toHaveBeenCalledWith(15);
+    expect(mockExpireStaleScans).toHaveBeenCalledWith(DEFAULT_STALE_SCAN_THRESHOLDS);
   });
 
-  it("logs a warning with staleCount, expiredCount, and maxAgeMinutes", async () => {
+  it("logs a warning with staleCount, expiredCount, and both thresholds", async () => {
     await runWatchStaleScans();
 
     expect(mockLoggerWarn).toHaveBeenCalledOnce();
     const [message, context] = mockLoggerWarn.mock.calls[0];
     expect(message).toContain("expired stale scan");
-    expect(context).toMatchObject({ staleCount: 3, expiredCount: 3, maxAgeMinutes: 15 });
+    expect(context).toMatchObject({
+      staleCount: 3,
+      expiredCount: 3,
+      pendingMaxAgeMinutes: DEFAULT_STALE_SCAN_THRESHOLDS.pendingMaxAgeMinutes,
+      inProgressMaxAgeMinutes: DEFAULT_STALE_SCAN_THRESHOLDS.inProgressMaxAgeMinutes,
+    });
   });
 
   it("does not log an info no-op message when scans are expired", async () => {
@@ -191,11 +211,15 @@ describe("watchStaleScans — partial expiry", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Count query correctness — scans under 15 min old are not stale
+// Count/update predicate agreement (LOG-6, #2-A)
+//
+// The early-exit is only correct if the count query and the UPDATE select the
+// SAME rows. Both derive from buildStaleScanWhere(thresholds), so with the clock
+// frozen the count's where must deep-equal a freshly built predicate.
 // ---------------------------------------------------------------------------
 
-describe("watchStaleScans — count query uses 15-minute cutoff", () => {
-  it("passes the correct statuses and cutoff to db.scan.count", async () => {
+describe("watchStaleScans — count and update predicates agree", () => {
+  it("counts using exactly buildStaleScanWhere(thresholds)", async () => {
     const now = 1_700_000_000_000; // fixed epoch for determinism
     vi.setSystemTime(now);
     mockDbScanCount.mockResolvedValue(0);
@@ -205,14 +229,26 @@ describe("watchStaleScans — count query uses 15-minute cutoff", () => {
     expect(mockDbScanCount).toHaveBeenCalledOnce();
     const queryArg = mockDbScanCount.mock.calls[0][0];
 
-    // Status filter must include both stuck states
-    expect(queryArg.where.status.in).toContain("PENDING");
-    expect(queryArg.where.status.in).toContain("IN_PROGRESS");
+    // Frozen time → the predicate the count used must equal a fresh one built
+    // from the same shared thresholds (the same builder expireStaleScans uses).
+    expect(queryArg.where).toEqual(buildStaleScanWhere(DEFAULT_STALE_SCAN_THRESHOLDS));
 
-    // Cutoff must be exactly 15 minutes ago
-    const expectedCutoff = new Date(now - 15 * 60 * 1000);
-    expect(queryArg.where.createdAt.lt).toEqual(expectedCutoff);
+    // Sanity: the predicate ORs the two status-specific branches.
+    const statuses = queryArg.where.OR.map((b: { status: string }) => b.status);
+    expect(statuses).toContain("PENDING");
+    expect(statuses).toContain("IN_PROGRESS");
 
     vi.useRealTimers();
+  });
+
+  it("counts and expires using identical thresholds (no drift between steps)", async () => {
+    mockDbScanCount.mockResolvedValue(2);
+    mockExpireStaleScans.mockResolvedValue(2);
+
+    await runWatchStaleScans();
+
+    // expireStaleScans (the UPDATE) receives the same thresholds the count built
+    // its predicate from, so neither can select rows the other misses.
+    expect(mockExpireStaleScans).toHaveBeenCalledWith(DEFAULT_STALE_SCAN_THRESHOLDS);
   });
 });

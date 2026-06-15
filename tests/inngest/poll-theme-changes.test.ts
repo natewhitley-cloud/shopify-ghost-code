@@ -34,6 +34,8 @@ vi.mock("../../app/db.server", () => ({
 // live in tests/models/scan.server.test.ts.
 vi.mock("../../app/models/scan.server", () => ({
   expireStaleScans: vi.fn().mockResolvedValue(0),
+  // The coordinator passes these shared thresholds to expireStaleScans (LOG-6).
+  DEFAULT_STALE_SCAN_THRESHOLDS: { pendingMaxAgeMinutes: 15, inProgressMaxAgeMinutes: 30 },
 }));
 
 vi.mock("../../inngest/client", () => ({

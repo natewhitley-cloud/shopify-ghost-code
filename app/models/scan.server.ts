@@ -1,6 +1,7 @@
-import { ScanStatus } from "@prisma/client";
+import { Prisma, ScanStatus } from "@prisma/client";
 
 import db from "../db.server";
+import { logger } from "../lib/logger.server";
 
 /**
  * Terminal statuses that represent a successful, usable scan.
@@ -169,6 +170,15 @@ export async function updateScanStatus(scanId: string, status: ScanStatus, findi
 }
 
 /**
+ * Outcome of a finalizeScan call.
+ *
+ * `finalized` is true when this call actually transitioned the scan to its
+ * terminal success status. It is false when the resurrection guard blocked the
+ * write because the scan was no longer IN_PROGRESS (see finalizeScan docs).
+ */
+export type FinalizeScanResult = { finalized: boolean };
+
+/**
  * Mark a scan with its final, terminal status after ALL audit steps have run
  * (LOG-4). This is the single point at which a scan becomes COMPLETED or
  * PARTIAL — the core theme step (saveThemeFindings) deliberately leaves it
@@ -180,7 +190,26 @@ export async function updateScanStatus(scanId: string, status: ScanStatus, findi
  * persisted so the diff engine never treats an un-audited category's prior
  * findings as "resolved".
  *
- * Idempotent: a single scan.update, safe to re-run on an Inngest retry.
+ * Resurrection guard (LOG-6, #2-A): the watchdog (watch-stale-scans) can mark a
+ * still-running scan FAILED if it overruns the in-progress threshold. Without a
+ * guard, this worker would later blindly UPDATE that row back to COMPLETED/
+ * PARTIAL — silently resurrecting a terminal scan and producing out-of-order
+ * history alongside whatever replacement scan was started in the meantime. To
+ * prevent this we transition ONLY rows still in IN_PROGRESS, using a conditional
+ * `updateMany` (where status = IN_PROGRESS) and checking the affected count.
+ * This is race-safe: of two concurrent finalizers (or a finalizer racing the
+ * watchdog), at most one updateMany matches the IN_PROGRESS row, so only one can
+ * win — no read-then-write TOCTOU window.
+ *
+ * When the guard blocks the write (zero rows affected), we do NOT throw: a throw
+ * inside the Inngest finalize step would trigger confusing retries that can
+ * never succeed (the scan is already terminal). Instead we log a clear warning
+ * and return `{ finalized: false }` so the caller can proceed without a retry
+ * storm. The happy path (an IN_PROGRESS scan) is unaffected and returns
+ * `{ finalized: true }`.
+ *
+ * Idempotent: a no-op on an Inngest retry that already finalized the scan (the
+ * row is no longer IN_PROGRESS), reported via `finalized: false`.
  */
 export async function finalizeScan(
   scanId: string,
@@ -189,9 +218,12 @@ export async function finalizeScan(
     findingCount: number;
     skippedCategories: string[];
   },
-) {
-  return db.scan.update({
-    where: { id: scanId },
+): Promise<FinalizeScanResult> {
+  const result = await db.scan.updateMany({
+    // Conditional write: only an IN_PROGRESS scan may be finalized. A scan the
+    // watchdog already marked FAILED (or a concurrent finalizer already moved to
+    // COMPLETED/PARTIAL) will not match, so it cannot be resurrected.
+    where: { id: scanId, status: ScanStatus.IN_PROGRESS },
     data: {
       status: args.status,
       completedAt: new Date(),
@@ -199,6 +231,24 @@ export async function finalizeScan(
       skippedCategories: args.skippedCategories,
     },
   });
+
+  if (result.count === 0) {
+    // Read the current status purely to make the log actionable (this path is
+    // rare and off the hot path; it is not part of the race-safe write).
+    const current = await db.scan.findUnique({
+      where: { id: scanId },
+      select: { status: true },
+    });
+    logger.warn("finalizeScan skipped: scan was no longer IN_PROGRESS", {
+      function: "finalizeScan",
+      scanId,
+      attemptedStatus: args.status,
+      currentStatus: current?.status ?? "MISSING",
+    });
+    return { finalized: false };
+  }
+
+  return { finalized: true };
 }
 
 /**
@@ -274,22 +324,90 @@ export async function countScansForShopSince(shopId: string, since: Date): Promi
 }
 
 /**
- * Mark stale scans as FAILED.  A scan is "stale" if it has been PENDING or
- * IN_PROGRESS for longer than `maxAgeMinutes` (default 30).
+ * Per-status staleness thresholds for the stale-scan watchdog (LOG-6, #2-A).
  *
- * This is called by the daily cron coordinator before fanning out per-shop
- * checks so that shops whose scan jobs crashed or timed out are unblocked
- * before new scans are attempted.
+ * PENDING and IN_PROGRESS are aged off DIFFERENT clocks:
+ *   - A PENDING scan has never started, so it is aged from `createdAt`. If it
+ *     has not been picked up within `pendingMaxAgeMinutes` it is genuinely stuck.
+ *   - An IN_PROGRESS scan is aged from `startedAt`, NOT `createdAt`. A legitimate
+ *     long scan (rate-limit sleeps in theme-fetcher + Inngest retry backoff) can
+ *     sit far past `createdAt + pendingMaxAgeMinutes` while still healthy. Aging
+ *     it from `startedAt` with a longer `inProgressMaxAgeMinutes` stops the
+ *     watchdog from falsely FAILing a job that is still running (the LOG-6 bug).
+ */
+export type StaleScanThresholds = {
+  pendingMaxAgeMinutes: number;
+  inProgressMaxAgeMinutes: number;
+};
+
+/**
+ * Default staleness thresholds shared by every caller that expires stale scans
+ * (the 10-minute watchdog and the daily poll-theme-changes coordinator) so the
+ * cutoffs stay defined in exactly one place.
+ *
+ * - pendingMaxAgeMinutes (15): a scan that never started within 15 minutes is
+ *   genuinely stuck in the queue.
+ * - inProgressMaxAgeMinutes (30): aged from startedAt; long enough to tolerate
+ *   rate-limit sleeps plus Inngest retry backoff on a healthy long-running scan,
+ *   short enough to unblock a shop within a reasonable window when a worker
+ *   crashed mid-scan.
+ */
+export const DEFAULT_STALE_SCAN_THRESHOLDS: StaleScanThresholds = {
+  pendingMaxAgeMinutes: 15,
+  inProgressMaxAgeMinutes: 30,
+};
+
+/**
+ * Build the Prisma `where` predicate identifying stale scans, shared by both the
+ * watchdog's pre-update count query and `expireStaleScans`'s UPDATE so the two
+ * can never drift (DRY — a counted-but-not-expired or expired-but-not-counted
+ * scan would make the watchdog's early-exit and its logs disagree).
+ *
+ * The predicate is an OR of two status-specific branches:
+ *   - PENDING:     createdAt older than the pending cutoff.
+ *   - IN_PROGRESS: startedAt older than the in-progress cutoff. If `startedAt`
+ *     is somehow null on an IN_PROGRESS row (it should always be set by
+ *     updateScanStatus, but the column is nullable), fall back to `createdAt` so
+ *     the row can still eventually be expired rather than getting stuck forever.
+ */
+export function buildStaleScanWhere(thresholds: StaleScanThresholds): Prisma.ScanWhereInput {
+  const now = Date.now();
+  const pendingCutoff = new Date(now - thresholds.pendingMaxAgeMinutes * 60 * 1000);
+  const inProgressCutoff = new Date(now - thresholds.inProgressMaxAgeMinutes * 60 * 1000);
+
+  return {
+    OR: [
+      {
+        status: ScanStatus.PENDING,
+        createdAt: { lt: pendingCutoff },
+      },
+      {
+        status: ScanStatus.IN_PROGRESS,
+        OR: [
+          { startedAt: { lt: inProgressCutoff } },
+          // Defensive fallback for an IN_PROGRESS row with no startedAt.
+          { startedAt: null, createdAt: { lt: inProgressCutoff } },
+        ],
+      },
+    ],
+  };
+}
+
+/**
+ * Mark stale scans as FAILED using per-status thresholds (LOG-6, #2-A).
+ *
+ * A scan is "stale" when it matches `buildStaleScanWhere`: a PENDING scan older
+ * than `pendingMaxAgeMinutes` (aged from createdAt) or an IN_PROGRESS scan older
+ * than `inProgressMaxAgeMinutes` (aged from startedAt, with a createdAt
+ * fallback). This is called by the watchdog cron so that shops whose scan jobs
+ * crashed or timed out are unblocked, without falsely failing legitimately
+ * long-running scans.
  *
  * Returns the number of scans cleaned up.
  */
-export async function expireStaleScans(maxAgeMinutes = 30): Promise<number> {
-  const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+export async function expireStaleScans(thresholds: StaleScanThresholds): Promise<number> {
   const result = await db.scan.updateMany({
-    where: {
-      status: { in: [ScanStatus.PENDING, ScanStatus.IN_PROGRESS] },
-      createdAt: { lt: cutoff },
-    },
+    where: buildStaleScanWhere(thresholds),
     data: {
       status: ScanStatus.FAILED,
       completedAt: new Date(),
