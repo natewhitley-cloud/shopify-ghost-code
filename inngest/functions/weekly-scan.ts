@@ -24,6 +24,7 @@
 
 import { PLANS } from "../../app/lib/billing.server";
 import { inngest } from "../client";
+import { fanOutShopChecks } from "../lib/fan-out";
 
 export const weeklyScan = inngest.createFunction(
   { id: "weekly-scan", name: "Weekly Scheduled Scan (Coordinator)" },
@@ -50,23 +51,13 @@ export const weeklyScan = inngest.createFunction(
     }
 
     // -------------------------------------------------------------------------
-    // Step 2: Send one `poll/check-shop` event per shop.
-    // Reuses the same worker as poll-theme-changes — no duplication of
-    // per-shop logic. Inngest batches up to 512 events in a single send() call.
+    // Step 2: Fan out one `poll/check-shop` event per shop. Reuses the same
+    // worker as poll-theme-changes — no duplication of per-shop logic. The
+    // shared helper chunks at 500 events/send to respect Inngest's 512-event
+    // send() cap (a hard cap, not auto-batching) and sends each chunk in its
+    // own named step for retry-safe redelivery. See inngest/lib/fan-out.ts.
     // -------------------------------------------------------------------------
-    await step.run("fan-out-shop-events", async () => {
-      await (
-        await import("../client")
-      ).inngest.send(
-        shops.map((shop) => ({
-          name: "poll/check-shop" as const,
-          data: {
-            shopId: shop.id,
-            shopDomain: shop.domain,
-          },
-        })),
-      );
-    });
+    await fanOutShopChecks(step, shops);
 
     logger.info("[weekly-scan] Coordinator complete", {
       total: shops.length,
