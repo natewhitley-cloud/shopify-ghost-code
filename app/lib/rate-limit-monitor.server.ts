@@ -1,13 +1,22 @@
 /**
- * Rate-limit proximity alerting utility.
+ * Rate-limit module: throttle parsing, proximity alerting, and backoff.
  *
- * Inspects the throttleStatus returned by Shopify's GraphQL API and logs
- * structured warnings when a shop is close to exhausting its query budget.
+ * This is the single home for everything that reads Shopify's GraphQL
+ * `extensions.cost.throttleStatus`:
  *
- * This is an operational signal only — no database writes, no in-memory state.
- * Call this after every GraphQL response that includes throttle status.
+ *   - {@link parseThrottleStatus}  — extract the throttle block once.
+ *   - {@link checkThrottleStatus} / {@link checkThrottleStatusFromExtensions}
+ *                                  — operational alerting (warn/error logs).
+ *   - {@link checkRateLimit}       — proactive backoff: sleep when headroom is
+ *                                    low so the next request does not throttle.
+ *   - {@link isThrottledError}     — classify a GraphQL error as THROTTLED so a
+ *                                    paginated fetch can retry instead of fail.
  *
- * Thresholds:
+ * Alerting is an operational signal only — no database writes, no in-memory
+ * state. Backoff sleeps the current async task; callers `await` it after each
+ * paginated page.
+ *
+ * Thresholds (alerting):
  *   < 20% remaining  →  logger.warn  (rate-limit-proximity)
  *   <  5% remaining  →  logger.error (rate-limit-critical) → forwarded to Sentry
  */
@@ -21,8 +30,116 @@ export type ThrottleStatus = {
   restoreRate: number;
 };
 
+/**
+ * Loosely-parsed throttle block. Each field is present only when it was a
+ * number in the response; absent/non-numeric fields are dropped so callers can
+ * decide whether to require them.
+ */
+export type ParsedThrottleStatus = {
+  currentlyAvailable?: number;
+  maximumAvailable?: number;
+  restoreRate?: number;
+};
+
 const WARN_THRESHOLD = 0.2; // 20% remaining
 const ERROR_THRESHOLD = 0.05; // 5% remaining
+
+/**
+ * Below this many query-cost points of headroom, {@link checkRateLimit} sleeps
+ * to let the bucket refill before the next request.
+ */
+const RATE_LIMIT_THRESHOLD = 100;
+
+/** Default restore rate (points/sec) assumed when the response omits it. */
+const DEFAULT_RESTORE_RATE = 50;
+
+/**
+ * Extract the `cost.throttleStatus` block from a raw GraphQL `extensions`
+ * value. The single parser shared by alerting and backoff (QLT-4).
+ *
+ * @param extensions  Raw extensions value from a GraphQL JSON response.
+ * @returns A {@link ParsedThrottleStatus} with only the numeric fields that
+ *          were present, or `null` if no throttleStatus block exists at all.
+ */
+export function parseThrottleStatus(extensions: unknown): ParsedThrottleStatus | null {
+  const ext = extensions as Record<string, unknown> | null | undefined;
+  if (!ext) return null;
+
+  const cost = ext.cost as Record<string, unknown> | null | undefined;
+  if (!cost) return null;
+
+  const throttle = cost.throttleStatus as Record<string, unknown> | null | undefined;
+  if (!throttle) return null;
+
+  const parsed: ParsedThrottleStatus = {};
+  if (typeof throttle.currentlyAvailable === "number") {
+    parsed.currentlyAvailable = throttle.currentlyAvailable;
+  }
+  if (typeof throttle.maximumAvailable === "number") {
+    parsed.maximumAvailable = throttle.maximumAvailable;
+  }
+  if (typeof throttle.restoreRate === "number") {
+    parsed.restoreRate = throttle.restoreRate;
+  }
+  return parsed;
+}
+
+/** Minimal shape of a GraphQL error entry we inspect for a THROTTLED code. */
+type GraphQLErrorLike = {
+  message?: unknown;
+  extensions?: { code?: unknown } | null;
+};
+
+/**
+ * True when a GraphQL error represents a rate-limit (THROTTLED) failure.
+ *
+ * Shopify returns `extensions.code === "THROTTLED"`; we also match a "throttled"
+ * message as a fallback for responses that omit the machine-readable code.
+ * Used by the pagination helper to back off and resume rather than fail the
+ * whole step (PRF-3).
+ */
+export function isThrottledError(error: GraphQLErrorLike | null | undefined): boolean {
+  if (!error) return false;
+  const code = error.extensions?.code;
+  if (typeof code === "string" && code.toUpperCase() === "THROTTLED") {
+    return true;
+  }
+  return typeof error.message === "string" && /throttled/i.test(error.message);
+}
+
+/**
+ * Inspect throttleStatus and sleep if headroom is low, so the next paginated
+ * request does not get throttled. Proactive backoff (QLT-4).
+ *
+ * Previously lived in `theme-fetcher.server.ts` with its own duplicate parser
+ * and a hard-coded `[theme-fetcher]` log prefix even when called by the product,
+ * content, redirect, and translation fetchers. It now lives here, parses via
+ * {@link parseThrottleStatus}, and logs a neutral `[rate-limit]` prefix.
+ *
+ * @param extensions  Raw extensions object from a GraphQL response.
+ * @returns           Currently available query-cost points (after any sleep).
+ *                    `Infinity` when the response carries no throttle status.
+ */
+export async function checkRateLimit(extensions: unknown): Promise<number> {
+  const throttle = parseThrottleStatus(extensions);
+  if (!throttle) return Infinity;
+
+  const currentlyAvailable = throttle.currentlyAvailable ?? 0;
+  const restoreRate = throttle.restoreRate ?? DEFAULT_RESTORE_RATE;
+
+  if (currentlyAvailable < RATE_LIMIT_THRESHOLD) {
+    const pointsNeeded = RATE_LIMIT_THRESHOLD - currentlyAvailable;
+    const sleepMs = Math.ceil((pointsNeeded / restoreRate) * 1000);
+    console.log(
+      `[rate-limit] Headroom low (${currentlyAvailable} pts). ` +
+        `Sleeping ${sleepMs}ms to restore capacity.`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, sleepMs));
+    return RATE_LIMIT_THRESHOLD; // optimistic — we just waited for it
+  }
+
+  return currentlyAvailable;
+}
 
 /**
  * Check the current throttle status for a shop and log a warning or error
@@ -74,38 +191,22 @@ export function checkThrottleStatus(shopDomain: string, throttleStatus: Throttle
  * @param extensions  Raw extensions value from a GraphQL JSON response.
  */
 export function checkThrottleStatusFromExtensions(shopDomain: string, extensions: unknown): void {
-  const ext = extensions as Record<string, unknown> | null | undefined;
-  if (!ext) return;
-
-  const cost = ext.cost as Record<string, unknown> | null | undefined;
-  if (!cost) return;
-
-  const throttle = cost.throttleStatus as
-    | {
-        currentlyAvailable?: unknown;
-        maximumAvailable?: unknown;
-        restoreRate?: unknown;
-      }
-    | null
-    | undefined;
+  const throttle = parseThrottleStatus(extensions);
   if (!throttle) return;
 
-  const currentlyAvailable = throttle.currentlyAvailable;
-  const maximumAvailable = throttle.maximumAvailable;
-  const restoreRate = throttle.restoreRate;
-
-  // Validate all three fields are numbers before calling the core function.
+  // Alerting needs all three fields; skip silently if any is missing or
+  // non-numeric (parseThrottleStatus already dropped non-numeric fields).
   if (
-    typeof currentlyAvailable !== "number" ||
-    typeof maximumAvailable !== "number" ||
-    typeof restoreRate !== "number"
+    throttle.currentlyAvailable === undefined ||
+    throttle.maximumAvailable === undefined ||
+    throttle.restoreRate === undefined
   ) {
     return;
   }
 
   checkThrottleStatus(shopDomain, {
-    currentlyAvailable,
-    maximumAvailable,
-    restoreRate,
+    currentlyAvailable: throttle.currentlyAvailable,
+    maximumAvailable: throttle.maximumAvailable,
+    restoreRate: throttle.restoreRate,
   });
 }
