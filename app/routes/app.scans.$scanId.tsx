@@ -1,18 +1,21 @@
-import type { Finding } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData, useRevalidator, useFetcher } from "react-router";
+import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
 import { hasVisualImpact } from "../lib/finding-classification";
-import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
-import { formatDate, statusTone, statusLabel, isSuccessfulScan } from "../lib/format";
+import { formatDate, isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
-import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
-import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.server";
-import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
+import { canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
+import {
+  getAppAttributionForScan,
+  getFindingsPageForScan,
+  getFindingSummary,
+  getHighestSeverityFinding,
+} from "../models/finding.server";
+import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
   findUnknownScriptForShop,
@@ -21,7 +24,6 @@ import {
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import type { ScanDiff } from "../services/scan-differ.server";
-import { diffScans } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
 import {
   BG_SURFACE,
@@ -180,6 +182,9 @@ function FindingsTable({ children }: { children: React.ReactNode }) {
 // Loader
 // ---------------------------------------------------------------------------
 
+/** Number of findings per page. */
+const PAGE_SIZE = 50;
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { scanId } = params;
@@ -198,48 +203,50 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // findings JOIN for free-tier shops that cannot view finding details.
   const canViewDetails = canViewFindingDetails(shop.plan);
 
-  const scan = await getScanById(scanId, { includeFindings: canViewDetails });
+  // The scan is always fetched without inline findings. Findings are either
+  // paginated (paid plan) or fetched as a single preview (free plan) via
+  // separate queries below, keeping this query lightweight.
+  const scan = await getScanById(scanId, { includeFindings: false });
 
   // Verify the scan exists and belongs to the authenticated shop.
   if (!scan || scan.shopId !== shop.id) {
     throw new Response("Not found", { status: 404 });
   }
 
-  // Group 1: independent queries that only require `scan` to be resolved.
-  const [findingSummary, rawPreviewFinding, previousScan, unknownScripts] = await Promise.all([
-    getFindingSummary(scanId),
-    // Free-tier only: fetch a single preview finding (paid users get full array).
-    canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
-    // Diff: only needed for successful scans on plans that support diffing.
-    isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan)
-      ? getPreviousScanForTheme(scan.shopId, scan.themeId, scan.createdAt)
-      : Promise.resolve(null),
-    // Unknown scripts: only for successful scans when user can view details.
-    isSuccessfulScan(scan.status) && canViewDetails
-      ? getUnknownScriptsForScan(scanId)
-      : Promise.resolve([]),
-  ]);
+  // Parse cursor from URL for findings pagination (paid plans only).
+  const url = new URL(request.url);
+  const findingsCursor = url.searchParams.get("cursor") || undefined;
 
-  // Group 2: depends on findingSummary from Group 1.
+  // Parallel queries — all independent of each other once `scan` is resolved.
+  const [findingSummary, rawPreviewFinding, findingsPage, appAttributionData, unknownScripts] =
+    await Promise.all([
+      getFindingSummary(scanId),
+      // Free-tier only: fetch a single preview finding (paid users get a page).
+      canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
+      // Paid plan: paginated findings for the current page.
+      // Free plan or non-completed scans: empty page (findings not shown).
+      canViewDetails && isSuccessfulScan(scan.status)
+        ? getFindingsPageForScan(scanId, { limit: PAGE_SIZE, cursor: findingsCursor })
+        : Promise.resolve({ items: [], hasNextPage: false, nextCursor: null }),
+      // App Impact Map data: lean attribution query (all scans, no pagination).
+      // Only needed when the user can view details AND the scan succeeded.
+      canViewDetails && isSuccessfulScan(scan.status)
+        ? getAppAttributionForScan(scanId)
+        : Promise.resolve([] as Awaited<ReturnType<typeof getAppAttributionForScan>>),
+      // Unknown scripts: only for successful scans when user can view details.
+      isSuccessfulScan(scan.status) && canViewDetails
+        ? getUnknownScriptsForScan(scanId)
+        : Promise.resolve([]),
+    ]);
+
   // Compute health score for successful scans (COMPLETED or PARTIAL).
   let healthScore: HealthScoreResult | null = null;
   if (isSuccessfulScan(scan.status)) {
     healthScore = computeHealthScore(findingSummary.bySeverity);
   }
 
-  // For free-tier shops, omit the full findings array from the response to
-  // avoid leaking detail data to the client. Paid users get the full array;
-  // free users get an empty array (they receive previewFinding instead).
-  // When canViewDetails is false, getScanById was called without includeFindings
-  // so scan.findings is undefined — fall through to the empty array default.
-  const findings: Finding[] =
-    canViewDetails && "findings" in scan ? (scan.findings as Finding[]) : [];
-
-  // Sort findings by severity (HIGH → MEDIUM → LOW), then by type, file, line.
-  sortFindingsBySeverity(findings);
-
-  // Enrich findings with tracker flag for privacy callout badges.
-  const enrichedFindings = (findings ?? []).map((f) => ({
+  // Enrich each finding on the current page with the tracker flag.
+  const enrichedFindingsPage = findingsPage.items.map((f) => ({
     ...f,
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
@@ -252,20 +259,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       }
     : null;
 
-  // Compute diff against the previous completed scan for the same theme.
-  // scanDiffing is only enabled for plans that also have showFindingDetails,
-  // so `findings` is guaranteed to be populated when this branch is reached.
-  let scanDiff: ScanDiff | null = null;
-  if (previousScan) {
-    // Exclude prior findings in categories THIS scan skipped for missing scope,
-    // so an un-audited category is never reported as falsely "resolved" (LOG-4).
-    scanDiff = diffScans(findings, previousScan.findings, {
-      skippedCategories: scan.skippedCategories,
-    });
-    // Sort diff finding arrays by severity for consistent display order.
-    sortDiffFindingsBySeverity(scanDiff.newFindings);
-    sortDiffFindingsBySeverity(scanDiff.resolvedFindings);
-  }
+  // Whether this shop+plan combination can trigger the diff resource route.
+  // Exposed to the component so it knows whether to issue the useFetcher call.
+  const canUseDiffing = isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan);
 
   return {
     scan: {
@@ -277,13 +273,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       createdAt: scan.createdAt,
       findingCount: scan.findingCount,
     },
-    findings: enrichedFindings,
+    findings: enrichedFindingsPage,
+    findingsPagination: {
+      hasNextPage: findingsPage.hasNextPage,
+      nextCursor: findingsPage.nextCursor,
+    },
     previewFinding,
     findingSummary,
     canViewDetails,
-    scanDiff,
+    canUseDiffing,
     healthScore,
     unknownScripts,
+    appAttributionData,
   };
 };
 
@@ -413,13 +414,22 @@ export default function ScanDetail() {
   const {
     scan,
     findings,
+    findingsPagination,
     previewFinding,
     findingSummary,
     canViewDetails,
-    scanDiff,
+    canUseDiffing,
     healthScore,
     unknownScripts,
+    appAttributionData,
   } = useLoaderData<typeof loader>();
+
+  // Diff is loaded lazily via a resource route to avoid blocking the main page
+  // render on the expensive full-findings load for two scans (PRF-2).
+  const diffFetcher = useFetcher<{ scanDiff: ScanDiff | null }>();
+  // Ref prevents the diff from being re-requested on subsequent renders
+  // (e.g. after a poll revalidate while scan was still running).
+  const diffLoadTriggered = useRef(false);
 
   const revalidator = useRevalidator();
 
@@ -487,12 +497,28 @@ export default function ScanDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scan.status, pollingTimedOut]);
 
+  // Load the diff once for completed scans on eligible plans.
+  // Uses a resource route to avoid blocking the main page render on the
+  // expensive full-findings load for two scans (PRF-2 — see .diff.tsx route).
+  // The ref guard prevents re-loading on subsequent poll-triggered re-renders.
+  const isCompleted = isSuccessfulScan(scan.status);
+  useEffect(() => {
+    if (!isCompleted || !canUseDiffing || diffLoadTriggered.current) return;
+    diffLoadTriggered.current = true;
+    diffFetcher.load(`/app/scans/${scan.id}/diff`);
+    // diffFetcher is a stable object; isCompleted, canUseDiffing, scan.id
+    // are the meaningful dependencies here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCompleted, canUseDiffing, scan.id]);
+
   const status = scan.status as ScanStatus;
   const summary = findingSummary.bySeverity;
 
   const isFailed = scan.status === "FAILED";
   const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
-  const isCompleted = isSuccessfulScan(scan.status);
+
+  // Diff from the lazy resource route — null until the fetcher resolves.
+  const scanDiff = diffFetcher.data?.scanDiff ?? null;
 
   // Compute per-severity diff counts from scanDiff arrays.
   const severityDiff = scanDiff
@@ -519,20 +545,21 @@ export default function ScanDetail() {
   const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
   const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
 
-  // Performance impact: count external resources from uninstalled apps.
-  const externalResourceCount = findings.filter(
-    (f) => f.findingType === "GHOST_SCRIPT" || f.findingType === "GHOST_STYLE",
-  ).length;
-  const scriptCount = findings.filter((f) => f.findingType === "GHOST_SCRIPT").length;
-  const styleCount = findings.filter((f) => f.findingType === "GHOST_STYLE").length;
+  // Performance impact counts derived from the findingSummary aggregate (covers
+  // all findings, not just the current page). Previously computed by filtering
+  // the full findings array; now derived from the summary to avoid sending the
+  // full findings to the client.
+  const scriptCount = findingSummary.byType.GHOST_SCRIPT;
+  const styleCount = findingSummary.byType.GHOST_STYLE;
+  const externalResourceCount = scriptCount + styleCount;
 
-  // Build app attribution map: appName -> { files, findingCount, findingTypes }
+  // Build app attribution map from the pre-fetched lean attribution data
+  // (appName, filename, findingType only — no codeSnippet/description).
   const appAttribution = new Map<
     string,
     { files: Set<string>; count: number; types: Set<string> }
   >();
-  for (const f of findings) {
-    if (!f.appName) continue;
+  for (const f of appAttributionData) {
     if (!appAttribution.has(f.appName)) {
       appAttribution.set(f.appName, { files: new Set(), count: 0, types: new Set() });
     }
@@ -543,6 +570,7 @@ export default function ScanDetail() {
   }
 
   // Build a Set of fingerprints for new findings so we can tag rows in the table.
+  // Available once the diff fetcher resolves; rows render without the badge until then.
   const newFindingKeys = new Set(
     scanDiff
       ? scanDiff.newFindings.map(
@@ -993,17 +1021,30 @@ export default function ScanDetail() {
                 {findings.length === 0 ? (
                   <s-paragraph>No ghost code detected in this scan.</s-paragraph>
                 ) : (
-                  <FindingsTable>
-                    {findings.map((finding) => (
-                      <FindingRow
-                        key={finding.id}
-                        finding={finding}
-                        isNew={newFindingKeys.has(
-                          `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
-                        )}
-                      />
-                    ))}
-                  </FindingsTable>
+                  <>
+                    <FindingsTable>
+                      {findings.map((finding) => (
+                        <FindingRow
+                          key={finding.id}
+                          finding={finding}
+                          isNew={newFindingKeys.has(
+                            `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
+                          )}
+                        />
+                      ))}
+                    </FindingsTable>
+                    {findingsPagination.hasNextPage && (
+                      <s-box padding-block-start="base">
+                        <s-stack direction="inline" gap="base">
+                          <Link
+                            to={`/app/scans/${scan.id}?cursor=${findingsPagination.nextCursor}`}
+                          >
+                            Load More
+                          </Link>
+                        </s-stack>
+                      </s-box>
+                    )}
+                  </>
                 )}
               </s-stack>
             </s-card>
