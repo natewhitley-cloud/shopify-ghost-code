@@ -1,10 +1,10 @@
 import type { ActionFunctionArgs } from "react-router";
 
-import { PLANS } from "../lib/billing.server";
+import { PLAN_RANK, PLANS, resolvePlanFromSubscription } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { type BillingEventType, recordBillingEvent } from "../models/billing-event.server";
 import { getShopMetadata, updateShopPlanByDomain } from "../models/shop.server";
-import { authenticate, PLAN_STANDARD, PLAN_PROFESSIONAL } from "../shopify.server";
+import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
 // Plan price table — amounts match billing config in shopify.server.ts.
@@ -26,43 +26,10 @@ const PLAN_AMOUNTS: Record<string, number | undefined> = {
 //   app_subscription.status  — ACTIVE | CANCELLED | DECLINED | EXPIRED | FROZEN | PENDING
 //   app_subscription.name    — the plan name string we set in billing config
 //
-// We map ACTIVE subscriptions to the corresponding plan tier.
-// All non-ACTIVE statuses revert the shop to FREE.
-
-const SHOPIFY_SUBSCRIPTION_ACTIVE = "ACTIVE";
-
-// Plan rank for upgrade/downgrade detection. Higher rank = higher tier.
-const PLAN_RANK: Record<string, number> = {
-  [PLANS.FREE]: 0,
-  [PLANS.STANDARD]: 1,
-  [PLANS.PROFESSIONAL]: 2,
-};
-
-/**
- * Map a Shopify plan name + status to the internal plan string stored on Shop.
- *
- * - ACTIVE + known plan name → the matching tier (Standard or Professional)
- * - Anything else (cancelled, declined, expired, unknown name) → FREE
- */
-function resolvePlanFromSubscription(
-  planName: string | undefined,
-  status: string | undefined,
-): string {
-  if (status !== SHOPIFY_SUBSCRIPTION_ACTIVE) {
-    return PLANS.FREE;
-  }
-
-  switch (planName) {
-    case PLAN_STANDARD:
-      return PLANS.STANDARD;
-    case PLAN_PROFESSIONAL:
-      return PLANS.PROFESSIONAL;
-    default:
-      // Unknown plan name — treat as downgrade to free rather than silently
-      // granting paid features. Logs below will surface this for investigation.
-      return PLANS.FREE;
-  }
-}
+// We map ACTIVE subscriptions to the corresponding plan tier; all non-ACTIVE
+// statuses revert the shop to FREE. The mapping (resolvePlanFromSubscription)
+// and PLAN_RANK live in lib/billing.server.ts so the on-load reconciler applies
+// the EXACT same logic when correcting webhook drift.
 
 /**
  * Determine the billing event type by comparing old and new plan tiers.

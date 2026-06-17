@@ -48,6 +48,7 @@ import {
   getShopMetadata,
   upsertShop,
   updateShopPlanByDomain,
+  stampPlanReconciledAt,
   updateThemePublishTimestamp,
   dismissReviewPrompt,
   deleteShopData,
@@ -81,6 +82,7 @@ describe("getShopMetadata", () => {
         id: true,
         domain: true,
         plan: true,
+        planReconciledAt: true,
         installedAt: true,
         lastThemePublishAt: true,
         hasSeenReviewPrompt: true,
@@ -247,7 +249,7 @@ describe("updateShopPlanByDomain", () => {
 
     expect(mockDb.shop.update).toHaveBeenCalledWith({
       where: { domain: "test-shop.myshopify.com" },
-      data: { plan: "Standard" },
+      data: { plan: "Standard", planReconciledAt: expect.any(Date) },
       select: { id: true, domain: true, plan: true },
     });
     expect(result).toEqual({
@@ -255,6 +257,25 @@ describe("updateShopPlanByDomain", () => {
       domain: "test-shop.myshopify.com",
       plan: "Standard",
     });
+  });
+
+  it("stamps planReconciledAt to a Date alongside the plan write", async () => {
+    const existingShop = {
+      id: "shop-stamp",
+      domain: "stamp-shop.myshopify.com",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.shop.update.mockResolvedValue({
+      id: "shop-stamp",
+      domain: "stamp-shop.myshopify.com",
+      plan: "Standard",
+    });
+
+    await updateShopPlanByDomain("stamp-shop.myshopify.com", "Standard");
+
+    const callArg = mockDb.shop.update.mock.calls[0][0];
+    expect(callArg.data.planReconciledAt).toBeInstanceOf(Date);
   });
 
   it("persists the free plan string on downgrade", async () => {
@@ -273,7 +294,7 @@ describe("updateShopPlanByDomain", () => {
     const result = await updateShopPlanByDomain("another-shop.myshopify.com", "free");
 
     expect(mockDb.shop.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { plan: "free" } }),
+      expect.objectContaining({ data: { plan: "free", planReconciledAt: expect.any(Date) } }),
     );
     expect(result?.plan).toBe("free");
   });
@@ -294,9 +315,61 @@ describe("updateShopPlanByDomain", () => {
     const result = await updateShopPlanByDomain("pro-shop.myshopify.com", "Professional");
 
     expect(mockDb.shop.update).toHaveBeenCalledWith(
-      expect.objectContaining({ data: { plan: "Professional" } }),
+      expect.objectContaining({
+        data: { plan: "Professional", planReconciledAt: expect.any(Date) },
+      }),
     );
     expect(result?.plan).toBe("Professional");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// stampPlanReconciledAt
+// ---------------------------------------------------------------------------
+
+describe("stampPlanReconciledAt", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns null when the shop domain is not found in DB", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+
+    const result = await stampPlanReconciledAt("unknown.myshopify.com");
+
+    expect(result).toBeNull();
+    expect(mockDb.shop.update).not.toHaveBeenCalled();
+  });
+
+  it("updates only planReconciledAt (a Date) without touching the plan", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({
+      id: "shop-noop",
+      domain: "noop-shop.myshopify.com",
+      plan: "Standard",
+    });
+    mockDb.shop.update.mockResolvedValue({ id: "shop-noop" });
+
+    const result = await stampPlanReconciledAt("noop-shop.myshopify.com");
+
+    const callArg = mockDb.shop.update.mock.calls[0][0];
+    expect(callArg.where).toEqual({ domain: "noop-shop.myshopify.com" });
+    expect(callArg.data.planReconciledAt).toBeInstanceOf(Date);
+    expect(callArg.data).not.toHaveProperty("plan");
+    expect(callArg.select).toEqual({ id: true });
+    expect(result).toEqual({ id: "shop-noop" });
+  });
+
+  it("propagates a database error from update", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({
+      id: "shop-err",
+      domain: "err-shop.myshopify.com",
+      plan: "free",
+    });
+    mockDb.shop.update.mockRejectedValueOnce(new Error("DB write failed"));
+
+    await expect(stampPlanReconciledAt("err-shop.myshopify.com")).rejects.toThrow(
+      "DB write failed",
+    );
   });
 });
 

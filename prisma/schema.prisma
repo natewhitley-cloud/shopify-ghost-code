@@ -46,6 +46,11 @@ model Shop {
   domain                String               @unique
   installedAt           DateTime             @default(now())
   plan                  String               @default("free")
+  // Last time `plan` was reconciled against Shopify's actual active
+  // subscriptions (or refreshed by an APP_SUBSCRIPTIONS_UPDATE webhook). Null
+  // means never reconciled. Drives the app-load freshness guard so the
+  // reconciliation GraphQL query runs at most once per freshness window.
+  planReconciledAt      DateTime?
   lastThemePublishAt    DateTime?
   hasSeenReviewPrompt   Boolean              @default(false)
   scans                 Scan[]

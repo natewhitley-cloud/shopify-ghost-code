@@ -21,6 +21,7 @@
 **Purpose:** Let merchants discover they have a problem. The first scan is the marketing moment — generous on surface, tight on actionability. Showing the worst finding with full detail (file, line, snippet) creates maximum urgency while keeping the rest locked behind upgrade.
 
 **App listing features (max 40 chars each):**
+
 1. First scan always free
 2. 1 scan per month after first
 3. Severity counts + category breakdown
@@ -44,6 +45,7 @@
 **Purpose:** The mid-tier workhorse. Merchants get full finding details and weekly cadence — enough to stay on top of orphaned code without unlimited manual scans. The weekly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap creates clear daylight between Standard and Professional (unlimited).
 
 **App listing features (max 40 chars each):**
+
 1. All features in Free
 2. Full finding details with code
 3. 1 manual scan per week
@@ -63,6 +65,7 @@
 **Purpose:** "Set it and forget it" for multi-theme stores. Continuous monitoring with change tracking.
 
 **App listing features (max 40 chars each):**
+
 1. All features in Standard
 2. Unlimited scans
 3. Unlimited theme scanning
@@ -103,6 +106,7 @@
 - Plan stored as string on `Shop` model in Prisma (`plan` field, default `"free"`)
 - Plan changes arrive via `APP_SUBSCRIPTIONS_UPDATE` webhook
 - Unknown plan names or non-ACTIVE subscription statuses default to `"free"` (safe fallback)
+- **Plan reconciliation (drift guard):** the webhook is not the only source of truth. On app load, if the stored plan has not been reconciled within a 6-hour freshness window (`Shop.planReconciledAt`), the app queries Shopify's `currentAppInstallation.activeSubscriptions` and corrects the stored plan if it drifted (e.g. from a missed/out-of-order/stale webhook). Zero active subscriptions → `free`; if multiple are active, the highest tier wins. Reconciliation never blocks app load (errors are logged and the stored plan stands) and drift corrections are logged but do **not** create `BillingEvent` rows — those remain reserved for merchant-initiated changes from the webhook. Both the webhook and a successful reconcile stamp `planReconciledAt`, resetting the freshness clock. Plan-name → tier mapping lives in `app/lib/billing.server.ts` (`resolvePlanFromSubscription`) and is shared by the webhook and the reconciler.
 - Test mode: `SHOPIFY_BILLING_TEST=true` env var; dev store uses test charges automatically
 
 ---
@@ -111,7 +115,8 @@
 
 | File                                               | Role                                                         |
 | -------------------------------------------------- | ------------------------------------------------------------ |
-| `app/lib/billing.server.ts`                        | Plan definitions, feature matrix, constants                  |
+| `app/lib/billing.server.ts`                        | Plan definitions, feature matrix, constants, plan mapper     |
+| `app/services/billing-reconciler.server.ts`        | On-load plan reconciliation against Shopify (drift guard)    |
 | `app/lib/plan-gating.server.ts`                    | Gating functions (canStartScan, canViewFindingDetails, etc.) |
 | `app/shopify.server.ts`                            | Billing config with Shopify (prices, trial days)             |
 | `app/routes/app.settings.tsx`                      | Settings UI with upgrade buttons                             |

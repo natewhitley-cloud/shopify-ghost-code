@@ -7,6 +7,7 @@ export type ShopMetadata = {
   id: string;
   domain: string;
   plan: string;
+  planReconciledAt: Date | null;
   installedAt: Date;
   lastThemePublishAt: Date | null;
   hasSeenReviewPrompt: boolean;
@@ -26,6 +27,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       id: true,
       domain: true,
       plan: true,
+      planReconciledAt: true,
       installedAt: true,
       lastThemePublishAt: true,
       hasSeenReviewPrompt: true,
@@ -59,6 +61,10 @@ export async function upsertShop(domain: string) {
  *
  * Returns null if the shop is not found — caller is responsible for logging
  * and still returning 200 to Shopify.
+ *
+ * Also stamps `planReconciledAt` to now(): any authoritative plan write (webhook
+ * delivery or reconciliation drift correction) means the stored plan now matches
+ * Shopify, so the freshness clock should reset and avoid a redundant reconcile.
  */
 export async function updateShopPlanByDomain(
   domain: string,
@@ -69,8 +75,28 @@ export async function updateShopPlanByDomain(
 
   return db.shop.update({
     where: { domain },
-    data: { plan },
+    data: { plan, planReconciledAt: new Date() },
     select: { id: true, domain: true, plan: true },
+  });
+}
+
+/**
+ * Stamp `planReconciledAt` to now() WITHOUT changing the plan.
+ *
+ * Used by the reconciler on a no-op match (stored plan already equals Shopify's
+ * active subscription state) so the freshness clock still advances and the next
+ * app load skips the reconciliation query.
+ *
+ * Returns null if the shop domain is not found.
+ */
+export async function stampPlanReconciledAt(domain: string): Promise<{ id: string } | null> {
+  const shop = await db.shop.findUnique({ where: { domain } });
+  if (!shop) return null;
+
+  return db.shop.update({
+    where: { domain },
+    data: { planReconciledAt: new Date() },
+    select: { id: true },
   });
 }
 
