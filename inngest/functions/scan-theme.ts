@@ -173,7 +173,16 @@ async function runAuditStep(opts: {
 // ---------------------------------------------------------------------------
 
 export const scanTheme = inngest.createFunction(
-  { id: "scan-theme", name: "Scan Theme for Ghost Code" },
+  {
+    id: "scan-theme",
+    name: "Scan Theme for Ghost Code",
+    // Bound the number of concurrent scans. The cron coordinators fan out many
+    // poll/check-shop events, each of which can dispatch a scan/requested; without
+    // a cap, simultaneous CPU-bound scans pile up and contend for the event loop.
+    // Mirrors poll-check-shop's limit. The complementary event-loop offload (moving
+    // scan work off the main thread) is tracked separately in GC-8uw / PRF-1b.
+    concurrency: { limit: 5 },
+  },
   { event: "scan/requested" },
   async ({ event, step }) => {
     const { shopId, themeId, scanId } = event.data;

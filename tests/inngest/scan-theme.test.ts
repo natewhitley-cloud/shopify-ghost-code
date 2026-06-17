@@ -342,6 +342,19 @@ function makeAuditFinding(findingType: FindingType, overrides?: Record<string, u
 }
 
 // ---------------------------------------------------------------------------
+// Function configuration
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — function configuration", () => {
+  it("caps concurrency at 5 to bound simultaneous CPU-bound scans (PRF-1)", () => {
+    // The cron coordinators fan out many poll/check-shop events, each of which
+    // can dispatch a scan; the concurrency limit prevents unbounded pile-up.
+    const opts = (scanTheme as unknown as { opts: { concurrency?: unknown } }).opts;
+    expect(opts.concurrency).toEqual({ limit: 5 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Happy path
 // ---------------------------------------------------------------------------
 
