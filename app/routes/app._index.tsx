@@ -28,6 +28,7 @@ import { authenticate } from "../shopify.server";
 import {
   BG_BADGE_SUCCESS,
   BG_SURFACE,
+  BG_SURFACE_ALT,
   BG_WHITE,
   BORDER_DEFAULT,
   BORDER_STRONG,
@@ -896,7 +897,7 @@ export default function Dashboard() {
                     padding: "20px 16px",
                     borderRadius: "12px",
                     border: `1px solid ${BORDER_DEFAULT}`,
-                    background: scanLimitReached ? "#fafbfb" : BG_WHITE,
+                    background: scanLimitReached ? BG_SURFACE_ALT : BG_WHITE,
                     textAlign: "center",
                     gap: "12px",
                   }}
