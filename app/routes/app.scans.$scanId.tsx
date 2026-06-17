@@ -26,11 +26,21 @@ import { isTrackerApp } from "../services/app-lookup.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
 import {
+  BG_BADGE_SUCCESS,
+  BG_HOVER,
   BG_SURFACE,
   BG_WHITE,
+  BORDER_DEFAULT,
+  BORDER_STRONG,
   COLOR_CRITICAL,
+  COLOR_INFO,
+  COLOR_WARNING,
+  htmlTableCss,
   STATUS_TINTS,
+  TEXT_DISABLED,
+  TEXT_PRIMARY,
   TEXT_SUBDUED,
+  tileStatusTintCss,
   styles,
 } from "../styles/shared";
 
@@ -123,31 +133,15 @@ function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean 
 }
 
 const FINDINGS_TABLE_STYLES = `
-  .findings-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
-  .findings-table th,
-  .findings-table td {
-    border: 1px solid #e1e3e5;
-    padding: 8px 12px;
-    text-align: left;
-    vertical-align: top;
-  }
+  ${htmlTableCss("findings-table")}
   .findings-table thead th {
-    background: #edeeef;
-    font-weight: 600;
     white-space: nowrap;
     position: sticky;
     top: 0;
-    border-bottom: 2px solid #c9cccf;
-  }
-  .findings-table tbody tr:nth-child(even) {
-    background: #fafbfb;
+    border-bottom: 2px solid ${BORDER_STRONG};
   }
   .findings-table tbody tr:hover {
-    background: #f1f2f3;
+    background: ${BG_HOVER};
   }
   .findings-table td:nth-child(1) { width: 80px; }
   .findings-table td:nth-child(2) { width: 100px; white-space: nowrap; }
@@ -383,7 +377,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
               required
               style={{
                 padding: "4px 8px",
-                border: "1px solid #c9cccf",
+                border: `1px solid ${BORDER_STRONG}`,
                 borderRadius: "4px",
                 fontSize: "12px",
                 width: "120px",
@@ -394,7 +388,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
               disabled={fetcher.state !== "idle"}
               style={{
                 padding: "4px 8px",
-                border: "1px solid #c9cccf",
+                border: `1px solid ${BORDER_STRONG}`,
                 borderRadius: "4px",
                 fontSize: "12px",
                 background: BG_SURFACE,
@@ -602,17 +596,17 @@ export default function ScanDetail() {
           align-items: center;
           gap: 12px;
           font-size: 13px;
-          color: #6d7175;
+          color: ${TEXT_SUBDUED};
           padding: 8px 0;
           flex-wrap: wrap;
         }
         .scan-status-bar__separator {
-          color: #c9cccf;
+          color: ${BORDER_STRONG};
         }
         .scan-section-title {
           font-size: 18px;
           font-weight: 600;
-          color: #202223;
+          color: ${TEXT_PRIMARY};
           margin: 0;
         }
         .scan-tiles-row {
@@ -638,35 +632,28 @@ export default function ScanDetail() {
           justify-content: center;
           padding: 24px;
           border-radius: 12px;
-          border: 1px solid #e1e3e5;
-          background: #ffffff;
+          border: 1px solid ${BORDER_DEFAULT};
+          background: ${BG_WHITE};
           flex: 1;
         }
-        .scan-tile--health-success {
-          border-color: #c8e6c1;
-          background: #f1f8ef;
-        }
-        .scan-tile--health-warning {
-          border-color: #fdf0cd;
-          background: #fffcf2;
-        }
-        .scan-tile--health-critical {
-          border-color: #fde8e8;
-          background: #fef6f6;
-        }
+        ${tileStatusTintCss({
+          success: "scan-tile--health-success",
+          warning: "scan-tile--health-warning",
+          critical: "scan-tile--health-critical",
+        })}
         .scan-tile__big-number {
           font-size: 48px;
           font-weight: 700;
           line-height: 1;
           letter-spacing: -2px;
         }
-        .scan-tile__big-number--success { color: #1a8a3f; }
-        .scan-tile__big-number--warning { color: #b98900; }
-        .scan-tile__big-number--critical { color: #d72c0d; }
-        .scan-tile__big-number--neutral { color: #202223; }
+        .scan-tile__big-number--success { color: ${STATUS_TINTS.success.text}; }
+        .scan-tile__big-number--warning { color: ${COLOR_WARNING}; }
+        .scan-tile__big-number--critical { color: ${COLOR_CRITICAL}; }
+        .scan-tile__big-number--neutral { color: ${TEXT_PRIMARY}; }
         .scan-tile__subtitle {
           font-size: 14px;
-          color: #6d7175;
+          color: ${TEXT_SUBDUED};
           margin-top: 4px;
         }
         .scan-tile__label {
@@ -679,16 +666,16 @@ export default function ScanDetail() {
           text-transform: uppercase;
           letter-spacing: 0.5px;
         }
-        .scan-tile__label--success { background: #e3f1df; color: #1a8a3f; }
-        .scan-tile__label--warning { background: #fdf0cd; color: #916a00; }
-        .scan-tile__label--critical { background: #fde8e8; color: #d72c0d; }
+        .scan-tile__label--success { background: ${BG_BADGE_SUCCESS}; color: ${STATUS_TINTS.success.text}; }
+        .scan-tile__label--warning { background: ${STATUS_TINTS.warning.border}; color: ${STATUS_TINTS.warning.text}; }
+        .scan-tile__label--critical { background: ${STATUS_TINTS.critical.border}; color: ${COLOR_CRITICAL}; }
         .scan-tile__diff {
           font-size: 13px;
           margin-top: 8px;
         }
-        .scan-tile__diff--positive { color: #d72c0d; }
-        .scan-tile__diff--negative { color: #1a8a3f; }
-        .scan-tile__diff--neutral { color: #6d7175; }
+        .scan-tile__diff--positive { color: ${COLOR_CRITICAL}; }
+        .scan-tile__diff--negative { color: ${STATUS_TINTS.success.text}; }
+        .scan-tile__diff--neutral { color: ${TEXT_SUBDUED}; }
         .severity-breakdown {
           display: flex;
           flex-direction: column;
@@ -700,10 +687,10 @@ export default function ScanDetail() {
           justify-content: space-between;
           padding-bottom: 8px;
           margin-bottom: 12px;
-          border-bottom: 1px solid #e1e3e5;
+          border-bottom: 1px solid ${BORDER_DEFAULT};
           font-size: 11px;
           font-weight: 600;
-          color: #8c9196;
+          color: ${TEXT_DISABLED};
           text-transform: uppercase;
           letter-spacing: 0.5px;
         }
@@ -725,13 +712,13 @@ export default function ScanDetail() {
           line-height: 1;
           min-width: 32px;
         }
-        .severity-row__count--high { color: #d72c0d; }
-        .severity-row__count--medium { color: #b98900; }
-        .severity-row__count--low { color: #2c6ecb; }
+        .severity-row__count--high { color: ${COLOR_CRITICAL}; }
+        .severity-row__count--medium { color: ${COLOR_WARNING}; }
+        .severity-row__count--low { color: ${COLOR_INFO}; }
         .severity-row__label {
           font-size: 14px;
           font-weight: 500;
-          color: #6d7175;
+          color: ${TEXT_SUBDUED};
         }
         .severity-row__dot {
           width: 8px;
@@ -739,17 +726,17 @@ export default function ScanDetail() {
           border-radius: 50%;
           flex-shrink: 0;
         }
-        .severity-row__dot--high { background: #d72c0d; }
-        .severity-row__dot--medium { background: #b98900; }
-        .severity-row__dot--low { background: #2c6ecb; }
+        .severity-row__dot--high { background: ${COLOR_CRITICAL}; }
+        .severity-row__dot--medium { background: ${COLOR_WARNING}; }
+        .severity-row__dot--low { background: ${COLOR_INFO}; }
         .severity-row__diff {
           font-size: 12px;
           font-weight: 500;
           white-space: nowrap;
         }
-        .severity-row__diff--positive { color: #d72c0d; }
-        .severity-row__diff--negative { color: #1a8a3f; }
-        .severity-row__diff--neutral { color: #8c9196; }
+        .severity-row__diff--positive { color: ${COLOR_CRITICAL}; }
+        .severity-row__diff--negative { color: ${STATUS_TINTS.success.text}; }
+        .severity-row__diff--neutral { color: ${TEXT_DISABLED}; }
       `}</style>
 
       {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
@@ -986,7 +973,7 @@ export default function ScanDetail() {
                         gap: "6px",
                         padding: "6px 12px",
                         borderRadius: "6px",
-                        border: "1px solid #c9cccf",
+                        border: `1px solid ${BORDER_STRONG}`,
                         background: BG_WHITE,
                         color: TEXT_SUBDUED,
                         fontSize: "13px",
@@ -1112,26 +1099,8 @@ export default function ScanDetail() {
                 Shows which theme files were modified by each app that left code behind.
               </s-paragraph>
               <style>{`
-                .app-map-table {
-                  width: 100%;
-                  border-collapse: collapse;
-                  font-size: 13px;
-                }
-                .app-map-table th,
-                .app-map-table td {
-                  border: 1px solid #e1e3e5;
-                  padding: 8px 12px;
-                  text-align: left;
-                  vertical-align: top;
-                }
-                .app-map-table thead th {
-                  background: #edeeef;
-                  font-weight: 600;
-                  white-space: nowrap;
-                }
-                .app-map-table tbody tr:nth-child(even) {
-                  background: #fafbfb;
-                }
+                ${htmlTableCss("app-map-table")}
+                .app-map-table thead th { white-space: nowrap; }
               `}</style>
               <table className="app-map-table">
                 <thead>
@@ -1184,27 +1153,7 @@ export default function ScanDetail() {
                 app. If you recognize which app left these behind, let us know — it helps improve
                 detection for everyone.
               </s-paragraph>
-              <style>{`
-                .unknown-scripts-table {
-                  width: 100%;
-                  border-collapse: collapse;
-                  font-size: 13px;
-                }
-                .unknown-scripts-table th,
-                .unknown-scripts-table td {
-                  border: 1px solid #e1e3e5;
-                  padding: 8px 12px;
-                  text-align: left;
-                  vertical-align: top;
-                }
-                .unknown-scripts-table thead th {
-                  background: #edeeef;
-                  font-weight: 600;
-                }
-                .unknown-scripts-table tbody tr:nth-child(even) {
-                  background: #fafbfb;
-                }
-              `}</style>
+              <style>{`${htmlTableCss("unknown-scripts-table")}`}</style>
               <table className="unknown-scripts-table">
                 <thead>
                   <tr>

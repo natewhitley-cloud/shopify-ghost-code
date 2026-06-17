@@ -55,6 +55,8 @@ export const TABLE_BORDER = "#e1e3e5";
 /** Table cell separators, subtle dividers */
 export const TABLE_BORDER_LIGHT = "#edeeef";
 export const BORDER_DEFAULT = "#e1e3e5";
+/** Stronger border — table header bottom border, native form input borders */
+export const BORDER_STRONG = "#c9cccf";
 
 // ---------------------------------------------------------------------------
 // Status tint colors (backgrounds for stat tiles, badges, alert backgrounds)
@@ -75,6 +77,13 @@ export const STATUS_TINTS = {
   success: { border: "#c8e6c1", bg: "#f1f8ef", text: "#1a8a3f" },
   info: { border: "#b4d5fe", bg: "#f5f8ff", text: "#2c6ecb" },
 } as const;
+
+/**
+ * Success badge / pill-label background.
+ * Used for the "NEW" badge, health-score success labels, and scan-tile
+ * success labels. Slightly darker green tint than STATUS_TINTS.success.bg.
+ */
+export const BG_BADGE_SUCCESS = "#e3f1df";
 
 // ---------------------------------------------------------------------------
 // Typography constants
@@ -285,7 +294,7 @@ export const styles = {
     display: "inline-block",
     padding: "1px 6px",
     borderRadius: "4px",
-    background: "#e3f1df",
+    background: BG_BADGE_SUCCESS,
     color: "#1a8a3f",
     fontSize: "10px",
     fontWeight: 700,
@@ -329,3 +338,78 @@ export const styles = {
     lineHeight: "16px",
   } as React.CSSProperties,
 } as const;
+
+// ---------------------------------------------------------------------------
+// CSS string helpers (for <style> blocks and FINDINGS_TABLE_STYLES constants)
+// ---------------------------------------------------------------------------
+
+/**
+ * Generates compact HTML-table CSS for the given class name.
+ *
+ * Covers the common base used by the findings table, app-impact-map table,
+ * and unknown-scripts table: dimensions, th/td borders and padding, header
+ * background, and even-row striping.
+ *
+ * The findings table extends this with sticky positioning, a stronger header
+ * bottom border, hover styling, and per-column widths — add those rules after
+ * calling this helper.
+ *
+ * Usage:
+ *   const FINDINGS_TABLE_STYLES = `
+ *     ${htmlTableCss("findings-table")}
+ *     .findings-table thead th { position: sticky; top: 0; border-bottom: 2px solid ${BORDER_STRONG}; }
+ *     ...
+ *   `;
+ */
+export function htmlTableCss(className: string): string {
+  return `
+  .${className} {
+    width: 100%;
+    border-collapse: collapse;
+    font-size: 13px;
+  }
+  .${className} th,
+  .${className} td {
+    border: 1px solid ${TABLE_BORDER};
+    padding: 8px 12px;
+    text-align: left;
+    vertical-align: top;
+  }
+  .${className} thead th {
+    background: ${TABLE_BORDER_LIGHT};
+    font-weight: 600;
+  }
+  .${className} tbody tr:nth-child(even) {
+    background: ${BG_SURFACE_ALT};
+  }`.trim();
+}
+
+/**
+ * Generates status-tint variant CSS for a tile or card component.
+ * Produces three rules — success, warning, critical — each applying the
+ * appropriate STATUS_TINTS border-color and background.
+ *
+ * Usage (dashboard health tile):
+ *   tileStatusTintCss({
+ *     success: "health-score-tile--success",
+ *     warning: "health-score-tile--warning",
+ *     critical: "health-score-tile--critical",
+ *   })
+ *
+ * Usage (scan detail health tile):
+ *   tileStatusTintCss({
+ *     success: "scan-tile--health-success",
+ *     warning: "scan-tile--health-warning",
+ *     critical: "scan-tile--health-critical",
+ *   })
+ */
+export function tileStatusTintCss(classNames: {
+  success: string;
+  warning: string;
+  critical: string;
+}): string {
+  return `
+  .${classNames.success} { border-color: ${STATUS_TINTS.success.border}; background: ${STATUS_TINTS.success.bg}; }
+  .${classNames.warning} { border-color: ${STATUS_TINTS.warning.border}; background: ${STATUS_TINTS.warning.bg}; }
+  .${classNames.critical} { border-color: ${STATUS_TINTS.critical.border}; background: ${STATUS_TINTS.critical.bg}; }`.trim();
+}
