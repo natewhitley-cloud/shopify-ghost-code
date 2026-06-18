@@ -321,6 +321,111 @@ describe("detectGhostSnippets", () => {
     expect(appNames).toContain("Klaviyo");
     expect(appNames).toContain("Recharge");
   });
+
+  // GC-gmt: render/include tags inside an always-false conditional are dead code
+  // (the block never renders) and must not be flagged as ghost references.
+  describe("always-false conditional suppression (GC-gmt)", () => {
+    it("does NOT flag a render tag inside {% if false %}", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["{% if false %}", "  {% render 'klaviyo-onsite' %}", "{% endif %}"].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("still flags the same render tag when it is outside any conditional", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: "{% render 'klaviyo-onsite' %}",
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Klaviyo");
+    });
+
+    it("does NOT flag a render tag inside {% unless true %}", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["{% unless true %}", "  {% render 'klaviyo-onsite' %}", "{% endunless %}"].join(
+          "\n",
+        ),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("does NOT flag a render tag nested in an inner conditional inside {% if false %}", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "{% if false %}",
+          "  {% if settings.show_form %}",
+          "    {% render 'klaviyo-onsite' %}",
+          "  {% endif %}",
+          "{% endif %}",
+        ].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("handles whitespace-control variant {%- if false -%}", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: ["{%- if false -%}", "  {%- render 'klaviyo-onsite' -%}", "{%- endif -%}"].join(
+          "\n",
+        ),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(0);
+    });
+
+    it("STILL flags a render tag inside a non-always-false conditional like {% if foo %}", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "{% if settings.enable_klaviyo %}",
+          "  {% render 'klaviyo-onsite' %}",
+          "{% endif %}",
+        ].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Klaviyo");
+    });
+
+    it("STILL flags a render tag in the reachable {% else %} branch of an always-false block", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "{% if false %}",
+          "  {% render 'recharge-checkout-option' %}",
+          "{% else %}",
+          "  {% render 'klaviyo-onsite' %}",
+          "{% endif %}",
+        ].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Klaviyo");
+    });
+
+    it("STILL flags a render tag that follows an always-false block", () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: [
+          "{% if false %}",
+          "  {% render 'recharge-checkout-option' %}",
+          "{% endif %}",
+          "{% render 'klaviyo-onsite' %}",
+        ].join("\n"),
+      };
+      const findings = detectGhostSnippets(file);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Klaviyo");
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
