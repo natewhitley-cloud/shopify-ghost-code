@@ -173,6 +173,69 @@ export async function getDistinctFileCount(scanId: string): Promise<number> {
 }
 
 /**
+ * Return a cursor-paginated page of findings for a scan.
+ *
+ * Ordered by severity (HIGH first, per schema enum declaration order), then
+ * filename, then id. The id tiebreaker ensures a stable and unique cursor
+ * position even when multiple findings share the same severity + filename.
+ *
+ * Follows the same limit+1 over-fetch pattern used by getScansForShop so the
+ * caller never needs to know the internals of cursor pagination.
+ *
+ * @returns { items, hasNextPage, nextCursor } where nextCursor is the last
+ *   item's id, or null when there is no further page.
+ */
+export async function getFindingsPageForScan(
+  scanId: string,
+  options: { limit: number; cursor?: string },
+): Promise<{
+  items: Awaited<ReturnType<typeof db.finding.findMany>>;
+  hasNextPage: boolean;
+  nextCursor: string | null;
+}> {
+  const { limit, cursor } = options;
+
+  const rows = await db.finding.findMany({
+    where: { scanId },
+    // Severity enum declared HIGH, MEDIUM, LOW — ascending = HIGH first.
+    orderBy: [{ severity: "asc" }, { filename: "asc" }, { id: "asc" }],
+    take: limit + 1,
+    ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+  });
+
+  const hasNextPage = rows.length > limit;
+  const items = hasNextPage ? rows.slice(0, limit) : rows;
+  const nextCursor = hasNextPage ? items[items.length - 1].id : null;
+  return { items, hasNextPage, nextCursor };
+}
+
+/**
+ * Return the minimal attribution data needed for the App Impact Map: which app
+ * touched which files and which finding types.
+ *
+ * Only findings with a non-null appName are included (anonymous findings
+ * contribute nothing to the attribution map).
+ *
+ * Selects only the three fields required to build the map — avoids shipping
+ * full finding rows (codeSnippet, description, lineNumber, etc.) for a
+ * summary-only view.
+ */
+export async function getAppAttributionForScan(
+  scanId: string,
+): Promise<Array<{ appName: string; filename: string; findingType: FindingType }>> {
+  const rows = await db.finding.findMany({
+    where: { scanId, appName: { not: null } },
+    select: { appName: true, filename: true, findingType: true },
+  });
+  // appName is string | null in Prisma; the where clause guarantees non-null
+  // but TypeScript doesn't narrow through Prisma's generated type, so we
+  // filter once more at the type level.
+  return rows.filter(
+    (r): r is { appName: string; filename: string; findingType: FindingType } => r.appName !== null,
+  );
+}
+
+/**
  * Atomically persist the core theme-scan findings for a scan, WITHOUT marking
  * it terminal. The scan deliberately stays IN_PROGRESS so that the optional
  * audit steps (3–8) can still run and a late failure can still mark the scan

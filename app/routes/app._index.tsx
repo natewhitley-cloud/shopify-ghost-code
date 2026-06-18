@@ -26,12 +26,20 @@ import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server
 import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
 import {
+  BG_BADGE_SUCCESS,
+  BG_SURFACE,
+  BG_SURFACE_ALT,
   BG_WHITE,
+  BORDER_DEFAULT,
+  BORDER_STRONG,
+  COLOR_CRITICAL,
   COLOR_INFO,
+  COLOR_WARNING,
   STATUS_TINTS,
+  TEXT_DISABLED,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
-  BORDER_DEFAULT,
+  tileStatusTintCss,
 } from "../styles/shared";
 
 // ---------------------------------------------------------------------------
@@ -576,38 +584,31 @@ export default function Dashboard() {
               justify-content: center;
               padding: 12px 8px;
               border-radius: 12px;
-              border: 1px solid #e1e3e5;
+              border: 1px solid ${BORDER_DEFAULT};
             }
             .dashboard-section-title {
               font-size: 18px;
               font-weight: 600;
-              color: #202223;
+              color: ${TEXT_PRIMARY};
               margin: 0;
             }
-            .health-score-tile--success {
-              border-color: #c8e6c1;
-              background: #f1f8ef;
-            }
-            .health-score-tile--warning {
-              border-color: #fdf0cd;
-              background: #fffcf2;
-            }
-            .health-score-tile--critical {
-              border-color: #fde8e8;
-              background: #fef6f6;
-            }
+            ${tileStatusTintCss({
+              success: "health-score-tile--success",
+              warning: "health-score-tile--warning",
+              critical: "health-score-tile--critical",
+            })}
             .health-score-number {
               font-size: 48px;
               font-weight: 700;
               line-height: 1;
               letter-spacing: -2px;
             }
-            .health-score-number--success { color: #1a8a3f; }
-            .health-score-number--warning { color: #b98900; }
-            .health-score-number--critical { color: #d72c0d; }
+            .health-score-number--success { color: ${STATUS_TINTS.success.text}; }
+            .health-score-number--warning { color: ${COLOR_WARNING}; }
+            .health-score-number--critical { color: ${COLOR_CRITICAL}; }
             .health-score-subtitle {
               font-size: 14px;
-              color: #6d7175;
+              color: ${TEXT_SUBDUED};
               margin-top: 4px;
             }
             .health-score-label {
@@ -621,20 +622,20 @@ export default function Dashboard() {
               letter-spacing: 0.5px;
             }
             .health-score-label--success {
-              background: #e3f1df;
-              color: #1a8a3f;
+              background: ${BG_BADGE_SUCCESS};
+              color: ${STATUS_TINTS.success.text};
             }
             .health-score-label--warning {
-              background: #fdf0cd;
-              color: #916a00;
+              background: ${STATUS_TINTS.warning.border};
+              color: ${STATUS_TINTS.warning.text};
             }
             .health-score-label--critical {
-              background: #fde8e8;
-              color: #d72c0d;
+              background: ${STATUS_TINTS.critical.border};
+              color: ${COLOR_CRITICAL};
             }
             .health-score-delta {
               font-size: 13px;
-              color: #6d7175;
+              color: ${TEXT_SUBDUED};
               margin-top: 8px;
             }
             .findings-row {
@@ -651,42 +652,44 @@ export default function Dashboard() {
               justify-content: center;
               padding: 24px 8px;
               border-radius: 12px;
-              border: 1px solid #e1e3e5;
+              border: 1px solid ${BORDER_DEFAULT};
             }
             .finding-stat--high {
-              border-color: #fde8e8;
-              background: #fef6f6;
+              border-color: ${STATUS_TINTS.critical.border};
+              background: ${STATUS_TINTS.critical.bg};
             }
             .finding-stat--medium {
-              border-color: #fdf0cd;
-              background: #fffcf2;
+              border-color: ${STATUS_TINTS.warning.border};
+              background: ${STATUS_TINTS.warning.bg};
             }
             .finding-stat--low {
+              /* #dbeafe — intentionally lighter than STATUS_TINTS.info.border (#b4d5fe);
+                 kept distinct to match original dashboard visual */
               border-color: #dbeafe;
-              background: #f5f8ff;
+              background: ${STATUS_TINTS.info.bg};
             }
             .finding-stat__count {
               font-size: 48px;
               font-weight: 700;
               line-height: 1;
             }
-            .finding-stat__count--high { color: #d72c0d; }
-            .finding-stat__count--medium { color: #b98900; }
-            .finding-stat__count--low { color: #2c6ecb; }
+            .finding-stat__count--high { color: ${COLOR_CRITICAL}; }
+            .finding-stat__count--medium { color: ${COLOR_WARNING}; }
+            .finding-stat__count--low { color: ${COLOR_INFO}; }
             .finding-stat__label {
               font-size: 13px;
               font-weight: 500;
-              color: #6d7175;
+              color: ${TEXT_SUBDUED};
               margin-top: 6px;
             }
             .scan-meta {
               font-size: 13px;
-              color: #6d7175;
+              color: ${TEXT_SUBDUED};
               text-align: center;
               padding: 4px 0;
             }
             .scan-meta strong {
-              color: #202223;
+              color: ${TEXT_PRIMARY};
             }
             .actions-row {
               display: flex;
@@ -698,7 +701,7 @@ export default function Dashboard() {
             }
             .usage-bar-track {
               height: 8px;
-              background: #e1e3e5;
+              background: ${BORDER_DEFAULT};
               border-radius: 4px;
               overflow: hidden;
               max-width: 280px;
@@ -708,11 +711,11 @@ export default function Dashboard() {
               border-radius: 4px;
               transition: width 0.3s ease;
             }
-            .usage-bar-fill--normal { background: #2c6ecb; }
-            .usage-bar-fill--full { background: #d72c0d; }
+            .usage-bar-fill--normal { background: ${COLOR_INFO}; }
+            .usage-bar-fill--full { background: ${COLOR_CRITICAL}; }
             .usage-text {
               font-size: 13px;
-              color: #6d7175;
+              color: ${TEXT_SUBDUED};
               margin-top: 6px;
             }
             .scan-progress-container {
@@ -724,19 +727,19 @@ export default function Dashboard() {
             }
             .scan-progress-text {
               font-size: 15px;
-              color: #6d7175;
+              color: ${TEXT_SUBDUED};
               margin-top: 8px;
               max-width: 360px;
             }
             .scan-progress-elapsed {
               font-size: 13px;
-              color: #8c9196;
+              color: ${TEXT_DISABLED};
               margin-top: 12px;
             }
             .theme-picker-label {
               font-size: 13px;
               font-weight: 500;
-              color: #202223;
+              color: ${TEXT_PRIMARY};
               margin-bottom: 4px;
               display: block;
             }
@@ -744,31 +747,32 @@ export default function Dashboard() {
               width: 100%;
               padding: 7px 10px;
               border-radius: 8px;
-              border: 1px solid #c9cccf;
-              background: #ffffff;
+              border: 1px solid ${BORDER_STRONG};
+              background: ${BG_WHITE};
               font-size: 14px;
-              color: #202223;
+              color: ${TEXT_PRIMARY};
               outline: none;
               cursor: pointer;
               appearance: auto;
             }
             .theme-picker-select:focus {
-              border-color: #2c6ecb;
+              border-color: ${COLOR_INFO};
+              /* rgba derived from COLOR_INFO (#2c6ecb) at 20% opacity */
               box-shadow: 0 0 0 2px rgba(44, 110, 203, 0.2);
             }
             .theme-picker-select:disabled {
-              background: #f6f6f7;
-              color: #8c9196;
+              background: ${BG_SURFACE};
+              color: ${TEXT_DISABLED};
               cursor: not-allowed;
-              border-color: #e1e3e5;
+              border-color: ${BORDER_DEFAULT};
             }
             .theme-picker-nudge {
               font-size: 12px;
-              color: #6d7175;
+              color: ${TEXT_SUBDUED};
               margin-top: 4px;
             }
             .theme-picker-nudge a {
-              color: #2c6ecb;
+              color: ${COLOR_INFO};
             }
           `}</style>
 
@@ -893,7 +897,7 @@ export default function Dashboard() {
                     padding: "20px 16px",
                     borderRadius: "12px",
                     border: `1px solid ${BORDER_DEFAULT}`,
-                    background: scanLimitReached ? "#fafbfb" : BG_WHITE,
+                    background: scanLimitReached ? BG_SURFACE_ALT : BG_WHITE,
                     textAlign: "center",
                     gap: "12px",
                   }}

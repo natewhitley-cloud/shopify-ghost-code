@@ -1,18 +1,21 @@
-import type { Finding } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData, useRevalidator, useFetcher } from "react-router";
+import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
 import { hasVisualImpact } from "../lib/finding-classification";
-import { sortFindingsBySeverity, sortDiffFindingsBySeverity } from "../lib/finding-sort";
-import { formatDate, statusTone, statusLabel, isSuccessfulScan } from "../lib/format";
+import { formatDate, isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
-import { canViewFindingDetails, canUseScanDiffing } from "../lib/plan-gating.server";
-import { getFindingSummary, getHighestSeverityFinding } from "../models/finding.server";
-import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
+import { canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
+import {
+  getAppAttributionForScan,
+  getFindingsPageForScan,
+  getFindingSummary,
+  getHighestSeverityFinding,
+} from "../models/finding.server";
+import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
   findUnknownScriptForShop,
@@ -21,14 +24,23 @@ import {
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import type { ScanDiff } from "../services/scan-differ.server";
-import { diffScans } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
 import {
+  BG_BADGE_SUCCESS,
+  BG_HOVER,
   BG_SURFACE,
   BG_WHITE,
+  BORDER_DEFAULT,
+  BORDER_STRONG,
   COLOR_CRITICAL,
+  COLOR_INFO,
+  COLOR_WARNING,
+  htmlTableCss,
   STATUS_TINTS,
+  TEXT_DISABLED,
+  TEXT_PRIMARY,
   TEXT_SUBDUED,
+  tileStatusTintCss,
   styles,
 } from "../styles/shared";
 
@@ -121,31 +133,15 @@ function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean 
 }
 
 const FINDINGS_TABLE_STYLES = `
-  .findings-table {
-    width: 100%;
-    border-collapse: collapse;
-    font-size: 13px;
-  }
-  .findings-table th,
-  .findings-table td {
-    border: 1px solid #e1e3e5;
-    padding: 8px 12px;
-    text-align: left;
-    vertical-align: top;
-  }
+  ${htmlTableCss("findings-table")}
   .findings-table thead th {
-    background: #edeeef;
-    font-weight: 600;
     white-space: nowrap;
     position: sticky;
     top: 0;
-    border-bottom: 2px solid #c9cccf;
-  }
-  .findings-table tbody tr:nth-child(even) {
-    background: #fafbfb;
+    border-bottom: 2px solid ${BORDER_STRONG};
   }
   .findings-table tbody tr:hover {
-    background: #f1f2f3;
+    background: ${BG_HOVER};
   }
   .findings-table td:nth-child(1) { width: 80px; }
   .findings-table td:nth-child(2) { width: 100px; white-space: nowrap; }
@@ -180,6 +176,9 @@ function FindingsTable({ children }: { children: React.ReactNode }) {
 // Loader
 // ---------------------------------------------------------------------------
 
+/** Number of findings per page. */
+const PAGE_SIZE = 50;
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { scanId } = params;
@@ -198,48 +197,50 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // findings JOIN for free-tier shops that cannot view finding details.
   const canViewDetails = canViewFindingDetails(shop.plan);
 
-  const scan = await getScanById(scanId, { includeFindings: canViewDetails });
+  // The scan is always fetched without inline findings. Findings are either
+  // paginated (paid plan) or fetched as a single preview (free plan) via
+  // separate queries below, keeping this query lightweight.
+  const scan = await getScanById(scanId, { includeFindings: false });
 
   // Verify the scan exists and belongs to the authenticated shop.
   if (!scan || scan.shopId !== shop.id) {
     throw new Response("Not found", { status: 404 });
   }
 
-  // Group 1: independent queries that only require `scan` to be resolved.
-  const [findingSummary, rawPreviewFinding, previousScan, unknownScripts] = await Promise.all([
-    getFindingSummary(scanId),
-    // Free-tier only: fetch a single preview finding (paid users get full array).
-    canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
-    // Diff: only needed for successful scans on plans that support diffing.
-    isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan)
-      ? getPreviousScanForTheme(scan.shopId, scan.themeId, scan.createdAt)
-      : Promise.resolve(null),
-    // Unknown scripts: only for successful scans when user can view details.
-    isSuccessfulScan(scan.status) && canViewDetails
-      ? getUnknownScriptsForScan(scanId)
-      : Promise.resolve([]),
-  ]);
+  // Parse cursor from URL for findings pagination (paid plans only).
+  const url = new URL(request.url);
+  const findingsCursor = url.searchParams.get("cursor") || undefined;
 
-  // Group 2: depends on findingSummary from Group 1.
+  // Parallel queries — all independent of each other once `scan` is resolved.
+  const [findingSummary, rawPreviewFinding, findingsPage, appAttributionData, unknownScripts] =
+    await Promise.all([
+      getFindingSummary(scanId),
+      // Free-tier only: fetch a single preview finding (paid users get a page).
+      canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
+      // Paid plan: paginated findings for the current page.
+      // Free plan or non-completed scans: empty page (findings not shown).
+      canViewDetails && isSuccessfulScan(scan.status)
+        ? getFindingsPageForScan(scanId, { limit: PAGE_SIZE, cursor: findingsCursor })
+        : Promise.resolve({ items: [], hasNextPage: false, nextCursor: null }),
+      // App Impact Map data: lean attribution query (all scans, no pagination).
+      // Only needed when the user can view details AND the scan succeeded.
+      canViewDetails && isSuccessfulScan(scan.status)
+        ? getAppAttributionForScan(scanId)
+        : Promise.resolve([] as Awaited<ReturnType<typeof getAppAttributionForScan>>),
+      // Unknown scripts: only for successful scans when user can view details.
+      isSuccessfulScan(scan.status) && canViewDetails
+        ? getUnknownScriptsForScan(scanId)
+        : Promise.resolve([]),
+    ]);
+
   // Compute health score for successful scans (COMPLETED or PARTIAL).
   let healthScore: HealthScoreResult | null = null;
   if (isSuccessfulScan(scan.status)) {
     healthScore = computeHealthScore(findingSummary.bySeverity);
   }
 
-  // For free-tier shops, omit the full findings array from the response to
-  // avoid leaking detail data to the client. Paid users get the full array;
-  // free users get an empty array (they receive previewFinding instead).
-  // When canViewDetails is false, getScanById was called without includeFindings
-  // so scan.findings is undefined — fall through to the empty array default.
-  const findings: Finding[] =
-    canViewDetails && "findings" in scan ? (scan.findings as Finding[]) : [];
-
-  // Sort findings by severity (HIGH → MEDIUM → LOW), then by type, file, line.
-  sortFindingsBySeverity(findings);
-
-  // Enrich findings with tracker flag for privacy callout badges.
-  const enrichedFindings = (findings ?? []).map((f) => ({
+  // Enrich each finding on the current page with the tracker flag.
+  const enrichedFindingsPage = findingsPage.items.map((f) => ({
     ...f,
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
@@ -252,20 +253,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       }
     : null;
 
-  // Compute diff against the previous completed scan for the same theme.
-  // scanDiffing is only enabled for plans that also have showFindingDetails,
-  // so `findings` is guaranteed to be populated when this branch is reached.
-  let scanDiff: ScanDiff | null = null;
-  if (previousScan) {
-    // Exclude prior findings in categories THIS scan skipped for missing scope,
-    // so an un-audited category is never reported as falsely "resolved" (LOG-4).
-    scanDiff = diffScans(findings, previousScan.findings, {
-      skippedCategories: scan.skippedCategories,
-    });
-    // Sort diff finding arrays by severity for consistent display order.
-    sortDiffFindingsBySeverity(scanDiff.newFindings);
-    sortDiffFindingsBySeverity(scanDiff.resolvedFindings);
-  }
+  // Whether this shop+plan combination can trigger the diff resource route.
+  // Exposed to the component so it knows whether to issue the useFetcher call.
+  const canUseDiffing = isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan);
 
   return {
     scan: {
@@ -277,13 +267,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       createdAt: scan.createdAt,
       findingCount: scan.findingCount,
     },
-    findings: enrichedFindings,
+    findings: enrichedFindingsPage,
+    findingsPagination: {
+      hasNextPage: findingsPage.hasNextPage,
+      nextCursor: findingsPage.nextCursor,
+    },
     previewFinding,
     findingSummary,
     canViewDetails,
-    scanDiff,
+    canUseDiffing,
     healthScore,
     unknownScripts,
+    appAttributionData,
   };
 };
 
@@ -382,7 +377,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
               required
               style={{
                 padding: "4px 8px",
-                border: "1px solid #c9cccf",
+                border: `1px solid ${BORDER_STRONG}`,
                 borderRadius: "4px",
                 fontSize: "12px",
                 width: "120px",
@@ -393,7 +388,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
               disabled={fetcher.state !== "idle"}
               style={{
                 padding: "4px 8px",
-                border: "1px solid #c9cccf",
+                border: `1px solid ${BORDER_STRONG}`,
                 borderRadius: "4px",
                 fontSize: "12px",
                 background: BG_SURFACE,
@@ -413,13 +408,22 @@ export default function ScanDetail() {
   const {
     scan,
     findings,
+    findingsPagination,
     previewFinding,
     findingSummary,
     canViewDetails,
-    scanDiff,
+    canUseDiffing,
     healthScore,
     unknownScripts,
+    appAttributionData,
   } = useLoaderData<typeof loader>();
+
+  // Diff is loaded lazily via a resource route to avoid blocking the main page
+  // render on the expensive full-findings load for two scans (PRF-2).
+  const diffFetcher = useFetcher<{ scanDiff: ScanDiff | null }>();
+  // Ref prevents the diff from being re-requested on subsequent renders
+  // (e.g. after a poll revalidate while scan was still running).
+  const diffLoadTriggered = useRef(false);
 
   const revalidator = useRevalidator();
 
@@ -487,12 +491,28 @@ export default function ScanDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scan.status, pollingTimedOut]);
 
+  // Load the diff once for completed scans on eligible plans.
+  // Uses a resource route to avoid blocking the main page render on the
+  // expensive full-findings load for two scans (PRF-2 — see .diff.tsx route).
+  // The ref guard prevents re-loading on subsequent poll-triggered re-renders.
+  const isCompleted = isSuccessfulScan(scan.status);
+  useEffect(() => {
+    if (!isCompleted || !canUseDiffing || diffLoadTriggered.current) return;
+    diffLoadTriggered.current = true;
+    diffFetcher.load(`/app/scans/${scan.id}/diff`);
+    // diffFetcher is a stable object; isCompleted, canUseDiffing, scan.id
+    // are the meaningful dependencies here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isCompleted, canUseDiffing, scan.id]);
+
   const status = scan.status as ScanStatus;
   const summary = findingSummary.bySeverity;
 
   const isFailed = scan.status === "FAILED";
   const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
-  const isCompleted = isSuccessfulScan(scan.status);
+
+  // Diff from the lazy resource route — null until the fetcher resolves.
+  const scanDiff = diffFetcher.data?.scanDiff ?? null;
 
   // Compute per-severity diff counts from scanDiff arrays.
   const severityDiff = scanDiff
@@ -519,20 +539,21 @@ export default function ScanDetail() {
   const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
   const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
 
-  // Performance impact: count external resources from uninstalled apps.
-  const externalResourceCount = findings.filter(
-    (f) => f.findingType === "GHOST_SCRIPT" || f.findingType === "GHOST_STYLE",
-  ).length;
-  const scriptCount = findings.filter((f) => f.findingType === "GHOST_SCRIPT").length;
-  const styleCount = findings.filter((f) => f.findingType === "GHOST_STYLE").length;
+  // Performance impact counts derived from the findingSummary aggregate (covers
+  // all findings, not just the current page). Previously computed by filtering
+  // the full findings array; now derived from the summary to avoid sending the
+  // full findings to the client.
+  const scriptCount = findingSummary.byType.GHOST_SCRIPT;
+  const styleCount = findingSummary.byType.GHOST_STYLE;
+  const externalResourceCount = scriptCount + styleCount;
 
-  // Build app attribution map: appName -> { files, findingCount, findingTypes }
+  // Build app attribution map from the pre-fetched lean attribution data
+  // (appName, filename, findingType only — no codeSnippet/description).
   const appAttribution = new Map<
     string,
     { files: Set<string>; count: number; types: Set<string> }
   >();
-  for (const f of findings) {
-    if (!f.appName) continue;
+  for (const f of appAttributionData) {
     if (!appAttribution.has(f.appName)) {
       appAttribution.set(f.appName, { files: new Set(), count: 0, types: new Set() });
     }
@@ -543,6 +564,7 @@ export default function ScanDetail() {
   }
 
   // Build a Set of fingerprints for new findings so we can tag rows in the table.
+  // Available once the diff fetcher resolves; rows render without the badge until then.
   const newFindingKeys = new Set(
     scanDiff
       ? scanDiff.newFindings.map(
@@ -574,17 +596,17 @@ export default function ScanDetail() {
           align-items: center;
           gap: 12px;
           font-size: 13px;
-          color: #6d7175;
+          color: ${TEXT_SUBDUED};
           padding: 8px 0;
           flex-wrap: wrap;
         }
         .scan-status-bar__separator {
-          color: #c9cccf;
+          color: ${BORDER_STRONG};
         }
         .scan-section-title {
           font-size: 18px;
           font-weight: 600;
-          color: #202223;
+          color: ${TEXT_PRIMARY};
           margin: 0;
         }
         .scan-tiles-row {
@@ -610,35 +632,28 @@ export default function ScanDetail() {
           justify-content: center;
           padding: 24px;
           border-radius: 12px;
-          border: 1px solid #e1e3e5;
-          background: #ffffff;
+          border: 1px solid ${BORDER_DEFAULT};
+          background: ${BG_WHITE};
           flex: 1;
         }
-        .scan-tile--health-success {
-          border-color: #c8e6c1;
-          background: #f1f8ef;
-        }
-        .scan-tile--health-warning {
-          border-color: #fdf0cd;
-          background: #fffcf2;
-        }
-        .scan-tile--health-critical {
-          border-color: #fde8e8;
-          background: #fef6f6;
-        }
+        ${tileStatusTintCss({
+          success: "scan-tile--health-success",
+          warning: "scan-tile--health-warning",
+          critical: "scan-tile--health-critical",
+        })}
         .scan-tile__big-number {
           font-size: 48px;
           font-weight: 700;
           line-height: 1;
           letter-spacing: -2px;
         }
-        .scan-tile__big-number--success { color: #1a8a3f; }
-        .scan-tile__big-number--warning { color: #b98900; }
-        .scan-tile__big-number--critical { color: #d72c0d; }
-        .scan-tile__big-number--neutral { color: #202223; }
+        .scan-tile__big-number--success { color: ${STATUS_TINTS.success.text}; }
+        .scan-tile__big-number--warning { color: ${COLOR_WARNING}; }
+        .scan-tile__big-number--critical { color: ${COLOR_CRITICAL}; }
+        .scan-tile__big-number--neutral { color: ${TEXT_PRIMARY}; }
         .scan-tile__subtitle {
           font-size: 14px;
-          color: #6d7175;
+          color: ${TEXT_SUBDUED};
           margin-top: 4px;
         }
         .scan-tile__label {
@@ -651,16 +666,16 @@ export default function ScanDetail() {
           text-transform: uppercase;
           letter-spacing: 0.5px;
         }
-        .scan-tile__label--success { background: #e3f1df; color: #1a8a3f; }
-        .scan-tile__label--warning { background: #fdf0cd; color: #916a00; }
-        .scan-tile__label--critical { background: #fde8e8; color: #d72c0d; }
+        .scan-tile__label--success { background: ${BG_BADGE_SUCCESS}; color: ${STATUS_TINTS.success.text}; }
+        .scan-tile__label--warning { background: ${STATUS_TINTS.warning.border}; color: ${STATUS_TINTS.warning.text}; }
+        .scan-tile__label--critical { background: ${STATUS_TINTS.critical.border}; color: ${COLOR_CRITICAL}; }
         .scan-tile__diff {
           font-size: 13px;
           margin-top: 8px;
         }
-        .scan-tile__diff--positive { color: #d72c0d; }
-        .scan-tile__diff--negative { color: #1a8a3f; }
-        .scan-tile__diff--neutral { color: #6d7175; }
+        .scan-tile__diff--positive { color: ${COLOR_CRITICAL}; }
+        .scan-tile__diff--negative { color: ${STATUS_TINTS.success.text}; }
+        .scan-tile__diff--neutral { color: ${TEXT_SUBDUED}; }
         .severity-breakdown {
           display: flex;
           flex-direction: column;
@@ -672,10 +687,10 @@ export default function ScanDetail() {
           justify-content: space-between;
           padding-bottom: 8px;
           margin-bottom: 12px;
-          border-bottom: 1px solid #e1e3e5;
+          border-bottom: 1px solid ${BORDER_DEFAULT};
           font-size: 11px;
           font-weight: 600;
-          color: #8c9196;
+          color: ${TEXT_DISABLED};
           text-transform: uppercase;
           letter-spacing: 0.5px;
         }
@@ -697,13 +712,13 @@ export default function ScanDetail() {
           line-height: 1;
           min-width: 32px;
         }
-        .severity-row__count--high { color: #d72c0d; }
-        .severity-row__count--medium { color: #b98900; }
-        .severity-row__count--low { color: #2c6ecb; }
+        .severity-row__count--high { color: ${COLOR_CRITICAL}; }
+        .severity-row__count--medium { color: ${COLOR_WARNING}; }
+        .severity-row__count--low { color: ${COLOR_INFO}; }
         .severity-row__label {
           font-size: 14px;
           font-weight: 500;
-          color: #6d7175;
+          color: ${TEXT_SUBDUED};
         }
         .severity-row__dot {
           width: 8px;
@@ -711,17 +726,17 @@ export default function ScanDetail() {
           border-radius: 50%;
           flex-shrink: 0;
         }
-        .severity-row__dot--high { background: #d72c0d; }
-        .severity-row__dot--medium { background: #b98900; }
-        .severity-row__dot--low { background: #2c6ecb; }
+        .severity-row__dot--high { background: ${COLOR_CRITICAL}; }
+        .severity-row__dot--medium { background: ${COLOR_WARNING}; }
+        .severity-row__dot--low { background: ${COLOR_INFO}; }
         .severity-row__diff {
           font-size: 12px;
           font-weight: 500;
           white-space: nowrap;
         }
-        .severity-row__diff--positive { color: #d72c0d; }
-        .severity-row__diff--negative { color: #1a8a3f; }
-        .severity-row__diff--neutral { color: #8c9196; }
+        .severity-row__diff--positive { color: ${COLOR_CRITICAL}; }
+        .severity-row__diff--negative { color: ${STATUS_TINTS.success.text}; }
+        .severity-row__diff--neutral { color: ${TEXT_DISABLED}; }
       `}</style>
 
       {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
@@ -958,7 +973,7 @@ export default function ScanDetail() {
                         gap: "6px",
                         padding: "6px 12px",
                         borderRadius: "6px",
-                        border: "1px solid #c9cccf",
+                        border: `1px solid ${BORDER_STRONG}`,
                         background: BG_WHITE,
                         color: TEXT_SUBDUED,
                         fontSize: "13px",
@@ -993,17 +1008,30 @@ export default function ScanDetail() {
                 {findings.length === 0 ? (
                   <s-paragraph>No ghost code detected in this scan.</s-paragraph>
                 ) : (
-                  <FindingsTable>
-                    {findings.map((finding) => (
-                      <FindingRow
-                        key={finding.id}
-                        finding={finding}
-                        isNew={newFindingKeys.has(
-                          `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
-                        )}
-                      />
-                    ))}
-                  </FindingsTable>
+                  <>
+                    <FindingsTable>
+                      {findings.map((finding) => (
+                        <FindingRow
+                          key={finding.id}
+                          finding={finding}
+                          isNew={newFindingKeys.has(
+                            `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
+                          )}
+                        />
+                      ))}
+                    </FindingsTable>
+                    {findingsPagination.hasNextPage && (
+                      <s-box padding-block-start="base">
+                        <s-stack direction="inline" gap="base">
+                          <Link
+                            to={`/app/scans/${scan.id}?cursor=${findingsPagination.nextCursor}`}
+                          >
+                            Load More
+                          </Link>
+                        </s-stack>
+                      </s-box>
+                    )}
+                  </>
                 )}
               </s-stack>
             </s-card>
@@ -1071,26 +1099,8 @@ export default function ScanDetail() {
                 Shows which theme files were modified by each app that left code behind.
               </s-paragraph>
               <style>{`
-                .app-map-table {
-                  width: 100%;
-                  border-collapse: collapse;
-                  font-size: 13px;
-                }
-                .app-map-table th,
-                .app-map-table td {
-                  border: 1px solid #e1e3e5;
-                  padding: 8px 12px;
-                  text-align: left;
-                  vertical-align: top;
-                }
-                .app-map-table thead th {
-                  background: #edeeef;
-                  font-weight: 600;
-                  white-space: nowrap;
-                }
-                .app-map-table tbody tr:nth-child(even) {
-                  background: #fafbfb;
-                }
+                ${htmlTableCss("app-map-table")}
+                .app-map-table thead th { white-space: nowrap; }
               `}</style>
               <table className="app-map-table">
                 <thead>
@@ -1143,27 +1153,7 @@ export default function ScanDetail() {
                 app. If you recognize which app left these behind, let us know — it helps improve
                 detection for everyone.
               </s-paragraph>
-              <style>{`
-                .unknown-scripts-table {
-                  width: 100%;
-                  border-collapse: collapse;
-                  font-size: 13px;
-                }
-                .unknown-scripts-table th,
-                .unknown-scripts-table td {
-                  border: 1px solid #e1e3e5;
-                  padding: 8px 12px;
-                  text-align: left;
-                  vertical-align: top;
-                }
-                .unknown-scripts-table thead th {
-                  background: #edeeef;
-                  font-weight: 600;
-                }
-                .unknown-scripts-table tbody tr:nth-child(even) {
-                  background: #fafbfb;
-                }
-              `}</style>
+              <style>{`${htmlTableCss("unknown-scripts-table")}`}</style>
               <table className="unknown-scripts-table">
                 <thead>
                   <tr>

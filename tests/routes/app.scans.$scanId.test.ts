@@ -3,9 +3,16 @@
  *
  * Strategy:
  *   - Mock authenticate.admin() to control the session.
- *   - Mock scan/finding models, plan-gating, health-score, and scan-differ.
- *   - Verify loader returns correct data for paid vs free plans, ownership
- *     checks, 404s, and scan diffing.
+ *   - Mock scan/finding models, plan-gating, health-score, and app-lookup.
+ *   - Verify loader returns correct data: paginated findings, no inline diff
+ *     (diff is now in the .diff resource route — see app.scans.$scanId.diff.test.ts),
+ *     canUseDiffing flag, appAttributionData, and findingsPagination.
+ *
+ * PRF-2: loader no longer loads full findings or previous-scan data.
+ *   - getScanById is always called with { includeFindings: false }
+ *   - getFindingsPageForScan provides the paginated findings
+ *   - getAppAttributionForScan provides the lean attribution data
+ *   - getPreviousScanForTheme / diffScans are not called from this loader
  */
 
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
@@ -31,12 +38,13 @@ vi.mock("../../app/models/shop.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   getScanById: vi.fn(),
-  getPreviousScanForTheme: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
   getFindingSummary: vi.fn(),
   getHighestSeverityFinding: vi.fn(),
+  getFindingsPageForScan: vi.fn(),
+  getAppAttributionForScan: vi.fn(),
 }));
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
@@ -46,10 +54,6 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
 
 vi.mock("../../app/lib/health-score", () => ({
   computeHealthScore: vi.fn(),
-}));
-
-vi.mock("../../app/services/scan-differ.server", () => ({
-  diffScans: vi.fn(),
 }));
 
 vi.mock("../../app/models/unknown-script.server", () => ({
@@ -62,9 +66,12 @@ vi.mock("../../app/lib/format", () => ({
   formatDate: vi.fn().mockReturnValue("2026-03-22"),
   statusTone: vi.fn().mockReturnValue("info"),
   statusLabel: vi.fn().mockReturnValue("Completed"),
-  // Pure helper — mirror the real implementation so loader gating on
-  // successful (COMPLETED or PARTIAL) scans behaves correctly under test.
+  // Mirror the real implementation so loader gating on successful scans works.
   isSuccessfulScan: (status: string) => status === "COMPLETED" || status === "PARTIAL",
+}));
+
+vi.mock("../../app/services/app-lookup.server", () => ({
+  isTrackerApp: vi.fn().mockReturnValue(false),
 }));
 
 // ---------------------------------------------------------------------------
@@ -72,17 +79,22 @@ vi.mock("../../app/lib/format", () => ({
 // ---------------------------------------------------------------------------
 
 import { computeHealthScore } from "../../app/lib/health-score";
-import { canViewFindingDetails, canUseScanDiffing } from "../../app/lib/plan-gating.server";
-import { getFindingSummary, getHighestSeverityFinding } from "../../app/models/finding.server";
-import { getScanById, getPreviousScanForTheme } from "../../app/models/scan.server";
+import { canUseScanDiffing, canViewFindingDetails } from "../../app/lib/plan-gating.server";
+import {
+  getAppAttributionForScan,
+  getFindingsPageForScan,
+  getFindingSummary,
+  getHighestSeverityFinding,
+} from "../../app/models/finding.server";
+import { getScanById } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import {
-  getUnknownScriptsForScan,
   findUnknownScriptForShop,
+  getUnknownScriptsForScan,
   submitSignatureSuggestion,
 } from "../../app/models/unknown-script.server";
 import { action, loader } from "../../app/routes/app.scans.$scanId";
-import { diffScans } from "../../app/services/scan-differ.server";
+import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -92,14 +104,15 @@ import { authenticate } from "../../app/shopify.server";
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
-const mockGetPreviousScanForTheme = getPreviousScanForTheme as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
+const mockGetFindingsPageForScan = getFindingsPageForScan as ReturnType<typeof vi.fn>;
+const mockGetAppAttributionForScan = getAppAttributionForScan as ReturnType<typeof vi.fn>;
 const mockGetHighestSeverityFinding = getHighestSeverityFinding as ReturnType<typeof vi.fn>;
 const mockCanViewFindingDetails = canViewFindingDetails as ReturnType<typeof vi.fn>;
 const mockCanUseScanDiffing = canUseScanDiffing as ReturnType<typeof vi.fn>;
 const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
-const mockDiffScans = diffScans as ReturnType<typeof vi.fn>;
 const mockFindUnknownScriptForShop = findUnknownScriptForShop as ReturnType<typeof vi.fn>;
+const mockIsTrackerApp = isTrackerApp as ReturnType<typeof vi.fn>;
 const mockSubmitSignatureSuggestion = submitSignatureSuggestion as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
@@ -112,6 +125,7 @@ const SHOP = {
   plan: "Standard",
 };
 
+/** Scan fixture — no findings included; loader always uses includeFindings: false. */
 const SCAN = {
   id: "scan-1",
   shopId: "shop-1",
@@ -122,24 +136,25 @@ const SCAN = {
   startedAt: new Date("2026-03-20T10:00:00Z"),
   completedAt: new Date("2026-03-20T10:05:00Z"),
   createdAt: new Date("2026-03-20T10:00:00Z"),
-  findings: [
-    {
-      id: "f-1",
-      severity: "HIGH",
-      findingType: "GHOST_SCRIPT",
-      filename: "layout/theme.liquid",
-      lineNumber: 42,
-      appName: "SomeApp",
-      codeSnippet: '<script src="https://cdn.someapp.com/tracker.js"></script>',
-      description: "Orphaned script tag",
-    },
-  ],
+  skippedCategories: [] as string[],
+};
+
+const FINDING_ONE = {
+  id: "f-1",
+  severity: "HIGH",
+  findingType: "GHOST_SCRIPT",
+  filename: "layout/theme.liquid",
+  lineNumber: 42,
+  appName: "SomeApp",
+  codeSnippet: '<script src="https://cdn.someapp.com/tracker.js"></script>',
+  description: "Orphaned script tag",
+  createdAt: new Date("2026-03-20T10:05:00Z"),
 };
 
 const FINDING_SUMMARY = {
   total: 5,
   bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 },
-  byType: { GHOST_SCRIPT: 3, GHOST_STYLE: 2 },
+  byType: { GHOST_SCRIPT: 3, GHOST_STYLE: 2, GHOST_SNIPPET: 0 },
 };
 
 const HEALTH_SCORE = {
@@ -148,12 +163,21 @@ const HEALTH_SCORE = {
   tone: "warning" as const,
 };
 
+const EMPTY_FINDINGS_PAGE = { items: [], hasNextPage: false, nextCursor: null };
+const SINGLE_FINDING_PAGE = {
+  items: [FINDING_ONE],
+  hasNextPage: false,
+  nextCursor: null,
+};
+
 function makeLoaderArgs(
   scanId: string,
+  url?: string,
   overrides?: Partial<LoaderFunctionArgs>,
 ): LoaderFunctionArgs {
+  const requestUrl = url ?? `https://test-shop.myshopify.com/app/scans/${scanId}`;
   return {
-    request: new Request(`https://test-shop.myshopify.com/app/scans/${scanId}`),
+    request: new Request(requestUrl),
     params: { scanId },
     context: {},
     ...overrides,
@@ -191,11 +215,14 @@ beforeEach(() => {
   mockGetShopMetadata.mockResolvedValue(SHOP);
   mockGetScanById.mockResolvedValue(SCAN);
   mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
+  mockGetFindingsPageForScan.mockResolvedValue(SINGLE_FINDING_PAGE);
+  mockGetAppAttributionForScan.mockResolvedValue([]);
+  // vi.resetAllMocks clears mockReturnValue set in the vi.mock factory; restore here.
+  mockIsTrackerApp.mockReturnValue(false);
   mockCanViewFindingDetails.mockReturnValue(true);
   mockCanUseScanDiffing.mockReturnValue(false);
   mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetHighestSeverityFinding.mockResolvedValue(null);
-  mockGetPreviousScanForTheme.mockResolvedValue(null);
   (getUnknownScriptsForScan as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 });
 
@@ -204,29 +231,94 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("app.scans.$scanId loader", () => {
-  describe("paid plan — full findings", () => {
-    it("returns full findings for paid plan", async () => {
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        scan: { id: string };
-        findings: unknown[];
-        canViewDetails: boolean;
-        previewFinding: null;
-        healthScore: typeof HEALTH_SCORE;
-        findingSummary: typeof FINDING_SUMMARY;
-      };
+  // -------------------------------------------------------------------------
+  // Baseline shape
+  // -------------------------------------------------------------------------
 
-      expect(result.scan.id).toBe("scan-1");
-      expect(result.findings).toHaveLength(1);
-      expect(result.canViewDetails).toBe(true);
-      expect(result.previewFinding).toBeNull();
-      expect(result.healthScore).toEqual(HEALTH_SCORE);
-      expect(result.findingSummary).toEqual(FINDING_SUMMARY);
-    });
+  it("returns the expected loader shape for a paid plan", async () => {
+    const result = (await loader(makeLoaderArgs("scan-1"))) as {
+      scan: { id: string };
+      findings: unknown[];
+      findingsPagination: { hasNextPage: boolean; nextCursor: string | null };
+      canViewDetails: boolean;
+      canUseDiffing: boolean;
+      previewFinding: null;
+      healthScore: typeof HEALTH_SCORE;
+      findingSummary: typeof FINDING_SUMMARY;
+      appAttributionData: unknown[];
+    };
 
-    it("calls getScanById with includeFindings: true for paid plans", async () => {
+    expect(result.scan.id).toBe("scan-1");
+    expect(result.findings).toHaveLength(1);
+    expect(result.findingsPagination).toEqual({ hasNextPage: false, nextCursor: null });
+    expect(result.canViewDetails).toBe(true);
+    expect(result.canUseDiffing).toBe(false);
+    expect(result.previewFinding).toBeNull();
+    expect(result.healthScore).toEqual(HEALTH_SCORE);
+    expect(result.findingSummary).toEqual(FINDING_SUMMARY);
+    expect(result.appAttributionData).toEqual([]);
+  });
+
+  it("always calls getScanById with includeFindings: false (findings loaded separately)", async () => {
+    await loader(makeLoaderArgs("scan-1"));
+
+    expect(mockGetScanById).toHaveBeenCalledWith("scan-1", { includeFindings: false });
+  });
+
+  it("does not return scanDiff — diffing is handled by the .diff resource route", async () => {
+    mockCanUseScanDiffing.mockReturnValue(true);
+
+    const result = (await loader(makeLoaderArgs("scan-1"))) as Record<string, unknown>;
+
+    expect(result).not.toHaveProperty("scanDiff");
+  });
+
+  // -------------------------------------------------------------------------
+  // Plan gating: paid vs. free
+  // -------------------------------------------------------------------------
+
+  describe("paid plan — paginated findings", () => {
+    it("calls getFindingsPageForScan with PAGE_SIZE and no cursor for the first page", async () => {
       await loader(makeLoaderArgs("scan-1"));
 
-      expect(mockGetScanById).toHaveBeenCalledWith("scan-1", { includeFindings: true });
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith("scan-1", {
+        limit: 50,
+        cursor: undefined,
+      });
+    });
+
+    it("passes cursor from URL search params to getFindingsPageForScan", async () => {
+      await loader(
+        makeLoaderArgs("scan-1", "https://test-shop.myshopify.com/app/scans/scan-1?cursor=f-99"),
+      );
+
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith("scan-1", {
+        limit: 50,
+        cursor: "f-99",
+      });
+    });
+
+    it("returns findings enriched with isTracker flag", async () => {
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        findings: Array<{ id: string; isTracker: boolean }>;
+      };
+
+      expect(result.findings[0].id).toBe("f-1");
+      expect(result.findings[0].isTracker).toBe(false);
+    });
+
+    it("calls getAppAttributionForScan to populate the app impact map data", async () => {
+      mockGetAppAttributionForScan.mockResolvedValue([
+        { appName: "SomeApp", filename: "layout/theme.liquid", findingType: "GHOST_SCRIPT" },
+      ]);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        appAttributionData: Array<{ appName: string }>;
+      };
+
+      expect(mockGetAppAttributionForScan).toHaveBeenCalledWith("scan-1");
+      expect(result.appAttributionData).toHaveLength(1);
+      expect(result.appAttributionData[0].appName).toBe("SomeApp");
     });
   });
 
@@ -234,44 +326,132 @@ describe("app.scans.$scanId loader", () => {
     beforeEach(() => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Free" });
       mockCanViewFindingDetails.mockReturnValue(false);
-      // When includeFindings is false, scan.findings is not present
-      mockGetScanById.mockResolvedValue({
-        ...SCAN,
-        findings: undefined,
-      });
     });
 
-    it("returns empty findings array and previewFinding for free plan", async () => {
-      const previewFinding = {
-        id: "f-1",
-        severity: "HIGH",
-        findingType: "GHOST_SCRIPT",
-        filename: "layout/theme.liquid",
-        lineNumber: 42,
-        appName: "SomeApp",
-        codeSnippet: '<script src="https://cdn.someapp.com/tracker.js"></script>',
-      };
-      mockGetHighestSeverityFinding.mockResolvedValue(previewFinding);
+    it("returns empty findings page and previewFinding for free plan", async () => {
+      mockGetHighestSeverityFinding.mockResolvedValue(FINDING_ONE);
 
       const result = (await loader(makeLoaderArgs("scan-1"))) as {
         findings: unknown[];
-        previewFinding: typeof previewFinding;
+        findingsPagination: { hasNextPage: boolean; nextCursor: string | null };
+        previewFinding: { id: string; isTracker: boolean };
         canViewDetails: boolean;
       };
 
       expect(result.findings).toHaveLength(0);
+      expect(result.findingsPagination).toEqual({ hasNextPage: false, nextCursor: null });
       expect(result.canViewDetails).toBe(false);
-      expect(result.previewFinding).toEqual({ ...previewFinding, isTracker: false });
+      expect(result.previewFinding).toMatchObject({ id: "f-1", isTracker: false });
     });
 
-    it("calls getScanById with includeFindings: false for free plans", async () => {
+    it("does not call getFindingsPageForScan for free-plan shops", async () => {
       await loader(makeLoaderArgs("scan-1"));
 
-      expect(mockGetScanById).toHaveBeenCalledWith("scan-1", {
-        includeFindings: false,
-      });
+      expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
+    });
+
+    it("does not call getAppAttributionForScan for free-plan shops", async () => {
+      await loader(makeLoaderArgs("scan-1"));
+
+      expect(mockGetAppAttributionForScan).not.toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // canUseDiffing flag
+  // -------------------------------------------------------------------------
+
+  describe("canUseDiffing flag", () => {
+    it("is true when scan is completed and plan supports diffing", async () => {
+      mockCanUseScanDiffing.mockReturnValue(true);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { canUseDiffing: boolean };
+
+      expect(result.canUseDiffing).toBe(true);
+    });
+
+    it("is false when plan does not support diffing", async () => {
+      mockCanUseScanDiffing.mockReturnValue(false);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { canUseDiffing: boolean };
+
+      expect(result.canUseDiffing).toBe(false);
+    });
+
+    it("is false when scan is not completed (IN_PROGRESS)", async () => {
+      mockCanUseScanDiffing.mockReturnValue(true);
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "IN_PROGRESS" });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { canUseDiffing: boolean };
+
+      expect(result.canUseDiffing).toBe(false);
+    });
+
+    it("is true for PARTIAL scans on eligible plans (PARTIAL is a successful scan)", async () => {
+      mockCanUseScanDiffing.mockReturnValue(true);
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "PARTIAL" });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { canUseDiffing: boolean };
+
+      expect(result.canUseDiffing).toBe(true);
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Findings pagination
+  // -------------------------------------------------------------------------
+
+  describe("findings pagination", () => {
+    it("returns hasNextPage true and nextCursor when model signals more pages", async () => {
+      mockGetFindingsPageForScan.mockResolvedValue({
+        items: [FINDING_ONE],
+        hasNextPage: true,
+        nextCursor: "f-50",
+      });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        findings: unknown[];
+        findingsPagination: { hasNextPage: boolean; nextCursor: string | null };
+      };
+
+      expect(result.findings).toHaveLength(1);
+      expect(result.findingsPagination).toEqual({ hasNextPage: true, nextCursor: "f-50" });
+    });
+
+    it("returns hasNextPage false and null nextCursor on the last page", async () => {
+      mockGetFindingsPageForScan.mockResolvedValue(SINGLE_FINDING_PAGE);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        findingsPagination: { hasNextPage: boolean; nextCursor: string | null };
+      };
+
+      expect(result.findingsPagination).toEqual({ hasNextPage: false, nextCursor: null });
+    });
+
+    it("returns empty findings and no next cursor when the scan has no findings", async () => {
+      mockGetFindingsPageForScan.mockResolvedValue(EMPTY_FINDINGS_PAGE);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        findings: unknown[];
+        findingsPagination: { hasNextPage: boolean; nextCursor: string | null };
+      };
+
+      expect(result.findings).toHaveLength(0);
+      expect(result.findingsPagination).toEqual({ hasNextPage: false, nextCursor: null });
+    });
+
+    it("does not call getFindingsPageForScan for non-completed scans (IN_PROGRESS)", async () => {
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "IN_PROGRESS" });
+
+      await loader(makeLoaderArgs("scan-1"));
+
+      expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Health score
+  // -------------------------------------------------------------------------
 
   describe("health score", () => {
     it("computes health score for completed scans", async () => {
@@ -284,11 +464,7 @@ describe("app.scans.$scanId loader", () => {
     });
 
     it("returns null healthScore for non-completed scans", async () => {
-      mockGetScanById.mockResolvedValue({
-        ...SCAN,
-        status: "IN_PROGRESS",
-        findings: undefined,
-      });
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "IN_PROGRESS" });
 
       const result = (await loader(makeLoaderArgs("scan-1"))) as {
         healthScore: null;
@@ -298,6 +474,10 @@ describe("app.scans.$scanId loader", () => {
       expect(mockComputeHealthScore).not.toHaveBeenCalled();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // Error handling
+  // -------------------------------------------------------------------------
 
   describe("error handling", () => {
     it("throws 404 when scan not found", async () => {
@@ -340,7 +520,7 @@ describe("app.scans.$scanId loader", () => {
     });
 
     it("throws 400 when scanId param is missing", async () => {
-      const args = makeLoaderArgs("", { params: {} });
+      const args = makeLoaderArgs("", undefined, { params: {} });
 
       await expect(loader(args)).rejects.toThrow();
       try {
@@ -349,90 +529,6 @@ describe("app.scans.$scanId loader", () => {
         expect(e).toBeInstanceOf(Response);
         expect((e as Response).status).toBe(400);
       }
-    });
-  });
-
-  describe("scan diffing", () => {
-    it("computes diff for eligible plans with a previous scan", async () => {
-      mockCanUseScanDiffing.mockReturnValue(true);
-      const previousScan = {
-        ...SCAN,
-        id: "scan-0",
-        findings: [
-          {
-            id: "f-old",
-            severity: "MEDIUM",
-            findingType: "GHOST_STYLE",
-            filename: "assets/old.css",
-            lineNumber: 10,
-            appName: "OldApp",
-            codeSnippet: ".old-class {}",
-          },
-        ],
-      };
-      mockGetPreviousScanForTheme.mockResolvedValue(previousScan);
-
-      const scanDiffResult = {
-        newFindings: [SCAN.findings[0]],
-        resolvedFindings: [previousScan.findings[0]],
-        unchangedCount: 0,
-      };
-      mockDiffScans.mockReturnValue(scanDiffResult);
-
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const result = (await loader(makeLoaderArgs("scan-1"))) as any;
-
-      expect(result.scanDiff).toEqual(scanDiffResult);
-      expect(mockDiffScans).toHaveBeenCalled();
-    });
-
-    it("returns null scanDiff when plan does not support diffing", async () => {
-      mockCanUseScanDiffing.mockReturnValue(false);
-
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        scanDiff: null;
-      };
-
-      expect(result.scanDiff).toBeNull();
-      expect(mockGetPreviousScanForTheme).not.toHaveBeenCalled();
-    });
-
-    it("returns null scanDiff when no previous scan exists", async () => {
-      mockCanUseScanDiffing.mockReturnValue(true);
-      mockGetPreviousScanForTheme.mockResolvedValue(null);
-
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        scanDiff: null;
-      };
-
-      expect(result.scanDiff).toBeNull();
-      expect(mockDiffScans).not.toHaveBeenCalled();
-    });
-
-    it("treats a PARTIAL scan as successful and forwards skippedCategories to the differ (LOG-4)", async () => {
-      // A PARTIAL scan skipped GHOST_TAG for missing scope. The route must still
-      // compute a diff (PARTIAL is usable) AND pass the skipped categories so the
-      // differ never reports an un-audited category as falsely resolved.
-      mockCanUseScanDiffing.mockReturnValue(true);
-      mockGetScanById.mockResolvedValue({
-        ...SCAN,
-        status: "PARTIAL",
-        skippedCategories: ["GHOST_TAG"],
-      });
-      const previousScan = { ...SCAN, id: "scan-0", findings: [] };
-      mockGetPreviousScanForTheme.mockResolvedValue(previousScan);
-      mockDiffScans.mockReturnValue({
-        newFindings: [],
-        resolvedFindings: [],
-        unchangedCount: 0,
-      });
-
-      await loader(makeLoaderArgs("scan-1"));
-
-      expect(mockGetPreviousScanForTheme).toHaveBeenCalled();
-      expect(mockDiffScans).toHaveBeenCalledWith(SCAN.findings, previousScan.findings, {
-        skippedCategories: ["GHOST_TAG"],
-      });
     });
   });
 });

@@ -53,12 +53,14 @@ vi.mock("../../app/db.server", () => ({
 
 import {
   createFindings,
-  getFindingsForScan,
+  getAppAttributionForScan,
   countFindingsBySeverity,
-  getFindingSummary,
-  saveThemeFindings,
-  getHighestSeverityFinding,
   getDistinctFileCount,
+  getFindingsForScan,
+  getFindingsPageForScan,
+  getFindingSummary,
+  getHighestSeverityFinding,
+  saveThemeFindings,
   type CreateFindingInput,
 } from "../../app/models/finding.server";
 
@@ -549,5 +551,177 @@ describe("getDistinctFileCount", () => {
     mockDb.finding.findMany.mockRejectedValueOnce(new Error("Distinct query failed"));
 
     await expect(getDistinctFileCount(SCAN_ID)).rejects.toThrow("Distinct query failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFindingsPageForScan
+// ---------------------------------------------------------------------------
+
+describe("getFindingsPageForScan", () => {
+  const PAGE_SIZE = 50;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the first page of findings when no cursor is provided", async () => {
+    const rows = [{ id: "f-1", ...baseFinding, scanId: SCAN_ID }];
+    mockDb.finding.findMany.mockResolvedValue(rows);
+
+    await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scanId: SCAN_ID },
+        orderBy: [{ severity: "asc" }, { filename: "asc" }, { id: "asc" }],
+        take: PAGE_SIZE + 1,
+      }),
+    );
+    // No cursor means no cursor/skip fields in the query.
+    const call = mockDb.finding.findMany.mock.calls[0][0];
+    expect(call).not.toHaveProperty("cursor");
+    expect(call).not.toHaveProperty("skip");
+  });
+
+  it("passes cursor and skip:1 when a cursor is provided", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, cursor: "f-50" });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        cursor: { id: "f-50" },
+        skip: 1,
+      }),
+    );
+  });
+
+  it("returns hasNextPage:false and nextCursor:null when results fit within limit", async () => {
+    // Return exactly limit rows — no over-fetch item, so no next page.
+    const rows = Array.from({ length: PAGE_SIZE }, (_, i) => ({
+      id: `f-${i}`,
+      ...baseFinding,
+      scanId: SCAN_ID,
+    }));
+    mockDb.finding.findMany.mockResolvedValue(rows);
+
+    const result = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+
+    expect(result.hasNextPage).toBe(false);
+    expect(result.nextCursor).toBeNull();
+    expect(result.items).toHaveLength(PAGE_SIZE);
+  });
+
+  it("returns hasNextPage:true and nextCursor equal to last item id when over-fetch item exists", async () => {
+    // Return limit+1 rows — the extra item signals another page.
+    const rows = Array.from({ length: PAGE_SIZE + 1 }, (_, i) => ({
+      id: `f-${i}`,
+      ...baseFinding,
+      scanId: SCAN_ID,
+    }));
+    mockDb.finding.findMany.mockResolvedValue(rows);
+
+    const result = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+
+    expect(result.hasNextPage).toBe(true);
+    // nextCursor is the id of the last item in the returned page (index limit-1),
+    // not the over-fetch item (index limit).
+    expect(result.nextCursor).toBe(`f-${PAGE_SIZE - 1}`);
+    expect(result.items).toHaveLength(PAGE_SIZE);
+  });
+
+  it("returns empty items, hasNextPage:false, and null nextCursor when scan has no findings", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    const result = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+
+    expect(result.items).toHaveLength(0);
+    expect(result.hasNextPage).toBe(false);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("returns a single-item page when the scan has exactly one finding", async () => {
+    const rows = [{ id: "f-only", ...baseFinding, scanId: SCAN_ID }];
+    mockDb.finding.findMany.mockResolvedValue(rows);
+
+    const result = await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE });
+
+    expect(result.items).toHaveLength(1);
+    expect(result.items[0].id).toBe("f-only");
+    expect(result.hasNextPage).toBe(false);
+    expect(result.nextCursor).toBeNull();
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.findMany.mockRejectedValueOnce(new Error("Page query failed"));
+
+    await expect(getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE })).rejects.toThrow(
+      "Page query failed",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getAppAttributionForScan
+// ---------------------------------------------------------------------------
+
+describe("getAppAttributionForScan", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns lean attribution rows where appName is not null", async () => {
+    mockDb.finding.findMany.mockResolvedValue([
+      { appName: "SomeApp", filename: "layout/theme.liquid", findingType: "GHOST_SCRIPT" },
+      { appName: "OtherApp", filename: "assets/style.css", findingType: "GHOST_STYLE" },
+    ]);
+
+    const result = await getAppAttributionForScan(SCAN_ID);
+
+    expect(result).toHaveLength(2);
+    expect(result[0]).toEqual({
+      appName: "SomeApp",
+      filename: "layout/theme.liquid",
+      findingType: "GHOST_SCRIPT",
+    });
+  });
+
+  it("queries only appName, filename, and findingType (lean select)", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getAppAttributionForScan(SCAN_ID);
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, appName: { not: null } },
+      select: { appName: true, filename: true, findingType: true },
+    });
+  });
+
+  it("returns an empty array when no findings have an attributed app", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    const result = await getAppAttributionForScan(SCAN_ID);
+
+    expect(result).toEqual([]);
+  });
+
+  it("filters out any null appName rows at the type level (defensive guard)", async () => {
+    // Simulate a row that bypassed the where clause (should not happen in practice).
+    mockDb.finding.findMany.mockResolvedValue([
+      { appName: "RealApp", filename: "layout/theme.liquid", findingType: "GHOST_SCRIPT" },
+      { appName: null, filename: "snippets/foo.liquid", findingType: "GHOST_SNIPPET" },
+    ]);
+
+    const result = await getAppAttributionForScan(SCAN_ID);
+
+    expect(result).toHaveLength(1);
+    expect(result[0].appName).toBe("RealApp");
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.findMany.mockRejectedValueOnce(new Error("Attribution query failed"));
+
+    await expect(getAppAttributionForScan(SCAN_ID)).rejects.toThrow("Attribution query failed");
   });
 });
