@@ -147,6 +147,77 @@ function buildCommentSkipLines(content: string): Set<number> {
   return skipLines;
 }
 
+// Matches an always-false conditional opener: {% if false %} or {% unless true %}.
+// Requires the tag to close immediately after the literal (optionally with a
+// whitespace-control dash), so it does NOT match reachable conditionals like
+// {% if false_flag %} (different variable) or {% if false or x %} (compound).
+const ALWAYS_FALSE_CONDITIONAL_RE = /\{%-?\s*(?:if\s+false|unless\s+true)\s*-?%\}/;
+
+// Conditional block openers / closers (global, for counting multiple per line).
+// `if`, `unless`, and `case` increase nesting depth; their `end*` counterparts
+// decrease it. `elsif`/`else` do not change depth — they switch branches.
+const CONDITIONAL_OPEN_RE = /\{%-?\s*(?:if|unless|case)\b/g;
+const CONDITIONAL_CLOSE_RE = /\{%-?\s*(?:endif|endunless|endcase)\b/g;
+const CONDITIONAL_ELSE_RE = /\{%-?\s*(?:else|elsif)\b/;
+
+/**
+ * Returns a Set of 1-based line numbers that fall inside an always-false Liquid
+ * conditional block ({% if false %}…{% endif %} or {% unless true %}…{% endunless %}).
+ * Mirrors buildCommentSkipLines so callers can uniformly skip unreachable lines.
+ *
+ * Code guarded by such a conditional never renders, so a section/snippet tag
+ * nested inside it is dead code, not an active ghost reference, and must not be
+ * flagged. Handles nested conditionals (depth tracking), whitespace-control tags
+ * ({%- -%}), and stops suppression at an {% else %}/{% elsif %} on the always-false
+ * block's own level — the alternate branch IS reachable. Conditionals that are
+ * not always-false (e.g. {% if foo %}) are left untouched so their contents are
+ * still scanned.
+ */
+function buildAlwaysFalseConditionalSkipLines(content: string): Set<number> {
+  const skipLines = new Set<number>();
+
+  // Running nesting depth across all conditionals. When we enter an always-false
+  // block we remember the depth at which it opened; every line stays suppressed
+  // until the depth falls back below that level (the matching end* tag).
+  let depth = 0;
+  let suppressFromDepth: number | null = null;
+
+  for (const { lineNumber, text } of lines(content)) {
+    const wasSuppressed = suppressFromDepth !== null;
+    const opens = (text.match(CONDITIONAL_OPEN_RE) ?? []).length;
+    const closes = (text.match(CONDITIONAL_CLOSE_RE) ?? []).length;
+
+    depth += opens;
+
+    // Begin suppression when an always-false opener appears and we are not
+    // already inside an unreachable block (an inner always-false inside an
+    // already-suppressed block adds nothing).
+    const opensAlwaysFalse = ALWAYS_FALSE_CONDITIONAL_RE.test(text);
+    if (opensAlwaysFalse && suppressFromDepth === null) {
+      suppressFromDepth = depth;
+    }
+
+    let lineSuppressed = wasSuppressed || (opensAlwaysFalse && suppressFromDepth !== null);
+
+    // An {% else %}/{% elsif %} belonging to the always-false block itself (same
+    // nesting level) switches to a reachable branch: stop suppressing from here.
+    if (wasSuppressed && depth === suppressFromDepth && CONDITIONAL_ELSE_RE.test(text)) {
+      suppressFromDepth = null;
+      lineSuppressed = false;
+    }
+
+    if (lineSuppressed) skipLines.add(lineNumber);
+
+    depth -= closes;
+    if (depth < 0) depth = 0;
+    if (suppressFromDepth !== null && depth < suppressFromDepth) {
+      suppressFromDepth = null;
+    }
+  }
+
+  return skipLines;
+}
+
 // ---------------------------------------------------------------------------
 // Detector: GHOST_SCRIPT
 // ---------------------------------------------------------------------------
@@ -261,9 +332,14 @@ export function detectGhostSnippets(file: ThemeFile): CreateFindingInput[] {
   // statements inside {% comment %} blocks are not flagged as GHOST_SNIPPET.
   const commentSkipLines = buildCommentSkipLines(file.content);
 
+  // Precompute lines inside always-false conditionals ({% if false %} /
+  // {% unless true %}) so dead-code render/include statements are not flagged.
+  const alwaysFalseSkipLines = buildAlwaysFalseConditionalSkipLines(file.content);
+
   const processSnippetMatch = (snippetName: string, matchIndex: number) => {
     const lineNumber = lineNumberAtOffset(file.content, matchIndex);
     if (commentSkipLines.has(lineNumber)) return; // inside {% comment %} block
+    if (alwaysFalseSkipLines.has(lineNumber)) return; // inside always-false conditional
 
     const appName = identifyAppFromSnippetName(snippetName);
     if (!appName) return;
