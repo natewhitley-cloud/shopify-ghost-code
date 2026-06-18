@@ -11,7 +11,8 @@
  *   3. Cross-reference with installed apps to detect orphaned translations
  */
 
-import { checkRateLimit } from "./theme-fetcher.server";
+import { type GraphQLConnection, paginateConnection } from "../lib/graphql-pagination.server";
+import { checkRateLimit } from "../lib/rate-limit-monitor.server";
 import { probeScope } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -146,83 +147,46 @@ export async function fetchTranslationSummary(
   resourceType: string,
   sampleSize: number = 50,
 ): Promise<TranslationSummary> {
-  let translatedCount = 0;
-  let outdatedCount = 0;
-  const sampleTranslations: TranslationSummary["sampleTranslations"] = [];
-  let cursor: string | null = null;
-  let fetched = 0;
+  type TranslatableResourceNode = {
+    resourceId: string;
+    translations: Array<{ key: string; value: string; outdated: boolean }>;
+  };
+  type FlatTranslation = TranslationSummary["sampleTranslations"][number];
 
-  while (fetched < sampleSize) {
-    const pageSize = Math.min(sampleSize - fetched, 50);
-    const response = await admin.graphql(TRANSLATABLE_RESOURCES_QUERY, {
-      variables: {
-        resourceType,
-        locale,
-        first: pageSize,
-        ...(cursor !== null ? { after: cursor } : {}),
-      },
-    });
-
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: {
-        translatableResources?: {
-          nodes?: Array<{
-            resourceId: string;
-            translations: Array<{
-              key: string;
-              value: string;
-              outdated: boolean;
-            }>;
-          }>;
-          pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-        };
-      };
-      extensions?: unknown;
-    };
-
-    if (json.errors?.length) {
-      throw new Error(
-        `[translation-fetcher] Failed to fetch translations for ${resourceType}/${locale}: ` +
-          (json.errors[0]?.message ?? "unknown error"),
-      );
-    }
-
-    const nodes = json.data?.translatableResources?.nodes ?? [];
-    const pageInfo = json.data?.translatableResources?.pageInfo ?? {};
-
-    for (const node of nodes) {
-      for (const t of node.translations) {
-        translatedCount++;
-        if (t.outdated) outdatedCount++;
-
-        // Collect samples (up to a reasonable limit for code snippets)
-        if (sampleTranslations.length < 10) {
-          sampleTranslations.push({
-            resourceId: node.resourceId,
-            key: t.key,
-            value: t.value,
-            outdated: t.outdated,
-          });
-        }
-      }
-    }
-
-    fetched += nodes.length;
-
-    if (!pageInfo.hasNextPage) break;
-    cursor = pageInfo.endCursor ?? null;
-
-    await checkRateLimit(json.extensions);
-  }
+  // Pagination caps by the number of resources (nodes) examined, matching the
+  // original `sampleSize` semantics. The helper flattens each resource's
+  // translations into individual entries; counts are derived afterward.
+  const translations = await paginateConnection<TranslatableResourceNode, FlatTranslation>({
+    admin,
+    query: TRANSLATABLE_RESOURCES_QUERY,
+    variables: { resourceType, locale },
+    pageSize: 50,
+    maxNodes: sampleSize,
+    errorContext: `[translation-fetcher] Failed to fetch translations for ${resourceType}/${locale}`,
+    getConnection: (data) =>
+      (
+        data as
+          | { translatableResources?: GraphQLConnection<TranslatableResourceNode> }
+          | null
+          | undefined
+      )?.translatableResources,
+    mapNode: (node) =>
+      node.translations.map((t) => ({
+        resourceId: node.resourceId,
+        key: t.key,
+        value: t.value,
+        outdated: t.outdated,
+      })),
+  });
 
   return {
     locale,
     localeName,
     resourceType,
-    translatedCount,
-    outdatedCount,
-    sampleTranslations,
+    translatedCount: translations.length,
+    outdatedCount: translations.filter((t) => t.outdated).length,
+    // Keep a small sample for code snippets, preserving encounter order.
+    sampleTranslations: translations.slice(0, 10),
   };
 }
 

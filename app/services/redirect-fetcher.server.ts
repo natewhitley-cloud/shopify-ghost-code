@@ -5,7 +5,7 @@
  * Requires `read_url_redirects` scope.
  */
 
-import { checkRateLimit } from "./theme-fetcher.server";
+import { type GraphQLConnection, paginateConnection } from "../lib/graphql-pagination.server";
 import { probeScope } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -76,54 +76,18 @@ export async function fetchRedirects(
   admin: AdminApiContext,
   maxRedirects = 1000,
 ): Promise<RedirectData[]> {
-  const redirects: RedirectData[] = [];
-  let cursor: string | null = null;
-  let hasNextPage = true;
   const PAGE_SIZE = 50;
 
-  while (hasNextPage && redirects.length < maxRedirects) {
-    const response = await admin.graphql(REDIRECTS_QUERY, {
-      variables: {
-        first: PAGE_SIZE,
-        ...(cursor !== null ? { after: cursor } : {}),
-      },
-    });
+  type RedirectNode = { id: string; path: string; target: string };
 
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: {
-        urlRedirects?: {
-          nodes?: Array<{ id: string; path: string; target: string }>;
-          pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-        };
-      };
-      extensions?: unknown;
-    };
-
-    if (json.errors?.length) {
-      throw new Error(
-        `[redirect-fetcher] Failed to fetch redirects: ${json.errors[0]?.message ?? "unknown error"}`,
-      );
-    }
-
-    const nodes = json.data?.urlRedirects?.nodes ?? [];
-    const pageInfo = json.data?.urlRedirects?.pageInfo ?? {};
-
-    for (const node of nodes) {
-      if (redirects.length >= maxRedirects) break;
-      redirects.push({
-        id: node.id,
-        path: node.path,
-        target: node.target,
-      });
-    }
-
-    hasNextPage = Boolean(pageInfo.hasNextPage);
-    cursor = pageInfo.endCursor ?? null;
-
-    // Check rate limits after each page; sleep if needed before continuing.
-    await checkRateLimit(json.extensions);
-  }
-
-  return redirects;
+  return paginateConnection<RedirectNode, RedirectData>({
+    admin,
+    query: REDIRECTS_QUERY,
+    pageSize: PAGE_SIZE,
+    maxNodes: maxRedirects,
+    errorContext: "[redirect-fetcher] Failed to fetch redirects",
+    getConnection: (data) =>
+      (data as { urlRedirects?: GraphQLConnection<RedirectNode> } | null | undefined)?.urlRedirects,
+    mapNode: (node) => [{ id: node.id, path: node.path, target: node.target }],
+  });
 }

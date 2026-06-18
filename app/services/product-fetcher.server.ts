@@ -5,7 +5,7 @@
  * Requires `read_products` scope.
  */
 
-import { checkRateLimit } from "./theme-fetcher.server";
+import { type GraphQLConnection, paginateConnection } from "../lib/graphql-pagination.server";
 import { probeScope } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -149,54 +149,20 @@ export async function fetchProductTags(
   admin: AdminApiContext,
   maxProducts: number = 500,
 ): Promise<ProductTagData[]> {
-  const products: ProductTagData[] = [];
-  let cursor: string | null = null;
   const PAGE_SIZE = 50;
 
-  while (products.length < maxProducts) {
-    const first = Math.min(PAGE_SIZE, maxProducts - products.length);
-    const response = await admin.graphql(PRODUCT_TAGS_QUERY, {
-      variables: {
-        first,
-        ...(cursor !== null ? { after: cursor } : {}),
-      },
-    });
+  type ProductTagNode = { id: string; title: string; tags: string[] };
 
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: {
-        products?: {
-          nodes?: Array<{ id: string; title: string; tags: string[] }>;
-          pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-        };
-      };
-      extensions?: unknown;
-    };
-
-    if (json.errors?.length) {
-      throw new Error(
-        `[product-fetcher] Failed to fetch products: ${json.errors[0]?.message ?? "unknown error"}`,
-      );
-    }
-
-    const nodes = json.data?.products?.nodes ?? [];
-    const pageInfo = json.data?.products?.pageInfo ?? {};
-
-    for (const node of nodes) {
-      products.push({
-        id: node.id,
-        title: node.title,
-        tags: node.tags,
-      });
-    }
-
-    if (!pageInfo.hasNextPage || nodes.length === 0) break;
-    cursor = pageInfo.endCursor ?? null;
-
-    await checkRateLimit(json.extensions);
-  }
-
-  return products;
+  return paginateConnection<ProductTagNode, ProductTagData>({
+    admin,
+    query: PRODUCT_TAGS_QUERY,
+    pageSize: PAGE_SIZE,
+    maxNodes: maxProducts,
+    errorContext: "[product-fetcher] Failed to fetch products",
+    getConnection: (data) =>
+      (data as { products?: GraphQLConnection<ProductTagNode> } | null | undefined)?.products,
+    mapNode: (node) => [{ id: node.id, title: node.title, tags: node.tags }],
+  });
 }
 
 /**
@@ -210,60 +176,31 @@ export async function fetchProductPrices(
   admin: AdminApiContext,
   maxProducts: number = 500,
 ): Promise<ProductPriceData[]> {
-  const products: ProductPriceData[] = [];
-  let totalFetched = 0;
-  let cursor: string | null = null;
   const PAGE_SIZE = 50;
 
-  while (totalFetched < maxProducts) {
-    const first = Math.min(PAGE_SIZE, maxProducts - totalFetched);
-    const response = await admin.graphql(PRODUCT_PRICES_QUERY, {
-      variables: {
-        first,
-        ...(cursor !== null ? { after: cursor } : {}),
-      },
-    });
-
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: {
-        products?: {
-          nodes?: Array<{
-            id: string;
-            title: string;
-            variants: {
-              nodes: Array<{
-                id: string;
-                title: string;
-                price: string;
-                compareAtPrice: string | null;
-              }>;
-            };
-            metafields?: {
-              nodes?: Array<{ namespace: string; key: string }>;
-            };
-          }>;
-          pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-        };
-      };
-      extensions?: unknown;
+  type ProductPriceNode = {
+    id: string;
+    title: string;
+    variants: {
+      nodes: Array<{ id: string; title: string; price: string; compareAtPrice: string | null }>;
     };
+    metafields?: { nodes?: Array<{ namespace: string; key: string }> };
+  };
 
-    if (json.errors?.length) {
-      throw new Error(
-        `[product-fetcher] Failed to fetch product prices: ${json.errors[0]?.message ?? "unknown error"}`,
-      );
-    }
-
-    const nodes = json.data?.products?.nodes ?? [];
-    const pageInfo = json.data?.products?.pageInfo ?? {};
-
-    for (const node of nodes) {
+  return paginateConnection<ProductPriceNode, ProductPriceData>({
+    admin,
+    query: PRODUCT_PRICES_QUERY,
+    pageSize: PAGE_SIZE,
+    maxNodes: maxProducts,
+    errorContext: "[product-fetcher] Failed to fetch product prices",
+    getConnection: (data) =>
+      (data as { products?: GraphQLConnection<ProductPriceNode> } | null | undefined)?.products,
+    // Only return products where at least one variant has compareAtPrice set.
+    mapNode: (node) => {
       const variants = node.variants.nodes;
-      const hasCompareAtPrice = variants.some((v) => v.compareAtPrice !== null);
-
-      if (hasCompareAtPrice) {
-        products.push({
+      if (!variants.some((v) => v.compareAtPrice !== null)) return [];
+      return [
+        {
           id: node.id,
           title: node.title,
           variants,
@@ -271,19 +208,10 @@ export async function fetchProductPrices(
             namespace: m.namespace,
             key: m.key,
           })),
-        });
-      }
-    }
-
-    totalFetched += nodes.length;
-
-    if (!pageInfo.hasNextPage || nodes.length === 0) break;
-    cursor = pageInfo.endCursor ?? null;
-
-    await checkRateLimit(json.extensions);
-  }
-
-  return products;
+        },
+      ];
+    },
+  });
 }
 
 /**
@@ -300,69 +228,27 @@ export async function fetchProductMetafields(
   admin: AdminApiContext,
   maxProducts: number = 250,
 ): Promise<ProductMetafieldData[]> {
-  const products: ProductMetafieldData[] = [];
-  let totalFetched = 0;
-  let cursor: string | null = null;
   const PAGE_SIZE = 50;
 
-  while (totalFetched < maxProducts) {
-    const first = Math.min(PAGE_SIZE, maxProducts - totalFetched);
-    const response = await admin.graphql(PRODUCT_METAFIELDS_QUERY, {
-      variables: {
-        first,
-        ...(cursor !== null ? { after: cursor } : {}),
-      },
-    });
+  type ProductMetafieldNode = {
+    id: string;
+    title: string;
+    metafields: { nodes: Array<{ namespace: string; key: string; value: string; type: string }> };
+  };
 
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: {
-        products?: {
-          nodes?: Array<{
-            id: string;
-            title: string;
-            metafields: {
-              nodes: Array<{
-                namespace: string;
-                key: string;
-                value: string;
-                type: string;
-              }>;
-            };
-          }>;
-          pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-        };
-      };
-      extensions?: unknown;
-    };
-
-    if (json.errors?.length) {
-      throw new Error(
-        `[product-fetcher] Failed to fetch product metafields: ${json.errors[0]?.message ?? "unknown error"}`,
-      );
-    }
-
-    const nodes = json.data?.products?.nodes ?? [];
-    const pageInfo = json.data?.products?.pageInfo ?? {};
-
-    for (const node of nodes) {
+  return paginateConnection<ProductMetafieldNode, ProductMetafieldData>({
+    admin,
+    query: PRODUCT_METAFIELDS_QUERY,
+    pageSize: PAGE_SIZE,
+    maxNodes: maxProducts,
+    errorContext: "[product-fetcher] Failed to fetch product metafields",
+    getConnection: (data) =>
+      (data as { products?: GraphQLConnection<ProductMetafieldNode> } | null | undefined)?.products,
+    // Only return products that have at least one metafield.
+    mapNode: (node) => {
       const metafields = node.metafields.nodes;
-      if (metafields.length > 0) {
-        products.push({
-          id: node.id,
-          title: node.title,
-          metafields,
-        });
-      }
-    }
-
-    totalFetched += nodes.length;
-
-    if (!pageInfo.hasNextPage || nodes.length === 0) break;
-    cursor = pageInfo.endCursor ?? null;
-
-    await checkRateLimit(json.extensions);
-  }
-
-  return products;
+      if (metafields.length === 0) return [];
+      return [{ id: node.id, title: node.title, metafields }];
+    },
+  });
 }

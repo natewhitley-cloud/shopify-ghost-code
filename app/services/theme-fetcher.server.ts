@@ -5,11 +5,12 @@
  * their file contents.  All calls are made through the admin context
  * supplied by the caller — this service itself is stateless.
  *
- * Rate-limit strategy: check throttleStatus after every paginated page and
- * back off proportionally when headroom drops below 100 points.
+ * Rate-limit strategy: the shared pagination helper checks throttleStatus
+ * after every page and backs off proportionally when headroom drops below 100
+ * points (see app/lib/rate-limit-monitor.server.ts).
  */
 
-import { checkThrottleStatusFromExtensions } from "../lib/rate-limit-monitor.server";
+import { type GraphQLConnection, paginateConnection } from "../lib/graphql-pagination.server";
 import type { AdminApiContext } from "../types/shopify";
 
 /** A single theme file with its text content. */
@@ -17,44 +18,6 @@ export type ThemeFile = {
   filename: string;
   content: string;
 };
-
-// ---------------------------------------------------------------------------
-// Rate-limit helper
-// ---------------------------------------------------------------------------
-
-const RATE_LIMIT_THRESHOLD = 100;
-
-/**
- * Inspect throttleStatus and sleep if headroom is low.
- *
- * @param extensions  Raw extensions object from a GraphQL response.
- * @returns           Currently available query-cost points (after any sleep).
- */
-export async function checkRateLimit(extensions: unknown): Promise<number> {
-  const ext = extensions as Record<string, unknown> | undefined;
-  const cost = ext?.cost as Record<string, unknown> | undefined;
-  const throttle = cost?.throttleStatus as
-    | { currentlyAvailable?: number; restoreRate?: number }
-    | undefined;
-
-  if (!throttle) return Infinity;
-
-  const currentlyAvailable: number = throttle.currentlyAvailable ?? 0;
-  const restoreRate: number = throttle.restoreRate ?? 50;
-
-  if (currentlyAvailable < RATE_LIMIT_THRESHOLD) {
-    const pointsNeeded = RATE_LIMIT_THRESHOLD - currentlyAvailable;
-    const sleepMs = Math.ceil((pointsNeeded / restoreRate) * 1000);
-    console.log(
-      `[theme-fetcher] Rate limit headroom low (${currentlyAvailable} pts). ` +
-        `Sleeping ${sleepMs}ms to restore capacity.`,
-    );
-    await new Promise((resolve) => setTimeout(resolve, sleepMs));
-    return RATE_LIMIT_THRESHOLD; // optimistic — we just waited for it
-  }
-
-  return currentlyAvailable;
-}
 
 // ---------------------------------------------------------------------------
 // GraphQL queries
@@ -172,54 +135,22 @@ export type ThemeSummary = {
  * @param admin  Shopify admin API context (from authenticate.admin or offline token).
  */
 export async function fetchAllThemes(admin: AdminApiContext): Promise<ThemeSummary[]> {
-  const themes: ThemeSummary[] = [];
-  let cursor: string | null = null;
-  let hasNextPage = true;
   // Most stores have fewer than 20 themes; 50 per page is sufficient while keeping GraphQL cost low.
   const PAGE_SIZE = 50;
 
-  while (hasNextPage) {
-    const response = await admin.graphql(ALL_THEMES_QUERY, {
-      variables: {
-        first: PAGE_SIZE,
-        ...(cursor !== null ? { after: cursor } : {}),
-      },
-    });
+  type ThemeNode = { id: string; name: string; role: string; updatedAt: string };
 
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: {
-        themes?: {
-          nodes?: Array<{ id: string; name: string; role: string; updatedAt: string }>;
-          pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-        };
-      };
-      extensions?: unknown;
-    };
-
-    if (json.errors?.length) {
-      throw new Error(
-        `[theme-fetcher] Failed to fetch themes: ${json.errors[0]?.message ?? "unknown error"}`,
-      );
-    }
-
-    const nodes = json.data?.themes?.nodes ?? [];
-    const pageInfo = json.data?.themes?.pageInfo ?? {};
-
-    for (const node of nodes) {
-      themes.push({
-        id: node.id,
-        name: node.name,
-        role: node.role,
-        updatedAt: node.updatedAt,
-      });
-    }
-
-    hasNextPage = Boolean(pageInfo.hasNextPage);
-    cursor = pageInfo.endCursor ?? null;
-
-    await checkRateLimit(json.extensions);
-  }
+  const themes = await paginateConnection<ThemeNode, ThemeSummary>({
+    admin,
+    query: ALL_THEMES_QUERY,
+    pageSize: PAGE_SIZE,
+    errorContext: "[theme-fetcher] Failed to fetch themes",
+    getConnection: (data) =>
+      (data as { themes?: GraphQLConnection<ThemeNode> } | null | undefined)?.themes,
+    mapNode: (node) => [
+      { id: node.id, name: node.name, role: node.role, updatedAt: node.updatedAt },
+    ],
+  });
 
   // Sort: MAIN role first, then alphabetically by name.
   themes.sort((a, b) => {
@@ -246,80 +177,43 @@ export async function fetchThemeFiles(
   themeId: string,
   shopDomain?: string,
 ): Promise<ThemeFile[]> {
-  const files: ThemeFile[] = [];
-  let cursor: string | null = null;
-  let hasNextPage = true;
   const PAGE_SIZE = 250;
 
-  while (hasNextPage) {
-    const response = await admin.graphql(THEME_FILES_QUERY, {
-      variables: {
-        themeId,
-        first: PAGE_SIZE,
-        ...(cursor !== null ? { after: cursor } : {}),
-      },
-    });
+  type ThemeFileNode = { filename: string; body?: { content?: string } };
 
-    const json = (await response.json()) as {
-      errors?: Array<{ message: string }>;
-      data?: {
-        theme?: {
-          files?: {
-            nodes?: Array<{ filename: string; body?: { content?: string } }>;
-            pageInfo?: { hasNextPage?: boolean; endCursor?: string };
-          };
-        };
-      };
-      extensions?: unknown;
-    };
-
-    if (json.errors?.length) {
-      throw new Error(
-        `[theme-fetcher] Failed to fetch files for theme ${themeId}: ` +
-          (json.errors[0]?.message ?? "unknown error"),
-      );
-    }
-
-    const themeData = json.data?.theme;
-    if (!themeData) {
-      // Theme data is null/undefined without a top-level errors array — the
-      // theme was deleted, access was denied, or the response was malformed.
-      // Returning the files accumulated so far (usually an empty array on the
-      // first page) would let the caller complete the scan as "clean" and wipe
-      // every prior finding, making a transient soft-failure indistinguishable
-      // from a genuinely clean theme (LOG-5). Throw instead so Inngest retries
-      // and ultimately marks the scan FAILED rather than falsely COMPLETED.
-      // Throwing mid-pagination is deliberate: a retry is safer than persisting
-      // a partial file list.
-      throw new Error(
-        `[theme-fetcher] No theme data returned for theme ${themeId} ` +
-          `(deleted, access denied, or malformed response). Aborting fetch to avoid a false-clean scan.`,
-      );
-    }
-
-    const nodes = themeData.files?.nodes ?? [];
-    const pageInfo = themeData.files?.pageInfo ?? {};
-
-    for (const node of nodes) {
-      // body is a union type; only OnlineStoreThemeFileBodyText has content.
-      const content: string | undefined = node.body?.content;
-      if (typeof content === "string") {
-        files.push({ filename: node.filename, content });
+  return paginateConnection<ThemeFileNode, ThemeFile>({
+    admin,
+    query: THEME_FILES_QUERY,
+    variables: { themeId },
+    pageSize: PAGE_SIZE,
+    errorContext: `[theme-fetcher] Failed to fetch files for theme ${themeId}`,
+    shopDomain,
+    getConnection: (data) => {
+      const theme = (
+        data as { theme?: { files?: GraphQLConnection<ThemeFileNode> } | null } | null | undefined
+      )?.theme;
+      if (!theme) {
+        // Theme data is null/undefined without a top-level errors array — the
+        // theme was deleted, access was denied, or the response was malformed.
+        // Returning the files accumulated so far (usually an empty array on the
+        // first page) would let the caller complete the scan as "clean" and wipe
+        // every prior finding, making a transient soft-failure indistinguishable
+        // from a genuinely clean theme (LOG-5). Throw instead so Inngest retries
+        // and ultimately marks the scan FAILED rather than falsely COMPLETED.
+        // Throwing mid-pagination is deliberate: a retry is safer than persisting
+        // a partial file list.
+        throw new Error(
+          `[theme-fetcher] No theme data returned for theme ${themeId} ` +
+            `(deleted, access denied, or malformed response). Aborting fetch to avoid a false-clean scan.`,
+        );
       }
-    }
-
-    hasNextPage = Boolean(pageInfo.hasNextPage);
-    cursor = pageInfo.endCursor ?? null;
-
-    // Check rate limits after each page; sleep if needed before continuing.
-    await checkRateLimit(json.extensions);
-
-    // Log a structured warning/error if the shop is approaching its rate limit.
-    // Non-blocking — does not change pagination or error handling behavior.
-    if (shopDomain) {
-      checkThrottleStatusFromExtensions(shopDomain, json.extensions);
-    }
-  }
-
-  return files;
+      // The connection lives on theme.files; theme itself is the parent object.
+      return theme.files;
+    },
+    // body is a union type; only OnlineStoreThemeFileBodyText has content.
+    mapNode: (node) =>
+      typeof node.body?.content === "string"
+        ? [{ filename: node.filename, content: node.body.content }]
+        : [],
+  });
 }
