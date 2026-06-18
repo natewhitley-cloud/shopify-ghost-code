@@ -11,9 +11,12 @@
  */
 
 import {
+  BG_SURFACE_ALT,
+  BORDER_DEFAULT,
   COLOR_CRITICAL,
   COLOR_INFO,
   COLOR_WARNING,
+  STATUS_TINTS,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
 } from "../styles/shared";
@@ -119,12 +122,12 @@ export function HealthScoreTrendChart({
         .trend-chart-heading {
           font-size: 18px;
           font-weight: 600;
-          color: #202223;
+          color: ${TEXT_PRIMARY};
           margin: 0 0 4px 0;
         }
-        .trend-chart-direction--improving { color: #1a8a3f; }
-        .trend-chart-direction--declining { color: #b98900; }
-        .trend-chart-direction--stable { color: #6d7175; }
+        .trend-chart-direction--improving { color: ${STATUS_TINTS.success.text}; }
+        .trend-chart-direction--declining { color: ${COLOR_WARNING}; }
+        .trend-chart-direction--stable { color: ${TEXT_SUBDUED}; }
         .trend-chart-svg-container {
           margin-top: 12px;
           width: 100%;
@@ -230,7 +233,7 @@ export function HealthScoreTrendChart({
                           y={chartBottom - minBarH}
                           width={barWidth}
                           height={minBarH}
-                          fill="#e1e3e5"
+                          fill={BORDER_DEFAULT}
                         />
                       )}
                     </g>
@@ -294,8 +297,8 @@ export function HealthScoreTrendEmptyState({
     <>
       <style>{`
         .trend-chart-empty {
-          background: #fafbfb;
-          border: 1px solid #e1e3e5;
+          background: ${BG_SURFACE_ALT};
+          border: 1px solid ${BORDER_DEFAULT};
           border-radius: 12px;
           padding: 24px 20px;
           margin-top: 16px;
@@ -303,12 +306,12 @@ export function HealthScoreTrendEmptyState({
         .trend-chart-empty-heading {
           font-size: 16px;
           font-weight: 600;
-          color: #202223;
+          color: ${TEXT_PRIMARY};
           margin: 0 0 8px 0;
         }
         .trend-chart-empty-text {
           font-size: 14px;
-          color: #6d7175;
+          color: ${TEXT_SUBDUED};
           margin: 0 0 16px 0;
         }
       `}</style>
