@@ -294,6 +294,80 @@ describe("CSV export", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Security: CSV formula injection neutralization (GC-fjg / SEC-2)
+// ---------------------------------------------------------------------------
+
+describe("CSV formula injection", () => {
+  /**
+   * Returns the second line of the CSV body (the single data row) for a scan
+   * whose only finding has the given codeSnippet. The codeSnippet column is the
+   * last field in the row.
+   */
+  async function dataRowForSnippet(codeSnippet: string): Promise<string> {
+    mockGetFindingsForScan.mockResolvedValue([{ ...FINDINGS[0], codeSnippet }]);
+    const response = await callLoader("scan-abc", "csv");
+    const body = await response.text();
+    return body.split("\r\n")[1];
+  }
+
+  it("prefixes a value starting with = with a single quote", async () => {
+    const row = await dataRowForSnippet("=SUM(A1:A2)");
+    expect(row.endsWith(`"'=SUM(A1:A2)"`)).toBe(true);
+  });
+
+  it("prefixes a value starting with + with a single quote", async () => {
+    const row = await dataRowForSnippet("+1+1");
+    expect(row.endsWith(`"'+1+1"`)).toBe(true);
+  });
+
+  it("prefixes a value starting with - with a single quote", async () => {
+    const row = await dataRowForSnippet("-2+3");
+    expect(row.endsWith(`"'-2+3"`)).toBe(true);
+  });
+
+  it("prefixes a value starting with @ with a single quote", async () => {
+    const row = await dataRowForSnippet("@SUM(1)");
+    expect(row.endsWith(`"'@SUM(1)"`)).toBe(true);
+  });
+
+  it("prefixes a value starting with a tab with a single quote", async () => {
+    const row = await dataRowForSnippet("\t=cmd");
+    expect(row.endsWith(`"'\t=cmd"`)).toBe(true);
+  });
+
+  it("prefixes a value starting with a carriage return with a single quote", async () => {
+    const row = await dataRowForSnippet("\r=cmd");
+    expect(row.endsWith(`"'\r=cmd"`)).toBe(true);
+  });
+
+  it("does NOT prefix a value with = that is not at the start", async () => {
+    const row = await dataRowForSnippet("color =red");
+    expect(row.endsWith(`"color =red"`)).toBe(true);
+    expect(row).not.toContain(`"'color`);
+  });
+
+  it("does NOT prefix a benign value", async () => {
+    const row = await dataRowForSnippet("display: none;");
+    expect(row.endsWith(`"display: none;"`)).toBe(true);
+  });
+
+  it("composes with comma/quote escaping when a dangerous value also contains them", async () => {
+    // Leading '=' must be neutralized AND internal quotes doubled AND the comma
+    // kept inside the wrapping quotes (so it stays one field).
+    const row = await dataRowForSnippet('=HYPERLINK("a,b")');
+    expect(row.endsWith(`"'=HYPERLINK(""a,b"")"`)).toBe(true);
+  });
+
+  it("composes with newline escaping for a dangerous value containing a newline", async () => {
+    mockGetFindingsForScan.mockResolvedValue([{ ...FINDINGS[0], codeSnippet: "=A1\nsecond line" }]);
+    const response = await callLoader("scan-abc", "csv");
+    const body = await response.text();
+    // The neutralized field with embedded newline lives inside the wrapping quotes.
+    expect(body).toContain(`"'=A1\nsecond line"`);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Happy path: JSON export
 // ---------------------------------------------------------------------------
 
