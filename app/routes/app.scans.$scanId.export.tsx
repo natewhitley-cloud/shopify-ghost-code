@@ -22,16 +22,43 @@ import { authenticate } from "../shopify.server";
 // ---------------------------------------------------------------------------
 
 /**
+ * Characters that, when they appear as the FIRST character of a CSV field,
+ * cause spreadsheet apps (Excel / Google Sheets / LibreOffice) to interpret
+ * the field as a formula. A malicious finding value beginning with one of
+ * these enables CSV formula injection (data exfiltration / command execution
+ * via DDE) when the exported file is opened.
+ *
+ *   =  +  -  @   formula triggers
+ *   \t (0x09)    horizontal tab — also treated as a formula lead by Excel
+ *   \r (0x0D)    carriage return — likewise dangerous as a leading char
+ *
+ * Per OWASP guidance we neutralize these by prefixing the field with a single
+ * quote ('), which forces the spreadsheet to treat the value as text.
+ */
+const CSV_FORMULA_TRIGGERS = ["=", "+", "-", "@", "\t", "\r"];
+
+/**
  * Escape a single CSV field value:
+ *   - Neutralize CSV formula injection: if the raw value starts with a
+ *     formula-trigger character, prefix it with a single quote (') so
+ *     spreadsheet apps treat it as text, not a formula.
  *   - Always wrap in double-quotes so commas and newlines inside values are safe.
  *   - Escape existing double-quote characters by doubling them ("").
  *   - Convert null/undefined to an empty string.
+ *
+ * Order matters: the formula-neutralizing prefix is applied to the RAW value
+ * first, then the standard RFC-4180 quote-doubling and wrapping is applied to
+ * the result. This keeps the two concerns composable and correct.
  */
 function escapeCsvField(value: string | number | null | undefined): string {
   if (value === null || value === undefined) {
     return '""';
   }
-  const str = String(value);
+  let str = String(value);
+  // Neutralize formula injection on the raw value before any quoting.
+  if (str.length > 0 && CSV_FORMULA_TRIGGERS.includes(str[0])) {
+    str = `'${str}`;
+  }
   // Double up any internal double-quotes, then wrap the whole field.
   return `"${str.replace(/"/g, '""')}"`;
 }
