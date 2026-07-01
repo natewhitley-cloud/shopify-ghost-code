@@ -2,7 +2,7 @@
  * URL redirect fetcher service.
  *
  * Queries Shopify Admin API for URL redirects.
- * Requires `read_url_redirects` scope.
+ * Requires `read_online_store_navigation` scope.
  */
 
 import { type GraphQLConnection, paginateConnection } from "../lib/graphql-pagination.server";
