@@ -42,6 +42,21 @@
     "comment_count": 0
   },
   {
+    "id": "GC-d4f",
+    "title": "HANDOFF: 2026-07-01 (session 16) — GC-8uw/GC-07t/GC-jlk shipped + prod-verified; only passive checks remain",
+    "description": "SESSION 16 HANDOFF\n\nWHAT GOT DONE\n- GC-8uw (perf): offloaded scanThemeFiles to a piscina worker pool (app/services/scan-pool.server.ts + scan-engine.worker.ts, esbuild build:worker step). Prod-verified: 45 findings/291 files, event-loop p99 ~1000ms→~4ms, NO worker_fallback.\n- GC-07t (bug): expiring-offline-token reauth loop. Root cause = legacy Session row with no refreshToken → SDK skips refresh → bounce loop. Fixed with SafeSessionStorage guard (app/lib/safe-session-storage.server.ts) nulling out expired+no-refreshToken offline sessions → clean re-auth. Prod-verified (clean session re-create, no loop).\n- GC-jlk (P1 bug): probeScope mislabeled thrown ACCESS_DENIED as transient (admin.graphql THROWS GraphqlQueryError on GraphQL errors; classification only ran on json.errors body path) → scans stuck IN_PROGRESS → watchdog-FAILED. Fixed catch block to classify err.body.errors.graphQLErrors + err.message via isAccessDeniedError. Prod-verified: scan finalizes PARTIAL, all 6 optional audits skip cleanly, no TransientScopeCheckError.\n- All shipped to main + deployed to Railway. Working tree clean, origin synced.\n\nKEY DECISIONS\n- GC-8uw Option B (piscina worker pool) over Option C (separate worker service) — self-contained, no deploy-topology change, headlessly testable. Rejected C: entangled with owner-gated Railway topology.\n- GC-07t Option A (SafeSessionStorage guard) over close-as-resolved — cheap insurance vs the severe silent-lockout failure mode even though recurrence is near-zero under current SDK.\n- Added docs/backlog-snapshot.json (bd list --all --json) as off-machine bead backup — beads are gitignored local Dolt with NO remote. Stopgap; durable fix = Dolt remote.\n\nPASSIVE OWNER VERIFICATIONS (rolled forward from GC-l7u, both self-confirming — no action)\n1. SIGTERM graceful drain (GC-8gh) — visible in Railway logs the next time the current deployment (a6cf7e0b) is REPLACED.\n2. GC-07t auth guard — self-confirms on the next natural offline-token expiry (offline TTL ~1hr); or force-expire a dev Session row w/ no refreshToken to test.\n\nRECOMMENDED NEXT (zero owner input)\n1. GC-kde (P3): dashboard loader blocks every page view on live Shopify theme API calls, no caching — we OBSERVED this in prod (slow app-home loads). High-value UX fix, no owner input.\n2. GC-i0j (P3): wire local Inngest dev so scans run under 'shopify app dev' (currently can't — see memory ghost-code-dev-scan-verification).\n3. /tend or /curate: implementer learnings at 49 lines, tester at 48 (GC-q7a) — both near the 50 warning line.\n\nBLOCKED / OWNER-GATED\n- GC-eis (P1): contextual App Bridge optional-scope requests — blocked on a UX decision + headless-untestable live grant flow.\n\nRISKS\n- Local .env → prod Railway DB (over public proxy); any prisma migrate hits prod. Additive/reversible changes only.\n- Beads = gitignored local Dolt, no remote → off-machine backup is only the periodic docs/backlog-snapshot.json.\n- shopify app dev leaves a dev-preview URL override on quit → use store Dev Console 'Clean dev preview' to return to prod (see memory).\n\nSuperseded GC-l7u (session-15 handoff); its active verifications (#1 preDeploy, #3 index migration, #4 worker, #6 scope-fix) all CONFIRMED this session.",
+    "status": "open",
+    "priority": 1,
+    "issue_type": "task",
+    "owner": "natewhitley@gmail.com",
+    "created_at": "2026-07-01T23:09:54Z",
+    "created_by": "Nathan Whitley",
+    "updated_at": "2026-07-01T23:09:54Z",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
     "id": "GC-jlk",
     "title": "probeScope mislabels thrown ACCESS_DENIED as transient → scans stuck IN_PROGRESS in prod",
     "description": "SYMPTOM\nProd scans compute findings but never finalize — stuck at IN_PROGRESS. Confirmed live 2026-07-01: scan cmr2ndfe60001mq01mk3zo4ic on nw-dev-store-2 logged 'theme scan complete' (45 findings, 291 files) but status=IN_PROGRESS, completedAt=null. Inngest fn 'scan-theme' failed + retried on:\n  TransientScopeCheckError: [scope-check] transient error while probing 'read_translations' scope: Access denied for shopLocales field. Required access: read_locales or read_markets_home.\n\nROOT CAUSE\napp/lib/scope-check.server.ts probeScope() classifies ACCESS_DENIED (→ return false, skip audit → PARTIAL) vs transient (→ throw TransientScopeCheckError → Inngest retry) ONLY for errors in the GraphQL RESPONSE BODY (json.errors). But the @shopify/shopify-app-react-router admin.graphql() client THROWS a GraphqlQueryError when the response contains errors (stack: throwFailedRequest → NewGraphqlClient.request → admin.graphql → probeScope). So access-denied lands in the catch(err) block, which UNCONDITIONALLY throws TransientScopeCheckError without running isAccessDeniedError. A permanent access-denied is thus mislabeled transient → Inngest retries forever → scan never finalizes.\n\nIMPACT (high)\nAffects every optional-scope audit (translations/products/content/redirects — all use probeScope) when the scope is un-granted AND the client throws. App runs limited scopes (read_themes-centric), so optional scopes are typically un-granted → most/all prod scans fail to finalize despite computing findings. Core feature broken in prod.\n\nFIX\nIn probeScope's catch(err): run the thrown error through isAccessDeniedError (check err.message, and any structured GraphQL errors on err.body/err.response/err.graphQLErrors if present) BEFORE defaulting to transient. If access-denied → return false (skip cleanly → PARTIAL). Else → throw TransientScopeCheckError. The thrown message 'Access denied for shopLocales field...' matches the existing ACCESS_DENIED_MESSAGE regex, so message-based detection covers this case; also check extensions.code==='ACCESS_DENIED' on structured errors if the client exposes them.\nTEST: mock admin.graphql to THROW a GraphqlQueryError-shaped access-denied → expect probeScope returns false (not throws). Keep existing body-errors path tests.\n\nNOTE: worker offload (GC-8uw) verified working in the same run — this bug is unrelated to that. Stuck scan cmr2ndfe finalized to PARTIAL manually as a one-off.",
@@ -63,13 +78,15 @@
     "title": "HANDOFF: 2026-07-01 (session 15) — deploy cluster cleared via /sprint; 3 owner deploy-verifications pending",
     "description": "Session 15 handoff. Ghost Code.\n\nWHAT GOT DONE\n- Reviewed session-14 handoff (GC-bo4) against reality — all claims verified (main @ 264a89c pushed, PR #17, GC-a5o closed, preDeployCommand + Dockerfile changes present, 0 pending migrations). Handoff was accurate.\n- Cleared the ENTIRE remaining deploy cluster (5 beads) via /sprint with real team roles. All pushed to main (92aebb2..8c82cca):\n  - GC-8gh (OPS-7): SIGTERM graceful shutdown. CMD now exec-form 'node node_modules/.bin/react-router-serve ./build/server/index.js' so node is PID 1 and receives SIGTERM; @react-router/serve already drains via server.close(). Removed dead docker-start npm script. [scaffolder, 92aebb2]\n  - GC-2d8 (OPS-9): added USER node (non-root) + Dockerfile HEALTHCHECK (busybox wget). restartPolicyMaxRetries kept at 5. [scaffolder, 4f60a90]\n  - GC-29h (OPS-5): .dockerignore now excludes .env/.env.*/.git/.gitignore + noise. [scaffolder, 169b85f]\n  - GC-irz (PRF-9): added Session.shop + Scan[status,startedAt]/[status,createdAt] indexes via hand-authored migration 20260701180000_index_hygiene. SCOPE CORRECTION: the 'drop unused Finding.severity index' item was a review mis-diagnosis — index is load-bearing (WHERE+groupBy+orderBy in finding.server.ts). Kept it. [scaffolder, c12bf82]\n  - GC-u9e (URL-3): review CTA now deep-links https://apps.shopify.com/ghost-code#modal-show=WriteReviewModal (opens write-review modal), verified vs Shopify docs via shopify-dev MCP. [implementer, 1a44843]\n- Retro run: 3 learnings persisted via /sprint loop (2 scaffolder: busybox-wget, severity-index-load-bearing; 1 implementer: review deep-link). retro-history + harvest-learnings memory updated (learning-loop gap marked RESOLVED). Filed GC-q7a (curate tester learnings, 4th-retro flag). Commits 8c82cca + a0ce7df.\n\nKEY DECISIONS\n- Dispatched via /sprint (real roles) NOT general-purpose — closes the recurring learning-loop gap flagged S12/S13/S14. Now the confirmed default for team-owned work.\n- Routed GC-u9e to implementer, not scaffolder — it's a UI URL (app/routes), not deploy config. Added a 2nd agent rather than mis-route.\n- GC-irz: chose 'verify-then-drop' over blind drop — caught the severity-index mis-diagnosis. Kept the index; added only the 2 genuinely-useful indexes + Session.shop.\n- GC-2d8: left restartPolicyMaxRetries=5 (a broken deploy should fail, not crash-loop forever).\n\nPATTERNS \u0026 DISCOVERIES\n- @react-router/serve v7.17.0 ALREADY does graceful shutdown (SIGTERM -\u003e server.close()); the only bug was npm swallowing the signal. exec-form node PID 1 is the complete fix.\n- Finding_severity_idx is load-bearing (finding.server.ts WHERE+groupBy+orderBy) — do NOT drop; the review doc was wrong.\n- node:20-alpine ships busybox wget — usable in Dockerfile HEALTHCHECK with no apk add. (Railway ignores Dockerfile HEALTHCHECK; it's portability-only.)\n- Shopify review deep-link: #modal-show=WriteReviewModal opens the write-review modal; #reviews is a no-op.\n\nOWNER-GATED DEPLOY VERIFICATIONS — OPEN (needs Railway dashboard; CLI is unauthenticated)\nThese accumulated across S14+S15 and all resolve on the NEXT deploy in one dashboard pass:\n1. (from GC-bo4/S14) Deploy 358f79d Active/Success + preDeployCommand ran prisma migrate deploy.\n2. (GC-8gh) On next deploy, old container drains in-flight requests on SIGTERM rather than hard-kill (or just trust the mechanism: node is now PID 1, serve drains).\n3. (GC-irz) preDeployCommand applies pending migration 20260701180000_index_hygiene (3 CREATE INDEX, additive/fast). Verify 'No failed migrations' post-deploy.\n\nUNCOMMITTED / UNPUSHED\n- 1 unpushed commit: a0ce7df (session-15 retro-history). Push it (docs-only). Otherwise only .claude/tackline/memory/sessions/* auto-noise remains (ignore).\n\nRECOMMENDED NEXT STEPS\n1. Owner: one Railway dashboard pass on next deploy covering the 3 verifications above; then this handoff + GC-bo4 can be considered fully closed.\n2. GC-q7a (P3): curate tester learnings (48 lines, overdue 4 retros) — quick /curate.\n3. Next substantive pickup (P2, no owner input): GC-8uw (offload CPU-bound scanThemeFiles off the web event loop) — real product/perf work. Or GC-e8a (esbuild advisory, needs major vite bump — riskier, defer).\n4. GC-eis (P1) remains blocked on a UX decision (per-category scope-request modal vs settings UI) + dev-store grant-flow testing — owner call, spec-first.\n5. Process: consider /tend to evaluate scaffolder's deploy-config learnings cluster (preDeployCommand, dual-prisma-copy, busybox-wget, exec-node-PID1) for promotion to a deployment-config rule.\n\nRISKS \u0026 WARNINGS\n- No critical risks. Residual: the index migration is its own maiden run on next deploy, but preDeployCommand is already live (shipped 358f79d) so it applies automatically; indexes are additive/reversible.\n- Do NOT run prisma migrate dev/deploy locally — .env points at prod Railway (no local/shadow DB).\n- Backlog is a local Dolt DB with no remote (bd dolt push fails) — bead state is not backed up off this machine.",
     "notes": "VERIFIED 2026-07-01T23:05Z (deploy a6cf7e0b): #6 GC-jlk CONFIRMED — scan cmr2omplu finalized status=PARTIAL, 45 findings, all 6 optional audits skipped cleanly (read_translations/tag/price/page/metafield/redirect), NO TransientScopeCheckError. #4 GC-8uw RE-CONFIRMED — theme scan complete, no worker_fallback. Remaining OPEN: only passive checks — #2 SIGTERM drain (visible when this deployment is next replaced) and #5 GC-07t guard (self-confirms on next natural offline-token expiry). All active verifications done.",
-    "status": "open",
+    "status": "closed",
     "priority": 1,
     "issue_type": "task",
     "owner": "natewhitley@gmail.com",
     "created_at": "2026-07-01T18:49:23Z",
     "created_by": "Nathan Whitley",
-    "updated_at": "2026-07-01T23:02:05Z",
+    "updated_at": "2026-07-01T23:10:02Z",
+    "closed_at": "2026-07-01T23:10:02Z",
+    "close_reason": "Superseded by GC-d4f (session-16 handoff). All active verifications CONFIRMED this session: #1 preDeployCommand, #3 index migration, #4 GC-8uw worker (no worker_fallback), #6 GC-jlk scope-fix (scan finalizes PARTIAL). Only passive checks (#2 SIGTERM drain, #5 auth-guard natural expiry) rolled forward to GC-d4f.",
     "dependency_count": 0,
     "dependent_count": 0,
     "comment_count": 0
@@ -1083,6 +1100,21 @@
     "comment_count": 0
   },
   {
+    "id": "GC-i0j",
+    "title": "Wire local Inngest dev so scans run under shopify app dev",
+    "description": "From retro session 16 (2026-07-01). Dev scans can't run/verify locally — .env INNGEST_EVENT_KEY/SIGNING_KEY empty, no Inngest Dev Server, inngest.send() defaults to Cloud → 401. What to change: add INNGEST_DEV (or isDev in inngest/client.ts) so send() targets the local dev server when NODE_ENV=development, add an npm script + doc for 'npx inngest-cli dev -u http://localhost:\u003cport\u003e/api/inngest', and note in CLAUDE.md. Still won't exercise the piscina worker (dev uses inline fallback), but lets scans complete locally.",
+    "status": "open",
+    "priority": 3,
+    "issue_type": "task",
+    "owner": "natewhitley@gmail.com",
+    "created_at": "2026-07-01T23:08:40Z",
+    "created_by": "Nathan Whitley",
+    "updated_at": "2026-07-01T23:08:40Z",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
     "id": "GC-q7a",
     "title": "Curate tester learnings (48 lines, flagged 4 retros running)",
     "description": "From retro session 15 (2026-07-01). memory/agents/tester/learnings.md has sat at 48 lines and been flagged for /curate in retros for sessions 11, 13, 14, and 15 without action — approaching the 50-line warning / 60-line hard cap. What to change: run /curate on the tester learnings file: merge duplicate entries, archive entries \u003e21 days with no recent references to memory/agents/tester/archive.md, and apply the tiered Core/Task-Relevant structure. Also note promotion candidates for /tend.",
@@ -1673,6 +1705,21 @@
     "updated_at": "2026-06-15T21:13:22Z",
     "closed_at": "2026-06-15T21:13:22Z",
     "close_reason": "Closed",
+    "dependency_count": 0,
+    "dependent_count": 0,
+    "comment_count": 0
+  },
+  {
+    "id": "GC-24q",
+    "title": "Silence npm update-notifier on container start (deploy-log hygiene)",
+    "description": "From retro session 16 (2026-07-01). Every Railway container start logs npm's 'New major version of npm available' notice at severity=error, creating false-alarm error lines in deploy logs (confused owner during a deploy check). What to change: set NPM_CONFIG_UPDATE_NOTIFIER=false (or 'npm config set update-notifier false') in the Dockerfile runtime stage.",
+    "status": "open",
+    "priority": 4,
+    "issue_type": "chore",
+    "owner": "natewhitley@gmail.com",
+    "created_at": "2026-07-01T23:08:40Z",
+    "created_by": "Nathan Whitley",
+    "updated_at": "2026-07-01T23:08:40Z",
     "dependency_count": 0,
     "dependent_count": 0,
     "comment_count": 0
