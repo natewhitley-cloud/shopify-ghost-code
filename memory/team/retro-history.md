@@ -265,3 +265,9 @@
 - New learnings: 0 to team files (bugs dispatched via general-purpose agents, not /sprint)
 - Pruned/archived: 0 (all 5 learnings files under 50-line cap)
 - Key insight: general-purpose agent dispatches bypass the team-learning loop — durable learnings from the 4 bug agents lived only in PR bodies. Captured as a feedback memory + proven offline prisma-migrate-diff recipe for the live-DB constraint.
+
+## Retro: 2026-07-01 (session 13 — owner manual steps + cluster-15 pickups)
+- Tasks completed: 3 beads closed (GC-25u pricing-link, GC-vu9 protocol-relative scanner bug, GC-zkv finding-sort tests); 2 PRs merged (#15, #16); GC-o1a handoff closed; GC-664 deferred (owner call)
+- New learnings: 2 to debugger (protocol-relative `new URL()` drop; verify scope names vs docs), 1 to tester (coverage.include broadened) — harvested manually from general-purpose dispatches
+- Pruned/archived: 0 (tester at 48 lines — flag for /curate next session)
+- Key insight: the session-12 handoff's "CRITICAL pending migration" was already false — deploys are self-migrating (Docker CMD runs `prisma migrate deploy` on boot). Verify handoff risk claims against reality (`prisma migrate status`, prod introspection) before acting. Two general-purpose dispatch loops again bypassed the team-learning loop (recurring — see harvest-learnings memory).

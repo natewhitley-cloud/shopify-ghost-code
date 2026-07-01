@@ -22,6 +22,8 @@
 - Start diagnosis with the error message, then trace backwards through the call chain.
 - Check logs first (stdout for Railway), then code, then API responses.
 - Reproduce before fixing — write a failing test that demonstrates the bug.
+- Protocol-relative URLs (`//host/x.js`) throw in `new URL(url)` (no scheme), so any `try{new URL(url)}catch{continue}` silently DROPS them. Normalize with an `https:` prefix first. Use the shared `hostnameFromUrl()` in `app/lib/url.server.ts` rather than re-rolling `new URL().hostname` — there were 4 duplicate extractors before GC-vu9 consolidated them. (added: 2026-07-01, dispatch: GC-vu9)
+- Verify a Shopify access-scope name against the Admin API docs before "fixing" it. Commit 995f56d changed the correct `read_online_store_navigation` to a non-existent `read_url_redirects` on a false premise; the `urlRedirects` query requires `read_online_store_navigation`. A wrong scope-rename looks plausible and never fails locally. (added: 2026-07-01, dispatch: GC-vu9)
 
 ## Cross-Agent Notes
 
