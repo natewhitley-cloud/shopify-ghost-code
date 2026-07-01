@@ -1,7 +1,7 @@
 import type { LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData } from "react-router";
 
-import { getPlanFeatures } from "../lib/billing.server";
+import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import { PLANS } from "../lib/plans";
 import { getShopMetadata } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
@@ -22,25 +22,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const features = getPlanFeatures(shop.plan);
 
-  return { shop: { plan: shop.plan, domain: shop.domain }, features, shopDomain: session.shop };
+  // Shopify Managed Pricing — plan changes happen on Shopify's native UI.
+  const pricingPlansUrl = buildPricingPlansUrl(session.shop);
+
+  return { shop: { plan: shop.plan, domain: shop.domain }, features, pricingPlansUrl };
 };
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-// Charge ID from the Shopify Partner Dashboard (Partners → Apps → Ghost Code → Pricing).
-const GHOST_CODE_CHARGE_ID = "3e80de5fa6065400e94de3f1fe7f0c8b";
-
 export default function Settings() {
-  const { shop, shopDomain } = useLoaderData<typeof loader>();
+  const { shop, pricingPlansUrl } = useLoaderData<typeof loader>();
 
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
   const isProfessional = shop.plan === PLANS.PROFESSIONAL;
-
-  // Shopify Managed Pricing — plan changes happen on Shopify's native UI.
-  const pricingPlansUrl = `https://${shopDomain}/admin/charges/${GHOST_CODE_CHARGE_ID}/pricing_plans`;
 
   function planButton(label: string, variant: "primary" | "secondary" = "primary") {
     return (

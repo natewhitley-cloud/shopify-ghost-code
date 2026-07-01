@@ -6,3 +6,8 @@ export const PLANS = {
   STANDARD: "Standard",
   PROFESSIONAL: "Professional",
 } as const;
+
+// App handle from the Shopify Partner Dashboard (Apps → Ghost Code).
+// Used to build the Managed Pricing "Select a plan" URL. This is the app's
+// URL slug (`ghost-code`) — NOT the client_id.
+export const APP_HANDLE = "ghost-code";

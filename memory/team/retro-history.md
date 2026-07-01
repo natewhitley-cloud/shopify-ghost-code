@@ -259,3 +259,9 @@
 - WIN: read-only verifier fan-out (7 agents, one per cluster) reconciled a large filed set fast with concrete evidence; trust their evidence (one correctly reported a fix already existed — I wrongly doubted it first).
 - WIN: CMP-3 — checked docs/pricing-and-plans.md before a billing change; found the flag was dead/stale, not a behavioral bug. The project rule (review pricing doc before plan-gating changes) paid off.
 - implementer learnings at 50 lines (warning threshold) — run /curate next session.
+
+## Retro: 2026-07-01 (session 12)
+- Tasks completed: 7 beads closed (GC-gmt/fjg/2tq/iji bugs + GC-403 handoff), 7 PRs merged (#8-#14)
+- New learnings: 0 to team files (bugs dispatched via general-purpose agents, not /sprint)
+- Pruned/archived: 0 (all 5 learnings files under 50-line cap)
+- Key insight: general-purpose agent dispatches bypass the team-learning loop — durable learnings from the 4 bug agents lived only in PR bodies. Captured as a feedback memory + proven offline prisma-migrate-diff recipe for the live-DB constraint.
