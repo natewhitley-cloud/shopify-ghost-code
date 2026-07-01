@@ -10,8 +10,8 @@ export default defineConfig({
     include: ["tests/**/*.test.{ts,tsx}"],
     coverage: {
       provider: "v8",
-      include: ["app/**/*.server.ts", "inngest/**/*.ts"],
-      exclude: ["app/routes/**", "**/*.d.ts"],
+      include: ["app/**/*.{ts,tsx}", "inngest/**/*.ts"],
+      exclude: ["**/*.d.ts", "app/**/+types/**", ".react-router/**", "app/entry.*.tsx"],
     },
   },
 });
