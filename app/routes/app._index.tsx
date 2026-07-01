@@ -1,3 +1,4 @@
+import { ScanOrigin } from "@prisma/client";
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, redirect, useFetcher, useLoaderData } from "react-router";
@@ -323,7 +324,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // can see the queued scan in their history.
   let scan: { id: string };
   try {
-    ({ scan } = await dispatchScan(shop.id, themeId, themeName, { quota }));
+    // MANUAL origin: this merchant-initiated scan is the only kind that counts
+    // toward the manual weekly/monthly quota (GC-iji). Passed explicitly for clarity.
+    ({ scan } = await dispatchScan(shop.id, themeId, themeName, {
+      quota,
+      origin: ScanOrigin.MANUAL,
+    }));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create scan.";
     return { error: message };

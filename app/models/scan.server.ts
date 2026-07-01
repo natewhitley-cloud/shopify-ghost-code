@@ -1,4 +1,4 @@
-import { Prisma, ScanStatus } from "@prisma/client";
+import { Prisma, ScanOrigin, ScanStatus } from "@prisma/client";
 
 import db from "../db.server";
 import { logger } from "../lib/logger.server";
@@ -45,11 +45,19 @@ export type ScanQuota = {
  * Throws an Error with message "A scan is already in progress for this shop."
  * when a PENDING or IN_PROGRESS scan already exists. Callers should catch this
  * to surface a user-friendly message.
+ *
+ * `origin` records which surface initiated the scan and drives the manual-quota
+ * exemption (GC-iji). Only MANUAL (merchant-initiated) scans count toward the
+ * quota; SCHEDULED (cron) and AUTO_PUBLISH (theme-publish auto-rescan) scans are
+ * exempt, so a scheduled or auto scan can never block a merchant's own manual
+ * scan. Defaults to MANUAL for callers (and legacy behaviour) that do not
+ * specify an origin.
  */
 export async function createScan(
   shopId: string,
   themeId: string,
   themeName: string,
+  origin: ScanOrigin = ScanOrigin.MANUAL,
   quota?: ScanQuota,
 ) {
   return db.$transaction(async (tx) => {
@@ -61,11 +69,15 @@ export async function createScan(
       throw new Error("A scan is already in progress for this shop.");
     }
 
-    // Enforce quota atomically when provided.
+    // Enforce quota atomically when provided. Only MANUAL scans consume the
+    // quota (GC-iji): the count is scoped to origin=MANUAL so a SCHEDULED or
+    // AUTO_PUBLISH scan created earlier in the period does not count against the
+    // merchant's manual allowance.
     if (quota && !quota.isFirstScan && quota.maxScans !== Infinity) {
       const usedInPeriod = await tx.scan.count({
         where: {
           shopId,
+          origin: ScanOrigin.MANUAL,
           createdAt: { gte: quota.periodStart },
           status: { in: [...SUCCESSFUL_SCAN_STATUSES, ScanStatus.IN_PROGRESS] },
         },
@@ -78,7 +90,7 @@ export async function createScan(
     }
 
     return tx.scan.create({
-      data: { shopId, themeId, themeName },
+      data: { shopId, themeId, themeName, origin },
     });
   });
 }
@@ -312,11 +324,16 @@ export async function getLatestSuccessfulScanForTheme(
  * Only successful (COMPLETED / PARTIAL) and IN_PROGRESS scans count toward the
  * quota. FAILED and PENDING scans are excluded so merchants are not penalised
  * for infrastructure failures or scans that never ran.
+ *
+ * Only MANUAL (merchant-initiated) scans count (GC-iji): SCHEDULED (cron) and
+ * AUTO_PUBLISH (theme-publish auto-rescan) scans are exempt from the manual
+ * quota, mirroring the atomic count inside createScan.
  */
 export async function countScansForShopSince(shopId: string, since: Date): Promise<number> {
   return db.scan.count({
     where: {
       shopId,
+      origin: ScanOrigin.MANUAL,
       createdAt: { gte: since },
       status: { in: [...SUCCESSFUL_SCAN_STATUSES, ScanStatus.IN_PROGRESS] },
     },

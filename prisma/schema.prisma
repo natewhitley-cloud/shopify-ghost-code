@@ -42,29 +42,29 @@ model Session {
 // ---------------------------------------------------------------------------
 
 model Shop {
-  id                    String               @id @default(cuid())
-  domain                String               @unique
-  installedAt           DateTime             @default(now())
-  plan                  String               @default("free")
+  id                  String         @id @default(cuid())
+  domain              String         @unique
+  installedAt         DateTime       @default(now())
+  plan                String         @default("free")
   // Last time `plan` was reconciled against Shopify's actual active
   // subscriptions (or refreshed by an APP_SUBSCRIPTIONS_UPDATE webhook). Null
   // means never reconciled. Drives the app-load freshness guard so the
   // reconciliation GraphQL query runs at most once per freshness window.
-  planReconciledAt      DateTime?
-  lastThemePublishAt    DateTime?
-  hasSeenReviewPrompt   Boolean              @default(false)
-  scans                 Scan[]
-  billingEvents         BillingEvent[]
+  planReconciledAt    DateTime?
+  lastThemePublishAt  DateTime?
+  hasSeenReviewPrompt Boolean        @default(false)
+  scans               Scan[]
+  billingEvents       BillingEvent[]
 }
 
 model BillingEvent {
   id        String   @id @default(cuid())
   shopId    String
   shop      Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  eventType String   // "upgrade" | "downgrade" | "cancellation" | "reactivation"
-  fromPlan  String?  // null for first subscription
-  toPlan    String?  // null for cancellation
-  amount    Float?   // monthly price of toPlan, null for cancellation
+  eventType String // "upgrade" | "downgrade" | "cancellation" | "reactivation"
+  fromPlan  String? // null for first subscription
+  toPlan    String? // null for cancellation
+  amount    Float? // monthly price of toPlan, null for cancellation
   createdAt DateTime @default(now())
 
   @@index([shopId])
@@ -73,23 +73,30 @@ model BillingEvent {
 }
 
 model Scan {
-  id             String          @id @default(cuid())
-  shopId         String
-  shop           Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  themeId        String
-  themeName      String
-  status         ScanStatus      @default(PENDING)
-  startedAt      DateTime?
-  completedAt    DateTime?
-  createdAt      DateTime        @default(now())
-  findingCount   Int             @default(0)
+  id                String          @id @default(cuid())
+  shopId            String
+  shop              Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  themeId           String
+  themeName         String
+  status            ScanStatus      @default(PENDING)
+  startedAt         DateTime?
+  completedAt       DateTime?
+  createdAt         DateTime        @default(now())
+  findingCount      Int             @default(0)
   // FindingType categories whose OPTIONAL audit was skipped this run because the
   // required Shopify scope was not granted (ACCESS_DENIED). Drives PARTIAL status
   // and prevents the diff engine from falsely marking un-audited categories as
   // "resolved" (LOG-4). Empty for fully-audited scans and all legacy scans.
-  skippedCategories String[]     @default([])
-  findings       Finding[]
-  unknownScripts UnknownScript[]
+  skippedCategories String[]        @default([])
+  // Which surface initiated this scan. Only MANUAL (merchant-initiated) scans
+  // count toward a plan's manual weekly/monthly quota; SCHEDULED (cron) and
+  // AUTO_PUBLISH (theme-publish auto-rescan) scans are exempt so a scheduled or
+  // auto scan can never block a merchant's manual scan (GC-iji). Defaults to
+  // MANUAL, which correctly backfills all pre-existing rows (historically every
+  // scan was merchant-initiated).
+  origin            ScanOrigin      @default(MANUAL)
+  findings          Finding[]
+  unknownScripts    UnknownScript[]
 
   @@index([shopId, createdAt])
 }
@@ -147,6 +154,17 @@ model Finding {
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
+
+// Which surface initiated a scan. Drives manual-quota exemption (GC-iji):
+// only MANUAL scans count against a plan's manual weekly/monthly scan limit.
+enum ScanOrigin {
+  // Merchant clicked "Scan" in the app UI. Counts toward the manual quota.
+  MANUAL
+  // Weekly cron (poll-check-shop). Exempt from the manual quota.
+  SCHEDULED
+  // Theme-publish auto-rescan webhook (Professional). Exempt from the manual quota.
+  AUTO_PUBLISH
+}
 
 enum ScanStatus {
   PENDING
@@ -219,4 +237,3 @@ model MetricSnapshot {
   avgFindingsPerScan Float
   createdAt          DateTime @default(now())
 }
-

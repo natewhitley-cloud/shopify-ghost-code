@@ -19,7 +19,7 @@
  * each layer's module under test.
  */
 
-import { FindingType, Severity } from "@prisma/client";
+import { FindingType, ScanOrigin, Severity } from "@prisma/client";
 import type { ActionFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -336,6 +336,7 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
         SHOP_ID,
         THEME_ID,
         THEME_NAME,
+        ScanOrigin.MANUAL,
         expect.objectContaining({ periodLabel: "month", isFirstScan: true }),
       );
     });

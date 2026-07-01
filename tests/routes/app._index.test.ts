@@ -8,6 +8,7 @@
  *   - Verify action creates a scan and dispatches to Inngest, with plan gating.
  */
 
+import { ScanOrigin } from "@prisma/client";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -499,11 +500,13 @@ describe("app._index action", () => {
       expect((result as Response).status).toBe(302);
       expect((result as Response).headers.get("Location")).toBe("/app/scans/scan-new");
 
+      // MANUAL origin (GC-iji): merchant-initiated scans are the only kind that
+      // consume the manual quota.
       expect(mockDispatchScan).toHaveBeenCalledWith(
         "shop-1",
         "gid://shopify/Theme/123456",
         "Dawn",
-        expect.objectContaining({ quota: expect.anything() }),
+        expect.objectContaining({ quota: expect.anything(), origin: ScanOrigin.MANUAL }),
       );
     });
   });
@@ -779,11 +782,13 @@ describe("app._index action — theme picker", () => {
       expect((result as Response).status).toBe(302);
       expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
       expect(mockFetchAllThemes).not.toHaveBeenCalled();
+      // MANUAL origin (GC-iji): merchant-initiated scans are the only kind that
+      // consume the manual quota.
       expect(mockDispatchScan).toHaveBeenCalledWith(
         "shop-1",
         "gid://shopify/Theme/123456",
         "Dawn",
-        expect.objectContaining({ quota: expect.anything() }),
+        expect.objectContaining({ quota: expect.anything(), origin: ScanOrigin.MANUAL }),
       );
     });
 
@@ -819,9 +824,11 @@ describe("app._index action — theme picker", () => {
       // fetchAllThemes validates the selection; fetchMainTheme should not be called
       expect(mockFetchAllThemes).toHaveBeenCalledTimes(1);
       expect(mockFetchMainTheme).not.toHaveBeenCalled();
-      // Professional plan has no scan quota (Infinity limits), so quota is null
+      // Professional plan has no scan quota (Infinity limits), so quota is null.
+      // Origin is MANUAL (GC-iji): a merchant-initiated scan from the dashboard.
       expect(mockDispatchScan).toHaveBeenCalledWith("shop-1", "gid://shopify/Theme/789", "Craft", {
         quota: null,
+        origin: ScanOrigin.MANUAL,
       });
     });
   });
@@ -870,11 +877,13 @@ describe("app._index action — theme picker", () => {
       expect(mockFetchAllThemes).not.toHaveBeenCalled();
       // Should fall back to MAIN theme
       expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
+      // MANUAL origin (GC-iji): merchant-initiated scans are the only kind that
+      // consume the manual quota.
       expect(mockDispatchScan).toHaveBeenCalledWith(
         "shop-1",
         "gid://shopify/Theme/123456",
         "Dawn",
-        expect.objectContaining({ quota: expect.anything() }),
+        expect.objectContaining({ quota: expect.anything(), origin: ScanOrigin.MANUAL }),
       );
     });
   });
@@ -895,11 +904,13 @@ describe("app._index action — theme picker", () => {
       expect((result as Response).status).toBe(302);
       expect(mockFetchAllThemes).not.toHaveBeenCalled();
       expect(mockFetchMainTheme).toHaveBeenCalledTimes(1);
+      // MANUAL origin (GC-iji): merchant-initiated scans are the only kind that
+      // consume the manual quota.
       expect(mockDispatchScan).toHaveBeenCalledWith(
         "shop-1",
         "gid://shopify/Theme/123456",
         "Dawn",
-        expect.objectContaining({ quota: expect.anything() }),
+        expect.objectContaining({ quota: expect.anything(), origin: ScanOrigin.MANUAL }),
       );
     });
   });

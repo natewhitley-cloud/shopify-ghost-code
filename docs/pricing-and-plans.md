@@ -32,7 +32,7 @@
 
 | Feature                | Limit                                           |
 | ---------------------- | ----------------------------------------------- |
-| Scans                  | 1 per week (resets Monday 00:00 UTC)            |
+| Scans                  | 1 manual per week (resets Monday 00:00 UTC)     |
 | Finding details        | Full (file, line number, code snippet)          |
 | Theme Health Score     | Yes (score + color band + delta between scans)  |
 | Weekly scheduled scan  | Yes (automatic scan every Sunday 6 AM UTC)      |
@@ -43,6 +43,8 @@
 | Scan diffing           | No                                              |
 
 **Purpose:** The mid-tier workhorse. Merchants get full finding details and weekly cadence — enough to stay on top of orphaned code without unlimited manual scans. The weekly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap creates clear daylight between Standard and Professional (unlimited).
+
+> **Manual-quota exemption (GC-iji):** the weekly cap counts **manual** (merchant-initiated) scans only. The Sunday-6AM scheduled scan and any Professional auto-rescan (theme-publish) are exempt and never consume the manual allowance — a merchant always gets their 1 manual scan/week regardless of how many automatic scans ran. This is enforced by a `Scan.origin` column (`MANUAL` / `SCHEDULED` / `AUTO_PUBLISH`); only `MANUAL` rows are counted in `createScan`'s atomic quota check and in `countScansForShopSince`.
 
 **App listing features (max 40 chars each):**
 
