@@ -3,6 +3,7 @@ import { ApiVersion, AppDistribution, shopifyApp } from "@shopify/shopify-app-re
 import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prisma";
 
 import prisma from "./db.server";
+import { SafeSessionStorage } from "./lib/safe-session-storage.server";
 
 // Plan name constants — used by APP_SUBSCRIPTIONS_UPDATE webhook to map
 // Shopify plan names to internal plan strings. Managed Pricing handles
@@ -27,7 +28,7 @@ const shopify = shopifyApp({
   scopes: process.env.SCOPES?.split(","),
   appUrl,
   authPathPrefix: "/auth",
-  sessionStorage: new PrismaSessionStorage(prisma),
+  sessionStorage: new SafeSessionStorage(new PrismaSessionStorage(prisma)),
   distribution: AppDistribution.AppStore,
   future: {
     expiringOfflineAccessTokens: true,
