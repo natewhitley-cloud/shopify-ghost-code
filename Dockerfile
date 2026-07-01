@@ -26,4 +26,7 @@ COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/shopify.app.toml ./shopify.app.toml
 COPY --from=build /app/shopify.web.toml ./shopify.web.toml
 EXPOSE 3000
+HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
+  CMD wget -qO- http://localhost:3000/health || exit 1
+USER node
 CMD ["node", "node_modules/.bin/react-router-serve", "./build/server/index.js"]
