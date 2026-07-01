@@ -22,7 +22,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepare": "husky || true",
-    "bench:scan": "vite-node scripts/bench-scan-engine.ts"
+    "bench:scan": "vite-node --config vitest.config.ts scripts/bench-scan-engine.ts"
   },
   "type": "module",
   "engines": {
