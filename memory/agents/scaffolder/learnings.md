@@ -9,6 +9,7 @@
 - Inngest client and event types live in `inngest/`, functions in `inngest/functions/`.
 - All server-only code uses `.server.ts` suffix to prevent client bundling.
 - Shopify config lives in `shopify.app.toml` — scopes, webhooks, app metadata.
+- `node:20-alpine` ships BusyBox `wget`, so a Dockerfile `HEALTHCHECK` can use `wget -qO- http://localhost:3000/health || exit 1` with no `apk add`. Note: Railway ignores Dockerfile HEALTHCHECK (uses railway.toml `healthcheckPath`) — the instruction is portability-only. (added: 2026-07-01, dispatch: GC-2d8)
 
 ## Gotchas
 
@@ -20,6 +21,7 @@
 - `npx prisma validate` always requires DATABASE_URL to be set. Use `DATABASE_URL=postgresql://x@localhost:5432/x npx prisma validate` as the validation command. (added: 2026-03-10, dispatch: .7)
 - Run `prisma migrate deploy` as Railway's `preDeployCommand` (railway.toml `[deploy]`), NOT on container boot — it then runs once per deploy in the new image and fails the deploy cleanly instead of re-running on every crash-restart. Boot should be just `react-router-serve`. (added: 2026-07-01, dispatch: GC-a5o)
 - Removing boot-time `prisma generate` is only safe if the runtime image copies BOTH `node_modules/.prisma` AND `node_modules/@prisma/client` from the build stage — the generated engine lives in `.prisma/client` but the package wrapper in `@prisma/client` must match it or the client is incomplete. (added: 2026-07-01, dispatch: GC-a5o)
+- `Finding_severity_idx` is load-bearing, NOT unused (a review doc claimed otherwise). `app/models/finding.server.ts` uses `severity` in a WHERE filter (`getFindingsByScan`), two `groupBy` calls, and several `orderBy` clauses. Any future proposal to drop it must first remove the optional severity filter and re-home the sort/group onto a covering index. Verify index usage by grepping queries before dropping — review-doc "unused index" claims are not reliable. (added: 2026-07-01, dispatch: GC-irz)
 
 ## Preferences
 
