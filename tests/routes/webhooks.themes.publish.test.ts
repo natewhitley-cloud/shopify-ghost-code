@@ -12,6 +12,7 @@
  *     tests/services/scan-dispatch.server.test.ts.
  */
 
+import { ScanOrigin } from "@prisma/client";
 import type { ActionFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -188,6 +189,18 @@ describe("webhooks.themes.publish — Professional plan (happy path)", () => {
     expect(themeId).toBe(THEME_GID);
     expect(themeId).toMatch(/^gid:\/\/shopify\/Theme\//);
     expect(themeName).toBe(THEME_NAME);
+  });
+
+  it("dispatches with AUTO_PUBLISH origin so the auto-rescan is exempt from the manual quota (GC-iji)", async () => {
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(mockDispatchScan).toHaveBeenCalledOnce();
+    const options = mockDispatchScan.mock.calls[0][3];
+    expect(options).toEqual(expect.objectContaining({ origin: ScanOrigin.AUTO_PUBLISH }));
   });
 
   it("looks up the shop by the domain from the webhook", async () => {

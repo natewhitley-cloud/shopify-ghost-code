@@ -25,7 +25,7 @@
  *      re-runs createScan).
  */
 
-import { ScanStatus } from "@prisma/client";
+import { ScanOrigin, ScanStatus } from "@prisma/client";
 
 import { createScan, getLatestSuccessfulScanForTheme } from "../../app/models/scan.server";
 import { inngest } from "../client";
@@ -172,7 +172,9 @@ export const pollCheckShop = inngest.createFunction(
     // -------------------------------------------------------------------------
     const scanId = await step.run("create-scan", async () => {
       const createStart = Date.now();
-      const scan = await createScan(shopId, themeId, themeName);
+      // SCHEDULED origin: this cron-created scan is exempt from the manual
+      // weekly quota (GC-iji) so it can never block a merchant's manual scan.
+      const scan = await createScan(shopId, themeId, themeName, ScanOrigin.SCHEDULED);
 
       const createMs = Date.now() - createStart;
       const { logger } = await import("../../app/lib/logger.server");

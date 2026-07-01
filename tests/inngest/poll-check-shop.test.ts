@@ -18,7 +18,7 @@
  *   - The step mock from createMockInngestStep() executes each callback immediately.
  */
 
-import { ScanStatus } from "@prisma/client";
+import { ScanOrigin, ScanStatus } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -193,7 +193,13 @@ describe("pollCheckShop — happy path", () => {
   it("creates a scan record with the correct shop and theme identifiers", async () => {
     await runPollCheckShop();
 
-    expect(mockCreateScan).toHaveBeenCalledWith(SHOP_ID, THEME_GID, THEME_NAME);
+    // SCHEDULED origin (GC-iji): cron scans are exempt from the manual quota.
+    expect(mockCreateScan).toHaveBeenCalledWith(
+      SHOP_ID,
+      THEME_GID,
+      THEME_NAME,
+      ScanOrigin.SCHEDULED,
+    );
   });
 
   it("dispatches a scan/requested event via step.sendEvent after creating the scan", async () => {

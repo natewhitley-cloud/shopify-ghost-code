@@ -191,6 +191,18 @@ describe("canStartScan — Standard plan", () => {
     expect(result.reason).toContain("Upgrade to Professional");
   });
 
+  it("allows a manual scan when only a SCHEDULED cron scan ran this week (GC-iji)", async () => {
+    // countScansForShopSince counts MANUAL scans only (verified in
+    // scan.server.test.ts), so a week whose only scan was the Sunday cron reports
+    // 0 manual usage — the merchant's weekly manual scan is still available.
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    const result = await canStartScan(SHOP_ID, "Standard");
+
+    expect(result.allowed).toBe(true);
+    expect(result.reason).toBeUndefined();
+  });
+
   it("passes the start of the current ISO week (Monday 00:00 UTC) as the since date", async () => {
     mockCountScansForShopSince.mockResolvedValue(0);
 

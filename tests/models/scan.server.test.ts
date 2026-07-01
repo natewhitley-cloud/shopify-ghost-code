@@ -10,7 +10,7 @@
  * objects that are referenced inside a vi.mock factory.
  */
 
-import { ScanStatus } from "@prisma/client";
+import { ScanOrigin, ScanStatus } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -22,6 +22,7 @@ const mockTx = vi.hoisted(() => ({
   scan: {
     findFirst: vi.fn(),
     create: vi.fn(),
+    count: vi.fn(),
   },
 }));
 
@@ -88,6 +89,7 @@ const baseScan = {
   themeId: THEME_ID,
   themeName: "Dawn",
   status: ScanStatus.PENDING,
+  origin: ScanOrigin.MANUAL,
   findingCount: 0,
   createdAt: new Date("2026-01-15T10:00:00Z"),
   startedAt: null,
@@ -116,9 +118,36 @@ describe("createScan", () => {
       }),
     );
     expect(mockTx.scan.create).toHaveBeenCalledWith({
-      data: { shopId: SHOP_ID, themeId: THEME_ID, themeName: "Dawn" },
+      data: { shopId: SHOP_ID, themeId: THEME_ID, themeName: "Dawn", origin: ScanOrigin.MANUAL },
     });
     expect(result).toEqual(baseScan);
+  });
+
+  it("defaults origin to MANUAL when not provided (GC-iji)", async () => {
+    mockTx.scan.findFirst.mockResolvedValue(null);
+    mockTx.scan.create.mockResolvedValue(baseScan);
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn");
+
+    expect(mockTx.scan.create).toHaveBeenCalledWith({
+      data: { shopId: SHOP_ID, themeId: THEME_ID, themeName: "Dawn", origin: ScanOrigin.MANUAL },
+    });
+  });
+
+  it("persists the given origin in the created scan (SCHEDULED)", async () => {
+    mockTx.scan.findFirst.mockResolvedValue(null);
+    mockTx.scan.create.mockResolvedValue(baseScan);
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.SCHEDULED);
+
+    expect(mockTx.scan.create).toHaveBeenCalledWith({
+      data: {
+        shopId: SHOP_ID,
+        themeId: THEME_ID,
+        themeName: "Dawn",
+        origin: ScanOrigin.SCHEDULED,
+      },
+    });
   });
 
   it("throws when a PENDING scan already exists for the shop", async () => {
@@ -156,6 +185,93 @@ describe("createScan", () => {
     mockTx.scan.create.mockRejectedValue(new Error("DB constraint violation"));
 
     await expect(createScan(SHOP_ID, THEME_ID, "Dawn")).rejects.toThrow("DB constraint violation");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// createScan — manual quota exemption (GC-iji)
+//
+// Standard-plan merchants get 1 MANUAL scan/week PLUS a weekly SCHEDULED cron
+// scan and (Professional) AUTO_PUBLISH auto-rescans. Only MANUAL scans may
+// consume the manual quota; SCHEDULED and AUTO_PUBLISH scans must be exempt so
+// they can never block the merchant's own manual scan.
+// ---------------------------------------------------------------------------
+
+describe("createScan — manual quota exemption (GC-iji)", () => {
+  // Standard plan: 1 manual scan per week.
+  const STANDARD_QUOTA = {
+    periodStart: new Date("2026-06-15T00:00:00Z"),
+    maxScans: 1,
+    periodLabel: "week" as const,
+    isFirstScan: false,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTx.scan.findFirst.mockResolvedValue(null); // no active scan
+    mockTx.scan.create.mockResolvedValue(baseScan);
+  });
+
+  // Simulate the DB honouring the where.origin filter: count only fixture rows
+  // whose origin matches the query (or all rows when no origin filter is set).
+  function countMatchingOrigin(scans: Array<{ origin: ScanOrigin }>) {
+    return async ({ where }: { where: { origin?: ScanOrigin } }) =>
+      scans.filter((s) => where.origin === undefined || s.origin === where.origin).length;
+  }
+
+  it("scopes the atomic quota count to origin=MANUAL", async () => {
+    mockTx.scan.count.mockResolvedValue(0);
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, STANDARD_QUOTA);
+
+    const callArg = mockTx.scan.count.mock.calls[0][0];
+    expect(callArg.where.origin).toBe(ScanOrigin.MANUAL);
+  });
+
+  it("allows a MANUAL scan when the only scan this week is SCHEDULED (the bead scenario)", async () => {
+    // A Sunday-6AM cron SCHEDULED scan already ran this week. It must NOT consume
+    // the merchant's single weekly manual scan — the exact GC-iji bug.
+    mockTx.scan.count.mockImplementation(countMatchingOrigin([{ origin: ScanOrigin.SCHEDULED }]));
+
+    await expect(
+      createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, STANDARD_QUOTA),
+    ).resolves.toEqual(baseScan);
+    expect(mockTx.scan.create).toHaveBeenCalledOnce();
+  });
+
+  it("allows a MANUAL scan when the only scan this week is AUTO_PUBLISH", async () => {
+    mockTx.scan.count.mockImplementation(
+      countMatchingOrigin([{ origin: ScanOrigin.AUTO_PUBLISH }]),
+    );
+
+    await expect(
+      createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, STANDARD_QUOTA),
+    ).resolves.toEqual(baseScan);
+    expect(mockTx.scan.create).toHaveBeenCalledOnce();
+  });
+
+  it("allows a MANUAL scan even when SCHEDULED and AUTO_PUBLISH scans both exist this week", async () => {
+    mockTx.scan.count.mockImplementation(
+      countMatchingOrigin([
+        { origin: ScanOrigin.SCHEDULED },
+        { origin: ScanOrigin.AUTO_PUBLISH },
+        { origin: ScanOrigin.SCHEDULED },
+      ]),
+    );
+
+    await expect(
+      createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, STANDARD_QUOTA),
+    ).resolves.toEqual(baseScan);
+  });
+
+  it("rejects a second MANUAL scan when a MANUAL scan already exists this week (quota consumed)", async () => {
+    // Existing manual behaviour is preserved: a manual scan DOES consume quota.
+    mockTx.scan.count.mockImplementation(countMatchingOrigin([{ origin: ScanOrigin.MANUAL }]));
+
+    await expect(
+      createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, STANDARD_QUOTA),
+    ).rejects.toThrow("Scan limit reached: 1 of 1 scans used this week.");
+    expect(mockTx.scan.create).not.toHaveBeenCalled();
   });
 });
 
@@ -561,6 +677,7 @@ describe("countScansForShopSince", () => {
     expect(mockDb.scan.count).toHaveBeenCalledWith({
       where: {
         shopId: SHOP_ID,
+        origin: ScanOrigin.MANUAL,
         createdAt: { gte: since },
         status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL, ScanStatus.IN_PROGRESS] },
       },
@@ -579,6 +696,35 @@ describe("countScansForShopSince", () => {
     expect(callArg.where.status.in).toContain(ScanStatus.IN_PROGRESS);
     expect(callArg.where.status.in).not.toContain(ScanStatus.FAILED);
     expect(callArg.where.status.in).not.toContain(ScanStatus.PENDING);
+  });
+
+  it("filters to origin=MANUAL so SCHEDULED and AUTO_PUBLISH scans are exempt (GC-iji)", async () => {
+    mockDb.scan.count.mockResolvedValue(0);
+
+    await countScansForShopSince(SHOP_ID, new Date("2026-01-01T00:00:00Z"));
+
+    const callArg = mockDb.scan.count.mock.calls[0][0];
+    expect(callArg.where.origin).toBe(ScanOrigin.MANUAL);
+  });
+
+  it("counts only MANUAL scans in a mixed-origin period (excludes SCHEDULED + AUTO_PUBLISH)", async () => {
+    // Behavioural check: a period containing 2 MANUAL, 1 SCHEDULED, 1 AUTO_PUBLISH
+    // scan must report a manual usage of 2. Simulate the DB honouring the
+    // where.origin filter.
+    const periodScans = [
+      { origin: ScanOrigin.MANUAL },
+      { origin: ScanOrigin.SCHEDULED },
+      { origin: ScanOrigin.AUTO_PUBLISH },
+      { origin: ScanOrigin.MANUAL },
+    ];
+    mockDb.scan.count.mockImplementation(
+      async ({ where }: { where: { origin?: ScanOrigin } }) =>
+        periodScans.filter((s) => where.origin === undefined || s.origin === where.origin).length,
+    );
+
+    const result = await countScansForShopSince(SHOP_ID, new Date("2026-06-01T00:00:00Z"));
+
+    expect(result).toBe(2);
   });
 
   it("returns 0 when no scans have been run since the given date", async () => {

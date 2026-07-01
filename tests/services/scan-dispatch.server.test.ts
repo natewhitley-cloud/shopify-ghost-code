@@ -13,6 +13,7 @@
  *     test makes the invariant explicit so a future regression is caught.
  */
 
+import { ScanOrigin } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -92,11 +93,17 @@ describe("dispatchScan — happy path", () => {
     expect(result.scan).toEqual(MOCK_SCAN);
   });
 
-  it("calls createScan with the correct arguments", async () => {
+  it("calls createScan with the correct arguments (defaulting origin to MANUAL)", async () => {
     await dispatchScan(SHOP_ID, THEME_ID, THEME_NAME);
 
     expect(mockCreateScan).toHaveBeenCalledOnce();
-    expect(mockCreateScan).toHaveBeenCalledWith(SHOP_ID, THEME_ID, THEME_NAME, undefined);
+    expect(mockCreateScan).toHaveBeenCalledWith(
+      SHOP_ID,
+      THEME_ID,
+      THEME_NAME,
+      ScanOrigin.MANUAL,
+      undefined,
+    );
   });
 
   it("forwards quota to createScan when provided", async () => {
@@ -109,15 +116,39 @@ describe("dispatchScan — happy path", () => {
 
     await dispatchScan(SHOP_ID, THEME_ID, THEME_NAME, { quota });
 
-    expect(mockCreateScan).toHaveBeenCalledWith(SHOP_ID, THEME_ID, THEME_NAME, quota);
+    expect(mockCreateScan).toHaveBeenCalledWith(
+      SHOP_ID,
+      THEME_ID,
+      THEME_NAME,
+      ScanOrigin.MANUAL,
+      quota,
+    );
+  });
+
+  it("forwards a non-default origin to createScan (GC-iji: AUTO_PUBLISH exemption)", async () => {
+    await dispatchScan(SHOP_ID, THEME_ID, THEME_NAME, { origin: ScanOrigin.AUTO_PUBLISH });
+
+    expect(mockCreateScan).toHaveBeenCalledWith(
+      SHOP_ID,
+      THEME_ID,
+      THEME_NAME,
+      ScanOrigin.AUTO_PUBLISH,
+      undefined,
+    );
   });
 
   it("passes null quota when options is omitted", async () => {
     await dispatchScan(SHOP_ID, THEME_ID, THEME_NAME);
 
     // createScan receives undefined (no quota) — the model treats undefined
-    // the same as null (no quota enforcement).
-    expect(mockCreateScan).toHaveBeenCalledWith(SHOP_ID, THEME_ID, THEME_NAME, undefined);
+    // the same as null (no quota enforcement). Origin defaults to MANUAL.
+    expect(mockCreateScan).toHaveBeenCalledWith(
+      SHOP_ID,
+      THEME_ID,
+      THEME_NAME,
+      ScanOrigin.MANUAL,
+      undefined,
+    );
   });
 
   it("sends a scan/requested event with the correct payload", async () => {

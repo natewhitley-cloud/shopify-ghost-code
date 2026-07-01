@@ -1,3 +1,4 @@
+import { ScanOrigin } from "@prisma/client";
 import type { ActionFunctionArgs } from "react-router";
 
 import { logger } from "../lib/logger.server";
@@ -62,7 +63,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // failure (active scan, quota exceeded) is propagated here; inngest.send
     // failures are logged inside dispatchScan (best-effort) and do NOT reach
     // this catch, preventing Shopify retry storms caused by transient send errors.
-    await dispatchScan(shopRecord.id, themeId, themeName);
+    // AUTO_PUBLISH origin: this auto-rescan is exempt from the manual weekly
+    // quota (GC-iji) so it never blocks the merchant's own manual scan.
+    await dispatchScan(shopRecord.id, themeId, themeName, { origin: ScanOrigin.AUTO_PUBLISH });
   } catch (err) {
     // createScan threw — scan already in progress or quota exceeded.
     // Log and return 200 to prevent Shopify retry storms.
