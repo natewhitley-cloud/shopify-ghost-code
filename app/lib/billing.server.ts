@@ -1,6 +1,26 @@
 // Import PLANS for local use and re-export for existing server imports.
-import { PLANS } from "./plans";
+import { APP_HANDLE, PLANS } from "./plans";
 export { PLANS };
+
+// ---------------------------------------------------------------------------
+// Managed Pricing URL
+// ---------------------------------------------------------------------------
+
+/**
+ * Build the Shopify Managed Pricing ("Select a plan") URL for a shop.
+ *
+ * Correct format (verified against the live admin):
+ *   https://admin.shopify.com/store/{storeHandle}/charges/{appHandle}/pricing_plans
+ *
+ * `storeHandle` is the shop's myshopify subdomain — the session shop domain
+ * with a trailing `.myshopify.com` stripped (e.g. `nw-dev-store-2.myshopify.com`
+ * → `nw-dev-store-2`). If the domain does not match that suffix we fall back to
+ * using it verbatim rather than emitting a malformed URL.
+ */
+export function buildPricingPlansUrl(shopDomain: string): string {
+  const storeHandle = shopDomain.replace(/\.myshopify\.com$/i, "");
+  return `https://admin.shopify.com/store/${storeHandle}/charges/${APP_HANDLE}/pricing_plans`;
+}
 
 // ---------------------------------------------------------------------------
 // Shopify subscription → internal plan mapping
