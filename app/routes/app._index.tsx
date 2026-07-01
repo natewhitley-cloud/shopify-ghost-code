@@ -525,7 +525,12 @@ export default function Dashboard() {
             <s-stack direction="inline" gap="base">
               <s-button
                 variant="primary"
-                onClick={() => window.open("https://apps.shopify.com/ghost-code#reviews", "_blank")}
+                onClick={() =>
+                  window.open(
+                    "https://apps.shopify.com/ghost-code#modal-show=WriteReviewModal",
+                    "_blank",
+                  )
+                }
               >
                 Leave a Review
               </s-button>
