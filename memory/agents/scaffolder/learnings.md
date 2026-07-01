@@ -18,6 +18,8 @@
 - REST Admin API is blocked for new apps since April 2025 — GraphQL only.
 - Inngest has no react-router adapter. Use `inngest/remix` — it exports serve() compatible with React Router v7 loader/action exports. (added: 2026-03-10, dispatch: .10)
 - `npx prisma validate` always requires DATABASE_URL to be set. Use `DATABASE_URL=postgresql://x@localhost:5432/x npx prisma validate` as the validation command. (added: 2026-03-10, dispatch: .7)
+- Run `prisma migrate deploy` as Railway's `preDeployCommand` (railway.toml `[deploy]`), NOT on container boot — it then runs once per deploy in the new image and fails the deploy cleanly instead of re-running on every crash-restart. Boot should be just `react-router-serve`. (added: 2026-07-01, dispatch: GC-a5o)
+- Removing boot-time `prisma generate` is only safe if the runtime image copies BOTH `node_modules/.prisma` AND `node_modules/@prisma/client` from the build stage — the generated engine lives in `.prisma/client` but the package wrapper in `@prisma/client` must match it or the client is incomplete. (added: 2026-07-01, dispatch: GC-a5o)
 
 ## Preferences
 

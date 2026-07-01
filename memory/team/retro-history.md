@@ -271,3 +271,9 @@
 - New learnings: 2 to debugger (protocol-relative `new URL()` drop; verify scope names vs docs), 1 to tester (coverage.include broadened) — harvested manually from general-purpose dispatches
 - Pruned/archived: 0 (tester at 48 lines — flag for /curate next session)
 - Key insight: the session-12 handoff's "CRITICAL pending migration" was already false — deploys are self-migrating (Docker CMD runs `prisma migrate deploy` on boot). Verify handoff risk claims against reality (`prisma migrate status`, prod introspection) before acting. Two general-purpose dispatch loops again bypassed the team-learning loop (recurring — see harvest-learnings memory).
+
+## Retro: 2026-07-01 (session 14 — GC-a5o deploy hardening)
+- Tasks completed: 1 bead closed (GC-a5o / OPS-6); 1 PR merged (#17, main @ 358f79d)
+- New learnings: 2 to scaffolder (migrate deploy → Railway preDeployCommand not boot; removing boot-time prisma generate requires copying both .prisma AND @prisma/client) — harvested manually from a general-purpose dispatch (recurring gap — see harvest-learnings memory)
+- Pruned/archived: 0 (tester still at 48 lines — /curate still pending)
+- Key insight: deploys are now pre-deploy-migrating, not boot-migrating (GC-a5o inverted the session-13 model). The deploy that introduces preDeployCommand is itself its maiden run, so land such changes when `prisma migrate status` shows nothing pending. External /health can't distinguish deploys (old container answers 200 on new-deploy failure) — Railway dashboard is the source of truth.
