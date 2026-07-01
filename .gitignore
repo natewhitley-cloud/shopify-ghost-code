@@ -27,6 +27,9 @@ dist/
 .claude/settings.local.json
 CLAUDE.local.md
 
+# Tackline rotating session memory (churny, not work product)
+.claude/tackline/memory/sessions/
+
 # IDE / Editor configs
 .vscode/
 .idea/
