@@ -1,4 +1,4 @@
-import { ScanOrigin } from "@prisma/client";
+import { ScanOrigin, Severity } from "@prisma/client";
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, redirect, useFetcher, useLoaderData } from "react-router";
@@ -14,7 +14,7 @@ import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canStartScan, getScanUsage, getWeekStartUTC } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
-import { getFindingSummary } from "../models/finding.server";
+import { getSeverityCountsForScans } from "../models/finding.server";
 import {
   getScansForShop,
   hasCompletedScans,
@@ -104,32 +104,52 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   const [latestScan = null, previousScan = null] = recentScans.items;
 
-  // Phase 1: queries that depend only on latestScan/previousScan IDs (parallel).
-  // getFindingSummary for latestScan is included here — it only needs latestScan.id
-  // which is available from Phase 0, so it can run concurrently with the other queries.
-  const [findingSummary, prevSummary, usage, completedScanCheck, trendSummaries] =
-    await Promise.all([
-      latestScan ? getFindingSummary(latestScan.id) : Promise.resolve(null),
-      previousScan && isSuccessfulScan(previousScan.status)
-        ? getFindingSummary(previousScan.id)
-        : Promise.resolve(null),
-      getScanUsage(shop.id, shop.plan),
-      hasCompletedScans(shop.id),
-      // Fetch finding summaries for all trend scans in parallel.
-      completedScansForTrend.length > 0
-        ? Promise.all(completedScansForTrend.map((s) => getFindingSummary(s.id)))
-        : Promise.resolve([] as Awaited<ReturnType<typeof getFindingSummary>>[]),
-    ]);
+  // Union of scan ids the dashboard needs severity counts for: the latest scan,
+  // the previous scan (only when it's a successful terminal state), and the
+  // trend scans. A single getSeverityCountsForScans call replaces what used to
+  // be up to 9 separate getFindingSummary calls (the N+1 fix). getFindingSummary
+  // is deliberately not used here — the dashboard never reads the byType axis.
+  const severityScanIds = Array.from(
+    new Set<string>([
+      ...(latestScan ? [latestScan.id] : []),
+      ...(previousScan && isSuccessfulScan(previousScan.status) ? [previousScan.id] : []),
+      ...completedScansForTrend.map((s) => s.id),
+    ]),
+  );
+
+  // Phase 1: queries that depend only on Phase 0 results (parallel).
+  const [severityCounts, usage, completedScanCheck] = await Promise.all([
+    getSeverityCountsForScans(severityScanIds),
+    getScanUsage(shop.id, shop.plan),
+    hasCompletedScans(shop.id),
+  ]);
+
+  const zeroSeverityRecord: Record<Severity, number> = {
+    [Severity.HIGH]: 0,
+    [Severity.MEDIUM]: 0,
+    [Severity.LOW]: 0,
+  };
+
+  // Severity record for the latest scan, used both for the health score and the
+  // findings display. Kept in a `bySeverity`-shaped object so the returned
+  // findingSummary stays compatible with the component (which reads only
+  // findingSummary?.bySeverity?.HIGH/MEDIUM/LOW).
+  const latestSeverity = latestScan
+    ? (severityCounts.get(latestScan.id) ?? zeroSeverityRecord)
+    : null;
+  const findingSummary = latestSeverity ? { bySeverity: latestSeverity } : null;
 
   // Compute health scores from parallel results
   let healthScore: HealthScoreResult | null = null;
-  if (latestScan && isSuccessfulScan(latestScan.status) && findingSummary) {
-    healthScore = computeHealthScore(findingSummary.bySeverity);
+  if (latestScan && isSuccessfulScan(latestScan.status) && latestSeverity) {
+    healthScore = computeHealthScore(latestSeverity);
   }
 
   let previousHealthScore: HealthScoreResult | null = null;
-  if (prevSummary) {
-    previousHealthScore = computeHealthScore(prevSummary.bySeverity);
+  if (previousScan && isSuccessfulScan(previousScan.status)) {
+    previousHealthScore = computeHealthScore(
+      severityCounts.get(previousScan.id) ?? zeroSeverityRecord,
+    );
   }
 
   // Compute health score trend — paid plans only, requires >= 3 completed scans.
@@ -144,12 +164,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // Build score entries paired with their scan metadata, then reverse to
     // oldest-first so the chart reads left-to-right chronologically.
     const scores: TrendScoreEntry[] = completedScansForTrend
-      .map((scan, i) => {
-        const summary = trendSummaries[i];
-        const { score, tone, label } = computeHealthScore(summary.bySeverity);
-        const highCount = summary.bySeverity.HIGH ?? 0;
-        const mediumCount = summary.bySeverity.MEDIUM ?? 0;
-        const lowCount = summary.bySeverity.LOW ?? 0;
+      .map((scan) => {
+        const counts = severityCounts.get(scan.id) ?? zeroSeverityRecord;
+        const { score, tone, label } = computeHealthScore(counts);
+        const highCount = counts.HIGH ?? 0;
+        const mediumCount = counts.MEDIUM ?? 0;
+        const lowCount = counts.LOW ?? 0;
         return {
           scanId: scan.id,
           score,

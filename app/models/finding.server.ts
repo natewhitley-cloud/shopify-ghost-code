@@ -143,6 +143,49 @@ export async function getFindingSummary(scanId: string) {
 }
 
 /**
+ * Batch severity counts: return a per-scan severity breakdown for many scans in
+ * a SINGLE groupBy query, avoiding the N+1 pattern of calling getFindingSummary
+ * once per scan. This is the lean counterpart to getFindingSummary for callers
+ * (e.g. the dashboard) that only need the severity axis and never byType.
+ *
+ * Every requested scanId is guaranteed a fully-populated Record<Severity, number>
+ * with HIGH/MEDIUM/LOW defaulted to 0 — including scans that have zero findings.
+ *
+ * Returns an empty Map (without querying) when scanIds is empty.
+ */
+export async function getSeverityCountsForScans(
+  scanIds: string[],
+): Promise<Map<string, Record<Severity, number>>> {
+  const result = new Map<string, Record<Severity, number>>();
+  if (scanIds.length === 0) return result;
+
+  // Seed every requested scanId with a zeroed record so scans with no findings
+  // still appear in the map. Reuses the same zero-map pattern as getFindingSummary.
+  for (const scanId of scanIds) {
+    result.set(scanId, {
+      [Severity.HIGH]: 0,
+      [Severity.MEDIUM]: 0,
+      [Severity.LOW]: 0,
+    });
+  }
+
+  const rows = await db.finding.groupBy({
+    by: ["scanId", "severity"],
+    where: { scanId: { in: scanIds } },
+    _count: { severity: true },
+  });
+
+  for (const row of rows) {
+    const counts = result.get(row.scanId);
+    if (counts) {
+      counts[row.severity] = row._count.severity;
+    }
+  }
+
+  return result;
+}
+
+/**
  * Return the single highest-severity finding for a scan.
  * Uses Prisma enum sort order (HIGH → MEDIUM → LOW declared in schema) so
  * ascending sort gives the highest-severity row first.

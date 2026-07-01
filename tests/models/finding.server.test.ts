@@ -59,6 +59,7 @@ import {
   getFindingsForScan,
   getFindingsPageForScan,
   getFindingSummary,
+  getSeverityCountsForScans,
   getHighestSeverityFinding,
   saveThemeFindings,
   type CreateFindingInput,
@@ -339,6 +340,81 @@ describe("getFindingSummary", () => {
       .mockRejectedValueOnce(new Error("Type aggregation failed"));
 
     await expect(getFindingSummary(SCAN_ID)).rejects.toThrow("Type aggregation failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getSeverityCountsForScans
+// ---------------------------------------------------------------------------
+
+describe("getSeverityCountsForScans", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns an empty Map without querying when scanIds is empty", async () => {
+    const result = await getSeverityCountsForScans([]);
+
+    expect(result).toBeInstanceOf(Map);
+    expect(result.size).toBe(0);
+    expect(mockDb.finding.groupBy).not.toHaveBeenCalled();
+  });
+
+  it("issues a single groupBy over [scanId, severity] scoped to the requested ids", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([]);
+
+    await getSeverityCountsForScans(["scan-a", "scan-b"]);
+
+    expect(mockDb.finding.groupBy).toHaveBeenCalledOnce();
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith({
+      by: ["scanId", "severity"],
+      where: { scanId: { in: ["scan-a", "scan-b"] } },
+      _count: { severity: true },
+    });
+  });
+
+  it("buckets counts per scan and severity across multiple scans", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([
+      { scanId: "scan-a", severity: Severity.HIGH, _count: { severity: 2 } },
+      { scanId: "scan-a", severity: Severity.LOW, _count: { severity: 1 } },
+      { scanId: "scan-b", severity: Severity.MEDIUM, _count: { severity: 4 } },
+    ]);
+
+    const result = await getSeverityCountsForScans(["scan-a", "scan-b"]);
+
+    expect(result.get("scan-a")).toEqual({
+      [Severity.HIGH]: 2,
+      [Severity.MEDIUM]: 0,
+      [Severity.LOW]: 1,
+    });
+    expect(result.get("scan-b")).toEqual({
+      [Severity.HIGH]: 0,
+      [Severity.MEDIUM]: 4,
+      [Severity.LOW]: 0,
+    });
+  });
+
+  it("returns a zeroed record for a requested scan that has no findings", async () => {
+    // groupBy returns rows only for scan-a; scan-b has zero findings.
+    mockDb.finding.groupBy.mockResolvedValue([
+      { scanId: "scan-a", severity: Severity.HIGH, _count: { severity: 3 } },
+    ]);
+
+    const result = await getSeverityCountsForScans(["scan-a", "scan-b"]);
+
+    // Every requested id is present, even the one with no findings.
+    expect(result.size).toBe(2);
+    expect(result.get("scan-b")).toEqual({
+      [Severity.HIGH]: 0,
+      [Severity.MEDIUM]: 0,
+      [Severity.LOW]: 0,
+    });
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.groupBy.mockRejectedValue(new Error("Batch aggregation failed"));
+
+    await expect(getSeverityCountsForScans(["scan-a"])).rejects.toThrow("Batch aggregation failed");
   });
 });
 
