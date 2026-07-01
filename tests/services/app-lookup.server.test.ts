@@ -44,6 +44,12 @@ describe("identifyAppFromUrl", () => {
     expect(identifyAppFromUrl("not-a-url")).toBeNull();
   });
 
+  it("identifies app from a protocol-relative CDN URL", () => {
+    // Regression: protocol-relative URLs previously threw in new URL(), so
+    // cdnDomains matching was skipped and the app went unattributed.
+    expect(identifyAppFromUrl("//static.klaviyo.com/onsite/js/klaviyo.js")).toBe("Klaviyo");
+  });
+
   it("identifies Hotjar from its CDN domain", () => {
     expect(identifyAppFromUrl("https://static.hotjar.com/c/hotjar.js")).toBe("Hotjar");
   });

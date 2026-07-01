@@ -1,6 +1,7 @@
 import type { SignatureSubmission, SubmissionStatus } from "@prisma/client";
 
 import db from "../db.server";
+import { hostnameFromUrl } from "../lib/url.server";
 
 export type CreateUnknownScriptInput = {
   filename: string;
@@ -86,17 +87,6 @@ export async function submitSignatureSuggestion(
 }
 
 /**
- * Extract domain from a URL string, returning null for invalid URLs.
- */
-function extractDomain(url: string): string | null {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * List submissions grouped by URL domain with frequency counts.
  * Returns domains with the most submissions first.
  */
@@ -127,7 +117,7 @@ export async function getSubmissionsByDomain(options?: {
   >();
 
   for (const sub of submissions) {
-    const domain = extractDomain(sub.unknownScript.url);
+    const domain = hostnameFromUrl(sub.unknownScript.url);
     if (!domain) continue;
 
     let entry = domainMap.get(domain);
@@ -201,7 +191,7 @@ export async function acceptSubmissionsForDomain(domain: string): Promise<{ coun
   // Refine in JS to ensure exact domain match (contains is a substring match,
   // so "example.com" would also match "notexample.com").
   const matchingScriptIds = unknownScripts
-    .filter((s) => extractDomain(s.url) === domain)
+    .filter((s) => hostnameFromUrl(s.url) === domain)
     .map((s) => s.id);
 
   if (matchingScriptIds.length === 0) {
