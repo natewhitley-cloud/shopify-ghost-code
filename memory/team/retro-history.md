@@ -286,3 +286,12 @@
 - Key insight: recurring "general-purpose bypasses learning loop" gap (flagged S12/S13/S14) RESOLVED by using /sprint. Now the confirmed default path for team-owned work.
 - Owner-gated deploy verifications accumulating: GC-bo4 (S14 preDeployCommand maiden run) + GC-8gh SIGTERM drain + GC-irz index migration all await one Railway dashboard pass on next deploy.
 - tester learnings still at 48 lines — flagged for /curate a 4th retro running; filed as a tracked bead this time (GC-q7a).
+
+## Retro: 2026-07-01 (session 16 — GC-8uw worker offload + prod bug hunt)
+- Tasks: 3 beads closed (GC-8uw worker pool, GC-07t auth-loop guard, GC-jlk scope-check P1); 2 bugs filed (GC-07t, GC-jlk) then fixed same session. 14 commits (fix + perf + chore), all hooks green.
+- Dispatch: implementer via Agent (baseline harness, worker pool, session guard, scope fix) — 4 dispatches, all verified in orchestrator review. Learning loop honored (implementer +11 entries this session).
+- Key insight: orchestrator review caught 2 latent defects the agents' reflections missed — a broken `bench:scan` npm alias and an esbuild transitive-dep fragility. Running the deliverable + checking the diff (not trusting reflections) is load-bearing.
+- Key insight: verifying in PROD (real scan) surfaced two bugs unit tests couldn't — the expiring-offline-token reauth loop (GC-07t) and `admin.graphql()` THROWS on GraphQL errors so probeScope mislabeled access-denied as transient → scans stuck IN_PROGRESS (GC-jlk). Both fixed + prod-verified (scan finalizes PARTIAL, no worker_fallback).
+- Blocker (~10 exchanges): `shopify app dev` leaves a dev-preview URL override after quit → broken embedded panel; resolved via store Dev Console "Clean dev preview". Captured in memory.
+- Backlog backup: beads are gitignored local Dolt with no remote; added `docs/backlog-snapshot.json` (bd list --all --json) as an off-machine stopgap. Durable fix (Dolt remote) still open.
+- Learnings sizes: implementer 49, tester 48 — both nearing the 50 warning line; GC-q7a (tester curate) still open, implementer now also a candidate.
