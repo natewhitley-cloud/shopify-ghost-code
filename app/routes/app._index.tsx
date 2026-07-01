@@ -23,6 +23,7 @@ import {
 import type { ScanQuota } from "../models/scan.server";
 import { dismissReviewPrompt, getShopMetadata } from "../models/shop.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
+import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
@@ -93,9 +94,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     trendChartEnabled && (shop.plan === PLANS.STANDARD || shop.plan === PLANS.PROFESSIONAL);
 
   // Phase 0: fetch theme metadata and recent scans in parallel — none depend on each other.
+  // Theme reads go through the ~60s per-shop TTL cache (theme-cache.server) so
+  // repeated dashboard navigations don't re-hit the Shopify theme API. Keyed by
+  // session.shop. The action's theme validation and the poll cron deliberately
+  // call the raw fetchers instead so their reads stay fresh.
   const [mainTheme, allThemes, recentScans, completedScansForTrend] = await Promise.all([
-    fetchMainTheme(admin),
-    shouldFetchThemes ? fetchAllThemes(admin) : Promise.resolve([] as ThemeSummary[]),
+    getCachedMainTheme(admin, session.shop),
+    shouldFetchThemes
+      ? getCachedAllThemes(admin, session.shop)
+      : Promise.resolve([] as ThemeSummary[]),
     getScansForShop(shop.id, { limit: 2 }),
     shouldFetchTrendScans
       ? getCompletedScansForShop(shop.id, { limit: 7 })

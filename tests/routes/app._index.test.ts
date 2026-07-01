@@ -42,7 +42,7 @@ vi.mock("../../app/services/scan-dispatch.server", () => ({
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
-  getFindingSummary: vi.fn(),
+  getSeverityCountsForScans: vi.fn(),
 }));
 
 vi.mock("../../app/lib/billing.server", () => ({
@@ -91,7 +91,7 @@ vi.mock("../../app/lib/plans", () => ({
 import { getPlanFeatures } from "../../app/lib/billing.server";
 import { computeHealthScore } from "../../app/lib/health-score";
 import { canStartScan, getScanUsage, getWeekStartUTC } from "../../app/lib/plan-gating.server";
-import { getFindingSummary } from "../../app/models/finding.server";
+import { getSeverityCountsForScans } from "../../app/models/finding.server";
 import {
   getScansForShop,
   hasCompletedScans,
@@ -100,6 +100,7 @@ import {
 import { getShopMetadata, dismissReviewPrompt } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
 import { dispatchScan } from "../../app/services/scan-dispatch.server";
+import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
 import { authenticate } from "../../app/shopify.server";
 
@@ -112,7 +113,7 @@ const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
 const mockDispatchScan = dispatchScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
-const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
+const mockGetSeverityCounts = getSeverityCountsForScans as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockGetScanUsage = getScanUsage as ReturnType<typeof vi.fn>;
@@ -162,6 +163,23 @@ const FINDING_SUMMARY = {
   byType: { GHOST_SCRIPT: 3, GHOST_STYLE: 2 },
 };
 
+type SeverityRecord = { HIGH: number; MEDIUM: number; LOW: number };
+
+/**
+ * Build a mockImplementation for getSeverityCountsForScans that returns a Map
+ * keyed by the requested scan ids. `perScan` supplies distinct severity records
+ * by scan id; any id not listed falls back to `fallback` (defaults to
+ * FINDING_SUMMARY.bySeverity). Mirrors the real function's contract: every
+ * requested id is present in the returned Map.
+ */
+function severityCountsImpl(
+  perScan: Record<string, SeverityRecord> = {},
+  fallback: SeverityRecord = FINDING_SUMMARY.bySeverity,
+) {
+  return async (scanIds: string[]) =>
+    new Map<string, SeverityRecord>(scanIds.map((id) => [id, perScan[id] ?? fallback]));
+}
+
 const HEALTH_SCORE = {
   score: 69,
   label: "Fair",
@@ -196,6 +214,10 @@ function makeActionArgs(overrides?: Partial<ActionFunctionArgs>): ActionFunction
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // The loader's theme reads go through theme-cache.server (real module) which
+  // calls the mocked fetchers. Clear its module-level cache each test so a
+  // cache hit from a prior test doesn't suppress the expected fetcher call.
+  resetThemeCaches();
 
   mockAuthenticateAdmin.mockResolvedValue({
     session: { shop: SHOP.domain },
@@ -205,7 +227,7 @@ beforeEach(() => {
   mockGetShopMetadata.mockResolvedValue(SHOP);
   mockFetchMainTheme.mockResolvedValue(MAIN_THEME);
   mockGetScansForShop.mockResolvedValue({ items: [COMPLETED_SCAN], hasNextPage: false });
-  mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
+  mockGetSeverityCounts.mockImplementation(severityCountsImpl());
   mockGetPlanFeatures.mockReturnValue({
     maxScansPerMonth: 1,
     maxScansPerWeek: Infinity,
@@ -364,7 +386,7 @@ describe("app._index loader", () => {
 
       expect(mockFetchMainTheme).not.toHaveBeenCalled();
       expect(mockGetScansForShop).not.toHaveBeenCalled();
-      expect(mockGetFindingSummary).not.toHaveBeenCalled();
+      expect(mockGetSeverityCounts).not.toHaveBeenCalled();
     });
   });
 
@@ -400,11 +422,12 @@ describe("app._index loader", () => {
         items: [COMPLETED_SCAN, previousScan],
         hasNextPage: false,
       });
-      mockGetFindingSummary.mockResolvedValueOnce(FINDING_SUMMARY).mockResolvedValueOnce({
-        total: 10,
-        bySeverity: { HIGH: 5, MEDIUM: 3, LOW: 2 },
-        byType: {},
-      });
+      mockGetSeverityCounts.mockImplementation(
+        severityCountsImpl({
+          "scan-1": { HIGH: 2, MEDIUM: 2, LOW: 1 },
+          "scan-0": { HIGH: 5, MEDIUM: 3, LOW: 2 },
+        }),
+      );
       const prevScore = { score: 43, label: "Poor", tone: "caution" };
       mockComputeHealthScore.mockReturnValueOnce(HEALTH_SCORE).mockReturnValueOnce(prevScore);
 
@@ -1104,15 +1127,17 @@ describe("app._index loader — health score trend chart", () => {
         periodStart: new Date("2026-03-16T00:00:00Z"),
       });
       mockGetCompletedScansForShop.mockResolvedValue(THREE_TREND_SCANS);
-      // The loader calls getFindingSummary for latestScan first (from recentScans),
-      // then for each trend scan in parallel. Set up summary returns:
-      // - first call: latestScan summary (FINDING_SUMMARY)
-      // - then 3 trend scan summaries (newest, middle, oldest order from getCompletedScansForShop)
-      mockGetFindingSummary
-        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
-        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_NEWEST) // trend scan 1 (newest)
-        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_MIDDLE) // trend scan 2 (middle)
-        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_OLDEST); // trend scan 3 (oldest)
+      // The loader makes ONE getSeverityCountsForScans call over the union of
+      // latestScan + trend scan ids. Map each id to its severity record:
+      // latestScan (scan-1), plus the three trend scans keyed by their ids.
+      mockGetSeverityCounts.mockImplementation(
+        severityCountsImpl({
+          "scan-1": FINDING_SUMMARY.bySeverity,
+          [TREND_SCAN_NEWEST.id]: TREND_FINDING_SUMMARY_NEWEST.bySeverity,
+          [TREND_SCAN_MIDDLE.id]: TREND_FINDING_SUMMARY_MIDDLE.bySeverity,
+          [TREND_SCAN_OLDEST.id]: TREND_FINDING_SUMMARY_OLDEST.bySeverity,
+        }),
+      );
     });
 
     it("returns healthScoreTrend that is not null", async () => {
@@ -1152,16 +1177,14 @@ describe("app._index loader — health score trend chart", () => {
 
     it("returns direction: improving when newest total findings is more than 3 below oldest", async () => {
       // oldest total=10, newest total=3 → delta = 10-3 = 7 > 3 → "improving"
-      mockGetFindingSummary.mockReset();
-      mockGetFindingSummary
-        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
-        .mockResolvedValueOnce({ total: 3, bySeverity: { HIGH: 1, MEDIUM: 1, LOW: 1 }, byType: {} }) // newest
-        .mockResolvedValueOnce({ total: 6, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 2 }, byType: {} }) // middle
-        .mockResolvedValueOnce({
-          total: 10,
-          bySeverity: { HIGH: 4, MEDIUM: 4, LOW: 2 },
-          byType: {},
-        }); // oldest
+      mockGetSeverityCounts.mockImplementation(
+        severityCountsImpl({
+          "scan-1": FINDING_SUMMARY.bySeverity,
+          [TREND_SCAN_NEWEST.id]: { HIGH: 1, MEDIUM: 1, LOW: 1 }, // total 3
+          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 2 }, // total 6
+          [TREND_SCAN_OLDEST.id]: { HIGH: 4, MEDIUM: 4, LOW: 2 }, // total 10
+        }),
+      );
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1172,20 +1195,14 @@ describe("app._index loader — health score trend chart", () => {
 
     it("returns direction: declining when newest total findings is more than 3 above oldest", async () => {
       // oldest total=3, newest total=10 → delta = 3-10 = -7 < -3 → "declining"
-      mockGetFindingSummary.mockReset();
-      mockGetFindingSummary
-        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
-        .mockResolvedValueOnce({
-          total: 10,
-          bySeverity: { HIGH: 4, MEDIUM: 4, LOW: 2 },
-          byType: {},
-        }) // newest
-        .mockResolvedValueOnce({ total: 6, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 2 }, byType: {} }) // middle
-        .mockResolvedValueOnce({
-          total: 3,
-          bySeverity: { HIGH: 1, MEDIUM: 1, LOW: 1 },
-          byType: {},
-        }); // oldest
+      mockGetSeverityCounts.mockImplementation(
+        severityCountsImpl({
+          "scan-1": FINDING_SUMMARY.bySeverity,
+          [TREND_SCAN_NEWEST.id]: { HIGH: 4, MEDIUM: 4, LOW: 2 }, // total 10
+          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 2 }, // total 6
+          [TREND_SCAN_OLDEST.id]: { HIGH: 1, MEDIUM: 1, LOW: 1 }, // total 3
+        }),
+      );
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1196,15 +1213,14 @@ describe("app._index loader — health score trend chart", () => {
 
     it("returns direction: stable when delta is within +/- 3", async () => {
       // oldest total=6, newest total=5 → delta = 1, within +/-3 → "stable"
-      mockGetFindingSummary
-        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
-        .mockResolvedValueOnce({ total: 5, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 }, byType: {} }) // newest
-        .mockResolvedValueOnce({ total: 5, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 }, byType: {} }) // middle
-        .mockResolvedValueOnce({
-          total: 6,
-          bySeverity: { HIGH: 2, MEDIUM: 3, LOW: 1 },
-          byType: {},
-        }); // oldest
+      mockGetSeverityCounts.mockImplementation(
+        severityCountsImpl({
+          "scan-1": FINDING_SUMMARY.bySeverity,
+          [TREND_SCAN_NEWEST.id]: { HIGH: 2, MEDIUM: 2, LOW: 1 }, // total 5
+          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 1 }, // total 5
+          [TREND_SCAN_OLDEST.id]: { HIGH: 2, MEDIUM: 3, LOW: 1 }, // total 6
+        }),
+      );
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1215,15 +1231,14 @@ describe("app._index loader — health score trend chart", () => {
 
     it("returns direction: stable when delta is exactly +3 (boundary: not > 3)", async () => {
       // oldest total=8, newest total=5 → delta = 3, not > 3 → "stable"
-      mockGetFindingSummary
-        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
-        .mockResolvedValueOnce({ total: 5, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 }, byType: {} }) // newest
-        .mockResolvedValueOnce({ total: 6, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 2 }, byType: {} }) // middle
-        .mockResolvedValueOnce({
-          total: 8,
-          bySeverity: { HIGH: 3, MEDIUM: 3, LOW: 2 },
-          byType: {},
-        }); // oldest
+      mockGetSeverityCounts.mockImplementation(
+        severityCountsImpl({
+          "scan-1": FINDING_SUMMARY.bySeverity,
+          [TREND_SCAN_NEWEST.id]: { HIGH: 2, MEDIUM: 2, LOW: 1 }, // total 5
+          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 2 }, // total 6
+          [TREND_SCAN_OLDEST.id]: { HIGH: 3, MEDIUM: 3, LOW: 2 }, // total 8
+        }),
+      );
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1234,15 +1249,14 @@ describe("app._index loader — health score trend chart", () => {
 
     it("returns direction: stable when delta is exactly -3 (boundary: not < -3)", async () => {
       // oldest total=5, newest total=8 → delta = -3, not < -3 → "stable"
-      mockGetFindingSummary
-        .mockResolvedValueOnce(FINDING_SUMMARY) // latestScan
-        .mockResolvedValueOnce({ total: 8, bySeverity: { HIGH: 3, MEDIUM: 3, LOW: 2 }, byType: {} }) // newest
-        .mockResolvedValueOnce({ total: 6, bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 2 }, byType: {} }) // middle
-        .mockResolvedValueOnce({
-          total: 5,
-          bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 },
-          byType: {},
-        }); // oldest
+      mockGetSeverityCounts.mockImplementation(
+        severityCountsImpl({
+          "scan-1": FINDING_SUMMARY.bySeverity,
+          [TREND_SCAN_NEWEST.id]: { HIGH: 3, MEDIUM: 3, LOW: 2 }, // total 8
+          [TREND_SCAN_MIDDLE.id]: { HIGH: 2, MEDIUM: 2, LOW: 2 }, // total 6
+          [TREND_SCAN_OLDEST.id]: { HIGH: 2, MEDIUM: 2, LOW: 1 }, // total 5
+        }),
+      );
 
       const result = (await loader(makeLoaderArgs())) as {
         healthScoreTrend: { scores: unknown[]; direction: string } | null;
@@ -1259,11 +1273,14 @@ describe("app._index loader — health score trend chart", () => {
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
       mockGetScanUsage.mockResolvedValue(null);
       mockGetCompletedScansForShop.mockResolvedValue(THREE_TREND_SCANS);
-      mockGetFindingSummary
-        .mockResolvedValueOnce(FINDING_SUMMARY)
-        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_NEWEST)
-        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_MIDDLE)
-        .mockResolvedValueOnce(TREND_FINDING_SUMMARY_OLDEST);
+      mockGetSeverityCounts.mockImplementation(
+        severityCountsImpl({
+          "scan-1": FINDING_SUMMARY.bySeverity,
+          [TREND_SCAN_NEWEST.id]: TREND_FINDING_SUMMARY_NEWEST.bySeverity,
+          [TREND_SCAN_MIDDLE.id]: TREND_FINDING_SUMMARY_MIDDLE.bySeverity,
+          [TREND_SCAN_OLDEST.id]: TREND_FINDING_SUMMARY_OLDEST.bySeverity,
+        }),
+      );
     });
 
     it("returns healthScoreTrend that is not null (Pro plan also gets trend)", async () => {
