@@ -35,6 +35,8 @@ model Session {
   emailVerified       Boolean?  @default(false)
   refreshToken        String?
   refreshTokenExpires DateTime?
+
+  @@index([shop])
 }
 
 // ---------------------------------------------------------------------------
@@ -99,6 +101,8 @@ model Scan {
   unknownScripts    UnknownScript[]
 
   @@index([shopId, createdAt])
+  @@index([status, startedAt])
+  @@index([status, createdAt])
 }
 
 // ---------------------------------------------------------------------------
