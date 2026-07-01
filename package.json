@@ -2,7 +2,8 @@
   "name": "ghost-code",
   "private": true,
   "scripts": {
-    "build": "react-router build",
+    "build": "react-router build && npm run build:worker",
+    "build:worker": "esbuild app/services/scan-engine.worker.ts --bundle --platform=node --format=esm --outfile=build/server/scan-engine.worker.js --external:@prisma/client",
     "dev": "shopify app dev",
     "config:link": "shopify app config link",
     "generate": "shopify app generate",
@@ -22,7 +23,8 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "prepare": "husky || true",
-    "bench:scan": "vite-node --config vitest.config.ts scripts/bench-scan-engine.ts"
+    "bench:scan": "vite-node --config vitest.config.ts scripts/bench-scan-engine.ts",
+    "bench:pool": "npm run build:worker && vite-node --config vitest.config.ts scripts/bench-scan-pool.ts"
   },
   "type": "module",
   "engines": {
@@ -40,6 +42,7 @@
     "@shopify/shopify-app-session-storage-prisma": "^9.0.0",
     "inngest": "^3.54.0",
     "isbot": "^5.1.31",
+    "piscina": "^5.2.0",
     "prisma": "^6.16.3",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",

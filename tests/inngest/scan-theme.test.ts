@@ -51,6 +51,10 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
 }));
 
+vi.mock("../../app/services/scan-pool.server", () => ({
+  scanThemeFilesInPool: vi.fn(),
+}));
+
 vi.mock("../../app/models/unknown-script.server", () => ({
   createUnknownScripts: vi.fn(),
 }));
@@ -143,7 +147,7 @@ import {
 import { detectOrphanedProductTags } from "../../app/services/product-tag-detector.server";
 import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
 import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
-import { scanThemeFiles } from "../../app/services/scan-engine.server";
+import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import { detectTranslationContent } from "../../app/services/translation-detector.server";
 import {
@@ -165,7 +169,7 @@ const mockDb = db as unknown as {
 };
 const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
-const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
+const mockScanThemeFiles = scanThemeFilesInPool as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
 const mockFinalizeScan = finalizeScan as ReturnType<typeof vi.fn>;
 const mockGetPreviousScanForTheme = getPreviousScanForTheme as ReturnType<typeof vi.fn>;

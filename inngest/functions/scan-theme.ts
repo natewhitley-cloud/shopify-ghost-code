@@ -45,7 +45,7 @@ import {
   updateScanStatus,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
-import { scanThemeFiles } from "../../app/services/scan-engine.server";
+import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 import { inngest } from "../client";
@@ -214,7 +214,7 @@ export const scanTheme = inngest.createFunction(
           fileCount: files.length,
         });
 
-        const { findings, unknownScripts } = scanThemeFiles(files);
+        const { findings, unknownScripts } = await scanThemeFilesInPool(files);
         logger.info("theme scan complete", {
           function: "scan-theme",
           event: "scan_complete",

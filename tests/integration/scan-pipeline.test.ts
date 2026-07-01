@@ -71,6 +71,10 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
 }));
 
+vi.mock("../../app/services/scan-pool.server", () => ({
+  scanThemeFilesInPool: vi.fn(),
+}));
+
 vi.mock("../../app/models/unknown-script.server", () => ({
   createUnknownScripts: vi.fn(),
 }));
@@ -144,7 +148,7 @@ import { action } from "../../app/routes/app._index";
 import { hasContentScope } from "../../app/services/content-fetcher.server";
 import { hasProductScope } from "../../app/services/product-fetcher.server";
 import { hasNavigationScope } from "../../app/services/redirect-fetcher.server";
-import { scanThemeFiles } from "../../app/services/scan-engine.server";
+import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchMainTheme, fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import { hasTranslationScope } from "../../app/services/translation-fetcher.server";
 import { authenticate, unauthenticated } from "../../app/shopify.server";
@@ -167,7 +171,7 @@ const mockSaveThemeFindings = saveThemeFindings as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
-const mockScanThemeFiles = scanThemeFiles as ReturnType<typeof vi.fn>;
+const mockScanThemeFiles = scanThemeFilesInPool as ReturnType<typeof vi.fn>;
 const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
 const mockInngestSend = inngest.send as ReturnType<typeof vi.fn>;
 const mockHasTranslationScope = hasTranslationScope as ReturnType<typeof vi.fn>;
