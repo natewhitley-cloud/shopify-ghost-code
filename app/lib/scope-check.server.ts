@@ -100,8 +100,28 @@ export async function probeScope(
     const response = await admin.graphql(probeQuery);
     json = (await response.json()) as { errors?: GraphQLResponseError[] };
   } catch (err) {
-    // Transport-level failure (network, timeout, 5xx thrown by the client).
-    // The scope status is unknown — never treat this as "scope missing".
+    // The @shopify/shopify-api GraphQL client THROWS a GraphqlQueryError when
+    // the HTTP response contains GraphQL errors (status 200 + body.errors).
+    // This means an access-denied from the API arrives here via throw, not via
+    // json.errors, so we must classify it before defaulting to transient.
+
+    // Check structured GraphQL errors carried on the thrown error.
+    // GraphqlQueryError exposes them at err.body.errors.graphQLErrors (an array
+    // of raw GraphQL error objects with {message, extensions}).
+    type ThrownWithBody = { body?: { errors?: { graphQLErrors?: GraphQLResponseError[] } } };
+    const graphqlErrors: GraphQLResponseError[] =
+      (err as ThrownWithBody)?.body?.errors?.graphQLErrors ?? [];
+    if (graphqlErrors.some(isAccessDeniedError)) return false;
+
+    // Also check the thrown error's top-level message — the client sets it to
+    // the first GraphQL error's message, which may match the access-denied regex
+    // even without a structured extensions.code (e.g. "Access denied for
+    // shopLocales field. Required access: read_locales or read_markets_home").
+    if (err instanceof Error && isAccessDeniedError({ message: err.message })) {
+      return false;
+    }
+
+    // Anything else (network, timeout, 5xx, unexpected): scope status unknown.
     throw new TransientScopeCheckError(scopeLabel, err);
   }
 
