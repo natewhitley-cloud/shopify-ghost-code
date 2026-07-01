@@ -10,22 +10,11 @@
  */
 
 import { APP_SIGNATURES, type AppSignature } from "../data/app-signatures.server";
+import { hostnameFromUrl } from "../lib/url.server";
 
 // ---------------------------------------------------------------------------
 // Internal helpers
 // ---------------------------------------------------------------------------
-
-/**
- * Extract the hostname from a URL string without throwing on malformed input.
- * Returns null if the URL cannot be parsed.
- */
-function safeHostname(url: string): string | null {
-  try {
-    return new URL(url).hostname;
-  } catch {
-    return null;
-  }
-}
 
 /**
  * Check whether `hostname` matches or is a subdomain of any domain in
@@ -52,7 +41,7 @@ function domainMatches(hostname: string, cdnDomains: AppSignature["cdnDomains"])
  * checking scriptPatterns against the full URL string.
  */
 export function identifyAppFromUrl(url: string): string | null {
-  const hostname = safeHostname(url);
+  const hostname = hostnameFromUrl(url);
 
   for (const sig of APP_SIGNATURES) {
     if (hostname !== null && domainMatches(hostname, sig.cdnDomains)) {

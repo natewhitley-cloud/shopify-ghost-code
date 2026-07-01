@@ -89,6 +89,28 @@ describe("collectUnknownScripts", () => {
     const unknowns = collectUnknownScripts(file);
     expect(unknowns).toHaveLength(0);
   });
+
+  it("collects protocol-relative URLs from unknown third-party domains", () => {
+    // Regression: a protocol-relative src previously threw in new URL() and was
+    // silently dropped instead of collected as an unknown script.
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="//cdn.unknown-orphan.com/w.js"></script>',
+    };
+    const unknowns = collectUnknownScripts(file);
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].url).toBe("//cdn.unknown-orphan.com/w.js");
+    expect(unknowns[0].resourceType).toBe("script");
+  });
+
+  it("skips genuinely malformed script URLs without throwing", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="ht!tp:// bad url"></script>',
+    };
+    const unknowns = collectUnknownScripts(file);
+    expect(unknowns).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -139,6 +161,28 @@ describe("collectUnknownStylesheets", () => {
     const file = {
       filename: "layout/theme.liquid",
       content: '<link rel="stylesheet" href="https://store.myshopify.com/styles.css">',
+    };
+    const unknowns = collectUnknownStylesheets(file);
+    expect(unknowns).toHaveLength(0);
+  });
+
+  it("collects protocol-relative stylesheets from unknown third-party domains", () => {
+    // Regression: a protocol-relative href previously threw in new URL() and
+    // was silently dropped instead of collected as an unknown stylesheet.
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="stylesheet" href="//cdn.unknown-orphan.com/w.css">',
+    };
+    const unknowns = collectUnknownStylesheets(file);
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].url).toBe("//cdn.unknown-orphan.com/w.css");
+    expect(unknowns[0].resourceType).toBe("stylesheet");
+  });
+
+  it("skips protocol-relative Shopify stylesheet URLs", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="stylesheet" href="//cdn.shopify.com/theme.css">',
     };
     const unknowns = collectUnknownStylesheets(file);
     expect(unknowns).toHaveLength(0);

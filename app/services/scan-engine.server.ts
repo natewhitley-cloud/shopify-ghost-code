@@ -66,6 +66,7 @@ import {
 } from "./app-lookup.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
+import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
 // ---------------------------------------------------------------------------
@@ -1000,12 +1001,9 @@ export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[
       if (appName) continue; // Already identified — skip
 
       // Filter out first-party Shopify CDN URLs that are not app artifacts
-      try {
-        const hostname = new URL(url).hostname;
-        if (SHOPIFY_FIRST_PARTY_RE.test(hostname)) continue;
-      } catch {
-        continue; // Malformed URL — skip
-      }
+      const hostname = hostnameFromUrl(url);
+      if (hostname === null) continue; // Malformed URL — skip
+      if (SHOPIFY_FIRST_PARTY_RE.test(hostname)) continue;
 
       unknowns.push({
         filename: file.filename,
@@ -1039,12 +1037,9 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
       if (appName) continue; // Already identified — skip
 
       // Filter out first-party Shopify CDN URLs
-      try {
-        const hostname = new URL(url).hostname;
-        if (SHOPIFY_FIRST_PARTY_RE.test(hostname)) continue;
-      } catch {
-        continue; // Malformed URL — skip
-      }
+      const hostname = hostnameFromUrl(url);
+      if (hostname === null) continue; // Malformed URL — skip
+      if (SHOPIFY_FIRST_PARTY_RE.test(hostname)) continue;
 
       unknowns.push({
         filename: file.filename,
@@ -1876,20 +1871,6 @@ const SHARED_CDN_DOMAINS = [
 ];
 
 /**
- * Extract the hostname from a URL string, handling protocol-relative URLs.
- * Returns null if parsing fails.
- */
-function extractDomain(href: string): string | null {
-  try {
-    // Handle protocol-relative URLs like //cdn.judge.me
-    const normalized = href.startsWith("//") ? `https:${href}` : href;
-    return new URL(normalized).hostname;
-  } catch {
-    return null;
-  }
-}
-
-/**
  * Returns true if the given hostname matches a Shopify-owned domain or
  * a *.myshopify.com subdomain.
  */
@@ -1951,7 +1932,7 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
     const href = match[2] ?? match[3];
     if (!href) continue;
 
-    const hostname = extractDomain(href);
+    const hostname = hostnameFromUrl(href);
     if (!hostname) continue;
 
     // Skip Shopify-owned domains
@@ -2154,7 +2135,7 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
     if (commentSkipLines.has(lineNumber)) return; // inside {% comment %} block
     if (conditionalLines.has(lineNumber)) return; // theme-native conditional logic
 
-    const hostname = extractDomain(url);
+    const hostname = hostnameFromUrl(url);
     if (!hostname) return;
 
     // Skip Shopify-owned domains
