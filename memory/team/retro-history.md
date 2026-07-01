@@ -277,3 +277,12 @@
 - New learnings: 2 to scaffolder (migrate deploy → Railway preDeployCommand not boot; removing boot-time prisma generate requires copying both .prisma AND @prisma/client) — harvested manually from a general-purpose dispatch (recurring gap — see harvest-learnings memory)
 - Pruned/archived: 0 (tester still at 48 lines — /curate still pending)
 - Key insight: deploys are now pre-deploy-migrating, not boot-migrating (GC-a5o inverted the session-13 model). The deploy that introduces preDeployCommand is itself its maiden run, so land such changes when `prisma migrate status` shows nothing pending. External /health can't distinguish deploys (old container answers 200 on new-deploy failure) — Railway dashboard is the source of truth.
+
+## Retro: 2026-07-01 (session 15 — remaining deploy cluster + SIGTERM)
+- Tasks completed: 5 beads closed (GC-8gh SIGTERM graceful shutdown; GC-2d8 non-root USER + Dockerfile HEALTHCHECK; GC-29h .dockerignore hygiene; GC-irz index migration; GC-u9e review-CTA deep-link). 6 commits pushed to main (92aebb2..8c82cca), direct-to-main (no PRs).
+- Dispatch: /sprint with real team roles — scaffolder (GC-8gh/2d8/29h/irz), implementer (GC-u9e). FIRST session in 4 to route through the team-learning loop instead of general-purpose. 3 learnings persisted via the proper path (2 scaffolder, 1 implementer).
+- Commits: 4 fix, 1 perf, 1 chore. Zero rework/corrections — every change landed first try, all hooks green.
+- Key insight: GC-irz's "drop unused Finding.severity index" was a review-doc mis-diagnosis — the index is load-bearing (WHERE + groupBy + orderBy in finding.server.ts). The "verify before drop" gate caught it. Backlog-triage rule (verify vs current code) paid off again.
+- Key insight: recurring "general-purpose bypasses learning loop" gap (flagged S12/S13/S14) RESOLVED by using /sprint. Now the confirmed default path for team-owned work.
+- Owner-gated deploy verifications accumulating: GC-bo4 (S14 preDeployCommand maiden run) + GC-8gh SIGTERM drain + GC-irz index migration all await one Railway dashboard pass on next deploy.
+- tester learnings still at 48 lines — flagged for /curate a 4th retro running; filed as a tracked bead this time (GC-q7a).
