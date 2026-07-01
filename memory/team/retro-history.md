@@ -295,3 +295,11 @@
 - Blocker (~10 exchanges): `shopify app dev` leaves a dev-preview URL override after quit → broken embedded panel; resolved via store Dev Console "Clean dev preview". Captured in memory.
 - Backlog backup: beads are gitignored local Dolt with no remote; added `docs/backlog-snapshot.json` (bd list --all --json) as an off-machine stopgap. Durable fix (Dolt remote) still open.
 - Learnings sizes: implementer 49, tester 48 — both nearing the 50 warning line; GC-q7a (tester curate) still open, implementer now also a candidate.
+
+## Retro: 2026-07-01 (session 17 — dashboard perf cluster + beads DB anomaly)
+- Tasks: 2 beads implemented + shipped (GC-qk3 batch severity query ~18→1; GC-kde 60s per-shop theme-read TTL cache). 2 commits, pushed to origin, 1711 tests green. Beads NOT closed — see anomaly below.
+- Dispatch: 2 general-purpose Agent dispatches (serial), each reviewed against the actual diff before accepting. NOT /sprint, so team learnings were harvested manually this retro (implementer +1, tester +1 & refined the import/order entry).
+- Key insight (process win): orchestrator diff-review + the "cache only the read path" constraint given IN the dispatch prompt kept the caching agent off the security-validation (action) and cron (updatedAt) paths — the subagent's caller audit confirmed it. Specifying the constraint up front > catching it in review.
+- Key insight (INCIDENT): the live beads Dolt DB was swapped mid-session to a DISJOINT 168-issue dataset (Wix research / Partner Dashboard) — every session-16 bead (GC-qk3/kde/d4f/8uw…) vanished from the live DB. git-tracked docs/backlog-snapshot.json (86 issues) was the only intact backup. Preserved both non-destructively (exported live DB to docs/backlog-live-168-2026-07-01.json, untracked); reconciliation is a pending human decision. Captured as global memory. Likely trigger: beads git-hooks resync during husky/lint-staged stash cycles (unconfirmed).
+- Friction: 2 pre-commit bounces (import/order sibling-before-parent, prefer-const) because subagents ran tsc+prettier but NOT eslint before reporting done. Process fix added to tester learnings.
+- Learnings sizes: implementer 50, tester 49 — BOTH now at/over the 50 warning. /tend (curate) is overdue (GC-q7a tracks tester; implementer now also a candidate).
