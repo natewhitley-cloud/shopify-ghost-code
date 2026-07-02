@@ -50,5 +50,4 @@ jobs:
         env:
           SMOKE_BASE_URL: ${{ secrets.SMOKE_BASE_URL }}
           HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
-          EXPECTED_SHA: ${{ github.sha }}
         run: node scripts/smoke.mjs

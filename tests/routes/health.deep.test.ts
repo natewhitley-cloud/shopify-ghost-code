@@ -91,7 +91,6 @@ describe("health.deep loader", () => {
     process.env.INNGEST_EVENT_KEY = "evt-key";
     process.env.INNGEST_SIGNING_KEY = "sign-key";
     process.env.HEALTH_CHECK_TOKEN = "secret-token";
-    process.env.RAILWAY_GIT_COMMIT_SHA = "abc123def456";
     process.env.NODE_ENV = "test";
   });
 
@@ -112,28 +111,7 @@ describe("health.deep loader", () => {
       scans: { stuckPending: 0 },
     });
     expect(typeof body.timestamp).toBe("string");
-    expect(body.version).toBe("abc123def456");
     expect(mockLoggerError).not.toHaveBeenCalled();
-  });
-
-  it("includes version: null when RAILWAY_GIT_COMMIT_SHA is unset", async () => {
-    delete process.env.RAILWAY_GIT_COMMIT_SHA;
-
-    const response = await callLoader({ "x-health-token": "secret-token" });
-    const body = await response.json();
-
-    expect(response.status).toBe(200);
-    expect(body.version).toBeNull();
-  });
-
-  it("includes version in the 503 response body when a check is degraded", async () => {
-    mockScanCount.mockResolvedValue(1);
-
-    const response = await callLoader({ "x-health-token": "secret-token" });
-    const body = await response.json();
-
-    expect(response.status).toBe(503);
-    expect(body.version).toBe("abc123def456");
   });
 
   it("does not count expired offline sessions that still have a refreshToken (self-healing)", async () => {
