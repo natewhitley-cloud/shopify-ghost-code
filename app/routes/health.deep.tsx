@@ -116,7 +116,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const httpStatus = status === "ok" ? 200 : 503;
 
   return Response.json(
-    { status, timestamp: new Date().toISOString(), checks },
+    {
+      status,
+      timestamp: new Date().toISOString(),
+      version: process.env.RAILWAY_GIT_COMMIT_SHA ?? null,
+      checks,
+    },
     { status: httpStatus },
   );
 };
