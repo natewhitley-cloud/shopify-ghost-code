@@ -191,6 +191,13 @@ un-refreshable state, it flags — a real GC-07t signal.
 
 ## BEAD-4 — Flip the post-deploy smoke from soft-launch to blocking gate
 
+- **STATUS: ✅ DONE 2026-07-02** — `continue-on-error` removed from the smoke step.
+  Done same day as BEAD-3 rather than waiting for extra green deploys (owner call),
+  since the smoke had already run verified-green in CI once. Note: after the
+  `node: not found` CI-wiring fix, the smoke is now its own `smoke` job (needs:
+  deploy) on ubuntu-latest — so a failed smoke fails that job / turns the workflow
+  red (it does NOT roll back the already-run deploy). File as closed when beads
+  unfreezes.
 - **type:** chore
 - **priority:** P3
 - **labels:** observability, smoke, ci

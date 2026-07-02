@@ -42,11 +42,11 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version-file: ".nvmrc"
-      # SOFT-LAUNCH: non-blocking until the smoke has proven itself green across a
-      # few real deploys. Remove `continue-on-error` to make a failed smoke fail
-      # the run (BEAD-4). smoke.mjs is dependency-free — no npm ci needed.
+      # BLOCKING GATE (BEAD-4, enabled 2026-07-02 after a verified-green CI run):
+      # a failed smoke fails this job and turns the workflow red. Note it does NOT
+      # roll back the deploy — the deploy job already ran — it's a red-alert signal
+      # that prod is degraded. smoke.mjs is dependency-free — no npm ci needed.
       - name: Post-deploy smoke test
-        continue-on-error: true
         env:
           SMOKE_BASE_URL: ${{ secrets.SMOKE_BASE_URL }}
           HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
