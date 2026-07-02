@@ -7,6 +7,37 @@ once the canonical lineage is chosen.
 
 ---
 
+## Beads infra — root cause + recommended fix (investigated 2026-07-02, not yet actioned)
+
+Investigated the beads setup before any reconciliation. Root cause of the DB-swap
+scare is now concrete: **the beads data has no git-tracked source of truth.**
+- `.beads/dolt/` (the actual DB) is **gitignored**; runs `dolt_mode: server`, single
+  "Initialize" commit, **no history, no remote**.
+- Beads' native durability mechanism — a git-tracked `.beads/issues.jsonl` — is
+  **disabled**. The only tracked JSONL is `interactions.jsonl` (**0 bytes**).
+- So the backlog lives only in the local Dolt server DB + **manual** `docs/*.json`
+  snapshots. The `post-checkout`/`post-merge` hooks resync on every git op, but with
+  no canonical git JSONL to reconcile against they can drift the server onto a
+  different DB → the swap. Nothing versioned = swap invisible + unrecoverable-by-diff.
+
+**Recommended durability fix: enable git-tracked JSONL export — NOT a Dolt remote.**
+JSONL rides the git repo you already push (no new infra/credentials), is diffable (a
+swap shows as a huge diff = detectable), and kills the manual snapshot dance. A Dolt
+remote only adds off-machine backup + a separate push step to forget; skip it unless
+you specifically want Dolt-native branch/merge history.
+
+**Recommended reconcile method: fresh rebuild, not a two-DB merge.** snapshot.json is
+a non-native JSON array (needs a transform, not `bd import`) and live-168 is
+contaminated, so surgical restore-and-merge is fragile. Cleaner: new DB → enable JSONL
+export → import the ~29 open items (18 eng from snapshot-86 + 11 product from live-168)
+→ archive the 217 closed as reference JSON. One pass reconciles + fixes durability.
+
+Both worlds remain preserved on disk (`docs/backlog-snapshot.json` 86 +
+`docs/backlog-live-168-2026-07-01.json` 168) — **do not delete either** until this is
+done. Deferred by owner 2026-07-02; not started.
+
+---
+
 ## BEAD-1 — App Store listing SEO / discoverability pass (post-launch)
 
 - **type:** task
