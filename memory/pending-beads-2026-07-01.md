@@ -143,6 +143,12 @@ they're harmless (overwritten on refresh). Not worth scheduling on its own.
 
 ## BEAD-3 — Fix /health/deep sessions-check: flag only UN-REFRESHABLE expired offline sessions
 
+- **STATUS: ✅ DONE 2026-07-02** — shipped `1a444c4` (fix) on top of `f331cb2`
+  (probe) + `06e25c8` (investigation). Deployed to prod; `scripts/smoke.mjs`
+  verified GREEN end-to-end (status ok, 0/0/0, exit 0). Grace-direction kept as a
+  probe-tuning choice (`expires < now − 5min`), not an exact mirror of
+  SafeSessionStorage — shares the refreshToken-null trigger + FIVE_MINUTES_MS.
+  File as closed when beads unfreezes.
 - **type:** bug
 - **priority:** P2 (blocks making the post-deploy smoke a trustworthy gate)
 - **labels:** observability, smoke, auth
@@ -180,3 +186,39 @@ un-refreshable state, it flags — a real GC-07t signal.
 - Verified green against prod via `scripts/smoke.mjs`
 - Once green across a deploy or two, remove `continue-on-error` from the smoke step
   in `.github/workflows/deploy.yml` (marked with a SOFT-LAUNCH comment)
+
+---
+
+## BEAD-4 — Flip the post-deploy smoke from soft-launch to blocking gate
+
+- **type:** chore
+- **priority:** P3
+- **labels:** observability, smoke, ci
+- **depends on:** BEAD-3 (done) + a couple of green deploys
+
+### Why
+The "Post-deploy smoke test" step in `.github/workflows/deploy.yml` is currently
+`continue-on-error: true` (soft-launched — runs and reports but never fails the
+build). BEAD-3 made `/health/deep` a true signal and it verified GREEN in prod on
+2026-07-02. Once it has ridden green through **1–2 more natural deploys** (cheap
+confidence it's stable, not a fluke), it should become a real gate so a bad deploy
+actually goes red.
+
+### Fix
+Remove the `continue-on-error: true` line from the `Post-deploy smoke test` step in
+`.github/workflows/deploy.yml` (there's a `SOFT-LAUNCH` comment marking exactly
+where and why). Leave the best-effort `Scan deploy logs for errors` step as-is
+(it should stay `continue-on-error`).
+
+### Watch-outs before flipping
+- The smoke runs AFTER `railway up`, so it detects a bad deploy, it does not roll it
+  back. Making it blocking turns the GH Action red (alert) — consider whether you
+  want an auto-rollback follow-up later.
+- It can race the rollout (smoke may hit the old container mid-cutover). If flaps
+  appear after flipping, add a version/build marker to `/health/deep` and have the
+  smoke assert the new build is live before checking.
+
+### Definition of done
+- `continue-on-error` removed from the smoke step; a forced degraded `/health/deep`
+  makes the deploy job fail
+- Confirmed a normal green deploy still passes
