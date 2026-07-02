@@ -1,6 +1,10 @@
 # Required GitHub Secrets:
 # - RAILWAY_TOKEN: Railway API token (from railway.app/account/tokens)
 # - RAILWAY_SERVICE_ID: Railway service ID for the ghost-code web service
+# - HEALTH_CHECK_TOKEN: shared secret for the /health/deep ops endpoint
+#   (must match the HEALTH_CHECK_TOKEN env var set on the Railway service)
+# - SMOKE_BASE_URL: public base URL of the deployed service,
+#   e.g. https://shopify-ghost-code-production.up.railway.app
 
 name: Deploy
 
@@ -18,3 +22,21 @@ jobs:
       - uses: actions/checkout@v5
       - name: Deploy to Railway
         run: railway up --service=${{ secrets.RAILWAY_SERVICE_ID }}
+      # SOFT-LAUNCH: non-blocking until the smoke has proven itself green across a
+      # few real deploys and the required secrets are configured (HEALTH_CHECK_TOKEN,
+      # SMOKE_BASE_URL here + HEALTH_CHECK_TOKEN on the Railway service). Once stable,
+      # remove `continue-on-error` to make a failed smoke fail the deploy.
+      - name: Post-deploy smoke test
+        continue-on-error: true
+        env:
+          SMOKE_BASE_URL: ${{ secrets.SMOKE_BASE_URL }}
+          HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
+        run: node scripts/smoke.mjs
+      # Best-effort log scan: report ERROR/FATAL markers from the fresh deploy
+      # but never fail the build on them (continue-on-error + grep || echo).
+      - name: Scan deploy logs for errors
+        if: always()
+        continue-on-error: true
+        run: |
+          railway logs --service=${{ secrets.RAILWAY_SERVICE_ID }} 2>/dev/null \
+            | grep -E "ERROR|FATAL" || echo "No ERROR/FATAL markers found in recent logs"
