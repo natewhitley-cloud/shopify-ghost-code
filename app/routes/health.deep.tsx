@@ -3,6 +3,7 @@ import type { LoaderFunctionArgs } from "react-router";
 
 import db from "../db.server";
 import { logger } from "../lib/logger.server";
+import { FIVE_MINUTES_MS } from "../lib/safe-session-storage.server";
 import { DEFAULT_STALE_SCAN_THRESHOLDS } from "../models/scan.server";
 
 /**
@@ -74,9 +75,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     await probeDb();
     dbOk = true;
 
-    // Auth-loop precursor: offline sessions whose token has already expired.
+    // Auth-loop precursor (GC-07t): only offline sessions that are stuck.
+    // With expiringOfflineAccessTokens enabled, short-lived offline tokens
+    // routinely expire and auto-refresh via refreshToken — that's the benign,
+    // self-healing majority and must NOT count. The genuinely-stuck state is
+    // the exact trigger SafeSessionStorage.loadSession guards against: an
+    // offline session expired beyond the FIVE_MINUTES_MS grace window with NO
+    // refreshToken to recover it, which drives the reauth bounce loop.
     expiredOffline = await db.session.count({
-      where: { isOnline: false, expires: { not: null, lt: new Date() } },
+      where: {
+        refreshToken: null,
+        expires: { not: null, lt: new Date(Date.now() - FIVE_MINUTES_MS) },
+        isOnline: false,
+      },
     });
 
     // "Scans couldn't run": PENDING scans older than the watchdog's pending

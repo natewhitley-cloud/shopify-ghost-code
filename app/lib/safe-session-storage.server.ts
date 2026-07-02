@@ -4,7 +4,7 @@ import { SessionStorage } from "@shopify/shopify-app-session-storage";
 // Mirrors the SDK's WITHIN_MILLISECONDS_OF_EXPIRY constant in
 // ensure-offline-token-is-not-expired — treat a session expiring within this
 // window as already expired so the guard and the SDK agree on stale sessions.
-const FIVE_MINUTES_MS = 5 * 60 * 1000;
+export const FIVE_MINUTES_MS = 5 * 60 * 1000;
 
 /**
  * Wraps a SessionStorage to intercept loadSession and return undefined for

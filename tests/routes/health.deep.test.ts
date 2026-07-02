@@ -51,6 +51,34 @@ function callLoader(headers?: Record<string, string>) {
   return loader({ request: makeRequest(headers) } as LoaderFunctionArgs);
 }
 
+// Grace window mirroring SafeSessionStorage.FIVE_MINUTES_MS (kept local so the
+// test doesn't pull in the SDK imports the lib module carries at load time).
+const FIVE_MINUTES_MS = 5 * 60 * 1000;
+
+type SessionRow = { isOnline: boolean; refreshToken: string | null; expires: Date | null };
+
+// Applies the route's Prisma `where` filter against in-memory rows so the mock
+// exercises the real filter intent (refreshToken null + offline + expired
+// beyond grace) rather than returning a fixed count.
+function matchesWhere(row: SessionRow, where: Record<string, unknown>): boolean {
+  return Object.entries(where).every(([field, cond]) => {
+    const value = (row as Record<string, unknown>)[field];
+    if (cond === null) return value === null;
+    if (cond && typeof cond === "object") {
+      const c = cond as { not?: unknown; lt?: unknown };
+      if ("not" in c && c.not === null && value === null) return false;
+      if ("lt" in c && !(value instanceof Date && value < (c.lt as Date))) return false;
+      return true;
+    }
+    return value === cond;
+  });
+}
+
+function countMatching(rows: SessionRow[]) {
+  return (args: { where?: Record<string, unknown> }) =>
+    rows.filter((row) => matchesWhere(row, args?.where ?? {})).length;
+}
+
 const ORIGINAL_ENV = { ...process.env };
 
 describe("health.deep loader", () => {
@@ -86,15 +114,63 @@ describe("health.deep loader", () => {
     expect(mockLoggerError).not.toHaveBeenCalled();
   });
 
-  it("returns 503 + degraded when expired offline sessions exist", async () => {
-    mockSessionCount.mockResolvedValue(4);
+  it("does not count expired offline sessions that still have a refreshToken (self-healing)", async () => {
+    const now = Date.now();
+    // Expired an hour ago, but a refreshToken means the SDK auto-refreshes it.
+    mockSessionCount.mockImplementation(
+      countMatching([
+        { isOnline: false, refreshToken: "refresh-abc", expires: new Date(now - 60 * 60 * 1000) },
+      ]),
+    );
+
+    const response = await callLoader({ "x-health-token": "secret-token" });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("ok");
+    expect(body.checks.sessions.expiredOffline).toBe(0);
+  });
+
+  it("returns 503 + degraded for an offline session expired beyond grace with no refreshToken", async () => {
+    const now = Date.now();
+    // Expired an hour ago with no refreshToken — the genuinely-stuck GC-07t state.
+    mockSessionCount.mockImplementation(
+      countMatching([
+        { isOnline: false, refreshToken: null, expires: new Date(now - 60 * 60 * 1000) },
+      ]),
+    );
 
     const response = await callLoader({ "x-health-token": "secret-token" });
     const body = await response.json();
 
     expect(response.status).toBe(503);
     expect(body.status).toBe("degraded");
-    expect(body.checks.sessions.expiredOffline).toBe(4);
+    expect(body.checks.sessions.expiredOffline).toBe(1);
+
+    // Query mirrors SafeSessionStorage's trigger exactly.
+    const where = mockSessionCount.mock.calls[0][0].where;
+    expect(where.refreshToken).toBeNull();
+    expect(where.isOnline).toBe(false);
+    expect(where.expires.not).toBeNull();
+    expect(where.expires.lt).toBeInstanceOf(Date);
+    expect(where.expires.lt.getTime()).toBeLessThanOrEqual(Date.now() - FIVE_MINUTES_MS);
+  });
+
+  it("does not count offline sessions still within the 5-minute grace window", async () => {
+    const now = Date.now();
+    // Expired 2 min ago (< 5 min grace), no refreshToken — SDK still refreshes.
+    mockSessionCount.mockImplementation(
+      countMatching([
+        { isOnline: false, refreshToken: null, expires: new Date(now - 2 * 60 * 1000) },
+      ]),
+    );
+
+    const response = await callLoader({ "x-health-token": "secret-token" });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("ok");
+    expect(body.checks.sessions.expiredOffline).toBe(0);
   });
 
   it("returns 503 + degraded when PENDING scans are stuck", async () => {
