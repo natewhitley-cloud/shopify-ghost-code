@@ -3,35 +3,52 @@
  *
  * Problem
  * -------
- * Plan state is otherwise set SOLELY from the APP_SUBSCRIPTIONS_UPDATE webhook.
- * A missed, out-of-order, or stale webhook silently drifts the stored plan from
- * Shopify's truth — over- or under-granting features with nothing to
- * self-correct.
+ * The APP_SUBSCRIPTIONS_UPDATE webhook — historically this app's primary
+ * plan-state writer — is DEAD as of 2026-04-28: Shopify stopped sending it for
+ * apps on Shopify App Pricing. Plan state is now driven by two mechanisms, both
+ * routed through this reconciler:
+ *   1. Redirect fast-path: when a merchant selects/confirms a plan Shopify
+ *      redirects back with a `plan_handle` param, which triggers an immediate
+ *      reconcile in app/routes/app.tsx (bypassing the freshness guard).
+ *   2. On-load reconcile: a periodic backstop that self-corrects drift from
+ *      out-of-redirect changes (cancellations, freezes, expirations).
  *
  * Approach (Option A — lazy on-load reconciliation with a freshness guard)
  * -----------------------------------------------------------------------
- * On app load, if the shop's plan has not been reconciled within the freshness
- * window, query Shopify for the actual active subscriptions, resolve the
+ * On app load, query Shopify for the actual active subscriptions, resolve the
  * effective plan, and correct the stored plan if it drifted. The freshness guard
- * bounds how often the extra GraphQL round-trip runs.
+ * bounds how often the extra GraphQL round-trip runs; the redirect fast-path
+ * ignores it so an upgrade is granted immediately.
  *
  * This service NEVER throws on a Shopify failure: it logs and leaves the stored
  * plan untouched so reconciliation can never break the app load.
  */
 
-import { PLAN_RANK, PLANS, resolvePlanFromSubscription } from "../lib/billing.server";
+import {
+  PLAN_AMOUNTS,
+  PLAN_RANK,
+  PLANS,
+  determineBillingEventType,
+  resolvePlanFromSubscription,
+} from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { isAccessDeniedError, type GraphQLResponseError } from "../lib/scope-check.server";
+import { recordBillingEvent } from "../models/billing-event.server";
 import { stampPlanReconciledAt, updateShopPlanByDomain } from "../models/shop.server";
 import type { AdminApiContext } from "../types/shopify";
 
 /**
- * Freshness window for plan reconciliation. The app-load loader only queries
- * Shopify for the shop's active subscriptions when the stored plan has not been
- * reconciled within this window (or has never been reconciled). Bounds how often
- * the extra GraphQL round-trip runs on app load.
+ * Freshness window for the on-load reconcile backstop. The app-load loader only
+ * queries Shopify for the shop's active subscriptions when the stored plan has
+ * not been reconciled within this window (or has never been reconciled).
+ *
+ * The redirect fast-path (app/routes/app.tsx, triggered by the `plan_handle`
+ * param) now handles the acute upgrade case immediately, so this window is only
+ * the backstop for out-of-redirect changes — cancellations, freezes, and
+ * expirations, which have NO redirect. 1h bounds how long those can over-grant
+ * before self-correcting while limiting extra Admin API round-trips. Tunable.
  */
-export const PLAN_RECONCILE_FRESHNESS_MS = 6 * 60 * 60 * 1000; // 6 hours
+export const PLAN_RECONCILE_FRESHNESS_MS = 1 * 60 * 60 * 1000; // 1 hour
 
 /**
  * True when the stored plan is stale and should be reconciled against Shopify.
@@ -106,15 +123,22 @@ export type ReconcileResult =
  * shop model so the freshness clock resets. On any Shopify error the function
  * logs and returns without touching the stored plan — it NEVER throws.
  *
- * Drift corrections deliberately do NOT record a BillingEvent: BillingEvents
- * capture merchant-initiated billing actions sourced from the webhook (the
- * canonical signal). A reconciliation is an internal data-integrity repair;
- * recording it would pollute conversion/churn analytics and risk double-counting
- * if the originally-missed webhook later arrives. We log the correction instead.
+ * BillingEvent recording is gated on `options.recordEvent` (default false):
+ *
+ *   - Routine on-load reconciles (recordEvent omitted/false) deliberately do NOT
+ *     record a BillingEvent. A routine reconcile is an internal data-integrity
+ *     repair, not a merchant-initiated action; recording it would pollute
+ *     conversion/churn analytics. We log the correction instead.
+ *   - The redirect fast-path passes `recordEvent: true`. That correction IS
+ *     merchant-initiated (they just confirmed a plan and Shopify redirected back
+ *     with `plan_handle`), so we record a BillingEvent — restoring the analytics
+ *     the now-dead APP_SUBSCRIPTIONS_UPDATE webhook used to produce. Recording is
+ *     fire-and-forget and never blocks or breaks the reconcile.
  */
 export async function reconcileShopPlan(
   admin: AdminApiContext,
   shop: { domain: string; plan: string },
+  options: { recordEvent?: boolean } = {},
 ): Promise<ReconcileResult> {
   let json: ReconcileResponse;
   try {
@@ -164,5 +188,43 @@ export async function reconcileShopPlan(
     activeSubscriptionCount: subscriptions.length,
   });
 
+  if (options.recordEvent) {
+    recordReconcileBillingEvent(updated.id, shop.plan, effectivePlan);
+  }
+
   return { status: "corrected", fromPlan: shop.plan, toPlan: effectivePlan };
+}
+
+/**
+ * Record a BillingEvent for a merchant-initiated (redirect-triggered) drift
+ * correction, mirroring what the deprecated APP_SUBSCRIPTIONS_UPDATE webhook did.
+ *
+ * Fire-and-forget: failures are logged but never propagated — recording is
+ * observability infrastructure and must never interrupt or break app load.
+ */
+function recordReconcileBillingEvent(shopId: string, fromPlan: string, toPlan: string): void {
+  const eventType = determineBillingEventType(fromPlan, toPlan);
+  if (eventType === null) return;
+
+  const amount = PLAN_AMOUNTS[toPlan] ?? null;
+  const recordedToPlan = toPlan === PLANS.FREE ? null : toPlan;
+
+  recordBillingEvent({ shopId, eventType, fromPlan, toPlan: recordedToPlan, amount })
+    .then(() => {
+      logger.info("billing-event-recorded", {
+        shopId,
+        eventType,
+        fromPlan,
+        toPlan: recordedToPlan,
+      });
+    })
+    .catch((err: unknown) => {
+      logger.error("Failed to record billing event", {
+        shopId,
+        eventType,
+        fromPlan,
+        toPlan,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    });
 }

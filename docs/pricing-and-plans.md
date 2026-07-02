@@ -81,7 +81,7 @@
 ## Downgrade & Cancellation
 
 - **Professional → Standard**: In-app "Switch to Standard" button on settings page. Uses `replacementBehavior: APPLY_ON_NEXT_BILLING_CYCLE` — merchant keeps Professional features until current billing cycle ends.
-- **Paid → Free**: Cancel link to `shopify://admin/settings/billing`. Shopify handles cancellation; `APP_SUBSCRIPTIONS_UPDATE` webhook sets plan to free.
+- **Paid → Free**: Cancel link to `shopify://admin/settings/billing`. Shopify handles cancellation. Cancellations have NO redirect back to the app, so the plan reverts to free via the on-load reconcile backstop (see Billing Mechanics), not a webhook.
 - **Billing events tracked**: All upgrades, downgrades, and cancellations recorded in `BillingEvent` table for analytics.
 
 ---
@@ -106,9 +106,12 @@
 
 - All billing goes through **Shopify's native billing API** (merchants pay via their Shopify invoice)
 - Plan stored as string on `Shop` model in Prisma (`plan` field, default `"free"`)
-- Plan changes arrive via `APP_SUBSCRIPTIONS_UPDATE` webhook
+- Plan changes are detected on app load — the `APP_SUBSCRIPTIONS_UPDATE` webhook is **DEAD as of 2026-04-28** (Shopify stopped sending it for App Pricing apps)
 - Unknown plan names or non-ACTIVE subscription statuses default to `"free"` (safe fallback)
-- **Plan reconciliation (drift guard):** the webhook is not the only source of truth. On app load, if the stored plan has not been reconciled within a 6-hour freshness window (`Shop.planReconciledAt`), the app queries Shopify's `currentAppInstallation.activeSubscriptions` and corrects the stored plan if it drifted (e.g. from a missed/out-of-order/stale webhook). Zero active subscriptions → `free`; if multiple are active, the highest tier wins. Reconciliation never blocks app load (errors are logged and the stored plan stands) and drift corrections are logged but do **not** create `BillingEvent` rows — those remain reserved for merchant-initiated changes from the webhook. Both the webhook and a successful reconcile stamp `planReconciledAt`, resetting the freshness clock. Plan-name → tier mapping lives in `app/lib/billing.server.ts` (`resolvePlanFromSubscription`) and is shared by the webhook and the reconciler.
+- **Plan reconciliation (source of truth):** with the webhook gone, plan state is driven entirely from the app-load loader (`app/routes/app.tsx`), which always corrects `Shop.plan` from Shopify's `currentAppInstallation.activeSubscriptions` query (`app/services/billing-reconciler.server.ts`) — the URL `plan_handle` param is NEVER trusted to grant a tier. Zero active subscriptions → `free`; if multiple are active, the highest tier wins. Reconciliation never blocks app load (errors are logged and the stored plan stands). It runs on two triggers:
+  - **Redirect fast-path:** when a merchant selects/confirms a plan, Shopify redirects back with a `plan_handle` param. Its PRESENCE forces an immediate reconcile (bypassing the freshness window) so upgrades grant right away. Because this correction is merchant-initiated, it records a `BillingEvent` (restoring the analytics the webhook used to produce).
+  - **Backstop:** otherwise, reconcile only when the stored plan is older than a **1-hour** freshness window (`Shop.planReconciledAt`, tunable). This covers out-of-redirect changes (cancellations, freezes, expirations, which have no redirect). Routine backstop corrections are logged but do **not** create `BillingEvent` rows, to avoid polluting conversion/churn analytics.
+  - Both triggers stamp `planReconciledAt`, resetting the freshness clock. Plan-name → tier mapping lives in `app/lib/billing.server.ts` (`resolvePlanFromSubscription`).
 - Test mode: `SHOPIFY_BILLING_TEST=true` env var; dev store uses test charges automatically
 
 ---

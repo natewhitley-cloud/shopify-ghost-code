@@ -19,15 +19,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shop = await getShopMetadata(session.shop);
   }
 
-  // Lazy plan reconciliation (CMP-2 / GC-fur): plan state is otherwise set only
-  // from the APP_SUBSCRIPTIONS_UPDATE webhook, so a missed/stale webhook can
-  // silently drift the stored plan. When the stored plan is stale (or never
-  // reconciled), reconcile it against Shopify's actual active subscriptions.
+  // Plan reconciliation (CMP-2 / GC-fur). The APP_SUBSCRIPTIONS_UPDATE webhook
+  // that used to write plan state is DEAD as of 2026-04-28, so plan state is now
+  // driven entirely from here:
+  //   - Redirect fast-path: when a merchant selects/confirms a plan, Shopify
+  //     redirects back with a `plan_handle` param. Its PRESENCE forces an
+  //     immediate reconcile (bypassing the freshness guard) so an upgrade is
+  //     granted right away. We never trust the param's VALUE — reconcileShopPlan
+  //     re-queries Shopify's active subscriptions as the sole source of truth.
+  //   - Backstop: otherwise reconcile only when the stored plan is stale.
   // Wrapped in try/catch — reconciliation must NEVER break the app load; on any
   // error we log and continue with the stored plan.
-  if (shop && isPlanReconcileStale(shop.planReconciledAt)) {
+  const redirectTriggered = new URL(request.url).searchParams.has("plan_handle");
+  if (shop && (redirectTriggered || isPlanReconcileStale(shop.planReconciledAt))) {
     try {
-      await reconcileShopPlan(admin, { domain: shop.domain, plan: shop.plan });
+      // recordEvent only on the merchant-initiated redirect path — routine stale
+      // reconciles must not pollute conversion/churn analytics.
+      await reconcileShopPlan(
+        admin,
+        { domain: shop.domain, plan: shop.plan },
+        { recordEvent: redirectTriggered },
+      );
     } catch (err) {
       logger.error("billing-reconcile-loader-failed", {
         shop: session.shop,

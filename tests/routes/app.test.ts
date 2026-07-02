@@ -74,9 +74,9 @@ function makeShop(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function runLoader() {
+function runLoader(url = "https://example.com/app") {
   return loader({
-    request: new Request("https://example.com/app"),
+    request: new Request(url),
     params: {},
     context: {},
   } as unknown as LoaderFunctionArgs);
@@ -97,20 +97,21 @@ describe("app.tsx loader — plan reconciliation hook", () => {
     mockReconcile.mockResolvedValue({ status: "matched", plan: "free" });
   });
 
-  it("runs reconciliation when the stored plan is stale", async () => {
+  it("runs reconciliation when the stored plan is stale (no plan_handle → recordEvent false)", async () => {
     mockGetShop.mockResolvedValue(makeShop({ plan: "Standard", planReconciledAt: null }));
     mockIsStale.mockReturnValue(true);
 
     const result = await runLoader();
 
-    expect(mockReconcile).toHaveBeenCalledWith(fakeAdmin, {
-      domain: "test-shop.myshopify.com",
-      plan: "Standard",
-    });
+    expect(mockReconcile).toHaveBeenCalledWith(
+      fakeAdmin,
+      { domain: "test-shop.myshopify.com", plan: "Standard" },
+      { recordEvent: false },
+    );
     expect(result).toEqual({ apiKey: "test-api-key" });
   });
 
-  it("skips reconciliation when the stored plan is fresh", async () => {
+  it("skips reconciliation when the stored plan is fresh and there is no plan_handle", async () => {
     mockGetShop.mockResolvedValue(
       makeShop({ plan: "Standard", planReconciledAt: new Date("2026-06-17T11:30:00Z") }),
     );
@@ -119,6 +120,23 @@ describe("app.tsx loader — plan reconciliation hook", () => {
     await runLoader();
 
     expect(mockReconcile).not.toHaveBeenCalled();
+  });
+
+  it("forces reconciliation when plan_handle is present even if the plan is fresh (redirect fast-path)", async () => {
+    mockGetShop.mockResolvedValue(
+      makeShop({ plan: "free", planReconciledAt: new Date("2026-06-17T11:30:00Z") }),
+    );
+    mockIsStale.mockReturnValue(false);
+
+    await runLoader("https://example.com/app?plan_handle=standard&shop=test-shop.myshopify.com");
+
+    // Fresh plan would normally skip; plan_handle presence forces the reconcile.
+    expect(mockIsStale).not.toHaveBeenCalled();
+    expect(mockReconcile).toHaveBeenCalledWith(
+      fakeAdmin,
+      { domain: "test-shop.myshopify.com", plan: "free" },
+      { recordEvent: true },
+    );
   });
 
   it("creates the shop on first visit then reconciles the freshly created record", async () => {

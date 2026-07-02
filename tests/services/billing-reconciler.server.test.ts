@@ -20,6 +20,10 @@ vi.mock("../../app/models/shop.server", () => ({
   stampPlanReconciledAt: vi.fn(),
 }));
 
+vi.mock("../../app/models/billing-event.server", () => ({
+  recordBillingEvent: vi.fn(),
+}));
+
 // Silence logger output but allow assertions on calls.
 vi.mock("../../app/lib/logger.server", () => ({
   logger: {
@@ -34,6 +38,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { logger } from "../../app/lib/logger.server";
+import { recordBillingEvent } from "../../app/models/billing-event.server";
 import { stampPlanReconciledAt, updateShopPlanByDomain } from "../../app/models/shop.server";
 import {
   PLAN_RECONCILE_FRESHNESS_MS,
@@ -77,6 +82,7 @@ function makeAdminThatThrows(err: Error) {
 
 const mockUpdate = updateShopPlanByDomain as ReturnType<typeof vi.fn>;
 const mockStamp = stampPlanReconciledAt as ReturnType<typeof vi.fn>;
+const mockRecordEvent = recordBillingEvent as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // isPlanReconcileStale
@@ -90,8 +96,8 @@ describe("isPlanReconcileStale", () => {
   });
 
   it("returns false when reconciled within the freshness window", () => {
-    const oneHourAgo = new Date(now.getTime() - 60 * 60 * 1000);
-    expect(isPlanReconcileStale(oneHourAgo, now)).toBe(false);
+    const halfWindowAgo = new Date(now.getTime() - PLAN_RECONCILE_FRESHNESS_MS / 2);
+    expect(isPlanReconcileStale(halfWindowAgo, now)).toBe(false);
   });
 
   it("returns true when reconciled longer ago than the freshness window", () => {
@@ -154,6 +160,7 @@ describe("reconcileShopPlan", () => {
     vi.clearAllMocks();
     mockUpdate.mockResolvedValue({ id: "shop-1", domain: "s.myshopify.com", plan: "x" });
     mockStamp.mockResolvedValue({ id: "shop-1" });
+    mockRecordEvent.mockResolvedValue({});
   });
 
   it("upgrades when stored plan is free but Shopify has an ACTIVE Standard subscription", async () => {
@@ -250,5 +257,65 @@ describe("reconcileShopPlan", () => {
     const result = await reconcileShopPlan(admin, { domain: "gone.myshopify.com", plan: "free" });
 
     expect(result).toEqual({ status: "shop-not-found" });
+  });
+
+  // -------------------------------------------------------------------------
+  // Redirect-triggered billing-event recording (recordEvent option)
+  // -------------------------------------------------------------------------
+
+  it("records a BillingEvent on a corrected drift when recordEvent is true (redirect path)", async () => {
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    await reconcileShopPlan(
+      admin,
+      { domain: "s.myshopify.com", plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(mockRecordEvent).toHaveBeenCalledWith({
+      shopId: "shop-1",
+      eventType: "upgrade",
+      fromPlan: "free",
+      toPlan: "Standard",
+      amount: 29,
+    });
+  });
+
+  it("records a cancellation with null toPlan/amount when a redirect correction reverts to free", async () => {
+    const admin = makeAdmin([]);
+
+    await reconcileShopPlan(
+      admin,
+      { domain: "s.myshopify.com", plan: "Professional" },
+      { recordEvent: true },
+    );
+
+    expect(mockRecordEvent).toHaveBeenCalledWith({
+      shopId: "shop-1",
+      eventType: "cancellation",
+      fromPlan: "Professional",
+      toPlan: null,
+      amount: null,
+    });
+  });
+
+  it("does NOT record a BillingEvent on a corrected drift for the routine path (recordEvent omitted)", async () => {
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "free" });
+
+    expect(mockRecordEvent).not.toHaveBeenCalled();
+  });
+
+  it("does NOT record a BillingEvent when the plan already matches, even with recordEvent true", async () => {
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    await reconcileShopPlan(
+      admin,
+      { domain: "s.myshopify.com", plan: "Standard" },
+      { recordEvent: true },
+    );
+
+    expect(mockRecordEvent).not.toHaveBeenCalled();
   });
 });

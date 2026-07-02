@@ -1,5 +1,6 @@
-// Import PLANS for local use and re-export for existing server imports.
 import { APP_HANDLE, PLANS } from "./plans";
+import type { BillingEventType } from "../models/billing-event.server";
+// Import PLANS for local use and re-export for existing server imports.
 export { PLANS };
 
 // ---------------------------------------------------------------------------
@@ -71,6 +72,59 @@ export function resolvePlanFromSubscription(
       // granting paid features.
       return PLANS.FREE;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Billing-event classification
+//
+// Shared by the (now-deprecated) APP_SUBSCRIPTIONS_UPDATE webhook and the
+// billing reconciler's redirect fast-path, so a merchant-initiated plan change
+// is classified and priced identically regardless of which path recorded it.
+// ---------------------------------------------------------------------------
+
+// Plan price table — amounts match billing config in shopify.server.ts.
+// Used to populate BillingEvent.amount for upgrade/reactivation events.
+export const PLAN_AMOUNTS: Record<string, number | undefined> = {
+  [PLANS.STANDARD]: 29,
+  [PLANS.PROFESSIONAL]: 49,
+  // FREE has no recurring charge amount
+};
+
+/**
+ * Determine the billing event type by comparing old and new plan tiers.
+ *
+ * Rules:
+ *   - new plan is FREE and old plan was FREE → no meaningful event, return null
+ *   - new plan is paid, old plan was FREE (including first install) → upgrade
+ *   - new plan is FREE, old plan was paid → cancellation
+ *   - new plan rank > old plan rank → upgrade
+ *   - new plan rank < old plan rank → downgrade
+ *   - same rank → null (no-op, e.g. ACTIVE webhook for unchanged plan)
+ *
+ * "Reactivation" occurs when a shop returns to ANY paid plan after being on
+ * FREE. Because we can't distinguish "first subscribe" from "reactivate after
+ * cancellation" without a full billing history query, we classify both as
+ * "upgrade" here — the distinction is cosmetic and can be refined later with
+ * additional DB context if needed.
+ */
+export function determineBillingEventType(
+  fromPlan: string,
+  toPlan: string,
+): BillingEventType | null {
+  const fromRank = PLAN_RANK[fromPlan] ?? 0;
+  const toRank = PLAN_RANK[toPlan] ?? 0;
+
+  if (fromRank === toRank) return null;
+
+  if (toPlan === PLANS.FREE) {
+    return "cancellation";
+  }
+
+  if (fromPlan === PLANS.FREE) {
+    return "upgrade";
+  }
+
+  return toRank > fromRank ? "upgrade" : "downgrade";
 }
 
 // Feature flags per plan. Used to gate UI and service-layer behavior.

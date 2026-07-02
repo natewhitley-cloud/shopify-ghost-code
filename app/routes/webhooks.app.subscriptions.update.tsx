@@ -1,69 +1,26 @@
 import type { ActionFunctionArgs } from "react-router";
 
-import { PLAN_RANK, PLANS, resolvePlanFromSubscription } from "../lib/billing.server";
+import {
+  PLANS,
+  PLAN_AMOUNTS,
+  determineBillingEventType,
+  resolvePlanFromSubscription,
+} from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
-import { type BillingEventType, recordBillingEvent } from "../models/billing-event.server";
+import { recordBillingEvent } from "../models/billing-event.server";
 import { getShopMetadata, updateShopPlanByDomain } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
-// Plan price table — amounts match billing config in shopify.server.ts.
-// Used to populate BillingEvent.amount for upgrade/reactivation events.
-// ---------------------------------------------------------------------------
-
-const PLAN_AMOUNTS: Record<string, number | undefined> = {
-  [PLANS.STANDARD]: 29,
-  [PLANS.PROFESSIONAL]: 49,
-  // FREE has no recurring charge amount
-};
-
-// ---------------------------------------------------------------------------
-// Shopify subscription status → internal plan tier mapping
-// ---------------------------------------------------------------------------
-
-// Shopify sends `APP_SUBSCRIPTIONS_UPDATE` whenever a subscription is
-// activated, cancelled, declined, or expires. The payload includes:
-//   app_subscription.status  — ACTIVE | CANCELLED | DECLINED | EXPIRED | FROZEN | PENDING
-//   app_subscription.name    — the plan name string we set in billing config
+// DEPRECATED as of 2026-04-28.
 //
-// We map ACTIVE subscriptions to the corresponding plan tier; all non-ACTIVE
-// statuses revert the shop to FREE. The mapping (resolvePlanFromSubscription)
-// and PLAN_RANK live in lib/billing.server.ts so the on-load reconciler applies
-// the EXACT same logic when correcting webhook drift.
-
-/**
- * Determine the billing event type by comparing old and new plan tiers.
- *
- * Rules:
- *   - new plan is FREE and old plan was FREE → no meaningful event, return null
- *   - new plan is paid, old plan was FREE (including first install) → upgrade
- *   - new plan is FREE, old plan was paid → cancellation
- *   - new plan rank > old plan rank → upgrade
- *   - new plan rank < old plan rank → downgrade
- *   - same rank → null (no-op, e.g. ACTIVE webhook for unchanged plan)
- *
- * "Reactivation" occurs when a shop returns to ANY paid plan after being on
- * FREE. Because we can't distinguish "first subscribe" from "reactivate after
- * cancellation" without a full billing history query, we classify both as
- * "upgrade" here — the distinction is cosmetic and the tester can refine
- * this logic later with additional DB context if needed.
- */
-function determineBillingEventType(fromPlan: string, toPlan: string): BillingEventType | null {
-  const fromRank = PLAN_RANK[fromPlan] ?? 0;
-  const toRank = PLAN_RANK[toPlan] ?? 0;
-
-  if (fromRank === toRank) return null;
-
-  if (toPlan === PLANS.FREE) {
-    return "cancellation";
-  }
-
-  if (fromPlan === PLANS.FREE) {
-    return "upgrade";
-  }
-
-  return toRank > fromRank ? "upgrade" : "downgrade";
-}
+// Shopify STOPPED sending the APP_SUBSCRIPTIONS_UPDATE webhook on that date for
+// apps on Shopify App Pricing (formerly Managed Pricing). This handler is no
+// longer invoked. It is retained only for pre-cutover safety / historical
+// reference — do NOT rely on it for plan state. Plan state is now driven by the
+// redirect fast-path + on-load reconcile in app/routes/app.tsx (see
+// app/services/billing-reconciler.server.ts).
+// ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
 // Webhook action
