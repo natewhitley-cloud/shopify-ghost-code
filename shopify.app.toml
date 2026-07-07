@@ -19,9 +19,9 @@ api_version = "2026-04"
   topics = [ "app/scopes_update" ]
   uri = "/webhooks/app/scopes_update"
 
-  [[webhooks.subscriptions]]
-  topics = [ "app_subscriptions/update" ]
-  uri = "/webhooks/app/subscriptions/update"
+  # APP_SUBSCRIPTIONS_UPDATE was removed by Shopify on 2026-04-28 (App Pricing
+  # deprecation) and now fails config deploy validation. Plan state is handled
+  # by the plan_handle redirect fast-path + Admin-API reconcile (GC-89k).
 
   [[webhooks.subscriptions]]
   topics = [ "themes/publish" ]
