@@ -12,33 +12,33 @@ High-intent Shopify Community threads where a helpful response (with a natural G
 
 ### Tier 1: Direct match — merchants asking exactly what Ghost Code solves
 
-| Thread | Angle |
-|---|---|
+| Thread                                                                                                                                                                       | Angle                                                                                                                                                                                                                                                                |
+| ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [How to remove leftover code from an uninstalled app?](https://community.shopify.com/c/shopify-discussions/how-to-remove-leftover-code-from-an-uninstalled-app/td-p/1037318) | High-traffic solved thread. The existing answers are "contact the app developer" or "manually search theme.liquid." Respond with the manual steps (be genuinely helpful) and mention Ghost Code automates the search across all theme files, settings, and metadata. |
-| [Leftover code from uninstalled app — how do I remove it?](https://community.shopify.com/t/leftover-code-from-uninstalled-app-how-do-i-remove-it-from-my-website/294871/3) | Merchant doesn't know where to look. Explain the common hiding spots (theme.liquid, snippets/, sections/, assets/) and mention Ghost Code scans all 8 surfaces including ones merchants miss (translations, metafields, redirects). |
-| [Can leftover app code be detected in our theme?](https://community.shopify.com/t/can-leftover-app-code-be-detected-in-our-theme/164034) | The title IS Ghost Code's value prop. Answer: yes, by searching for app-specific patterns — scripts, render/include statements, CSS, tracking pixels. Mention you built a tool that does this automatically with 100+ app signatures. |
-| [URGENT: Old app code still running after uninstall](https://community.shopify.com/t/urgent-old-app-code-still-running-after-uninstall/403717/3) | Highest-severity case — an uninstalled app was still routing live traffic. This validates "Your store is running things you didn't install." Respond with empathy and concrete steps. Mention Ghost Code can detect these kinds of orphaned scripts. |
-| [How to remove left-over code from uninstalled apps?](https://community.shopify.com/t/how-to-remove-left-over-code-from-uninstalled-apps/250058/1) | Classic thread. The current advice is "contact the developer." Add the manual audit steps, then mention Ghost Code for merchants who've installed/uninstalled many apps. |
-| [Cleaning up old app code](https://community.shopify.com/t/cleaning-up-old-app-code/333196) | Merchant knows they have the problem but doesn't know the scope. Explain that code hides in more places than theme.liquid — settings, translations, metafields. Ghost Code finds it all. |
-| [How can I remove unused code from uninstalled apps?](https://community.shopify.com/t/how-can-i-remove-unused-code-from-uninstalled-apps/238921) | Similar to above. Lead with the manual approach, then position Ghost Code as the automated version. |
+| [Leftover code from uninstalled app — how do I remove it?](https://community.shopify.com/t/leftover-code-from-uninstalled-app-how-do-i-remove-it-from-my-website/294871/3)   | Merchant doesn't know where to look. Explain the common hiding spots (theme.liquid, snippets/, sections/, assets/) and mention Ghost Code scans all 8 surfaces including ones merchants miss (translations, metafields, redirects).                                  |
+| [Can leftover app code be detected in our theme?](https://community.shopify.com/t/can-leftover-app-code-be-detected-in-our-theme/164034)                                     | The title IS Ghost Code's value prop. Answer: yes, by searching for app-specific patterns — scripts, render/include statements, CSS, tracking pixels. Mention you built a tool that does this automatically with 100+ app signatures.                                |
+| [URGENT: Old app code still running after uninstall](https://community.shopify.com/t/urgent-old-app-code-still-running-after-uninstall/403717/3)                             | Highest-severity case — an uninstalled app was still routing live traffic. This validates "Your store is running things you didn't install." Respond with empathy and concrete steps. Mention Ghost Code can detect these kinds of orphaned scripts.                 |
+| [How to remove left-over code from uninstalled apps?](https://community.shopify.com/t/how-to-remove-left-over-code-from-uninstalled-apps/250058/1)                           | Classic thread. The current advice is "contact the developer." Add the manual audit steps, then mention Ghost Code for merchants who've installed/uninstalled many apps.                                                                                             |
+| [Cleaning up old app code](https://community.shopify.com/t/cleaning-up-old-app-code/333196)                                                                                  | Merchant knows they have the problem but doesn't know the scope. Explain that code hides in more places than theme.liquid — settings, translations, metafields. Ghost Code finds it all.                                                                             |
+| [How can I remove unused code from uninstalled apps?](https://community.shopify.com/t/how-can-i-remove-unused-code-from-uninstalled-apps/238921)                             | Similar to above. Lead with the manual approach, then position Ghost Code as the automated version.                                                                                                                                                                  |
 
 ### Tier 2: Speed/performance threads where orphaned code is a likely cause
 
-| Thread | Angle |
-|---|---|
-| [Site speed dropped from 52 to 36](https://community.shopify.com/c/site-speed/site-speed-dropped-from-a-52-to-a-36/td-p/1682186) | Speed drop threads get lots of traffic. Don't lead with Ghost Code — lead with "one common cause merchants miss is leftover code from apps you've uninstalled." Offer the manual check approach and mention Ghost Code for a thorough audit. |
-| [Where can I find codes added to my theme by previously downloaded apps?](https://community.shopify.com/c/site-speed/where-can-i-find-the-codes-that-have-been-added-to-my-theme-by/td-p/1674326) | Merchant is in the "Site Speed" category and explicitly asking about app code in their theme. Perfect fit. |
-| [Where to remove added codes from apps I have downloaded?](https://community.shopify.com/c/site-speed/where-to-remove-the-added-codes-to-the-page-by-apps-i-have/td-p/1703975) | Same angle — merchant knows apps added code, doesn't know where to find it all. |
-| [Left over code from app](https://community.shopify.com/c/site-speed/left-over-code-from-app/td-p/1581837) | Posted in the Site Speed category — merchant connecting orphaned code to performance. |
+| Thread                                                                                                                                                                                            | Angle                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Site speed dropped from 52 to 36](https://community.shopify.com/c/site-speed/site-speed-dropped-from-a-52-to-a-36/td-p/1682186)                                                                  | Speed drop threads get lots of traffic. Don't lead with Ghost Code — lead with "one common cause merchants miss is leftover code from apps you've uninstalled." Offer the manual check approach and mention Ghost Code for a thorough audit. |
+| [Where can I find codes added to my theme by previously downloaded apps?](https://community.shopify.com/c/site-speed/where-can-i-find-the-codes-that-have-been-added-to-my-theme-by/td-p/1674326) | Merchant is in the "Site Speed" category and explicitly asking about app code in their theme. Perfect fit.                                                                                                                                   |
+| [Where to remove added codes from apps I have downloaded?](https://community.shopify.com/c/site-speed/where-to-remove-the-added-codes-to-the-page-by-apps-i-have/td-p/1703975)                    | Same angle — merchant knows apps added code, doesn't know where to find it all.                                                                                                                                                              |
+| [Left over code from app](https://community.shopify.com/c/site-speed/left-over-code-from-app/td-p/1581837)                                                                                        | Posted in the Site Speed category — merchant connecting orphaned code to performance.                                                                                                                                                        |
 
 ### Tier 3: Liquid error threads caused by orphaned snippets
 
-| Thread | Angle |
-|---|---|
-| [Liquid error: Could not find asset snippets/wlm-head](https://community.shopify.com/c/shopify-scripts/how-to-remove-liquid-error-snippets-wlm-head-line-16-could-not/td-p/1969007) | App was uninstalled but left a render tag pointing to a deleted snippet. Explain the fix (remove the render/include line) and mention Ghost Code detects these broken references automatically. |
-| [Liquid error: Could not find asset snippets/opinew_review_stars](https://community.shopify.com/c/technical-q-a/liquid-error-could-not-find-asset-snippets-opinew-review-stars/td-p/1777555) | Same pattern — Opinew app uninstalled, snippet reference remains. |
-| [How to remove Liquid error: Could not find asset snippets/lookbooks-app.liquid](https://community.shopify.com/c/Shopify-Design/Liquid-error-Could-not-find-asset-snippets-lookbooks-app-liquid/td-p/308060) | Lookbooks app — same orphaned snippet pattern. |
-| [How to remove leftover code from uninstalled Rivo app?](https://community.shopify.com/t/how-to-remove-leftover-code-from-uninstalled-rivo-app/285737) | App-specific cleanup request. Respond with how to find Rivo's code patterns, mention Ghost Code recognizes Rivo by signature. |
+| Thread                                                                                                                                                                                                       | Angle                                                                                                                                                                                           |
+| ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [Liquid error: Could not find asset snippets/wlm-head](https://community.shopify.com/c/shopify-scripts/how-to-remove-liquid-error-snippets-wlm-head-line-16-could-not/td-p/1969007)                          | App was uninstalled but left a render tag pointing to a deleted snippet. Explain the fix (remove the render/include line) and mention Ghost Code detects these broken references automatically. |
+| [Liquid error: Could not find asset snippets/opinew_review_stars](https://community.shopify.com/c/technical-q-a/liquid-error-could-not-find-asset-snippets-opinew-review-stars/td-p/1777555)                 | Same pattern — Opinew app uninstalled, snippet reference remains.                                                                                                                               |
+| [How to remove Liquid error: Could not find asset snippets/lookbooks-app.liquid](https://community.shopify.com/c/Shopify-Design/Liquid-error-Could-not-find-asset-snippets-lookbooks-app-liquid/td-p/308060) | Lookbooks app — same orphaned snippet pattern.                                                                                                                                                  |
+| [How to remove leftover code from uninstalled Rivo app?](https://community.shopify.com/t/how-to-remove-leftover-code-from-uninstalled-rivo-app/285737)                                                       | App-specific cleanup request. Respond with how to find Rivo's code patterns, mention Ghost Code recognizes Rivo by signature.                                                                   |
 
 ### Response Guidelines
 
@@ -148,16 +148,16 @@ High-intent Shopify Community threads where a helpful response (with a natural G
 
 ### Current listing (as submitted)
 
-| Field | Current Value | Assessment |
-|---|---|---|
-| **App name** | Ghost Code | Misses a keyword opportunity. 30 char limit — "Ghost Code" is only 10 chars. |
-| **Subtitle** | "Find and remove leftover app code slowing down your theme" | Good — problem-focused, includes "leftover app code" and "theme." 57 chars. |
-| **Keywords (5 slots)** | theme cleanup, orphaned code, theme speed, app cleanup, theme audit | Solid mix. See recommendations below. |
-| **Description** | Option A from listing doc (462/500 chars) | Strong. Covers scan scope, app signatures, file/line attribution, export. |
-| **Features** | 5 items | Reviewed in listing doc — good coverage. |
-| **Category** | Site optimization > Other | Best available fit. No "theme audit" category exists. |
-| **SEO title** | Set (unknown exact text) | Need to verify — should include primary keyword. |
-| **Meta description** | Set (unknown exact text) | Need to verify — should be benefit-focused with keywords. |
+| Field                  | Current Value                                                       | Assessment                                                                   |
+| ---------------------- | ------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| **App name**           | Ghost Code                                                          | Misses a keyword opportunity. 30 char limit — "Ghost Code" is only 10 chars. |
+| **Subtitle**           | "Find and remove leftover app code slowing down your theme"         | Good — problem-focused, includes "leftover app code" and "theme." 57 chars.  |
+| **Keywords (5 slots)** | theme cleanup, orphaned code, theme speed, app cleanup, theme audit | Solid mix. See recommendations below.                                        |
+| **Description**        | Option A from listing doc (462/500 chars)                           | Strong. Covers scan scope, app signatures, file/line attribution, export.    |
+| **Features**           | 5 items                                                             | Reviewed in listing doc — good coverage.                                     |
+| **Category**           | Site optimization > Other                                           | Best available fit. No "theme audit" category exists.                        |
+| **SEO title**          | Set (unknown exact text)                                            | Need to verify — should include primary keyword.                             |
+| **Meta description**   | Set (unknown exact text)                                            | Need to verify — should be benefit-focused with keywords.                    |
 
 ### Recommendations
 
@@ -173,6 +173,7 @@ Shopify's AI flagged "Ghost Code" as potentially generic (session 25 handoff not
 **Risk:** Shopify may not allow changing the name after approval. If you can update it before the review decision, do it. If not, note it for future iteration.
 
 **Options:**
+
 - A) "Ghost Code: Theme Audit" — positions the app clearly, "theme audit" is a keyword
 - B) "Ghost Code - Theme Cleanup" — more action-oriented, "theme cleanup" is your #1 keyword
 - C) "Ghost Code" (keep as-is) — cleaner brand, but misses the SEO opportunity
@@ -184,6 +185,7 @@ Shopify's AI flagged "Ghost Code" as potentially generic (session 25 handoff not
 **Recommendation:** Consider swapping "theme speed" for "leftover code" or "uninstall cleanup." Merchants searching "theme speed" are looking for speed optimization apps (Hyperspeed, Boostify) — not cleanup tools. Your subtitle already contains the speed angle. Use the keyword slot for a term where Ghost Code is the direct answer.
 
 **Suggested 5:**
+
 1. theme cleanup (keep — your #1 term)
 2. orphaned code (keep — exact problem language)
 3. leftover code (swap in — merchants use this exact phrase in forums)
@@ -195,9 +197,11 @@ Shopify's AI flagged "Ghost Code" as potentially generic (session 25 handoff not
 The current description (Option A) is strong. One tweak: lead with the pain, not the feature. The current opening is "Every app you uninstall can leave code behind" — good. But consider making the first line even more visceral:
 
 **Current (462 chars):**
+
 > Every app you uninstall can leave code behind — scripts, styles, snippets, SEO tags, tracking pixels, orphaned metafields, and more. Ghost Code runs 26 checks across your theme files, settings, translations, and store data to find it all. It recognizes 100+ apps by signature and tells you exactly which app left each fragment, in which file, at which line. Track your theme health score over time, compare scans to see progress, and export findings as CSV or JSON.
 
 **PAS rewrite (approved, 493 chars):**
+
 > Every app you uninstall leaves code behind. Scripts, styles, tracking pixels, SEO tags, and metadata buried across your theme. You can't see it, but it's slowing your pages, conflicting with your SEO, and firing requests to services you stopped using. Cleaning it up manually means searching file by file, if you even know where to look. Ghost Code scans 8 surfaces in your theme with 26 checks and attributes every fragment to the app that left it, with file, line, and code snippet. First scan is free.
 
 Update in Partner Dashboard alongside the app name change (GC-fh0).
@@ -227,9 +231,11 @@ Not currently set. A demo store showing Ghost Code results on a real theme would
 **UI:** Non-blocking banner at the top of the dashboard, dismissable. Shows once per shop.
 
 **Copy:**
+
 > Ghost Code found {findingCount} issues in your theme. If this was helpful, we'd love a quick review on the App Store. [Leave a Review] [Dismiss]
 
 **Implementation notes:**
+
 - Track `hasSeenReviewPrompt` in shop record (boolean, default false)
 - Only show if `status === 'COMPLETED'` and `findingCount >= 3` and `!hasSeenReviewPrompt`
 - "Leave a Review" links to the app's App Store review page
@@ -265,6 +271,7 @@ Instead of first-scan, trigger after the merchant's **3rd completed scan** (they
 **Target keywords:** leftover app code shopify, shopify theme slow, uninstalled app code
 
 **Outline:**
+
 1. The problem: what happens when you uninstall a Shopify app (code stays)
 2. Where the code hides (theme.liquid, snippets, assets, but also translations, metafields, redirects)
 3. Real examples from community forums (anonymized)
@@ -280,6 +287,7 @@ Instead of first-scan, trigger after the merchant's **3rd completed scan** (they
 **Target keywords:** remove ghost code shopify, clean shopify theme, remove old app code
 
 **Outline:**
+
 1. What is "ghost code" (define the term)
 2. Step-by-step manual audit (with screenshots)
 3. Common app patterns to search for (BOLD, Loox, Judge.me, Stamped, etc.)
@@ -298,32 +306,88 @@ Instead of first-scan, trigger after the merchant's **3rd completed scan** (they
 
 ## 7. Post-Approval Launch Sequence
 
-| Timing | Action | Cost |
-|---|---|---|
-| Day 1 | Publish launch post in Shopify Community "Show Your App" | $0 |
-| Day 1 | Respond to 2-3 highest-traffic forum threads (Tier 1) | $0 |
-| Day 2-3 | Respond to 2-3 more threads (space them out) | $0 |
-| Week 1 | Publish blog post #1 | $0 |
-| Week 1 | Record and publish Loom video | $0 |
-| Week 2 | Activate $100 App Store ad credit — search ads on "theme cleanup", "app cleanup", "orphaned code" at $5/day | $0 (credit) |
-| Week 2 | Publish blog post #2 | $0 |
-| Week 3-4 | Respond to any new forum threads that appear | $0 |
-| Month 2 | If data exists: publish "We scanned X stores and found..." data report | $0 |
-| Month 3 | If 50+ installs + 5+ reviews: apply for Built for Shopify badge | $0 |
-| Month 4+ | Consider affiliate program (25% rev share) if PMF confirmed | Rev share only |
+| Timing   | Action                                                                                                      | Cost           |
+| -------- | ----------------------------------------------------------------------------------------------------------- | -------------- |
+| Day 1    | Publish launch post in Shopify Community "Show Your App"                                                    | $0             |
+| Day 1    | Respond to 2-3 highest-traffic forum threads (Tier 1)                                                       | $0             |
+| Day 2-3  | Respond to 2-3 more threads (space them out)                                                                | $0             |
+| Week 1   | Publish blog post #1                                                                                        | $0             |
+| Week 1   | Record and publish Loom video                                                                               | $0             |
+| Week 2   | Activate $100 App Store ad credit — search ads on "theme cleanup", "app cleanup", "orphaned code" at $5/day | $0 (credit)    |
+| Week 2   | Publish blog post #2                                                                                        | $0             |
+| Week 3-4 | Respond to any new forum threads that appear                                                                | $0             |
+| Month 2  | If data exists: publish "We scanned X stores and found..." data report                                      | $0             |
+| Month 3  | If 50+ installs + 5+ reviews: apply for Built for Shopify badge                                             | $0             |
+| Month 4+ | Consider affiliate program (25% rev share) if PMF confirmed                                                 | Rev share only |
 
 ---
 
 ## 8. Metrics to Track
 
-| Metric | Target | How to measure |
-|---|---|---|
-| App Store impressions | Baseline | Partner Dashboard analytics |
-| Install rate (impressions -> installs) | >5% | Partner Dashboard |
-| Trial-to-paid conversion | >25% | DB query (shops with active subscription / total installs) |
-| First-scan completion rate | >80% | DB query (completed scans / total installs) |
-| 30-day retention | >50% | DB query (shops still installed after 30 days) |
-| Reviews | 5+ in first 3 months | App Store listing |
-| Average rating | >4.5 stars | App Store listing |
-| Monthly churn | <5% | DB query |
-| Ad CPI (cost per install) | <$5 | App Store ads dashboard |
+| Metric                                 | Target               | How to measure                                             |
+| -------------------------------------- | -------------------- | ---------------------------------------------------------- |
+| App Store impressions                  | Baseline             | Partner Dashboard analytics                                |
+| Install rate (impressions -> installs) | >5%                  | Partner Dashboard                                          |
+| Trial-to-paid conversion               | >25%                 | DB query (shops with active subscription / total installs) |
+| First-scan completion rate             | >80%                 | DB query (completed scans / total installs)                |
+| 30-day retention                       | >50%                 | DB query (shops still installed after 30 days)             |
+| Reviews                                | 5+ in first 3 months | App Store listing                                          |
+| Average rating                         | >4.5 stars           | App Store listing                                          |
+| Monthly churn                          | <5%                  | DB query                                                   |
+| Ad CPI (cost per install)              | <$5                  | App Store ads dashboard                                    |
+
+---
+
+## 6. Second Community Pass (2026-07-08)
+
+Fresh sweep of threads from the last ~12 months (excludes Section 1's threads). Reddit blocks automated research — the confirmed finds below are forum threads; do a 10-minute manual Reddit search with the query strings in 6c before posting there.
+
+### 6a. New threads to respond to (priority order)
+
+| #   | Thread                                                                                                                                                                                         | Date              | Angle                                                                                                                                                       |
+| --- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | [Cleaning leftover app code for a faster Shopify store](https://community.shopify.com/t/cleaning-leftover-app-code-for-a-faster-shopify-store/632348)                                          | Jun 2026          | Freshest match; effectively unanswered. Validate OP's leftover-code suspicion, explain artifact types, offer scan.                                          |
+| 2   | [Here's how I remove code from old apps using Sidekick](https://community.shopify.com/t/heres-how-i-remove-code-from-old-apps-on-shopify-using-side-kick/608042)                               | Apr 2026          | Merchant hand-rolling detection with Sidekick prompts. Affirm, note limits (no structured report / file-line specificity), offer purpose-built alternative. |
+| 3   | [Need help improving store speed: remove leftover code & unused JS](https://community.shopify.com/t/need-help-improving-store-speed-remove-leftover-code-amp-reduce-unused-javascript/385236)  | Jan 2025          | LCP 7s; Shopify support said "remove leftover app code" with no specifics; Veda/EComposer named.                                                            |
+| 4   | [How can I remove unused code from uninstalled apps?](https://community.shopify.com/c/shopify-discussions/how-can-i-remove-unused-code-from-uninstalled-apps/td-p/2170385)                     | 2023, still ranks | Shopify moderator answered "there is no app that does the work of clearing out residual code." Correct the record, citing the mod.                          |
+| 5   | [Question regarding unwanted codes after uninstalling](https://community.shopify.com/t/question-regarding-unwanted-codes-after-uninstalling/373819)                                            | Nov 2024          | Effectively unanswered 1-reply stub; multiple apps installed/removed, store slower.                                                                         |
+| 6   | [Multiple meta titles/descriptions from removed SEO app](https://community.shopify.com/t/multiple-meta-titles-and-description-due-to-remaining-code-from-seo-app/354463)                       | Sep 2024          | DUPLICATE_META shipped + v1.3 title/canonical hook.                                                                                                         |
+| 7   | [Liquid error: could not find asset snippets/preloaderapp.liquid](https://community.shopify.com/t/liquid-error-layout-theme-line-309-could-not-find-asset-snippets-preloaderapp-liquid/381189) | Dec 2024          | Fresh instance of the evergreen error-string pattern (Section 1 Tier 3 playbook applies).                                                                   |
+| 8   | [Tips to update theme and remove ALL app code](https://community.shopify.com/t/tips-to-update-theme-and-remove-all-app-code/323894)                                                            | May 2024          | 9-year store, "hundreds of apps" — pre-migration audit angle: scan + export report before rebuilding.                                                       |
+| 9   | [Cleaning up old app code](https://community.shopify.com/t/cleaning-up-old-app-code/2627700)                                                                                                   | Jun 2024          | Only reply suggested reverting whole theme files; add the surgical alternative.                                                                             |
+| 10  | [Liquid error: icon-cart-empty after PageFly uninstall](https://community.shopify.com/c/technical-q-a/problem-with-liquid-error-could-not-find-asset-snippets-icon/td-p/2070792)               | Evergreen         | Accepted answer is "comment it out" — position safe removal + dangling-render detection.                                                                    |
+
+Content-material (not a reply target): [community.shopify.dev — apps can't clean theme files on uninstall because the API session is already revoked](https://community.shopify.dev/t/how-to-remove-theme-files-on-app-uninstall/21617) (Aug 2025) — authoritative root-cause explanation for blog/FAQ copy.
+
+### 6b. Early-adopter offer (Managed Pricing)
+
+- Mechanism: Partner Dashboard → search store → **Discount → Create** → Ghost Code → **100% off × 3 billing cycles**. Auto-expires; billing starts month 4. Apply while merchant is still in the 7-day trial so charges 1–3 are the $0 ones. Alternative: per-store trial extension (+~83 days). Requires "Manage credits and refunds" permission.
+- Framing: "early tester with a direct line to the founder — help shape the product." NEVER tie the free months to a review (prohibited: incentivized reviews → review removal / ranking demotion / delisting). Review ask is separate, neutral-language, later — after a value moment or support exchange, via the in-app WriteReviewModal CTA.
+- Cap: pre-decide (~20–30 stores). Track cohort: store domain, source thread, discount date, feedback received.
+- Analytics note: BillingEvent `amount` records list price, not discounted $0 — conversion revenue slightly overstated during promo.
+
+### 6c. Reddit posture
+
+- r/shopify (~200k): very strict on self-promotion; app devs get banned for product mentions even when on-topic. Forum-first strategy; on Reddit build karma with non-promotional help, disclose affiliation, mention tool once at most when directly asked.
+- r/ShopifyeCommerce (~40k): slightly more permissive, same helpful-first rules.
+- Manual search queries: `shopify "leftover code" uninstalled app`, `shopify slow after uninstalling apps`, `shopify "liquid error" "could not find asset"`, `shopify SEO broken after removing app`.
+- community.shopify.com has no anti-promotion rules and an Accepted Solution mechanic — it remains the primary GTM surface.
+
+### 6d. Competitive landscape shift (verified 2026-07-08)
+
+| Competitor                                                     | Status                                     | Notes                                                                                                                                                                                                                                                        |
+| -------------------------------------------------------------- | ------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **GhostSweep** (apps.shopify.com/ghost-sweep)                  | Launched **2026-06-09**, $20/mo, 0 reviews | Timi Studio (Shenzhen). Subtitle is literally "Ghost Code Scanner". Structural detection (dead links / orphan resources / orphan files) vs our signature matching; has metafield cleanup, PDF/JSON export, scan comparison, Safe/Caution/Danger risk labels. |
+| **ghostcode.app** (standalone SaaS, NOT App Store)             | Live; no Wayback history (very new)        | Claims "150+ signatures from 100+ known apps", confidence scoring, **one-click removal** on Pro. Direct name collision.                                                                                                                                      |
+| **Store Health** (apps.shopify.com/store-scanner-health-check) | Feb 2026, $0/$19.99, 7 reviews             | Broad store-audit dashboard; scripts/risk category partially overlaps, not signature-matched.                                                                                                                                                                |
+| **Cleanify Code**                                              | **Delisted**                               | Former only competitor; confirmed gone.                                                                                                                                                                                                                      |
+
+Implications: (1) market validated — two fast-follows within ~6 weeks of our launch; (2) the review race is the moat race — first to meaningful review count wins default-choice status, raising the urgency of the early-adopter push; (3) both fast-follows ride the "Ghost Code" name — consider trademark/passing-off review and a Shopify report on the GhostSweep subtitle; (4) both competitors ship removal or risk-classification — revisit the detection-only stance earlier than the 500-install trigger, possibly via generated per-finding removal instructions (no theme writes).
+
+### 6e. New detector / signature candidates from this pass
+
+- **JSON template app-block references (OS 2.0)** — broken `"type"` block references left inside `templates/*.json` after uninstall; distinct from orphaned section FILES. High priority: OS 2.0 is default for all new themes.
+- **GDPR/consent-banner app signatures** (CookieYes, Consentmo, GDPR Bear) — "cookie banner still showing after uninstall" threads; compliance angle.
+- **ScriptTag education panel** — merchants blame theme code for request-time ScriptTag injections a theme scan can't see; add "what a theme scan can/can't see" copy to the report to protect trust (webhooks/discount objects same story).
+- **"Add Section" picker pollution framing** — already detected (orphaned sections); name the merchant-visible symptom in finding copy.
+- Signature expansion from thread mentions: Shogun, Beeketing (defunct, huge legacy base), Privy, Geolizr, ShopLift, YMQ, Yoast, Loox, Judge.me, Globo Pre-Order, Gorgias, Tidio, Langify, EmbedSocial; verify against current 94.
