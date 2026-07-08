@@ -1,90 +1,82 @@
-# Session 8 Handoff: CI Cleanup + Infra Backlog
+# Session 22 Handoff: Review-Fix Sprint (Batches 1+2 shipped)
 
-**Date**: 2026-03-11
-**Project**: ~/shopify-ghost-code
-**Epic**: shopify-ghost-code-6gh (Ghost Code MVP)
-**Last commit**: `a6d8814` (chore: run prettier formatting)
-
----
+**Date**: 2026-07-07
+**Project**: ~/shopify/ghost-code-app
+**Prod state**: main `33ad905` deployed green (CI ✓ Deploy ✓ smoke ✓, incl. `✓ deployed SHA matches`)
 
 ## What Got Done
 
-1. **Committed prior session's uncommitted changes** — already done by session 7's final commits (8e976fc, 257c20d)
-2. **Quick wins (3 beads closed)**: f49 (Date bug), snq (comment fix), e3v (scheduledScan test gap)
-3. **GitHub repo created**: https://github.com/natewhitley-cloud/shopify-ghost-code.git — bead bvh closed
-4. **CI lint cleanup**: Eliminated 114 `no-explicit-any` errors across 19 test files, 112 import ordering warnings, 6 misc errors (unused vars/escapes), Prettier formatting on 20 files
-5. **Infra backlog created**: 5 P0 beads (bvh ✓, oxp, 7mt, 0ba, eis) with dependency chain
-
----
+- **/review** of session-20/21 billing work → 8 findings → 3 logical batches
+- **Batch 1 (GC-4oc, CLOSED)**: one-shot Admin-API retry in `reconcileShopPlan` gated on
+  `recordEvent: true` (the redirect fast-path marker) so conversion BillingEvents survive a
+  transient Shopify error; + 3 stale-comment fixes (`shopify.server.ts`, `billing.server.ts`);
+  - direct unit tests for `determineBillingEventType`/`PLAN_AMOUNTS` (coverage now survives
+    future webhook-handler deletion). Audit: 0 bugs, 7/7 probes pass. Suite 1726 → 1752.
+- **Batch 2 (GC-59t, CLOSED)**: smoke-gate SHA pinning via build-time `.deploy-sha` file
+  (deploy.yml writes $GITHUB_SHA before `railway up` → Dockerfile copies with touch-guard →
+  `/health/deep` reports `deployedSha` → smoke compares vs EXPECTED_SHA, **warn-only**).
+  Audit caught 1 real bug pre-deploy: `.deploy-sha` was gitignored and `railway up` respects
+  .gitignore → the file would never reach the build context (permanent invisible no-op). Fixed
+  (`4650fc4`). Suite → 1754. **Soft-launch observed `✓ deployed SHA matches` on first deploy.**
+- **/retro** done: 7 learnings persisted (implementer/tester/scaffolder) + 3 cross-agent notes;
+  retro-history appended; global memory updated (session file, audit-pattern 7→8 bugs,
+  cwd-drift lesson).
 
 ## Key Decisions
 
-1. **Bulk `any` elimination via implementer agent** — dispatched single agent for all 114 errors rather than fixing manually. Completed in ~5 min, zero test breakage. Confirmed this is the right pattern for mechanical bulk fixes.
-2. **Editor configs stay untracked** — `.cursor/`, `.gemini/`, `.mcp.json` are not committed. Should add to `.gitignore` if they keep appearing.
-3. **Deploy workflow left failing** — intentional until Railway secrets are configured. Not worth gating with conditional logic yet.
+- **Retry keys off `recordEvent: true`, no separate retryOnError option** — recordEvent IS the
+  fast-path semantic marker; a second flag would be redundant (rejected: loader-side retry).
+- **SHA pin shipped warn-only despite passing everything locally** — per the S20 soft-launch
+  rule; flip condition (≥1 green observation) met on the FIRST deploy, so the flip is ready now.
+- **Batch 3 filed as GC-dda, dependency-blocked on GC-89k** rather than done opportunistically.
+- **One combined push for both batches** — the SHA soft-launch needed a real deploy to observe
+  anyway; a single rollover gave the billing fix + the observation.
 
----
+## Patterns & Discoveries
 
-## Uncommitted Changes
+- **`railway up` respects `.gitignore`** (has `--no-gitignore` opt-out) — CI-injected
+  build-context files must NOT be gitignored. In scaffolder learnings + global memory.
+- **Orchestrator cwd drift incident**: shell cwd silently sat inside an agent worktree; a merge
+  no-op'd ("Already up to date"), the gate ran in the wrong tree, two learnings appends landed
+  in the worktree copy. Caught ONLY by the next agent's brief tripwire ("verify commit reachable
+  after merging main, else STOP"). Recovery: re-merge from canonical repo, re-append learnings,
+  re-run gate. Rules now: `cd <repo> && pwd` in the same invocation as any repo mutation;
+  verify merges with `git branch --contains <sha>`; keep tripwires in every dispatch brief.
+- First Batch-2 audit dispatch stalled (600s watchdog, zero work done — worktree still at
+  session-start HEAD). Disk-state check before re-dispatch avoided duplicate/lost work.
+  SendMessage was unavailable this session; fresh re-dispatch was the resume path.
 
-- `memory/team/retro-history.md` — updated with session 8 retro entry
-- No code changes uncommitted.
+## In-Progress Work
 
----
+None — clean stop. No uncommitted app code, no stashes, no in_progress beads.
 
-## Blocked Work (5 beads)
+## Blocked Work
 
-All blocked on Railway setup (oxp):
-
-```
-oxp: Set up Railway project with PostgreSQL  ← READY but hitting "Team not found" error
- ├→ 7mt: Configure Railway env vars  ← blocked on oxp
- │   └→ eis: Set up Inngest Cloud  ← blocked on 7mt
- ├→ .66: Update shopify.app.toml  ← blocked on oxp
- │   └→ k82: Apply Prisma migration  ← blocked on .66
- └→ 0ba: Configure Shopify Partners app  ← blocked on oxp
-```
-
----
+- **GC-dda** (Batch 3: delete dead `webhooks.app.subscriptions.update` handler + tests + toml
+  breadcrumb): blocked on GC-89k. Zero coverage loss when it runs (direct tests landed in eb5277c).
+- **GC-fir** (Partner API migration): still blocked on 2026-07 RC → GA.
 
 ## Open Questions
 
-- **Railway "Team not found" error**: When provisioning PostgreSQL in Railway dashboard, getting "Team not found". Likely causes: (a) need paid Hobby plan ($5/mo), (b) project created under wrong context (team vs personal), (c) new account needs billing setup. User paused to investigate.
-
----
-
-## Cumulative Project State
-
-- **97 beads**: 85 closed, 12 open (5 blocked, 7 ready)
-- **473 tests** across 24 test files
-- **CI status**: lint ✓, format ✓, tests ✓, deploy ✗ (expected — no Railway secrets)
-- **App signatures**: 54 known apps
-
----
+None blocking. GC-89k's two QA gates are decidable only by running them on a store (Nathan).
 
 ## Recommended Next Steps
 
-1. **Resolve Railway "Team not found"** — check billing/plan status, try CLI if dashboard fails. This unblocks the entire deploy chain (5 beads).
-2. **Once Railway is up**: `bd update oxp --status=in_progress`, get production URL, then cascade through .66 → k82 → 7mt → eis → 0ba
-3. **After deploy chain**: Sentry (.67), then perf audit (.40) and app review package (.39)
-4. **Code work available now** (not blocked on Railway): rb3 (active upsell), sg5 (auto-scan on uninstall)
-
----
+1. **GC-89k (Nathan, ~15 min)**: welcome-link route under `/app` + live upgrade test on a store
+   → close GC-89k → GC-dda unblocks. Code-side note: `_index/route.tsx:11` preserves
+   searchParams on `/` → `/app` redirect, so `plan_handle` survives a root landing.
+2. **GC-7ml (agent-ready)**: flip smoke SHA check to blocking — condition met (run 28916107597).
+   ~3-line smoke.mjs change + deploy.yml comment; keep warn-only when EXPECTED_SHA is unset.
+3. **/curate before next sprint**: tester (53) and implementer (52) learnings past the 50-line
+   warning; tester's pre-commit-eslint entry is a flagged /promote candidate.
+4. **GC-rcj + GC-fh0 (Nathan)**: Partner Dashboard listing copy — fully written in the beads.
 
 ## Risks & Warnings
 
-- **Deploy workflow runs on every push to main** and will fail until RAILWAY_TOKEN and RAILWAY_SERVICE_ID secrets are set. This is noisy but not harmful.
-- **21 lint warnings remain** (all import/order in test files where imports must follow vi.mock). These are structural to the Vitest mock pattern and won't cause CI failure.
-- **`.cursor/`, `.gemini/`, `.mcp.json` are untracked** — consider adding to `.gitignore` to stop them appearing in `git status`.
-
----
-
-## Team State
-
-| Member      | Lines | Status | Notes                                    |
-| ----------- | ----- | ------ | ---------------------------------------- |
-| implementer | 48    | active | Dispatched this session for bulk any fix |
-| tester      | 43    | steady | No changes                               |
-| scaffolder  | 30    | steady | No changes                               |
-| reviewer    | 27    | steady | No changes                               |
-| debugger    | 24    | cold   | Never dispatched                         |
+- Every push to main = full prod deploy; smoke gate blocks but does NOT roll back.
+- SHA check is still warn-only until GC-7ml — the rollover false-green gap exists until then.
+- Concurrent-double-redirect BillingEvent race (two simultaneous fast-path reconciles) noted by
+  the Batch-1 audit as a theoretical DB-level double-record; needs DB locking; deliberately not
+  beaded (low likelihood/impact).
+- `.claude/worktrees/` had 5 leftover agent worktrees at session end (all merged; one locked
+  from the stalled dispatch) — removed at wrap; if any survive, `git worktree remove` them.

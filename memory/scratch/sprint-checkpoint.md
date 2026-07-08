@@ -1,38 +1,53 @@
-# Sprint Checkpoint — 2026-06-15 (session 8)
+# Sprint checkpoint — session 22, review-fix batches (2026-07-07)
 
-**Focus:** GC-9vj → Cluster 3 (observability) → Cluster 4 (test backfill). Sequence as needed.
+## Batch 1 — DONE (all green on real main)
 
-## Phase 1 context — LOADED
-- team.yaml: 5 members (scaffolder, implementer, tester, reviewer, debugger). All sonnet.
-- Learnings read for all 5. Implementer has GC-b34 per-line→full-content conversion learnings (offset-range dedup, multi-line regression). Reviewer has live-exec-regex learning. Tester has detector-split double-count fixture learning.
-- Epic state: GC-zse, shopify-ghost-code-6gh exist (not central to this sprint).
-- main @ 8fda049, clean (only tackline session-memory churn).
+- implementer merged as cabf9f2 (bf26993); tester merged as c0fb8e9 (eb5277c, +23 tests, audit
+  found ZERO bugs, all 7 probes pass). Gate on real main: tsc + 1752/1752 + build PASS.
+- GC-4oc CLOSED. Learnings persisted (implementer ×2, tester ×2, cross-notes both ways).
+- INCIDENT (resolved): orchestrator cwd had silently drifted into the tester's worktree — first
+  "merge" of eb5277c was a no-op ("Already up to date" in its own tree) and the gate ran there,
+  not on main. Caught by scaffolder's brief tripwire. Lesson saved to global memory
+  (orchestrator-cwd-drifts-into-agent-worktrees). ALWAYS `cd <repo> && pwd` in the same
+  invocation as merges/appends.
+- Local main = c0fb8e9, 4 commits ahead of origin. PUSH DECISION WITH NATHAN: recommend one
+  deploy after Batch 2 merges (SHA-check soft-launch needs a real deploy to observe anyway).
 
-## Scoping verification (done)
-- GC-9vj: detectGhostSections (L318), detectGhostCanonical (L1213), detectGhostAjax (L2034) — STILL per-line. OPEN.
-- OPS-3 + SEC-3: no INNGEST_SIGNING_KEY/EVENT_KEY guard, no explicit signingKey in serve(). OPEN.
-- OPS-4: entry.server.tsx has onError (console only), no handleError export, no captureException in routes/services. OPEN.
-- OPS-8: health.tsx static, no DB check. OPEN.
-- TST-2: ALREADY DONE (scan-theme.test.ts mocks all fetchers L46-111, via 6A/PR#1). DROPPED.
-- TST-3: scan-detail action + 3 model fns untested. OPEN.
-- TST-4: no tests/inngest/middleware.test.ts. OPEN.
-- TST-5: misleading test at gdpr-flow.test.ts L371; webhooks don't wrap deleteShopData. OPEN.
+## Batch 2 — GC-59t smoke-gate SHA pinning (scaffolder RUNNING in background, redo dispatch)
 
-## Dispatch plan (SERIAL — per project CLAUDE.md orchestrator rule)
-1. GC-9vj → implementer (+ reviewer live-exec verify → implementer fix if bug)
-2. OPS-3 + SEC-3 → debugger (+ reviewer security pass)
-3. OPS-4 + OPS-8 → implementer
-4. TST-5 → tester  [PRIORITIZED] — contract option (a): keep 5xx, assert propagation, rename test, +HMAC tests
-5. TST-3 → tester
-6. TST-4 → tester
+- First scaffolder dispatch correctly self-blocked on the missing-eb5277c tripwire (no changes);
+  re-dispatched fresh after the real merge. SendMessage unavailable in this session → fresh
+  dispatch was the resume path.
+- Assignee: scaffolder (owns .github/\*\*, Dockerfile; smoke.mjs + small health.deep loader
+  addition folded in for pipeline coherence). Then tester audit.
+- Root cause of prior failure (22d9d90, reverted in 3d4349f): read RAILWAY_GIT_COMMIT_SHA at
+  runtime — empty under `railway up` CLI deploys, hard-failed blocking gate.
+- Approach (per S20 memory + bead): workflow writes $GITHUB_SHA to a file before `railway up`;
+  Dockerfile build stage already COPY . . → copy file into runtime stage; health.deep reports it
+  (null-safe when absent, e.g. local dev); smoke compares vs EXPECTED_SHA=$GITHUB_SHA passed in
+  the smoke job — **WARN-ONLY (soft-launch)**, flip to blocking only after ≥1 real deploy observed
+  green (file follow-up bead for the flip).
+- Key facts: deploy.yml deploy job runs in railway CLI container (no Node); smoke job is separate
+  ubuntu-latest with Node. Dockerfile runtime stage lists explicit COPYs (must add the SHA file).
+  railway.toml healthcheckPath=/health unaffected. Check .dockerignore/.gitignore for the SHA file.
+- Trailers at dispatch: scaffolder@<git log -1 --format=%h -- memory/agents/scaffolder/learnings.md>.
+- Mark GC-59t in_progress at dispatch.
 
-## Status: SPRINT COMPLETE — all 6 tasks merged to main @ 97ced6b
-- GC-9vj (implementer+reviewer) → merged 09d770b, closed
-- GC-be2 OPS-3/SEC-3 (debugger) → merged 8e2cacd, closed
-- GC-c09 OPS-4/OPS-8 (implementer) → merged bdc4737, closed
-- GC-s14 TST-5 (tester) → merged adbda43, closed
-- GC-wex TST-3 (tester) → merged e42a973, closed
-- GC-f6w TST-4 (tester) → merged efdd577, closed
-- Learnings persisted (97ced6b). Suite 1442→1486 (+44). tsc clean. Nothing pushed (local only).
-- Follow-up filed: GC-jjb (detectGhostSections comment-skip parity, P2).
-- NOT pushed to remote (awaiting user). Recommend /retro next.
+## Batch 3 — gated on Nathan's manual QA (GC-89k gates); NOT sprintable
+
+- Delete dead webhooks.app.subscriptions.update handler + tests + toml breadcrumb after GC-89k closes.
+
+## ENDGAME (Nathan-approved 2026-07-07): after batch-2 audit returns
+
+1. Merge audit branch (cd-pinned + `git branch --contains <sha>` verify), apply/dispatch fixes if any
+2. Full gate on real main: tsc + vitest + npm run build
+3. PUSH to main (authorized — "pushed/committed" per Nathan) = prod deploy; watch gh run
+   (CI + Deploy + smoke) and confirm the GC-59t warn-only SHA line appears in the smoke log
+   (⚠ WARN expected on this first deploy OR ✓ match — either is a successful soft-launch
+   observation; a ✓ match means the flip-to-blocking bead can be actioned next session)
+4. File flip-to-blocking follow-up bead for GC-59t once observed; close GC-59t (soft-launch
+   shipped; flip is the follow-up)
+5. /retro then /handoff
+
+- Batch-2 audit agent note: first audit dispatch stalled (watchdog, zero work done, worktree
+  agent-aa525a49ac6720622 locked+abandoned at a7bb057 — clean up at wrap); retry running.

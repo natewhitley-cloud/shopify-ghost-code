@@ -251,6 +251,7 @@
 - Open follow-up: GC-jjb (detectGhostSections comment-skip parity). Owner-blocked unchanged: deploy retry, 4A (dev store), 7A (app handle).
 
 ## Retro: 2026-06-15 (session 9)
+
 - Tasks completed: 8 commits (2 fix, 2 docs, 2 chore, 1 test, 1 refactor); 11 beads closed (3 sprint, QLT-7, 5 pre-done dupes, CMP-3, 1 moot).
 - Fix rate: 25% — normal; low rework. One subagent crashed mid-task (socket error) — recovered by dispatching a fresh agent to finish from the partial on-disk state.
 - New learnings: implementer +3, tester +2, reviewer +1; 1 global memory (verify-findings-against-code-before-filing-beads).
@@ -261,24 +262,28 @@
 - implementer learnings at 50 lines (warning threshold) — run /curate next session.
 
 ## Retro: 2026-07-01 (session 12)
+
 - Tasks completed: 7 beads closed (GC-gmt/fjg/2tq/iji bugs + GC-403 handoff), 7 PRs merged (#8-#14)
 - New learnings: 0 to team files (bugs dispatched via general-purpose agents, not /sprint)
 - Pruned/archived: 0 (all 5 learnings files under 50-line cap)
 - Key insight: general-purpose agent dispatches bypass the team-learning loop — durable learnings from the 4 bug agents lived only in PR bodies. Captured as a feedback memory + proven offline prisma-migrate-diff recipe for the live-DB constraint.
 
 ## Retro: 2026-07-01 (session 13 — owner manual steps + cluster-15 pickups)
+
 - Tasks completed: 3 beads closed (GC-25u pricing-link, GC-vu9 protocol-relative scanner bug, GC-zkv finding-sort tests); 2 PRs merged (#15, #16); GC-o1a handoff closed; GC-664 deferred (owner call)
 - New learnings: 2 to debugger (protocol-relative `new URL()` drop; verify scope names vs docs), 1 to tester (coverage.include broadened) — harvested manually from general-purpose dispatches
 - Pruned/archived: 0 (tester at 48 lines — flag for /curate next session)
 - Key insight: the session-12 handoff's "CRITICAL pending migration" was already false — deploys are self-migrating (Docker CMD runs `prisma migrate deploy` on boot). Verify handoff risk claims against reality (`prisma migrate status`, prod introspection) before acting. Two general-purpose dispatch loops again bypassed the team-learning loop (recurring — see harvest-learnings memory).
 
 ## Retro: 2026-07-01 (session 14 — GC-a5o deploy hardening)
+
 - Tasks completed: 1 bead closed (GC-a5o / OPS-6); 1 PR merged (#17, main @ 358f79d)
 - New learnings: 2 to scaffolder (migrate deploy → Railway preDeployCommand not boot; removing boot-time prisma generate requires copying both .prisma AND @prisma/client) — harvested manually from a general-purpose dispatch (recurring gap — see harvest-learnings memory)
 - Pruned/archived: 0 (tester still at 48 lines — /curate still pending)
 - Key insight: deploys are now pre-deploy-migrating, not boot-migrating (GC-a5o inverted the session-13 model). The deploy that introduces preDeployCommand is itself its maiden run, so land such changes when `prisma migrate status` shows nothing pending. External /health can't distinguish deploys (old container answers 200 on new-deploy failure) — Railway dashboard is the source of truth.
 
 ## Retro: 2026-07-01 (session 15 — remaining deploy cluster + SIGTERM)
+
 - Tasks completed: 5 beads closed (GC-8gh SIGTERM graceful shutdown; GC-2d8 non-root USER + Dockerfile HEALTHCHECK; GC-29h .dockerignore hygiene; GC-irz index migration; GC-u9e review-CTA deep-link). 6 commits pushed to main (92aebb2..8c82cca), direct-to-main (no PRs).
 - Dispatch: /sprint with real team roles — scaffolder (GC-8gh/2d8/29h/irz), implementer (GC-u9e). FIRST session in 4 to route through the team-learning loop instead of general-purpose. 3 learnings persisted via the proper path (2 scaffolder, 1 implementer).
 - Commits: 4 fix, 1 perf, 1 chore. Zero rework/corrections — every change landed first try, all hooks green.
@@ -288,6 +293,7 @@
 - tester learnings still at 48 lines — flagged for /curate a 4th retro running; filed as a tracked bead this time (GC-q7a).
 
 ## Retro: 2026-07-01 (session 16 — GC-8uw worker offload + prod bug hunt)
+
 - Tasks: 3 beads closed (GC-8uw worker pool, GC-07t auth-loop guard, GC-jlk scope-check P1); 2 bugs filed (GC-07t, GC-jlk) then fixed same session. 14 commits (fix + perf + chore), all hooks green.
 - Dispatch: implementer via Agent (baseline harness, worker pool, session guard, scope fix) — 4 dispatches, all verified in orchestrator review. Learning loop honored (implementer +11 entries this session).
 - Key insight: orchestrator review caught 2 latent defects the agents' reflections missed — a broken `bench:scan` npm alias and an esbuild transitive-dep fragility. Running the deliverable + checking the diff (not trusting reflections) is load-bearing.
@@ -297,6 +303,7 @@
 - Learnings sizes: implementer 49, tester 48 — both nearing the 50 warning line; GC-q7a (tester curate) still open, implementer now also a candidate.
 
 ## Retro: 2026-07-01 (session 17 — dashboard perf cluster + beads DB anomaly)
+
 - Tasks: 2 beads implemented + shipped (GC-qk3 batch severity query ~18→1; GC-kde 60s per-shop theme-read TTL cache). 2 commits, pushed to origin, 1711 tests green. Beads NOT closed — see anomaly below.
 - Dispatch: 2 general-purpose Agent dispatches (serial), each reviewed against the actual diff before accepting. NOT /sprint, so team learnings were harvested manually this retro (implementer +1, tester +1 & refined the import/order entry).
 - Key insight (process win): orchestrator diff-review + the "cache only the read path" constraint given IN the dispatch prompt kept the caching agent off the security-validation (action) and cron (updatedAt) paths — the subagent's caller audit confirmed it. Specifying the constraint up front > catching it in review.
@@ -305,6 +312,7 @@
 - Learnings sizes: implementer 50, tester 49 — BOTH now at/over the 50 warning. /tend (curate) is overdue (GC-q7a tracks tester; implementer now also a candidate).
 
 ## Retro: 2026-07-02 (session 19 — automated post-deploy testing + GC-07t investigation)
+
 - Shipped: a Tier-3 post-deploy smoke gate (`/health/deep` probe + `scripts/smoke.mjs` + a blocking `smoke` CI job). 8 commits (3 fix, 3 docs, 1 feat, 1 ci). Verified GREEN in a real CI run.
 - Dispatch: 2 ad-hoc general-purpose Agent dispatches (smoke spike, BEAD-3 fix), each output re-verified by the orchestrator (ran the tests/typecheck/lint itself, not trusting the "8/8 pass" claim). NOT /sprint — team learnings not auto-updated (curate still overdue: implementer 50, tester 49).
 - Key win (verify-don't-trust, ×3): (1) re-ran subagents' test claims; (2) refuted my own "systemic auth bug" hypothesis when prod evidence showed all offline sessions carry refreshTokens; (3) "watch it go green" exposed the smoke had NEVER run in CI — `continue-on-error` masked `node: not found` in the railway-CLI container (false green across several deploys).
@@ -313,6 +321,7 @@
 - Process note: two CI-structure gotchas cost rework — soft-launched steps must be confirmed to actually EXECUTE (read step logs); jobs with a custom `container:` lack Node.
 
 ## Retro: 2026-07-02 (session 20 — confirm smoke gate + SHA-pinning experiment + /tend)
+
 - Commits: 3 (1 fix, 1 revert, 1 docs). Net code change ~zero: SHA-pinning (22d9d90) was reverted (3d4349f); the durable output was a docs/rule fix (07e1ef5). Low volume, high verification/judgment density.
 - Confirmed S19's blocking smoke gate is genuinely working (real assertions, not a false-green) — then tried to close the smoke-races-rollout gap by pinning to the deployed commit SHA.
 - Key insight (soft-launch before blocking): the SHA-pinning assertion depended on `RAILWAY_GIT_COMMIT_SHA`, which is EMPTY on `railway up` CLI deploys (unverifiable locally). It shipped straight into the BLOCKING gate → reddened main on a config gap (no outage). Contrast: BEAD-4 (S19) flipped smoke to blocking only AFTER a verified-green run. Lesson captured as global memory: new gate checks with unverifiable assumptions ship non-fatal first, prove green, THEN block.
@@ -322,6 +331,7 @@
 - Beads still frozen (168-world lineage) — reconciliation remains the pending owner decision blocking BEAD-1..4 filing.
 
 ## Retro: 2026-07-02 (session 21 — GC-89k billing fast-path after App Pricing webhook death)
+
 - Commits: 1 code (17af54c fix/billing, 8 files +306/-135) + pushed the S20 docs commit (416c969). Low volume, high investigation/judgment density.
 - Beads: filed GC-fir (P2, Partner API canonical migration, blocked on 2026-07 RC→GA). GC-89k advanced (code shipped + deployed green) but stays OPEN pending 2 manual QA gates (welcome-link route under /app; live upgrade test). Beads-lineage reconciliation CLOSED per owner call — Beads (169→171) is now the single source of truth; stray 168-export deleted.
 - Key insight (verify secondhand bead framing vs PRIMARY docs): the bead framed the risk as "activeSubscriptions query may be broken (scattered empty-array reports)." Shopify docs showed the real story — the APP_SUBSCRIPTIONS_UPDATE webhook is DEAD as of 2026-04-28 (not the query), the Admin query still works (just "less canonical" than the Partner API), and a SECOND silent bug existed: billing-event analytics stopped (webhook was the sole recordBillingEvent caller). Reading primary docs reshaped the whole task. Reinforces backlog-triage.md.
@@ -330,3 +340,11 @@
 - Verify-don't-trust ×3 again: verified the Partner-API claim against shopify.dev before coding; independently re-ran tsc + 37 targeted tests rather than trusting the agent report; reviewed the full diff (incl. DRY extraction + a lib→model type import) before commit.
 - Process note (recurring): implementation via a general-purpose Agent (not /sprint) means team learnings aren't auto-harvested. Durable output was captured in the gdpr-and-billing.md rule (passive context) + global memory instead — acceptable here, no manufactured team-learning entries.
 - Discoveries → global memory: new reference note (shopify-app-pricing-webhook-deprecation) flagged as PORTFOLIO-WIDE — tax-integrity-app carries the same latent risk (tax-integrity-monitor-qkq).
+
+## Retro: 2026-07-07 (session 22)
+
+- Tasks completed: 2 beads (GC-4oc, GC-59t) + 8-finding review triage into 3 batches; both batches deployed green, SHA soft-launch observed ✓ on first deploy
+- New learnings: 7 across 3 members (implementer 2, tester 3, scaffolder 2) + 3 cross-agent notes
+- Pruned/archived: 0 (tester 53 / implementer 52 lines — both past 50-line warning; run /curate before next sprint)
+- Key insight: per-batch adversarial audit caught its 8th real bug (gitignored .deploy-sha → railway up silently excluded it → feature would have been a permanent warn-only no-op invisible to CI); audits of soft-launch features must cover the build/deploy pipeline, not just app code
+- Process incident: orchestrator cwd drifted into an agent worktree — merge no-op'd, gate ran in wrong tree; caught by a brief tripwire ("verify commit reachable after merge, else STOP"); lesson → global memory
