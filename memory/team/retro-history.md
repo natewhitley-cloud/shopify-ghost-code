@@ -348,3 +348,10 @@
 - Pruned/archived: 0 (tester 53 / implementer 52 lines — both past 50-line warning; run /curate before next sprint)
 - Key insight: per-batch adversarial audit caught its 8th real bug (gitignored .deploy-sha → railway up silently excluded it → feature would have been a permanent warn-only no-op invisible to CI); audits of soft-launch features must cover the build/deploy pipeline, not just app code
 - Process incident: orchestrator cwd drifted into an agent worktree — merge no-op'd, gate ran in wrong tree; caught by a brief tripwire ("verify commit reachable after merge, else STOP"); lesson → global memory
+
+## Retro: 2026-07-08 (session 23 — gate flip + curate + GTM pass)
+- Tasks completed: 1 closed (GC-7ml — smoke SHA pin now BLOCKING, verified live in all 3 modes pre-push + 2 green blocking deploys); 6 filed from GTM findings (GC-aih, GC-vif, GC-zgg, GC-366, GC-tbx, GC-twy)
+- New learnings: 0 (no team dispatches — /curate session; tester 54→31, implementer 52→25, 47 entries archived with dated reasons)
+- Pruned/archived: 47 entries; promote candidate flagged: build/deploy-pipeline audit pattern (tester + scaffolder, 4 entries, same GC-59t incident) — run /promote
+- Key insight: two fast-follow competitors appeared within ~6 weeks of launch (GhostSweep in-store 06-09 subtitled "Ghost Code Scanner"; ghostcode.app SaaS with one-click removal) — verified live before presenting; the review race is now the moat race
+- Process: verify-striking-agent-claims-live paid off twice (both competitor claims confirmed real); Reddit agent returned 3 threads from its explicit exclude list — orchestrator must dedupe agent results against known lists regardless of prompt instructions
