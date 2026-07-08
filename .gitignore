@@ -18,6 +18,9 @@ dist/
 .env.*
 !.env.example
 
+# CI transient — generated at build time, must not be committed
+.deploy-sha
+
 # Shopify
 .shopify/
 .shopify.lock

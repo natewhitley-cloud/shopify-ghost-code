@@ -13,13 +13,19 @@
  * token gate (fail-closed in prod, 401 on mismatch, pass on match).
  */
 
+import { readFileSync } from "node:fs";
+
 import type { LoaderFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+import { loader } from "../../app/routes/health.deep";
 
 const mockQueryRaw = vi.fn();
 const mockSessionCount = vi.fn();
 const mockScanCount = vi.fn();
 const mockLoggerError = vi.fn();
+
+vi.mock("node:fs", () => ({ readFileSync: vi.fn() }));
 
 vi.mock("../../app/db.server", () => ({
   default: {
@@ -40,8 +46,6 @@ vi.mock("../../app/lib/logger.server", () => ({
 vi.mock("../../app/models/scan.server", () => ({
   DEFAULT_STALE_SCAN_THRESHOLDS: { pendingMaxAgeMinutes: 15, inProgressMaxAgeMinutes: 30 },
 }));
-
-import { loader } from "../../app/routes/health.deep";
 
 function makeRequest(headers: Record<string, string> = {}): Request {
   return new Request("http://localhost/health/deep", { headers });
@@ -92,6 +96,8 @@ describe("health.deep loader", () => {
     process.env.INNGEST_SIGNING_KEY = "sign-key";
     process.env.HEALTH_CHECK_TOKEN = "secret-token";
     process.env.NODE_ENV = "test";
+    // Default: .deploy-sha contains a known SHA.
+    vi.mocked(readFileSync).mockImplementation(() => "abc123def456abc123def456abc123def456abc1");
   });
 
   afterEach(() => {
@@ -111,7 +117,30 @@ describe("health.deep loader", () => {
       scans: { stuckPending: 0 },
     });
     expect(typeof body.timestamp).toBe("string");
+    expect(body.deployedSha).toBe("abc123def456abc123def456abc123def456abc1");
     expect(mockLoggerError).not.toHaveBeenCalled();
+  });
+
+  it("returns deployedSha: null when .deploy-sha is absent", async () => {
+    vi.mocked(readFileSync).mockImplementation(() => {
+      throw Object.assign(new Error("ENOENT: no such file"), { code: "ENOENT" });
+    });
+
+    const response = await callLoader({ "x-health-token": "secret-token" });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.deployedSha).toBeNull();
+  });
+
+  it("returns deployedSha: null when .deploy-sha is empty", async () => {
+    vi.mocked(readFileSync).mockImplementation(() => "");
+
+    const response = await callLoader({ "x-health-token": "secret-token" });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.deployedSha).toBeNull();
   });
 
   it("does not count expired offline sessions that still have a refreshToken (self-healing)", async () => {
