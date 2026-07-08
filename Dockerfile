@@ -11,6 +11,9 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# Ensure .deploy-sha exists so the runtime COPY never fails on local builds
+# where CI hasn't written it (railway up in CI writes it before docker build).
+RUN [ -f .deploy-sha ] || touch .deploy-sha
 RUN npx prisma generate
 RUN npm run build
 
@@ -25,6 +28,8 @@ COPY --from=build /app/prisma ./prisma
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/shopify.app.toml ./shopify.app.toml
 COPY --from=build /app/shopify.web.toml ./shopify.web.toml
+# SHA written by CI before `railway up`; empty file on local builds (no SHA known).
+COPY --from=build /app/.deploy-sha ./.deploy-sha
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD wget -qO- http://localhost:3000/health || exit 1

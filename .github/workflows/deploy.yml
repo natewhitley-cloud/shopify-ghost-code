@@ -20,6 +20,11 @@ jobs:
       RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
     steps:
       - uses: actions/checkout@v5
+      # Write the commit SHA into the build context BEFORE railway up so Docker
+      # can COPY it into the runtime image. RAILWAY_GIT_COMMIT_SHA is only set
+      # for repo-linked deploys, not CLI (railway up) deploys — we inject it.
+      - name: Write deploy SHA to build context
+        run: echo "$GITHUB_SHA" > .deploy-sha
       - name: Deploy to Railway
         run: railway up --service=${{ secrets.RAILWAY_SERVICE_ID }}
       # Best-effort log scan: report ERROR/FATAL markers from the fresh deploy
@@ -46,8 +51,15 @@ jobs:
       # a failed smoke fails this job and turns the workflow red. Note it does NOT
       # roll back the deploy — the deploy job already ran — it's a red-alert signal
       # that prod is degraded. smoke.mjs is dependency-free — no npm ci needed.
+      #
+      # EXPECTED_SHA (GC-59t, soft-launch): the smoke compares body.deployedSha
+      # (written to .deploy-sha by the deploy job, baked into the Docker image)
+      # against github.sha. A mismatch logs a ⚠ WARN but does NOT fail the gate —
+      # keeping warn-only until observed green in ≥1 real deploy, then flip to
+      # blocking (see GC-59t for the follow-up flip task).
       - name: Post-deploy smoke test
         env:
           SMOKE_BASE_URL: ${{ secrets.SMOKE_BASE_URL }}
           HEALTH_CHECK_TOKEN: ${{ secrets.HEALTH_CHECK_TOKEN }}
+          EXPECTED_SHA: ${{ github.sha }}
         run: node scripts/smoke.mjs

@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
+
 import { ScanStatus } from "@prisma/client";
 import type { LoaderFunctionArgs } from "react-router";
 
@@ -20,6 +23,18 @@ import { DEFAULT_STALE_SCAN_THRESHOLDS } from "../models/scan.server";
  *
  * Access is token-gated via the `x-health-token` header (HEALTH_CHECK_TOKEN).
  */
+
+// SHA written by CI into .deploy-sha before `railway up`. Read per-request
+// (health is an infrequent ops endpoint, not a hot path). Returns null when
+// the file is missing or empty — normal for local dev builds.
+function readDeployedSha(): string | null {
+  try {
+    const content = readFileSync(join(process.cwd(), ".deploy-sha"), "utf8").trim();
+    return content || null;
+  } catch {
+    return null;
+  }
+}
 
 // Same budget as /health — well under Railway's healthcheckTimeout (30s).
 const DB_PROBE_TIMEOUT_MS = 2000;
@@ -116,7 +131,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const httpStatus = status === "ok" ? 200 : 503;
 
   return Response.json(
-    { status, timestamp: new Date().toISOString(), checks },
+    { status, timestamp: new Date().toISOString(), deployedSha: readDeployedSha(), checks },
     { status: httpStatus },
   );
 };

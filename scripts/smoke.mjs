@@ -12,12 +12,17 @@
  * Env:
  *   SMOKE_BASE_URL     e.g. https://shopify-ghost-code-production.up.railway.app
  *   HEALTH_CHECK_TOKEN must match the app's HEALTH_CHECK_TOKEN env var
+ *   EXPECTED_SHA       (optional) git commit SHA injected by CI; compared
+ *                      against body.deployedSha after a passing health check.
+ *                      Mismatches log a ⚠ WARN but do NOT change the exit code
+ *                      (soft-launch, GC-59t — flip to blocking after ≥1 green).
  */
 
 import process from "node:process";
 
 const BASE_URL = process.env.SMOKE_BASE_URL;
 const HEALTH_CHECK_TOKEN = process.env.HEALTH_CHECK_TOKEN;
+const EXPECTED_SHA = process.env.EXPECTED_SHA;
 
 const BOOT_TIMEOUT_MS = 60_000;
 const RETRY_INTERVAL_MS = 3_000;
@@ -91,6 +96,22 @@ async function checkDeep() {
 
   if (body.status === "ok" && res.status === 200) {
     console.log("\n✓ Smoke test passed — all checks green");
+
+    // SHA pin check (soft-launch, GC-59t): warn-only until observed green in
+    // ≥1 real deploy, then flip to blocking. Does NOT change the exit code.
+    const deployedSha = body.deployedSha ?? null;
+    const shaVerified =
+      Boolean(EXPECTED_SHA) &&
+      Boolean(deployedSha) &&
+      (EXPECTED_SHA.startsWith(deployedSha) || deployedSha.startsWith(EXPECTED_SHA));
+    if (shaVerified) {
+      console.log(`✓ deployed SHA matches (${deployedSha})`);
+    } else {
+      console.log(
+        `⚠ WARN (soft-launch, GC-59t): SHA pin unverified — expected ${EXPECTED_SHA ?? "(unset)"}, got ${deployedSha ?? "null"}`,
+      );
+    }
+
     process.exit(0);
   }
 
