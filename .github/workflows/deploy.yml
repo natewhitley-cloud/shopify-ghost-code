@@ -52,11 +52,10 @@ jobs:
       # roll back the deploy — the deploy job already ran — it's a red-alert signal
       # that prod is degraded. smoke.mjs is dependency-free — no npm ci needed.
       #
-      # EXPECTED_SHA (GC-59t, soft-launch): the smoke compares body.deployedSha
-      # (written to .deploy-sha by the deploy job, baked into the Docker image)
-      # against github.sha. A mismatch logs a ⚠ WARN but does NOT fail the gate —
-      # keeping warn-only until observed green in ≥1 real deploy, then flip to
-      # blocking (see GC-59t for the follow-up flip task).
+      # EXPECTED_SHA (GC-59t, BLOCKING since GC-7ml): the smoke compares
+      # body.deployedSha (written to .deploy-sha by the deploy job, baked into
+      # the Docker image) against github.sha. A mismatch fails the gate — soft-
+      # launch observed ✓ green on 2 consecutive deploys (33ad905, 91a0a04).
       - name: Post-deploy smoke test
         env:
           SMOKE_BASE_URL: ${{ secrets.SMOKE_BASE_URL }}

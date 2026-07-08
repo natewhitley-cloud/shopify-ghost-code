@@ -14,8 +14,8 @@
  *   HEALTH_CHECK_TOKEN must match the app's HEALTH_CHECK_TOKEN env var
  *   EXPECTED_SHA       (optional) git commit SHA injected by CI; compared
  *                      against body.deployedSha after a passing health check.
- *                      Mismatches log a ⚠ WARN but do NOT change the exit code
- *                      (soft-launch, GC-59t — flip to blocking after ≥1 green).
+ *                      Mismatches FAIL the smoke (GC-59t, blocking since
+ *                      GC-7ml). Unset (local/manual runs) logs a ⚠ WARN only.
  */
 
 import process from "node:process";
@@ -97,8 +97,9 @@ async function checkDeep() {
   if (body.status === "ok" && res.status === 200) {
     console.log("\n✓ Smoke test passed — all checks green");
 
-    // SHA pin check (soft-launch, GC-59t): warn-only until observed green in
-    // ≥1 real deploy, then flip to blocking. Does NOT change the exit code.
+    // SHA pin check (GC-59t, BLOCKING since GC-7ml): a mismatch means the
+    // commit that triggered this run is not what's serving traffic — fail the
+    // gate. Stays warn-only when EXPECTED_SHA is unset (local/manual runs).
     const deployedSha = body.deployedSha ?? null;
     const shaVerified =
       Boolean(EXPECTED_SHA) &&
@@ -106,9 +107,11 @@ async function checkDeep() {
       (EXPECTED_SHA.startsWith(deployedSha) || deployedSha.startsWith(EXPECTED_SHA));
     if (shaVerified) {
       console.log(`✓ deployed SHA matches (${deployedSha})`);
+    } else if (EXPECTED_SHA) {
+      fail(`SHA pin mismatch — expected ${EXPECTED_SHA}, got ${deployedSha ?? "null"}`);
     } else {
       console.log(
-        `⚠ WARN (soft-launch, GC-59t): SHA pin unverified — expected ${EXPECTED_SHA ?? "(unset)"}, got ${deployedSha ?? "null"}`,
+        `⚠ WARN: SHA pin unverified — EXPECTED_SHA unset, deployed ${deployedSha ?? "null"}`,
       );
     }
 
