@@ -1,6 +1,6 @@
 import { APP_HANDLE, PLANS } from "./plans";
 import type { BillingEventType } from "../models/billing-event.server";
-// Import PLANS for local use and re-export for existing server imports.
+// Re-export PLANS so existing server-side import sites need no change.
 export { PLANS };
 
 // ---------------------------------------------------------------------------
@@ -82,7 +82,10 @@ export function resolvePlanFromSubscription(
 // is classified and priced identically regardless of which path recorded it.
 // ---------------------------------------------------------------------------
 
-// Plan price table — amounts match billing config in shopify.server.ts.
+// Plan price table — under Managed Pricing, prices are configured in the
+// Shopify Partner Dashboard, not in code. These hardcoded amounts MUST be
+// manually kept in sync with Partner Dashboard pricing; any drift will
+// silently corrupt BillingEvent.amount records with wrong values.
 // Used to populate BillingEvent.amount for upgrade/reactivation events.
 export const PLAN_AMOUNTS: Record<string, number | undefined> = {
   [PLANS.STANDARD]: 29,

@@ -117,6 +117,45 @@ export type ReconcileResult =
   | { status: "shop-not-found" };
 
 /**
+ * Query Shopify for the shop's current active subscriptions.
+ *
+ * Returns the subscription list on success, or null on any transport-level or
+ * GraphQL error. All failures are logged internally. This function never throws.
+ */
+async function fetchActiveSubscriptions(
+  admin: AdminApiContext,
+  shopDomain: string,
+): Promise<ActiveSubscription[] | null> {
+  let json: ReconcileResponse;
+  try {
+    const response = await admin.graphql(ACTIVE_SUBSCRIPTIONS_QUERY);
+    json = (await response.json()) as ReconcileResponse;
+  } catch (err) {
+    // Transport-level failure (network, timeout, 5xx). Never throw — the stored
+    // plan stands until the next reconcile attempt.
+    logger.error("billing-reconcile-request-failed", {
+      shop: shopDomain,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+
+  const errors = json.errors ?? [];
+  if (errors.length > 0) {
+    const accessDenied = errors.some(isAccessDeniedError);
+    // Never expose raw GraphQL errors to the merchant — log internally only.
+    logger.error("billing-reconcile-graphql-error", {
+      shop: shopDomain,
+      accessDenied,
+      error: errors[0]?.message ?? "unknown GraphQL error",
+    });
+    return null;
+  }
+
+  return json.data?.currentAppInstallation?.activeSubscriptions ?? [];
+}
+
+/**
  * Reconcile a shop's stored plan against Shopify's actual active subscriptions.
  *
  * On success (match or drift correction) `planReconciledAt` is stamped via the
@@ -134,39 +173,35 @@ export type ReconcileResult =
  *     with `plan_handle`), so we record a BillingEvent — restoring the analytics
  *     the now-dead APP_SUBSCRIPTIONS_UPDATE webhook used to produce. Recording is
  *     fire-and-forget and never blocks or breaks the reconcile.
+ *
+ *   On Admin API failure with recordEvent: true, exactly one retry is attempted.
+ *   A permanent loss is otherwise possible — backstop reconciles run with
+ *   recordEvent: false and will not re-record the missed event.
  */
 export async function reconcileShopPlan(
   admin: AdminApiContext,
   shop: { domain: string; plan: string },
   options: { recordEvent?: boolean } = {},
 ): Promise<ReconcileResult> {
-  let json: ReconcileResponse;
-  try {
-    const response = await admin.graphql(ACTIVE_SUBSCRIPTIONS_QUERY);
-    json = (await response.json()) as ReconcileResponse;
-  } catch (err) {
-    // Transport-level failure (network, timeout, 5xx). Never throw — the stored
-    // plan stands until the next reconcile attempt.
-    logger.error("billing-reconcile-request-failed", {
-      shop: shop.domain,
-      error: err instanceof Error ? err.message : String(err),
-    });
-    return { status: "skipped-error" };
+  let subscriptions = await fetchActiveSubscriptions(admin, shop.domain);
+
+  if (subscriptions === null) {
+    // Failed. For the redirect fast-path (recordEvent: true), a lost BillingEvent
+    // is permanent — backstop reconciles run with recordEvent: false and will not
+    // re-record. Retry exactly once; routine backstop reconciles do NOT retry.
+    if (options.recordEvent) {
+      logger.warn("billing-reconcile-redirect-retry", { shop: shop.domain });
+      subscriptions = await fetchActiveSubscriptions(admin, shop.domain);
+      logger.info("billing-reconcile-redirect-retry-outcome", {
+        shop: shop.domain,
+        succeeded: subscriptions !== null,
+      });
+    }
+    if (subscriptions === null) {
+      return { status: "skipped-error" };
+    }
   }
 
-  const errors = json.errors ?? [];
-  if (errors.length > 0) {
-    const accessDenied = errors.some(isAccessDeniedError);
-    // Never expose raw GraphQL errors to the merchant — log internally only.
-    logger.error("billing-reconcile-graphql-error", {
-      shop: shop.domain,
-      accessDenied,
-      error: errors[0]?.message ?? "unknown GraphQL error",
-    });
-    return { status: "skipped-error" };
-  }
-
-  const subscriptions = json.data?.currentAppInstallation?.activeSubscriptions ?? [];
   const effectivePlan = resolveEffectivePlan(subscriptions);
 
   if (effectivePlan === shop.plan) {
