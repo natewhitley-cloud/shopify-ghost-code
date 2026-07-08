@@ -318,4 +318,69 @@ describe("reconcileShopPlan", () => {
 
     expect(mockRecordEvent).not.toHaveBeenCalled();
   });
+
+  // -------------------------------------------------------------------------
+  // Redirect-path retry (GC-4oc): one-shot retry when recordEvent && API error
+  // -------------------------------------------------------------------------
+
+  it("retries once on redirect path when first Admin API call fails, records event on retry success", async () => {
+    // First call: transport failure. Second call: Standard subscription active.
+    const admin = {
+      graphql: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("timeout"))
+        .mockResolvedValueOnce({
+          json: async () => ({
+            data: {
+              currentAppInstallation: {
+                activeSubscriptions: [{ name: "Standard", status: "ACTIVE" }],
+              },
+            },
+          }),
+        }),
+    };
+
+    const result = await reconcileShopPlan(
+      admin,
+      { domain: "s.myshopify.com", plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(admin.graphql).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "billing-reconcile-redirect-retry",
+      expect.objectContaining({ shop: "s.myshopify.com" }),
+    );
+    expect(mockRecordEvent).toHaveBeenCalledWith({
+      shopId: "shop-1",
+      eventType: "upgrade",
+      fromPlan: "free",
+      toPlan: "Standard",
+      amount: 29,
+    });
+    expect(result).toEqual({ status: "corrected", fromPlan: "free", toPlan: "Standard" });
+  });
+
+  it("returns skipped-error without throwing when both redirect-path retry attempts fail", async () => {
+    const admin = makeAdminThatThrows(new Error("down"));
+
+    const result = await reconcileShopPlan(
+      admin,
+      { domain: "s.myshopify.com", plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(admin.graphql).toHaveBeenCalledTimes(2);
+    expect(mockRecordEvent).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: "skipped-error" });
+  });
+
+  it("does NOT retry on Admin API failure when not on the redirect path (recordEvent false)", async () => {
+    const admin = makeAdminThatThrows(new Error("down"));
+
+    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "Standard" });
+
+    expect(admin.graphql).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ status: "skipped-error" });
+  });
 });

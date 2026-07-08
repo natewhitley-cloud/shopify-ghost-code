@@ -5,9 +5,10 @@ import { PrismaSessionStorage } from "@shopify/shopify-app-session-storage-prism
 import prisma from "./db.server";
 import { SafeSessionStorage } from "./lib/safe-session-storage.server";
 
-// Plan name constants — used by APP_SUBSCRIPTIONS_UPDATE webhook to map
-// Shopify plan names to internal plan strings. Managed Pricing handles
-// billing through the App Store; these constants are for webhook matching only.
+// Plan name constants — mirror the plan names configured in the Shopify
+// Partner Dashboard (Managed Pricing). Used by the billing reconciler
+// (billing-reconciler.server.ts) to match Shopify subscription names to
+// internal plan strings via resolvePlanFromSubscription (billing.server.ts).
 export const PLAN_STANDARD = "Standard";
 export const PLAN_PROFESSIONAL = "Professional";
 
@@ -33,8 +34,11 @@ const shopify = shopifyApp({
   future: {
     expiringOfflineAccessTokens: true,
   },
-  // Billing is handled via Managed Pricing in the Partner Dashboard.
-  // Plan changes arrive via APP_SUBSCRIPTIONS_UPDATE webhook.
+  // Billing is handled via Managed Pricing (Shopify Partner Dashboard).
+  // Plan state is driven by the redirect fast-path (plan_handle param on
+  // return from plan selection) and the on-load backstop reconcile — both in
+  // app/routes/app.tsx via billing-reconciler.server.ts. The
+  // APP_SUBSCRIPTIONS_UPDATE webhook is DEAD since 2026-04-28.
   // No billing config needed here — Shopify manages the checkout flow.
   ...(process.env.SHOP_CUSTOM_DOMAIN
     ? { customShopDomains: [process.env.SHOP_CUSTOM_DOMAIN] }
