@@ -383,4 +383,136 @@ describe("reconcileShopPlan", () => {
     expect(admin.graphql).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ status: "skipped-error" });
   });
+
+  // -------------------------------------------------------------------------
+  // Adversarial audit probes (per-batch tester audit pattern)
+  // -------------------------------------------------------------------------
+
+  // PROBE 1: GraphQL-error body (resolved, not thrown) on first attempt, retry succeeds.
+  // fetchActiveSubscriptions returns null for json.errors as well as throws, so
+  // the retry must fire for both error shapes.
+  it("retries once on redirect path when first attempt returns a GraphQL errors body, records event on retry success", async () => {
+    const admin = {
+      graphql: vi
+        .fn()
+        .mockResolvedValueOnce({
+          json: async () => ({
+            errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }],
+          }),
+        })
+        .mockResolvedValueOnce({
+          json: async () => ({
+            data: {
+              currentAppInstallation: {
+                activeSubscriptions: [{ name: "Standard", status: "ACTIVE" }],
+              },
+            },
+          }),
+        }),
+    };
+
+    const result = await reconcileShopPlan(
+      admin,
+      { domain: "s.myshopify.com", plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(admin.graphql).toHaveBeenCalledTimes(2);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "billing-reconcile-redirect-retry",
+      expect.objectContaining({ shop: "s.myshopify.com" }),
+    );
+    expect(mockRecordEvent).toHaveBeenCalledWith({
+      shopId: "shop-1",
+      eventType: "upgrade",
+      fromPlan: "free",
+      toPlan: "Standard",
+      amount: 29,
+    });
+    expect(result).toEqual({ status: "corrected", fromPlan: "free", toPlan: "Standard" });
+  });
+
+  // PROBE 2: Retry succeeds but shop is gone mid-request — updateShopPlanByDomain
+  // returns null. Must return shop-not-found and NOT record a BillingEvent.
+  it("returns shop-not-found and does not record an event when the retry succeeds but the shop has been deleted", async () => {
+    mockUpdate.mockResolvedValue(null);
+    const admin = {
+      graphql: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("timeout"))
+        .mockResolvedValueOnce({
+          json: async () => ({
+            data: {
+              currentAppInstallation: {
+                activeSubscriptions: [{ name: "Standard", status: "ACTIVE" }],
+              },
+            },
+          }),
+        }),
+    };
+
+    const result = await reconcileShopPlan(
+      admin,
+      { domain: "gone.myshopify.com", plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(admin.graphql).toHaveBeenCalledTimes(2);
+    expect(mockRecordEvent).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: "shop-not-found" });
+  });
+
+  // PROBE 3: First attempt succeeds → graphql called EXACTLY once even with recordEvent true.
+  // Guards against a spurious retry firing when the first call was successful.
+  it("calls graphql exactly once when the first attempt succeeds, regardless of recordEvent", async () => {
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    await reconcileShopPlan(
+      admin,
+      { domain: "s.myshopify.com", plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(admin.graphql).toHaveBeenCalledTimes(1);
+  });
+
+  // PROBE 4: GraphQL-error body with recordEvent: false → exactly one call.
+  // The no-retry-on-backstop invariant must hold for BOTH error shapes (throw
+  // and resolved-with-errors), not just transport throws.
+  it("calls graphql exactly once on GraphQL errors body when recordEvent is false (no backstop retry)", async () => {
+    const admin = makeAdminWithErrors([
+      { message: "Throttled", extensions: { code: "THROTTLED" } },
+    ]);
+
+    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "Standard" });
+
+    expect(admin.graphql).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ status: "skipped-error" });
+  });
+
+  // PROBE 5: Mixed failure modes — transport throw on first attempt, GraphQL-error body
+  // on second (retry). Both attempts fail; must return skipped-error cleanly with no
+  // unhandled rejection and no BillingEvent recorded.
+  it("returns skipped-error cleanly when first attempt throws and retry returns a GraphQL errors body", async () => {
+    const admin = {
+      graphql: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("network down"))
+        .mockResolvedValueOnce({
+          json: async () => ({
+            errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }],
+          }),
+        }),
+    };
+
+    const result = await reconcileShopPlan(
+      admin,
+      { domain: "s.myshopify.com", plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(admin.graphql).toHaveBeenCalledTimes(2);
+    expect(mockRecordEvent).not.toHaveBeenCalled();
+    expect(result).toEqual({ status: "skipped-error" });
+  });
 });
