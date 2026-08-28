@@ -517,8 +517,9 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
 
     // Every optional scope is ungranted here, so all six optional audit
-    // categories are skipped-for-scope → the scan finalizes as PARTIAL (LOG-4),
-    // and only the theme scan contributes findings.
+    // categories are skipped-for-scope → the scan still finalizes COMPLETED, with
+    // those skipped categories recorded for the differ (LOG-4), and only the
+    // theme scan contributes findings.
     mockHasTranslationScope.mockResolvedValue(false);
     mockHasProductScope.mockResolvedValue(false);
     mockHasContentScope.mockResolvedValue(false);
@@ -543,14 +544,31 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
   }
 
   describe("happy path — complete scan flow", () => {
-    it("returns PARTIAL status (optional scopes ungranted) and the correct finding count", async () => {
+    it("returns COMPLETED status (optional scopes ungranted) and the correct finding count", async () => {
       const result = await runScanThemeFn();
 
       expect(result).toEqual({
         scanId: SCAN_ID,
         findingCount: MOCK_FINDINGS.length,
-        status: "PARTIAL",
+        status: "COMPLETED",
       });
+
+      // COMPLETED + non-empty skippedCategories must coexist: the scan succeeds
+      // but still records which optional categories were skipped for the differ.
+      expect(mockFinalizeScan).toHaveBeenCalledWith(
+        SCAN_ID,
+        expect.objectContaining({
+          status: "COMPLETED",
+          skippedCategories: [
+            FindingType.GHOST_TRANSLATION,
+            FindingType.GHOST_TAG,
+            FindingType.GHOST_PRICE,
+            FindingType.GHOST_PAGE,
+            FindingType.GHOST_METAFIELD,
+            FindingType.GHOST_REDIRECT,
+          ],
+        }),
+      );
     });
 
     it("marks IN_PROGRESS first, then finalizes the terminal status separately (LOG-4)", async () => {
@@ -566,7 +584,7 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
       expect(statusCalls).toEqual(["IN_PROGRESS"]);
       expect(mockFinalizeScan).toHaveBeenCalledWith(
         SCAN_ID,
-        expect.objectContaining({ status: "PARTIAL", findingCount: MOCK_FINDINGS.length }),
+        expect.objectContaining({ status: "COMPLETED", findingCount: MOCK_FINDINGS.length }),
       );
     });
 
@@ -594,12 +612,12 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
   });
 
   describe("happy path — zero findings (clean theme)", () => {
-    it("returns PARTIAL with findingCount of 0 (optional scopes ungranted)", async () => {
+    it("returns COMPLETED with findingCount of 0 (optional scopes ungranted)", async () => {
       mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
 
       const result = await runScanThemeFn();
 
-      expect(result).toEqual({ scanId: SCAN_ID, findingCount: 0, status: "PARTIAL" });
+      expect(result).toEqual({ scanId: SCAN_ID, findingCount: 0, status: "COMPLETED" });
     });
 
     it("persists an empty findings array (idempotent deleteMany + no createMany)", async () => {

@@ -18,10 +18,14 @@
  *                                  Uses runAuditStep() to avoid boilerplate. Each
  *                                  reports whether it was skipped for missing
  *                                  scope.
- *   9. finalize-scan             — sets the terminal status: PARTIAL if any
- *                                  optional category was skipped for missing
- *                                  scope, otherwise COMPLETED. This is the ONLY
- *                                  place the scan leaves IN_PROGRESS on success.
+ *   9. finalize-scan             — sets the terminal status to COMPLETED. The
+ *                                  core theme audit ran, so success is COMPLETED
+ *                                  even when optional categories were skipped for
+ *                                  missing scope; `skippedCategories` still
+ *                                  records which ones were skipped (for the diff
+ *                                  engine and a future "enable more checks"
+ *                                  nudge). This is the ONLY place the scan leaves
+ *                                  IN_PROGRESS on success.
  *
  * Why completion is decoupled from persistence (LOG-4): if the scan were marked
  * COMPLETED inside step 2, a failure in steps 3–8 could not mark it FAILED (the
@@ -58,8 +62,9 @@ import { inngest } from "../client";
  * Result of an optional audit step.
  *
  * `skipped` is true ONLY when the audit was skipped because its required scope
- * was not granted (a genuine ACCESS_DENIED). It drives both the PARTIAL status
- * decision and the diff engine's exclusion of un-audited categories (LOG-4). An
+ * was not granted (a genuine ACCESS_DENIED). It drives which categories land in
+ * `skippedCategories`, which powers the diff engine's exclusion of un-audited
+ * categories (LOG-4) and a future "enable more checks" nudge. An
  * audit that ran but found nothing (or had no data to check) is NOT skipped.
  */
 type AuditStepResult = { findingCount: number; skipped: boolean };
@@ -242,7 +247,7 @@ export const scanTheme = inngest.createFunction(
       // Step 3: Translation audit (optional — requires read_translations scope)
       // Slightly different from generic audit steps because it has extra logic
       // (empty-translations check). When scope is genuinely missing it reports
-      // skipped:true so the scan finalizes PARTIAL.
+      // skipped:true so the category is recorded in skippedCategories.
       const translationResult: AuditStepResult = await step.run("translation-audit", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -263,7 +268,7 @@ export const scanTheme = inngest.createFunction(
             stepName: "translation-audit",
             shopId,
           });
-          // Scope not granted → this category was NOT audited (drives PARTIAL).
+          // Scope not granted → this category was NOT audited (recorded in skippedCategories).
           return { findingCount: 0, skipped: true };
         }
 
@@ -415,8 +420,9 @@ export const scanTheme = inngest.createFunction(
 
       // Collect the optional categories that were skipped because their scope
       // was not granted. Each entry maps 1:1 to a FindingType so the differ can
-      // exclude that category's prior findings from "resolved" (LOG-4). The
-      // list is the basis for the PARTIAL-vs-COMPLETED decision below.
+      // exclude that category's prior findings from "resolved" (LOG-4). The scan
+      // still finalizes COMPLETED (below); this list also seeds a future
+      // "enable more checks" nudge.
       const skippedCategories: string[] = [
         [translationResult.skipped, FindingType.GHOST_TRANSLATION],
         [tagResult.skipped, FindingType.GHOST_TAG],
@@ -458,9 +464,12 @@ export const scanTheme = inngest.createFunction(
         });
       }
 
-      // PARTIAL when one or more optional categories were skipped for missing
-      // scope; COMPLETED when every category was audited (a full audit).
-      const finalStatus = skippedCategories.length > 0 ? ScanStatus.PARTIAL : ScanStatus.COMPLETED;
+      // Always COMPLETED on the success path: the core theme audit ran, so the
+      // scan succeeded even if optional categories were skipped for missing
+      // scope. `skippedCategories` (built above) still records which optional
+      // categories were skipped, for (a) the diff engine (LOG-4) and (b) a
+      // future "enable more checks" nudge.
+      const finalStatus = ScanStatus.COMPLETED;
 
       // FINAL step: set the terminal status. This is the ONLY place the scan
       // leaves IN_PROGRESS on the success path (LOG-4). Idempotent on retry.

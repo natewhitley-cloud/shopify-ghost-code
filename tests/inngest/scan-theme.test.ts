@@ -712,7 +712,7 @@ describe("scanTheme — optional audit steps", () => {
   });
 
   describe("genuine ACCESS_DENIED — scope not granted", () => {
-    it("skips the product-backed audits cleanly and finalizes the scan PARTIAL with those categories", async () => {
+    it("skips the product-backed audits cleanly and finalizes the scan COMPLETED with those categories recorded", async () => {
       // hasProductScope reports the scope is genuinely missing. The three
       // product-backed audits (tag, price, metafield) all gate on it.
       mockHasProductScope.mockResolvedValue(false);
@@ -729,12 +729,13 @@ describe("scanTheme — optional audit steps", () => {
       expect(mockCreateFindings).not.toHaveBeenCalled();
       expect(mockDb.finding.deleteMany).not.toHaveBeenCalled();
 
-      // The core scan succeeded, so the scan is usable — but because three
-      // optional categories were skipped for missing scope, it is PARTIAL, not
-      // COMPLETED, and those categories are recorded so the differ never marks
-      // their prior findings as falsely "resolved" (LOG-4).
+      // The core scan succeeded, so the scan finalizes COMPLETED even though
+      // three optional categories were skipped for missing scope. Those skipped
+      // categories are STILL recorded (COMPLETED + non-empty skippedCategories
+      // must coexist) so the differ never marks their prior findings as falsely
+      // "resolved" (LOG-4).
       expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
-        status: "PARTIAL",
+        status: "COMPLETED",
         findingCount: MOCK_FINDINGS.length,
         skippedCategories: [
           FindingType.GHOST_TAG,
@@ -746,7 +747,7 @@ describe("scanTheme — optional audit steps", () => {
       expect(result).toEqual({
         scanId: SCAN_ID,
         findingCount: MOCK_FINDINGS.length,
-        status: "PARTIAL",
+        status: "COMPLETED",
       });
     });
   });
