@@ -40,7 +40,8 @@ export const weeklyScan = inngest.createFunction(
       // Free-plan shops must trigger scans manually.
       // Professional-plan shops are covered by the daily poll-theme-changes cron.
       return db.shop.findMany({
-        where: { plan: PLANS.STANDARD },
+        // exclude uninstalled-pending-redact shops (gc-grd)
+        where: { plan: PLANS.STANDARD, uninstalledAt: null },
         select: { id: true, domain: true },
       });
     });

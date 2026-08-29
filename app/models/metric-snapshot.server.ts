@@ -118,11 +118,13 @@ export async function computeCurrentMetrics(
     scansWithFindings,
     activeShopIds,
   ] = await Promise.all([
-    // Total shops ever installed
-    prismaClient.shop.count(),
+    // Total currently-installed shops
+    // exclude uninstalled-pending-redact shops (gc-grd)
+    prismaClient.shop.count({ where: { uninstalledAt: null } }),
 
-    // All shops — needed to compute plan breakdown
-    prismaClient.shop.findMany({ select: { plan: true } }),
+    // All currently-installed shops — needed to compute plan breakdown
+    // exclude uninstalled-pending-redact shops (gc-grd)
+    prismaClient.shop.findMany({ where: { uninstalledAt: null }, select: { plan: true } }),
 
     // All-time scan count (any status)
     prismaClient.scan.count(),

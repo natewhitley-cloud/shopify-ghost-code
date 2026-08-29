@@ -24,6 +24,7 @@ const mockDb = vi.hoisted(() => ({
     findUnique: vi.fn(),
     upsert: vi.fn(),
     update: vi.fn(),
+    updateMany: vi.fn(),
     delete: vi.fn(),
   },
   session: {
@@ -52,6 +53,7 @@ import {
   updateThemePublishTimestamp,
   dismissReviewPrompt,
   deleteShopData,
+  markShopUninstalled,
 } from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
@@ -151,7 +153,7 @@ describe("upsertShop", () => {
     vi.clearAllMocks();
   });
 
-  it("upserts by domain with create:{domain} and an empty update (no token)", async () => {
+  it("upserts by domain with create:{domain} and a reinstall-reset update (no token)", async () => {
     mockDb.shop.upsert.mockResolvedValue({
       id: "shop-new",
       domain: "new-shop.myshopify.com",
@@ -163,7 +165,8 @@ describe("upsertShop", () => {
     expect(mockDb.shop.upsert).toHaveBeenCalledWith({
       where: { domain: "new-shop.myshopify.com" },
       create: { domain: "new-shop.myshopify.com" },
-      update: {},
+      // Reinstall clears the uninstalled flag (gc-grd).
+      update: { uninstalledAt: null },
     });
   });
 
@@ -183,12 +186,13 @@ describe("upsertShop", () => {
     expect(result).toEqual(created);
   });
 
-  it("returns the existing record on re-install without mutating metadata (update is a no-op)", async () => {
+  it("clears uninstalledAt on re-install while preserving other metadata (plan/flags)", async () => {
     const existing = {
       id: "shop-existing",
       domain: "re-install.myshopify.com",
       plan: "Professional",
       installedAt: new Date("2026-01-01T00:00:00Z"),
+      uninstalledAt: null,
       lastThemePublishAt: new Date("2026-05-01T00:00:00Z"),
       hasSeenReviewPrompt: true,
     };
@@ -196,8 +200,11 @@ describe("upsertShop", () => {
 
     const result = await upsertShop("re-install.myshopify.com");
 
-    // The update clause is empty, so an existing shop's plan/flags are preserved.
-    expect(mockDb.shop.upsert).toHaveBeenCalledWith(expect.objectContaining({ update: {} }));
+    // The update clause only clears uninstalledAt (reinstall-reset); it does not
+    // touch plan/flags, so an existing shop's other metadata is preserved.
+    expect(mockDb.shop.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({ update: { uninstalledAt: null } }),
+    );
     expect(result).toEqual(existing);
   });
 
@@ -662,6 +669,68 @@ describe("deleteShopData", () => {
     mockDb.$transaction.mockRejectedValueOnce(new Error("Transaction rolled back"));
 
     await expect(deleteShopData("error-shop.myshopify.com")).rejects.toThrow(
+      "Transaction rolled back",
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markShopUninstalled
+// ---------------------------------------------------------------------------
+
+describe("markShopUninstalled", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("deletes sessions and stamps uninstalledAt in a single transaction", async () => {
+    mockDb.session.deleteMany.mockResolvedValue({ count: 2 });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await markShopUninstalled("bye.myshopify.com");
+
+    expect(mockDb.$transaction).toHaveBeenCalledOnce();
+    expect(mockDb.session.deleteMany).toHaveBeenCalledWith({
+      where: { shop: "bye.myshopify.com" },
+    });
+    const updateArg = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(updateArg.where).toEqual({ domain: "bye.myshopify.com" });
+    expect(updateArg.data.uninstalledAt).toBeInstanceOf(Date);
+  });
+
+  it("does NOT hard-delete the shop (keeps data for the shop/redact grace window)", async () => {
+    mockDb.session.deleteMany.mockResolvedValue({ count: 1 });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await markShopUninstalled("bye.myshopify.com");
+
+    expect(mockDb.shop.delete).not.toHaveBeenCalled();
+  });
+
+  it("returns found: true when a shop row was updated", async () => {
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await markShopUninstalled("bye.myshopify.com");
+
+    expect(result).toEqual({ found: true });
+  });
+
+  it("returns found: false (idempotent) when the shop row is already gone", async () => {
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await markShopUninstalled("already-gone.myshopify.com");
+
+    expect(result).toEqual({ found: false });
+    // updateMany never throws on a missing row — no findUnique guard needed.
+    expect(mockDb.shop.updateMany).toHaveBeenCalledOnce();
+  });
+
+  it("propagates a $transaction error", async () => {
+    mockDb.$transaction.mockRejectedValueOnce(new Error("Transaction rolled back"));
+
+    await expect(markShopUninstalled("err.myshopify.com")).rejects.toThrow(
       "Transaction rolled back",
     );
   });

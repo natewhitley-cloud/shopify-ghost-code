@@ -1,7 +1,8 @@
 import type { ActionFunctionArgs } from "react-router";
 
 import { logger } from "../lib/logger.server";
-import { deleteShopData } from "../models/shop.server";
+import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
+import { markShopUninstalled } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -9,12 +10,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   logger.info("Webhook received", { topic, shop });
 
-  // Delete all Ghost Code data for this shop atomically.
-  // deleteShopData handles sessions, scans (cascade-deletes findings), and shop
-  // in a single transaction. Returns null if the shop is already gone (idempotent).
-  const deleted = await deleteShopData(shop);
-  if (!deleted) {
-    logger.warn("Shop not found in DB — nothing to delete", {
+  // Record the uninstall event (best-effort — never throws) so we retain an
+  // uninstall record and a data source for the operator digest (gc-bny).
+  await recordOpsEvent({
+    eventType: OPS_EVENT_TYPES.SHOP_UNINSTALLED,
+    key: shop,
+    message: "app/uninstalled",
+  });
+
+  // Revoke access (delete Sessions) and stamp Shop.uninstalledAt, but KEEP the
+  // Shop + scan data. The full hard-delete stays deferred to shop/redact so the
+  // 48h GDPR grace window is honored (gc-grd). Idempotent: found=false if the
+  // shop row is already gone.
+  const { found } = await markShopUninstalled(shop);
+  if (!found) {
+    logger.warn("Shop not found in DB — nothing to mark uninstalled", {
       shop,
       webhook: "app/uninstalled",
     });

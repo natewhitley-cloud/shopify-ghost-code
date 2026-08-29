@@ -270,6 +270,21 @@ describe("computeCurrentMetrics", () => {
     expect(result.totalShops).toBe(42);
   });
 
+  it("counts only currently-installed shops (uninstalledAt: null) for totalShops (gc-grd)", async () => {
+    await computeCurrentMetrics(mockDb as unknown as typeof import("../../app/db.server").default);
+
+    expect(mockDb.shop.count).toHaveBeenCalledWith({ where: { uninstalledAt: null } });
+  });
+
+  it("computes shopsByPlan only over currently-installed shops (uninstalledAt: null) (gc-grd)", async () => {
+    await computeCurrentMetrics(mockDb as unknown as typeof import("../../app/db.server").default);
+
+    expect(mockDb.shop.findMany).toHaveBeenCalledWith({
+      where: { uninstalledAt: null },
+      select: { plan: true },
+    });
+  });
+
   it("computes shopsByPlan from findMany results", async () => {
     mockDb.shop.findMany.mockResolvedValue([
       { plan: "free" },

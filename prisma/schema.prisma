@@ -53,6 +53,12 @@ model Shop {
   // means never reconciled. Drives the app-load freshness guard so the
   // reconciliation GraphQL query runs at most once per freshness window.
   planReconciledAt    DateTime?
+  // Marks an uninstalled-but-not-yet-redacted shop. Null = active install; set =
+  // the merchant uninstalled (app/uninstalled fired) and the row is pending the
+  // shop/redact hard-delete within the 48h GDPR grace window; cleared back to null
+  // on reinstall (see upsertShop). Iterators/metrics exclude non-null rows so a
+  // dead shop is never scanned or counted as an active install (gc-grd).
+  uninstalledAt       DateTime?
   lastThemePublishAt  DateTime?
   hasSeenReviewPrompt Boolean        @default(false)
   scans               Scan[]

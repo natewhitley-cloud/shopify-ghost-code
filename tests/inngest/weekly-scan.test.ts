@@ -122,6 +122,13 @@ describe("weeklyScan coordinator — plan filter", () => {
     expect(callArg.where.plan).not.toBe("standard");
   });
 
+  it("excludes uninstalled-pending-redact shops (uninstalledAt: null) (gc-grd)", async () => {
+    await runWeeklyScan();
+
+    const callArg = mockDb.shop.findMany.mock.calls[0][0];
+    expect(callArg.where.uninstalledAt).toBeNull();
+  });
+
   it("selects only id and domain fields from shop (no accessToken leak)", async () => {
     await runWeeklyScan();
 

@@ -24,6 +24,7 @@ export const OPS_EVENT_TYPES = {
   CRON_HEARTBEAT: "cron_heartbeat",
   FUNCTION_FAILURE: "function_failure",
   WORKER_FALLBACK: "worker_fallback",
+  SHOP_UNINSTALLED: "shop_uninstalled",
 } as const;
 
 export interface RecordOpsEventInput {

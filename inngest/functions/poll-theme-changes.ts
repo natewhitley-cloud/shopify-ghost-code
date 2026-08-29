@@ -58,7 +58,8 @@ export const pollThemeChanges = inngest.createFunction(
       // Use PLANS.PROFESSIONAL ("Professional") to match the canonical stored value
       // set during plan upgrade (see billing.server.ts and billing webhook handler).
       return db.shop.findMany({
-        where: { plan: PLANS.PROFESSIONAL },
+        // exclude uninstalled-pending-redact shops (gc-grd)
+        where: { plan: PLANS.PROFESSIONAL, uninstalledAt: null },
         select: { id: true, domain: true },
       });
     });

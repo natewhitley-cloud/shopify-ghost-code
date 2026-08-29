@@ -134,6 +134,13 @@ describe("pollThemeChanges coordinator — plan filter (S-02 regression)", () =>
     expect(callArg.where.plan).not.toBe("professional");
   });
 
+  it("excludes uninstalled-pending-redact shops (uninstalledAt: null) (gc-grd)", async () => {
+    await runPollThemeChanges();
+
+    const callArg = mockDb.shop.findMany.mock.calls[0][0];
+    expect(callArg.where.uninstalledAt).toBeNull();
+  });
+
   it("selects only id and domain fields from shop", async () => {
     await runPollThemeChanges();
 

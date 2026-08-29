@@ -50,8 +50,41 @@ export async function upsertShop(domain: string) {
   return db.shop.upsert({
     where: { domain },
     create: { domain },
-    update: {},
+    // Reinstall-reset: a reinstall re-triggers this on the next authenticated
+    // app load. Clearing uninstalledAt back to null returns the shop to the
+    // active-install state so iterators/metrics count and scan it again (gc-grd).
+    update: { uninstalledAt: null },
   });
+}
+
+/**
+ * Revoke access and mark a shop as uninstalled WITHOUT hard-deleting its data.
+ *
+ * Called by the app/uninstalled webhook. Instead of wiping the Shop + scan data
+ * immediately (which would make the shop/redact 48h GDPR grace window meaningless
+ * and leave no uninstall record), this:
+ *   1. Deletes the shop's Session rows — Sessions use a plain string `shop` field
+ *      (no FK), so they must be deleted explicitly. This revokes access tokens.
+ *   2. Stamps `uninstalledAt` = now() on the Shop row, marking it uninstalled-but-
+ *      pending-redact so iterators/metrics skip it (gc-grd).
+ *
+ * The full wipe (Shop + all scan data via cascade) stays deferred to shop/redact,
+ * which Shopify delivers ~48h after uninstall and which calls deleteShopData.
+ *
+ * Both writes run in a single transaction. Uses updateMany keyed on domain so a
+ * missing shop row is a safe no-op (count 0) rather than a throw — idempotent,
+ * matching the null-safe style of deleteShopData. Returns whether a shop row was
+ * found and updated, so the caller can log a warn on a miss and still return 200.
+ */
+export async function markShopUninstalled(domain: string): Promise<{ found: boolean }> {
+  const [, updateResult] = await db.$transaction([
+    // Sessions use a plain string `shop` field (no FK) — delete explicitly to revoke access.
+    db.session.deleteMany({ where: { shop: domain } }),
+    // updateMany is a no-op (count 0) if the shop row is already gone — idempotent.
+    db.shop.updateMany({ where: { domain }, data: { uninstalledAt: new Date() } }),
+  ]);
+
+  return { found: updateResult.count > 0 };
 }
 
 /**
