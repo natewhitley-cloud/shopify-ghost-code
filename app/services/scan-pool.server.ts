@@ -32,6 +32,7 @@ import Piscina from "piscina";
 
 import { type ScanResult, type ThemeFile } from "./scan-engine.server";
 import { logger } from "../lib/logger.server";
+import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
 
 // ---------------------------------------------------------------------------
 // Pool singleton
@@ -99,6 +100,18 @@ export async function scanThemeFilesInPool(files: ThemeFile[]): Promise<ScanResu
       fileCount: files.length,
     });
 
+    // Record the degraded-worker path for the daily digest's Section-B "worker
+    // fallbacks" count. Best-effort: recordOpsEvent NEVER throws, so it cannot
+    // add a failure mode to the scan path. The TERMINAL failure (if the retry
+    // below also fails) is counted separately as a function_failure by the
+    // scan-theme Inngest job's onFailure — do NOT double-count it here.
+    await recordOpsEvent({
+      eventType: OPS_EVENT_TYPES.WORKER_FALLBACK,
+      key: "scan-pool",
+      message: firstErr instanceof Error ? firstErr.message : String(firstErr),
+      metadata: { event: "worker_retry", fileCount: files.length },
+    });
+
     try {
       const result = await getPool().run(
         { files },
@@ -111,7 +124,10 @@ export async function scanThemeFilesInPool(files: ThemeFile[]): Promise<ScanResu
       // stall the whole multi-tenant process. Re-throwing lets the scan-theme
       // Inngest job mark the scan FAILED (rather than returning empty findings,
       // which would look like a clean theme and wipe prior findings).
-      // TODO(gc-06e.13): record failure-event for daily digest
+      // Worker degradation is already recorded as a WORKER_FALLBACK OpsEvent at
+      // the retry point above; the terminal failure here is counted as a
+      // function_failure by the scan-theme Inngest job's onFailure, so we do not
+      // record a second OpsEvent in this block.
       const message = retryErr instanceof Error ? retryErr.message : String(retryErr);
       logger.error("scan-pool: worker run failed after retry — failing scan (no inline fallback)", {
         service: "scan-pool",

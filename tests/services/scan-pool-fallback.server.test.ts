@@ -56,6 +56,15 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: mockInlineScan,
 }));
 
+// Mock the ops-event model so the WORKER_FALLBACK digest write is observable
+// without touching the database. OPS_EVENT_TYPES is re-exported unchanged.
+const mockRecordOpsEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock("../../app/models/ops-event.server", () => ({
+  OPS_EVENT_TYPES: { WORKER_FALLBACK: "worker_fallback" },
+  recordOpsEvent: mockRecordOpsEvent,
+}));
+
 // ---------------------------------------------------------------------------
 // Fixtures
 // ---------------------------------------------------------------------------
@@ -90,6 +99,8 @@ beforeEach(async () => {
   mockWarn.mockReset();
   mockError.mockReset();
   mockInlineScan.mockReset();
+  mockRecordOpsEvent.mockReset();
+  mockRecordOpsEvent.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -111,6 +122,17 @@ describe("scanThemeFilesInPool — worker-failure path", () => {
     expect(mockRun).toHaveBeenCalledTimes(2); // first attempt + one retry
     expect(mockWarn).toHaveBeenCalledOnce(); // retry warning only
     expect(mockError).not.toHaveBeenCalled();
+
+    // The degraded-worker path records exactly one WORKER_FALLBACK OpsEvent for
+    // the digest's Section-B "worker fallbacks" count — not the terminal failure.
+    expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "worker_fallback",
+        key: "scan-pool",
+        metadata: expect.objectContaining({ fileCount: TEST_FILES.length }),
+      }),
+    );
   });
 
   it("throws after the retry also fails — and never runs the scan inline on the main thread", async () => {
@@ -152,5 +174,7 @@ describe("scanThemeFilesInPool — worker-failure path", () => {
     expect(mockWarn).not.toHaveBeenCalled();
     expect(mockError).not.toHaveBeenCalled();
     expect(mockInlineScan).not.toHaveBeenCalled();
+    // No worker degradation on the happy path — no OpsEvent written.
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
   });
 });
