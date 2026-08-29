@@ -1,21 +1,21 @@
 /**
  * Notification scaffolding for operational alerts.
  *
- * Currently, all notifications are structured log entries only — queryable in
- * Railway log aggregation via the `event` field. The notification channel
- * integrations (Slack, email) are stubbed with TODO comments for future work.
+ * notifyFunctionFailure emits a structured error log (also forwarded to Sentry
+ * by logger.error) AND sends an operator email via the ops-alert channel. The
+ * email path is inert by default: it is a pure no-op unless OPS_ALERT_EMAIL and
+ * RESEND_API_KEY are set in Railway, so local/CI/build stay silent.
  *
  * Design:
  *   - notifyFunctionFailure is async and fire-and-forget from callers.
  *   - Any error thrown inside this function is caught and logged — it must
  *     never propagate back to the Inngest middleware and affect job execution.
- *
- * Future integrations:
- *   - SLACK_WEBHOOK_URL env var → post to a Slack channel
- *   - NOTIFICATION_EMAIL env var → send via a transactional email provider
+ *   - sendOpsAlert itself never throws; the surrounding try/catch is a
+ *     belt-and-suspenders guard for the log path.
  */
 
 import { logger } from "./logger.server";
+import { sendOpsAlert } from "../services/ops-alert.server";
 
 export interface FunctionFailureContext {
   functionId: string;
@@ -23,14 +23,16 @@ export interface FunctionFailureContext {
   error: string;
   runId: string;
   attemptNumber?: number;
+  /** Shop domain, when the failing job carries one. */
+  shop?: string;
 }
 
 /**
  * Notify on an Inngest function failure.
  *
- * Always logs a structured error entry. Additional notification channels
- * (Slack, email) are stubbed below — wire them up when the relevant env vars
- * are configured.
+ * Always logs a structured error entry (which logger.error also forwards to
+ * Sentry) and sends an operator email via the ops-alert channel. The email is
+ * inert unless OPS_ALERT_EMAIL and RESEND_API_KEY are configured in Railway.
  *
  * This is fire-and-forget — callers should not await this in the hot path.
  */
@@ -42,34 +44,25 @@ export async function notifyFunctionFailure(ctx: FunctionFailureContext): Promis
       error: ctx.error,
       runId: ctx.runId,
       attemptNumber: ctx.attemptNumber,
+      shop: ctx.shop,
     });
 
-    // TODO: Slack integration
-    // When SLACK_WEBHOOK_URL is configured, post a message to the ops channel.
-    // Example payload:
-    //   { text: `Inngest function \`${ctx.functionId}\` failed: ${ctx.error}` }
-    // const slackWebhookUrl = process.env.SLACK_WEBHOOK_URL;
-    // if (slackWebhookUrl) {
-    //   await fetch(slackWebhookUrl, {
-    //     method: "POST",
-    //     headers: { "Content-Type": "application/json" },
-    //     body: JSON.stringify({
-    //       text: `Inngest function \`${ctx.functionId}\` failed on run \`${ctx.runId}\`: ${ctx.error}`,
-    //     }),
-    //   });
-    // }
-
-    // TODO: Email integration
-    // When NOTIFICATION_EMAIL is configured, send an alert via a transactional
-    // email provider (e.g. Resend, SendGrid, Postmark).
-    // const notificationEmail = process.env.NOTIFICATION_EMAIL;
-    // if (notificationEmail) {
-    //   await sendEmail({
-    //     to: notificationEmail,
-    //     subject: `[Ghost Code] Inngest function failed: ${ctx.functionId}`,
-    //     text: `Run ID: ${ctx.runId}\nEvent: ${ctx.eventName}\nError: ${ctx.error}`,
-    //   });
-    // }
+    // Operator email alert. sendOpsAlert is a no-op unless the ops-alert env
+    // vars are set, so this is safe and silent in local/CI/build.
+    const subject = `Inngest function failed: ${ctx.functionId}`;
+    const bodyLines = [
+      `Function: ${ctx.functionId}`,
+      `Event: ${ctx.eventName}`,
+      `Run ID: ${ctx.runId}`,
+    ];
+    if (ctx.attemptNumber !== undefined) {
+      bodyLines.push(`Attempt: ${ctx.attemptNumber}`);
+    }
+    if (ctx.shop) {
+      bodyLines.push(`Shop: ${ctx.shop}`);
+    }
+    bodyLines.push(`Error: ${ctx.error}`);
+    await sendOpsAlert(subject, bodyLines.join("\n"));
   } catch (err) {
     // Swallow errors — notification failure must not affect job execution.
     logger.warn("notification-dispatch-failed", {

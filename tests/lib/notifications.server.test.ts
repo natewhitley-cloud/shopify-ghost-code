@@ -13,9 +13,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Module mocks
 // ---------------------------------------------------------------------------
 
-const { mockLoggerError, mockLoggerWarn } = vi.hoisted(() => ({
+const { mockLoggerError, mockLoggerWarn, mockSendOpsAlert } = vi.hoisted(() => ({
   mockLoggerError: vi.fn(),
   mockLoggerWarn: vi.fn(),
+  mockSendOpsAlert: vi.fn().mockResolvedValue({ sent: false, reason: "disabled" }),
 }));
 
 vi.mock("../../app/lib/logger.server", () => ({
@@ -24,6 +25,10 @@ vi.mock("../../app/lib/logger.server", () => ({
     warn: mockLoggerWarn,
     error: mockLoggerError,
   },
+}));
+
+vi.mock("../../app/services/ops-alert.server", () => ({
+  sendOpsAlert: mockSendOpsAlert,
 }));
 
 // ---------------------------------------------------------------------------
@@ -66,6 +71,7 @@ describe("notifyFunctionFailure", () => {
         error: BASE_CTX.error,
         runId: BASE_CTX.runId,
         attemptNumber: undefined,
+        shop: undefined,
       });
     });
 
@@ -89,6 +95,40 @@ describe("notifyFunctionFailure", () => {
 
     it("resolves without throwing on success", async () => {
       await expect(notifyFunctionFailure(BASE_CTX)).resolves.toBeUndefined();
+    });
+  });
+
+  describe("ops-alert email wiring", () => {
+    it("sends an operator alert with a prefix-free subject and the failure context in the body", async () => {
+      await notifyFunctionFailure(BASE_CTX);
+
+      expect(mockSendOpsAlert).toHaveBeenCalledOnce();
+      const [subject, body] = mockSendOpsAlert.mock.calls[0];
+      expect(subject).toBe("Inngest function failed: scan-theme");
+      expect(body).toContain("Function: scan-theme");
+      expect(body).toContain("Event: scan/requested");
+      expect(body).toContain("Run ID: run-abc-123");
+      expect(body).toContain("Error: Shop not found");
+    });
+
+    it("includes attempt number and shop in the body when present", async () => {
+      await notifyFunctionFailure({
+        ...BASE_CTX,
+        attemptNumber: 3,
+        shop: "demo.myshopify.com",
+      });
+
+      const body = mockSendOpsAlert.mock.calls[0][1];
+      expect(body).toContain("Attempt: 3");
+      expect(body).toContain("Shop: demo.myshopify.com");
+    });
+
+    it("omits attempt and shop lines when they are absent", async () => {
+      await notifyFunctionFailure(BASE_CTX);
+
+      const body = mockSendOpsAlert.mock.calls[0][1];
+      expect(body).not.toContain("Attempt:");
+      expect(body).not.toContain("Shop:");
     });
   });
 
