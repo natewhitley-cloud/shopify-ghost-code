@@ -52,6 +52,12 @@ vi.mock("../../inngest/client", () => ({
   },
 }));
 
+// The real withCronHeartbeat wrapper runs the handler then records a heartbeat.
+// Stub the heartbeat write so it does not touch the DB or logger in these tests.
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordCronHeartbeat: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------

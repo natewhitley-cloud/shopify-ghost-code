@@ -241,3 +241,28 @@ model MetricSnapshot {
   avgFindingsPerScan Float
   createdAt          DateTime @default(now())
 }
+
+// ---------------------------------------------------------------------------
+// Ops events — one unified append-only log backing observability features
+// (gc-06e.1). A single table serves the cron heartbeat / dead-man's-switch,
+// the function-failure log, and the future daily ops digest (gc-bny) so we do
+// not proliferate one table per signal.
+//
+//   eventType = "cron_heartbeat"   key = inngest function id (latest = liveness)
+//   eventType = "function_failure" key = inngest function id (counted per window)
+//   eventType = "worker_fallback"  (reserved for a later worker-degradation signal)
+//
+// Append-only and best-effort: writes never block the caller. Reads derive the
+// heartbeat (latest per key) and failure counts (count in a window).
+// ---------------------------------------------------------------------------
+model OpsEvent {
+  id        String   @id @default(cuid())
+  eventType String
+  key       String?
+  message   String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([eventType, createdAt])
+  @@index([key, createdAt])
+}

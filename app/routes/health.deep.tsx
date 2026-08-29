@@ -7,6 +7,7 @@ import type { LoaderFunctionArgs } from "react-router";
 import db from "../db.server";
 import { logger } from "../lib/logger.server";
 import { FIVE_MINUTES_MS } from "../lib/safe-session-storage.server";
+import { CRON_HEARTBEAT_EXPECTATIONS, getStaleCrons } from "../models/ops-event.server";
 import { DEFAULT_STALE_SCAN_THRESHOLDS } from "../models/scan.server";
 
 /**
@@ -81,11 +82,17 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   // --- Read-only checks --------------------------------------------------------
-  const inngestOk = Boolean(process.env.INNGEST_EVENT_KEY && process.env.INNGEST_SIGNING_KEY);
+  // Env-var presence is necessary but NOT sufficient: a present-but-stale
+  // signing key (the documented worst-case — silent key drift stops every cron)
+  // still passes this check. The real liveness signal is heartbeat recency: if a
+  // cron has silently stopped, its heartbeat ages past its interval and the
+  // dead-man's-switch (getStaleCrons) flags it, making inngestOk false below.
+  const inngestEnvOk = Boolean(process.env.INNGEST_EVENT_KEY && process.env.INNGEST_SIGNING_KEY);
 
   let dbOk = false;
   let expiredOffline = 0;
   let stuckPending = 0;
+  let overdueCrons: string[] = [];
   try {
     await probeDb();
     dbOk = true;
@@ -113,15 +120,31 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     stuckPending = await db.scan.count({
       where: { status: ScanStatus.PENDING, createdAt: { lt: pendingCutoff } },
     });
+
+    // Cron dead-man's-switch: flag any cron whose latest heartbeat is older than
+    // its interval * grace. Fail-open on a query error — env presence remains the
+    // signal and a transient recency-probe hiccup must not false-degrade the
+    // deploy smoke gate. (Never-seen crons are not flagged; see getStaleCrons.)
+    try {
+      const stale = await getStaleCrons(CRON_HEARTBEAT_EXPECTATIONS);
+      overdueCrons = stale.map((c) => c.key);
+    } catch (error) {
+      logger.error("Deep health check: cron heartbeat probe failed", {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
   } catch (error) {
     logger.error("Deep health check failed: database unreachable", {
       error: error instanceof Error ? error.message : String(error),
     });
   }
 
+  // Functional Inngest signal: keys must be present AND no cron overdue.
+  const inngestOk = inngestEnvOk && overdueCrons.length === 0;
+
   const checks = {
     db: { ok: dbOk },
-    inngest: { ok: inngestOk },
+    inngest: { ok: inngestOk, envOk: inngestEnvOk, overdueCrons },
     sessions: { expiredOffline },
     scans: { stuckPending },
   };

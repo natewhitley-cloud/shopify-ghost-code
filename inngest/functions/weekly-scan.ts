@@ -25,11 +25,12 @@
 import { PLANS } from "../../app/lib/billing.server";
 import { inngest } from "../client";
 import { fanOutShopChecks } from "../lib/fan-out";
+import { withCronHeartbeat } from "../lib/heartbeat";
 
 export const weeklyScan = inngest.createFunction(
   { id: "weekly-scan", name: "Weekly Scheduled Scan (Coordinator)" },
   { cron: "0 6 * * 0" }, // Sunday 6 AM UTC
-  async ({ step, logger }) => {
+  withCronHeartbeat("weekly-scan", async ({ step, logger }) => {
     // -------------------------------------------------------------------------
     // Step 1: Fetch all Standard-plan shops
     // -------------------------------------------------------------------------
@@ -65,5 +66,5 @@ export const weeklyScan = inngest.createFunction(
     });
 
     return { total: shops.length, dispatched: shops.length };
-  },
+  }),
 );

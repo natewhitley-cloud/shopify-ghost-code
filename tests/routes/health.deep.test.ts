@@ -24,6 +24,7 @@ const mockQueryRaw = vi.fn();
 const mockSessionCount = vi.fn();
 const mockScanCount = vi.fn();
 const mockLoggerError = vi.fn();
+const mockGetStaleCrons = vi.fn();
 
 vi.mock("node:fs", () => ({ readFileSync: vi.fn() }));
 
@@ -45,6 +46,14 @@ vi.mock("../../app/lib/logger.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   DEFAULT_STALE_SCAN_THRESHOLDS: { pendingMaxAgeMinutes: 15, inProgressMaxAgeMinutes: 30 },
+}));
+
+// getStaleCrons is the dead-man's-switch; its overdue/fresh logic is unit-tested
+// in tests/models/ops-event.server.test.ts. Here we drive its return value to
+// verify how the route folds it into inngestOk.
+vi.mock("../../app/models/ops-event.server", () => ({
+  getStaleCrons: (...args: unknown[]) => mockGetStaleCrons(...args),
+  CRON_HEARTBEAT_EXPECTATIONS: [{ key: "watch-stale-scans", intervalMs: 600000 }],
 }));
 
 function makeRequest(headers: Record<string, string> = {}): Request {
@@ -92,6 +101,7 @@ describe("health.deep loader", () => {
     mockQueryRaw.mockResolvedValue([{ "?column?": 1 }]);
     mockSessionCount.mockResolvedValue(0);
     mockScanCount.mockResolvedValue(0);
+    mockGetStaleCrons.mockResolvedValue([]);
     process.env.INNGEST_EVENT_KEY = "evt-key";
     process.env.INNGEST_SIGNING_KEY = "sign-key";
     process.env.HEALTH_CHECK_TOKEN = "secret-token";
@@ -112,7 +122,7 @@ describe("health.deep loader", () => {
     expect(body.status).toBe("ok");
     expect(body.checks).toEqual({
       db: { ok: true },
-      inngest: { ok: true },
+      inngest: { ok: true, envOk: true, overdueCrons: [] },
       sessions: { expiredOffline: 0 },
       scans: { stuckPending: 0 },
     });
@@ -222,6 +232,38 @@ describe("health.deep loader", () => {
     expect(response.status).toBe(503);
     expect(body.status).toBe("degraded");
     expect(body.checks.inngest.ok).toBe(false);
+    // Env presence is still reported separately from the functional signal.
+    expect(body.checks.inngest.envOk).toBe(false);
+  });
+
+  it("returns 503 + degraded when a cron heartbeat is overdue (dead-man's-switch) even with keys present", async () => {
+    mockGetStaleCrons.mockResolvedValue([
+      { key: "watch-stale-scans", intervalMs: 600000, thresholdMs: 1200000, ageMs: 3600000 },
+    ]);
+
+    const response = await callLoader({ "x-health-token": "secret-token" });
+    const body = await response.json();
+
+    expect(response.status).toBe(503);
+    expect(body.status).toBe("degraded");
+    // Keys are present but a cron has silently stopped — the functional signal wins.
+    expect(body.checks.inngest.envOk).toBe(true);
+    expect(body.checks.inngest.ok).toBe(false);
+    expect(body.checks.inngest.overdueCrons).toEqual(["watch-stale-scans"]);
+  });
+
+  it("stays ok (fail-open) when the cron heartbeat probe throws", async () => {
+    mockGetStaleCrons.mockRejectedValue(new Error("groupBy failed"));
+
+    const response = await callLoader({ "x-health-token": "secret-token" });
+    const body = await response.json();
+
+    expect(response.status).toBe(200);
+    expect(body.status).toBe("ok");
+    expect(body.checks.inngest.ok).toBe(true);
+    expect(body.checks.inngest.overdueCrons).toEqual([]);
+    // The probe failure is logged for observability.
+    expect(mockLoggerError).toHaveBeenCalledOnce();
   });
 
   it("returns 503 + error and logs when the DB probe rejects", async () => {

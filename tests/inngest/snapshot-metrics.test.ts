@@ -37,6 +37,12 @@ vi.mock("../../inngest/client", () => ({
   },
 }));
 
+// Spy the heartbeat write so we can assert the real withCronHeartbeat wrapper
+// records a cron_heartbeat after a successful run (without touching the DB).
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordCronHeartbeat: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
@@ -46,6 +52,7 @@ import {
   computeCurrentMetrics,
   createMetricSnapshot,
 } from "../../app/models/metric-snapshot.server";
+import { recordCronHeartbeat } from "../../app/models/ops-event.server";
 import { snapshotMetrics } from "../../inngest/functions/snapshot-metrics";
 import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
@@ -56,6 +63,7 @@ import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 const mockComputeCurrentMetrics = computeCurrentMetrics as ReturnType<typeof vi.fn>;
 const mockCreateMetricSnapshot = createMetricSnapshot as ReturnType<typeof vi.fn>;
 const mockLoggerInfo = (logger as unknown as { info: ReturnType<typeof vi.fn> }).info;
+const mockRecordCronHeartbeat = recordCronHeartbeat as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -147,6 +155,15 @@ describe("snapshotMetrics — logging", () => {
         completionRate: 0.92,
       }),
     );
+  });
+});
+
+describe("snapshotMetrics — cron heartbeat", () => {
+  it("records a cron_heartbeat keyed to the function id after a successful run", async () => {
+    await runSnapshotMetrics();
+
+    expect(mockRecordCronHeartbeat).toHaveBeenCalledOnce();
+    expect(mockRecordCronHeartbeat).toHaveBeenCalledWith("snapshot-metrics");
   });
 });
 

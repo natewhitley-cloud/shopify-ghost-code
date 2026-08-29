@@ -15,6 +15,7 @@
  */
 
 import { logger } from "./logger.server";
+import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
 import { sendOpsAlert } from "../services/ops-alert.server";
 
 export interface FunctionFailureContext {
@@ -63,6 +64,26 @@ export async function notifyFunctionFailure(ctx: FunctionFailureContext): Promis
     }
     bodyLines.push(`Error: ${ctx.error}`);
     await sendOpsAlert(subject, bodyLines.join("\n"));
+
+    // Persist the failure to the unified OpsEvent log. This is what the future
+    // daily ops digest counts (function_failure events per window). recordOpsEvent
+    // is best-effort and never throws, so it is additive to the email + log above.
+    const metadata: Record<string, string | number> = {
+      eventName: ctx.eventName,
+      runId: ctx.runId,
+    };
+    if (ctx.attemptNumber !== undefined) {
+      metadata.attemptNumber = ctx.attemptNumber;
+    }
+    if (ctx.shop) {
+      metadata.shop = ctx.shop;
+    }
+    await recordOpsEvent({
+      eventType: OPS_EVENT_TYPES.FUNCTION_FAILURE,
+      key: ctx.functionId,
+      message: ctx.error,
+      metadata,
+    });
   } catch (err) {
     // Swallow errors — notification failure must not affect job execution.
     logger.warn("notification-dispatch-failed", {

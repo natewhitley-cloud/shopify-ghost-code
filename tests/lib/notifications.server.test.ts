@@ -13,11 +13,14 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Module mocks
 // ---------------------------------------------------------------------------
 
-const { mockLoggerError, mockLoggerWarn, mockSendOpsAlert } = vi.hoisted(() => ({
-  mockLoggerError: vi.fn(),
-  mockLoggerWarn: vi.fn(),
-  mockSendOpsAlert: vi.fn().mockResolvedValue({ sent: false, reason: "disabled" }),
-}));
+const { mockLoggerError, mockLoggerWarn, mockSendOpsAlert, mockRecordOpsEvent } = vi.hoisted(
+  () => ({
+    mockLoggerError: vi.fn(),
+    mockLoggerWarn: vi.fn(),
+    mockSendOpsAlert: vi.fn().mockResolvedValue({ sent: false, reason: "disabled" }),
+    mockRecordOpsEvent: vi.fn().mockResolvedValue(undefined),
+  }),
+);
 
 vi.mock("../../app/lib/logger.server", () => ({
   logger: {
@@ -29,6 +32,15 @@ vi.mock("../../app/lib/logger.server", () => ({
 
 vi.mock("../../app/services/ops-alert.server", () => ({
   sendOpsAlert: mockSendOpsAlert,
+}));
+
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordOpsEvent: mockRecordOpsEvent,
+  OPS_EVENT_TYPES: {
+    CRON_HEARTBEAT: "cron_heartbeat",
+    FUNCTION_FAILURE: "function_failure",
+    WORKER_FALLBACK: "worker_fallback",
+  },
 }));
 
 // ---------------------------------------------------------------------------
@@ -129,6 +141,32 @@ describe("notifyFunctionFailure", () => {
       const body = mockSendOpsAlert.mock.calls[0][1];
       expect(body).not.toContain("Attempt:");
       expect(body).not.toContain("Shop:");
+    });
+  });
+
+  describe("function_failure ops-event log (Part 3)", () => {
+    it("records a function_failure event keyed to the function id with the error as message", async () => {
+      await notifyFunctionFailure(BASE_CTX);
+
+      expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
+      expect(mockRecordOpsEvent).toHaveBeenCalledWith({
+        eventType: "function_failure",
+        key: BASE_CTX.functionId,
+        message: BASE_CTX.error,
+        metadata: { eventName: BASE_CTX.eventName, runId: BASE_CTX.runId },
+      });
+    });
+
+    it("includes attemptNumber and shop in the event metadata when present", async () => {
+      await notifyFunctionFailure({ ...BASE_CTX, attemptNumber: 3, shop: "demo.myshopify.com" });
+
+      const arg = mockRecordOpsEvent.mock.calls[0][0];
+      expect(arg.metadata).toEqual({
+        eventName: BASE_CTX.eventName,
+        runId: BASE_CTX.runId,
+        attemptNumber: 3,
+        shop: "demo.myshopify.com",
+      });
     });
   });
 

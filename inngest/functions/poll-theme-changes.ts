@@ -25,11 +25,12 @@
 import { PLANS } from "../../app/lib/billing.server";
 import { inngest } from "../client";
 import { fanOutShopChecks } from "../lib/fan-out";
+import { withCronHeartbeat } from "../lib/heartbeat";
 
 export const pollThemeChanges = inngest.createFunction(
   { id: "poll-theme-changes", name: "Daily Theme Change Poll (Coordinator)" },
   { cron: "0 6 * * *" },
-  async ({ step, logger }) => {
+  withCronHeartbeat("poll-theme-changes", async ({ step, logger }) => {
     // -------------------------------------------------------------------------
     // Step 0: Expire stale scans stuck in PENDING/IN_PROGRESS past their
     // per-status thresholds (PENDING aged from createdAt, IN_PROGRESS from
@@ -82,5 +83,5 @@ export const pollThemeChanges = inngest.createFunction(
     });
 
     return { total: shops.length, dispatched: shops.length };
-  },
+  }),
 );

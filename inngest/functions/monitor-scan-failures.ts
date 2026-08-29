@@ -17,6 +17,7 @@
 
 import { logger } from "../../app/lib/logger.server";
 import { inngest } from "../client";
+import { withCronHeartbeat } from "../lib/heartbeat";
 
 const WINDOW_HOURS = 24;
 const WARN_THRESHOLD = 0.1; // 10%
@@ -25,7 +26,7 @@ const CRITICAL_THRESHOLD = 0.25; // 25%
 export const monitorScanFailures = inngest.createFunction(
   { id: "monitor-scan-failures", name: "Scan Failure Rate Monitor" },
   { cron: "0 */6 * * *" }, // every 6 hours
-  async ({ step }) => {
+  withCronHeartbeat("monitor-scan-failures", async ({ step }) => {
     const stats = await step.run("compute-failure-rate", async () => {
       const { getFailureRateStats } = await import("../../app/models/scan.server");
       return getFailureRateStats(WINDOW_HOURS);
@@ -43,5 +44,5 @@ export const monitorScanFailures = inngest.createFunction(
     }
 
     return stats;
-  },
+  }),
 );

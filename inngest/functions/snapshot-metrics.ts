@@ -13,11 +13,12 @@
 
 import { logger } from "../../app/lib/logger.server";
 import { inngest } from "../client";
+import { withCronHeartbeat } from "../lib/heartbeat";
 
 export const snapshotMetrics = inngest.createFunction(
   { id: "snapshot-metrics", name: "Daily Metrics Snapshot" },
   { cron: "0 6 * * *" },
-  async ({ step }) => {
+  withCronHeartbeat("snapshot-metrics", async ({ step }) => {
     const snapshot = await step.run("compute-and-store-metrics", async () => {
       const { computeCurrentMetrics, createMetricSnapshot } =
         await import("../../app/models/metric-snapshot.server");
@@ -37,5 +38,5 @@ export const snapshotMetrics = inngest.createFunction(
     });
 
     return snapshot;
-  },
+  }),
 );

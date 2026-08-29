@@ -33,6 +33,7 @@
 import { logger } from "../../app/lib/logger.server";
 import { DEFAULT_STALE_SCAN_THRESHOLDS } from "../../app/models/scan.server";
 import { inngest } from "../client";
+import { withCronHeartbeat } from "../lib/heartbeat";
 
 // PENDING scans are aged from createdAt; IN_PROGRESS scans from startedAt with a
 // longer threshold to tolerate rate-limit sleeps + Inngest retry backoff on
@@ -43,7 +44,7 @@ const STALE_THRESHOLDS = DEFAULT_STALE_SCAN_THRESHOLDS;
 export const watchStaleScans = inngest.createFunction(
   { id: "watch-stale-scans", name: "Watch for Stale Scans" },
   { cron: "*/10 * * * *" }, // every 10 minutes
-  async ({ step }) => {
+  withCronHeartbeat("watch-stale-scans", async ({ step }) => {
     // Step 1: Count qualifying stale scans without modifying anything.
     // If none exist we short-circuit to avoid an unnecessary UPDATE query.
     const staleCount = await step.run("count-stale-scans", async () => {
@@ -70,5 +71,5 @@ export const watchStaleScans = inngest.createFunction(
     });
 
     return { staleCount, expiredCount };
-  },
+  }),
 );
