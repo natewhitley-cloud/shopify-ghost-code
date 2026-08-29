@@ -11,11 +11,18 @@
  *   In prod, the Dockerfile build stage runs `npm run build:worker` after
  *   `react-router build`, and the runtime stage copies the full build/ dir.
  *
- * Fallback:
- *   If the pool throws (worker missing, spawn failure, task timeout), a warning
- *   is logged and scanThemeFiles() is called inline.  This ensures a scan never
- *   fails outright due to worker infrastructure.  The fallback is logged
- *   distinctly so a broken worker path is never silently masked.
+ * Failure handling (gc-06e.2):
+ *   If the pool throws (worker missing, spawn failure, task timeout), the run is
+ *   retried ONCE in the pool with a stricter timeout.  If it still fails the
+ *   error is escalated (logger.error) and re-thrown.  We deliberately do NOT
+ *   re-run scanThemeFiles() inline on the main thread: that CPU-bound scan can
+ *   catastrophically backtrack on a pathological theme file and, run inline,
+ *   would stall the entire multi-tenant event loop (auth, health checks, other
+ *   shops' scans, GDPR webhooks).  Re-throwing lets the caller (the scan-theme
+ *   Inngest job) mark the scan FAILED via its existing failure path rather than
+ *   returning an empty result that would look like a clean theme and wipe prior
+ *   findings.  scanThemeFiles is intentionally not imported here so an inline
+ *   main-thread fallback is impossible.
  */
 
 import os from "node:os";
@@ -23,7 +30,7 @@ import { join } from "node:path";
 
 import Piscina from "piscina";
 
-import { scanThemeFiles, type ScanResult, type ThemeFile } from "./scan-engine.server";
+import { type ScanResult, type ThemeFile } from "./scan-engine.server";
 import { logger } from "../lib/logger.server";
 
 // ---------------------------------------------------------------------------
@@ -41,6 +48,13 @@ let pool: Piscina | null = null;
 function workerFilePath(): string {
   return join(process.cwd(), "build", "server", "scan-engine.worker.js");
 }
+
+// First-attempt ceiling: scans are ~100ms, so 30s is a generous headroom for a
+// cold worker or a large theme.  The single retry uses a stricter ceiling since
+// a healthy re-run should complete quickly; a slow retry signals a genuinely
+// pathological input and should fail fast rather than tie up a worker.
+const WORKER_TIMEOUT_MS = 30_000;
+const WORKER_RETRY_TIMEOUT_MS = 10_000;
 
 function getPool(): Piscina {
   if (!pool) {
@@ -63,25 +77,53 @@ function getPool(): Piscina {
 /**
  * Run scanThemeFiles in a worker thread from the pool.
  *
- * Falls back to the inline synchronous scan if the pool fails (missing worker
- * file, spawn error, task timeout).  Fallback is logged as a warning with a
- * distinct message so ops can detect it without mistaking it for a silent skip.
+ * On worker failure (missing worker file, spawn error, task timeout) the run is
+ * retried ONCE in the pool with a stricter timeout.  If the retry also fails the
+ * error is escalated to logger.error and re-thrown — it is NEVER re-run inline on
+ * the main thread (see the module header).  The caller marks the scan FAILED.
  */
 export async function scanThemeFilesInPool(files: ThemeFile[]): Promise<ScanResult> {
   try {
     const result = await getPool().run(
       { files },
-      { signal: AbortSignal.timeout(30_000) }, // generous ceiling; scans are ~100ms
+      { signal: AbortSignal.timeout(WORKER_TIMEOUT_MS) },
     );
     return result as ScanResult;
-  } catch (err) {
-    logger.warn("scan-pool: worker run failed — falling back to inline scan", {
+  } catch (firstErr) {
+    // Distinct message so ops can detect a degraded worker path without
+    // mistaking it for a silent skip.
+    logger.warn("scan-pool: worker run failed — retrying once in the pool", {
       service: "scan-pool",
-      event: "worker_fallback",
-      error: err instanceof Error ? err.message : String(err),
+      event: "worker_retry",
+      error: firstErr instanceof Error ? firstErr.message : String(firstErr),
       fileCount: files.length,
     });
-    return scanThemeFiles(files);
+
+    try {
+      const result = await getPool().run(
+        { files },
+        { signal: AbortSignal.timeout(WORKER_RETRY_TIMEOUT_MS) },
+      );
+      return result as ScanResult;
+    } catch (retryErr) {
+      // Escalate and fail: do NOT fall back to an inline main-thread scan. The
+      // scan is CPU-bound and can backtrack pathologically; run inline it would
+      // stall the whole multi-tenant process. Re-throwing lets the scan-theme
+      // Inngest job mark the scan FAILED (rather than returning empty findings,
+      // which would look like a clean theme and wipe prior findings).
+      // TODO(gc-06e.13): record failure-event for daily digest
+      const message = retryErr instanceof Error ? retryErr.message : String(retryErr);
+      logger.error("scan-pool: worker run failed after retry — failing scan (no inline fallback)", {
+        service: "scan-pool",
+        event: "worker_failed",
+        error: message,
+        fileCount: files.length,
+      });
+      throw new Error(
+        `scan-pool: theme scan failed in worker after retry (${message}) — ` +
+          "refusing inline main-thread fallback to protect the event loop",
+      );
+    }
   }
 }
 
