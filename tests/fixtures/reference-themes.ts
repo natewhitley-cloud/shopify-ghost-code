@@ -19,6 +19,34 @@
  * tolerate: `og_*` local assigns, `page_image[.width|.height]`, `request.*`,
  * `settings.*`, `product.*`, `cart.*`, `current_tags`, `current_page`,
  * `shop.*`, and the `default` / `escape` / `image_url` / `t` filters.
+ *
+ * v1.3 / v1.4 detector surface (gc-06e.3)
+ * ---------------------------------------
+ * The DAWN_CANONICAL / DAWN_PRECONNECT / DAWN_FONT / DAWN_AJAX constants below
+ * are copied VERBATIM from github.com/Shopify/dawn @ `main` (fetched 2026-08) to
+ * lock GHOST_CANONICAL / GHOST_PRECONNECT / GHOST_FONT / GHOST_AJAX against the
+ * same LOG-1 class of false positive on legitimate stock-theme code:
+ *   - canonical: `layout/theme.liquid` `<link rel="canonical" href="{{ canonical_url }}">`
+ *     (Dawn has no canonical in `snippets/meta-tags.liquid`; it lives in the layout head).
+ *   - preconnect: `layout/theme.liquid` `<link rel="preconnect" href="https://fonts.shopifycdn.com" ...>`
+ *     (the sole preconnect Dawn ships; a Shopify-owned font host, never an app CDN).
+ *   - fonts: Dawn ships NO literal `@font-face { ... }` in `assets/base.css`. It
+ *     generates the @font-face rules at render time via the `font_face` Liquid
+ *     filter inside a `{% style %}` block in `layout/theme.liquid`, and preloads
+ *     the woff2 via `<link rel="preload" as="font" href="{{ ... | font_url }}">`.
+ *     DAWN_FONT captures both, verbatim: the real markup detectGhostFont must
+ *     tolerate (no literal `@font-face {`, no hardcoded font-service URL).
+ *   - ajax: every Dawn network call (`assets/global.js`, `cart.js`,
+ *     `predictive-search.js`, `product-form.js`) uses a RELATIVE, route-variable
+ *     template literal (`fetch(`${routes.cart_add_url}`, ...)`), never an
+ *     absolute `https://` URL. DAWN_AJAX collects these verbatim call sites: the
+ *     real markup detectGhostAjax must not flag. (These assets are also outside
+ *     Ghost Code's scannable set, so the risk is app-injected inline `<script>`
+ *     using the same syntax; the detector is exercised on that syntax directly.)
+ *
+ * Provenance note: tokens (tag names, attributes, Liquid filters, route
+ * variables, URLs) are verbatim; insignificant whitespace from multi-attribute
+ * tags may be normalized to a single line by the fetch, never invented.
  */
 
 /** Dawn `layout/theme.liquid` — the `<title>` block, verbatim. */
@@ -70,9 +98,55 @@ export const DAWN_META_TAGS = `{%- liquid
 <meta name="twitter:title" content="{{ og_title | escape }}">
 <meta name="twitter:description" content="{{ og_description | escape }}">`;
 
+/** Dawn `layout/theme.liquid` canonical link, verbatim. */
+export const DAWN_CANONICAL = `<link rel="canonical" href="{{ canonical_url }}">`;
+
+/** Dawn `layout/theme.liquid` sole preconnect hint, verbatim. */
+export const DAWN_PRECONNECT = `<link rel="preconnect" href="https://fonts.shopifycdn.com" crossorigin>`;
+
 /**
- * A theme's head SEO surface: the title block plus the OG/Twitter meta tags.
- * `title` feeds detectGhostTitle, `metaTags` feeds detectGhostOg.
+ * Dawn `layout/theme.liquid` font preload links plus the `{% style %}`
+ * block that renders @font-face rules via the `font_face` Liquid filter,
+ * verbatim. Dawn ships no literal `@font-face { ... }` in `assets/base.css`;
+ * this filter-based generation is the real markup detectGhostFont must tolerate.
+ */
+export const DAWN_FONT = `<link rel="preload" as="font" href="{{ settings.type_body_font | font_url }}" type="font/woff2" crossorigin>
+<link rel="preload" as="font" href="{{ settings.type_header_font | font_url }}" type="font/woff2" crossorigin>
+
+{% style %}
+  {{ settings.type_body_font | font_face: font_display: 'swap' }}
+  {{ body_font_bold | font_face: font_display: 'swap' }}
+  {{ body_font_italic | font_face: font_display: 'swap' }}
+  {{ body_font_bold_italic | font_face: font_display: 'swap' }}
+  {{ settings.type_header_font | font_face: font_display: 'swap' }}
+{% endstyle %}`;
+
+/**
+ * Dawn asset JS: real `fetch(...)` call sites from `assets/product-form.js`,
+ * `cart.js`, `global.js`, and `predictive-search.js`, verbatim. Every one is a
+ * RELATIVE, route-variable template literal (never an absolute `https://` URL),
+ * which is exactly the shape detectGhostAjax must not flag.
+ */
+export const DAWN_AJAX = `fetch(\`\${routes.cart_add_url}\`, config)
+
+fetch(\`\${routes.cart_change_url}\`, { ...fetchConfig(), ...{ body } })
+
+fetch(\`\${routes.cart_update_url}\`, { ...fetchConfig(), ...{ body } })
+
+fetch(\`\${routes.cart_url}.json\`)
+
+fetch(\`\${routes.predictive_search_url}?q=\${encodeURIComponent(searchTerm)}&section_id=predictive-search\`, {
+  signal: this.abortController.signal,
+})
+
+fetch(\`\${productUrl}?section_id=bulk-quick-order-list\`)`;
+
+/**
+ * A theme's head SEO + performance surface plus its AJAX call sites.
+ * `title` feeds detectGhostTitle, `metaTags` feeds detectGhostOg,
+ * `canonical` feeds detectGhostCanonical, `preconnect` feeds
+ * detectGhostPreconnect, `fontFace` feeds detectGhostFont, and `ajax` feeds
+ * detectGhostAjax.
  */
 export interface ReferenceThemeFixture {
   /** Theme name as shipped in the Shopify Theme Store. */
@@ -81,16 +155,33 @@ export interface ReferenceThemeFixture {
   title: string;
   /** `snippets/meta-tags.liquid` markup. */
   metaTags: string;
+  /** `layout/theme.liquid` canonical link markup. */
+  canonical: string;
+  /** `layout/theme.liquid` preconnect hint markup. */
+  preconnect: string;
+  /** `layout/theme.liquid` font preload links + `font_face` @font-face markup. */
+  fontFace: string;
+  /** Real `fetch(...)` call sites from Dawn's JS assets. */
+  ajax: string;
 }
 
 /**
  * The five free reference themes named in the LOG-1 remediation. Dawn is the
  * verified upstream; the others ship Shopify's identical canonical markup.
  */
+const DAWN_FOUNDATION = {
+  title: DAWN_TITLE,
+  metaTags: DAWN_META_TAGS,
+  canonical: DAWN_CANONICAL,
+  preconnect: DAWN_PRECONNECT,
+  fontFace: DAWN_FONT,
+  ajax: DAWN_AJAX,
+};
+
 export const REFERENCE_THEMES: ReferenceThemeFixture[] = [
-  { name: "Dawn", title: DAWN_TITLE, metaTags: DAWN_META_TAGS },
-  { name: "Sense", title: DAWN_TITLE, metaTags: DAWN_META_TAGS },
-  { name: "Refresh", title: DAWN_TITLE, metaTags: DAWN_META_TAGS },
-  { name: "Craft", title: DAWN_TITLE, metaTags: DAWN_META_TAGS },
-  { name: "Spotlight", title: DAWN_TITLE, metaTags: DAWN_META_TAGS },
+  { name: "Dawn", ...DAWN_FOUNDATION },
+  { name: "Sense", ...DAWN_FOUNDATION },
+  { name: "Refresh", ...DAWN_FOUNDATION },
+  { name: "Craft", ...DAWN_FOUNDATION },
+  { name: "Spotlight", ...DAWN_FOUNDATION },
 ];

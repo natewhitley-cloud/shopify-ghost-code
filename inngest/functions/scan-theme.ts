@@ -49,6 +49,7 @@ import {
   updateScanStatus,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
+import { MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
@@ -219,7 +220,21 @@ export const scanTheme = inngest.createFunction(
           fileCount: files.length,
         });
 
-        const { findings, unknownScripts } = await scanThemeFilesInPool(files);
+        const { findings, unknownScripts, skippedFiles } = await scanThemeFilesInPool(files);
+
+        // Surface any files skipped for exceeding the per-file size cap so the
+        // drop is never silent (gc-06e.2). Real theme Liquid files are far under
+        // the cap; a skip here is anomalous and worth an ops signal.
+        if (skippedFiles && skippedFiles.length > 0) {
+          logger.warn("theme scan skipped oversized files", {
+            function: "scan-theme",
+            event: "files_skipped_oversized",
+            shopId,
+            cap: MAX_SCANNABLE_FILE_BYTES,
+            skippedFiles,
+          });
+        }
+
         logger.info("theme scan complete", {
           function: "scan-theme",
           event: "scan_complete",

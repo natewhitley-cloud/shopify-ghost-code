@@ -83,10 +83,77 @@ export type UnknownExternalResource = {
   codeSnippet: string;
 };
 
+/** A scannable file skipped because it exceeded the per-file size cap. */
+export type SkippedFile = { filename: string; size: number };
+
 export type ScanResult = {
   findings: CreateFindingInput[];
   unknownScripts: UnknownExternalResource[];
+  // Scannable files skipped by the per-file detectors because their content
+  // exceeded MAX_SCANNABLE_FILE_BYTES. Surfaced so the caller can log the skip
+  // (no silent drops). Optional for backward compatibility with ScanResult
+  // literals in tests; scanThemeFiles always populates it (possibly empty).
+  skippedFiles?: SkippedFile[];
 };
+
+// ---------------------------------------------------------------------------
+// File-size guard + ReDoS-safe tag extraction
+// ---------------------------------------------------------------------------
+
+/**
+ * Maximum size (in characters) of a single scannable file that the per-file
+ * regex detectors will process (gc-06e.2).
+ *
+ * Real Shopify theme Liquid files (templates/, sections/, snippets/, layout/)
+ * are well under this: Dawn's largest Liquid file is ~70 KB, and even
+ * page-builder apps rarely emit a single Liquid file past a few hundred KB.
+ * 1 MB is a deliberately generous ceiling — large enough that no legitimate
+ * theme asset is ever dropped, small enough to bound worst-case detector cost
+ * on a pathological/oversized file. Files above the cap are skipped for the
+ * per-file detectors and reported in ScanResult.skippedFiles (no silent drop).
+ */
+export const MAX_SCANNABLE_FILE_BYTES = 1_000_000;
+
+/**
+ * Extract complete HTML tags (`<link ...>`, `<meta ...>`, `<script ...>`) from
+ * `content` in a single linear left-to-right pass, returning each tag's text and
+ * its byte offset in `content`.
+ *
+ * This is the ReDoS-safe substitute for scanning the whole file with a
+ * `<tag[^>]+ ... [^>]* ...>` regex. Those adjacent `[^>]` quantifiers force the
+ * engine to re-scan a tag's interior from every `<tag` start position — O(n^2),
+ * effectively a process hang, on pathological input such as thousands of
+ * unterminated `<link` fragments. Locating each tag with indexOf and slicing to
+ * the next `>` is O(n) and never backtracks; detectors then apply their
+ * (unchanged) attribute regexes to the short, bounded tag text, where the same
+ * patterns cannot blow up.
+ *
+ * Semantics match the previous whole-content regexes exactly:
+ *   - The prefix match is case-insensitive and NOT word-boundary anchored, so a
+ *     `<link[^>]+` pattern and `<linkfoo ...>` are both captured (as before).
+ *   - A `<tag` with no following `>` yields no tag — the old regex could not
+ *     complete a match without its trailing `[^>]*>` either.
+ *   - Tags are non-overlapping and left-to-right, mirroring the global regex's
+ *     lastIndex advancement, so per-tag matching reproduces the original set of
+ *     matches and their offsets. (The one theoretical divergence — a raw `>`
+ *     inside a quoted attribute value — does not occur in real theme markup and
+ *     is not something the old `[^>]` structural quantifiers tolerated either.)
+ */
+function extractTags(content: string, tagPrefix: string): Array<{ tag: string; offset: number }> {
+  const tags: Array<{ tag: string; offset: number }> = [];
+  const haystack = content.toLowerCase();
+  const needle = tagPrefix.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const start = haystack.indexOf(needle, from);
+    if (start === -1) break;
+    const close = content.indexOf(">", start + needle.length);
+    if (close === -1) break; // unterminated tag — no complete match possible
+    tags.push({ tag: content.slice(start, close + 1), offset: start });
+    from = close + 1;
+  }
+  return tags;
+}
 
 // ---------------------------------------------------------------------------
 // File filtering
@@ -231,19 +298,22 @@ const SCRIPT_SRC_RE = /<script[^>]+src\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*
 export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  // Run against full file content so multi-line tags like:
+  // Isolate each <script ...> tag first (linear, non-backtracking), then apply
+  // SCRIPT_SRC_RE to the bounded tag text. Multi-line tags like:
   //   <script
   //     src="https://static.klaviyo.com/...">
-  // are matched. lineNumberAtOffset maps the match position back to a line.
-  let match: RegExpExecArray | null;
-  SCRIPT_SRC_RE.lastIndex = 0;
+  // are still matched because a tag spans to its closing `>`. lineNumberAtOffset
+  // maps the match position back to a line.
+  for (const { tag, offset } of extractTags(file.content, "<script")) {
+    SCRIPT_SRC_RE.lastIndex = 0;
+    const match = SCRIPT_SRC_RE.exec(tag);
+    if (!match) continue;
 
-  while ((match = SCRIPT_SRC_RE.exec(file.content)) !== null) {
     const url = match[1];
     const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
     if (!appName) continue;
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_SCRIPT, codeSnippet);
 
@@ -273,15 +343,17 @@ const LINK_STYLESHEET_RE =
 export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  // Run against full file content so multi-line tags like:
+  // Isolate each <link ...> tag first (linear, non-backtracking), then apply
+  // LINK_STYLESHEET_RE to the bounded tag text. Multi-line tags like:
   //   <link
   //     rel="stylesheet"
   //     href="https://cdn.judge.me/...">
-  // are matched. lineNumberAtOffset maps the match position back to a line.
-  let match: RegExpExecArray | null;
-  LINK_STYLESHEET_RE.lastIndex = 0;
+  // are still matched. lineNumberAtOffset maps the match position back to a line.
+  for (const { tag, offset } of extractTags(file.content, "<link")) {
+    LINK_STYLESHEET_RE.lastIndex = 0;
+    const match = LINK_STYLESHEET_RE.exec(tag);
+    if (!match) continue;
 
-  while ((match = LINK_STYLESHEET_RE.exec(file.content)) !== null) {
     // Group 1 captures href when rel comes first; group 3 when href comes first.
     const url = match[1] ?? match[3];
     if (!url) continue;
@@ -289,7 +361,7 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
     const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
     if (!appName) continue;
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_STYLE, codeSnippet);
 
@@ -454,19 +526,25 @@ const HREFLANG_RE_2 =
 export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  // Run against full file content so multi-line <link> tags are matched.
-  // lineNumberAtOffset maps each match offset back to a 1-based line number.
-  let match: RegExpExecArray | null;
+  // Isolate each <link ...> tag first (linear, non-backtracking), then apply the
+  // hreflang patterns to the bounded tag text. Multi-line <link> tags are still
+  // matched. lineNumberAtOffset maps each match offset back to a 1-based line.
+  // Two passes preserve the original finding order (all pattern-1 hits, then all
+  // pattern-2 hits) before the dedup filter below.
+  const linkTags = extractTags(file.content, "<link");
 
   // Pattern 1: hreflang before href — groups: [1]=lang, [2]=href
-  HREFLANG_RE_1.lastIndex = 0;
-  while ((match = HREFLANG_RE_1.exec(file.content)) !== null) {
+  for (const { tag, offset } of linkTags) {
+    HREFLANG_RE_1.lastIndex = 0;
+    const match = HREFLANG_RE_1.exec(tag);
+    if (!match) continue;
+
     const lang = match[1];
     const href = match[2];
     const appName = identifyAppFromHrefLang(href);
     if (!appName) continue;
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_HREFLANG, codeSnippet);
 
@@ -482,14 +560,17 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
   }
 
   // Pattern 2: href before hreflang — groups: [1]=href, [2]=lang
-  HREFLANG_RE_2.lastIndex = 0;
-  while ((match = HREFLANG_RE_2.exec(file.content)) !== null) {
+  for (const { tag, offset } of linkTags) {
+    HREFLANG_RE_2.lastIndex = 0;
+    const match = HREFLANG_RE_2.exec(tag);
+    if (!match) continue;
+
     const href = match[1];
     const lang = match[2];
     const appName = identifyAppFromHrefLang(href);
     if (!appName) continue;
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_HREFLANG, codeSnippet);
 
@@ -592,10 +673,13 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
     // conditional keyword (handles the single-line `{% if %}...<meta>...{% endif %}` pattern)
     if (conditionalDepth > 0 || LIQUID_CONDITIONAL_RE.test(text)) continue;
 
-    let match: RegExpExecArray | null;
-    META_TAG_RE.lastIndex = 0;
+    // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
+    // META_TAG_RE to the bounded tag text.
+    for (const { tag } of extractTags(text, "<meta")) {
+      META_TAG_RE.lastIndex = 0;
+      const match = META_TAG_RE.exec(tag);
+      if (!match) continue;
 
-    while ((match = META_TAG_RE.exec(text)) !== null) {
       const attrValue = match[1].toLowerCase();
 
       // Skip properties that are intentionally repeatable per the OG spec
@@ -949,10 +1033,13 @@ export function detectGhostRobots(file: ThemeFile): CreateFindingInput[] {
     // Skip lines with Liquid conditionals — these are theme-native logic
     if (LIQUID_CONDITIONAL_RE.test(text)) continue;
 
-    let match: RegExpExecArray | null;
-    META_ROBOTS_RE.lastIndex = 0;
+    // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
+    // META_ROBOTS_RE to the bounded tag text.
+    for (const { tag } of extractTags(text, "<meta")) {
+      META_ROBOTS_RE.lastIndex = 0;
+      const match = META_ROBOTS_RE.exec(tag);
+      if (!match) continue;
 
-    while ((match = META_ROBOTS_RE.exec(text)) !== null) {
       // Group 1 captures content when name comes first; group 2 when content comes first.
       const contentValue = match[1] ?? match[2];
       if (!contentValue) continue;
@@ -992,10 +1079,11 @@ export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[
   const unknowns: UnknownExternalResource[] = [];
 
   for (const { lineNumber, text } of lines(file.content)) {
-    let match: RegExpExecArray | null;
-    SCRIPT_SRC_RE.lastIndex = 0;
+    for (const { tag } of extractTags(text, "<script")) {
+      SCRIPT_SRC_RE.lastIndex = 0;
+      const match = SCRIPT_SRC_RE.exec(tag);
+      if (!match) continue;
 
-    while ((match = SCRIPT_SRC_RE.exec(text)) !== null) {
       const url = match[1];
       const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
       if (appName) continue; // Already identified — skip
@@ -1026,10 +1114,11 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
   const unknowns: UnknownExternalResource[] = [];
 
   for (const { lineNumber, text } of lines(file.content)) {
-    let match: RegExpExecArray | null;
-    LINK_STYLESHEET_RE.lastIndex = 0;
+    for (const { tag } of extractTags(text, "<link")) {
+      LINK_STYLESHEET_RE.lastIndex = 0;
+      const match = LINK_STYLESHEET_RE.exec(tag);
+      if (!match) continue;
 
-    while ((match = LINK_STYLESHEET_RE.exec(text)) !== null) {
       const url = match[1] ?? match[3];
       if (!url) continue;
 
@@ -1321,10 +1410,15 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
     if (LIQUID_CONDITIONAL_RE.test(text)) conditionalLines.add(lineNumber);
   }
 
-  let collectMatch: RegExpExecArray | null;
-  CANONICAL_RE.lastIndex = 0;
-  while ((collectMatch = CANONICAL_RE.exec(file.content)) !== null) {
-    const lineNumber = lineNumberAtOffset(file.content, collectMatch.index);
+  // Isolate each <link ...> tag first (linear, non-backtracking), then apply
+  // CANONICAL_RE to the bounded tag text. Multi-line / prettier-wrapped tags are
+  // still matched. lineNumberAtOffset maps each match offset back to a line.
+  for (const { tag, offset } of extractTags(file.content, "<link")) {
+    CANONICAL_RE.lastIndex = 0;
+    const collectMatch = CANONICAL_RE.exec(tag);
+    if (!collectMatch) continue;
+
+    const lineNumber = lineNumberAtOffset(file.content, offset + collectMatch.index);
     if (commentSkipLines.has(lineNumber)) continue; // inside {% comment %} block
     if (conditionalLines.has(lineNumber)) continue; // theme-native conditional logic
 
@@ -1757,15 +1851,19 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
     if (/\{%-?\s*endcomment\s*-?%\}/.test(line)) insideComment = false;
   }
 
-  let match: RegExpExecArray | null;
-  OG_META_RE.lastIndex = 0;
+  // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
+  // OG_META_RE to the bounded tag text. lineNumberAtOffset maps the match offset
+  // back to a line.
+  for (const { tag, offset } of extractTags(file.content, "<meta")) {
+    OG_META_RE.lastIndex = 0;
+    const match = OG_META_RE.exec(tag);
+    if (!match) continue;
 
-  while ((match = OG_META_RE.exec(file.content)) !== null) {
     // Group 1 captures og:* via property, group 2 captures twitter:* via name
     const property = match[1] ?? match[2];
     if (!property) continue;
 
-    const matchLineNumber = lineNumberAtOffset(file.content, match.index);
+    const matchLineNumber = lineNumberAtOffset(file.content, offset + match.index);
 
     // Skip OG tags inside Liquid comment blocks
     if (commentedLines.has(matchLineNumber)) continue;
@@ -1918,14 +2016,16 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
     if (LIQUID_CONDITIONAL_RE.test(text)) skipLines.add(lineNumber);
   }
 
-  // Run against full file content so multi-line <link> tags (e.g. from
-  // Prettier-formatted theme files) are matched. lineNumberAtOffset maps each
-  // match offset back to a 1-based line number for skip-set checking.
-  let match: RegExpExecArray | null;
-  PRECONNECT_RE.lastIndex = 0;
+  // Isolate each <link ...> tag first (linear, non-backtracking), then apply
+  // PRECONNECT_RE to the bounded tag text. Multi-line <link> tags (e.g. from
+  // Prettier-formatted theme files) are still matched. lineNumberAtOffset maps
+  // each match offset back to a 1-based line number for skip-set checking.
+  for (const { tag, offset } of extractTags(file.content, "<link")) {
+    PRECONNECT_RE.lastIndex = 0;
+    const match = PRECONNECT_RE.exec(tag);
+    if (!match) continue;
 
-  while ((match = PRECONNECT_RE.exec(file.content)) !== null) {
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
     if (skipLines.has(lineNumber)) continue;
 
     // Group 2 captures href when rel comes first; group 3 when href comes first.
@@ -2041,11 +2141,14 @@ export function detectGhostFont(file: ThemeFile): CreateFindingInput[] {
       });
     }
 
-    // Check for font service <link> tags
-    FONT_LINK_RE.lastIndex = 0;
+    // Check for font service <link> tags — isolate each <link ...> tag first
+    // (linear, non-backtracking), then apply FONT_LINK_RE to the bounded tag.
+    for (const { tag } of extractTags(text, "<link")) {
+      FONT_LINK_RE.lastIndex = 0;
+      const linkMatch = FONT_LINK_RE.exec(tag);
+      if (!linkMatch) continue;
 
-    while ((match = FONT_LINK_RE.exec(text)) !== null) {
-      const href = match[1] ?? match[2];
+      const href = linkMatch[1] ?? linkMatch[2];
       if (!href) continue;
 
       const codeSnippet = buildSnippet(file.content, lineNumber);
@@ -2222,10 +2325,21 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
 export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   const findings: CreateFindingInput[] = [];
   const unknownScripts: UnknownExternalResource[] = [];
+  const skippedFiles: SkippedFile[] = [];
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
     if (!isScannableFile(file.filename)) continue;
+
+    // File-size guard (gc-06e.2): a single oversized scannable file is anomalous
+    // (real theme Liquid files are far under MAX_SCANNABLE_FILE_BYTES) and would
+    // let a pathological blob dominate detector cost. Skip the per-file detectors
+    // for it and record the skip so the caller logs it — never a silent drop. The
+    // cross-file passes below still include the file (they are not regex-heavy).
+    if (file.content.length > MAX_SCANNABLE_FILE_BYTES) {
+      skippedFiles.push({ filename: file.filename, size: file.content.length });
+      continue;
+    }
 
     findings.push(...detectGhostScripts(file));
     findings.push(...detectGhostStyles(file));
@@ -2285,5 +2399,5 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // Pass 4: page builder layout detection
   findings.push(...detectGhostLayouts(files));
 
-  return { findings, unknownScripts };
+  return { findings, unknownScripts, skippedFiles };
 }

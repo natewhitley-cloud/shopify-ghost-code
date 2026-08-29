@@ -3110,6 +3110,63 @@ describe("reference-theme golden files — no GHOST_TITLE/GHOST_OG false positiv
 });
 
 // ---------------------------------------------------------------------------
+// v1.3 / v1.4 detectors (gc-06e.3): the same real-stock-theme golden-file guard
+// applied to detectGhostCanonical / detectGhostPreconnect / detectGhostFont /
+// detectGhostAjax. These detectors had ZERO coverage against real Dawn markup,
+// the exact LOG-1 class of bug that shipped false positives. A failure here is a
+// REAL false positive on legitimate stock-theme code, not a test to weaken.
+// ---------------------------------------------------------------------------
+
+describe("reference-theme golden files (v1.3/v1.4): no false positives on canonical/preconnect/font/ajax", () => {
+  for (const theme of REFERENCE_THEMES) {
+    it(`does NOT flag ${theme.name} canonical link markup`, () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: theme.canonical,
+      };
+      expect(detectGhostCanonical(file)).toHaveLength(0);
+    });
+
+    it(`does NOT flag ${theme.name} preconnect hint markup`, () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: theme.preconnect,
+      };
+      expect(detectGhostPreconnect(file)).toHaveLength(0);
+    });
+
+    it(`does NOT flag ${theme.name} font preload + font_face markup`, () => {
+      const file: ThemeFile = {
+        filename: "layout/theme.liquid",
+        content: theme.fontFace,
+      };
+      expect(detectGhostFont(file)).toHaveLength(0);
+    });
+
+    it(`does NOT flag ${theme.name} relative route-variable fetch call sites`, () => {
+      const file: ThemeFile = {
+        filename: "assets/global.js",
+        content: theme.ajax,
+      };
+      expect(detectGhostAjax(file)).toHaveLength(0);
+    });
+
+    it(`does NOT flag ${theme.name} full liquid head via scanThemeFiles`, () => {
+      const files: ThemeFile[] = [
+        {
+          filename: "layout/theme.liquid",
+          content: `<head>\n${theme.canonical}\n${theme.preconnect}\n${theme.fontFace}\n</head>`,
+        },
+      ];
+      const { findings } = scanThemeFiles(files);
+      expect(findingsOfType(findings, FindingType.GHOST_CANONICAL)).toHaveLength(0);
+      expect(findingsOfType(findings, FindingType.GHOST_PRECONNECT)).toHaveLength(0);
+      expect(findingsOfType(findings, FindingType.GHOST_FONT)).toHaveLength(0);
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Anti-over-correction: the expanded allowlists must NOT blind the detector to
 // genuine ghost code. Truly orphaned / app-injected markup is STILL flagged.
 // ---------------------------------------------------------------------------
