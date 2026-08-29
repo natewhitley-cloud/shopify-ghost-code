@@ -22,6 +22,7 @@
  */
 
 import { logger } from "./logger.server";
+import { recordApiError } from "../models/ops-event.server";
 
 /** Shape of the throttleStatus block inside GraphQL response extensions. */
 export type ThrottleStatus = {
@@ -145,10 +146,12 @@ export async function checkRateLimit(extensions: unknown): Promise<number> {
  * Check the current throttle status for a shop and log a warning or error
  * if query budget is running low.
  *
- * This function is intentionally synchronous and stateless — it has no side
- * effects beyond structured log output. Callers should invoke it after each
- * GraphQL response but must not change their control flow based on its return
- * value.
+ * This function is intentionally synchronous. Alongside structured log output it
+ * also records a durable API_ERROR OpsEvent (best-effort, fire-and-forget) so the
+ * daily operator digest can count rate-limit errors/warnings; that write never
+ * throws and is not awaited, keeping the function synchronous for its callers.
+ * Callers should invoke it after each GraphQL response but must not change their
+ * control flow based on its return value.
  *
  * @param shopDomain     The myshopify domain of the shop making requests.
  * @param throttleStatus The throttleStatus object from extensions.cost.
@@ -169,6 +172,13 @@ export function checkThrottleStatus(shopDomain: string, throttleStatus: Throttle
       percentRemaining: Math.round(percentRemaining * 100),
       restoreRate,
     });
+    void recordApiError({
+      level: "error",
+      code: "rate_limit_critical",
+      shopDomain,
+      message: "GraphQL rate-limit critical (<5% headroom)",
+      metadata: { available: currentlyAvailable, maximum: maximumAvailable },
+    });
   } else if (percentRemaining < WARN_THRESHOLD) {
     logger.warn("rate-limit-proximity", {
       shopDomain,
@@ -176,6 +186,13 @@ export function checkThrottleStatus(shopDomain: string, throttleStatus: Throttle
       maximum: maximumAvailable,
       percentRemaining: Math.round(percentRemaining * 100),
       restoreRate,
+    });
+    void recordApiError({
+      level: "warn",
+      code: "rate_limit_proximity",
+      shopDomain,
+      message: "GraphQL rate-limit proximity (<20% headroom)",
+      metadata: { available: currentlyAvailable, maximum: maximumAvailable },
     });
   }
 }

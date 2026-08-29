@@ -13,9 +13,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 // Module mocks
 // ---------------------------------------------------------------------------
 
-const { mockLoggerWarn, mockLoggerError } = vi.hoisted(() => ({
+const { mockLoggerWarn, mockLoggerError, mockRecordApiError } = vi.hoisted(() => ({
   mockLoggerWarn: vi.fn(),
   mockLoggerError: vi.fn(),
+  mockRecordApiError: vi.fn(),
 }));
 
 vi.mock("../../app/lib/logger.server", () => ({
@@ -24,6 +25,10 @@ vi.mock("../../app/lib/logger.server", () => ({
     warn: mockLoggerWarn,
     error: mockLoggerError,
   },
+}));
+
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordApiError: mockRecordApiError,
 }));
 
 // ---------------------------------------------------------------------------
@@ -76,6 +81,15 @@ describe("checkThrottleStatus", () => {
       expect(mockLoggerError).not.toHaveBeenCalled();
     });
 
+    it("does not record an API_ERROR OpsEvent when headroom is healthy", () => {
+      checkThrottleStatus(
+        "test-shop.myshopify.com",
+        makeThrottleStatus({ currentlyAvailable: 500, maximumAvailable: 1000 }),
+      );
+
+      expect(mockRecordApiError).not.toHaveBeenCalled();
+    });
+
     it("does not log at exactly 20% remaining", () => {
       // Exactly 20% — the threshold is strictly less-than (<), so 20% should not trigger warn
       checkThrottleStatus(
@@ -111,6 +125,23 @@ describe("checkThrottleStatus", () => {
         }),
       );
       expect(mockLoggerError).not.toHaveBeenCalled();
+    });
+
+    it("records an API_ERROR OpsEvent with level warn in the proximity branch", () => {
+      checkThrottleStatus(
+        "test-shop.myshopify.com",
+        makeThrottleStatus({ currentlyAvailable: 190, maximumAvailable: 1000 }),
+      );
+
+      expect(mockRecordApiError).toHaveBeenCalledOnce();
+      expect(mockRecordApiError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "warn",
+          code: "rate_limit_proximity",
+          shopDomain: "test-shop.myshopify.com",
+          metadata: { available: 190, maximum: 1000 },
+        }),
+      );
     });
 
     it("includes percentRemaining rounded to nearest integer in the log context", () => {
@@ -149,6 +180,23 @@ describe("checkThrottleStatus", () => {
         }),
       );
       expect(mockLoggerWarn).not.toHaveBeenCalled();
+    });
+
+    it("records an API_ERROR OpsEvent with level error in the critical branch", () => {
+      checkThrottleStatus(
+        "test-shop.myshopify.com",
+        makeThrottleStatus({ currentlyAvailable: 40, maximumAvailable: 1000 }),
+      );
+
+      expect(mockRecordApiError).toHaveBeenCalledOnce();
+      expect(mockRecordApiError).toHaveBeenCalledWith(
+        expect.objectContaining({
+          level: "error",
+          code: "rate_limit_critical",
+          shopDomain: "test-shop.myshopify.com",
+          metadata: { available: 40, maximum: 1000 },
+        }),
+      );
     });
 
     it("does not log warn when in error territory (only error fires)", () => {

@@ -2,6 +2,7 @@ import type { ActionFunctionArgs } from "react-router";
 
 import db from "../db.server";
 import { logger } from "../lib/logger.server";
+import { recordWebhookFailure } from "../models/ops-event.server";
 import { authenticate } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -9,26 +10,31 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   logger.info("Webhook received", { topic, shop });
 
-  const current = Array.isArray(payload?.current) ? (payload.current as string[]) : [];
-  if (session && current.length > 0) {
-    const oldScopes = session.scope ?? "";
-    const newScopes = current.toString();
+  try {
+    const current = Array.isArray(payload?.current) ? (payload.current as string[]) : [];
+    if (session && current.length > 0) {
+      const oldScopes = session.scope ?? "";
+      const newScopes = current.toString();
 
-    logger.info("Scope update", {
-      shop,
-      oldScopes,
-      newScopes,
-      sessionId: session.id,
-    });
+      logger.info("Scope update", {
+        shop,
+        oldScopes,
+        newScopes,
+        sessionId: session.id,
+      });
 
-    await db.session.update({
-      where: {
-        id: session.id,
-      },
-      data: {
-        scope: newScopes,
-      },
-    });
+      await db.session.update({
+        where: {
+          id: session.id,
+        },
+        data: {
+          scope: newScopes,
+        },
+      });
+    }
+  } catch (err) {
+    await recordWebhookFailure({ topic, shop, error: err });
+    throw err;
   }
 
   return new Response(null, { status: 200 });

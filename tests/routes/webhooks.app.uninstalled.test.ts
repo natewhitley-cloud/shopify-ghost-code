@@ -29,11 +29,14 @@ vi.mock("../../app/models/shop.server", () => ({
 
 vi.mock("../../app/models/ops-event.server", () => ({
   recordOpsEvent: vi.fn(),
+  recordWebhookFailure: vi.fn(),
   OPS_EVENT_TYPES: {
     CRON_HEARTBEAT: "cron_heartbeat",
     FUNCTION_FAILURE: "function_failure",
     WORKER_FALLBACK: "worker_fallback",
     SHOP_UNINSTALLED: "shop_uninstalled",
+    WEBHOOK_FAILURE: "webhook_failure",
+    API_ERROR: "api_error",
   },
 }));
 
@@ -49,7 +52,11 @@ vi.mock("../../app/lib/logger.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { OPS_EVENT_TYPES, recordOpsEvent } from "../../app/models/ops-event.server";
+import {
+  OPS_EVENT_TYPES,
+  recordOpsEvent,
+  recordWebhookFailure,
+} from "../../app/models/ops-event.server";
 import { deleteShopData, markShopUninstalled } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.app.uninstalled";
 import { authenticate } from "../../app/shopify.server";
@@ -62,6 +69,7 @@ const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>
 const mockMarkShopUninstalled = markShopUninstalled as ReturnType<typeof vi.fn>;
 const mockDeleteShopData = deleteShopData as ReturnType<typeof vi.fn>;
 const mockRecordOpsEvent = recordOpsEvent as ReturnType<typeof vi.fn>;
+const mockRecordWebhookFailure = recordWebhookFailure as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -149,6 +157,12 @@ describe("webhooks.app.uninstalled action", () => {
     );
 
     expect(mockMarkShopUninstalled).toHaveBeenCalledWith("test-shop.myshopify.com");
+    // The failure is recorded durably before re-throwing (gc-6fb).
+    expect(mockRecordWebhookFailure).toHaveBeenCalledWith({
+      topic: "APP_UNINSTALLED",
+      shop: "test-shop.myshopify.com",
+      error: dbError,
+    });
   });
 
   it("propagates the thrown Response on invalid HMAC and never touches the DB", async () => {

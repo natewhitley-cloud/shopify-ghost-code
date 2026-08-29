@@ -25,6 +25,8 @@ export const OPS_EVENT_TYPES = {
   FUNCTION_FAILURE: "function_failure",
   WORKER_FALLBACK: "worker_fallback",
   SHOP_UNINSTALLED: "shop_uninstalled",
+  WEBHOOK_FAILURE: "webhook_failure",
+  API_ERROR: "api_error",
 } as const;
 
 export interface RecordOpsEventInput {
@@ -64,6 +66,50 @@ export async function recordOpsEvent(input: RecordOpsEventInput): Promise<void> 
 }
 
 /**
+ * Record a webhook that FAILED (its handler threw after HMAC auth). Thin
+ * convenience over recordOpsEvent — same never-throws guarantee, so wrapping a
+ * webhook body with this and re-throwing preserves Shopify's retry behavior
+ * while making the failure durably countable for the daily digest.
+ */
+export async function recordWebhookFailure(input: {
+  topic: string;
+  shop: string;
+  error: unknown;
+}): Promise<void> {
+  await recordOpsEvent({
+    eventType: OPS_EVENT_TYPES.WEBHOOK_FAILURE,
+    key: input.topic,
+    message: input.error instanceof Error ? input.error.message : String(input.error),
+    metadata: { shop: input.shop },
+  });
+}
+
+/**
+ * Record a GraphQL / rate-limit API error or warning. Thin convenience over
+ * recordOpsEvent — same never-throws guarantee. `level` distinguishes a genuine
+ * error from a proximity warning; it is stored in metadata so the digest can
+ * tally the two independently (see countApiErrorsByLevel).
+ */
+export async function recordApiError(input: {
+  level: "error" | "warn";
+  code: string;
+  shopDomain?: string;
+  message: string;
+  metadata?: Record<string, string | number>;
+}): Promise<void> {
+  await recordOpsEvent({
+    eventType: OPS_EVENT_TYPES.API_ERROR,
+    key: input.code,
+    message: input.message,
+    metadata: {
+      level: input.level,
+      ...(input.shopDomain ? { shopDomain: input.shopDomain } : {}),
+      ...input.metadata,
+    },
+  });
+}
+
+/**
  * Record a successful cron run. Thin convenience over recordOpsEvent — same
  * never-throws guarantee, so wrapping a cron's success path with this can never
  * turn a healthy run into a failure.
@@ -93,6 +139,40 @@ export async function countOpsEvents(eventType: string, sinceMs: number): Promis
   return db.opsEvent.count({
     where: { eventType, createdAt: { gte: new Date(Date.now() - sinceMs) } },
   });
+}
+
+/**
+ * Tally API_ERROR events in the trailing window by their metadata.level. Used by
+ * the daily digest to split GraphQL/rate-limit signals into errors vs warnings.
+ *
+ * Level fallback: a row whose `metadata.level` is anything other than the string
+ * "warn" (missing, null, malformed, or literally "error") is counted as an
+ * error. This is deliberate — an unclassifiable API_ERROR row is more useful
+ * surfaced as an error than silently dropped. Volume is low (these rows only
+ * exist when a genuine API error/warning fired), so an in-memory tally is fine.
+ */
+export async function countApiErrorsByLevel(
+  sinceMs: number,
+): Promise<{ error: number; warn: number }> {
+  const rows = await db.opsEvent.findMany({
+    where: {
+      eventType: OPS_EVENT_TYPES.API_ERROR,
+      createdAt: { gte: new Date(Date.now() - sinceMs) },
+    },
+    select: { metadata: true },
+  });
+
+  let error = 0;
+  let warn = 0;
+  for (const row of rows) {
+    const level = (row.metadata as { level?: unknown } | null)?.level;
+    if (level === "warn") {
+      warn += 1;
+    } else {
+      error += 1;
+    }
+  }
+  return { error, warn };
 }
 
 // ---------------------------------------------------------------------------

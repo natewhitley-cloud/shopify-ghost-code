@@ -21,6 +21,7 @@ import {
   checkThrottleStatusFromExtensions,
   isThrottledError,
 } from "./rate-limit-monitor.server";
+import { recordApiError } from "../models/ops-event.server";
 import type { AdminApiContext } from "../types/shopify";
 
 /** A Relay-style connection slice as returned inside a GraphQL response. */
@@ -137,6 +138,12 @@ export async function paginateConnection<TNode, TResult>(
       if (json.errors.some(isThrottledError)) {
         throttleRetries += 1;
         if (throttleRetries > maxThrottleRetries) {
+          await recordApiError({
+            level: "error",
+            code: "graphql_throttled_exhausted",
+            message: `still THROTTLED after ${maxThrottleRetries} retries`,
+            metadata: { context: errorContext },
+          });
           throw new Error(`${errorContext}: still THROTTLED after ${maxThrottleRetries} retries`);
         }
         // Back off using whatever throttle headroom the response reported; if it
@@ -145,6 +152,12 @@ export async function paginateConnection<TNode, TResult>(
         continue; // retry the same page — cursor unchanged
       }
 
+      await recordApiError({
+        level: "error",
+        code: "graphql_error",
+        message: json.errors[0]?.message ?? "unknown error",
+        metadata: { context: errorContext },
+      });
       throw new Error(`${errorContext}: ${json.errors[0]?.message ?? "unknown error"}`);
     }
 

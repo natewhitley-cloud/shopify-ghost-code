@@ -14,6 +14,17 @@
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+// ---------------------------------------------------------------------------
+// Module mocks (hoisted). paginateConnection records a durable API_ERROR
+// OpsEvent before each fatal throw; mock the model so those writes never hit a
+// real db and can be asserted.
+// ---------------------------------------------------------------------------
+
+const mockRecordApiError = vi.hoisted(() => vi.fn());
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordApiError: mockRecordApiError,
+}));
+
 import {
   paginateConnection,
   type GraphQLConnection,
@@ -247,6 +258,21 @@ describe("paginateConnection", () => {
     await expect(paginateConnection(baseOptions(graphql))).rejects.toThrow(
       "[test] Failed to fetch items: Access denied",
     );
+  });
+
+  it("records an API_ERROR OpsEvent before throwing on a non-THROTTLED error", async () => {
+    mockRecordApiError.mockClear();
+    mockRecordApiError.mockResolvedValue(undefined);
+    const graphql = vi.fn().mockResolvedValue(errorPage([{ message: "Access denied" }]));
+
+    await expect(paginateConnection(baseOptions(graphql))).rejects.toThrow();
+
+    expect(mockRecordApiError).toHaveBeenCalledWith({
+      level: "error",
+      code: "graphql_error",
+      message: "Access denied",
+      metadata: { context: "[test] Failed to fetch items" },
+    });
   });
 });
 

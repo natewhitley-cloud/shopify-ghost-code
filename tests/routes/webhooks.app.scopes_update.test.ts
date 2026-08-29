@@ -29,6 +29,11 @@ vi.mock("../../app/db.server", () => ({
   },
 }));
 
+const mockRecordWebhookFailure = vi.hoisted(() => vi.fn());
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordWebhookFailure: mockRecordWebhookFailure,
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
@@ -285,6 +290,43 @@ describe("webhooks.app.scopes_update — no session", () => {
     } as unknown as ActionFunctionArgs);
 
     expect(mockSessionUpdate).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Webhook failure capture (gc-6fb): records + re-throws so Shopify retries
+// ---------------------------------------------------------------------------
+
+describe("webhooks.app.scopes_update — failure capture", () => {
+  it("records a webhook failure and re-throws when the inner work throws", async () => {
+    const boom = new Error("db write failed");
+    mockSessionUpdate.mockRejectedValue(boom);
+    mockRecordWebhookFailure.mockResolvedValue(undefined);
+
+    await expect(
+      action({
+        request: makeRequest(),
+        params: {},
+        context: {},
+      } as unknown as ActionFunctionArgs),
+    ).rejects.toThrow("db write failed");
+
+    expect(mockRecordWebhookFailure).toHaveBeenCalledOnce();
+    expect(mockRecordWebhookFailure).toHaveBeenCalledWith({
+      topic: "APP_SUBSCRIPTIONS_UPDATE",
+      shop: SHOP_DOMAIN,
+      error: boom,
+    });
+  });
+
+  it("does not record a webhook failure on the happy path", async () => {
+    await action({
+      request: makeRequest(),
+      params: {},
+      context: {},
+    } as unknown as ActionFunctionArgs);
+
+    expect(mockRecordWebhookFailure).not.toHaveBeenCalled();
   });
 });
 

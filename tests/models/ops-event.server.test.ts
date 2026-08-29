@@ -19,6 +19,7 @@ const mockDb = vi.hoisted(() => ({
   opsEvent: {
     create: vi.fn(),
     findFirst: vi.fn(),
+    findMany: vi.fn(),
     count: vi.fn(),
     groupBy: vi.fn(),
   },
@@ -40,12 +41,15 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  countApiErrorsByLevel,
   countOpsEvents,
   getLatestHeartbeat,
   getStaleCrons,
   OPS_EVENT_TYPES,
+  recordApiError,
   recordCronHeartbeat,
   recordOpsEvent,
+  recordWebhookFailure,
   type CronExpectation,
 } from "../../app/models/ops-event.server";
 
@@ -185,6 +189,156 @@ describe("countOpsEvents", () => {
     const gte = where.createdAt.gte as Date;
     // Window start is ~24h before now.
     expect(before - gte.getTime()).toBeGreaterThanOrEqual(24 * 60 * 60 * 1000 - 1000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordWebhookFailure
+// ---------------------------------------------------------------------------
+
+describe("recordWebhookFailure", () => {
+  it("writes a webhook_failure event keyed to the topic with the error message and shop metadata", async () => {
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+
+    await recordWebhookFailure({
+      topic: "APP_UNINSTALLED",
+      shop: "acme.myshopify.com",
+      error: new Error("boom"),
+    });
+
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: {
+        eventType: OPS_EVENT_TYPES.WEBHOOK_FAILURE,
+        key: "APP_UNINSTALLED",
+        message: "boom",
+        metadata: { shop: "acme.myshopify.com" },
+      },
+    });
+  });
+
+  it("coerces a non-Error thrown value to a string message", async () => {
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+
+    await recordWebhookFailure({ topic: "SHOP_REDACT", shop: "acme.myshopify.com", error: "nope" });
+
+    const data = mockDb.opsEvent.create.mock.calls[0][0].data;
+    expect(data.message).toBe("nope");
+  });
+
+  it("never throws even if the underlying insert fails", async () => {
+    mockDb.opsEvent.create.mockRejectedValue(new Error("db down"));
+
+    await expect(
+      recordWebhookFailure({
+        topic: "SHOP_REDACT",
+        shop: "acme.myshopify.com",
+        error: new Error("x"),
+      }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordApiError
+// ---------------------------------------------------------------------------
+
+describe("recordApiError", () => {
+  it("writes an api_error event with level in metadata and code as the key", async () => {
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+
+    await recordApiError({
+      level: "error",
+      code: "graphql_error",
+      message: "Access denied",
+      metadata: { context: "[test]" },
+    });
+
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: {
+        eventType: OPS_EVENT_TYPES.API_ERROR,
+        key: "graphql_error",
+        message: "Access denied",
+        metadata: { level: "error", context: "[test]" },
+      },
+    });
+  });
+
+  it("includes shopDomain in metadata only when provided", async () => {
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+
+    await recordApiError({
+      level: "warn",
+      code: "rate_limit_proximity",
+      shopDomain: "acme.myshopify.com",
+      message: "low headroom",
+      metadata: { available: 190, maximum: 1000 },
+    });
+
+    expect(mockDb.opsEvent.create.mock.calls[0][0].data.metadata).toEqual({
+      level: "warn",
+      shopDomain: "acme.myshopify.com",
+      available: 190,
+      maximum: 1000,
+    });
+  });
+
+  it("omits shopDomain from metadata when not provided", async () => {
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+
+    await recordApiError({ level: "error", code: "graphql_error", message: "boom" });
+
+    const metadata = mockDb.opsEvent.create.mock.calls[0][0].data.metadata;
+    expect(metadata).toEqual({ level: "error" });
+    expect(metadata).not.toHaveProperty("shopDomain");
+  });
+
+  it("never throws even if the underlying insert fails", async () => {
+    mockDb.opsEvent.create.mockRejectedValue(new Error("db down"));
+
+    await expect(
+      recordApiError({ level: "error", code: "graphql_error", message: "boom" }),
+    ).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// countApiErrorsByLevel
+// ---------------------------------------------------------------------------
+
+describe("countApiErrorsByLevel", () => {
+  it("queries API_ERROR rows in the trailing window selecting only metadata", async () => {
+    mockDb.opsEvent.findMany.mockResolvedValue([]);
+    const before = Date.now();
+
+    await countApiErrorsByLevel(24 * 60 * 60 * 1000);
+
+    const arg = mockDb.opsEvent.findMany.mock.calls[0][0];
+    expect(arg.where.eventType).toBe(OPS_EVENT_TYPES.API_ERROR);
+    expect(arg.select).toEqual({ metadata: true });
+    const gte = arg.where.createdAt.gte as Date;
+    expect(before - gte.getTime()).toBeGreaterThanOrEqual(24 * 60 * 60 * 1000 - 1000);
+  });
+
+  it("tallies rows by metadata.level", async () => {
+    mockDb.opsEvent.findMany.mockResolvedValue([
+      { metadata: { level: "error" } },
+      { metadata: { level: "warn" } },
+      { metadata: { level: "warn" } },
+      { metadata: { level: "error" } },
+    ]);
+
+    expect(await countApiErrorsByLevel(1000)).toEqual({ error: 2, warn: 2 });
+  });
+
+  it("treats any non-warn level (missing/null/unknown) as an error (fallback)", async () => {
+    mockDb.opsEvent.findMany.mockResolvedValue([
+      { metadata: { level: "warn" } },
+      { metadata: {} }, // missing level -> error
+      { metadata: null }, // null metadata -> error
+      { metadata: { level: "bogus" } }, // unknown level -> error
+    ]);
+
+    expect(await countApiErrorsByLevel(1000)).toEqual({ error: 3, warn: 1 });
   });
 });
 
