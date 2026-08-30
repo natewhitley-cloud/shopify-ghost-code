@@ -1,7 +1,7 @@
 import { ScanOrigin, Severity } from "@prisma/client";
 import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Link, redirect, useFetcher, useLoaderData } from "react-router";
+import { Link, redirect, useFetcher, useLoaderData, useNavigate } from "react-router";
 
 import {
   HealthScoreTrendChart,
@@ -12,7 +12,12 @@ import { getPlanFeatures } from "../lib/billing.server";
 import { formatDate, isSuccessfulScan } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
-import { canStartScan, getScanUsage, getWeekStartUTC } from "../lib/plan-gating.server";
+import {
+  canStartScan,
+  canUseMultipleThemes,
+  getScanUsage,
+  getWeekStartUTC,
+} from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { getSeverityCountsForScans } from "../models/finding.server";
 import {
@@ -71,6 +76,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       previousHealthScore: null,
       showRescanNudge: false,
       showThemeChangeNudge: false,
+      showMultiThemeNudge: false,
       showReviewPrompt: false,
       healthScoreTrend: null,
       showTrendEmptyState: false,
@@ -230,6 +236,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     latestScan.completedAt !== null &&
     new Date(shop.lastThemePublishAt) > new Date(latestScan.completedAt);
 
+  // Multi-theme upgrade nudge: a shop whose plan can't scan multiple themes but
+  // whose store HAS more than one theme is missing Professional's flagship
+  // unlimited-theme differentiator. allThemes is only populated for Standard and
+  // Professional (loader skips the fetch on Free), and Professional passes
+  // canUseMultipleThemes, so this naturally targets Standard shops with 2+ themes.
+  const showMultiThemeNudge = !canUseMultipleThemes(shop.plan) && allThemes.length > 1;
+
   // Review prompt: show once after the first completed scan with 4+ findings.
   // Permanently dismissed when the merchant clicks "Dismiss" (sets hasSeenReviewPrompt).
   const REVIEW_PROMPT_MIN_FINDINGS = 4;
@@ -252,6 +265,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     previousHealthScore,
     showRescanNudge,
     showThemeChangeNudge,
+    showMultiThemeNudge,
     showReviewPrompt,
     healthScoreTrend,
     showTrendEmptyState,
@@ -412,6 +426,7 @@ export default function Dashboard() {
     previousHealthScore,
     showRescanNudge,
     showThemeChangeNudge,
+    showMultiThemeNudge,
     showReviewPrompt,
     healthScoreTrend,
     showTrendEmptyState,
@@ -420,6 +435,7 @@ export default function Dashboard() {
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
+  const navigate = useNavigate();
 
   // Optimistically hide the review prompt once the merchant clicks Dismiss,
   // so it disappears immediately without waiting for the server round-trip.
@@ -536,6 +552,21 @@ export default function Dashboard() {
               {...(isSubmitting ? { loading: true } : {})}
             >
               Start New Scan
+            </s-button>
+          </s-stack>
+        </s-banner>
+      )}
+
+      {/* Multi-theme upgrade nudge — Standard plan shops with more than one theme */}
+      {showMultiThemeNudge && (
+        <s-banner tone="info">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              Your store has more than one theme. Upgrade to Professional to scan any theme, not
+              just your published one.
+            </s-paragraph>
+            <s-button variant="primary" onClick={() => navigate("/app/settings")}>
+              Upgrade to Professional
             </s-button>
           </s-stack>
         </s-banner>

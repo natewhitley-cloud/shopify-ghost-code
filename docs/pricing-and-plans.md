@@ -1,6 +1,6 @@
 # Ghost Code — Pricing & Plans
 
-> **Last updated:** 2026-03-28
+> **Last updated:** 2026-08-30
 > **Source of truth for:** plan tiers, feature gating, upgrade triggers, pricing decisions.
 > Update this file when billing logic, plan features, or pricing changes.
 
@@ -98,7 +98,7 @@
 3. **Scan limit hit on Standard** — Standard plan allows 1 manual scan per week (resets Monday 00:00 UTC). Weekly limit reached surfaces an upgrade prompt to Professional (unlimited). Combined with auto-rescan being Pro-only, this creates meaningful upgrade pressure for active merchants.
 4. **Auto-rescan skipped** — Theme publish webhooks arrive but scans are silently skipped on non-Pro plans. Standard shops get a weekly scheduled scan but miss same-day feedback when they publish a theme. Passive trigger (user doesn't see it unless they notice scans aren't auto-running).
 5. **Scan diffing unavailable** — Standard users don't see "New / Resolved / Unchanged" diff badges. Pro users get change tracking.
-6. **Multi-theme gating** — Defined in code (`canUseMultipleThemes()`) but not yet enforced in UI. Future feature.
+6. **Multi-theme gating** — `canUseMultipleThemes()` (in `app/lib/plan-gating.server.ts`, derived from the plan matrix's `maxThemes`) gates multi-theme scanning to Professional. Standard is capped at 1 theme, so the theme picker is disabled there; a Standard shop whose store has more than one theme also sees an in-app upgrade nudge on the dashboard.
 
 ---
 

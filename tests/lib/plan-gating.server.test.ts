@@ -47,6 +47,7 @@ import {
   canStartScan,
   canViewFindingDetails,
   canUseAutoRescan,
+  canUseMultipleThemes,
   canUseScanDiffing,
 } from "../../app/lib/plan-gating.server";
 
@@ -118,6 +119,28 @@ describe("canUseScanDiffing", () => {
 
   it("returns true for Professional plan", () => {
     expect(canUseScanDiffing("Professional")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canUseMultipleThemes — pure, plan-tier tests
+// ---------------------------------------------------------------------------
+
+describe("canUseMultipleThemes", () => {
+  it("returns false for free plan (maxThemes: 1)", () => {
+    expect(canUseMultipleThemes("free")).toBe(false);
+  });
+
+  it("returns false for Standard plan (maxThemes: 1)", () => {
+    expect(canUseMultipleThemes("Standard")).toBe(false);
+  });
+
+  it("returns true for Professional plan (maxThemes: Infinity)", () => {
+    expect(canUseMultipleThemes("Professional")).toBe(true);
+  });
+
+  it("defaults to free-tier behavior for unknown plan names", () => {
+    expect(canUseMultipleThemes("unknown-plan")).toBe(false);
   });
 });
 

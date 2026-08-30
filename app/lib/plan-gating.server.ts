@@ -129,3 +129,15 @@ export function canUseAutoRescan(planName: string): boolean {
 export function canUseScanDiffing(planName: string): boolean {
   return getPlanFeatures(planName).scanDiffing;
 }
+
+/**
+ * Whether the plan can scan more than one theme (multi-theme support).
+ *
+ * Derived from the plan matrix's `maxThemes` (single source of truth in
+ * billing.server.ts): Professional gets unlimited themes; Free and Standard are
+ * capped at 1. Used to gate the theme picker and the Standard→Professional
+ * multi-theme upgrade nudge.
+ */
+export function canUseMultipleThemes(planName: string): boolean {
+  return getPlanFeatures(planName).maxThemes > 1;
+}

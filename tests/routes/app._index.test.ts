@@ -51,6 +51,7 @@ vi.mock("../../app/lib/billing.server", () => ({
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canStartScan: vi.fn(),
+  canUseMultipleThemes: vi.fn(),
   getScanUsage: vi.fn(),
   getWeekStartUTC: vi.fn(),
 }));
@@ -90,7 +91,12 @@ vi.mock("../../app/lib/plans", () => ({
 
 import { getPlanFeatures } from "../../app/lib/billing.server";
 import { computeHealthScore } from "../../app/lib/health-score";
-import { canStartScan, getScanUsage, getWeekStartUTC } from "../../app/lib/plan-gating.server";
+import {
+  canStartScan,
+  canUseMultipleThemes,
+  getScanUsage,
+  getWeekStartUTC,
+} from "../../app/lib/plan-gating.server";
 import { getSeverityCountsForScans } from "../../app/models/finding.server";
 import {
   getScansForShop,
@@ -116,6 +122,7 @@ const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockGetSeverityCounts = getSeverityCountsForScans as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
+const mockCanUseMultipleThemes = canUseMultipleThemes as ReturnType<typeof vi.fn>;
 const mockGetScanUsage = getScanUsage as ReturnType<typeof vi.fn>;
 const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
@@ -244,6 +251,9 @@ beforeEach(() => {
     periodStart: new Date("2026-03-01T00:00:00Z"),
   });
   mockHasCompletedScans.mockResolvedValue(true);
+  // Default plan is Free/Standard (maxThemes: 1) → cannot use multiple themes.
+  // Professional-plan tests override this to true.
+  mockCanUseMultipleThemes.mockReturnValue(false);
   mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetWeekStartUTC.mockReturnValue(new Date("2026-03-16T00:00:00Z"));
   mockFetchAllThemes.mockResolvedValue([]);
@@ -781,6 +791,76 @@ describe("app._index loader — theme picker", () => {
       expect(result.allThemes).toEqual([]);
       expect(result.canSelectTheme).toBe(false);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Loader: multi-theme upgrade nudge (gc-06e.15)
+// ---------------------------------------------------------------------------
+
+describe("app._index loader — multi-theme upgrade nudge", () => {
+  it("shows the nudge for a Standard shop with more than one theme", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+    mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+    mockCanUseMultipleThemes.mockReturnValue(false);
+    mockFetchAllThemes.mockResolvedValue(ALL_THEMES); // 2 themes
+    mockGetScanUsage.mockResolvedValue({
+      used: 0,
+      limit: 1,
+      period: "week" as const,
+      periodStart: new Date("2026-03-16T00:00:00Z"),
+    });
+
+    const result = (await loader(makeLoaderArgs())) as { showMultiThemeNudge: boolean };
+
+    expect(result.showMultiThemeNudge).toBe(true);
+  });
+
+  it("does not show the nudge for a Standard shop with only one theme", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+    mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+    mockCanUseMultipleThemes.mockReturnValue(false);
+    mockFetchAllThemes.mockResolvedValue([ALL_THEMES[0]]); // single theme
+    mockGetScanUsage.mockResolvedValue({
+      used: 0,
+      limit: 1,
+      period: "week" as const,
+      periodStart: new Date("2026-03-16T00:00:00Z"),
+    });
+
+    const result = (await loader(makeLoaderArgs())) as { showMultiThemeNudge: boolean };
+
+    expect(result.showMultiThemeNudge).toBe(false);
+  });
+
+  it("does not show the nudge for a Professional shop with more than one theme", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
+    mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+    mockCanUseMultipleThemes.mockReturnValue(true); // Pro can already use multiple themes
+    mockFetchAllThemes.mockResolvedValue(ALL_THEMES); // 2 themes
+    mockGetScanUsage.mockResolvedValue(null);
+
+    const result = (await loader(makeLoaderArgs())) as { showMultiThemeNudge: boolean };
+
+    expect(result.showMultiThemeNudge).toBe(false);
+  });
+
+  it("does not show the nudge for a Free shop (themes are never fetched)", async () => {
+    // Default SHOP fixture is Free; loader skips fetchAllThemes so allThemes is [].
+    mockCanUseMultipleThemes.mockReturnValue(false);
+
+    const result = (await loader(makeLoaderArgs())) as { showMultiThemeNudge: boolean };
+
+    expect(mockFetchAllThemes).not.toHaveBeenCalled();
+    expect(result.showMultiThemeNudge).toBe(false);
+  });
+
+  it("returns showMultiThemeNudge: false when shop is null", async () => {
+    mockGetShopMetadata.mockResolvedValue(null);
+
+    const result = (await loader(makeLoaderArgs())) as { showMultiThemeNudge: boolean };
+
+    expect(result.showMultiThemeNudge).toBe(false);
   });
 });
 
