@@ -2097,11 +2097,12 @@ export function detectGhostFont(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Comment-line tracking is delegated to the shared helper so Font skips the
-  // same lines as every other comment-aware detector (including a directive that
-  // shares a line with {% endcomment %}). Previously this loop cleared the
-  // comment flag on the endcomment line and `continue`d BEFORE marking it,
-  // scanning that line while all other detectors skipped it — that drift is now
-  // fixed.
+  // same lines as every other comment-aware detector. Previously this detector's
+  // inline loop `continue`d on the endcomment branch, so it OVER-skipped a
+  // stray/opener-less `{% endcomment %}` line — a false negative that swallowed
+  // real ghost-font content sharing that line. buildCommentSkipLines only skips
+  // lines that OPEN a comment or sit INSIDE one, so a stray endcomment line is
+  // scanned; Font now correctly scans it too, matching all other detectors.
   const commentSkipLines = buildCommentSkipLines(file.content);
 
   for (const { lineNumber, text } of lines(file.content)) {
