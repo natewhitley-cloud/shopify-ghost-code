@@ -3,7 +3,9 @@ import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
+import { copyToClipboard } from "../lib/clipboard";
 import { hasVisualImpact } from "../lib/finding-classification";
+import { getFindingRemediation } from "../lib/finding-remediation";
 import { formatDate, isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
@@ -103,7 +105,59 @@ interface FindingLike {
   isVisual?: boolean;
 }
 
-function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean }) {
+/**
+ * Copy-to-clipboard button for a finding's full code snippet.
+ *
+ * Uses the iframe-safe copyToClipboard helper (async Clipboard API with an
+ * execCommand fallback) and shows a brief "Copied" confirmation. Each button
+ * owns its own confirmation state so rows are independent.
+ */
+export function CopyButton({ text }: { text: string }) {
+  const [copied, setCopied] = useState(false);
+  const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Clear the pending reset timer on unmount to avoid setting state after the
+  // row is gone (e.g. when paginating).
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    };
+  }, []);
+
+  const handleCopy = async () => {
+    const ok = await copyToClipboard(text);
+    if (!ok) {
+      shopify.toast.show("Copy failed. Select the code and copy manually.", { isError: true });
+      return;
+    }
+    setCopied(true);
+    if (timeoutRef.current) clearTimeout(timeoutRef.current);
+    timeoutRef.current = setTimeout(() => setCopied(false), 1500);
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleCopy}
+      aria-label="Copy code snippet"
+      style={{
+        flexShrink: 0,
+        padding: "2px 8px",
+        border: `1px solid ${BORDER_STRONG}`,
+        borderRadius: "4px",
+        fontSize: "11px",
+        background: copied ? BG_BADGE_SUCCESS : BG_SURFACE,
+        color: copied ? STATUS_TINTS.success.text : TEXT_SUBDUED,
+        cursor: "pointer",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {copied ? "Copied" : "Copy"}
+    </button>
+  );
+}
+
+export function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean }) {
   const isVisual = finding.isVisual ?? hasVisualImpact(finding.findingType);
   return (
     <tr>
@@ -122,11 +176,26 @@ function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean 
       <td style={{ textAlign: "center" }}>{finding.lineNumber}</td>
       <td>{finding.appName ?? "—"}</td>
       <td>
-        <code style={{ fontSize: "12px", wordBreak: "break-word" }}>
-          {finding.codeSnippet.length > 80
-            ? `${finding.codeSnippet.slice(0, 80)}…`
-            : finding.codeSnippet}
-        </code>
+        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
+            <code style={{ fontSize: "12px", wordBreak: "break-word", flex: 1 }}>
+              {finding.codeSnippet.length > 80
+                ? `${finding.codeSnippet.slice(0, 80)}…`
+                : finding.codeSnippet}
+            </code>
+            <CopyButton text={finding.codeSnippet} />
+          </div>
+          <div
+            style={{
+              fontSize: "12px",
+              color: TEXT_SUBDUED,
+              lineHeight: 1.4,
+            }}
+          >
+            <strong style={{ color: TEXT_PRIMARY, fontWeight: 600 }}>How to remove: </strong>
+            {getFindingRemediation(finding.findingType)}
+          </div>
+        </div>
       </td>
     </tr>
   );
@@ -148,7 +217,7 @@ const FINDINGS_TABLE_STYLES = `
   .findings-table td:nth-child(3) { width: 200px; }
   .findings-table td:nth-child(4) { width: 50px; text-align: center; }
   .findings-table td:nth-child(5) { width: 100px; }
-  .findings-table td:nth-child(6) { max-width: 400px; overflow: hidden; text-overflow: ellipsis; }
+  .findings-table td:nth-child(6) { max-width: 520px; }
 `;
 
 function FindingsTable({ children }: { children: React.ReactNode }) {

@@ -15,6 +15,8 @@
  *   - getPreviousScanForTheme / diffScans are not called from this loader
  */
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -93,7 +95,7 @@ import {
   getUnknownScriptsForScan,
   submitSignatureSuggestion,
 } from "../../app/models/unknown-script.server";
-import { action, loader } from "../../app/routes/app.scans.$scanId";
+import { action, CopyButton, FindingRow, loader } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { authenticate } from "../../app/shopify.server";
 
@@ -638,5 +640,65 @@ describe("app.scans.$scanId action", () => {
     }
 
     expect(mockSubmitSignatureSuggestion).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FindingRow rendering — removal guidance + copy-to-clipboard (gc-06e.11)
+//
+// Rendered to static markup so we can assert the remediation blurb and the
+// copy control both appear. The row is wrapped in a table to keep the markup
+// valid (a bare <tr> would warn about DOM nesting).
+// ---------------------------------------------------------------------------
+
+describe("FindingRow — removal guidance + copy button", () => {
+  function renderRow(finding: Record<string, unknown>) {
+    return renderToStaticMarkup(
+      createElement(
+        "table",
+        null,
+        createElement("tbody", null, createElement(FindingRow, { finding } as never)),
+      ),
+    );
+  }
+
+  it("renders the per-type remediation guidance for the finding", () => {
+    const html = renderRow(FINDING_ONE);
+    // GHOST_SCRIPT guidance mentions removing the script tag from the theme.
+    expect(html).toContain("How to remove:");
+    expect(html.toLowerCase()).toContain("script tag");
+    expect(html.toLowerCase()).toContain("theme");
+  });
+
+  it("renders a Copy button labelled for accessibility", () => {
+    const html = renderRow(FINDING_ONE);
+    expect(html).toContain('aria-label="Copy code snippet"');
+    expect(html).toContain(">Copy<");
+  });
+
+  it("shows guidance appropriate to the finding type (SETTINGS_DRIFT is not a script tag)", () => {
+    const html = renderRow({ ...FINDING_ONE, findingType: "SETTINGS_DRIFT" });
+    expect(html).toContain("settings_data.json");
+    expect(html.toLowerCase()).not.toContain("script tag");
+  });
+
+  it("still renders the truncated snippet alongside the guidance", () => {
+    const html = renderRow(FINDING_ONE);
+    // The snippet is present (first chunk of the code snippet appears).
+    expect(html).toContain("&lt;script");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// CopyButton — initial render state
+// ---------------------------------------------------------------------------
+
+describe("CopyButton", () => {
+  it("renders with the idle 'Copy' label and an accessible name", () => {
+    const html = renderToStaticMarkup(createElement(CopyButton, { text: "some code" }));
+    expect(html).toContain('aria-label="Copy code snippet"');
+    expect(html).toContain(">Copy<");
+    // Not yet copied — the confirmation label must not be present initially.
+    expect(html).not.toContain(">Copied<");
   });
 });
