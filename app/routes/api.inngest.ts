@@ -12,6 +12,7 @@ import { serve } from "inngest/remix";
 
 import { inngest } from "../../inngest/client";
 import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failures";
+import { operatorDigest } from "../../inngest/functions/operator-digest";
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
 import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
 import { scanTheme } from "../../inngest/functions/scan-theme";
@@ -34,6 +35,7 @@ const handler = serve({
     monitorScanFailures,
     watchStaleScans,
     snapshotMetrics,
+    operatorDigest,
   ],
 });
 

@@ -132,6 +132,19 @@ export async function getLatestHeartbeat(key: string): Promise<OpsEvent | null> 
 }
 
 /**
+ * Most-recent OpsEvent of a type (optionally narrowed by key), or null if none
+ * exists. Used by the operator daily digest to read yesterday's `digest_snapshot`
+ * row (plan-mix + MRR) before writing today's, so successive runs can diff
+ * against a prior snapshot rather than against themselves.
+ */
+export async function getLatestOpsEvent(eventType: string, key?: string): Promise<OpsEvent | null> {
+  return db.opsEvent.findFirst({
+    where: { eventType, ...(key ? { key } : {}) },
+    orderBy: { createdAt: "desc" },
+  });
+}
+
+/**
  * Count events of a type within a trailing window. Used by the daily digest to
  * count `function_failure` events over the last 24h.
  */
@@ -219,6 +232,7 @@ export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
   { key: "monitor-scan-failures", intervalMs: 6 * HOUR_MS },
   { key: "snapshot-metrics", intervalMs: DAY_MS },
   { key: "poll-theme-changes", intervalMs: DAY_MS },
+  { key: "operator-digest", intervalMs: DAY_MS },
   { key: "weekly-scan", intervalMs: 7 * DAY_MS },
 ];
 
