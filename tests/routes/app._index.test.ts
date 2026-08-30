@@ -51,6 +51,7 @@ vi.mock("../../app/lib/billing.server", () => ({
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canStartScan: vi.fn(),
+  canUseScanDiffing: vi.fn(),
   getScanUsage: vi.fn(),
   getWeekStartUTC: vi.fn(),
 }));
@@ -90,7 +91,12 @@ vi.mock("../../app/lib/plans", () => ({
 
 import { getPlanFeatures } from "../../app/lib/billing.server";
 import { computeHealthScore } from "../../app/lib/health-score";
-import { canStartScan, getScanUsage, getWeekStartUTC } from "../../app/lib/plan-gating.server";
+import {
+  canStartScan,
+  canUseScanDiffing,
+  getScanUsage,
+  getWeekStartUTC,
+} from "../../app/lib/plan-gating.server";
 import { getSeverityCountsForScans } from "../../app/models/finding.server";
 import {
   getScansForShop,
@@ -116,6 +122,7 @@ const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockGetSeverityCounts = getSeverityCountsForScans as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
+const mockCanUseScanDiffing = canUseScanDiffing as ReturnType<typeof vi.fn>;
 const mockGetScanUsage = getScanUsage as ReturnType<typeof vi.fn>;
 const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
@@ -248,6 +255,8 @@ beforeEach(() => {
   mockGetWeekStartUTC.mockReturnValue(new Date("2026-03-16T00:00:00Z"));
   mockFetchAllThemes.mockResolvedValue([]);
   mockGetCompletedScansForShop.mockResolvedValue([]);
+  // Default: plan cannot diff (Free). Paid-plan tests override to true.
+  mockCanUseScanDiffing.mockReturnValue(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -500,6 +509,76 @@ describe("app._index loader — review prompt", () => {
     const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
 
     expect(result.showReviewPrompt).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Loader: new high-severity findings callout (gc-06e.5)
+// ---------------------------------------------------------------------------
+
+describe("app._index loader — new-findings callout", () => {
+  it("returns canDiffLatest: true for a paid plan with a completed latest scan", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
+    mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+    mockGetScanUsage.mockResolvedValue(null);
+    mockCanUseScanDiffing.mockReturnValue(true);
+
+    const result = (await loader(makeLoaderArgs())) as {
+      latestScanId: string | null;
+      canDiffLatest: boolean;
+    };
+
+    expect(result.canDiffLatest).toBe(true);
+    expect(result.latestScanId).toBe("scan-1");
+    expect(mockCanUseScanDiffing).toHaveBeenCalledWith("Professional");
+  });
+
+  it("returns canDiffLatest: false for a Free plan (diffing not available)", async () => {
+    // Default SHOP is Free; mockCanUseScanDiffing defaults to false.
+    const result = (await loader(makeLoaderArgs())) as {
+      latestScanId: string | null;
+      canDiffLatest: boolean;
+    };
+
+    expect(result.canDiffLatest).toBe(false);
+    // latestScanId is still exposed for a completed scan regardless of plan.
+    expect(result.latestScanId).toBe("scan-1");
+  });
+
+  it("returns canDiffLatest: false and latestScanId: null when latest scan is not completed", async () => {
+    // Even on an eligible plan, a non-successful scan is not diffable.
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
+    mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+    mockGetScanUsage.mockResolvedValue(null);
+    mockCanUseScanDiffing.mockReturnValue(true);
+    mockGetScansForShop.mockResolvedValue({
+      items: [{ ...COMPLETED_SCAN, status: "IN_PROGRESS" }],
+      hasNextPage: false,
+    });
+
+    const result = (await loader(makeLoaderArgs())) as {
+      latestScanId: string | null;
+      canDiffLatest: boolean;
+    };
+
+    expect(result.canDiffLatest).toBe(false);
+    expect(result.latestScanId).toBeNull();
+  });
+
+  it("returns canDiffLatest: false and latestScanId: null when no scans exist", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
+    mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+    mockGetScanUsage.mockResolvedValue(null);
+    mockCanUseScanDiffing.mockReturnValue(true);
+    mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+
+    const result = (await loader(makeLoaderArgs())) as {
+      latestScanId: string | null;
+      canDiffLatest: boolean;
+    };
+
+    expect(result.canDiffLatest).toBe(false);
+    expect(result.latestScanId).toBeNull();
   });
 });
 

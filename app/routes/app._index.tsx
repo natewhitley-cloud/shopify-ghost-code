@@ -1,5 +1,5 @@
 import { ScanOrigin, Severity } from "@prisma/client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, redirect, useFetcher, useLoaderData } from "react-router";
 
@@ -12,7 +12,12 @@ import { getPlanFeatures } from "../lib/billing.server";
 import { formatDate, isSuccessfulScan } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
-import { canStartScan, getScanUsage, getWeekStartUTC } from "../lib/plan-gating.server";
+import {
+  canStartScan,
+  canUseScanDiffing,
+  getScanUsage,
+  getWeekStartUTC,
+} from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { getSeverityCountsForScans } from "../models/finding.server";
 import {
@@ -22,6 +27,7 @@ import {
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
 import { dismissReviewPrompt, getShopMetadata } from "../models/shop.server";
+import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
@@ -61,6 +67,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     return {
       shop: null,
       latestScan: null,
+      latestScanId: null,
+      canDiffLatest: false,
       findingSummary: null,
       mainTheme: null,
       allThemes: [] as ThemeSummary[],
@@ -239,9 +247,19 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     latestScan.findingCount >= REVIEW_PROMPT_MIN_FINDINGS &&
     !shop.hasSeenReviewPrompt;
 
+  // Expose the latest successful scan id and whether this shop+plan can diff it,
+  // so the component can lazily fetch the diff resource route (same pattern as
+  // the scan-detail page) to surface NEW high-severity findings without loading
+  // findings here (avoids the expensive 2-scan full-findings load — see PRF-2).
+  const latestScanId = latestScan && isSuccessfulScan(latestScan.status) ? latestScan.id : null;
+  const canDiffLatest =
+    latestScan != null && isSuccessfulScan(latestScan.status) && canUseScanDiffing(shop.plan);
+
   return {
     shop,
     latestScan,
+    latestScanId,
+    canDiffLatest,
     findingSummary,
     mainTheme,
     allThemes,
@@ -402,6 +420,8 @@ export default function Dashboard() {
   const {
     shop,
     latestScan,
+    latestScanId,
+    canDiffLatest,
     findingSummary,
     mainTheme,
     allThemes,
@@ -420,6 +440,26 @@ export default function Dashboard() {
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
+
+  // Lazily fetch the diff for the latest successful scan via the resource route
+  // (same pattern as scan-detail — see app.scans.$scanId.tsx) to surface NEW
+  // high-severity findings. The diff is never computed in the loader (PRF-2).
+  const diffFetcher = useFetcher<{ scanDiff: ScanDiff | null }>();
+  // Ref guard prevents re-requesting the diff on subsequent re-renders.
+  const diffLoadTriggered = useRef(false);
+
+  useEffect(() => {
+    if (!canDiffLatest || !latestScanId || diffLoadTriggered.current) return;
+    diffLoadTriggered.current = true;
+    diffFetcher.load(`/app/scans/${latestScanId}/diff`);
+    // diffFetcher is a stable object; canDiffLatest and latestScanId are the
+    // meaningful dependencies here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canDiffLatest, latestScanId]);
+
+  // New high-severity findings from the lazily-loaded diff (null until resolved).
+  const scanDiff = diffFetcher.data?.scanDiff ?? null;
+  const newHigh = scanDiff ? scanDiff.newFindings.filter((f) => f.severity === "HIGH").length : 0;
 
   // Optimistically hide the review prompt once the merchant clicks Dismiss,
   // so it disappears immediately without waiting for the server round-trip.
@@ -500,6 +540,22 @@ export default function Dashboard() {
       {actionError && (
         <s-banner tone="critical">
           <s-paragraph>{actionError}</s-paragraph>
+        </s-banner>
+      )}
+
+      {/* New high-severity findings callout — shown once the lazily-loaded diff
+          resolves with HIGH findings that are new since the previous scan. */}
+      {newHigh > 0 && latestScanId && (
+        <s-banner tone="warning">
+          <s-stack direction="block" gap="base">
+            <s-paragraph>
+              {newHigh} new high-severity finding{newHigh === 1 ? "" : "s"} detected in your latest
+              scan.
+            </s-paragraph>
+            <Link to={`/app/scans/${latestScanId}`}>
+              <s-button variant="primary">Review</s-button>
+            </Link>
+          </s-stack>
         </s-banner>
       )}
 
