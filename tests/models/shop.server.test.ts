@@ -54,6 +54,7 @@ import {
   dismissReviewPrompt,
   deleteShopData,
   markShopUninstalled,
+  reactivateShop,
 } from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
@@ -86,6 +87,7 @@ describe("getShopMetadata", () => {
         plan: true,
         planReconciledAt: true,
         installedAt: true,
+        uninstalledAt: true,
         lastThemePublishAt: true,
         hasSeenReviewPrompt: true,
       },
@@ -733,5 +735,35 @@ describe("markShopUninstalled", () => {
     await expect(markShopUninstalled("err.myshopify.com")).rejects.toThrow(
       "Transaction rolled back",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// reactivateShop
+// ---------------------------------------------------------------------------
+
+describe("reactivateShop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("clears uninstalledAt via updateMany keyed on domain", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await reactivateShop("re-install.myshopify.com");
+
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { domain: "re-install.myshopify.com" },
+      data: { uninstalledAt: null },
+    });
+    // updateMany (not update) so a missing row is a safe no-op, not a throw.
+    expect(mockDb.shop.update).not.toHaveBeenCalled();
+  });
+
+  it("is a safe no-op (does not throw) when the shop row is absent", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(reactivateShop("gone.myshopify.com")).resolves.toBeUndefined();
+    expect(mockDb.shop.updateMany).toHaveBeenCalledOnce();
   });
 });

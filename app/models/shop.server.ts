@@ -9,6 +9,7 @@ export type ShopMetadata = {
   plan: string;
   planReconciledAt: Date | null;
   installedAt: Date;
+  uninstalledAt: Date | null;
   lastThemePublishAt: Date | null;
   hasSeenReviewPrompt: boolean;
 };
@@ -29,10 +30,24 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       plan: true,
       planReconciledAt: true,
       installedAt: true,
+      uninstalledAt: true,
       lastThemePublishAt: true,
       hasSeenReviewPrompt: true,
     },
   });
+}
+
+/**
+ * Clear the uninstalled-pending-redact flag on reinstall so the shop rejoins the
+ * active set (weekly-scan/poll-theme-changes/metrics/digest all skip rows with a
+ * non-null uninstalledAt).
+ *
+ * Called from the app loader ONLY when an existing shop row still carries a set
+ * uninstalledAt (i.e. an actual reinstall), never on every load. Uses updateMany
+ * keyed on domain so a missing row is a safe no-op (count 0) rather than a throw.
+ */
+export async function reactivateShop(domain: string): Promise<void> {
+  await db.shop.updateMany({ where: { domain }, data: { uninstalledAt: null } });
 }
 
 /**
@@ -50,9 +65,11 @@ export async function upsertShop(domain: string) {
   return db.shop.upsert({
     where: { domain },
     create: { domain },
-    // Reinstall-reset: a reinstall re-triggers this on the next authenticated
-    // app load. Clearing uninstalledAt back to null returns the shop to the
-    // active-install state so iterators/metrics count and scan it again (gc-grd).
+    // Defensive fallback only: upsertShop is NOT called on a normal reinstall
+    // (the app loader takes the existing-row branch and skips this), so this
+    // clause only clears uninstalledAt in the rare create-race where the row
+    // reappears here. The real reinstall-reset happens via reactivateShop in the
+    // app loader (gc-grd).
     update: { uninstalledAt: null },
   });
 }

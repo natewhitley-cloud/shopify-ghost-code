@@ -25,6 +25,7 @@ vi.mock("../../app/shopify.server", () => ({
 vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
   upsertShop: vi.fn(),
+  reactivateShop: vi.fn(),
 }));
 
 vi.mock("../../app/services/billing-reconciler.server", () => ({
@@ -41,7 +42,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { logger } from "../../app/lib/logger.server";
-import { getShopMetadata, upsertShop } from "../../app/models/shop.server";
+import { getShopMetadata, reactivateShop, upsertShop } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app";
 import {
   isPlanReconcileStale,
@@ -56,6 +57,7 @@ import { authenticate } from "../../app/shopify.server";
 const mockAdminAuth = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShop = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockUpsert = upsertShop as ReturnType<typeof vi.fn>;
+const mockReactivate = reactivateShop as ReturnType<typeof vi.fn>;
 const mockIsStale = isPlanReconcileStale as ReturnType<typeof vi.fn>;
 const mockReconcile = reconcileShopPlan as ReturnType<typeof vi.fn>;
 
@@ -68,6 +70,7 @@ function makeShop(overrides: Record<string, unknown> = {}) {
     plan: "free",
     planReconciledAt: null,
     installedAt: new Date("2026-01-01T00:00:00Z"),
+    uninstalledAt: null,
     lastThemePublishAt: null,
     hasSeenReviewPrompt: false,
     ...overrides,
@@ -149,6 +152,38 @@ describe("app.tsx loader — plan reconciliation hook", () => {
 
     expect(mockUpsert).toHaveBeenCalledWith("test-shop.myshopify.com");
     expect(mockReconcile).toHaveBeenCalledOnce();
+  });
+
+  it("reactivates an existing shop that is still flagged uninstalled (reinstall)", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ uninstalledAt: new Date("2026-06-01T00:00:00Z") }));
+    mockIsStale.mockReturnValue(false);
+
+    await runLoader();
+
+    expect(mockReactivate).toHaveBeenCalledWith("test-shop.myshopify.com");
+    // Existing row → upsertShop is NOT the reinstall path.
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("does NOT reactivate an existing active shop (uninstalledAt null)", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ uninstalledAt: null }));
+    mockIsStale.mockReturnValue(false);
+
+    await runLoader();
+
+    expect(mockReactivate).not.toHaveBeenCalled();
+    expect(mockUpsert).not.toHaveBeenCalled();
+  });
+
+  it("creates (upsert) a brand-new shop without calling reactivateShop", async () => {
+    mockGetShop.mockResolvedValueOnce(null).mockResolvedValueOnce(makeShop());
+    mockUpsert.mockResolvedValue(makeShop());
+    mockIsStale.mockReturnValue(false);
+
+    await runLoader();
+
+    expect(mockUpsert).toHaveBeenCalledWith("test-shop.myshopify.com");
+    expect(mockReactivate).not.toHaveBeenCalled();
   });
 
   it("does not break the loader when reconciliation throws", async () => {

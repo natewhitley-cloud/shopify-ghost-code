@@ -4,7 +4,7 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Outlet, useLoaderData, useRouteError } from "react-router";
 
 import { logger } from "../lib/logger.server";
-import { getShopMetadata, upsertShop } from "../models/shop.server";
+import { getShopMetadata, reactivateShop, upsertShop } from "../models/shop.server";
 import { isPlanReconcileStale, reconcileShopPlan } from "../services/billing-reconciler.server";
 import { authenticate } from "../shopify.server";
 
@@ -17,6 +17,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // This covers the case where the app/installed webhook isn't available.
     await upsertShop(session.shop);
     shop = await getShopMetadata(session.shop);
+  } else if (shop.uninstalledAt) {
+    // Reinstall: the row exists but is still flagged uninstalled-pending-redact
+    // (gc-grd stamps uninstalledAt instead of deleting). Clear the flag so the
+    // shop rejoins the active set. This writes ONLY on an actual reinstall, not
+    // on every load.
+    await reactivateShop(session.shop);
+    shop.uninstalledAt = null;
   }
 
   // Plan reconciliation (CMP-2 / GC-fur). The APP_SUBSCRIPTIONS_UPDATE webhook
