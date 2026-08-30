@@ -742,6 +742,7 @@ describe("app._index loader — theme picker", () => {
     it("returns canSelectTheme: true for Professional plan (maxThemes > 1)", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      mockCanUseMultipleThemes.mockReturnValue(true);
       mockGetScanUsage.mockResolvedValue(null);
 
       const result = (await loader(makeLoaderArgs())) as {
@@ -913,6 +914,7 @@ describe("app._index action — theme picker", () => {
     it("uses the selected theme and scans it instead of the MAIN theme", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      mockCanUseMultipleThemes.mockReturnValue(true);
       mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
 
       const request = new Request("https://test-shop.myshopify.com/app", {
@@ -940,6 +942,7 @@ describe("app._index action — theme picker", () => {
     it("returns error when submitted themeId is not found in shop theme list", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
       mockGetPlanFeatures.mockReturnValue(PRO_FEATURES);
+      mockCanUseMultipleThemes.mockReturnValue(true);
       // Return themes list that does NOT contain the submitted ID
       mockFetchAllThemes.mockResolvedValue([
         {

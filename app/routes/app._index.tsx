@@ -86,7 +86,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   }
 
   const features = getPlanFeatures(shop.plan);
-  const canSelectTheme = features.maxThemes > 1;
+  const canSelectTheme = canUseMultipleThemes(shop.plan);
 
   // Fetch all themes for Standard and Professional so the picker has options to
   // display even when disabled (Standard teaser). Skip the API call on Free plan
@@ -305,7 +305,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const selectedThemeId = formData.get("themeId") as string | null;
 
   const actionFeatures = getPlanFeatures(shop.plan);
-  const allowThemeSelection = actionFeatures.maxThemes > 1;
+  const allowThemeSelection = canUseMultipleThemes(shop.plan);
 
   let themeId: string;
   let themeName: string;

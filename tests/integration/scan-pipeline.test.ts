@@ -59,6 +59,7 @@ vi.mock("../../app/models/finding.server", () => ({
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canStartScan: vi.fn(),
+  canUseMultipleThemes: vi.fn(() => false),
   getWeekStartUTC: vi.fn(() => new Date("2024-01-15T00:00:00Z")),
 }));
 
