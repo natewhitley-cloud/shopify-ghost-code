@@ -58,11 +58,25 @@ vi.mock("../../app/services/scan-engine.server", () => ({
 
 // Mock the ops-event model so the WORKER_FALLBACK digest write is observable
 // without touching the database. OPS_EVENT_TYPES is re-exported unchanged.
+// countOpsEvents/getLatestOpsEvent back the sustained-fallback escalation
+// (gc-06e.13, sub-item 2); default to "no escalation" so the pre-existing
+// worker-failure-path tests are unaffected.
 const mockRecordOpsEvent = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+const mockCountOpsEvents = vi.hoisted(() => vi.fn().mockResolvedValue(0));
+const mockGetLatestOpsEvent = vi.hoisted(() => vi.fn().mockResolvedValue(null));
 
 vi.mock("../../app/models/ops-event.server", () => ({
-  OPS_EVENT_TYPES: { WORKER_FALLBACK: "worker_fallback" },
+  OPS_EVENT_TYPES: { WORKER_FALLBACK: "worker_fallback", FUNCTION_FAILURE: "function_failure" },
   recordOpsEvent: mockRecordOpsEvent,
+  countOpsEvents: mockCountOpsEvents,
+  getLatestOpsEvent: mockGetLatestOpsEvent,
+}));
+
+// Mock the ops-alert/failure notifier so escalation is observable without I/O.
+const mockNotifyFunctionFailure = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
+
+vi.mock("../../app/lib/notifications.server", () => ({
+  notifyFunctionFailure: mockNotifyFunctionFailure,
 }));
 
 // ---------------------------------------------------------------------------
@@ -101,6 +115,12 @@ beforeEach(async () => {
   mockInlineScan.mockReset();
   mockRecordOpsEvent.mockReset();
   mockRecordOpsEvent.mockResolvedValue(undefined);
+  mockCountOpsEvents.mockReset();
+  mockCountOpsEvents.mockResolvedValue(0);
+  mockGetLatestOpsEvent.mockReset();
+  mockGetLatestOpsEvent.mockResolvedValue(null);
+  mockNotifyFunctionFailure.mockReset();
+  mockNotifyFunctionFailure.mockResolvedValue(undefined);
 });
 
 afterEach(async () => {
@@ -176,5 +196,92 @@ describe("scanThemeFilesInPool — worker-failure path", () => {
     expect(mockInlineScan).not.toHaveBeenCalled();
     // No worker degradation on the happy path — no OpsEvent written.
     expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+    // No escalation probe on a clean run.
+    expect(mockCountOpsEvents).not.toHaveBeenCalled();
+    expect(mockNotifyFunctionFailure).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Sustained-fallback escalation (gc-06e.13, sub-item 2)
+// ---------------------------------------------------------------------------
+
+describe("scanThemeFilesInPool — sustained-fallback escalation", () => {
+  // Drive one fallback (reject once, then succeed) so a single WORKER_FALLBACK is
+  // recorded and exactly one escalation check runs; the trailing-window count is
+  // controlled directly via mockCountOpsEvents.
+  function primeSingleFallback() {
+    mockRun.mockRejectedValueOnce(new Error("transient worker spawn failure"));
+    mockRun.mockResolvedValueOnce(WORKER_RESULT);
+  }
+
+  it("escalates once (function_failure + ops-alert) at/over the threshold with no prior escalation", async () => {
+    primeSingleFallback();
+    mockCountOpsEvents.mockResolvedValue(3); // == threshold
+    mockGetLatestOpsEvent.mockResolvedValue(null); // no prior escalation
+
+    const result = await scanThemeFilesInPool(TEST_FILES);
+
+    expect(result).toEqual(WORKER_RESULT);
+    expect(mockCountOpsEvents).toHaveBeenCalledWith("worker_fallback", 30 * 60_000);
+    expect(mockNotifyFunctionFailure).toHaveBeenCalledOnce();
+    expect(mockNotifyFunctionFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        functionId: "scan-pool",
+        eventName: "worker-fallback-escalation",
+        error: expect.stringContaining("persistently degraded"),
+      }),
+    );
+  });
+
+  it("does NOT escalate below the threshold", async () => {
+    primeSingleFallback();
+    mockCountOpsEvents.mockResolvedValue(2); // < threshold
+
+    const result = await scanThemeFilesInPool(TEST_FILES);
+
+    expect(result).toEqual(WORKER_RESULT);
+    expect(mockNotifyFunctionFailure).not.toHaveBeenCalled();
+    // Below threshold, we never consult the de-dupe row.
+    expect(mockGetLatestOpsEvent).not.toHaveBeenCalled();
+  });
+
+  it("de-dupes: suppresses a repeat page when a recent escalation exists in the window", async () => {
+    primeSingleFallback();
+    mockCountOpsEvents.mockResolvedValue(5); // over threshold
+    // Prior escalation 1 minute ago — inside the 30m window.
+    mockGetLatestOpsEvent.mockResolvedValue({ createdAt: new Date(Date.now() - 60_000) });
+
+    const result = await scanThemeFilesInPool(TEST_FILES);
+
+    expect(result).toEqual(WORKER_RESULT);
+    expect(mockNotifyFunctionFailure).not.toHaveBeenCalled();
+  });
+
+  it("re-escalates once the prior escalation has aged out of the window", async () => {
+    primeSingleFallback();
+    mockCountOpsEvents.mockResolvedValue(5);
+    // Prior escalation 45 minutes ago — outside the 30m window.
+    mockGetLatestOpsEvent.mockResolvedValue({ createdAt: new Date(Date.now() - 45 * 60_000) });
+
+    const result = await scanThemeFilesInPool(TEST_FILES);
+
+    expect(result).toEqual(WORKER_RESULT);
+    expect(mockNotifyFunctionFailure).toHaveBeenCalledOnce();
+  });
+
+  it("is best-effort: a probe error is swallowed to a warn and the scan still returns", async () => {
+    primeSingleFallback();
+    mockCountOpsEvents.mockRejectedValue(new Error("db unavailable"));
+
+    const result = await scanThemeFilesInPool(TEST_FILES);
+
+    expect(result).toEqual(WORKER_RESULT);
+    expect(mockNotifyFunctionFailure).not.toHaveBeenCalled();
+    // Two warns: the retry warning and the swallowed-escalation warning.
+    const escalationWarn = mockWarn.mock.calls.find(
+      ([msg]) => typeof msg === "string" && msg.includes("escalation check failed"),
+    );
+    expect(escalationWarn).toBeDefined();
   });
 });

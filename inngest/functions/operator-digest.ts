@@ -260,6 +260,98 @@ export function sortFindingTypeCounts(
 }
 
 // ---------------------------------------------------------------------------
+// Snapshot-metric threshold evaluation (gc-06e.13, sub-item 3)
+//
+// MetricSnapshot rows were collected but never evaluated. This adds conservative
+// threshold + trend alerting: the latest snapshot's 30d completion rate against
+// two floors, and the 7d scan volume / avg-findings against the PRIOR snapshot
+// for a coarse trend signal. Deliberately a few meaningful thresholds, not an
+// anomaly-detection system. Values are conservative starting points — tune in
+// METRIC_THRESHOLDS. Only the completion-rate CRITICAL floor is a HARD breach
+// that pages; the trend checks are low-volume-noisy so they are warn-only.
+// ---------------------------------------------------------------------------
+
+export const METRIC_THRESHOLDS = {
+  /** 30d completion rate below this is elevated (warn only). */
+  completionRateWarnFloor: 0.9,
+  /** 30d completion rate below this (= failure rate > 25%) is a hard breach. */
+  completionRateCriticalFloor: 0.75,
+  /** 7d scans below this fraction of the prior snapshot's 7d scans → warn. */
+  scanVolumeDropFactor: 0.5,
+  /** avg findings/scan above this multiple of the prior snapshot's → warn. */
+  findingsSpikeFactor: 3,
+} as const;
+
+/** The MetricSnapshot fields the evaluator reads (serialization-safe subset). */
+export interface MetricEvalSnapshot {
+  completionRate: number;
+  scansLast7d: number;
+  avgFindingsPerScan: number;
+}
+
+export interface MetricAnomalyResult {
+  /** Human-readable lines for the digest (includes the critical ones). */
+  anomalies: string[];
+  /** The subset that breached a HARD threshold — these page separately. */
+  critical: string[];
+}
+
+function fmtPct(n: number): string {
+  return `${(n * 100).toFixed(1)}%`;
+}
+
+/**
+ * Evaluate the latest snapshot (and its trend vs the prior one) against
+ * METRIC_THRESHOLDS. Pure and null-safe: no snapshot yet → no anomalies; trend
+ * checks are skipped when there is no prior snapshot.
+ */
+export function evaluateSnapshotMetrics(
+  current: MetricEvalSnapshot | null,
+  prior: MetricEvalSnapshot | null,
+): MetricAnomalyResult {
+  const anomalies: string[] = [];
+  const critical: string[] = [];
+  if (!current) return { anomalies, critical };
+
+  if (current.completionRate < METRIC_THRESHOLDS.completionRateCriticalFloor) {
+    const line = `Scan completion rate ${fmtPct(current.completionRate)} (30d) below ${fmtPct(
+      METRIC_THRESHOLDS.completionRateCriticalFloor,
+    )} -- CRITICAL`;
+    anomalies.push(line);
+    critical.push(line);
+  } else if (current.completionRate < METRIC_THRESHOLDS.completionRateWarnFloor) {
+    anomalies.push(
+      `Scan completion rate ${fmtPct(current.completionRate)} (30d) below ${fmtPct(
+        METRIC_THRESHOLDS.completionRateWarnFloor,
+      )}`,
+    );
+  }
+
+  if (prior) {
+    if (
+      prior.scansLast7d > 0 &&
+      current.scansLast7d < prior.scansLast7d * METRIC_THRESHOLDS.scanVolumeDropFactor
+    ) {
+      anomalies.push(
+        `7d scan volume dropped from ${prior.scansLast7d} to ${current.scansLast7d} vs prior snapshot`,
+      );
+    }
+    if (
+      prior.avgFindingsPerScan > 0 &&
+      current.avgFindingsPerScan > prior.avgFindingsPerScan * METRIC_THRESHOLDS.findingsSpikeFactor
+    ) {
+      anomalies.push(
+        `Avg findings/scan spiked from ${prior.avgFindingsPerScan.toFixed(
+          1,
+        )} to ${current.avgFindingsPerScan.toFixed(1)} vs prior snapshot`,
+      );
+    }
+  }
+
+  return { anomalies, critical };
+}
+
+// ---------------------------------------------------------------------------
 // Digest body (plaintext; sendOpsAlert is a text-only channel)
 // ---------------------------------------------------------------------------
 
@@ -297,6 +389,9 @@ export interface OperatorDigestData {
     apiErrors: { error: number; warn: number };
     staleCrons: StaleCronSummary[];
   };
+  /** Snapshot-metric threshold/trend anomalies (gc-06e.13). Optional so callers
+   * that predate the metric evaluation still type-check; absent => none. */
+  anomalies?: string[];
 }
 
 function fmtCountDelta(delta: number | null): string {
@@ -446,6 +541,17 @@ export function buildDigestBody(data: OperatorDigestData): string {
   } else {
     for (const c of ops.staleCrons) {
       lines.push(`  OVERDUE: ${c.key} (last heartbeat ${c.lastHeartbeatAt}, ${c.ageMs} ms ago)`);
+    }
+  }
+  lines.push("");
+
+  lines.push("METRIC ANOMALIES (30d snapshot vs thresholds)");
+  const anomalies = data.anomalies ?? [];
+  if (anomalies.length === 0) {
+    lines.push("  None -- all monitored metrics within thresholds");
+  } else {
+    for (const a of anomalies) {
+      lines.push(`  ${a}`);
     }
   }
   lines.push("");
@@ -656,6 +762,26 @@ export const operatorDigest = inngest.createFunction(
       };
     })) as OperatorDigestData["ops"];
 
+    // Evaluate the collected MetricSnapshot rows (gc-06e.13, sub-item 3): the
+    // latest snapshot's 30d completion rate against thresholds, plus a coarse
+    // trend vs the prior snapshot. Read-only. Surfaced in the digest below and,
+    // on a HARD breach, paged separately via the critical list.
+    const metricAnomalies = (await step.run("evaluate-snapshot-metrics", async () => {
+      const { getSnapshotHistory } = await import("../../app/models/metric-snapshot.server");
+      const [latest, prior] = await getSnapshotHistory(2);
+      const toEval = (
+        s: { completionRate: number; scansLast7d: number; avgFindingsPerScan: number } | undefined,
+      ): MetricEvalSnapshot | null =>
+        s
+          ? {
+              completionRate: s.completionRate,
+              scansLast7d: s.scansLast7d,
+              avgFindingsPerScan: s.avgFindingsPerScan,
+            }
+          : null;
+      return evaluateSnapshotMetrics(toEval(latest), toEval(prior));
+    })) as MetricAnomalyResult;
+
     // Assemble via the pure aggregators (status map computed ONCE, reused in B).
     const statusCounts = computeScanStatusCounts(scanRows);
     const data: OperatorDigestData = {
@@ -688,6 +814,7 @@ export const operatorDigest = inngest.createFunction(
         totalActive: shopData.totalActive,
       },
       ops,
+      anomalies: metricAnomalies.anomalies,
     };
 
     // Build + send. Best-effort: sendOpsAlert never throws, but wrap defensively
@@ -706,6 +833,23 @@ export const operatorDigest = inngest.createFunction(
         return false;
       }
     })) as boolean;
+
+    // Hard metric breach pages SEPARATELY from the scheduled digest so a critical
+    // threshold isn't buried in the daily rollup. Best-effort: sendOpsAlert never
+    // throws, but wrap defensively so no failure escapes the cron.
+    if (metricAnomalies.critical.length > 0) {
+      await step.run("alert-metric-breach", async () => {
+        const { sendOpsAlert } = await import("../../app/services/ops-alert.server");
+        try {
+          await sendOpsAlert(
+            `Metric threshold breach -- ${data.dateLabel}`,
+            `Hard metric threshold(s) breached:\n${metricAnomalies.critical.join("\n")}`,
+          );
+        } catch {
+          // swallow — paging is best-effort
+        }
+      });
+    }
 
     return { status: "completed", dateReported: data.dateLabel, alertSent };
   }),

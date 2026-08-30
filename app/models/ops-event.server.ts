@@ -229,6 +229,7 @@ const DEFAULT_GRACE_FACTOR = 2;
  */
 export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
   { key: "watch-stale-scans", intervalMs: 10 * MINUTE_MS },
+  { key: "monitor-deep-health", intervalMs: 15 * MINUTE_MS },
   { key: "monitor-scan-failures", intervalMs: 6 * HOUR_MS },
   { key: "snapshot-metrics", intervalMs: DAY_MS },
   { key: "poll-theme-changes", intervalMs: DAY_MS },

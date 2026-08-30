@@ -11,6 +11,7 @@
 import { serve } from "inngest/remix";
 
 import { inngest } from "../../inngest/client";
+import { monitorDeepHealth } from "../../inngest/functions/monitor-deep-health";
 import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failures";
 import { operatorDigest } from "../../inngest/functions/operator-digest";
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
@@ -33,6 +34,7 @@ const handler = serve({
     pollCheckShop,
     weeklyScan,
     monitorScanFailures,
+    monitorDeepHealth,
     watchStaleScans,
     snapshotMetrics,
     operatorDigest,

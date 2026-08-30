@@ -45,6 +45,8 @@ import {
   countUninstallEventsExcluding,
   DEFAULT_EXCLUDE_SHOPS,
   diffSnapshot,
+  evaluateSnapshotMetrics,
+  METRIC_THRESHOLDS,
   operatorDigest,
   parseExcludeShops,
   parseSnapshotMetadata,
@@ -676,6 +678,82 @@ describe("buildDigestBody — cron health", () => {
     expect(body).toContain("Function failures: 1");
     expect(body).toContain("Worker-pool fallbacks: 2");
     expect(body).toContain("Errors: 3, Warnings: 4");
+  });
+});
+
+describe("buildDigestBody — metric anomalies", () => {
+  it("reports none when no anomalies are present (default)", () => {
+    const body = buildDigestBody(makeData());
+    expect(body).toContain("METRIC ANOMALIES (30d snapshot vs thresholds)");
+    expect(body).toContain("None -- all monitored metrics within thresholds");
+  });
+
+  it("lists each anomaly line when present", () => {
+    const body = buildDigestBody(
+      makeData({ anomalies: ["Scan completion rate 60.0% (30d) below 75.0% -- CRITICAL"] }),
+    );
+    expect(body).toContain("Scan completion rate 60.0% (30d) below 75.0% -- CRITICAL");
+    expect(body).not.toContain("None -- all monitored metrics within thresholds");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// evaluateSnapshotMetrics (gc-06e.13, sub-item 3)
+// ---------------------------------------------------------------------------
+
+describe("evaluateSnapshotMetrics", () => {
+  const healthy = { completionRate: 0.99, scansLast7d: 20, avgFindingsPerScan: 5 };
+
+  it("returns no anomalies when there is no snapshot yet", () => {
+    expect(evaluateSnapshotMetrics(null, null)).toEqual({ anomalies: [], critical: [] });
+  });
+
+  it("stays quiet when all metrics are within thresholds", () => {
+    const result = evaluateSnapshotMetrics(healthy, healthy);
+    expect(result.anomalies).toEqual([]);
+    expect(result.critical).toEqual([]);
+  });
+
+  it("flags a hard breach (critical) when completion rate is below the critical floor", () => {
+    const result = evaluateSnapshotMetrics({ ...healthy, completionRate: 0.6 }, healthy);
+    expect(result.critical).toHaveLength(1);
+    expect(result.critical[0]).toContain("CRITICAL");
+    // The critical line is also surfaced in the digest anomaly list.
+    expect(result.anomalies).toContain(result.critical[0]);
+  });
+
+  it("flags an elevated (warn-only) completion rate without paging", () => {
+    // Below the warn floor (0.9) but above the critical floor (0.75).
+    const result = evaluateSnapshotMetrics({ ...healthy, completionRate: 0.85 }, healthy);
+    expect(result.critical).toEqual([]);
+    expect(result.anomalies).toHaveLength(1);
+    expect(result.anomalies[0]).not.toContain("CRITICAL");
+  });
+
+  it("flags a 7d scan-volume drop vs the prior snapshot (warn only)", () => {
+    const prior = { ...healthy, scansLast7d: 100 };
+    const current = { ...healthy, scansLast7d: 40 }; // < 50% of prior
+    const result = evaluateSnapshotMetrics(current, prior);
+    expect(result.critical).toEqual([]);
+    expect(result.anomalies.some((a) => a.includes("7d scan volume dropped"))).toBe(true);
+  });
+
+  it("flags a findings spike vs the prior snapshot (warn only)", () => {
+    const prior = { ...healthy, avgFindingsPerScan: 2 };
+    const current = { ...healthy, avgFindingsPerScan: 10 }; // > 3x prior
+    const result = evaluateSnapshotMetrics(current, prior);
+    expect(result.anomalies.some((a) => a.includes("Avg findings/scan spiked"))).toBe(true);
+  });
+
+  it("skips trend checks when there is no prior snapshot", () => {
+    const current = { completionRate: 0.99, scansLast7d: 1, avgFindingsPerScan: 100 };
+    const result = evaluateSnapshotMetrics(current, null);
+    expect(result.anomalies).toEqual([]);
+  });
+
+  it("exposes conservative default thresholds", () => {
+    expect(METRIC_THRESHOLDS.completionRateCriticalFloor).toBe(0.75);
+    expect(METRIC_THRESHOLDS.completionRateWarnFloor).toBe(0.9);
   });
 });
 

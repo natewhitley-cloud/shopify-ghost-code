@@ -32,7 +32,13 @@ import Piscina from "piscina";
 
 import { type ScanResult, type ThemeFile } from "./scan-engine.server";
 import { logger } from "../lib/logger.server";
-import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
+import { notifyFunctionFailure } from "../lib/notifications.server";
+import {
+  countOpsEvents,
+  getLatestOpsEvent,
+  OPS_EVENT_TYPES,
+  recordOpsEvent,
+} from "../models/ops-event.server";
 
 // ---------------------------------------------------------------------------
 // Pool singleton
@@ -57,6 +63,28 @@ function workerFilePath(): string {
 const WORKER_TIMEOUT_MS = 30_000;
 const WORKER_RETRY_TIMEOUT_MS = 10_000;
 
+// Worker-fallback escalation (gc-06e.13, sub-item 2).
+//
+// A single degraded-worker retry is tolerable (transient spawn hiccup, one slow
+// theme). A SUSTAINED run of them is a real incident: the worker pool is
+// persistently unhealthy and scans are silently taking the slow/retry path. After
+// this many WORKER_FALLBACK events within the trailing window, escalate ONCE to a
+// function_failure + ops-alert via notifyFunctionFailure.
+//
+// "N consecutive" is approximated as "N within a trailing window", queried from
+// the durable OpsEvent history rather than an in-process counter. Rationale:
+//   - The scan path records NO per-run SUCCESS marker (that would add a write to
+//     the hot path and grow the OpsEvent table), so there is no success row to
+//     reset a strict consecutive counter against.
+//   - An in-process counter is unreliable across the Inngest execution model:
+//     each scan job runs independently and the process can be replaced (redeploy)
+//     or replicated (multiple containers), so a counter would neither persist nor
+//     be shared. Querying the DB-backed history is the only reliable mechanism.
+// A burst of N fallbacks in the window is exactly the persistent-degradation
+// signal worth paging on.
+const WORKER_FALLBACK_ESCALATION_THRESHOLD = 3;
+const WORKER_FALLBACK_ESCALATION_WINDOW_MS = 30 * 60_000; // 30 minutes
+
 function getPool(): Piscina {
   if (!pool) {
     pool = new Piscina({
@@ -74,6 +102,53 @@ function getPool(): Piscina {
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
+
+/**
+ * Escalate when worker fallbacks are sustained. Called on each fallback; counts
+ * WORKER_FALLBACK events in the trailing window and, at/over the threshold, fires
+ * ONE function_failure + ops-alert. De-duped within the window via the last
+ * function_failure keyed "scan-pool" so a burst pages only once.
+ *
+ * Best-effort: any error (DB probe, alert) is swallowed to a warn. Escalation is
+ * observability and must never add a failure mode to the already-degraded scan
+ * path.
+ */
+async function maybeEscalateWorkerFallbacks(): Promise<void> {
+  try {
+    const recentFallbacks = await countOpsEvents(
+      OPS_EVENT_TYPES.WORKER_FALLBACK,
+      WORKER_FALLBACK_ESCALATION_WINDOW_MS,
+    );
+    if (recentFallbacks < WORKER_FALLBACK_ESCALATION_THRESHOLD) return;
+
+    // De-dupe: escalate at most once per window. notifyFunctionFailure records a
+    // function_failure keyed to this same id, so a prior escalation inside the
+    // window suppresses a repeat page on every subsequent fallback in the burst.
+    const lastEscalation = await getLatestOpsEvent(OPS_EVENT_TYPES.FUNCTION_FAILURE, "scan-pool");
+    if (
+      lastEscalation &&
+      Date.now() - lastEscalation.createdAt.getTime() < WORKER_FALLBACK_ESCALATION_WINDOW_MS
+    ) {
+      return;
+    }
+
+    const windowMinutes = WORKER_FALLBACK_ESCALATION_WINDOW_MS / 60_000;
+    await notifyFunctionFailure({
+      functionId: "scan-pool",
+      eventName: "worker-fallback-escalation",
+      error:
+        `scan-pool worker fell back ${recentFallbacks} time(s) in the last ${windowMinutes}m ` +
+        "-- worker pool is persistently degraded",
+      runId: `scan-pool-${Date.now()}`,
+    });
+  } catch (err) {
+    logger.warn("scan-pool: worker-fallback escalation check failed", {
+      service: "scan-pool",
+      event: "escalation_failed",
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
 
 /**
  * Run scanThemeFiles in a worker thread from the pool.
@@ -111,6 +186,10 @@ export async function scanThemeFilesInPool(files: ThemeFile[]): Promise<ScanResu
       message: firstErr instanceof Error ? firstErr.message : String(firstErr),
       metadata: { event: "worker_retry", fileCount: files.length },
     });
+
+    // Escalate if worker fallbacks are SUSTAINED (see maybeEscalateWorkerFallbacks).
+    // Best-effort and never throws, so it cannot affect the retry below.
+    await maybeEscalateWorkerFallbacks();
 
     try {
       const result = await getPool().run(
