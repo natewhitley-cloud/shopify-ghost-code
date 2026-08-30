@@ -4,7 +4,7 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
 import { copyToClipboard } from "../lib/clipboard";
-import { hasVisualImpact } from "../lib/finding-classification";
+import { getFindingConfidence, hasVisualImpact } from "../lib/finding-classification";
 import { getFindingRemediation } from "../lib/finding-remediation";
 import { formatDate, isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -159,14 +159,27 @@ export function CopyButton({ text }: { text: string }) {
 
 export function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean }) {
   const isVisual = finding.isVisual ?? hasVisualImpact(finding.findingType);
+  const confidence = getFindingConfidence(finding.findingType);
   return (
     <tr>
       <td>
-        <div style={{ display: "flex", alignItems: "center", gap: "6px" }}>
+        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
           <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
           {isNew && <span style={styles.newBadge}>NEW</span>}
           {finding.isTracker && <span style={styles.trackerBadge}>TRACKING</span>}
           {isVisual && <span style={styles.visualBadge}>VISUAL</span>}
+          {confidence === "signature" ? (
+            <span style={styles.signatureBadge} title="Matched against a known app signature">
+              High confidence
+            </span>
+          ) : (
+            <span
+              style={styles.heuristicBadge}
+              title="Structurally inferred, not a known app-signature match. Review before removing."
+            >
+              Heuristic
+            </span>
+          )}
         </div>
       </td>
       <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>

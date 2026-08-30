@@ -687,6 +687,18 @@ describe("FindingRow — removal guidance + copy button", () => {
     // The snippet is present (first chunk of the code snippet appears).
     expect(html).toContain("&lt;script");
   });
+
+  it('renders a "High confidence" badge for a signature-matched finding (GHOST_SCRIPT)', () => {
+    const html = renderRow(FINDING_ONE);
+    expect(html).toContain("High confidence");
+    expect(html).not.toContain(">Heuristic<");
+  });
+
+  it('renders a "Heuristic" badge for a structurally-inferred finding (SETTINGS_DRIFT)', () => {
+    const html = renderRow({ ...FINDING_ONE, findingType: "SETTINGS_DRIFT" });
+    expect(html).toContain(">Heuristic<");
+    expect(html).not.toContain("High confidence");
+  });
 });
 
 // ---------------------------------------------------------------------------

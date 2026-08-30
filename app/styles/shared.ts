@@ -337,6 +337,43 @@ export const styles = {
     letterSpacing: "0.5px",
     lineHeight: "16px",
   } as React.CSSProperties,
+
+  /**
+   * "HIGH CONFIDENCE" badge for signature-matched findings (detected via a
+   * known app-signature match). Calm info-blue tint, kept subordinate to the
+   * severity badge.
+   */
+  signatureBadge: {
+    display: "inline-block",
+    padding: "1px 6px",
+    borderRadius: "4px",
+    background: STATUS_TINTS.info.border,
+    color: STATUS_TINTS.info.text,
+    fontSize: "10px",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+    lineHeight: "16px",
+  } as React.CSSProperties,
+
+  /**
+   * "HEURISTIC" badge for structurally-inferred findings (no app-signature
+   * match required), which are more false-positive-prone and worth a review.
+   * Neutral grey outline so it reads as metadata, not an alarm.
+   */
+  heuristicBadge: {
+    display: "inline-block",
+    padding: "1px 6px",
+    borderRadius: "4px",
+    background: BG_SURFACE,
+    color: TEXT_SUBDUED,
+    border: `1px solid ${BORDER_STRONG}`,
+    fontSize: "10px",
+    fontWeight: 700,
+    textTransform: "uppercase",
+    letterSpacing: "0.5px",
+    lineHeight: "16px",
+  } as React.CSSProperties,
 } as const;
 
 // ---------------------------------------------------------------------------
