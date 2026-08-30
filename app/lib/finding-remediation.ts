@@ -23,7 +23,7 @@ const REMEDIATION: Record<string, string> = {
   GHOST_SCRIPT:
     "Once you have confirmed the app is uninstalled, this script tag can be removed from the theme file. Duplicate your live theme first (Online Store, Themes, Actions, Duplicate), then delete the tag in the theme code editor.",
   GHOST_PIXEL:
-    "This tracking pixel may still be sending visitor data to a service you no longer use. After confirming the app is gone, remove the pixel snippet from the theme file. Duplicate the theme first as a backup.",
+    "This is a tracking pixel injected into your theme. If it belongs to an app you have uninstalled, it may still be sending visitor data to a service you no longer use. Confirm this is not a pixel you still rely on (for example, an active Google or Meta tag) before removing its snippet from the theme file. Duplicate the theme first as a backup.",
   GHOST_AJAX:
     "This code still calls an uninstalled app's API on every page load, slowing the page for no benefit. Once you confirm the app is removed, delete the request from the theme file. Duplicate the theme first.",
   GHOST_PRECONNECT:

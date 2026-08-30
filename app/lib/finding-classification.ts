@@ -82,6 +82,13 @@ export type FindingConfidence = "signature" | "heuristic";
  *                        prefix with no app attribution.
  *   - GHOST_TRANSLATION — informational only; the detector explicitly cannot
  *                        prove the content is orphaned.
+ *   - GHOST_TAG / GHOST_PAGE / GHOST_METAFIELD — fire on a LOOSE prefix/namespace
+ *                        match (product tag, page handle, or metafield namespace).
+ *                        The prefix can collide with a merchant's own tag/page/
+ *                        metafield, so a positive match does not prove the source
+ *                        is an uninstalled app. Surfaced as "Heuristic" so a
+ *                        false positive does not inherit an unearned "High
+ *                        confidence" badge.
  */
 const HEURISTIC_FINDING_TYPES = new Set([
   "ORPHAN_ASSET",
@@ -96,6 +103,9 @@ const HEURISTIC_FINDING_TYPES = new Set([
   "GHOST_OG",
   "GHOST_REDIRECT",
   "GHOST_TRANSLATION",
+  "GHOST_TAG",
+  "GHOST_PAGE",
+  "GHOST_METAFIELD",
 ]);
 
 /**
@@ -112,8 +122,6 @@ const HEURISTIC_FINDING_TYPES = new Set([
  *                                    identifier table (fbq, gtag, ttq, …).
  *   - GHOST_PRECONNECT / GHOST_FONT / GHOST_AJAX — resource/call attributed to
  *                                    a known app CDN/domain.
- *   - GHOST_TAG / GHOST_PAGE / GHOST_METAFIELD — product tag / page handle /
- *                                    metafield namespace matches a known app.
  *   - GHOST_PRICE                  — compare-at residue corroborated by a known
  *                                    discount-app metafield signature.
  */
@@ -128,9 +136,6 @@ const SIGNATURE_FINDING_TYPES = new Set([
   "GHOST_PRECONNECT",
   "GHOST_FONT",
   "GHOST_AJAX",
-  "GHOST_TAG",
-  "GHOST_PAGE",
-  "GHOST_METAFIELD",
   "GHOST_PRICE",
 ]);
 

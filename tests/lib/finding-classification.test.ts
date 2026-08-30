@@ -99,9 +99,6 @@ describe("getFindingConfidence", () => {
     "GHOST_PRECONNECT",
     "GHOST_FONT",
     "GHOST_AJAX",
-    "GHOST_TAG",
-    "GHOST_PAGE",
-    "GHOST_METAFIELD",
     "GHOST_PRICE",
   ];
 
@@ -123,6 +120,9 @@ describe("getFindingConfidence", () => {
     "GHOST_OG",
     "GHOST_REDIRECT",
     "GHOST_TRANSLATION",
+    "GHOST_TAG",
+    "GHOST_PAGE",
+    "GHOST_METAFIELD",
   ];
 
   it.each(HEURISTIC_TYPES)('returns "heuristic" for %s', (type) => {
