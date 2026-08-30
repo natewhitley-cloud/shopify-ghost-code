@@ -1073,7 +1073,26 @@ export function detectGhostRobots(file: ThemeFile): CreateFindingInput[] {
 // Collector: unknown external scripts (unrecognized CDN URLs)
 // ---------------------------------------------------------------------------
 
-const SHOPIFY_FIRST_PARTY_RE = /\.(shopify\.com|shopifycdn\.com|myshopify\.com)$/;
+// Shopify-owned base domains. A hostname is first-party if it equals one of
+// these or is a subdomain of it. Single source of truth for both the
+// unknown-script/stylesheet collectors and the ghost-preconnect detector, so the
+// .com/.net variants can never drift apart again (gc-06e.6).
+const SHOPIFY_BASE_DOMAINS = [
+  "shopify.com",
+  "shopifycdn.com",
+  "shopifycdn.net",
+  "myshopify.com",
+  "shopifysvc.com",
+];
+
+/**
+ * Returns true if the hostname is a Shopify-owned domain or a subdomain of one.
+ * Uses an exact-or-dot-boundary check so lookalikes (e.g. "evilshopify.com",
+ * "notshopifycdn.net") are NOT treated as first-party.
+ */
+function isShopifyDomain(hostname: string): boolean {
+  return SHOPIFY_BASE_DOMAINS.some((base) => hostname === base || hostname.endsWith(`.${base}`));
+}
 
 export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
@@ -1091,7 +1110,7 @@ export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[
       // Filter out first-party Shopify CDN URLs that are not app artifacts
       const hostname = hostnameFromUrl(url);
       if (hostname === null) continue; // Malformed URL — skip
-      if (SHOPIFY_FIRST_PARTY_RE.test(hostname)) continue;
+      if (isShopifyDomain(hostname)) continue;
 
       unknowns.push({
         filename: file.filename,
@@ -1128,7 +1147,7 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
       // Filter out first-party Shopify CDN URLs
       const hostname = hostnameFromUrl(url);
       if (hostname === null) continue; // Malformed URL — skip
-      if (SHOPIFY_FIRST_PARTY_RE.test(hostname)) continue;
+      if (isShopifyDomain(hostname)) continue;
 
       unknowns.push({
         filename: file.filename,
@@ -1954,11 +1973,6 @@ const PRECONNECT_RE =
   /<link[^>]+rel\s*=\s*["'](preconnect|dns-prefetch|preload)["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["']([^"']+)["'][^>]+rel\s*=\s*["'](preconnect|dns-prefetch|preload)["'][^>]*>/gi;
 
 /**
- * Shopify-owned domains that should never be flagged as ghost preconnect hints.
- */
-const SHOPIFY_DOMAINS = ["cdn.shopify.com", "cdn.shopifycdn.net", "monorail-edge.shopifysvc.com"];
-
-/**
  * Major shared CDNs commonly used by themes directly — not app-specific.
  */
 const SHARED_CDN_DOMAINS = [
@@ -1967,16 +1981,6 @@ const SHARED_CDN_DOMAINS = [
   "cdnjs.cloudflare.com",
   "cdn.jsdelivr.net",
 ];
-
-/**
- * Returns true if the given hostname matches a Shopify-owned domain or
- * a *.myshopify.com subdomain.
- */
-function isShopifyDomain(hostname: string): boolean {
-  if (SHOPIFY_DOMAINS.includes(hostname)) return true;
-  if (hostname.endsWith(".myshopify.com")) return true;
-  return false;
-}
 
 /**
  * Returns true if the given hostname matches a major shared CDN.
