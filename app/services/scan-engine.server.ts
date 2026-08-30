@@ -199,10 +199,18 @@ function buildSnippet(content: string, lineNumber: number): string {
  * Includes the {% comment %} opener line, all body lines, and the {% endcomment %}
  * closing line, so callers can uniformly skip any line in the set.
  *
- * Used by detectGhostSnippets, detectGhostPreconnect, and detectDuplicateMetaTags
- * to avoid false positives from commented-out code. Each of those detectors has
- * additional skip logic (conditional-line skipping or depth tracking) that differs
- * between them and therefore stays inline rather than being unified here.
+ * Approximation: skipping is line-granular, so when live code shares a line with
+ * {% endcomment %} the whole line is skipped. Code BEFORE the endcomment on that
+ * line is genuinely commented (correctly skipped); code AFTER it is live but gets
+ * skipped too. This is the majority behavior across all comment-aware detectors —
+ * they all include the endcomment line in the skip set — so it is intentional and
+ * uniform rather than per-detector drift.
+ *
+ * Used by the comment-aware detectors (snippets, sections, hreflang, canonical,
+ * title, og, preconnect, font, ajax, duplicate-meta) to avoid false positives
+ * from commented-out code. Some of those detectors layer additional skip logic
+ * (conditional-line skipping or depth tracking) that differs between them and
+ * therefore stays inline rather than being unified here.
  */
 function buildCommentSkipLines(content: string): Set<number> {
   const skipLines = new Set<number>();
@@ -1604,15 +1612,8 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
   const isLayoutFile = file.filename.startsWith("layout/");
   const contentLines = file.content.split("\n");
 
-  // Build a set of line numbers inside Liquid comment blocks
-  const commentedLines = new Set<number>();
-  let insideComment = false;
-  for (let i = 0; i < contentLines.length; i++) {
-    const line = contentLines[i];
-    if (/\{%-?\s*comment\s*-?%\}/.test(line)) insideComment = true;
-    if (insideComment) commentedLines.add(i + 1); // 1-indexed
-    if (/\{%-?\s*endcomment\s*-?%\}/.test(line)) insideComment = false;
-  }
+  // Build a set of line numbers inside Liquid comment blocks (shared helper)
+  const commentedLines = buildCommentSkipLines(file.content);
 
   // Collect all title occurrences for duplicate detection
   const allTitles: Array<{
@@ -1841,15 +1842,8 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
   const contentLines = file.content.split("\n");
 
-  // Build a set of line numbers inside Liquid comment blocks
-  const commentedLines = new Set<number>();
-  let insideComment = false;
-  for (let i = 0; i < contentLines.length; i++) {
-    const line = contentLines[i];
-    if (/\{%-?\s*comment\s*-?%\}/.test(line)) insideComment = true;
-    if (insideComment) commentedLines.add(i + 1); // 1-indexed
-    if (/\{%-?\s*endcomment\s*-?%\}/.test(line)) insideComment = false;
-  }
+  // Build a set of line numbers inside Liquid comment blocks (shared helper)
+  const commentedLines = buildCommentSkipLines(file.content);
 
   // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
   // OG_META_RE to the bounded tag text. lineNumberAtOffset maps the match offset
@@ -2102,16 +2096,16 @@ const FONT_LINK_RE =
 export function detectGhostFont(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  let insideComment = false;
+  // Comment-line tracking is delegated to the shared helper so Font skips the
+  // same lines as every other comment-aware detector (including a directive that
+  // shares a line with {% endcomment %}). Previously this loop cleared the
+  // comment flag on the endcomment line and `continue`d BEFORE marking it,
+  // scanning that line while all other detectors skipped it — that drift is now
+  // fixed.
+  const commentSkipLines = buildCommentSkipLines(file.content);
 
   for (const { lineNumber, text } of lines(file.content)) {
-    // Track Liquid comment blocks
-    if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-    if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) {
-      insideComment = false;
-      continue;
-    }
-    if (insideComment) continue;
+    if (commentSkipLines.has(lineNumber)) continue;
 
     // Skip lines with Liquid conditionals — these are theme-native logic
     if (LIQUID_CONDITIONAL_RE.test(text)) continue;

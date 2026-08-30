@@ -3631,6 +3631,95 @@ describe("detectGhostFont", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Unified comment-skip: detectGhostTitle / detectGhostOg / detectGhostFont all
+// delegate comment-block detection to buildCommentSkipLines (gc-06e.12). These
+// tests lock the three detectors to identical comment-skip semantics so future
+// drift (one detector clearing the insideComment flag differently) is caught.
+//
+// NOTE on the real behavior change: the previous inline Font loop cleared the
+// comment flag on the {% endcomment %} line and `continue`d, which meant it
+// SKIPPED any code on a {% endcomment %} line — including a stray, opener-less
+// {% endcomment %}. The shared helper only skips lines while genuinely inside a
+// comment, so Font now SCANS code on an opener-less endcomment line, matching
+// Title/Og. Well-formed comment blocks are unchanged for all three.
+// ---------------------------------------------------------------------------
+
+describe("unified comment-skip across title/og/font (gc-06e.12)", () => {
+  it("Font skips a font <link> sharing a line with {% endcomment %} in a comment block", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        "<!-- Judge.me widget -->",
+        '<link href="https://cdn.judge.me/fonts/widget-font.css" rel="stylesheet"> {% endcomment %}',
+      ].join("\n"),
+    };
+    expect(detectGhostFont(file)).toHaveLength(0);
+  });
+
+  it("Font skips an @font-face sharing a line with {% endcomment %} in a comment block", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        "<!-- Judge.me widget -->",
+        '<style>@font-face { font-family: "JudgeFont"; src: url("https://cdn.judge.me/f.woff2"); }</style> {% endcomment %}',
+      ].join("\n"),
+    };
+    expect(detectGhostFont(file)).toHaveLength(0);
+  });
+
+  it("Title/Og/Font all skip a ghost directive on the {% endcomment %} line of a comment block", () => {
+    const titleFile: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["{% comment %}", "<title>{{ seoapp_meta_title }}</title> {% endcomment %}"].join(
+        "\n",
+      ),
+    };
+    const ogFile: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: [
+        "{% comment %}",
+        '<meta property="og:title" content="{{ seoapp_meta_title }}"> {% endcomment %}',
+      ].join("\n"),
+    };
+    const fontFile: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        '<link href="https://cdn.judge.me/fonts/widget-font.css" rel="stylesheet"> {% endcomment %}',
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(titleFile)).toHaveLength(0);
+    expect(detectGhostOg(ogFile)).toHaveLength(0);
+    expect(detectGhostFont(fontFile)).toHaveLength(0);
+  });
+
+  it("Title/Og/Font all SCAN a ghost directive on an opener-less {% endcomment %} line (Font drift fixed)", () => {
+    // No {% comment %} opener: the {% endcomment %} is stray, so the line is live
+    // code. All three now treat it as scannable (previously Font alone skipped it).
+    const titleFile: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title>{{ seoapp_meta_title }}</title> {% endcomment %}",
+    };
+    const ogFile: ThemeFile = {
+      filename: "snippets/meta-tags.liquid",
+      content: '<meta property="og:title" content="{{ seoapp_meta_title }}"> {% endcomment %}',
+    };
+    const fontFile: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<link href="https://cdn.judge.me/fonts/widget-font.css" rel="stylesheet"> {% endcomment %}',
+    };
+    expect(detectGhostTitle(titleFile)).toHaveLength(1);
+    expect(detectGhostOg(ogFile)).toHaveLength(1);
+    const fontFindings = detectGhostFont(fontFile);
+    expect(fontFindings).toHaveLength(1);
+    expect(fontFindings[0].appName).toBe("Judge.me");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // detectGhostAjax
 // ---------------------------------------------------------------------------
 
