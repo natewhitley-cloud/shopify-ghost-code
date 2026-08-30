@@ -23,8 +23,12 @@ export async function copyToClipboard(text: string): Promise<boolean> {
 
   // Fallback: hidden textarea + execCommand("copy").
   if (typeof document === "undefined") return false;
+  // Declared outside the try so the finally can remove it on BOTH the success
+  // and throw paths — otherwise a throw from select()/execCommand() would leak
+  // an orphaned hidden <textarea> into the DOM on every failed copy.
+  let textarea: HTMLTextAreaElement | undefined;
   try {
-    const textarea = document.createElement("textarea");
+    textarea = document.createElement("textarea");
     textarea.value = text;
     // Keep it out of view and prevent scroll/zoom jumps when it receives focus.
     textarea.style.position = "fixed";
@@ -33,10 +37,12 @@ export async function copyToClipboard(text: string): Promise<boolean> {
     textarea.setAttribute("readonly", "");
     document.body.appendChild(textarea);
     textarea.select();
-    const ok = document.execCommand("copy");
-    document.body.removeChild(textarea);
-    return ok;
+    return document.execCommand("copy");
   } catch {
     return false;
+  } finally {
+    // remove() is a no-op if the node was never appended (e.g. createElement
+    // succeeded but appendChild threw), so cleanup is always safe.
+    textarea?.remove();
   }
 }

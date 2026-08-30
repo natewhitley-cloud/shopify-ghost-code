@@ -31,13 +31,15 @@ function stubDocument(execResult: boolean, spies?: { append?: () => void; remove
     style: {} as Record<string, string>,
     setAttribute: vi.fn(),
     select: vi.fn(),
+    // The fallback removes the node via textarea.remove() (guaranteed on both
+    // the success and throw paths by a finally block), not body.removeChild.
+    remove: vi.fn(spies?.remove),
   };
   const doc = {
     createElement: vi.fn(() => textarea),
     execCommand: vi.fn(() => execResult),
     body: {
       appendChild: vi.fn(spies?.append),
-      removeChild: vi.fn(spies?.remove),
     },
   };
   vi.stubGlobal("document", doc);
@@ -90,17 +92,35 @@ describe("copyToClipboard — execCommand fallback", () => {
     expect(textarea.select).toHaveBeenCalled();
     expect(doc.execCommand).toHaveBeenCalledWith("copy");
     expect(doc.body.appendChild).toHaveBeenCalled();
-    expect(doc.body.removeChild).toHaveBeenCalled();
+    expect(textarea.remove).toHaveBeenCalled();
     expect(result).toBe(true);
   });
 
   it("returns false when execCommand reports failure", async () => {
     vi.stubGlobal("navigator", {});
-    stubDocument(false);
+    const { textarea } = stubDocument(false);
 
     const result = await copyToClipboard("nope");
 
     expect(result).toBe(false);
+    // Even on a failed copy the textarea must be cleaned up (no orphan leak).
+    expect(textarea.remove).toHaveBeenCalled();
+  });
+
+  it("removes the textarea on the throw path (no orphaned node leak)", async () => {
+    vi.stubGlobal("navigator", {});
+    const { doc, textarea } = stubDocument(true);
+    // Simulate select()/execCommand throwing inside a sandboxed iframe.
+    doc.execCommand.mockImplementation(() => {
+      throw new Error("execCommand not permitted");
+    });
+
+    const result = await copyToClipboard("throws");
+
+    // Return value semantics unchanged: a thrown fallback still returns false.
+    expect(result).toBe(false);
+    // The finally block guarantees cleanup even though execCommand threw.
+    expect(textarea.remove).toHaveBeenCalled();
   });
 
   it("returns false when neither navigator.clipboard nor document is available", async () => {
