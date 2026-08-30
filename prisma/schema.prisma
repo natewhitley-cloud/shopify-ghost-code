@@ -132,8 +132,14 @@ model UnknownScript {
   codeSnippet  String
   createdAt    DateTime              @default(now())
   submissions  SignatureSubmission[]
+  // Hostname of `url`, computed at insert time (gc-06e.10). Enables an indexed
+  // exact-match lookup in acceptSubmissionsForDomain instead of a non-indexable
+  // `url contains` substring scan. Nullable: rows created before this column
+  // existed have null and are matched via the legacy contains fallback.
+  domain       String?
 
   @@index([scanId])
+  @@index([domain])
 }
 
 model SignatureSubmission {

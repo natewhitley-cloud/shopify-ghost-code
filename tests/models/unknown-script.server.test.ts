@@ -59,6 +59,8 @@ import {
   findUnknownScriptForShop,
   createUnknownScripts,
   submitSignatureSuggestion,
+  listSubmissionsForReview,
+  SUBMISSION_QUERY_LIMIT,
 } from "../../app/models/unknown-script.server";
 import type { CreateUnknownScriptInput } from "../../app/models/unknown-script.server";
 
@@ -185,6 +187,20 @@ describe("getSubmissionsByDomain", () => {
         where: undefined,
       }),
     );
+  });
+
+  it("bounds the read with a take limit and orders newest first", async () => {
+    mockDb.signatureSubmission.findMany.mockResolvedValue([]);
+
+    await getSubmissionsByDomain();
+
+    expect(mockDb.signatureSubmission.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        take: SUBMISSION_QUERY_LIMIT,
+        orderBy: { createdAt: "desc" },
+      }),
+    );
+    expect(SUBMISSION_QUERY_LIMIT).toBeGreaterThan(0);
   });
 
   it("filters out domains below minCount threshold", async () => {
@@ -314,32 +330,69 @@ describe("acceptSubmissionsForDomain", () => {
     vi.resetAllMocks();
   });
 
-  it("batch-updates submissions for matching domain", async () => {
-    mockDb.unknownScript.findMany.mockResolvedValue([
-      { id: "us-1", url: "https://target.com/a.js" },
-      { id: "us-2", url: "https://target.com/b.js" },
-      { id: "us-3", url: "https://other.com/c.js" },
+  it("accepts indexed rows via an exact domain-column match (fast path)", async () => {
+    // Fast path: the first findMany queries the indexed `domain` column and its
+    // rows are exact matches used directly (no JS refine). The second findMany
+    // (legacy null-domain fallback) returns nothing here.
+    mockDb.unknownScript.findMany
+      .mockResolvedValueOnce([{ id: "us-1" }, { id: "us-2" }])
+      .mockResolvedValueOnce([]);
+    mockDb.signatureSubmission.updateMany.mockResolvedValue({ count: 4 });
+
+    const result = await acceptSubmissionsForDomain("target.com");
+
+    // First query hits the indexed column with an exact equality.
+    expect(mockDb.unknownScript.findMany).toHaveBeenNthCalledWith(1, {
+      where: { domain: "target.com" },
+      select: { id: true },
+    });
+    // Second query is the legacy fallback, scoped to null-domain rows only.
+    expect(mockDb.unknownScript.findMany).toHaveBeenNthCalledWith(2, {
+      where: { domain: null, url: { contains: "target.com" } },
+      select: { id: true, url: true },
+    });
+    expect(mockDb.signatureSubmission.updateMany).toHaveBeenCalledWith({
+      where: { unknownScriptId: { in: ["us-1", "us-2"] } },
+      data: { status: "ACCEPTED", reviewedAt: expect.any(Date) },
+    });
+    expect(result).toEqual({ count: 4 });
+  });
+
+  it("matches legacy null-domain rows via contains + JS hostname refine", async () => {
+    // No indexed rows; legacy fallback returns a real match plus a substring
+    // false-positive ("nottarget.com" contains "target.com") that the JS
+    // hostname refine must drop.
+    mockDb.unknownScript.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([
+      { id: "us-3", url: "https://target.com/c.js" },
+      { id: "us-4", url: "https://nottarget.com/d.js" },
     ]);
-    mockDb.signatureSubmission.updateMany.mockResolvedValue({ count: 5 });
+    mockDb.signatureSubmission.updateMany.mockResolvedValue({ count: 1 });
 
     const result = await acceptSubmissionsForDomain("target.com");
 
     expect(mockDb.signatureSubmission.updateMany).toHaveBeenCalledWith({
-      where: {
-        unknownScriptId: { in: ["us-1", "us-2"] },
-      },
-      data: {
-        status: "ACCEPTED",
-        reviewedAt: expect.any(Date),
-      },
+      where: { unknownScriptId: { in: ["us-3"] } },
+      data: { status: "ACCEPTED", reviewedAt: expect.any(Date) },
     });
-    expect(result).toEqual({ count: 5 });
+    expect(result).toEqual({ count: 1 });
   });
 
-  it("returns count 0 when no unknown scripts match the domain", async () => {
-    mockDb.unknownScript.findMany.mockResolvedValue([
-      { id: "us-1", url: "https://other.com/a.js" },
-    ]);
+  it("combines indexed and legacy matches into one update", async () => {
+    mockDb.unknownScript.findMany
+      .mockResolvedValueOnce([{ id: "us-1" }])
+      .mockResolvedValueOnce([{ id: "us-2", url: "https://target.com/b.js" }]);
+    mockDb.signatureSubmission.updateMany.mockResolvedValue({ count: 2 });
+
+    await acceptSubmissionsForDomain("target.com");
+
+    expect(mockDb.signatureSubmission.updateMany).toHaveBeenCalledWith({
+      where: { unknownScriptId: { in: ["us-1", "us-2"] } },
+      data: { status: "ACCEPTED", reviewedAt: expect.any(Date) },
+    });
+  });
+
+  it("returns count 0 and skips the update when nothing matches", async () => {
+    mockDb.unknownScript.findMany.mockResolvedValueOnce([]).mockResolvedValueOnce([]);
 
     const result = await acceptSubmissionsForDomain("target.com");
 
@@ -347,18 +400,76 @@ describe("acceptSubmissionsForDomain", () => {
     expect(mockDb.signatureSubmission.updateMany).not.toHaveBeenCalled();
   });
 
-  it("returns count 0 when there are no unknown scripts at all", async () => {
-    mockDb.unknownScript.findMany.mockResolvedValue([]);
-
-    const result = await acceptSubmissionsForDomain("target.com");
-
-    expect(result).toEqual({ count: 0 });
-  });
-
   it("propagates a database error", async () => {
     mockDb.unknownScript.findMany.mockRejectedValue(new Error("Connection timeout"));
 
     await expect(acceptSubmissionsForDomain("target.com")).rejects.toThrow("Connection timeout");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listSubmissionsForReview
+// ---------------------------------------------------------------------------
+
+describe("listSubmissionsForReview", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("returns flattened review rows with unknown-script context", async () => {
+    mockDb.signatureSubmission.findMany.mockResolvedValue([
+      {
+        id: "sub-1",
+        suggestedAppName: "Klaviyo",
+        status: "PENDING",
+        createdAt: new Date("2026-01-15T10:00:00Z"),
+        reviewedAt: null,
+        unknownScript: {
+          url: "https://cdn.klaviyo.com/a.js",
+          filename: "layout/theme.liquid",
+          domain: "cdn.klaviyo.com",
+        },
+      },
+    ]);
+
+    const result = await listSubmissionsForReview({ status: "PENDING" });
+
+    expect(result).toEqual([
+      {
+        id: "sub-1",
+        suggestedAppName: "Klaviyo",
+        status: "PENDING",
+        createdAt: new Date("2026-01-15T10:00:00Z"),
+        reviewedAt: null,
+        url: "https://cdn.klaviyo.com/a.js",
+        filename: "layout/theme.liquid",
+        domain: "cdn.klaviyo.com",
+      },
+    ]);
+  });
+
+  it("filters by status and bounds the read with take + newest-first order", async () => {
+    mockDb.signatureSubmission.findMany.mockResolvedValue([]);
+
+    await listSubmissionsForReview({ status: "PENDING" });
+
+    expect(mockDb.signatureSubmission.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: "PENDING" },
+        take: SUBMISSION_QUERY_LIMIT,
+        orderBy: { createdAt: "desc" },
+      }),
+    );
+  });
+
+  it("passes no where clause when status is not provided", async () => {
+    mockDb.signatureSubmission.findMany.mockResolvedValue([]);
+
+    await listSubmissionsForReview();
+
+    expect(mockDb.signatureSubmission.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined }),
+    );
   });
 });
 
@@ -529,8 +640,8 @@ describe("createUnknownScripts", () => {
 
     expect(mockDb.unknownScript.createMany).toHaveBeenCalledWith({
       data: [
-        { ...scripts[0], scanId: "scan-99" },
-        { ...scripts[1], scanId: "scan-99" },
+        { ...scripts[0], scanId: "scan-99", domain: "cdn.example.com" },
+        { ...scripts[1], scanId: "scan-99", domain: "cdn.example.com" },
       ],
     });
     expect(result).toEqual({ count: 2 });

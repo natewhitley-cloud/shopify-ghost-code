@@ -26,6 +26,29 @@ export type SubmissionStats = {
 };
 
 /**
+ * A single submission enriched with its unknown-script context, for the admin
+ * review table (per-submission approve/reject moderation).
+ */
+export type SubmissionReviewRow = {
+  id: string;
+  suggestedAppName: string;
+  status: SubmissionStatus;
+  createdAt: Date;
+  reviewedAt: Date | null;
+  url: string;
+  filename: string;
+  domain: string | null;
+};
+
+/**
+ * Upper bound on rows returned by the submission-review queries. These power an
+ * internal ops tool, so a fixed cap is preferable to unbounded reads; the newest
+ * submissions are the ones worth reviewing. Raise if the review backlog ever
+ * legitimately exceeds this.
+ */
+export const SUBMISSION_QUERY_LIMIT = 500;
+
+/**
  * Batch-insert unknown scripts for a completed scan.
  *
  * Idempotency guard:
@@ -53,7 +76,7 @@ export async function createUnknownScripts(scanId: string, scripts: CreateUnknow
     }
 
     return tx.unknownScript.createMany({
-      data: scripts.map((s) => ({ ...s, scanId })),
+      data: scripts.map((s) => ({ ...s, scanId, domain: hostnameFromUrl(s.url) })),
     });
   });
 }
@@ -104,6 +127,11 @@ export async function getSubmissionsByDomain(options?: {
         select: { url: true },
       },
     },
+    // Bound the read: this is an internal review query, not a merchant surface.
+    // Group over the newest SUBMISSION_QUERY_LIMIT submissions rather than the
+    // full (potentially unbounded) table.
+    orderBy: { createdAt: "desc" },
+    take: SUBMISSION_QUERY_LIMIT,
   });
 
   // Group by domain
@@ -181,18 +209,31 @@ export async function updateSubmissionStatus(
  * Used after promoting a domain to the signature DB.
  */
 export async function acceptSubmissionsForDomain(domain: string): Promise<{ count: number }> {
-  // Filter at the DB level using a URL contains check on the domain.
-  // This avoids fetching every unknown script into memory.
-  const unknownScripts = await db.unknownScript.findMany({
-    where: { url: { contains: domain } },
-    select: { id: true, url: true },
+  // Fast path: exact-match on the indexed `domain` column (populated at insert
+  // in createUnknownScripts). No substring scan, no JS refine — the stored
+  // hostname is already exact.
+  const indexedScripts = await db.unknownScript.findMany({
+    where: { domain },
+    select: { id: true },
   });
 
-  // Refine in JS to ensure exact domain match (contains is a substring match,
-  // so "example.com" would also match "notexample.com").
-  const matchingScriptIds = unknownScripts
+  // Legacy fallback: rows created before the `domain` column existed have
+  // domain=null. Match them with the old non-indexable `contains` substring
+  // scan, scoped to domain=null rows so it never touches already-indexed rows,
+  // then refine in JS for an exact hostname match ("example.com" must not match
+  // "notexample.com"). This set shrinks over time — createUnknownScripts
+  // repopulates `domain` whenever a scan is re-run.
+  // TODO(gc-06e.10): once historical UnknownScript rows are backfilled with
+  // `domain`, drop this fallback and the JS refine entirely.
+  const legacyScripts = await db.unknownScript.findMany({
+    where: { domain: null, url: { contains: domain } },
+    select: { id: true, url: true },
+  });
+  const legacyScriptIds = legacyScripts
     .filter((s) => hostnameFromUrl(s.url) === domain)
     .map((s) => s.id);
+
+  const matchingScriptIds = [...indexedScripts.map((s) => s.id), ...legacyScriptIds];
 
   if (matchingScriptIds.length === 0) {
     return { count: 0 };
@@ -207,6 +248,37 @@ export async function acceptSubmissionsForDomain(domain: string): Promise<{ coun
       reviewedAt: new Date(),
     },
   });
+}
+
+/**
+ * List individual submissions (newest first, bounded) enriched with their
+ * unknown-script context, for the admin review table's per-submission
+ * approve/reject moderation.
+ */
+export async function listSubmissionsForReview(options?: {
+  status?: SubmissionStatus;
+}): Promise<SubmissionReviewRow[]> {
+  const rows = await db.signatureSubmission.findMany({
+    where: options?.status ? { status: options.status } : undefined,
+    include: {
+      unknownScript: {
+        select: { url: true, filename: true, domain: true },
+      },
+    },
+    orderBy: { createdAt: "desc" },
+    take: SUBMISSION_QUERY_LIMIT,
+  });
+
+  return rows.map((r) => ({
+    id: r.id,
+    suggestedAppName: r.suggestedAppName,
+    status: r.status,
+    createdAt: r.createdAt,
+    reviewedAt: r.reviewedAt,
+    url: r.unknownScript.url,
+    filename: r.unknownScript.filename,
+    domain: r.unknownScript.domain,
+  }));
 }
 
 /**
