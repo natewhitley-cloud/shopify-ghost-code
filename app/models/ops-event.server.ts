@@ -292,3 +292,44 @@ export async function getStaleCrons(
   }
   return stale;
 }
+
+// ---------------------------------------------------------------------------
+// Retention
+// ---------------------------------------------------------------------------
+
+/**
+ * Retention prune for the OpsEvent table (gc-06e.17).
+ *
+ * Deletes stale `cron_heartbeat` rows older than `heartbeatOlderThanDays`
+ * (default 30d) and returns the number deleted. Heartbeats are the
+ * highest-volume, lowest-value rows in the table — one per cron per run
+ * (~55k/yr, unbounded) whose only consumer is the dead-man's-switch, which reads
+ * the LATEST heartbeat per key (getStaleCrons / getLatestHeartbeat). A heartbeat
+ * older than a day is already dead weight, so a 30d window keeps ample recent
+ * history for /health/deep while bounding table growth.
+ *
+ * DELIBERATELY MINIMAL: this prunes ONLY `cron_heartbeat`. `function_failure`
+ * rows back the operator digest's failure history and are left untouched here at
+ * any age. The remaining low-volume types (api_error, webhook_failure,
+ * digest_snapshot, worker_fallback) are also left alone — they don't accumulate
+ * the way heartbeats do. Widen this predicate only alongside a matching
+ * per-type retention rationale.
+ *
+ * The cutoff is computed from `new Date()` at call time, so each run trims
+ * relative to "now". deleteMany only — no schema change.
+ */
+export async function pruneOpsEvents(options?: {
+  heartbeatOlderThanDays?: number;
+}): Promise<number> {
+  const days = options?.heartbeatOlderThanDays ?? 30;
+  const cutoff = new Date(Date.now() - days * DAY_MS);
+
+  const { count } = await db.opsEvent.deleteMany({
+    where: {
+      eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT,
+      createdAt: { lt: cutoff },
+    },
+  });
+
+  return count;
+}

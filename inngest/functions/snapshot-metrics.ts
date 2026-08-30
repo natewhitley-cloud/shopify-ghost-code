@@ -5,8 +5,10 @@
  * a MetricSnapshot row. One snapshot per UTC day — upsert semantics mean
  * running this multiple times in a day is safe (later run overwrites earlier).
  *
- * This is a single-step function: no fan-out needed because it queries
- * aggregate data rather than per-shop data.
+ * No fan-out needed because it queries aggregate data rather than per-shop
+ * data. The OpsEvent retention prune runs as a SEPARATE step so a prune failure
+ * can never lose the metric snapshot (and vice versa) — Inngest retries each
+ * step independently.
  *
  * Schedule: 6 AM UTC daily (`0 6 * * *`)
  */
@@ -35,6 +37,19 @@ export const snapshotMetrics = inngest.createFunction(
       });
 
       return saved;
+    });
+
+    // Separate step: prune stale cron_heartbeat OpsEvents so the table doesn't
+    // grow unbounded. Isolated from the snapshot write above so a prune failure
+    // doesn't discard the metric snapshot, and its own failure is retried alone.
+    await step.run("prune-ops-events", async () => {
+      const { pruneOpsEvents } = await import("../../app/models/ops-event.server");
+
+      const deleted = await pruneOpsEvents();
+
+      logger.info("prune-ops-events-complete", { deletedHeartbeats: deleted });
+
+      return deleted;
     });
 
     return snapshot;

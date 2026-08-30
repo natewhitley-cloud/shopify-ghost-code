@@ -41,6 +41,7 @@ vi.mock("../../inngest/client", () => ({
 // records a cron_heartbeat after a successful run (without touching the DB).
 vi.mock("../../app/models/ops-event.server", () => ({
   recordCronHeartbeat: vi.fn(),
+  pruneOpsEvents: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -52,7 +53,7 @@ import {
   computeCurrentMetrics,
   createMetricSnapshot,
 } from "../../app/models/metric-snapshot.server";
-import { recordCronHeartbeat } from "../../app/models/ops-event.server";
+import { pruneOpsEvents, recordCronHeartbeat } from "../../app/models/ops-event.server";
 import { snapshotMetrics } from "../../inngest/functions/snapshot-metrics";
 import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
@@ -64,6 +65,7 @@ const mockComputeCurrentMetrics = computeCurrentMetrics as ReturnType<typeof vi.
 const mockCreateMetricSnapshot = createMetricSnapshot as ReturnType<typeof vi.fn>;
 const mockLoggerInfo = (logger as unknown as { info: ReturnType<typeof vi.fn> }).info;
 const mockRecordCronHeartbeat = recordCronHeartbeat as ReturnType<typeof vi.fn>;
+const mockPruneOpsEvents = pruneOpsEvents as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -115,6 +117,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockComputeCurrentMetrics.mockResolvedValue(SAMPLE_METRICS);
   mockCreateMetricSnapshot.mockResolvedValue(SAMPLE_SNAPSHOT);
+  mockPruneOpsEvents.mockResolvedValue(0);
 });
 
 // ---------------------------------------------------------------------------
@@ -167,20 +170,27 @@ describe("snapshotMetrics — cron heartbeat", () => {
   });
 });
 
-describe("snapshotMetrics — uses a single step", () => {
-  it("executes exactly one step.run call", async () => {
+describe("snapshotMetrics — steps", () => {
+  it("runs the snapshot and prune as two separate steps", async () => {
     const step = createMockInngestStep();
 
     await runSnapshotMetrics(step);
 
-    expect(step.run).toHaveBeenCalledOnce();
+    expect(step.run).toHaveBeenCalledTimes(2);
+    expect(step.run).toHaveBeenNthCalledWith(1, "compute-and-store-metrics", expect.any(Function));
+    expect(step.run).toHaveBeenNthCalledWith(2, "prune-ops-events", expect.any(Function));
   });
+});
 
-  it("names the step 'compute-and-store-metrics'", async () => {
-    const step = createMockInngestStep();
+describe("snapshotMetrics — ops-event prune", () => {
+  it("prunes stale OpsEvents in its own step and logs the deleted count", async () => {
+    mockPruneOpsEvents.mockResolvedValue(17);
 
-    await runSnapshotMetrics(step);
+    await runSnapshotMetrics();
 
-    expect(step.run).toHaveBeenCalledWith("compute-and-store-metrics", expect.any(Function));
+    expect(mockPruneOpsEvents).toHaveBeenCalledOnce();
+    expect(mockLoggerInfo).toHaveBeenCalledWith("prune-ops-events-complete", {
+      deletedHeartbeats: 17,
+    });
   });
 });

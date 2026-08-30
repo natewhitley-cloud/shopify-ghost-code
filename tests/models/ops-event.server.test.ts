@@ -22,6 +22,7 @@ const mockDb = vi.hoisted(() => ({
     findMany: vi.fn(),
     count: vi.fn(),
     groupBy: vi.fn(),
+    deleteMany: vi.fn(),
   },
 }));
 
@@ -46,6 +47,7 @@ import {
   getLatestHeartbeat,
   getStaleCrons,
   OPS_EVENT_TYPES,
+  pruneOpsEvents,
   recordApiError,
   recordCronHeartbeat,
   recordOpsEvent,
@@ -435,5 +437,53 @@ describe("getStaleCrons", () => {
     const result = await getStaleCrons(EXPECTATIONS, { now: NOW });
 
     expect(result.map((c) => c.key)).toEqual(["watch-stale-scans"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pruneOpsEvents (retention)
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+describe("pruneOpsEvents", () => {
+  it("deletes cron_heartbeat rows older than 30d by default and returns the count", async () => {
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 42 });
+    const before = Date.now();
+
+    const deleted = await pruneOpsEvents();
+
+    expect(deleted).toBe(42);
+    const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
+    expect(where.eventType).toBe(OPS_EVENT_TYPES.CRON_HEARTBEAT);
+    const cutoff = where.createdAt.lt as Date;
+    // Cutoff is ~30d before now (allow a small clock delta during the call).
+    expect(before - cutoff.getTime()).toBeGreaterThanOrEqual(30 * DAY_MS - 1000);
+    expect(before - cutoff.getTime()).toBeLessThanOrEqual(30 * DAY_MS + 1000);
+  });
+
+  it("only targets cron_heartbeat — function_failure is never in the delete predicate (preserved at any age)", async () => {
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 0 });
+
+    await pruneOpsEvents();
+
+    const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
+    // The predicate pins a single eventType; function_failure (and every other
+    // type) is excluded, so no function_failure row can match regardless of age.
+    expect(where.eventType).toBe("cron_heartbeat");
+    expect(where.eventType).not.toBe("function_failure");
+    // Only the eventType + age bound the delete — nothing widens it.
+    expect(Object.keys(where).sort()).toEqual(["createdAt", "eventType"]);
+  });
+
+  it("honours a custom retention window", async () => {
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 3 });
+    const before = Date.now();
+
+    await pruneOpsEvents({ heartbeatOlderThanDays: 90 });
+
+    const cutoff = mockDb.opsEvent.deleteMany.mock.calls[0][0].where.createdAt.lt as Date;
+    expect(before - cutoff.getTime()).toBeGreaterThanOrEqual(90 * DAY_MS - 1000);
+    expect(before - cutoff.getTime()).toBeLessThanOrEqual(90 * DAY_MS + 1000);
   });
 });
