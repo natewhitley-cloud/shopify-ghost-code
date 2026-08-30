@@ -177,9 +177,31 @@ export function isScannableFile(filename: string): boolean {
 // Line-level helpers
 // ---------------------------------------------------------------------------
 
+// Per-file line index (single-entry cache). scanThemeFiles processes each file's
+// detectors synchronously before moving on, so every lineNumberAtOffset /
+// buildSnippet / lines call within a file shares one index — turning the former
+// O(N) re-splits and O(offset) newline scans into O(1)/O(log N) (gc-06e.8).
+let _cachedContent: string | null = null;
+let _cachedLineStarts: number[] = [];
+let _cachedSplitLines: string[] = [];
+
+function lineIndexFor(content: string): { lineStarts: number[]; splitLines: string[] } {
+  if (content !== _cachedContent) {
+    _cachedContent = content;
+    _cachedSplitLines = content.split("\n");
+    const starts = [0];
+    for (let i = 0; i < content.length; i++) {
+      if (content.charCodeAt(i) === 10 /* \n */) starts.push(i + 1);
+    }
+    _cachedLineStarts = starts;
+  }
+  return { lineStarts: _cachedLineStarts, splitLines: _cachedSplitLines };
+}
+
 /** Split file content into lines, preserving 1-based line numbers. */
 function lines(content: string): Array<{ lineNumber: number; text: string }> {
-  return content.split("\n").map((text, i) => ({ lineNumber: i + 1, text }));
+  const { splitLines } = lineIndexFor(content);
+  return splitLines.map((text, i) => ({ lineNumber: i + 1, text }));
 }
 
 /**
@@ -188,10 +210,10 @@ function lines(content: string): Array<{ lineNumber: number; text: string }> {
  * without storing huge blobs.
  */
 function buildSnippet(content: string, lineNumber: number): string {
-  const allLines = content.split("\n");
+  const { splitLines } = lineIndexFor(content);
   const start = Math.max(0, lineNumber - 2); // 0-indexed, one line before
-  const end = Math.min(allLines.length, lineNumber + 1); // one line after
-  return allLines.slice(start, end).join("\n").slice(0, 300);
+  const end = Math.min(splitLines.length, lineNumber + 1); // one line after
+  return splitLines.slice(start, end).join("\n").slice(0, 300);
 }
 
 /**
@@ -740,11 +762,22 @@ const LIQUID_TAG_RE = /\{\{|\{%/;
  * Compute the 1-based line number where `offset` falls within `content`.
  */
 function lineNumberAtOffset(content: string, offset: number): number {
-  let line = 1;
-  for (let i = 0; i < offset && i < content.length; i++) {
-    if (content[i] === "\n") line++;
+  const { lineStarts } = lineIndexFor(content);
+  const target = Math.min(offset, content.length);
+  // largest i with lineStarts[i] <= target; line = i + 1
+  let lo = 0;
+  let hi = lineStarts.length - 1;
+  let ans = 0;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (lineStarts[mid] <= target) {
+      ans = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
   }
-  return line;
+  return ans + 1;
 }
 
 export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
