@@ -9,6 +9,8 @@
  * because this is only ever used for equality comparison within the same shop.
  */
 
+import { CROSS_FILE_FINDING_TYPES } from "../lib/finding-classification";
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
@@ -162,11 +164,16 @@ export function fingerprintFinding(
  *
  * Unscanned oversized files (gc-06e.19):
  *   `opts.skippedFiles` is the set of theme file paths the CURRENT scan did NOT
- *   scan because they exceeded the per-file size cap. Their per-file detectors
- *   never ran, so prior findings in those files are excluded for exactly the
- *   same reason as skipped categories — an unscanned file is unknown, not fixed.
- *   Without this guard, a file that grew past the cap between two scans would
- *   turn all of its prior findings into false "resolved".
+ *   scan because they exceeded the per-file size cap. Only the PER-FILE
+ *   detectors are skipped for such a file, so its per-file prior findings are
+ *   excluded for the same reason as skipped categories — an unre-checked
+ *   per-file finding is unknown, not fixed. The CROSS-FILE passes (Pass 2
+ *   ORPHAN_ASSET, Pass 4 GHOST_LAYOUT — see CROSS_FILE_FINDING_TYPES) still run
+ *   over an oversized file, so cross-file findings attributed to that file ARE
+ *   still computed in the current scan and therefore diff normally: they are NOT
+ *   excluded by the skipped-file filter. Excluding them would misreport a
+ *   still-present cross-file finding as "new" every rescan and silently drop a
+ *   genuine resolution.
  */
 export function diffScans(
   currentFindings: DiffableFinding[],
@@ -175,8 +182,13 @@ export function diffScans(
 ): ScanDiff {
   // Drop prior findings whose category was not audited, or whose file was not
   // scanned (oversized), this run so they can never be miscounted as resolved.
-  // Current findings only ever exist for audited categories and scanned files,
-  // so no symmetric filter is needed on `currentFindings`.
+  // The oversized-file skip only invalidates PER-FILE detector findings: a
+  // cross-file finding type (CROSS_FILE_FINDING_TYPES — ORPHAN_ASSET,
+  // GHOST_LAYOUT) is STILL computed for a skipped file by Pass 2 / Pass 4, so it
+  // must diff normally and is NOT excluded by the skipped-file filter.
+  // Current findings only ever exist for audited categories, and for scanned
+  // files or the cross-file passes, so no symmetric filter is needed on
+  // `currentFindings`.
   const skippedCats = opts?.skippedCategories ? new Set(opts.skippedCategories) : null;
   const skippedFiles = opts?.skippedFiles ? new Set(opts.skippedFiles) : null;
   const hasCatFilter = skippedCats !== null && skippedCats.size > 0;
@@ -186,7 +198,11 @@ export function diffScans(
       ? previousFindings.filter(
           (f) =>
             !(hasCatFilter && skippedCats!.has(f.findingType)) &&
-            !(hasFileFilter && skippedFiles!.has(f.filename)),
+            !(
+              hasFileFilter &&
+              skippedFiles!.has(f.filename) &&
+              !CROSS_FILE_FINDING_TYPES.has(f.findingType)
+            ),
         )
       : previousFindings;
 

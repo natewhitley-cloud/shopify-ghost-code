@@ -487,6 +487,65 @@ describe("diffScans — skipped files (gc-06e.19 oversized-file exclusion)", () 
 });
 
 // ---------------------------------------------------------------------------
+// diffScans — cross-file findings on skipped files (gc-06e.19)
+//
+// The oversized-file skip only turns OFF the per-file detectors (Pass 1). The
+// cross-file passes (Pass 2 ORPHAN_ASSET, Pass 4 GHOST_LAYOUT) still run over an
+// oversized file, so cross-file findings attributed to that file ARE recomputed
+// in the current scan and must diff normally — they are NOT excluded by the
+// skipped-file filter (which would misreport them as new every rescan and drop
+// genuine resolutions).
+// ---------------------------------------------------------------------------
+
+describe("diffScans — cross-file findings survive the skipped-file filter (gc-06e.19)", () => {
+  it("reports an ORPHAN_ASSET on a skipped file as UNCHANGED when it exists in both scans", () => {
+    // Pass 2 still ran on the oversized file, so the same ORPHAN_ASSET is present
+    // in current and previous. Before the fix the skipped-file filter dropped the
+    // previous copy, so the current copy became "new" AND the previous copy was
+    // silently lost from the resolved calculation (a false new every rescan).
+    const orphan = makeFinding("snippets/bloated.liquid", "ORPHAN_ASSET", "", {
+      description: "snippets/bloated.liquid is never referenced",
+    });
+    const previous = [orphan];
+    const current = [orphan];
+
+    const diff = diffScans(current, previous, { skippedFiles: ["snippets/bloated.liquid"] });
+
+    expect(diff.unchangedCount).toBe(1);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.resolvedFindings).toHaveLength(0);
+  });
+
+  it("reports an ORPHAN_ASSET on a skipped file as RESOLVED when absent from the current scan", () => {
+    // Pass 2 still ran and found the snippet is now referenced (or removed), so
+    // the ORPHAN_ASSET is genuinely gone. Because the cross-file pass DID run, the
+    // absence is a real resolution and must be reported.
+    const previous = [makeFinding("snippets/bloated.liquid", "ORPHAN_ASSET", "")];
+
+    const diff = diffScans([], previous, { skippedFiles: ["snippets/bloated.liquid"] });
+
+    expect(diff.resolvedFindings).toHaveLength(1);
+    expect(diff.resolvedFindings[0].findingType).toBe("ORPHAN_ASSET");
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.unchangedCount).toBe(0);
+  });
+
+  it("still excludes a PER-FILE finding (GHOST_SCRIPT) on a skipped file present in previous only", () => {
+    // A per-file detector did NOT run on the oversized file, so its absence from
+    // the current scan is unknown, not fixed — it must remain excluded (never a
+    // false resolved), even though a cross-file finding on the same file would
+    // diff normally.
+    const previous = [makeFinding("snippets/bloated.liquid", "GHOST_SCRIPT", "old-script")];
+
+    const diff = diffScans([], previous, { skippedFiles: ["snippets/bloated.liquid"] });
+
+    expect(diff.resolvedFindings).toHaveLength(0);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.unchangedCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LOG-10 — fingerprint stability across non-substantive snippet changes
 //
 // These are the acceptance criteria: a finding's identity must survive edits

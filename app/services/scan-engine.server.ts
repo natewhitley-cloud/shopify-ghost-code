@@ -2330,6 +2330,10 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     // let a pathological blob dominate detector cost. Skip the per-file detectors
     // for it and record the skip so the caller logs it — never a silent drop. The
     // cross-file passes below still include the file (they are not regex-heavy).
+    // Because those passes still emit for a skipped file, the differ must NOT
+    // treat a skipped file's cross-file findings as unre-checked — the set of
+    // cross-file types lives in CROSS_FILE_FINDING_TYPES (finding-classification);
+    // update it when adding a new cross-file pass (Pass 2 / Pass 4 below).
     if (file.content.length > MAX_SCANNABLE_FILE_BYTES) {
       skippedFiles.push({ filename: file.filename, size: file.content.length });
       continue;

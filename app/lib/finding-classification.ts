@@ -157,3 +157,34 @@ export const CONFIDENCE_TYPE_SETS = {
   signature: SIGNATURE_FINDING_TYPES,
   heuristic: HEURISTIC_FINDING_TYPES,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Cross-file vs per-file detection (gc-06e.19)
+// ---------------------------------------------------------------------------
+
+/**
+ * Finding types emitted by the CROSS-FILE passes of the scan engine
+ * (scanThemeFiles in scan-engine.server.ts):
+ *
+ *   - ORPHAN_ASSET — Pass 2 (analyzeFileReferences over ALL Liquid files).
+ *   - GHOST_LAYOUT — Pass 4 (detectGhostLayouts over ALL layout files).
+ *
+ * These passes run over every file regardless of the per-file size cap
+ * (MAX_SCANNABLE_FILE_BYTES). The oversized-file guard in Pass 1 only skips the
+ * PER-FILE detectors; the cross-file passes still compute findings for an
+ * oversized file (attributed to that file's own filename).
+ *
+ * The differ (scan-differ.server.ts) uses this set so that when a file is
+ * skipped-for-size in the current scan, only its PER-FILE prior findings are
+ * excluded from the diff — cross-file findings for that file were still
+ * computed and must diff normally.
+ *
+ * NOTE: Pass 3 (SETTINGS_DRIFT) is also cross-file, but it is always attributed
+ * to config/settings_data.json (a non-scannable JSON file that never enters the
+ * per-file size-skip path), so it is intentionally NOT included here — the
+ * skipped-file filter can never reach a SETTINGS_DRIFT finding.
+ *
+ * If a future cross-file pass emits a NEW finding type attributed to the file it
+ * scans, add that type here so the differ keeps diffing it across size skips.
+ */
+export const CROSS_FILE_FINDING_TYPES = new Set(["ORPHAN_ASSET", "GHOST_LAYOUT"]);
