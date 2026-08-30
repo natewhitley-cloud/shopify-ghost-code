@@ -209,7 +209,7 @@ function lines(content: string): Array<{ lineNumber: number; text: string }> {
  * surrounding context (capped at 300 chars) to give developers enough signal
  * without storing huge blobs.
  */
-function buildSnippet(content: string, lineNumber: number): string {
+export function buildSnippet(content: string, lineNumber: number): string {
   const { splitLines } = lineIndexFor(content);
   const start = Math.max(0, lineNumber - 2); // 0-indexed, one line before
   const end = Math.min(splitLines.length, lineNumber + 1); // one line after
@@ -761,7 +761,7 @@ const LIQUID_TAG_RE = /\{\{|\{%/;
 /**
  * Compute the 1-based line number where `offset` falls within `content`.
  */
-function lineNumberAtOffset(content: string, offset: number): number {
+export function lineNumberAtOffset(content: string, offset: number): number {
   const { lineStarts } = lineIndexFor(content);
   const target = Math.min(offset, content.length);
   // largest i with lineStarts[i] <= target; line = i + 1
