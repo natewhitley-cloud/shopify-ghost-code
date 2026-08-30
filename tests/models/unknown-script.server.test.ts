@@ -352,7 +352,10 @@ describe("acceptSubmissionsForDomain", () => {
       select: { id: true, url: true },
     });
     expect(mockDb.signatureSubmission.updateMany).toHaveBeenCalledWith({
-      where: { unknownScriptId: { in: ["us-1", "us-2"] } },
+      where: {
+        unknownScriptId: { in: ["us-1", "us-2"] },
+        status: { not: "REJECTED" },
+      },
       data: { status: "ACCEPTED", reviewedAt: expect.any(Date) },
     });
     expect(result).toEqual({ count: 4 });
@@ -371,7 +374,10 @@ describe("acceptSubmissionsForDomain", () => {
     const result = await acceptSubmissionsForDomain("target.com");
 
     expect(mockDb.signatureSubmission.updateMany).toHaveBeenCalledWith({
-      where: { unknownScriptId: { in: ["us-3"] } },
+      where: {
+        unknownScriptId: { in: ["us-3"] },
+        status: { not: "REJECTED" },
+      },
       data: { status: "ACCEPTED", reviewedAt: expect.any(Date) },
     });
     expect(result).toEqual({ count: 1 });
@@ -386,9 +392,29 @@ describe("acceptSubmissionsForDomain", () => {
     await acceptSubmissionsForDomain("target.com");
 
     expect(mockDb.signatureSubmission.updateMany).toHaveBeenCalledWith({
-      where: { unknownScriptId: { in: ["us-1", "us-2"] } },
+      where: {
+        unknownScriptId: { in: ["us-1", "us-2"] },
+        status: { not: "REJECTED" },
+      },
       data: { status: "ACCEPTED", reviewedAt: expect.any(Date) },
     });
+  });
+
+  it("guards the update with status not REJECTED so prior rejections are preserved (gc-06e.10)", async () => {
+    // A submission an operator explicitly REJECTED for this domain must NOT be
+    // flipped back to ACCEPTED on a later "Accept domain" click. The updateMany
+    // where clause therefore excludes REJECTED rows — only PENDING (and already
+    // ACCEPTED) rows are targeted.
+    mockDb.unknownScript.findMany.mockResolvedValueOnce([{ id: "us-1" }]).mockResolvedValueOnce([]);
+    mockDb.signatureSubmission.updateMany.mockResolvedValue({ count: 1 });
+
+    await acceptSubmissionsForDomain("target.com");
+
+    expect(mockDb.signatureSubmission.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ status: { not: "REJECTED" } }),
+      }),
+    );
   });
 
   it("returns count 0 and skips the update when nothing matches", async () => {

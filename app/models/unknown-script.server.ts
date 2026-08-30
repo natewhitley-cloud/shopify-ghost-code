@@ -242,6 +242,10 @@ export async function acceptSubmissionsForDomain(domain: string): Promise<{ coun
   return db.signatureSubmission.updateMany({
     where: {
       unknownScriptId: { in: matchingScriptIds },
+      // Preserve explicit operator REJECTs: a later "Accept domain" click must
+      // not flip a submission an operator deliberately rejected back to ACCEPTED.
+      // Only PENDING (and harmlessly already-ACCEPTED) rows are accepted.
+      status: { not: "REJECTED" },
     },
     data: {
       status: "ACCEPTED",
