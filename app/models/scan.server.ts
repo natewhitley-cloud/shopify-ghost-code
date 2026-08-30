@@ -197,10 +197,11 @@ export type FinalizeScanResult = { finalized: boolean };
  * IN_PROGRESS so a late audit failure can still mark it FAILED.
  *
  * Decides nothing itself: the caller (the scan-theme finalize step) passes the
- * already-decided status, the authoritative findingCount, and the set of
- * optional categories that were skipped for missing scope. skippedCategories is
- * persisted so the diff engine never treats an un-audited category's prior
- * findings as "resolved".
+ * already-decided status, the authoritative findingCount, the set of optional
+ * categories that were skipped for missing scope, and the theme files skipped
+ * for exceeding the size cap. skippedCategories and skippedFiles are persisted
+ * so the diff engine never treats an un-audited category's — or an unscanned
+ * oversized file's — prior findings as "resolved".
  *
  * Resurrection guard (LOG-6, #2-A): the watchdog (watch-stale-scans) can mark a
  * still-running scan FAILED if it overruns the in-progress threshold. Without a
@@ -229,6 +230,7 @@ export async function finalizeScan(
     status: typeof ScanStatus.COMPLETED | typeof ScanStatus.PARTIAL;
     findingCount: number;
     skippedCategories: string[];
+    skippedFiles: string[];
   },
 ): Promise<FinalizeScanResult> {
   const result = await db.scan.updateMany({
@@ -241,6 +243,7 @@ export async function finalizeScan(
       completedAt: new Date(),
       findingCount: args.findingCount,
       skippedCategories: args.skippedCategories,
+      skippedFiles: args.skippedFiles,
     },
   });
 

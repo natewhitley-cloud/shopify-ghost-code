@@ -202,62 +202,73 @@ export const scanTheme = inngest.createFunction(
       // Step 2: Fetch theme files, scan them, and save findings.
       // Combined into one step because theme file contents can exceed
       // Inngest's 4MB step output serialization limit.
-      const { findingCount, fileCount } = await step.run("fetch-and-scan", async () => {
-        const db = (await import("../../app/db.server")).default;
-        const shop = await db.shop.findUnique({ where: { id: shopId } });
-        if (!shop) {
-          throw new Error(`Shop ${shopId} not found — cannot fetch theme files`);
-        }
+      const { findingCount, fileCount, skippedFilePaths } = await step.run(
+        "fetch-and-scan",
+        async () => {
+          const db = (await import("../../app/db.server")).default;
+          const shop = await db.shop.findUnique({ where: { id: shopId } });
+          if (!shop) {
+            throw new Error(`Shop ${shopId} not found — cannot fetch theme files`);
+          }
 
-        const { unauthenticated } = await import("../../app/shopify.server");
-        const { admin } = await unauthenticated.admin(shop.domain);
-        const files = await fetchThemeFiles(admin, themeId, shop.domain);
-        const { logger } = await import("../../app/lib/logger.server");
-        logger.info("theme files fetched", {
-          function: "scan-theme",
-          event: "files_fetched",
-          shopId,
-          fileCount: files.length,
-        });
-
-        const { findings, unknownScripts, skippedFiles } = await scanThemeFilesInPool(files);
-
-        // Surface any files skipped for exceeding the per-file size cap so the
-        // drop is never silent (gc-06e.2). Real theme Liquid files are far under
-        // the cap; a skip here is anomalous and worth an ops signal.
-        if (skippedFiles && skippedFiles.length > 0) {
-          logger.warn("theme scan skipped oversized files", {
+          const { unauthenticated } = await import("../../app/shopify.server");
+          const { admin } = await unauthenticated.admin(shop.domain);
+          const files = await fetchThemeFiles(admin, themeId, shop.domain);
+          const { logger } = await import("../../app/lib/logger.server");
+          logger.info("theme files fetched", {
             function: "scan-theme",
-            event: "files_skipped_oversized",
+            event: "files_fetched",
             shopId,
-            cap: MAX_SCANNABLE_FILE_BYTES,
-            skippedFiles,
+            fileCount: files.length,
           });
-        }
 
-        logger.info("theme scan complete", {
-          function: "scan-theme",
-          event: "scan_complete",
-          shopId,
-          findingCount: findings.length,
-          unknownScriptCount: unknownScripts.length,
-        });
+          const { findings, unknownScripts, skippedFiles } = await scanThemeFilesInPool(files);
 
-        // Persist the theme findings in a single $transaction (idempotency
-        // guard inside) but DELIBERATELY leave the scan IN_PROGRESS. The
-        // terminal status is set only in the finalize step after every audit
-        // has run, so a late audit failure can still mark the scan FAILED
-        // (LOG-4).
-        await saveThemeFindings(scanId, findings);
+          // Surface any files skipped for exceeding the per-file size cap so the
+          // drop is never silent (gc-06e.2). Real theme Liquid files are far under
+          // the cap; a skip here is anomalous and worth an ops signal.
+          if (skippedFiles && skippedFiles.length > 0) {
+            logger.warn("theme scan skipped oversized files", {
+              function: "scan-theme",
+              event: "files_skipped_oversized",
+              shopId,
+              cap: MAX_SCANNABLE_FILE_BYTES,
+              skippedFiles,
+            });
+          }
 
-        // Persist unknown scripts separately (not part of the transaction —
-        // these are informational and don't affect scan correctness).
-        await createUnknownScripts(scanId, unknownScripts);
+          logger.info("theme scan complete", {
+            function: "scan-theme",
+            event: "scan_complete",
+            shopId,
+            findingCount: findings.length,
+            unknownScriptCount: unknownScripts.length,
+          });
 
-        // Return only the counts — not the full findings array (Inngest's 4MB
-        // step-output limit). fileCount drives the zero-file sanity guard below.
-        return { findingCount: findings.length, fileCount: files.length };
-      });
+          // Persist the theme findings in a single $transaction (idempotency
+          // guard inside) but DELIBERATELY leave the scan IN_PROGRESS. The
+          // terminal status is set only in the finalize step after every audit
+          // has run, so a late audit failure can still mark the scan FAILED
+          // (LOG-4).
+          await saveThemeFindings(scanId, findings);
+
+          // Persist unknown scripts separately (not part of the transaction —
+          // these are informational and don't affect scan correctness).
+          await createUnknownScripts(scanId, unknownScripts);
+
+          // Return only the counts and the (tiny) list of skipped file paths — not
+          // the full findings array (Inngest's 4MB step-output limit). fileCount
+          // drives the zero-file sanity guard below; skippedFilePaths is persisted
+          // on the scan so the differ can exclude unscanned oversized files from
+          // "resolved" (gc-06e.19). A skip is anomalous, so this list is normally
+          // empty and at most a handful of paths.
+          return {
+            findingCount: findings.length,
+            fileCount: files.length,
+            skippedFilePaths: (skippedFiles ?? []).map((f) => f.filename),
+          };
+        },
+      );
 
       // Step 3: Translation audit (optional — requires read_translations scope)
       // Slightly different from generic audit steps because it has extra logic
@@ -493,6 +504,7 @@ export const scanTheme = inngest.createFunction(
           status: finalStatus,
           findingCount: totalFindings,
           skippedCategories,
+          skippedFiles: skippedFilePaths,
         });
       });
 
@@ -504,6 +516,7 @@ export const scanTheme = inngest.createFunction(
         status: finalStatus,
         findingCount: totalFindings,
         skippedCategories,
+        skippedFiles: skippedFilePaths,
         translationFindings: translationResult.findingCount,
         tagFindings: tagResult.findingCount,
         priceFindings: priceResult.findingCount,

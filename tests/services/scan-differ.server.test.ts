@@ -421,6 +421,72 @@ describe("diffScans — skipped categories (LOG-4 un-audited exclusion)", () => 
 });
 
 // ---------------------------------------------------------------------------
+// diffScans — skipped files (gc-06e.19 oversized-file exclusion)
+// ---------------------------------------------------------------------------
+
+describe("diffScans — skipped files (gc-06e.19 oversized-file exclusion)", () => {
+  it("does NOT mark a prior finding as resolved when its file was skipped (oversized) this run", () => {
+    // Scan A found ghost code in a .liquid file. Before scan B the file grew
+    // past MAX_SCANNABLE_FILE_BYTES, so scan B skipped it entirely — its
+    // per-file detectors never ran. Without the guard, scan B's diff would count
+    // every prior finding in that file as a false "resolved", telling the
+    // merchant they fixed something they did not.
+    const previous = [
+      makeFinding("sections/bloated.liquid", "GHOST_SCRIPT", "old-script"),
+      makeFinding("sections/bloated.liquid", "GHOST_STYLE", "old-style"),
+    ];
+
+    const diff = diffScans([], previous, { skippedFiles: ["sections/bloated.liquid"] });
+
+    expect(diff.resolvedFindings).toHaveLength(0);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.unchangedCount).toBe(0);
+  });
+
+  it("still resolves findings in SCANNED files while excluding skipped ones", () => {
+    const resolvedScript = makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "old-script");
+    const skippedFileFinding = makeFinding("sections/bloated.liquid", "GHOST_SCRIPT", "old-script");
+    const previous = [resolvedScript, skippedFileFinding];
+
+    // Current scan scanned layout/theme.liquid (found nothing → resolved) but
+    // skipped sections/bloated.liquid for being oversized.
+    const diff = diffScans([], previous, { skippedFiles: ["sections/bloated.liquid"] });
+
+    expect(diff.resolvedFindings).toHaveLength(1);
+    expect(diff.resolvedFindings[0].filename).toBe("layout/theme.liquid");
+    expect(diff.unchangedCount).toBe(0);
+    expect(diff.newFindings).toHaveLength(0);
+  });
+
+  it("excludes skipped-file findings via BOTH filters at once (category + file)", () => {
+    const previous = [
+      makeFinding("n/a", "GHOST_TAG", "orphan-tag"), // skipped category
+      makeFinding("sections/bloated.liquid", "GHOST_SCRIPT", "old-script"), // skipped file
+      makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "old-script"), // genuinely resolved
+    ];
+
+    const diff = diffScans([], previous, {
+      skippedCategories: ["GHOST_TAG"],
+      skippedFiles: ["sections/bloated.liquid"],
+    });
+
+    expect(diff.resolvedFindings).toHaveLength(1);
+    expect(diff.resolvedFindings[0].filename).toBe("layout/theme.liquid");
+  });
+
+  it("behaves identically to no-opts when skippedFiles is empty or omitted", () => {
+    const previous = [makeFinding("sections/bloated.liquid", "GHOST_SCRIPT", "old-script")];
+
+    const withEmpty = diffScans([], previous, { skippedFiles: [] });
+    const without = diffScans([], previous);
+
+    // Empty skip set must not suppress a genuine resolved finding.
+    expect(withEmpty.resolvedFindings).toHaveLength(1);
+    expect(without.resolvedFindings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LOG-10 — fingerprint stability across non-substantive snippet changes
 //
 // These are the acceptance criteria: a finding's identity must survive edits

@@ -49,6 +49,7 @@ vi.mock("../../app/services/theme-fetcher.server", () => ({
 
 vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
+  MAX_SCANNABLE_FILE_BYTES: 1_000_000,
 }));
 
 vi.mock("../../app/services/scan-pool.server", () => ({
@@ -413,6 +414,30 @@ describe("scanTheme — happy path", () => {
       status: "COMPLETED",
       findingCount: MOCK_FINDINGS.length,
       skippedCategories: [],
+      skippedFiles: [],
+    });
+  });
+
+  it("threads oversized skipped-file paths from the scan engine into finalizeScan (gc-06e.19)", async () => {
+    // The scan engine reports two files skipped for exceeding the size cap. Their
+    // paths must be persisted on the scan so the differ can exclude their prior
+    // findings from "resolved" (an unscanned file is unknown, not fixed).
+    mockScanThemeFiles.mockReturnValueOnce({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      skippedFiles: [
+        { filename: "sections/bloated.liquid", size: 2_000_000 },
+        { filename: "assets/huge.js", size: 3_500_000 },
+      ],
+    });
+
+    await runScanTheme();
+
+    expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+      status: "COMPLETED",
+      findingCount: MOCK_FINDINGS.length,
+      skippedCategories: [],
+      skippedFiles: ["sections/bloated.liquid", "assets/huge.js"],
     });
   });
 
@@ -742,6 +767,7 @@ describe("scanTheme — optional audit steps", () => {
           FindingType.GHOST_PRICE,
           FindingType.GHOST_METAFIELD,
         ],
+        skippedFiles: [],
       });
 
       expect(result).toEqual({
@@ -850,6 +876,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       status: "COMPLETED",
       findingCount: 0,
       skippedCategories: [],
+      skippedFiles: [],
     });
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });

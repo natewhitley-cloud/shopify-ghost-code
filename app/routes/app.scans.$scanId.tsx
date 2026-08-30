@@ -266,6 +266,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       completedAt: scan.completedAt,
       createdAt: scan.createdAt,
       findingCount: scan.findingCount,
+      skippedFiles: scan.skippedFiles,
     },
     findings: enrichedFindingsPage,
     findingsPagination: {
@@ -929,6 +930,19 @@ export default function ScanDetail() {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Oversized-file skip notice — these files were too large (>1 MB) to
+          scan, so their findings are neither reported nor diffed (gc-06e.19). */}
+      {isCompleted && scan.skippedFiles.length > 0 && (
+        <div style={{ marginTop: "16px" }}>
+          <s-banner tone="warning">
+            {scan.skippedFiles.length} file{scan.skippedFiles.length !== 1 ? "s" : ""} skipped (over
+            1 MB, not scanned): {scan.skippedFiles.join(", ")}. Findings in{" "}
+            {scan.skippedFiles.length !== 1 ? "these files" : "this file"} are not included in this
+            scan or its comparison.
+          </s-banner>
         </div>
       )}
 

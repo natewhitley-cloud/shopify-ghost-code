@@ -137,6 +137,7 @@ const SCAN = {
   completedAt: new Date("2026-03-20T10:05:00Z"),
   createdAt: new Date("2026-03-20T10:00:00Z"),
   skippedCategories: [] as string[],
+  skippedFiles: [] as string[],
 };
 
 const FINDING_ONE = {

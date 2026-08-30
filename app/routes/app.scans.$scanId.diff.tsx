@@ -68,6 +68,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // Exclude prior findings in categories the current scan skipped (missing
     // scope) so they are never reported as falsely "resolved" (LOG-4).
     skippedCategories: scan.skippedCategories,
+    // Likewise exclude prior findings in files the current scan skipped for
+    // exceeding the size cap — an unscanned file is unknown, not fixed
+    // (gc-06e.19).
+    skippedFiles: scan.skippedFiles,
   });
 
   // Sort diff arrays for consistent display order in the UI.

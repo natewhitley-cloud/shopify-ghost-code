@@ -105,6 +105,7 @@ const SCAN = {
   completedAt: new Date("2026-03-20T10:05:00Z"),
   createdAt: new Date("2026-03-20T10:00:00Z"),
   skippedCategories: [] as string[],
+  skippedFiles: [] as string[],
 };
 
 const CURRENT_FINDING = {
@@ -199,6 +200,7 @@ describe("app.scans.$scanId.diff loader", () => {
     expect(result.scanDiff).toEqual(DIFF_RESULT);
     expect(mockDiffScans).toHaveBeenCalledWith([CURRENT_FINDING], PREVIOUS_SCAN.findings, {
       skippedCategories: [],
+      skippedFiles: [],
     });
   });
 
@@ -225,6 +227,7 @@ describe("app.scans.$scanId.diff loader", () => {
 
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
       skippedCategories: ["GHOST_TAG"],
+      skippedFiles: [],
     });
   });
 

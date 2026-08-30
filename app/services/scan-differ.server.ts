@@ -159,19 +159,35 @@ export function fingerprintFinding(
  *   neither "resolved" (we did not re-check them, so we cannot claim they are
  *   gone) nor "unchanged". Without this guard, a missing optional scope would
  *   silently turn every prior finding in that category into a false "resolved".
+ *
+ * Unscanned oversized files (gc-06e.19):
+ *   `opts.skippedFiles` is the set of theme file paths the CURRENT scan did NOT
+ *   scan because they exceeded the per-file size cap. Their per-file detectors
+ *   never ran, so prior findings in those files are excluded for exactly the
+ *   same reason as skipped categories — an unscanned file is unknown, not fixed.
+ *   Without this guard, a file that grew past the cap between two scans would
+ *   turn all of its prior findings into false "resolved".
  */
 export function diffScans(
   currentFindings: DiffableFinding[],
   previousFindings: DiffableFinding[],
-  opts?: { skippedCategories?: Iterable<string> },
+  opts?: { skippedCategories?: Iterable<string>; skippedFiles?: Iterable<string> },
 ): ScanDiff {
-  // Drop prior findings whose category was not audited this run so they can
-  // never be miscounted as resolved. Current findings only ever exist for
-  // audited categories, so no symmetric filter is needed on `currentFindings`.
-  const skipped = opts?.skippedCategories ? new Set(opts.skippedCategories) : null;
+  // Drop prior findings whose category was not audited, or whose file was not
+  // scanned (oversized), this run so they can never be miscounted as resolved.
+  // Current findings only ever exist for audited categories and scanned files,
+  // so no symmetric filter is needed on `currentFindings`.
+  const skippedCats = opts?.skippedCategories ? new Set(opts.skippedCategories) : null;
+  const skippedFiles = opts?.skippedFiles ? new Set(opts.skippedFiles) : null;
+  const hasCatFilter = skippedCats !== null && skippedCats.size > 0;
+  const hasFileFilter = skippedFiles !== null && skippedFiles.size > 0;
   const effectivePrevious =
-    skipped && skipped.size > 0
-      ? previousFindings.filter((f) => !skipped.has(f.findingType))
+    hasCatFilter || hasFileFilter
+      ? previousFindings.filter(
+          (f) =>
+            !(hasCatFilter && skippedCats!.has(f.findingType)) &&
+            !(hasFileFilter && skippedFiles!.has(f.filename)),
+        )
       : previousFindings;
 
   // Build a multiset (Map<fingerprint, count>) for the previous findings so

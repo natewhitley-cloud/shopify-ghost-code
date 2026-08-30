@@ -935,6 +935,7 @@ describe("finalizeScan", () => {
     status: ScanStatus.COMPLETED as typeof ScanStatus.COMPLETED,
     findingCount: 3,
     skippedCategories: [],
+    skippedFiles: [],
   };
 
   beforeEach(() => {
@@ -957,18 +958,20 @@ describe("finalizeScan", () => {
     expect(result).toEqual({ finalized: true });
   });
 
-  it("persists PARTIAL status and skippedCategories on the happy path", async () => {
+  it("persists PARTIAL status, skippedCategories, and skippedFiles on the happy path", async () => {
     mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
 
     await finalizeScan("scan-1", {
       status: ScanStatus.PARTIAL,
       findingCount: 5,
       skippedCategories: ["GHOST_TAG", "GHOST_PRICE"],
+      skippedFiles: ["sections/bloated.liquid"],
     });
 
     const callArg = mockDb.scan.updateMany.mock.calls[0][0];
     expect(callArg.data.status).toBe(ScanStatus.PARTIAL);
     expect(callArg.data.skippedCategories).toEqual(["GHOST_TAG", "GHOST_PRICE"]);
+    expect(callArg.data.skippedFiles).toEqual(["sections/bloated.liquid"]);
   });
 
   it("does NOT revive a scan the watchdog already marked FAILED", async () => {

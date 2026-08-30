@@ -96,6 +96,12 @@ model Scan {
   // and prevents the diff engine from falsely marking un-audited categories as
   // "resolved" (LOG-4). Empty for fully-audited scans and all legacy scans.
   skippedCategories String[]        @default([])
+  // Theme file paths whose per-file detectors were SKIPPED this run because the
+  // file exceeded MAX_SCANNABLE_FILE_BYTES (gc-06e.19). Those files were not
+  // scanned, so the diff engine must exclude their prior findings from
+  // "resolved" — an unscanned file is unknown, not fixed. Also surfaced in the
+  // scan-detail UI. Empty for fully-scanned scans and all legacy scans.
+  skippedFiles      String[]        @default([])
   // Which surface initiated this scan. Only MANUAL (merchant-initiated) scans
   // count toward a plan's manual weekly/monthly quota; SCHEDULED (cron) and
   // AUTO_PUBLISH (theme-publish auto-rescan) scans are exempt so a scheduled or
