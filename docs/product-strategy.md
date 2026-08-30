@@ -69,7 +69,7 @@ The Disputifier breach ($12K in unauthorized refunds, 108↑ Reddit) primed merc
 
 ## What v1 detects
 
-Ghost Code v1 ships with 20 finding types across 94+ app signatures (915 tests):
+Ghost Code v1 ships with 26 finding types across 115 app signatures (915 tests):
 
 ### Theme-file detectors (read_themes scope)
 
@@ -168,7 +168,7 @@ Cleanify Code (the only prior competitor) was delisted — reviews mentioned fal
 | **Orphaned Metafields**                    | Medium | **Shipped** (GHOST_METAFIELD)   | Known app namespaces on products. `read_products` optional scope.                                                                        |
 | **Orphaned Redirects**                     | Medium | **Shipped** (GHOST_REDIRECT)    | SEO app redirect patterns + bulk detection. `read_online_store_navigation` optional scope.                                               |
 
-### v1.3 — SEO integrity detection (next sprint)
+### v1.3 — SEO integrity detection (Shipped)
 
 Critical SEO detectors using existing `read_themes` scope — no new scopes needed. These target the most damaging SEO problems caused by orphaned app code.
 
@@ -180,7 +180,7 @@ Critical SEO detectors using existing `read_themes` scope — no new scopes need
 
 **Why this tier matters:** These three detectors address the gap between "your store is slow" (current detection) and "your store is invisible to Google" (what merchants fear most). Together with existing GHOST_ROBOTS, DUPLICATE_META, JSON_LD_CONFLICT, and GHOST_REDIRECT, they complete Ghost Code's SEO integrity story.
 
-### v1.4 — Performance artifact detection
+### v1.4 — Performance artifact detection (Shipped)
 
 Resource-level performance detectors. All use `read_themes` scope.
 
@@ -212,14 +212,14 @@ Merchant-reported persistent artifacts after app uninstall — status of detecti
 | **Persistent UI text fragments**         | Payment badge text appearing 2 years post-uninstall                            | **Shipped** — GHOST_TEXT                                                                                                                                                                               |
 | **Custom tags on products/orders**       | "Some apps leave behind meta fields, Tags or code"                             | **Shipped** — GHOST_TAG (read_products optional scope)                                                                                                                                                 |
 | **Discount/pricing data**                | BOLD Discounts: "Sales are STUCK ON MY PRODUCTS"                               | **Shipped** — GHOST_PRICE (read_products optional scope)                                                                                                                                               |
-| **SEO sabotage code**                    | SearchPie: rankings flatlined to 0 within 2 days                               | **Partially shipped** — GHOST_ROBOTS, DUPLICATE_META, JSON_LD_CONFLICT, GHOST_REDIRECT cover theme + redirect side. Canonical/title tag overrides planned for v1.3. Server-side redirects not visible. |
+| **SEO sabotage code**                    | SearchPie: rankings flatlined to 0 within 2 days                               | **Partially shipped** — GHOST_ROBOTS, DUPLICATE_META, JSON_LD_CONFLICT, GHOST_REDIRECT cover theme + redirect side. Canonical/title tag overrides shipped in v1.3 (GHOST_CANONICAL, GHOST_TITLE). Server-side redirects not visible. |
 | **Tracking pixels (sneaky persistence)** | "The number of sneaky tracking scripts were beyond astonishing"                | **Shipped** — GHOST_SCRIPT (external) + GHOST_PIXEL (inline, 12 tracker patterns)                                                                                                                      |
 | **Orphaned webhooks**                    | Apps lose API access on uninstall but webhooks may persist                     | **Not feasible** — Shopify isolates webhook subscriptions per-app                                                                                                                                      |
-| **Orphaned canonical/title overrides**   | SEO apps override canonical + title tags; orphaned logic after uninstall       | **Planned** — v1.3 (GHOST_CANONICAL, GHOST_TITLE)                                                                                                                                                      |
-| **Orphaned Open Graph tags**             | Social apps inject OG/Twitter Card meta; broken after uninstall                | **Planned** — v1.3 (GHOST_OG)                                                                                                                                                                          |
-| **Orphaned resource hints**              | Apps add preconnect/preload for their CDNs; wastes connections after uninstall | **Planned** — v1.4 (GHOST_PRECONNECT)                                                                                                                                                                  |
-| **Orphaned font declarations**           | Apps load custom fonts; persist after uninstall (100-500ms wasted)             | **Planned** — v1.4 (GHOST_FONT)                                                                                                                                                                        |
-| **Orphaned AJAX calls**                  | App JS makes fetch/XHR to defunct app servers                                  | **Planned** — v1.4 (GHOST_AJAX)                                                                                                                                                                        |
+| **Orphaned canonical/title overrides**   | SEO apps override canonical + title tags; orphaned logic after uninstall       | **Shipped** — v1.3 (GHOST_CANONICAL, GHOST_TITLE)                                                                                                                                                      |
+| **Orphaned Open Graph tags**             | Social apps inject OG/Twitter Card meta; broken after uninstall                | **Shipped** — v1.3 (GHOST_OG)                                                                                                                                                                          |
+| **Orphaned resource hints**              | Apps add preconnect/preload for their CDNs; wastes connections after uninstall | **Shipped** — v1.4 (GHOST_PRECONNECT)                                                                                                                                                                  |
+| **Orphaned font declarations**           | Apps load custom fonts; persist after uninstall (100-500ms wasted)             | **Shipped** — v1.4 (GHOST_FONT)                                                                                                                                                                        |
+| **Orphaned AJAX calls**                  | App JS makes fetch/XHR to defunct app servers                                  | **Shipped** — v1.4 (GHOST_AJAX)                                                                                                                                                                        |
 
 ---
 
