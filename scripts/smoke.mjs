@@ -3,9 +3,12 @@
  * Tier 3 post-deploy smoke test.
  *
  * Waits for the freshly-deployed service to boot (polls /health), then hits the
- * token-gated /health/deep ops endpoint and asserts every check is green.
- * Exits 0 only when status === "ok"; any degraded/error condition exits 1 so the
- * deploy workflow fails loudly.
+ * token-gated /health/deep ops endpoint and asserts every check is green, then
+ * probes PUT /api/inngest to verify the Inngest signing key is not just present
+ * but VALID (the cold-start-safe health check and the "keys present" deep check
+ * both pass on a stale-but-present key — gc-06e.18).
+ * Exits 0 only when every gate passes; any degraded/error condition exits 1 so
+ * the deploy workflow fails loudly.
  *
  * Dependency-free — uses global fetch (Node 18+).
  *
@@ -26,6 +29,8 @@ const EXPECTED_SHA = process.env.EXPECTED_SHA;
 
 const BOOT_TIMEOUT_MS = 60_000;
 const RETRY_INTERVAL_MS = 3_000;
+const INNGEST_PROBE_RETRIES = 3;
+const INNGEST_PROBE_TIMEOUT_MS = 10_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -115,11 +120,64 @@ async function checkDeep() {
       );
     }
 
-    process.exit(0);
+    return; // deep check green — control returns to run the inngest probe
   }
 
   fail(`Smoke test failed — status "${body.status}"${body.message ? `: ${body.message}` : ""}`);
 }
 
+/**
+ * Authoritative Inngest signing-key probe (gc-06e.18).
+ *
+ * /health/deep only asserts the key is PRESENT, and the dead-man's-switch is
+ * cold-start-safe (never-seen crons are not flagged), so a stale-but-present
+ * INNGEST_SIGNING_KEY passes both at the smoke-gate instant — then every cron
+ * silently stops. PUT /api/inngest makes the server sync with Inngest Cloud
+ * using that key: 200 = valid, 401 = stale/invalid.
+ *
+ * A 401 is definitive (bad key) and BLOCKS the deploy. But PUT /api/inngest makes
+ * the app re-sync with Inngest Cloud, so its result also depends on Inngest Cloud's
+ * availability/latency at this instant — a transient 5xx/timeout is NOT proof of a
+ * bad deploy. So non-401 failures WARN-only (do not block) until this probe has
+ * proven stable across real deploys (deploy-safety: soft-launch an assertion before
+ * making it a blocking gate). Each attempt is time-bounded so a hung connection to
+ * Inngest Cloud can never stall the deploy job.
+ */
+async function probeInngestSigningKey() {
+  let lastError = "no response";
+  for (let attempt = 1; attempt <= INNGEST_PROBE_RETRIES; attempt++) {
+    try {
+      const res = await fetch(`${base}/api/inngest`, {
+        method: "PUT",
+        signal: AbortSignal.timeout(INNGEST_PROBE_TIMEOUT_MS),
+      });
+      if (res.status === 200) {
+        console.log("✓ PUT /api/inngest returned 200 — Inngest signing key is valid");
+        return;
+      }
+      lastError = `HTTP ${res.status}`;
+      if (res.status === 401) {
+        fail(
+          "PUT /api/inngest returned 401 — INNGEST_SIGNING_KEY is stale/invalid; crons will silently stop",
+        );
+        return;
+      }
+    } catch (error) {
+      lastError = error instanceof Error ? error.message : String(error);
+    }
+    if (attempt < INNGEST_PROBE_RETRIES) await sleep(RETRY_INTERVAL_MS);
+  }
+  // Non-401 failure (transient 5xx, timeout, network). Warn but do NOT block —
+  // a 401 above is the only signal we treat as a definitive stale key.
+  console.log(
+    `⚠ WARN: PUT /api/inngest did not confirm 200 after ${INNGEST_PROBE_RETRIES} attempts ` +
+      `(last: ${lastError}). Not blocking — likely transient / Inngest-Cloud-dependent; ` +
+      `a stale key would have returned 401 and blocked.`,
+  );
+}
+
 await waitForBoot();
 await checkDeep();
+await probeInngestSigningKey();
+console.log("\n✓ All post-deploy gates passed");
+process.exit(0);
