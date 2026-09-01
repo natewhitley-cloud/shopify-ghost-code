@@ -50,6 +50,24 @@ describe("collectUnknownScripts", () => {
     expect(unknowns).toHaveLength(0);
   });
 
+  it("skips shopifycdn.net URLs (first-party, .net TLD)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.shopifycdn.net/assets/app.js"></script>',
+    };
+    const unknowns = collectUnknownScripts(file);
+    expect(unknowns).toHaveLength(0);
+  });
+
+  it("still flags lookalike non-Shopify domains", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://notshopifycdn.net/x.js"></script>',
+    };
+    const unknowns = collectUnknownScripts(file);
+    expect(unknowns).toHaveLength(1);
+  });
+
   it("skips myshopify.com URLs", () => {
     const file = {
       filename: "layout/theme.liquid",
@@ -142,6 +160,15 @@ describe("collectUnknownStylesheets", () => {
     const file = {
       filename: "layout/theme.liquid",
       content: '<link rel="stylesheet" href="https://cdn.shopify.com/theme.css">',
+    };
+    const unknowns = collectUnknownStylesheets(file);
+    expect(unknowns).toHaveLength(0);
+  });
+
+  it("skips shopifycdn.net stylesheet URLs", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="stylesheet" href="https://cdn.shopifycdn.net/theme.css">',
     };
     const unknowns = collectUnknownStylesheets(file);
     expect(unknowns).toHaveLength(0);
