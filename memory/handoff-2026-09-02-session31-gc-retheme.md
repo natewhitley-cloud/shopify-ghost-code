@@ -2,6 +2,23 @@
 
 Date: 2026-09-02 · Prod unchanged (`7cc62b7`)
 
+---
+## Session 32 update — PHASE B SHIPPED + DEPLOYED (prod `cb99526`)
+
+Whole visible re-theme complete and LIVE. Deployed via ff `main` -> `cb99526`; GH CI + Deploy green; blocking SHA-match smoke ✓ (`deployedSha === cb99526`).
+
+- `.8` branded shell (hairline + tinted ground) on all 4 merchant routes — `81f79cb`. Ported `hairline` (single-accent slate gradient, NOT CS's 2-color rail) + `groundStyle` into `shared.ts`; slotted primary-action Links kept as direct `s-page` children.
+- `.9` STATUS_TINTS nested->flat migration + drop dead `styles.statTile` — `01a24af`. Pixel-neutral; added flat `CRIT/WARN/SUCCESS/INFO _BD/_BG` + `WARN_TEXT` (kept `#916a00` divergence); `MetricTile` dynamic access -> value-identical local `tintMap`. Split off the risky half.
+- `.10` chart chrome recolor — `d579ef4`. Empty-bar `BORDER_DEFAULT`->`BAR_TRACK`; added subtle 1px `ACCENT_BORDER` baseline axis; **severity bars kept semantic** (bead's "port TrendChartPrimitive + BASELINE_BAR" framing was stale; chart was already correct).
+- `.11` tokenized 2 stray blues (`INFO_BD_LIGHT` `#dbeafe`, `INFO_FOCUS_RING` COLOR_INFO@20%) — `cb99526`. Bead items 1 (diff = loader-only resource route, no UI) + 2 (`sectionCard`/`sectionHeader` still in active use, NOT dead) were already satisfied.
+- **`gc-32w`** (port CS StatTile/DataTable/InfoTooltip/SegmentedControl/Pagination into GC) — AUDITED read-only -> **KEEP-ALL, closed**. InfoTooltip/SegmentedControl = zero GC demand; StatTile 24/20px vs GC 48px hero + teal/AI tokens GC shed; DataTable row-object paradigm regresses findings-table sticky/hover/widths; Pagination page-based vs GC cursor "Load More". Hidden cost: StatTile/DataTable need a global `.tnum` rule GC lacks. All negatives grep-verified.
+
+**Recurring gotcha this session:** every Phase B bead carried stale pre-parked-package framing ("swap in package components", "port TrendChartPrimitive"); `.10`/`.11` were also over-stated. Spike-before-dispatch caught all of it — TRUST CODE over bead text.
+
+**Still open:** `gc-hny.12` (P3, optional local `htmlTableCss` cleanup for `scan-history-table`); epic `gc-hny` left open only for parked Phase A (`.1-.5`, deferred +8w); `docs/s30-planning-handoffs` branch still separate + unpushed. **NOT yet eyeballed rendered** — shell/palette/hairline gradient never viewed on dev store; the single-accent hairline was my call without Nathan's visual sign-off.
+
+---
+
 ## What shipped
 - **`gc-hny.7` DONE** — token layer on branch `feat/gc-forensic-slate-tokens` (commit `42709d3`, off main `7cc62b7`, **unpushed**). Edited ONLY `app/styles/shared.ts`: added Forensic Slate `ACCENT_*` + branded-shell tokens, fixed two WCAG bugs (`COLOR_WARNING #b98900->#8a6600`, `COLOR_SUCCESS #008060->#1a8a3f`). tsc clean, 2119 tests green. No consumer routes touched.
 - **s30 docs committed** — branch `docs/s30-planning-handoffs` (commit `2874b7a`, **unpushed**). Separate line from the re-theme.
