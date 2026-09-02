@@ -6,7 +6,15 @@ import type { ScanStatus } from "../lib/format";
 import { getScansForShop } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
-import { BORDER_DEFAULT, BG_HOVER, BG_SURFACE, BG_SURFACE_ALT, COLOR_INFO } from "../styles/shared";
+import {
+  BORDER_DEFAULT,
+  BG_HOVER,
+  BG_SURFACE,
+  BG_SURFACE_ALT,
+  COLOR_INFO,
+  groundStyle,
+  hairline,
+} from "../styles/shared";
 
 // ---------------------------------------------------------------------------
 // Loader
@@ -45,7 +53,12 @@ export default function ScanHistory() {
 
   return (
     <s-page heading="Scan History">
-      <style>{`
+      <Link to="/app" slot="primary-action">
+        Back to Dashboard
+      </Link>
+      <div style={hairline} />
+      <div style={groundStyle}>
+        <style>{`
         .scan-history-table {
           width: 100%;
           border-collapse: collapse;
@@ -67,61 +80,59 @@ export default function ScanHistory() {
           background: ${BG_HOVER};
         }
       `}</style>
-      <Link to="/app" slot="primary-action">
-        Back to Dashboard
-      </Link>
 
-      {scans.length === 0 ? (
-        <s-empty-state heading="No scans yet">
-          <s-paragraph>Run your first scan from the dashboard.</s-paragraph>
-        </s-empty-state>
-      ) : (
-        <>
-          <s-card>
-            <table className="scan-history-table">
-              <thead>
-                <tr>
-                  <th>Date</th>
-                  <th>Theme</th>
-                  <th>Status</th>
-                  <th>Findings</th>
-                  <th>Actions</th>
-                </tr>
-              </thead>
-              <tbody>
-                {scans.map((scan) => (
-                  <tr key={scan.id}>
-                    <td>{formatDate(scan.createdAt, true)}</td>
-                    <td>{scan.themeName}</td>
-                    <td>
-                      <s-badge tone={statusTone(scan.status as ScanStatus)}>
-                        {statusLabel(scan.status as ScanStatus)}
-                      </s-badge>
-                    </td>
-                    <td>{scan.findingCount}</td>
-                    <td>
-                      <Link
-                        to={`/app/scans/${scan.id}`}
-                        style={{ color: COLOR_INFO, textDecoration: "none" }}
-                      >
-                        View
-                      </Link>
-                    </td>
+        {scans.length === 0 ? (
+          <s-empty-state heading="No scans yet">
+            <s-paragraph>Run your first scan from the dashboard.</s-paragraph>
+          </s-empty-state>
+        ) : (
+          <>
+            <s-card>
+              <table className="scan-history-table">
+                <thead>
+                  <tr>
+                    <th>Date</th>
+                    <th>Theme</th>
+                    <th>Status</th>
+                    <th>Findings</th>
+                    <th>Actions</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </s-card>
+                </thead>
+                <tbody>
+                  {scans.map((scan) => (
+                    <tr key={scan.id}>
+                      <td>{formatDate(scan.createdAt, true)}</td>
+                      <td>{scan.themeName}</td>
+                      <td>
+                        <s-badge tone={statusTone(scan.status as ScanStatus)}>
+                          {statusLabel(scan.status as ScanStatus)}
+                        </s-badge>
+                      </td>
+                      <td>{scan.findingCount}</td>
+                      <td>
+                        <Link
+                          to={`/app/scans/${scan.id}`}
+                          style={{ color: COLOR_INFO, textDecoration: "none" }}
+                        >
+                          View
+                        </Link>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </s-card>
 
-          {nextCursor && (
-            <s-box padding-block-start="base">
-              <s-stack direction="inline" gap="base">
-                <Link to={`/app/scans?cursor=${nextCursor}`}>Load More</Link>
-              </s-stack>
-            </s-box>
-          )}
-        </>
-      )}
+            {nextCursor && (
+              <s-box padding-block-start="base">
+                <s-stack direction="inline" gap="base">
+                  <Link to={`/app/scans?cursor=${nextCursor}`}>Load More</Link>
+                </s-stack>
+              </s-box>
+            )}
+          </>
+        )}
+      </div>
     </s-page>
   );
 }

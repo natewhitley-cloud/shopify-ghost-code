@@ -44,6 +44,8 @@ import {
   COLOR_CRITICAL,
   COLOR_INFO,
   COLOR_WARNING,
+  groundStyle,
+  hairline,
   STATUS_TINTS,
   TEXT_DISABLED,
   TEXT_PRIMARY,
@@ -548,145 +550,147 @@ export default function Dashboard() {
 
   return (
     <s-page heading="Ghost Code Scanner">
-      {/* Error banner — only rendered when the action returns an error */}
-      {actionError && (
-        <s-banner tone="critical">
-          <s-paragraph>{actionError}</s-paragraph>
-        </s-banner>
-      )}
+      <div style={hairline} />
+      <div style={groundStyle}>
+        {/* Error banner — only rendered when the action returns an error */}
+        {actionError && (
+          <s-banner tone="critical">
+            <s-paragraph>{actionError}</s-paragraph>
+          </s-banner>
+        )}
 
-      {/* New high-severity findings callout — shown once the lazily-loaded diff
+        {/* New high-severity findings callout — shown once the lazily-loaded diff
           resolves with HIGH findings that are new since the previous scan. */}
-      {newHigh > 0 && latestScanId && (
-        <s-banner tone="warning">
-          <s-stack direction="block" gap="base">
-            <s-paragraph>
-              {newHigh} new high-severity finding{newHigh === 1 ? "" : "s"} detected in your latest
-              scan.
-            </s-paragraph>
-            <Link to={`/app/scans/${latestScanId}`}>
-              <s-button variant="primary">Review</s-button>
-            </Link>
-          </s-stack>
-        </s-banner>
-      )}
+        {newHigh > 0 && latestScanId && (
+          <s-banner tone="warning">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                {newHigh} new high-severity finding{newHigh === 1 ? "" : "s"} detected in your
+                latest scan.
+              </s-paragraph>
+              <Link to={`/app/scans/${latestScanId}`}>
+                <s-button variant="primary">Review</s-button>
+              </Link>
+            </s-stack>
+          </s-banner>
+        )}
 
-      {/* Rescan nudge — Standard plan only, >30 days since last completed scan */}
-      {showRescanNudge && (
-        <s-banner tone="info">
-          <s-stack direction="block" gap="base">
-            <s-paragraph>
-              It&apos;s been over 30 days since your last scan. Re-scan your theme to check for new
-              orphaned code from recently uninstalled apps.
-            </s-paragraph>
-            <s-button
-              variant="primary"
-              onClick={handleStartScan}
-              {...(isSubmitting ? { loading: true } : {})}
-            >
-              Start New Scan
-            </s-button>
-          </s-stack>
-        </s-banner>
-      )}
-
-      {/* Theme change nudge — shown when a theme was published since the last scan */}
-      {showThemeChangeNudge && (
-        <s-banner tone="info">
-          <s-stack direction="block" gap="base">
-            <s-paragraph>
-              Your theme was recently updated. Scan now to check for new orphaned code from app
-              changes.
-            </s-paragraph>
-            <s-button
-              variant="primary"
-              onClick={handleStartScan}
-              {...(isSubmitting ? { loading: true } : {})}
-            >
-              Start New Scan
-            </s-button>
-          </s-stack>
-        </s-banner>
-      )}
-
-      {/* Multi-theme upgrade nudge — Standard plan shops with more than one theme */}
-      {showMultiThemeNudge && (
-        <s-banner tone="info">
-          <s-stack direction="block" gap="base">
-            <s-paragraph>
-              Your store has more than one theme. Upgrade to Professional to scan any theme, not
-              just your published one.
-            </s-paragraph>
-            <s-button variant="primary" onClick={() => navigate("/app/settings")}>
-              Upgrade to Professional
-            </s-button>
-          </s-stack>
-        </s-banner>
-      )}
-
-      {/* App Store review prompt — shown once after first scan with 4+ findings */}
-      {showReviewBanner && (
-        <s-banner tone="info">
-          <s-stack direction="block" gap="base">
-            <s-paragraph>
-              Ghost Code found {latestScan?.findingCount} issues in your theme. If this was helpful,
-              we&apos;d love a quick review on the App Store.
-            </s-paragraph>
-            <s-stack direction="inline" gap="base">
+        {/* Rescan nudge — Standard plan only, >30 days since last completed scan */}
+        {showRescanNudge && (
+          <s-banner tone="info">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                It&apos;s been over 30 days since your last scan. Re-scan your theme to check for
+                new orphaned code from recently uninstalled apps.
+              </s-paragraph>
               <s-button
                 variant="primary"
-                onClick={() =>
-                  window.open(
-                    "https://apps.shopify.com/ghost-code#modal-show=WriteReviewModal",
-                    "_blank",
-                  )
-                }
+                onClick={handleStartScan}
+                {...(isSubmitting ? { loading: true } : {})}
               >
-                Leave a Review
-              </s-button>
-              <s-button variant="secondary" onClick={handleDismissReviewPrompt}>
-                Dismiss
+                Start New Scan
               </s-button>
             </s-stack>
-          </s-stack>
-        </s-banner>
-      )}
+          </s-banner>
+        )}
 
-      {showOnboarding ? (
-        /* Onboarding card — shown on first install before any scan has run */
-        <s-card>
-          <s-stack direction="block" gap="large">
-            <s-heading>Welcome to Ghost Code</s-heading>
-            <s-paragraph>
-              <strong>Ghost Code finds and removes leftover code from uninstalled apps.</strong>{" "}
-              Over time, apps you&apos;ve removed leave behind scripts, stylesheets, and snippets in
-              your theme — slowing your store and cluttering your code. Ghost Code scans your theme
-              and flags everything that can be safely removed.
-            </s-paragraph>
-            {mainTheme ? (
+        {/* Theme change nudge — shown when a theme was published since the last scan */}
+        {showThemeChangeNudge && (
+          <s-banner tone="info">
+            <s-stack direction="block" gap="base">
               <s-paragraph>
-                Your active theme is <strong>{mainTheme.name}</strong>. Ghost Code will scan that
-                theme for ghost code left behind by uninstalled apps.
+                Your theme was recently updated. Scan now to check for new orphaned code from app
+                changes.
               </s-paragraph>
-            ) : (
+              <s-button
+                variant="primary"
+                onClick={handleStartScan}
+                {...(isSubmitting ? { loading: true } : {})}
+              >
+                Start New Scan
+              </s-button>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {/* Multi-theme upgrade nudge — Standard plan shops with more than one theme */}
+        {showMultiThemeNudge && (
+          <s-banner tone="info">
+            <s-stack direction="block" gap="base">
               <s-paragraph>
-                No published theme was detected. Publish a theme in your Shopify admin before
-                starting your first scan.
+                Your store has more than one theme. Upgrade to Professional to scan any theme, not
+                just your published one.
               </s-paragraph>
-            )}
-            <s-button
-              variant="primary"
-              onClick={handleStartScan}
-              {...(isSubmitting ? { loading: true } : {})}
-              {...(!mainTheme ? { disabled: true } : {})}
-            >
-              {isSubmitting ? "Starting scan…" : "Start First Scan"}
-            </s-button>
-          </s-stack>
-        </s-card>
-      ) : (
-        <>
-          <style>{`
+              <s-button variant="primary" onClick={() => navigate("/app/settings")}>
+                Upgrade to Professional
+              </s-button>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {/* App Store review prompt — shown once after first scan with 4+ findings */}
+        {showReviewBanner && (
+          <s-banner tone="info">
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                Ghost Code found {latestScan?.findingCount} issues in your theme. If this was
+                helpful, we&apos;d love a quick review on the App Store.
+              </s-paragraph>
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  variant="primary"
+                  onClick={() =>
+                    window.open(
+                      "https://apps.shopify.com/ghost-code#modal-show=WriteReviewModal",
+                      "_blank",
+                    )
+                  }
+                >
+                  Leave a Review
+                </s-button>
+                <s-button variant="secondary" onClick={handleDismissReviewPrompt}>
+                  Dismiss
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        )}
+
+        {showOnboarding ? (
+          /* Onboarding card — shown on first install before any scan has run */
+          <s-card>
+            <s-stack direction="block" gap="large">
+              <s-heading>Welcome to Ghost Code</s-heading>
+              <s-paragraph>
+                <strong>Ghost Code finds and removes leftover code from uninstalled apps.</strong>{" "}
+                Over time, apps you&apos;ve removed leave behind scripts, stylesheets, and snippets
+                in your theme — slowing your store and cluttering your code. Ghost Code scans your
+                theme and flags everything that can be safely removed.
+              </s-paragraph>
+              {mainTheme ? (
+                <s-paragraph>
+                  Your active theme is <strong>{mainTheme.name}</strong>. Ghost Code will scan that
+                  theme for ghost code left behind by uninstalled apps.
+                </s-paragraph>
+              ) : (
+                <s-paragraph>
+                  No published theme was detected. Publish a theme in your Shopify admin before
+                  starting your first scan.
+                </s-paragraph>
+              )}
+              <s-button
+                variant="primary"
+                onClick={handleStartScan}
+                {...(isSubmitting ? { loading: true } : {})}
+                {...(!mainTheme ? { disabled: true } : {})}
+              >
+                {isSubmitting ? "Starting scan…" : "Start First Scan"}
+              </s-button>
+            </s-stack>
+          </s-card>
+        ) : (
+          <>
+            <style>{`
             .dashboard-top-row {
               display: grid;
               grid-template-columns: 1fr 3fr;
@@ -897,247 +901,249 @@ export default function Dashboard() {
             }
           `}</style>
 
-          {/* Theme Health + Findings — combined card */}
-          <s-card>
-            {/* aria-live="polite" ensures screen readers announce when scan status changes */}
-            <div aria-live="polite">
-              <s-stack direction="block" gap="base">
-                {scanInProgress ? (
-                  <div className="scan-progress-container">
-                    <s-spinner accessibilityLabel="Scanning theme" size="large" />
-                    <s-heading>Scanning your theme...</s-heading>
-                    <div className="scan-progress-text">
-                      Ghost Code is analyzing your theme files for orphaned code. Results will
-                      appear here when the scan is complete.
-                    </div>
-                    {elapsedText && (
-                      <div className="scan-progress-elapsed">Started {elapsedText} ago</div>
-                    )}
-                    <div className="scan-progress-elapsed">
-                      This typically takes 1–3 minutes depending on theme size.
-                    </div>
-                  </div>
-                ) : healthScore && latestScan ? (
-                  <>
-                    <div className="dashboard-top-row">
-                      {/* Left: health score tile */}
-                      <div style={{ display: "flex", flexDirection: "column" }}>
-                        <h2 className="dashboard-section-title">Theme Health</h2>
-                        {/* Spacer to match the subtitle line height in the right column */}
-                        <div style={{ height: "18px" }} />
-                        <div
-                          className={`health-score-tile health-score-tile--${healthScore.tone}`}
-                          style={{ marginTop: "8px", flex: 1 }}
-                        >
-                          <div
-                            className={`health-score-number health-score-number--${healthScore.tone}`}
-                          >
-                            {healthScore.score}
-                          </div>
-                          <div className="health-score-subtitle">out of 100</div>
-                          <div
-                            className={`health-score-label health-score-label--${healthScore.tone}`}
-                          >
-                            {healthScore.label}
-                          </div>
-                          {previousHealthScore && (
-                            <div className="health-score-delta">
-                              Prev: {previousHealthScore.score}
-                              {scoreDelta ? ` (${scoreDelta})` : ""}
-                            </div>
-                          )}
-                        </div>
+            {/* Theme Health + Findings — combined card */}
+            <s-card>
+              {/* aria-live="polite" ensures screen readers announce when scan status changes */}
+              <div aria-live="polite">
+                <s-stack direction="block" gap="base">
+                  {scanInProgress ? (
+                    <div className="scan-progress-container">
+                      <s-spinner accessibilityLabel="Scanning theme" size="large" />
+                      <s-heading>Scanning your theme...</s-heading>
+                      <div className="scan-progress-text">
+                        Ghost Code is analyzing your theme files for orphaned code. Results will
+                        appear here when the scan is complete.
                       </div>
-                      {/* Right: findings */}
-                      <div style={{ display: "flex", flexDirection: "column" }}>
-                        <h2 className="dashboard-section-title">Most Recent Findings</h2>
-                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
-                          Scanned{" "}
-                          <strong style={{ color: TEXT_PRIMARY }}>{latestScan.themeName}</strong> on{" "}
-                          {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
-                        </div>
-                        <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
-                          <div className="finding-stat finding-stat--high">
-                            <div className="finding-stat__count finding-stat__count--high">
-                              {highCount}
-                            </div>
-                            <div className="finding-stat__label">High</div>
-                          </div>
-                          <div className="finding-stat finding-stat--medium">
-                            <div className="finding-stat__count finding-stat__count--medium">
-                              {mediumCount}
-                            </div>
-                            <div className="finding-stat__label">Medium</div>
-                          </div>
-                          <div className="finding-stat finding-stat--low">
-                            <div className="finding-stat__count finding-stat__count--low">
-                              {lowCount}
-                            </div>
-                            <div className="finding-stat__label">Low</div>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <s-text>Run your first scan to see your theme health score.</s-text>
-                )}
-              </s-stack>
-            </div>
-          </s-card>
-
-          {/* Health Score Trend — feature-flagged, paid plans only */}
-          <HealthScoreTrendChart
-            trendChartEnabled={trendChartEnabled}
-            healthScoreTrend={healthScoreTrend}
-          />
-
-          {/* Trend empty state — paid plan, fewer than 3 completed scans */}
-          <HealthScoreTrendEmptyState
-            trendChartEnabled={trendChartEnabled}
-            showTrendEmptyState={showTrendEmptyState}
-            scansNeeded={scansNeeded}
-            onStartScan={handleStartScan}
-            isSubmitting={isSubmitting}
-            scanDisabled={!shop || scanLimitReached}
-          />
-
-          {/* Scan Actions */}
-          <div style={{ marginTop: "24px", marginBottom: "8px" }}>
-            <h2 className="dashboard-section-title">Scan Actions</h2>
-          </div>
-          <s-card>
-            <s-stack direction="block" gap="base">
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
-                {/* Left: scan action */}
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    padding: "20px 16px",
-                    borderRadius: "12px",
-                    border: `1px solid ${BORDER_DEFAULT}`,
-                    background: scanLimitReached ? BG_SURFACE_ALT : BG_WHITE,
-                    textAlign: "center",
-                    gap: "12px",
-                  }}
-                >
-                  <s-heading>New Scan</s-heading>
-                  {isFirstScan ? (
-                    <div style={{ fontSize: "13px", color: STATUS_TINTS.success.text }}>
-                      Your first scan is free
-                    </div>
-                  ) : scanUsage !== null ? (
-                    <div style={{ width: "100%" }}>
-                      <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginBottom: "6px" }}>
-                        {scanUsage.used} of {scanUsage.limit} used this {scanUsage.period}
-                      </div>
-                      <div
-                        className="usage-bar-track"
-                        style={{ margin: "0 auto", maxWidth: "160px" }}
-                      >
-                        <div
-                          className={`usage-bar-fill ${scanLimitReached ? "usage-bar-fill--full" : "usage-bar-fill--normal"}`}
-                          style={{
-                            width: `${Math.min((scanUsage.used / scanUsage.limit) * 100, 100)}%`,
-                          }}
-                        />
-                      </div>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: "13px", color: STATUS_TINTS.success.text }}>
-                      Unlimited scans on your plan
-                    </div>
-                  )}
-                  {/* Theme picker — hidden on Free, disabled on Standard, active on Professional.
-                      allThemes is only populated for Standard and Professional (loader skips
-                      the fetch on Free), so checking length > 0 is sufficient to gate display. */}
-                  {allThemes.length > 0 ? (
-                    <div style={{ width: "100%", textAlign: "left" }}>
-                      <label htmlFor="theme-picker" className="theme-picker-label">
-                        Select theme to scan
-                      </label>
-                      {/* Native <select> used because Polaris Web Components do not expose <s-select> */}
-                      <select
-                        id="theme-picker"
-                        className="theme-picker-select"
-                        value={selectedThemeId}
-                        onChange={(e) => setSelectedThemeId(e.target.value)}
-                        disabled={!canSelectTheme || isSubmitting}
-                        aria-label="Select theme to scan"
-                      >
-                        {allThemes.map((theme) => (
-                          <option key={theme.id} value={theme.id}>
-                            {theme.name}
-                            {theme.role === "MAIN" ? " (Published)" : " (Draft)"}
-                          </option>
-                        ))}
-                      </select>
-                      {!canSelectTheme && (
-                        <div className="theme-picker-nudge">
-                          <Link to="/app/settings">Upgrade to Professional</Link> to scan any theme
-                        </div>
+                      {elapsedText && (
+                        <div className="scan-progress-elapsed">Started {elapsedText} ago</div>
                       )}
+                      <div className="scan-progress-elapsed">
+                        This typically takes 1–3 minutes depending on theme size.
+                      </div>
                     </div>
-                  ) : null}
-                  <s-button
-                    variant="primary"
-                    onClick={handleStartScan}
-                    {...(isSubmitting ? { loading: true } : {})}
-                    {...(!shop || scanLimitReached ? { disabled: true } : {})}
-                  >
-                    {isSubmitting ? "Starting..." : "Start New Scan"}
-                  </s-button>
-                  {scanLimitReached && (
-                    <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
-                      <Link to="/app/settings" style={{ color: COLOR_INFO }}>
-                        Upgrade for more scans
-                      </Link>
-                    </div>
+                  ) : healthScore && latestScan ? (
+                    <>
+                      <div className="dashboard-top-row">
+                        {/* Left: health score tile */}
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          <h2 className="dashboard-section-title">Theme Health</h2>
+                          {/* Spacer to match the subtitle line height in the right column */}
+                          <div style={{ height: "18px" }} />
+                          <div
+                            className={`health-score-tile health-score-tile--${healthScore.tone}`}
+                            style={{ marginTop: "8px", flex: 1 }}
+                          >
+                            <div
+                              className={`health-score-number health-score-number--${healthScore.tone}`}
+                            >
+                              {healthScore.score}
+                            </div>
+                            <div className="health-score-subtitle">out of 100</div>
+                            <div
+                              className={`health-score-label health-score-label--${healthScore.tone}`}
+                            >
+                              {healthScore.label}
+                            </div>
+                            {previousHealthScore && (
+                              <div className="health-score-delta">
+                                Prev: {previousHealthScore.score}
+                                {scoreDelta ? ` (${scoreDelta})` : ""}
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        {/* Right: findings */}
+                        <div style={{ display: "flex", flexDirection: "column" }}>
+                          <h2 className="dashboard-section-title">Most Recent Findings</h2>
+                          <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
+                            Scanned{" "}
+                            <strong style={{ color: TEXT_PRIMARY }}>{latestScan.themeName}</strong>{" "}
+                            on {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                          </div>
+                          <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
+                            <div className="finding-stat finding-stat--high">
+                              <div className="finding-stat__count finding-stat__count--high">
+                                {highCount}
+                              </div>
+                              <div className="finding-stat__label">High</div>
+                            </div>
+                            <div className="finding-stat finding-stat--medium">
+                              <div className="finding-stat__count finding-stat__count--medium">
+                                {mediumCount}
+                              </div>
+                              <div className="finding-stat__label">Medium</div>
+                            </div>
+                            <div className="finding-stat finding-stat--low">
+                              <div className="finding-stat__count finding-stat__count--low">
+                                {lowCount}
+                              </div>
+                              <div className="finding-stat__label">Low</div>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    </>
+                  ) : (
+                    <s-text>Run your first scan to see your theme health score.</s-text>
                   )}
-                </div>
-                {/* Right: scan history */}
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: "20px 16px",
-                    borderRadius: "12px",
-                    border: `1px solid ${BORDER_DEFAULT}`,
-                    background: BG_WHITE,
-                    textAlign: "center",
-                    gap: "12px",
-                  }}
-                >
-                  <s-heading>Scan History</s-heading>
-                  <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
-                    View all past scans and findings
-                  </div>
-                  <Link
-                    to="/app/scans"
+                </s-stack>
+              </div>
+            </s-card>
+
+            {/* Health Score Trend — feature-flagged, paid plans only */}
+            <HealthScoreTrendChart
+              trendChartEnabled={trendChartEnabled}
+              healthScoreTrend={healthScoreTrend}
+            />
+
+            {/* Trend empty state — paid plan, fewer than 3 completed scans */}
+            <HealthScoreTrendEmptyState
+              trendChartEnabled={trendChartEnabled}
+              showTrendEmptyState={showTrendEmptyState}
+              scansNeeded={scansNeeded}
+              onStartScan={handleStartScan}
+              isSubmitting={isSubmitting}
+              scanDisabled={!shop || scanLimitReached}
+            />
+
+            {/* Scan Actions */}
+            <div style={{ marginTop: "24px", marginBottom: "8px" }}>
+              <h2 className="dashboard-section-title">Scan Actions</h2>
+            </div>
+            <s-card>
+              <s-stack direction="block" gap="base">
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
+                  {/* Left: scan action */}
+                  <div
                     style={{
-                      display: "inline-block",
-                      padding: "8px 24px",
-                      borderRadius: "8px",
-                      background: COLOR_INFO,
-                      color: BG_WHITE,
-                      fontSize: "14px",
-                      fontWeight: 600,
-                      textDecoration: "none",
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      padding: "20px 16px",
+                      borderRadius: "12px",
+                      border: `1px solid ${BORDER_DEFAULT}`,
+                      background: scanLimitReached ? BG_SURFACE_ALT : BG_WHITE,
                       textAlign: "center",
+                      gap: "12px",
                     }}
                   >
-                    View Scan History
-                  </Link>
+                    <s-heading>New Scan</s-heading>
+                    {isFirstScan ? (
+                      <div style={{ fontSize: "13px", color: STATUS_TINTS.success.text }}>
+                        Your first scan is free
+                      </div>
+                    ) : scanUsage !== null ? (
+                      <div style={{ width: "100%" }}>
+                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginBottom: "6px" }}>
+                          {scanUsage.used} of {scanUsage.limit} used this {scanUsage.period}
+                        </div>
+                        <div
+                          className="usage-bar-track"
+                          style={{ margin: "0 auto", maxWidth: "160px" }}
+                        >
+                          <div
+                            className={`usage-bar-fill ${scanLimitReached ? "usage-bar-fill--full" : "usage-bar-fill--normal"}`}
+                            style={{
+                              width: `${Math.min((scanUsage.used / scanUsage.limit) * 100, 100)}%`,
+                            }}
+                          />
+                        </div>
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: "13px", color: STATUS_TINTS.success.text }}>
+                        Unlimited scans on your plan
+                      </div>
+                    )}
+                    {/* Theme picker — hidden on Free, disabled on Standard, active on Professional.
+                      allThemes is only populated for Standard and Professional (loader skips
+                      the fetch on Free), so checking length > 0 is sufficient to gate display. */}
+                    {allThemes.length > 0 ? (
+                      <div style={{ width: "100%", textAlign: "left" }}>
+                        <label htmlFor="theme-picker" className="theme-picker-label">
+                          Select theme to scan
+                        </label>
+                        {/* Native <select> used because Polaris Web Components do not expose <s-select> */}
+                        <select
+                          id="theme-picker"
+                          className="theme-picker-select"
+                          value={selectedThemeId}
+                          onChange={(e) => setSelectedThemeId(e.target.value)}
+                          disabled={!canSelectTheme || isSubmitting}
+                          aria-label="Select theme to scan"
+                        >
+                          {allThemes.map((theme) => (
+                            <option key={theme.id} value={theme.id}>
+                              {theme.name}
+                              {theme.role === "MAIN" ? " (Published)" : " (Draft)"}
+                            </option>
+                          ))}
+                        </select>
+                        {!canSelectTheme && (
+                          <div className="theme-picker-nudge">
+                            <Link to="/app/settings">Upgrade to Professional</Link> to scan any
+                            theme
+                          </div>
+                        )}
+                      </div>
+                    ) : null}
+                    <s-button
+                      variant="primary"
+                      onClick={handleStartScan}
+                      {...(isSubmitting ? { loading: true } : {})}
+                      {...(!shop || scanLimitReached ? { disabled: true } : {})}
+                    >
+                      {isSubmitting ? "Starting..." : "Start New Scan"}
+                    </s-button>
+                    {scanLimitReached && (
+                      <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
+                        <Link to="/app/settings" style={{ color: COLOR_INFO }}>
+                          Upgrade for more scans
+                        </Link>
+                      </div>
+                    )}
+                  </div>
+                  {/* Right: scan history */}
+                  <div
+                    style={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      padding: "20px 16px",
+                      borderRadius: "12px",
+                      border: `1px solid ${BORDER_DEFAULT}`,
+                      background: BG_WHITE,
+                      textAlign: "center",
+                      gap: "12px",
+                    }}
+                  >
+                    <s-heading>Scan History</s-heading>
+                    <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+                      View all past scans and findings
+                    </div>
+                    <Link
+                      to="/app/scans"
+                      style={{
+                        display: "inline-block",
+                        padding: "8px 24px",
+                        borderRadius: "8px",
+                        background: COLOR_INFO,
+                        color: BG_WHITE,
+                        fontSize: "14px",
+                        fontWeight: 600,
+                        textDecoration: "none",
+                        textAlign: "center",
+                      }}
+                    >
+                      View Scan History
+                    </Link>
+                  </div>
                 </div>
-              </div>
-            </s-stack>
-          </s-card>
-        </>
-      )}
+              </s-stack>
+            </s-card>
+          </>
+        )}
+      </div>
     </s-page>
   );
 }

@@ -37,6 +37,8 @@ import {
   COLOR_CRITICAL,
   COLOR_INFO,
   COLOR_WARNING,
+  groundStyle,
+  hairline,
   htmlTableCss,
   STATUS_TINTS,
   TEXT_DISABLED,
@@ -672,8 +674,9 @@ export default function ScanDetail() {
       <Link to="/app/scans" slot="primary-action">
         Back to History
       </Link>
-
-      <style>{`
+      <div style={hairline} />
+      <div style={groundStyle}>
+        <style>{`
         .scan-status-bar {
           display: flex;
           align-items: center;
@@ -822,453 +825,454 @@ export default function ScanDetail() {
         .severity-row__diff--neutral { color: ${TEXT_DISABLED}; }
       `}</style>
 
-      {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
-      {pollingTimedOut && (
-        <s-banner tone="warning">
-          Scan is taking longer than expected. Refresh the page to check the latest status.
-        </s-banner>
-      )}
-
-      {/* FAILED state banner — prominent error message for merchants */}
-      {isFailed && (
-        <s-banner tone="critical">
-          This scan failed to complete. Please try running a new scan from the dashboard.
-        </s-banner>
-      )}
-
-      {/* Row 1: Status bar — compact metadata line */}
-      <div className="scan-status-bar">
-        <s-badge tone={statusTone(status)}>{statusLabel(status)}</s-badge>
-        <span className="scan-status-bar__separator">|</span>
-        <span>Started {formatDate(scan.startedAt ?? scan.createdAt, true)}</span>
-        {scan.completedAt && (
-          <>
-            <span className="scan-status-bar__separator">|</span>
-            <span>Completed {formatDate(scan.completedAt, true)}</span>
-          </>
-        )}
-      </div>
-
-      {/* Row 2: Summary tiles — conditional on scan state */}
-      {isFailed ? (
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-heading>Scan Did Not Complete</s-heading>
-            <s-paragraph>
-              Findings are unavailable because this scan encountered an error before finishing.
-              Start a new scan from the dashboard to get up-to-date results.
-            </s-paragraph>
-            <Link to="/app">
-              <s-button variant="primary">Go to Dashboard</s-button>
-            </Link>
-          </s-stack>
-        </s-card>
-      ) : isRunning ? (
-        <s-card>
-          <s-stack direction="block" gap="base">
-            <s-heading>Scan In Progress</s-heading>
-            <s-paragraph>
-              Your theme is being scanned. Findings will appear here automatically when the scan
-              completes — no need to refresh.
-            </s-paragraph>
-          </s-stack>
-        </s-card>
-      ) : (
-        <div className="scan-tiles-row">
-          {/* Tile 1: Health Score */}
-          {healthScore && (
-            <div className="scan-tile-wrapper">
-              <h2 className="scan-section-title">Theme Health</h2>
-              <div
-                className={`scan-tile scan-tile--health-${healthToneModifier(healthScore.tone)}`}
-                style={{ marginTop: "8px" }}
-              >
-                <div
-                  className={`scan-tile__big-number scan-tile__big-number--${healthToneModifier(healthScore.tone)}`}
-                >
-                  {healthScore.score}
-                </div>
-                <div className="scan-tile__subtitle">out of 100</div>
-                <div
-                  className={`scan-tile__label scan-tile__label--${healthToneModifier(healthScore.tone)}`}
-                >
-                  {healthScore.label}
-                </div>
-              </div>
-            </div>
-          )}
-
-          {/* Tile 2: Total Findings */}
-          <div className="scan-tile-wrapper">
-            <h2 className="scan-section-title">Total Findings</h2>
-            <div className="scan-tile" style={{ marginTop: "8px" }}>
-              <div className="scan-tile__big-number scan-tile__big-number--neutral">
-                {totalFindings}
-              </div>
-              <div className="scan-tile__subtitle">findings detected</div>
-              {scanDiff && (totalNew > 0 || totalResolved > 0) && (
-                <div
-                  className={`scan-tile__diff ${
-                    totalNew > totalResolved
-                      ? "scan-tile__diff--positive"
-                      : totalResolved > totalNew
-                        ? "scan-tile__diff--negative"
-                        : "scan-tile__diff--neutral"
-                  }`}
-                >
-                  {totalNew > 0 && <span style={{ color: COLOR_CRITICAL }}>+{totalNew} new</span>}
-                  {totalNew > 0 && totalResolved > 0 && " / "}
-                  {totalResolved > 0 && (
-                    <span style={{ color: STATUS_TINTS.success.text }}>
-                      -{totalResolved} resolved
-                    </span>
-                  )}
-                </div>
-              )}
-              {scanDiff && totalNew === 0 && totalResolved === 0 && (
-                <div className="scan-tile__diff scan-tile__diff--neutral">no change</div>
-              )}
-            </div>
-          </div>
-
-          {/* Tile 3: Severity Breakdown */}
-          <div className="scan-tile-wrapper">
-            <h2 className="scan-section-title">Severity Breakdown</h2>
-            <div className="scan-tile" style={{ marginTop: "8px" }}>
-              <div className="severity-breakdown">
-                <div className="severity-breakdown__header">
-                  <span>Severity</span>
-                  <span>Change</span>
-                </div>
-                {(
-                  [
-                    { key: "HIGH", label: "High", mod: "high" },
-                    { key: "MEDIUM", label: "Medium", mod: "medium" },
-                    { key: "LOW", label: "Low", mod: "low" },
-                  ] as const
-                ).map(({ key, label, mod }) => {
-                  const count = summary[key];
-                  const net = severityNet ? severityNet[key] : null;
-                  return (
-                    <div key={key} className="severity-row">
-                      <div className="severity-row__left">
-                        <span className={`severity-row__dot severity-row__dot--${mod}`} />
-                        <span className={`severity-row__count severity-row__count--${mod}`}>
-                          {count}
-                        </span>
-                        <span className="severity-row__label">{label}</span>
-                      </div>
-                      {net !== null && net !== 0 && (
-                        <span
-                          className={`severity-row__diff ${
-                            net > 0
-                              ? "severity-row__diff--positive"
-                              : "severity-row__diff--negative"
-                          }`}
-                        >
-                          {net > 0 ? `+${net}` : String(net)}
-                        </span>
-                      )}
-                      {net !== null && net === 0 && (
-                        <span className="severity-row__diff severity-row__diff--neutral">—</span>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-          </div>
-
-          {/* Tile 4: Performance Impact (conditional) */}
-          {externalResourceCount > 0 && (
-            <div className="scan-tile-wrapper">
-              <h2 className="scan-section-title">Performance Impact</h2>
-              <div className="scan-tile" style={{ marginTop: "8px" }}>
-                <div
-                  className={`scan-tile__big-number ${externalResourceCount > 3 ? "scan-tile__big-number--critical" : externalResourceCount > 1 ? "scan-tile__big-number--warning" : "scan-tile__big-number--neutral"}`}
-                >
-                  {externalResourceCount}
-                </div>
-                <div className="scan-tile__subtitle">external resources loading</div>
-                <div
-                  style={{
-                    marginTop: "8px",
-                    fontSize: "13px",
-                    color: TEXT_SUBDUED,
-                    textAlign: "center",
-                  }}
-                >
-                  {scriptCount > 0 && (
-                    <div>
-                      {scriptCount} script{scriptCount !== 1 ? "s" : ""}
-                    </div>
-                  )}
-                  {styleCount > 0 && (
-                    <div>
-                      {styleCount} stylesheet{styleCount !== 1 ? "s" : ""}
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Oversized-file skip notice — these files were too large (>1 MB) to
-          scan, so their findings are neither reported nor diffed (gc-06e.19). */}
-      {isCompleted && scan.skippedFiles.length > 0 && (
-        <div style={{ marginTop: "16px" }}>
+        {/* Polling timeout notice — shown when we stopped polling after 10 minutes */}
+        {pollingTimedOut && (
           <s-banner tone="warning">
-            {scan.skippedFiles.length} file{scan.skippedFiles.length !== 1 ? "s" : ""} skipped (over
-            1 MB, not scanned): {scan.skippedFiles.join(", ")}. Findings in{" "}
-            {scan.skippedFiles.length !== 1 ? "these files" : "this file"} are not included in this
-            scan or its comparison.
+            Scan is taking longer than expected. Refresh the page to check the latest status.
           </s-banner>
-        </div>
-      )}
+        )}
 
-      {/* Findings detail table — only shown for completed scans */}
-      {isCompleted &&
-        (canViewDetails ? (
+        {/* FAILED state banner — prominent error message for merchants */}
+        {isFailed && (
+          <s-banner tone="critical">
+            This scan failed to complete. Please try running a new scan from the dashboard.
+          </s-banner>
+        )}
+
+        {/* Row 1: Status bar — compact metadata line */}
+        <div className="scan-status-bar">
+          <s-badge tone={statusTone(status)}>{statusLabel(status)}</s-badge>
+          <span className="scan-status-bar__separator">|</span>
+          <span>Started {formatDate(scan.startedAt ?? scan.createdAt, true)}</span>
+          {scan.completedAt && (
+            <>
+              <span className="scan-status-bar__separator">|</span>
+              <span>Completed {formatDate(scan.completedAt, true)}</span>
+            </>
+          )}
+        </div>
+
+        {/* Row 2: Summary tiles — conditional on scan state */}
+        {isFailed ? (
+          <s-card>
+            <s-stack direction="block" gap="base">
+              <s-heading>Scan Did Not Complete</s-heading>
+              <s-paragraph>
+                Findings are unavailable because this scan encountered an error before finishing.
+                Start a new scan from the dashboard to get up-to-date results.
+              </s-paragraph>
+              <Link to="/app">
+                <s-button variant="primary">Go to Dashboard</s-button>
+              </Link>
+            </s-stack>
+          </s-card>
+        ) : isRunning ? (
+          <s-card>
+            <s-stack direction="block" gap="base">
+              <s-heading>Scan In Progress</s-heading>
+              <s-paragraph>
+                Your theme is being scanned. Findings will appear here automatically when the scan
+                completes — no need to refresh.
+              </s-paragraph>
+            </s-stack>
+          </s-card>
+        ) : (
+          <div className="scan-tiles-row">
+            {/* Tile 1: Health Score */}
+            {healthScore && (
+              <div className="scan-tile-wrapper">
+                <h2 className="scan-section-title">Theme Health</h2>
+                <div
+                  className={`scan-tile scan-tile--health-${healthToneModifier(healthScore.tone)}`}
+                  style={{ marginTop: "8px" }}
+                >
+                  <div
+                    className={`scan-tile__big-number scan-tile__big-number--${healthToneModifier(healthScore.tone)}`}
+                  >
+                    {healthScore.score}
+                  </div>
+                  <div className="scan-tile__subtitle">out of 100</div>
+                  <div
+                    className={`scan-tile__label scan-tile__label--${healthToneModifier(healthScore.tone)}`}
+                  >
+                    {healthScore.label}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Tile 2: Total Findings */}
+            <div className="scan-tile-wrapper">
+              <h2 className="scan-section-title">Total Findings</h2>
+              <div className="scan-tile" style={{ marginTop: "8px" }}>
+                <div className="scan-tile__big-number scan-tile__big-number--neutral">
+                  {totalFindings}
+                </div>
+                <div className="scan-tile__subtitle">findings detected</div>
+                {scanDiff && (totalNew > 0 || totalResolved > 0) && (
+                  <div
+                    className={`scan-tile__diff ${
+                      totalNew > totalResolved
+                        ? "scan-tile__diff--positive"
+                        : totalResolved > totalNew
+                          ? "scan-tile__diff--negative"
+                          : "scan-tile__diff--neutral"
+                    }`}
+                  >
+                    {totalNew > 0 && <span style={{ color: COLOR_CRITICAL }}>+{totalNew} new</span>}
+                    {totalNew > 0 && totalResolved > 0 && " / "}
+                    {totalResolved > 0 && (
+                      <span style={{ color: STATUS_TINTS.success.text }}>
+                        -{totalResolved} resolved
+                      </span>
+                    )}
+                  </div>
+                )}
+                {scanDiff && totalNew === 0 && totalResolved === 0 && (
+                  <div className="scan-tile__diff scan-tile__diff--neutral">no change</div>
+                )}
+              </div>
+            </div>
+
+            {/* Tile 3: Severity Breakdown */}
+            <div className="scan-tile-wrapper">
+              <h2 className="scan-section-title">Severity Breakdown</h2>
+              <div className="scan-tile" style={{ marginTop: "8px" }}>
+                <div className="severity-breakdown">
+                  <div className="severity-breakdown__header">
+                    <span>Severity</span>
+                    <span>Change</span>
+                  </div>
+                  {(
+                    [
+                      { key: "HIGH", label: "High", mod: "high" },
+                      { key: "MEDIUM", label: "Medium", mod: "medium" },
+                      { key: "LOW", label: "Low", mod: "low" },
+                    ] as const
+                  ).map(({ key, label, mod }) => {
+                    const count = summary[key];
+                    const net = severityNet ? severityNet[key] : null;
+                    return (
+                      <div key={key} className="severity-row">
+                        <div className="severity-row__left">
+                          <span className={`severity-row__dot severity-row__dot--${mod}`} />
+                          <span className={`severity-row__count severity-row__count--${mod}`}>
+                            {count}
+                          </span>
+                          <span className="severity-row__label">{label}</span>
+                        </div>
+                        {net !== null && net !== 0 && (
+                          <span
+                            className={`severity-row__diff ${
+                              net > 0
+                                ? "severity-row__diff--positive"
+                                : "severity-row__diff--negative"
+                            }`}
+                          >
+                            {net > 0 ? `+${net}` : String(net)}
+                          </span>
+                        )}
+                        {net !== null && net === 0 && (
+                          <span className="severity-row__diff severity-row__diff--neutral">—</span>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+
+            {/* Tile 4: Performance Impact (conditional) */}
+            {externalResourceCount > 0 && (
+              <div className="scan-tile-wrapper">
+                <h2 className="scan-section-title">Performance Impact</h2>
+                <div className="scan-tile" style={{ marginTop: "8px" }}>
+                  <div
+                    className={`scan-tile__big-number ${externalResourceCount > 3 ? "scan-tile__big-number--critical" : externalResourceCount > 1 ? "scan-tile__big-number--warning" : "scan-tile__big-number--neutral"}`}
+                  >
+                    {externalResourceCount}
+                  </div>
+                  <div className="scan-tile__subtitle">external resources loading</div>
+                  <div
+                    style={{
+                      marginTop: "8px",
+                      fontSize: "13px",
+                      color: TEXT_SUBDUED,
+                      textAlign: "center",
+                    }}
+                  >
+                    {scriptCount > 0 && (
+                      <div>
+                        {scriptCount} script{scriptCount !== 1 ? "s" : ""}
+                      </div>
+                    )}
+                    {styleCount > 0 && (
+                      <div>
+                        {styleCount} stylesheet{styleCount !== 1 ? "s" : ""}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Oversized-file skip notice — these files were too large (>1 MB) to
+          scan, so their findings are neither reported nor diffed (gc-06e.19). */}
+        {isCompleted && scan.skippedFiles.length > 0 && (
+          <div style={{ marginTop: "16px" }}>
+            <s-banner tone="warning">
+              {scan.skippedFiles.length} file{scan.skippedFiles.length !== 1 ? "s" : ""} skipped
+              (over 1 MB, not scanned): {scan.skippedFiles.join(", ")}. Findings in{" "}
+              {scan.skippedFiles.length !== 1 ? "these files" : "this file"} are not included in
+              this scan or its comparison.
+            </s-banner>
+          </div>
+        )}
+
+        {/* Findings detail table — only shown for completed scans */}
+        {isCompleted &&
+          (canViewDetails ? (
+            <div style={{ marginTop: "32px" }}>
+              <s-card>
+                <s-stack direction="block" gap="base">
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <h2 className="scan-section-title">Findings</h2>
+                    {findings.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          // Use authenticated fetch (App Bridge intercepts fetch in
+                          // embedded apps and adds the session token automatically).
+                          const res = await fetch(`/app/scans/${scan.id}/export?format=csv`);
+                          if (!res.ok) {
+                            shopify.toast.show("Export failed", { isError: true });
+                            return;
+                          }
+                          const blob = await res.blob();
+                          const url = URL.createObjectURL(blob);
+                          const a = document.createElement("a");
+                          a.href = url;
+                          a.download = `ghost-code-scan-${scan.id}.csv`;
+                          document.body.appendChild(a);
+                          a.click();
+                          a.remove();
+                          URL.revokeObjectURL(url);
+                        }}
+                        style={{
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: "6px",
+                          padding: "6px 12px",
+                          borderRadius: "6px",
+                          border: `1px solid ${BORDER_STRONG}`,
+                          background: BG_WHITE,
+                          color: TEXT_SUBDUED,
+                          fontSize: "13px",
+                          cursor: "pointer",
+                        }}
+                      >
+                        <svg
+                          width="14"
+                          height="14"
+                          viewBox="0 0 20 20"
+                          fill="none"
+                          xmlns="http://www.w3.org/2000/svg"
+                        >
+                          <path
+                            d="M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 17h12"
+                            stroke="currentColor"
+                            strokeWidth="1.5"
+                            strokeLinecap="round"
+                            strokeLinejoin="round"
+                          />
+                        </svg>
+                        Export CSV
+                      </button>
+                    )}
+                  </div>
+                  {findings.some((f) => f.isTracker) && (
+                    <s-banner tone="warning">
+                      Findings marked TRACKING are from analytics or advertising scripts that may
+                      still be collecting visitor data even though the app has been uninstalled.
+                    </s-banner>
+                  )}
+                  {findings.length === 0 ? (
+                    <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+                  ) : (
+                    <>
+                      <FindingsTable>
+                        {findings.map((finding) => (
+                          <FindingRow
+                            key={finding.id}
+                            finding={finding}
+                            isNew={newFindingKeys.has(
+                              `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
+                            )}
+                          />
+                        ))}
+                      </FindingsTable>
+                      {findingsPagination.hasNextPage && (
+                        <s-box padding-block-start="base">
+                          <s-stack direction="inline" gap="base">
+                            <Link
+                              to={`/app/scans/${scan.id}?cursor=${findingsPagination.nextCursor}`}
+                            >
+                              Load More
+                            </Link>
+                          </s-stack>
+                        </s-box>
+                      )}
+                    </>
+                  )}
+                </s-stack>
+              </s-card>
+            </div>
+          ) : previewFinding === null ? (
+            /* Free tier, no findings at all */
+            <s-card>
+              <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+            </s-card>
+          ) : (
+            /* Free tier with findings — show summary + one preview row + upgrade prompt */
+            <>
+              {/* Summary header: total count + category breakdown */}
+              <s-card>
+                <s-stack direction="block" gap="base">
+                  <s-heading>{findingSummary.total} findings detected</s-heading>
+                  <s-stack direction="inline" gap="base">
+                    {(Object.entries(findingSummary.byType) as [string, number][])
+                      .filter(([, count]) => count > 0)
+                      .map(([type, count]) => (
+                        <s-badge key={type} tone="neutral">
+                          {FINDING_TYPE_LABELS[type] ?? type}: {count}
+                        </s-badge>
+                      ))}
+                  </s-stack>
+                </s-stack>
+              </s-card>
+
+              {/* Preview finding — one row shown as a mini data table */}
+              <s-card>
+                <s-stack direction="block" gap="base">
+                  <s-heading>Preview: Highest Severity Finding</s-heading>
+                  <FindingsTable>
+                    <FindingRow finding={previewFinding} />
+                  </FindingsTable>
+
+                  {/* Upgrade banner: remaining count and upgrade CTA (hidden when only 1 finding total) */}
+                  {findingSummary.total > 1 && (
+                    <s-banner tone="info">
+                      <s-stack direction="block" gap="base">
+                        <s-text>
+                          {findingSummary.total - 1} more{" "}
+                          {findingSummary.total - 1 === 1 ? "finding" : "findings"} detected.
+                          Upgrade to Standard to see full details including all file names, line
+                          numbers, and code snippets.
+                        </s-text>
+                        <Link to="/app/settings">
+                          <s-button variant="primary">Upgrade Plan</s-button>
+                        </Link>
+                      </s-stack>
+                    </s-banner>
+                  )}
+                </s-stack>
+              </s-card>
+            </>
+          ))}
+
+        {/* App Impact Map — groups findings by app to show which files each app touched */}
+        {isCompleted && canViewDetails && appAttribution.size > 0 && (
           <div style={{ marginTop: "32px" }}>
             <s-card>
               <s-stack direction="block" gap="base">
-                <div
-                  style={{
-                    display: "flex",
-                    justifyContent: "space-between",
-                    alignItems: "center",
-                  }}
-                >
-                  <h2 className="scan-section-title">Findings</h2>
-                  {findings.length > 0 && (
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        // Use authenticated fetch (App Bridge intercepts fetch in
-                        // embedded apps and adds the session token automatically).
-                        const res = await fetch(`/app/scans/${scan.id}/export?format=csv`);
-                        if (!res.ok) {
-                          shopify.toast.show("Export failed", { isError: true });
-                          return;
-                        }
-                        const blob = await res.blob();
-                        const url = URL.createObjectURL(blob);
-                        const a = document.createElement("a");
-                        a.href = url;
-                        a.download = `ghost-code-scan-${scan.id}.csv`;
-                        document.body.appendChild(a);
-                        a.click();
-                        a.remove();
-                        URL.revokeObjectURL(url);
-                      }}
-                      style={{
-                        display: "inline-flex",
-                        alignItems: "center",
-                        gap: "6px",
-                        padding: "6px 12px",
-                        borderRadius: "6px",
-                        border: `1px solid ${BORDER_STRONG}`,
-                        background: BG_WHITE,
-                        color: TEXT_SUBDUED,
-                        fontSize: "13px",
-                        cursor: "pointer",
-                      }}
-                    >
-                      <svg
-                        width="14"
-                        height="14"
-                        viewBox="0 0 20 20"
-                        fill="none"
-                        xmlns="http://www.w3.org/2000/svg"
-                      >
-                        <path
-                          d="M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 17h12"
-                          stroke="currentColor"
-                          strokeWidth="1.5"
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                        />
-                      </svg>
-                      Export CSV
-                    </button>
-                  )}
-                </div>
-                {findings.some((f) => f.isTracker) && (
-                  <s-banner tone="warning">
-                    Findings marked TRACKING are from analytics or advertising scripts that may
-                    still be collecting visitor data even though the app has been uninstalled.
-                  </s-banner>
-                )}
-                {findings.length === 0 ? (
-                  <s-paragraph>No ghost code detected in this scan.</s-paragraph>
-                ) : (
-                  <>
-                    <FindingsTable>
-                      {findings.map((finding) => (
-                        <FindingRow
-                          key={finding.id}
-                          finding={finding}
-                          isNew={newFindingKeys.has(
-                            `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
-                          )}
-                        />
-                      ))}
-                    </FindingsTable>
-                    {findingsPagination.hasNextPage && (
-                      <s-box padding-block-start="base">
-                        <s-stack direction="inline" gap="base">
-                          <Link
-                            to={`/app/scans/${scan.id}?cursor=${findingsPagination.nextCursor}`}
-                          >
-                            Load More
-                          </Link>
-                        </s-stack>
-                      </s-box>
-                    )}
-                  </>
-                )}
-              </s-stack>
-            </s-card>
-          </div>
-        ) : previewFinding === null ? (
-          /* Free tier, no findings at all */
-          <s-card>
-            <s-paragraph>No ghost code detected in this scan.</s-paragraph>
-          </s-card>
-        ) : (
-          /* Free tier with findings — show summary + one preview row + upgrade prompt */
-          <>
-            {/* Summary header: total count + category breakdown */}
-            <s-card>
-              <s-stack direction="block" gap="base">
-                <s-heading>{findingSummary.total} findings detected</s-heading>
-                <s-stack direction="inline" gap="base">
-                  {(Object.entries(findingSummary.byType) as [string, number][])
-                    .filter(([, count]) => count > 0)
-                    .map(([type, count]) => (
-                      <s-badge key={type} tone="neutral">
-                        {FINDING_TYPE_LABELS[type] ?? type}: {count}
-                      </s-badge>
-                    ))}
-                </s-stack>
-              </s-stack>
-            </s-card>
-
-            {/* Preview finding — one row shown as a mini data table */}
-            <s-card>
-              <s-stack direction="block" gap="base">
-                <s-heading>Preview: Highest Severity Finding</s-heading>
-                <FindingsTable>
-                  <FindingRow finding={previewFinding} />
-                </FindingsTable>
-
-                {/* Upgrade banner: remaining count and upgrade CTA (hidden when only 1 finding total) */}
-                {findingSummary.total > 1 && (
-                  <s-banner tone="info">
-                    <s-stack direction="block" gap="base">
-                      <s-text>
-                        {findingSummary.total - 1} more{" "}
-                        {findingSummary.total - 1 === 1 ? "finding" : "findings"} detected. Upgrade
-                        to Standard to see full details including all file names, line numbers, and
-                        code snippets.
-                      </s-text>
-                      <Link to="/app/settings">
-                        <s-button variant="primary">Upgrade Plan</s-button>
-                      </Link>
-                    </s-stack>
-                  </s-banner>
-                )}
-              </s-stack>
-            </s-card>
-          </>
-        ))}
-
-      {/* App Impact Map — groups findings by app to show which files each app touched */}
-      {isCompleted && canViewDetails && appAttribution.size > 0 && (
-        <div style={{ marginTop: "32px" }}>
-          <s-card>
-            <s-stack direction="block" gap="base">
-              <h2 className="scan-section-title">App Impact Map</h2>
-              <s-paragraph>
-                Shows which theme files were modified by each app that left code behind.
-              </s-paragraph>
-              <style>{`
+                <h2 className="scan-section-title">App Impact Map</h2>
+                <s-paragraph>
+                  Shows which theme files were modified by each app that left code behind.
+                </s-paragraph>
+                <style>{`
                 ${htmlTableCss("app-map-table")}
                 .app-map-table thead th { white-space: nowrap; }
               `}</style>
-              <table className="app-map-table">
-                <thead>
-                  <tr>
-                    <th>App</th>
-                    <th>Findings</th>
-                    <th>Types</th>
-                    <th>Files Affected</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {[...appAttribution.entries()]
-                    .sort((a, b) => b[1].count - a[1].count)
-                    .map(([appName, data]) => (
-                      <tr key={appName}>
-                        <td style={{ fontWeight: 600 }}>{appName}</td>
-                        <td style={{ textAlign: "center" }}>{data.count}</td>
-                        <td>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
-                            {[...data.types].map((t) => (
-                              <div key={t}>
-                                <s-badge tone="neutral">{FINDING_TYPE_LABELS[t] ?? t}</s-badge>
+                <table className="app-map-table">
+                  <thead>
+                    <tr>
+                      <th>App</th>
+                      <th>Findings</th>
+                      <th>Types</th>
+                      <th>Files Affected</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {[...appAttribution.entries()]
+                      .sort((a, b) => b[1].count - a[1].count)
+                      .map(([appName, data]) => (
+                        <tr key={appName}>
+                          <td style={{ fontWeight: 600 }}>{appName}</td>
+                          <td style={{ textAlign: "center" }}>{data.count}</td>
+                          <td>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "4px" }}>
+                              {[...data.types].map((t) => (
+                                <div key={t}>
+                                  <s-badge tone="neutral">{FINDING_TYPE_LABELS[t] ?? t}</s-badge>
+                                </div>
+                              ))}
+                            </div>
+                          </td>
+                          <td>
+                            {[...data.files].map((f) => (
+                              <div key={f}>
+                                <code style={{ fontSize: "12px" }}>{f}</code>
                               </div>
                             ))}
-                          </div>
-                        </td>
-                        <td>
-                          {[...data.files].map((f) => (
-                            <div key={f}>
-                              <code style={{ fontSize: "12px" }}>{f}</code>
-                            </div>
-                          ))}
-                        </td>
-                      </tr>
+                          </td>
+                        </tr>
+                      ))}
+                  </tbody>
+                </table>
+              </s-stack>
+            </s-card>
+          </div>
+        )}
+        {/* Unrecognized Scripts — merchant feedback loop for unknown external resources */}
+        {isCompleted && canViewDetails && unknownScripts.length > 0 && (
+          <div style={{ marginTop: "32px" }}>
+            <s-card>
+              <s-stack direction="block" gap="base">
+                <h2 className="scan-section-title">Unrecognized Scripts</h2>
+                <s-paragraph>
+                  These external scripts were found in your theme but could not be matched to a
+                  known app. If you recognize which app left these behind, let us know — it helps
+                  improve detection for everyone.
+                </s-paragraph>
+                <style>{`${htmlTableCss("unknown-scripts-table")}`}</style>
+                <table className="unknown-scripts-table">
+                  <thead>
+                    <tr>
+                      <th>Type</th>
+                      <th>File</th>
+                      <th>URL</th>
+                      <th>Which app left this?</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {unknownScripts.map((script) => (
+                      <UnknownScriptRow key={script.id} script={script} />
                     ))}
-                </tbody>
-              </table>
-            </s-stack>
-          </s-card>
-        </div>
-      )}
-      {/* Unrecognized Scripts — merchant feedback loop for unknown external resources */}
-      {isCompleted && canViewDetails && unknownScripts.length > 0 && (
-        <div style={{ marginTop: "32px" }}>
-          <s-card>
-            <s-stack direction="block" gap="base">
-              <h2 className="scan-section-title">Unrecognized Scripts</h2>
-              <s-paragraph>
-                These external scripts were found in your theme but could not be matched to a known
-                app. If you recognize which app left these behind, let us know — it helps improve
-                detection for everyone.
-              </s-paragraph>
-              <style>{`${htmlTableCss("unknown-scripts-table")}`}</style>
-              <table className="unknown-scripts-table">
-                <thead>
-                  <tr>
-                    <th>Type</th>
-                    <th>File</th>
-                    <th>URL</th>
-                    <th>Which app left this?</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {unknownScripts.map((script) => (
-                    <UnknownScriptRow key={script.id} script={script} />
-                  ))}
-                </tbody>
-              </table>
-            </s-stack>
-          </s-card>
-        </div>
-      )}
+                  </tbody>
+                </table>
+              </s-stack>
+            </s-card>
+          </div>
+        )}
+      </div>
     </s-page>
   );
 }

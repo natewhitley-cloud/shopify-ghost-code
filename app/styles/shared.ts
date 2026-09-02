@@ -65,6 +65,26 @@ export const HAIRLINE = "#e2e7ee";
 /** Unfilled track for accent bar charts */
 export const BAR_TRACK = "#e3e9f1";
 
+/** Forensic Slate top-rail: a 3px single-accent bar across the top of each
+ * branded page, fading to transparent at both ends. GC is monochrome (one
+ * accent), so unlike ClearSignal's two-color rail this is a single-hue fade. */
+export const hairline: React.CSSProperties = {
+  height: "3px",
+  borderRadius: "2px",
+  background: `linear-gradient(90deg, transparent, ${ACCENT_FILL} 20%, ${ACCENT_FILL} 80%, transparent)`,
+};
+
+/** Branded page shell: the muted-slate ground that a page body sits on. White
+ * cards/tiles float on top of it. */
+export const groundStyle: React.CSSProperties = {
+  background: GROUND,
+  borderRadius: "14px",
+  padding: "20px",
+  display: "flex",
+  flexDirection: "column",
+  gap: "20px",
+};
+
 // ---------------------------------------------------------------------------
 // Text colors
 // ---------------------------------------------------------------------------
