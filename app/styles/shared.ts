@@ -4,6 +4,11 @@
  * Single source of truth for all colors, typography, spacing, and layout
  * utilities used across routes and components.
  *
+ * PROVENANCE: This design system is a deliberate copy of ClearSignal
+ * (`bot-analytics-cleanup-app`) `app/styles/shared.ts` v2 @ `df840fd`.
+ * Resync from ClearSignal before diverging; drift here is what made this
+ * file go stale before.
+ *
  * NOTE: This file must NOT use the `.server.ts` suffix — routes with client
  * exports import from here and cannot import `.server.ts` modules.
  *
@@ -18,11 +23,47 @@
 /** Errors, high severity, health score 0–49 */
 export const COLOR_CRITICAL = "#d72c0d";
 /** Caution, medium severity, health score 50–79 */
-export const COLOR_WARNING = "#b98900";
+// Matches STATUS_TINTS.warning.text; darkened to reach AA (≥4.5:1 on white).
+export const COLOR_WARNING = "#8a6600";
 /** Healthy, low severity, health score 80–100 */
-export const COLOR_SUCCESS = "#008060";
+// Matches STATUS_TINTS.success.text; darkened to reach AA (≥4.5:1 on white).
+export const COLOR_SUCCESS = "#1a8a3f";
 /** Informational, low-severity findings, links, current-plan highlight */
 export const COLOR_INFO = "#2c6ecb";
+
+// ---------------------------------------------------------------------------
+// Forensic Slate accent (brand accent — NOT semantic status)
+// ---------------------------------------------------------------------------
+// Ghost Code's brand accent: a cool desaturated blue-grey. Drives card rails,
+// section headers, chart bar fills, links, and primary buttons. These are the
+// app's identity colors and must never stand in for status semantics (use the
+// COLOR_* / STATUS_TINTS tokens above for that).
+
+/** Primary accent (7.0:1 on white, passes WCAG AA) */
+export const ACCENT_FILL = "#3d5a80";
+/** Accent text / darker variant */
+export const ACCENT_INK = "#2c4562";
+/** Accent-tinted subdued text */
+export const ACCENT_SUB = "#5b6675";
+/** Accent tint background for badges/pills */
+export const ACCENT_TINT = "#eaeff6";
+/** Accent border */
+export const ACCENT_BORDER = "#cdd8e8";
+
+// ---------------------------------------------------------------------------
+// Branded shell (tinted-ground + floating-card surfaces)
+// ---------------------------------------------------------------------------
+// Ground and hairline tokens for the accent-tinted page shell that floats
+// white cards above a subtly colored panel.
+
+/** Tinted page ground behind cards */
+export const GROUND = "#eef1f5";
+/** Border around the ground panel */
+export const GROUND_BORDER = "#e0e6ee";
+/** Card hairline / accent-tinted divider */
+export const HAIRLINE = "#e2e7ee";
+/** Unfilled track for accent bar charts */
+export const BAR_TRACK = "#e3e9f1";
 
 // ---------------------------------------------------------------------------
 // Text colors
