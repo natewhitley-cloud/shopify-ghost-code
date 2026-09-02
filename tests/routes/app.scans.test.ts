@@ -30,6 +30,7 @@ vi.mock("../../app/models/shop.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   getScansForShop: vi.fn(),
+  getDistinctThemesForShop: vi.fn(),
 }));
 
 vi.mock("../../app/lib/format", () => ({
@@ -42,7 +43,7 @@ vi.mock("../../app/lib/format", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { getScansForShop } from "../../app/models/scan.server";
+import { getScansForShop, getDistinctThemesForShop } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.scans._index";
 import { authenticate } from "../../app/shopify.server";
@@ -54,6 +55,7 @@ import { authenticate } from "../../app/shopify.server";
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
+const mockGetDistinctThemesForShop = getDistinctThemesForShop as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -105,6 +107,7 @@ beforeEach(() => {
   });
 
   mockGetShopMetadata.mockResolvedValue(SHOP);
+  mockGetDistinctThemesForShop.mockResolvedValue(["Dawn"]);
 });
 
 // ---------------------------------------------------------------------------
@@ -126,6 +129,8 @@ describe("app.scans loader", () => {
     expect(mockGetScansForShop).toHaveBeenCalledWith("shop-1", {
       limit: PAGE_SIZE,
       cursor: undefined,
+      theme: undefined,
+      status: undefined,
     });
   });
 
@@ -203,7 +208,91 @@ describe("app.scans loader", () => {
       expect(mockGetScansForShop).toHaveBeenCalledWith("shop-1", {
         limit: PAGE_SIZE,
         cursor: "scan-20",
+        theme: undefined,
+        status: undefined,
       });
+    });
+  });
+
+  describe("filters", () => {
+    it("passes the theme param through to getScansForShop", async () => {
+      mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+
+      const result = (await loader(
+        makeLoaderArgs("https://test-shop.myshopify.com/app/scans?theme=Dawn"),
+      )) as { theme: string; status: string };
+
+      expect(mockGetScansForShop).toHaveBeenCalledWith(
+        "shop-1",
+        expect.objectContaining({ theme: "Dawn", status: undefined }),
+      );
+      expect(result.theme).toBe("Dawn");
+    });
+
+    it("passes a valid status param through to getScansForShop", async () => {
+      mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+
+      const result = (await loader(
+        makeLoaderArgs("https://test-shop.myshopify.com/app/scans?status=COMPLETED"),
+      )) as { status: string };
+
+      expect(mockGetScansForShop).toHaveBeenCalledWith(
+        "shop-1",
+        expect.objectContaining({ status: "COMPLETED" }),
+      );
+      expect(result.status).toBe("COMPLETED");
+    });
+
+    it("ignores an unknown status param (treats it as no status filter)", async () => {
+      mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+
+      const result = (await loader(
+        makeLoaderArgs("https://test-shop.myshopify.com/app/scans?status=BOGUS"),
+      )) as { status: string };
+
+      expect(mockGetScansForShop).toHaveBeenCalledWith(
+        "shop-1",
+        expect.objectContaining({ status: undefined }),
+      );
+      expect(result.status).toBe("");
+    });
+
+    it("passes both theme and status when both params are present", async () => {
+      mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+
+      await loader(
+        makeLoaderArgs("https://test-shop.myshopify.com/app/scans?theme=Dawn&status=FAILED"),
+      );
+
+      expect(mockGetScansForShop).toHaveBeenCalledWith(
+        "shop-1",
+        expect.objectContaining({ theme: "Dawn", status: "FAILED" }),
+      );
+    });
+
+    it("returns the distinct theme options for the dropdown", async () => {
+      mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+      mockGetDistinctThemesForShop.mockResolvedValue(["Craft", "Dawn"]);
+
+      const result = (await loader(makeLoaderArgs())) as { themes: string[] };
+
+      expect(mockGetDistinctThemesForShop).toHaveBeenCalledWith("shop-1");
+      expect(result.themes).toEqual(["Craft", "Dawn"]);
+    });
+
+    it("returns empty theme options when the shop is not found", async () => {
+      mockGetShopMetadata.mockResolvedValue(null);
+
+      const result = (await loader(makeLoaderArgs())) as {
+        themes: string[];
+        theme: string;
+        status: string;
+      };
+
+      expect(result.themes).toEqual([]);
+      expect(result.theme).toBe("");
+      expect(result.status).toBe("");
+      expect(mockGetDistinctThemesForShop).not.toHaveBeenCalled();
     });
   });
 });

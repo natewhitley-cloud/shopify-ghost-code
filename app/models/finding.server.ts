@@ -230,16 +230,27 @@ export async function getDistinctFileCount(scanId: string): Promise<number> {
  */
 export async function getFindingsPageForScan(
   scanId: string,
-  options: { limit: number; cursor?: string },
+  options: {
+    limit: number;
+    cursor?: string;
+    severity?: string;
+    findingType?: string;
+    appName?: string;
+  },
 ): Promise<{
   items: Awaited<ReturnType<typeof db.finding.findMany>>;
   hasNextPage: boolean;
   nextCursor: string | null;
 }> {
-  const { limit, cursor } = options;
+  const { limit, cursor, severity, findingType, appName } = options;
 
   const rows = await db.finding.findMany({
-    where: { scanId },
+    where: {
+      scanId,
+      ...(severity ? { severity: severity as Severity } : {}),
+      ...(findingType ? { findingType: findingType as FindingType } : {}),
+      ...(appName ? { appName } : {}),
+    },
     // Severity enum declared HIGH, MEDIUM, LOW — ascending = HIGH first.
     orderBy: [{ severity: "asc" }, { filename: "asc" }, { id: "asc" }],
     take: limit + 1,
@@ -276,6 +287,48 @@ export async function getAppAttributionForScan(
   return rows.filter(
     (r): r is { appName: string; filename: string; findingType: FindingType } => r.appName !== null,
   );
+}
+
+/**
+ * Return the distinct filter option values PRESENT in a scan's findings so the
+ * findings-table dropdowns only offer values that actually exist:
+ *   - `types`: distinct FindingType values, sorted (Prisma enum-declaration order).
+ *   - `apps`: distinct non-null appName values, sorted A→Z.
+ *
+ * Derived from ALL of the scan's findings (unfiltered), so the dropdowns keep
+ * offering every value even while an active filter narrows the visible page.
+ * Severity options are the fixed HIGH/MEDIUM/LOW set and need no query, so they
+ * are intentionally not returned here.
+ *
+ * A dedicated distinct query per axis is used rather than reusing
+ * getAppAttributionForScan: that helper returns one row per attributed finding
+ * (not distinct) and omits the type axis, so it would need client-side dedup
+ * and a second query anyway.
+ */
+export async function getFindingFilterOptionsForScan(
+  scanId: string,
+): Promise<{ types: FindingType[]; apps: string[] }> {
+  const [typeRows, appRows] = await Promise.all([
+    db.finding.findMany({
+      where: { scanId },
+      distinct: ["findingType"],
+      select: { findingType: true },
+      orderBy: { findingType: "asc" },
+    }),
+    db.finding.findMany({
+      where: { scanId, appName: { not: null } },
+      distinct: ["appName"],
+      select: { appName: true },
+      orderBy: { appName: "asc" },
+    }),
+  ]);
+
+  return {
+    types: typeRows.map((r) => r.findingType),
+    // appName is string | null in Prisma; the where clause guarantees non-null
+    // but TypeScript does not narrow through the generated type.
+    apps: appRows.map((r) => r.appName).filter((a): a is string => a !== null),
+  };
 }
 
 /**

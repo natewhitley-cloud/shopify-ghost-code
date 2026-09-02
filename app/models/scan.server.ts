@@ -128,12 +128,16 @@ export async function getScanById(scanId: string, options?: { includeFindings?: 
  */
 export async function getScansForShop(
   shopId: string,
-  options?: { limit?: number; cursor?: string },
+  options?: { limit?: number; cursor?: string; theme?: string; status?: string },
 ): Promise<{ items: Awaited<ReturnType<typeof db.scan.findMany>>; hasNextPage: boolean }> {
-  const { limit, cursor } = options ?? {};
+  const { limit, cursor, theme, status } = options ?? {};
 
   const rows = await db.scan.findMany({
-    where: { shopId },
+    where: {
+      shopId,
+      ...(theme ? { themeName: theme } : {}),
+      ...(status ? { status: status as ScanStatus } : {}),
+    },
     orderBy: { createdAt: "desc" },
     ...(limit !== undefined ? { take: limit + 1 } : {}),
     ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
@@ -146,6 +150,24 @@ export async function getScansForShop(
   const hasNextPage = rows.length > limit;
   const items = hasNextPage ? rows.slice(0, limit) : rows;
   return { items, hasNextPage };
+}
+
+/**
+ * Return the distinct theme names this shop has ever scanned, sorted A→Z.
+ *
+ * Powers the Theme filter dropdown on the scan-history page. Derived from ALL
+ * of the shop's scans (unfiltered), so the dropdown always offers every theme
+ * the shop has scanned even while a filter is narrowing the visible list — and
+ * a non-empty result also tells the UI the shop has at least one scan.
+ */
+export async function getDistinctThemesForShop(shopId: string): Promise<string[]> {
+  const rows = await db.scan.findMany({
+    where: { shopId },
+    distinct: ["themeName"],
+    select: { themeName: true },
+    orderBy: { themeName: "asc" },
+  });
+  return rows.map((row) => row.themeName);
 }
 
 /** True for terminal statuses where completedAt should be stamped. */

@@ -52,6 +52,7 @@ import {
   INFO_BD_LIGHT,
   INFO_BG,
   INFO_FOCUS_RING,
+  sectionCard,
   TEXT_DISABLED,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
@@ -907,8 +908,8 @@ export default function Dashboard() {
             }
           `}</style>
 
-            {/* Theme Health + Findings — combined card */}
-            <s-card>
+            {/* Scan Summary — Theme Health + Findings, one floating card */}
+            <div style={{ ...sectionCard, marginBottom: 0 }}>
               {/* aria-live="polite" ensures screen readers announce when scan status changes */}
               <div aria-live="polite">
                 <s-stack direction="block" gap="base">
@@ -994,7 +995,7 @@ export default function Dashboard() {
                   )}
                 </s-stack>
               </div>
-            </s-card>
+            </div>
 
             {/* Health Score Trend — feature-flagged, paid plans only */}
             <HealthScoreTrendChart
@@ -1012,12 +1013,10 @@ export default function Dashboard() {
               scanDisabled={!shop || scanLimitReached}
             />
 
-            {/* Scan Actions */}
-            <div style={{ marginTop: "24px", marginBottom: "8px" }}>
-              <h2 className="dashboard-section-title">Scan Actions</h2>
-            </div>
-            <s-card>
+            {/* Scan Actions — heading lives inside its own floating card */}
+            <div style={{ ...sectionCard, marginBottom: 0 }}>
               <s-stack direction="block" gap="base">
+                <h2 className="dashboard-section-title">Scan Actions</h2>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "16px" }}>
                   {/* Left: scan action */}
                   <div
@@ -1146,7 +1145,7 @@ export default function Dashboard() {
                   </div>
                 </div>
               </s-stack>
-            </s-card>
+            </div>
           </>
         )}
       </div>

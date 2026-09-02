@@ -56,6 +56,7 @@ import {
   getAppAttributionForScan,
   countFindingsBySeverity,
   getDistinctFileCount,
+  getFindingFilterOptionsForScan,
   getFindingsForScan,
   getFindingsPageForScan,
   getFindingSummary,
@@ -735,6 +736,166 @@ describe("getFindingsPageForScan", () => {
     await expect(getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE })).rejects.toThrow(
       "Page query failed",
     );
+  });
+
+  // ------- Server-side filters (severity / findingType / appName) -------
+
+  it("filters by severity only (threads severity into the where clause)", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, severity: Severity.HIGH });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { scanId: SCAN_ID, severity: Severity.HIGH } }),
+    );
+  });
+
+  it("filters by findingType only", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, {
+      limit: PAGE_SIZE,
+      findingType: FindingType.GHOST_SCRIPT,
+    });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scanId: SCAN_ID, findingType: FindingType.GHOST_SCRIPT },
+      }),
+    );
+  });
+
+  it("filters by appName only", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, appName: "OldApp" });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { scanId: SCAN_ID, appName: "OldApp" } }),
+    );
+  });
+
+  it("combines severity + findingType + appName into a single where clause", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, {
+      limit: PAGE_SIZE,
+      severity: Severity.MEDIUM,
+      findingType: FindingType.GHOST_SNIPPET,
+      appName: "OtherApp",
+    });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          scanId: SCAN_ID,
+          severity: Severity.MEDIUM,
+          findingType: FindingType.GHOST_SNIPPET,
+          appName: "OtherApp",
+        },
+      }),
+    );
+  });
+
+  it("omits filter keys entirely when filter values are empty/undefined", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, {
+      limit: PAGE_SIZE,
+      severity: "",
+      findingType: undefined,
+      appName: "",
+    });
+
+    const call = mockDb.finding.findMany.mock.calls[0][0];
+    // No filter keys leak into the where clause — only scanId is present.
+    expect(call.where).toEqual({ scanId: SCAN_ID });
+  });
+
+  it("preserves cursor/skip pagination alongside active filters", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, {
+      limit: PAGE_SIZE,
+      cursor: "f-50",
+      severity: Severity.LOW,
+    });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scanId: SCAN_ID, severity: Severity.LOW },
+        cursor: { id: "f-50" },
+        skip: 1,
+      }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFindingFilterOptionsForScan
+// ---------------------------------------------------------------------------
+
+describe("getFindingFilterOptionsForScan", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns distinct findingType values and non-null appName values", async () => {
+    // Promise.all order: types query first, apps query second.
+    mockDb.finding.findMany
+      .mockResolvedValueOnce([
+        { findingType: FindingType.GHOST_SCRIPT },
+        { findingType: FindingType.GHOST_STYLE },
+      ])
+      .mockResolvedValueOnce([{ appName: "AppA" }, { appName: "AppB" }]);
+
+    const result = await getFindingFilterOptionsForScan(SCAN_ID);
+
+    expect(result.types).toEqual([FindingType.GHOST_SCRIPT, FindingType.GHOST_STYLE]);
+    expect(result.apps).toEqual(["AppA", "AppB"]);
+  });
+
+  it("issues a distinct+sorted query per axis (types over all findings, apps non-null)", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingFilterOptionsForScan(SCAN_ID);
+
+    expect(mockDb.finding.findMany).toHaveBeenNthCalledWith(1, {
+      where: { scanId: SCAN_ID },
+      distinct: ["findingType"],
+      select: { findingType: true },
+      orderBy: { findingType: "asc" },
+    });
+    expect(mockDb.finding.findMany).toHaveBeenNthCalledWith(2, {
+      where: { scanId: SCAN_ID, appName: { not: null } },
+      distinct: ["appName"],
+      select: { appName: true },
+      orderBy: { appName: "asc" },
+    });
+  });
+
+  it("filters out any null appName rows defensively", async () => {
+    mockDb.finding.findMany
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([{ appName: "AppA" }, { appName: null }]);
+
+    const result = await getFindingFilterOptionsForScan(SCAN_ID);
+
+    expect(result.apps).toEqual(["AppA"]);
+  });
+
+  it("returns empty lists when the scan has no findings", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    const result = await getFindingFilterOptionsForScan(SCAN_ID);
+
+    expect(result).toEqual({ types: [], apps: [] });
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.findMany.mockRejectedValue(new Error("Options query failed"));
+
+    await expect(getFindingFilterOptionsForScan(SCAN_ID)).rejects.toThrow("Options query failed");
   });
 });
 

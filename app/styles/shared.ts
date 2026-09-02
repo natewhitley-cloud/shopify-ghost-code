@@ -23,13 +23,23 @@
 /** Errors, high severity, health score 0–49 */
 export const COLOR_CRITICAL = "#d72c0d";
 /** Caution, medium severity, health score 50–79 */
-// Darkened from the WARN_TEXT tile tint (#916a00) to reach AA (≥4.5:1 on white).
-export const COLOR_WARNING = "#8a6600";
+// Amber INK for Medium numbers/text (no longer olive). Only used on white/near-
+// white for 24px+ bold numbers and the declining-trend label, so it is tuned to
+// stay AA-legible as large text.
+export const COLOR_WARNING = "#b07d02";
 /** Healthy, low severity, health score 80–100 */
 // Also serves as the SUCCESS tile-tint text; AA-compliant (≥4.5:1 on white).
 export const COLOR_SUCCESS = "#1a8a3f";
 /** Informational, low-severity findings, links, current-plan highlight */
 export const COLOR_INFO = "#2c6ecb";
+
+// Severity bar FILLS — light fills that carry a dark in-bar label (SEV_LABEL_INK).
+// Distinct from the COLOR_* text inks: fills are for bar segments / legend swatches / dots,
+// inks are for numbers and text on white. Keeps the chart consistent with the light-tint stat tiles.
+export const SEV_HIGH_FILL = "#f87171";
+export const SEV_MED_FILL = "#fbbf24";
+export const SEV_LOW_FILL = "#60a5fa";
+export const SEV_LABEL_INK = "#1f2328"; // dark label sitting inside any severity fill
 
 // ---------------------------------------------------------------------------
 // Forensic Slate accent (brand accent — NOT semantic status)

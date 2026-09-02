@@ -3,6 +3,7 @@ import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
+import { readValue } from "../components/polaris-events";
 import { copyToClipboard } from "../lib/clipboard";
 import { getFindingConfidence, hasVisualImpact } from "../lib/finding-classification";
 import { getFindingRemediation } from "../lib/finding-remediation";
@@ -11,8 +12,10 @@ import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
+import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import {
   getAppAttributionForScan,
+  getFindingFilterOptionsForScan,
   getFindingsPageForScan,
   getFindingSummary,
   getHighestSeverityFinding,
@@ -39,6 +42,9 @@ import {
   COLOR_SUCCESS,
   COLOR_WARNING,
   CRIT_BD,
+  SEV_HIGH_FILL,
+  SEV_LOW_FILL,
+  SEV_MED_FILL,
   groundStyle,
   hairline,
   htmlTableCss,
@@ -65,6 +71,20 @@ function severityTone(severity: string): "critical" | "warning" | "info" {
       return "info";
   }
 }
+
+/**
+ * The three valid Severity values, in display order. Used to (1) validate the
+ * `?severity=` loader param — an unknown value is ignored rather than passed to
+ * the DB — and (2) build the Severity filter dropdown. These are fixed and need
+ * no per-scan query (unlike Type/App, which are derived from the scan).
+ */
+const SEVERITY_VALUES = ["HIGH", "MEDIUM", "LOW"] as const;
+
+const filterLabelStyle: React.CSSProperties = {
+  marginBottom: "4px",
+  fontSize: "13px",
+  fontWeight: 600,
+};
 
 const FINDING_TYPE_LABELS: Record<string, string> = {
   GHOST_SCRIPT: "Scripts",
@@ -298,27 +318,66 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const findingsCursor = url.searchParams.get("cursor") || undefined;
 
+  // Findings-table filters (server-side, since pagination is cursor-based — a
+  // client-only filter would only narrow the visible page).
+  //   severity — validated against the fixed HIGH/MEDIUM/LOW set.
+  //   type     — validated against the known FindingType set (FINDING_TYPE_LABELS keys).
+  //   app      — free-form match against Finding.appName; empty string = no filter.
+  // An unknown/garbage severity or type is treated as "no filter" rather than
+  // passed through to the query.
+  const rawSeverity = url.searchParams.get("severity") || undefined;
+  const severity =
+    rawSeverity && (SEVERITY_VALUES as readonly string[]).includes(rawSeverity)
+      ? rawSeverity
+      : undefined;
+
+  const rawType = url.searchParams.get("type") || undefined;
+  const findingType = rawType && rawType in FINDING_TYPE_LABELS ? rawType : undefined;
+
+  const appName = url.searchParams.get("app") || undefined;
+
+  // Filters only apply to (and options are only computed for) the paid +
+  // successful findings view — the same gate as the paginated findings query.
+  const canViewFindings = canViewDetails && isSuccessfulScan(scan.status);
+
   // Parallel queries — all independent of each other once `scan` is resolved.
-  const [findingSummary, rawPreviewFinding, findingsPage, appAttributionData, unknownScripts] =
-    await Promise.all([
-      getFindingSummary(scanId),
-      // Free-tier only: fetch a single preview finding (paid users get a page).
-      canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
-      // Paid plan: paginated findings for the current page.
-      // Free plan or non-completed scans: empty page (findings not shown).
-      canViewDetails && isSuccessfulScan(scan.status)
-        ? getFindingsPageForScan(scanId, { limit: PAGE_SIZE, cursor: findingsCursor })
-        : Promise.resolve({ items: [], hasNextPage: false, nextCursor: null }),
-      // App Impact Map data: lean attribution query (all scans, no pagination).
-      // Only needed when the user can view details AND the scan succeeded.
-      canViewDetails && isSuccessfulScan(scan.status)
-        ? getAppAttributionForScan(scanId)
-        : Promise.resolve([] as Awaited<ReturnType<typeof getAppAttributionForScan>>),
-      // Unknown scripts: only for successful scans when user can view details.
-      isSuccessfulScan(scan.status) && canViewDetails
-        ? getUnknownScriptsForScan(scanId)
-        : Promise.resolve([]),
-    ]);
+  const [
+    findingSummary,
+    rawPreviewFinding,
+    findingsPage,
+    appAttributionData,
+    unknownScripts,
+    filterOptions,
+  ] = await Promise.all([
+    getFindingSummary(scanId),
+    // Free-tier only: fetch a single preview finding (paid users get a page).
+    canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
+    // Paid plan: paginated findings for the current page, with active filters
+    // threaded into the DB query.
+    // Free plan or non-completed scans: empty page (findings not shown).
+    canViewFindings
+      ? getFindingsPageForScan(scanId, {
+          limit: PAGE_SIZE,
+          cursor: findingsCursor,
+          severity,
+          findingType,
+          appName,
+        })
+      : Promise.resolve({ items: [], hasNextPage: false, nextCursor: null }),
+    // App Impact Map data: lean attribution query (all scans, no pagination).
+    // Only needed when the user can view details AND the scan succeeded.
+    canViewFindings
+      ? getAppAttributionForScan(scanId)
+      : Promise.resolve([] as Awaited<ReturnType<typeof getAppAttributionForScan>>),
+    // Unknown scripts: only for successful scans when user can view details.
+    canViewFindings ? getUnknownScriptsForScan(scanId) : Promise.resolve([]),
+    // Distinct filter options (Type + App) present in this scan — powers the
+    // findings-table dropdowns. Computed only under the findings-view gate;
+    // empty option lists otherwise so nothing leaks to a gated view.
+    canViewFindings
+      ? getFindingFilterOptionsForScan(scanId)
+      : Promise.resolve({ types: [], apps: [] }),
+  ]);
 
   // Compute health score for successful scans (COMPLETED or PARTIAL).
   let healthScore: HealthScoreResult | null = null;
@@ -367,6 +426,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     healthScore,
     unknownScripts,
     appAttributionData,
+    // Findings-table filter options + active values (controlled selects).
+    filterOptions,
+    filters: {
+      severity: severity ?? "",
+      type: findingType ?? "",
+      app: appName ?? "",
+    },
   };
 };
 
@@ -504,7 +570,45 @@ export default function ScanDetail() {
     healthScore,
     unknownScripts,
     appAttributionData,
+    filterOptions,
+    filters,
   } = useLoaderData<typeof loader>();
+
+  const [, setSearchParams] = useFilterSearchParams();
+
+  // Set (or clear) a single findings filter param and reset pagination. Clearing
+  // the cursor is essential: a stale `?cursor=` from a previous page must not
+  // combine with a freshly changed filter (it would page into a now-different
+  // result set). preventScrollReset is handled by useFilterSearchParams.
+  function updateFilter(key: string, value: string) {
+    setSearchParams((prev) => {
+      const next = new URLSearchParams(prev);
+      if (value) {
+        next.set(key, value);
+      } else {
+        next.delete(key);
+      }
+      next.delete("cursor");
+      return next;
+    });
+  }
+
+  // Clear all findings filters (also drops the cursor).
+  function clearFilters() {
+    setSearchParams(() => new URLSearchParams());
+  }
+
+  const hasActiveFilter = filters.severity !== "" || filters.type !== "" || filters.app !== "";
+
+  // Preserve active filters across the cursor "Load More" navigation — a bare
+  // `?cursor=` link would drop the filters and page into the unfiltered result.
+  const loadMoreParams = new URLSearchParams();
+  if (filters.severity) loadMoreParams.set("severity", filters.severity);
+  if (filters.type) loadMoreParams.set("type", filters.type);
+  if (filters.app) loadMoreParams.set("app", filters.app);
+  if (findingsPagination.nextCursor) {
+    loadMoreParams.set("cursor", findingsPagination.nextCursor);
+  }
 
   // Diff is loaded lazily via a resource route to avoid blocking the main page
   // render on the expensive full-findings load for two scans (PRF-2).
@@ -815,9 +919,9 @@ export default function ScanDetail() {
           border-radius: 50%;
           flex-shrink: 0;
         }
-        .severity-row__dot--high { background: ${COLOR_CRITICAL}; }
-        .severity-row__dot--medium { background: ${COLOR_WARNING}; }
-        .severity-row__dot--low { background: ${COLOR_INFO}; }
+        .severity-row__dot--high { background: ${SEV_HIGH_FILL}; }
+        .severity-row__dot--medium { background: ${SEV_MED_FILL}; }
+        .severity-row__dot--low { background: ${SEV_LOW_FILL}; }
         .severity-row__diff {
           font-size: 12px;
           font-weight: 500;
@@ -1099,6 +1203,75 @@ export default function ScanDetail() {
                       </button>
                     )}
                   </div>
+                  {/* Filter bar — only when the scan actually has findings to
+                    filter (a paid + successful view). Stays visible even when
+                    the active filters match zero rows so the merchant can
+                    adjust or clear them. */}
+                  {findingSummary.total > 0 && (
+                    <div style={styles.filterBar}>
+                      <div style={{ minWidth: "180px" }}>
+                        <div style={filterLabelStyle}>Severity</div>
+                        <s-select
+                          aria-label="Severity"
+                          value={filters.severity}
+                          onChange={(e: unknown) => updateFilter("severity", readValue(e))}
+                        >
+                          <s-option value="">All severities</s-option>
+                          {SEVERITY_VALUES.map((value) => (
+                            <s-option key={value} value={value}>
+                              {value}
+                            </s-option>
+                          ))}
+                        </s-select>
+                      </div>
+                      <div style={{ minWidth: "180px" }}>
+                        <div style={filterLabelStyle}>Type</div>
+                        <s-select
+                          aria-label="Type"
+                          value={filters.type}
+                          onChange={(e: unknown) => updateFilter("type", readValue(e))}
+                        >
+                          <s-option value="">All types</s-option>
+                          {filterOptions.types.map((value) => (
+                            <s-option key={value} value={value}>
+                              {FINDING_TYPE_LABELS[value] ?? value.replace(/_/g, " ")}
+                            </s-option>
+                          ))}
+                        </s-select>
+                      </div>
+                      <div style={{ minWidth: "180px" }}>
+                        <div style={filterLabelStyle}>App</div>
+                        <s-select
+                          aria-label="App"
+                          value={filters.app}
+                          onChange={(e: unknown) => updateFilter("app", readValue(e))}
+                        >
+                          <s-option value="">All apps</s-option>
+                          {filterOptions.apps.map((value) => (
+                            <s-option key={value} value={value}>
+                              {value}
+                            </s-option>
+                          ))}
+                        </s-select>
+                      </div>
+                      {hasActiveFilter && (
+                        <button
+                          type="button"
+                          onClick={clearFilters}
+                          style={{
+                            border: 0,
+                            background: "transparent",
+                            color: COLOR_INFO,
+                            font: "inherit",
+                            cursor: "pointer",
+                            padding: 0,
+                          }}
+                        >
+                          Clear filters
+                        </button>
+                      )}
+                    </div>
+                  )}
                   {findings.some((f) => f.isTracker) && (
                     <s-banner tone="warning">
                       Findings marked TRACKING are from analytics or advertising scripts that may
@@ -1106,7 +1279,11 @@ export default function ScanDetail() {
                     </s-banner>
                   )}
                   {findings.length === 0 ? (
-                    <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+                    findingSummary.total > 0 ? (
+                      <s-paragraph>No findings match these filters.</s-paragraph>
+                    ) : (
+                      <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+                    )
                   ) : (
                     <>
                       <FindingsTable>
@@ -1124,7 +1301,8 @@ export default function ScanDetail() {
                         <s-box padding-block-start="base">
                           <s-stack direction="inline" gap="base">
                             <Link
-                              to={`/app/scans/${scan.id}?cursor=${findingsPagination.nextCursor}`}
+                              to={`/app/scans/${scan.id}?${loadMoreParams.toString()}`}
+                              preventScrollReset
                             >
                               Load More
                             </Link>

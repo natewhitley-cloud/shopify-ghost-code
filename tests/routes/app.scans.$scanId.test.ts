@@ -47,6 +47,7 @@ vi.mock("../../app/models/finding.server", () => ({
   getHighestSeverityFinding: vi.fn(),
   getFindingsPageForScan: vi.fn(),
   getAppAttributionForScan: vi.fn(),
+  getFindingFilterOptionsForScan: vi.fn(),
 }));
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
@@ -84,6 +85,7 @@ import { computeHealthScore } from "../../app/lib/health-score";
 import { canUseScanDiffing, canViewFindingDetails } from "../../app/lib/plan-gating.server";
 import {
   getAppAttributionForScan,
+  getFindingFilterOptionsForScan,
   getFindingsPageForScan,
   getFindingSummary,
   getHighestSeverityFinding,
@@ -109,6 +111,9 @@ const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
 const mockGetFindingsPageForScan = getFindingsPageForScan as ReturnType<typeof vi.fn>;
 const mockGetAppAttributionForScan = getAppAttributionForScan as ReturnType<typeof vi.fn>;
+const mockGetFindingFilterOptionsForScan = getFindingFilterOptionsForScan as ReturnType<
+  typeof vi.fn
+>;
 const mockGetHighestSeverityFinding = getHighestSeverityFinding as ReturnType<typeof vi.fn>;
 const mockCanViewFindingDetails = canViewFindingDetails as ReturnType<typeof vi.fn>;
 const mockCanUseScanDiffing = canUseScanDiffing as ReturnType<typeof vi.fn>;
@@ -220,6 +225,7 @@ beforeEach(() => {
   mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
   mockGetFindingsPageForScan.mockResolvedValue(SINGLE_FINDING_PAGE);
   mockGetAppAttributionForScan.mockResolvedValue([]);
+  mockGetFindingFilterOptionsForScan.mockResolvedValue({ types: [], apps: [] });
   // vi.resetAllMocks clears mockReturnValue set in the vi.mock factory; restore here.
   mockIsTrackerApp.mockReturnValue(false);
   mockCanViewFindingDetails.mockReturnValue(true);
@@ -287,6 +293,9 @@ describe("app.scans.$scanId loader", () => {
       expect(mockGetFindingsPageForScan).toHaveBeenCalledWith("scan-1", {
         limit: 50,
         cursor: undefined,
+        severity: undefined,
+        findingType: undefined,
+        appName: undefined,
       });
     });
 
@@ -298,6 +307,9 @@ describe("app.scans.$scanId loader", () => {
       expect(mockGetFindingsPageForScan).toHaveBeenCalledWith("scan-1", {
         limit: 50,
         cursor: "f-99",
+        severity: undefined,
+        findingType: undefined,
+        appName: undefined,
       });
     });
 
@@ -449,6 +461,113 @@ describe("app.scans.$scanId loader", () => {
       await loader(makeLoaderArgs("scan-1"));
 
       expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Findings filters (server-side severity / type / app)
+  // -------------------------------------------------------------------------
+
+  describe("findings filters", () => {
+    it("threads valid severity/type/app params into getFindingsPageForScan", async () => {
+      await loader(
+        makeLoaderArgs(
+          "scan-1",
+          "https://test-shop.myshopify.com/app/scans/scan-1?severity=HIGH&type=GHOST_SCRIPT&app=Klaviyo",
+        ),
+      );
+
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith("scan-1", {
+        limit: 50,
+        cursor: undefined,
+        severity: "HIGH",
+        findingType: "GHOST_SCRIPT",
+        appName: "Klaviyo",
+      });
+    });
+
+    it("returns the active filter values so the selects are controlled", async () => {
+      const result = (await loader(
+        makeLoaderArgs(
+          "scan-1",
+          "https://test-shop.myshopify.com/app/scans/scan-1?severity=MEDIUM&type=GHOST_STYLE&app=OldApp",
+        ),
+      )) as { filters: { severity: string; type: string; app: string } };
+
+      expect(result.filters).toEqual({ severity: "MEDIUM", type: "GHOST_STYLE", app: "OldApp" });
+    });
+
+    it("ignores an unknown severity param (treats it as no filter)", async () => {
+      const result = (await loader(
+        makeLoaderArgs("scan-1", "https://test-shop.myshopify.com/app/scans/scan-1?severity=BOGUS"),
+      )) as { filters: { severity: string } };
+
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
+        "scan-1",
+        expect.objectContaining({ severity: undefined }),
+      );
+      expect(result.filters.severity).toBe("");
+    });
+
+    it("ignores an unknown type param (treats it as no filter)", async () => {
+      const result = (await loader(
+        makeLoaderArgs(
+          "scan-1",
+          "https://test-shop.myshopify.com/app/scans/scan-1?type=NOT_A_REAL_TYPE",
+        ),
+      )) as { filters: { type: string } };
+
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
+        "scan-1",
+        expect.objectContaining({ findingType: undefined }),
+      );
+      expect(result.filters.type).toBe("");
+    });
+
+    it("returns the distinct filter options for the dropdowns", async () => {
+      mockGetFindingFilterOptionsForScan.mockResolvedValue({
+        types: ["GHOST_SCRIPT", "GHOST_STYLE"],
+        apps: ["AppA", "AppB"],
+      });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        filterOptions: { types: string[]; apps: string[] };
+      };
+
+      expect(mockGetFindingFilterOptionsForScan).toHaveBeenCalledWith("scan-1");
+      expect(result.filterOptions).toEqual({
+        types: ["GHOST_SCRIPT", "GHOST_STYLE"],
+        apps: ["AppA", "AppB"],
+      });
+    });
+
+    it("does not query filtered findings or options for a free-tier shop (even with filter params)", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+
+      const result = (await loader(
+        makeLoaderArgs(
+          "scan-1",
+          "https://test-shop.myshopify.com/app/scans/scan-1?severity=HIGH&type=GHOST_SCRIPT&app=Klaviyo",
+        ),
+      )) as { findings: unknown[]; filterOptions: { types: string[]; apps: string[] } };
+
+      expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
+      expect(mockGetFindingFilterOptionsForScan).not.toHaveBeenCalled();
+      expect(result.findings).toHaveLength(0);
+      expect(result.filterOptions).toEqual({ types: [], apps: [] });
+    });
+
+    it("does not query filtered findings or options for a non-successful scan (FAILED) even with filter params", async () => {
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "FAILED" });
+
+      const result = (await loader(
+        makeLoaderArgs("scan-1", "https://test-shop.myshopify.com/app/scans/scan-1?severity=HIGH"),
+      )) as { filterOptions: { types: string[]; apps: string[] } };
+
+      expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
+      expect(mockGetFindingFilterOptionsForScan).not.toHaveBeenCalled();
+      expect(result.filterOptions).toEqual({ types: [], apps: [] });
     });
   });
 

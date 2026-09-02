@@ -160,12 +160,11 @@ describe("HealthScoreTrendChart — renders chart", () => {
       trendChartEnabled: true,
       healthScoreTrend: makeTrend({ direction: "improving" }),
     });
-    // Traverse to the s-card > h2 content
+    // Traverse to the card > h2 content
     const fragment = result!;
-    const div = fragment.props.children[1]; // <div className="trend-chart-card">
-    const card = div.props.children; // <s-card>
-    const h2 = card.props.children[0]; // <h2>
-    // h2 children: ["Health Score Trend: ", <span>Improving</span>]
+    const div = fragment.props.children[1]; // sectionCard <div>
+    const h2 = div.props.children[0]; // <h2>
+    // h2 children: ["Findings Trend: ", <span>Improving</span>]
     const span = h2.props.children[1];
     expect(span.props.children).toBe("Improving");
   });
@@ -177,8 +176,7 @@ describe("HealthScoreTrendChart — renders chart", () => {
     });
     const fragment = result!;
     const div = fragment.props.children[1];
-    const card = div.props.children;
-    const h2 = card.props.children[0];
+    const h2 = div.props.children[0];
     const span = h2.props.children[1];
     expect(span.props.children).toBe("Declining");
   });
@@ -190,8 +188,7 @@ describe("HealthScoreTrendChart — renders chart", () => {
     });
     const fragment = result!;
     const div = fragment.props.children[1];
-    const card = div.props.children;
-    const h2 = card.props.children[0];
+    const h2 = div.props.children[0];
     const span = h2.props.children[1];
     expect(span.props.children).toBe("Stable");
   });
@@ -203,8 +200,7 @@ describe("HealthScoreTrendChart — renders chart", () => {
     });
     const fragment = result!;
     const div = fragment.props.children[1];
-    const card = div.props.children;
-    const h2 = card.props.children[0];
+    const h2 = div.props.children[0];
     const span = h2.props.children[1];
     expect(span.props.className).toBe("trend-chart-direction--improving");
   });
@@ -216,8 +212,7 @@ describe("HealthScoreTrendChart — renders chart", () => {
     });
     const fragment = result!;
     const div = fragment.props.children[1];
-    const card = div.props.children;
-    const h2 = card.props.children[0];
+    const h2 = div.props.children[0];
     const span = h2.props.children[1];
     expect(span.props.className).toBe("trend-chart-direction--declining");
   });
@@ -229,8 +224,7 @@ describe("HealthScoreTrendChart — renders chart", () => {
     });
     const fragment = result!;
     const div = fragment.props.children[1];
-    const card = div.props.children;
-    const h2 = card.props.children[0];
+    const h2 = div.props.children[0];
     const span = h2.props.children[1];
     expect(span.props.className).toBe("trend-chart-direction--stable");
   });

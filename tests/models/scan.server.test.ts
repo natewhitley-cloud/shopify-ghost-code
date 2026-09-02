@@ -66,6 +66,7 @@ import {
   getFailureRateStats,
   getScanById,
   getScansForShop,
+  getDistinctThemesForShop,
   updateScanStatus,
   getPreviousScanForTheme,
   getLatestSuccessfulScanForTheme,
@@ -445,6 +446,88 @@ describe("getScansForShop", () => {
 
     const callArg = mockDb.scan.findMany.mock.calls[0][0];
     expect(callArg).not.toHaveProperty("take");
+  });
+
+  it("filters by themeName when the theme option is provided", async () => {
+    mockDb.scan.findMany.mockResolvedValue([baseScan]);
+
+    await getScansForShop(SHOP_ID, { theme: "Dawn" });
+
+    expect(mockDb.scan.findMany).toHaveBeenCalledWith({
+      where: { shopId: SHOP_ID, themeName: "Dawn" },
+      orderBy: { createdAt: "desc" },
+    });
+  });
+
+  it("filters by status when the status option is provided", async () => {
+    mockDb.scan.findMany.mockResolvedValue([baseScan]);
+
+    await getScansForShop(SHOP_ID, { status: ScanStatus.FAILED });
+
+    expect(mockDb.scan.findMany).toHaveBeenCalledWith({
+      where: { shopId: SHOP_ID, status: ScanStatus.FAILED },
+      orderBy: { createdAt: "desc" },
+    });
+  });
+
+  it("filters by both theme and status when both options are provided", async () => {
+    mockDb.scan.findMany.mockResolvedValue([baseScan]);
+
+    await getScansForShop(SHOP_ID, {
+      theme: "Dawn",
+      status: ScanStatus.COMPLETED,
+      limit: 5,
+      cursor: "cursor-1",
+    });
+
+    expect(mockDb.scan.findMany).toHaveBeenCalledWith({
+      where: { shopId: SHOP_ID, themeName: "Dawn", status: ScanStatus.COMPLETED },
+      orderBy: { createdAt: "desc" },
+      take: 6,
+      cursor: { id: "cursor-1" },
+      skip: 1,
+    });
+  });
+
+  it("omits theme/status from the where clause when neither is provided", async () => {
+    mockDb.scan.findMany.mockResolvedValue([baseScan]);
+
+    await getScansForShop(SHOP_ID);
+
+    const callArg = mockDb.scan.findMany.mock.calls[0][0];
+    expect(callArg.where).toEqual({ shopId: SHOP_ID });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getDistinctThemesForShop
+// ---------------------------------------------------------------------------
+
+describe("getDistinctThemesForShop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the distinct theme names sorted ascending", async () => {
+    mockDb.scan.findMany.mockResolvedValue([{ themeName: "Craft" }, { themeName: "Dawn" }]);
+
+    const result = await getDistinctThemesForShop(SHOP_ID);
+
+    expect(mockDb.scan.findMany).toHaveBeenCalledWith({
+      where: { shopId: SHOP_ID },
+      distinct: ["themeName"],
+      select: { themeName: true },
+      orderBy: { themeName: "asc" },
+    });
+    expect(result).toEqual(["Craft", "Dawn"]);
+  });
+
+  it("returns an empty array when the shop has no scans", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+
+    const result = await getDistinctThemesForShop(SHOP_ID);
+
+    expect(result).toEqual([]);
   });
 });
 
