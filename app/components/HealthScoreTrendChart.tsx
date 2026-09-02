@@ -15,8 +15,8 @@ import {
   BORDER_DEFAULT,
   COLOR_CRITICAL,
   COLOR_INFO,
+  COLOR_SUCCESS,
   COLOR_WARNING,
-  STATUS_TINTS,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
 } from "../styles/shared";
@@ -125,7 +125,7 @@ export function HealthScoreTrendChart({
           color: ${TEXT_PRIMARY};
           margin: 0 0 4px 0;
         }
-        .trend-chart-direction--improving { color: ${STATUS_TINTS.success.text}; }
+        .trend-chart-direction--improving { color: ${COLOR_SUCCESS}; }
         .trend-chart-direction--declining { color: ${COLOR_WARNING}; }
         .trend-chart-direction--stable { color: ${TEXT_SUBDUED}; }
         .trend-chart-svg-container {

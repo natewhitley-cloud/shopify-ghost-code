@@ -34,9 +34,20 @@ import { authenticate } from "../shopify.server";
 import {
   BORDER_DEFAULT,
   BG_WHITE,
+  COLOR_CRITICAL,
+  COLOR_INFO,
+  COLOR_SUCCESS,
+  CRIT_BD,
+  CRIT_BG,
+  INFO_BD,
+  INFO_BG,
+  SUCCESS_BD,
+  SUCCESS_BG,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
-  STATUS_TINTS,
+  WARN_BD,
+  WARN_BG,
+  WARN_TEXT,
   sectionCard,
   sectionHeader,
   styles,
@@ -105,7 +116,13 @@ function MetricTile({
   value: string | number;
   accent?: "info" | "success" | "warning" | "critical";
 }) {
-  const tint = accent ? STATUS_TINTS[accent] : null;
+  const tintMap = {
+    info: { border: INFO_BD, bg: INFO_BG, text: COLOR_INFO },
+    success: { border: SUCCESS_BD, bg: SUCCESS_BG, text: COLOR_SUCCESS },
+    warning: { border: WARN_BD, bg: WARN_BG, text: WARN_TEXT },
+    critical: { border: CRIT_BD, bg: CRIT_BG, text: COLOR_CRITICAL },
+  } as const;
+  const tint = accent ? tintMap[accent] : null;
   return (
     <div
       style={{

@@ -43,14 +43,20 @@ import {
   BORDER_STRONG,
   COLOR_CRITICAL,
   COLOR_INFO,
+  COLOR_SUCCESS,
   COLOR_WARNING,
+  CRIT_BD,
+  CRIT_BG,
   groundStyle,
   hairline,
-  STATUS_TINTS,
+  INFO_BG,
   TEXT_DISABLED,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
   tileStatusTintCss,
+  WARN_BD,
+  WARN_BG,
+  WARN_TEXT,
 } from "../styles/shared";
 
 // ---------------------------------------------------------------------------
@@ -728,7 +734,7 @@ export default function Dashboard() {
               line-height: 1;
               letter-spacing: -2px;
             }
-            .health-score-number--success { color: ${STATUS_TINTS.success.text}; }
+            .health-score-number--success { color: ${COLOR_SUCCESS}; }
             .health-score-number--warning { color: ${COLOR_WARNING}; }
             .health-score-number--critical { color: ${COLOR_CRITICAL}; }
             .health-score-subtitle {
@@ -748,14 +754,14 @@ export default function Dashboard() {
             }
             .health-score-label--success {
               background: ${BG_BADGE_SUCCESS};
-              color: ${STATUS_TINTS.success.text};
+              color: ${COLOR_SUCCESS};
             }
             .health-score-label--warning {
-              background: ${STATUS_TINTS.warning.border};
-              color: ${STATUS_TINTS.warning.text};
+              background: ${WARN_BD};
+              color: ${WARN_TEXT};
             }
             .health-score-label--critical {
-              background: ${STATUS_TINTS.critical.border};
+              background: ${CRIT_BD};
               color: ${COLOR_CRITICAL};
             }
             .health-score-delta {
@@ -780,18 +786,18 @@ export default function Dashboard() {
               border: 1px solid ${BORDER_DEFAULT};
             }
             .finding-stat--high {
-              border-color: ${STATUS_TINTS.critical.border};
-              background: ${STATUS_TINTS.critical.bg};
+              border-color: ${CRIT_BD};
+              background: ${CRIT_BG};
             }
             .finding-stat--medium {
-              border-color: ${STATUS_TINTS.warning.border};
-              background: ${STATUS_TINTS.warning.bg};
+              border-color: ${WARN_BD};
+              background: ${WARN_BG};
             }
             .finding-stat--low {
-              /* #dbeafe — intentionally lighter than STATUS_TINTS.info.border (#b4d5fe);
+              /* #dbeafe — intentionally lighter than INFO_BD (#b4d5fe);
                  kept distinct to match original dashboard visual */
               border-color: #dbeafe;
-              background: ${STATUS_TINTS.info.bg};
+              background: ${INFO_BG};
             }
             .finding-stat__count {
               font-size: 48px;
@@ -1029,7 +1035,7 @@ export default function Dashboard() {
                   >
                     <s-heading>New Scan</s-heading>
                     {isFirstScan ? (
-                      <div style={{ fontSize: "13px", color: STATUS_TINTS.success.text }}>
+                      <div style={{ fontSize: "13px", color: COLOR_SUCCESS }}>
                         Your first scan is free
                       </div>
                     ) : scanUsage !== null ? (
@@ -1050,7 +1056,7 @@ export default function Dashboard() {
                         </div>
                       </div>
                     ) : (
-                      <div style={{ fontSize: "13px", color: STATUS_TINTS.success.text }}>
+                      <div style={{ fontSize: "13px", color: COLOR_SUCCESS }}>
                         Unlimited scans on your plan
                       </div>
                     )}

@@ -29,7 +29,8 @@ import {
 } from "../models/unknown-script.server";
 import { authenticate } from "../shopify.server";
 import {
-  STATUS_TINTS,
+  INFO_BD,
+  INFO_BG,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
   sectionCard,
@@ -126,8 +127,8 @@ function StatTile({ label, value }: { label: string; value: number }) {
       style={{
         padding: "12px 16px",
         borderRadius: "8px",
-        border: `1px solid ${STATUS_TINTS.info.border}`,
-        background: STATUS_TINTS.info.bg,
+        border: `1px solid ${INFO_BD}`,
+        background: INFO_BG,
         minWidth: 0,
       }}
     >

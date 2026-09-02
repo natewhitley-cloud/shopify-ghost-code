@@ -23,10 +23,10 @@
 /** Errors, high severity, health score 0–49 */
 export const COLOR_CRITICAL = "#d72c0d";
 /** Caution, medium severity, health score 50–79 */
-// Matches STATUS_TINTS.warning.text; darkened to reach AA (≥4.5:1 on white).
+// Darkened from the WARN_TEXT tile tint (#916a00) to reach AA (≥4.5:1 on white).
 export const COLOR_WARNING = "#8a6600";
 /** Healthy, low severity, health score 80–100 */
-// Matches STATUS_TINTS.success.text; darkened to reach AA (≥4.5:1 on white).
+// Also serves as the SUCCESS tile-tint text; AA-compliant (≥4.5:1 on white).
 export const COLOR_SUCCESS = "#1a8a3f";
 /** Informational, low-severity findings, links, current-plan highlight */
 export const COLOR_INFO = "#2c6ecb";
@@ -37,7 +37,7 @@ export const COLOR_INFO = "#2c6ecb";
 // Ghost Code's brand accent: a cool desaturated blue-grey. Drives card rails,
 // section headers, chart bar fills, links, and primary buttons. These are the
 // app's identity colors and must never stand in for status semantics (use the
-// COLOR_* / STATUS_TINTS tokens above for that).
+// COLOR_* / tint tokens above for that).
 
 /** Primary accent (7.0:1 on white, passes WCAG AA) */
 export const ACCENT_FILL = "#3d5a80";
@@ -123,26 +123,24 @@ export const BORDER_STRONG = "#c9cccf";
 // Status tint colors (backgrounds for stat tiles, badges, alert backgrounds)
 // ---------------------------------------------------------------------------
 
-/**
- * Per-status border, background, and text colors.
- * Used for severity stat tiles, health score tiles, and inline badge spans.
- *
- * Usage:
- *   border: `1px solid ${STATUS_TINTS.critical.border}`
- *   background: STATUS_TINTS.critical.bg
- *   color: STATUS_TINTS.critical.text
- */
-export const STATUS_TINTS = {
-  critical: { border: "#fde8e8", bg: "#fef6f6", text: "#d72c0d" },
-  warning: { border: "#fdf0cd", bg: "#fffcf2", text: "#916a00" },
-  success: { border: "#c8e6c1", bg: "#f1f8ef", text: "#1a8a3f" },
-  info: { border: "#b4d5fe", bg: "#f5f8ff", text: "#2c6ecb" },
-} as const;
+// Flat semantic tint tokens (border/bg pairs + explicit warning text).
+// Mirrors ClearSignal's flat token shape. Text for critical/success/info reuses
+// the semantic COLOR_* tokens (identical values); warning keeps a distinct
+// WARN_TEXT because it intentionally diverges from COLOR_WARNING.
+export const CRIT_BD = "#fde8e8";
+export const CRIT_BG = "#fef6f6";
+export const WARN_BD = "#fdf0cd";
+export const WARN_BG = "#fffcf2";
+export const WARN_TEXT = "#916a00";
+export const SUCCESS_BD = "#c8e6c1";
+export const SUCCESS_BG = "#f1f8ef";
+export const INFO_BD = "#b4d5fe";
+export const INFO_BG = "#f5f8ff";
 
 /**
  * Success badge / pill-label background.
  * Used for the "NEW" badge, health-score success labels, and scan-tile
- * success labels. Slightly darker green tint than STATUS_TINTS.success.bg.
+ * success labels. Slightly darker green tint than SUCCESS_BG.
  */
 export const BG_BADGE_SUCCESS = "#e3f1df";
 
@@ -306,21 +304,6 @@ export const styles = {
   }),
 
   /**
-   * Stat tile container — centered, bordered, tintable.
-   * Apply STATUS_TINTS border/bg on top of these base styles for colored variants.
-   */
-  statTile: {
-    display: "flex",
-    flexDirection: "column",
-    alignItems: "center",
-    justifyContent: "center",
-    padding: "20px 16px",
-    borderRadius: "12px",
-    border: `1px solid ${BORDER_DEFAULT}`,
-    textAlign: "center",
-  } as React.CSSProperties,
-
-  /**
    * Inline severity badge span — reliable colored badge for severity indicators.
    * Use when <s-badge tone="..."> color fallback is not acceptable.
    *
@@ -329,9 +312,9 @@ export const styles = {
    */
   severityBadge: (severity: "HIGH" | "MEDIUM" | "LOW"): React.CSSProperties => {
     const tintMap = {
-      HIGH: STATUS_TINTS.critical,
-      MEDIUM: STATUS_TINTS.warning,
-      LOW: STATUS_TINTS.info,
+      HIGH: { border: CRIT_BD, text: COLOR_CRITICAL },
+      MEDIUM: { border: WARN_BD, text: WARN_TEXT },
+      LOW: { border: INFO_BD, text: COLOR_INFO },
     };
     const tint = tintMap[severity];
     return {
@@ -349,7 +332,7 @@ export const styles = {
 
   /**
    * "NEW" diff badge used in the findings table to mark new findings.
-   * Green background, matches STATUS_TINTS.success text color.
+   * Green background, matches COLOR_SUCCESS text color.
    */
   newBadge: {
     display: "inline-block",
@@ -366,14 +349,14 @@ export const styles = {
 
   /**
    * "TRACKING" badge used in the findings table for tracker app findings.
-   * Red background using STATUS_TINTS.critical colors.
+   * Red background using the critical tint colors.
    */
   trackerBadge: {
     display: "inline-block",
     padding: "1px 6px",
     borderRadius: "4px",
-    background: STATUS_TINTS.critical.border,
-    color: STATUS_TINTS.critical.text,
+    background: CRIT_BD,
+    color: COLOR_CRITICAL,
     fontSize: "10px",
     fontWeight: 700,
     textTransform: "uppercase",
@@ -390,8 +373,8 @@ export const styles = {
     display: "inline-block",
     padding: "1px 6px",
     borderRadius: "4px",
-    background: STATUS_TINTS.warning.border,
-    color: STATUS_TINTS.warning.text,
+    background: WARN_BD,
+    color: WARN_TEXT,
     fontSize: "10px",
     fontWeight: 700,
     textTransform: "uppercase",
@@ -408,8 +391,8 @@ export const styles = {
     display: "inline-block",
     padding: "1px 6px",
     borderRadius: "4px",
-    background: STATUS_TINTS.info.border,
-    color: STATUS_TINTS.info.text,
+    background: INFO_BD,
+    color: COLOR_INFO,
     fontSize: "10px",
     fontWeight: 700,
     textTransform: "uppercase",
@@ -485,7 +468,7 @@ export function htmlTableCss(className: string): string {
 /**
  * Generates status-tint variant CSS for a tile or card component.
  * Produces three rules — success, warning, critical — each applying the
- * appropriate STATUS_TINTS border-color and background.
+ * appropriate tint border-color and background.
  *
  * Usage (dashboard health tile):
  *   tileStatusTintCss({
@@ -507,7 +490,7 @@ export function tileStatusTintCss(classNames: {
   critical: string;
 }): string {
   return `
-  .${classNames.success} { border-color: ${STATUS_TINTS.success.border}; background: ${STATUS_TINTS.success.bg}; }
-  .${classNames.warning} { border-color: ${STATUS_TINTS.warning.border}; background: ${STATUS_TINTS.warning.bg}; }
-  .${classNames.critical} { border-color: ${STATUS_TINTS.critical.border}; background: ${STATUS_TINTS.critical.bg}; }`.trim();
+  .${classNames.success} { border-color: ${SUCCESS_BD}; background: ${SUCCESS_BG}; }
+  .${classNames.warning} { border-color: ${WARN_BD}; background: ${WARN_BG}; }
+  .${classNames.critical} { border-color: ${CRIT_BD}; background: ${CRIT_BG}; }`.trim();
 }

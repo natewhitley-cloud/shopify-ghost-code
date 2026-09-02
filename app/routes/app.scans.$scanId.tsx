@@ -36,12 +36,15 @@ import {
   BORDER_STRONG,
   COLOR_CRITICAL,
   COLOR_INFO,
+  COLOR_SUCCESS,
   COLOR_WARNING,
+  CRIT_BD,
   groundStyle,
   hairline,
   htmlTableCss,
-  STATUS_TINTS,
   TEXT_DISABLED,
+  WARN_BD,
+  WARN_TEXT,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
   tileStatusTintCss,
@@ -149,7 +152,7 @@ export function CopyButton({ text }: { text: string }) {
         borderRadius: "4px",
         fontSize: "11px",
         background: copied ? BG_BADGE_SUCCESS : BG_SURFACE,
-        color: copied ? STATUS_TINTS.success.text : TEXT_SUBDUED,
+        color: copied ? COLOR_SUCCESS : TEXT_SUBDUED,
         cursor: "pointer",
         whiteSpace: "nowrap",
       }}
@@ -449,7 +452,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
       </td>
       <td>
         {isSubmitted ? (
-          <span style={{ color: STATUS_TINTS.success.text, fontWeight: 500 }}>
+          <span style={{ color: COLOR_SUCCESS, fontWeight: 500 }}>
             Submitted{submittedName ? ` — ${submittedName}` : ""} — thank you!
           </span>
         ) : (
@@ -733,7 +736,7 @@ export default function ScanDetail() {
           line-height: 1;
           letter-spacing: -2px;
         }
-        .scan-tile__big-number--success { color: ${STATUS_TINTS.success.text}; }
+        .scan-tile__big-number--success { color: ${COLOR_SUCCESS}; }
         .scan-tile__big-number--warning { color: ${COLOR_WARNING}; }
         .scan-tile__big-number--critical { color: ${COLOR_CRITICAL}; }
         .scan-tile__big-number--neutral { color: ${TEXT_PRIMARY}; }
@@ -752,15 +755,15 @@ export default function ScanDetail() {
           text-transform: uppercase;
           letter-spacing: 0.5px;
         }
-        .scan-tile__label--success { background: ${BG_BADGE_SUCCESS}; color: ${STATUS_TINTS.success.text}; }
-        .scan-tile__label--warning { background: ${STATUS_TINTS.warning.border}; color: ${STATUS_TINTS.warning.text}; }
-        .scan-tile__label--critical { background: ${STATUS_TINTS.critical.border}; color: ${COLOR_CRITICAL}; }
+        .scan-tile__label--success { background: ${BG_BADGE_SUCCESS}; color: ${COLOR_SUCCESS}; }
+        .scan-tile__label--warning { background: ${WARN_BD}; color: ${WARN_TEXT}; }
+        .scan-tile__label--critical { background: ${CRIT_BD}; color: ${COLOR_CRITICAL}; }
         .scan-tile__diff {
           font-size: 13px;
           margin-top: 8px;
         }
         .scan-tile__diff--positive { color: ${COLOR_CRITICAL}; }
-        .scan-tile__diff--negative { color: ${STATUS_TINTS.success.text}; }
+        .scan-tile__diff--negative { color: ${COLOR_SUCCESS}; }
         .scan-tile__diff--neutral { color: ${TEXT_SUBDUED}; }
         .severity-breakdown {
           display: flex;
@@ -821,7 +824,7 @@ export default function ScanDetail() {
           white-space: nowrap;
         }
         .severity-row__diff--positive { color: ${COLOR_CRITICAL}; }
-        .severity-row__diff--negative { color: ${STATUS_TINTS.success.text}; }
+        .severity-row__diff--negative { color: ${COLOR_SUCCESS}; }
         .severity-row__diff--neutral { color: ${TEXT_DISABLED}; }
       `}</style>
 
@@ -922,9 +925,7 @@ export default function ScanDetail() {
                     {totalNew > 0 && <span style={{ color: COLOR_CRITICAL }}>+{totalNew} new</span>}
                     {totalNew > 0 && totalResolved > 0 && " / "}
                     {totalResolved > 0 && (
-                      <span style={{ color: STATUS_TINTS.success.text }}>
-                        -{totalResolved} resolved
-                      </span>
+                      <span style={{ color: COLOR_SUCCESS }}>-{totalResolved} resolved</span>
                     )}
                   </div>
                 )}
