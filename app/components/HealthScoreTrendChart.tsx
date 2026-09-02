@@ -11,6 +11,8 @@
  */
 
 import {
+  ACCENT_BORDER,
+  BAR_TRACK,
   BG_SURFACE_ALT,
   BORDER_DEFAULT,
   COLOR_CRITICAL,
@@ -146,6 +148,15 @@ export function HealthScoreTrendChart({
               role="img"
               aria-label="Findings trend stacked bar chart"
             >
+              {/* Subtle slate baseline axis grounding the bars */}
+              <line
+                x1={0}
+                y1={chartBottom}
+                x2={viewBoxWidth}
+                y2={chartBottom}
+                stroke={ACCENT_BORDER}
+                strokeWidth={1}
+              />
               {scores.map((entry, i) => {
                 const x = barX(i);
                 const cx = x + barWidth / 2;
@@ -233,7 +244,7 @@ export function HealthScoreTrendChart({
                           y={chartBottom - minBarH}
                           width={barWidth}
                           height={minBarH}
-                          fill={BORDER_DEFAULT}
+                          fill={BAR_TRACK}
                         />
                       )}
                     </g>
