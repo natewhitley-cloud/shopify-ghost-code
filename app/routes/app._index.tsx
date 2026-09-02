@@ -49,7 +49,9 @@ import {
   CRIT_BG,
   groundStyle,
   hairline,
+  INFO_BD_LIGHT,
   INFO_BG,
+  INFO_FOCUS_RING,
   TEXT_DISABLED,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
@@ -794,9 +796,8 @@ export default function Dashboard() {
               background: ${WARN_BG};
             }
             .finding-stat--low {
-              /* #dbeafe — intentionally lighter than INFO_BD (#b4d5fe);
-                 kept distinct to match original dashboard visual */
-              border-color: #dbeafe;
+              /* lighter than INFO_BD, kept distinct to match original dashboard visual */
+              border-color: ${INFO_BD_LIGHT};
               background: ${INFO_BG};
             }
             .finding-stat__count {
@@ -888,8 +889,7 @@ export default function Dashboard() {
             }
             .theme-picker-select:focus {
               border-color: ${COLOR_INFO};
-              /* rgba derived from COLOR_INFO (#2c6ecb) at 20% opacity */
-              box-shadow: 0 0 0 2px rgba(44, 110, 203, 0.2);
+              box-shadow: 0 0 0 2px ${INFO_FOCUS_RING};
             }
             .theme-picker-select:disabled {
               background: ${BG_SURFACE};

@@ -136,6 +136,11 @@ export const SUCCESS_BD = "#c8e6c1";
 export const SUCCESS_BG = "#f1f8ef";
 export const INFO_BD = "#b4d5fe";
 export const INFO_BG = "#f5f8ff";
+/** Info border, one step lighter than INFO_BD — used for the low-severity
+ * dashboard stat tile to match the original visual. */
+export const INFO_BD_LIGHT = "#dbeafe";
+/** COLOR_INFO (#2c6ecb) at 20% opacity — focus-ring box-shadow on native selects. */
+export const INFO_FOCUS_RING = "rgba(44, 110, 203, 0.2)";
 
 /**
  * Success badge / pill-label background.
