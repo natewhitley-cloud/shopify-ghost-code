@@ -8,7 +8,7 @@
  *   - Verify action creates a scan and dispatches to Inngest, with plan gating.
  */
 
-import { ScanOrigin } from "@prisma/client";
+import { FindingType, ScanOrigin } from "@prisma/client";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
@@ -43,6 +43,7 @@ vi.mock("../../app/services/scan-dispatch.server", () => ({
 
 vi.mock("../../app/models/finding.server", () => ({
   getSeverityCountsForScans: vi.fn(),
+  getTypeCountsForScan: vi.fn(),
 }));
 
 vi.mock("../../app/lib/billing.server", () => ({
@@ -99,7 +100,7 @@ import {
   getScanUsage,
   getWeekStartUTC,
 } from "../../app/lib/plan-gating.server";
-import { getSeverityCountsForScans } from "../../app/models/finding.server";
+import { getSeverityCountsForScans, getTypeCountsForScan } from "../../app/models/finding.server";
 import {
   getScansForShop,
   hasCompletedScans,
@@ -122,6 +123,7 @@ const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
 const mockDispatchScan = dispatchScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockGetSeverityCounts = getSeverityCountsForScans as ReturnType<typeof vi.fn>;
+const mockGetTypeCounts = getTypeCountsForScan as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockCanUseMultipleThemes = canUseMultipleThemes as ReturnType<typeof vi.fn>;
@@ -238,6 +240,9 @@ beforeEach(() => {
   mockFetchMainTheme.mockResolvedValue(MAIN_THEME);
   mockGetScansForShop.mockResolvedValue({ items: [COMPLETED_SCAN], hasNextPage: false });
   mockGetSeverityCounts.mockImplementation(severityCountsImpl());
+  // Default: latest scan has no per-type findings, so laneSummary is empty.
+  // Lane-specific tests override this with concrete type counts.
+  mockGetTypeCounts.mockResolvedValue({});
   mockGetPlanFeatures.mockReturnValue({
     maxScansPerMonth: 1,
     maxScansPerWeek: Infinity,
@@ -452,6 +457,160 @@ describe("app._index loader", () => {
 
       expect(result.previousHealthScore).toEqual(prevScore);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Loader: consequence lanes (Slice 2)
+// ---------------------------------------------------------------------------
+
+describe("app._index loader — consequence lanes", () => {
+  it("computes laneSummary, startHere, and dominant for a successful scan with findings", async () => {
+    // GHOST_PIXEL -> privacy / act-now (count 2); SETTINGS_DRIFT -> housekeeping / whenever (count 3).
+    mockGetTypeCounts.mockResolvedValue({
+      [FindingType.GHOST_PIXEL]: 2,
+      [FindingType.SETTINGS_DRIFT]: 3,
+    });
+
+    const result = (await loader(makeLoaderArgs())) as {
+      laneSummary: Array<{ lane: string; count: number; urgency: string; hasAgentic: boolean }>;
+      startHere: string | null;
+      dominant: string | null;
+    };
+
+    // Rows returned in LANES display order: privacy (order 3) then housekeeping (order 4).
+    expect(result.laneSummary.map((r) => r.lane)).toEqual(["privacy", "housekeeping"]);
+    // startHere = most-urgent lane (privacy is act-now).
+    expect(result.startHere).toBe("privacy");
+    // dominant = highest-count lane (housekeeping has 3).
+    expect(result.dominant).toBe("housekeeping");
+  });
+
+  it("passes the latest scan id to getTypeCountsForScan", async () => {
+    await loader(makeLoaderArgs());
+
+    expect(mockGetTypeCounts).toHaveBeenCalledWith("scan-1");
+  });
+
+  it("returns empty laneSummary and null startHere/dominant when the scan has no findings", async () => {
+    // Default mock resolves to {} -> no lanes.
+    const result = (await loader(makeLoaderArgs())) as {
+      laneSummary: unknown[];
+      startHere: string | null;
+      dominant: string | null;
+    };
+
+    expect(result.laneSummary).toEqual([]);
+    expect(result.startHere).toBeNull();
+    expect(result.dominant).toBeNull();
+  });
+
+  it("does not fetch type counts and returns empty lanes when latest scan is not successful", async () => {
+    mockGetScansForShop.mockResolvedValue({
+      items: [{ ...COMPLETED_SCAN, status: "IN_PROGRESS" }],
+      hasNextPage: false,
+    });
+
+    const result = (await loader(makeLoaderArgs())) as {
+      laneSummary: unknown[];
+      startHere: string | null;
+      dominant: string | null;
+    };
+
+    expect(mockGetTypeCounts).not.toHaveBeenCalled();
+    expect(result.laneSummary).toEqual([]);
+    expect(result.startHere).toBeNull();
+    expect(result.dominant).toBeNull();
+  });
+
+  it("includes empty lanes and null trend in the null-shop early return", async () => {
+    mockGetShopMetadata.mockResolvedValue(null);
+
+    const result = (await loader(makeLoaderArgs())) as {
+      laneSummary: unknown[];
+      startHere: string | null;
+      dominant: string | null;
+      findingTrend: unknown;
+    };
+
+    expect(result.laneSummary).toEqual([]);
+    expect(result.startHere).toBeNull();
+    expect(result.dominant).toBeNull();
+    expect(result.findingTrend).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Loader: finding-count trend (Slice 2)
+// ---------------------------------------------------------------------------
+
+describe("app._index loader — finding trend", () => {
+  const PREVIOUS_SCAN = {
+    ...COMPLETED_SCAN,
+    id: "scan-0",
+    status: "COMPLETED",
+    completedAt: new Date("2026-03-19T10:05:00Z"),
+  };
+
+  function withTwoScans(current: SeverityRecord, previous: SeverityRecord) {
+    mockGetScansForShop.mockResolvedValue({
+      items: [COMPLETED_SCAN, PREVIOUS_SCAN],
+      hasNextPage: false,
+    });
+    mockGetSeverityCounts.mockImplementation(
+      severityCountsImpl({ "scan-1": current, "scan-0": previous }),
+    );
+  }
+
+  it("returns null findingTrend when there is no previous scan", async () => {
+    // Default getScansForShop returns a single scan.
+    const result = (await loader(makeLoaderArgs())) as { findingTrend: unknown };
+
+    expect(result.findingTrend).toBeNull();
+  });
+
+  it("returns null findingTrend when the previous scan is not successful", async () => {
+    mockGetScansForShop.mockResolvedValue({
+      items: [COMPLETED_SCAN, { ...PREVIOUS_SCAN, status: "IN_PROGRESS" }],
+      hasNextPage: false,
+    });
+
+    const result = (await loader(makeLoaderArgs())) as { findingTrend: unknown };
+
+    expect(result.findingTrend).toBeNull();
+  });
+
+  it("returns improving when the current total is below the previous total", async () => {
+    // current total 3, previous total 10.
+    withTwoScans({ HIGH: 1, MEDIUM: 1, LOW: 1 }, { HIGH: 5, MEDIUM: 3, LOW: 2 });
+
+    const result = (await loader(makeLoaderArgs())) as {
+      findingTrend: { direction: string; previousTotal: number } | null;
+    };
+
+    expect(result.findingTrend).toEqual({ direction: "improving", previousTotal: 10 });
+  });
+
+  it("returns declining when the current total is above the previous total", async () => {
+    // current total 10, previous total 3.
+    withTwoScans({ HIGH: 5, MEDIUM: 3, LOW: 2 }, { HIGH: 1, MEDIUM: 1, LOW: 1 });
+
+    const result = (await loader(makeLoaderArgs())) as {
+      findingTrend: { direction: string; previousTotal: number } | null;
+    };
+
+    expect(result.findingTrend).toEqual({ direction: "declining", previousTotal: 3 });
+  });
+
+  it("returns stable when the current and previous totals are equal", async () => {
+    // both total 5.
+    withTwoScans({ HIGH: 2, MEDIUM: 2, LOW: 1 }, { HIGH: 1, MEDIUM: 3, LOW: 1 });
+
+    const result = (await loader(makeLoaderArgs())) as {
+      findingTrend: { direction: string; previousTotal: number } | null;
+    };
+
+    expect(result.findingTrend).toEqual({ direction: "stable", previousTotal: 5 });
   });
 });
 

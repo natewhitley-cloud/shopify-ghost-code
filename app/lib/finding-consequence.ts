@@ -71,31 +71,37 @@ export const LANES: ReadonlyArray<{
   key: LaneKey;
   label: string;
   soWhat: string;
+  dominantPhrase: string;
 }> = [
   {
     key: "customers-see-it",
     label: "Customers see it",
     soWhat: "Shoppers can see this on your live storefront right now.",
+    dominantPhrase: "what your customers see",
   },
   {
     key: "discoverability",
     label: "Found by Google & AI",
     soWhat: "This shapes how Google and AI assistants read and rank your store.",
+    dominantPhrase: "how you're found by Google & AI",
   },
   {
     key: "speed",
     label: "Speed",
     soWhat: "This is loading extra code that slows your storefront down.",
+    dominantPhrase: "your store's speed",
   },
   {
     key: "privacy",
     label: "Still tracking you",
     soWhat: "A removed app is still collecting or sending shopper data.",
+    dominantPhrase: "tracking you didn't authorize",
   },
   {
     key: "housekeeping",
     label: "Housekeeping",
     soWhat: "Leftover clutter with no live impact — clean up when convenient.",
+    dominantPhrase: "leftover housekeeping",
   },
 ];
 
@@ -286,6 +292,22 @@ export const CONSEQUENCE_MAP: Record<
 /** Returns the PRIMARY consequence lane for a finding type. */
 export function laneForType(type: FindingType): LaneKey {
   return CONSEQUENCE_MAP[type].primary;
+}
+
+/**
+ * The mid-sentence phrase for the "most of the damage is in X" dashboard read
+ * (e.g. "what your customers see"). Falls back to the lane's label if a lane is
+ * ever missing a phrase, mirroring rankToUrgency's defensive fallback.
+ */
+export function dominantPhraseForLane(lane: LaneKey): string {
+  const meta = LANES.find((l) => l.key === lane);
+  return meta?.dominantPhrase ?? meta?.label ?? lane;
+}
+
+/** The one-line "so what" copy for a lane. */
+export function soWhatForLane(lane: LaneKey): string {
+  const meta = LANES.find((l) => l.key === lane);
+  return meta?.soWhat ?? "";
 }
 
 /**

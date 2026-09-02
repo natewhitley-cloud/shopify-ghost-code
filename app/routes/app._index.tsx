@@ -9,6 +9,14 @@ import {
 } from "../components/HealthScoreTrendChart";
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { getPlanFeatures } from "../lib/billing.server";
+import {
+  computeLaneSummary,
+  dominantLane,
+  dominantPhraseForLane,
+  soWhatForLane,
+  startHereLane,
+} from "../lib/finding-consequence";
+import type { LaneKey, LaneSummaryRow, UrgencyKey } from "../lib/finding-consequence";
 import { formatDate, isSuccessfulScan } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
@@ -20,7 +28,7 @@ import {
   getWeekStartUTC,
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
-import { getSeverityCountsForScans } from "../models/finding.server";
+import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import {
   getScansForShop,
   hasCompletedScans,
@@ -35,6 +43,10 @@ import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server
 import type { ThemeSummary } from "../services/theme-fetcher.server";
 import { authenticate } from "../shopify.server";
 import {
+  ACCENT_BORDER,
+  ACCENT_FILL,
+  ACCENT_INK,
+  ACCENT_TINT,
   BG_BADGE_SUCCESS,
   BG_SURFACE,
   BG_SURFACE_ALT,
@@ -46,11 +58,8 @@ import {
   COLOR_SUCCESS,
   COLOR_WARNING,
   CRIT_BD,
-  CRIT_BG,
   groundStyle,
   hairline,
-  INFO_BD_LIGHT,
-  INFO_BG,
   INFO_FOCUS_RING,
   sectionCard,
   TEXT_DISABLED,
@@ -58,7 +67,6 @@ import {
   TEXT_SUBDUED,
   tileStatusTintCss,
   WARN_BD,
-  WARN_BG,
   WARN_TEXT,
 } from "../styles/shared";
 
@@ -97,6 +105,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       showTrendEmptyState: false,
       scansNeeded: 0,
       trendChartEnabled: false,
+      laneSummary: [] as LaneSummaryRow[],
+      startHere: null as LaneKey | null,
+      dominant: null as LaneKey | null,
+      findingTrend: null,
     };
   }
 
@@ -146,11 +158,24 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   );
 
   // Phase 1: queries that depend only on Phase 0 results (parallel).
-  const [severityCounts, usage, completedScanCheck] = await Promise.all([
+  // typeCounts is fetched here (in parallel) only for a successful latest scan,
+  // so it powers the consequence lanes without an extra serial round-trip. It
+  // uses getTypeCountsForScan rather than getFindingSummary so we don't re-run
+  // the severity groupBy the batch severity query above already covers.
+  const [severityCounts, usage, completedScanCheck, typeCounts] = await Promise.all([
     getSeverityCountsForScans(severityScanIds),
     getScanUsage(shop.id, shop.plan),
     hasCompletedScans(shop.id),
+    latestScan && isSuccessfulScan(latestScan.status)
+      ? getTypeCountsForScan(latestScan.id)
+      : Promise.resolve(null),
   ]);
+
+  // Consequence lanes: roll the latest scan's per-type counts up into merchant
+  // "so what" lanes. Empty array when there is no successful scan or no findings.
+  const laneSummary: LaneSummaryRow[] = typeCounts ? computeLaneSummary(typeCounts) : [];
+  const startHere: LaneKey | null = startHereLane(laneSummary);
+  const dominant: LaneKey | null = dominantLane(laneSummary);
 
   const zeroSeverityRecord: Record<Severity, number> = {
     [Severity.HIGH]: 0,
@@ -178,6 +203,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     previousHealthScore = computeHealthScore(
       severityCounts.get(previousScan.id) ?? zeroSeverityRecord,
     );
+  }
+
+  // Finding-count trend: compare the latest scan's total finding count against
+  // the previous successful scan's. Fewer findings = improving. Derived from the
+  // severity counts already fetched — no extra query. null when there is no
+  // successful previous scan to compare against.
+  const sumSeverity = (r: Record<Severity, number>) => r.HIGH + r.MEDIUM + r.LOW;
+  let findingTrend: {
+    direction: "improving" | "declining" | "stable";
+    previousTotal: number;
+  } | null = null;
+  if (latestSeverity && previousScan && isSuccessfulScan(previousScan.status)) {
+    const currentTotal = sumSeverity(latestSeverity);
+    const previousTotal = sumSeverity(severityCounts.get(previousScan.id) ?? zeroSeverityRecord);
+    const direction =
+      currentTotal < previousTotal
+        ? "improving"
+        : currentTotal > previousTotal
+          ? "declining"
+          : "stable";
+    findingTrend = { direction, previousTotal };
   }
 
   // Compute health score trend — paid plans only, requires >= 3 completed scans.
@@ -296,6 +342,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     showTrendEmptyState,
     scansNeeded,
     trendChartEnabled,
+    laneSummary,
+    startHere,
+    dominant,
+    findingTrend,
   };
 };
 
@@ -433,6 +483,26 @@ function formatElapsedTime(elapsedSeconds: number): string {
   return `${minutes} minutes ${remainingSeconds} seconds`;
 }
 
+/**
+ * Per-urgency chip presentation for a consequence lane. Colors come from the
+ * shared design tokens — see the CONSEQUENCE_MAP urgency tiers.
+ */
+const URGENCY_CHIP: Record<
+  UrgencyKey,
+  { label: string; bg: string; text: string; border?: string }
+> = {
+  "act-now": { label: "Act now", bg: CRIT_BD, text: COLOR_CRITICAL },
+  compounding: { label: "Compounding", bg: WARN_BD, text: COLOR_WARNING },
+  whenever: { label: "Whenever", bg: BG_SURFACE, text: TEXT_SUBDUED, border: BORDER_DEFAULT },
+};
+
+/** Lane count color by urgency — most-urgent lanes read loudest. */
+const URGENCY_COUNT_COLOR: Record<UrgencyKey, string> = {
+  "act-now": COLOR_CRITICAL,
+  compounding: COLOR_WARNING,
+  whenever: TEXT_DISABLED,
+};
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -459,6 +529,10 @@ export default function Dashboard() {
     showTrendEmptyState,
     scansNeeded,
     trendChartEnabled,
+    laneSummary,
+    startHere,
+    dominant,
+    findingTrend,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
@@ -539,10 +613,12 @@ export default function Dashboard() {
     return () => clearInterval(interval);
   }, [scanInProgress, latestScan?.createdAt]);
 
-  // Show "—" while a scan is in progress; show counts once completed.
-  const highCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.HIGH ?? 0);
-  const mediumCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.MEDIUM ?? 0);
-  const lowCount = scanInProgress ? "—" : String(findingSummary?.bySeverity?.LOW ?? 0);
+  // Total findings in the latest completed scan — drives the consequence-lane
+  // "so what" copy (the leftover-item sentence).
+  const currentTotal =
+    (findingSummary?.bySeverity?.HIGH ?? 0) +
+    (findingSummary?.bySeverity?.MEDIUM ?? 0) +
+    (findingSummary?.bySeverity?.LOW ?? 0);
 
   // Whether the plan's scan limit (weekly or monthly) has been reached.
   // isFirstScan overrides the limit — the first scan is always allowed on the free plan.
@@ -772,48 +848,108 @@ export default function Dashboard() {
               color: ${TEXT_SUBDUED};
               margin-top: 8px;
             }
-            .findings-row {
-              display: grid;
-              grid-template-columns: repeat(3, 1fr);
-              gap: 16px;
-              padding: 4px 0;
-              height: 100%;
-            }
-            .finding-stat {
+            .health-read {
               display: flex;
               flex-direction: column;
+              gap: 8px;
+              margin-top: 12px;
+            }
+            .health-read__damage {
+              font-size: 15px;
+              font-weight: 600;
+              color: ${TEXT_PRIMARY};
+            }
+            .health-read__trend {
+              font-size: 13px;
+              font-weight: 600;
+            }
+            .health-read__lead {
+              font-size: 14px;
+              color: ${TEXT_SUBDUED};
+            }
+            .lanes {
+              display: flex;
+              flex-direction: column;
+              gap: 10px;
+            }
+            .lane {
+              display: grid;
+              grid-template-columns: 56px 1fr auto;
               align-items: center;
-              justify-content: center;
-              padding: 24px 8px;
-              border-radius: 12px;
+              gap: 12px;
+              padding: 12px 14px;
+              border-radius: 11px;
               border: 1px solid ${BORDER_DEFAULT};
+              background: ${BG_WHITE};
+              text-decoration: none;
+              color: inherit;
+              transition:
+                box-shadow 0.15s ease,
+                border-color 0.15s ease;
             }
-            .finding-stat--high {
-              border-color: ${CRIT_BD};
-              background: ${CRIT_BG};
+            .lane:hover {
+              box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
             }
-            .finding-stat--medium {
-              border-color: ${WARN_BD};
-              background: ${WARN_BG};
+            .lane.start {
+              border-color: ${ACCENT_FILL};
+              box-shadow: 0 0 0 3px ${ACCENT_TINT};
             }
-            .finding-stat--low {
-              /* lighter than INFO_BD, kept distinct to match original dashboard visual */
-              border-color: ${INFO_BD_LIGHT};
-              background: ${INFO_BG};
-            }
-            .finding-stat__count {
-              font-size: 48px;
+            .lane__count {
+              font-size: 28px;
               font-weight: 700;
               line-height: 1;
+              text-align: center;
             }
-            .finding-stat__count--high { color: ${COLOR_CRITICAL}; }
-            .finding-stat__count--medium { color: ${COLOR_WARNING}; }
-            .finding-stat__count--low { color: ${COLOR_INFO}; }
-            .finding-stat__label {
+            .lane__body {
+              display: flex;
+              flex-direction: column;
+              gap: 4px;
+              min-width: 0;
+            }
+            .lane__label-row {
+              display: flex;
+              align-items: center;
+              gap: 8px;
+              flex-wrap: wrap;
+            }
+            .lane__label {
+              font-size: 15px;
+              font-weight: 600;
+              color: ${TEXT_PRIMARY};
+            }
+            .lane__chip {
+              display: inline-block;
+              padding: 2px 7px;
+              border-radius: 4px;
+              font-size: 10px;
+              font-weight: 700;
+              text-transform: uppercase;
+              letter-spacing: 0.5px;
+              line-height: 16px;
+            }
+            .lane__chip--agentic {
+              background: ${ACCENT_TINT};
+              color: ${ACCENT_INK};
+              border: 1px solid ${ACCENT_BORDER};
+            }
+            .lane__chip--start {
+              background: ${ACCENT_FILL};
+              color: ${BG_WHITE};
+            }
+            .lane__sowhat {
               font-size: 13px;
-              font-weight: 500;
               color: ${TEXT_SUBDUED};
-              margin-top: 6px;
+            }
+            .lane__review {
+              font-size: 13px;
+              font-weight: 600;
+              white-space: nowrap;
+            }
+            .lanes-footer {
+              font-size: 13px;
+              color: ${TEXT_SUBDUED};
+              padding-top: 12px;
+              border-top: 1px solid ${BORDER_DEFAULT};
             }
             .scan-meta {
               font-size: 13px;
@@ -959,7 +1095,7 @@ export default function Dashboard() {
                             )}
                           </div>
                         </div>
-                        {/* Right: findings */}
+                        {/* Right: health read — the merchant "so what" for this scan */}
                         <div style={{ display: "flex", flexDirection: "column" }}>
                           <h2 className="dashboard-section-title">Most Recent Findings</h2>
                           <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
@@ -967,25 +1103,42 @@ export default function Dashboard() {
                             <strong style={{ color: TEXT_PRIMARY }}>{latestScan.themeName}</strong>{" "}
                             on {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
                           </div>
-                          <div className="findings-row" style={{ marginTop: "8px", flex: 1 }}>
-                            <div className="finding-stat finding-stat--high">
-                              <div className="finding-stat__count finding-stat__count--high">
-                                {highCount}
+                          <div className="health-read">
+                            {dominant && (
+                              <div className="health-read__damage">
+                                Most of the damage is in{" "}
+                                <span style={{ color: ACCENT_INK }}>
+                                  {dominantPhraseForLane(dominant)}
+                                </span>
+                                .
                               </div>
-                              <div className="finding-stat__label">High</div>
-                            </div>
-                            <div className="finding-stat finding-stat--medium">
-                              <div className="finding-stat__count finding-stat__count--medium">
-                                {mediumCount}
+                            )}
+                            {findingTrend && (
+                              <div
+                                className="health-read__trend"
+                                style={{
+                                  color:
+                                    findingTrend.direction === "improving"
+                                      ? COLOR_SUCCESS
+                                      : findingTrend.direction === "declining"
+                                        ? COLOR_WARNING
+                                        : TEXT_SUBDUED,
+                                }}
+                              >
+                                {findingTrend.direction === "improving"
+                                  ? `▲ Improving: down from ${findingTrend.previousTotal} findings last scan`
+                                  : findingTrend.direction === "declining"
+                                    ? `▼ Up from ${findingTrend.previousTotal} findings last scan`
+                                    : "No change from last scan"}
                               </div>
-                              <div className="finding-stat__label">Medium</div>
-                            </div>
-                            <div className="finding-stat finding-stat--low">
-                              <div className="finding-stat__count finding-stat__count--low">
-                                {lowCount}
+                            )}
+                            {laneSummary.length > 0 && (
+                              <div className="health-read__lead">
+                                {currentTotal} leftover item{currentTotal === 1 ? "" : "s"} from
+                                apps you&apos;ve uninstalled are still in your theme. Here&apos;s
+                                what they&apos;re doing, worst first.
                               </div>
-                              <div className="finding-stat__label">Low</div>
-                            </div>
+                            )}
                           </div>
                         </div>
                       </div>
@@ -996,6 +1149,86 @@ export default function Dashboard() {
                 </s-stack>
               </div>
             </div>
+
+            {/* Consequence lanes — "what it's costing you", worst-first */}
+            {healthScore && latestScan && (
+              <div style={{ ...sectionCard, marginBottom: 0 }}>
+                <s-stack direction="block" gap="base">
+                  <div>
+                    <h2 className="dashboard-section-title">What it&apos;s costing you</h2>
+                    <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
+                      Grouped by consequence. Start with the flagged lane.
+                    </div>
+                  </div>
+                  {laneSummary.length === 0 ? (
+                    <div style={{ fontSize: "14px", color: COLOR_SUCCESS }}>
+                      No leftover code found. Your theme is clean.
+                    </div>
+                  ) : (
+                    <>
+                      <div className="lanes">
+                        {laneSummary.map((row) => {
+                          const chip = URGENCY_CHIP[row.urgency];
+                          const isStart = row.lane === startHere;
+                          const isWhenever = row.urgency === "whenever";
+                          return (
+                            <Link
+                              key={row.lane}
+                              to={`/app/scans/${latestScanId}?lane=${row.lane}`}
+                              aria-label={`Review ${row.label} findings`}
+                              className={`lane${isStart ? " start" : ""}`}
+                            >
+                              <div
+                                className="lane__count"
+                                style={{ color: URGENCY_COUNT_COLOR[row.urgency] }}
+                              >
+                                {row.count}
+                              </div>
+                              <div className="lane__body">
+                                <div className="lane__label-row">
+                                  <span className="lane__label">{row.label}</span>
+                                  {isStart && (
+                                    <span className="lane__chip lane__chip--start">Start here</span>
+                                  )}
+                                  {row.hasAgentic && (
+                                    <span className="lane__chip lane__chip--agentic">
+                                      AI agents
+                                    </span>
+                                  )}
+                                  <span
+                                    className="lane__chip"
+                                    style={{
+                                      background: chip.bg,
+                                      color: chip.text,
+                                      ...(chip.border
+                                        ? { border: `1px solid ${chip.border}` }
+                                        : {}),
+                                    }}
+                                  >
+                                    {chip.label}
+                                  </span>
+                                </div>
+                                <div className="lane__sowhat">{soWhatForLane(row.lane)}</div>
+                              </div>
+                              <div
+                                className="lane__review"
+                                style={{ color: isWhenever ? TEXT_SUBDUED : ACCENT_INK }}
+                              >
+                                Review →
+                              </div>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                      <div className="lanes-footer">
+                        ✓ Then re-scan to confirm it&apos;s gone. Each fix drops your finding count.
+                        Watch the trend climb back toward 100.
+                      </div>
+                    </>
+                  )}
+                </s-stack>
+              </div>
+            )}
 
             {/* Health Score Trend — feature-flagged, paid plans only */}
             <HealthScoreTrendChart

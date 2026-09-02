@@ -186,6 +186,60 @@ export async function getSeverityCountsForScans(
 }
 
 /**
+ * Per-type finding counts for a SINGLE scan: return a fully zero-seeded
+ * Record<FindingType, number> from one groupBy query. This is the lean,
+ * type-axis counterpart to getSeverityCountsForScans for callers (e.g. the
+ * dashboard consequence lanes) that need the byType breakdown for exactly one
+ * scan and never the severity axis.
+ *
+ * Every FindingType enum member is guaranteed present, defaulted to 0 — including
+ * for a scan with zero findings — so lane-summary callers can index any type
+ * without undefined checks. Reuses the same exhaustive zero-map pattern as
+ * getFindingSummary (whose severity groupBy the dashboard already has from the
+ * batch severity query, so getFindingSummary is deliberately not reused here).
+ */
+export async function getTypeCountsForScan(scanId: string): Promise<Record<FindingType, number>> {
+  const typeCounts: Record<FindingType, number> = {
+    [FindingType.GHOST_SCRIPT]: 0,
+    [FindingType.GHOST_STYLE]: 0,
+    [FindingType.GHOST_SNIPPET]: 0,
+    [FindingType.GHOST_SECTION]: 0,
+    [FindingType.GHOST_HREFLANG]: 0,
+    [FindingType.ORPHAN_ASSET]: 0,
+    [FindingType.DUPLICATE_META]: 0,
+    [FindingType.GHOST_JSON_LD]: 0,
+    [FindingType.GHOST_TEXT]: 0,
+    [FindingType.GHOST_TRANSLATION]: 0,
+    [FindingType.SETTINGS_DRIFT]: 0,
+    [FindingType.GHOST_PIXEL]: 0,
+    [FindingType.JSON_LD_CONFLICT]: 0,
+    [FindingType.GHOST_LAYOUT]: 0,
+    [FindingType.GHOST_TAG]: 0,
+    [FindingType.GHOST_PRICE]: 0,
+    [FindingType.GHOST_PAGE]: 0,
+    [FindingType.GHOST_METAFIELD]: 0,
+    [FindingType.GHOST_REDIRECT]: 0,
+    [FindingType.GHOST_ROBOTS]: 0,
+    [FindingType.GHOST_CANONICAL]: 0,
+    [FindingType.GHOST_TITLE]: 0,
+    [FindingType.GHOST_OG]: 0,
+    [FindingType.GHOST_PRECONNECT]: 0,
+    [FindingType.GHOST_FONT]: 0,
+    [FindingType.GHOST_AJAX]: 0,
+  };
+
+  const rows = await db.finding.groupBy({
+    by: ["findingType"],
+    where: { scanId },
+    _count: { findingType: true },
+  });
+  for (const row of rows) {
+    typeCounts[row.findingType] = row._count.findingType;
+  }
+  return typeCounts;
+}
+
+/**
  * Return the single highest-severity finding for a scan.
  * Uses Prisma enum sort order (HIGH → MEDIUM → LOW declared in schema) so
  * ascending sort gives the highest-severity row first.

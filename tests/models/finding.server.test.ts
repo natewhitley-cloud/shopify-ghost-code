@@ -61,6 +61,7 @@ import {
   getFindingsPageForScan,
   getFindingSummary,
   getSeverityCountsForScans,
+  getTypeCountsForScan,
   getHighestSeverityFinding,
   saveThemeFindings,
   type CreateFindingInput,
@@ -516,6 +517,71 @@ describe("saveThemeFindings", () => {
 
     const updateCallArg = mockDb.scan.update.mock.calls[0][0];
     expect(updateCallArg.data.findingCount).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getTypeCountsForScan
+// ---------------------------------------------------------------------------
+
+describe("getTypeCountsForScan", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("calls groupBy with by:[findingType] scoped to the scan", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([]);
+
+    await getTypeCountsForScan(SCAN_ID);
+
+    expect(mockDb.finding.groupBy).toHaveBeenCalledOnce();
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith({
+      by: ["findingType"],
+      where: { scanId: SCAN_ID },
+      _count: { findingType: true },
+    });
+  });
+
+  it("returns a fully zero-seeded record covering all 26 FindingType members", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([]);
+
+    const result = await getTypeCountsForScan(SCAN_ID);
+
+    const keys = Object.keys(result);
+    expect(keys).toHaveLength(26);
+    // Every enum member present and defaulted to 0.
+    for (const type of Object.values(FindingType)) {
+      expect(result[type]).toBe(0);
+    }
+  });
+
+  it("fills counts from grouped rows and leaves the rest at zero", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([
+      { findingType: FindingType.GHOST_SCRIPT, _count: { findingType: 4 } },
+      { findingType: FindingType.GHOST_PIXEL, _count: { findingType: 2 } },
+    ]);
+
+    const result = await getTypeCountsForScan(SCAN_ID);
+
+    expect(result[FindingType.GHOST_SCRIPT]).toBe(4);
+    expect(result[FindingType.GHOST_PIXEL]).toBe(2);
+    // An untouched type stays at its seeded zero.
+    expect(result[FindingType.ORPHAN_ASSET]).toBe(0);
+  });
+
+  it("returns all zeros for an empty scan", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([]);
+
+    const result = await getTypeCountsForScan(SCAN_ID);
+
+    const total = Object.values(result).reduce((sum, n) => sum + n, 0);
+    expect(total).toBe(0);
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.groupBy.mockRejectedValue(new Error("Type aggregation failed"));
+
+    await expect(getTypeCountsForScan(SCAN_ID)).rejects.toThrow("Type aggregation failed");
   });
 });
 
