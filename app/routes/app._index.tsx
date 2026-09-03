@@ -70,6 +70,22 @@ import {
   groundStyle,
   hairline,
   INFO_FOCUS_RING,
+  LANE_BLUE_BD,
+  LANE_BLUE_FILL,
+  LANE_BLUE_INK,
+  LANE_BLUE_TINT,
+  LANE_GREY_BD,
+  LANE_GREY_FILL,
+  LANE_GREY_INK,
+  LANE_GREY_TINT,
+  LANE_PURPLE_BD,
+  LANE_PURPLE_FILL,
+  LANE_PURPLE_INK,
+  LANE_PURPLE_TINT,
+  LANE_TEAL_BD,
+  LANE_TEAL_FILL,
+  LANE_TEAL_INK,
+  LANE_TEAL_TINT,
   sectionCard,
   TEXT_DISABLED,
   TEXT_PRIMARY,
@@ -505,11 +521,28 @@ const URGENCY_CHIP: Record<
   whenever: { label: "Whenever", bg: BG_SURFACE, text: TEXT_SUBDUED, border: BORDER_DEFAULT },
 };
 
-/** Lane count color by urgency — most-urgent lanes read loudest. */
-const URGENCY_COUNT_COLOR: Record<UrgencyKey, string> = {
-  "act-now": COLOR_CRITICAL,
-  compounding: COLOR_WARNING,
-  whenever: TEXT_DISABLED,
+/** Per-lane brand identity: left stripe (fill), count/link ink, card tint, border. */
+const LANE_COLOR: Record<LaneKey, { fill: string; ink: string; tint: string; bd: string }> = {
+  "customers-see-it": {
+    fill: LANE_BLUE_FILL,
+    ink: LANE_BLUE_INK,
+    tint: LANE_BLUE_TINT,
+    bd: LANE_BLUE_BD,
+  },
+  discoverability: {
+    fill: LANE_PURPLE_FILL,
+    ink: LANE_PURPLE_INK,
+    tint: LANE_PURPLE_TINT,
+    bd: LANE_PURPLE_BD,
+  },
+  speed: { fill: LANE_TEAL_FILL, ink: LANE_TEAL_INK, tint: LANE_TEAL_TINT, bd: LANE_TEAL_BD },
+  privacy: { fill: ACCENT_FILL, ink: ACCENT_INK, tint: ACCENT_TINT, bd: ACCENT_BORDER },
+  housekeeping: {
+    fill: LANE_GREY_FILL,
+    ink: LANE_GREY_INK,
+    tint: LANE_GREY_TINT,
+    bd: LANE_GREY_BD,
+  },
 };
 
 // ---------------------------------------------------------------------------
@@ -547,6 +580,16 @@ export default function Dashboard() {
   const dismissFetcher = useFetcher<typeof action>();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+
+  // Render the start-here lane first, then the remaining lanes in their
+  // existing (computeLaneSummary) order.
+  const orderedLanes =
+    startHere != null
+      ? [
+          ...laneSummary.filter((row) => row.lane === startHere),
+          ...laneSummary.filter((row) => row.lane !== startHere),
+        ]
+      : laneSummary;
 
   // Lazily fetch the diff for the latest successful scan via the resource route
   // (same pattern as scan-detail — see app.scans.$scanId.tsx) to surface NEW
@@ -889,8 +932,6 @@ export default function Dashboard() {
               gap: 12px;
               padding: 12px 14px;
               border-radius: 11px;
-              border: 1px solid ${BORDER_DEFAULT};
-              background: ${BG_WHITE};
               text-decoration: none;
               color: inherit;
               transition:
@@ -903,10 +944,6 @@ export default function Dashboard() {
             .lane:focus-visible {
               outline: 2px solid ${ACCENT_FILL};
               outline-offset: 2px;
-            }
-            .lane.start {
-              border-color: ${ACCENT_FILL};
-              box-shadow: 0 0 0 3px ${ACCENT_TINT};
             }
             .lane__count {
               font-size: 28px;
@@ -1186,21 +1223,28 @@ export default function Dashboard() {
                   ) : (
                     <>
                       <div className="lanes">
-                        {laneSummary.map((row) => {
+                        {orderedLanes.map((row) => {
                           const chip = URGENCY_CHIP[row.urgency];
                           const isStart = row.lane === startHere;
-                          const isWhenever = row.urgency === "whenever";
+                          const c = LANE_COLOR[row.lane];
                           return (
                             <Link
                               key={row.lane}
                               to={`/app/scans/${latestScanId}?${mergeSearchParams(searchParams, { lane: row.lane })}`}
                               aria-label={`Review ${row.count} ${row.label} finding${row.count === 1 ? "" : "s"}. ${chip.label}${isStart ? ", start here" : ""}`}
                               className={`lane${isStart ? " start" : ""}`}
+                              style={{
+                                background: c.tint,
+                                border: `1px solid ${c.bd}`,
+                                borderLeft: `${isStart ? 6 : 5}px solid ${c.fill}`,
+                                ...(isStart
+                                  ? {
+                                      boxShadow: `0 0 0 1px ${c.bd}, 0 2px 8px rgba(0,0,0,0.06)`,
+                                    }
+                                  : {}),
+                              }}
                             >
-                              <div
-                                className="lane__count"
-                                style={{ color: URGENCY_COUNT_COLOR[row.urgency] }}
-                              >
+                              <div className="lane__count" style={{ color: c.ink }}>
                                 {row.count}
                               </div>
                               <div className="lane__body">
@@ -1229,10 +1273,7 @@ export default function Dashboard() {
                                 </div>
                                 <div className="lane__sowhat">{soWhatForLane(row.lane)}</div>
                               </div>
-                              <div
-                                className="lane__review"
-                                style={{ color: isWhenever ? TEXT_SUBDUED : ACCENT_INK }}
-                              >
+                              <div className="lane__review" style={{ color: c.ink }}>
                                 Review →
                               </div>
                             </Link>

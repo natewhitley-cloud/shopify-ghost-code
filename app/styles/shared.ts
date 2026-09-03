@@ -60,6 +60,27 @@ export const ACCENT_TINT = "#eaeff6";
 /** Accent border */
 export const ACCENT_BORDER = "#cdd8e8";
 
+// Consequence-lane identity colors (dashboard lanes). Cool-tone family drawn
+// from the logo gradient (blue/purple), ClearSignal (teal, AI purple), and the
+// forensic-slate primary. fill = left stripe, ink = count/link, tint = card bg,
+// bd = card border.
+export const LANE_PURPLE_FILL = "#6d5ce0";
+export const LANE_PURPLE_INK = "#5b4bd0";
+export const LANE_PURPLE_TINT = "#f2effc";
+export const LANE_PURPLE_BD = "#ddd6f8";
+export const LANE_BLUE_FILL = "#3f77c9";
+export const LANE_BLUE_INK = "#2c5aa0";
+export const LANE_BLUE_TINT = "#edf3fc";
+export const LANE_BLUE_BD = "#d5e3f6";
+export const LANE_TEAL_FILL = "#0d8a86";
+export const LANE_TEAL_INK = "#0b6d6a";
+export const LANE_TEAL_TINT = "#e1f0ee";
+export const LANE_TEAL_BD = "#c6e6e0";
+export const LANE_GREY_FILL = "#8c9196";
+export const LANE_GREY_INK = "#5f6468";
+export const LANE_GREY_TINT = "#f5f6f7";
+export const LANE_GREY_BD = "#e4e6e8";
+
 // ---------------------------------------------------------------------------
 // Branded shell (tinted-ground + floating-card surfaces)
 // ---------------------------------------------------------------------------
