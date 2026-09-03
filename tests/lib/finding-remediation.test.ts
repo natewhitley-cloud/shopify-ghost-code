@@ -22,6 +22,7 @@ const AGENTIC_IMPACT_TYPES = [
   "GHOST_HREFLANG",
   "GHOST_ROBOTS",
   "GHOST_JSON_LD",
+  "GHOST_OG",
   "JSON_LD_CONFLICT",
   "DUPLICATE_META",
 ] as const;
@@ -89,6 +90,12 @@ describe("getFindingImpact — agentic reframe", () => {
   it("frames JSON_LD_CONFLICT around AI agents picking the wrong data", () => {
     const impact = getFindingImpact("JSON_LD_CONFLICT") ?? "";
     expect(impact.toLowerCase()).toContain("agent");
+  });
+
+  it("frames GHOST_OG around AI agents reading a stale price or availability", () => {
+    const impact = getFindingImpact("GHOST_OG") ?? "";
+    expect(impact.toLowerCase()).toContain("agent");
+    expect(impact.toLowerCase()).toMatch(/price|availability/);
   });
 });
 

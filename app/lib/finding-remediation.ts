@@ -7,7 +7,8 @@
  *     engines, i.e. what this leftover signal does to how ChatGPT, Perplexity,
  *     Google AI Overviews, and shopping agents read the product. Only set for
  *     the finding types where an orphaned/conflicting signal actively misleads
- *     an agent (canonical, hreflang, meta robots, JSON-LD, duplicate meta).
+ *     an agent (canonical, hreflang, meta robots, JSON-LD, Open Graph, duplicate
+ *     meta).
  *   - `howTo`: how to remove it without breaking the store, written for a
  *     non-technical merchant, one to two sentences, accurate to what the
  *     finding actually represents.
@@ -64,7 +65,7 @@ const REMEDIATION: Record<string, Remediation> = {
   },
 
   // ---- Theme-file edits: SEO and meta markup in the head ----
-  // These carry an agentic `impact`: canonical/hreflang/robots/JSON-LD/meta
+  // These carry an agentic `impact`: canonical/hreflang/robots/JSON-LD/OG/meta
   // are exactly the signals AI shopping agents and answer engines read to
   // decide what a product is, where it lives, and whether to surface it.
   GHOST_CANONICAL: {
@@ -78,8 +79,10 @@ const REMEDIATION: Record<string, Remediation> = {
       "This title tag override was likely left by an SEO app. Remove it from the theme head so Shopify's native title logic takes over. Duplicate the theme as a backup first.",
   },
   GHOST_OG: {
+    impact:
+      "AI shopping agents and answer engines also read Open Graph tags like og:price and og:availability, not just social platforms. Left by an uninstalled app, this tag can hand them a stale price or availability status, so they quote the wrong price or mark your product out of stock when it isn't.",
     howTo:
-      "This Open Graph tag controls how pages look when shared on social media. If the app that added it is gone, remove the tag from the theme head (duplicate the theme first) and let Shopify generate the defaults.",
+      "Once you confirm the app that added it is gone, remove the tag from the theme head and let Shopify generate the defaults. Duplicate the theme first.",
   },
   GHOST_HREFLANG: {
     impact:
