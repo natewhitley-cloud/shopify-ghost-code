@@ -122,6 +122,11 @@ vi.mock("../../app/services/redirect-detector.server", () => ({
   detectOrphanedRedirects: vi.fn(),
 }));
 
+vi.mock("../../app/services/jsonld-price-audit.server", () => ({
+  auditStaticJsonLdPrices: vi.fn(),
+  STATIC_JSONLD_PRICE_DESC_PREFIX: "Static JSON-LD advertises ",
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
@@ -136,6 +141,7 @@ import {
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.server";
+import { auditStaticJsonLdPrices } from "../../app/services/jsonld-price-audit.server";
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
 import { detectOrphanedPages } from "../../app/services/page-detector.server";
 import { detectPersistentDiscounts } from "../../app/services/price-detector.server";
@@ -199,6 +205,7 @@ const mockDetectPersistentDiscounts = detectPersistentDiscounts as ReturnType<ty
 const mockDetectOrphanedPages = detectOrphanedPages as ReturnType<typeof vi.fn>;
 const mockDetectOrphanedMetafields = detectOrphanedMetafields as ReturnType<typeof vi.fn>;
 const mockDetectOrphanedRedirects = detectOrphanedRedirects as ReturnType<typeof vi.fn>;
+const mockAuditStaticJsonLdPrices = auditStaticJsonLdPrices as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -328,6 +335,12 @@ beforeEach(() => {
   mockDetectOrphanedPages.mockReturnValue([]);
   mockDetectOrphanedMetafields.mockReturnValue([]);
   mockDetectOrphanedRedirects.mockReturnValue([]);
+
+  // Live-price audit: default to no findings. The step is also flag-gated
+  // (JSONLD_LIVE_PRICE_ENABLED) — cleared here so it is inert unless a test
+  // explicitly enables it.
+  mockAuditStaticJsonLdPrices.mockResolvedValue([]);
+  delete process.env.JSONLD_LIVE_PRICE_ENABLED;
 });
 
 // ---------------------------------------------------------------------------
@@ -824,6 +837,126 @@ describe("scanTheme — optional audit steps", () => {
       expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
       expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-price audit for stale static JSON-LD (gc-47c.10)
+//
+// Double-inert soft-launch: needs BOTH the JSONLD_LIVE_PRICE_ENABLED flag AND a
+// granted read_products scope. Reuses JSON_LD_CONFLICT (no schema change), so
+// its persist must NOT clobber the worker's same-file conflict findings — it
+// deletes only rows whose description starts with the audit's prefix.
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
+  const PRICE_PREFIX = "Static JSON-LD advertises ";
+
+  const PRICE_CANDIDATE = {
+    filename: "sections/product.liquid",
+    lineNumber: 3,
+    codeSnippet: '<script type="application/ld+json">{"@type":"Product"}</script>',
+    handle: "widget",
+    staticPrice: "19.99",
+    staticPriceCurrency: "USD",
+  };
+
+  const PRICE_FINDING = {
+    filename: "sections/product.liquid",
+    lineNumber: 3,
+    codeSnippet: PRICE_CANDIDATE.codeSnippet,
+    findingType: FindingType.JSON_LD_CONFLICT,
+    severity: Severity.HIGH,
+    appName: undefined,
+    description: `${PRICE_PREFIX}price 19.99 but the live product price is 29.99. An AI shopping agent could quote the stale price.`,
+  };
+
+  function withCandidates(candidates: unknown[]) {
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      staticProductCandidates: candidates,
+    });
+  }
+
+  it("is fully inert when the flag is OFF (no scope probe, no persist, not skipped)", async () => {
+    // Flag unset by beforeEach. Candidates present + scope granted, yet the step
+    // must not run — verifying the flag gate short-circuits FIRST.
+    withCandidates([PRICE_CANDIDATE]);
+
+    const result = await runScanTheme();
+
+    expect(mockAuditStaticJsonLdPrices).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+      status: "COMPLETED",
+      findingCount: MOCK_FINDINGS.length,
+      // JSON_LD_CONFLICT must NOT appear — flag-off is not a scope skip.
+      skippedCategories: [],
+      skippedFiles: [],
+    });
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("audits and persists findings when the flag is ON and scope is granted", async () => {
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    withCandidates([PRICE_CANDIDATE]);
+    mockHasProductScope.mockResolvedValue(true);
+    mockAuditStaticJsonLdPrices.mockResolvedValue([PRICE_FINDING]);
+    mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length + 1);
+
+    const result = await runScanTheme();
+
+    expect(mockAuditStaticJsonLdPrices).toHaveBeenCalledWith(MOCK_ADMIN, [PRICE_CANDIDATE]);
+    // Idempotency delete is NARROWED to this audit's rows so the worker's
+    // same-file JSON_LD_CONFLICT findings are never clobbered.
+    expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+      where: {
+        scanId: SCAN_ID,
+        findingType: FindingType.JSON_LD_CONFLICT,
+        description: { startsWith: PRICE_PREFIX },
+      },
+    });
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [PRICE_FINDING]);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length + 1);
+  });
+
+  it("is inert (not skipped) when the flag is ON but there are no candidates", async () => {
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    withCandidates([]);
+    mockHasProductScope.mockResolvedValue(true);
+
+    const result = await runScanTheme();
+
+    expect(mockAuditStaticJsonLdPrices).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [] }),
+    );
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("records JSON_LD_CONFLICT in skippedCategories when scope is NOT granted", async () => {
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    withCandidates([PRICE_CANDIDATE]);
+    // Product scope missing: the three product audits AND the live-price audit
+    // all skip. Their categories are recorded so the differ never false-resolves.
+    mockHasProductScope.mockResolvedValue(false);
+
+    const result = await runScanTheme();
+
+    expect(mockAuditStaticJsonLdPrices).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+      status: "COMPLETED",
+      findingCount: MOCK_FINDINGS.length,
+      skippedCategories: [
+        FindingType.GHOST_TAG,
+        FindingType.GHOST_PRICE,
+        FindingType.GHOST_METAFIELD,
+        FindingType.JSON_LD_CONFLICT,
+      ],
+      skippedFiles: [],
+    });
+    expect(result.status).toBe("COMPLETED");
   });
 });
 

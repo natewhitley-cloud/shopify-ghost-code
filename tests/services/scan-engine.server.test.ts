@@ -12,6 +12,7 @@ import {
   detectDuplicateMetaTags,
   detectGhostJsonLd,
   detectJsonLdConflicts,
+  extractStaticProductCandidates,
   detectGhostTextFragments,
   detectGhostPixels,
   detectSettingsDrift,
@@ -2165,6 +2166,141 @@ describe("detectJsonLdConflicts", () => {
     expect(findings[0].description).toContain("line 1");
     // No offer field differs, so the description must not gain an offer clause.
     expect(findings[0].description).not.toContain("offer");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// extractStaticProductCandidates (gc-47c.10)
+// ---------------------------------------------------------------------------
+
+describe("extractStaticProductCandidates", () => {
+  it("extracts an unsigned static Product block with handle + price + availability", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      content: `<script type="application/ld+json">
+{
+  "@type": "Product",
+  "name": "Blue Widget",
+  "url": "https://shop.example.com/products/blue-widget?variant=1",
+  "offers": {
+    "@type": "Offer",
+    "price": "19.99",
+    "priceCurrency": "USD",
+    "availability": "https://schema.org/InStock"
+  }
+}
+</script>`,
+    };
+    const candidates = extractStaticProductCandidates(file);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      filename: "sections/product.liquid",
+      handle: "blue-widget",
+      staticPrice: "19.99",
+      staticPriceCurrency: "USD",
+      staticAvailability: "InStock",
+    });
+    expect(candidates[0].codeSnippet).toContain("ld+json");
+  });
+
+  it("extracts sku when present on the offer", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      content: `<script type="application/ld+json">
+{"@type":"Product","url":"https://s.com/products/x","offers":{"@type":"Offer","sku":"SKU-42","price":"5.00"}}
+</script>`,
+    };
+    const candidates = extractStaticProductCandidates(file);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].sku).toBe("SKU-42");
+    expect(candidates[0].handle).toBe("x");
+  });
+
+  it("skips signed blocks (handled by detectGhostJsonLd)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: `<script type="application/ld+json">
+{"@type":"Product","url":"https://judge.me/reviews/product123","offers":{"price":"9.99"}}
+</script>`,
+    };
+    expect(extractStaticProductCandidates(file)).toHaveLength(0);
+  });
+
+  it("skips Liquid blocks (theme-rendered, not stale)", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      content: `<script type="application/ld+json">
+{"@type":"Product","url":"https://s.com/products/{{ product.handle }}","offers":{"price":"1.00"}}
+</script>`,
+    };
+    expect(extractStaticProductCandidates(file)).toHaveLength(0);
+  });
+
+  it("skips blocks with no resolvable identity (no handle, no sku)", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      content: `<script type="application/ld+json">
+{"@type":"Product","name":"Nameless","offers":{"price":"1.00"}}
+</script>`,
+    };
+    expect(extractStaticProductCandidates(file)).toHaveLength(0);
+  });
+
+  it("skips blocks with an identity but nothing to compare (no price, no availability)", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      content: `<script type="application/ld+json">
+{"@type":"Product","url":"https://s.com/products/y","brand":"Acme"}
+</script>`,
+    };
+    expect(extractStaticProductCandidates(file)).toHaveLength(0);
+  });
+
+  it("skips non-Product nodes", () => {
+    const file: ThemeFile = {
+      filename: "sections/faq.liquid",
+      content: `<script type="application/ld+json">
+{"@type":"FAQPage","url":"https://s.com/products/z","offers":{"price":"1.00"}}
+</script>`,
+    };
+    expect(extractStaticProductCandidates(file)).toHaveLength(0);
+  });
+
+  it("extracts Product nodes nested in an @graph wrapper", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      content: `<script type="application/ld+json">
+{"@graph":[{"@type":"WebPage"},{"@type":"Product","url":"https://s.com/products/graph-prod","offers":{"price":"12.34","priceCurrency":"EUR"}}]}
+</script>`,
+    };
+    const candidates = extractStaticProductCandidates(file);
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0].handle).toBe("graph-prod");
+    expect(candidates[0].staticPrice).toBe("12.34");
+  });
+
+  it("does not extract from non-scannable-agnostic malformed JSON", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      content: `<script type="application/ld+json">{ not valid json </script>`,
+    };
+    expect(extractStaticProductCandidates(file)).toHaveLength(0);
+  });
+
+  it("surfaces candidates through scanThemeFiles without emitting findings for them", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "sections/product.liquid",
+        content: `<script type="application/ld+json">
+{"@type":"Product","url":"https://s.com/products/pooled","offers":{"price":"7.77"}}
+</script>`,
+      },
+    ];
+    const result = scanThemeFiles(files);
+    expect(result.staticProductCandidates).toHaveLength(1);
+    expect(result.staticProductCandidates?.[0].handle).toBe("pooled");
+    // The static unsigned Product block must NOT itself produce a JSON-LD finding.
+    expect(findingsOfType(result.findings, FindingType.GHOST_JSON_LD)).toHaveLength(0);
   });
 });
 

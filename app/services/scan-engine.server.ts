@@ -87,6 +87,41 @@ export type UnknownExternalResource = {
 /** A scannable file skipped because it exceeded the per-file size cap. */
 export type SkippedFile = { filename: string; size: number };
 
+/**
+ * A compact record of an UNSIGNED static Product JSON-LD block, extracted during
+ * the worker theme scan so the (much later, scope-gated) live-price audit can
+ * correlate it against the LIVE product price without re-shipping theme file
+ * contents between Inngest steps (gc-47c.10).
+ *
+ * Why this exists: the worker scan returns only COUNTS from its Inngest step
+ * (theme file bodies blow past the 4MB step-output limit), yet the live-price
+ * audit needs each static block's price/availability/identity to compare. This
+ * list is tiny (a handful of products per theme) so it CAN cross the step
+ * boundary. Each entry is self-contained — it carries a pre-built codeSnippet so
+ * the audit step, which no longer has the file body, can still emit a normal
+ * finding.
+ *
+ * Only blocks with a resolvable identity (handle or sku) AND something to compare
+ * (a price or an availability) are recorded; anything ambiguous is dropped here
+ * so it can never become a false positive downstream.
+ */
+export type StaticProductCandidate = {
+  filename: string;
+  lineNumber: number;
+  /** Pre-built code snippet (bounded, ~3 lines) so the audit step can emit a finding without the file body. */
+  codeSnippet: string;
+  /** Product handle parsed from a `/products/{handle}` url, lower-cased. */
+  handle?: string;
+  /** Variant SKU, when the block carries one (identifies a specific variant). */
+  sku?: string;
+  /** Static advertised price, normalized to a trimmed string (number-or-string). */
+  staticPrice?: string;
+  /** Static price currency (ISO code), when present. */
+  staticPriceCurrency?: string;
+  /** Static availability with the schema.org URL prefix stripped (e.g. "InStock"). */
+  staticAvailability?: string;
+};
+
 export type ScanResult = {
   findings: CreateFindingInput[];
   unknownScripts: UnknownExternalResource[];
@@ -95,6 +130,10 @@ export type ScanResult = {
   // (no silent drops). Optional for backward compatibility with ScanResult
   // literals in tests; scanThemeFiles always populates it (possibly empty).
   skippedFiles?: SkippedFile[];
+  // Compact list of unsigned static Product JSON-LD candidates for the live-price
+  // audit (gc-47c.10). Optional for backward compatibility with ScanResult
+  // literals in tests; scanThemeFiles always populates it (possibly empty).
+  staticProductCandidates?: StaticProductCandidate[];
 };
 
 // ---------------------------------------------------------------------------
@@ -1112,6 +1151,110 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
   }
 
   return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Extraction: static Product JSON-LD candidates (for the live-price audit)
+// ---------------------------------------------------------------------------
+
+/**
+ * Pull the resolvable product identity off a Product node. We only trust the two
+ * keys that map deterministically to a live Shopify product:
+ *   - `handle`  parsed from a `/products/{handle}` url (Product.url), lower-cased.
+ *   - `sku`     the variant SKU (on the Product node or its first Offer).
+ *
+ * `mpn`, `@id`, and `name` are deliberately NOT used: an mpn is a manufacturer
+ * part number (not a Shopify SKU), `@id` is an arbitrary IRI, and `name` is not a
+ * unique key — resolving on any of them risks matching the WRONG product and
+ * emitting a false price conflict.
+ */
+function extractProductIdentity(node: Record<string, unknown>): {
+  handle?: string;
+  sku?: string;
+} {
+  let handle: string | undefined;
+  const url = normalizeOfferValue(node["url"]);
+  if (url) {
+    const m = /\/products\/([^/?#]+)/.exec(url);
+    if (m) handle = m[1].toLowerCase();
+  }
+
+  let sku = normalizeOfferValue(node["sku"]);
+  if (sku === undefined) {
+    const offers = node["offers"];
+    const first = Array.isArray(offers)
+      ? offers.find((o) => o !== null && typeof o === "object" && !Array.isArray(o))
+      : offers;
+    if (first !== null && typeof first === "object" && !Array.isArray(first)) {
+      sku = normalizeOfferValue((first as Record<string, unknown>)["sku"]);
+    }
+  }
+
+  return { handle, sku };
+}
+
+/**
+ * Extract UNSIGNED static Product JSON-LD blocks as compact candidates for the
+ * live-price audit (gc-47c.10). A candidate is recorded only when the block is:
+ *   - static (no Liquid tags — a Liquid block is theme-rendered, not stale),
+ *   - UNSIGNED (no app signature — signed blocks are GHOST_JSON_LD, handled by
+ *     detectGhostJsonLd; this is the "legitimate static JSON-LD" that detector
+ *     deliberately skips),
+ *   - a Product node with a resolvable identity (handle or sku), AND
+ *   - carries something comparable (a price or an availability).
+ *
+ * Anything ambiguous or unresolvable is dropped HERE so it can never reach the
+ * audit as a false positive.
+ */
+export function extractStaticProductCandidates(file: ThemeFile): StaticProductCandidate[] {
+  const candidates: StaticProductCandidate[] = [];
+
+  JSON_LD_BLOCK_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
+    const blockContent = match[1];
+
+    // Liquid blocks are dynamically rendered by the theme engine — not stale
+    // static injections. Mirrors both JSON-LD detectors.
+    if (LIQUID_TAG_RE.test(blockContent)) continue;
+
+    // Signed blocks are orphaned-app markup handled by detectGhostJsonLd. We only
+    // want the unsigned "legitimate static JSON-LD" it skips.
+    if (identifyAppFromJsonLd(blockContent)) continue;
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(blockContent);
+    } catch {
+      continue; // Malformed JSON — skip gracefully
+    }
+
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+
+    for (const node of extractJsonLdNodes(parsed)) {
+      if (normalizeAtType(node["@type"]) !== "Product") continue;
+
+      const { handle, sku } = extractProductIdentity(node);
+      if (handle === undefined && sku === undefined) continue; // unresolvable → skip
+
+      const offer = extractOfferFields(node);
+      if (offer.price === undefined && offer.availability === undefined) continue; // nothing to compare
+
+      candidates.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet: buildSnippet(file.content, lineNumber),
+        handle,
+        sku,
+        staticPrice: offer.price,
+        staticPriceCurrency: offer.priceCurrency,
+        staticAvailability: offer.availability,
+      });
+    }
+  }
+
+  return candidates;
 }
 
 // ---------------------------------------------------------------------------
@@ -2558,6 +2701,7 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   const findings: CreateFindingInput[] = [];
   const unknownScripts: UnknownExternalResource[] = [];
   const skippedFiles: SkippedFile[] = [];
+  const staticProductCandidates: StaticProductCandidate[] = [];
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
@@ -2598,6 +2742,11 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     // Collect unrecognized external resources
     unknownScripts.push(...collectUnknownScripts(file));
     unknownScripts.push(...collectUnknownStylesheets(file));
+
+    // Collect unsigned static Product JSON-LD blocks for the live-price audit
+    // (gc-47c.10). No findings are emitted here — the (scope+flag-gated) audit
+    // step compares these against LIVE product prices later.
+    staticProductCandidates.push(...extractStaticProductCandidates(file));
   }
 
   // Pass 2: cross-file orphan snippet detection
@@ -2635,5 +2784,5 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // Pass 4: page builder layout detection
   findings.push(...detectGhostLayouts(files));
 
-  return { findings, unknownScripts, skippedFiles };
+  return { findings, unknownScripts, skippedFiles, staticProductCandidates };
 }

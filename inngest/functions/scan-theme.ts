@@ -89,6 +89,16 @@ async function persistAuditFindings(opts: {
   findings: CreateFindingInput[];
   event: string;
   logMessage: string;
+  /**
+   * When set, the idempotency deleteMany is narrowed to findings of this type
+   * whose description starts with this prefix. Required when a FindingType is
+   * shared by more than one producer in the same scan (JSON_LD_CONFLICT is
+   * emitted BOTH by the worker's same-file detector in step 2 AND by the
+   * live-price audit): deleting the whole type here would wipe the other
+   * producer's already-persisted findings, since step 2 does not re-run on this
+   * step's retry. Single-producer callers omit it and delete by type as before.
+   */
+  deleteDescriptionPrefix?: string;
 }): Promise<void> {
   if (opts.findings.length === 0) return;
 
@@ -97,7 +107,13 @@ async function persistAuditFindings(opts: {
   // Idempotency guard: delete any previous findings of this type before
   // inserting, so Inngest retries don't create duplicates.
   await db.finding.deleteMany({
-    where: { scanId: opts.scanId, findingType: opts.findingType },
+    where: {
+      scanId: opts.scanId,
+      findingType: opts.findingType,
+      ...(opts.deleteDescriptionPrefix
+        ? { description: { startsWith: opts.deleteDescriptionPrefix } }
+        : {}),
+    },
   });
   const { createFindings } = await import("../../app/models/finding.server");
   await createFindings(opts.scanId, opts.findings);
@@ -202,7 +218,7 @@ export const scanTheme = inngest.createFunction(
       // Step 2: Fetch theme files, scan them, and save findings.
       // Combined into one step because theme file contents can exceed
       // Inngest's 4MB step output serialization limit.
-      const { findingCount, fileCount, skippedFilePaths } = await step.run(
+      const { findingCount, fileCount, skippedFilePaths, staticProductCandidates } = await step.run(
         "fetch-and-scan",
         async () => {
           const db = (await import("../../app/db.server")).default;
@@ -222,7 +238,8 @@ export const scanTheme = inngest.createFunction(
             fileCount: files.length,
           });
 
-          const { findings, unknownScripts, skippedFiles } = await scanThemeFilesInPool(files);
+          const { findings, unknownScripts, skippedFiles, staticProductCandidates } =
+            await scanThemeFilesInPool(files);
 
           // Surface any files skipped for exceeding the per-file size cap so the
           // drop is never silent (gc-06e.2). Real theme Liquid files are far under
@@ -266,6 +283,10 @@ export const scanTheme = inngest.createFunction(
             findingCount: findings.length,
             fileCount: files.length,
             skippedFilePaths: (skippedFiles ?? []).map((f) => f.filename),
+            // Tiny (a handful per theme), so it safely crosses the step boundary
+            // unlike the full findings array. Threaded into the live-price audit
+            // step below (gc-47c.10).
+            staticProductCandidates: staticProductCandidates ?? [],
           };
         },
       );
@@ -435,6 +456,69 @@ export const scanTheme = inngest.createFunction(
         }),
       );
 
+      // Step 9: Live-price audit for stale static JSON-LD (optional — requires
+      // read_products scope AND the JSONLD_LIVE_PRICE_ENABLED flag). Modeled on
+      // translation-audit: it has extra pre-conditions (flag + candidate list),
+      // so it does not use runAuditStep.
+      //
+      // Double-inert soft-launch (gc-47c.10): when the flag is OFF the step is
+      // fully inert and returns skipped:false (NOT a scope skip — the category is
+      // not "un-audited due to missing scope", it is deliberately disabled). Only
+      // once the flag is ON does a genuinely missing read_products scope report
+      // skipped:true → skippedCategories.
+      const jsonLdPriceResult: AuditStepResult = await step.run("product-price-audit", async () => {
+        const { logger } = await import("../../app/lib/logger.server");
+
+        if (process.env.JSONLD_LIVE_PRICE_ENABLED !== "true") {
+          // Flag off: inert. Not a scope skip.
+          return { findingCount: 0, skipped: false };
+        }
+
+        // Nothing to correlate — the theme had no unsigned static Product
+        // JSON-LD. Audited (nothing to check), not a scope skip.
+        if (staticProductCandidates.length === 0) {
+          return { findingCount: 0, skipped: false };
+        }
+
+        const db = (await import("../../app/db.server")).default;
+        const shop = await db.shop.findUnique({ where: { id: shopId } });
+        if (!shop) return { findingCount: 0, skipped: false };
+
+        const { unauthenticated } = await import("../../app/shopify.server");
+        const { admin } = await unauthenticated.admin(shop.domain);
+
+        const { hasProductScope } = await import("../../app/services/product-fetcher.server");
+        const hasScope = await hasProductScope(admin);
+        if (!hasScope) {
+          logger.info("read_products scope not available — skipping live-price audit", {
+            function: "scan-theme",
+            stepName: "product-price-audit",
+            shopId,
+          });
+          // Scope not granted → category NOT audited (recorded in skippedCategories).
+          return { findingCount: 0, skipped: true };
+        }
+
+        const { auditStaticJsonLdPrices, STATIC_JSONLD_PRICE_DESC_PREFIX } =
+          await import("../../app/services/jsonld-price-audit.server");
+        const priceFindings = await auditStaticJsonLdPrices(admin, staticProductCandidates);
+
+        await persistAuditFindings({
+          scanId,
+          shopId,
+          findingType: FindingType.JSON_LD_CONFLICT,
+          findings: priceFindings,
+          event: "jsonld_price_findings",
+          logMessage: "live-price JSON-LD findings persisted",
+          // JSON_LD_CONFLICT is ALSO produced by the worker (step 2). Narrow the
+          // idempotency delete to THIS audit's rows so a retry never wipes the
+          // worker's same-file conflict findings.
+          deleteDescriptionPrefix: STATIC_JSONLD_PRICE_DESC_PREFIX,
+        });
+
+        return { findingCount: priceFindings.length, skipped: false };
+      });
+
       const totalFindings =
         findingCount +
         translationResult.findingCount +
@@ -442,13 +526,24 @@ export const scanTheme = inngest.createFunction(
         priceResult.findingCount +
         pageResult.findingCount +
         metafieldResult.findingCount +
-        redirectResult.findingCount;
+        redirectResult.findingCount +
+        jsonLdPriceResult.findingCount;
 
       // Collect the optional categories that were skipped because their scope
       // was not granted. Each entry maps 1:1 to a FindingType so the differ can
       // exclude that category's prior findings from "resolved" (LOG-4). The scan
       // still finalizes COMPLETED (below); this list also seeds a future
       // "enable more checks" nudge.
+      // NOTE (gc-47c.10): JSON_LD_CONFLICT is a SHARED type — the worker's
+      // same-file conflict detector (step 2) always audits it, while the
+      // live-price audit only audits a SUBSET (static-vs-live). skippedCategories
+      // is coarse (per-FindingType), so listing JSON_LD_CONFLICT here makes the
+      // differ exclude ALL prior JSON_LD_CONFLICT findings from resolved-detection
+      // whenever the live-price audit is scope-skipped. That over-excludes the
+      // worker's same-file conflicts, but it errs in the SAFE direction (a prior
+      // finding is reported as still-present rather than falsely "resolved" —
+      // LOG-4). This only fires when the flag is ON but read_products is not
+      // granted; sub-type exclusion would need a schema change (out of scope).
       const skippedCategories: string[] = [
         [translationResult.skipped, FindingType.GHOST_TRANSLATION],
         [tagResult.skipped, FindingType.GHOST_TAG],
@@ -456,6 +551,7 @@ export const scanTheme = inngest.createFunction(
         [pageResult.skipped, FindingType.GHOST_PAGE],
         [metafieldResult.skipped, FindingType.GHOST_METAFIELD],
         [redirectResult.skipped, FindingType.GHOST_REDIRECT],
+        [jsonLdPriceResult.skipped, FindingType.JSON_LD_CONFLICT],
       ]
         .filter(([skipped]) => skipped)
         .map(([, category]) => category as string);
@@ -523,6 +619,7 @@ export const scanTheme = inngest.createFunction(
         pageFindings: pageResult.findingCount,
         metafieldFindings: metafieldResult.findingCount,
         redirectFindings: redirectResult.findingCount,
+        jsonLdPriceFindings: jsonLdPriceResult.findingCount,
       });
 
       return {
