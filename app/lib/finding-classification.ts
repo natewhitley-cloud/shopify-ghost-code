@@ -67,6 +67,9 @@ export type FindingConfidence = "signature" | "heuristic";
  *                        is optional.
  *   - JSON_LD_CONFLICT — two JSON-LD blocks share an @type with differing data;
  *                        app attribution optional.
+ *   - JSON_LD_PRICE_CONFLICT — a static JSON-LD price/availability disagrees with
+ *                        live product data; a structural comparison, not an
+ *                        app-signature match.
  *   - GHOST_JSON_LD    — can fire purely on an app-only @type (FAQPage, Review,
  *                        …) with no app match.
  *   - SETTINGS_DRIFT   — settings_data.json references a section file that no
@@ -94,6 +97,7 @@ const HEURISTIC_FINDING_TYPES = new Set([
   "ORPHAN_ASSET",
   "DUPLICATE_META",
   "JSON_LD_CONFLICT",
+  "JSON_LD_PRICE_CONFLICT",
   "GHOST_JSON_LD",
   "SETTINGS_DRIFT",
   "GHOST_LAYOUT",

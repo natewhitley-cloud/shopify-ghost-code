@@ -418,6 +418,30 @@ describe("diffScans — skipped categories (LOG-4 un-audited exclusion)", () => 
     expect(withEmpty.resolvedFindings).toHaveLength(1);
     expect(without.resolvedFindings).toHaveLength(1);
   });
+
+  it("skips only JSON_LD_PRICE_CONFLICT, leaving the worker's JSON_LD_CONFLICT to diff (gc-47c.10)", () => {
+    // The live-price audit (JSON_LD_PRICE_CONFLICT) was scope-skipped, but the
+    // worker's same-file conflict detector (JSON_LD_CONFLICT) always runs. Because
+    // the two are DISTINCT types, listing only JSON_LD_PRICE_CONFLICT must NOT
+    // suppress a genuinely-resolved worker JSON_LD_CONFLICT — the pre-fix bug that
+    // shared one type would have hidden it.
+    const previous = [
+      makeFinding("sections/product.liquid", "JSON_LD_CONFLICT", "worker-conflict"),
+      makeFinding("sections/product.liquid", "JSON_LD_PRICE_CONFLICT", "stale-price"),
+    ];
+
+    const diff = diffScans([], previous, {
+      skippedCategories: ["JSON_LD_PRICE_CONFLICT"],
+    });
+
+    // The worker conflict is re-checked (audited) and gone -> resolved.
+    expect(diff.resolvedFindings).toHaveLength(1);
+    expect(diff.resolvedFindings[0].findingType).toBe("JSON_LD_CONFLICT");
+    // The price conflict was NOT re-checked -> excluded, never false-resolved.
+    expect(diff.resolvedFindings.some((f) => f.findingType === "JSON_LD_PRICE_CONFLICT")).toBe(
+      false,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

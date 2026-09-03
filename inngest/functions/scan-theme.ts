@@ -89,30 +89,19 @@ async function persistAuditFindings(opts: {
   findings: CreateFindingInput[];
   event: string;
   logMessage: string;
-  /**
-   * When set, the idempotency deleteMany is narrowed to findings of this type
-   * whose description starts with this prefix. Required when a FindingType is
-   * shared by more than one producer in the same scan (JSON_LD_CONFLICT is
-   * emitted BOTH by the worker's same-file detector in step 2 AND by the
-   * live-price audit): deleting the whole type here would wipe the other
-   * producer's already-persisted findings, since step 2 does not re-run on this
-   * step's retry. Single-producer callers omit it and delete by type as before.
-   */
-  deleteDescriptionPrefix?: string;
 }): Promise<void> {
   if (opts.findings.length === 0) return;
 
   const db = (await import("../../app/db.server")).default;
 
   // Idempotency guard: delete any previous findings of this type before
-  // inserting, so Inngest retries don't create duplicates.
+  // inserting, so Inngest retries don't create duplicates. Each audit owns its
+  // FindingType exclusively, so deleting by type never clobbers another
+  // producer's rows.
   await db.finding.deleteMany({
     where: {
       scanId: opts.scanId,
       findingType: opts.findingType,
-      ...(opts.deleteDescriptionPrefix
-        ? { description: { startsWith: opts.deleteDescriptionPrefix } }
-        : {}),
     },
   });
   const { createFindings } = await import("../../app/models/finding.server");
@@ -499,24 +488,28 @@ export const scanTheme = inngest.createFunction(
           return { findingCount: 0, skipped: true };
         }
 
-        const { auditStaticJsonLdPrices, STATIC_JSONLD_PRICE_DESC_PREFIX } =
+        const { auditStaticJsonLdPrices } =
           await import("../../app/services/jsonld-price-audit.server");
-        const priceFindings = await auditStaticJsonLdPrices(admin, staticProductCandidates);
+        const { findings: priceFindings, skipped } = await auditStaticJsonLdPrices(
+          admin,
+          staticProductCandidates,
+          shopId,
+        );
 
         await persistAuditFindings({
           scanId,
           shopId,
-          findingType: FindingType.JSON_LD_CONFLICT,
+          findingType: FindingType.JSON_LD_PRICE_CONFLICT,
           findings: priceFindings,
           event: "jsonld_price_findings",
           logMessage: "live-price JSON-LD findings persisted",
-          // JSON_LD_CONFLICT is ALSO produced by the worker (step 2). Narrow the
-          // idempotency delete to THIS audit's rows so a retry never wipes the
-          // worker's same-file conflict findings.
-          deleteDescriptionPrefix: STATIC_JSONLD_PRICE_DESC_PREFIX,
         });
 
-        return { findingCount: priceFindings.length, skipped: false };
+        // `skipped` is true when the audit could not fully cover the candidates
+        // (lookup-budget truncation or read_products revoked mid-scan), so the
+        // category is recorded in skippedCategories and the differ does not
+        // false-resolve the prior findings we could not re-check.
+        return { findingCount: priceFindings.length, skipped };
       });
 
       const totalFindings =
@@ -534,16 +527,12 @@ export const scanTheme = inngest.createFunction(
       // exclude that category's prior findings from "resolved" (LOG-4). The scan
       // still finalizes COMPLETED (below); this list also seeds a future
       // "enable more checks" nudge.
-      // NOTE (gc-47c.10): JSON_LD_CONFLICT is a SHARED type — the worker's
-      // same-file conflict detector (step 2) always audits it, while the
-      // live-price audit only audits a SUBSET (static-vs-live). skippedCategories
-      // is coarse (per-FindingType), so listing JSON_LD_CONFLICT here makes the
-      // differ exclude ALL prior JSON_LD_CONFLICT findings from resolved-detection
-      // whenever the live-price audit is scope-skipped. That over-excludes the
-      // worker's same-file conflicts, but it errs in the SAFE direction (a prior
-      // finding is reported as still-present rather than falsely "resolved" —
-      // LOG-4). This only fires when the flag is ON but read_products is not
-      // granted; sub-type exclusion would need a schema change (out of scope).
+      // NOTE (gc-47c.10): the live-price audit emits JSON_LD_PRICE_CONFLICT, a
+      // type EXCLUSIVE to it (the worker's same-file conflict detector uses the
+      // separate JSON_LD_CONFLICT type). So listing JSON_LD_PRICE_CONFLICT here
+      // when the audit is skipped (scope not granted, lookup-budget truncation,
+      // or mid-scan revocation) excludes exactly this audit's prior findings from
+      // resolved-detection (LOG-4) without touching the worker's rows.
       const skippedCategories: string[] = [
         [translationResult.skipped, FindingType.GHOST_TRANSLATION],
         [tagResult.skipped, FindingType.GHOST_TAG],
@@ -551,7 +540,7 @@ export const scanTheme = inngest.createFunction(
         [pageResult.skipped, FindingType.GHOST_PAGE],
         [metafieldResult.skipped, FindingType.GHOST_METAFIELD],
         [redirectResult.skipped, FindingType.GHOST_REDIRECT],
-        [jsonLdPriceResult.skipped, FindingType.JSON_LD_CONFLICT],
+        [jsonLdPriceResult.skipped, FindingType.JSON_LD_PRICE_CONFLICT],
       ]
         .filter(([skipped]) => skipped)
         .map(([, category]) => category as string);

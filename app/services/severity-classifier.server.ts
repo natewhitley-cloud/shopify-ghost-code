@@ -34,6 +34,7 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.SETTINGS_DRIFT]: Severity.LOW,
   [FindingType.GHOST_PIXEL]: Severity.HIGH,
   [FindingType.JSON_LD_CONFLICT]: Severity.HIGH,
+  [FindingType.JSON_LD_PRICE_CONFLICT]: Severity.HIGH,
   [FindingType.GHOST_LAYOUT]: Severity.MEDIUM,
   [FindingType.GHOST_TAG]: Severity.LOW,
   [FindingType.GHOST_PRICE]: Severity.HIGH,
