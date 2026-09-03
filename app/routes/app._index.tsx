@@ -1,7 +1,14 @@
 import { ScanOrigin, Severity } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Link, redirect, useFetcher, useLoaderData, useNavigate } from "react-router";
+import {
+  Link,
+  redirect,
+  useFetcher,
+  useLoaderData,
+  useNavigate,
+  useSearchParams,
+} from "react-router";
 
 import {
   HealthScoreTrendChart,
@@ -20,6 +27,7 @@ import type { LaneKey, LaneSummaryRow, UrgencyKey } from "../lib/finding-consequ
 import { formatDate, isSuccessfulScan } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
+import { mergeSearchParams } from "../lib/merge-search-params";
 import {
   canStartScan,
   canUseMultipleThemes,
@@ -537,6 +545,7 @@ export default function Dashboard() {
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
 
   // Lazily fetch the diff for the latest successful scan via the resource route
   // (same pattern as scan-detail — see app.scans.$scanId.tsx) to surface NEW
@@ -1182,7 +1191,7 @@ export default function Dashboard() {
                           return (
                             <Link
                               key={row.lane}
-                              to={`/app/scans/${latestScanId}?lane=${row.lane}`}
+                              to={`/app/scans/${latestScanId}?${mergeSearchParams(searchParams, { lane: row.lane })}`}
                               aria-label={`Review ${row.count} ${row.label} finding${row.count === 1 ? "" : "s"}. ${chip.label}${isStart ? ", start here" : ""}`}
                               className={`lane${isStart ? " start" : ""}`}
                             >
