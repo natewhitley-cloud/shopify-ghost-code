@@ -848,8 +848,81 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Detect conflicting JSON-LD blocks — multiple <script type="application/ld+json">
- * blocks with the same @type but different data in the same file.
+ * A single schema.org node: an object carrying its own `@type`. Real SEO-app
+ * output nests nodes in several shapes (bare object, `@graph` wrapper, top-level
+ * array), so we flatten every block into a list of nodes before comparing.
+ */
+interface JsonLdNode {
+  lineNumber: number;
+  /** Canonical JSON of just this node (stable key order) for equality checks. */
+  rawContent: string;
+}
+
+/**
+ * Recursively sort object keys so two semantically identical nodes serialize to
+ * the same string regardless of the source key order — makes dedup reliable.
+ */
+function canonicalizeJson(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalizeJson);
+  if (value && typeof value === "object") {
+    const sorted: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort()) {
+      sorted[key] = canonicalizeJson((value as Record<string, unknown>)[key]);
+    }
+    return sorted;
+  }
+  return value;
+}
+
+/**
+ * Normalize a node's `@type` into a stable string grouping key.
+ *
+ * - A string `@type` is used as-is.
+ * - An array `@type` (e.g. `["Product","Thing"]`) uses its FIRST string element.
+ *   schema.org convention lists the most specific/primary type first, so this is
+ *   deterministic and groups `["Product","Thing"]` with a plain `"Product"` node.
+ * - Anything else yields `null` (not a node we can group).
+ */
+function normalizeAtType(atType: unknown): string | null {
+  if (typeof atType === "string") return atType;
+  if (Array.isArray(atType)) {
+    const first = atType.find((t) => typeof t === "string");
+    return typeof first === "string" ? first : null;
+  }
+  return null;
+}
+
+/**
+ * Flatten a parsed JSON-LD block into its member nodes. Handles the three common
+ * real-world shapes: a bare object with `@type`, a `{"@graph":[...]}` wrapper
+ * whose members carry the `@type`s, and a top-level array of nodes. Comparison
+ * is node-level (not whole-block) so two `@graph` blocks differing in one node
+ * are still caught.
+ */
+function extractJsonLdNodes(parsed: unknown): Array<Record<string, unknown>> {
+  const nodes: Array<Record<string, unknown>> = [];
+  const consider = (value: unknown): void => {
+    if (!value || typeof value !== "object") return;
+    if (Array.isArray(value)) {
+      for (const item of value) consider(item);
+      return;
+    }
+    const obj = value as Record<string, unknown>;
+    const graph = obj["@graph"];
+    if (Array.isArray(graph)) {
+      for (const item of graph) consider(item);
+    }
+    if (normalizeAtType(obj["@type"]) !== null) {
+      nodes.push(obj);
+    }
+  };
+  consider(parsed);
+  return nodes;
+}
+
+/**
+ * Detect conflicting JSON-LD blocks — multiple schema.org nodes with the same
+ * @type but different data in the same file.
  *
  * This happens when multiple SEO/review apps each inject their own schema markup
  * and one gets uninstalled but its markup persists. Google may drop rich results
@@ -858,8 +931,9 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
 export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  // Collect all JSON-LD blocks with their parsed @type and content
-  const blocksByType = new Map<string, Array<{ lineNumber: number; rawContent: string }>>();
+  // Collect all JSON-LD nodes (flattened across @graph wrappers, top-level
+  // arrays, and array @types), grouped by normalized @type across the whole file.
+  const nodesByType = new Map<string, JsonLdNode[]>();
 
   JSON_LD_BLOCK_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
@@ -871,55 +945,63 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
     // rendered and may produce different output at runtime.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
 
-    // Try to parse the JSON and extract @type
-    let parsed: Record<string, unknown>;
+    // Try to parse the JSON — may be an object, an @graph wrapper, or an array.
+    let parsed: unknown;
     try {
       parsed = JSON.parse(blockContent);
     } catch {
       continue; // Malformed JSON — skip gracefully
     }
 
-    const atType = parsed["@type"];
-    if (typeof atType !== "string") continue;
-
     const lineNumber = lineNumberAtOffset(file.content, match.index);
 
-    if (!blocksByType.has(atType)) {
-      blocksByType.set(atType, []);
+    for (const node of extractJsonLdNodes(parsed)) {
+      const typeKey = normalizeAtType(node["@type"]);
+      if (typeKey === null) continue;
+      const rawContent = JSON.stringify(canonicalizeJson(node));
+      if (!nodesByType.has(typeKey)) {
+        nodesByType.set(typeKey, []);
+      }
+      nodesByType.get(typeKey)!.push({ lineNumber, rawContent });
     }
-    blocksByType.get(atType)!.push({ lineNumber, rawContent: blockContent });
   }
 
-  // For each @type with 2+ occurrences, compare blocks and emit conflicts
-  for (const [atType, blocks] of blocksByType) {
-    if (blocks.length < 2) continue;
+  // For each @type with 2+ nodes, compare all pairs. Each node is checked against
+  // every earlier node so a genuine difference between ANY two is caught (not
+  // just differences from node[0]). A node identical to some earlier node is a
+  // duplicate, not a conflict, so it is skipped. To avoid N-squared spam we emit
+  // at most one finding per node, referencing the earliest node it conflicts with.
+  for (const [atType, nodes] of nodesByType) {
+    if (nodes.length < 2) continue;
 
-    const firstBlock = blocks[0];
+    for (let i = 1; i < nodes.length; i++) {
+      const node = nodes[i];
 
-    for (let i = 1; i < blocks.length; i++) {
-      const block = blocks[i];
+      let conflictsWith: JsonLdNode | null = null;
+      for (let j = 0; j < i; j++) {
+        if (nodes[j].rawContent !== node.rawContent) {
+          conflictsWith = nodes[j];
+          break;
+        }
+      }
+      // No earlier node differs — this node is an exact duplicate, not a conflict.
+      if (!conflictsWith) continue;
 
-      // If content is identical (after trimming whitespace), skip — these are
-      // duplicates, not conflicts. The existing DUPLICATE handling catches those.
-      if (firstBlock.rawContent.trim() === block.rawContent.trim()) continue;
-
-      const codeSnippet = buildSnippet(file.content, block.lineNumber);
+      const codeSnippet = buildSnippet(file.content, node.lineNumber);
       const severity = classifySeverity(FindingType.JSON_LD_CONFLICT, codeSnippet);
 
       // Try app attribution
       const appName =
-        identifyAppFromJsonLd(block.rawContent) ??
-        identifyAppFromCode(block.rawContent) ??
-        undefined;
+        identifyAppFromJsonLd(node.rawContent) ?? identifyAppFromCode(node.rawContent) ?? undefined;
 
       findings.push({
         filename: file.filename,
-        lineNumber: block.lineNumber,
+        lineNumber: node.lineNumber,
         codeSnippet,
         findingType: FindingType.JSON_LD_CONFLICT,
         severity,
         appName,
-        description: `Conflicting JSON-LD "@type": "${atType}" — conflicts with block on line ${firstBlock.lineNumber}`,
+        description: `Conflicting JSON-LD "@type": "${atType}" (conflicts with block on line ${conflictsWith.lineNumber})`,
       });
     }
   }

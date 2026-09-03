@@ -1980,6 +1980,78 @@ describe("detectJsonLdConflicts", () => {
     expect(conflictFindings).toHaveLength(1);
     expect(conflictFindings[0].description).toContain("Product");
   });
+
+  it("detects conflict between two @graph-wrapped Product nodes", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">',
+        '{"@context": "https://schema.org", "@graph": [{"@type": "Product", "name": "Widget", "sku": "AAA"}]}',
+        "</script>",
+        '<script type="application/ld+json">',
+        '{"@context": "https://schema.org", "@graph": [{"@type": "Product", "name": "Widget", "sku": "BBB"}]}',
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Product");
+    expect(findings[0].description).toContain("line 1");
+    expect(findings[0].lineNumber).toBe(4);
+  });
+
+  it("groups an array @type node with a plain-string @type node", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": ["Product", "Thing"], "name": "Widget", "sku": "AAA"}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "sku": "BBB"}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Product");
+  });
+
+  it("detects conflict inside a top-level JSON array block", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content:
+        '<script type="application/ld+json">[{"@type": "Product", "name": "A"}, {"@type": "Product", "name": "B"}]</script>',
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Product");
+  });
+
+  it("catches an all-pairs conflict when block[0] and block[1] are identical but block[2] differs", () => {
+    const same = '{"@type": "Product", "name": "Widget", "sku": "AAA"}';
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        `<script type="application/ld+json">${same}</script>`,
+        `<script type="application/ld+json">${same}</script>`,
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "sku": "BBB"}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    // block[1] is an exact duplicate of block[0] (skipped); block[2] conflicts.
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(3);
+    expect(findings[0].description).toContain("line 1");
+  });
+
+  it("treats key-reordered but semantically identical nodes as duplicates, not conflicts", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "sku": "AAA"}</script>',
+        '<script type="application/ld+json">{"sku": "AAA", "name": "Widget", "@type": "Product"}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
