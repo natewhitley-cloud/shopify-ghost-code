@@ -66,6 +66,7 @@ import {
 } from "./app-lookup.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
+import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
@@ -1227,13 +1228,26 @@ export function detectGhostPixels(file: ThemeFile): CreateFindingInput[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Matches <meta name="robots" content="..."> with either attribute ordering:
+ * `name` attribute values recognized by META_ROBOTS_RE: the generic `robots`
+ * directive plus every maintained AI-crawler UA name. Orphaned AI-crawler
+ * meta directives (e.g. `<meta name="GPTBot" content="noindex">`) are the
+ * same failure mode as an orphaned `name="robots"` tag — an uninstalled app
+ * left a restrictive directive behind — so they reuse the GHOST_ROBOTS
+ * finding rather than a new finding type.
+ */
+const META_ROBOTS_NAME_RE = ["robots", ...AI_CRAWLER_USER_AGENTS].join("|");
+
+/**
+ * Matches <meta name="robots|<AI crawler>" content="..."> with either
+ * attribute ordering:
  *   - name before content
  *   - content before name
  * Captures the content attribute value for directive analysis.
  */
-const META_ROBOTS_RE =
-  /<meta\s+[^>]*name\s*=\s*["']robots["'][^>]*content\s*=\s*["']([^"']+)["'][^>]*>|<meta\s+[^>]*content\s*=\s*["']([^"']+)["'][^>]*name\s*=\s*["']robots["'][^>]*>/gi;
+const META_ROBOTS_RE = new RegExp(
+  `<meta\\s+[^>]*name\\s*=\\s*["'](?:${META_ROBOTS_NAME_RE})["'][^>]*content\\s*=\\s*["']([^"']+)["'][^>]*>|<meta\\s+[^>]*content\\s*=\\s*["']([^"']+)["'][^>]*name\\s*=\\s*["'](?:${META_ROBOTS_NAME_RE})["'][^>]*>`,
+  "gi",
+);
 
 /**
  * Restrictive robots directives that can harm SEO when left orphaned.
