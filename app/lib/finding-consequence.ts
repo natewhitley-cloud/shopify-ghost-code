@@ -25,7 +25,7 @@
  * Admin-API detectors). Do not change an assignment without re-grounding it.
  */
 
-import { FindingType } from "@prisma/client";
+import type { FindingType } from "@prisma/client";
 
 // ---------------------------------------------------------------------------
 // Core keys
@@ -127,157 +127,157 @@ export const CONSEQUENCE_MAP: Record<
   FindingType,
   { primary: LaneKey; secondary: LaneKey[]; urgency: UrgencyKey; agentic: boolean }
 > = {
-  [FindingType.GHOST_SCRIPT]: {
+  GHOST_SCRIPT: {
     primary: "speed",
     secondary: ["privacy"],
     urgency: "act-now",
     agentic: false,
   },
-  [FindingType.GHOST_STYLE]: {
+  GHOST_STYLE: {
     primary: "speed",
     secondary: ["customers-see-it"],
     urgency: "act-now",
     agentic: false,
   },
-  [FindingType.GHOST_SNIPPET]: {
+  GHOST_SNIPPET: {
     primary: "customers-see-it",
     secondary: ["speed"],
     urgency: "act-now",
     agentic: false,
   },
-  [FindingType.GHOST_SECTION]: {
+  GHOST_SECTION: {
     primary: "customers-see-it",
     secondary: [],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.GHOST_HREFLANG]: {
+  GHOST_HREFLANG: {
     primary: "discoverability",
     secondary: [],
     urgency: "compounding",
     agentic: true,
   },
-  [FindingType.ORPHAN_ASSET]: {
+  ORPHAN_ASSET: {
     primary: "housekeeping",
     secondary: ["speed"],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.DUPLICATE_META]: {
+  DUPLICATE_META: {
     primary: "discoverability",
     secondary: [],
     urgency: "compounding",
     agentic: true,
   },
-  [FindingType.GHOST_JSON_LD]: {
+  GHOST_JSON_LD: {
     primary: "discoverability",
     secondary: [],
     urgency: "compounding",
     agentic: true,
   },
-  [FindingType.GHOST_TEXT]: {
+  GHOST_TEXT: {
     primary: "customers-see-it",
     secondary: [],
     urgency: "act-now",
     agentic: true,
   },
-  [FindingType.GHOST_TRANSLATION]: {
+  GHOST_TRANSLATION: {
     primary: "housekeeping",
     secondary: ["customers-see-it"],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.SETTINGS_DRIFT]: {
+  SETTINGS_DRIFT: {
     primary: "housekeeping",
     secondary: [],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.GHOST_PIXEL]: {
+  GHOST_PIXEL: {
     primary: "privacy",
     secondary: ["speed"],
     urgency: "act-now",
     agentic: false,
   },
-  [FindingType.JSON_LD_CONFLICT]: {
+  JSON_LD_CONFLICT: {
     primary: "discoverability",
     secondary: [],
     urgency: "compounding",
     agentic: true,
   },
-  [FindingType.GHOST_LAYOUT]: {
+  GHOST_LAYOUT: {
     primary: "customers-see-it",
     secondary: ["housekeeping"],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.GHOST_TAG]: {
+  GHOST_TAG: {
     primary: "housekeeping",
     secondary: ["customers-see-it"],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.GHOST_PRICE]: {
+  GHOST_PRICE: {
     primary: "customers-see-it",
     secondary: ["discoverability"],
     urgency: "act-now",
     agentic: true,
   },
-  [FindingType.GHOST_PAGE]: {
+  GHOST_PAGE: {
     primary: "customers-see-it",
     secondary: ["discoverability"],
     urgency: "compounding",
     agentic: true,
   },
-  [FindingType.GHOST_METAFIELD]: {
+  GHOST_METAFIELD: {
     primary: "housekeeping",
     secondary: ["customers-see-it"],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.GHOST_REDIRECT]: {
+  GHOST_REDIRECT: {
     primary: "discoverability",
     secondary: ["customers-see-it"],
     urgency: "compounding",
     agentic: true,
   },
-  [FindingType.GHOST_ROBOTS]: {
+  GHOST_ROBOTS: {
     primary: "discoverability",
     secondary: [],
     urgency: "act-now",
     agentic: true,
   },
-  [FindingType.GHOST_CANONICAL]: {
+  GHOST_CANONICAL: {
     primary: "discoverability",
     secondary: [],
     urgency: "act-now",
     agentic: true,
   },
-  [FindingType.GHOST_TITLE]: {
+  GHOST_TITLE: {
     primary: "discoverability",
     secondary: ["customers-see-it"],
     urgency: "compounding",
     agentic: true,
   },
-  [FindingType.GHOST_OG]: {
+  GHOST_OG: {
     primary: "discoverability",
     secondary: ["customers-see-it"],
     urgency: "compounding",
     agentic: true,
   },
-  [FindingType.GHOST_PRECONNECT]: {
+  GHOST_PRECONNECT: {
     primary: "speed",
     secondary: [],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.GHOST_FONT]: {
+  GHOST_FONT: {
     primary: "speed",
     secondary: ["customers-see-it"],
     urgency: "whenever",
     agentic: false,
   },
-  [FindingType.GHOST_AJAX]: {
+  GHOST_AJAX: {
     primary: "speed",
     secondary: ["privacy", "customers-see-it"],
     urgency: "act-now",
