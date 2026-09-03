@@ -100,7 +100,7 @@ export const LANES: ReadonlyArray<{
   {
     key: "housekeeping",
     label: "Housekeeping",
-    soWhat: "Leftover clutter with no live impact — clean up when convenient.",
+    soWhat: "Leftover clutter with no live impact. Clean up when convenient.",
     dominantPhrase: "leftover housekeeping",
   },
 ];

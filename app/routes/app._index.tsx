@@ -890,6 +890,10 @@ export default function Dashboard() {
             .lane:hover {
               box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
             }
+            .lane:focus-visible {
+              outline: 2px solid ${ACCENT_FILL};
+              outline-offset: 2px;
+            }
             .lane.start {
               border-color: ${ACCENT_FILL};
               box-shadow: 0 0 0 3px ${ACCENT_TINT};
@@ -1175,7 +1179,7 @@ export default function Dashboard() {
                             <Link
                               key={row.lane}
                               to={`/app/scans/${latestScanId}?lane=${row.lane}`}
-                              aria-label={`Review ${row.label} findings`}
+                              aria-label={`Review ${row.count} ${row.label} finding${row.count === 1 ? "" : "s"}`}
                               className={`lane${isStart ? " start" : ""}`}
                             >
                               <div
