@@ -14,7 +14,7 @@ import {
   typesForLane,
 } from "../lib/finding-consequence";
 import type { LaneKey } from "../lib/finding-consequence";
-import { getFindingRemediation } from "../lib/finding-remediation";
+import { getFindingImpact, getFindingRemediation } from "../lib/finding-remediation";
 import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
@@ -112,12 +112,12 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   GHOST_PIXEL: "Tracking Pixels",
   JSON_LD_CONFLICT: "JSON-LD Conflicts",
   GHOST_LAYOUT: "Layout Code",
-  GHOST_TAG: "Theme Tags",
-  GHOST_PRICE: "Price Markup",
-  GHOST_PAGE: "Page Templates",
+  GHOST_TAG: "Product Tags",
+  GHOST_PRICE: "Compare-at Prices",
+  GHOST_PAGE: "Content Pages",
   GHOST_METAFIELD: "Metafields",
   GHOST_REDIRECT: "Redirects",
-  GHOST_ROBOTS: "Robots.txt Rules",
+  GHOST_ROBOTS: "Robots Meta Tags",
   GHOST_CANONICAL: "Canonical Tags",
   GHOST_TITLE: "Title Tags",
   GHOST_OG: "Open Graph Tags",
@@ -234,6 +234,18 @@ export function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: b
             </code>
             <CopyButton text={finding.codeSnippet} />
           </div>
+          {getFindingImpact(finding.findingType) && (
+            <div
+              style={{
+                fontSize: "12px",
+                color: TEXT_SUBDUED,
+                lineHeight: 1.4,
+              }}
+            >
+              <strong style={{ color: TEXT_PRIMARY, fontWeight: 600 }}>Why it matters: </strong>
+              {getFindingImpact(finding.findingType)}
+            </div>
+          )}
           <div
             style={{
               fontSize: "12px",

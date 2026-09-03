@@ -12,7 +12,19 @@
 import { FindingType } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
-import { getFindingRemediation } from "../../app/lib/finding-remediation";
+import { getFindingImpact, getFindingRemediation } from "../../app/lib/finding-remediation";
+
+// The finding types that carry an agentic "why it matters" impact line — the
+// signals AI shopping agents and answer engines read (canonical/hreflang/meta
+// robots/JSON-LD/duplicate meta). Kept in sync with REMEDIATION in the module.
+const AGENTIC_IMPACT_TYPES = [
+  "GHOST_CANONICAL",
+  "GHOST_HREFLANG",
+  "GHOST_ROBOTS",
+  "GHOST_JSON_LD",
+  "JSON_LD_CONFLICT",
+  "DUPLICATE_META",
+] as const;
 
 // ---------------------------------------------------------------------------
 // Coverage: every enum type has a non-empty, em-dash-free blurb
@@ -41,6 +53,42 @@ describe("getFindingRemediation — coverage", () => {
     for (const type of ALL_TYPES) {
       expect(getFindingRemediation(type)).not.toBe(fallback);
     }
+  });
+
+  it.each(ALL_TYPES)("impact line for %s (when present) contains no em-dash or en-dash", (type) => {
+    const impact = getFindingImpact(type);
+    if (impact !== null) {
+      expect(impact).not.toMatch(/[—–]/);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Agentic "why it matters" impact line
+// ---------------------------------------------------------------------------
+
+describe("getFindingImpact — agentic reframe", () => {
+  it.each(AGENTIC_IMPACT_TYPES)("returns a non-empty impact line for %s", (type) => {
+    const impact = getFindingImpact(type);
+    expect(impact).not.toBeNull();
+    expect((impact ?? "").trim().length).toBeGreaterThan(0);
+  });
+
+  it("returns null for a type with no distinct agent-facing consequence (GHOST_SCRIPT)", () => {
+    expect(getFindingImpact("GHOST_SCRIPT")).toBeNull();
+  });
+
+  it("does NOT add an impact line for GHOST_PRICE (compare-at pricing, not a JSON-LD signal)", () => {
+    expect(getFindingImpact("GHOST_PRICE")).toBeNull();
+  });
+
+  it("returns null for an unknown type", () => {
+    expect(getFindingImpact("SOME_FUTURE_TYPE")).toBeNull();
+  });
+
+  it("frames JSON_LD_CONFLICT around AI agents picking the wrong data", () => {
+    const impact = getFindingImpact("JSON_LD_CONFLICT") ?? "";
+    expect(impact.toLowerCase()).toContain("agent");
   });
 });
 
