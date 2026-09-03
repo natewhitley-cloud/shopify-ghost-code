@@ -20,7 +20,9 @@ import {
   computeLaneSummary,
   dominantLane,
   dominantPhraseForLane,
+  isLaneKey,
   laneForType,
+  laneLabelForLane,
   startHereLane,
   typesForLane,
   type LaneKey,
@@ -112,6 +114,46 @@ describe("URGENCY_RANK", () => {
     expect(URGENCY_RANK["act-now"]).toBe(0);
     expect(URGENCY_RANK.compounding).toBe(1);
     expect(URGENCY_RANK.whenever).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isLaneKey / laneLabelForLane — `?lane=` deep-link validation + banner copy
+// ---------------------------------------------------------------------------
+
+describe("isLaneKey", () => {
+  it("returns true for all 5 valid lane keys", () => {
+    for (const lane of ALL_LANES) {
+      expect(isLaneKey(lane)).toBe(true);
+    }
+  });
+
+  it("returns false for garbage / non-lane strings", () => {
+    for (const bogus of ["", "bogus", "SPEED", "customers", "housekeeping ", "privacy2"]) {
+      expect(isLaneKey(bogus)).toBe(false);
+    }
+  });
+
+  it("narrows the type so a validated value indexes lane helpers", () => {
+    const raw = "speed";
+    // Type-guard usage: inside the guard, raw is a LaneKey.
+    expect(isLaneKey(raw) && laneLabelForLane(raw)).toBe("Speed");
+  });
+});
+
+describe("laneLabelForLane", () => {
+  it("returns the exact merchant-facing label for every lane", () => {
+    expect(laneLabelForLane("customers-see-it")).toBe("Customers see it");
+    expect(laneLabelForLane("discoverability")).toBe("Found by Google & AI");
+    expect(laneLabelForLane("speed")).toBe("Speed");
+    expect(laneLabelForLane("privacy")).toBe("Still tracking you");
+    expect(laneLabelForLane("housekeeping")).toBe("Housekeeping");
+  });
+
+  it("matches the label co-located on each LANES entry", () => {
+    for (const lane of LANES) {
+      expect(laneLabelForLane(lane.key)).toBe(lane.label);
+    }
   });
 });
 

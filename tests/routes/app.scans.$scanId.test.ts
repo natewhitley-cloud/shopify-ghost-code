@@ -81,6 +81,7 @@ vi.mock("../../app/services/app-lookup.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/finding-consequence";
 import { computeHealthScore } from "../../app/lib/health-score";
 import { canUseScanDiffing, canViewFindingDetails } from "../../app/lib/plan-gating.server";
 import {
@@ -492,9 +493,14 @@ describe("app.scans.$scanId loader", () => {
           "scan-1",
           "https://test-shop.myshopify.com/app/scans/scan-1?severity=MEDIUM&type=GHOST_STYLE&app=OldApp",
         ),
-      )) as { filters: { severity: string; type: string; app: string } };
+      )) as { filters: { severity: string; type: string; app: string; lane: string } };
 
-      expect(result.filters).toEqual({ severity: "MEDIUM", type: "GHOST_STYLE", app: "OldApp" });
+      expect(result.filters).toEqual({
+        severity: "MEDIUM",
+        type: "GHOST_STYLE",
+        app: "OldApp",
+        lane: "",
+      });
     });
 
     it("ignores an unknown severity param (treats it as no filter)", async () => {
@@ -568,6 +574,88 @@ describe("app.scans.$scanId loader", () => {
       expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
       expect(mockGetFindingFilterOptionsForScan).not.toHaveBeenCalled();
       expect(result.filterOptions).toEqual({ types: [], apps: [] });
+    });
+  });
+
+  // -------------------------------------------------------------------------
+  // Lane deep-link filter (`?lane=`) — Slice 3 consequence-axis reframe
+  // -------------------------------------------------------------------------
+
+  describe("lane deep-link filter", () => {
+    it("resolves ?lane=speed to typesForLane('speed') and passes them as findingTypes", async () => {
+      await loader(
+        makeLoaderArgs("scan-1", "https://test-shop.myshopify.com/app/scans/scan-1?lane=speed"),
+      );
+
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
+        "scan-1",
+        expect.objectContaining({
+          findingTypes: typesForLane("speed"),
+          // No single-type filter came from the URL.
+          findingType: undefined,
+        }),
+      );
+    });
+
+    it("populates filters.lane, laneLabel, and laneSoWhat for a valid lane", async () => {
+      const result = (await loader(
+        makeLoaderArgs(
+          "scan-1",
+          "https://test-shop.myshopify.com/app/scans/scan-1?lane=customers-see-it",
+        ),
+      )) as { filters: { lane: string }; laneLabel: string; laneSoWhat: string };
+
+      expect(result.filters.lane).toBe("customers-see-it");
+      expect(result.laneLabel).toBe(laneLabelForLane("customers-see-it"));
+      expect(result.laneSoWhat).toBe(soWhatForLane("customers-see-it"));
+    });
+
+    it("ignores an invalid ?lane=bogus (no findingTypes, empty banner copy)", async () => {
+      const result = (await loader(
+        makeLoaderArgs("scan-1", "https://test-shop.myshopify.com/app/scans/scan-1?lane=bogus"),
+      )) as { filters: { lane: string }; laneLabel: string; laneSoWhat: string };
+
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
+        "scan-1",
+        expect.objectContaining({ findingTypes: undefined }),
+      );
+      expect(result.filters.lane).toBe("");
+      expect(result.laneLabel).toBe("");
+      expect(result.laneSoWhat).toBe("");
+    });
+
+    it("passes the single type AND the lane types when both ?type= and ?lane= are present (model applies precedence)", async () => {
+      await loader(
+        makeLoaderArgs(
+          "scan-1",
+          "https://test-shop.myshopify.com/app/scans/scan-1?type=GHOST_SCRIPT&lane=discoverability",
+        ),
+      );
+
+      // The loader forwards both; type precedence is enforced in the model layer.
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
+        "scan-1",
+        expect.objectContaining({
+          findingType: "GHOST_SCRIPT",
+          findingTypes: typesForLane("discoverability"),
+        }),
+      );
+    });
+
+    it("leaves lane fields empty when no ?lane= param is present", async () => {
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        filters: { lane: string };
+        laneLabel: string;
+        laneSoWhat: string;
+      };
+
+      expect(result.filters.lane).toBe("");
+      expect(result.laneLabel).toBe("");
+      expect(result.laneSoWhat).toBe("");
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
+        "scan-1",
+        expect.objectContaining({ findingTypes: undefined }),
+      );
     });
   });
 

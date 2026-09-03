@@ -279,6 +279,13 @@ export async function getDistinctFileCount(scanId: string): Promise<number> {
  * Follows the same limit+1 over-fetch pattern used by getScansForShop so the
  * caller never needs to know the internals of cursor pagination.
  *
+ * Type filtering supports two mutually-exclusive params with a precedence rule:
+ *   - `findingType`  — a single type; when set it wins.
+ *   - `findingTypes` — a set of types (`findingType IN (...)`); used only when
+ *     the single `findingType` is unset and the array is non-empty. This backs
+ *     the `?lane=` deep link, which maps one lane to multiple finding types.
+ * severity and appName are always ANDed independently of the type filter.
+ *
  * @returns { items, hasNextPage, nextCursor } where nextCursor is the last
  *   item's id, or null when there is no further page.
  */
@@ -289,6 +296,7 @@ export async function getFindingsPageForScan(
     cursor?: string;
     severity?: string;
     findingType?: string;
+    findingTypes?: FindingType[];
     appName?: string;
   },
 ): Promise<{
@@ -296,13 +304,19 @@ export async function getFindingsPageForScan(
   hasNextPage: boolean;
   nextCursor: string | null;
 }> {
-  const { limit, cursor, severity, findingType, appName } = options;
+  const { limit, cursor, severity, findingType, findingTypes, appName } = options;
 
   const rows = await db.finding.findMany({
     where: {
       scanId,
       ...(severity ? { severity: severity as Severity } : {}),
-      ...(findingType ? { findingType: findingType as FindingType } : {}),
+      // Type precedence: a single findingType wins; else a non-empty findingTypes
+      // set is applied as an IN filter; else no type filter at all.
+      ...(findingType
+        ? { findingType: findingType as FindingType }
+        : findingTypes && findingTypes.length > 0
+          ? { findingType: { in: findingTypes } }
+          : {}),
       ...(appName ? { appName } : {}),
     },
     // Severity enum declared HIGH, MEDIUM, LOW — ascending = HIGH first.

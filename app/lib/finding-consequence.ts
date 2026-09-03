@@ -311,6 +311,24 @@ export function soWhatForLane(lane: LaneKey): string {
 }
 
 /**
+ * Type guard: true iff `value` is a valid LaneKey (matches a LANES entry key).
+ * Used by the scan-detail `?lane=` loader to treat garbage lane params as
+ * "no filter", mirroring how severity/type params are validated.
+ */
+export function isLaneKey(value: string): value is LaneKey {
+  return LANES.some((l) => l.key === value);
+}
+
+/**
+ * The merchant-facing label for a lane (e.g. "Speed"). Falls back to the key if
+ * a lane is ever missing, mirroring the defensive style of the helpers above.
+ */
+export function laneLabelForLane(lane: LaneKey): string {
+  const meta = LANES.find((l) => l.key === lane);
+  return meta?.label ?? lane;
+}
+
+/**
  * All finding types whose PRIMARY lane === `lane`.
  *
  * This defines exactly what the Slice 3 `?lane=` deep-link filter matches:

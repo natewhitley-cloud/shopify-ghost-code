@@ -6,6 +6,13 @@ import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { readValue } from "../components/polaris-events";
 import { copyToClipboard } from "../lib/clipboard";
 import { getFindingConfidence, hasVisualImpact } from "../lib/finding-classification";
+import {
+  isLaneKey,
+  laneLabelForLane,
+  soWhatForLane,
+  typesForLane,
+} from "../lib/finding-consequence";
+import type { LaneKey } from "../lib/finding-consequence";
 import { getFindingRemediation } from "../lib/finding-remediation";
 import { formatDate, isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
@@ -42,6 +49,8 @@ import {
   COLOR_SUCCESS,
   COLOR_WARNING,
   CRIT_BD,
+  INFO_BD,
+  INFO_BG,
   SEV_HIGH_FILL,
   SEV_LOW_FILL,
   SEV_MED_FILL,
@@ -336,6 +345,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   const appName = url.searchParams.get("app") || undefined;
 
+  // Lane deep-link filter (`?lane=`). A lane maps to MULTIPLE finding types (its
+  // PRIMARY-lane types), so it becomes a `findingType IN (...)` set filter. An
+  // unknown/garbage lane is treated as "no filter", mirroring severity/type.
+  const rawLane = url.searchParams.get("lane") || undefined;
+  const lane: LaneKey | undefined = rawLane && isLaneKey(rawLane) ? rawLane : undefined;
+  const laneTypes = lane ? typesForLane(lane) : undefined;
+
   // Filters only apply to (and options are only computed for) the paid +
   // successful findings view — the same gate as the paginated findings query.
   const canViewFindings = canViewDetails && isSuccessfulScan(scan.status);
@@ -361,6 +377,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           cursor: findingsCursor,
           severity,
           findingType,
+          findingTypes: laneTypes,
           appName,
         })
       : Promise.resolve({ items: [], hasNextPage: false, nextCursor: null }),
@@ -432,7 +449,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       severity: severity ?? "",
       type: findingType ?? "",
       app: appName ?? "",
+      lane: lane ?? "",
     },
+    // Lane-context banner copy (empty when no lane filter is active).
+    laneLabel: lane ? laneLabelForLane(lane) : "",
+    laneSoWhat: lane ? soWhatForLane(lane) : "",
   };
 };
 
@@ -572,6 +593,8 @@ export default function ScanDetail() {
     appAttributionData,
     filterOptions,
     filters,
+    laneLabel,
+    laneSoWhat,
   } = useLoaderData<typeof loader>();
 
   const [, setSearchParams] = useFilterSearchParams();
@@ -598,7 +621,8 @@ export default function ScanDetail() {
     setSearchParams(() => new URLSearchParams());
   }
 
-  const hasActiveFilter = filters.severity !== "" || filters.type !== "" || filters.app !== "";
+  const hasActiveFilter =
+    filters.severity !== "" || filters.type !== "" || filters.app !== "" || filters.lane !== "";
 
   // Preserve active filters across the cursor "Load More" navigation — a bare
   // `?cursor=` link would drop the filters and page into the unfiltered result.
@@ -606,6 +630,7 @@ export default function ScanDetail() {
   if (filters.severity) loadMoreParams.set("severity", filters.severity);
   if (filters.type) loadMoreParams.set("type", filters.type);
   if (filters.app) loadMoreParams.set("app", filters.app);
+  if (filters.lane) loadMoreParams.set("lane", filters.lane);
   if (findingsPagination.nextCursor) {
     loadMoreParams.set("cursor", findingsPagination.nextCursor);
   }
@@ -1203,6 +1228,37 @@ export default function ScanDetail() {
                       </button>
                     )}
                   </div>
+                  {/* Lane-context banner — shown when the merchant arrived via a
+                    dashboard consequence-lane deep link (`?lane=`). Names the
+                    lane, restates its "so what", and offers a one-click escape
+                    hatch back to the full, unfiltered findings view. */}
+                  {filters.lane && (
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        flexWrap: "wrap",
+                        gap: "12px",
+                        padding: "12px 16px",
+                        borderRadius: "8px",
+                        border: `1px solid ${INFO_BD}`,
+                        background: INFO_BG,
+                      }}
+                    >
+                      <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                        <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
+                          Showing: {laneLabel}
+                        </span>
+                        {laneSoWhat && (
+                          <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+                            {laneSoWhat}
+                          </span>
+                        )}
+                      </div>
+                      <Link to={`/app/scans/${scan.id}`}>View full scan results</Link>
+                    </div>
+                  )}
                   {/* Filter bar — only when the scan actually has findings to
                     filter (a paid + successful view). Stays visible even when
                     the active filters match zero rows so the merchant can

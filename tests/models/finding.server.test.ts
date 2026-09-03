@@ -878,6 +878,73 @@ describe("getFindingsPageForScan", () => {
     expect(call.where).toEqual({ scanId: SCAN_ID });
   });
 
+  it("filters by findingTypes set as findingType: { in: [...] } (lane deep link)", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, {
+      limit: PAGE_SIZE,
+      findingTypes: [FindingType.GHOST_SCRIPT, FindingType.GHOST_STYLE, FindingType.GHOST_AJAX],
+    });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          scanId: SCAN_ID,
+          findingType: {
+            in: [FindingType.GHOST_SCRIPT, FindingType.GHOST_STYLE, FindingType.GHOST_AJAX],
+          },
+        },
+      }),
+    );
+  });
+
+  it("omits the type filter when findingTypes is an empty array", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, findingTypes: [] });
+
+    const call = mockDb.finding.findMany.mock.calls[0][0];
+    expect(call.where).toEqual({ scanId: SCAN_ID });
+  });
+
+  it("gives a single findingType precedence over findingTypes when both are passed", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, {
+      limit: PAGE_SIZE,
+      findingType: FindingType.GHOST_SCRIPT,
+      findingTypes: [FindingType.GHOST_STYLE, FindingType.GHOST_AJAX],
+    });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scanId: SCAN_ID, findingType: FindingType.GHOST_SCRIPT },
+      }),
+    );
+  });
+
+  it("combines a findingTypes set with severity + appName filters", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsPageForScan(SCAN_ID, {
+      limit: PAGE_SIZE,
+      severity: Severity.HIGH,
+      findingTypes: [FindingType.GHOST_SCRIPT, FindingType.GHOST_STYLE],
+      appName: "OldApp",
+    });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          scanId: SCAN_ID,
+          severity: Severity.HIGH,
+          findingType: { in: [FindingType.GHOST_SCRIPT, FindingType.GHOST_STYLE] },
+          appName: "OldApp",
+        },
+      }),
+    );
+  });
+
   it("preserves cursor/skip pagination alongside active filters", async () => {
     mockDb.finding.findMany.mockResolvedValue([]);
 
