@@ -19,8 +19,8 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 
+import { FormattedDate } from "../components/FormattedDate";
 import { isAdminShop } from "../lib/admin-gate.server";
-import { formatDate } from "../lib/format";
 import { logger } from "../lib/logger.server";
 import {
   computeCurrentMetrics,
@@ -182,7 +182,7 @@ export default function AdminMetrics() {
         </fetcher.Form>
         {snap && (
           <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
-            Last snapshot: {formatDate(new Date(snap.snapshotDate))}
+            Last snapshot: <FormattedDate value={new Date(snap.snapshotDate)} />
           </span>
         )}
       </div>
@@ -300,7 +300,9 @@ export default function AdminMetrics() {
               <tbody>
                 {snapshotHistory.map((row) => (
                   <tr key={row.id}>
-                    <td style={styles.tableCell}>{formatDate(new Date(row.snapshotDate))}</td>
+                    <td style={styles.tableCell}>
+                      <FormattedDate value={new Date(row.snapshotDate)} />
+                    </td>
                     <td style={{ ...styles.tableCell, textAlign: "right" as const }}>
                       {row.activeShops}
                     </td>

@@ -2,8 +2,9 @@ import type { CSSProperties } from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData } from "react-router";
 
+import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
-import { formatDate, statusTone, statusLabel } from "../lib/format";
+import { statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import { getScansForShop, getDistinctThemesForShop } from "../models/scan.server";
@@ -230,7 +231,9 @@ export default function ScanHistory() {
                     <tbody>
                       {scans.map((scan) => (
                         <tr key={scan.id}>
-                          <td>{formatDate(scan.createdAt, true)}</td>
+                          <td>
+                            <FormattedDate value={scan.createdAt} includeTime />
+                          </td>
                           <td>{scan.themeName}</td>
                           <td>
                             <s-badge tone={statusTone(scan.status as ScanStatus)}>

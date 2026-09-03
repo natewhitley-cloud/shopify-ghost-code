@@ -10,6 +10,7 @@ import {
   useSearchParams,
 } from "react-router";
 
+import { FormattedDate } from "../components/FormattedDate";
 import {
   HealthScoreTrendChart,
   HealthScoreTrendEmptyState,
@@ -24,7 +25,7 @@ import {
   startHereLane,
 } from "../lib/finding-consequence";
 import type { LaneKey, LaneSummaryRow, UrgencyKey } from "../lib/finding-consequence";
-import { formatDate, isSuccessfulScan } from "../lib/format";
+import { isSuccessfulScan } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { mergeSearchParams } from "../lib/merge-search-params";
@@ -1114,7 +1115,8 @@ export default function Dashboard() {
                           <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
                             Scanned{" "}
                             <strong style={{ color: TEXT_PRIMARY }}>{latestScan.themeName}</strong>{" "}
-                            on {formatDate(latestScan.completedAt ?? latestScan.createdAt)}
+                            on{" "}
+                            <FormattedDate value={latestScan.completedAt ?? latestScan.createdAt} />
                           </div>
                           <div className="health-read">
                             {dominant && (

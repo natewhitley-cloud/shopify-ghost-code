@@ -22,8 +22,17 @@ export function isSuccessfulScan(status: ScanStatus | string): boolean {
  * @param date       - The date to format (Date, ISO string, null, or undefined).
  * @param includeTime - When true, appends hour and minute to the output.
  *                      Defaults to false (date only).
+ * @param timeZone   - Optional IANA time zone (e.g. "UTC"). When provided, the
+ *                     date is formatted in that zone rather than the ambient
+ *                     environment zone. Passing "UTC" yields a deterministic
+ *                     server/client render, which callers use to avoid React
+ *                     hydration mismatches before the client has mounted.
  */
-export function formatDate(date: Date | string | null | undefined, includeTime = false): string {
+export function formatDate(
+  date: Date | string | null | undefined,
+  includeTime = false,
+  timeZone?: string,
+): string {
   if (!date) return "—";
   const d = typeof date === "string" ? new Date(date) : date;
   const options: Intl.DateTimeFormatOptions = {
@@ -31,6 +40,7 @@ export function formatDate(date: Date | string | null | undefined, includeTime =
     month: "short",
     day: "numeric",
     ...(includeTime ? { hour: "2-digit", minute: "2-digit" } : {}),
+    ...(timeZone ? { timeZone } : {}),
   };
   return d.toLocaleDateString("en-US", options);
 }

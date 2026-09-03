@@ -3,6 +3,7 @@ import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
+import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
 import { copyToClipboard } from "../lib/clipboard";
 import { getFindingConfidence, hasVisualImpact } from "../lib/finding-classification";
@@ -14,7 +15,7 @@ import {
 } from "../lib/finding-consequence";
 import type { LaneKey } from "../lib/finding-consequence";
 import { getFindingRemediation } from "../lib/finding-remediation";
-import { formatDate, isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
+import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
@@ -57,6 +58,7 @@ import {
   groundStyle,
   hairline,
   htmlTableCss,
+  sectionCard,
   TEXT_DISABLED,
   WARN_BD,
   WARN_TEXT,
@@ -992,11 +994,15 @@ export default function ScanDetail() {
         <div className="scan-status-bar">
           <s-badge tone={statusTone(status)}>{statusLabel(status)}</s-badge>
           <span className="scan-status-bar__separator">|</span>
-          <span>Started {formatDate(scan.startedAt ?? scan.createdAt, true)}</span>
+          <span>
+            Started <FormattedDate value={scan.startedAt ?? scan.createdAt} includeTime />
+          </span>
           {scan.completedAt && (
             <>
               <span className="scan-status-bar__separator">|</span>
-              <span>Completed {formatDate(scan.completedAt, true)}</span>
+              <span>
+                Completed <FormattedDate value={scan.completedAt} includeTime />
+              </span>
             </>
           )}
         </div>
@@ -1026,7 +1032,7 @@ export default function ScanDetail() {
             </s-stack>
           </s-card>
         ) : (
-          <div className="scan-tiles-row">
+          <div className="scan-tiles-row" style={{ ...sectionCard, marginTop: 0, marginBottom: 0 }}>
             {/* Tile 1: Health Score */}
             {healthScore && (
               <div className="scan-tile-wrapper">
@@ -1168,7 +1174,7 @@ export default function ScanDetail() {
         {/* Oversized-file skip notice — these files were too large (>1 MB) to
           scan, so their findings are neither reported nor diffed (gc-06e.19). */}
         {isCompleted && scan.skippedFiles.length > 0 && (
-          <div style={{ marginTop: "16px" }}>
+          <div>
             <s-banner tone="warning">
               {scan.skippedFiles.length} file{scan.skippedFiles.length !== 1 ? "s" : ""} skipped
               (over 1 MB, not scanned): {scan.skippedFiles.join(", ")}. Findings in{" "}
@@ -1187,7 +1193,6 @@ export default function ScanDetail() {
         {isCompleted && filters.lane && (
           <div
             style={{
-              marginTop: "32px",
               display: "flex",
               justifyContent: "space-between",
               alignItems: "center",
@@ -1214,7 +1219,7 @@ export default function ScanDetail() {
         {/* Findings detail table — only shown for completed scans */}
         {isCompleted &&
           (canViewDetails ? (
-            <div style={{ marginTop: "32px" }}>
+            <div>
               <s-card>
                 <s-stack direction="block" gap="base">
                   <div
@@ -1444,7 +1449,7 @@ export default function ScanDetail() {
 
         {/* App Impact Map — groups findings by app to show which files each app touched */}
         {isCompleted && canViewDetails && appAttribution.size > 0 && (
-          <div style={{ marginTop: "32px" }}>
+          <div>
             <s-card>
               <s-stack direction="block" gap="base">
                 <h2 className="scan-section-title">App Impact Map</h2>
@@ -1497,7 +1502,7 @@ export default function ScanDetail() {
         )}
         {/* Unrecognized Scripts — merchant feedback loop for unknown external resources */}
         {isCompleted && canViewDetails && unknownScripts.length > 0 && (
-          <div style={{ marginTop: "32px" }}>
+          <div>
             <s-card>
               <s-stack direction="block" gap="base">
                 <h2 className="scan-section-title">Unrecognized Scripts</h2>

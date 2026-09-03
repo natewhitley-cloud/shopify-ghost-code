@@ -91,6 +91,29 @@ describe("formatDate", () => {
     const d = new Date(2024, 11, 31); // Dec 31 2024
     expect(formatDate(d)).toBe("Dec 31, 2024");
   });
+
+  // -------------------------------------------------------------------------
+  // timeZone parameter (deterministic, hydration-safe rendering)
+  // -------------------------------------------------------------------------
+
+  it("formats a fixed UTC instant in UTC regardless of the ambient process TZ", () => {
+    // 2025-03-10T23:30:00Z is Mar 11 in UTC+ zones and Mar 10 in UTC- zones if
+    // formatted locally. Pinning timeZone: "UTC" must always yield Mar 10.
+    const iso = "2025-03-10T23:30:00.000Z";
+    expect(formatDate(iso, false, "UTC")).toBe("Mar 10, 2025");
+  });
+
+  it("includes the time in UTC when both includeTime and timeZone are set", () => {
+    const iso = "2025-03-10T23:30:00.000Z";
+    const result = formatDate(iso, true, "UTC");
+    expect(result).toContain("Mar 10, 2025");
+    // 23:30 UTC in 2-digit 12-hour en-US format is 11:30 PM.
+    expect(result).toMatch(/11:30\s?PM/i);
+  });
+
+  it("still returns em-dash for null even when a timeZone is provided", () => {
+    expect(formatDate(null, true, "UTC")).toBe("—");
+  });
 });
 
 // ---------------------------------------------------------------------------

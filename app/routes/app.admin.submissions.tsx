@@ -16,8 +16,8 @@
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { useFetcher, useLoaderData } from "react-router";
 
+import { FormattedDate } from "../components/FormattedDate";
 import { isAdminShop } from "../lib/admin-gate.server";
-import { formatDate } from "../lib/format";
 import { logger } from "../lib/logger.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
@@ -262,7 +262,9 @@ export default function AdminSubmissions() {
                     <td style={{ ...styles.tableCell, fontSize: "12px", color: TEXT_SUBDUED }}>
                       {sub.filename}
                     </td>
-                    <td style={styles.tableCell}>{formatDate(new Date(sub.createdAt))}</td>
+                    <td style={styles.tableCell}>
+                      <FormattedDate value={new Date(sub.createdAt)} />
+                    </td>
                     <td style={styles.tableCell}>
                       <s-badge tone={statusTone(sub.status)}>{sub.status}</s-badge>
                     </td>

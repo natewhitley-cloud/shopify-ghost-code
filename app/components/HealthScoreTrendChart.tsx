@@ -55,7 +55,9 @@ export type HealthScoreTrend = {
  */
 function formatShortDate(iso: string): string {
   const d = new Date(iso);
-  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+  // Format in UTC so the server (UTC) and client (local TZ) axis labels agree,
+  // avoiding a React hydration mismatch. Axis labels in UTC are acceptable.
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
 // ---------------------------------------------------------------------------
