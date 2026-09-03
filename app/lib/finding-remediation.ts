@@ -102,6 +102,12 @@ const REMEDIATION: Record<string, Remediation> = {
     howTo:
       "Keep the block Shopify or your active app generates and remove the conflicting one from the theme file. Duplicate the theme first.",
   },
+  JSON_LD_PRICE_CONFLICT: {
+    impact:
+      "A static JSON-LD block in your theme still advertises a price or stock status that no longer matches your live product, so an AI shopping agent could quote the stale price or call an in-stock item sold out.",
+    howTo:
+      "Remove the hard-coded application/ld+json block from the theme file and let Shopify or your active app generate structured data from live product data. Duplicate the theme first.",
+  },
   DUPLICATE_META: {
     impact:
       "This meta tag appears twice on the same page, so crawlers and AI agents may read the wrong copy or discount the signal entirely.",

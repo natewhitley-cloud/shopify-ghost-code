@@ -12,6 +12,7 @@
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect, vi } from "vitest";
 
+import { logger } from "../../app/lib/logger.server";
 import {
   auditStaticJsonLdPrices,
   compareStaticToLive,
@@ -88,7 +89,7 @@ describe("compareStaticToLive — price mismatch", () => {
   it("flags a material price mismatch (happy path)", () => {
     const finding = compareStaticToLive(candidate({ staticPrice: "19.99" }), live());
     expect(finding).not.toBeNull();
-    expect(finding!.findingType).toBe(FindingType.JSON_LD_CONFLICT);
+    expect(finding!.findingType).toBe(FindingType.JSON_LD_PRICE_CONFLICT);
     expect(finding!.severity).toBe(Severity.HIGH);
     expect(finding!.appName).toBeUndefined();
     expect(finding!.description).toContain("19.99");
@@ -205,6 +206,35 @@ describe("compareStaticToLive — availability contradiction", () => {
     );
     expect(finding!.description).toContain("price");
   });
+
+  it("treats a multi-variant product as in stock when ANY variant is available", () => {
+    // static OutOfStock vs a product where one of several variants is in stock:
+    // availableForSale.some() -> live is in stock -> contradiction -> finding.
+    const finding = compareStaticToLive(
+      candidate({ staticPrice: undefined, staticAvailability: "OutOfStock" }),
+      live({
+        variants: [
+          { price: "29.99", compareAtPrice: null, availableForSale: false },
+          { price: "24.99", compareAtPrice: null, availableForSale: true },
+        ],
+      }),
+    );
+    expect(finding).not.toBeNull();
+    expect(finding!.description).toContain("in stock");
+  });
+
+  it("does not flag when static is in stock and any variant is available", () => {
+    const finding = compareStaticToLive(
+      candidate({ staticPrice: undefined, staticAvailability: "InStock" }),
+      live({
+        variants: [
+          { price: "29.99", compareAtPrice: null, availableForSale: false },
+          { price: "24.99", compareAtPrice: null, availableForSale: true },
+        ],
+      }),
+    );
+    expect(finding).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -245,10 +275,15 @@ function productByHandleResponse(
   return { products: { nodes: [{ variants: { nodes: variants, pageInfo: { hasNextPage } } }] } };
 }
 
+const SHOP_ID = "shop_1";
+
 describe("auditStaticJsonLdPrices", () => {
-  it("returns [] for no candidates without querying", async () => {
+  it("returns no findings and not-skipped for no candidates without querying", async () => {
     const { admin, graphql } = mockAdmin({});
-    expect(await auditStaticJsonLdPrices(admin, [])).toEqual([]);
+    expect(await auditStaticJsonLdPrices(admin, [], SHOP_ID)).toEqual({
+      findings: [],
+      skipped: false,
+    });
     expect(graphql).not.toHaveBeenCalled();
   });
 
@@ -257,11 +292,14 @@ describe("auditStaticJsonLdPrices", () => {
       byHandle: () =>
         productByHandleResponse([{ price: "29.99", compareAtPrice: null, availableForSale: true }]),
     });
-    const findings = await auditStaticJsonLdPrices(admin, [
-      candidate({ handle: "widget", sku: undefined, staticPrice: "19.99" }),
-    ]);
+    const { findings, skipped } = await auditStaticJsonLdPrices(
+      admin,
+      [candidate({ handle: "widget", sku: undefined, staticPrice: "19.99" })],
+      SHOP_ID,
+    );
     expect(findings).toHaveLength(1);
     expect(findings[0].description).toContain("29.99");
+    expect(skipped).toBe(false);
   });
 
   it("resolves by sku (preferred over handle) and compares that variant", async () => {
@@ -271,9 +309,11 @@ describe("auditStaticJsonLdPrices", () => {
       },
     }));
     const { admin } = mockAdmin({ bySku });
-    const findings = await auditStaticJsonLdPrices(admin, [
-      candidate({ handle: "widget", sku: "SKU-1", staticPrice: "19.99" }),
-    ]);
+    const { findings } = await auditStaticJsonLdPrices(
+      admin,
+      [candidate({ handle: "widget", sku: "SKU-1", staticPrice: "19.99" })],
+      SHOP_ID,
+    );
     expect(findings).toHaveLength(1);
     expect(bySku).toHaveBeenCalledTimes(1);
   });
@@ -289,17 +329,21 @@ describe("auditStaticJsonLdPrices", () => {
         },
       }),
     });
-    const findings = await auditStaticJsonLdPrices(admin, [
-      candidate({ sku: "DUP", handle: "widget", staticPrice: "19.99" }),
-    ]);
+    const { findings } = await auditStaticJsonLdPrices(
+      admin,
+      [candidate({ sku: "DUP", handle: "widget", staticPrice: "19.99" })],
+      SHOP_ID,
+    );
     expect(findings).toHaveLength(0);
   });
 
   it("skips an unresolvable handle", async () => {
     const { admin } = mockAdmin({ byHandle: () => ({ products: { nodes: [] } }) });
-    const findings = await auditStaticJsonLdPrices(admin, [
-      candidate({ handle: "missing", sku: undefined, staticPrice: "19.99" }),
-    ]);
+    const { findings } = await auditStaticJsonLdPrices(
+      admin,
+      [candidate({ handle: "missing", sku: undefined, staticPrice: "19.99" })],
+      SHOP_ID,
+    );
     expect(findings).toHaveLength(0);
   });
 
@@ -311,9 +355,11 @@ describe("auditStaticJsonLdPrices", () => {
           /* hasNextPage */ true,
         ),
     });
-    const findings = await auditStaticJsonLdPrices(admin, [
-      candidate({ handle: "huge", sku: undefined, staticPrice: "19.99" }),
-    ]);
+    const { findings } = await auditStaticJsonLdPrices(
+      admin,
+      [candidate({ handle: "huge", sku: undefined, staticPrice: "19.99" })],
+      SHOP_ID,
+    );
     expect(findings).toHaveLength(0);
   });
 
@@ -322,11 +368,121 @@ describe("auditStaticJsonLdPrices", () => {
       productByHandleResponse([{ price: "29.99", compareAtPrice: null, availableForSale: true }]),
     );
     const { admin } = mockAdmin({ byHandle });
-    const findings = await auditStaticJsonLdPrices(admin, [
-      candidate({ handle: "widget", sku: undefined, staticPrice: "19.99", lineNumber: 1 }),
-      candidate({ handle: "widget", sku: undefined, staticPrice: "19.99", lineNumber: 2 }),
-    ]);
+    const { findings } = await auditStaticJsonLdPrices(
+      admin,
+      [
+        candidate({ handle: "widget", sku: undefined, staticPrice: "19.99", lineNumber: 1 }),
+        candidate({ handle: "widget", sku: undefined, staticPrice: "19.99", lineNumber: 2 }),
+      ],
+      SHOP_ID,
+    );
     expect(findings).toHaveLength(2);
     expect(byHandle).toHaveBeenCalledTimes(1);
+  });
+
+  // -------------------------------------------------------------------------
+  // FIX 2 — THROTTLED resilience: a single lookup that throttles once then
+  // succeeds must retry the SAME lookup, not fail the whole audit.
+  // -------------------------------------------------------------------------
+  it("backs off and retries a single lookup that returns THROTTLED then succeeds", async () => {
+    let handleCalls = 0;
+    const graphql = vi.fn(async (query: string) => {
+      if (query.includes("shop {")) {
+        return { json: async () => ({ data: { shop: { currencyCode: "USD" } } }) };
+      }
+      // ProductByHandle: throttle the first attempt, succeed on the retry.
+      handleCalls += 1;
+      if (handleCalls === 1) {
+        return { json: async () => ({ errors: [{ extensions: { code: "THROTTLED" } }] }) };
+      }
+      return {
+        json: async () => ({
+          data: productByHandleResponse([
+            { price: "29.99", compareAtPrice: null, availableForSale: true },
+          ]),
+        }),
+      };
+    });
+    const admin = { graphql } as unknown as AdminApiContext;
+
+    const { findings, skipped } = await auditStaticJsonLdPrices(
+      admin,
+      [candidate({ handle: "widget", sku: undefined, staticPrice: "19.99" })],
+      SHOP_ID,
+    );
+
+    expect(handleCalls).toBe(2); // throttled once, retried once
+    expect(findings).toHaveLength(1);
+    expect(skipped).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
+  // FIX 2 (error path) — a non-throttle, non-access-denied GraphQL error
+  // propagates so the Inngest step retries the whole step.
+  // -------------------------------------------------------------------------
+  it("throws on an unexpected GraphQL error (surfaced to the step for retry)", async () => {
+    const graphql = vi.fn(async (query: string) => {
+      if (query.includes("shop {")) {
+        return { json: async () => ({ data: { shop: { currencyCode: "USD" } } }) };
+      }
+      return { json: async () => ({ errors: [{ message: "Internal error" }] }) };
+    });
+    const admin = { graphql } as unknown as AdminApiContext;
+
+    await expect(
+      auditStaticJsonLdPrices(
+        admin,
+        [candidate({ handle: "widget", sku: undefined, staticPrice: "19.99" })],
+        SHOP_ID,
+      ),
+    ).rejects.toThrow(/Internal error/);
+  });
+
+  // -------------------------------------------------------------------------
+  // Nice-to-have — read_products revoked mid-scan returns a clean skip rather
+  // than throwing, so the category lands in skippedCategories.
+  // -------------------------------------------------------------------------
+  it("returns skipped when read_products is revoked mid-scan (ACCESS_DENIED)", async () => {
+    const graphql = vi.fn(async (query: string) => {
+      if (query.includes("shop {")) {
+        return { json: async () => ({ data: { shop: { currencyCode: "USD" } } }) };
+      }
+      return { json: async () => ({ errors: [{ extensions: { code: "ACCESS_DENIED" } }] }) };
+    });
+    const admin = { graphql } as unknown as AdminApiContext;
+
+    const { findings, skipped } = await auditStaticJsonLdPrices(
+      admin,
+      [candidate({ handle: "widget", sku: undefined, staticPrice: "19.99" })],
+      SHOP_ID,
+    );
+    expect(findings).toHaveLength(0);
+    expect(skipped).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // FIX 3 — the MAX_LOOKUPS cap: past the budget, extra candidates go
+  // unresolved (never false-resolved), the audit warns, and reports skipped.
+  // -------------------------------------------------------------------------
+  it("warns and reports skipped when the lookup cap truncates the candidate list", async () => {
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    // Each distinct handle resolves to a matching price (no finding), so the
+    // only observable effect is the cap: 60 distinct handles > MAX_LOOKUPS (50).
+    const { admin } = mockAdmin({
+      byHandle: () =>
+        productByHandleResponse([{ price: "19.99", compareAtPrice: null, availableForSale: true }]),
+    });
+    const many = Array.from({ length: 60 }, (_, i) =>
+      candidate({ handle: `h-${i}`, sku: undefined, staticPrice: "19.99", lineNumber: i }),
+    );
+
+    const { skipped } = await auditStaticJsonLdPrices(admin, many, SHOP_ID);
+
+    expect(skipped).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("lookup cap"),
+      expect.objectContaining({ shopId: SHOP_ID, dropped: 10 }),
+    );
+    warnSpy.mockRestore();
   });
 });

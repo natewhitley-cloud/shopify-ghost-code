@@ -111,6 +111,7 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   SETTINGS_DRIFT: "Settings Drift",
   GHOST_PIXEL: "Tracking Pixels",
   JSON_LD_CONFLICT: "JSON-LD Conflicts",
+  JSON_LD_PRICE_CONFLICT: "JSON-LD Price Mismatch",
   GHOST_LAYOUT: "Layout Code",
   GHOST_TAG: "Product Tags",
   GHOST_PRICE: "Compare-at Prices",

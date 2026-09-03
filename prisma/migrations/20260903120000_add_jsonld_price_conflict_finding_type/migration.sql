@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "FindingType" ADD VALUE 'JSON_LD_PRICE_CONFLICT';

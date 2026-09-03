@@ -214,6 +214,12 @@ enum FindingType {
   SETTINGS_DRIFT
   GHOST_PIXEL
   JSON_LD_CONFLICT
+  // Emitted EXCLUSIVELY by the live-price audit (jsonld-price-audit.server.ts):
+  // a static Product JSON-LD block advertises a price/availability that no longer
+  // matches the live product. Kept distinct from JSON_LD_CONFLICT (the worker's
+  // same-file conflict detector) so skippedCategories can scope-gate only this
+  // audit without over-excluding the worker's findings (gc-47c.10 fix).
+  JSON_LD_PRICE_CONFLICT
   GHOST_LAYOUT
   GHOST_TAG
   GHOST_PRICE

@@ -205,6 +205,12 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "compounding",
     agentic: true,
   },
+  JSON_LD_PRICE_CONFLICT: {
+    primary: "discoverability",
+    secondary: [],
+    urgency: "compounding",
+    agentic: true,
+  },
   GHOST_LAYOUT: {
     primary: "customers-see-it",
     secondary: ["housekeeping"],
