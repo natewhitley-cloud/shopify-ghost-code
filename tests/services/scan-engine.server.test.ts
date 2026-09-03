@@ -2052,6 +2052,120 @@ describe("detectJsonLdConflicts", () => {
     const findings = detectJsonLdConflicts(file);
     expect(findings).toHaveLength(0);
   });
+
+  it("surfaces a conflicting Offer price between two Product blocks", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "price": "19.99", "priceCurrency": "USD"}}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "price": "24.99", "priceCurrency": "USD"}}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    // Base substrings preserved, plus the enriched offer clause.
+    expect(findings[0].description).toContain('"@type": "Product"');
+    expect(findings[0].description).toContain("line 1");
+    expect(findings[0].description).toContain("offer price differs");
+    expect(findings[0].description).toContain("19.99");
+    expect(findings[0].description).toContain("24.99");
+  });
+
+  it("normalizes numeric vs string price when diffing offers", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "price": 19.99}}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "price": "19.99"}}</script>',
+      ].join("\n"),
+    };
+    // The raw JSON differs (number 19.99 vs string "19.99"), so the generic
+    // node-level conflict still fires. But the OFFER diff normalizes both to the
+    // same string, so no misleading "offer price differs" clause is appended.
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).not.toContain("offer");
+  });
+
+  it("surfaces conflicting Offer availability and strips the schema.org URL prefix", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "availability": "https://schema.org/InStock"}}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "availability": "https://schema.org/OutOfStock"}}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("offer availability differs");
+    expect(findings[0].description).toContain("InStock");
+    expect(findings[0].description).toContain("OutOfStock");
+    // The URL prefix must be stripped for readability.
+    expect(findings[0].description).not.toContain("schema.org");
+  });
+
+  it("compares the first offer when offers is an array on one side", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": [{"@type": "Offer", "price": "19.99"}, {"@type": "Offer", "price": "99.99"}]}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "price": "24.99"}}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("offer price differs");
+    expect(findings[0].description).toContain("19.99");
+    expect(findings[0].description).toContain("24.99");
+    // The second array element (99.99) is ignored: only the first offer counts.
+    expect(findings[0].description).not.toContain("99.99");
+  });
+
+  it("surfaces conflicting price between two direct @type Offer nodes", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Offer", "price": "19.99", "priceCurrency": "USD"}</script>',
+        '<script type="application/ld+json">{"@type": "Offer", "price": "24.99", "priceCurrency": "USD"}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain('"@type": "Offer"');
+    expect(findings[0].description).toContain("offer price differs");
+    expect(findings[0].description).toContain("19.99");
+    expect(findings[0].description).toContain("24.99");
+  });
+
+  it("lists multiple differing offer fields (price and availability)", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "price": "19.99", "availability": "https://schema.org/InStock"}}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "offers": {"@type": "Offer", "price": "24.99", "availability": "https://schema.org/OutOfStock"}}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("offer price differs");
+    expect(findings[0].description).toContain("offer availability differs");
+  });
+
+  it("keeps the generic wording when the conflict is not offer-related", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "aggregateRating": {"@type": "AggregateRating", "ratingValue": "4.5"}}</script>',
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget", "aggregateRating": {"@type": "AggregateRating", "ratingValue": "4.2"}}</script>',
+      ].join("\n"),
+    };
+    const findings = detectJsonLdConflicts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain('"@type": "Product"');
+    expect(findings[0].description).toContain("line 1");
+    // No offer field differs, so the description must not gain an offer clause.
+    expect(findings[0].description).not.toContain("offer");
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -856,6 +856,25 @@ interface JsonLdNode {
   lineNumber: number;
   /** Canonical JSON of just this node (stable key order) for equality checks. */
   rawContent: string;
+  /**
+   * The comparable Offer fields for this node (price, availability, etc.),
+   * pulled at extraction time so a conflicting pair can be diffed cheaply.
+   */
+  offer: OfferFields;
+}
+
+/**
+ * The subset of schema.org Offer fields an AI shopping agent would quote to a
+ * shopper. When two same-@type nodes disagree here, the merchant-facing finding
+ * names the exact field(s): this is the highest-signal JSON-LD conflict Ghost
+ * Code can report (an agent could quote the wrong price or wrong stock status).
+ * Values are normalized to trimmed strings so numeric vs string prices compare.
+ */
+interface OfferFields {
+  price?: string;
+  priceCurrency?: string;
+  availability?: string;
+  priceValidUntil?: string;
 }
 
 /**
@@ -920,6 +939,80 @@ function extractJsonLdNodes(parsed: unknown): Array<Record<string, unknown>> {
   return nodes;
 }
 
+/** Normalize an Offer scalar to a trimmed string so `19.99` (number) and
+ * `"19.99"` (string) compare equal. Non-scalars yield undefined. */
+function normalizeOfferValue(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim();
+  if (typeof value === "number") return String(value);
+  return undefined;
+}
+
+/** Strip a leading `https://schema.org/` (or http) prefix from an availability
+ * value so the message shows `InStock`, not the full URL. */
+function stripSchemaOrgPrefix(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  return value.replace(/^https?:\/\/schema\.org\//i, "");
+}
+
+/**
+ * Pull the comparable Offer fields off a node. Offers live at `node.offers` as a
+ * single object OR an array, or the node itself may BE an Offer (its own `@type`
+ * is "Offer"), in which case the fields sit on the node directly. When multiple
+ * offers are present we deliberately compare only the FIRST one: keeps the diff
+ * deterministic and avoids combinatorial pairing.
+ */
+function extractOfferFields(node: Record<string, unknown>): OfferFields {
+  let source: Record<string, unknown> | null = null;
+
+  if (normalizeAtType(node["@type"]) === "Offer") {
+    source = node;
+  } else {
+    const offers = node["offers"];
+    if (Array.isArray(offers)) {
+      // First offer only (deterministic, avoids N-way pairing).
+      const first = offers.find((o) => o !== null && typeof o === "object" && !Array.isArray(o));
+      source = (first as Record<string, unknown>) ?? null;
+    } else if (offers !== null && typeof offers === "object") {
+      source = offers as Record<string, unknown>;
+    }
+  }
+
+  if (!source) return {};
+
+  return {
+    price: normalizeOfferValue(source["price"]),
+    priceCurrency: normalizeOfferValue(source["priceCurrency"]),
+    availability: stripSchemaOrgPrefix(normalizeOfferValue(source["availability"])),
+    priceValidUntil: normalizeOfferValue(source["priceValidUntil"]),
+  };
+}
+
+const OFFER_FIELD_LABELS: Array<[keyof OfferFields, string]> = [
+  ["price", "price"],
+  ["priceCurrency", "priceCurrency"],
+  ["availability", "availability"],
+  ["priceValidUntil", "priceValidUntil"],
+];
+
+/**
+ * Build a clause naming each Offer field that differs between two nodes, e.g.
+ * `offer price differs (19.99 vs 24.99)`. A field is only reported when BOTH
+ * sides carry a value and they disagree: a field present on one side only is not
+ * a clear price/stock contradiction worth surfacing. Returns "" when nothing
+ * differs (caller then keeps the generic conflict wording).
+ */
+function describeOfferDiff(a: OfferFields, b: OfferFields): string {
+  const parts: string[] = [];
+  for (const [key, label] of OFFER_FIELD_LABELS) {
+    const av = a[key];
+    const bv = b[key];
+    if (av !== undefined && bv !== undefined && av !== bv) {
+      parts.push(`offer ${label} differs (${av} vs ${bv})`);
+    }
+  }
+  return parts.join(", ");
+}
+
 /**
  * Detect conflicting JSON-LD blocks — multiple schema.org nodes with the same
  * @type but different data in the same file.
@@ -962,7 +1055,7 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
       if (!nodesByType.has(typeKey)) {
         nodesByType.set(typeKey, []);
       }
-      nodesByType.get(typeKey)!.push({ lineNumber, rawContent });
+      nodesByType.get(typeKey)!.push({ lineNumber, rawContent, offer: extractOfferFields(node) });
     }
   }
 
@@ -994,6 +1087,17 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
       const appName =
         identifyAppFromJsonLd(node.rawContent) ?? identifyAppFromCode(node.rawContent) ?? undefined;
 
+      // When the disagreement is in an Offer field, ENRICH this single finding
+      // to name the field(s) and both values (highest-signal conflict: an AI
+      // agent could quote the wrong price/stock). We do NOT emit a separate
+      // finding, so the generic conflict gc-47c.9 already reports is not
+      // double-counted. Non-offer differences (e.g. aggregateRating only) leave
+      // the generic wording untouched.
+      const offerClause = describeOfferDiff(conflictsWith.offer, node.offer);
+      const description =
+        `Conflicting JSON-LD "@type": "${atType}" (conflicts with block on line ${conflictsWith.lineNumber})` +
+        (offerClause ? `: ${offerClause}` : "");
+
       findings.push({
         filename: file.filename,
         lineNumber: node.lineNumber,
@@ -1001,7 +1105,7 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
         findingType: FindingType.JSON_LD_CONFLICT,
         severity,
         appName,
-        description: `Conflicting JSON-LD "@type": "${atType}" (conflicts with block on line ${conflictsWith.lineNumber})`,
+        description,
       });
     }
   }
