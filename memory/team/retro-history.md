@@ -1,5 +1,11 @@
 # Retrospective History
 
+## Retro: 2026-09-03 (gc-47c agentic epic core + deploy)
+- Tasks completed: 6 gc-47c beads (.5/.10/.12 built+shipped, .7/.8/.9 from prior work confirmed closed); .10 pre-activation blocker (gc-1tr) resolved; .6 re-parked; 5 stale handoff beads closed; gc-hny deferred. 2 deploys (start + end), prod `548f1ec`→`a1915a4`, all gates green (2338 tests).
+- New learnings: 4 (implementer x3: FindingType blast-radius, no-shared-type-across-scope-boundary, worker→audit compact-candidate; tester x1: list-driven regex edges). Files all under 50 lines, no pruning.
+- Key insight: adversarial review-before-merge earned its keep — the .10 review caught a real differ bug (shared FindingType across a scope-gated + non-scope-gated detector miscounts findings) that a passing gate missed; fixed via own FindingType + re-reviewed.
+- Process: worktree parallel dispatch works but branches from session-start HEAD (agents must `git reset --hard main` when prior work merged — .10-fixes agent self-corrected; .12 shipped from a stale base, harmless because disjoint files). Critical-co-author call on .6 (recommended NOT building a parked/blocked/unproven P4) over literal "do it".
+
 ## Retro: 2026-06-15 (session 7 — deploy unblock + Cluster 2 & 1 review remediation)
 
 - Tasks completed: merged PR #1 (prior session's top-10 work); fixed deploy blocker (PR #2, dead better-sqlite3 native build); Cluster 2 scan-integrity (PRs #3-#6: LOG-5/7/8/6/10); Cluster 1 detector false-positives via /sprint (PR #7: LOG-11/12). 7 PRs merged this session. Suite 1367 → 1442.
