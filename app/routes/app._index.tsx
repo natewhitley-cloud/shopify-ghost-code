@@ -833,7 +833,7 @@ export default function Dashboard() {
               display: grid;
               grid-template-columns: 1fr 3fr;
               gap: 16px;
-              align-items: stretch;
+              align-items: start;
             }
             @media (max-width: 600px) {
               .dashboard-top-row {
@@ -1125,7 +1125,7 @@ export default function Dashboard() {
                           <div style={{ height: "18px" }} />
                           <div
                             className={`health-score-tile health-score-tile--${healthScore.tone}`}
-                            style={{ marginTop: "8px", flex: 1 }}
+                            style={{ marginTop: "8px" }}
                           >
                             <div
                               className={`health-score-number health-score-number--${healthScore.tone}`}
