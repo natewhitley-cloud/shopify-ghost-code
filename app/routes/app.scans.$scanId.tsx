@@ -579,6 +579,32 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
   );
 }
 
+/**
+ * Pure URL-param transition for the findings filter controls. Exported for unit
+ * testing. Sets or clears `key`, always drops `cursor` (a stale cursor must not
+ * page into a freshly-changed result set), and enforces that `lane` and `type`
+ * are mutually exclusive: they are the same filter dimension in the query (a
+ * single `?type=` takes precedence over the lane's type-set), so selecting one
+ * clears the other — otherwise the lane banner would keep claiming a lane the
+ * results are no longer filtered by.
+ */
+export function nextFindingsFilterParams(
+  prev: URLSearchParams,
+  key: string,
+  value: string,
+): URLSearchParams {
+  const next = new URLSearchParams(prev);
+  if (value) {
+    next.set(key, value);
+  } else {
+    next.delete(key);
+  }
+  if (key === "type" && value) next.delete("lane");
+  if (key === "lane" && value) next.delete("type");
+  next.delete("cursor");
+  return next;
+}
+
 export default function ScanDetail() {
   const {
     scan,
@@ -604,16 +630,7 @@ export default function ScanDetail() {
   // combine with a freshly changed filter (it would page into a now-different
   // result set). preventScrollReset is handled by useFilterSearchParams.
   function updateFilter(key: string, value: string) {
-    setSearchParams((prev) => {
-      const next = new URLSearchParams(prev);
-      if (value) {
-        next.set(key, value);
-      } else {
-        next.delete(key);
-      }
-      next.delete("cursor");
-      return next;
-    });
+    setSearchParams((prev) => nextFindingsFilterParams(prev, key, value));
   }
 
   // Clear all findings filters (also drops the cursor).
@@ -1161,6 +1178,39 @@ export default function ScanDetail() {
           </div>
         )}
 
+        {/* Lane-context banner — shown when the merchant arrived via a dashboard
+          consequence-lane deep link (`?lane=`). Rendered ABOVE the paid/free
+          split so free-tier merchants (who land on the upgrade preview) still
+          get the "why am I here" context and an escape hatch, not just a bare
+          upgrade wall. Names the lane, restates its "so what", and links back to
+          the full, unfiltered findings view. */}
+        {isCompleted && filters.lane && (
+          <div
+            style={{
+              marginTop: "32px",
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "12px",
+              padding: "12px 16px",
+              borderRadius: "8px",
+              border: `1px solid ${INFO_BD}`,
+              background: INFO_BG,
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+              <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
+                Showing: {laneLabel}
+              </span>
+              {laneSoWhat && (
+                <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>{laneSoWhat}</span>
+              )}
+            </div>
+            <Link to={`/app/scans/${scan.id}`}>View full scan results</Link>
+          </div>
+        )}
+
         {/* Findings detail table — only shown for completed scans */}
         {isCompleted &&
           (canViewDetails ? (
@@ -1228,37 +1278,6 @@ export default function ScanDetail() {
                       </button>
                     )}
                   </div>
-                  {/* Lane-context banner — shown when the merchant arrived via a
-                    dashboard consequence-lane deep link (`?lane=`). Names the
-                    lane, restates its "so what", and offers a one-click escape
-                    hatch back to the full, unfiltered findings view. */}
-                  {filters.lane && (
-                    <div
-                      style={{
-                        display: "flex",
-                        justifyContent: "space-between",
-                        alignItems: "center",
-                        flexWrap: "wrap",
-                        gap: "12px",
-                        padding: "12px 16px",
-                        borderRadius: "8px",
-                        border: `1px solid ${INFO_BD}`,
-                        background: INFO_BG,
-                      }}
-                    >
-                      <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                        <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
-                          Showing: {laneLabel}
-                        </span>
-                        {laneSoWhat && (
-                          <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
-                            {laneSoWhat}
-                          </span>
-                        )}
-                      </div>
-                      <Link to={`/app/scans/${scan.id}`}>View full scan results</Link>
-                    </div>
-                  )}
                   {/* Filter bar — only when the scan actually has findings to
                     filter (a paid + successful view). Stays visible even when
                     the active filters match zero rows so the merchant can

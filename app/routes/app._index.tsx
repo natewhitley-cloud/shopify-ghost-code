@@ -492,7 +492,7 @@ const URGENCY_CHIP: Record<
   { label: string; bg: string; text: string; border?: string }
 > = {
   "act-now": { label: "Act now", bg: CRIT_BD, text: COLOR_CRITICAL },
-  compounding: { label: "Compounding", bg: WARN_BD, text: COLOR_WARNING },
+  compounding: { label: "Compounding", bg: WARN_BD, text: WARN_TEXT },
   whenever: { label: "Whenever", bg: BG_SURFACE, text: TEXT_SUBDUED, border: BORDER_DEFAULT },
 };
 
@@ -1159,10 +1159,14 @@ export default function Dashboard() {
               <div style={{ ...sectionCard, marginBottom: 0 }}>
                 <s-stack direction="block" gap="base">
                   <div>
-                    <h2 className="dashboard-section-title">What it&apos;s costing you</h2>
-                    <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
-                      Grouped by consequence. Start with the flagged lane.
-                    </div>
+                    <h2 className="dashboard-section-title">
+                      {laneSummary.length === 0 ? "You're all clear" : "What it's costing you"}
+                    </h2>
+                    {laneSummary.length > 0 && (
+                      <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
+                        Grouped by consequence. Start with the flagged lane.
+                      </div>
+                    )}
                   </div>
                   {laneSummary.length === 0 ? (
                     <div style={{ fontSize: "14px", color: COLOR_SUCCESS }}>
@@ -1179,7 +1183,7 @@ export default function Dashboard() {
                             <Link
                               key={row.lane}
                               to={`/app/scans/${latestScanId}?lane=${row.lane}`}
-                              aria-label={`Review ${row.count} ${row.label} finding${row.count === 1 ? "" : "s"}`}
+                              aria-label={`Review ${row.count} ${row.label} finding${row.count === 1 ? "" : "s"}. ${chip.label}${isStart ? ", start here" : ""}`}
                               className={`lane${isStart ? " start" : ""}`}
                             >
                               <div

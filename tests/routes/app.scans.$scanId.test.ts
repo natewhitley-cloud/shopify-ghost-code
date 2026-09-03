@@ -98,7 +98,13 @@ import {
   getUnknownScriptsForScan,
   submitSignatureSuggestion,
 } from "../../app/models/unknown-script.server";
-import { action, CopyButton, FindingRow, loader } from "../../app/routes/app.scans.$scanId";
+import {
+  action,
+  CopyButton,
+  FindingRow,
+  loader,
+  nextFindingsFilterParams,
+} from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { authenticate } from "../../app/shopify.server";
 
@@ -847,6 +853,44 @@ describe("app.scans.$scanId action", () => {
     }
 
     expect(mockSubmitSignatureSuggestion).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// nextFindingsFilterParams — lane/type mutual exclusion + cursor reset
+// ---------------------------------------------------------------------------
+
+describe("nextFindingsFilterParams", () => {
+  it("selecting a type clears an active lane (they are the same query dimension)", () => {
+    const prev = new URLSearchParams("lane=privacy&severity=HIGH&cursor=abc");
+    const next = nextFindingsFilterParams(prev, "type", "GHOST_SCRIPT");
+    expect(next.get("type")).toBe("GHOST_SCRIPT");
+    expect(next.has("lane")).toBe(false); // lane dropped
+    expect(next.get("severity")).toBe("HIGH"); // orthogonal filter preserved
+    expect(next.has("cursor")).toBe(false); // pagination reset
+  });
+
+  it("selecting a lane clears an active type", () => {
+    const prev = new URLSearchParams("type=GHOST_SCRIPT&cursor=abc");
+    const next = nextFindingsFilterParams(prev, "lane", "speed");
+    expect(next.get("lane")).toBe("speed");
+    expect(next.has("type")).toBe(false);
+    expect(next.has("cursor")).toBe(false);
+  });
+
+  it("selecting severity or app leaves lane intact (orthogonal to the type axis)", () => {
+    const prev = new URLSearchParams("lane=speed");
+    expect(nextFindingsFilterParams(prev, "severity", "HIGH").get("lane")).toBe("speed");
+    expect(nextFindingsFilterParams(prev, "app", "OldApp").get("lane")).toBe("speed");
+  });
+
+  it("clearing a filter (empty value) deletes the key and does not trigger lane/type coupling", () => {
+    const prev = new URLSearchParams("lane=privacy&type=GHOST_SCRIPT&cursor=abc");
+    // Clearing severity must not delete lane or type via the coupling guards.
+    const next = nextFindingsFilterParams(prev, "type", "");
+    expect(next.has("type")).toBe(false);
+    expect(next.get("lane")).toBe("privacy"); // coupling only fires when a value is set
+    expect(next.has("cursor")).toBe(false);
   });
 });
 
