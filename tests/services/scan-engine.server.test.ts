@@ -2540,6 +2540,54 @@ describe("detectGhostRobots", () => {
     const robotsFindings = findingsOfType(result.findings, FindingType.GHOST_ROBOTS);
     expect(robotsFindings).toHaveLength(1);
   });
+
+  it("detects orphaned GPTBot noindex directive", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<meta name="GPTBot" content="noindex">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_ROBOTS);
+    expect(findings[0].description).toContain("noindex");
+  });
+
+  it("detects orphaned ClaudeBot nofollow directive with content before name", () => {
+    const file: ThemeFile = {
+      filename: "templates/collection.liquid",
+      content: '<meta content="nofollow" name="ClaudeBot">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("nofollow");
+  });
+
+  it("skips permissive AI-crawler directive (index, follow)", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<meta name="PerplexityBot" content="index, follow">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips conditional AI-crawler robots (Liquid if)", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '{% if template == "404" %}<meta name="Google-Extended" content="none">{% endif %}',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(0);
+  });
+
+  it("does not treat an arbitrary meta name as robots-like", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<meta name="description" content="noindex">',
+    };
+    const findings = detectGhostRobots(file);
+    expect(findings).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
