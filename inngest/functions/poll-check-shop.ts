@@ -34,7 +34,9 @@ export const pollCheckShop = inngest.createFunction(
   {
     id: "poll-check-shop",
     name: "Poll: Check Single Shop for Theme Changes",
-    concurrency: { limit: 5 },
+    // Shares the account-wide 5-slot Inngest pool across the 3 sibling apps; capped
+    // at 3 to reserve cron headroom, matching scan-theme.
+    concurrency: { limit: 3 },
   },
   { event: "poll/check-shop" },
   async ({ event, step, logger }) => {
