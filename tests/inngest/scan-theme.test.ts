@@ -363,11 +363,12 @@ function makeAuditFinding(findingType: FindingType, overrides?: Record<string, u
 // ---------------------------------------------------------------------------
 
 describe("scanTheme — function configuration", () => {
-  it("caps concurrency at 5 to bound simultaneous CPU-bound scans (PRF-1)", () => {
-    // The cron coordinators fan out many poll/check-shop events, each of which
-    // can dispatch a scan; the concurrency limit prevents unbounded pile-up.
+  it("caps concurrency at 3 to reserve headroom on the shared Inngest pool (PRF-1)", () => {
+    // The Inngest Hobby plan's 5-concurrent-step pool is account-wide and shared
+    // across the 3 sibling apps; capping below the pool size keeps cron heartbeats
+    // from being starved by a scan burst.
     const opts = (scanTheme as unknown as { opts: { concurrency?: unknown } }).opts;
-    expect(opts.concurrency).toEqual({ limit: 5 });
+    expect(opts.concurrency).toEqual({ limit: 3 });
   });
 });
 
