@@ -292,7 +292,7 @@ export const CONSEQUENCE_MAP: Record<
   DUPLICATE_LIBRARY: {
     primary: "speed",
     secondary: [],
-    urgency: "act-now",
+    urgency: "whenever",
     agentic: false,
   },
 };
