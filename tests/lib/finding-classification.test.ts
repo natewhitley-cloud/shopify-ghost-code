@@ -153,7 +153,7 @@ describe("getFindingConfidence", () => {
   // ---------------------------------------------------------------------------
   it("classifies every FindingType enum member in exactly one tier (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(27);
+    expect(allTypes).toHaveLength(28);
 
     for (const type of allTypes) {
       const inSignature = CONFIDENCE_TYPE_SETS.signature.has(type);
@@ -170,6 +170,6 @@ describe("getFindingConfidence", () => {
     const heuristic = [...CONFIDENCE_TYPE_SETS.heuristic];
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
-    expect(signature.length + heuristic.length).toBe(27);
+    expect(signature.length + heuristic.length).toBe(28);
   });
 });

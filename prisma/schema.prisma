@@ -233,6 +233,7 @@ enum FindingType {
   GHOST_PRECONNECT
   GHOST_FONT
   GHOST_AJAX
+  DUPLICATE_LIBRARY
 }
 
 enum SubmissionStatus {

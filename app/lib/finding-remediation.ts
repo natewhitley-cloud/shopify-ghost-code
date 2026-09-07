@@ -63,6 +63,12 @@ const REMEDIATION: Record<string, Remediation> = {
     howTo:
       "This external stylesheet loads from an app you may have removed. Once confirmed, delete the link tag (or the orphaned CSS file) from the theme. Duplicate the theme first.",
   },
+  // NOTE: provisional copy (gc-tus.7). Final wording and urgency tier are set in
+  // gc-tus.9 (B3) once the detector (gc-tus.8) defines exactly what it emits.
+  DUPLICATE_LIBRARY: {
+    howTo:
+      "The same JavaScript library is being loaded more than once, so shoppers download and run duplicate code on every page. Find where each copy is added (often a leftover from an uninstalled app) and remove the redundant one, keeping a single copy. Duplicate the theme as a backup first.",
+  },
 
   // ---- Theme-file edits: SEO and meta markup in the head ----
   // These carry an agentic `impact`: canonical/hreflang/robots/JSON-LD/OG/meta
