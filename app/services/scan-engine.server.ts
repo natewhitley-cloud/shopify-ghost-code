@@ -52,6 +52,9 @@
  *   GHOST_AJAX     — orphaned fetch()/XMLHttpRequest/jQuery AJAX calls to
  *                    defunct app servers, wasting network requests and leaking
  *                    data to third-party domains
+ *   DUPLICATE_LIBRARY — cross-file: the same public-CDN JS library loaded at two
+ *                    or more distinct MAJOR versions across the theme (e.g.
+ *                    Swiper v8 in one file and v11 in another)
  */
 
 import { FindingType } from "@prisma/client";
@@ -67,7 +70,7 @@ import {
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
-import { isBenignLibrary } from "../lib/library-matcher.server";
+import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
@@ -1554,6 +1557,80 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
 }
 
 // ---------------------------------------------------------------------------
+// Detector: DUPLICATE_LIBRARY
+// ---------------------------------------------------------------------------
+
+/**
+ * Cross-file detector: flags when the SAME public-CDN JavaScript library is
+ * loaded at two or more DISTINCT MAJOR versions across the theme (e.g. Swiper
+ * v8 in one file and Swiper v11 in another). Duplicate/conflicting copies bloat
+ * page weight and can break at runtime when two majors fight over the same
+ * global. Emits ONE DUPLICATE_LIBRARY finding per conflicting library.
+ *
+ * IMPORTANT — reads RAW script URLs, not the post-suppression unknownScripts
+ * array: the unknown-script collectors DROP benign libraries via isBenignLibrary
+ * (gc-tus A1), so a library that appears there would be invisible to a detector
+ * that consumed that array. This pass therefore re-extracts external <script>
+ * src URLs directly from each file's content and parses them with parseLibrary.
+ *
+ * Scope (v1): public-CDN URLs only (jsdelivr / unpkg / cdnjs) — parseLibrary
+ * returns null for everything else, so asset_url-hosted copies are out of scope.
+ * Not flagged: a single library, two libraries each seen once, the same major
+ * in multiple files, or two copies of the identical version. Only a genuine
+ * MAJOR-version split counts as a conflict.
+ */
+export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput[] {
+  // library name -> (major -> first place that major was seen)
+  const byLibrary = new Map<string, Map<number, { file: ThemeFile; lineNumber: number }>>();
+
+  for (const file of files) {
+    for (const { lineNumber, text } of lines(file.content)) {
+      for (const { tag } of extractTags(text, "<script")) {
+        SCRIPT_SRC_RE.lastIndex = 0;
+        const match = SCRIPT_SRC_RE.exec(tag);
+        if (!match) continue;
+
+        const lib = parseLibrary(match[1]);
+        if (lib === null) continue;
+
+        let majors = byLibrary.get(lib.name);
+        if (!majors) {
+          majors = new Map();
+          byLibrary.set(lib.name, majors);
+        }
+        // Keep the FIRST occurrence of each major for stable attribution.
+        if (!majors.has(lib.major)) majors.set(lib.major, { file, lineNumber });
+      }
+    }
+  }
+
+  const findings: CreateFindingInput[] = [];
+
+  for (const [name, majors] of byLibrary) {
+    if (majors.size < 2) continue; // single major = no conflict
+
+    const sortedMajors = [...majors.keys()].sort((a, b) => a - b);
+    // Attribute the finding to the lowest-major occurrence (deterministic).
+    const anchor = majors.get(sortedMajors[0])!;
+
+    const detail = sortedMajors.map((m) => `v${m} (${majors.get(m)!.file.filename})`).join(", ");
+    const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
+    const severity = classifySeverity(FindingType.DUPLICATE_LIBRARY, codeSnippet);
+
+    findings.push({
+      filename: anchor.file.filename,
+      lineNumber: anchor.lineNumber,
+      codeSnippet,
+      findingType: FindingType.DUPLICATE_LIBRARY,
+      severity,
+      description: `Library "${name}" is loaded at ${sortedMajors.length} conflicting major versions: ${detail}`,
+    });
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Detector: SETTINGS_DRIFT
 // ---------------------------------------------------------------------------
 
@@ -2702,6 +2779,12 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
  *     for files that match known app patterns or the theme.*.liquid naming
  *     convention.
  *
+ *   Pass 5 — cross-file duplicate-library detection:
+ *     Re-extracts external <script> src URLs from RAW file content across all
+ *     files and flags any public-CDN library loaded at two or more distinct
+ *     MAJOR versions (e.g. Swiper v8 + v11).  Emits one DUPLICATE_LIBRARY
+ *     finding per conflicting library.
+ *
  * Returns all findings (all passes) ready for createFindings().
  */
 export function scanThemeFiles(files: ThemeFile[]): ScanResult {
@@ -2790,6 +2873,10 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
 
   // Pass 4: page builder layout detection
   findings.push(...detectGhostLayouts(files));
+
+  // Pass 5: cross-file duplicate-library detection (reads RAW script URLs, not
+  // the suppression-filtered unknownScripts array — see detectDuplicateLibraries).
+  findings.push(...detectDuplicateLibraries(files));
 
   return { findings, unknownScripts, skippedFiles, staticProductCandidates };
 }
