@@ -9,6 +9,7 @@ import { copyToClipboard } from "../lib/clipboard";
 import { getFindingConfidence, hasVisualImpact } from "../lib/finding-classification";
 import {
   isLaneKey,
+  LANES,
   laneLabelForLane,
   soWhatForLane,
   typesForLane,
@@ -1303,6 +1304,21 @@ export default function ScanDetail() {
                     adjust or clear them. */}
                   {findingSummary.total > 0 && (
                     <div style={styles.filterBar}>
+                      <div style={{ minWidth: "180px" }}>
+                        <div style={filterLabelStyle}>Impact</div>
+                        <s-select
+                          aria-label="Impact"
+                          value={filters.lane}
+                          onChange={(e: unknown) => updateFilter("lane", readValue(e))}
+                        >
+                          <s-option value="">All impacts</s-option>
+                          {LANES.map((l) => (
+                            <s-option key={l.key} value={l.key}>
+                              {l.label}
+                            </s-option>
+                          ))}
+                        </s-select>
+                      </div>
                       <div style={{ minWidth: "180px" }}>
                         <div style={filterLabelStyle}>Severity</div>
                         <s-select
