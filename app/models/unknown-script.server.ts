@@ -1,6 +1,7 @@
 import type { SignatureSubmission, SubmissionStatus } from "@prisma/client";
 
 import db from "../db.server";
+import { isBenignLibrary } from "../lib/library-matcher.server";
 import { hostnameFromUrl } from "../lib/url.server";
 
 export type CreateUnknownScriptInput = {
@@ -83,13 +84,22 @@ export async function createUnknownScripts(scanId: string, scripts: CreateUnknow
 
 /**
  * Get unknown scripts for a scan, including any merchant submissions.
+ *
+ * Read-time benign-library suppression: NEW scans already drop benign public-CDN
+ * libraries / web fonts at collection time (gc-tus A1), but OLD scans predating
+ * that change still carry benign UnknownScript rows. We filter them out here with
+ * the SAME matcher the collectors use (isBenignLibrary — single source of truth)
+ * so the per-scan view hides them regardless of scan age, WITHOUT mutating or
+ * deleting stored rows. The model layer is the right place: every caller of the
+ * per-scan view reads through this function, so the suppression stays consistent.
  */
 export async function getUnknownScriptsForScan(scanId: string) {
-  return db.unknownScript.findMany({
+  const scripts = await db.unknownScript.findMany({
     where: { scanId },
     include: { submissions: true },
     orderBy: { createdAt: "asc" },
   });
+  return scripts.filter((s) => !isBenignLibrary(s.url));
 }
 
 /**
@@ -249,6 +259,44 @@ export async function acceptSubmissionsForDomain(domain: string): Promise<{ coun
     },
     data: {
       status: "ACCEPTED",
+      reviewedAt: new Date(),
+    },
+  });
+}
+
+/**
+ * Auto-reject pending submissions filed against benign public-CDN libraries.
+ *
+ * Merchants may have submitted "which app left this?" suggestions against benign
+ * libraries (swiper, Google Fonts, etc.) before gc-tus A1 stopped emitting them
+ * as unknown scripts. Those PENDING rows inflate getSubmissionStats and the
+ * operator pending queue. This is the inverse of acceptSubmissionsForDomain's
+ * bulk-status pattern: it decides membership with the shared isBenignLibrary
+ * matcher (not a domain) and sets status to REJECTED (never deletes rows).
+ *
+ * Idempotent: it only targets PENDING submissions, so once a benign submission is
+ * rejected it leaves the PENDING set and a re-run finds nothing (count 0). Scoped
+ * to the newest SUBMISSION_QUERY_LIMIT pending rows, matching the other bounded
+ * operator reads.
+ */
+export async function rejectBenignLibrarySubmissions(): Promise<{ count: number }> {
+  const pending = await db.signatureSubmission.findMany({
+    where: { status: "PENDING" },
+    select: { id: true, unknownScript: { select: { url: true } } },
+    orderBy: { createdAt: "desc" },
+    take: SUBMISSION_QUERY_LIMIT,
+  });
+
+  const benignIds = pending.filter((s) => isBenignLibrary(s.unknownScript.url)).map((s) => s.id);
+
+  if (benignIds.length === 0) {
+    return { count: 0 };
+  }
+
+  return db.signatureSubmission.updateMany({
+    where: { id: { in: benignIds } },
+    data: {
+      status: "REJECTED",
       reviewedAt: new Date(),
     },
   });

@@ -110,6 +110,10 @@ const HEURISTIC_FINDING_TYPES = new Set([
   "GHOST_TAG",
   "GHOST_PAGE",
   "GHOST_METAFIELD",
+  // DUPLICATE_LIBRARY — cross-file structural inference (the same JS library is
+  // loaded by two or more theme files); no positive app-signature match, so it
+  // is surfaced as "Heuristic" pending merchant review.
+  "DUPLICATE_LIBRARY",
 ]);
 
 /**
@@ -196,4 +200,8 @@ export const CONFIDENCE_TYPE_SETS = {
  * If a future cross-file pass emits a NEW finding type attributed to the file it
  * scans, add that type here so the differ keeps diffing it across size skips.
  */
-export const CROSS_FILE_FINDING_TYPES = new Set(["ORPHAN_ASSET", "GHOST_LAYOUT"]);
+export const CROSS_FILE_FINDING_TYPES = new Set([
+  "ORPHAN_ASSET",
+  "GHOST_LAYOUT",
+  "DUPLICATE_LIBRARY",
+]);

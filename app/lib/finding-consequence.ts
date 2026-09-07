@@ -289,6 +289,12 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "act-now",
     agentic: false,
   },
+  DUPLICATE_LIBRARY: {
+    primary: "speed",
+    secondary: [],
+    urgency: "whenever",
+    agentic: false,
+  },
 };
 
 // ---------------------------------------------------------------------------

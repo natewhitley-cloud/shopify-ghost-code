@@ -24,6 +24,7 @@ import {
   detectGhostPreconnect,
   detectGhostFont,
   detectGhostAjax,
+  detectDuplicateLibraries,
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
@@ -1124,6 +1125,33 @@ describe("scanThemeFiles", () => {
       { filename: "layout/theme.liquid", content: "<html>{{ content_for_layout }}</html>" },
     ];
     expect(scanThemeFiles(files).findings).toHaveLength(0);
+  });
+
+  it("surfaces the count of benign public-CDN libraries suppressed (gc-tus A2 telemetry)", () => {
+    const files = [
+      {
+        filename: "layout/theme.liquid",
+        content: `<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">
+<script src="https://cdn.unknownapp.com/widget.js"></script>`,
+      },
+    ];
+    const result = scanThemeFiles(files);
+    // Two benign resources (swiper + Google Fonts) are dropped and counted; the
+    // unknown third-party script is still emitted.
+    expect(result.benignLibrarySkips).toBe(2);
+    expect(result.unknownScripts).toHaveLength(1);
+    expect(result.unknownScripts[0].url).toBe("https://cdn.unknownapp.com/widget.js");
+  });
+
+  it("reports zero benign skips when nothing is suppressed", () => {
+    const files = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://cdn.unknownapp.com/widget.js"></script>',
+      },
+    ];
+    expect(scanThemeFiles(files).benignLibrarySkips).toBe(0);
   });
 
   it("aggregates findings across multiple file types", () => {
@@ -4734,5 +4762,136 @@ describe("LOG-12 — detectDuplicateMetaTags false positive fixes", () => {
       const findings = detectDuplicateMetaTags(file);
       expect(findings).toHaveLength(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDuplicateLibraries (cross-file)
+// ---------------------------------------------------------------------------
+
+describe("detectDuplicateLibraries", () => {
+  const scriptTag = (url: string) => `<script src="${url}"></script>`;
+
+  it("flags the same library at two distinct majors across files (exactly one finding)", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@8.4.5/swiper-bundle.min.js"),
+      },
+      {
+        filename: "sections/hero.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.0.5/swiper-bundle.min.js"),
+      },
+    ];
+    const findings = detectDuplicateLibraries(files);
+    expect(findings).toHaveLength(1);
+
+    const finding = findings[0];
+    expect(finding.findingType).toBe(FindingType.DUPLICATE_LIBRARY);
+    expect(finding.severity).toBe(Severity.MEDIUM);
+    // Attributed to the lowest-major occurrence.
+    expect(finding.filename).toBe("layout/theme.liquid");
+    expect(finding.description).toContain("swiper");
+    expect(finding.description).toContain("v8 (layout/theme.liquid)");
+    expect(finding.description).toContain("v11 (sections/hero.liquid)");
+  });
+
+  it("detects a conflict across different CDNs (jsdelivr v8 + cdnjs v11)", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@8.4.5/swiper-bundle.min.js"),
+      },
+      {
+        filename: "sections/hero.liquid",
+        content: scriptTag("https://cdnjs.cloudflare.com/ajax/libs/swiper/11.0.0/swiper.min.js"),
+      },
+    ];
+    const findings = detectDuplicateLibraries(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("swiper");
+  });
+
+  it("does NOT flag the same major in two files", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.0.5/swiper-bundle.min.js"),
+      },
+      {
+        filename: "sections/hero.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.2.0/swiper-bundle.min.js"),
+      },
+    ];
+    expect(detectDuplicateLibraries(files)).toHaveLength(0);
+  });
+
+  it("does NOT flag a single library seen once", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.0.5/swiper-bundle.min.js"),
+      },
+    ];
+    expect(detectDuplicateLibraries(files)).toHaveLength(0);
+  });
+
+  it("does NOT flag two different libraries each seen once", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.0.5/swiper-bundle.min.js"),
+      },
+      {
+        filename: "sections/hero.liquid",
+        content: scriptTag("https://unpkg.com/vanilla-lazyload@17.8.3/dist/lazyload.min.js"),
+      },
+    ];
+    expect(detectDuplicateLibraries(files)).toHaveLength(0);
+  });
+
+  it("does NOT flag two copies of the identical version", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.0.5/swiper-bundle.min.js"),
+      },
+      {
+        filename: "sections/hero.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.0.5/swiper-bundle.min.js"),
+      },
+    ];
+    expect(detectDuplicateLibraries(files)).toHaveLength(0);
+  });
+
+  it("ignores non-CDN script URLs entirely", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: scriptTag("https://cdn.acme-app.com/swiper@8/widget.js"),
+      },
+      {
+        filename: "sections/hero.liquid",
+        content: scriptTag("https://cdn.acme-app.com/swiper@11/widget.js"),
+      },
+    ];
+    expect(detectDuplicateLibraries(files)).toHaveLength(0);
+  });
+
+  it("sees libraries A1 suppresses in the unknown-script collectors (reads raw URLs)", () => {
+    // swiper is in the benign seed list, so collectUnknownScripts DROPS it; the
+    // duplicate detector must still catch a cross-file major conflict.
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@8.4.5/swiper-bundle.min.js"),
+      },
+      {
+        filename: "sections/hero.liquid",
+        content: scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.0.5/swiper-bundle.min.js"),
+      },
+    ];
+    const { findings } = scanThemeFiles(files);
+    expect(findingsOfType(findings, FindingType.DUPLICATE_LIBRARY)).toHaveLength(1);
   });
 });

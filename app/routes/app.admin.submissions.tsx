@@ -25,6 +25,7 @@ import {
   getSubmissionStats,
   getSubmissionsByDomain,
   listSubmissionsForReview,
+  rejectBenignLibrarySubmissions,
   updateSubmissionStatus,
 } from "../models/unknown-script.server";
 import { authenticate } from "../shopify.server";
@@ -97,6 +98,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
       accepted: result.count,
     });
     return { ok: true, accepted: result.count };
+  }
+
+  if (intent === "rejectBenign") {
+    const result = await rejectBenignLibrarySubmissions();
+    logger.info("admin-submissions-reject-benign", { shopDomain, rejected: result.count });
+    return { ok: true, rejectedBenign: result.count };
   }
 
   if (intent === "updateStatus") {
@@ -177,6 +184,23 @@ export default function AdminSubmissions() {
           <StatTile label="Pending" value={stats.pending} />
           <StatTile label="Accepted" value={stats.accepted} />
           <StatTile label="Rejected" value={stats.rejected} />
+        </div>
+        {/* Bulk clean-up: reject any pending submissions filed against benign
+            public-CDN libraries (swiper, Google Fonts, etc.) that no longer emit
+            unknown scripts (gc-tus A2). Idempotent — safe to click repeatedly. */}
+        <div style={{ marginTop: "16px", display: "flex", alignItems: "center", gap: "12px" }}>
+          <fetcher.Form method="post">
+            <input type="hidden" name="intent" value="rejectBenign" />
+            <s-button disabled={isBusy} type="submit">
+              Reject benign-library submissions
+            </s-button>
+          </fetcher.Form>
+          {fetcher.data && "rejectedBenign" in fetcher.data && (
+            <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+              Rejected {fetcher.data.rejectedBenign} benign-library submission
+              {fetcher.data.rejectedBenign !== 1 ? "s" : ""}.
+            </span>
+          )}
         </div>
       </div>
 

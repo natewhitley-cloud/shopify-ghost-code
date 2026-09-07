@@ -63,6 +63,10 @@ const REMEDIATION: Record<string, Remediation> = {
     howTo:
       "This external stylesheet loads from an app you may have removed. Once confirmed, delete the link tag (or the orphaned CSS file) from the theme. Duplicate the theme first.",
   },
+  DUPLICATE_LIBRARY: {
+    howTo:
+      "The same JavaScript library is loaded at two or more different major versions, so shoppers download and parse redundant, potentially conflicting copies on every page. Find where each version is added, then consolidate to a single version and remove the others. Duplicate the theme as a backup first.",
+  },
 
   // ---- Theme-file edits: SEO and meta markup in the head ----
   // These carry an agentic `impact`: canonical/hreflang/robots/JSON-LD/OG/meta

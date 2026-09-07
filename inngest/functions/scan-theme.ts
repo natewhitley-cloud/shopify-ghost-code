@@ -231,8 +231,13 @@ export const scanTheme = inngest.createFunction(
             fileCount: files.length,
           });
 
-          const { findings, unknownScripts, skippedFiles, staticProductCandidates } =
-            await scanThemeFilesInPool(files);
+          const {
+            findings,
+            unknownScripts,
+            skippedFiles,
+            staticProductCandidates,
+            benignLibrarySkips,
+          } = await scanThemeFilesInPool(files);
 
           // Surface any files skipped for exceeding the per-file size cap so the
           // drop is never silent (gc-06e.2). Real theme Liquid files are far under
@@ -244,6 +249,18 @@ export const scanTheme = inngest.createFunction(
               shopId,
               cap: MAX_SCANNABLE_FILE_BYTES,
               skippedFiles,
+            });
+          }
+
+          // Surface benign public-CDN libraries / web fonts dropped by the
+          // collectors so the suppression is observable, never silent (gc-tus A2).
+          // Info-level: unlike an oversized-file skip this is expected/benign.
+          if (benignLibrarySkips && benignLibrarySkips > 0) {
+            logger.info("theme scan suppressed benign libraries", {
+              function: "scan-theme",
+              event: "benign_libraries_suppressed",
+              shopId,
+              benignLibrarySkips,
             });
           }
 

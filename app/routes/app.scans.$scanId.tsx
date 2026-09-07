@@ -125,6 +125,7 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   GHOST_PRECONNECT: "Preconnect Hints",
   GHOST_FONT: "Font References",
   GHOST_AJAX: "AJAX Requests",
+  DUPLICATE_LIBRARY: "Duplicate Libraries",
 };
 
 // ---------------------------------------------------------------------------

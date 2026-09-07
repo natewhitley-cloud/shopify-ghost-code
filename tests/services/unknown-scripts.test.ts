@@ -215,3 +215,118 @@ describe("collectUnknownStylesheets", () => {
     expect(unknowns).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Benign library / web-font recognition (drop-at-collection)
+// ---------------------------------------------------------------------------
+
+describe("benign library recognition", () => {
+  it("drops a jsdelivr /npm/<pkg>@ library script (swiper)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>',
+    };
+    expect(collectUnknownScripts(file)).toHaveLength(0);
+  });
+
+  it("drops an unpkg package-path library script", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://unpkg.com/vanilla-lazyload@17.8.3/dist/lazyload.min.js"></script>',
+    };
+    expect(collectUnknownScripts(file)).toHaveLength(0);
+  });
+
+  it("drops a Google Fonts stylesheet by host", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">',
+    };
+    expect(collectUnknownStylesheets(file)).toHaveLength(0);
+  });
+
+  it("still emits an arbitrary script served from a shared CDN root", () => {
+    // Negative case: jsdelivr serves arbitrary code, so a non-allowlisted path
+    // must NOT be suppressed (proves we didn't over-suppress by host).
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.jsdelivr.net/npm/evil-tracker@1/x.js"></script>',
+    };
+    const unknowns = collectUnknownScripts(file);
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].url).toBe("https://cdn.jsdelivr.net/npm/evil-tracker@1/x.js");
+  });
+
+  it("still emits an unknown third-party script (unaffected by the matcher)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.unknownapp.com/widget.js"></script>',
+    };
+    expect(collectUnknownScripts(file)).toHaveLength(1);
+  });
+
+  it("is deterministic across repeated calls (no lastIndex/state hazard)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>',
+    };
+    const first = collectUnknownScripts(file);
+    const second = collectUnknownScripts(file);
+    expect(first).toHaveLength(0);
+    expect(second).toHaveLength(0);
+    expect(first).toEqual(second);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Benign-skip telemetry counter (gc-tus A2) — collectors tally suppressions
+// ---------------------------------------------------------------------------
+
+describe("benign-skip counter", () => {
+  it("counts each benign script suppression into the passed accumulator", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<script src="https://unpkg.com/lodash@4/lodash.min.js"></script>
+<script src="https://cdn.unknownapp.com/widget.js"></script>`,
+    };
+    const benignSkips = { count: 0 };
+    const unknowns = collectUnknownScripts(file, benignSkips);
+
+    // The two benign libraries are dropped and tallied; the unknown one is emitted.
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].url).toBe("https://cdn.unknownapp.com/widget.js");
+    expect(benignSkips.count).toBe(2);
+  });
+
+  it("counts benign stylesheet suppressions and shares the accumulator across collectors", () => {
+    const scriptFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>',
+    };
+    const styleFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">',
+    };
+    const benignSkips = { count: 0 };
+    collectUnknownScripts(scriptFile, benignSkips);
+    collectUnknownStylesheets(styleFile, benignSkips);
+
+    expect(benignSkips.count).toBe(2);
+  });
+
+  it("does not increment for genuinely-unknown resources", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.unknownapp.com/widget.js"></script>',
+    };
+    const benignSkips = { count: 0 };
+    collectUnknownScripts(file, benignSkips);
+
+    expect(benignSkips.count).toBe(0);
+  });
+});

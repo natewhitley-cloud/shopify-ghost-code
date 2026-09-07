@@ -52,6 +52,9 @@
  *   GHOST_AJAX     — orphaned fetch()/XMLHttpRequest/jQuery AJAX calls to
  *                    defunct app servers, wasting network requests and leaking
  *                    data to third-party domains
+ *   DUPLICATE_LIBRARY — cross-file: the same public-CDN JS library loaded at two
+ *                    or more distinct MAJOR versions across the theme (e.g.
+ *                    Swiper v8 in one file and v11 in another)
  */
 
 import { FindingType } from "@prisma/client";
@@ -67,6 +70,7 @@ import {
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
+import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
@@ -86,6 +90,16 @@ export type UnknownExternalResource = {
 
 /** A scannable file skipped because it exceeded the per-file size cap. */
 export type SkippedFile = { filename: string; size: number };
+
+/**
+ * Mutable counter threaded through the unknown-resource collectors so the number
+ * of benign public-CDN libraries / web fonts they DROP (via isBenignLibrary,
+ * gc-tus A1) can be tallied for scan-time telemetry WITHOUT a second pass over
+ * the file. The collectors' return value (the emitted unknowns) is unchanged; the
+ * count rides alongside so callers that don't care (e.g. unit tests) can ignore
+ * it by not passing a counter.
+ */
+export type BenignSkipCounter = { count: number };
 
 /**
  * A compact record of an UNSIGNED static Product JSON-LD block, extracted during
@@ -134,6 +148,12 @@ export type ScanResult = {
   // audit (gc-47c.10). Optional for backward compatibility with ScanResult
   // literals in tests; scanThemeFiles always populates it (possibly empty).
   staticProductCandidates?: StaticProductCandidate[];
+  // Count of benign public-CDN libraries / web fonts the unknown-resource
+  // collectors suppressed (gc-tus A1). Surfaced so the worker can emit an ops
+  // signal (no silent drop) — NOT persisted to a DB column. Optional for
+  // backward compatibility with ScanResult literals in tests; scanThemeFiles
+  // always populates it (possibly 0).
+  benignLibrarySkips?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -1478,7 +1498,10 @@ function isShopifyDomain(hostname: string): boolean {
   return SHOPIFY_BASE_DOMAINS.some((base) => hostname === base || hostname.endsWith(`.${base}`));
 }
 
-export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[] {
+export function collectUnknownScripts(
+  file: ThemeFile,
+  benignSkips?: BenignSkipCounter,
+): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
 
   for (const { lineNumber, text } of lines(file.content)) {
@@ -1495,6 +1518,12 @@ export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[
       const hostname = hostnameFromUrl(url);
       if (hostname === null) continue; // Malformed URL — skip
       if (isShopifyDomain(hostname)) continue;
+
+      // Drop benign public-CDN libraries / web fonts (not orphaned app code)
+      if (isBenignLibrary(url)) {
+        if (benignSkips) benignSkips.count++;
+        continue;
+      }
 
       unknowns.push({
         filename: file.filename,
@@ -1513,7 +1542,10 @@ export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[
 // Collector: unknown external stylesheets (unrecognized CDN URLs)
 // ---------------------------------------------------------------------------
 
-export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResource[] {
+export function collectUnknownStylesheets(
+  file: ThemeFile,
+  benignSkips?: BenignSkipCounter,
+): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
 
   for (const { lineNumber, text } of lines(file.content)) {
@@ -1533,6 +1565,12 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
       if (hostname === null) continue; // Malformed URL — skip
       if (isShopifyDomain(hostname)) continue;
 
+      // Drop benign public-CDN libraries / web fonts (not orphaned app code)
+      if (isBenignLibrary(url)) {
+        if (benignSkips) benignSkips.count++;
+        continue;
+      }
+
       unknowns.push({
         filename: file.filename,
         lineNumber,
@@ -1544,6 +1582,80 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
   }
 
   return unknowns;
+}
+
+// ---------------------------------------------------------------------------
+// Detector: DUPLICATE_LIBRARY
+// ---------------------------------------------------------------------------
+
+/**
+ * Cross-file detector: flags when the SAME public-CDN JavaScript library is
+ * loaded at two or more DISTINCT MAJOR versions across the theme (e.g. Swiper
+ * v8 in one file and Swiper v11 in another). Duplicate/conflicting copies bloat
+ * page weight and can break at runtime when two majors fight over the same
+ * global. Emits ONE DUPLICATE_LIBRARY finding per conflicting library.
+ *
+ * IMPORTANT — reads RAW script URLs, not the post-suppression unknownScripts
+ * array: the unknown-script collectors DROP benign libraries via isBenignLibrary
+ * (gc-tus A1), so a library that appears there would be invisible to a detector
+ * that consumed that array. This pass therefore re-extracts external <script>
+ * src URLs directly from each file's content and parses them with parseLibrary.
+ *
+ * Scope (v1): public-CDN URLs only (jsdelivr / unpkg / cdnjs) — parseLibrary
+ * returns null for everything else, so asset_url-hosted copies are out of scope.
+ * Not flagged: a single library, two libraries each seen once, the same major
+ * in multiple files, or two copies of the identical version. Only a genuine
+ * MAJOR-version split counts as a conflict.
+ */
+export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput[] {
+  // library name -> (major -> first place that major was seen)
+  const byLibrary = new Map<string, Map<number, { file: ThemeFile; lineNumber: number }>>();
+
+  for (const file of files) {
+    for (const { lineNumber, text } of lines(file.content)) {
+      for (const { tag } of extractTags(text, "<script")) {
+        SCRIPT_SRC_RE.lastIndex = 0;
+        const match = SCRIPT_SRC_RE.exec(tag);
+        if (!match) continue;
+
+        const lib = parseLibrary(match[1]);
+        if (lib === null) continue;
+
+        let majors = byLibrary.get(lib.name);
+        if (!majors) {
+          majors = new Map();
+          byLibrary.set(lib.name, majors);
+        }
+        // Keep the FIRST occurrence of each major for stable attribution.
+        if (!majors.has(lib.major)) majors.set(lib.major, { file, lineNumber });
+      }
+    }
+  }
+
+  const findings: CreateFindingInput[] = [];
+
+  for (const [name, majors] of byLibrary) {
+    if (majors.size < 2) continue; // single major = no conflict
+
+    const sortedMajors = [...majors.keys()].sort((a, b) => a - b);
+    // Attribute the finding to the lowest-major occurrence (deterministic).
+    const anchor = majors.get(sortedMajors[0])!;
+
+    const detail = sortedMajors.map((m) => `v${m} (${majors.get(m)!.file.filename})`).join(", ");
+    const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
+    const severity = classifySeverity(FindingType.DUPLICATE_LIBRARY, codeSnippet);
+
+    findings.push({
+      filename: anchor.file.filename,
+      lineNumber: anchor.lineNumber,
+      codeSnippet,
+      findingType: FindingType.DUPLICATE_LIBRARY,
+      severity,
+      description: `Library "${name}" is loaded at ${sortedMajors.length} conflicting major versions: ${detail}`,
+    });
+  }
+
+  return findings;
 }
 
 // ---------------------------------------------------------------------------
@@ -2695,6 +2807,12 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
  *     for files that match known app patterns or the theme.*.liquid naming
  *     convention.
  *
+ *   Pass 5 — cross-file duplicate-library detection:
+ *     Re-extracts external <script> src URLs from RAW file content across all
+ *     files and flags any public-CDN library loaded at two or more distinct
+ *     MAJOR versions (e.g. Swiper v8 + v11).  Emits one DUPLICATE_LIBRARY
+ *     finding per conflicting library.
+ *
  * Returns all findings (all passes) ready for createFindings().
  */
 export function scanThemeFiles(files: ThemeFile[]): ScanResult {
@@ -2702,6 +2820,9 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   const unknownScripts: UnknownExternalResource[] = [];
   const skippedFiles: SkippedFile[] = [];
   const staticProductCandidates: StaticProductCandidate[] = [];
+  // Tally benign public-CDN libraries / web fonts dropped by the collectors so
+  // the drop is observable (surfaced by the worker as an ops signal, gc-tus A2).
+  const benignSkips: BenignSkipCounter = { count: 0 };
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
@@ -2739,9 +2860,10 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     findings.push(...detectGhostFont(file));
     findings.push(...detectGhostAjax(file));
 
-    // Collect unrecognized external resources
-    unknownScripts.push(...collectUnknownScripts(file));
-    unknownScripts.push(...collectUnknownStylesheets(file));
+    // Collect unrecognized external resources (benign libraries are dropped and
+    // counted into benignSkips rather than emitted).
+    unknownScripts.push(...collectUnknownScripts(file, benignSkips));
+    unknownScripts.push(...collectUnknownStylesheets(file, benignSkips));
 
     // Collect unsigned static Product JSON-LD blocks for the live-price audit
     // (gc-47c.10). No findings are emitted here — the (scope+flag-gated) audit
@@ -2784,5 +2906,15 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // Pass 4: page builder layout detection
   findings.push(...detectGhostLayouts(files));
 
-  return { findings, unknownScripts, skippedFiles, staticProductCandidates };
+  // Pass 5: cross-file duplicate-library detection (reads RAW script URLs, not
+  // the suppression-filtered unknownScripts array — see detectDuplicateLibraries).
+  findings.push(...detectDuplicateLibraries(files));
+
+  return {
+    findings,
+    unknownScripts,
+    skippedFiles,
+    staticProductCandidates,
+    benignLibrarySkips: benignSkips.count,
+  };
 }
