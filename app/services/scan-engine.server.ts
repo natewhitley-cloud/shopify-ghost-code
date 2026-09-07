@@ -67,6 +67,7 @@ import {
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
+import { isBenignLibrary } from "../lib/library-matcher.server";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
@@ -1496,6 +1497,9 @@ export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[
       if (hostname === null) continue; // Malformed URL — skip
       if (isShopifyDomain(hostname)) continue;
 
+      // Drop benign public-CDN libraries / web fonts (not orphaned app code)
+      if (isBenignLibrary(url)) continue;
+
       unknowns.push({
         filename: file.filename,
         lineNumber,
@@ -1532,6 +1536,9 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
       const hostname = hostnameFromUrl(url);
       if (hostname === null) continue; // Malformed URL — skip
       if (isShopifyDomain(hostname)) continue;
+
+      // Drop benign public-CDN libraries / web fonts (not orphaned app code)
+      if (isBenignLibrary(url)) continue;
 
       unknowns.push({
         filename: file.filename,

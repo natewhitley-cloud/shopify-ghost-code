@@ -215,3 +215,68 @@ describe("collectUnknownStylesheets", () => {
     expect(unknowns).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Benign library / web-font recognition (drop-at-collection)
+// ---------------------------------------------------------------------------
+
+describe("benign library recognition", () => {
+  it("drops a jsdelivr /npm/<pkg>@ library script (swiper)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>',
+    };
+    expect(collectUnknownScripts(file)).toHaveLength(0);
+  });
+
+  it("drops an unpkg package-path library script", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://unpkg.com/vanilla-lazyload@17.8.3/dist/lazyload.min.js"></script>',
+    };
+    expect(collectUnknownScripts(file)).toHaveLength(0);
+  });
+
+  it("drops a Google Fonts stylesheet by host", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">',
+    };
+    expect(collectUnknownStylesheets(file)).toHaveLength(0);
+  });
+
+  it("still emits an arbitrary script served from a shared CDN root", () => {
+    // Negative case: jsdelivr serves arbitrary code, so a non-allowlisted path
+    // must NOT be suppressed (proves we didn't over-suppress by host).
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.jsdelivr.net/npm/evil-tracker@1/x.js"></script>',
+    };
+    const unknowns = collectUnknownScripts(file);
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].url).toBe("https://cdn.jsdelivr.net/npm/evil-tracker@1/x.js");
+  });
+
+  it("still emits an unknown third-party script (unaffected by the matcher)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.unknownapp.com/widget.js"></script>',
+    };
+    expect(collectUnknownScripts(file)).toHaveLength(1);
+  });
+
+  it("is deterministic across repeated calls (no lastIndex/state hazard)", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>',
+    };
+    const first = collectUnknownScripts(file);
+    const second = collectUnknownScripts(file);
+    expect(first).toHaveLength(0);
+    expect(second).toHaveLength(0);
+    expect(first).toEqual(second);
+  });
+});
