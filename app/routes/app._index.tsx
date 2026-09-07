@@ -121,7 +121,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       scanUsage: null,
       isFirstScan: true,
       healthScore: null,
-      previousHealthScore: null,
       showRescanNudge: false,
       showThemeChangeNudge: false,
       showMultiThemeNudge: false,
@@ -221,13 +220,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let healthScore: HealthScoreResult | null = null;
   if (latestScan && isSuccessfulScan(latestScan.status) && latestSeverity) {
     healthScore = computeHealthScore(latestSeverity);
-  }
-
-  let previousHealthScore: HealthScoreResult | null = null;
-  if (previousScan && isSuccessfulScan(previousScan.status)) {
-    previousHealthScore = computeHealthScore(
-      severityCounts.get(previousScan.id) ?? zeroSeverityRecord,
-    );
   }
 
   // Finding-count trend: compare the latest scan's total finding count against
@@ -358,7 +350,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scanUsage,
     isFirstScan,
     healthScore,
-    previousHealthScore,
     showRescanNudge,
     showThemeChangeNudge,
     showMultiThemeNudge,
@@ -484,16 +475,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Format a score delta as a signed string, e.g. "+17" or "-5".
- * Returns null when the delta is zero (no change to display).
- */
-function formatDelta(current: number, previous: number): string | null {
-  const delta = current - previous;
-  if (delta === 0) return null;
-  return delta > 0 ? `+${delta}` : String(delta);
-}
-
-/**
  * Format elapsed seconds into a human-readable string.
  * Examples: "a few seconds", "30 seconds", "1 minute", "2 minutes", "3 minutes 15 seconds"
  */
@@ -562,7 +543,6 @@ export default function Dashboard() {
     scanUsage,
     isFirstScan,
     healthScore,
-    previousHealthScore,
     showRescanNudge,
     showThemeChangeNudge,
     showMultiThemeNudge,
@@ -673,18 +653,19 @@ export default function Dashboard() {
     (findingSummary?.bySeverity?.MEDIUM ?? 0) +
     (findingSummary?.bySeverity?.LOW ?? 0);
 
+  // Finding count for the dominant consequence lane — surfaced in the hero's
+  // "most of the damage is in …" line so the merchant knows how many findings
+  // that top lane represents.
+  const dominantCount = dominant
+    ? (laneSummary.find((row) => row.lane === dominant)?.count ?? 0)
+    : 0;
+
   // Whether the plan's scan limit (weekly or monthly) has been reached.
   // isFirstScan overrides the limit — the first scan is always allowed on the free plan.
   const scanLimitReached = !isFirstScan && scanUsage !== null && scanUsage.used >= scanUsage.limit;
 
   // Show onboarding experience when the shop is set up but has never been scanned.
   const showOnboarding = !!shop && !latestScan;
-
-  // Score delta: only meaningful when both latest and previous are completed.
-  const scoreDelta =
-    healthScore && previousHealthScore
-      ? formatDelta(healthScore.score, previousHealthScore.score)
-      : null;
 
   return (
     <s-page heading="Ghost Code Scanner">
@@ -912,10 +893,6 @@ export default function Dashboard() {
               font-weight: 600;
               color: ${TEXT_PRIMARY};
             }
-            .health-read__trend {
-              font-size: 13px;
-              font-weight: 600;
-            }
             .health-read__lead {
               font-size: 14px;
               color: ${TEXT_SUBDUED};
@@ -1124,24 +1101,35 @@ export default function Dashboard() {
                           {/* Spacer to match the subtitle line height in the right column */}
                           <div style={{ height: "18px" }} />
                           <div
-                            className={`health-score-tile health-score-tile--${healthScore.tone}`}
+                            className={`health-score-tile health-score-tile--${currentTotal === 0 ? "success" : "warning"}`}
                             style={{ marginTop: "8px" }}
                           >
                             <div
-                              className={`health-score-number health-score-number--${healthScore.tone}`}
+                              className={`health-score-number health-score-number--${currentTotal === 0 ? "success" : "warning"}`}
                             >
-                              {healthScore.score}
+                              {currentTotal}
                             </div>
-                            <div className="health-score-subtitle">out of 100</div>
-                            <div
-                              className={`health-score-label health-score-label--${healthScore.tone}`}
-                            >
-                              {healthScore.label}
+                            <div className="health-score-subtitle">
+                              {currentTotal === 1 ? "finding" : "findings"}
                             </div>
-                            {previousHealthScore && (
-                              <div className="health-score-delta">
-                                Prev: {previousHealthScore.score}
-                                {scoreDelta ? ` (${scoreDelta})` : ""}
+                            {findingTrend && (
+                              <div
+                                className="health-score-delta"
+                                style={{
+                                  fontWeight: 600,
+                                  color:
+                                    findingTrend.direction === "improving"
+                                      ? COLOR_SUCCESS
+                                      : findingTrend.direction === "declining"
+                                        ? COLOR_WARNING
+                                        : TEXT_SUBDUED,
+                                }}
+                              >
+                                {findingTrend.direction === "improving"
+                                  ? `▼ ${findingTrend.previousTotal - currentTotal} fewer than last scan`
+                                  : findingTrend.direction === "declining"
+                                    ? `▲ ${currentTotal - findingTrend.previousTotal} more than last scan`
+                                    : "No change from last scan"}
                               </div>
                             )}
                           </div>
@@ -1162,33 +1150,17 @@ export default function Dashboard() {
                                 <span style={{ color: ACCENT_INK }}>
                                   {dominantPhraseForLane(dominant)}
                                 </span>
+                                {dominantCount > 0
+                                  ? ` (${dominantCount} finding${dominantCount === 1 ? "" : "s"})`
+                                  : ""}
                                 .
-                              </div>
-                            )}
-                            {findingTrend && (
-                              <div
-                                className="health-read__trend"
-                                style={{
-                                  color:
-                                    findingTrend.direction === "improving"
-                                      ? COLOR_SUCCESS
-                                      : findingTrend.direction === "declining"
-                                        ? COLOR_WARNING
-                                        : TEXT_SUBDUED,
-                                }}
-                              >
-                                {findingTrend.direction === "improving"
-                                  ? `▲ Improving: down from ${findingTrend.previousTotal} findings last scan`
-                                  : findingTrend.direction === "declining"
-                                    ? `▼ Up from ${findingTrend.previousTotal} findings last scan`
-                                    : "No change from last scan"}
                               </div>
                             )}
                             {laneSummary.length > 0 && (
                               <div className="health-read__lead">
                                 {currentTotal} leftover item{currentTotal === 1 ? "" : "s"} from
-                                apps you&apos;ve uninstalled are still in your theme. Here&apos;s
-                                what they&apos;re doing, worst first.
+                                apps you&apos;ve uninstalled {currentTotal === 1 ? "is" : "are"}{" "}
+                                still in your theme. See what each is costing you below.
                               </div>
                             )}
                           </div>

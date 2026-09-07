@@ -286,7 +286,6 @@ describe("app._index loader", () => {
       expect(result).toHaveProperty("scanUsage");
       expect(result).toHaveProperty("isFirstScan");
       expect(result).toHaveProperty("healthScore");
-      expect(result).toHaveProperty("previousHealthScore");
       expect(result).toHaveProperty("showRescanNudge");
       expect(result).toHaveProperty("showThemeChangeNudge");
     });
@@ -393,7 +392,6 @@ describe("app._index loader", () => {
       expect(result.scanUsage).toBeNull();
       expect(result.isFirstScan).toBe(true);
       expect(result.healthScore).toBeNull();
-      expect(result.previousHealthScore).toBeNull();
       expect(result.showRescanNudge).toBe(false);
       expect(result.showThemeChangeNudge).toBe(false);
       expect(result.showReviewPrompt).toBe(false);
@@ -429,33 +427,6 @@ describe("app._index loader", () => {
 
       expect(result.latestScan).toBeNull();
       expect(result.healthScore).toBeNull();
-    });
-
-    it("returns previousHealthScore when two completed scans exist", async () => {
-      const previousScan = {
-        ...COMPLETED_SCAN,
-        id: "scan-0",
-        status: "COMPLETED",
-        completedAt: new Date("2026-03-19T10:05:00Z"),
-      };
-      mockGetScansForShop.mockResolvedValue({
-        items: [COMPLETED_SCAN, previousScan],
-        hasNextPage: false,
-      });
-      mockGetSeverityCounts.mockImplementation(
-        severityCountsImpl({
-          "scan-1": { HIGH: 2, MEDIUM: 2, LOW: 1 },
-          "scan-0": { HIGH: 5, MEDIUM: 3, LOW: 2 },
-        }),
-      );
-      const prevScore = { score: 43, label: "Poor", tone: "caution" };
-      mockComputeHealthScore.mockReturnValueOnce(HEALTH_SCORE).mockReturnValueOnce(prevScore);
-
-      const result = (await loader(makeLoaderArgs())) as {
-        previousHealthScore: typeof prevScore;
-      };
-
-      expect(result.previousHealthScore).toEqual(prevScore);
     });
   });
 });
