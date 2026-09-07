@@ -280,3 +280,53 @@ describe("benign library recognition", () => {
     expect(first).toEqual(second);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Benign-skip telemetry counter (gc-tus A2) — collectors tally suppressions
+// ---------------------------------------------------------------------------
+
+describe("benign-skip counter", () => {
+  it("counts each benign script suppression into the passed accumulator", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: `<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<script src="https://unpkg.com/lodash@4/lodash.min.js"></script>
+<script src="https://cdn.unknownapp.com/widget.js"></script>`,
+    };
+    const benignSkips = { count: 0 };
+    const unknowns = collectUnknownScripts(file, benignSkips);
+
+    // The two benign libraries are dropped and tallied; the unknown one is emitted.
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].url).toBe("https://cdn.unknownapp.com/widget.js");
+    expect(benignSkips.count).toBe(2);
+  });
+
+  it("counts benign stylesheet suppressions and shares the accumulator across collectors", () => {
+    const scriptFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>',
+    };
+    const styleFile = {
+      filename: "layout/theme.liquid",
+      content: '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">',
+    };
+    const benignSkips = { count: 0 };
+    collectUnknownScripts(scriptFile, benignSkips);
+    collectUnknownStylesheets(styleFile, benignSkips);
+
+    expect(benignSkips.count).toBe(2);
+  });
+
+  it("does not increment for genuinely-unknown resources", () => {
+    const file = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.unknownapp.com/widget.js"></script>',
+    };
+    const benignSkips = { count: 0 };
+    collectUnknownScripts(file, benignSkips);
+
+    expect(benignSkips.count).toBe(0);
+  });
+});

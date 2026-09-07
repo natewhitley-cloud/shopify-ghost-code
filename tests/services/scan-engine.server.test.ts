@@ -1127,6 +1127,33 @@ describe("scanThemeFiles", () => {
     expect(scanThemeFiles(files).findings).toHaveLength(0);
   });
 
+  it("surfaces the count of benign public-CDN libraries suppressed (gc-tus A2 telemetry)", () => {
+    const files = [
+      {
+        filename: "layout/theme.liquid",
+        content: `<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter">
+<script src="https://cdn.unknownapp.com/widget.js"></script>`,
+      },
+    ];
+    const result = scanThemeFiles(files);
+    // Two benign resources (swiper + Google Fonts) are dropped and counted; the
+    // unknown third-party script is still emitted.
+    expect(result.benignLibrarySkips).toBe(2);
+    expect(result.unknownScripts).toHaveLength(1);
+    expect(result.unknownScripts[0].url).toBe("https://cdn.unknownapp.com/widget.js");
+  });
+
+  it("reports zero benign skips when nothing is suppressed", () => {
+    const files = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://cdn.unknownapp.com/widget.js"></script>',
+      },
+    ];
+    expect(scanThemeFiles(files).benignLibrarySkips).toBe(0);
+  });
+
   it("aggregates findings across multiple file types", () => {
     // snippets/tracking.liquid is rendered by sections/header.liquid to avoid
     // a spurious ORPHAN_ASSET finding that would complicate this count-agnostic

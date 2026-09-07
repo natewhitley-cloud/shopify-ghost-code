@@ -92,6 +92,16 @@ export type UnknownExternalResource = {
 export type SkippedFile = { filename: string; size: number };
 
 /**
+ * Mutable counter threaded through the unknown-resource collectors so the number
+ * of benign public-CDN libraries / web fonts they DROP (via isBenignLibrary,
+ * gc-tus A1) can be tallied for scan-time telemetry WITHOUT a second pass over
+ * the file. The collectors' return value (the emitted unknowns) is unchanged; the
+ * count rides alongside so callers that don't care (e.g. unit tests) can ignore
+ * it by not passing a counter.
+ */
+export type BenignSkipCounter = { count: number };
+
+/**
  * A compact record of an UNSIGNED static Product JSON-LD block, extracted during
  * the worker theme scan so the (much later, scope-gated) live-price audit can
  * correlate it against the LIVE product price without re-shipping theme file
@@ -138,6 +148,12 @@ export type ScanResult = {
   // audit (gc-47c.10). Optional for backward compatibility with ScanResult
   // literals in tests; scanThemeFiles always populates it (possibly empty).
   staticProductCandidates?: StaticProductCandidate[];
+  // Count of benign public-CDN libraries / web fonts the unknown-resource
+  // collectors suppressed (gc-tus A1). Surfaced so the worker can emit an ops
+  // signal (no silent drop) — NOT persisted to a DB column. Optional for
+  // backward compatibility with ScanResult literals in tests; scanThemeFiles
+  // always populates it (possibly 0).
+  benignLibrarySkips?: number;
 };
 
 // ---------------------------------------------------------------------------
@@ -1482,7 +1498,10 @@ function isShopifyDomain(hostname: string): boolean {
   return SHOPIFY_BASE_DOMAINS.some((base) => hostname === base || hostname.endsWith(`.${base}`));
 }
 
-export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[] {
+export function collectUnknownScripts(
+  file: ThemeFile,
+  benignSkips?: BenignSkipCounter,
+): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
 
   for (const { lineNumber, text } of lines(file.content)) {
@@ -1501,7 +1520,10 @@ export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[
       if (isShopifyDomain(hostname)) continue;
 
       // Drop benign public-CDN libraries / web fonts (not orphaned app code)
-      if (isBenignLibrary(url)) continue;
+      if (isBenignLibrary(url)) {
+        if (benignSkips) benignSkips.count++;
+        continue;
+      }
 
       unknowns.push({
         filename: file.filename,
@@ -1520,7 +1542,10 @@ export function collectUnknownScripts(file: ThemeFile): UnknownExternalResource[
 // Collector: unknown external stylesheets (unrecognized CDN URLs)
 // ---------------------------------------------------------------------------
 
-export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResource[] {
+export function collectUnknownStylesheets(
+  file: ThemeFile,
+  benignSkips?: BenignSkipCounter,
+): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
 
   for (const { lineNumber, text } of lines(file.content)) {
@@ -1541,7 +1566,10 @@ export function collectUnknownStylesheets(file: ThemeFile): UnknownExternalResou
       if (isShopifyDomain(hostname)) continue;
 
       // Drop benign public-CDN libraries / web fonts (not orphaned app code)
-      if (isBenignLibrary(url)) continue;
+      if (isBenignLibrary(url)) {
+        if (benignSkips) benignSkips.count++;
+        continue;
+      }
 
       unknowns.push({
         filename: file.filename,
@@ -2792,6 +2820,9 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   const unknownScripts: UnknownExternalResource[] = [];
   const skippedFiles: SkippedFile[] = [];
   const staticProductCandidates: StaticProductCandidate[] = [];
+  // Tally benign public-CDN libraries / web fonts dropped by the collectors so
+  // the drop is observable (surfaced by the worker as an ops signal, gc-tus A2).
+  const benignSkips: BenignSkipCounter = { count: 0 };
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
@@ -2829,9 +2860,10 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     findings.push(...detectGhostFont(file));
     findings.push(...detectGhostAjax(file));
 
-    // Collect unrecognized external resources
-    unknownScripts.push(...collectUnknownScripts(file));
-    unknownScripts.push(...collectUnknownStylesheets(file));
+    // Collect unrecognized external resources (benign libraries are dropped and
+    // counted into benignSkips rather than emitted).
+    unknownScripts.push(...collectUnknownScripts(file, benignSkips));
+    unknownScripts.push(...collectUnknownStylesheets(file, benignSkips));
 
     // Collect unsigned static Product JSON-LD blocks for the live-price audit
     // (gc-47c.10). No findings are emitted here — the (scope+flag-gated) audit
@@ -2878,5 +2910,11 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // the suppression-filtered unknownScripts array — see detectDuplicateLibraries).
   findings.push(...detectDuplicateLibraries(files));
 
-  return { findings, unknownScripts, skippedFiles, staticProductCandidates };
+  return {
+    findings,
+    unknownScripts,
+    skippedFiles,
+    staticProductCandidates,
+    benignLibrarySkips: benignSkips.count,
+  };
 }

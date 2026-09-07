@@ -53,8 +53,10 @@ vi.mock("../../app/db.server", () => ({
 
 import {
   getSubmissionsByDomain,
+  getUnknownScriptsForScan,
   updateSubmissionStatus,
   acceptSubmissionsForDomain,
+  rejectBenignLibrarySubmissions,
   getSubmissionStats,
   findUnknownScriptForShop,
   createUnknownScripts,
@@ -262,6 +264,102 @@ describe("getSubmissionsByDomain", () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].domain).toBe("valid.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getUnknownScriptsForScan — read-time benign-library suppression (gc-tus A1 tail)
+// ---------------------------------------------------------------------------
+
+describe("getUnknownScriptsForScan", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("filters out benign public-CDN library rows at read time (old un-rescanned scans)", async () => {
+    // An OLD scan predating drop-at-collection still has a benign swiper row plus
+    // a genuinely-unknown third-party row. The benign one must be hidden from the
+    // per-scan view; the unknown one must still show.
+    mockDb.unknownScript.findMany.mockResolvedValue([
+      { id: "us-benign", url: "https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js" },
+      { id: "us-unknown", url: "https://cdn.unknownapp.com/widget.js" },
+    ]);
+
+    const result = await getUnknownScriptsForScan("scan-1");
+
+    expect(result.map((s) => s.id)).toEqual(["us-unknown"]);
+    // Query is unchanged (no data mutation) — filtering happens in JS.
+    expect(mockDb.unknownScript.findMany).toHaveBeenCalledWith({
+      where: { scanId: "scan-1" },
+      include: { submissions: true },
+      orderBy: { createdAt: "asc" },
+    });
+  });
+
+  it("returns all rows when none are benign", async () => {
+    mockDb.unknownScript.findMany.mockResolvedValue([
+      { id: "us-1", url: "https://cdn.unknownapp.com/a.js" },
+      { id: "us-2", url: "https://cdn.otherapp.com/b.js" },
+    ]);
+
+    const result = await getUnknownScriptsForScan("scan-2");
+
+    expect(result.map((s) => s.id)).toEqual(["us-1", "us-2"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// rejectBenignLibrarySubmissions — auto-reject benign-lib submissions (gc-tus A2)
+// ---------------------------------------------------------------------------
+
+describe("rejectBenignLibrarySubmissions", () => {
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("rejects pending submissions against benign libs and leaves non-benign ones untouched", async () => {
+    mockDb.signatureSubmission.findMany.mockResolvedValue([
+      {
+        id: "sub-benign",
+        unknownScript: { url: "https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js" },
+      },
+      { id: "sub-keep", unknownScript: { url: "https://cdn.unknownapp.com/widget.js" } },
+    ]);
+    mockDb.signatureSubmission.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await rejectBenignLibrarySubmissions();
+
+    // Only the benign submission id is targeted, and only PENDING rows are read.
+    expect(mockDb.signatureSubmission.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { status: "PENDING" } }),
+    );
+    expect(mockDb.signatureSubmission.updateMany).toHaveBeenCalledWith({
+      where: { id: { in: ["sub-benign"] } },
+      data: { status: "REJECTED", reviewedAt: expect.any(Date) },
+    });
+    expect(result).toEqual({ count: 1 });
+  });
+
+  it("is idempotent: a second run finds nothing pending and returns count 0", async () => {
+    // First run rejected the benign rows; they are no longer PENDING, so the
+    // bounded pending read comes back empty and no update is issued.
+    mockDb.signatureSubmission.findMany.mockResolvedValue([]);
+
+    const result = await rejectBenignLibrarySubmissions();
+
+    expect(result).toEqual({ count: 0 });
+    expect(mockDb.signatureSubmission.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("returns count 0 and skips the update when only non-benign submissions are pending", async () => {
+    mockDb.signatureSubmission.findMany.mockResolvedValue([
+      { id: "sub-1", unknownScript: { url: "https://cdn.unknownapp.com/a.js" } },
+    ]);
+
+    const result = await rejectBenignLibrarySubmissions();
+
+    expect(result).toEqual({ count: 0 });
+    expect(mockDb.signatureSubmission.updateMany).not.toHaveBeenCalled();
   });
 });
 
