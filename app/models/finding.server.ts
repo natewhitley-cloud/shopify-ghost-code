@@ -18,6 +18,61 @@ export type CreateFindingInput = {
 };
 
 /**
+ * A fresh per-severity counter with HIGH/MEDIUM/LOW seeded to 0.
+ * The single source of the zeroed severity shape reused by every severity
+ * aggregate (getFindingSummary, getSeverityCountsForScans, and the
+ * ignore-filtered rollup in finding-aggregation.server).
+ */
+export function createZeroSeverityCounts(): Record<Severity, number> {
+  return {
+    [Severity.HIGH]: 0,
+    [Severity.MEDIUM]: 0,
+    [Severity.LOW]: 0,
+  };
+}
+
+/**
+ * A fresh exhaustive per-type counter with every FindingType seeded to 0.
+ * Typed as `Record<FindingType, number>` so the compiler forces completeness —
+ * a new enum member fails to compile until it is added here. The single source
+ * of the zeroed type shape reused by getFindingSummary, getTypeCountsForScan,
+ * and the ignore-filtered rollup in finding-aggregation.server.
+ */
+export function createZeroTypeCounts(): Record<FindingType, number> {
+  return {
+    [FindingType.GHOST_SCRIPT]: 0,
+    [FindingType.GHOST_STYLE]: 0,
+    [FindingType.GHOST_SNIPPET]: 0,
+    [FindingType.GHOST_SECTION]: 0,
+    [FindingType.GHOST_HREFLANG]: 0,
+    [FindingType.ORPHAN_ASSET]: 0,
+    [FindingType.DUPLICATE_META]: 0,
+    [FindingType.GHOST_JSON_LD]: 0,
+    [FindingType.GHOST_TEXT]: 0,
+    [FindingType.GHOST_TRANSLATION]: 0,
+    [FindingType.SETTINGS_DRIFT]: 0,
+    [FindingType.GHOST_PIXEL]: 0,
+    [FindingType.JSON_LD_CONFLICT]: 0,
+    [FindingType.JSON_LD_PRICE_CONFLICT]: 0,
+    [FindingType.GHOST_LAYOUT]: 0,
+    [FindingType.GHOST_TAG]: 0,
+    [FindingType.GHOST_PRICE]: 0,
+    [FindingType.GHOST_PAGE]: 0,
+    [FindingType.GHOST_METAFIELD]: 0,
+    [FindingType.GHOST_REDIRECT]: 0,
+    [FindingType.GHOST_ROBOTS]: 0,
+    [FindingType.GHOST_CANONICAL]: 0,
+    [FindingType.GHOST_TITLE]: 0,
+    [FindingType.GHOST_OG]: 0,
+    [FindingType.GHOST_PRECONNECT]: 0,
+    [FindingType.GHOST_FONT]: 0,
+    [FindingType.GHOST_AJAX]: 0,
+    [FindingType.DUPLICATE_LIBRARY]: 0,
+    [FindingType.DANGLING_REFERENCE]: 0,
+  };
+}
+
+/**
  * Batch-insert findings for a completed scan.
  * Uses createMany for a single round-trip; skipDuplicates is left false
  * because the scan engine should never produce true duplicates within one scan.
@@ -55,29 +110,6 @@ export async function getFindingsForScan(
 }
 
 /**
- * Group findings by severity and return counts.
- * Prisma groupBy is used for a single aggregation query.
- */
-export async function countFindingsBySeverity(scanId: string) {
-  const rows = await db.finding.groupBy({
-    by: ["severity"],
-    where: { scanId },
-    _count: { severity: true },
-  });
-
-  // Normalise into a plain object so callers don't need to know the groupBy shape.
-  const counts: Record<Severity, number> = {
-    [Severity.HIGH]: 0,
-    [Severity.MEDIUM]: 0,
-    [Severity.LOW]: 0,
-  };
-  for (const row of rows) {
-    counts[row.severity] = row._count.severity;
-  }
-  return counts;
-}
-
-/**
  * Summary aggregate for a scan: total count + breakdown by both axes.
  * Executed as two parallel queries to minimise latency.
  */
@@ -95,46 +127,12 @@ export async function getFindingSummary(scanId: string) {
     }),
   ]);
 
-  const severityCounts: Record<Severity, number> = {
-    [Severity.HIGH]: 0,
-    [Severity.MEDIUM]: 0,
-    [Severity.LOW]: 0,
-  };
+  const severityCounts = createZeroSeverityCounts();
   for (const row of bySeverity) {
     severityCounts[row.severity] = row._count.severity;
   }
 
-  const typeCounts: Record<FindingType, number> = {
-    [FindingType.GHOST_SCRIPT]: 0,
-    [FindingType.GHOST_STYLE]: 0,
-    [FindingType.GHOST_SNIPPET]: 0,
-    [FindingType.GHOST_SECTION]: 0,
-    [FindingType.GHOST_HREFLANG]: 0,
-    [FindingType.ORPHAN_ASSET]: 0,
-    [FindingType.DUPLICATE_META]: 0,
-    [FindingType.GHOST_JSON_LD]: 0,
-    [FindingType.GHOST_TEXT]: 0,
-    [FindingType.GHOST_TRANSLATION]: 0,
-    [FindingType.SETTINGS_DRIFT]: 0,
-    [FindingType.GHOST_PIXEL]: 0,
-    [FindingType.JSON_LD_CONFLICT]: 0,
-    [FindingType.JSON_LD_PRICE_CONFLICT]: 0,
-    [FindingType.GHOST_LAYOUT]: 0,
-    [FindingType.GHOST_TAG]: 0,
-    [FindingType.GHOST_PRICE]: 0,
-    [FindingType.GHOST_PAGE]: 0,
-    [FindingType.GHOST_METAFIELD]: 0,
-    [FindingType.GHOST_REDIRECT]: 0,
-    [FindingType.GHOST_ROBOTS]: 0,
-    [FindingType.GHOST_CANONICAL]: 0,
-    [FindingType.GHOST_TITLE]: 0,
-    [FindingType.GHOST_OG]: 0,
-    [FindingType.GHOST_PRECONNECT]: 0,
-    [FindingType.GHOST_FONT]: 0,
-    [FindingType.GHOST_AJAX]: 0,
-    [FindingType.DUPLICATE_LIBRARY]: 0,
-    [FindingType.DANGLING_REFERENCE]: 0,
-  };
+  const typeCounts = createZeroTypeCounts();
   for (const row of byType) {
     typeCounts[row.findingType] = row._count.findingType;
   }
@@ -165,11 +163,7 @@ export async function getSeverityCountsForScans(
   // Seed every requested scanId with a zeroed record so scans with no findings
   // still appear in the map. Reuses the same zero-map pattern as getFindingSummary.
   for (const scanId of scanIds) {
-    result.set(scanId, {
-      [Severity.HIGH]: 0,
-      [Severity.MEDIUM]: 0,
-      [Severity.LOW]: 0,
-    });
+    result.set(scanId, createZeroSeverityCounts());
   }
 
   const rows = await db.finding.groupBy({
@@ -202,37 +196,7 @@ export async function getSeverityCountsForScans(
  * batch severity query, so getFindingSummary is deliberately not reused here).
  */
 export async function getTypeCountsForScan(scanId: string): Promise<Record<FindingType, number>> {
-  const typeCounts: Record<FindingType, number> = {
-    [FindingType.GHOST_SCRIPT]: 0,
-    [FindingType.GHOST_STYLE]: 0,
-    [FindingType.GHOST_SNIPPET]: 0,
-    [FindingType.GHOST_SECTION]: 0,
-    [FindingType.GHOST_HREFLANG]: 0,
-    [FindingType.ORPHAN_ASSET]: 0,
-    [FindingType.DUPLICATE_META]: 0,
-    [FindingType.GHOST_JSON_LD]: 0,
-    [FindingType.GHOST_TEXT]: 0,
-    [FindingType.GHOST_TRANSLATION]: 0,
-    [FindingType.SETTINGS_DRIFT]: 0,
-    [FindingType.GHOST_PIXEL]: 0,
-    [FindingType.JSON_LD_CONFLICT]: 0,
-    [FindingType.JSON_LD_PRICE_CONFLICT]: 0,
-    [FindingType.GHOST_LAYOUT]: 0,
-    [FindingType.GHOST_TAG]: 0,
-    [FindingType.GHOST_PRICE]: 0,
-    [FindingType.GHOST_PAGE]: 0,
-    [FindingType.GHOST_METAFIELD]: 0,
-    [FindingType.GHOST_REDIRECT]: 0,
-    [FindingType.GHOST_ROBOTS]: 0,
-    [FindingType.GHOST_CANONICAL]: 0,
-    [FindingType.GHOST_TITLE]: 0,
-    [FindingType.GHOST_OG]: 0,
-    [FindingType.GHOST_PRECONNECT]: 0,
-    [FindingType.GHOST_FONT]: 0,
-    [FindingType.GHOST_AJAX]: 0,
-    [FindingType.DUPLICATE_LIBRARY]: 0,
-    [FindingType.DANGLING_REFERENCE]: 0,
-  };
+  const typeCounts = createZeroTypeCounts();
 
   const rows = await db.finding.groupBy({
     by: ["findingType"],
@@ -259,20 +223,28 @@ export async function getHighestSeverityFinding(scanId: string) {
 }
 
 /**
- * Return the count of distinct filenames in a scan's findings.
- * Used to normalize the Health Score deduction so large themes are not
- * penalized more than small ones simply because they have more files.
+ * Look up a single finding by id, scoped to a shop via its parent scan.
  *
- * Returns 0 when the scan has no findings (e.g. a clean theme).
- * The caller (health score computation) handles the 0-file edge case.
+ * Returns null when the finding does not exist OR belongs to a scan owned by a
+ * different shop — the `scan: { shopId }` relation filter enforces tenant
+ * isolation, so the caller can trust any non-null result belongs to `shopId`.
+ *
+ * Selects only the four fields that feed `fingerprintFinding` plus `appName`, so
+ * the ignore action (E2.3) can compute the SAME fingerprint E2.2 filters on
+ * without trusting a client-sent value.
  */
-export async function getDistinctFileCount(scanId: string): Promise<number> {
-  const result = await db.finding.findMany({
-    where: { scanId },
-    select: { filename: true },
-    distinct: ["filename"],
+export async function getFindingByIdForShop(findingId: string, shopId: string) {
+  return db.finding.findFirst({
+    where: { id: findingId, scan: { shopId } },
+    select: {
+      id: true,
+      filename: true,
+      findingType: true,
+      codeSnippet: true,
+      lineNumber: true,
+      appName: true,
+    },
   });
-  return result.length;
 }
 
 /**

@@ -1,3 +1,4 @@
+import { logger } from "./logger.server";
 import { APP_HANDLE, PLANS } from "./plans";
 import type { BillingEventType } from "../models/billing-event.server";
 // Re-export PLANS so existing server-side import sites need no change.
@@ -92,6 +93,39 @@ export const PLAN_AMOUNTS: Record<string, number | undefined> = {
   [PLANS.PROFESSIONAL]: 49,
   // FREE has no recurring charge amount
 };
+
+/**
+ * Resolve the recurring charge amount to record on a BillingEvent for `plan`,
+ * guarding against silent PLAN_AMOUNTS drift.
+ *
+ * PLAN_AMOUNTS is a hand-maintained mirror of Partner Dashboard pricing. We
+ * cannot detect a *value* drift (e.g. Standard changed $29 -> $39 in the
+ * Dashboard) at runtime without querying each subscription's price, which would
+ * need extra Admin API fields we deliberately don't fetch (gc-7wj: keep it light,
+ * no new queries/scopes). What we CAN catch cheaply is a *structural* drift: a
+ * plan Shopify reports as paid (rank above FREE) that has no entry here — which
+ * would otherwise silently record amount=null. That signals PLAN_AMOUNTS fell out
+ * of sync with PLANS and must be updated. We log a warn rather than throwing so
+ * billing-event recording (fire-and-forget) is never interrupted.
+ *
+ * Returns the configured amount, or null when unmapped (FREE, or an unmapped
+ * paid plan — the latter also warns).
+ */
+export function resolvePlanAmount(plan: string): number | null {
+  const amount = PLAN_AMOUNTS[plan];
+  if (amount === undefined) {
+    if ((PLAN_RANK[plan] ?? 0) > PLAN_RANK[PLANS.FREE]) {
+      logger.warn("billing-plan-amount-missing", {
+        plan,
+        message:
+          "Paid plan has no PLAN_AMOUNTS entry — PLAN_AMOUNTS may be out of sync with " +
+          "Partner Dashboard pricing; BillingEvent.amount will be recorded as null.",
+      });
+    }
+    return null;
+  }
+  return amount;
+}
 
 /**
  * Determine the billing event type by comparing old and new plan tiers.

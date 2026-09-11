@@ -71,7 +71,7 @@ export function detectOrphanedPages(pages: PageData[]): CreateFindingInput[] {
       findingType: FindingType.GHOST_PAGE,
       severity,
       appName: match.appName,
-      description: `Page "${page.title}" (/${page.handle}) likely created by ${match.appName}`,
+      description: `Possible leftover page "${page.title}" (/${page.handle}) from ${match.appName}. Verify ${match.appName} is uninstalled before removing; if you still use it, this page is live and should be kept.`,
     });
   }
 

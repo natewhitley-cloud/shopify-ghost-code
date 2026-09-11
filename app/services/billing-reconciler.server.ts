@@ -25,10 +25,10 @@
  */
 
 import {
-  PLAN_AMOUNTS,
   PLAN_RANK,
   PLANS,
   determineBillingEventType,
+  resolvePlanAmount,
   resolvePlanFromSubscription,
 } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
@@ -241,7 +241,7 @@ function recordReconcileBillingEvent(shopId: string, fromPlan: string, toPlan: s
   const eventType = determineBillingEventType(fromPlan, toPlan);
   if (eventType === null) return;
 
-  const amount = PLAN_AMOUNTS[toPlan] ?? null;
+  const amount = resolvePlanAmount(toPlan);
   const recordedToPlan = toPlan === PLANS.FREE ? null : toPlan;
 
   recordBillingEvent({ shopId, eventType, fromPlan, toPlan: recordedToPlan, amount })

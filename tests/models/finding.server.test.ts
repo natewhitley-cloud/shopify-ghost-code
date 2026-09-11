@@ -54,8 +54,7 @@ vi.mock("../../app/db.server", () => ({
 import {
   createFindings,
   getAppAttributionForScan,
-  countFindingsBySeverity,
-  getDistinctFileCount,
+  getFindingByIdForShop,
   getFindingFilterOptionsForScan,
   getFindingsForScan,
   getFindingsPageForScan,
@@ -215,74 +214,6 @@ describe("getFindingsForScan", () => {
     mockDb.finding.findMany.mockRejectedValue(new Error("Query error"));
 
     await expect(getFindingsForScan(SCAN_ID)).rejects.toThrow("Query error");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// countFindingsBySeverity
-// ---------------------------------------------------------------------------
-
-describe("countFindingsBySeverity", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns normalised counts for all severity levels", async () => {
-    mockDb.finding.groupBy.mockResolvedValue([
-      { severity: Severity.HIGH, _count: { severity: 3 } },
-      { severity: Severity.MEDIUM, _count: { severity: 2 } },
-      { severity: Severity.LOW, _count: { severity: 1 } },
-    ]);
-
-    const result = await countFindingsBySeverity(SCAN_ID);
-
-    expect(result).toEqual({
-      [Severity.HIGH]: 3,
-      [Severity.MEDIUM]: 2,
-      [Severity.LOW]: 1,
-    });
-  });
-
-  it("returns zeros for severity levels with no findings", async () => {
-    mockDb.finding.groupBy.mockResolvedValue([
-      { severity: Severity.HIGH, _count: { severity: 5 } },
-    ]);
-
-    const result = await countFindingsBySeverity(SCAN_ID);
-
-    expect(result[Severity.HIGH]).toBe(5);
-    expect(result[Severity.MEDIUM]).toBe(0);
-    expect(result[Severity.LOW]).toBe(0);
-  });
-
-  it("returns all-zero counts when the scan has no findings", async () => {
-    mockDb.finding.groupBy.mockResolvedValue([]);
-
-    const result = await countFindingsBySeverity(SCAN_ID);
-
-    expect(result).toEqual({
-      [Severity.HIGH]: 0,
-      [Severity.MEDIUM]: 0,
-      [Severity.LOW]: 0,
-    });
-  });
-
-  it("calls groupBy with the correct arguments", async () => {
-    mockDb.finding.groupBy.mockResolvedValue([]);
-
-    await countFindingsBySeverity(SCAN_ID);
-
-    expect(mockDb.finding.groupBy).toHaveBeenCalledWith({
-      by: ["severity"],
-      where: { scanId: SCAN_ID },
-      _count: { severity: true },
-    });
-  });
-
-  it("propagates a database error", async () => {
-    mockDb.finding.groupBy.mockRejectedValue(new Error("Aggregation failed"));
-
-    await expect(countFindingsBySeverity(SCAN_ID)).rejects.toThrow("Aggregation failed");
   });
 });
 
@@ -633,67 +564,6 @@ describe("getHighestSeverityFinding", () => {
     mockDb.finding.findFirst.mockRejectedValueOnce(new Error("Connection lost"));
 
     await expect(getHighestSeverityFinding(SCAN_ID)).rejects.toThrow("Connection lost");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getDistinctFileCount
-// ---------------------------------------------------------------------------
-
-describe("getDistinctFileCount", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns the count of distinct filenames for a scan", async () => {
-    mockDb.finding.findMany.mockResolvedValue([
-      { filename: "layout/theme.liquid" },
-      { filename: "snippets/app-badge.liquid" },
-      { filename: "assets/app.css" },
-    ]);
-
-    const result = await getDistinctFileCount(SCAN_ID);
-
-    expect(result).toBe(3);
-  });
-
-  it("returns 0 when no findings exist for the scan", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
-
-    const result = await getDistinctFileCount(SCAN_ID);
-
-    expect(result).toBe(0);
-  });
-
-  it("passes scanId, distinct on filename, and filename select to findMany", async () => {
-    mockDb.finding.findMany.mockResolvedValue([]);
-
-    await getDistinctFileCount(SCAN_ID);
-
-    expect(mockDb.finding.findMany).toHaveBeenCalledWith({
-      where: { scanId: SCAN_ID },
-      select: { filename: true },
-      distinct: ["filename"],
-    });
-  });
-
-  it("counts each unique filename once even when findings share the same file", async () => {
-    // The DB deduplication is handled by Prisma's distinct — the mock returns
-    // already-deduped rows (simulating what Prisma would return).
-    mockDb.finding.findMany.mockResolvedValue([
-      { filename: "layout/theme.liquid" },
-      { filename: "snippets/app-badge.liquid" },
-    ]);
-
-    const result = await getDistinctFileCount(SCAN_ID);
-
-    expect(result).toBe(2);
-  });
-
-  it("propagates a database error", async () => {
-    mockDb.finding.findMany.mockRejectedValueOnce(new Error("Distinct query failed"));
-
-    await expect(getDistinctFileCount(SCAN_ID)).rejects.toThrow("Distinct query failed");
   });
 });
 
@@ -1093,5 +963,50 @@ describe("getAppAttributionForScan", () => {
     mockDb.finding.findMany.mockRejectedValueOnce(new Error("Attribution query failed"));
 
     await expect(getAppAttributionForScan(SCAN_ID)).rejects.toThrow("Attribution query failed");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFindingByIdForShop — tenant-scoped single-finding lookup (E2.3)
+// ---------------------------------------------------------------------------
+
+describe("getFindingByIdForShop", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("looks up by id scoped to the shop via the parent scan and selects fingerprint fields", async () => {
+    const finding = {
+      id: "f-1",
+      filename: "layout/theme.liquid",
+      findingType: "GHOST_SCRIPT",
+      codeSnippet: "<script></script>",
+      lineNumber: 42,
+      appName: "OldApp",
+    };
+    mockDb.finding.findFirst.mockResolvedValue(finding);
+
+    const result = await getFindingByIdForShop("f-1", "shop-1");
+
+    expect(mockDb.finding.findFirst).toHaveBeenCalledWith({
+      where: { id: "f-1", scan: { shopId: "shop-1" } },
+      select: {
+        id: true,
+        filename: true,
+        findingType: true,
+        codeSnippet: true,
+        lineNumber: true,
+        appName: true,
+      },
+    });
+    expect(result).toEqual(finding);
+  });
+
+  it("returns null when the finding does not belong to the shop", async () => {
+    mockDb.finding.findFirst.mockResolvedValue(null);
+
+    const result = await getFindingByIdForShop("f-other", "shop-1");
+
+    expect(result).toBeNull();
   });
 });

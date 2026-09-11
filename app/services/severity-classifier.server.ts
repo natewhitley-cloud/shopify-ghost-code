@@ -38,7 +38,14 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.GHOST_LAYOUT]: Severity.MEDIUM,
   [FindingType.GHOST_TAG]: Severity.LOW,
   [FindingType.GHOST_PRICE]: Severity.HIGH,
-  [FindingType.GHOST_PAGE]: Severity.MEDIUM,
+  // GHOST_PAGE / GHOST_METAFIELD are informational (LOW): they are matched purely
+  // by app-name handle / namespace pattern, with NO signal that the app is
+  // actually uninstalled. A merchant actively using the app (e.g. Judge.me,
+  // PageFly) has live dependencies that match these patterns, so a higher
+  // severity would flag real, in-use data for deletion. They surface for the
+  // merchant to verify (see the verify-first copy in the detectors); the app-level
+  // ignore (E2) is the real false-positive suppression, not severity.
+  [FindingType.GHOST_PAGE]: Severity.LOW,
   [FindingType.GHOST_METAFIELD]: Severity.LOW,
   [FindingType.GHOST_REDIRECT]: Severity.MEDIUM,
   [FindingType.GHOST_ROBOTS]: Severity.HIGH,

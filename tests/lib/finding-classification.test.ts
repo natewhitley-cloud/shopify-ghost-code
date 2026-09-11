@@ -14,6 +14,8 @@ import {
   CONFIDENCE_TYPE_SETS,
   getFindingConfidence,
   hasVisualImpact,
+  isThemeFileFinding,
+  THEME_FILE_TYPE_SETS,
 } from "../../app/lib/finding-classification";
 
 // ---------------------------------------------------------------------------
@@ -172,5 +174,92 @@ describe("getFindingConfidence", () => {
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
     expect(signature.length + heuristic.length).toBe(29);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isThemeFileFinding — theme-file-backed vs Admin-resource (gc-3on)
+// ---------------------------------------------------------------------------
+
+describe("isThemeFileFinding", () => {
+  // Types attributed to a real theme file path (scan-engine + JSON-LD price +
+  // dangling reference) — these get an "Open in theme editor" link.
+  const THEME_FILE_TYPES = [
+    "GHOST_SCRIPT",
+    "GHOST_STYLE",
+    "GHOST_SNIPPET",
+    "GHOST_SECTION",
+    "GHOST_HREFLANG",
+    "GHOST_TEXT",
+    "GHOST_PIXEL",
+    "GHOST_ROBOTS",
+    "GHOST_CANONICAL",
+    "GHOST_TITLE",
+    "GHOST_OG",
+    "GHOST_PRECONNECT",
+    "GHOST_FONT",
+    "GHOST_AJAX",
+    "DUPLICATE_META",
+    "DUPLICATE_LIBRARY",
+    "GHOST_JSON_LD",
+    "JSON_LD_CONFLICT",
+    "JSON_LD_PRICE_CONFLICT",
+    "GHOST_LAYOUT",
+    "ORPHAN_ASSET",
+    "SETTINGS_DRIFT",
+    "DANGLING_REFERENCE",
+  ];
+
+  it.each(THEME_FILE_TYPES)("returns true for theme-file type %s", (type) => {
+    expect(isThemeFileFinding(type)).toBe(true);
+  });
+
+  // Types whose filename is a synthetic Admin-resource locator (products, pages,
+  // redirects, metafields, translations) — must NOT get a theme-editor link.
+  const ADMIN_RESOURCE_TYPES = [
+    "GHOST_PAGE",
+    "GHOST_REDIRECT",
+    "GHOST_PRICE",
+    "GHOST_TAG",
+    "GHOST_METAFIELD",
+    "GHOST_TRANSLATION",
+  ];
+
+  it.each(ADMIN_RESOURCE_TYPES)("returns false for Admin-resource type %s", (type) => {
+    expect(isThemeFileFinding(type)).toBe(false);
+  });
+
+  it("returns false for unknown / empty types (never links an untriaged type)", () => {
+    expect(isThemeFileFinding("UNKNOWN_TYPE")).toBe(false);
+    expect(isThemeFileFinding("")).toBe(false);
+  });
+
+  it("is case-sensitive (lowercase does not match)", () => {
+    expect(isThemeFileFinding("ghost_script")).toBe(false);
+  });
+
+  // Drift guard: every FindingType enum member must be classified in exactly one
+  // of the two curated sets — a new enum value added without a classification
+  // fails here, forcing a deliberate theme-file-vs-Admin-resource call.
+  it("classifies every FindingType enum member in exactly one set (drift guard)", () => {
+    const allTypes = Object.values(FindingType);
+    expect(allTypes).toHaveLength(29);
+
+    for (const type of allTypes) {
+      const inThemeFile = THEME_FILE_TYPE_SETS.themeFile.has(type);
+      const inAdminResource = THEME_FILE_TYPE_SETS.adminResource.has(type);
+      expect(
+        inThemeFile !== inAdminResource,
+        `${type} must be in exactly one theme-file/Admin-resource set`,
+      ).toBe(true);
+    }
+  });
+
+  it("has no overlap and full coverage between the two sets", () => {
+    const themeFile = [...THEME_FILE_TYPE_SETS.themeFile];
+    const adminResource = [...THEME_FILE_TYPE_SETS.adminResource];
+    const overlap = themeFile.filter((t) => THEME_FILE_TYPE_SETS.adminResource.has(t));
+    expect(overlap).toEqual([]);
+    expect(themeFile.length + adminResource.length).toBe(29);
   });
 });

@@ -44,6 +44,13 @@ vi.mock("../../app/models/finding.server", () => ({
   getFindingsForScan: vi.fn(),
 }));
 
+// E2.2: the loader now filters ignored findings out of both scan sets before
+// diffing. Mock the ignore read to return "no suppressions" so filterIgnoredFindings
+// (real, pure) short-circuits and the existing diff assertions are unchanged.
+vi.mock("../../app/models/ignored-finding.server", () => ({
+  getIgnoredFindingsForShop: vi.fn(),
+}));
+
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canUseScanDiffing: vi.fn(),
 }));
@@ -66,6 +73,7 @@ vi.mock("../../app/lib/finding-sort", () => ({
 
 import { canUseScanDiffing } from "../../app/lib/plan-gating.server";
 import { getFindingsForScan } from "../../app/models/finding.server";
+import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getScanById, getPreviousScanForTheme } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.scans.$scanId.diff";
@@ -81,6 +89,7 @@ const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetPreviousScanForTheme = getPreviousScanForTheme as ReturnType<typeof vi.fn>;
 const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
+const mockGetIgnoredFindings = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
 const mockCanUseScanDiffing = canUseScanDiffing as ReturnType<typeof vi.fn>;
 const mockDiffScans = diffScans as ReturnType<typeof vi.fn>;
 
@@ -179,6 +188,7 @@ beforeEach(() => {
   mockGetScanById.mockResolvedValue(SCAN);
   mockGetPreviousScanForTheme.mockResolvedValue(PREVIOUS_SCAN);
   mockGetFindingsForScan.mockResolvedValue([CURRENT_FINDING]);
+  mockGetIgnoredFindings.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
   mockCanUseScanDiffing.mockReturnValue(true);
   mockDiffScans.mockReturnValue(DIFF_RESULT);
 });
