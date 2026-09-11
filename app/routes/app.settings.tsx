@@ -132,9 +132,11 @@ export default function Settings() {
             <hr className="plan-tile__divider" />
             <div className="plan-tile__features">
               <s-unordered-list>
-                <s-list-item>1 scan per month</s-list-item>
-                <s-list-item>Finding count only</s-list-item>
-                <s-list-item>Single theme</s-list-item>
+                <s-list-item>First scan always free</s-list-item>
+                <s-list-item>1 scan per month after first</s-list-item>
+                <s-list-item>Findings grouped by impact, with counts</s-list-item>
+                <s-list-item>Preview of top finding in full</s-list-item>
+                <s-list-item>Single theme scanning</s-list-item>
               </s-unordered-list>
             </div>
           </div>
@@ -149,10 +151,10 @@ export default function Settings() {
             <hr className="plan-tile__divider" />
             <div className="plan-tile__features">
               <s-unordered-list>
-                <s-list-item>1 scan per week</s-list-item>
+                <s-list-item>All features in Free</s-list-item>
                 <s-list-item>Full finding details with code</s-list-item>
-                <s-list-item>Theme Health Score + delta</s-list-item>
-                <s-list-item>Single theme</s-list-item>
+                <s-list-item>1 manual scan per week</s-list-item>
+                <s-list-item>Findings trend over time</s-list-item>
                 <s-list-item>7-day free trial</s-list-item>
               </s-unordered-list>
             </div>
@@ -173,11 +175,11 @@ export default function Settings() {
             <hr className="plan-tile__divider" />
             <div className="plan-tile__features">
               <s-unordered-list>
-                <s-list-item>Everything in Standard</s-list-item>
-                <s-list-item>Multiple theme scanning</s-list-item>
+                <s-list-item>All features in Standard</s-list-item>
+                <s-list-item>Unlimited scans</s-list-item>
+                <s-list-item>Unlimited theme scanning</s-list-item>
                 <s-list-item>Auto-rescan on theme publish</s-list-item>
-                <s-list-item>Automatic daily scans</s-list-item>
-                <s-list-item>Scan diffing</s-list-item>
+                <s-list-item>Scan diffing (New/Resolved)</s-list-item>
                 <s-list-item>7-day free trial</s-list-item>
               </s-unordered-list>
             </div>
