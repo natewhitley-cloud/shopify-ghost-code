@@ -140,6 +140,11 @@ export type PlanFeatures = {
   scanDiffing: boolean;
   /** Whether the plan receives any form of scheduled (automatic) scanning. */
   scheduledScan: boolean;
+  /**
+   * Whether the plan includes dangling-reference (Broken Links) detection.
+   * Paid-only (Standard and above); Free does not get this audit (gc-m4h.7).
+   */
+  canDetectDanglingReferences: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -153,6 +158,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: false,
         scanDiffing: false,
         scheduledScan: true, // Weekly scheduled scan, Sunday 6 AM UTC via weekly-scan cron
+        canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -163,6 +169,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: true,
         scanDiffing: true,
         scheduledScan: true, // Daily via poll-theme-changes coordinator
+        canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -175,6 +182,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         autoRescan: false,
         scanDiffing: false,
         scheduledScan: false,
+        canDetectDanglingReferences: false, // Free does NOT get dangling-reference detection (gc-m4h.7)
       };
   }
 }

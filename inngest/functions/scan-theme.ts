@@ -49,6 +49,7 @@ import {
   updateScanStatus,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
+import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
@@ -180,6 +181,21 @@ async function runAuditStep(opts: {
 }
 
 // ---------------------------------------------------------------------------
+// Dangling-reference finding presentation (gc-m4h.5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Storefront URL segment + human label per dangling entity subtype. Used to
+ * render the matched literal + verdict in a DANGLING_REFERENCE finding's
+ * description, and the subtype tag carried in `appName` (spike §E).
+ */
+const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> = {
+  product: { segment: "products", label: "product" },
+  collection: { segment: "collections", label: "collection" },
+  page: { segment: "pages", label: "page" },
+};
+
+// ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
 
@@ -211,95 +227,112 @@ export const scanTheme = inngest.createFunction(
       // Step 2: Fetch theme files, scan them, and save findings.
       // Combined into one step because theme file contents can exceed
       // Inngest's 4MB step output serialization limit.
-      const { findingCount, fileCount, skippedFilePaths, staticProductCandidates } = await step.run(
-        "fetch-and-scan",
-        async () => {
-          const db = (await import("../../app/db.server")).default;
-          const shop = await db.shop.findUnique({ where: { id: shopId } });
-          if (!shop) {
-            throw new Error(`Shop ${shopId} not found — cannot fetch theme files`);
-          }
+      const {
+        findingCount,
+        fileCount,
+        skippedFilePaths,
+        staticProductCandidates,
+        danglingOccurrences,
+        danglingDistinctHandles,
+      } = await step.run("fetch-and-scan", async () => {
+        const db = (await import("../../app/db.server")).default;
+        const shop = await db.shop.findUnique({ where: { id: shopId } });
+        if (!shop) {
+          throw new Error(`Shop ${shopId} not found — cannot fetch theme files`);
+        }
 
-          const { unauthenticated } = await import("../../app/shopify.server");
-          const { admin } = await unauthenticated.admin(shop.domain);
-          const files = await fetchThemeFiles(admin, themeId, shop.domain);
-          const { logger } = await import("../../app/lib/logger.server");
-          logger.info("theme files fetched", {
+        const { unauthenticated } = await import("../../app/shopify.server");
+        const { admin } = await unauthenticated.admin(shop.domain);
+        const files = await fetchThemeFiles(admin, themeId, shop.domain);
+        const { logger } = await import("../../app/lib/logger.server");
+        logger.info("theme files fetched", {
+          function: "scan-theme",
+          event: "files_fetched",
+          shopId,
+          fileCount: files.length,
+        });
+
+        const {
+          findings,
+          unknownScripts,
+          skippedFiles,
+          staticProductCandidates,
+          benignLibrarySkips,
+        } = await scanThemeFilesInPool(files);
+
+        // Surface any files skipped for exceeding the per-file size cap so the
+        // drop is never silent (gc-06e.2). Real theme Liquid files are far under
+        // the cap; a skip here is anomalous and worth an ops signal.
+        if (skippedFiles && skippedFiles.length > 0) {
+          logger.warn("theme scan skipped oversized files", {
             function: "scan-theme",
-            event: "files_fetched",
+            event: "files_skipped_oversized",
             shopId,
-            fileCount: files.length,
-          });
-
-          const {
-            findings,
-            unknownScripts,
+            cap: MAX_SCANNABLE_FILE_BYTES,
             skippedFiles,
-            staticProductCandidates,
-            benignLibrarySkips,
-          } = await scanThemeFilesInPool(files);
-
-          // Surface any files skipped for exceeding the per-file size cap so the
-          // drop is never silent (gc-06e.2). Real theme Liquid files are far under
-          // the cap; a skip here is anomalous and worth an ops signal.
-          if (skippedFiles && skippedFiles.length > 0) {
-            logger.warn("theme scan skipped oversized files", {
-              function: "scan-theme",
-              event: "files_skipped_oversized",
-              shopId,
-              cap: MAX_SCANNABLE_FILE_BYTES,
-              skippedFiles,
-            });
-          }
-
-          // Surface benign public-CDN libraries / web fonts dropped by the
-          // collectors so the suppression is observable, never silent (gc-tus A2).
-          // Info-level: unlike an oversized-file skip this is expected/benign.
-          if (benignLibrarySkips && benignLibrarySkips > 0) {
-            logger.info("theme scan suppressed benign libraries", {
-              function: "scan-theme",
-              event: "benign_libraries_suppressed",
-              shopId,
-              benignLibrarySkips,
-            });
-          }
-
-          logger.info("theme scan complete", {
-            function: "scan-theme",
-            event: "scan_complete",
-            shopId,
-            findingCount: findings.length,
-            unknownScriptCount: unknownScripts.length,
           });
+        }
 
-          // Persist the theme findings in a single $transaction (idempotency
-          // guard inside) but DELIBERATELY leave the scan IN_PROGRESS. The
-          // terminal status is set only in the finalize step after every audit
-          // has run, so a late audit failure can still mark the scan FAILED
-          // (LOG-4).
-          await saveThemeFindings(scanId, findings);
+        // Surface benign public-CDN libraries / web fonts dropped by the
+        // collectors so the suppression is observable, never silent (gc-tus A2).
+        // Info-level: unlike an oversized-file skip this is expected/benign.
+        if (benignLibrarySkips && benignLibrarySkips > 0) {
+          logger.info("theme scan suppressed benign libraries", {
+            function: "scan-theme",
+            event: "benign_libraries_suppressed",
+            shopId,
+            benignLibrarySkips,
+          });
+        }
 
-          // Persist unknown scripts separately (not part of the transaction —
-          // these are informational and don't affect scan correctness).
-          await createUnknownScripts(scanId, unknownScripts);
+        logger.info("theme scan complete", {
+          function: "scan-theme",
+          event: "scan_complete",
+          shopId,
+          findingCount: findings.length,
+          unknownScriptCount: unknownScripts.length,
+        });
 
-          // Return only the counts and the (tiny) list of skipped file paths — not
-          // the full findings array (Inngest's 4MB step-output limit). fileCount
-          // drives the zero-file sanity guard below; skippedFilePaths is persisted
-          // on the scan so the differ can exclude unscanned oversized files from
-          // "resolved" (gc-06e.19). A skip is anomalous, so this list is normally
-          // empty and at most a handful of paths.
-          return {
-            findingCount: findings.length,
-            fileCount: files.length,
-            skippedFilePaths: (skippedFiles ?? []).map((f) => f.filename),
-            // Tiny (a handful per theme), so it safely crosses the step boundary
-            // unlike the full findings array. Threaded into the live-price audit
-            // step below (gc-47c.10).
-            staticProductCandidates: staticProductCandidates ?? [],
-          };
-        },
-      );
+        // Persist the theme findings in a single $transaction (idempotency
+        // guard inside) but DELIBERATELY leave the scan IN_PROGRESS. The
+        // terminal status is set only in the finalize step after every audit
+        // has run, so a late audit failure can still mark the scan FAILED
+        // (LOG-4).
+        await saveThemeFindings(scanId, findings);
+
+        // Persist unknown scripts separately (not part of the transaction —
+        // these are informational and don't affect scan correctness).
+        await createUnknownScripts(scanId, unknownScripts);
+
+        // Extract DANGLING_REFERENCE candidates (pure, static) here while the
+        // theme files are in scope. Only the tiny handle/occurrence arrays
+        // (handles + file/line + snippet — NOT raw file content) cross the
+        // step boundary; existence is resolved via the Admin API in the
+        // dangling-reference-audit step below (gc-m4h.5).
+        const dangling = extractDanglingReferences(files);
+
+        // Return only the counts and the (tiny) list of skipped file paths — not
+        // the full findings array (Inngest's 4MB step-output limit). fileCount
+        // drives the zero-file sanity guard below; skippedFilePaths is persisted
+        // on the scan so the differ can exclude unscanned oversized files from
+        // "resolved" (gc-06e.19). A skip is anomalous, so this list is normally
+        // empty and at most a handful of paths.
+        return {
+          findingCount: findings.length,
+          fileCount: files.length,
+          skippedFilePaths: (skippedFiles ?? []).map((f) => f.filename),
+          // Tiny (a handful per theme), so it safely crosses the step boundary
+          // unlike the full findings array. Threaded into the live-price audit
+          // step below (gc-47c.10).
+          staticProductCandidates: staticProductCandidates ?? [],
+          // Dangling-reference candidates (gc-m4h.5): distinct handles for the
+          // resolver + per-occurrence hits (file/line/snippet) for the findings.
+          // Both are small (a handful per theme), so they cross the boundary
+          // safely — no raw file content is carried.
+          danglingOccurrences: dangling.occurrences,
+          danglingDistinctHandles: dangling.distinctHandles,
+        };
+      });
 
       // Step 3: Translation audit (optional — requires read_translations scope)
       // Slightly different from generic audit steps because it has extra logic
@@ -533,6 +566,100 @@ export const scanTheme = inngest.createFunction(
         return { findingCount: priceFindings.length, skipped };
       });
 
+      // Step 10: Dangling-reference audit (optional — requires a Standard+ plan
+      // AND read_products and/or read_content scope AND the
+      // DANGLING_REFERENCE_LIVE_ENABLED flag). Modeled on the live-price audit:
+      // it has extra pre-conditions (flag + plan + candidate list + per-entity
+      // scope gates), so it does not use runAuditStep.
+      //
+      // Double-inert soft-launch (gc-m4h.5): when the flag is OFF the step is
+      // fully inert — it does NOT resolve, persist, or count — and returns
+      // skipped:false (flag-off is a deliberate disable, not an un-audited scope
+      // skip). Only once the flag is ON does a missing scope / lookup-budget
+      // truncation report skipped:true → skippedCategories.
+      const danglingRefResult: AuditStepResult = await step.run(
+        "dangling-reference-audit",
+        async () => {
+          if (process.env.DANGLING_REFERENCE_LIVE_ENABLED !== "true") {
+            // Flag off: inert. Not a scope skip.
+            return { findingCount: 0, skipped: false };
+          }
+
+          // No static references in the theme — nothing to resolve. Audited
+          // (nothing to check), not a scope skip.
+          if (danglingDistinctHandles.length === 0) {
+            return { findingCount: 0, skipped: false };
+          }
+
+          const db = (await import("../../app/db.server")).default;
+          const shop = await db.shop.findUnique({ where: { id: shopId } });
+          if (!shop) return { findingCount: 0, skipped: false };
+
+          // Plan gate (gc-m4h.7): dangling-reference detection is Standard+.
+          // For Free shops the step is inert exactly like the flag-off path — no
+          // resolve, no persist, no count. This is NOT a scope skip: the category
+          // is deliberately withheld by plan (like flag-off), not left un-audited
+          // for lack of scope, so it must NOT enter skippedCategories (that would
+          // misreport an un-run category and suppress the differ's resolved-detection).
+          // Checked before any Admin API work so the cheap gate short-circuits first.
+          const { canDetectDanglingReferences } = await import("../../app/lib/plan-gating.server");
+          if (!canDetectDanglingReferences(shop.plan)) {
+            return { findingCount: 0, skipped: false };
+          }
+
+          const { unauthenticated } = await import("../../app/shopify.server");
+          const { admin } = await unauthenticated.admin(shop.domain);
+
+          const { resolveDanglingReferences } =
+            await import("../../app/services/dangling-reference-resolver.server");
+          const { missing, scopeStatus, truncated } = await resolveDanglingReferences(
+            admin,
+            danglingDistinctHandles,
+            shopId,
+          );
+
+          // Map the resolver's distinct `missing` set back to ONE finding per
+          // OCCURRENCE (the same handle can be linked from several files/lines,
+          // and each broken link is its own finding). Key on (entityType, handle).
+          const missingKeys = new Set(missing.map((m) => `${m.entityType} ${m.handle}`));
+          const { classifySeverity } =
+            await import("../../app/services/severity-classifier.server");
+          const danglingFindings: CreateFindingInput[] = danglingOccurrences
+            .filter((occ) => missingKeys.has(`${occ.entityType} ${occ.handle}`))
+            .map((occ) => {
+              const meta = DANGLING_SUBTYPE_META[occ.entityType];
+              return {
+                filename: occ.filename,
+                lineNumber: occ.lineNumber,
+                codeSnippet: occ.snippet,
+                findingType: FindingType.DANGLING_REFERENCE,
+                severity: classifySeverity(FindingType.DANGLING_REFERENCE, occ.snippet),
+                // Structured subtype tag (spike §E): the UI can badge subtype
+                // without parsing the description.
+                appName: occ.entityType,
+                description: `Broken ${meta.label} link: /${meta.segment}/${occ.handle}. This ${meta.label} no longer exists (verified via Admin API).`,
+              };
+            });
+
+          await persistAuditFindings({
+            scanId,
+            shopId,
+            findingType: FindingType.DANGLING_REFERENCE,
+            findings: danglingFindings,
+            event: "dangling_reference_findings",
+            logMessage: "dangling-reference findings persisted",
+          });
+
+          // Precise-skip rule (spike §D / R1): mark the category skipped iff a
+          // static ref of a type whose scope is absent was present, OR the
+          // lookup budget truncated — so the differ never false-resolves refs we
+          // could not re-check.
+          const skipped =
+            scopeStatus.products === "absent" || scopeStatus.content === "absent" || truncated;
+          return { findingCount: danglingFindings.length, skipped };
+        },
+      );
+
       const totalFindings =
         findingCount +
         translationResult.findingCount +
@@ -541,7 +668,8 @@ export const scanTheme = inngest.createFunction(
         pageResult.findingCount +
         metafieldResult.findingCount +
         redirectResult.findingCount +
-        jsonLdPriceResult.findingCount;
+        jsonLdPriceResult.findingCount +
+        danglingRefResult.findingCount;
 
       // Collect the optional categories that were skipped because their scope
       // was not granted. Each entry maps 1:1 to a FindingType so the differ can
@@ -562,6 +690,7 @@ export const scanTheme = inngest.createFunction(
         [metafieldResult.skipped, FindingType.GHOST_METAFIELD],
         [redirectResult.skipped, FindingType.GHOST_REDIRECT],
         [jsonLdPriceResult.skipped, FindingType.JSON_LD_PRICE_CONFLICT],
+        [danglingRefResult.skipped, FindingType.DANGLING_REFERENCE],
       ]
         .filter(([skipped]) => skipped)
         .map(([, category]) => category as string);
@@ -630,6 +759,7 @@ export const scanTheme = inngest.createFunction(
         metafieldFindings: metafieldResult.findingCount,
         redirectFindings: redirectResult.findingCount,
         jsonLdPriceFindings: jsonLdPriceResult.findingCount,
+        danglingRefFindings: danglingRefResult.findingCount,
       });
 
       return {

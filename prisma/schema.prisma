@@ -234,6 +234,11 @@ enum FindingType {
   GHOST_FONT
   GHOST_AJAX
   DUPLICATE_LIBRARY
+  // Emitted by the dangling-reference audit (gc-m4h): theme code statically
+  // references a shop entity (product / collection / page) that no longer exists
+  // in the Admin. ONE FindingType covers all entity subtypes; the subtype is
+  // carried at runtime in `description` + `appName` (no JSON column on Finding).
+  DANGLING_REFERENCE
 }
 
 enum SubmissionStatus {

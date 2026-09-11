@@ -295,6 +295,12 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "whenever",
     agentic: false,
   },
+  DANGLING_REFERENCE: {
+    primary: "customers-see-it",
+    secondary: ["discoverability"],
+    urgency: "act-now",
+    agentic: true,
+  },
 };
 
 // ---------------------------------------------------------------------------

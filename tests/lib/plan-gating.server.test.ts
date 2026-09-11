@@ -45,6 +45,7 @@ vi.mock("../../app/models/scan.server", () => ({
 
 import {
   canStartScan,
+  canDetectDanglingReferences,
   canViewFindingDetails,
   canUseAutoRescan,
   canUseMultipleThemes,
@@ -119,6 +120,28 @@ describe("canUseScanDiffing", () => {
 
   it("returns true for Professional plan", () => {
     expect(canUseScanDiffing("Professional")).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canDetectDanglingReferences — pure, plan-tier tests (gc-m4h.7: Standard+)
+// ---------------------------------------------------------------------------
+
+describe("canDetectDanglingReferences", () => {
+  it("returns false for free plan", () => {
+    expect(canDetectDanglingReferences("free")).toBe(false);
+  });
+
+  it("returns true for Standard plan", () => {
+    expect(canDetectDanglingReferences("Standard")).toBe(true);
+  });
+
+  it("returns true for Professional plan", () => {
+    expect(canDetectDanglingReferences("Professional")).toBe(true);
+  });
+
+  it("defaults to free-tier behavior for unknown plan names", () => {
+    expect(canDetectDanglingReferences("unknown-plan")).toBe(false);
   });
 });
 

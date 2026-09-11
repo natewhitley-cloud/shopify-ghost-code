@@ -76,6 +76,15 @@ vi.mock("../../app/services/scan-pool.server", () => ({
   scanThemeFilesInPool: vi.fn(),
 }));
 
+// The scan-theme step-2 extraction always runs extractDanglingReferences on the
+// theme files. Its real module imports isScannableFile/buildSnippet from the
+// (partially mocked) scan-engine.server, so it must be mocked here too. Part B
+// leaves the DANGLING_REFERENCE_LIVE_ENABLED flag off, so returning no candidates
+// keeps the dangling-reference audit step inert (gc-m4h.5).
+vi.mock("../../app/services/dangling-reference-extractor.server", () => ({
+  extractDanglingReferences: vi.fn(() => ({ occurrences: [], distinctHandles: [] })),
+}));
+
 vi.mock("../../app/models/unknown-script.server", () => ({
   createUnknownScripts: vi.fn(),
 }));

@@ -133,6 +133,7 @@ export async function getFindingSummary(scanId: string) {
     [FindingType.GHOST_FONT]: 0,
     [FindingType.GHOST_AJAX]: 0,
     [FindingType.DUPLICATE_LIBRARY]: 0,
+    [FindingType.DANGLING_REFERENCE]: 0,
   };
   for (const row of byType) {
     typeCounts[row.findingType] = row._count.findingType;
@@ -230,6 +231,7 @@ export async function getTypeCountsForScan(scanId: string): Promise<Record<Findi
     [FindingType.GHOST_FONT]: 0,
     [FindingType.GHOST_AJAX]: 0,
     [FindingType.DUPLICATE_LIBRARY]: 0,
+    [FindingType.DANGLING_REFERENCE]: 0,
   };
 
   const rows = await db.finding.groupBy({

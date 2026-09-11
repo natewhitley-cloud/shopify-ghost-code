@@ -126,6 +126,19 @@ vi.mock("../../app/services/jsonld-price-audit.server", () => ({
   auditStaticJsonLdPrices: vi.fn(),
 }));
 
+// Dangling-reference audit boundaries (gc-m4h.5). The extractor MUST be mocked:
+// its real module imports isScannableFile/buildSnippet from the (mocked)
+// scan-engine.server, so leaving it real would call undefined mock members. The
+// resolver is mocked like auditStaticJsonLdPrices — the worker test controls
+// which handles are "missing" without touching the Admin API.
+vi.mock("../../app/services/dangling-reference-extractor.server", () => ({
+  extractDanglingReferences: vi.fn(),
+}));
+
+vi.mock("../../app/services/dangling-reference-resolver.server", () => ({
+  resolveDanglingReferences: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
@@ -140,6 +153,8 @@ import {
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.server";
+import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
+import { resolveDanglingReferences } from "../../app/services/dangling-reference-resolver.server";
 import { auditStaticJsonLdPrices } from "../../app/services/jsonld-price-audit.server";
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
 import { detectOrphanedPages } from "../../app/services/page-detector.server";
@@ -205,6 +220,8 @@ const mockDetectOrphanedPages = detectOrphanedPages as ReturnType<typeof vi.fn>;
 const mockDetectOrphanedMetafields = detectOrphanedMetafields as ReturnType<typeof vi.fn>;
 const mockDetectOrphanedRedirects = detectOrphanedRedirects as ReturnType<typeof vi.fn>;
 const mockAuditStaticJsonLdPrices = auditStaticJsonLdPrices as ReturnType<typeof vi.fn>;
+const mockExtractDanglingReferences = extractDanglingReferences as ReturnType<typeof vi.fn>;
+const mockResolveDanglingReferences = resolveDanglingReferences as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -218,6 +235,9 @@ const MOCK_SHOP = {
   id: SHOP_ID,
   domain: "test-shop.myshopify.com",
   accessToken: "test-token",
+  // Paid plan by default so the Standard+ dangling-reference gate (gc-m4h.7)
+  // grants; a dedicated test overrides findUnique with a Free-plan shop.
+  plan: "Standard",
 };
 
 const MOCK_ADMIN = {
@@ -340,6 +360,18 @@ beforeEach(() => {
   // explicitly enables it.
   mockAuditStaticJsonLdPrices.mockResolvedValue([]);
   delete process.env.JSONLD_LIVE_PRICE_ENABLED;
+
+  // Dangling-reference audit (gc-m4h.5): no candidates + all scopes resolved by
+  // default, and the flag is cleared so the step is inert unless a test enables
+  // it. The resolver default is only consulted when a test supplies candidates
+  // AND turns the flag on.
+  mockExtractDanglingReferences.mockReturnValue({ occurrences: [], distinctHandles: [] });
+  mockResolveDanglingReferences.mockResolvedValue({
+    missing: [],
+    scopeStatus: { products: "checked", content: "checked" },
+    truncated: false,
+  });
+  delete process.env.DANGLING_REFERENCE_LIVE_ENABLED;
 });
 
 // ---------------------------------------------------------------------------
@@ -981,6 +1013,222 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       skippedFiles: [],
     });
     expect(result.status).toBe("COMPLETED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Dangling-reference audit (gc-m4h.5)
+//
+// Double-inert soft-launch: needs BOTH the DANGLING_REFERENCE_LIVE_ENABLED flag
+// AND static candidates. When ON, the resolver's distinct `missing` set is
+// mapped back to ONE finding per occurrence; the precise-skip rule marks the
+// category skipped iff a needed scope was absent OR the lookup budget truncated.
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
+  const DANGLING_OCCURRENCE = {
+    entityType: "collection",
+    handle: "summer-sale",
+    filename: "sections/footer.liquid",
+    lineNumber: 12,
+    snippet: '<a href="/collections/summer-sale">Summer Sale</a>',
+  };
+  const DANGLING_DISTINCT = { entityType: "collection", handle: "summer-sale" };
+  const EXPECTED_DESCRIPTION =
+    "Broken collection link: /collections/summer-sale. This collection no longer exists (verified via Admin API).";
+
+  function withCandidates(occurrences: unknown[], distinctHandles: unknown[]) {
+    mockExtractDanglingReferences.mockReturnValue({ occurrences, distinctHandles });
+  }
+
+  it("is fully inert when the flag is OFF (no resolve, no persist, not skipped, findingCount 0)", async () => {
+    // Flag unset by beforeEach. Candidates present, yet the step must not run.
+    withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
+
+    const result = await runScanTheme();
+
+    expect(mockResolveDanglingReferences).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+      status: "COMPLETED",
+      findingCount: MOCK_FINDINGS.length,
+      // Flag-off is a deliberate disable, NOT a scope skip.
+      skippedCategories: [],
+      skippedFiles: [],
+    });
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("is inert on a Free plan even when the flag is ON (plan gate, not a scope skip)", async () => {
+    // Standard+ only (gc-m4h.7). Flag on + candidates present, but a Free shop
+    // must NOT run the audit — and the plan gate is a deliberate withhold, so it
+    // does NOT enter skippedCategories (mirrors the flag-off path exactly).
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
+
+    const result = await runScanTheme();
+
+    expect(mockResolveDanglingReferences).not.toHaveBeenCalled();
+    expect(mockCreateFindings).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+      status: "COMPLETED",
+      findingCount: MOCK_FINDINGS.length,
+      // Plan gate is a deliberate disable, NOT a scope skip.
+      skippedCategories: [],
+      skippedFiles: [],
+    });
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("persists one finding per occurrence for a missing ref and counts it in the total", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
+    mockResolveDanglingReferences.mockResolvedValue({
+      missing: [DANGLING_DISTINCT],
+      scopeStatus: { products: "checked", content: "checked" },
+      truncated: false,
+    });
+    mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length + 1);
+
+    const result = await runScanTheme();
+
+    // Resolver is called with the distinct handles + shopId.
+    expect(mockResolveDanglingReferences).toHaveBeenCalledWith(
+      MOCK_ADMIN,
+      [DANGLING_DISTINCT],
+      SHOP_ID,
+    );
+
+    // Idempotency delete scopes by the exclusive DANGLING_REFERENCE type.
+    expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: FindingType.DANGLING_REFERENCE },
+    });
+
+    // One finding per occurrence, with subtype in appName + description and the
+    // occurrence's snippet/file/line carried through. Severity classified MEDIUM.
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [
+      {
+        filename: DANGLING_OCCURRENCE.filename,
+        lineNumber: DANGLING_OCCURRENCE.lineNumber,
+        codeSnippet: DANGLING_OCCURRENCE.snippet,
+        findingType: FindingType.DANGLING_REFERENCE,
+        severity: Severity.MEDIUM,
+        appName: "collection",
+        description: EXPECTED_DESCRIPTION,
+      },
+    ]);
+
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length + 1);
+  });
+
+  it("emits ONE finding per occurrence when the same missing handle is linked from multiple lines", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    const secondOccurrence = {
+      ...DANGLING_OCCURRENCE,
+      filename: "sections/header.liquid",
+      lineNumber: 4,
+      snippet: "{{ collections['summer-sale'].title }}",
+    };
+    // Two occurrences, ONE distinct handle → resolver looks it up once, but both
+    // broken links become findings.
+    withCandidates([DANGLING_OCCURRENCE, secondOccurrence], [DANGLING_DISTINCT]);
+    mockResolveDanglingReferences.mockResolvedValue({
+      missing: [DANGLING_DISTINCT],
+      scopeStatus: { products: "checked", content: "checked" },
+      truncated: false,
+    });
+    mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length + 2);
+
+    const result = await runScanTheme();
+
+    const persisted = mockCreateFindings.mock.calls[0][1];
+    expect(persisted).toHaveLength(2);
+    expect(persisted.map((f: { lineNumber: number }) => f.lineNumber)).toEqual([12, 4]);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
+  });
+
+  it("does NOT flag a handle that still exists (not in the resolver's missing set)", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
+    // Resolver reports nothing missing (the collection still exists).
+    mockResolveDanglingReferences.mockResolvedValue({
+      missing: [],
+      scopeStatus: { products: "checked", content: "checked" },
+      truncated: false,
+    });
+
+    const result = await runScanTheme();
+
+    // No DANGLING_REFERENCE finding persisted (persistAuditFindings no-ops on []).
+    expect(mockCreateFindings).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [] }),
+    );
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("records DANGLING_REFERENCE in skippedCategories when a needed scope is absent (no false findings)", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
+    // read_products absent → the resolver reports the products scope absent and
+    // returns NO missing refs for the unchecked type (precise-skip rule R1).
+    mockResolveDanglingReferences.mockResolvedValue({
+      missing: [],
+      scopeStatus: { products: "absent", content: "checked" },
+      truncated: false,
+    });
+
+    const result = await runScanTheme();
+
+    // Never claim a ref "deleted" from an unchecked scope.
+    expect(mockCreateFindings).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({
+        skippedCategories: [FindingType.DANGLING_REFERENCE],
+      }),
+    );
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("records DANGLING_REFERENCE in skippedCategories when the lookup budget truncates", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
+    // Truncated: findings for what WAS checked still persist, but the category is
+    // recorded so the differ never false-resolves the refs we could not re-check.
+    mockResolveDanglingReferences.mockResolvedValue({
+      missing: [DANGLING_DISTINCT],
+      scopeStatus: { products: "checked", content: "checked" },
+      truncated: true,
+    });
+    mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length + 1);
+
+    await runScanTheme();
+
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [
+      expect.objectContaining({ findingType: FindingType.DANGLING_REFERENCE }),
+    ]);
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({
+        skippedCategories: [FindingType.DANGLING_REFERENCE],
+      }),
+    );
+  });
+
+  it("is inert (not skipped) when the flag is ON but there are no candidates", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    withCandidates([], []);
+
+    const result = await runScanTheme();
+
+    expect(mockResolveDanglingReferences).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [] }),
+    );
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
 });
 

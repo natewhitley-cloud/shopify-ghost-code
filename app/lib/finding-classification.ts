@@ -114,6 +114,12 @@ const HEURISTIC_FINDING_TYPES = new Set([
   // loaded by two or more theme files); no positive app-signature match, so it
   // is surfaced as "Heuristic" pending merchant review.
   "DUPLICATE_LIBRARY",
+  // DANGLING_REFERENCE — a static theme reference to a shop entity whose
+  // existence is checked against the Admin API, not matched against a known-app
+  // signature. No app-attribution axis applies, so it lands in HEURISTIC. (The
+  // heuristic/signature split is about app-attribution, not certainty; existence
+  // here is Admin-verified and high-certainty — see gc-m4h spike risk R3.)
+  "DANGLING_REFERENCE",
 ]);
 
 /**
