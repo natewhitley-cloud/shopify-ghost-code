@@ -2,18 +2,12 @@
  * Tests for app/entry.server.tsx — handleError export.
  *
  * Strategy:
- *   - Mock ~/lib/sentry.server's captureException to assert forwarding.
+ *   - Spy on console.error to assert errors surface to the logs.
  *   - Mock ./shopify.server so importing the entry module has no side effects.
- *   - Verify handleError forwards normal errors and skips aborted requests.
+ *   - Verify handleError logs normal errors and skips aborted requests.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-
-const mockCaptureException = vi.fn();
-
-vi.mock("../app/lib/sentry.server", () => ({
-  captureException: mockCaptureException,
-}));
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../app/shopify.server", () => ({
   addDocumentResponseHeaders: vi.fn(),
@@ -34,28 +28,32 @@ function makeRequest(aborted: boolean): Request {
 }
 
 describe("handleError", () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+
   beforeEach(() => {
     vi.clearAllMocks();
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
   });
 
-  it("forwards a normal error to captureException with request context", async () => {
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+  });
+
+  it("logs a normal error to console.error", async () => {
     const handleError = await importHandleError();
     const error = new Error("loader blew up");
 
     handleError(error, { request: makeRequest(false) });
 
-    expect(mockCaptureException).toHaveBeenCalledOnce();
-    expect(mockCaptureException).toHaveBeenCalledWith(error, {
-      url: "https://example.com/app/scans",
-      method: "POST",
-    });
+    expect(consoleErrorSpy).toHaveBeenCalledOnce();
+    expect(consoleErrorSpy).toHaveBeenCalledWith(error);
   });
 
-  it("does NOT call captureException when the request was aborted", async () => {
+  it("does NOT log when the request was aborted", async () => {
     const handleError = await importHandleError();
 
     handleError(new Error("client cancelled"), { request: makeRequest(true) });
 
-    expect(mockCaptureException).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
   });
 });

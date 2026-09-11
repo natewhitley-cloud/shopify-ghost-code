@@ -48,6 +48,9 @@ function makeAdmin(
     contentScope?: boolean;
     product?: (handle: string) => Array<{ handle: string }>;
     collection?: (handle: string) => Array<{ handle: string }>;
+    /** Custom per-handle page node resolver (mirrors `product`/`collection`). */
+    page?: (handle: string) => Array<{ handle: string }>;
+    /** Convenience: the set of existing page handles (exact-match membership). */
     pages?: string[];
   } = {},
 ): { admin: AdminApiContext; graphql: ReturnType<typeof vi.fn> } {
@@ -64,16 +67,14 @@ function makeAdmin(
         const nodes = opts.collection ? opts.collection(handleFromVars(options)) : [];
         return envelope({ collections: { nodes } });
       }
-      if (query.includes("query Pages(")) {
-        const nodes = (opts.pages ?? []).map((h) => ({
-          id: `gid://shopify/Page/${h}`,
-          title: h,
-          handle: h,
-          body: "",
-          createdAt: "2026-01-01T00:00:00Z",
-          updatedAt: "2026-01-01T00:00:00Z",
-        }));
-        return envelope({ pages: { nodes, pageInfo: { hasNextPage: false, endCursor: null } } });
+      if (query.includes("PageExistsByHandle")) {
+        const h = handleFromVars(options);
+        const nodes = opts.page
+          ? opts.page(h)
+          : (opts.pages ?? []).includes(h)
+            ? [{ handle: h }]
+            : [];
+        return envelope({ pages: { nodes } });
       }
       // Scope probes ({ products(first: 1) ... } / { pages(first: 1) ... }).
       if (query.includes("products(first: 1)")) {
@@ -200,7 +201,15 @@ describe("resolveDanglingReferences — product & collection existence", () => {
 // ---------------------------------------------------------------------------
 
 describe("resolveDanglingReferences — page existence", () => {
-  it("reports only the page handles absent from the fetched Set", async () => {
+  it("does not report a page whose exact handle exists", async () => {
+    const { admin } = makeAdmin({ pages: ["about-us"] });
+    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    expect(result.missing).toEqual([]);
+    expect(result.scopeStatus.content).toBe("checked");
+    expect(result.truncated).toBe(false);
+  });
+
+  it("reports only the page handles that do not exist", async () => {
     const { admin, graphql } = makeAdmin({ pages: ["about-us", "contact"] });
     const result = await resolveDanglingReferences(
       admin,
@@ -209,9 +218,108 @@ describe("resolveDanglingReferences — page existence", () => {
     );
     expect(result.missing).toEqual([{ entityType: "page", handle: "old-landing" }]);
     expect(result.scopeStatus.content).toBe("checked");
-    // fetchPages is one paginated pass, not one lookup per candidate.
-    const pageQueries = graphql.mock.calls.filter((c) => (c[0] as string).includes("query Pages("));
-    expect(pageQueries).toHaveLength(1);
+    // One per-handle existence lookup per candidate (not a single paginated pass).
+    const pageQueries = graphql.mock.calls.filter((c) =>
+      (c[0] as string).includes("PageExistsByHandle"),
+    );
+    expect(pageQueries).toHaveLength(2);
+  });
+
+  // Exact-handle-match guard: a fuzzy near-match that does not equal the queried
+  // handle must be treated as MISSING (mirrors the product/collection guard).
+  it("treats a fuzzy near-match page (different handle) as missing", async () => {
+    const { admin } = makeAdmin({ page: () => [{ handle: "about-us-2" }] });
+    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    expect(result.missing).toEqual([{ entityType: "page", handle: "about-us" }]);
+  });
+
+  // Case-insensitivity: Shopify may return a mixed-case handle; the exact-match
+  // guard lower-cases the node handle before comparing, so a case-only difference
+  // is NOT reported missing (this is the old Set-membership case bug's regression).
+  it("does not report a page when the returned handle differs only in case", async () => {
+    const { admin } = makeAdmin({ page: () => [{ handle: "About-Us" }] });
+    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    expect(result.missing).toEqual([]);
+    expect(result.scopeStatus.content).toBe("checked");
+  });
+
+  // Fuzzy-crowding regression (gc-3yi): a fuzzy `handle:` search can rank several
+  // near-matches at or above the exact handle. The existence queries fetch
+  // `first: 5` so the exact node is not crowded out of the result window. Here the
+  // exact `about-us` is present but preceded by 4 higher-ranked near-matches — it
+  // would fall outside a `first: 2` window (exact node excluded => false positive)
+  // but survives at `first: 5`, so the page is treated as EXISTING. The logic is
+  // shared via `handleExists`, so exercising it for pages covers all entity types.
+  it("does not report an existing handle crowded below fuzzy near-matches (first: 5 headroom)", async () => {
+    const { admin } = makeAdmin({
+      page: (h) => [
+        { handle: `${h}-2` },
+        { handle: `${h}-old` },
+        { handle: `${h}-draft` },
+        { handle: `${h}-copy` },
+        { handle: h }, // exact match, ranked 5th — excluded by first: 2, kept by first: 5
+      ],
+    });
+    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    expect(result.missing).toEqual([]);
+    expect(result.scopeStatus.content).toBe("checked");
+  });
+
+  // Companion to the fuzzy-crowding case: a full window of near-matches that does
+  // NOT include the exact handle must still be reported missing — the exact-match
+  // guard rejects every near-match, so a near-match cannot rescue a truly-dangling
+  // handle (the wider window is headroom, not a looser match).
+  it("reports missing when the window is all near-matches and lacks the exact handle", async () => {
+    const { admin } = makeAdmin({
+      page: (h) => [
+        { handle: `${h}-2` },
+        { handle: `${h}-old` },
+        { handle: `${h}-draft` },
+        { handle: `${h}-copy` },
+        { handle: `${h}-archive` },
+      ],
+    });
+    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    expect(result.missing).toEqual([{ entityType: "page", handle: "about-us" }]);
+    expect(result.scopeStatus.content).toBe("checked");
+  });
+
+  // Primary regression (gc-3yi): with more page candidates than MAX_LOOKUPS, an
+  // existing page beyond the budget is NOT falsely reported missing, and the
+  // result is marked truncated so the differ suppresses the unchecked candidates.
+  it("does not falsely report existing pages when the lookup budget is exceeded", async () => {
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    // Every page exists (no findings); 60 distinct page handles > MAX_LOOKUPS (50).
+    const { admin } = makeAdmin({ page: (h) => [{ handle: h }] });
+    const many = Array.from({ length: 60 }, (_, i) => distinct("page", `pg-${i}`));
+
+    const result = await resolveDanglingReferences(admin, many, SHOP_ID);
+
+    expect(result.missing).toEqual([]);
+    expect(result.truncated).toBe(true);
+    expect(result.scopeStatus.content).toBe("checked");
+    warnSpy.mockRestore();
+  });
+
+  // The lookup budget is SHARED across products/collections and pages: products
+  // consumed first, pages draw from the remainder, and the cap still trips.
+  it("shares the lookup budget across product/collection and page candidates", async () => {
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
+    // 40 existing products + 40 existing pages = 80 lookups > MAX_LOOKUPS (50).
+    const { admin } = makeAdmin({
+      product: (h) => [{ handle: h }],
+      page: (h) => [{ handle: h }],
+    });
+    const candidates = [
+      ...Array.from({ length: 40 }, (_, i) => distinct("product", `p-${i}`)),
+      ...Array.from({ length: 40 }, (_, i) => distinct("page", `pg-${i}`)),
+    ];
+
+    const result = await resolveDanglingReferences(admin, candidates, SHOP_ID);
+
+    expect(result.missing).toEqual([]);
+    expect(result.truncated).toBe(true);
+    warnSpy.mockRestore();
   });
 });
 
@@ -241,7 +349,9 @@ describe("resolveDanglingReferences — scope gating", () => {
     const result = await resolveDanglingReferences(admin, [distinct("page", "old-page")], SHOP_ID);
     expect(result.missing).toEqual([]);
     expect(result.scopeStatus.content).toBe("absent");
-    const pageQueries = graphql.mock.calls.filter((c) => (c[0] as string).includes("query Pages("));
+    const pageQueries = graphql.mock.calls.filter((c) =>
+      (c[0] as string).includes("PageExistsByHandle"),
+    );
     expect(pageQueries).toHaveLength(0);
   });
 

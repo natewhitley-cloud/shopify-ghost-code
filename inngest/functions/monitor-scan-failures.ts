@@ -7,10 +7,7 @@
  *
  * Thresholds:
  *   > 10% failure rate  → warn  (elevated — investigate if sustained)
- *   > 25% failure rate  → error (critical — Sentry alert fires via logger)
- *
- * The logger.error path automatically forwards to Sentry when SENTRY_DSN is
- * configured, so no explicit Sentry call is needed here.
+ *   > 25% failure rate  → error (critical — surfaces in structured logs)
  *
  * Schedule: every 6 hours (`0 * /6 * * *`)
  */

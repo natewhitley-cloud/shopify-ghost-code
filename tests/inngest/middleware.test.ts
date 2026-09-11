@@ -2,20 +2,15 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { logger } from "../../app/lib/logger.server";
 import { notifyFunctionFailure } from "../../app/lib/notifications.server";
-import { captureException } from "../../app/lib/sentry.server";
-import {
-  failureLoggingMiddleware,
-  loggingMiddleware,
-  sentryMiddleware,
-} from "../../inngest/middleware";
+import { failureLoggingMiddleware, loggingMiddleware } from "../../inngest/middleware";
 
 /**
  * Behavioral tests for the Inngest observability middleware (TST-4 / GC-f6w).
  *
  * These middlewares are the production observability path for EVERY
  * background-job failure: if a hook signature drifts on an Inngest SDK
- * upgrade, scan failures would silently stop reaching Sentry and the
- * notification dispatch with nothing to catch it. We invoke the hooks the way
+ * upgrade, scan failures would silently stop reaching the notification
+ * dispatch with nothing to catch it. We invoke the hooks the way
  * the Inngest SDK does — `middleware.init()` to get `{ onFunctionRun }`, then
  * `onFunctionRun({ fn, ctx })` to get the per-run hooks (`afterExecution` /
  * `transformOutput`) — and assert on observable behaviour.
@@ -26,9 +21,9 @@ import {
  * we await their results defensively.
  */
 
-// The module-under-test imports `logger`, `notifyFunctionFailure`, and
-// `captureException`; every export must be present in the factory or Vitest
-// throws at runtime when the module is loaded.
+// The module-under-test imports `logger` and `notifyFunctionFailure`; every
+// export must be present in the factory or Vitest throws at runtime when the
+// module is loaded.
 vi.mock("../../app/lib/logger.server", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
 }));
@@ -37,13 +32,8 @@ vi.mock("../../app/lib/notifications.server", () => ({
   notifyFunctionFailure: vi.fn().mockResolvedValue(undefined),
 }));
 
-vi.mock("../../app/lib/sentry.server", () => ({
-  captureException: vi.fn(),
-}));
-
 const loggerInfo = vi.mocked(logger.info);
 const notifyMock = vi.mocked(notifyFunctionFailure);
-const captureMock = vi.mocked(captureException);
 
 // `fn.id()` is a METHOD returning the kebab id; `name` is the display label.
 const fn = { name: "scan-theme", id: () => "scan-theme" };
@@ -66,7 +56,7 @@ type RunHooks = {
  * hooks object (`{ afterExecution?, transformOutput? }`).
  */
 async function initRun(
-  middleware: typeof loggingMiddleware | typeof sentryMiddleware | typeof failureLoggingMiddleware,
+  middleware: typeof loggingMiddleware | typeof failureLoggingMiddleware,
 ): Promise<RunHooks> {
   const registered = await middleware.init();
   return registered.onFunctionRun({ fn, ctx: runCtx } as never) as unknown as RunHooks;
@@ -107,29 +97,6 @@ describe("loggingMiddleware", () => {
       function: "scan-theme",
       durationMs: 250,
     });
-  });
-});
-
-describe("sentryMiddleware", () => {
-  it("forwards the error to Sentry with the function name when result.error is set", async () => {
-    const hooks = await initRun(sentryMiddleware);
-    const error = new Error("scan exploded");
-
-    const result = hooks.transformOutput({ result: { error } });
-
-    expect(captureMock).toHaveBeenCalledTimes(1);
-    expect(captureMock).toHaveBeenCalledWith(error, { inngestFunction: "scan-theme" });
-    // Output passthrough: returns undefined to leave the result unchanged.
-    expect(result).toBeUndefined();
-  });
-
-  it("does not call captureException when result.error is absent", async () => {
-    const hooks = await initRun(sentryMiddleware);
-
-    const result = hooks.transformOutput({ result: { error: undefined } });
-
-    expect(captureMock).not.toHaveBeenCalled();
-    expect(result).toBeUndefined();
   });
 });
 

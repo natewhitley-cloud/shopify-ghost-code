@@ -33,6 +33,9 @@ const mockDb = vi.hoisted(() => ({
   scan: {
     deleteMany: vi.fn(),
   },
+  opsEvent: {
+    deleteMany: vi.fn(),
+  },
   // Array-form $transaction: resolve each staged operation in parallel.
   $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
 }));
@@ -642,6 +645,30 @@ describe("deleteShopData", () => {
 
     expect(mockDb.shop.delete).toHaveBeenCalledWith({
       where: { domain: "delete-me.myshopify.com" },
+    });
+  });
+
+  it("purges OpsEvent rows carrying the domain (key + metadata.shop + metadata.shopDomain)", async () => {
+    const existingShop = {
+      id: "shop-gdpr-ops",
+      domain: "delete-me.myshopify.com",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 3 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    expect(mockDb.opsEvent.deleteMany).toHaveBeenCalledWith({
+      where: {
+        OR: [
+          { key: "delete-me.myshopify.com" },
+          { metadata: { path: ["shop"], equals: "delete-me.myshopify.com" } },
+          { metadata: { path: ["shopDomain"], equals: "delete-me.myshopify.com" } },
+        ],
+      },
     });
   });
 

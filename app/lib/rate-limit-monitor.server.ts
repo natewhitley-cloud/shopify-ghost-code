@@ -18,7 +18,7 @@
  *
  * Thresholds (alerting):
  *   < 20% remaining  →  logger.warn  (rate-limit-proximity)
- *   <  5% remaining  →  logger.error (rate-limit-critical) → forwarded to Sentry
+ *   <  5% remaining  →  logger.error (rate-limit-critical)
  */
 
 import { logger } from "./logger.server";
