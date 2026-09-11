@@ -243,6 +243,47 @@ describe("resolveDanglingReferences — page existence", () => {
     expect(result.scopeStatus.content).toBe("checked");
   });
 
+  // Fuzzy-crowding regression (gc-3yi): a fuzzy `handle:` search can rank several
+  // near-matches at or above the exact handle. The existence queries fetch
+  // `first: 5` so the exact node is not crowded out of the result window. Here the
+  // exact `about-us` is present but preceded by 4 higher-ranked near-matches — it
+  // would fall outside a `first: 2` window (exact node excluded => false positive)
+  // but survives at `first: 5`, so the page is treated as EXISTING. The logic is
+  // shared via `handleExists`, so exercising it for pages covers all entity types.
+  it("does not report an existing handle crowded below fuzzy near-matches (first: 5 headroom)", async () => {
+    const { admin } = makeAdmin({
+      page: (h) => [
+        { handle: `${h}-2` },
+        { handle: `${h}-old` },
+        { handle: `${h}-draft` },
+        { handle: `${h}-copy` },
+        { handle: h }, // exact match, ranked 5th — excluded by first: 2, kept by first: 5
+      ],
+    });
+    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    expect(result.missing).toEqual([]);
+    expect(result.scopeStatus.content).toBe("checked");
+  });
+
+  // Companion to the fuzzy-crowding case: a full window of near-matches that does
+  // NOT include the exact handle must still be reported missing — the exact-match
+  // guard rejects every near-match, so a near-match cannot rescue a truly-dangling
+  // handle (the wider window is headroom, not a looser match).
+  it("reports missing when the window is all near-matches and lacks the exact handle", async () => {
+    const { admin } = makeAdmin({
+      page: (h) => [
+        { handle: `${h}-2` },
+        { handle: `${h}-old` },
+        { handle: `${h}-draft` },
+        { handle: `${h}-copy` },
+        { handle: `${h}-archive` },
+      ],
+    });
+    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    expect(result.missing).toEqual([{ entityType: "page", handle: "about-us" }]);
+    expect(result.scopeStatus.content).toBe("checked");
+  });
+
   // Primary regression (gc-3yi): with more page candidates than MAX_LOOKUPS, an
   // existing page beyond the budget is NOT falsely reported missing, and the
   // result is marked truncated so the differ suppresses the unchecked candidates.

@@ -118,7 +118,7 @@ const MAX_THROTTLE_RETRIES = 5;
 
 const PRODUCT_EXISTS_QUERY = `
   query ProductExistsByHandle($query: String!) {
-    products(first: 2, query: $query) {
+    products(first: 5, query: $query) {
       nodes {
         handle
       }
@@ -128,7 +128,7 @@ const PRODUCT_EXISTS_QUERY = `
 
 const COLLECTION_EXISTS_QUERY = `
   query CollectionExistsByHandle($query: String!) {
-    collections(first: 2, query: $query) {
+    collections(first: 5, query: $query) {
       nodes {
         handle
       }
@@ -138,7 +138,7 @@ const COLLECTION_EXISTS_QUERY = `
 
 const PAGE_EXISTS_QUERY = `
   query PageExistsByHandle($query: String!) {
-    pages(first: 2, query: $query) {
+    pages(first: 5, query: $query) {
       nodes {
         handle
       }
@@ -249,6 +249,15 @@ const EXISTS_QUERY_BY_TYPE = {
  * (or an empty result) means the exact handle is gone → dangling. Handles are
  * lower-cased by Shopify and by the extractor, so a case-insensitive compare is
  * belt-and-braces.
+ *
+ * The queries fetch `first: 5` (not 1) purely as headroom: a fuzzy `handle:`
+ * search can rank several near-matches (e.g. `about-us-2`, `about-us-old`) at or
+ * above the exact `about-us`, and a tighter window could crowd a genuinely
+ * existing handle out of the result set — falsely reporting it dangling. Five
+ * gives comfortable room over the exact match while staying cheap (only `handle`
+ * is selected). The exact-match filter still does the deciding: when the exact
+ * handle is truly gone, every near-match in the window is rejected and the
+ * entity is correctly reported missing.
  */
 async function handleExists(
   admin: AdminApiContext,
