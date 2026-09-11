@@ -193,12 +193,21 @@ export async function dismissReviewPrompt(shopId: string): Promise<{ id: string 
  *
  * Deletion order:
  *   1. Sessions  — no FK to Shop (plain string `shop` field), must be deleted explicitly.
- *   2. Shop      — PostgreSQL cascades handle all child tables automatically.
+ *   2. OpsEvents — no FK to Shop, must be deleted explicitly (same reason as Sessions).
+ *   3. Shop      — PostgreSQL cascades handle all child tables automatically.
  *
  * Cascade map (all have onDelete: Cascade on their Shop or Scan FK):
  *   Shop → Scans → Findings
  *   Shop → Scans → UnknownScripts → SignatureSubmissions
  *   Shop → BillingEvents
+ *
+ * OpsEvent has NO Shop FK, so cascade never touches it — yet observability rows
+ * carry the shop's myshopify domain (webhook-failure `metadata.shop`, api-error
+ * `metadata.shopDomain`, and the SHOP_UNINSTALLED event `key`). Left alone, the
+ * domain would persist indefinitely after shop/redact — a GDPR erasure gap. We
+ * purge those rows explicitly here so the delete is atomic with the shop delete.
+ * Safe w.r.t. the operator-digest 24h uninstall window: shop/redact fires ~48h
+ * after uninstall, so the digest has already read any SHOP_UNINSTALLED row.
  *
  * Returns null if the domain is not found, so callers can log and still
  * return 200 without throwing.
@@ -212,6 +221,20 @@ export async function deleteShopData(domain: string) {
   await db.$transaction([
     // Sessions use a plain string `shop` field (no FK) — must delete explicitly.
     db.session.deleteMany({ where: { shop: domain } }),
+    // OpsEvent has no Shop FK, so cascade skips it — purge the rows carrying the
+    // domain (key on uninstall, metadata.shop / metadata.shopDomain otherwise).
+    // Covers the structured domain fields only; a domain incidentally embedded
+    // in a free-text `message` (webhook_failure/function_failure error strings)
+    // is not reached — accepted as low-risk residual, not structured PII.
+    db.opsEvent.deleteMany({
+      where: {
+        OR: [
+          { key: domain },
+          { metadata: { path: ["shop"], equals: domain } },
+          { metadata: { path: ["shopDomain"], equals: domain } },
+        ],
+      },
+    }),
     // Shop delete cascades to: Scans → Findings, UnknownScripts → SignatureSubmissions,
     // and BillingEvents (all have onDelete: Cascade on their Shop/Scan FK).
     db.shop.delete({ where: { domain } }),
