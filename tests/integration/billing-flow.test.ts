@@ -1,45 +1,42 @@
 /**
- * Integration tests: billing flow — webhook → plan update
+ * Integration tests: billing flow — live plan path (redirect fast-path + on-load reconcile)
  *
- * Tests the APP_SUBSCRIPTIONS_UPDATE webhook handler, which maps Shopify
- * subscription status to internal plan tiers. Billing is handled via
- * Managed Pricing in the Partner Dashboard — there is no in-app billing
- * action to test.
+ * The APP_SUBSCRIPTIONS_UPDATE webhook that historically wrote plan state is DEAD
+ * as of 2026-04-28 (Shopify stopped sending it for Shopify App Pricing apps).
+ * Plan state is now driven entirely by `reconcileShopPlan`, which is invoked from
+ * the app/routes/app.tsx loader — immediately when the request carries a
+ * `plan_handle` param (redirect fast-path), and periodically as an on-load
+ * backstop for out-of-redirect changes (cancellations, freezes, expirations).
+ *
+ * These tests exercise that live path END-TO-END: the real reconciler
+ * (app/services/billing-reconciler.server.ts) driving the real shop model
+ * (app/models/shop.server.ts `updateShopPlanByDomain`) against a mocked Admin
+ * GraphQL client and a real-shaped Prisma mock. Only the Shopify I/O boundary
+ * (admin.graphql), the Prisma client, and the logger are mocked.
  *
  * Covers:
- *   - Subscription activated (ACTIVE) → plan upgraded
- *   - Subscription cancelled (CANCELLED) → plan reverted to free
- *   - Unknown plan name with ACTIVE status → free (safe default)
- *   - Missing payload → 200 with no DB write
- *   - Shop not found in DB → 200 with attempted update
+ *   - ACTIVE Standard subscription → Shop.plan reconciled to Standard (upgrade)
+ *   - No active subscription → Shop.plan reverted to free (stale-drift backstop)
  *
- * Mocking strategy: mock at the I/O boundary (authenticate.webhook,
- * updateShopPlanByDomain) and verify the business logic wiring.
+ * Mocking strategy: mock at the I/O boundary (app/db.server Prisma client,
+ * admin.graphql) and let the real reconciler + model wiring run.
  */
 
-import type { ActionFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks — hoisted by Vitest before any imports
 // ---------------------------------------------------------------------------
 
-vi.mock("../../app/shopify.server", () => ({
-  authenticate: {
-    admin: vi.fn(),
-    webhook: vi.fn(),
+// Real-shaped Prisma mock: only the shop methods the real model touches
+// (updateShopPlanByDomain → shop.findUnique + shop.update).
+vi.mock("../../app/db.server", () => ({
+  default: {
+    shop: {
+      findUnique: vi.fn(),
+      update: vi.fn(),
+    },
   },
-  PLAN_STANDARD: "Standard",
-  PLAN_PROFESSIONAL: "Professional",
-}));
-
-vi.mock("../../app/models/shop.server", () => ({
-  getShopMetadata: vi.fn(),
-  updateShopPlanByDomain: vi.fn(),
-}));
-
-vi.mock("../../app/models/billing-event.server", () => ({
-  recordBillingEvent: vi.fn().mockResolvedValue({}),
 }));
 
 vi.mock("../../app/lib/logger.server", () => ({
@@ -54,17 +51,14 @@ vi.mock("../../app/lib/logger.server", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
-import { getShopMetadata, updateShopPlanByDomain } from "../../app/models/shop.server";
-import { action as subscriptionWebhookAction } from "../../app/routes/webhooks.app.subscriptions.update";
-import { authenticate } from "../../app/shopify.server";
+import db from "../../app/db.server";
+import { reconcileShopPlan } from "../../app/services/billing-reconciler.server";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
 // ---------------------------------------------------------------------------
 
-const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>;
-const mockUpdateShopPlanByDomain = updateShopPlanByDomain as ReturnType<typeof vi.fn>;
-const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
+const mockShop = (db as unknown as { shop: Record<string, ReturnType<typeof vi.fn>> }).shop;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -77,25 +71,17 @@ const SHOP_ID = "shop-abc-123";
 // Helpers
 // ---------------------------------------------------------------------------
 
-function makeWebhookRequest() {
-  return new Request("https://example.com/webhooks/app/subscriptions/update", {
-    method: "POST",
-    body: "{}",
-    headers: { "Content-Type": "application/json" },
-  });
-}
+type Sub = { name?: string; status?: string };
 
-function mockSubscriptionWebhook(planName: string | undefined, status: string | undefined) {
-  const payload =
-    planName !== undefined || status !== undefined
-      ? { app_subscription: { name: planName, status } }
-      : {};
-
-  mockAuthenticateWebhook.mockResolvedValue({
-    topic: "APP_SUBSCRIPTIONS_UPDATE",
-    shop: SHOP_DOMAIN,
-    payload,
-  });
+/** Build an admin context whose graphql() returns the given active subscriptions. */
+function makeAdmin(subscriptions: Sub[]) {
+  return {
+    graphql: vi.fn().mockResolvedValue({
+      json: async () => ({
+        data: { currentAppInstallation: { activeSubscriptions: subscriptions } },
+      }),
+    }),
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -104,139 +90,52 @@ function mockSubscriptionWebhook(planName: string | undefined, status: string | 
 
 beforeEach(() => {
   vi.clearAllMocks();
-
-  // Default: DB update succeeds
-  mockUpdateShopPlanByDomain.mockResolvedValue({
-    id: SHOP_ID,
-    domain: SHOP_DOMAIN,
-    plan: "Standard",
-  });
-
-  mockGetShopMetadata.mockResolvedValue({
-    id: SHOP_ID,
-    domain: SHOP_DOMAIN,
-    plan: "Free",
-  });
 });
 
 // ---------------------------------------------------------------------------
-// APP_SUBSCRIPTIONS_UPDATE webhook — plan update and downgrade
+// Live plan path — reconcileShopPlan → updateShopPlanByDomain → Prisma
 // ---------------------------------------------------------------------------
 
-describe("Billing flow — APP_SUBSCRIPTIONS_UPDATE webhook (plan sync)", () => {
-  describe("subscription activated — plan upgrade", () => {
-    it("updates shop plan to Standard when status=ACTIVE and name=Standard", async () => {
-      mockSubscriptionWebhook("Standard", "ACTIVE");
+describe("Billing flow — live plan path (reconcileShopPlan → Shop.plan)", () => {
+  describe("ACTIVE subscription — plan reconciled up", () => {
+    it("reconciles Shop.plan to Standard when Shopify has an ACTIVE Standard subscription", async () => {
+      // Stored plan is stale (free); Shopify reports an ACTIVE Standard subscription.
+      mockShop.findUnique.mockResolvedValue({ id: SHOP_ID, domain: SHOP_DOMAIN, plan: "free" });
+      mockShop.update.mockResolvedValue({ id: SHOP_ID, domain: SHOP_DOMAIN, plan: "Standard" });
 
-      const response = await subscriptionWebhookAction({
-        request: makeWebhookRequest(),
-        params: {},
-        context: {},
-      } as unknown as ActionFunctionArgs);
+      const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-      expect(response.status).toBe(200);
-      expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "Standard");
-    });
+      const result = await reconcileShopPlan(admin, { domain: SHOP_DOMAIN, plan: "free" });
 
-    it("updates shop plan to Professional when status=ACTIVE and name=Professional", async () => {
-      mockSubscriptionWebhook("Professional", "ACTIVE");
-
-      const response = await subscriptionWebhookAction({
-        request: makeWebhookRequest(),
-        params: {},
-        context: {},
-      } as unknown as ActionFunctionArgs);
-
-      expect(response.status).toBe(200);
-      expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "Professional");
+      // The real model persists the corrected plan and stamps planReconciledAt.
+      expect(mockShop.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { domain: SHOP_DOMAIN },
+          data: expect.objectContaining({ plan: "Standard" }),
+        }),
+      );
+      expect(result).toEqual({ status: "corrected", fromPlan: "free", toPlan: "Standard" });
     });
   });
 
-  describe("subscription cancelled — plan downgrade to free", () => {
-    it("reverts shop plan to free when status=CANCELLED", async () => {
-      mockSubscriptionWebhook("Standard", "CANCELLED");
+  describe("no active subscription — stale-drift backstop reverts to free", () => {
+    it("reverts Shop.plan to free when Shopify reports no active subscription", async () => {
+      // Stored plan drifted to Standard but Shopify has no active subscription
+      // (cancelled/expired out-of-redirect — the backstop must self-correct).
+      mockShop.findUnique.mockResolvedValue({ id: SHOP_ID, domain: SHOP_DOMAIN, plan: "Standard" });
+      mockShop.update.mockResolvedValue({ id: SHOP_ID, domain: SHOP_DOMAIN, plan: "free" });
 
-      const response = await subscriptionWebhookAction({
-        request: makeWebhookRequest(),
-        params: {},
-        context: {},
-      } as unknown as ActionFunctionArgs);
+      const admin = makeAdmin([]);
 
-      expect(response.status).toBe(200);
-      expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "free");
-    });
+      const result = await reconcileShopPlan(admin, { domain: SHOP_DOMAIN, plan: "Standard" });
 
-    it("reverts shop plan to free when status=DECLINED", async () => {
-      mockSubscriptionWebhook("Standard", "DECLINED");
-
-      const response = await subscriptionWebhookAction({
-        request: makeWebhookRequest(),
-        params: {},
-        context: {},
-      } as unknown as ActionFunctionArgs);
-
-      expect(response.status).toBe(200);
-      expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "free");
-    });
-
-    it("reverts shop plan to free when status=EXPIRED", async () => {
-      mockSubscriptionWebhook("Professional", "EXPIRED");
-
-      const response = await subscriptionWebhookAction({
-        request: makeWebhookRequest(),
-        params: {},
-        context: {},
-      } as unknown as ActionFunctionArgs);
-
-      expect(response.status).toBe(200);
-      expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "free");
-    });
-  });
-
-  describe("unknown plan name — safe fallback to free", () => {
-    it("reverts to free for ACTIVE subscription with an unrecognised plan name", async () => {
-      mockSubscriptionWebhook("GoldPlan", "ACTIVE");
-
-      const response = await subscriptionWebhookAction({
-        request: makeWebhookRequest(),
-        params: {},
-        context: {},
-      } as unknown as ActionFunctionArgs);
-
-      expect(response.status).toBe(200);
-      expect(mockUpdateShopPlanByDomain).toHaveBeenCalledWith(SHOP_DOMAIN, "free");
-    });
-  });
-
-  describe("edge cases — webhook always returns 200", () => {
-    it("returns 200 and skips DB update when app_subscription is missing from payload", async () => {
-      mockAuthenticateWebhook.mockResolvedValue({
-        topic: "APP_SUBSCRIPTIONS_UPDATE",
-        shop: SHOP_DOMAIN,
-        payload: {},
-      });
-
-      const response = await subscriptionWebhookAction({
-        request: makeWebhookRequest(),
-        params: {},
-        context: {},
-      } as unknown as ActionFunctionArgs);
-
-      expect(response.status).toBe(200);
-      expect(mockUpdateShopPlanByDomain).not.toHaveBeenCalled();
-    });
-
-    it("returns 200 when shop is not found in DB (null return from model)", async () => {
-      mockSubscriptionWebhook("Standard", "ACTIVE");
-      mockUpdateShopPlanByDomain.mockResolvedValue(null);
-
-      const response = await subscriptionWebhookAction({
-        request: makeWebhookRequest(),
-        params: {},
-        context: {},
-      } as unknown as ActionFunctionArgs);
-
-      expect(response.status).toBe(200);
+      expect(mockShop.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { domain: SHOP_DOMAIN },
+          data: expect.objectContaining({ plan: "free" }),
+        }),
+      );
+      expect(result).toEqual({ status: "corrected", fromPlan: "Standard", toPlan: "free" });
     });
   });
 });

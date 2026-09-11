@@ -76,7 +76,6 @@ export const sessionStorage = shopify.sessionStorage;
 // routes/webhooks.tsx                     | action: authenticate.webhook() | OK (catch-all for GDPR compliance_topics)
 // routes/webhooks.app.scopes_update.tsx   | action: authenticate.webhook() | OK
 // routes/webhooks.app.uninstalled.tsx     | action: authenticate.webhook() | OK
-// routes/webhooks.app.subscriptions.update.tsx | action: authenticate.webhook() | OK
 // routes/webhooks.themes.publish.tsx      | action: authenticate.webhook() | OK
 // routes/api.inngest.ts                   | loader+action: Inngest SDK handler (no Shopify admin auth) | OK (Inngest uses its own signing key verification internally)
 //
