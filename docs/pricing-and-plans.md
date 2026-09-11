@@ -1,6 +1,6 @@
 # Ghost Code — Pricing & Plans
 
-> **Last updated:** 2026-08-30
+> **Last updated:** 2026-09-11
 > **Source of truth for:** plan tiers, feature gating, upgrade triggers, pricing decisions.
 > Update this file when billing logic, plan features, or pricing changes.
 
@@ -17,6 +17,7 @@
 | Themes                 | 1                                                                                                                                                            |
 | Auto-rescan on publish | No                                                                                                                                                           |
 | Scan diffing           | No                                                                                                                                                           |
+| Broken-link detection  | No (dangling-reference / Broken Links audit is Standard+)                                                                                                    |
 
 **Purpose:** Let merchants discover they have a problem. The first scan is the marketing moment — generous on surface, tight on actionability. Showing the worst finding with full detail (file, line, snippet) creates maximum urgency while keeping the rest locked behind upgrade.
 
@@ -30,17 +31,18 @@
 
 ### Standard ($29/mo, 7-day free trial)
 
-| Feature                | Limit                                           |
-| ---------------------- | ----------------------------------------------- |
-| Scans                  | 1 manual per week (resets Monday 00:00 UTC)     |
-| Finding details        | Full (file, line number, code snippet)          |
-| Theme Health Score     | Yes (score + color band + delta between scans)  |
-| Weekly scheduled scan  | Yes (automatic scan every Sunday 6 AM UTC)      |
-| Monthly re-scan nudge  | Yes (in-app prompt on 1st of each month)        |
-| App install nudge      | Yes (in-app banner when a new app is installed) |
-| Themes                 | 1                                               |
-| Auto-rescan on publish | No                                              |
-| Scan diffing           | No                                              |
+| Feature                | Limit                                            |
+| ---------------------- | ------------------------------------------------ |
+| Scans                  | 1 manual per week (resets Monday 00:00 UTC)      |
+| Finding details        | Full (file, line number, code snippet)           |
+| Theme Health Score     | Yes (score + color band + delta between scans)   |
+| Weekly scheduled scan  | Yes (automatic scan every Sunday 6 AM UTC)       |
+| Monthly re-scan nudge  | Yes (in-app prompt on 1st of each month)         |
+| App install nudge      | Yes (in-app banner when a new app is installed)  |
+| Themes                 | 1                                                |
+| Auto-rescan on publish | No                                               |
+| Scan diffing           | No                                               |
+| Broken-link detection  | Yes (dangling references verified via Admin API) |
 
 **Purpose:** The mid-tier workhorse. Merchants get full finding details and weekly cadence — enough to stay on top of orphaned code without unlimited manual scans. The weekly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap creates clear daylight between Standard and Professional (unlimited).
 
@@ -56,13 +58,14 @@
 
 ### Professional ($49/mo, 7-day free trial)
 
-| Feature                | Limit                                          |
-| ---------------------- | ---------------------------------------------- |
-| Scans per month        | Unlimited                                      |
-| Finding details        | Full                                           |
-| Themes                 | Unlimited                                      |
-| Auto-rescan on publish | Yes                                            |
-| Scan diffing           | Yes (new / resolved / unchanged between scans) |
+| Feature                | Limit                                            |
+| ---------------------- | ------------------------------------------------ |
+| Scans per month        | Unlimited                                        |
+| Finding details        | Full                                             |
+| Themes                 | Unlimited                                        |
+| Auto-rescan on publish | Yes                                              |
+| Scan diffing           | Yes (new / resolved / unchanged between scans)   |
+| Broken-link detection  | Yes (dangling references verified via Admin API) |
 
 **Purpose:** "Set it and forget it" for multi-theme stores. Continuous monitoring with change tracking.
 
@@ -159,14 +162,15 @@
 
 ## Decision Log
 
-| Date       | Decision                                                                      | Rationale                                                                                                                                                                                                    |
-| ---------- | ----------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 2026-03-10 | Initial pricing: $0 / $29 / $59                                               | Aligned with Shopify ecosystem norms for utility apps                                                                                                                                                        |
-| 2026-03-10 | 7-day trial on both paid tiers                                                | Standard for Shopify apps; reduces friction                                                                                                                                                                  |
-| 2026-03-10 | Free limit: 1 scan/month                                                      | Low enough to push upgrades, high enough to demonstrate value                                                                                                                                                |
-| 2026-03-10 | Finding details hidden on free (not findings themselves)                      | Showing counts creates urgency; fully hiding scans would reduce perceived value                                                                                                                              |
-| 2026-03-10 | Free tier: first scan always free, then 1/month                               | Generous onboarding moment; research confirms this model is standard in Shopify audit tools. Mitigated by keeping findings locked — value is visible, not actionable.                                        |
-| 2026-03-10 | Free tier: show highest-severity finding in full + count + category breakdown | "Peek" architecture outperforms pure gating per SaaS research. Count creates urgency; category breakdown signals comprehensiveness; single full finding makes the problem tangible.                          |
-| 2026-03-11 | Standard: weekly scheduled scan (Sunday 6 AM UTC)                             | Differentiates Standard from Free without encroaching on Pro's daily auto-rescan. Reuses the existing poll-check-shop worker — no new per-shop logic needed. `scheduledScan: boolean` added to PlanFeatures. |
-| 2026-03-10 | Pro price: $49/mo (down from $59)                                             | $49 better fits market comparables and reduces the Standard→Pro gap. Monitor post-launch — raise to $59 if willingness-to-pay signals support it.                                                            |
-| 2026-03-22 | Standard: 1 scan/week (down from unlimited)                                   | Creates clear upgrade path to Professional (unlimited). Weekly cadence matches the scheduled scan rhythm. Prevents unlimited-scan abuse on mid-tier while keeping the plan useful for most merchants.        |
+| Date       | Decision                                                                      | Rationale                                                                                                                                                                                                                                                                                                                                                                        |
+| ---------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-03-10 | Initial pricing: $0 / $29 / $59                                               | Aligned with Shopify ecosystem norms for utility apps                                                                                                                                                                                                                                                                                                                            |
+| 2026-03-10 | 7-day trial on both paid tiers                                                | Standard for Shopify apps; reduces friction                                                                                                                                                                                                                                                                                                                                      |
+| 2026-03-10 | Free limit: 1 scan/month                                                      | Low enough to push upgrades, high enough to demonstrate value                                                                                                                                                                                                                                                                                                                    |
+| 2026-03-10 | Finding details hidden on free (not findings themselves)                      | Showing counts creates urgency; fully hiding scans would reduce perceived value                                                                                                                                                                                                                                                                                                  |
+| 2026-03-10 | Free tier: first scan always free, then 1/month                               | Generous onboarding moment; research confirms this model is standard in Shopify audit tools. Mitigated by keeping findings locked — value is visible, not actionable.                                                                                                                                                                                                            |
+| 2026-03-10 | Free tier: show highest-severity finding in full + count + category breakdown | "Peek" architecture outperforms pure gating per SaaS research. Count creates urgency; category breakdown signals comprehensiveness; single full finding makes the problem tangible.                                                                                                                                                                                              |
+| 2026-03-11 | Standard: weekly scheduled scan (Sunday 6 AM UTC)                             | Differentiates Standard from Free without encroaching on Pro's daily auto-rescan. Reuses the existing poll-check-shop worker — no new per-shop logic needed. `scheduledScan: boolean` added to PlanFeatures.                                                                                                                                                                     |
+| 2026-03-10 | Pro price: $49/mo (down from $59)                                             | $49 better fits market comparables and reduces the Standard→Pro gap. Monitor post-launch — raise to $59 if willingness-to-pay signals support it.                                                                                                                                                                                                                                |
+| 2026-03-22 | Standard: 1 scan/week (down from unlimited)                                   | Creates clear upgrade path to Professional (unlimited). Weekly cadence matches the scheduled scan rhythm. Prevents unlimited-scan abuse on mid-tier while keeping the plan useful for most merchants.                                                                                                                                                                            |
+| 2026-09-11 | Dangling-reference (Broken Links) detection is Standard+ (gc-m4h.7)           | Admin-API-verified broken-link detection is a paid capability. Free surfaces the problem exists but not this audit; gated via `PlanFeatures.canDetectDanglingReferences` + `canDetectDanglingReferences(plan)` and enforced in the scan-theme worker's dangling-reference step (plan gate is not a scope skip). Still behind `DANGLING_REFERENCE_LIVE_ENABLED` soft-launch flag. |

@@ -131,6 +131,14 @@ export function canUseScanDiffing(planName: string): boolean {
 }
 
 /**
+ * Whether the plan includes dangling-reference (Broken Links) detection.
+ * Paid-only (Standard and above); Free does not get this audit (gc-m4h.7).
+ */
+export function canDetectDanglingReferences(planName: string): boolean {
+  return getPlanFeatures(planName).canDetectDanglingReferences;
+}
+
+/**
  * Whether the plan can scan more than one theme (multi-theme support).
  *
  * Derived from the plan matrix's `maxThemes` (single source of truth in

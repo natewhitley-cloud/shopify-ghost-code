@@ -235,6 +235,9 @@ const MOCK_SHOP = {
   id: SHOP_ID,
   domain: "test-shop.myshopify.com",
   accessToken: "test-token",
+  // Paid plan by default so the Standard+ dangling-reference gate (gc-m4h.7)
+  // grants; a dedicated test overrides findUnique with a Free-plan shop.
+  plan: "Standard",
 };
 
 const MOCK_ADMIN = {
@@ -1049,6 +1052,28 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       status: "COMPLETED",
       findingCount: MOCK_FINDINGS.length,
       // Flag-off is a deliberate disable, NOT a scope skip.
+      skippedCategories: [],
+      skippedFiles: [],
+    });
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it("is inert on a Free plan even when the flag is ON (plan gate, not a scope skip)", async () => {
+    // Standard+ only (gc-m4h.7). Flag on + candidates present, but a Free shop
+    // must NOT run the audit — and the plan gate is a deliberate withhold, so it
+    // does NOT enter skippedCategories (mirrors the flag-off path exactly).
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
+
+    const result = await runScanTheme();
+
+    expect(mockResolveDanglingReferences).not.toHaveBeenCalled();
+    expect(mockCreateFindings).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(SCAN_ID, {
+      status: "COMPLETED",
+      findingCount: MOCK_FINDINGS.length,
+      // Plan gate is a deliberate disable, NOT a scope skip.
       skippedCategories: [],
       skippedFiles: [],
     });

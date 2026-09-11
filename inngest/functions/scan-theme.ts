@@ -566,10 +566,11 @@ export const scanTheme = inngest.createFunction(
         return { findingCount: priceFindings.length, skipped };
       });
 
-      // Step 10: Dangling-reference audit (optional — requires read_products
-      // and/or read_content scope AND the DANGLING_REFERENCE_LIVE_ENABLED flag).
-      // Modeled on the live-price audit: it has extra pre-conditions (flag +
-      // candidate list + per-entity scope gates), so it does not use runAuditStep.
+      // Step 10: Dangling-reference audit (optional — requires a Standard+ plan
+      // AND read_products and/or read_content scope AND the
+      // DANGLING_REFERENCE_LIVE_ENABLED flag). Modeled on the live-price audit:
+      // it has extra pre-conditions (flag + plan + candidate list + per-entity
+      // scope gates), so it does not use runAuditStep.
       //
       // Double-inert soft-launch (gc-m4h.5): when the flag is OFF the step is
       // fully inert — it does NOT resolve, persist, or count — and returns
@@ -593,6 +594,18 @@ export const scanTheme = inngest.createFunction(
           const db = (await import("../../app/db.server")).default;
           const shop = await db.shop.findUnique({ where: { id: shopId } });
           if (!shop) return { findingCount: 0, skipped: false };
+
+          // Plan gate (gc-m4h.7): dangling-reference detection is Standard+.
+          // For Free shops the step is inert exactly like the flag-off path — no
+          // resolve, no persist, no count. This is NOT a scope skip: the category
+          // is deliberately withheld by plan (like flag-off), not left un-audited
+          // for lack of scope, so it must NOT enter skippedCategories (that would
+          // misreport an un-run category and suppress the differ's resolved-detection).
+          // Checked before any Admin API work so the cheap gate short-circuits first.
+          const { canDetectDanglingReferences } = await import("../../app/lib/plan-gating.server");
+          if (!canDetectDanglingReferences(shop.plan)) {
+            return { findingCount: 0, skipped: false };
+          }
 
           const { unauthenticated } = await import("../../app/shopify.server");
           const { admin } = await unauthenticated.admin(shop.domain);
