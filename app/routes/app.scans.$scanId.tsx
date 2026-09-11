@@ -18,7 +18,7 @@ import type { LaneKey } from "../lib/finding-consequence";
 import { getFindingImpact, getFindingRemediation } from "../lib/finding-remediation";
 import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
-import { computeHealthScore } from "../lib/health-score";
+import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
@@ -787,6 +787,10 @@ export default function ScanDetail() {
       }
     : null;
 
+  // Change in health score vs the previous scan (null until a diff resolves).
+  // Higher score = healthier, so a positive delta is an improvement.
+  const healthDelta = computeHealthDelta(summary, severityDiff);
+
   const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
   const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
   const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
@@ -1068,6 +1072,19 @@ export default function ScanDetail() {
                   >
                     {healthScore.label}
                   </div>
+                  {healthDelta !== null && healthDelta > 0 && (
+                    <div className="scan-tile__diff">
+                      <span style={{ color: COLOR_SUCCESS }}>+{healthDelta} vs last scan</span>
+                    </div>
+                  )}
+                  {healthDelta !== null && healthDelta < 0 && (
+                    <div className="scan-tile__diff">
+                      <span style={{ color: COLOR_CRITICAL }}>{healthDelta} vs last scan</span>
+                    </div>
+                  )}
+                  {healthDelta === 0 && (
+                    <div className="scan-tile__diff scan-tile__diff--neutral">no change</div>
+                  )}
                 </div>
               </div>
             )}

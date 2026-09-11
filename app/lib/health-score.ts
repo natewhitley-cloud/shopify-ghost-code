@@ -65,3 +65,47 @@ export function computeHealthScore(findings: SeverityCounts): HealthScoreResult 
 
   return { score, ...scoreToBand(score) };
 }
+
+/**
+ * Per-severity diff between the current scan and the previous one, as produced
+ * by the scan-detail component from a `scanDiff`. `new*` counts are findings
+ * present now but absent before; `resolved*` counts are findings present before
+ * but absent now.
+ */
+export type SeverityDiff = {
+  newHigh: number;
+  newMedium: number;
+  newLow: number;
+  resolvedHigh: number;
+  resolvedMedium: number;
+  resolvedLow: number;
+};
+
+/**
+ * Compute the change in Theme Health Score versus the previous scan.
+ *
+ * Returns null when there is no previous scan to compare (`severityDiff` null).
+ * Otherwise reconstructs the previous per-severity counts from the current
+ * counts and the diff (previous = current - new + resolved, floored at 0) and
+ * returns `currentScore - previousScore`.
+ *
+ * A positive delta means the score went up (health improved); negative means it
+ * dropped (health regressed).
+ */
+export function computeHealthDelta(
+  currentBySeverity: SeverityCounts,
+  severityDiff: SeverityDiff | null,
+): number | null {
+  if (severityDiff === null) return null;
+
+  const previous: SeverityCounts = {
+    HIGH: Math.max(0, currentBySeverity.HIGH - severityDiff.newHigh + severityDiff.resolvedHigh),
+    MEDIUM: Math.max(
+      0,
+      currentBySeverity.MEDIUM - severityDiff.newMedium + severityDiff.resolvedMedium,
+    ),
+    LOW: Math.max(0, currentBySeverity.LOW - severityDiff.newLow + severityDiff.resolvedLow),
+  };
+
+  return computeHealthScore(currentBySeverity).score - computeHealthScore(previous).score;
+}
