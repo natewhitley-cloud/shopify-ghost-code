@@ -29,8 +29,8 @@
  *     content:  'checked' | 'absent'     // covers page candidates
  *   }
  *   truncated:   boolean                 // the per-scan lookup cap (MAX_LOOKUPS)
- *                                        // stopped some product/collection
- *                                        // candidates from being checked
+ *                                        // stopped some candidate (product,
+ *                                        // collection, or page) from being checked
  * }
  *
  * Graceful degradation (locked decision #5 + precise-skip rule R1). Each entity
@@ -52,10 +52,10 @@
  *
  * Mirrors the per-handle lookup + budget + THROTTLED/ACCESS_DENIED discipline of
  * `jsonld-price-audit.server.ts`; reuses the shared scope probes (`hasProductScope`,
- * `hasContentScope`) and `fetchPages` rather than reinventing them.
+ * `hasContentScope`) rather than reinventing them.
  */
 
-import { hasContentScope, fetchPages } from "./content-fetcher.server";
+import { hasContentScope } from "./content-fetcher.server";
 import type {
   DanglingEntityType,
   DistinctDanglingHandle,
@@ -101,9 +101,11 @@ export interface DanglingResolutionResult {
 // ---------------------------------------------------------------------------
 
 /**
- * Cap on distinct product/collection existence lookups per scan. Mirrors the
- * live-price audit's budget (spike §D). Pages are fetched in a single paginated
- * pass and membership-tested in memory, so they do NOT consume this budget.
+ * Cap on distinct existence lookups per scan, shared across product, collection,
+ * AND page candidates. Mirrors the live-price audit's budget (spike §D). Every
+ * entity type resolves via a per-handle `handle:"..."` lookup, so all three draw
+ * from this single budget; when it is exhausted, unchecked candidates are never
+ * reported missing and `truncated` is set true.
  */
 const MAX_LOOKUPS = 50;
 
@@ -127,6 +129,16 @@ const PRODUCT_EXISTS_QUERY = `
 const COLLECTION_EXISTS_QUERY = `
   query CollectionExistsByHandle($query: String!) {
     collections(first: 2, query: $query) {
+      nodes {
+        handle
+      }
+    }
+  }
+`;
+
+const PAGE_EXISTS_QUERY = `
+  query PageExistsByHandle($query: String!) {
+    pages(first: 2, query: $query) {
       nodes {
         handle
       }
@@ -224,8 +236,14 @@ async function runQuery<T>(
 // Existence checks
 // ---------------------------------------------------------------------------
 
+const EXISTS_QUERY_BY_TYPE = {
+  product: PRODUCT_EXISTS_QUERY,
+  collection: COLLECTION_EXISTS_QUERY,
+  page: PAGE_EXISTS_QUERY,
+} as const;
+
 /**
- * True iff a product/collection with EXACTLY this handle exists. The
+ * True iff a product/collection/page with EXACTLY this handle exists. The
  * `query: 'handle:"..."'` search can be fuzzy, so we confirm a returned node's
  * handle equals the queried handle before deciding "exists" — a fuzzy near-match
  * (or an empty result) means the exact handle is gone → dangling. Handles are
@@ -234,17 +252,22 @@ async function runQuery<T>(
  */
 async function handleExists(
   admin: AdminApiContext,
-  entityType: "product" | "collection",
+  entityType: "product" | "collection" | "page",
   handle: string,
 ): Promise<boolean> {
-  const query = entityType === "product" ? PRODUCT_EXISTS_QUERY : COLLECTION_EXISTS_QUERY;
+  const query = EXISTS_QUERY_BY_TYPE[entityType];
   const data = await runQuery<{ [key: string]: { nodes?: Array<{ handle?: string }> } }>(
     admin,
     query,
     { query: `handle:${escapeSearchValue(handle)}` },
     `failed to resolve ${entityType} handle`,
   );
-  const root = entityType === "product" ? data?.products : data?.collections;
+  const root =
+    entityType === "product"
+      ? data?.products
+      : entityType === "collection"
+        ? data?.collections
+        : data?.pages;
   const nodes = root?.nodes ?? [];
   return nodes.some((n) => (n.handle ?? "").toLowerCase() === handle);
 }
@@ -292,24 +315,41 @@ async function resolveProductsAndCollections(
 }
 
 /**
- * Resolve page candidates via a single `fetchPages` pass + Set membership.
- * Probes `read_content` only when there is at least one page candidate. Pages do
- * not consume the lookup budget.
+ * Resolve page candidates. Probes `read_content` only when there is at least one
+ * page candidate. Uses the same per-handle `handle:"..."` existence lookup as
+ * products/collections (rather than fetching the full page list, which caps at
+ * 250 and would falsely report any page beyond the cap as deleted). Increments
+ * the SHARED `counter.n` per lookup and marks `counter.capHit` when the budget
+ * truncates the list, so unchecked candidates are never reported missing.
  */
 async function resolvePages(
   admin: AdminApiContext,
   candidates: DistinctDanglingHandle[],
+  counter: { n: number; capHit: boolean },
 ): Promise<{ missing: ResolvedMissingRef[]; scope: ScopeResolutionState }> {
   if (candidates.length === 0) return { missing: [], scope: "checked" };
 
   if (!(await hasContentScope(admin))) return { missing: [], scope: "absent" };
 
-  const pages = await fetchPages(admin);
-  const existing = new Set(pages.map((p) => p.handle.toLowerCase()));
-
-  const missing = candidates
-    .filter((c) => !existing.has(c.handle))
-    .map((c) => ({ entityType: c.entityType, handle: c.handle }));
+  const missing: ResolvedMissingRef[] = [];
+  try {
+    for (const candidate of candidates) {
+      if (counter.n >= MAX_LOOKUPS) {
+        counter.capHit = true;
+        continue;
+      }
+      counter.n += 1;
+      const exists = await handleExists(admin, "page", candidate.handle);
+      if (!exists) missing.push({ entityType: candidate.entityType, handle: candidate.handle });
+    }
+  } catch (err) {
+    if (err instanceof ScopeRevokedError) {
+      // Revoked mid-scan: drop partial results so an unchecked type is never
+      // reported missing, and surface the scope as absent.
+      return { missing: [], scope: "absent" };
+    }
+    throw err;
+  }
 
   return { missing, scope: "checked" };
 }
@@ -340,7 +380,7 @@ export async function resolveDanglingReferences(
   const counter = { n: 0, capHit: false };
 
   const products = await resolveProductsAndCollections(admin, productCollectionCandidates, counter);
-  const content = await resolvePages(admin, pageCandidates);
+  const content = await resolvePages(admin, pageCandidates, counter);
 
   if (counter.capHit) {
     logger.warn(
