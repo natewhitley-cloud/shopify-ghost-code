@@ -44,10 +44,10 @@ model Session {
 // ---------------------------------------------------------------------------
 
 model Shop {
-  id                  String         @id @default(cuid())
-  domain              String         @unique
-  installedAt         DateTime       @default(now())
-  plan                String         @default("free")
+  id                  String           @id @default(cuid())
+  domain              String           @unique
+  installedAt         DateTime         @default(now())
+  plan                String           @default("free")
   // Last time `plan` was reconciled against Shopify's actual active
   // subscriptions (or refreshed by an APP_SUBSCRIPTIONS_UPDATE webhook). Null
   // means never reconciled. Drives the app-load freshness guard so the
@@ -60,9 +60,10 @@ model Shop {
   // dead shop is never scanned or counted as an active install (gc-grd).
   uninstalledAt       DateTime?
   lastThemePublishAt  DateTime?
-  hasSeenReviewPrompt Boolean        @default(false)
+  hasSeenReviewPrompt Boolean          @default(false)
   scans               Scan[]
   billingEvents       BillingEvent[]
+  ignoredFindings     IgnoredFinding[]
 }
 
 model BillingEvent {
@@ -174,8 +175,68 @@ model Finding {
 }
 
 // ---------------------------------------------------------------------------
+// False-positive suppression (E2 epic gc-gis).
+//
+// A merchant can suppress a finding they've judged a false positive at two
+// granularities, both stored in this ONE table and disambiguated by `scope`:
+//
+//   scope = INSTANCE  fingerprint set, appName null — suppress this one specific
+//                     finding across re-scans. `fingerprint` is the stable hex
+//                     string from fingerprintFinding(filename, findingType,
+//                     codeSnippet, lineNumber) in scan-differ.server.ts — the
+//                     SAME identity the diff engine uses, so an ignore survives
+//                     re-scans exactly as long as the finding's identity does.
+//
+//   scope = APP       appName set, fingerprint null — bulk-suppress every finding
+//                     attributed to a given app (Finding.appName), e.g. "stop
+//                     flagging Judge.me" (the M2 bulk mechanism).
+//
+// Suppression is purely additive/reversible: deleting a row un-ignores. No
+// filtering logic lives here — the aggregation choke point (E2.2) reads
+// getIgnoredFindingsForShop and filters a scan's findings itself.
+//
+// Two partial uniques enforce idempotency per granularity. Postgres treats NULLs
+// as distinct in a unique index, so the null column in each constraint never
+// collides: many APP rows (fingerprint NULL) coexist under
+// @@unique([shopId, fingerprint]), and many INSTANCE rows (appName NULL) coexist
+// under @@unique([shopId, appName]). A repeat ignore of the same
+// (shopId, fingerprint) or (shopId, appName) hits the constraint, so the model
+// wrapper upserts to stay idempotent.
+// ---------------------------------------------------------------------------
+model IgnoredFinding {
+  id          String      @id @default(cuid())
+  shopId      String
+  shop        Shop        @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  scope       IgnoreScope
+  // Set for INSTANCE scope (fingerprintFinding hex); null for APP scope.
+  fingerprint String?
+  // Set for APP scope (maps to Finding.appName); null for INSTANCE scope.
+  appName     String?
+  // Optional merchant note on why this was suppressed.
+  reason      String?
+  createdAt   DateTime    @default(now())
+
+  @@unique([shopId, fingerprint])
+  @@unique([shopId, appName])
+  @@index([shopId])
+  // NOTE: the migration (20260911130000_add_ignored_finding) also adds a CHECK
+  // constraint `IgnoredFinding_scope_key_check` enforcing that EXACTLY one of
+  // `fingerprint` / `appName` is non-null (XOR): (fingerprint IS NOT NULL) <>
+  // (appName IS NOT NULL). Prisma cannot express a CHECK natively, so it exists
+  // only in SQL — do not be surprised by this schema/DB drift.
+}
+
+// ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
+
+// Granularity of a false-positive suppression (see IgnoredFinding).
+enum IgnoreScope {
+  // Suppress one specific finding identity (keyed by fingerprint) across re-scans.
+  INSTANCE
+  // Bulk-suppress every finding attributed to an app (keyed by appName).
+  APP
+}
 
 // Which surface initiated a scan. Drives manual-quota exemption (GC-iji):
 // only MANUAL scans count against a plan's manual weekly/monthly scan limit.

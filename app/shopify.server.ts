@@ -25,7 +25,7 @@ if (!appUrl) {
 const shopify = shopifyApp({
   apiKey: process.env.SHOPIFY_API_KEY,
   apiSecretKey,
-  apiVersion: ApiVersion.April26,
+  apiVersion: ApiVersion.July26,
   scopes: process.env.SCOPES?.split(","),
   appUrl,
   authPathPrefix: "/auth",
@@ -46,7 +46,7 @@ const shopify = shopifyApp({
 });
 
 export default shopify;
-export const apiVersion = ApiVersion.April26;
+export const apiVersion = ApiVersion.July26;
 export const addDocumentResponseHeaders = shopify.addDocumentResponseHeaders;
 export const authenticate = shopify.authenticate;
 export const unauthenticated = shopify.unauthenticated;
@@ -112,7 +112,7 @@ export const sessionStorage = shopify.sessionStorage;
 // NOTE: The SDK's CSP only sets frame-ancestors (not script-src or style-src).
 // Shopify's embedded app security model relies on App Bridge + the iframe
 // boundary rather than script-src restrictions. This is correct and expected
-// behavior for Shopify apps as of SDK v1.1.1 (April26 API version).
+// behavior for Shopify apps as of the July26 (2026-07) API version.
 //
 // PART 3: GDPR Webhook Completeness
 // -----------------------------------

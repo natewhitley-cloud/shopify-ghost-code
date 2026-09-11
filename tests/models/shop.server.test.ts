@@ -774,17 +774,29 @@ describe("reactivateShop", () => {
     vi.clearAllMocks();
   });
 
-  it("clears uninstalledAt via updateMany keyed on domain", async () => {
+  it("clears uninstalledAt AND nulls planReconciledAt via updateMany keyed on domain", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
     await reactivateShop("re-install.myshopify.com");
 
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
       where: { domain: "re-install.myshopify.com" },
-      data: { uninstalledAt: null },
+      // planReconciledAt is nulled so the next load treats the plan as stale and
+      // forces a fresh reconcile — otherwise a fast uninstall -> reinstall inside
+      // the 1h freshness window would keep a stale (possibly paid) plan (gc-bbb).
+      data: { uninstalledAt: null, planReconciledAt: null },
     });
     // updateMany (not update) so a missing row is a safe no-op, not a throw.
     expect(mockDb.shop.update).not.toHaveBeenCalled();
+  });
+
+  it("nulls planReconciledAt so a reinstall forces a fresh plan reconcile", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await reactivateShop("re-install.myshopify.com");
+
+    const callArg = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(callArg.data.planReconciledAt).toBeNull();
   });
 
   it("is a safe no-op (does not throw) when the shop row is absent", async () => {

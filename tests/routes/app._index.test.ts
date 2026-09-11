@@ -46,6 +46,22 @@ vi.mock("../../app/models/finding.server", () => ({
   getTypeCountsForScan: vi.fn(),
 }));
 
+// E2.2: the loader recomputes the latest scan's counts via getFilteredFindingSummary
+// ONLY when the shop has suppressions. Mock the ignore read to return "no
+// suppressions" so that override branch never fires and existing assertions
+// (getTypeCountsForScan called, unfiltered counts) are unchanged.
+vi.mock("../../app/models/ignored-finding.server", () => ({
+  getIgnoredFindingsForShop: vi.fn(),
+}));
+
+// FIX 1/2: when the shop HAS ignores, the loader rebuilds an ignore-filtered
+// severity map for every aggregated scan via getFilteredFindingSummary and reads
+// the health tile, finding-count trend, and trend chart from it. Mock it so tests
+// can supply filtered per-scan counts. The no-ignores path never calls it.
+vi.mock("../../app/services/finding-aggregation.server", () => ({
+  getFilteredFindingSummary: vi.fn(),
+}));
+
 vi.mock("../../app/lib/billing.server", () => ({
   getPlanFeatures: vi.fn(),
 }));
@@ -101,6 +117,7 @@ import {
   getWeekStartUTC,
 } from "../../app/lib/plan-gating.server";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../../app/models/finding.server";
+import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import {
   getScansForShop,
   hasCompletedScans,
@@ -108,6 +125,7 @@ import {
 } from "../../app/models/scan.server";
 import { getShopMetadata, dismissReviewPrompt } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
+import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
 import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
@@ -124,6 +142,8 @@ const mockDispatchScan = dispatchScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockGetSeverityCounts = getSeverityCountsForScans as ReturnType<typeof vi.fn>;
 const mockGetTypeCounts = getTypeCountsForScan as ReturnType<typeof vi.fn>;
+const mockGetIgnoredFindings = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
+const mockGetFilteredFindingSummary = getFilteredFindingSummary as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockCanUseMultipleThemes = canUseMultipleThemes as ReturnType<typeof vi.fn>;
@@ -243,6 +263,13 @@ beforeEach(() => {
   // Default: latest scan has no per-type findings, so laneSummary is empty.
   // Lane-specific tests override this with concrete type counts.
   mockGetTypeCounts.mockResolvedValue({});
+  mockGetIgnoredFindings.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
+  // Safe default; only invoked on the has-ignores path, overridden in those tests.
+  mockGetFilteredFindingSummary.mockResolvedValue({
+    total: 0,
+    bySeverity: { HIGH: 0, MEDIUM: 0, LOW: 0 },
+    byType: {},
+  });
   mockGetPlanFeatures.mockReturnValue({
     maxScansPerMonth: 1,
     maxScansPerWeek: Infinity,
@@ -1613,5 +1640,142 @@ describe("app._index loader — health score trend chart", () => {
 
       expect(mockGetCompletedScansForShop).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 1/2 (E2.2): ignore-filtered counts are consistent across the health tile,
+// the finding-count trend, and the trend chart. When a shop has active ignores,
+// all three must read the SAME ignore-filtered source and can never disagree for
+// the same scan — in particular, the newest trend point's score must equal the
+// health-tile score when the newest trend scan IS the latest scan.
+// ---------------------------------------------------------------------------
+describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)", () => {
+  // Latest scan (scan-1) doubles as the newest trend scan, mirroring production
+  // where the most recent completed scan is both the health tile's scan and the
+  // right-most point of the trend chart.
+  const PREVIOUS_SCAN = {
+    ...COMPLETED_SCAN,
+    id: "scan-0",
+    completedAt: new Date("2026-03-13T10:00:00Z"),
+  };
+  const TREND_NEWEST = {
+    id: "scan-1",
+    completedAt: new Date("2026-03-20T10:00:00Z"),
+    themeName: "Dawn",
+  };
+  const TREND_MIDDLE = {
+    id: "scan-0",
+    completedAt: new Date("2026-03-13T10:00:00Z"),
+    themeName: "Dawn",
+  };
+  const TREND_OLDEST = {
+    id: "trend-old",
+    completedAt: new Date("2026-03-06T10:00:00Z"),
+    themeName: "Dawn",
+  };
+
+  afterEach(() => {
+    delete process.env.ENABLE_TREND_CHART;
+  });
+
+  beforeEach(() => {
+    process.env.ENABLE_TREND_CHART = "true";
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+    mockGetPlanFeatures.mockReturnValue(STANDARD_FEATURES);
+    mockGetScanUsage.mockResolvedValue({
+      used: 0,
+      limit: 1,
+      period: "week" as const,
+      periodStart: new Date("2026-03-16T00:00:00Z"),
+    });
+    // Latest + previous scan for the finding-count trend comparison.
+    mockGetScansForShop.mockResolvedValue({
+      items: [COMPLETED_SCAN, PREVIOUS_SCAN],
+      hasNextPage: false,
+    });
+    mockGetCompletedScansForShop.mockResolvedValue([TREND_NEWEST, TREND_MIDDLE, TREND_OLDEST]);
+
+    // Shop HAS an active ignore → loader must use the filtered map, not raw counts.
+    mockGetIgnoredFindings.mockResolvedValue({
+      fingerprints: new Set(["deadbeef"]),
+      appNames: new Set<string>(),
+    });
+
+    // RAW batch counts are deliberately large/wrong so any read that bypasses the
+    // filtered map produces an obviously different (and failing) number.
+    mockGetSeverityCounts.mockImplementation(
+      severityCountsImpl({}, { HIGH: 9, MEDIUM: 9, LOW: 9 }),
+    );
+
+    // FILTERED per-scan counts (the source of truth once ignores exist).
+    const filtered: Record<string, { HIGH: number; MEDIUM: number; LOW: number }> = {
+      "scan-1": { HIGH: 1, MEDIUM: 0, LOW: 0 }, // total 1
+      "scan-0": { HIGH: 0, MEDIUM: 2, LOW: 0 }, // total 2
+      "trend-old": { HIGH: 0, MEDIUM: 0, LOW: 3 }, // total 3
+    };
+    mockGetFilteredFindingSummary.mockImplementation(async (scanId: string) => {
+      const bySeverity = filtered[scanId] ?? { HIGH: 0, MEDIUM: 0, LOW: 0 };
+      return {
+        total: bySeverity.HIGH + bySeverity.MEDIUM + bySeverity.LOW,
+        bySeverity,
+        byType: {},
+      };
+    });
+
+    // Deterministic score so tile and trend are directly comparable. Weighted so
+    // filtered (small) and raw (large=9/9/9) inputs yield clearly different scores.
+    mockComputeHealthScore.mockImplementation(
+      (counts: { HIGH: number; MEDIUM: number; LOW: number }) => ({
+        score: 100 - (counts.HIGH * 10 + counts.MEDIUM * 5 + counts.LOW),
+        label: "Computed",
+        tone: "warning" as const,
+      }),
+    );
+  });
+
+  it("computes the health tile from the ignore-filtered latest-scan counts", async () => {
+    const result = (await loader(makeLoaderArgs())) as {
+      healthScore: { score: number } | null;
+    };
+    // filtered scan-1 = {HIGH:1} → 100 - 10 = 90 (raw would be 100-(90+45+9) = -44)
+    expect(result.healthScore?.score).toBe(90);
+  });
+
+  it("newest trend point score EQUALS the health-tile score for the same latest scan", async () => {
+    const result = (await loader(makeLoaderArgs())) as {
+      healthScore: { score: number } | null;
+      healthScoreTrend: {
+        scores: Array<{ scanId: string; score: number }>;
+      } | null;
+    };
+    const scores = result.healthScoreTrend?.scores ?? [];
+    const newest = scores[scores.length - 1];
+
+    expect(newest.scanId).toBe("scan-1");
+    // The core invariant: same scan, same ignore-filtered source, same score.
+    expect(newest.score).toBe(result.healthScore?.score);
+    expect(newest.score).toBe(90);
+  });
+
+  it("findingTrend.previousTotal uses the ignore-filtered previous-scan total", async () => {
+    const result = (await loader(makeLoaderArgs())) as {
+      findingTrend: { direction: string; previousTotal: number } | null;
+    };
+    // filtered scan-0 total = 2 (raw would be 9+9+9 = 27)
+    expect(result.findingTrend?.previousTotal).toBe(2);
+    // current (filtered scan-1) total 1 < previous 2 → improving
+    expect(result.findingTrend?.direction).toBe("improving");
+  });
+
+  it("does NOT call getFilteredFindingSummary when the shop has no ignores", async () => {
+    mockGetIgnoredFindings.mockResolvedValue({
+      fingerprints: new Set<string>(),
+      appNames: new Set<string>(),
+    });
+
+    await loader(makeLoaderArgs());
+
+    expect(mockGetFilteredFindingSummary).not.toHaveBeenCalled();
   });
 });

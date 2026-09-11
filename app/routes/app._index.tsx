@@ -38,6 +38,7 @@ import {
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
+import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import {
   getScansForShop,
   hasCompletedScans,
@@ -45,6 +46,7 @@ import {
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
 import { dismissReviewPrompt, getShopMetadata } from "../models/shop.server";
+import { getFilteredFindingSummary } from "../services/finding-aggregation.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
@@ -186,20 +188,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // so it powers the consequence lanes without an extra serial round-trip. It
   // uses getTypeCountsForScan rather than getFindingSummary so we don't re-run
   // the severity groupBy the batch severity query above already covers.
-  const [severityCounts, usage, completedScanCheck, typeCounts] = await Promise.all([
+  const [severityCounts, usage, completedScanCheck, typeCounts, ignores] = await Promise.all([
     getSeverityCountsForScans(severityScanIds),
     getScanUsage(shop.id, shop.plan),
     hasCompletedScans(shop.id),
     latestScan && isSuccessfulScan(latestScan.status)
       ? getTypeCountsForScan(latestScan.id)
       : Promise.resolve(null),
+    getIgnoredFindingsForShop(shop.id),
   ]);
-
-  // Consequence lanes: roll the latest scan's per-type counts up into merchant
-  // "so what" lanes. Empty array when there is no successful scan or no findings.
-  const laneSummary: LaneSummaryRow[] = typeCounts ? computeLaneSummary(typeCounts) : [];
-  const startHere: LaneKey | null = startHereLane(laneSummary);
-  const dominant: LaneKey | null = dominantLane(laneSummary);
 
   const zeroSeverityRecord: Record<Severity, number> = {
     [Severity.HIGH]: 0,
@@ -207,13 +204,63 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     [Severity.LOW]: 0,
   };
 
-  // Severity record for the latest scan, used both for the health score and the
-  // findings display. Kept in a `bySeverity`-shaped object so the returned
-  // findingSummary stays compatible with the component (which reads only
-  // findingSummary?.bySeverity?.HIGH/MEDIUM/LOW).
-  const latestSeverity = latestScan
-    ? (severityCounts.get(latestScan.id) ?? zeroSeverityRecord)
+  // Severity + per-type counts for the latest scan, used for the health score,
+  // the findings display, and the consequence lanes. Kept in a `bySeverity`-
+  // shaped object so the returned findingSummary stays compatible with the
+  // component (which reads only findingSummary?.bySeverity?.HIGH/MEDIUM/LOW).
+  //
+  // E2.2 (gc-57t): the batch severity query and getTypeCountsForScan above are
+  // lean groupBy aggregates that CANNOT exclude INSTANCE (fingerprint) ignores.
+  // So when this shop has active suppressions we rebuild an ignore-filtered
+  // severity map covering EVERY scan the dashboard aggregates — latest, previous,
+  // AND the trend scans (exactly `severityScanIds`) — and route the health tile,
+  // the finding-count trend, and the trend chart through that single source so
+  // they can never disagree for the same scan. Filtering ALL scans (including
+  // historical/previous) by the CURRENT ignore set is the correct, consistent
+  // behavior: an ignored fingerprint or app-level rule applies across every scan,
+  // so a merchant who suppresses a finding sees it removed from history too.
+  //
+  // Cost: shops with NO suppressions skip this entirely and keep the fast batch
+  // groupBy path (zero extra queries). When ignores exist, the per-scan filtered
+  // load runs once per dashboard load over the already-bounded severityScanIds
+  // set (latest + previous + the trend window) — never for scans outside it.
+  const hasIgnores = ignores.fingerprints.size > 0 || ignores.appNames.size > 0;
+  let filteredSeverityByScanId: Map<string, Record<Severity, number>> | null = null;
+  let latestTypeCounts = typeCounts;
+  if (hasIgnores) {
+    const summaries = await Promise.all(
+      severityScanIds.map(
+        async (id) => [id, await getFilteredFindingSummary(id, ignores)] as const,
+      ),
+    );
+    filteredSeverityByScanId = new Map(summaries.map(([id, summary]) => [id, summary.bySeverity]));
+    // The latest successful scan's ignore-filtered per-type counts feed the lanes.
+    if (latestScan && isSuccessfulScan(latestScan.status)) {
+      const latest = summaries.find(([id]) => id === latestScan.id);
+      if (latest) latestTypeCounts = latest[1].byType;
+    }
+  }
+
+  // Single ignore-aware severity accessor: reads the filtered map when the shop
+  // has suppressions, else the lean batch groupBy. Every severity read below
+  // (health tile, finding-count trend, trend chart) goes through this so they
+  // stay consistent for any given scan.
+  const severityForScan = (scanId: string): Record<Severity, number> =>
+    filteredSeverityByScanId?.get(scanId) ?? severityCounts.get(scanId) ?? zeroSeverityRecord;
+
+  const latestSeverity: Record<Severity, number> | null = latestScan
+    ? severityForScan(latestScan.id)
     : null;
+
+  // Consequence lanes: roll the latest scan's (ignore-filtered) per-type counts
+  // up into merchant "so what" lanes. Empty array when there is no successful
+  // scan or no findings.
+  const laneSummary: LaneSummaryRow[] = latestTypeCounts
+    ? computeLaneSummary(latestTypeCounts)
+    : [];
+  const startHere: LaneKey | null = startHereLane(laneSummary);
+  const dominant: LaneKey | null = dominantLane(laneSummary);
+
   const findingSummary = latestSeverity ? { bySeverity: latestSeverity } : null;
 
   // Compute health scores from parallel results
@@ -233,7 +280,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   } | null = null;
   if (latestSeverity && previousScan && isSuccessfulScan(previousScan.status)) {
     const currentTotal = sumSeverity(latestSeverity);
-    const previousTotal = sumSeverity(severityCounts.get(previousScan.id) ?? zeroSeverityRecord);
+    const previousTotal = sumSeverity(severityForScan(previousScan.id));
     const direction =
       currentTotal < previousTotal
         ? "improving"
@@ -256,7 +303,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // oldest-first so the chart reads left-to-right chronologically.
     const scores: TrendScoreEntry[] = completedScansForTrend
       .map((scan) => {
-        const counts = severityCounts.get(scan.id) ?? zeroSeverityRecord;
+        const counts = severityForScan(scan.id);
         const { score, tone, label } = computeHealthScore(counts);
         const highCount = counts.HIGH ?? 0;
         const mediumCount = counts.MEDIUM ?? 0;

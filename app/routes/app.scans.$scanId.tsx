@@ -6,7 +6,11 @@ import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
 import { copyToClipboard } from "../lib/clipboard";
-import { getFindingConfidence, hasVisualImpact } from "../lib/finding-classification";
+import {
+  getFindingConfidence,
+  hasVisualImpact,
+  isThemeFileFinding,
+} from "../lib/finding-classification";
 import {
   isLaneKey,
   LANES,
@@ -21,14 +25,21 @@ import type { ScanStatus } from "../lib/format";
 import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
+import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import {
   getAppAttributionForScan,
+  getFindingByIdForShop,
   getFindingFilterOptionsForScan,
+  getFindingsForScan,
   getFindingsPageForScan,
-  getFindingSummary,
   getHighestSeverityFinding,
 } from "../models/finding.server";
+import {
+  getIgnoredFindingsForShop,
+  ignoreFindingApp,
+  ignoreFindingInstance,
+} from "../models/ignored-finding.server";
 import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
@@ -37,6 +48,12 @@ import {
   submitSignatureSuggestion,
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
+import {
+  filterIgnoredFindings,
+  getFilteredFindingSummary,
+  isFindingIgnored,
+} from "../services/finding-aggregation.server";
+import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -135,6 +152,7 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
 // ---------------------------------------------------------------------------
 
 interface FindingLike {
+  id?: string;
   severity: string;
   findingType: string;
   filename: string;
@@ -143,6 +161,93 @@ interface FindingLike {
   codeSnippet: string;
   isTracker?: boolean;
   isVisual?: boolean;
+  isIgnored?: boolean;
+}
+
+/**
+ * Per-finding suppression control (E2.3), rendered inside the snippet cell only
+ * in the paid findings table (gated by `FindingRow`'s `scanId` prop — the
+ * free-tier preview row does not get it). Each control owns its own fetcher so
+ * rows submit independently.
+ *
+ * Posts to the scan-detail `action` (bare fetcher.Form → current route). The
+ * fingerprint is computed server-side from the finding id, so only the id (plus
+ * an optional reason and, for the app-level rule, the appName) is sent.
+ *
+ * Already-ignored findings render a suppressed-state note with a link to the
+ * management view instead of a dead "Ignore" button — after a successful ignore
+ * the loader revalidates, `finding.isIgnored` flips true, and this branch shows.
+ */
+function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
+  const fetcher = useFetcher<{ success?: boolean; error?: string }>();
+  const submitting = fetcher.state !== "idle";
+
+  if (finding.isIgnored) {
+    return (
+      <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
+        <span style={{ fontWeight: 600, color: COLOR_SUCCESS }}>Ignored</span> — excluded from
+        counts and score. <Link to="/app/ignored">Manage ignored findings</Link>
+      </div>
+    );
+  }
+
+  const ignoreButtonStyle: React.CSSProperties = {
+    padding: "4px 8px",
+    border: `1px solid ${BORDER_STRONG}`,
+    borderRadius: "4px",
+    fontSize: "12px",
+    background: BG_SURFACE,
+    color: TEXT_SUBDUED,
+    cursor: submitting ? "default" : "pointer",
+    whiteSpace: "nowrap",
+  };
+
+  return (
+    <fetcher.Form
+      method="post"
+      style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px" }}
+    >
+      <input type="hidden" name="findingId" value={finding.id} />
+      <input type="hidden" name="appName" value={finding.appName ?? ""} />
+      <input
+        type="text"
+        name="reason"
+        placeholder="Reason (optional)"
+        maxLength={500}
+        aria-label="Reason for ignoring (optional)"
+        style={{
+          padding: "4px 8px",
+          border: `1px solid ${BORDER_STRONG}`,
+          borderRadius: "4px",
+          fontSize: "12px",
+          width: "160px",
+        }}
+      />
+      <button
+        type="submit"
+        name="intent"
+        value="ignore-instance"
+        disabled={submitting}
+        style={ignoreButtonStyle}
+      >
+        {submitting ? "…" : "Ignore this finding"}
+      </button>
+      {finding.appName && (
+        <button
+          type="submit"
+          name="intent"
+          value="ignore-app"
+          disabled={submitting}
+          style={ignoreButtonStyle}
+        >
+          Ignore all from {finding.appName}
+        </button>
+      )}
+      {fetcher.data?.error && (
+        <span style={{ color: COLOR_CRITICAL, fontSize: "12px" }}>{fetcher.data.error}</span>
+      )}
+    </fetcher.Form>
+  );
 }
 
 /**
@@ -197,9 +302,30 @@ export function CopyButton({ text }: { text: string }) {
   );
 }
 
-export function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: boolean }) {
+export function FindingRow({
+  finding,
+  isNew,
+  scanId,
+  shopDomain,
+  themeId,
+}: {
+  finding: FindingLike;
+  isNew?: boolean;
+  scanId?: string;
+  shopDomain?: string;
+  themeId?: string | null;
+}) {
   const isVisual = finding.isVisual ?? hasVisualImpact(finding.findingType);
   const confidence = getFindingConfidence(finding.findingType);
+
+  // Theme-editor deep-link — only for theme-file-backed finding types (Admin
+  // resource types like GHOST_PAGE/GHOST_PRICE use synthetic locators, not
+  // editable theme paths). Null when the theme id is missing/malformed so no
+  // broken link renders. Requires shopDomain (passed from the loader).
+  const themeEditorUrl =
+    shopDomain && isThemeFileFinding(finding.findingType)
+      ? buildThemeEditorUrl(shopDomain, themeId, finding.filename)
+      : null;
   return (
     <tr>
       <td>
@@ -225,6 +351,13 @@ export function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: b
       <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
       <td>
         <code style={{ fontSize: "12px" }}>{finding.filename}</code>
+        {themeEditorUrl && (
+          <div style={{ marginTop: "4px" }}>
+            <a href={themeEditorUrl} target="_top" rel="noreferrer" style={{ fontSize: "12px" }}>
+              Open in theme editor
+            </a>
+          </div>
+        )}
       </td>
       <td style={{ textAlign: "center" }}>{finding.lineNumber}</td>
       <td>{finding.appName ?? "—"}</td>
@@ -260,6 +393,9 @@ export function FindingRow({ finding, isNew }: { finding: FindingLike; isNew?: b
             <strong style={{ color: TEXT_PRIMARY, fontWeight: 600 }}>How to remove: </strong>
             {getFindingRemediation(finding.findingType)}
           </div>
+          {/* Suppression control — only in the paid findings table (scanId set)
+            and only when the finding has a stable id to fingerprint from. */}
+          {scanId && finding.id && <FindingIgnoreControls finding={finding} />}
         </div>
       </td>
     </tr>
@@ -374,6 +510,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // successful findings view — the same gate as the paginated findings query.
   const canViewFindings = canViewDetails && isSuccessfulScan(scan.status);
 
+  // Suppressed findings (E2.2, gc-57t): the summary aggregate below excludes
+  // them so the total, per-severity counts, and health score all stay honest.
+  // getFilteredFindingSummary fast-paths to the lean groupBy when this shop has
+  // no ignores, so the common case is unchanged.
+  const ignores = await getIgnoredFindingsForShop(shop.id);
+
   // Parallel queries — all independent of each other once `scan` is resolved.
   const [
     findingSummary,
@@ -383,7 +525,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     unknownScripts,
     filterOptions,
   ] = await Promise.all([
-    getFindingSummary(scanId),
+    getFilteredFindingSummary(scanId, ignores),
     // Free-tier only: fetch a single preview finding (paid users get a page).
     canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
     // Paid plan: paginated findings for the current page, with active filters
@@ -420,17 +562,47 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     healthScore = computeHealthScore(findingSummary.bySeverity);
   }
 
-  // Enrich each finding on the current page with the tracker flag.
+  // Enrich each finding on the current page with the tracker flag and whether it
+  // is currently suppressed (E2.3). The findings PAGE is intentionally NOT
+  // filtered by ignores (E2.2 only excludes them from the counts/score/lanes, so
+  // pagination cursors stay stable) — instead each already-ignored row is tagged
+  // so its row action reflects the suppressed state rather than offering a dead
+  // "Ignore" button. `isFindingIgnored` fingerprints each finding, so we only run
+  // it when the shop actually has suppressions (mirrors E2.2's zero-cost path).
+  const hasIgnores = ignores.fingerprints.size > 0 || ignores.appNames.size > 0;
   const enrichedFindingsPage = findingsPage.items.map((f) => ({
     ...f,
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
+    isIgnored: hasIgnores ? isFindingIgnored(f, ignores) : false,
   }));
 
+  // Free-tier preview finding (E2.2/E2.3): getHighestSeverityFinding returns the
+  // single top finding regardless of suppression. If this shop has ignored that
+  // exact finding, surfacing it as "your top issue" while the health score (which
+  // excludes ignores) disagrees would be dishonest — so when the resolved preview
+  // is itself ignored we fall back to the highest-severity NON-ignored finding
+  // (or none, if every finding is ignored). getFindingsForScan is already ordered
+  // HIGH→MEDIUM→LOW, so the first kept row is the top surviving finding. This only
+  // loads findings when the shop has ignores AND its top finding is suppressed, so
+  // the common no-ignores free-tier path is unchanged.
+  let resolvedPreviewFinding = rawPreviewFinding;
+  if (
+    !canViewDetails &&
+    hasIgnores &&
+    rawPreviewFinding &&
+    isFindingIgnored(rawPreviewFinding, ignores)
+  ) {
+    const { kept } = filterIgnoredFindings(await getFindingsForScan(scanId), ignores);
+    resolvedPreviewFinding = kept[0] ?? null;
+  }
+
   // Enrich the preview finding with tracker flag (free-tier only).
-  const previewFinding = rawPreviewFinding
+  const previewFinding = resolvedPreviewFinding
     ? {
-        ...rawPreviewFinding,
-        isTracker: rawPreviewFinding.appName ? isTrackerApp(rawPreviewFinding.appName) : false,
+        ...resolvedPreviewFinding,
+        isTracker: resolvedPreviewFinding.appName
+          ? isTrackerApp(resolvedPreviewFinding.appName)
+          : false,
       }
     : null;
 
@@ -439,9 +611,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const canUseDiffing = isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan);
 
   return {
+    // Shop domain (e.g. `my-store.myshopify.com`) — used to build the theme
+    // code editor deep-link (`admin.shopify.com/store/{handle}/...`) client-side.
+    shopDomain: session.shop,
     scan: {
       id: scan.id,
       themeName: scan.themeName,
+      // Theme GID (e.g. `gid://shopify/OnlineStoreTheme/123`) — powers the
+      // "Open in theme editor" link on theme-file findings (gc-3on).
+      themeId: scan.themeId,
       status: scan.status,
       startedAt: scan.startedAt,
       completedAt: scan.completedAt,
@@ -476,8 +654,23 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 };
 
 // ---------------------------------------------------------------------------
-// Action — handles merchant feedback on unknown scripts
+// Action — dispatched by `intent`:
+//   - "ignore-instance": suppress this one finding (E2.3). The fingerprint is
+//     computed SERVER-SIDE from the stored finding's fields (looked up by id,
+//     scoped to the shop) so it matches E2.2's filter key exactly — the client
+//     only sends a finding id, never a forgeable fingerprint.
+//   - "ignore-app": suppress every finding attributed to an app (E2.3).
+//   - default (no intent): merchant feedback on unknown scripts (unchanged).
+// E2 is a trust/accuracy feature available to ALL plans — no plan gate here.
 // ---------------------------------------------------------------------------
+
+/** Trim a reason form field to a stored value (undefined when blank). */
+const MAX_REASON_LENGTH = 500;
+function parseReason(raw: FormDataEntryValue | null): string | undefined {
+  if (typeof raw !== "string") return undefined;
+  const trimmed = raw.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
@@ -485,6 +678,49 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   if (!shop) throw new Response("Not found", { status: 404 });
 
   const formData = await request.formData();
+  const intent = formData.get("intent");
+
+  // E2.3 — suppress a single finding instance.
+  if (intent === "ignore-instance") {
+    const findingId = (formData.get("findingId") as string)?.trim();
+    if (!findingId) return { error: "Finding is required" };
+
+    const reason = parseReason(formData.get("reason"));
+    if (reason && reason.length > MAX_REASON_LENGTH) {
+      return { error: "Reason is too long" };
+    }
+
+    // Tenant-scoped lookup: a finding id belonging to another shop resolves to
+    // null, so we never fingerprint or suppress across tenants.
+    const finding = await getFindingByIdForShop(findingId, shop.id);
+    if (!finding) return { error: "Finding not found" };
+
+    const fingerprint = fingerprintFinding(
+      finding.filename,
+      finding.findingType,
+      finding.codeSnippet,
+      finding.lineNumber,
+    );
+    await ignoreFindingInstance({ shopId: shop.id, fingerprint, reason });
+    return { success: true, ignored: "instance" as const };
+  }
+
+  // E2.3 — suppress every finding attributed to an app.
+  if (intent === "ignore-app") {
+    const appName = (formData.get("appName") as string)?.trim();
+    if (!appName) return { error: "App is required" };
+    if (appName.length > 200) return { error: "App name is too long" };
+
+    const reason = parseReason(formData.get("reason"));
+    if (reason && reason.length > MAX_REASON_LENGTH) {
+      return { error: "Reason is too long" };
+    }
+
+    await ignoreFindingApp({ shopId: shop.id, appName, reason });
+    return { success: true, ignored: "app" as const };
+  }
+
+  // Default path: merchant feedback on unknown scripts.
   const unknownScriptId = formData.get("unknownScriptId") as string;
   const suggestedAppName = formData.get("suggestedAppName") as string;
 
@@ -625,6 +861,7 @@ export function nextFindingsFilterParams(
 
 export default function ScanDetail() {
   const {
+    shopDomain,
     scan,
     findings,
     findingsPagination,
@@ -1419,6 +1656,9 @@ export default function ScanDetail() {
                           <FindingRow
                             key={finding.id}
                             finding={finding}
+                            scanId={scan.id}
+                            shopDomain={shopDomain}
+                            themeId={scan.themeId}
                             isNew={newFindingKeys.has(
                               `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
                             )}
@@ -1471,7 +1711,11 @@ export default function ScanDetail() {
                 <s-stack direction="block" gap="base">
                   <s-heading>Preview: Highest Severity Finding</s-heading>
                   <FindingsTable>
-                    <FindingRow finding={previewFinding} />
+                    <FindingRow
+                      finding={previewFinding}
+                      shopDomain={shopDomain}
+                      themeId={scan.themeId}
+                    />
                   </FindingsTable>
 
                   {/* Upgrade banner: remaining count and upgrade CTA (hidden when only 1 finding total) */}

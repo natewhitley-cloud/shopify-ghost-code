@@ -20,8 +20,10 @@ import { sortDiffFindingsBySeverity } from "../lib/finding-sort";
 import { isSuccessfulScan } from "../lib/format";
 import { canUseScanDiffing } from "../lib/plan-gating.server";
 import { getFindingsForScan } from "../models/finding.server";
+import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
+import { filterIgnoredFindings } from "../services/finding-aggregation.server";
 import { diffScans } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
@@ -64,7 +66,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // unchanged, and which previous findings were resolved).
   const currentFindings = await getFindingsForScan(scanId);
 
-  const scanDiff: ScanDiff = diffScans(currentFindings, previousScan.findings, {
+  // Drop findings the merchant has suppressed (E2.2, gc-57t) from BOTH the
+  // current and previous sets before diffing, so an ignored finding is never
+  // reported as "new" (dropped from current) or "resolved" (dropped from
+  // previous). This composes with the differ's own skippedCategories /
+  // skippedFiles exclusions below — all are monotonic removals from the sets.
+  const ignores = await getIgnoredFindingsForShop(shop.id);
+  const keptCurrent = filterIgnoredFindings(currentFindings, ignores).kept;
+  const keptPrevious = filterIgnoredFindings(previousScan.findings, ignores).kept;
+
+  const scanDiff: ScanDiff = diffScans(keptCurrent, keptPrevious, {
     // Exclude prior findings in categories the current scan skipped (missing
     // scope) so they are never reported as falsely "resolved" (LOG-4).
     skippedCategories: scan.skippedCategories,

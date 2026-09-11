@@ -1,4 +1,8 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+
+vi.mock("../../app/lib/logger.server", () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
+}));
 
 import {
   PLAN_AMOUNTS,
@@ -6,7 +10,9 @@ import {
   buildPricingPlansUrl,
   determineBillingEventType,
   getPlanFeatures,
+  resolvePlanAmount,
 } from "../../app/lib/billing.server";
+import { logger } from "../../app/lib/logger.server";
 import type { BillingEventType } from "../../app/models/billing-event.server";
 
 describe("getPlanFeatures", () => {
@@ -82,6 +88,52 @@ describe("PLAN_AMOUNTS", () => {
     const paidPlans = [PLANS.STANDARD, PLANS.PROFESSIONAL] as const;
     for (const plan of paidPlans) {
       expect(typeof PLAN_AMOUNTS[plan]).toBe("number");
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolvePlanAmount (PLAN_AMOUNTS drift guard — gc-7wj)
+// ---------------------------------------------------------------------------
+
+describe("resolvePlanAmount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns the configured amount for a paid plan without warning", () => {
+    expect(resolvePlanAmount(PLANS.STANDARD)).toBe(29);
+    expect(resolvePlanAmount(PLANS.PROFESSIONAL)).toBe(49);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("returns null for FREE without warning (no recurring charge)", () => {
+    expect(resolvePlanAmount(PLANS.FREE)).toBeNull();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("returns null without warning for an unknown (non-paid-rank) plan", () => {
+    // An unrecognised plan string ranks as FREE (rank 0), so it is NOT a paid-plan
+    // drift signal — resolve to null silently.
+    expect(resolvePlanAmount("mystery-plan")).toBeNull();
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
+
+  it("warns and returns null when a paid plan is missing from PLAN_AMOUNTS (drift)", () => {
+    // Simulate PLAN_AMOUNTS drifting out of sync with PLANS: a plan Shopify still
+    // reports as paid (rank above FREE) but that has no amount mapping. Without the
+    // guard this would silently record amount=null on the BillingEvent.
+    const original = PLAN_AMOUNTS[PLANS.PROFESSIONAL];
+    try {
+      delete PLAN_AMOUNTS[PLANS.PROFESSIONAL];
+
+      expect(resolvePlanAmount(PLANS.PROFESSIONAL)).toBeNull();
+      expect(logger.warn).toHaveBeenCalledWith(
+        "billing-plan-amount-missing",
+        expect.objectContaining({ plan: PLANS.PROFESSIONAL }),
+      );
+    } finally {
+      PLAN_AMOUNTS[PLANS.PROFESSIONAL] = original;
     }
   });
 });

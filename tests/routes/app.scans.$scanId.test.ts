@@ -44,10 +44,27 @@ vi.mock("../../app/models/scan.server", () => ({
 
 vi.mock("../../app/models/finding.server", () => ({
   getFindingSummary: vi.fn(),
+  getFindingsForScan: vi.fn(),
   getHighestSeverityFinding: vi.fn(),
   getFindingsPageForScan: vi.fn(),
   getAppAttributionForScan: vi.fn(),
   getFindingFilterOptionsForScan: vi.fn(),
+  getFindingByIdForShop: vi.fn(),
+  // Zero-map helpers used by the REAL getFilteredFindingSummary (finding-aggregation
+  // is left unmocked). Needed once a test supplies non-empty ignores, which routes
+  // aggregation through the materialize-and-filter path instead of the groupBy.
+  createZeroSeverityCounts: () => ({ HIGH: 0, MEDIUM: 0, LOW: 0 }),
+  createZeroTypeCounts: () => ({}),
+}));
+
+// E2.2: the loader now aggregates via getFilteredFindingSummary, which fast-paths
+// to getFindingSummary when the shop has no suppressions. Left unmocked (real,
+// pure) so the fast-path assertions on getFindingSummary below still hold; only
+// the ignore read is mocked to return "no suppressions".
+vi.mock("../../app/models/ignored-finding.server", () => ({
+  getIgnoredFindingsForShop: vi.fn(),
+  ignoreFindingInstance: vi.fn(),
+  ignoreFindingApp: vi.fn(),
 }));
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
@@ -86,11 +103,18 @@ import { computeHealthScore } from "../../app/lib/health-score";
 import { canUseScanDiffing, canViewFindingDetails } from "../../app/lib/plan-gating.server";
 import {
   getAppAttributionForScan,
+  getFindingByIdForShop,
   getFindingFilterOptionsForScan,
+  getFindingsForScan,
   getFindingsPageForScan,
   getFindingSummary,
   getHighestSeverityFinding,
 } from "../../app/models/finding.server";
+import {
+  getIgnoredFindingsForShop,
+  ignoreFindingApp,
+  ignoreFindingInstance,
+} from "../../app/models/ignored-finding.server";
 import { getScanById } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import {
@@ -106,6 +130,7 @@ import {
   nextFindingsFilterParams,
 } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
+import { fingerprintFinding } from "../../app/services/scan-differ.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -122,6 +147,11 @@ const mockGetFindingFilterOptionsForScan = getFindingFilterOptionsForScan as Ret
   typeof vi.fn
 >;
 const mockGetHighestSeverityFinding = getHighestSeverityFinding as ReturnType<typeof vi.fn>;
+const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
+const mockGetIgnoredFindings = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
+const mockGetFindingByIdForShop = getFindingByIdForShop as ReturnType<typeof vi.fn>;
+const mockIgnoreFindingInstance = ignoreFindingInstance as ReturnType<typeof vi.fn>;
+const mockIgnoreFindingApp = ignoreFindingApp as ReturnType<typeof vi.fn>;
 const mockCanViewFindingDetails = canViewFindingDetails as ReturnType<typeof vi.fn>;
 const mockCanUseScanDiffing = canUseScanDiffing as ReturnType<typeof vi.fn>;
 const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
@@ -239,6 +269,8 @@ beforeEach(() => {
   mockCanUseScanDiffing.mockReturnValue(false);
   mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetHighestSeverityFinding.mockResolvedValue(null);
+  mockGetFindingsForScan.mockResolvedValue([]);
+  mockGetIgnoredFindings.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
   (getUnknownScriptsForScan as ReturnType<typeof vi.fn>).mockResolvedValue([]);
 });
 
@@ -370,6 +402,62 @@ describe("app.scans.$scanId loader", () => {
       await loader(makeLoaderArgs("scan-1"));
 
       expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
+    });
+
+    // FIX 3 (E2.2): the free-tier preview finding must respect suppressions. If
+    // the highest-severity finding is itself ignored, surfacing it as "your top
+    // issue" while the health score excludes it is dishonest.
+    it("falls back to the highest NON-ignored finding when the top finding is ignored", async () => {
+      // Top finding is attributed to an app the merchant has APP-ignored.
+      const ignoredTop = { ...FINDING_ONE, id: "f-ignored", appName: "BadApp", severity: "HIGH" };
+      const keptNext = {
+        ...FINDING_ONE,
+        id: "f-kept",
+        appName: "GoodApp",
+        severity: "MEDIUM",
+      };
+      mockGetHighestSeverityFinding.mockResolvedValue(ignoredTop);
+      // getFindingsForScan returns HIGH→MEDIUM ordered; the ignored one is first.
+      mockGetFindingsForScan.mockResolvedValue([ignoredTop, keptNext]);
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["BadApp"]),
+      });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        previewFinding: { id: string } | null;
+      };
+
+      expect(mockGetFindingsForScan).toHaveBeenCalledWith("scan-1");
+      expect(result.previewFinding?.id).toBe("f-kept");
+    });
+
+    it("returns previewFinding null when every finding is ignored", async () => {
+      const ignoredTop = { ...FINDING_ONE, id: "f-ignored", appName: "BadApp", severity: "HIGH" };
+      mockGetHighestSeverityFinding.mockResolvedValue(ignoredTop);
+      mockGetFindingsForScan.mockResolvedValue([ignoredTop]);
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["BadApp"]),
+      });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        previewFinding: { id: string } | null;
+      };
+
+      expect(result.previewFinding).toBeNull();
+    });
+
+    it("does not load full findings for the preview when the shop has no ignores", async () => {
+      mockGetHighestSeverityFinding.mockResolvedValue(FINDING_ONE);
+      // Default ignores are empty (set in beforeEach).
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        previewFinding: { id: string } | null;
+      };
+
+      expect(mockGetFindingsForScan).not.toHaveBeenCalled();
+      expect(result.previewFinding?.id).toBe("f-1");
     });
 
     it("does not call getAppAttributionForScan for free-plan shops", async () => {
@@ -853,6 +941,103 @@ describe("app.scans.$scanId action", () => {
     }
 
     expect(mockSubmitSignatureSuggestion).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Action — ignore/mark-intentional (E2.3). The fingerprint is computed
+// SERVER-SIDE from the stored finding (looked up by id, scoped to the shop),
+// so the client only sends a finding id — never a forgeable fingerprint.
+// ---------------------------------------------------------------------------
+
+describe("app.scans.$scanId action — ignore intents", () => {
+  it("ignore-instance: computes the server-side fingerprint and suppresses with the reason", async () => {
+    mockGetFindingByIdForShop.mockResolvedValue(FINDING_ONE);
+    mockIgnoreFindingInstance.mockResolvedValue({ id: "ign-1" });
+
+    const result = await action(
+      makeActionArgs({
+        intent: "ignore-instance",
+        findingId: "f-1",
+        reason: "  false positive  ",
+      }),
+    );
+
+    // Ownership is enforced by the scoped lookup.
+    expect(mockGetFindingByIdForShop).toHaveBeenCalledWith("f-1", SHOP.id);
+
+    // The fingerprint must match E2.2's filter key exactly (same pure function).
+    const expectedFingerprint = fingerprintFinding(
+      FINDING_ONE.filename,
+      FINDING_ONE.findingType,
+      FINDING_ONE.codeSnippet,
+      FINDING_ONE.lineNumber,
+    );
+    expect(mockIgnoreFindingInstance).toHaveBeenCalledWith({
+      shopId: SHOP.id,
+      fingerprint: expectedFingerprint,
+      reason: "false positive",
+    });
+    expect(result).toEqual({ success: true, ignored: "instance" });
+  });
+
+  it("ignore-instance: omits reason (undefined) when blank", async () => {
+    mockGetFindingByIdForShop.mockResolvedValue(FINDING_ONE);
+    mockIgnoreFindingInstance.mockResolvedValue({ id: "ign-1" });
+
+    await action(makeActionArgs({ intent: "ignore-instance", findingId: "f-1", reason: "   " }));
+
+    expect(mockIgnoreFindingInstance.mock.calls[0][0].reason).toBeUndefined();
+  });
+
+  it("ignore-instance: returns an error and does not suppress when the finding is not the shop's", async () => {
+    mockGetFindingByIdForShop.mockResolvedValue(null);
+
+    const result = await action(
+      makeActionArgs({ intent: "ignore-instance", findingId: "f-other" }),
+    );
+
+    expect(result).toEqual({ error: "Finding not found" });
+    expect(mockIgnoreFindingInstance).not.toHaveBeenCalled();
+  });
+
+  it("ignore-instance: returns an error when findingId is missing (no lookup, no write)", async () => {
+    const result = await action(makeActionArgs({ intent: "ignore-instance" }));
+
+    expect(result).toEqual({ error: "Finding is required" });
+    expect(mockGetFindingByIdForShop).not.toHaveBeenCalled();
+    expect(mockIgnoreFindingInstance).not.toHaveBeenCalled();
+  });
+
+  it("ignore-app: suppresses every finding for the app with the trimmed reason", async () => {
+    mockIgnoreFindingApp.mockResolvedValue({ id: "ign-2" });
+
+    const result = await action(
+      makeActionArgs({ intent: "ignore-app", appName: "  Judge.me  ", reason: "known good" }),
+    );
+
+    expect(mockIgnoreFindingApp).toHaveBeenCalledWith({
+      shopId: SHOP.id,
+      appName: "Judge.me",
+      reason: "known good",
+    });
+    expect(result).toEqual({ success: true, ignored: "app" });
+  });
+
+  it("ignore-app: returns an error when appName is missing (no write)", async () => {
+    const result = await action(makeActionArgs({ intent: "ignore-app", appName: "   " }));
+
+    expect(result).toEqual({ error: "App is required" });
+    expect(mockIgnoreFindingApp).not.toHaveBeenCalled();
+  });
+
+  it("throws a 404 Response when the shop cannot be resolved (ignore-instance)", async () => {
+    mockGetShopMetadata.mockResolvedValue(null);
+
+    await expect(
+      action(makeActionArgs({ intent: "ignore-instance", findingId: "f-1" })),
+    ).rejects.toBeInstanceOf(Response);
+    expect(mockIgnoreFindingInstance).not.toHaveBeenCalled();
   });
 });
 

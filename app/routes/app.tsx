@@ -24,6 +24,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     // on every load.
     await reactivateShop(session.shop);
     shop.uninstalledAt = null;
+    // reactivateShop also nulls planReconciledAt in the DB; mirror it here so the
+    // staleness check below fires a fresh reconcile on THIS load rather than
+    // over-granting a possibly-stale plan for one more request (gc-bbb).
+    shop.planReconciledAt = null;
   }
 
   // Plan reconciliation (CMP-2 / GC-fur). The APP_SUBSCRIPTIONS_UPDATE webhook
@@ -69,6 +73,7 @@ export default function App() {
       <s-app-nav>
         <s-link href="/app">Dashboard</s-link>
         <s-link href="/app/scans">Scan History</s-link>
+        <s-link href="/app/ignored">Ignored Findings</s-link>
         <s-link href="/app/settings">Billing</s-link>
       </s-app-nav>
       <Outlet />

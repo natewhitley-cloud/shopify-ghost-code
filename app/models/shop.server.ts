@@ -45,9 +45,17 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
  * Called from the app loader ONLY when an existing shop row still carries a set
  * uninstalledAt (i.e. an actual reinstall), never on every load. Uses updateMany
  * keyed on domain so a missing row is a safe no-op (count 0) rather than a throw.
+ *
+ * Also nulls `planReconciledAt` so the freshness clock is treated as stale (see
+ * isPlanReconcileStale) and the next load forces a fresh reconcile. Without this,
+ * a fast uninstall -> reinstall within the 1h freshness window would keep a stale
+ * (possibly still-paid) plan until the window elapses (gc-bbb).
  */
 export async function reactivateShop(domain: string): Promise<void> {
-  await db.shop.updateMany({ where: { domain }, data: { uninstalledAt: null } });
+  await db.shop.updateMany({
+    where: { domain },
+    data: { uninstalledAt: null, planReconciledAt: null },
+  });
 }
 
 /**
@@ -200,6 +208,7 @@ export async function dismissReviewPrompt(shopId: string): Promise<{ id: string 
  *   Shop → Scans → Findings
  *   Shop → Scans → UnknownScripts → SignatureSubmissions
  *   Shop → BillingEvents
+ *   Shop → IgnoredFinding
  *
  * OpsEvent has NO Shop FK, so cascade never touches it — yet observability rows
  * carry the shop's myshopify domain (webhook-failure `metadata.shop`, api-error

@@ -95,7 +95,7 @@ export function detectOrphanedMetafields(products: ProductMetafieldData[]): Crea
         findingType: FindingType.GHOST_METAFIELD,
         severity,
         appName,
-        description: `Product "${product.title}" has ${metafields.length} metafield(s) in ${appName} namespace — may be left by uninstalled app`,
+        description: `Product "${product.title}" has ${metafields.length} metafield(s) in the ${appName} namespace. Possible leftover data from ${appName}; verify the app is uninstalled before removing, as these are live if you still use ${appName}.`,
       });
     }
   }

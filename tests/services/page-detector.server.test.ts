@@ -87,11 +87,14 @@ describe("detectOrphanedPages", () => {
     expect(findings).toEqual([]);
   });
 
-  it("assigns MEDIUM severity", () => {
+  it("assigns LOW (informational) severity", () => {
+    // GHOST_PAGE is informational: it is matched only by an app-name handle
+    // pattern with no signal the app is actually uninstalled, so it must not
+    // outrank findings with confirmed live impact (gc-aky).
     const pages = [makePage({ handle: "pagefly-test" })];
     const findings = detectOrphanedPages(pages);
 
-    expect(findings[0].severity).toBe(Severity.MEDIUM);
+    expect(findings[0].severity).toBe(Severity.LOW);
   });
 
   it("sets appName correctly", () => {

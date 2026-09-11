@@ -211,3 +211,105 @@ export const CROSS_FILE_FINDING_TYPES = new Set([
   "GHOST_LAYOUT",
   "DUPLICATE_LIBRARY",
 ]);
+
+// ---------------------------------------------------------------------------
+// Theme-file-backed vs Admin-resource findings (gc-3on)
+// ---------------------------------------------------------------------------
+
+/**
+ * FindingTypes whose `filename` is a REAL theme file path editable in the
+ * Shopify theme code editor (e.g. `sections/foo.liquid`, `assets/bar.js`,
+ * `config/settings_data.json`). Only these get an "Open in theme editor"
+ * deep-link on the scan-detail findings table.
+ *
+ * Basis — VERIFIED against the detectors:
+ *   - Every type emitted by the theme-file scan engine (scan-engine.server.ts)
+ *     is attributed to `file.filename`, the theme file it scanned. That covers
+ *     GHOST_SCRIPT/STYLE/SNIPPET/SECTION/HREFLANG/TEXT/PIXEL/ROBOTS/CANONICAL/
+ *     TITLE/OG/PRECONNECT/FONT/AJAX, DUPLICATE_META, DUPLICATE_LIBRARY,
+ *     GHOST_JSON_LD, JSON_LD_CONFLICT, GHOST_LAYOUT, ORPHAN_ASSET, and
+ *     SETTINGS_DRIFT (config/settings_data.json — a real, editable theme file).
+ *   - JSON_LD_PRICE_CONFLICT — built from `extractStaticProductCandidates(file)`,
+ *     so its filename is the theme file that held the static JSON-LD.
+ *   - DANGLING_REFERENCE — one finding per DanglingRefOccurrence, whose filename
+ *     is the theme file + line where the broken reference literally appears.
+ */
+const THEME_FILE_FINDING_TYPES = new Set([
+  "GHOST_SCRIPT",
+  "GHOST_STYLE",
+  "GHOST_SNIPPET",
+  "GHOST_SECTION",
+  "GHOST_HREFLANG",
+  "GHOST_TEXT",
+  "GHOST_PIXEL",
+  "GHOST_ROBOTS",
+  "GHOST_CANONICAL",
+  "GHOST_TITLE",
+  "GHOST_OG",
+  "GHOST_PRECONNECT",
+  "GHOST_FONT",
+  "GHOST_AJAX",
+  "DUPLICATE_META",
+  "DUPLICATE_LIBRARY",
+  "GHOST_JSON_LD",
+  "JSON_LD_CONFLICT",
+  "JSON_LD_PRICE_CONFLICT",
+  "GHOST_LAYOUT",
+  "ORPHAN_ASSET",
+  "SETTINGS_DRIFT",
+  "DANGLING_REFERENCE",
+]);
+
+/**
+ * FindingTypes whose `filename` is a SYNTHETIC locator for an Admin API resource
+ * (product, page, redirect, metafield, translation), NOT a theme file. These
+ * must NOT get a theme-editor link — deep-linking `?key=products/123` would 404
+ * in the code editor. They are the target of the gc-7h9 Admin-resource
+ * fast-follow (which will deep-link to the resource's admin page instead).
+ *
+ * Basis — VERIFIED against the detectors:
+ *   - GHOST_PAGE       → `pages/{handle}`                    (page-detector)
+ *   - GHOST_REDIRECT   → `redirects/{id}` / `redirects/bulk` (redirect-detector)
+ *   - GHOST_PRICE      → `products/{id}`                     (price-detector)
+ *   - GHOST_TAG        → `products/{id}`                     (product-tag-detector)
+ *   - GHOST_METAFIELD  → `products/{id}/metafields`          (metafield-detector)
+ *   - GHOST_TRANSLATION→ `translations/{locale}/{resource}`  (translation-detector)
+ *
+ * NOTE: the gc-3on brief cited GHOST_TAG as a "theme-code" type, but the
+ * product-tag detector attributes it to `products/{id}` — a product resource,
+ * not a theme file — so it is EXCLUDED here (code is authoritative).
+ */
+const ADMIN_RESOURCE_FINDING_TYPES = new Set([
+  "GHOST_PAGE",
+  "GHOST_REDIRECT",
+  "GHOST_PRICE",
+  "GHOST_TAG",
+  "GHOST_METAFIELD",
+  "GHOST_TRANSLATION",
+]);
+
+/**
+ * Returns true if the finding's `filename` is a theme file editable in the
+ * Shopify theme code editor, so the row can offer an "Open in theme editor"
+ * deep-link.
+ *
+ * Unknown/unclassified types default to FALSE: it is safer to omit a link for an
+ * untriaged new type than to emit one that deep-links to a non-theme locator and
+ * 404s. The paired THEME_FILE/ADMIN_RESOURCE sets partition every FindingType
+ * enum member; a drift test guards that partition as the enum grows.
+ *
+ * Pure function of findingType — no database lookup required.
+ */
+export function isThemeFileFinding(findingType: string): boolean {
+  return THEME_FILE_FINDING_TYPES.has(findingType);
+}
+
+/**
+ * Exposed for the drift-guard test: the two curated sets that partition the
+ * FindingType enum by whether the finding's filename is a theme file. Not for
+ * rendering — use isThemeFileFinding() there.
+ */
+export const THEME_FILE_TYPE_SETS = {
+  themeFile: THEME_FILE_FINDING_TYPES,
+  adminResource: ADMIN_RESOURCE_FINDING_TYPES,
+} as const;

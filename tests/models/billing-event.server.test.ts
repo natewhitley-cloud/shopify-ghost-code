@@ -3,8 +3,7 @@
  *
  * Strategy:
  *   - Mock db.server (Prisma client) to control DB responses.
- *   - Test each exported function: recordBillingEvent, getBillingEventsForShop,
- *     getBillingEventStats.
+ *   - Test each exported function: recordBillingEvent, getBillingEventStats.
  *   - Verify Prisma call shapes and return value transformations.
  */
 
@@ -17,7 +16,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDb = vi.hoisted(() => ({
   billingEvent: {
     create: vi.fn(),
-    findMany: vi.fn(),
     groupBy: vi.fn(),
   },
 }));
@@ -32,7 +30,6 @@ vi.mock("../../app/db.server", () => ({
 
 import {
   recordBillingEvent,
-  getBillingEventsForShop,
   getBillingEventStats,
   type BillingEventType,
 } from "../../app/models/billing-event.server";
@@ -123,77 +120,6 @@ describe("recordBillingEvent", () => {
     await expect(recordBillingEvent({ shopId: SHOP_ID, eventType: "upgrade" })).rejects.toThrow(
       "DB write failed",
     );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// getBillingEventsForShop
-// ---------------------------------------------------------------------------
-
-describe("getBillingEventsForShop", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns billing events for a shop ordered newest-first with default limit", async () => {
-    const events = [BASE_BILLING_EVENT];
-    mockDb.billingEvent.findMany.mockResolvedValue(events);
-
-    const result = await getBillingEventsForShop(SHOP_ID);
-
-    expect(mockDb.billingEvent.findMany).toHaveBeenCalledOnce();
-    expect(mockDb.billingEvent.findMany).toHaveBeenCalledWith({
-      where: { shopId: SHOP_ID },
-      orderBy: { createdAt: "desc" },
-      take: 50,
-    });
-    expect(result).toEqual(events);
-  });
-
-  it("applies a custom limit when provided", async () => {
-    mockDb.billingEvent.findMany.mockResolvedValue([]);
-
-    await getBillingEventsForShop(SHOP_ID, { limit: 10 });
-
-    expect(mockDb.billingEvent.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({ take: 10 }),
-    );
-  });
-
-  it("adds a createdAt gte filter when since is provided", async () => {
-    mockDb.billingEvent.findMany.mockResolvedValue([]);
-    const since = new Date("2026-01-01T00:00:00Z");
-
-    await getBillingEventsForShop(SHOP_ID, { since });
-
-    expect(mockDb.billingEvent.findMany).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { shopId: SHOP_ID, createdAt: { gte: since } },
-      }),
-    );
-  });
-
-  it("does not include createdAt filter when since is not provided", async () => {
-    mockDb.billingEvent.findMany.mockResolvedValue([]);
-
-    await getBillingEventsForShop(SHOP_ID);
-
-    const callArg = mockDb.billingEvent.findMany.mock.calls[0][0];
-    expect(callArg.where).not.toHaveProperty("createdAt");
-  });
-
-  it("returns an empty array when no events exist for the shop", async () => {
-    mockDb.billingEvent.findMany.mockResolvedValue([]);
-
-    const result = await getBillingEventsForShop(SHOP_ID);
-
-    expect(result).toEqual([]);
-  });
-
-  it("propagates a database error", async () => {
-    mockDb.billingEvent.findMany.mockRejectedValue(new Error("Query failed"));
-
-    await expect(getBillingEventsForShop(SHOP_ID)).rejects.toThrow("Query failed");
   });
 });
 

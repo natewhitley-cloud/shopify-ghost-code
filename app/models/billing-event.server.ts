@@ -39,27 +39,6 @@ export async function recordBillingEvent(input: RecordBillingEventInput) {
 }
 
 /**
- * Return billing events for a single shop, newest-first.
- *
- * @param shopId  - internal DB shop ID
- * @param options.limit - cap the number of results (default: 50)
- * @param options.since - only return events on or after this date
- */
-export async function getBillingEventsForShop(
-  shopId: string,
-  options?: { limit?: number; since?: Date },
-) {
-  return db.billingEvent.findMany({
-    where: {
-      shopId,
-      ...(options?.since ? { createdAt: { gte: options.since } } : {}),
-    },
-    orderBy: { createdAt: "desc" },
-    take: options?.limit ?? 50,
-  });
-}
-
-/**
  * Return aggregate counts of each event type across all shops.
  * Optionally filter to events on or after `since`.
  *
