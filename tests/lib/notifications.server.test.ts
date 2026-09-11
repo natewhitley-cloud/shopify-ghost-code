@@ -13,18 +13,25 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // Module mocks
 // ---------------------------------------------------------------------------
 
-const { mockLoggerError, mockLoggerWarn, mockSendOpsAlert, mockRecordOpsEvent } = vi.hoisted(
-  () => ({
-    mockLoggerError: vi.fn(),
-    mockLoggerWarn: vi.fn(),
-    mockSendOpsAlert: vi.fn().mockResolvedValue({ sent: false, reason: "disabled" }),
-    mockRecordOpsEvent: vi.fn().mockResolvedValue(undefined),
-  }),
-);
+const {
+  mockLoggerInfo,
+  mockLoggerError,
+  mockLoggerWarn,
+  mockSendOpsAlert,
+  mockRecordOpsEvent,
+  mockGetLatestOpsEvent,
+} = vi.hoisted(() => ({
+  mockLoggerInfo: vi.fn(),
+  mockLoggerError: vi.fn(),
+  mockLoggerWarn: vi.fn(),
+  mockSendOpsAlert: vi.fn().mockResolvedValue({ sent: false, reason: "disabled" }),
+  mockRecordOpsEvent: vi.fn().mockResolvedValue(undefined),
+  mockGetLatestOpsEvent: vi.fn().mockResolvedValue(null),
+}));
 
 vi.mock("../../app/lib/logger.server", () => ({
   logger: {
-    info: vi.fn(),
+    info: mockLoggerInfo,
     warn: mockLoggerWarn,
     error: mockLoggerError,
   },
@@ -36,6 +43,7 @@ vi.mock("../../app/services/ops-alert.server", () => ({
 
 vi.mock("../../app/models/ops-event.server", () => ({
   recordOpsEvent: mockRecordOpsEvent,
+  getLatestOpsEvent: mockGetLatestOpsEvent,
   OPS_EVENT_TYPES: {
     CRON_HEARTBEAT: "cron_heartbeat",
     FUNCTION_FAILURE: "function_failure",
@@ -167,6 +175,48 @@ describe("notifyFunctionFailure", () => {
         attemptNumber: 3,
         shop: "demo.myshopify.com",
       });
+    });
+  });
+
+  describe("email dedup/throttle", () => {
+    it("sends the email and records the event when no prior failure exists", async () => {
+      mockGetLatestOpsEvent.mockResolvedValueOnce(null);
+
+      await notifyFunctionFailure(BASE_CTX);
+
+      expect(mockGetLatestOpsEvent).toHaveBeenCalledWith("function_failure", BASE_CTX.functionId);
+      expect(mockSendOpsAlert).toHaveBeenCalledOnce();
+      expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
+    });
+
+    it("suppresses the email but still records the event within the 60m window", async () => {
+      mockGetLatestOpsEvent.mockResolvedValueOnce({
+        createdAt: new Date(Date.now() - 30 * 60 * 1000), // 30 min ago
+      });
+
+      await notifyFunctionFailure(BASE_CTX);
+
+      expect(mockSendOpsAlert).not.toHaveBeenCalled();
+      expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
+      expect(mockLoggerInfo).toHaveBeenCalledWith("ops-alert-suppressed-dedup", {
+        functionId: BASE_CTX.functionId,
+        windowMs: 60 * 60 * 1000,
+      });
+    });
+
+    it("sends the email when the prior failure is older than the window", async () => {
+      mockGetLatestOpsEvent.mockResolvedValueOnce({
+        createdAt: new Date(Date.now() - 61 * 60 * 1000), // 61 min ago
+      });
+
+      await notifyFunctionFailure(BASE_CTX);
+
+      expect(mockSendOpsAlert).toHaveBeenCalledOnce();
+      expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
+      expect(mockLoggerInfo).not.toHaveBeenCalledWith(
+        "ops-alert-suppressed-dedup",
+        expect.anything(),
+      );
     });
   });
 

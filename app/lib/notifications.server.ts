@@ -15,8 +15,14 @@
  */
 
 import { logger } from "./logger.server";
-import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
+import { OPS_EVENT_TYPES, getLatestOpsEvent, recordOpsEvent } from "../models/ops-event.server";
 import { sendOpsAlert } from "../services/ops-alert.server";
+
+// Suppress duplicate operator emails for the same function within this trailing
+// window. A burst of identical Inngest failures (retries of one run, or the same
+// systemic fault firing across many shops) still records every OpsEvent (the
+// digest counts them all) but sends only one email per functionId per window.
+const ALERT_DEDUP_WINDOW_MS = 60 * 60 * 1000;
 
 export interface FunctionFailureContext {
   functionId: string;
@@ -48,22 +54,37 @@ export async function notifyFunctionFailure(ctx: FunctionFailureContext): Promis
       shop: ctx.shop,
     });
 
-    // Operator email alert. sendOpsAlert is a no-op unless the ops-alert env
-    // vars are set, so this is safe and silent in local/CI/build.
-    const subject = `Inngest function failed: ${ctx.functionId}`;
-    const bodyLines = [
-      `Function: ${ctx.functionId}`,
-      `Event: ${ctx.eventName}`,
-      `Run ID: ${ctx.runId}`,
-    ];
-    if (ctx.attemptNumber !== undefined) {
-      bodyLines.push(`Attempt: ${ctx.attemptNumber}`);
+    // Dedup/throttle: if a function_failure for this same functionId was already
+    // recorded within the trailing window, skip the email (but still record the
+    // OpsEvent below). This query MUST run before recordOpsEvent, or it would find
+    // the row we are about to write and always suppress.
+    const last = await getLatestOpsEvent(OPS_EVENT_TYPES.FUNCTION_FAILURE, ctx.functionId);
+    const suppressed =
+      last !== null && Date.now() - last.createdAt.getTime() < ALERT_DEDUP_WINDOW_MS;
+
+    if (suppressed) {
+      logger.info("ops-alert-suppressed-dedup", {
+        functionId: ctx.functionId,
+        windowMs: ALERT_DEDUP_WINDOW_MS,
+      });
+    } else {
+      // Operator email alert. sendOpsAlert is a no-op unless the ops-alert env
+      // vars are set, so this is safe and silent in local/CI/build.
+      const subject = `Inngest function failed: ${ctx.functionId}`;
+      const bodyLines = [
+        `Function: ${ctx.functionId}`,
+        `Event: ${ctx.eventName}`,
+        `Run ID: ${ctx.runId}`,
+      ];
+      if (ctx.attemptNumber !== undefined) {
+        bodyLines.push(`Attempt: ${ctx.attemptNumber}`);
+      }
+      if (ctx.shop) {
+        bodyLines.push(`Shop: ${ctx.shop}`);
+      }
+      bodyLines.push(`Error: ${ctx.error}`);
+      await sendOpsAlert(subject, bodyLines.join("\n"));
     }
-    if (ctx.shop) {
-      bodyLines.push(`Shop: ${ctx.shop}`);
-    }
-    bodyLines.push(`Error: ${ctx.error}`);
-    await sendOpsAlert(subject, bodyLines.join("\n"));
 
     // Persist the failure to the unified OpsEvent log. This is what the future
     // daily ops digest counts (function_failure events per window). recordOpsEvent
