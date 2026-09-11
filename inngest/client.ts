@@ -1,7 +1,7 @@
 import { EventSchemas, Inngest } from "inngest";
 
 import type { Events } from "./events";
-import { failureLoggingMiddleware, loggingMiddleware, sentryMiddleware } from "./middleware";
+import { failureLoggingMiddleware, loggingMiddleware } from "./middleware";
 
 /**
  * Fail-fast guard for Inngest credentials.
@@ -15,8 +15,7 @@ import { failureLoggingMiddleware, loggingMiddleware, sentryMiddleware } from ".
  * stops firing. We convert that silent outage into a deploy-time failure.
  *
  * In development the Inngest Dev Server does not require these keys, so the
- * guard only fires in production. This mirrors the SENTRY_DSN philosophy
- * (optional in dev, required in prod) and the fail-fast style in
+ * guard only fires in production. This mirrors the fail-fast style in
  * app/shopify.server.ts.
  */
 if (process.env.NODE_ENV === "production") {
@@ -31,7 +30,7 @@ if (process.env.NODE_ENV === "production") {
 export const inngest = new Inngest({
   id: "ghost-code",
   schemas: new EventSchemas().fromRecord<Events>(),
-  middleware: [loggingMiddleware, sentryMiddleware, failureLoggingMiddleware],
+  middleware: [loggingMiddleware, failureLoggingMiddleware],
   // Pass the event key explicitly rather than relying solely on the SDK's
   // implicit env lookup. The value is identical, but explicit wiring makes the
   // credential dependency visible at the call site and keeps client config in

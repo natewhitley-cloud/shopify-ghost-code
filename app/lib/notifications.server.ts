@@ -1,10 +1,10 @@
 /**
  * Notification scaffolding for operational alerts.
  *
- * notifyFunctionFailure emits a structured error log (also forwarded to Sentry
- * by logger.error) AND sends an operator email via the ops-alert channel. The
- * email path is inert by default: it is a pure no-op unless OPS_ALERT_EMAIL and
- * RESEND_API_KEY are set in Railway, so local/CI/build stay silent.
+ * notifyFunctionFailure emits a structured error log AND sends an operator
+ * email via the ops-alert channel. The email path is inert by default: it is a
+ * pure no-op unless OPS_ALERT_EMAIL and RESEND_API_KEY are set in Railway, so
+ * local/CI/build stay silent.
  *
  * Design:
  *   - notifyFunctionFailure is async and fire-and-forget from callers.
@@ -31,9 +31,9 @@ export interface FunctionFailureContext {
 /**
  * Notify on an Inngest function failure.
  *
- * Always logs a structured error entry (which logger.error also forwards to
- * Sentry) and sends an operator email via the ops-alert channel. The email is
- * inert unless OPS_ALERT_EMAIL and RESEND_API_KEY are configured in Railway.
+ * Always logs a structured error entry and sends an operator email via the
+ * ops-alert channel. The email is inert unless OPS_ALERT_EMAIL and
+ * RESEND_API_KEY are configured in Railway.
  *
  * This is fire-and-forget — callers should not await this in the hot path.
  */

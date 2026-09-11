@@ -5,7 +5,6 @@ import { isbot } from "isbot";
 import { renderToPipeableStream } from "react-dom/server";
 import { ServerRouter, type EntryContext } from "react-router";
 
-import { captureException } from "./lib/sentry.server";
 import { addDocumentResponseHeaders } from "./shopify.server";
 
 export const streamTimeout = 5000;
@@ -43,9 +42,6 @@ export default async function handleRequest(
         onError(error) {
           responseStatusCode = 500;
           console.error(error);
-          // Forward render-phase errors to Sentry. captureException is a no-op
-          // when SENTRY_DSN is unset, so this never affects app behaviour.
-          captureException(error);
         },
       },
     );
@@ -58,13 +54,13 @@ export default async function handleRequest(
 
 /**
  * React Router v7 calls this for errors thrown in loaders, actions, and
- * server rendering. We forward them to Sentry so the web request path has the
- * same observability as the Inngest path.
+ * server rendering. Errors surface via console/structured logs only — there is
+ * no external error-capture service wired up.
  *
  * Aborted requests (client cancelled / navigated away) are skipped — they are
- * not real failures and would otherwise spam Sentry.
+ * not real failures and would otherwise spam the logs.
  */
 export function handleError(error: unknown, { request }: { request: Request }): void {
   if (request.signal.aborted) return;
-  captureException(error, { url: request.url, method: request.method });
+  console.error(error);
 }
