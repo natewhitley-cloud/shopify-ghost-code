@@ -172,6 +172,14 @@ const REMEDIATION: Record<string, Remediation> = {
       "This translated content may be left over from a translation app you removed. Review it in the Translate & Adapt app (or Markets) and remove the locale's content if you no longer offer that language.",
   },
 
+  // ---- Broken storefront links (theme code references a deleted entity) ----
+  DANGLING_REFERENCE: {
+    impact:
+      "This link points at a product, collection, or page that no longer exists, so shoppers and AI shopping agents hit a 404. Broken links waste crawl budget and can drop the affected page from Google and AI answers.",
+    howTo:
+      "Fix the link to point at a page that still exists, or remove it if it is no longer needed. The referenced product, collection, or page has been deleted from your store. Duplicate the theme as a backup before editing the theme code.",
+  },
+
   // ---- Theme settings ----
   SETTINGS_DRIFT: {
     howTo:

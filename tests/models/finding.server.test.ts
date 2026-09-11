@@ -542,13 +542,13 @@ describe("getTypeCountsForScan", () => {
     });
   });
 
-  it("returns a fully zero-seeded record covering all 28 FindingType members", async () => {
+  it("returns a fully zero-seeded record covering all 29 FindingType members", async () => {
     mockDb.finding.groupBy.mockResolvedValue([]);
 
     const result = await getTypeCountsForScan(SCAN_ID);
 
     const keys = Object.keys(result);
-    expect(keys).toHaveLength(28);
+    expect(keys).toHaveLength(29);
     // Every enum member present and defaulted to 0.
     for (const type of Object.values(FindingType)) {
       expect(result[type]).toBe(0);

@@ -123,6 +123,7 @@ describe("getFindingConfidence", () => {
     "GHOST_TAG",
     "GHOST_PAGE",
     "GHOST_METAFIELD",
+    "DANGLING_REFERENCE",
   ];
 
   it.each(HEURISTIC_TYPES)('returns "heuristic" for %s', (type) => {
@@ -153,7 +154,7 @@ describe("getFindingConfidence", () => {
   // ---------------------------------------------------------------------------
   it("classifies every FindingType enum member in exactly one tier (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(28);
+    expect(allTypes).toHaveLength(29);
 
     for (const type of allTypes) {
       const inSignature = CONFIDENCE_TYPE_SETS.signature.has(type);
@@ -170,6 +171,6 @@ describe("getFindingConfidence", () => {
     const heuristic = [...CONFIDENCE_TYPE_SETS.heuristic];
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
-    expect(signature.length + heuristic.length).toBe(28);
+    expect(signature.length + heuristic.length).toBe(29);
   });
 });

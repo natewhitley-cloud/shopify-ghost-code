@@ -26,6 +26,7 @@ const AGENTIC_IMPACT_TYPES = [
   "JSON_LD_CONFLICT",
   "JSON_LD_PRICE_CONFLICT",
   "DUPLICATE_META",
+  "DANGLING_REFERENCE",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -35,8 +36,8 @@ const AGENTIC_IMPACT_TYPES = [
 describe("getFindingRemediation — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 28 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(28);
+  it("has 29 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(29);
   });
 
   it.each(ALL_TYPES)("returns a non-empty blurb for %s", (type) => {
@@ -120,6 +121,12 @@ describe("getFindingRemediation — accuracy", () => {
     const blurb = getFindingRemediation("GHOST_PRICE");
     expect(blurb.toLowerCase()).toContain("compare-at");
     expect(blurb.toLowerCase()).toContain("variant");
+  });
+
+  it("tells merchants to fix or remove a broken link for DANGLING_REFERENCE", () => {
+    const blurb = getFindingRemediation("DANGLING_REFERENCE").toLowerCase();
+    expect(blurb).toContain("link");
+    expect(blurb).toMatch(/remove|fix/);
   });
 
   it("warns against hand-editing settings_data.json for SETTINGS_DRIFT", () => {
