@@ -44,10 +44,15 @@ vi.mock("../../app/models/shop.server", () => ({
   deleteShopData: vi.fn(),
 }));
 
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordWebhookFailure: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
+import { recordWebhookFailure } from "../../app/models/ops-event.server";
 import { deleteShopData } from "../../app/models/shop.server";
 import { action as webhookAction } from "../../app/routes/webhooks";
 import { authenticate } from "../../app/shopify.server";
@@ -58,6 +63,7 @@ import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>;
 const mockDeleteShopData = deleteShopData as ReturnType<typeof vi.fn>;
+const mockRecordWebhookFailure = recordWebhookFailure as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Test data
@@ -396,6 +402,15 @@ describe("GDPR compliance invariants", () => {
 
     // The delete was attempted — we are not short-circuiting before the DB call.
     expect(mockDeleteShopData).toHaveBeenCalledWith(SHOP_DOMAIN);
+
+    // The failure is recorded (durably countable for the daily digest) before
+    // the error propagates. recordWebhookFailure never throws, so it preserves
+    // the 5xx-then-retry contract.
+    expect(mockRecordWebhookFailure).toHaveBeenCalledWith({
+      topic: "SHOP_REDACT",
+      shop: SHOP_DOMAIN,
+      error: dbError,
+    });
   });
 
   it("shop/redact propagates the thrown Response on invalid HMAC and never touches the DB", async () => {

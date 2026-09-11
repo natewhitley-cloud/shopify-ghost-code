@@ -24,6 +24,10 @@ vi.mock("../../app/models/shop.server", () => ({
   deleteShopData: vi.fn(),
 }));
 
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordWebhookFailure: vi.fn(),
+}));
+
 vi.mock("../../app/lib/logger.server", () => ({
   logger: {
     info: vi.fn(),
@@ -36,6 +40,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { recordWebhookFailure } from "../../app/models/ops-event.server";
 import { deleteShopData } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks";
 import { authenticate } from "../../app/shopify.server";
@@ -46,6 +51,7 @@ import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>;
 const mockDeleteShopData = deleteShopData as ReturnType<typeof vi.fn>;
+const mockRecordWebhookFailure = recordWebhookFailure as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -125,6 +131,27 @@ describe("webhooks (GDPR catch-all) action", () => {
 
     expect(result).toBeInstanceOf(Response);
     expect((result as Response).status).toBe(200);
+  });
+
+  it("SHOP_REDACT records a webhook failure and re-throws when deleteShopData rejects", async () => {
+    mockAuthenticateWebhook.mockResolvedValue({
+      shop: "test-shop.myshopify.com",
+      topic: "SHOP_REDACT",
+    });
+    const dbError = new Error("transient DB failure during shop/redact");
+    mockDeleteShopData.mockRejectedValue(dbError);
+
+    await expect(action(makeActionArgs())).rejects.toThrow(
+      "transient DB failure during shop/redact",
+    );
+
+    // The failure is recorded (durably countable for the digest) before the
+    // error is re-thrown so Shopify sees a 5xx and retries.
+    expect(mockRecordWebhookFailure).toHaveBeenCalledWith({
+      topic: "SHOP_REDACT",
+      shop: "test-shop.myshopify.com",
+      error: dbError,
+    });
   });
 
   it("unknown topic returns 200", async () => {
