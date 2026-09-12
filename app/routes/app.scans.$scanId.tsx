@@ -26,6 +26,7 @@ import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
+import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
@@ -643,6 +644,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       createdAt: scan.createdAt,
       findingCount: scan.findingCount,
       skippedFiles: scan.skippedFiles,
+      // Optional-audit categories skipped because their Shopify scope was not
+      // granted (H5 / gc-1wf). Drives the "checks skipped" banner that links to
+      // the settings Permissions card.
+      skippedCategories: scan.skippedCategories,
     },
     findings: enrichedFindingsPage,
     findingsPagination: {
@@ -1470,6 +1475,29 @@ export default function ScanDetail() {
             </s-banner>
           </div>
         )}
+
+        {/* Missing-scope skip notice (H5 / gc-1wf) — optional audits were skipped
+          because the app lacks the required read-only permission. Standard+ only:
+          Free merchants can't grant these scopes or view the resulting findings.
+          Links to the settings Permissions card to re-consent. */}
+        {isCompleted &&
+          canViewDetails &&
+          scanSkippedForScopes({
+            status: scan.status,
+            skippedCategories: scan.skippedCategories,
+          }) && (
+            <div>
+              <s-banner tone="warning">
+                {scan.skippedCategories.length} optional{" "}
+                {scan.skippedCategories.length !== 1 ? "checks were" : "check was"} skipped because
+                Ghost Code does not have permission to read:{" "}
+                {skippedCategoryLabels(scan.skippedCategories).join(", ")}. Grant access on the{" "}
+                <Link to="/app/settings">Settings</Link> page to include{" "}
+                {scan.skippedCategories.length !== 1 ? "these checks" : "this check"} in future
+                scans.
+              </s-banner>
+            </div>
+          )}
 
         {/* Lane-context banner — shown when the merchant arrived via a dashboard
           consequence-lane deep link (`?lane=`). Rendered ABOVE the paid/free

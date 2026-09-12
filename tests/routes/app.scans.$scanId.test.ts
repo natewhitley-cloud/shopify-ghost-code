@@ -307,6 +307,19 @@ describe("app.scans.$scanId loader", () => {
     expect(result.appAttributionData).toEqual([]);
   });
 
+  it("exposes scan.skippedCategories for the missing-scope banner (gc-1wf)", async () => {
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      skippedCategories: ["GHOST_PAGE", "GHOST_REDIRECT"],
+    });
+
+    const result = (await loader(makeLoaderArgs("scan-1"))) as {
+      scan: { skippedCategories: string[] };
+    };
+
+    expect(result.scan.skippedCategories).toEqual(["GHOST_PAGE", "GHOST_REDIRECT"]);
+  });
+
   it("always calls getScanById with includeFindings: false (findings loaded separately)", async () => {
     await loader(makeLoaderArgs("scan-1"));
 

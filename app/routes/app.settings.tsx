@@ -1,7 +1,14 @@
+import { useEffect, useState } from "react";
 import type { LoaderFunctionArgs } from "react-router";
 import { Link, useLoaderData } from "react-router";
 
 import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
+import {
+  allOptionalScopesGranted,
+  missingOptionalScopes,
+  OPTIONAL_SCOPE_INFO,
+  OPTIONAL_SCOPES,
+} from "../lib/optional-scopes";
 import { PLANS } from "../lib/plans";
 import { getShopMetadata } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
@@ -35,6 +42,169 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   return { shop: { plan: shop.plan, domain: shop.domain }, features, pricingPlansUrl };
 };
+
+// ---------------------------------------------------------------------------
+// Permissions card (client-side, Standard+ only)
+// ---------------------------------------------------------------------------
+
+/**
+ * The `shopify` global is injected by App Bridge in embedded context. The
+ * `scopes` API is relatively new, so it is typed optional and guarded at runtime
+ * — on an older App Bridge `shopify.scopes` is undefined and the card degrades
+ * to an informational note rather than throwing.
+ *
+ * Shapes verified against the App Home Scopes API docs
+ * (shopify.dev/docs/api/app-home/v1.0/apis/authentication-and-data/scopes-api):
+ *   - query()   → { granted, required, optional }  (string[] each)
+ *   - request() → { result: "granted-all" | "declined-all", detail: { granted } }
+ */
+declare const shopify:
+  | {
+      scopes?: {
+        query: () => Promise<{ granted: string[]; required: string[]; optional: string[] }>;
+        request: (
+          scopes: string[],
+        ) => Promise<{ result: "granted-all" | "declined-all"; detail: { granted: string[] } }>;
+      };
+    }
+  | undefined;
+
+/**
+ * Live granted-scope state for the optional per-audit scopes, with a re-consent
+ * button that opens the App Bridge permission modal for only the missing scopes.
+ * Rendered only for Standard+ plans (the Admin-resource detectors these scopes
+ * unlock are paid features, so Free merchants never see this card).
+ */
+function PermissionsCard() {
+  // null = not yet loaded; string[] = App Bridge query result.
+  const [granted, setGranted] = useState<string[] | null>(null);
+  // true when the App Bridge scopes API is unavailable (older App Bridge).
+  const [unsupported, setUnsupported] = useState(false);
+  // true when the initial query or a request failed.
+  const [failed, setFailed] = useState(false);
+  const [requesting, setRequesting] = useState(false);
+
+  // Query current scopes on mount. Runs only in the browser (App Bridge global),
+  // so the SSR render never touches `shopify`.
+  useEffect(() => {
+    if (typeof shopify === "undefined" || !shopify.scopes) {
+      setUnsupported(true);
+      return;
+    }
+    let cancelled = false;
+    shopify.scopes
+      .query()
+      .then((res) => {
+        if (!cancelled) setGranted(res.granted);
+      })
+      .catch(() => {
+        if (!cancelled) setFailed(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const missing = missingOptionalScopes(granted ?? []);
+
+  async function handleGrant() {
+    if (typeof shopify === "undefined" || !shopify.scopes) return;
+    setRequesting(true);
+    setFailed(false);
+    try {
+      await shopify.scopes.request(missing);
+      // Re-query so the displayed state reflects the merchant's decision (the
+      // modal is all-or-nothing, but re-querying is the authoritative source).
+      const res = await shopify.scopes.query();
+      setGranted(res.granted);
+    } catch {
+      setFailed(true);
+    } finally {
+      setRequesting(false);
+    }
+  }
+
+  return (
+    <div style={{ marginTop: "16px" }}>
+      <s-card>
+        <s-stack direction="block" gap="base">
+          <s-heading>Permissions</s-heading>
+          <s-paragraph>
+            Some checks (products, pages, redirects, and translations) need extra read-only
+            permissions. Grant them to include those checks in your scans.
+          </s-paragraph>
+
+          {unsupported ? (
+            <s-paragraph>
+              <span style={{ color: TEXT_SUBDUED }}>
+                Permission status is unavailable in this view. Reload the app from your Shopify
+                admin to manage permissions.
+              </span>
+            </s-paragraph>
+          ) : granted === null && !failed ? (
+            <s-paragraph>
+              <span style={{ color: TEXT_SUBDUED }}>Checking permissions…</span>
+            </s-paragraph>
+          ) : (
+            <>
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: "8px",
+                  borderTop: `1px solid ${BORDER_DEFAULT}`,
+                  paddingTop: "12px",
+                }}
+              >
+                {OPTIONAL_SCOPES.map((scope) => {
+                  const isGranted = (granted ?? []).includes(scope);
+                  const info = OPTIONAL_SCOPE_INFO[scope];
+                  return (
+                    <div
+                      key={scope}
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        justifyContent: "space-between",
+                        gap: "12px",
+                      }}
+                    >
+                      <div>
+                        <div style={{ fontWeight: 600, color: TEXT_PRIMARY }}>{info.label}</div>
+                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>{info.unlocks}</div>
+                      </div>
+                      <s-badge tone={isGranted ? "success" : "warning"}>
+                        {isGranted ? "Granted" : "Not granted"}
+                      </s-badge>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {granted !== null && allOptionalScopesGranted(granted) ? (
+                <s-banner tone="success">
+                  All permissions granted — every check runs on your scans.
+                </s-banner>
+              ) : (
+                <div>
+                  <s-button variant="primary" onClick={handleGrant} disabled={requesting}>
+                    {requesting ? "Requesting…" : "Grant access"}
+                  </s-button>
+                </div>
+              )}
+
+              {failed && (
+                <s-banner tone="critical">
+                  Something went wrong updating permissions. Please try again.
+                </s-banner>
+              )}
+            </>
+          )}
+        </s-stack>
+      </s-card>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -204,6 +374,9 @@ export default function Settings() {
             </s-stack>
           </s-card>
         </div>
+
+        {/* Permissions — Standard+ only (the checks these scopes unlock are paid). */}
+        {!isFree && <PermissionsCard />}
 
         {/* About */}
         <div style={{ marginTop: "16px" }} />
