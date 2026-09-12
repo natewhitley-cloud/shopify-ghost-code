@@ -17,6 +17,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   adminResourceLinkLabel,
+  adminResourceLocatorLabel,
   buildAdminResourceUrl,
   numericIdFromGidLocator,
 } from "../../app/lib/admin-resource-url";
@@ -181,6 +182,93 @@ describe("adminResourceLinkLabel", () => {
   it("returns a non-empty label for every ADMIN_RESOURCE type (no missing labels)", () => {
     for (const type of THEME_FILE_TYPE_SETS.adminResource) {
       expect(adminResourceLinkLabel(type).length, `${type} must have a label`).toBeGreaterThan(0);
+    }
+  });
+});
+
+describe("adminResourceLocatorLabel", () => {
+  // ---- product-backed types (fixed label, locator ignored) ---------------
+
+  it("labels GHOST_TAG as Product", () => {
+    expect(adminResourceLocatorLabel("GHOST_TAG", VALID_LOCATOR.GHOST_TAG)).toBe("Product");
+  });
+
+  it("labels GHOST_PRICE as Product", () => {
+    expect(adminResourceLocatorLabel("GHOST_PRICE", VALID_LOCATOR.GHOST_PRICE)).toBe("Product");
+  });
+
+  it("labels GHOST_METAFIELD as Product metafield", () => {
+    expect(adminResourceLocatorLabel("GHOST_METAFIELD", VALID_LOCATOR.GHOST_METAFIELD)).toBe(
+      "Product metafield",
+    );
+  });
+
+  // ---- GHOST_PAGE: surface the handle path -------------------------------
+
+  it("labels GHOST_PAGE with its handle path", () => {
+    expect(adminResourceLocatorLabel("GHOST_PAGE", "pages/summer-sale")).toBe(
+      "Page: /pages/summer-sale",
+    );
+  });
+
+  it("falls back to the raw locator for a GHOST_PAGE with no handle", () => {
+    expect(adminResourceLocatorLabel("GHOST_PAGE", "pages/")).toBe("pages/");
+  });
+
+  // ---- GHOST_REDIRECT: single vs bulk ------------------------------------
+
+  it("labels a single GHOST_REDIRECT as URL redirect", () => {
+    expect(adminResourceLocatorLabel("GHOST_REDIRECT", VALID_LOCATOR.GHOST_REDIRECT)).toBe(
+      "URL redirect",
+    );
+  });
+
+  it("labels a bulk GHOST_REDIRECT with its prefix", () => {
+    expect(adminResourceLocatorLabel("GHOST_REDIRECT", "redirects/bulk/klaviyo-")).toBe(
+      "URL redirects: klaviyo-",
+    );
+  });
+
+  it("restores `/` (stored as `_`) in a bulk GHOST_REDIRECT prefix", () => {
+    expect(adminResourceLocatorLabel("GHOST_REDIRECT", "redirects/bulk/collections_summer")).toBe(
+      "URL redirects: collections/summer",
+    );
+  });
+
+  it("labels a bulk GHOST_REDIRECT with an empty prefix as URL redirects", () => {
+    expect(adminResourceLocatorLabel("GHOST_REDIRECT", "redirects/bulk/")).toBe("URL redirects");
+  });
+
+  // ---- GHOST_TRANSLATION -------------------------------------------------
+
+  it("labels GHOST_TRANSLATION with its locale and resource", () => {
+    expect(adminResourceLocatorLabel("GHOST_TRANSLATION", "translations/fr/product")).toBe(
+      "Translation: fr / product",
+    );
+  });
+
+  it("falls back to the raw locator for an unparseable GHOST_TRANSLATION", () => {
+    expect(adminResourceLocatorLabel("GHOST_TRANSLATION", "translations/fr")).toBe(
+      "translations/fr",
+    );
+  });
+
+  // ---- unknown / fallback ------------------------------------------------
+
+  it("falls back to the raw locator for an unknown type", () => {
+    expect(adminResourceLocatorLabel("GHOST_SCRIPT", "assets/foo.js")).toBe("assets/foo.js");
+  });
+
+  it("falls back to the finding type when the locator is blank", () => {
+    expect(adminResourceLocatorLabel("SOME_NEW_TYPE", "")).toBe("SOME_NEW_TYPE");
+    expect(adminResourceLocatorLabel("SOME_NEW_TYPE", null)).toBe("SOME_NEW_TYPE");
+  });
+
+  // ---- drift guard: never blank for a real Admin-resource type -----------
+  it("returns a non-empty label for every ADMIN_RESOURCE type", () => {
+    for (const type of THEME_FILE_TYPE_SETS.adminResource) {
+      const label = adminResourceLocatorLabel(type, VALID_LOCATOR[type]);
+      expect(label.length, `${type} must have a non-blank locator label`).toBeGreaterThan(0);
     }
   });
 });

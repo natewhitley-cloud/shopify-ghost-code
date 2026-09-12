@@ -48,7 +48,7 @@ vi.mock("../../app/lib/plans", () => ({
 
 import { buildPricingPlansUrl, getPlanFeatures } from "../../app/lib/billing.server";
 import { getShopMetadata } from "../../app/models/shop.server";
-import { loader } from "../../app/routes/app.settings";
+import { loader, scopeBadge } from "../../app/routes/app.settings";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -138,5 +138,38 @@ describe("app.settings loader", () => {
       expect(e).toBeInstanceOf(Response);
       expect((e as Response).status).toBe(404);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Permissions card badge state
+// ---------------------------------------------------------------------------
+
+describe("scopeBadge (PermissionsCard)", () => {
+  it("marks a granted scope as Granted (success)", () => {
+    expect(scopeBadge(["read_products", "read_content"], "read_products")).toEqual({
+      tone: "success",
+      text: "Granted",
+    });
+  });
+
+  it("marks a scope absent from a successful query as Not granted (warning)", () => {
+    expect(scopeBadge(["read_content"], "read_products")).toEqual({
+      tone: "warning",
+      text: "Not granted",
+    });
+  });
+
+  it("marks an empty-but-successful query as Not granted, not unavailable", () => {
+    expect(scopeBadge([], "read_products")).toEqual({ tone: "warning", text: "Not granted" });
+  });
+
+  it("shows Status unavailable (neutral) when the query failed (granted === null)", () => {
+    // Regression: a rejected scopes.query() must not render every scope as a
+    // false "Not granted" — the grant state is unknown, not denied.
+    expect(scopeBadge(null, "read_products")).toEqual({
+      tone: "neutral",
+      text: "Status unavailable",
+    });
   });
 });

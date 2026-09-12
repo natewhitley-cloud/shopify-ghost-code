@@ -70,6 +70,23 @@ declare const shopify:
   | undefined;
 
 /**
+ * The badge treatment for one optional scope, derived from the App Bridge query
+ * result. When `granted` is null we never successfully read the grant state (the
+ * initial `shopify.scopes.query()` rejected), so we render a neutral "Status
+ * unavailable" badge rather than falsely asserting "Not granted" — a query
+ * failure is not proof the scope is missing. Pure + exported for unit testing.
+ */
+export function scopeBadge(
+  granted: string[] | null,
+  scope: string,
+): { tone: "success" | "warning" | "neutral"; text: string } {
+  if (granted === null) return { tone: "neutral", text: "Status unavailable" };
+  return granted.includes(scope)
+    ? { tone: "success", text: "Granted" }
+    : { tone: "warning", text: "Not granted" };
+}
+
+/**
  * Live granted-scope state for the optional per-audit scopes, with a re-consent
  * button that opens the App Bridge permission modal for only the missing scopes.
  * Rendered only for Standard+ plans (the Admin-resource detectors these scopes
@@ -157,7 +174,10 @@ function PermissionsCard() {
                 }}
               >
                 {OPTIONAL_SCOPES.map((scope) => {
-                  const isGranted = (granted ?? []).includes(scope);
+                  // When the query failed (granted === null) this renders a
+                  // neutral "Status unavailable" badge instead of a false
+                  // "Not granted" — we couldn't read the real grant state.
+                  const badge = scopeBadge(granted, scope);
                   const info = OPTIONAL_SCOPE_INFO[scope];
                   return (
                     <div
@@ -173,9 +193,7 @@ function PermissionsCard() {
                         <div style={{ fontWeight: 600, color: TEXT_PRIMARY }}>{info.label}</div>
                         <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>{info.unlocks}</div>
                       </div>
-                      <s-badge tone={isGranted ? "success" : "warning"}>
-                        {isGranted ? "Granted" : "Not granted"}
-                      </s-badge>
+                      <s-badge tone={badge.tone}>{badge.text}</s-badge>
                     </div>
                   );
                 })}

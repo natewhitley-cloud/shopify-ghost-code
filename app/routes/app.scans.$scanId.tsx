@@ -5,7 +5,11 @@ import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
-import { adminResourceLinkLabel, buildAdminResourceUrl } from "../lib/admin-resource-url";
+import {
+  adminResourceLinkLabel,
+  adminResourceLocatorLabel,
+  buildAdminResourceUrl,
+} from "../lib/admin-resource-url";
 import { copyToClipboard } from "../lib/clipboard";
 import {
   getFindingConfidence,
@@ -361,7 +365,16 @@ export function FindingRow({
       </td>
       <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
       <td>
-        <code style={{ fontSize: "12px" }}>{finding.filename}</code>
+        {isAdminResourceFinding(finding.findingType) ? (
+          // Admin-resource rows carry a synthetic locator with an embedded GID
+          // (developer plumbing), so show a human label instead of the raw path.
+          <span style={{ fontSize: "12px" }}>
+            {adminResourceLocatorLabel(finding.findingType, finding.filename)}
+          </span>
+        ) : (
+          // Theme-file rows: the filename is a real, editable theme path — show it verbatim.
+          <code style={{ fontSize: "12px" }}>{finding.filename}</code>
+        )}
         {themeEditorUrl && (
           <div style={{ marginTop: "4px" }}>
             <a href={themeEditorUrl} target="_top" rel="noreferrer" style={{ fontSize: "12px" }}>
@@ -1488,13 +1501,12 @@ export default function ScanDetail() {
           }) && (
             <div>
               <s-banner tone="warning">
-                {scan.skippedCategories.length} optional{" "}
-                {scan.skippedCategories.length !== 1 ? "checks were" : "check was"} skipped because
-                Ghost Code does not have permission to read:{" "}
+                This scan skipped {scan.skippedCategories.length}{" "}
+                {scan.skippedCategories.length !== 1 ? "checks" : "check"} because Ghost Code
+                didn&apos;t have the required permissions when it ran:{" "}
                 {skippedCategoryLabels(scan.skippedCategories).join(", ")}. Grant access on the{" "}
-                <Link to="/app/settings">Settings</Link> page to include{" "}
-                {scan.skippedCategories.length !== 1 ? "these checks" : "this check"} in future
-                scans.
+                <Link to="/app/settings">Settings</Link> page, then run a new scan to include{" "}
+                {scan.skippedCategories.length !== 1 ? "them" : "it"}.
               </s-banner>
             </div>
           )}

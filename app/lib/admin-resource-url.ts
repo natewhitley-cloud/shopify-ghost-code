@@ -162,3 +162,71 @@ export function adminResourceLinkLabel(findingType: string): string {
       return "View resource";
   }
 }
+
+/**
+ * A human-friendly label for an Admin-resource finding's synthetic locator, for
+ * the scan-detail findings "File" column. The stored `filename` for these types
+ * is developer plumbing (a resource prefix + embedded GID, e.g.
+ * `products/gid://shopify/Product/8234567890`), which is meaningless to a
+ * merchant, so this maps it to a plain-language description.
+ *
+ * Locator formats are the ones the Admin-resource detectors emit (documented in
+ * finding-classification.ts). Only the FILE-CELL text is affected — the raw
+ * locator is still what the exporter and deep-link builder consume.
+ *
+ * Mapping:
+ *   - GHOST_TAG / GHOST_PRICE (`products/{gid}`)            → "Product"
+ *   - GHOST_METAFIELD (`products/{gid}/metafields`)         → "Product metafield"
+ *   - GHOST_PAGE (`pages/{handle}`)                         → "Page: /pages/{handle}"
+ *   - GHOST_REDIRECT single (`redirects/{gid}`)             → "URL redirect"
+ *   - GHOST_REDIRECT bulk (`redirects/bulk/{prefix}`)       → "URL redirects: {prefix}"
+ *                                                             (the stored prefix has `/`
+ *                                                             replaced by `_`; restored here)
+ *   - GHOST_TRANSLATION (`translations/{locale}/{resource}`)→ "Translation: {locale} / {resource}"
+ *
+ * Anything unknown or unparseable falls back to the raw locator (or the finding
+ * type if the locator is blank) so the cell is never empty.
+ */
+export function adminResourceLocatorLabel(
+  findingType: string,
+  locator: string | null | undefined,
+): string {
+  const fallback = locator && locator.length > 0 ? locator : findingType;
+
+  switch (findingType) {
+    case "GHOST_TAG":
+    case "GHOST_PRICE":
+      return "Product";
+    case "GHOST_METAFIELD":
+      return "Product metafield";
+    case "GHOST_PAGE": {
+      const handle = pageHandleFromLocator(locator);
+      return handle ? `Page: /pages/${handle}` : fallback;
+    }
+    case "GHOST_REDIRECT": {
+      const bulkPrefix = "redirects/bulk/";
+      if (locator && locator.startsWith(bulkPrefix)) {
+        // Restore the `/` the detector replaced with `_` when storing the prefix.
+        const prefix = locator.slice(bulkPrefix.length).replace(/_/g, "/");
+        return prefix.length > 0 ? `URL redirects: ${prefix}` : "URL redirects";
+      }
+      return "URL redirect";
+    }
+    case "GHOST_TRANSLATION": {
+      const prefix = "translations/";
+      if (locator && locator.startsWith(prefix)) {
+        const rest = locator.slice(prefix.length);
+        const slash = rest.indexOf("/");
+        // Require a non-empty locale AND resource on either side of the slash.
+        if (slash > 0 && slash < rest.length - 1) {
+          const locale = rest.slice(0, slash);
+          const resource = rest.slice(slash + 1);
+          return `Translation: ${locale} / ${resource}`;
+        }
+      }
+      return fallback;
+    }
+    default:
+      return fallback;
+  }
+}
