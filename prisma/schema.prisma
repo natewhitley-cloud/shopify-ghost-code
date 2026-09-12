@@ -281,6 +281,13 @@ enum FindingType {
   // same-file conflict detector) so skippedCategories can scope-gate only this
   // audit without over-excluding the worker's findings (gc-47c.10 fix).
   JSON_LD_PRICE_CONFLICT
+  // Emitted by the malformed-JSON-LD detector (detectInvalidJsonLd in
+  // scan-engine.server.ts): a STATIC `application/ld+json` block fails JSON.parse,
+  // so search engines and AI answer/shopping agents discard it wholesale and the
+  // product/page becomes invisible to structured-data consumers. Liquid-templated
+  // blocks are excluded (their raw form legitimately isn't valid JSON). Theme-file
+  // only, no scope gate, all plans.
+  JSON_LD_INVALID
   GHOST_LAYOUT
   GHOST_TAG
   GHOST_PRICE
@@ -300,6 +307,14 @@ enum FindingType {
   // in the Admin. ONE FindingType covers all entity subtypes; the subtype is
   // carried at runtime in `description` + `appName` (no JSON column on Finding).
   DANGLING_REFERENCE
+  // Emitted by the checkout-extensibility sunset auditor (gc-b3c): the theme
+  // still relies on the now-sunset `layout/checkout.liquid` customization
+  // mechanism, which Shopify hard-blocks for Plus stores as of ~Aug 13, 2026.
+  // ONE FindingType covers all customization-depth subtypes (scripts / tracking
+  // / snippets / content-injection / layout); the subtype is carried at runtime
+  // in `description` + `appName` (no JSON column on Finding), mirroring
+  // DANGLING_REFERENCE.
+  CHECKOUT_SUNSET
 }
 
 enum SubmissionStatus {

@@ -179,6 +179,12 @@ export type PlanFeatures = {
    * Paid-only (Standard and above); Free does not get this audit (gc-m4h.7).
    */
   canDetectDanglingReferences: boolean;
+  /**
+   * Whether the plan includes checkout-extensibility sunset (Checkout Sunset)
+   * detection. Paid-only (Standard and above); Free does not get this audit
+   * (gc-b3c), mirroring canDetectDanglingReferences.
+   */
+  canDetectCheckoutSunset: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -193,6 +199,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         scanDiffing: false,
         scheduledScan: true, // Weekly scheduled scan, Sunday 6 AM UTC via weekly-scan cron
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
+        canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -204,6 +211,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         scanDiffing: true,
         scheduledScan: true, // Daily via poll-theme-changes coordinator
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
+        canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -217,6 +225,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         scanDiffing: false,
         scheduledScan: false,
         canDetectDanglingReferences: false, // Free does NOT get dangling-reference detection (gc-m4h.7)
+        canDetectCheckoutSunset: false, // Free does NOT get checkout-sunset detection (gc-b3c)
       };
   }
 }

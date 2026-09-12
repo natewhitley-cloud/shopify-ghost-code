@@ -904,6 +904,73 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Detector: JSON_LD_INVALID (malformed static JSON-LD)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit one JSON_LD_INVALID finding per STATIC `application/ld+json` block whose
+ * raw content fails `JSON.parse`.
+ *
+ * Why this matters: search engines and AI answer/shopping agents discard a
+ * malformed structured-data block wholesale, so any product/page relying on it
+ * silently becomes invisible to those consumers — a real, silent AEO failure the
+ * other JSON-LD detectors quietly skip past.
+ *
+ * Scope decisions (mirrors detectGhostJsonLd, which shares the block extractor):
+ *   - LIQUID-TEMPLATED BLOCKS ARE EXCLUDED. A block containing Liquid (`{{`/`{%`)
+ *     is rendered by the theme engine, so its RAW (pre-render) form legitimately
+ *     is not valid JSON. Reuses the exact same `LIQUID_TAG_RE` predicate the
+ *     existing JSON-LD detectors use — inventing a second predicate would risk
+ *     the two drifting apart (a false-positive on every Liquid-driven schema).
+ *   - EMPTY / WHITESPACE-ONLY BLOCKS ARE SKIPPED. An empty `<script ld+json>` has
+ *     no structured data to discard, so flagging it would be noise, not signal.
+ *   - Fires only when `JSON.parse` throws on the raw static block content.
+ *
+ * Theme-file only, NO scope gate, ALL plans — a pure static theme-file signal.
+ */
+export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+
+  let match: RegExpExecArray | null;
+  JSON_LD_BLOCK_RE.lastIndex = 0;
+
+  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
+    const blockContent = match[1];
+
+    // Liquid-templated blocks are rendered server-side; their raw form isn't
+    // meant to be valid JSON. Same predicate as detectGhostJsonLd.
+    if (LIQUID_TAG_RE.test(blockContent)) continue;
+
+    // An empty/whitespace-only block carries no data to lose — not a defect.
+    if (blockContent.trim().length === 0) continue;
+
+    try {
+      JSON.parse(blockContent);
+      continue; // parses cleanly — nothing to report
+    } catch {
+      // Falls through to emit the finding below.
+    }
+
+    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const codeSnippet = buildSnippet(file.content, lineNumber);
+    const severity = classifySeverity(FindingType.JSON_LD_INVALID, codeSnippet);
+
+    findings.push({
+      filename: file.filename,
+      lineNumber,
+      codeSnippet,
+      findingType: FindingType.JSON_LD_INVALID,
+      severity,
+      appName: undefined,
+      description:
+        "JSON-LD block is not valid JSON and will be ignored by search + AI shopping agents",
+    });
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Detector: JSON_LD_CONFLICT
 // ---------------------------------------------------------------------------
 
@@ -2849,6 +2916,7 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     findings.push(...detectGhostHrefLang(file));
     findings.push(...detectDuplicateMetaTags(file));
     findings.push(...detectGhostJsonLd(file));
+    findings.push(...detectInvalidJsonLd(file));
     findings.push(...detectJsonLdConflicts(file));
     findings.push(...detectGhostTextFragments(file));
     findings.push(...detectGhostPixels(file));

@@ -45,6 +45,7 @@ vi.mock("../../app/models/scan.server", () => ({
 
 import {
   canStartScan,
+  canDetectCheckoutSunset,
   canDetectDanglingReferences,
   canViewFindingDetails,
   canUseAutoRescan,
@@ -142,6 +143,28 @@ describe("canDetectDanglingReferences", () => {
 
   it("defaults to free-tier behavior for unknown plan names", () => {
     expect(canDetectDanglingReferences("unknown-plan")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canDetectCheckoutSunset — pure, plan-tier tests (gc-b3c: Standard+)
+// ---------------------------------------------------------------------------
+
+describe("canDetectCheckoutSunset", () => {
+  it("returns false for free plan", () => {
+    expect(canDetectCheckoutSunset("free")).toBe(false);
+  });
+
+  it("returns true for Standard plan", () => {
+    expect(canDetectCheckoutSunset("Standard")).toBe(true);
+  });
+
+  it("returns true for Professional plan", () => {
+    expect(canDetectCheckoutSunset("Professional")).toBe(true);
+  });
+
+  it("defaults to free-tier behavior for unknown plan names", () => {
+    expect(canDetectCheckoutSunset("unknown-plan")).toBe(false);
   });
 });
 

@@ -112,6 +112,12 @@ const REMEDIATION: Record<string, Remediation> = {
     howTo:
       "Remove the hard-coded application/ld+json block from the theme file and let Shopify or your active app generate structured data from live product data. Duplicate the theme first.",
   },
+  JSON_LD_INVALID: {
+    impact:
+      "This JSON-LD block is not valid JSON, so Google and AI shopping agents discard it entirely. Any product details, price, or availability it was meant to declare simply never reach them, and your product can be skipped in search and AI answers.",
+    howTo:
+      "Fix the broken application/ld+json block so it is valid JSON, or remove it if an active app or Shopify already generates the structured data. A JSON validator will point to the exact syntax error (often a trailing comma or an unquoted value). Duplicate the theme as a backup first.",
+  },
   DUPLICATE_META: {
     impact:
       "This meta tag appears twice on the same page, so crawlers and AI agents may read the wrong copy or discount the signal entirely.",
@@ -178,6 +184,12 @@ const REMEDIATION: Record<string, Remediation> = {
       "This link points at a product, collection, or page that no longer exists, so shoppers and AI shopping agents hit a 404. Broken links waste crawl budget and can drop the affected page from Google and AI answers.",
     howTo:
       "Fix the link to point at a page that still exists, or remove it if it is no longer needed. The referenced product, collection, or page has been deleted from your store. Duplicate the theme as a backup before editing the theme code.",
+  },
+
+  // ---- Sunset checkout customization mechanism ----
+  CHECKOUT_SUNSET: {
+    howTo:
+      "Your theme still uses checkout.liquid to customize checkout. As of the sunset date (around August 13, 2026), Shopify stops rendering checkout.liquid for Plus stores, so any custom code, tracking, or content it holds will no longer run at checkout. Recreate these customizations with Checkout Extensibility: move custom scripts and pixels to the customer events (web pixels) or checkout UI extensions, and rebuild injected content as checkout UI extensions in the checkout editor. Migrate and test on a draft before the cutover, and duplicate your live theme as a backup first.",
   },
 
   // ---- Theme settings ----

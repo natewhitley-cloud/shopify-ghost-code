@@ -137,6 +137,7 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   GHOST_PIXEL: "Tracking Pixels",
   JSON_LD_CONFLICT: "JSON-LD Conflicts",
   JSON_LD_PRICE_CONFLICT: "JSON-LD Price Mismatch",
+  JSON_LD_INVALID: "Invalid JSON-LD",
   GHOST_LAYOUT: "Layout Code",
   GHOST_TAG: "Product Tags",
   GHOST_PRICE: "Compare-at Prices",
@@ -152,6 +153,7 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   GHOST_AJAX: "AJAX Requests",
   DUPLICATE_LIBRARY: "Duplicate Libraries",
   DANGLING_REFERENCE: "Broken Links",
+  CHECKOUT_SUNSET: "Checkout Sunset",
 };
 
 // ---------------------------------------------------------------------------

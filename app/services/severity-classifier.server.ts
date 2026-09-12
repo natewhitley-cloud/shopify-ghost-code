@@ -35,6 +35,13 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.GHOST_PIXEL]: Severity.HIGH,
   [FindingType.JSON_LD_CONFLICT]: Severity.HIGH,
   [FindingType.JSON_LD_PRICE_CONFLICT]: Severity.HIGH,
+  // JSON_LD_INVALID is MEDIUM: a malformed structured-data block is discarded
+  // wholesale by search engines and AI agents, so the product/page loses its
+  // structured-data signal — a real discoverability loss, but not the live,
+  // shopper-facing or actively-wrong-data harm that drives the HIGH JSON-LD
+  // tiers (JSON_LD_CONFLICT / JSON_LD_PRICE_CONFLICT feed agents WRONG data;
+  // an invalid block simply yields NO data). MEDIUM matches GHOST_JSON_LD.
+  [FindingType.JSON_LD_INVALID]: Severity.MEDIUM,
   [FindingType.GHOST_LAYOUT]: Severity.MEDIUM,
   [FindingType.GHOST_TAG]: Severity.LOW,
   [FindingType.GHOST_PRICE]: Severity.HIGH,
@@ -57,6 +64,13 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.GHOST_AJAX]: Severity.HIGH,
   [FindingType.DUPLICATE_LIBRARY]: Severity.MEDIUM,
   [FindingType.DANGLING_REFERENCE]: Severity.MEDIUM,
+  // CHECKOUT_SUNSET is HIGH (the highest severity this app emits — there is no
+  // CRITICAL tier): once Shopify hard-blocks checkout.liquid for Plus stores
+  // (~Aug 13, 2026), the file stops rendering entirely, so every customization
+  // it carries (custom scripts, tracking, injected snippets) breaks at the
+  // single most conversion-critical step. This is a hard, dated breakage, not a
+  // cosmetic or discoverability decay.
+  [FindingType.CHECKOUT_SUNSET]: Severity.HIGH,
 };
 
 // ---------------------------------------------------------------------------

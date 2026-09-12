@@ -49,6 +49,7 @@ import {
   updateScanStatus,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
+import { detectCheckoutSunset } from "../../app/services/checkout-sunset-detector.server";
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
@@ -260,6 +261,20 @@ export const scanTheme = inngest.createFunction(
           benignLibrarySkips,
         } = await scanThemeFilesInPool(files);
 
+        // Checkout-extensibility sunset audit (gc-b3c): PURE, static, no Admin
+        // API — it reads only the theme files already in scope here, so it runs
+        // inline in this core step rather than as a separate fetch step. Plan-
+        // gated to Standard+ (mirrors dangling-reference gating gc-m4h.7): for
+        // Free shops the detector is not run, so no CHECKOUT_SUNSET findings are
+        // produced. Emits at most one finding (checkout.liquid present + non-
+        // trivial); its rows are persisted with the theme findings below, under
+        // saveThemeFindings' scan-scoped idempotency guard.
+        const { canDetectCheckoutSunset } = await import("../../app/lib/plan-gating.server");
+        const checkoutSunsetFindings = canDetectCheckoutSunset(shop.plan)
+          ? detectCheckoutSunset(files)
+          : [];
+        const themeFindings = [...findings, ...checkoutSunsetFindings];
+
         // Surface any files skipped for exceeding the per-file size cap so the
         // drop is never silent (gc-06e.2). Real theme Liquid files are far under
         // the cap; a skip here is anomalous and worth an ops signal.
@@ -289,7 +304,7 @@ export const scanTheme = inngest.createFunction(
           function: "scan-theme",
           event: "scan_complete",
           shopId,
-          findingCount: findings.length,
+          findingCount: themeFindings.length,
           unknownScriptCount: unknownScripts.length,
         });
 
@@ -298,7 +313,7 @@ export const scanTheme = inngest.createFunction(
         // terminal status is set only in the finalize step after every audit
         // has run, so a late audit failure can still mark the scan FAILED
         // (LOG-4).
-        await saveThemeFindings(scanId, findings);
+        await saveThemeFindings(scanId, themeFindings);
 
         // Persist unknown scripts separately (not part of the transaction —
         // these are informational and don't affect scan correctness).
@@ -318,7 +333,7 @@ export const scanTheme = inngest.createFunction(
         // "resolved" (gc-06e.19). A skip is anomalous, so this list is normally
         // empty and at most a handful of paths.
         return {
-          findingCount: findings.length,
+          findingCount: themeFindings.length,
           fileCount: files.length,
           skippedFilePaths: (skippedFiles ?? []).map((f) => f.filename),
           // Tiny (a handful per theme), so it safely crosses the step boundary

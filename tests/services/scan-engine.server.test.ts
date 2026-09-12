@@ -11,6 +11,7 @@ import {
   detectGhostHrefLang,
   detectDuplicateMetaTags,
   detectGhostJsonLd,
+  detectInvalidJsonLd,
   detectJsonLdConflicts,
   extractStaticProductCandidates,
   detectGhostTextFragments,
@@ -4893,5 +4894,88 @@ describe("detectDuplicateLibraries", () => {
     ];
     const { findings } = scanThemeFiles(files);
     expect(findingsOfType(findings, FindingType.DUPLICATE_LIBRARY)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JSON_LD_INVALID detection (detectInvalidJsonLd)
+// ---------------------------------------------------------------------------
+
+describe("detectInvalidJsonLd", () => {
+  it("flags a malformed static JSON-LD block", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      // Trailing comma → invalid JSON.
+      content:
+        '<script type="application/ld+json">{"@type": "Product", "name": "Widget",}</script>',
+    };
+    const findings = detectInvalidJsonLd(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.JSON_LD_INVALID);
+    expect(findings[0].filename).toBe("templates/product.liquid");
+    expect(findings[0].description.toLowerCase()).toContain("not valid json");
+    // Malformed structured data → MEDIUM by default.
+    expect(findings[0].severity).toBe(Severity.MEDIUM);
+  });
+
+  it("does NOT flag a valid static JSON-LD block", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content:
+        '<script type="application/ld+json">{"@context":"https://schema.org","@type":"Product","name":"Widget"}</script>',
+    };
+    expect(detectInvalidJsonLd(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag a Liquid-templated block even when its raw form is not valid JSON (FP guard)", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      // Raw content is unparseable JSON, but it is a native Liquid-rendered block.
+      content:
+        '<script type="application/ld+json">{"@type":"Product","name":{{ product.title | json }},}</script>',
+    };
+    expect(detectInvalidJsonLd(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag a Liquid {% %} tag block whose raw form is invalid JSON (FP guard)", () => {
+    const file: ThemeFile = {
+      filename: "sections/product.liquid",
+      content:
+        '<script type="application/ld+json">{% if product %}{"@type":"Product"}{% endif %}</script>',
+    };
+    expect(detectInvalidJsonLd(file)).toHaveLength(0);
+  });
+
+  it("skips empty / whitespace-only blocks (no data to lose)", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: '<script type="application/ld+json">   \n  </script>',
+    };
+    expect(detectInvalidJsonLd(file)).toHaveLength(0);
+  });
+
+  it("emits one finding per malformed block when multiple are present", () => {
+    const file: ThemeFile = {
+      filename: "templates/product.liquid",
+      content: [
+        '<script type="application/ld+json">{not valid json}</script>',
+        '<script type="application/ld+json">{"@type":"Product","name":"Valid"}</script>',
+        "<script type=\"application/ld+json\">{'@type': 'Review'}</script>",
+      ].join("\n"),
+    };
+    const findings = detectInvalidJsonLd(file);
+    expect(findings).toHaveLength(2);
+    expect(findings.every((f) => f.findingType === FindingType.JSON_LD_INVALID)).toBe(true);
+  });
+
+  it("surfaces JSON_LD_INVALID findings through scanThemeFiles (all-plans, no gate)", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "templates/product.liquid",
+        content: '<script type="application/ld+json">{"@type":"Product",,}</script>',
+      },
+    ];
+    const { findings } = scanThemeFiles(files);
+    expect(findingsOfType(findings, FindingType.JSON_LD_INVALID)).toHaveLength(1);
   });
 });

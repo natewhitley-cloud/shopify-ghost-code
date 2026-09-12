@@ -211,6 +211,17 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "compounding",
     agentic: true,
   },
+  // JSON_LD_INVALID: a malformed static JSON-LD block that search engines and AI
+  // agents discard wholesale. discoverability + agentic (it shapes whether Google
+  // & AI can read the product's structured data at all); compounding, not act-now
+  // — there is no live shopper-facing breakage, the signal just silently fails to
+  // register (mirrors GHOST_JSON_LD / JSON_LD_CONFLICT).
+  JSON_LD_INVALID: {
+    primary: "discoverability",
+    secondary: [],
+    urgency: "compounding",
+    agentic: true,
+  },
   GHOST_LAYOUT: {
     primary: "customers-see-it",
     secondary: ["housekeeping"],
@@ -300,6 +311,17 @@ export const CONSEQUENCE_MAP: Record<
     secondary: ["discoverability"],
     urgency: "act-now",
     agentic: true,
+  },
+  // CHECKOUT_SUNSET: reliance on the sunset checkout.liquid mechanism. Primary
+  // lane is "customers-see-it" — the breakage lands at checkout, the most
+  // shopper-facing step, and takes custom scripts/tracking/snippets down with it.
+  // act-now: the Plus hard-block is a dated, imminent event (~Aug 13, 2026), not
+  // a slow decay. Not agentic — it does not shape how Google/AI read the store.
+  CHECKOUT_SUNSET: {
+    primary: "customers-see-it",
+    secondary: [],
+    urgency: "act-now",
+    agentic: false,
   },
 };
 

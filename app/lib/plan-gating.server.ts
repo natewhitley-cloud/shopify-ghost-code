@@ -139,6 +139,15 @@ export function canDetectDanglingReferences(planName: string): boolean {
 }
 
 /**
+ * Whether the plan includes checkout-extensibility sunset (Checkout Sunset)
+ * detection. Paid-only (Standard and above); Free does not get this audit
+ * (gc-b3c), mirroring canDetectDanglingReferences.
+ */
+export function canDetectCheckoutSunset(planName: string): boolean {
+  return getPlanFeatures(planName).canDetectCheckoutSunset;
+}
+
+/**
  * Whether the plan can scan more than one theme (multi-theme support).
  *
  * Derived from the plan matrix's `maxThemes` (single source of truth in

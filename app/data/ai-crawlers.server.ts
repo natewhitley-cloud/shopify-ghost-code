@@ -20,4 +20,22 @@ export const AI_CRAWLER_USER_AGENTS = [
   "anthropic-ai",
   "Bytespider",
   "Applebot-Extended",
+  // OpenAI — search index + user-triggered fetch (distinct from the GPTBot training crawler).
+  "OAI-SearchBot",
+  "ChatGPT-User",
+  // Perplexity — user-triggered fetch (distinct from the PerplexityBot index crawler).
+  "Perplexity-User",
+  // Meta — Llama AI crawler + its user-triggered fetcher.
+  "Meta-ExternalAgent",
+  "Meta-ExternalFetcher",
+  // Amazon — crawler feeding Amazon AI/Alexa answers.
+  "Amazonbot",
+  // Cohere — LLM training/retrieval crawler.
+  "cohere-ai",
+  // You.com AI search crawler.
+  "YouBot",
+  // Diffbot — knowledge-graph / LLM data crawler.
+  "Diffbot",
+  // Google — Vertex AI Agents fetcher (distinct from Google-Extended).
+  "Google-CloudVertexBot",
 ];

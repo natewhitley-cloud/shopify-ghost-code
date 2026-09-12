@@ -54,6 +54,7 @@ export function createZeroTypeCounts(): Record<FindingType, number> {
     [FindingType.GHOST_PIXEL]: 0,
     [FindingType.JSON_LD_CONFLICT]: 0,
     [FindingType.JSON_LD_PRICE_CONFLICT]: 0,
+    [FindingType.JSON_LD_INVALID]: 0,
     [FindingType.GHOST_LAYOUT]: 0,
     [FindingType.GHOST_TAG]: 0,
     [FindingType.GHOST_PRICE]: 0,
@@ -69,6 +70,7 @@ export function createZeroTypeCounts(): Record<FindingType, number> {
     [FindingType.GHOST_AJAX]: 0,
     [FindingType.DUPLICATE_LIBRARY]: 0,
     [FindingType.DANGLING_REFERENCE]: 0,
+    [FindingType.CHECKOUT_SUNSET]: 0,
   };
 }
 

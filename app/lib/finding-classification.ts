@@ -120,6 +120,20 @@ const HEURISTIC_FINDING_TYPES = new Set([
   // heuristic/signature split is about app-attribution, not certainty; existence
   // here is Admin-verified and high-certainty — see gc-m4h spike risk R3.)
   "DANGLING_REFERENCE",
+  // CHECKOUT_SUNSET — a STRUCTURAL match on the presence + content of a specific
+  // theme file (`layout/checkout.liquid`), not a positive known-app signature.
+  // The heuristic/signature split is about app-attribution: this finding has no
+  // app-attribution axis (it names no app), so it lands in HEURISTIC, mirroring
+  // DANGLING_REFERENCE. (Certainty is high — the file's existence is directly
+  // observed — but that is orthogonal to the confidence-tier axis.)
+  "CHECKOUT_SUNSET",
+  // JSON_LD_INVALID — a deterministic `JSON.parse` failure on a static JSON-LD
+  // block, not a positive known-app signature. Like DANGLING_REFERENCE and
+  // CHECKOUT_SUNSET it has no app-attribution axis (it names no app), so it
+  // lands in HEURISTIC on the documented app-attribution split. (Certainty is
+  // high — a malformed block is unambiguously broken — but that is orthogonal to
+  // the confidence-tier axis.)
+  "JSON_LD_INVALID",
 ]);
 
 /**
@@ -254,10 +268,16 @@ const THEME_FILE_FINDING_TYPES = new Set([
   "GHOST_JSON_LD",
   "JSON_LD_CONFLICT",
   "JSON_LD_PRICE_CONFLICT",
+  // JSON_LD_INVALID — attributed to the theme file whose static JSON-LD block
+  // failed to parse, so it gets an "Open in theme editor" deep-link.
+  "JSON_LD_INVALID",
   "GHOST_LAYOUT",
   "ORPHAN_ASSET",
   "SETTINGS_DRIFT",
   "DANGLING_REFERENCE",
+  // CHECKOUT_SUNSET — attributed to `layout/checkout.liquid`, a real, editable
+  // theme file, so it gets an "Open in theme editor" deep-link.
+  "CHECKOUT_SUNSET",
 ]);
 
 /**

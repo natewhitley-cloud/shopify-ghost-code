@@ -25,6 +25,7 @@ const AGENTIC_IMPACT_TYPES = [
   "GHOST_OG",
   "JSON_LD_CONFLICT",
   "JSON_LD_PRICE_CONFLICT",
+  "JSON_LD_INVALID",
   "DUPLICATE_META",
   "DANGLING_REFERENCE",
 ] as const;
@@ -36,8 +37,8 @@ const AGENTIC_IMPACT_TYPES = [
 describe("getFindingRemediation — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 29 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(29);
+  it("has 31 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(31);
   });
 
   it.each(ALL_TYPES)("returns a non-empty blurb for %s", (type) => {

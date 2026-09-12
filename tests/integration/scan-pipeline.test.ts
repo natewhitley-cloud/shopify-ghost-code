@@ -61,6 +61,10 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
   canStartScan: vi.fn(),
   canUseMultipleThemes: vi.fn(() => false),
   getWeekStartUTC: vi.fn(() => new Date("2024-01-15T00:00:00Z")),
+  // Checkout-sunset detection is gated in the core fetch-and-scan step (gc-b3c);
+  // keep it inert here so this pipeline-mechanics test's finding counts are
+  // unaffected (the detector has its own unit coverage).
+  canDetectCheckoutSunset: vi.fn(() => false),
 }));
 
 vi.mock("../../app/services/theme-fetcher.server", () => ({
