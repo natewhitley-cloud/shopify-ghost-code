@@ -14,6 +14,7 @@ import {
   CONFIDENCE_TYPE_SETS,
   getFindingConfidence,
   hasVisualImpact,
+  isAdminResourceFinding,
   isThemeFileFinding,
   THEME_FILE_TYPE_SETS,
 } from "../../app/lib/finding-classification";
@@ -261,5 +262,44 @@ describe("isThemeFileFinding", () => {
     const overlap = themeFile.filter((t) => THEME_FILE_TYPE_SETS.adminResource.has(t));
     expect(overlap).toEqual([]);
     expect(themeFile.length + adminResource.length).toBe(29);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isAdminResourceFinding — exact inverse of isThemeFileFinding (gc-7h9)
+// ---------------------------------------------------------------------------
+
+describe("isAdminResourceFinding", () => {
+  const ADMIN_RESOURCE_TYPES = [
+    "GHOST_PAGE",
+    "GHOST_REDIRECT",
+    "GHOST_PRICE",
+    "GHOST_TAG",
+    "GHOST_METAFIELD",
+    "GHOST_TRANSLATION",
+  ];
+
+  it.each(ADMIN_RESOURCE_TYPES)("returns true for Admin-resource type %s", (type) => {
+    expect(isAdminResourceFinding(type)).toBe(true);
+  });
+
+  it("returns false for theme-file types", () => {
+    expect(isAdminResourceFinding("GHOST_SCRIPT")).toBe(false);
+    expect(isAdminResourceFinding("DANGLING_REFERENCE")).toBe(false);
+  });
+
+  it("returns false for unknown / empty types", () => {
+    expect(isAdminResourceFinding("UNKNOWN_TYPE")).toBe(false);
+    expect(isAdminResourceFinding("")).toBe(false);
+  });
+
+  it("is the exact inverse of isThemeFileFinding over the enum", () => {
+    const allTypes = Object.values(FindingType);
+    for (const type of allTypes) {
+      expect(
+        isAdminResourceFinding(type),
+        `${type}: isAdminResourceFinding must be the inverse of isThemeFileFinding`,
+      ).toBe(!isThemeFileFinding(type));
+    }
   });
 });

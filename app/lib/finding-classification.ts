@@ -305,6 +305,21 @@ export function isThemeFileFinding(findingType: string): boolean {
 }
 
 /**
+ * Returns true if the finding's `filename` is a SYNTHETIC Admin-resource locator
+ * (product / page / redirect / metafield / translation), so the row can offer a
+ * deep-link to that resource's best-available admin/storefront surface instead of
+ * a theme-editor link (gc-7h9). Exact inverse of isThemeFileFinding over the
+ * enum: the two sets partition every FindingType, so a finding gets at most one
+ * link. Unknown/unclassified types default to FALSE — safer to omit a link for an
+ * untriaged new type than to deep-link a locator we cannot map.
+ *
+ * Pure function of findingType — no database lookup required.
+ */
+export function isAdminResourceFinding(findingType: string): boolean {
+  return ADMIN_RESOURCE_FINDING_TYPES.has(findingType);
+}
+
+/**
  * Exposed for the drift-guard test: the two curated sets that partition the
  * FindingType enum by whether the finding's filename is a theme file. Not for
  * rendering — use isThemeFileFinding() there.

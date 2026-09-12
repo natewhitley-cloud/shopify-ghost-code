@@ -5,10 +5,12 @@ import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
+import { adminResourceLinkLabel, buildAdminResourceUrl } from "../lib/admin-resource-url";
 import { copyToClipboard } from "../lib/clipboard";
 import {
   getFindingConfidence,
   hasVisualImpact,
+  isAdminResourceFinding,
   isThemeFileFinding,
 } from "../lib/finding-classification";
 import {
@@ -326,6 +328,14 @@ export function FindingRow({
     shopDomain && isThemeFileFinding(finding.findingType)
       ? buildThemeEditorUrl(shopDomain, themeId, finding.filename)
       : null;
+  // Admin-resource deep-link — the parallel of themeEditorUrl for finding types
+  // whose filename is a synthetic resource locator (product/page/redirect/
+  // metafield/translation) rather than a theme file. The theme-file and
+  // Admin-resource sets partition the enum, so at most one of these is non-null.
+  const adminResourceUrl =
+    shopDomain && isAdminResourceFinding(finding.findingType)
+      ? buildAdminResourceUrl(shopDomain, finding.findingType, finding.filename)
+      : null;
   return (
     <tr>
       <td>
@@ -355,6 +365,13 @@ export function FindingRow({
           <div style={{ marginTop: "4px" }}>
             <a href={themeEditorUrl} target="_top" rel="noreferrer" style={{ fontSize: "12px" }}>
               Open in theme editor
+            </a>
+          </div>
+        )}
+        {adminResourceUrl && (
+          <div style={{ marginTop: "4px" }}>
+            <a href={adminResourceUrl} target="_top" rel="noreferrer" style={{ fontSize: "12px" }}>
+              {adminResourceLinkLabel(finding.findingType)}
             </a>
           </div>
         )}
