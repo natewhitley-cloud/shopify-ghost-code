@@ -33,6 +33,8 @@ vi.mock("../../app/db.server", () => ({
     finding: {
       deleteMany: vi.fn(),
       count: vi.fn(),
+      findMany: vi.fn(),
+      groupBy: vi.fn(),
     },
   },
 }));
@@ -50,6 +52,10 @@ vi.mock("../../app/services/theme-fetcher.server", () => ({
 vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
   MAX_SCANNABLE_FILE_BYTES: 1_000_000,
+  // Real-behaviour stub so the core step's scannableFileCount is meaningful.
+  isScannableFile: (filename: string) =>
+    filename.endsWith(".liquid") &&
+    ["templates/", "sections/", "snippets/", "layout/"].some((p) => filename.startsWith(p)),
 }));
 
 vi.mock("../../app/services/scan-pool.server", () => ({
@@ -58,6 +64,17 @@ vi.mock("../../app/services/scan-pool.server", () => ({
 
 vi.mock("../../app/models/unknown-script.server", () => ({
   createUnknownScripts: vi.fn(),
+}));
+
+vi.mock("../../app/models/scan-domain.server", () => ({
+  createScanDomains: vi.fn(),
+}));
+
+// scan_signal telemetry (Feature 2): mock the sink so the emitted metadata can be
+// asserted. OPS_EVENT_TYPES is re-declared minimally — only SCAN_SIGNAL is read.
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordOpsEvent: vi.fn(),
+  OPS_EVENT_TYPES: { SCAN_SIGNAL: "scan_signal" },
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -146,6 +163,8 @@ vi.mock("../../app/services/dangling-reference-resolver.server", () => ({
 import db from "../../app/db.server";
 import { TransientScopeCheckError } from "../../app/lib/scope-check.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
+import { recordOpsEvent } from "../../app/models/ops-event.server";
+import { createScanDomains } from "../../app/models/scan-domain.server";
 import {
   finalizeScan,
   updateScanStatus,
@@ -186,7 +205,12 @@ import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from
 const mockDb = db as unknown as {
   shop: { findUnique: ReturnType<typeof vi.fn> };
   scan: { findUnique: ReturnType<typeof vi.fn>; update: ReturnType<typeof vi.fn> };
-  finding: { deleteMany: ReturnType<typeof vi.fn>; count: ReturnType<typeof vi.fn> };
+  finding: {
+    deleteMany: ReturnType<typeof vi.fn>;
+    count: ReturnType<typeof vi.fn>;
+    findMany: ReturnType<typeof vi.fn>;
+    groupBy: ReturnType<typeof vi.fn>;
+  };
 };
 const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
@@ -197,6 +221,8 @@ const mockGetPreviousScanForTheme = getPreviousScanForTheme as ReturnType<typeof
 const mockSaveThemeFindings = saveThemeFindings as ReturnType<typeof vi.fn>;
 const mockCreateFindings = createFindings as ReturnType<typeof vi.fn>;
 const mockCreateUnknownScripts = createUnknownScripts as ReturnType<typeof vi.fn>;
+const mockCreateScanDomains = createScanDomains as ReturnType<typeof vi.fn>;
+const mockRecordOpsEvent = recordOpsEvent as ReturnType<typeof vi.fn>;
 
 // Audit scope checks
 const mockHasTranslationScope = hasTranslationScope as ReturnType<typeof vi.fn>;
@@ -309,6 +335,11 @@ beforeEach(() => {
   mockDb.scan.update.mockResolvedValue(undefined);
   mockDb.finding.deleteMany.mockResolvedValue({ count: 0 });
   mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length);
+  // Resolution diff (Feature 3) reads current findings; scan_signal (Feature 2)
+  // reads the detector histogram. Default to empty — tests that exercise the
+  // diff/histogram override these.
+  mockDb.finding.findMany.mockResolvedValue([]);
+  mockDb.finding.groupBy.mockResolvedValue([]);
   mockUnauthenticated.admin.mockResolvedValue({ admin: MOCK_ADMIN });
 
   // Default happy-path wiring for services
@@ -324,6 +355,8 @@ beforeEach(() => {
   mockSaveThemeFindings.mockResolvedValue(undefined);
   mockCreateFindings.mockResolvedValue({ count: 0 });
   mockCreateUnknownScripts.mockResolvedValue({ count: 0 });
+  mockCreateScanDomains.mockResolvedValue({ count: 0 });
+  mockRecordOpsEvent.mockResolvedValue(undefined);
 
   // Default audit wiring: every scope IS granted, but the detectors find
   // nothing. This makes the audit steps genuinely run end-to-end (scope probe
@@ -460,6 +493,10 @@ describe("scanTheme — happy path", () => {
       findingCount: MOCK_FINDINGS.length,
       skippedCategories: [],
       skippedFiles: [],
+      // First-ever scan (no prior) → every finding is new; nothing resolved/carried.
+      newFindingCount: MOCK_FINDINGS.length,
+      resolvedFindingCount: 0,
+      persistedFindingCount: 0,
     });
   });
 
@@ -483,6 +520,9 @@ describe("scanTheme — happy path", () => {
       findingCount: MOCK_FINDINGS.length,
       skippedCategories: [],
       skippedFiles: ["sections/bloated.liquid", "assets/huge.js"],
+      newFindingCount: MOCK_FINDINGS.length,
+      resolvedFindingCount: 0,
+      persistedFindingCount: 0,
     });
   });
 
@@ -813,6 +853,9 @@ describe("scanTheme — optional audit steps", () => {
           FindingType.GHOST_METAFIELD,
         ],
         skippedFiles: [],
+        newFindingCount: MOCK_FINDINGS.length,
+        resolvedFindingCount: 0,
+        persistedFindingCount: 0,
       });
 
       expect(result).toEqual({
@@ -925,6 +968,9 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       // JSON_LD_PRICE_CONFLICT must NOT appear — flag-off is not a scope skip.
       skippedCategories: [],
       skippedFiles: [],
+      newFindingCount: MOCK_FINDINGS.length,
+      resolvedFindingCount: 0,
+      persistedFindingCount: 0,
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1011,6 +1057,9 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
         FindingType.JSON_LD_PRICE_CONFLICT,
       ],
       skippedFiles: [],
+      newFindingCount: MOCK_FINDINGS.length,
+      resolvedFindingCount: 0,
+      persistedFindingCount: 0,
     });
     expect(result.status).toBe("COMPLETED");
   });
@@ -1054,6 +1103,9 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       // Flag-off is a deliberate disable, NOT a scope skip.
       skippedCategories: [],
       skippedFiles: [],
+      newFindingCount: MOCK_FINDINGS.length,
+      resolvedFindingCount: 0,
+      persistedFindingCount: 0,
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1076,6 +1128,9 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       // Plan gate is a deliberate disable, NOT a scope skip.
       skippedCategories: [],
       skippedFiles: [],
+      newFindingCount: MOCK_FINDINGS.length,
+      resolvedFindingCount: 0,
+      persistedFindingCount: 0,
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1282,12 +1337,21 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       findingCount: 0,
       skippedCategories: [],
       skippedFiles: [],
+      // No prior scan → first-scan baseline: all zeros.
+      newFindingCount: 0,
+      resolvedFindingCount: 0,
+      persistedFindingCount: 0,
     });
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
 
   it("completes normally when 0 files are fetched and the prior scan had zero findings", async () => {
-    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prior-scan-clean", findingCount: 0 });
+    // findings:[] so the finalize-step resolution diff (Feature 3) can run.
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prior-scan-clean",
+      findingCount: 0,
+      findings: [],
+    });
 
     const result = await runScanTheme();
 
@@ -1295,15 +1359,224 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
 
-  it("does NOT run the guard (or look up a prior scan) when files were fetched", async () => {
+  it("trusts a non-empty fetch and completes even when a prior scan had findings (guard bypassed)", async () => {
     mockFetchThemeFiles.mockResolvedValue(MOCK_FILES);
     mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
-    // Even if a prior scan with findings exists, a non-empty fetch is trusted.
-    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prior", findingCount: 5 });
+    // A prior scan with findings exists, but a non-empty fetch is trusted so the
+    // zero-file guard never fires and the scan completes. findings:[] lets the
+    // finalize-step resolution diff run (the guard's own prior-scan lookup no
+    // longer being the only caller — finalize also looks it up now).
+    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prior", findingCount: 5, findings: [] });
 
     const result = await runScanTheme();
 
-    expect(mockGetPreviousScanForTheme).not.toHaveBeenCalled();
     expect(result.status).toBe("COMPLETED");
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 1 — third-party domain persistence
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — third-party domain capture (Feature 1)", () => {
+  it("persists the scan engine's third-party domains via createScanDomains", async () => {
+    const domains = [
+      {
+        domain: "static.klaviyo.com",
+        sources: ["script"],
+        refCount: 1,
+        matched: true,
+        appName: "Klaviyo",
+        benign: false,
+      },
+      {
+        domain: "api.unknownvendor.io",
+        sources: ["ajax"],
+        refCount: 2,
+        matched: false,
+        appName: null,
+        benign: false,
+      },
+    ];
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      thirdPartyDomains: domains,
+    });
+
+    await runScanTheme();
+
+    expect(mockCreateScanDomains).toHaveBeenCalledWith(SCAN_ID, domains);
+  });
+
+  it("persists an empty domain list when the engine returns none", async () => {
+    mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
+
+    await runScanTheme();
+
+    expect(mockCreateScanDomains).toHaveBeenCalledWith(SCAN_ID, []);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 2 — per-scan scan_signal OpsEvent
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — scan_signal OpsEvent (Feature 2)", () => {
+  it("emits one scan_signal with the detectorHits histogram and threaded scalars", async () => {
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [{ url: "https://x" }, { url: "https://y" }],
+      benignLibrarySkips: 3,
+      thirdPartyDomains: [
+        {
+          domain: "a.io",
+          sources: ["script"],
+          refCount: 1,
+          matched: false,
+          appName: null,
+          benign: false,
+        },
+      ],
+    });
+    // Authoritative per-detector histogram (DB groupBy, _count:true → number).
+    mockDb.finding.groupBy.mockResolvedValue([
+      { findingType: "GHOST_SCRIPT", _count: 2 },
+      { findingType: "GHOST_STYLE", _count: 1 },
+    ]);
+    // Scan row read back for timing (durationMs = completedAt - startedAt).
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+      startedAt: new Date("2026-06-15T00:00:00Z"),
+      completedAt: new Date("2026-06-15T00:00:05Z"),
+    });
+
+    await runScanTheme();
+
+    expect(mockRecordOpsEvent).toHaveBeenCalledTimes(1);
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.eventType).toBe("scan_signal");
+    expect(arg.key).toBe(SCAN_ID);
+    expect(arg.metadata).toMatchObject({
+      shopId: SHOP_ID,
+      scanId: SCAN_ID,
+      plan: "Standard",
+      themeId: THEME_ID,
+      fileCount: MOCK_FILES.length,
+      scannableFileCount: MOCK_FILES.length,
+      skippedFileCount: 0,
+      benignLibrarySkips: 3,
+      unknownScriptCount: 2,
+      thirdPartyDomainCount: 1,
+      detectorHits: { GHOST_SCRIPT: 2, GHOST_STYLE: 1 },
+      findingCount: MOCK_FINDINGS.length,
+      durationMs: 5000,
+    });
+  });
+
+  it("does NOT throw and still completes the scan when the signal groupBy fails", async () => {
+    mockDb.finding.groupBy.mockRejectedValue(new Error("groupBy exploded"));
+
+    const result = await runScanTheme();
+
+    // Telemetry failure is swallowed — the scan is unaffected.
+    expect(result.status).toBe("COMPLETED");
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feature 3 — resolution tracking (diff → counts)
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — resolution counts (Feature 3)", () => {
+  const findingA = {
+    filename: "sections/a.liquid",
+    findingType: "GHOST_SCRIPT",
+    codeSnippet: "aaa",
+    lineNumber: 1,
+    severity: "HIGH",
+    appName: null,
+    description: "A",
+  };
+  const findingB = {
+    filename: "sections/b.liquid",
+    findingType: "GHOST_STYLE",
+    codeSnippet: "bbb",
+    lineNumber: 1,
+    severity: "MEDIUM",
+    appName: null,
+    description: "B",
+  };
+  const findingC = {
+    filename: "sections/c.liquid",
+    findingType: "GHOST_SNIPPET",
+    codeSnippet: "ccc",
+    lineNumber: 1,
+    severity: "LOW",
+    appName: null,
+    description: "C",
+  };
+
+  it("computes new/resolved/persisted via the differ against the previous scan", async () => {
+    // Current DB findings: A (persists), C (new). Prior: A (persists), B (resolved).
+    mockScanThemeFiles.mockReturnValue({ findings: [findingA, findingC], unknownScripts: [] });
+    mockDb.finding.findMany.mockResolvedValue([findingA, findingC]);
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+    });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prior",
+      findingCount: 2,
+      findings: [findingA, findingB],
+    });
+
+    await runScanTheme();
+
+    const finalizeArg = mockFinalizeScan.mock.calls[0][1];
+    expect(finalizeArg).toMatchObject({
+      newFindingCount: 1, // C
+      resolvedFindingCount: 1, // B
+      persistedFindingCount: 1, // A
+    });
+  });
+
+  it("does NOT count a scope-skipped category's prior findings as resolved (LOG-4)", async () => {
+    // The product-tag audit's scope is missing → GHOST_TAG lands in
+    // skippedCategories, so a prior GHOST_TAG finding absent this run must NOT be
+    // reported resolved (we did not re-check it).
+    mockHasProductScope.mockResolvedValue(false);
+
+    const priorTagFinding = {
+      filename: "n/a",
+      findingType: "GHOST_TAG",
+      codeSnippet: "tag",
+      lineNumber: 0,
+      severity: "LOW",
+      appName: null,
+      description: "prior tag",
+    };
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+    });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prior",
+      findingCount: 1,
+      findings: [priorTagFinding],
+    });
+
+    await runScanTheme();
+
+    const finalizeArg = mockFinalizeScan.mock.calls[0][1];
+    expect(finalizeArg.skippedCategories).toContain("GHOST_TAG");
+    expect(finalizeArg.resolvedFindingCount).toBe(0);
+    expect(finalizeArg.newFindingCount).toBe(0);
   });
 });

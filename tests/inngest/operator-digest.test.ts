@@ -40,6 +40,7 @@ import {
   buildDigestBody,
   computeMrr,
   computePlanMix,
+  computeResolutionRollup,
   computeScanStatusCounts,
   computeScansPerStore,
   countUninstallEventsExcluding,
@@ -435,6 +436,33 @@ describe("sortFindingTypeCounts", () => {
 });
 
 // ---------------------------------------------------------------------------
+// computeResolutionRollup (Feature 3)
+// ---------------------------------------------------------------------------
+
+describe("computeResolutionRollup", () => {
+  it("sums resolved and new across successful scans and computes net", () => {
+    const rollup = computeResolutionRollup([
+      { status: "COMPLETED", newFindingCount: 2, resolvedFindingCount: 5 },
+      { status: "PARTIAL", newFindingCount: 1, resolvedFindingCount: 3 },
+    ]);
+    expect(rollup).toEqual({ resolved: 8, new: 3, net: 5 });
+  });
+
+  it("ignores FAILED and in-flight scans (their counts are default-0 anyway)", () => {
+    const rollup = computeResolutionRollup([
+      { status: "COMPLETED", newFindingCount: 4, resolvedFindingCount: 1 },
+      { status: "FAILED", newFindingCount: 9, resolvedFindingCount: 9 },
+      { status: "IN_PROGRESS", newFindingCount: 9, resolvedFindingCount: 9 },
+    ]);
+    expect(rollup).toEqual({ resolved: 1, new: 4, net: -3 });
+  });
+
+  it("returns all zeros for an empty window", () => {
+    expect(computeResolutionRollup([])).toEqual({ resolved: 0, new: 0, net: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildDigestBody
 // ---------------------------------------------------------------------------
 
@@ -512,6 +540,7 @@ describe("buildDigestBody — section structure (populated)", () => {
       "MRR (from reconciled plan; excludes free)",
       "SCANS (last 24h)",
       "FINDINGS (last 24h)",
+      "RESOLUTION (last 24h)",
       "SIGNATURE FLYWHEEL (last 24h)",
       "ACTIVATION",
       "=== OPERATIONAL HEALTH (last 24h) ===",
@@ -547,6 +576,23 @@ describe("buildDigestBody — section structure (populated)", () => {
     expect(body).toContain("b.myshopify.com -- 2");
     expect(body).toContain("GHOST_SCRIPT -- 8");
     expect(body).toContain("GHOST_STYLE -- 6");
+  });
+
+  it("renders the RESOLUTION rollup with a signed positive net", () => {
+    const withResolution = buildDigestBody(
+      makeData({ resolution: { resolved: 12, new: 4, net: 8 } }),
+    );
+    expect(withResolution).toContain("Resolved: 12");
+    expect(withResolution).toContain("New: 4");
+    expect(withResolution).toContain("Net (resolved - new): +8");
+  });
+
+  it("renders a negative net without a plus sign and zeros when resolution is absent", () => {
+    const negative = buildDigestBody(makeData({ resolution: { resolved: 1, new: 5, net: -4 } }));
+    expect(negative).toContain("Net (resolved - new): -4");
+    // makeData omits `resolution` → the section falls back to zeros.
+    expect(body).toContain("Resolved: 0");
+    expect(body).toContain("Net (resolved - new): 0");
   });
 });
 

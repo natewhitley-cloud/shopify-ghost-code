@@ -253,6 +253,13 @@ export async function finalizeScan(
     findingCount: number;
     skippedCategories: string[];
     skippedFiles: string[];
+    // Resolution-tracking counts (Feature 3 of the scan-observability spec),
+    // computed by the caller via the scan differ. All three are OPTIONAL and
+    // written only when supplied, so callers that do not compute a diff (and the
+    // existing tests) leave the columns at their `@default(0)` and are unaffected.
+    newFindingCount?: number;
+    resolvedFindingCount?: number;
+    persistedFindingCount?: number;
   },
 ): Promise<FinalizeScanResult> {
   const result = await db.scan.updateMany({
@@ -266,6 +273,13 @@ export async function finalizeScan(
       findingCount: args.findingCount,
       skippedCategories: args.skippedCategories,
       skippedFiles: args.skippedFiles,
+      ...(args.newFindingCount !== undefined ? { newFindingCount: args.newFindingCount } : {}),
+      ...(args.resolvedFindingCount !== undefined
+        ? { resolvedFindingCount: args.resolvedFindingCount }
+        : {}),
+      ...(args.persistedFindingCount !== undefined
+        ? { persistedFindingCount: args.persistedFindingCount }
+        : {}),
     },
   });
 

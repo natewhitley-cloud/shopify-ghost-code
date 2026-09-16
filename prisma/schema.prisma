@@ -110,8 +110,15 @@ model Scan {
   // MANUAL, which correctly backfills all pre-existing rows (historically every
   // scan was merchant-initiated).
   origin            ScanOrigin      @default(MANUAL)
+  // Scan-differ new/resolved/unchanged counts vs the previous completed scan for
+  // this theme (gc scan-signals). Default 0 correctly backfills legacy rows: no
+  // diff was ever computed for them, so they carry no resolution signal.
+  newFindingCount       Int          @default(0) // findings not present in the prior scan
+  resolvedFindingCount  Int          @default(0) // prior findings no longer present (fixed)
+  persistedFindingCount Int          @default(0) // findings unchanged / carried forward
   findings          Finding[]
   unknownScripts    UnknownScript[]
+  scanDomains       ScanDomain[]
 
   @@index([shopId, createdAt])
   @@index([status, startedAt])
@@ -155,6 +162,29 @@ model SignatureSubmission {
 
   @@index([unknownScriptId])
   @@index([status])
+}
+
+// ---------------------------------------------------------------------------
+// Third-party domain graph — one row per (scanId, domain), deduped across the
+// surfaces that referenced it (gc scan-signals, Feature 1). Captures the full
+// set of NON-Shopify hosts a theme talks to: matched-to-an-app, benign public
+// CDN/web-font, or neither (a signature-flywheel candidate). Shopify first-party
+// hosts are intentionally NOT persisted (noise).
+// ---------------------------------------------------------------------------
+model ScanDomain {
+  id        String   @id @default(cuid())
+  scanId    String
+  scan      Scan     @relation(fields: [scanId], references: [id], onDelete: Cascade)
+  domain    String // hostname, e.g. "cdn.example.com"
+  sources   String[] @default([]) // surfaces that referenced it: script|stylesheet|preconnect|dns_prefetch|font|ajax
+  refCount  Int      @default(0) // total references across the theme
+  matched   Boolean  @default(false) // true if `domain` resolved to a known app signature
+  appName   String? // set when matched
+  benign    Boolean  @default(false) // true if a known benign public CDN / web-font host
+  createdAt DateTime @default(now())
+
+  @@index([scanId])
+  @@index([domain]) // cross-scan market-intel / flywheel queries
 }
 
 model Finding {

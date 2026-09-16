@@ -27,6 +27,7 @@ export const OPS_EVENT_TYPES = {
   SHOP_UNINSTALLED: "shop_uninstalled",
   WEBHOOK_FAILURE: "webhook_failure",
   API_ERROR: "api_error",
+  SCAN_SIGNAL: "scan_signal",
 } as const;
 
 export interface RecordOpsEventInput {

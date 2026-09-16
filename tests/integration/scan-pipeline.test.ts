@@ -50,6 +50,7 @@ vi.mock("../../app/models/scan.server", () => ({
   hasCompletedScans: vi.fn(),
   updateScanStatus: vi.fn(),
   finalizeScan: vi.fn(),
+  getPreviousScanForTheme: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
@@ -74,6 +75,10 @@ vi.mock("../../app/services/theme-fetcher.server", () => ({
 
 vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
+  MAX_SCANNABLE_FILE_BYTES: 1_000_000,
+  isScannableFile: (filename: string) =>
+    filename.endsWith(".liquid") &&
+    ["templates/", "sections/", "snippets/", "layout/"].some((p) => filename.startsWith(p)),
 }));
 
 vi.mock("../../app/services/scan-pool.server", () => ({
@@ -91,6 +96,10 @@ vi.mock("../../app/services/dangling-reference-extractor.server", () => ({
 
 vi.mock("../../app/models/unknown-script.server", () => ({
   createUnknownScripts: vi.fn(),
+}));
+
+vi.mock("../../app/models/scan-domain.server", () => ({
+  createScanDomains: vi.fn(),
 }));
 
 // Optional-audit service boundaries. The scan-theme function probes each
@@ -139,6 +148,10 @@ vi.mock("../../app/db.server", () => ({
     },
     scan: {
       findUnique: vi.fn(),
+    },
+    finding: {
+      findMany: vi.fn(() => []),
+      groupBy: vi.fn(() => []),
     },
   },
 }));

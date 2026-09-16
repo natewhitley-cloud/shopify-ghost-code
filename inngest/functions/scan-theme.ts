@@ -43,6 +43,7 @@ import { FindingType, ScanStatus } from "@prisma/client";
 import { logger } from "../../app/lib/logger.server";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { saveThemeFindings } from "../../app/models/finding.server";
+import { createScanDomains } from "../../app/models/scan-domain.server";
 import {
   finalizeScan,
   getPreviousScanForTheme,
@@ -51,7 +52,7 @@ import {
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { detectCheckoutSunset } from "../../app/services/checkout-sunset-detector.server";
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
-import { MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
+import { isScannableFile, MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
@@ -231,7 +232,12 @@ export const scanTheme = inngest.createFunction(
       const {
         findingCount,
         fileCount,
+        scannableFileCount,
         skippedFilePaths,
+        skippedFileCount,
+        benignLibrarySkips,
+        unknownScriptCount,
+        thirdPartyDomainCount,
         staticProductCandidates,
         danglingOccurrences,
         danglingDistinctHandles,
@@ -259,6 +265,7 @@ export const scanTheme = inngest.createFunction(
           skippedFiles,
           staticProductCandidates,
           benignLibrarySkips,
+          thirdPartyDomains,
         } = await scanThemeFilesInPool(files);
 
         // Checkout-extensibility sunset audit (gc-b3c): PURE, static, no Admin
@@ -319,6 +326,11 @@ export const scanTheme = inngest.createFunction(
         // these are informational and don't affect scan correctness).
         await createUnknownScripts(scanId, unknownScripts);
 
+        // Persist the third-party domain graph (Feature 1). Informational /
+        // non-blocking like unknown scripts — a failure must not affect scan
+        // correctness. Delete-then-insert idempotency lives inside the model.
+        await createScanDomains(scanId, thirdPartyDomains ?? []);
+
         // Extract DANGLING_REFERENCE candidates (pure, static) here while the
         // theme files are in scope. Only the tiny handle/occurrence arrays
         // (handles + file/line + snippet — NOT raw file content) cross the
@@ -332,10 +344,21 @@ export const scanTheme = inngest.createFunction(
         // on the scan so the differ can exclude unscanned oversized files from
         // "resolved" (gc-06e.19). A skip is anomalous, so this list is normally
         // empty and at most a handful of paths.
+        const skippedFilePaths = (skippedFiles ?? []).map((f) => f.filename);
+
         return {
           findingCount: themeFindings.length,
           fileCount: files.length,
-          skippedFilePaths: (skippedFiles ?? []).map((f) => f.filename),
+          // Theme-shape scalars threaded to the finalize step's scan_signal
+          // OpsEvent (Feature 2). All tiny — safe across the 4MB step boundary.
+          scannableFileCount: files.filter((f) => isScannableFile(f.filename)).length,
+          skippedFilePaths,
+          skippedFileCount: skippedFilePaths.length,
+          benignLibrarySkips: benignLibrarySkips ?? 0,
+          unknownScriptCount: unknownScripts.length,
+          // Scalar count only — the full domain array is NOT returned across the
+          // step boundary (already persisted above via createScanDomains).
+          thirdPartyDomainCount: (thirdPartyDomains ?? []).length,
           // Tiny (a handful per theme), so it safely crosses the step boundary
           // unlike the full findings array. Threaded into the live-price audit
           // step below (gc-47c.10).
@@ -747,15 +770,125 @@ export const scanTheme = inngest.createFunction(
       // future "enable more checks" nudge.
       const finalStatus = ScanStatus.COMPLETED;
 
-      // FINAL step: set the terminal status. This is the ONLY place the scan
-      // leaves IN_PROGRESS on the success path (LOG-4). Idempotent on retry.
+      // FINAL step: compute resolution counts vs the previous scan, then set the
+      // terminal status. This is the ONLY place the scan leaves IN_PROGRESS on the
+      // success path (LOG-4). Idempotent on retry.
       await step.run("finalize-scan", async () => {
+        const db = (await import("../../app/db.server")).default;
+
+        // Diff this scan's persisted findings against the previous completed scan
+        // for this theme (Feature 3). REUSE the differ so scope-skipped categories
+        // and unscanned oversized files are excluded from "resolved" (LOG-4).
+        const currentScan = await db.scan.findUnique({
+          where: { id: scanId },
+          select: { createdAt: true },
+        });
+        const currentFindings = await db.finding.findMany({ where: { scanId } });
+        const previousScan = currentScan
+          ? await getPreviousScanForTheme(shopId, themeId, currentScan.createdAt)
+          : null;
+
+        let newFindingCount: number;
+        let resolvedFindingCount: number;
+        let persistedFindingCount: number;
+        if (previousScan) {
+          const { diffScans } = await import("../../app/services/scan-differ.server");
+          const diff = diffScans(currentFindings, previousScan.findings, {
+            skippedCategories,
+            skippedFiles: skippedFilePaths,
+          });
+          newFindingCount = diff.newFindings.length;
+          resolvedFindingCount = diff.resolvedFindings.length;
+          persistedFindingCount = diff.unchangedCount;
+        } else {
+          // First-ever scan for this theme: no baseline to diff against, so every
+          // finding is new and nothing can be resolved or carried forward.
+          newFindingCount = totalFindings;
+          resolvedFindingCount = 0;
+          persistedFindingCount = 0;
+        }
+
         await finalizeScan(scanId, {
           status: finalStatus,
           findingCount: totalFindings,
           skippedCategories,
           skippedFiles: skippedFilePaths,
+          newFindingCount,
+          resolvedFindingCount,
+          persistedFindingCount,
         });
+      });
+
+      // Emit ONE scan_signal OpsEvent per completed scan (Feature 2). Runs AFTER
+      // finalize-scan so completedAt/startedAt are set and every finding is
+      // persisted. The ENTIRE body is guarded: a groupBy or write failure must
+      // NEVER throw out of finalize — scan correctness must not depend on
+      // telemetry (recordOpsEvent already never throws; the groupBy needs the
+      // guard too).
+      await step.run("emit-scan-signal", async () => {
+        try {
+          // Append-only: OpsEvent has no unique constraint on (eventType, key),
+          // so an Inngest step re-run can write a duplicate scan_signal row for
+          // the same scanId. Downstream consumers must take the LATEST row per
+          // scanId (consistent with the existing OpsEvent append-only pattern).
+          const db = (await import("../../app/db.server")).default;
+          const { recordOpsEvent, OPS_EVENT_TYPES } =
+            await import("../../app/models/ops-event.server");
+
+          const scan = await db.scan.findUnique({
+            where: { id: scanId },
+            select: { startedAt: true, completedAt: true },
+          });
+          const shop = await db.shop.findUnique({
+            where: { id: shopId },
+            select: { plan: true },
+          });
+
+          // Authoritative per-detector histogram from the DB (over the logged
+          // per-step counts).
+          const detectorRows = await db.finding.groupBy({
+            by: ["findingType"],
+            where: { scanId },
+            _count: true,
+          });
+          const detectorHits: Record<string, number> = {};
+          for (const row of detectorRows) {
+            detectorHits[row.findingType] = row._count;
+          }
+
+          const durationMs =
+            scan?.completedAt && scan?.startedAt
+              ? scan.completedAt.getTime() - scan.startedAt.getTime()
+              : null;
+
+          await recordOpsEvent({
+            eventType: OPS_EVENT_TYPES.SCAN_SIGNAL,
+            key: scanId,
+            metadata: {
+              shopId,
+              scanId,
+              plan: shop?.plan ?? null,
+              themeId,
+              fileCount,
+              scannableFileCount,
+              skippedFileCount,
+              benignLibrarySkips,
+              unknownScriptCount,
+              thirdPartyDomainCount,
+              detectorHits,
+              findingCount: totalFindings,
+              durationMs,
+            },
+          });
+        } catch (err) {
+          logger.warn("scan_signal emit failed — telemetry only, scan unaffected", {
+            function: "scan-theme",
+            event: "scan_signal_failed",
+            scanId,
+            shopId,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       });
 
       logger.info("scan completed", {

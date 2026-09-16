@@ -1057,6 +1057,34 @@ describe("finalizeScan", () => {
     expect(callArg.data.skippedFiles).toEqual(["sections/bloated.liquid"]);
   });
 
+  it("persists the resolution counts when supplied (Feature 3)", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", {
+      ...FINALIZE_ARGS,
+      newFindingCount: 4,
+      resolvedFindingCount: 2,
+      persistedFindingCount: 7,
+    });
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    expect(callArg.data.newFindingCount).toBe(4);
+    expect(callArg.data.resolvedFindingCount).toBe(2);
+    expect(callArg.data.persistedFindingCount).toBe(7);
+  });
+
+  it("omits the resolution-count columns entirely when not supplied (backward-compatible)", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", FINALIZE_ARGS);
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    // Legacy callers must not touch these columns — they stay at their DB default.
+    expect(callArg.data).not.toHaveProperty("newFindingCount");
+    expect(callArg.data).not.toHaveProperty("resolvedFindingCount");
+    expect(callArg.data).not.toHaveProperty("persistedFindingCount");
+  });
+
   it("does NOT revive a scan the watchdog already marked FAILED", async () => {
     // updateMany matches zero rows because the scan is no longer IN_PROGRESS.
     mockDb.scan.updateMany.mockResolvedValue({ count: 0 });

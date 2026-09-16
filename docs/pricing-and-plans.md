@@ -1,6 +1,6 @@
 # Ghost Code — Pricing & Plans
 
-> **Last updated:** 2026-09-11
+> **Last updated:** 2026-09-12
 > **Source of truth for:** plan tiers, feature gating, upgrade triggers, pricing decisions.
 > Update this file when billing logic, plan features, or pricing changes.
 
@@ -25,7 +25,7 @@
 
 1. First scan always free
 2. 1 scan per month after first
-3. Severity counts + category breakdown
+3. Findings grouped by impact, with counts
 4. Preview of top finding in full
 5. Single theme scanning
 
@@ -52,9 +52,17 @@
 
 1. All features in Free
 2. Full finding details with code
-3. 1 manual scan per week
-4. Theme Health Score + delta
-5. 7-day free trial
+3. Catch broken links from old apps
+4. Catch checkout.liquid sunset risks
+5. Weekly auto-scan + findings trend
+6. 7-day free trial
+
+> **Bullet rationale (2026-09-12):** bullets 3–5 name Standard-only *outcomes* (Broken Links
+> `DANGLING_REFERENCE`, checkout.liquid sunset `CHECKOUT_SUNSET`) instead of *mechanics*, so
+> ad-driven visitors see concrete reasons to pay. The 1-manual-scan/week cap is unchanged and
+> still enforced; it's folded into "Weekly auto-scan" rather than stated as a limit. Checkout
+> bullet is tense-neutral on purpose; the Plus hard-block date has passed (see GhostCode
+> bead for the in-app copy fix). Apply these in Partner Dashboard → Managed Pricing.
 
 ### Professional ($49/mo, 7-day free trial)
 

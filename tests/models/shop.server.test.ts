@@ -648,7 +648,7 @@ describe("deleteShopData", () => {
     });
   });
 
-  it("purges OpsEvent rows carrying the domain (key + metadata.shop + metadata.shopDomain)", async () => {
+  it("purges OpsEvent rows carrying the domain (key + metadata.shop + metadata.shopDomain) and the internal shopId", async () => {
     const existingShop = {
       id: "shop-gdpr-ops",
       domain: "delete-me.myshopify.com",
@@ -667,8 +667,32 @@ describe("deleteShopData", () => {
           { key: "delete-me.myshopify.com" },
           { metadata: { path: ["shop"], equals: "delete-me.myshopify.com" } },
           { metadata: { path: ["shopDomain"], equals: "delete-me.myshopify.com" } },
+          { metadata: { path: ["shopId"], equals: "shop-gdpr-ops" } },
         ],
       },
+    });
+  });
+
+  it("purges scan_signal OpsEvent rows via the internal shopId clause (they carry no domain)", async () => {
+    // scan_signal events key on scanId and store the internal shop cuid in
+    // metadata.shopId (not the domain), so only the shopId OR-clause reaches
+    // them — the domain-based clauses never would. This asserts that clause is
+    // present so scan_signal rows are erased on shop/redact (GDPR).
+    const existingShop = {
+      id: "shop-gdpr-signal",
+      domain: "delete-me.myshopify.com",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 5 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    const opsWhere = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
+    expect(opsWhere.OR).toContainEqual({
+      metadata: { path: ["shopId"], equals: "shop-gdpr-signal" },
     });
   });
 

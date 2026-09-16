@@ -73,6 +73,7 @@ import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
+import type { ThirdPartyDomainRef } from "../models/scan-domain.server";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -154,6 +155,14 @@ export type ScanResult = {
   // backward compatibility with ScanResult literals in tests; scanThemeFiles
   // always populates it (possibly 0).
   benignLibrarySkips?: number;
+  // Every non-Shopify third-party host the theme references, deduped per host
+  // across every surface (script/stylesheet/preconnect/dns_prefetch/font/ajax),
+  // classified matched-app / benign-lib / neither (flywheel candidate). Persisted
+  // as ScanDomain rows (Feature 1 of the scan-observability spec). Small (bounded
+  // by distinct-host count) so it safely crosses the Inngest step boundary.
+  // Optional for backward compatibility with ScanResult literals in tests;
+  // scanThemeFiles always populates it (possibly empty).
+  thirdPartyDomains?: ThirdPartyDomainRef[];
 };
 
 // ---------------------------------------------------------------------------
@@ -1652,6 +1661,169 @@ export function collectUnknownStylesheets(
 }
 
 // ---------------------------------------------------------------------------
+// Collector: third-party domain graph (Feature 1 of scan-observability spec)
+// ---------------------------------------------------------------------------
+
+/** The surfaces a third-party host can be referenced from (ScanDomain.sources). */
+type DomainSource = "script" | "stylesheet" | "preconnect" | "dns_prefetch" | "font" | "ajax";
+
+/**
+ * Isolates a complete `@font-face { ... }` block. CSS `@font-face` blocks never
+ * nest braces, so `[^}]*}` is linear (ReDoS-safe) and bounds URL extraction to
+ * the font surface. Module-scope /g regex — MUST reset lastIndex = 0 before use.
+ */
+const FONT_FACE_BLOCK_RE = /@font-face\s*\{[^}]*\}/gi;
+
+/**
+ * Extracts each `url(...)` target inside a `@font-face` src declaration (absolute
+ * or protocol-relative). Applied only to the bounded block text above.
+ * Module-scope /g regex — MUST reset lastIndex = 0 before use.
+ */
+const FONT_FACE_SRC_URL_RE = /url\(\s*["']?((?:https?:)?\/\/[^"')\s]+)["']?\s*\)/gi;
+
+/**
+ * Collect every NON-Shopify third-party host a single theme file references,
+ * across the same surfaces the ghost detectors read: `<script src>`,
+ * `<link rel=stylesheet href>`, `<link rel=preconnect|dns-prefetch href>`,
+ * `@font-face` src URLs + font-service `<link>` tags, and fetch/XHR/jQuery-AJAX
+ * URL literals.
+ *
+ * DRY: reuses the SAME host/domain predicates the collectors and detectors
+ * already use — `hostnameFromUrl`, `isShopifyDomain`, `identifyAppFromUrl` /
+ * `identifyAppFromCode`, `isBenignLibrary`, `isSharedCdnDomain` — so domain logic
+ * is never duplicated. Classification per host:
+ *   - matched (`matched=true` + `appName`) when the URL resolves to a known app;
+ *   - else benign (`benign=true`) when it is a known benign public CDN / web-font
+ *     host (`isBenignLibrary` OR `isSharedCdnDomain`);
+ *   - else neither — a flywheel candidate (the proprietary long tail).
+ * Shopify first-party hosts and malformed URLs are skipped (never persisted).
+ *
+ * Per host within THIS file: unions the source surfaces, sums `refCount` (one per
+ * reference). A single physical `<link>` tag contributes AT MOST one surface
+ * (precedence stylesheet > preconnect > dns-prefetch > font), so a tag that
+ * matches several `<link>` regexes is not double-counted. Aggregation ACROSS
+ * files happens in `scanThemeFiles`.
+ */
+export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[] {
+  const byHost = new Map<
+    string,
+    {
+      sources: Set<DomainSource>;
+      refCount: number;
+      matched: boolean;
+      appName: string | null;
+      benign: boolean;
+    }
+  >();
+
+  const record = (rawUrl: string | undefined | null, source: DomainSource) => {
+    if (!rawUrl) return;
+    const hostname = hostnameFromUrl(rawUrl);
+    if (hostname === null) return; // malformed URL — skip
+    if (isShopifyDomain(hostname)) return; // first-party — never persisted
+
+    let entry = byHost.get(hostname);
+    if (!entry) {
+      const appName = identifyAppFromUrl(rawUrl) ?? identifyAppFromCode(rawUrl);
+      const matched = appName !== null;
+      const benign = !matched && (isBenignLibrary(rawUrl) || isSharedCdnDomain(hostname));
+      entry = {
+        sources: new Set<DomainSource>(),
+        refCount: 0,
+        matched,
+        appName: matched ? appName : null,
+        benign,
+      };
+      byHost.set(hostname, entry);
+    } else if (!entry.matched) {
+      // A later reference on the same host may carry app-identifying context the
+      // first did not (e.g. a different URL that resolves to a known app). Upgrade
+      // to matched — a matched host is never also benign.
+      const appName = identifyAppFromUrl(rawUrl) ?? identifyAppFromCode(rawUrl);
+      if (appName !== null) {
+        entry.matched = true;
+        entry.appName = appName;
+        entry.benign = false;
+      }
+    }
+    entry.sources.add(source);
+    entry.refCount += 1;
+  };
+
+  // <script src>
+  for (const { tag } of extractTags(file.content, "<script")) {
+    SCRIPT_SRC_RE.lastIndex = 0;
+    const m = SCRIPT_SRC_RE.exec(tag);
+    if (m) record(m[1], "script");
+  }
+
+  // <link> tags: record AT MOST ONE surface per physical tag, precedence
+  // stylesheet > preconnect > dns-prefetch > font. A single tag can match more
+  // than one of these regexes (e.g. a Google Fonts stylesheet href also matches
+  // FONT_LINK_RE), so without this precedence a tag would double-count refCount
+  // and emit a spurious `font` source. `continue` after the first surface that
+  // records prevents that.
+  for (const { tag } of extractTags(file.content, "<link")) {
+    LINK_STYLESHEET_RE.lastIndex = 0;
+    const styleMatch = LINK_STYLESHEET_RE.exec(tag);
+    if (styleMatch) {
+      record(styleMatch[1] ?? styleMatch[3], "stylesheet");
+      continue;
+    }
+
+    PRECONNECT_RE.lastIndex = 0;
+    const preMatch = PRECONNECT_RE.exec(tag);
+    if (preMatch) {
+      const relType = preMatch[1] ?? preMatch[4];
+      const href = preMatch[2] ?? preMatch[3];
+      // `preload` is outside the domain-graph source taxonomy — skip it (no
+      // record, no `continue`), so a preload tag falls through to the font
+      // check below, as it did before this precedence guard.
+      if (relType === "preconnect") {
+        record(href, "preconnect");
+        continue;
+      } else if (relType === "dns-prefetch") {
+        record(href, "dns_prefetch");
+        continue;
+      }
+    }
+
+    FONT_LINK_RE.lastIndex = 0;
+    const fontLinkMatch = FONT_LINK_RE.exec(tag);
+    if (fontLinkMatch) record(fontLinkMatch[1] ?? fontLinkMatch[2], "font");
+  }
+
+  // @font-face src url()s — bound extraction to each font-face block.
+  FONT_FACE_BLOCK_RE.lastIndex = 0;
+  let block: RegExpExecArray | null;
+  while ((block = FONT_FACE_BLOCK_RE.exec(file.content)) !== null) {
+    FONT_FACE_SRC_URL_RE.lastIndex = 0;
+    let urlMatch: RegExpExecArray | null;
+    while ((urlMatch = FONT_FACE_SRC_URL_RE.exec(block[0])) !== null) {
+      record(urlMatch[1], "font");
+    }
+  }
+
+  // fetch() / jQuery AJAX / XMLHttpRequest URL literals.
+  for (const re of [FETCH_RE, JQUERY_AJAX_RE, XHR_OPEN_RE]) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(file.content)) !== null) {
+      record(m[1], "ajax");
+    }
+  }
+
+  return [...byHost.entries()].map(([domain, e]) => ({
+    domain,
+    sources: [...e.sources].sort(),
+    refCount: e.refCount,
+    matched: e.matched,
+    appName: e.appName,
+    benign: e.benign,
+  }));
+}
+
+// ---------------------------------------------------------------------------
 // Detector: DUPLICATE_LIBRARY
 // ---------------------------------------------------------------------------
 
@@ -2887,6 +3059,8 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   const unknownScripts: UnknownExternalResource[] = [];
   const skippedFiles: SkippedFile[] = [];
   const staticProductCandidates: StaticProductCandidate[] = [];
+  // Per-file third-party domain refs, merged per host after the pass (Feature 1).
+  const thirdPartyDomainRefs: ThirdPartyDomainRef[] = [];
   // Tally benign public-CDN libraries / web fonts dropped by the collectors so
   // the drop is observable (surfaced by the worker as an ops signal, gc-tus A2).
   const benignSkips: BenignSkipCounter = { count: 0 };
@@ -2933,6 +3107,11 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     unknownScripts.push(...collectUnknownScripts(file, benignSkips));
     unknownScripts.push(...collectUnknownStylesheets(file, benignSkips));
 
+    // Collect the full third-party domain graph (Feature 1). Unlike the unknown-
+    // resource collectors this keeps EVERY non-Shopify host — matched-to-app,
+    // benign, and unknown — for the signature flywheel + market intel.
+    thirdPartyDomainRefs.push(...collectThirdPartyDomains(file));
+
     // Collect unsigned static Product JSON-LD blocks for the live-price audit
     // (gc-47c.10). No findings are emitted here — the (scope+flag-gated) audit
     // step compares these against LIVE product prices later.
@@ -2978,11 +3157,49 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // the suppression-filtered unknownScripts array — see detectDuplicateLibraries).
   findings.push(...detectDuplicateLibraries(files));
 
+  // Aggregate the third-party domain refs per host across all files: union the
+  // source surfaces, sum refCount. A matched host wins over benign (matched
+  // carries an appName and is never also benign); the first non-null appName is
+  // kept for a host matched in more than one file.
+  const domainAgg = new Map<
+    string,
+    {
+      sources: Set<string>;
+      refCount: number;
+      matched: boolean;
+      appName: string | null;
+      benign: boolean;
+    }
+  >();
+  for (const ref of thirdPartyDomainRefs) {
+    let e = domainAgg.get(ref.domain);
+    if (!e) {
+      e = { sources: new Set(), refCount: 0, matched: false, appName: null, benign: false };
+      domainAgg.set(ref.domain, e);
+    }
+    for (const s of ref.sources) e.sources.add(s);
+    e.refCount += ref.refCount;
+    if (ref.matched) {
+      e.matched = true;
+      if (e.appName === null) e.appName = ref.appName;
+    }
+    if (ref.benign) e.benign = true;
+  }
+  const thirdPartyDomains: ThirdPartyDomainRef[] = [...domainAgg.entries()].map(([domain, e]) => ({
+    domain,
+    sources: [...e.sources].sort(),
+    refCount: e.refCount,
+    matched: e.matched,
+    appName: e.matched ? e.appName : null,
+    benign: e.matched ? false : e.benign,
+  }));
+
   return {
     findings,
     unknownScripts,
     skippedFiles,
     staticProductCandidates,
     benignLibrarySkips: benignSkips.count,
+    thirdPartyDomains,
   };
 }
