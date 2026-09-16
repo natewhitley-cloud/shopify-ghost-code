@@ -259,6 +259,35 @@ export function sortFindingTypeCounts(
   return [...rows].sort((a, b) => b.count - a.count);
 }
 
+/** Resolution rollup over the window: total resolved, total new, and the net. */
+export interface ResolutionRollup {
+  resolved: number;
+  new: number;
+  net: number;
+}
+
+/**
+ * Sum the per-scan resolution counts (Feature 3) across the window's SUCCESSFUL
+ * scans (COMPLETED / PARTIAL) — the only scans that ran a diff. `net` is
+ * resolved − new: a positive net means merchants fixed more than we newly
+ * surfaced. FAILED / in-flight scans carry the default-0 columns and are skipped
+ * for clarity (summing them would be equivalent, but the status filter states
+ * intent). Purpose: a daily read on whether merchants act on what we surface.
+ */
+export function computeResolutionRollup(
+  scans: Array<{ status: string; newFindingCount: number; resolvedFindingCount: number }>,
+): ResolutionRollup {
+  let resolved = 0;
+  let newCount = 0;
+  for (const s of scans) {
+    if (s.status === "COMPLETED" || s.status === "PARTIAL") {
+      resolved += s.resolvedFindingCount;
+      newCount += s.newFindingCount;
+    }
+  }
+  return { resolved, new: newCount, net: resolved - newCount };
+}
+
 // ---------------------------------------------------------------------------
 // Snapshot-metric threshold evaluation (gc-06e.13, sub-item 3)
 //
@@ -376,6 +405,9 @@ export interface OperatorDigestData {
     perStore: Array<{ domain: string; count: number }>;
   };
   findings: { total: number; topTypes: Array<{ type: string; count: number }> };
+  /** Resolution rollup (Feature 3). Optional so callers/tests that predate it
+   * still type-check; absent => rendered as zeros. */
+  resolution?: ResolutionRollup;
   flywheel: {
     newUnknownScripts: number;
     newSubmissions: number;
@@ -497,6 +529,14 @@ export function buildDigestBody(data: OperatorDigestData): string {
       lines.push(`    ...and ${findings.topTypes.length - FINDING_TYPES_LIMIT} more type(s)`);
     }
   }
+  lines.push("");
+
+  const resolution = data.resolution ?? { resolved: 0, new: 0, net: 0 };
+  const netSign = resolution.net > 0 ? "+" : "";
+  lines.push("RESOLUTION (last 24h)");
+  lines.push(`  Resolved: ${resolution.resolved}`);
+  lines.push(`  New: ${resolution.new}`);
+  lines.push(`  Net (resolved - new): ${netSign}${resolution.net}`);
   lines.push("");
 
   const { flywheel } = data;
@@ -631,9 +671,23 @@ export const operatorDigest = inngest.createFunction(
           createdAt: { gte: windowStart },
           shopId: { in: activeShopIds },
         },
-        select: { shopId: true, status: true, findingCount: true },
+        // newFindingCount/resolvedFindingCount feed the RESOLUTION rollup
+        // (Feature 3) — no new query, just extra columns on the existing fetch.
+        select: {
+          shopId: true,
+          status: true,
+          findingCount: true,
+          newFindingCount: true,
+          resolvedFindingCount: true,
+        },
       });
-    })) as Array<{ shopId: string; status: string; findingCount: number }>;
+    })) as Array<{
+      shopId: string;
+      status: string;
+      findingCount: number;
+      newFindingCount: number;
+      resolvedFindingCount: number;
+    }>;
 
     // Top finding types across findings whose scan is in-window and belongs to
     // an ACTIVE install (excludes the dev store AND uninstalled-pending-redact
@@ -807,6 +861,7 @@ export const operatorDigest = inngest.createFunction(
         total: scanRows.reduce((sum, s) => sum + s.findingCount, 0),
         topTypes: sortFindingTypeCounts(findingTypeRows),
       },
+      resolution: computeResolutionRollup(scanRows),
       flywheel,
       activation: {
         activated: activatedCount,
