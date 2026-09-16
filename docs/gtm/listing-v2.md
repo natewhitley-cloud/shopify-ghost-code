@@ -31,12 +31,13 @@ what." The reframe + AI wedge is the only separator, so it must be visible in sc
 
 Char counts are against Shopify's field limits.
 
-> **Counts reconciled 2026-09-07 against current code:** FindingType enum = 28 defined, but
-> `JSON_LD_PRICE_CONFLICT` ships flag-gated OFF, so **27 are merchant-active** (was "26" in
-> `product-strategy.md`; DUPLICATE_LIBRARY was the latest add). App signatures = **114**
-> ("100+" is safe). Surfaces unchanged at **8** (DUPLICATE_LIBRARY rides the theme-files
-> surface). Bump these each release, or switch to soft "25+ checks / 100+ signatures" to
-> stop chasing the number.
+> **Counts reconciled 2026-09-12 against current code:** FindingType enum = **31 defined**
+> (added `CHECKOUT_SUNSET`, `JSON_LD_INVALID`, and `JSON_LD_PRICE_CONFLICT` is now flag-ON).
+> ~**30 are merchant-active** on a typical plan: `JSON_LD_PRICE_CONFLICT` needs the optional
+> `read_products` scope and `CHECKOUT_SUNSET` is Standard+. App signatures = **114** ("100+"
+> is safe). Surfaces unchanged at **8**. **Decision (2026-09-12): stop chasing the exact
+> number**: all copy below now uses soft **"30+ checks / 100+ signatures"** so releases
+> don't force a listing edit.
 
 ### App name (30 max) — 24 chars
 ```
@@ -55,9 +56,9 @@ Remove leftover app code: fix theme speed, SEO & AI errors
 Scan your theme for orphaned code left by uninstalled apps, then see what it's costing you.
 ```
 
-### Description (500 max) — 497 chars
+### Description (500 max) — 498 chars
 ```
-Every app you uninstall leaves code behind: scripts, tracking pixels, SEO tags, and metadata across your theme. You can't see it, but it slows your pages, feeds wrong info to Google and AI agents, and pings services you dropped. GhostCode scans 8 surfaces with 27 checks and attributes every fragment to the app that left it, with file, line, and snippet. Findings are grouped by what they actually cost you, not by severity. Track your health score, re-scan to confirm it's gone. First scan free.
+Every app you uninstall leaves code behind: scripts, tracking pixels, SEO tags, and metadata across your theme. You can't see it, but it slows your pages, feeds wrong info to Google and AI agents, and pings services you dropped. GhostCode scans 8 surfaces with 30+ checks and attributes every fragment to the app that left it, with file, line, and snippet. Findings are grouped by what they actually cost you, not by severity. Track your health score, re-scan to confirm it's gone. First scan free.
 ```
 
 ### Keywords (5 slots)
@@ -72,19 +73,54 @@ the AI angle in images and body copy instead.
 ```
 1. See what leftover code is costing you, grouped by consequence not severity
 2. Every fragment traced to the app that left it, with file, line, and snippet
-3. Catch wrong prices and blocked pages before Google and AI agents see them
-4. 27 checks across 8 theme surfaces, 100+ app signatures
+3. Catch schema prices that disagree with your live price before AI quotes it
+4. 30+ checks across 8 theme surfaces, 100+ app signatures
 5. Track your health score and re-scan to confirm it's gone. First scan free
 ```
+
+### Timely hook: checkout.liquid sunset (do NOT put in the hero)
+
+`CHECKOUT_SUNSET` (shipped 2026-09-12, Standard+) flags reliance on the deprecated
+`checkout.liquid` mechanism. **Framing note (as of 2026-09-12):** the Plus hard-block date
+in the code (`SUNSET_DATE = "around August 13, 2026"`) is now ~1 month in the PAST, so
+"beat the deadline" is the wrong tense for Plus stores; the correct hook is present-harm
+("checkout.liquid no longer renders; code it held has already stopped running") for Plus,
+and pending-deprecation for non-Plus. Keep it out of the hero regardless: it's Standard+
+gated (free scanners never see it) and isn't strictly "leftover code from an uninstalled
+app," so leading with it blurs the core promise. Use it in three places:
+
+1. **Standard-plan feature copy (Managed Pricing):** add an upgrade reason. Managed Pricing
+   feature bullets are capped at **40 chars**, so use `Catch checkout.liquid sunset risks`
+   (34/40). This detector (and Broken Links) are Standard-only but currently unnamed in the
+   Standard pricing card (see the "Pricing-card gap" note below).
+2. **Forum / content angle:** a "checkout.liquid is sunsetting; here's how to find every
+   script that will break" post (see `marketing-plan.md §1`). Highest-leverage home for it.
+3. **Not** an App Store Ads keyword: near-zero merchant search volume (sell it in body/content).
+
+### Pricing-card gap (Managed Pricing, 40 chars/bullet)
+
+The live Standard card sells **mechanics** (full detail, scan cadence, trend) but names none
+of its **outcome** detectors. Two flagship Standard-only detectors are invisible at the $29
+decision point: **Broken Links** (`DANGLING_REFERENCE`) and **checkout.liquid sunset**
+(`CHECKOUT_SUNSET`). For ad-driven traffic deciding whether to pay, concrete outcomes beat
+"more detail." Candidate bullets (all ≤40):
+
+- `Catch broken links from old apps` (32): names Broken Links
+- `Catch checkout.liquid sunset risks` (37): names checkout sunset, deadline-driven
+- `Weekly auto-scan + findings trend` (33): folds cadence + trend into one benefit line
+
+Also update `docs/pricing-and-plans.md` in the same pass; its Standard/Free listing bullets
+have drifted from the live cards ("Findings grouped by impact" and "Findings trend over time"
+are live; the doc still says "Severity counts" and "Theme Health Score + delta").
 
 ### SEO title (60 max, Google) — 60 chars
 ```
 GhostCode: Find & Remove Leftover App Code in Shopify Themes
 ```
 
-### Meta description (160 max, Google) — 156 chars
+### Meta description (160 max, Google) — 157 chars
 ```
-Scan your Shopify theme for orphaned code left by uninstalled apps. 27 checks, 100+ app signatures, file-level attribution, AI & SEO fixes. First scan free.
+Scan your Shopify theme for orphaned code left by uninstalled apps. 30+ checks, 100+ app signatures, file-level attribution, AI & SEO fixes. First scan free.
 ```
 
 ### Category
