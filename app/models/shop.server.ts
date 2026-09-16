@@ -232,6 +232,9 @@ export async function deleteShopData(domain: string) {
     db.session.deleteMany({ where: { shop: domain } }),
     // OpsEvent has no Shop FK, so cascade skips it — purge the rows carrying the
     // domain (key on uninstall, metadata.shop / metadata.shopDomain otherwise).
+    // The per-scan `scan_signal` event is the exception: it keys on scanId and
+    // carries the INTERNAL shop cuid in metadata.shopId (not the domain), so the
+    // shopId clause below is required to reach those rows.
     // Covers the structured domain fields only; a domain incidentally embedded
     // in a free-text `message` (webhook_failure/function_failure error strings)
     // is not reached — accepted as low-risk residual, not structured PII.
@@ -241,6 +244,7 @@ export async function deleteShopData(domain: string) {
           { key: domain },
           { metadata: { path: ["shop"], equals: domain } },
           { metadata: { path: ["shopDomain"], equals: domain } },
+          { metadata: { path: ["shopId"], equals: shop.id } },
         ],
       },
     }),
