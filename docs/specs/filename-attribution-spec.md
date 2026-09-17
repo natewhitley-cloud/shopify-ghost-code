@@ -8,17 +8,17 @@ Evidence: real-merchant scan `cmu48sn2600s4qg01fyhx3i87` (d4c4c4.myshopify.com, 
 ## 1. Problem
 
 Ghost Code attributes each finding to the app that left the orphaned code. Today
-that attribution is driven entirely by the *content* of the code (inline tracker
-call, script URL, snippet name), never by the *file the code lives in*. For a
+that attribution is driven entirely by the _content_ of the code (inline tracker
+call, script URL, snippet name), never by the _file the code lives in_. For a
 large class of real-world leftovers the filename is the strongest and sometimes
 the only correct signal, and the content signal actively points at the wrong app.
 
 Observed on the first real merchant scan:
 
-| Real orphaning app | File | Attributed as (today) | Why it went wrong |
-|---|---|---|---|
+| Real orphaning app        | File                                                        | Attributed as (today)                                  | Why it went wrong                                                                           |
+| ------------------------- | ----------------------------------------------------------- | ------------------------------------------------------ | ------------------------------------------------------------------------------------------- |
 | Spreadr (Amazon importer) | `snippets/spreadr.liquid`, `snippets/spreadr-custom.liquid` | "Facebook Pixel" x2, "Google Analytics (Universal)" x2 | Spreadr's code calls `fbq()` / `ga()`; the pixel detector matched the generic tracker call. |
-| PageFly (page builder) | `snippets/pagefly-main-js.liquid` | "Google Tag Manager", "Google Analytics" | PageFly injected a gtag loader; URL/inline attribution matched the tracker, not PageFly. |
+| PageFly (page builder)    | `snippets/pagefly-main-js.liquid`                           | "Google Tag Manager", "Google Analytics"               | PageFly injected a gtag loader; URL/inline attribution matched the tracker, not PageFly.    |
 
 Net: ~4 of 26 findings misattributed, and a merchant is told they have "Facebook
 Pixel / Google Analytics ghost code" when they actually uninstalled Spreadr and
@@ -29,7 +29,7 @@ from an app you removed" is the product's core story).
 
 - `AppSignature` (`app/data/app-signatures.server.ts`) has no filename field.
 - `app/services/app-lookup.server.ts` has `identifyAppFromUrl / Code / SnippetName
-  / HrefLang / JsonLd / TextFragment` but nothing keyed on the file path.
+/ HrefLang / JsonLd / TextFragment` but nothing keyed on the file path.
 - `detectGhostPixels` (`app/services/scan-engine.server.ts:1388`) uses its OWN
   hardcoded `TRACKING_PATTERNS` table (fbq -> Facebook Pixel, gtag -> Google
   Analytics, ...) and never consults the filename.
@@ -40,6 +40,7 @@ from an app you removed" is the product's core story).
 ## 3. Goals / non-goals
 
 Goals:
+
 - Add source-filename as an attribution signal.
 - Correctly attribute Spreadr and PageFly leftovers in the d4c4c4 fixture.
 - Do not regress existing correct attributions (snippet-name, specific-app URL).
@@ -47,6 +48,7 @@ Goals:
   post-deploy scan.
 
 Non-goals:
+
 - The domain graph (`collectThirdPartyDomains` / `ScanDomain`). It is NOT the lever
   here: Spreadr's leftovers are inline pixels with no external domain, so the
   domain graph would never surface Spreadr. Out of scope.
@@ -118,14 +120,21 @@ code embedded in the first app's file, and the more specific match should win.
 
 Decision table (content attribution vs filename attribution):
 
-| Content-derived app | Filename-owner app | Result |
-|---|---|---|
-| null | Spreadr | Spreadr |
-| Facebook Pixel (`isTracker`) | Spreadr | Spreadr (override) |
-| Google Analytics (`isTracker`) | PageFly | PageFly (override) |
-| Judge.me (non-tracker) | EComposer | Judge.me (keep content; nested widget) |
-| EComposer | EComposer | EComposer (agree) |
-| Facebook Pixel (`isTracker`) | null (no file match) | Facebook Pixel (unchanged) |
+| Content-derived app            | Filename-owner app   | Result                                 |
+| ------------------------------ | -------------------- | -------------------------------------- |
+| null                           | Spreadr              | Spreadr                                |
+| Facebook Pixel (`isTracker`)   | Spreadr              | Spreadr (override)                     |
+| Google Analytics (`isTracker`) | PageFly              | PageFly (override)                     |
+| Judge.me (non-tracker)         | EComposer            | Judge.me (keep content; nested widget) |
+| EComposer                      | EComposer            | EComposer (agree)                      |
+| Facebook Pixel (`isTracker`)   | null (no file match) | Facebook Pixel (unchanged)             |
+
+NOTE: the first row (`null` content + file match -> file-owner) is the
+helper's spec-compliant behavior, but the SCRIPT/STYLE detectors gate it OFF at
+the call site (see 4.4.2): a null content match preserves the original skip and
+does NOT manufacture a finding. `resolveAttribution` itself keeps the null row
+intact; only its callers decide whether to act on it. `detectGhostPixels` is
+unaffected — its content (a `TRACKING_PATTERNS` appName) is never null.
 
 Optional description enrichment (nice-to-have, not required): when overriding,
 append the tracker context, e.g. `Inline tracking pixel left by Spreadr (calls
@@ -143,7 +152,14 @@ Apply the precedence in each detector that currently attributes via content:
    tracker per file) but the emitted `appName` becomes the file owner.
 2. Script / stylesheet detectors (`:412`, `:460`). Wrap the existing
    `identifyAppFromUrl(url) ?? identifyAppFromCode(url)` result in the precedence
-   check against the filename owner.
+   check against the filename owner. The filename override is applied ONLY to
+   REFINE a non-null content match (tracker -> owning app). A null content match
+   (unrecognized URL) preserves the ORIGINAL skip (`if (!contentApp) continue;`)
+   and does NOT manufacture a finding from the filename alone. Rationale: broad
+   filePatterns (e.g. EComposer's `ecom-*`) plus a still-installed app would
+   otherwise flag every unrelated external `<script>`/`<link>` in that app's
+   files as a false positive. Gate the null-content row at the call site, before
+   calling `resolveAttribution`.
 3. Leave snippet-name, hreflang, and json-ld detectors as-is unless a concrete
    misattribution surfaces; those signals are already app-specific. (Surgical:
    only touch what the evidence implicates.)
@@ -167,7 +183,7 @@ single-sourced.
 ## 6. Compatibility
 
 - Scan-differ: `fingerprintFinding` = `filename + findingType +
-  normalize(codeSnippet, lineNumber)`. `appName` is NOT in the fingerprint, so
+normalize(codeSnippet, lineNumber)`. `appName` is NOT in the fingerprint, so
   re-attribution keeps a finding's identity. Verified: the first post-deploy scan
   reports these as `persisted`, not a spurious `resolved` + `new` pair. This is a
   hard requirement and must have a regression test.
@@ -199,7 +215,7 @@ the next real merchant scan and checking `Finding.appName` for `spreadr*` files.
 ## 9. Decisions (locked 2026-09-17)
 
 1. RESOLVED - Enrich descriptions. On override, emit `Inline tracking pixel left
-   by Spreadr (calls Facebook Pixel)` (keep the tracker context, fix the app). The
+by Spreadr (calls Facebook Pixel)` (keep the tracker context, fix the app). The
    `resolveAttribution` helper returns both the resolved app and the overridden
    tracker name so the detector can compose this string.
 2. RESOLVED - Keep content match for nested specific (non-tracker) apps. Judge.me
@@ -208,4 +224,7 @@ the next real merchant scan and checking `Finding.appName` for `spreadr*` files.
 3. RESOLVED - Evidence-driven scope only. Add `filePatterns` for Spreadr, PageFly,
    EComposer in this change. Do NOT add speculative patterns for Shogun/GemPages/
    others; add them when a scan implicates them.
+
+```
+
 ```

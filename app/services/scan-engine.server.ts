@@ -411,6 +411,11 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
 
     const url = match[1];
     const contentApp = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
+    // Preserve original skip: the filename override only REFINES a real content
+    // match (tracker → owning app), it never manufactures a finding from the
+    // filename alone. Otherwise a broad filePattern (e.g. EComposer's ecom-*)
+    // would flag an unrelated external URL even when that app is still installed.
+    if (!contentApp) continue;
     const resolved = resolveAttribution(contentApp, file.filename);
     if (!resolved.appName) continue;
 
@@ -462,6 +467,11 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
     if (!url) continue;
 
     const contentApp = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
+    // Preserve original skip: the filename override only REFINES a real content
+    // match (tracker → owning app), it never manufactures a finding from the
+    // filename alone. Otherwise a broad filePattern (e.g. EComposer's ecom-*)
+    // would flag an unrelated external URL even when that app is still installed.
+    if (!contentApp) continue;
     const resolved = resolveAttribution(contentApp, file.filename);
     if (!resolved.appName) continue;
 

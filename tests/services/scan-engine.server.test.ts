@@ -1856,6 +1856,25 @@ describe("filename attribution overrides content-tracker attribution", () => {
     expect(findings[0].appName).toBe("Google Analytics");
     expect(findings[0].description).toBe("Inline tracking pixel from Google Analytics (gtag)");
   });
+
+  it("does NOT manufacture a GHOST_SCRIPT from an unrecognized URL in an app-owned file", () => {
+    // An unrelated external script inside an EComposer section file. Content is
+    // null (unpkg is not a known app), so the filename must NOT create a finding
+    // — EComposer may still be installed; only a real content match is refined.
+    const file: ThemeFile = {
+      filename: "sections/ecom-hero.liquid",
+      content: '<script src="https://unpkg.com/whatever.js"></script>',
+    };
+    expect(detectGhostScripts(file)).toHaveLength(0);
+  });
+
+  it("does NOT manufacture a GHOST_STYLE from an unrecognized URL in an app-owned file", () => {
+    const file: ThemeFile = {
+      filename: "sections/ecom-hero.liquid",
+      content: '<link rel="stylesheet" href="https://unpkg.com/whatever.css">',
+    };
+    expect(detectGhostStyles(file)).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
