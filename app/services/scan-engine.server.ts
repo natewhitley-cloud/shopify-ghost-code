@@ -66,6 +66,7 @@ import {
   identifyAppFromHrefLang,
   identifyAppFromJsonLd,
   identifyAppFromTextFragment,
+  resolveAttribution,
 } from "./app-lookup.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
@@ -409,8 +410,9 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
     if (!match) continue;
 
     const url = match[1];
-    const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
-    if (!appName) continue;
+    const contentApp = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
+    const resolved = resolveAttribution(contentApp, file.filename);
+    if (!resolved.appName) continue;
 
     const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
     const codeSnippet = buildSnippet(file.content, lineNumber);
@@ -422,8 +424,10 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
       codeSnippet,
       findingType: FindingType.GHOST_SCRIPT,
       severity,
-      appName,
-      description: `External script from ${appName} (${url})`,
+      appName: resolved.appName,
+      description: resolved.overriddenTracker
+        ? `External script left by ${resolved.appName} (loads ${resolved.overriddenTracker})`
+        : `External script from ${resolved.appName} (${url})`,
     });
   }
 
@@ -457,8 +461,9 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
     const url = match[1] ?? match[3];
     if (!url) continue;
 
-    const appName = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
-    if (!appName) continue;
+    const contentApp = identifyAppFromUrl(url) ?? identifyAppFromCode(url);
+    const resolved = resolveAttribution(contentApp, file.filename);
+    if (!resolved.appName) continue;
 
     const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
     const codeSnippet = buildSnippet(file.content, lineNumber);
@@ -470,8 +475,10 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
       codeSnippet,
       findingType: FindingType.GHOST_STYLE,
       severity,
-      appName,
-      description: `External stylesheet from ${appName} (${url})`,
+      appName: resolved.appName,
+      description: resolved.overriddenTracker
+        ? `External stylesheet left by ${resolved.appName} (loads ${resolved.overriddenTracker})`
+        : `External stylesheet from ${resolved.appName} (${url})`,
     });
   }
 
@@ -1438,6 +1445,12 @@ export function detectGhostPixels(file: ThemeFile): CreateFindingInput[] {
         if (pattern.test(text)) {
           seenTrackers.add(tracker);
 
+          // Every TRACKING_PATTERNS entry is a tracker by definition, so the
+          // file-owner app (if any) always wins over the tracker attribution.
+          const resolved = resolveAttribution(appName, file.filename, {
+            contentIsTracker: true,
+          });
+
           const codeSnippet = buildSnippet(file.content, lineNumber);
           const severity = classifySeverity(FindingType.GHOST_PIXEL, codeSnippet);
 
@@ -1447,8 +1460,12 @@ export function detectGhostPixels(file: ThemeFile): CreateFindingInput[] {
             codeSnippet,
             findingType: FindingType.GHOST_PIXEL,
             severity,
-            appName,
-            description: `Inline tracking pixel from ${appName} (${tracker})`,
+            // `appName` (the TRACKING_PATTERNS entry) is always defined here, so
+            // resolved.appName is never null; coalesce to satisfy the type.
+            appName: resolved.appName ?? appName,
+            description: resolved.overriddenTracker
+              ? `Inline tracking pixel left by ${resolved.appName} (calls ${resolved.overriddenTracker})`
+              : `Inline tracking pixel from ${appName} (${tracker})`,
           });
         }
       }

@@ -152,9 +152,65 @@ export function identifyAppFromSnippetName(snippetName: string): string | null {
 }
 
 /**
+ * Identify an app from a theme file path (e.g. `snippets/spreadr-custom.liquid`).
+ *
+ * Checks each signature's filePatterns array against the full file path. The
+ * filename identifies the app that OWNS the file — the app whose uninstall
+ * orphaned it. Returns the full AppSignature (not just the name) so callers can
+ * read `isTracker`. Returns null when no signature has a matching filePattern.
+ */
+export function identifyAppFromFilename(filename: string): AppSignature | null {
+  for (const sig of APP_SIGNATURES) {
+    if (!sig.filePatterns) continue;
+    for (const pattern of sig.filePatterns) {
+      if (pattern.test(filename)) {
+        return sig;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Check whether a given app name corresponds to a known tracking/analytics app.
  * Used to add privacy callouts on findings from tracker scripts.
  */
 export function isTrackerApp(appName: string): boolean {
   return APP_SIGNATURES.some((sig) => sig.appName === appName && sig.isTracker === true);
+}
+
+/**
+ * Resolve the final attribution for a finding by reconciling the content-derived
+ * app (inline tracker call, script URL, snippet name) with the app that OWNS the
+ * file the code lives in.
+ *
+ * Precedence (spec 4.3): the file-owner app wins over the content-derived app
+ * ONLY when the content-derived app is a generic tracker (`isTracker`) or null.
+ * A specific NON-tracker content match (e.g. a Judge.me widget nested inside an
+ * EComposer section file) is a genuine second app's code and keeps its own,
+ * more-precise attribution. A file-owner that is itself a tracker never
+ * overrides (it is not a stronger signal than the content tracker).
+ *
+ * @param contentApp The app name derived from the code's content, or null.
+ * @param filename   The theme file path the finding lives in.
+ * @param opts.contentIsTracker Override for whether the content is a tracker.
+ *   Detectors whose every match is a tracker by construction (detectGhostPixels)
+ *   pass `true` directly; others let it derive from isTrackerApp(contentApp).
+ * @returns The resolved appName and, when the file-owner overrode a tracker, the
+ *   overridden tracker's app name (for description enrichment); otherwise null.
+ */
+export function resolveAttribution(
+  contentApp: string | null,
+  filename: string,
+  opts?: { contentIsTracker?: boolean },
+): { appName: string | null; overriddenTracker: string | null } {
+  const fileSig = identifyAppFromFilename(filename);
+  const contentIsTracker =
+    opts?.contentIsTracker ?? (contentApp !== null && isTrackerApp(contentApp));
+
+  if (fileSig && fileSig.isTracker !== true && (contentApp === null || contentIsTracker)) {
+    return { appName: fileSig.appName, overriddenTracker: contentApp };
+  }
+
+  return { appName: contentApp, overriddenTracker: null };
 }

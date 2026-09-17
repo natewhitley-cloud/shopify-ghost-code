@@ -1803,6 +1803,62 @@ describe("detectGhostPixels", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Filename-based attribution (gc-1ql) — reproduces the d4c4c4 misattributions
+// ---------------------------------------------------------------------------
+
+describe("filename attribution overrides content-tracker attribution", () => {
+  it("attributes an fbq pixel inside spreadr.liquid to Spreadr, not Facebook Pixel", () => {
+    const file: ThemeFile = {
+      filename: "snippets/spreadr.liquid",
+      content: ["<script>", "  fbq('init', '123456789');", "</script>"].join("\n"),
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Spreadr");
+    expect(findings[0].description).toBe(
+      "Inline tracking pixel left by Spreadr (calls Facebook Pixel)",
+    );
+  });
+
+  it("attributes a ga() pixel inside spreadr-custom.liquid to Spreadr", () => {
+    const file: ThemeFile = {
+      filename: "snippets/spreadr-custom.liquid",
+      content: "<script>\n  ga('send', 'pageview');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Spreadr");
+    expect(findings[0].description).toBe(
+      "Inline tracking pixel left by Spreadr (calls Google Analytics (Universal))",
+    );
+  });
+
+  it("attributes a gtag script inside pagefly-main-js.liquid to PageFly", () => {
+    const file: ThemeFile = {
+      filename: "snippets/pagefly-main-js.liquid",
+      content: '<script src="https://www.googletagmanager.com/gtag/js?id=G-ABC123"></script>',
+    };
+    const findings = detectGhostScripts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("PageFly");
+    expect(findings[0].description).toBe(
+      "External script left by PageFly (loads Google Tag Manager)",
+    );
+  });
+
+  it("does NOT override a raw gtag pixel in a non-app-owned file (theme.liquid)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<script>\n  gtag('config', 'UA-12345-1');\n</script>",
+    };
+    const findings = detectGhostPixels(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Google Analytics");
+    expect(findings[0].description).toBe("Inline tracking pixel from Google Analytics (gtag)");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // detectJsonLdConflicts
 // ---------------------------------------------------------------------------
 
