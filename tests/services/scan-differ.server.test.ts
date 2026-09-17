@@ -707,3 +707,41 @@ describe("diffScans — LOG-10 stability (end-to-end)", () => {
     expect(diff.resolvedFindings).toHaveLength(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Re-attribution stability (gc-1ql)
+// ---------------------------------------------------------------------------
+
+describe("diffScans is stable across appName re-attribution", () => {
+  it("reports re-attributed findings as persisted, not resolved+new", () => {
+    // Same filename / findingType / codeSnippet / lineNumber, only appName
+    // changes (Facebook Pixel/Google Analytics → Spreadr/PageFly). appName is
+    // NOT part of fingerprintFinding, so the identity must be unchanged.
+    const previous: DiffableFinding[] = [
+      makeFinding("snippets/spreadr.liquid", "GHOST_PIXEL", "  fbq('init', '123');", {
+        appName: "Facebook Pixel",
+        description: "Inline tracking pixel from Facebook Pixel (fbq)",
+      }),
+      makeFinding("snippets/pagefly-main-js.liquid", "GHOST_SCRIPT", "gtag script", {
+        appName: "Google Tag Manager",
+        description: "External script from Google Tag Manager (...)",
+      }),
+    ];
+    const current: DiffableFinding[] = [
+      makeFinding("snippets/spreadr.liquid", "GHOST_PIXEL", "  fbq('init', '123');", {
+        appName: "Spreadr",
+        description: "Inline tracking pixel left by Spreadr (calls Facebook Pixel)",
+      }),
+      makeFinding("snippets/pagefly-main-js.liquid", "GHOST_SCRIPT", "gtag script", {
+        appName: "PageFly",
+        description: "External script left by PageFly (loads Google Tag Manager)",
+      }),
+    ];
+
+    const diff = diffScans(current, previous);
+
+    expect(diff.unchangedCount).toBe(2);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.resolvedFindings).toHaveLength(0);
+  });
+});

@@ -8,6 +8,11 @@
  *   - snippetNames   : Liquid snippet/section names the app injects
  *   - cssPatterns    : RegExp patterns that appear inside CSS `<link>` hrefs or
  *                      inline `<style>` blocks
+ *   - filePatterns   : RegExp patterns matched against a finding's file PATH
+ *                      (`file.filename`, e.g. `snippets/spreadr-custom.liquid`).
+ *                      Anchor on a path boundary (`/(^|\/)spreadr[-.]/i`) to
+ *                      avoid substring collisions. Identifies the app that OWNS
+ *                      the file — see resolveAttribution in app-lookup.server.ts.
  *
  * KEEP IN SYNC with app-lookup.server.ts — any new fields added here need a
  * corresponding lookup function there.
@@ -26,6 +31,7 @@ export type AppSignature = {
   hrefLangPatterns?: RegExp[];
   jsonLdPatterns?: RegExp[];
   textPatterns?: RegExp[];
+  filePatterns?: RegExp[];
   isTracker?: boolean;
 };
 
@@ -631,6 +637,7 @@ export const APP_SIGNATURES: AppSignature[] = [
       "pf-footer",
     ],
     cssPatterns: [/pagefly/i],
+    filePatterns: [/(^|\/)pagefly[-.]/i],
   },
   {
     appName: "Shogun",
@@ -648,10 +655,27 @@ export const APP_SIGNATURES: AppSignature[] = [
   },
   {
     appName: "EComposer",
-    cdnDomains: ["cdn.ecomposer.io", "ecomposer.io"],
+    cdnDomains: ["cdn.ecomposer.io", "ecomposer.io", "cdn.ecomposer.app", "ecomposer.app"],
     scriptPatterns: [/ecomposer\.io/, /EComposer/],
     snippetNames: ["ecomposer", "ecomposer-head", "ecomposer-body"],
     cssPatterns: [/ecomposer/],
+    filePatterns: [/(^|\/)ecom[-_.]/i],
+  },
+
+  // -------------------------------------------------------------------------
+  // Affiliate / Product Importers
+  // -------------------------------------------------------------------------
+  {
+    // Spreadr = Amazon affiliate/importer app. Its leftovers are inline pixels
+    // (fbq/ga) inside spreadr*.liquid snippets, so filePatterns is the primary
+    // signal; scriptPatterns cover its own identifiers.
+    appName: "Spreadr",
+    cdnDomains: [],
+    scriptPatterns: [/SpreadrClick/, /spreadrRedirectURL/, /SpreadrLink/],
+    snippetNames: [],
+    cssPatterns: [],
+    filePatterns: [/(^|\/)spreadr[-.]/i],
+    isTracker: false,
   },
 
   // -------------------------------------------------------------------------

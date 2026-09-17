@@ -7,6 +7,8 @@ import {
   identifyAppFromHrefLang,
   identifyAppFromJsonLd,
   identifyAppFromTextFragment,
+  identifyAppFromFilename,
+  resolveAttribution,
   isTrackerApp,
 } from "../../app/services/app-lookup.server";
 
@@ -483,5 +485,119 @@ describe("isTrackerApp", () => {
 
   it("returns false for unknown app name", () => {
     expect(isTrackerApp("Unknown App")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// identifyAppFromFilename
+// ---------------------------------------------------------------------------
+
+describe("identifyAppFromFilename", () => {
+  it("matches a Spreadr snippet path", () => {
+    expect(identifyAppFromFilename("snippets/spreadr.liquid")?.appName).toBe("Spreadr");
+  });
+
+  it("matches a hyphenated Spreadr snippet path", () => {
+    expect(identifyAppFromFilename("snippets/spreadr-custom.liquid")?.appName).toBe("Spreadr");
+  });
+
+  it("matches a PageFly snippet path", () => {
+    expect(identifyAppFromFilename("snippets/pagefly-main-js.liquid")?.appName).toBe("PageFly");
+  });
+
+  it("matches an EComposer section path", () => {
+    expect(
+      identifyAppFromFilename("sections/ecom-default-template-quickview.liquid")?.appName,
+    ).toBe("EComposer");
+  });
+
+  it("matches a bare EComposer layout path", () => {
+    expect(identifyAppFromFilename("layout/ecom.liquid")?.appName).toBe("EComposer");
+  });
+
+  it("returns the full signature so callers can read isTracker", () => {
+    const sig = identifyAppFromFilename("snippets/spreadr.liquid");
+    expect(sig?.isTracker).toBe(false);
+    expect(sig?.scriptPatterns).toBeDefined();
+  });
+
+  it("does NOT match a near-miss substring in a longer word (spreadrnumors)", () => {
+    // The anchored /(^|\/)spreadr[-.]/i requires a `-` or `.` immediately after
+    // "spreadr", so "spreadrnumors" does not match.
+    expect(identifyAppFromFilename("snippets/spreadrnumors.liquid")).toBeNull();
+  });
+
+  it("does NOT match when the app name is buried mid-word", () => {
+    expect(identifyAppFromFilename("snippets/myspreadr.liquid")).toBeNull();
+  });
+
+  it("returns null for a plain theme file", () => {
+    expect(identifyAppFromFilename("layout/theme.liquid")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// resolveAttribution (precedence rule — spec 4.3)
+// ---------------------------------------------------------------------------
+
+describe("resolveAttribution", () => {
+  it("null content + Spreadr file → Spreadr, no overridden tracker", () => {
+    expect(resolveAttribution(null, "snippets/spreadr.liquid")).toEqual({
+      appName: "Spreadr",
+      overriddenTracker: null,
+    });
+  });
+
+  it("tracker content (isTracker signature) + Spreadr file → Spreadr overrides", () => {
+    // "Facebook Pixel (legacy)" is a genuine isTracker signature, so the derive
+    // path (isTrackerApp) flags it and the file-owner (Spreadr) wins.
+    expect(resolveAttribution("Facebook Pixel (legacy)", "snippets/spreadr.liquid")).toEqual({
+      appName: "Spreadr",
+      overriddenTracker: "Facebook Pixel (legacy)",
+    });
+  });
+
+  it("tracker content (Google Tag Manager) + PageFly file → PageFly overrides", () => {
+    // Exercises the isTrackerApp derive path with a known tracker signature name.
+    expect(resolveAttribution("Google Tag Manager", "snippets/pagefly-main-js.liquid")).toEqual({
+      appName: "PageFly",
+      overriddenTracker: "Google Tag Manager",
+    });
+  });
+
+  it("specific non-tracker content (Judge.me) + EComposer file → keep Judge.me", () => {
+    expect(resolveAttribution("Judge.me", "sections/ecom-default-template.liquid")).toEqual({
+      appName: "Judge.me",
+      overriddenTracker: null,
+    });
+  });
+
+  it("agreeing content + file (EComposer + EComposer file) → EComposer", () => {
+    expect(resolveAttribution("EComposer", "sections/ecom-default-template.liquid")).toEqual({
+      appName: "EComposer",
+      overriddenTracker: null,
+    });
+  });
+
+  it("tracker content + no file match → unchanged", () => {
+    expect(resolveAttribution("Facebook Pixel", "layout/theme.liquid")).toEqual({
+      appName: "Facebook Pixel",
+      overriddenTracker: null,
+    });
+  });
+
+  it("null content + no file match → null", () => {
+    expect(resolveAttribution(null, "layout/theme.liquid")).toEqual({
+      appName: null,
+      overriddenTracker: null,
+    });
+  });
+
+  it("honors an explicit contentIsTracker=true override (detectGhostPixels path)", () => {
+    // Even if the content app is not in the tracker list, the caller can force
+    // tracker semantics — as detectGhostPixels does for every TRACKING_PATTERN.
+    expect(
+      resolveAttribution("Facebook Pixel", "snippets/spreadr.liquid", { contentIsTracker: true }),
+    ).toEqual({ appName: "Spreadr", overriddenTracker: "Facebook Pixel" });
   });
 });
