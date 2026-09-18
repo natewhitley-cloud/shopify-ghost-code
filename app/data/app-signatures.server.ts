@@ -648,8 +648,8 @@ export const APP_SIGNATURES: AppSignature[] = [
   },
   {
     appName: "GemPages",
-    cdnDomains: ["cdn.ampify.com", "cdn.gempages.net"],
-    scriptPatterns: [/gempages\.net/, /GemPages/],
+    cdnDomains: ["cdn.ampify.com", "cdn.gempages.net", "gemcommerce.com"],
+    scriptPatterns: [/gempages\.net/, /GemPages/, /gemcommerce\.com/],
     snippetNames: ["gem-app-header-scripts", "gem-app-footer-scripts", "gempages"],
     cssPatterns: [/gempages/],
   },
@@ -696,6 +696,14 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["swym-wishlist", "wishlist-plus"],
     cssPatterns: [/swym/],
     textPatterns: [/\bswym-wishlist\b/, /\bdata-swym-collection\b/, /\bswym-button\b/],
+  },
+  {
+    appName: "Zooomy Wishlist",
+    cdnDomains: ["zooomyapps.com"],
+    scriptPatterns: [/zooomyapps\.com/i, /Zooomy/i],
+    snippetNames: [],
+    cssPatterns: [/zooomy/i],
+    filePatterns: [/(^|\/)zooomy/i],
   },
   {
     appName: "FOMO",

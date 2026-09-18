@@ -418,6 +418,31 @@ describe("new app signatures", () => {
   it("identifies Consentmo from snippet name", () => {
     expect(identifyAppFromSnippetName("gcm-integration-script")).toBe("Consentmo");
   });
+
+  // GemPages — gemcommerce.com CDN host (subdomain of newly-added domain)
+  it("identifies GemPages from assets.gemcommerce.com URL", () => {
+    expect(identifyAppFromUrl("https://assets.gemcommerce.com/assets-v2/gp-lazyload.v2.js")).toBe(
+      "GemPages",
+    );
+  });
+  it("still identifies GemPages from its existing gempages.net CDN URL", () => {
+    expect(identifyAppFromUrl("https://cdn.gempages.net/scripts/gp-global.js")).toBe("GemPages");
+  });
+
+  // Zooomy Wishlist
+  it("identifies Zooomy Wishlist from CDN URL", () => {
+    expect(identifyAppFromUrl("https://zooomyapps.com/wishlist/ListWishlist.js")).toBe(
+      "Zooomy Wishlist",
+    );
+  });
+  it("identifies Zooomy Wishlist from a section file path", () => {
+    expect(identifyAppFromFilename("sections/zooomy-wishlist.liquid")?.appName).toBe(
+      "Zooomy Wishlist",
+    );
+  });
+  it("does not over-match the zooomy filePattern on an unrelated path", () => {
+    expect(identifyAppFromFilename("sections/product.liquid")).toBeNull();
+  });
 });
 
 // ---------------------------------------------------------------------------
