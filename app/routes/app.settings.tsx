@@ -333,7 +333,7 @@ export default function Settings() {
           <div className={`plan-tile${isStandard ? " plan-tile--current" : ""}`}>
             <div className="plan-tile__header">
               <p className="plan-tile__name">Standard</p>
-              <p className="plan-tile__price">$29 / month</p>
+              <p className="plan-tile__price">$9 / month</p>
               {isStandard && <span className="plan-tile__badge">Current plan</span>}
             </div>
             <hr className="plan-tile__divider" />
@@ -357,7 +357,7 @@ export default function Settings() {
           <div className={`plan-tile${isProfessional ? " plan-tile--current" : ""}`}>
             <div className="plan-tile__header">
               <p className="plan-tile__name">Professional</p>
-              <p className="plan-tile__price">$49 / month</p>
+              <p className="plan-tile__price">$29 / month</p>
               {isProfessional && <span className="plan-tile__badge">Current plan</span>}
             </div>
             <hr className="plan-tile__divider" />
