@@ -71,12 +71,12 @@ describe("buildPricingPlansUrl", () => {
 // ---------------------------------------------------------------------------
 
 describe("PLAN_AMOUNTS", () => {
-  it("Standard plan amount is $29", () => {
-    expect(PLAN_AMOUNTS[PLANS.STANDARD]).toBe(29);
+  it("Standard plan amount is $9", () => {
+    expect(PLAN_AMOUNTS[PLANS.STANDARD]).toBe(9);
   });
 
-  it("Professional plan amount is $49", () => {
-    expect(PLAN_AMOUNTS[PLANS.PROFESSIONAL]).toBe(49);
+  it("Professional plan amount is $29", () => {
+    expect(PLAN_AMOUNTS[PLANS.PROFESSIONAL]).toBe(29);
   });
 
   it("free plan has no amount (undefined) — no recurring charge", () => {
@@ -102,8 +102,8 @@ describe("resolvePlanAmount", () => {
   });
 
   it("returns the configured amount for a paid plan without warning", () => {
-    expect(resolvePlanAmount(PLANS.STANDARD)).toBe(29);
-    expect(resolvePlanAmount(PLANS.PROFESSIONAL)).toBe(49);
+    expect(resolvePlanAmount(PLANS.STANDARD)).toBe(9);
+    expect(resolvePlanAmount(PLANS.PROFESSIONAL)).toBe(29);
     expect(logger.warn).not.toHaveBeenCalled();
   });
 

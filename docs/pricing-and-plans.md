@@ -1,6 +1,6 @@
 # Ghost Code — Pricing & Plans
 
-> **Last updated:** 2026-09-12
+> **Last updated:** 2026-09-18
 > **Source of truth for:** plan tiers, feature gating, upgrade triggers, pricing decisions.
 > Update this file when billing logic, plan features, or pricing changes.
 
@@ -29,7 +29,7 @@
 4. Preview of top finding in full
 5. Single theme scanning
 
-### Standard ($29/mo, 7-day free trial)
+### Standard ($9/mo, 7-day free trial)
 
 | Feature                | Limit                                            |
 | ---------------------- | ------------------------------------------------ |
@@ -64,7 +64,7 @@
 > bullet is tense-neutral on purpose; the Plus hard-block date has passed (see GhostCode
 > bead for the in-app copy fix). Apply these in Partner Dashboard → Managed Pricing.
 
-### Professional ($49/mo, 7-day free trial)
+### Professional ($29/mo, 7-day free trial)
 
 | Feature                | Limit                                            |
 | ---------------------- | ------------------------------------------------ |
@@ -150,18 +150,19 @@
 ### Current assessment
 
 - Free → Standard gate is strong: hiding details creates real urgency
-- Standard → Professional gap ($30) may feel steep for incremental value (auto-rescan + diffing)
+- Standard → Professional gap is $20 ($9 → $29); Pro's incremental value (unlimited scans, multi-theme, auto-rescan, diffing) has to carry it
 - 7-day trial on both paid tiers lowers friction
+- Pricing is now at/below the direct-comp median (see 2026-09-18 decision-log entry). Deliberately a land-grab price: no pricing power exists pre-reviews, so the goal is install velocity → reviews → social proof, then raise (grandfathering early merchants)
 
 ### Options to consider
 
-- **Lower Standard to $19/mo** to maximize free-to-paid conversion, keep Pro at $49
-- **Annual discount** (e.g., $249/yr Standard, $499/yr Pro) — common in Shopify apps, improves retention
+- **Annual discount** (e.g., ~$90/yr Standard, ~$290/yr Pro — roughly 2 months free) — common in Shopify apps, improves retention
 - **Usage-based pricing** — charge per theme on Standard instead of hard-capping at 1
+- **Raise prices post-traction** — once reviews accumulate and WTP is observed, revisit; the $9/$29 floor was chosen for the zero-review stage, not as a permanent ceiling
 
 ### Open questions
 
-- Monitor post-launch willingness-to-pay on Pro ($49/mo). If conversion rate is strong and churn is low, consider raising to $59. Watch for agency/developer buyers who may tolerate a higher price point.
+- Monitor post-launch willingness-to-pay on Pro ($29/mo). If conversion is strong and churn is low, this is the first lever to raise. Watch for agency/developer buyers who may tolerate a higher price point.
 - **Agency tier (post-launch):** Is there demand for an agency-focused tier above Pro? Watch for agencies adopting Pro at scale (multiple stores per billing email, export/reporting feature requests). An agency tier would require a multi-store dashboard (significant architecture change — separate web surface outside Shopify admin), white-label reporting, and flat per-agency pricing. Low-lift precursor: add exportable PDF reports to Pro and watch uptake. Do not design for this pre-launch.
 - Should auto-rescan be surfaced more actively (e.g., "a theme was published but auto-rescan is a Pro feature")? Research shows behavioral triggers convert 3–4x better than generic nudges — strong post-launch candidate.
 - Is multi-theme gating worth enforcing in the UI before launch, or defer to post-launch data?
@@ -182,3 +183,4 @@
 | 2026-03-10 | Pro price: $49/mo (down from $59)                                             | $49 better fits market comparables and reduces the Standard→Pro gap. Monitor post-launch — raise to $59 if willingness-to-pay signals support it.                                                                                                                                                                                                                                |
 | 2026-03-22 | Standard: 1 scan/week (down from unlimited)                                   | Creates clear upgrade path to Professional (unlimited). Weekly cadence matches the scheduled scan rhythm. Prevents unlimited-scan abuse on mid-tier while keeping the plan useful for most merchants.                                                                                                                                                                            |
 | 2026-09-11 | Dangling-reference (Broken Links) detection is Standard+ (gc-m4h.7)           | Admin-API-verified broken-link detection is a paid capability. Free surfaces the problem exists but not this audit; gated via `PlanFeatures.canDetectDanglingReferences` + `canDetectDanglingReferences(plan)` and enforced in the scan-theme worker's dangling-reference step (plan gate is not a scope skip). Still behind `DANGLING_REFERENCE_LIVE_ENABLED` soft-launch flag. |
+| 2026-09-18 | Standard $29 → **$9**, Professional $49 → **$29**                            | Competitive research on the direct category (leftover/ghost-code scanners): paid comps are Residue ~$4/mo (yearly), Script Scan $4.99/$14.99, GhostSweep $20 flat — median ~$10, and **all four have 0 reviews** (nascent category, no proven WTP, no pricing power). $29 sat above the entire observed range. Chose a land-grab price to maximize install velocity → reviews → social proof, then raise later (grandfather early merchants). $9 is a deliberate floor: it still covers the Admin-API cost of broken-link verification under the weekly scan cap, and sub-$9 signals "toy." Pro held above GhostSweep's $20 on the strength of unlimited scans + multi-theme + auto-rescan + diffing. **Code impact:** `PLAN_AMOUNTS` in `app/lib/billing.server.ts` updated (9/29) — the hand-maintained mirror that feeds `BillingEvent.amount` and the operator-digest MRR; MUST be flipped in the same window as the Partner Dashboard Managed-Pricing change or MRR/billing records drift. Managed-Pricing dollar values changed by Nathan in Partner Dashboard. |
