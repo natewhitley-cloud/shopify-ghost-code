@@ -277,7 +277,7 @@ describe("reconcileShopPlan", () => {
       eventType: "upgrade",
       fromPlan: "free",
       toPlan: "Standard",
-      amount: 29,
+      amount: 9,
     });
   });
 
@@ -356,7 +356,7 @@ describe("reconcileShopPlan", () => {
       eventType: "upgrade",
       fromPlan: "free",
       toPlan: "Standard",
-      amount: 29,
+      amount: 9,
     });
     expect(result).toEqual({ status: "corrected", fromPlan: "free", toPlan: "Standard" });
   });
@@ -427,7 +427,7 @@ describe("reconcileShopPlan", () => {
       eventType: "upgrade",
       fromPlan: "free",
       toPlan: "Standard",
-      amount: 29,
+      amount: 9,
     });
     expect(result).toEqual({ status: "corrected", fromPlan: "free", toPlan: "Standard" });
   });

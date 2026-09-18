@@ -89,8 +89,8 @@ export function resolvePlanFromSubscription(
 // silently corrupt BillingEvent.amount records with wrong values.
 // Used to populate BillingEvent.amount for upgrade/reactivation events.
 export const PLAN_AMOUNTS: Record<string, number | undefined> = {
-  [PLANS.STANDARD]: 29,
-  [PLANS.PROFESSIONAL]: 49,
+  [PLANS.STANDARD]: 9,
+  [PLANS.PROFESSIONAL]: 29,
   // FREE has no recurring charge amount
 };
 

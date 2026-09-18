@@ -233,8 +233,8 @@ describe("computePlanMix", () => {
 });
 
 describe("computeMrr", () => {
-  it("sums Standard at 29 and Professional at 49; free contributes nothing", () => {
-    expect(computeMrr({ free: 5, Standard: 2, Professional: 3 })).toBe(2 * 29 + 3 * 49);
+  it("sums Standard at 9 and Professional at 29; free contributes nothing", () => {
+    expect(computeMrr({ free: 5, Standard: 2, Professional: 3 })).toBe(2 * 9 + 3 * 29);
   });
 
   it("is zero for an all-free mix", () => {
