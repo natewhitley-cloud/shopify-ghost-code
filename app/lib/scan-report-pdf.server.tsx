@@ -7,7 +7,22 @@
  * by severity and renders a clean, branded, shareable report.
  */
 
-import { Document, Page, View, Text, StyleSheet, renderToBuffer } from "@react-pdf/renderer";
+import path from "node:path";
+
+import { Document, Page, View, Text, StyleSheet, Font, renderToBuffer } from "@react-pdf/renderer";
+
+// Register Noto Sans (committed under app/assets/fonts) so the PDF can render
+// Latin-ext/Cyrillic/Greek/Vietnamese theme content instead of tofu. The built-in
+// Helvetica/Courier fonts are Latin-1 only. Path is process.cwd()-absolute so it
+// resolves the same in dev and in the Docker runtime image (see Dockerfile COPY).
+const FONT_DIR = path.join(process.cwd(), "app/assets/fonts");
+Font.register({
+  family: "Noto Sans",
+  fonts: [
+    { src: path.join(FONT_DIR, "NotoSans-Regular.ttf") },
+    { src: path.join(FONT_DIR, "NotoSans-Bold.ttf"), fontWeight: 700 },
+  ],
+});
 
 type Severity = "HIGH" | "MEDIUM" | "LOW";
 
@@ -49,12 +64,13 @@ const styles = StyleSheet.create({
     paddingHorizontal: 44,
     fontSize: 10,
     color: SUBDUED,
-    fontFamily: "Helvetica",
+    fontFamily: "Noto Sans",
   },
   title: {
     fontSize: 18,
     color: HEADING,
-    fontFamily: "Helvetica-Bold",
+    fontFamily: "Noto Sans",
+    fontWeight: 700,
     marginBottom: 4,
   },
   metaLine: {
@@ -65,7 +81,8 @@ const styles = StyleSheet.create({
   healthLine: {
     fontSize: 13,
     color: HEADING,
-    fontFamily: "Helvetica-Bold",
+    fontFamily: "Noto Sans",
+    fontWeight: 700,
     marginTop: 8,
   },
   summaryLine: {
@@ -88,7 +105,8 @@ const styles = StyleSheet.create({
   findingHeader: {
     fontSize: 11,
     color: HEADING,
-    fontFamily: "Helvetica-Bold",
+    fontFamily: "Noto Sans",
+    fontWeight: 700,
     marginBottom: 3,
   },
   findingMeta: {
@@ -112,6 +130,11 @@ const styles = StyleSheet.create({
     fontSize: 11,
     color: SUBDUED,
     marginTop: 20,
+  },
+  degradeNote: {
+    fontSize: 8,
+    color: SUBDUED,
+    marginTop: 12,
   },
   footer: {
     position: "absolute",
@@ -143,6 +166,15 @@ function truncateSnippet(snippet: string): string {
   return snippet.length > MAX ? `${snippet.slice(0, MAX)}…` : snippet;
 }
 
+/**
+ * True if `text` contains glyphs outside the committed Noto Sans coverage
+ * (which covers Latin/Latin-ext/Cyrillic/Greek/Vietnamese, NOT CJK/Arabic/
+ * Hebrew/emoji). Drives the "some characters can't be shown" degrade note.
+ */
+export function hasUnsupportedGlyphs(text: string): boolean {
+  return /[぀-ヿ㐀-鿿가-힯֐-׿؀-ۿ]|[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(text);
+}
+
 function ScanReportDocument({ scan, findings, healthScore, exportedAt }: ScanReportInput) {
   // Sort a COPY — never rely on input order.
   const sorted = [...findings].sort(
@@ -157,6 +189,13 @@ function ScanReportDocument({ scan, findings, healthScore, exportedAt }: ScanRep
   // Cap the rendered list; counts above already reflect the full set.
   const visible = sorted.slice(0, MAX_PDF_FINDINGS);
   const overflow = sorted.length - visible.length;
+
+  // Detect any content outside Noto Sans coverage (CJK/Arabic/Hebrew/emoji) so
+  // we can surface a degrade note instead of silently dropping glyphs to tofu.
+  const hasUnsupported = [
+    scan.themeName,
+    ...findings.flatMap((f) => [f.description, f.codeSnippet, f.appName ?? "", f.filename]),
+  ].some(hasUnsupportedGlyphs);
 
   return (
     <Document>
@@ -195,6 +234,13 @@ function ScanReportDocument({ scan, findings, healthScore, exportedAt }: ScanRep
         {overflow > 0 ? (
           <Text style={styles.summaryLine}>
             +{overflow} more findings — see full results in Ghost Code.
+          </Text>
+        ) : null}
+
+        {hasUnsupported ? (
+          <Text style={styles.degradeNote}>
+            Some characters (e.g. CJK, Arabic, emoji) can&apos;t be shown in this PDF — view full
+            details in Ghost Code.
           </Text>
         ) : null}
 

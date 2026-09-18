@@ -9,7 +9,7 @@
 
 import { describe, it, expect } from "vitest";
 
-import { renderScanReportPdf } from "../../app/lib/scan-report-pdf.server";
+import { renderScanReportPdf, hasUnsupportedGlyphs } from "../../app/lib/scan-report-pdf.server";
 
 describe("renderScanReportPdf", () => {
   it("resolves to a Buffer whose first bytes are the %PDF- magic header", async () => {
@@ -71,5 +71,65 @@ describe("renderScanReportPdf", () => {
     expect(Buffer.isBuffer(buffer)).toBe(true);
     expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
     expect(buffer.byteLength).toBeGreaterThan(1000);
+  });
+
+  it("renders Cyrillic content (covered by Noto Sans) to a valid PDF", async () => {
+    const buffer = await renderScanReportPdf({
+      scan: { id: "scan-cyr", themeName: "Dawn", createdAt: new Date("2026-01-15T10:00:00Z") },
+      findings: [
+        {
+          severity: "HIGH",
+          findingType: "GHOST_SCRIPT",
+          filename: "layout/theme.liquid",
+          lineNumber: 7,
+          appName: "Klaviyo",
+          description: "Привет мир",
+          codeSnippet: '<script src="https://example.com/a.js"></script>',
+        },
+      ],
+      healthScore: { score: 70, label: "Fair" },
+      exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
+    });
+
+    expect(Buffer.isBuffer(buffer)).toBe(true);
+    expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+  });
+
+  it("renders CJK content (degrade path) without throwing", async () => {
+    const buffer = await renderScanReportPdf({
+      scan: { id: "scan-cjk", themeName: "Dawn", createdAt: new Date("2026-01-15T10:00:00Z") },
+      findings: [
+        {
+          severity: "MEDIUM",
+          findingType: "GHOST_STYLE",
+          filename: "assets/theme.css",
+          lineNumber: 3,
+          appName: null,
+          description: "日本語テスト",
+          codeSnippet: ".x { display: none; }",
+        },
+      ],
+      healthScore: { score: 60, label: "Fair" },
+      exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
+    });
+
+    expect(Buffer.isBuffer(buffer)).toBe(true);
+    expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+  });
+});
+
+describe("hasUnsupportedGlyphs", () => {
+  it("returns true for glyphs outside Noto Sans coverage", () => {
+    expect(hasUnsupportedGlyphs("日本語")).toBe(true);
+    expect(hasUnsupportedGlyphs("مرحبا")).toBe(true);
+    expect(hasUnsupportedGlyphs("😀")).toBe(true);
+    expect(hasUnsupportedGlyphs("안녕")).toBe(true);
+  });
+
+  it("returns false for covered scripts (Latin-ext, Cyrillic, Greek, ASCII)", () => {
+    expect(hasUnsupportedGlyphs("zażółć gęślą")).toBe(false);
+    expect(hasUnsupportedGlyphs("Привет")).toBe(false);
+    expect(hasUnsupportedGlyphs("Ελληνικά")).toBe(false);
+    expect(hasUnsupportedGlyphs("plain ASCII")).toBe(false);
   });
 });

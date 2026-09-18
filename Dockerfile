@@ -25,6 +25,10 @@ COPY --from=build /app/build ./build
 COPY --from=build /app/node_modules/.prisma ./node_modules/.prisma
 COPY --from=build /app/node_modules/@prisma/client ./node_modules/@prisma/client
 COPY --from=build /app/prisma ./prisma
+# Fonts for the PDF renderer (@react-pdf/renderer Font.register). The build
+# stage has them via `COPY . .`, but `app/` is NOT otherwise copied into
+# runtime — omit this and the font path 404s in prod (build passes, prod 500s).
+COPY --from=build /app/app/assets/fonts ./app/assets/fonts
 COPY --from=build /app/package.json ./package.json
 COPY --from=build /app/shopify.app.toml ./shopify.app.toml
 COPY --from=build /app/shopify.web.toml ./shopify.web.toml
