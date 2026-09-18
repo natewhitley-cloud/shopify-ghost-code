@@ -1606,34 +1606,39 @@ export default function ScanDetail() {
           theme code that app would leave behind on uninstall, and links back to
           the unfiltered view. Suppressed when a lane filter is also active so
           the two context banners don't stack awkwardly. */}
-        {isCompleted && filters.app && !filters.lane && (
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              alignItems: "center",
-              flexWrap: "wrap",
-              gap: "12px",
-              padding: "12px 16px",
-              borderRadius: "8px",
-              border: `1px solid ${INFO_BD}`,
-              background: INFO_BG,
-            }}
-          >
-            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-              <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
-                Removing {filters.app}
-              </span>
-              <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
-                The findings below are the theme code {filters.app} added to your theme.
-                Uninstalling the app won&apos;t remove them. They&apos;ll stay until cleaned up.
-              </span>
+        {isCompleted &&
+          canViewDetails &&
+          filters.app &&
+          !filters.lane &&
+          findingSummary.total > 0 && (
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                flexWrap: "wrap",
+                gap: "12px",
+                padding: "12px 16px",
+                borderRadius: "8px",
+                border: `1px solid ${INFO_BD}`,
+                background: INFO_BG,
+              }}
+            >
+              <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
+                  Removing {filters.app}
+                </span>
+                <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+                  The findings below are the theme code attributed to {filters.app}. This code stays
+                  in your theme until it&apos;s cleaned up, whether or not the app is still
+                  installed.
+                </span>
+              </div>
+              <Link to={`/app/scans/${scan.id}`} preventScrollReset>
+                Show all findings
+              </Link>
             </div>
-            <Link to={`/app/scans/${scan.id}`} preventScrollReset>
-              Show all findings
-            </Link>
-          </div>
-        )}
+          )}
 
         {/* Findings detail table — only shown for completed scans */}
         {isCompleted &&
@@ -1882,10 +1887,9 @@ export default function ScanDetail() {
               <s-stack direction="block" gap="base">
                 <h2 className="scan-section-title">App Impact Map</h2>
                 <s-paragraph>
-                  Thinking about removing an app? This maps the theme code each app has added to
-                  your live theme. Uninstalling an app doesn&apos;t remove this code. It stays
-                  behind until it&apos;s cleaned up. Pick an app below to see exactly what it would
-                  leave.
+                  Thinking about removing an app? This maps the theme code attributed to each app in
+                  your theme. This code stays until it&apos;s cleaned up, whether or not the app is
+                  still installed. Pick an app below to see what it left.
                 </s-paragraph>
                 <style>{`
                 ${htmlTableCss("app-map-table")}
@@ -1925,10 +1929,7 @@ export default function ScanDetail() {
                             ))}
                           </td>
                           <td style={{ whiteSpace: "nowrap" }}>
-                            <Link
-                              to={`/app/scans/${scan.id}?app=${encodeURIComponent(appName)}`}
-                              preventScrollReset
-                            >
+                            <Link to={`/app/scans/${scan.id}?app=${encodeURIComponent(appName)}`}>
                               See what stays →
                             </Link>
                           </td>
