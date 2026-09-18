@@ -5068,6 +5068,34 @@ describe("detectDuplicateTrackers", () => {
     const { findings } = scanThemeFiles(files);
     expect(findingsOfType(findings, FindingType.DUPLICATE_TRACKER)).toHaveLength(1);
   });
+
+  it("does NOT count bare GA4 IDs that lack gtag/googletagmanager context on the line", () => {
+    // Two distinct G-… strings in product copy with no tracker call context.
+    const files: ThemeFile[] = [
+      { filename: "templates/product.liquid", content: "<p>Model G-BLACK01 in stock</p>" },
+      { filename: "snippets/copy.liquid", content: "<p>Also see G-WHITE99 edition</p>" },
+    ];
+    expect(detectDuplicateTrackers(files)).toHaveLength(0);
+  });
+
+  it("does NOT count GA4 IDs inside a {% comment %} block", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content:
+          "{% comment %}\ngtag('config', 'G-AAAA1111');\ngtag('config', 'G-BBBB2222');\n{% endcomment %}",
+      },
+    ];
+    expect(detectDuplicateTrackers(files)).toHaveLength(0);
+  });
+
+  it("does NOT scan non-Liquid files (IDs in assets/*.js are ignored)", () => {
+    const files: ThemeFile[] = [
+      { filename: "assets/app.js", content: "gtag('config', 'G-AAAA1111');" },
+      { filename: "assets/vendor.js", content: "gtag('config', 'G-BBBB2222');" },
+    ];
+    expect(detectDuplicateTrackers(files)).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5137,6 +5165,31 @@ describe("detectOverlappingChatWidgets", () => {
     ];
     const { findings } = scanThemeFiles(files);
     expect(findingsOfType(findings, FindingType.OVERLAPPING_CHAT_WIDGET)).toHaveLength(1);
+  });
+
+  it("does NOT count a zE( match from a minified assets bundle (non-Liquid file skipped)", () => {
+    // A minified vendor bundle in assets/ trips the zE( signature, but assets/
+    // is non-scannable so it must be ignored — leaving only the one real widget,
+    // which is not a conflict.
+    const files: ThemeFile[] = [
+      { filename: "assets/vendor.min.js", content: "function zE(a){return a};zE(1);" },
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://widget.intercom.io/widget/abc123"></script>',
+      },
+    ];
+    expect(detectOverlappingChatWidgets(files)).toHaveLength(0);
+  });
+
+  it("does NOT count chat widgets referenced inside a {% comment %} block", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content:
+          '{% comment %}\n<script src="https://widget.intercom.io/widget/abc123"></script>\n<script src="https://js.driftt.com/include/drift.js"></script>\n{% endcomment %}',
+      },
+    ];
+    expect(detectOverlappingChatWidgets(files)).toHaveLength(0);
   });
 });
 

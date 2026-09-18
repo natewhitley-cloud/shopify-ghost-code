@@ -46,4 +46,30 @@ describe("renderScanReportPdf", () => {
     expect(Buffer.isBuffer(buffer)).toBe(true);
     expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
   });
+
+  it("renders without throwing when given more than the render cap (250) of findings", async () => {
+    const many = Array.from({ length: 400 }, (_, i) => ({
+      severity: (i % 3 === 0 ? "HIGH" : i % 3 === 1 ? "MEDIUM" : "LOW") as
+        | "HIGH"
+        | "MEDIUM"
+        | "LOW",
+      findingType: "GHOST_SCRIPT",
+      filename: `snippets/app-${i}.liquid`,
+      lineNumber: i + 1,
+      appName: i % 2 === 0 ? `App ${i}` : null,
+      description: `Finding number ${i}`,
+      codeSnippet: `<script src="https://cdn.example.com/app-${i}.js"></script>`,
+    }));
+
+    const buffer = await renderScanReportPdf({
+      scan: { id: "scan-many", themeName: "Dawn", createdAt: new Date("2026-01-15T10:00:00Z") },
+      findings: many,
+      healthScore: { score: 10, label: "Critical" },
+      exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
+    });
+
+    expect(Buffer.isBuffer(buffer)).toBe(true);
+    expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+    expect(buffer.byteLength).toBeGreaterThan(1000);
+  });
 });

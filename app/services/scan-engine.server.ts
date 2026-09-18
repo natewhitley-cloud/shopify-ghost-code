@@ -1943,11 +1943,27 @@ const TRACKER_PLATFORMS: ReadonlyArray<{
   name: string;
   regex: RegExp;
   idGroup: number;
+  context?: RegExp;
 }> = [
-  { name: "Google Analytics 4", regex: /\bG-[A-Z0-9]{4,15}\b/g, idGroup: 0 },
-  { name: "Google Tag Manager", regex: /\bGTM-[A-Z0-9]{4,10}\b/g, idGroup: 0 },
+  {
+    name: "Google Analytics 4",
+    regex: /\bG-[A-Z0-9]{4,15}\b/g,
+    idGroup: 0,
+    context: /gtag|googletagmanager|google-analytics|gtag\/js/i,
+  },
+  {
+    name: "Google Tag Manager",
+    regex: /\bGTM-[A-Z0-9]{4,10}\b/g,
+    idGroup: 0,
+    context: /googletagmanager|gtm\.js|dataLayer/i,
+  },
   { name: "Meta Pixel", regex: /fbq\(\s*['"]init['"]\s*,\s*['"](\d{6,20})['"]/gi, idGroup: 1 },
-  { name: "Universal Analytics", regex: /\bUA-\d{4,10}-\d{1,4}\b/g, idGroup: 0 },
+  {
+    name: "Universal Analytics",
+    regex: /\bUA-\d{4,10}-\d{1,4}\b/g,
+    idGroup: 0,
+    context: /google-analytics|analytics\.js|_gaq|gtag|\bga\s*\(/i,
+  },
   { name: "TikTok Pixel", regex: /ttq\.load\(\s*['"]([A-Z0-9]{6,30})['"]/gi, idGroup: 1 },
 ];
 
@@ -1970,8 +1986,14 @@ export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[
   const byPlatform = new Map<string, Map<string, { file: ThemeFile; lineNumber: number }>>();
 
   for (const file of files) {
+    if (!isScannableFile(file.filename)) continue;
+    const commentSkip = buildCommentSkipLines(file.content);
     for (const { lineNumber, text } of lines(file.content)) {
+      if (commentSkip.has(lineNumber)) continue;
       for (const platform of TRACKER_PLATFORMS) {
+        // Bare-ID platforms (GA4/GTM/UA) additionally require tracker context on
+        // the SAME line so a stray `G-…`/`GTM-…`/`UA-…` in copy is not counted.
+        if (platform.context && !platform.context.test(text)) continue;
         platform.regex.lastIndex = 0;
         let match: RegExpExecArray | null;
         while ((match = platform.regex.exec(text)) !== null) {
@@ -2008,7 +2030,7 @@ export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[
       codeSnippet,
       findingType: FindingType.DUPLICATE_TRACKER,
       severity,
-      description: `${platform.name} is configured with ${ids.size} different IDs: ${detail} — events will double-count or split across properties.`,
+      description: `${platform.name} is configured with ${ids.size} different IDs: ${detail}. If this is not intentional, events may double-count or split across properties.`,
     });
   }
 
@@ -2060,7 +2082,10 @@ export function detectOverlappingChatWidgets(files: ThemeFile[]): CreateFindingI
   const firstSeen = new Map<string, { file: ThemeFile; lineNumber: number }>();
 
   for (const file of files) {
+    if (!isScannableFile(file.filename)) continue;
+    const commentSkip = buildCommentSkipLines(file.content);
     for (const { lineNumber, text } of lines(file.content)) {
+      if (commentSkip.has(lineNumber)) continue;
       const lower = text.toLowerCase();
       for (const platform of CHAT_WIDGET_PLATFORMS) {
         if (firstSeen.has(platform.name)) continue; // already recorded

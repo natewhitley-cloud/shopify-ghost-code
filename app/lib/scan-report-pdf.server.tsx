@@ -31,6 +31,11 @@ export type ScanReportInput = {
 // Sort order: HIGH → MEDIUM → LOW.
 const SEVERITY_RANK: Record<Severity, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 
+// Cap the number of finding cards rendered so a pathological scan cannot force a
+// huge synchronous PDF render. The severity summary and health score still
+// reflect ALL findings — only the rendered LIST is capped.
+const MAX_PDF_FINDINGS = 250;
+
 // Restrained slate/professional palette.
 const HEADING = "#1f2933";
 const SUBDUED = "#52606d";
@@ -149,6 +154,10 @@ function ScanReportDocument({ scan, findings, healthScore, exportedAt }: ScanRep
     counts[f.severity] += 1;
   }
 
+  // Cap the rendered list; counts above already reflect the full set.
+  const visible = sorted.slice(0, MAX_PDF_FINDINGS);
+  const overflow = sorted.length - visible.length;
+
   return (
     <Document>
       <Page size="A4" style={styles.page}>
@@ -169,7 +178,7 @@ function ScanReportDocument({ scan, findings, healthScore, exportedAt }: ScanRep
         {sorted.length === 0 ? (
           <Text style={styles.emptyState}>No findings — this theme is clean.</Text>
         ) : (
-          sorted.map((f, i) => (
+          visible.map((f, i) => (
             <View key={i} style={styles.finding} wrap={false}>
               <Text style={styles.findingHeader}>
                 {f.severity} · {humanizeType(f.findingType)}
@@ -182,6 +191,12 @@ function ScanReportDocument({ scan, findings, healthScore, exportedAt }: ScanRep
             </View>
           ))
         )}
+
+        {overflow > 0 ? (
+          <Text style={styles.summaryLine}>
+            +{overflow} more findings — see full results in Ghost Code.
+          </Text>
+        ) : null}
 
         <Text style={styles.footer} fixed>
           Ghost Code · Scan {scan.id} · Exported {formatDate(exportedAt)}

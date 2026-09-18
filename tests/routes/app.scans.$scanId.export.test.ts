@@ -34,6 +34,14 @@ vi.mock("../../app/models/finding.server", () => ({
   getFindingsForScan: vi.fn(),
 }));
 
+vi.mock("../../app/models/ignored-finding.server", () => ({
+  getIgnoredFindingsForShop: vi.fn(),
+}));
+
+vi.mock("../../app/services/finding-aggregation.server", () => ({
+  filterIgnoredFindings: vi.fn(),
+}));
+
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canViewFindingDetails: vi.fn(),
   canExportPdf: vi.fn(),
@@ -49,11 +57,14 @@ vi.mock("../../app/lib/scan-report-pdf.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { computeHealthScore } from "../../app/lib/health-score";
 import { canExportPdf, canViewFindingDetails } from "../../app/lib/plan-gating.server";
 import { getFindingsForScan } from "../../app/models/finding.server";
+import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getScanById } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.scans.$scanId.export";
+import { filterIgnoredFindings } from "../../app/services/finding-aggregation.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -66,6 +77,8 @@ const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
 const mockCanViewFindingDetails = canViewFindingDetails as ReturnType<typeof vi.fn>;
 const mockCanExportPdf = canExportPdf as ReturnType<typeof vi.fn>;
+const mockGetIgnoredFindingsForShop = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
+const mockFilterIgnoredFindings = filterIgnoredFindings as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -150,6 +163,16 @@ beforeEach(() => {
   mockCanExportPdf.mockReturnValue(true); // Professional happy path for PDF export
   mockGetScanById.mockResolvedValue(SCAN);
   mockGetFindingsForScan.mockResolvedValue(FINDINGS);
+
+  // Default: no suppressions — pass every finding through untouched.
+  mockGetIgnoredFindingsForShop.mockResolvedValue({
+    fingerprints: new Set<string>(),
+    appNames: new Set<string>(),
+  });
+  mockFilterIgnoredFindings.mockImplementation((findings: unknown[]) => ({
+    kept: findings,
+    ignored: [],
+  }));
 });
 
 // ---------------------------------------------------------------------------
@@ -468,6 +491,31 @@ describe("JSON export", () => {
     const body = await response.json();
 
     expect(body.findings).toHaveLength(0);
+  });
+
+  it("excludes ignored findings from the export and reflects only kept in the health score", async () => {
+    // The shop has suppressed FINDINGS[0] (the HIGH Klaviyo finding); only the
+    // MEDIUM finding survives filtering.
+    mockGetIgnoredFindingsForShop.mockResolvedValue({
+      fingerprints: new Set<string>(),
+      appNames: new Set<string>(["Klaviyo"]),
+    });
+    mockFilterIgnoredFindings.mockReturnValue({
+      kept: [FINDINGS[1]],
+      ignored: [FINDINGS[0]],
+    });
+
+    const response = await callLoader("scan-abc", "json");
+    const body = await response.json();
+
+    // The suppressed HIGH finding is absent; only the MEDIUM one remains.
+    expect(body.findings).toHaveLength(1);
+    expect(body.findings[0].type).toBe("GHOST_STYLE");
+    expect(body.findings.some((f: { app: string | null }) => f.app === "Klaviyo")).toBe(false);
+
+    // Health score is computed from the kept set only (0 High, 1 Medium).
+    const expected = computeHealthScore({ HIGH: 0, MEDIUM: 1, LOW: 0 });
+    expect(body.healthScore.score).toBe(expected.score);
   });
 });
 

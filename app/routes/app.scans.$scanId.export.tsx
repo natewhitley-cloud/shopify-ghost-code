@@ -15,8 +15,10 @@ import { computeHealthScore } from "../lib/health-score";
 import { canExportPdf, canViewFindingDetails } from "../lib/plan-gating.server";
 import { renderScanReportPdf } from "../lib/scan-report-pdf.server";
 import { getFindingsForScan } from "../models/finding.server";
+import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
+import { filterIgnoredFindings } from "../services/finding-aggregation.server";
 import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -110,13 +112,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Normalise to a supported format; any unrecognised value falls back to CSV.
   const format = rawFormat === "json" ? "json" : rawFormat === "pdf" ? "pdf" : "csv";
 
-  // Step 6: Fetch findings.
+  // Step 6: Fetch findings, then drop the shop's suppressed (ignored) findings
+  // so the export matches exactly what the merchant sees on the dashboard — a
+  // shared report must not re-surface suppressed false-positives.
   const findings = await getFindingsForScan(scanId);
+  const ignores = await getIgnoredFindingsForShop(shop.id);
+  const { kept } = filterIgnoredFindings(findings, ignores);
 
   // Compute the theme health score once from severity counts — reused by the
   // JSON and PDF exports (CSV deliberately omits it: it is a scan-level scalar).
   const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
-  for (const f of findings) {
+  for (const f of kept) {
     counts[f.severity as "HIGH" | "MEDIUM" | "LOW"] += 1;
   }
   const health = computeHealthScore(counts);
@@ -131,7 +137,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
     const pdf = await renderScanReportPdf({
       scan: { id: scan.id, themeName: scan.themeName, createdAt: scan.createdAt },
-      findings,
+      findings: kept,
       healthScore: { score: health.score, label: health.label },
       exportedAt: new Date().toISOString(),
     });
@@ -152,7 +158,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         themeName: scan.themeName,
         exportedAt: new Date().toISOString(),
         healthScore: { score: health.score, label: health.label },
-        findings: findings.map((f) => ({
+        findings: kept.map((f) => ({
           severity: f.severity,
           type: f.findingType,
           file: f.filename,
@@ -185,7 +191,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     "Code Snippet",
     "Description",
   ]);
-  const dataRows = findings.map((f) =>
+  const dataRows = kept.map((f) =>
     toCsvRow([
       f.severity,
       f.findingType,
