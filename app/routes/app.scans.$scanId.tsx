@@ -1600,6 +1600,41 @@ export default function ScanDetail() {
           </div>
         )}
 
+        {/* App-context banner: shown when the merchant drilled into a single
+          app via the App Impact Map ("See what stays →", `?app=`). Mirrors the
+          lane banner's visual style. Reframes the filtered findings as the
+          theme code that app would leave behind on uninstall, and links back to
+          the unfiltered view. Suppressed when a lane filter is also active so
+          the two context banners don't stack awkwardly. */}
+        {isCompleted && filters.app && !filters.lane && (
+          <div
+            style={{
+              display: "flex",
+              justifyContent: "space-between",
+              alignItems: "center",
+              flexWrap: "wrap",
+              gap: "12px",
+              padding: "12px 16px",
+              borderRadius: "8px",
+              border: `1px solid ${INFO_BD}`,
+              background: INFO_BG,
+            }}
+          >
+            <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+              <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
+                Removing {filters.app}
+              </span>
+              <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+                The findings below are the theme code {filters.app} added to your theme.
+                Uninstalling the app won&apos;t remove them. They&apos;ll stay until cleaned up.
+              </span>
+            </div>
+            <Link to={`/app/scans/${scan.id}`} preventScrollReset>
+              Show all findings
+            </Link>
+          </div>
+        )}
+
         {/* Findings detail table — only shown for completed scans */}
         {isCompleted &&
           (canViewDetails ? (
@@ -1847,7 +1882,10 @@ export default function ScanDetail() {
               <s-stack direction="block" gap="base">
                 <h2 className="scan-section-title">App Impact Map</h2>
                 <s-paragraph>
-                  Shows which theme files were modified by each app that left code behind.
+                  Thinking about removing an app? This maps the theme code each app has added to
+                  your live theme. Uninstalling an app doesn&apos;t remove this code. It stays
+                  behind until it&apos;s cleaned up. Pick an app below to see exactly what it would
+                  leave.
                 </s-paragraph>
                 <style>{`
                 ${htmlTableCss("app-map-table")}
@@ -1860,6 +1898,7 @@ export default function ScanDetail() {
                       <th>Findings</th>
                       <th>Types</th>
                       <th>Files Affected</th>
+                      <th>Before you remove it</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1884,6 +1923,14 @@ export default function ScanDetail() {
                                 <code style={{ fontSize: "12px" }}>{f}</code>
                               </div>
                             ))}
+                          </td>
+                          <td style={{ whiteSpace: "nowrap" }}>
+                            <Link
+                              to={`/app/scans/${scan.id}?app=${encodeURIComponent(appName)}`}
+                              preventScrollReset
+                            >
+                              See what stays →
+                            </Link>
                           </td>
                         </tr>
                       ))}
