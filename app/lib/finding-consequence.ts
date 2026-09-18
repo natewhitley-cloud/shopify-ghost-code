@@ -323,6 +323,30 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "act-now",
     agentic: false,
   },
+  // DUPLICATE_TRACKER: the same analytics platform configured with two different
+  // IDs. Primary lane "privacy" (the "tracking" lane, mirroring GHOST_PIXEL) —
+  // this is a tracking-configuration defect that also silently corrupts the
+  // merchant's analytics; none of the five lanes is a perfect fit for "reporting
+  // integrity", and privacy is the closest since duplicate trackers send shopper
+  // data to multiple properties. secondary "speed" (each extra tag is extra code).
+  // act-now: every day it runs, the numbers a merchant decides on are wrong. Not
+  // agentic — it does not shape how Google/AI read the store.
+  DUPLICATE_TRACKER: {
+    primary: "privacy",
+    secondary: ["speed"],
+    urgency: "act-now",
+    agentic: false,
+  },
+  // OVERLAPPING_CHAT_WIDGET: two distinct chat widgets loading at once. Primary
+  // lane "customers-see-it" — shoppers literally see two chat bubbles / get split
+  // sessions. secondary "speed" (two widget bundles load). whenever: a visible
+  // conflict to clean up, not live breakage. Not agentic.
+  OVERLAPPING_CHAT_WIDGET: {
+    primary: "customers-see-it",
+    secondary: ["speed"],
+    urgency: "whenever",
+    agentic: false,
+  },
 };
 
 // ---------------------------------------------------------------------------

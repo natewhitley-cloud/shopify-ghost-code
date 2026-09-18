@@ -161,7 +161,7 @@ describe("getFindingConfidence", () => {
   // ---------------------------------------------------------------------------
   it("classifies every FindingType enum member in exactly one tier (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(31);
+    expect(allTypes).toHaveLength(33);
 
     for (const type of allTypes) {
       const inSignature = CONFIDENCE_TYPE_SETS.signature.has(type);
@@ -178,7 +178,7 @@ describe("getFindingConfidence", () => {
     const heuristic = [...CONFIDENCE_TYPE_SETS.heuristic];
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
-    expect(signature.length + heuristic.length).toBe(31);
+    expect(signature.length + heuristic.length).toBe(33);
   });
 });
 
@@ -250,7 +250,7 @@ describe("isThemeFileFinding", () => {
   // fails here, forcing a deliberate theme-file-vs-Admin-resource call.
   it("classifies every FindingType enum member in exactly one set (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(31);
+    expect(allTypes).toHaveLength(33);
 
     for (const type of allTypes) {
       const inThemeFile = THEME_FILE_TYPE_SETS.themeFile.has(type);
@@ -267,7 +267,7 @@ describe("isThemeFileFinding", () => {
     const adminResource = [...THEME_FILE_TYPE_SETS.adminResource];
     const overlap = themeFile.filter((t) => THEME_FILE_TYPE_SETS.adminResource.has(t));
     expect(overlap).toEqual([]);
-    expect(themeFile.length + adminResource.length).toBe(31);
+    expect(themeFile.length + adminResource.length).toBe(33);
   });
 });
 

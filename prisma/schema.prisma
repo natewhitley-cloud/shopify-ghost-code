@@ -345,6 +345,22 @@ enum FindingType {
   // in `description` + `appName` (no JSON column on Finding), mirroring
   // DANGLING_REFERENCE.
   CHECKOUT_SUNSET
+  // Emitted by the cross-file duplicate-tracker detector (detectDuplicateTrackers
+  // in scan-engine.server.ts): the same analytics/pixel platform (GA4, GTM, Meta
+  // Pixel, Universal Analytics, TikTok) is configured with two or more DISTINCT
+  // IDs across the theme, so events double-count or split across properties and
+  // corrupt reporting. A single ID, or the same ID repeated, is normal and never
+  // flagged. Theme-file only, no scope gate, all plans. Like DUPLICATE_LIBRARY it
+  // is cross-file with no single-app attribution.
+  DUPLICATE_TRACKER
+  // Emitted by the cross-file overlapping-chat-widget detector
+  // (detectOverlappingChatWidgets in scan-engine.server.ts): two or more DISTINCT
+  // chat-widget platforms (Intercom, Drift, Tidio, etc.) are present in the theme
+  // at once, so shoppers see conflicting chat bubbles / sessions. One platform,
+  // even if referenced multiple times, is never flagged. Theme-file only, no scope
+  // gate, all plans. Like DUPLICATE_LIBRARY it is cross-file with no single-app
+  // attribution.
+  OVERLAPPING_CHAT_WIDGET
 }
 
 enum SubmissionStatus {

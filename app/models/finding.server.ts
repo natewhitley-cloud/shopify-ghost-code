@@ -71,6 +71,8 @@ export function createZeroTypeCounts(): Record<FindingType, number> {
     [FindingType.DUPLICATE_LIBRARY]: 0,
     [FindingType.DANGLING_REFERENCE]: 0,
     [FindingType.CHECKOUT_SUNSET]: 0,
+    [FindingType.DUPLICATE_TRACKER]: 0,
+    [FindingType.OVERLAPPING_CHAT_WIDGET]: 0,
   };
 }
 

@@ -25,6 +25,7 @@ import {
   collectUnknownScripts,
   collectUnknownStylesheets,
   detectDuplicateMetaTags,
+  detectDuplicateTrackers,
   detectGhostCanonical,
   detectGhostHrefLang,
   detectGhostOg,
@@ -32,6 +33,7 @@ import {
   detectGhostRobots,
   detectGhostScripts,
   detectGhostStyles,
+  detectOverlappingChatWidgets,
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
@@ -110,6 +112,28 @@ describe("scan-engine ReDoS hardening — pathological input completes fast", ()
 
   it("collectUnknownScripts is fast on an unterminated <script> flood", () => {
     expect(timed(() => collectUnknownScripts(scriptBomb))).toBeLessThan(REDOS_BUDGET_MS);
+  });
+
+  // Tracker-ID matchers (GA4 / GTM / Meta / UA / TikTok). All are anchored and
+  // bounded, so partial-match floods must not backtrack. This fragment carries a
+  // dense run of unterminated tracker-shaped tokens for every platform regex.
+  const trackerBomb: ThemeFile = {
+    filename: "layout/theme.liquid",
+    content: pathological("G-AAAA fbq('init','1234 ttq.load('AAAA UA-1234- GTM-AAAA "),
+  };
+  // Chat-widget signatures are plain host/substring checks plus one bounded
+  // boundary-aware regex (zE(); a run of near-miss tokens must stay linear.
+  const chatBomb: ThemeFile = {
+    filename: "layout/theme.liquid",
+    content: pathological("resize( size( zE zdassets intercom driftt "),
+  };
+
+  it("detectDuplicateTrackers is fast on an unterminated tracker-token flood", () => {
+    expect(timed(() => detectDuplicateTrackers([trackerBomb]))).toBeLessThan(REDOS_BUDGET_MS);
+  });
+
+  it("detectOverlappingChatWidgets is fast on a chat-signature near-miss flood", () => {
+    expect(timed(() => detectOverlappingChatWidgets([chatBomb]))).toBeLessThan(REDOS_BUDGET_MS);
   });
 
   it("full scanThemeFiles is fast when every tag type is flooded at once", () => {

@@ -134,6 +134,13 @@ const HEURISTIC_FINDING_TYPES = new Set([
   // high — a malformed block is unambiguously broken — but that is orthogonal to
   // the confidence-tier axis.)
   "JSON_LD_INVALID",
+  // DUPLICATE_TRACKER / OVERLAPPING_CHAT_WIDGET — cross-file structural inference
+  // (the same analytics platform configured with distinct IDs, or two distinct
+  // chat-widget platforms, across theme files); no positive app-signature match,
+  // so they are surfaced as "Heuristic" pending merchant review, mirroring
+  // DUPLICATE_LIBRARY.
+  "DUPLICATE_TRACKER",
+  "OVERLAPPING_CHAT_WIDGET",
 ]);
 
 /**
@@ -224,6 +231,8 @@ export const CROSS_FILE_FINDING_TYPES = new Set([
   "ORPHAN_ASSET",
   "GHOST_LAYOUT",
   "DUPLICATE_LIBRARY",
+  "DUPLICATE_TRACKER",
+  "OVERLAPPING_CHAT_WIDGET",
 ]);
 
 // ---------------------------------------------------------------------------
@@ -278,6 +287,11 @@ const THEME_FILE_FINDING_TYPES = new Set([
   // CHECKOUT_SUNSET — attributed to `layout/checkout.liquid`, a real, editable
   // theme file, so it gets an "Open in theme editor" deep-link.
   "CHECKOUT_SUNSET",
+  // DUPLICATE_TRACKER / OVERLAPPING_CHAT_WIDGET — each anchored to the first-seen
+  // theme file where the tracker/widget appears, so both get an "Open in theme
+  // editor" deep-link, mirroring DUPLICATE_LIBRARY.
+  "DUPLICATE_TRACKER",
+  "OVERLAPPING_CHAT_WIDGET",
 ]);
 
 /**

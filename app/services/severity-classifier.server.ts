@@ -71,6 +71,15 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   // single most conversion-critical step. This is a hard, dated breakage, not a
   // cosmetic or discoverability decay.
   [FindingType.CHECKOUT_SUNSET]: Severity.HIGH,
+  // DUPLICATE_TRACKER is MEDIUM: the same analytics platform configured with two
+  // different IDs double-counts events or splits them across properties, quietly
+  // corrupting the reports a merchant makes decisions on. Real harm, but not the
+  // live shopper-facing or privacy-leak harm of the HIGH tiers.
+  [FindingType.DUPLICATE_TRACKER]: Severity.MEDIUM,
+  // OVERLAPPING_CHAT_WIDGET is LOW: two chat widgets loading at once is a visible
+  // conflict (duplicate bubbles, split sessions), but it degrades experience
+  // rather than breaking the store or leaking data.
+  [FindingType.OVERLAPPING_CHAT_WIDGET]: Severity.LOW,
 };
 
 // ---------------------------------------------------------------------------

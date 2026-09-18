@@ -26,6 +26,8 @@ import {
   detectGhostFont,
   detectGhostAjax,
   detectDuplicateLibraries,
+  detectDuplicateTrackers,
+  detectOverlappingChatWidgets,
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
@@ -4969,6 +4971,172 @@ describe("detectDuplicateLibraries", () => {
     ];
     const { findings } = scanThemeFiles(files);
     expect(findingsOfType(findings, FindingType.DUPLICATE_LIBRARY)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectDuplicateTrackers (cross-file)
+// ---------------------------------------------------------------------------
+
+describe("detectDuplicateTrackers", () => {
+  it("flags GA4 configured with two distinct IDs across files (exactly one finding)", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: "gtag('config', 'G-AAAA1111');",
+      },
+      {
+        filename: "snippets/analytics.liquid",
+        content: "gtag('config', 'G-BBBB2222');",
+      },
+    ];
+    const findings = detectDuplicateTrackers(files);
+    expect(findings).toHaveLength(1);
+
+    const finding = findings[0];
+    expect(finding.findingType).toBe(FindingType.DUPLICATE_TRACKER);
+    expect(finding.severity).toBe(Severity.MEDIUM);
+    // Anchored at the first-seen occurrence of the platform.
+    expect(finding.filename).toBe("layout/theme.liquid");
+    expect(finding.description).toContain("Google Analytics 4");
+    expect(finding.description).toContain("G-AAAA1111 (layout/theme.liquid)");
+    expect(finding.description).toContain("G-BBBB2222 (snippets/analytics.liquid)");
+  });
+
+  it("detects a GA4 conflict between a script src and a gtag config call", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://www.googletagmanager.com/gtag/js?id=G-AAAA1111"></script>',
+      },
+      {
+        filename: "snippets/extra.liquid",
+        content: "gtag('config', 'G-CCCC3333');",
+      },
+    ];
+    const findings = detectDuplicateTrackers(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.DUPLICATE_TRACKER);
+    expect(findings[0].description).toContain("Google Analytics 4");
+  });
+
+  it("does NOT flag the same GA4 ID repeated across files", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      { filename: "snippets/analytics.liquid", content: "gtag('config', 'G-AAAA1111');" },
+    ];
+    expect(detectDuplicateTrackers(files)).toHaveLength(0);
+  });
+
+  it("does NOT flag a single GA4 ID seen once", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.liquid", content: "gtag('config', 'G-AAAA1111');" },
+    ];
+    expect(detectDuplicateTrackers(files)).toHaveLength(0);
+  });
+
+  it("flags Meta Pixel configured with two distinct init IDs via fbq", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.liquid", content: "fbq('init', '111111111111111');" },
+      { filename: "snippets/pixel.liquid", content: 'fbq("init", "222222222222222");' },
+    ];
+    const findings = detectDuplicateTrackers(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.DUPLICATE_TRACKER);
+    expect(findings[0].description).toContain("Meta Pixel");
+    expect(findings[0].description).toContain("111111111111111");
+    expect(findings[0].description).toContain("222222222222222");
+  });
+
+  it("does NOT flag distinct platforms that each have a single ID (mixed, no per-platform conflict)", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      { filename: "snippets/pixel.liquid", content: "fbq('init', '111111111111111');" },
+    ];
+    expect(detectDuplicateTrackers(files)).toHaveLength(0);
+  });
+
+  it("returns no findings for empty input", () => {
+    expect(detectDuplicateTrackers([])).toHaveLength(0);
+  });
+
+  it("surfaces DUPLICATE_TRACKER findings through scanThemeFiles", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      { filename: "snippets/analytics.liquid", content: "gtag('config', 'G-BBBB2222');" },
+    ];
+    const { findings } = scanThemeFiles(files);
+    expect(findingsOfType(findings, FindingType.DUPLICATE_TRACKER)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectOverlappingChatWidgets (cross-file)
+// ---------------------------------------------------------------------------
+
+describe("detectOverlappingChatWidgets", () => {
+  it("flags two distinct chat platforms (Intercom + Drift) as one finding", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://widget.intercom.io/widget/abc123"></script>',
+      },
+      {
+        filename: "snippets/chat.liquid",
+        content: '<script src="https://js.driftt.com/include/drift.js"></script>',
+      },
+    ];
+    const findings = detectOverlappingChatWidgets(files);
+    expect(findings).toHaveLength(1);
+
+    const finding = findings[0];
+    expect(finding.findingType).toBe(FindingType.OVERLAPPING_CHAT_WIDGET);
+    expect(finding.severity).toBe(Severity.LOW);
+    // Anchored at the first-seen occurrence.
+    expect(finding.filename).toBe("layout/theme.liquid");
+    expect(finding.description).toContain("Intercom (layout/theme.liquid)");
+    expect(finding.description).toContain("Drift (snippets/chat.liquid)");
+  });
+
+  it("does NOT flag a single platform referenced twice", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://widget.intercom.io/widget/abc123"></script>',
+      },
+      {
+        filename: "snippets/chat.liquid",
+        content: "window.Intercom('boot', { app_id: 'abc123' });",
+      },
+    ];
+    expect(detectOverlappingChatWidgets(files)).toHaveLength(0);
+  });
+
+  it("does NOT fire the Zendesk zE( signature on innocuous calls like resize(", () => {
+    const files: ThemeFile[] = [
+      { filename: "assets/theme.liquid", content: "window.addEventListener('resize', onResize);" },
+      { filename: "snippets/util.liquid", content: "element.resize();\nfoo.size();" },
+    ];
+    expect(detectOverlappingChatWidgets(files)).toHaveLength(0);
+  });
+
+  it("returns no findings for empty input", () => {
+    expect(detectOverlappingChatWidgets([])).toHaveLength(0);
+  });
+
+  it("surfaces OVERLAPPING_CHAT_WIDGET findings through scanThemeFiles", () => {
+    const files: ThemeFile[] = [
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://widget.intercom.io/widget/abc123"></script>',
+      },
+      {
+        filename: "snippets/chat.liquid",
+        content: '<script src="https://embed.tawk.to/abc/default"></script>',
+      },
+    ];
+    const { findings } = scanThemeFiles(files);
+    expect(findingsOfType(findings, FindingType.OVERLAPPING_CHAT_WIDGET)).toHaveLength(1);
   });
 });
 

@@ -67,6 +67,14 @@ const REMEDIATION: Record<string, Remediation> = {
     howTo:
       "The same JavaScript library is loaded at two or more different major versions, so shoppers download and parse redundant, potentially conflicting copies on every page. Find where each version is added, then consolidate to a single version and remove the others. Duplicate the theme as a backup first.",
   },
+  DUPLICATE_TRACKER: {
+    howTo:
+      "The same analytics platform is installed with two different IDs, so events double-count or split across separate properties and corrupt the numbers in your reports. Find each place the tracker is added (the finding lists the IDs and their files), decide which ID is correct, and remove the others so only one remains. Duplicate the theme first.",
+  },
+  OVERLAPPING_CHAT_WIDGET: {
+    howTo:
+      "Two different chat widgets load at the same time, so shoppers can see two chat bubbles and conversations may split across conflicting sessions. Pick the one you want to keep and remove the other widget's embed code from the theme. Duplicate the theme first.",
+  },
 
   // ---- Theme-file edits: SEO and meta markup in the head ----
   // These carry an agentic `impact`: canonical/hreflang/robots/JSON-LD/OG/meta

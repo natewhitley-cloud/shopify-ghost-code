@@ -1925,6 +1925,175 @@ export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput
 }
 
 // ---------------------------------------------------------------------------
+// Detector: DUPLICATE_TRACKER
+// ---------------------------------------------------------------------------
+
+/**
+ * Analytics / pixel platforms this detector recognizes, each with a ReDoS-safe
+ * matcher (anchored, bounded quantifiers, no nested quantifiers) and the capture
+ * group that carries the platform ID (0 = whole match).
+ *
+ *   - Google Analytics 4  — `G-XXXX` in gtag('config','G-…') or gtag/js?id=G-….
+ *   - Google Tag Manager  — `GTM-XXXX` in gtm.js?id=GTM-… or an inline 'GTM-…'.
+ *   - Meta (Facebook) Pixel — the numeric id from fbq('init','<digits>').
+ *   - Universal Analytics — legacy `UA-XXXX-Y`.
+ *   - TikTok Pixel        — the id from ttq.load('<id>').
+ */
+const TRACKER_PLATFORMS: ReadonlyArray<{
+  name: string;
+  regex: RegExp;
+  idGroup: number;
+}> = [
+  { name: "Google Analytics 4", regex: /\bG-[A-Z0-9]{4,15}\b/g, idGroup: 0 },
+  { name: "Google Tag Manager", regex: /\bGTM-[A-Z0-9]{4,10}\b/g, idGroup: 0 },
+  { name: "Meta Pixel", regex: /fbq\(\s*['"]init['"]\s*,\s*['"](\d{6,20})['"]/gi, idGroup: 1 },
+  { name: "Universal Analytics", regex: /\bUA-\d{4,10}-\d{1,4}\b/g, idGroup: 0 },
+  { name: "TikTok Pixel", regex: /ttq\.load\(\s*['"]([A-Z0-9]{6,30})['"]/gi, idGroup: 1 },
+];
+
+/**
+ * Cross-file detector: flags when the SAME analytics/pixel platform is configured
+ * with two or more DISTINCT IDs across the theme (e.g. GA4 wired to two different
+ * measurement IDs). Genuine double-count / split-reporting conflict.
+ *
+ * HIGH PRECISION — distinct IDs only: a single ID, or the same ID repeated across
+ * files, is normal and never flagged. Emits ONE DUPLICATE_TRACKER finding per
+ * platform that has >= 2 distinct IDs, anchored at the FIRST-seen occurrence of
+ * that platform for stable attribution.
+ *
+ * Theme-file content only. Runtime/app-injected pixels (Web Pixels, GTM-runtime
+ * containers) are out of scope — this reads what is statically written in theme
+ * files, mirroring detectDuplicateLibraries.
+ */
+export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[] {
+  // platform name -> (distinct id -> first place that id was seen)
+  const byPlatform = new Map<string, Map<string, { file: ThemeFile; lineNumber: number }>>();
+
+  for (const file of files) {
+    for (const { lineNumber, text } of lines(file.content)) {
+      for (const platform of TRACKER_PLATFORMS) {
+        platform.regex.lastIndex = 0;
+        let match: RegExpExecArray | null;
+        while ((match = platform.regex.exec(text)) !== null) {
+          const id = match[platform.idGroup];
+          if (!id) continue;
+
+          let ids = byPlatform.get(platform.name);
+          if (!ids) {
+            ids = new Map();
+            byPlatform.set(platform.name, ids);
+          }
+          // Keep the FIRST occurrence of each distinct id for stable attribution.
+          if (!ids.has(id)) ids.set(id, { file, lineNumber });
+        }
+      }
+    }
+  }
+
+  const findings: CreateFindingInput[] = [];
+
+  for (const platform of TRACKER_PLATFORMS) {
+    const ids = byPlatform.get(platform.name);
+    if (!ids || ids.size < 2) continue; // one distinct id = normal, no conflict
+
+    // Anchor at the earliest occurrence of this platform (first inserted id).
+    const anchor = ids.values().next().value as { file: ThemeFile; lineNumber: number };
+    const detail = [...ids.entries()].map(([id, loc]) => `${id} (${loc.file.filename})`).join(", ");
+    const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
+    const severity = classifySeverity(FindingType.DUPLICATE_TRACKER, codeSnippet);
+
+    findings.push({
+      filename: anchor.file.filename,
+      lineNumber: anchor.lineNumber,
+      codeSnippet,
+      findingType: FindingType.DUPLICATE_TRACKER,
+      severity,
+      description: `${platform.name} is configured with ${ids.size} different IDs: ${detail} — events will double-count or split across properties.`,
+    });
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Detector: OVERLAPPING_CHAT_WIDGET
+// ---------------------------------------------------------------------------
+
+/**
+ * Chat-widget platforms this detector recognizes, each by a set of unambiguous
+ * host / global-object signatures. String signatures are matched case-insensitively
+ * (against a lowercased line); the lone RegExp signature (`zE(`) is boundary-aware
+ * so it does not fire on innocuous calls like `resize(` or `size(`.
+ *
+ * HubSpot is intentionally excluded — its script host overlaps with its analytics
+ * and CRM bundles, so presence does not reliably prove a chat widget (FP risk).
+ */
+const CHAT_WIDGET_PLATFORMS: ReadonlyArray<{
+  name: string;
+  signatures: ReadonlyArray<string | RegExp>;
+}> = [
+  { name: "Intercom", signatures: ["widget.intercom.io", "intercomsettings", "window.intercom"] },
+  { name: "Drift", signatures: ["js.driftt.com", "drift.load"] },
+  { name: "Tidio", signatures: ["code.tidio.co"] },
+  { name: "Zendesk Chat", signatures: ["static.zdassets.com", "$zopim", /\bzE\s*\(/] },
+  { name: "Gorgias", signatures: ["config.gorgias.chat"] },
+  { name: "Tawk.to", signatures: ["embed.tawk.to", "tawk_api"] },
+  { name: "Crisp", signatures: ["client.crisp.chat"] },
+  { name: "LiveChat", signatures: ["cdn.livechatinc.com"] },
+  { name: "Olark", signatures: ["static.olark.com"] },
+];
+
+/**
+ * Cross-file detector: flags when two or more DISTINCT chat-widget platforms are
+ * present anywhere in the theme (two chat bubbles = a conflict shoppers see, plus
+ * duplicated widget weight and split chat sessions).
+ *
+ * One platform, even if referenced on many lines/files, is never flagged. Emits
+ * ONE OVERLAPPING_CHAT_WIDGET finding, anchored at the FIRST-seen occurrence of
+ * any detected platform for stable attribution.
+ *
+ * Theme-file content only, mirroring detectDuplicateLibraries.
+ */
+export function detectOverlappingChatWidgets(files: ThemeFile[]): CreateFindingInput[] {
+  // platform name -> first place that platform was detected (insertion order is
+  // chronological across files/lines, so the first entry is the earliest anchor).
+  const firstSeen = new Map<string, { file: ThemeFile; lineNumber: number }>();
+
+  for (const file of files) {
+    for (const { lineNumber, text } of lines(file.content)) {
+      const lower = text.toLowerCase();
+      for (const platform of CHAT_WIDGET_PLATFORMS) {
+        if (firstSeen.has(platform.name)) continue; // already recorded
+        const hit = platform.signatures.some((sig) =>
+          typeof sig === "string" ? lower.includes(sig) : sig.test(text),
+        );
+        if (hit) firstSeen.set(platform.name, { file, lineNumber });
+      }
+    }
+  }
+
+  if (firstSeen.size < 2) return []; // one (or zero) platform = no conflict
+
+  const anchor = firstSeen.values().next().value as { file: ThemeFile; lineNumber: number };
+  const detail = [...firstSeen.entries()]
+    .map(([name, loc]) => `${name} (${loc.file.filename})`)
+    .join(", ");
+  const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
+  const severity = classifySeverity(FindingType.OVERLAPPING_CHAT_WIDGET, codeSnippet);
+
+  return [
+    {
+      filename: anchor.file.filename,
+      lineNumber: anchor.lineNumber,
+      codeSnippet,
+      findingType: FindingType.OVERLAPPING_CHAT_WIDGET,
+      severity,
+      description: `${firstSeen.size} chat widgets are loaded at once: ${detail} — shoppers may see conflicting chat bubbles.`,
+    },
+  ];
+}
+
+// ---------------------------------------------------------------------------
 // Detector: SETTINGS_DRIFT
 // ---------------------------------------------------------------------------
 
@@ -3073,11 +3242,14 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
  *     for files that match known app patterns or the theme.*.liquid naming
  *     convention.
  *
- *   Pass 5 — cross-file duplicate-library detection:
+ *   Pass 5 — cross-file duplicate-library / tracker / chat-widget detection:
  *     Re-extracts external <script> src URLs from RAW file content across all
  *     files and flags any public-CDN library loaded at two or more distinct
  *     MAJOR versions (e.g. Swiper v8 + v11).  Emits one DUPLICATE_LIBRARY
- *     finding per conflicting library.
+ *     finding per conflicting library.  Also flags any analytics platform
+ *     configured with two or more distinct IDs (DUPLICATE_TRACKER) and any two
+ *     or more distinct chat-widget platforms present at once
+ *     (OVERLAPPING_CHAT_WIDGET).
  *
  * Returns all findings (all passes) ready for createFindings().
  */
@@ -3183,6 +3355,12 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // Pass 5: cross-file duplicate-library detection (reads RAW script URLs, not
   // the suppression-filtered unknownScripts array — see detectDuplicateLibraries).
   findings.push(...detectDuplicateLibraries(files));
+
+  // Pass 5 (cont.): cross-file tracker / chat-widget conflict detection. Both are
+  // cross-file, distinct-signal-only detectors attributed to a first-seen theme
+  // file (see CROSS_FILE_FINDING_TYPES in finding-classification).
+  findings.push(...detectDuplicateTrackers(files));
+  findings.push(...detectOverlappingChatWidgets(files));
 
   // Aggregate the third-party domain refs per host across all files: union the
   // source surfaces, sum refCount. A matched host wins over benign (matched
