@@ -12,7 +12,7 @@
  * tomorrow's run can diff against a prior snapshot for a net up/down line. No
  * shop/plan/billing state is ever written.
  *
- * Cron: 8:00 AM America/Denver (DST-correct via the Inngest `TZ=` prefix).
+ * Cron: 7:00 AM America/Denver (DST-correct via the Inngest `TZ=` prefix).
  * Wrapped in withCronHeartbeat so it participates in the dead-man's-switch.
  *
  * Sections (each "in 24h" = trailing 24h unless noted):
@@ -612,7 +612,7 @@ export function buildDigestBody(data: OperatorDigestData): string {
 
 export const operatorDigest = inngest.createFunction(
   { id: "operator-digest", name: "Operator Daily Digest" },
-  { cron: "TZ=America/Denver 0 8 * * *" },
+  { cron: "TZ=America/Denver 0 7 * * *" },
   withCronHeartbeat("operator-digest", async ({ step }) => {
     const windowStart = new Date(Date.now() - DAY_MS);
     const excludeSet = parseExcludeShops(process.env.OPERATOR_EXCLUDE_SHOPS);
