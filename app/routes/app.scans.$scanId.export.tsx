@@ -11,7 +11,9 @@
 
 import type { LoaderFunctionArgs } from "react-router";
 
-import { canViewFindingDetails } from "../lib/plan-gating.server";
+import { computeHealthScore } from "../lib/health-score";
+import { canExportPdf, canViewFindingDetails } from "../lib/plan-gating.server";
+import { renderScanReportPdf } from "../lib/scan-report-pdf.server";
 import { getFindingsForScan } from "../models/finding.server";
 import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
@@ -106,24 +108,57 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const url = new URL(request.url);
   const rawFormat = url.searchParams.get("format") ?? "csv";
   // Normalise to a supported format; any unrecognised value falls back to CSV.
-  const format = rawFormat === "json" ? "json" : "csv";
+  const format = rawFormat === "json" ? "json" : rawFormat === "pdf" ? "pdf" : "csv";
 
   // Step 6: Fetch findings.
   const findings = await getFindingsForScan(scanId);
 
+  // Compute the theme health score once from severity counts — reused by the
+  // JSON and PDF exports (CSV deliberately omits it: it is a scan-level scalar).
+  const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };
+  for (const f of findings) {
+    counts[f.severity as "HIGH" | "MEDIUM" | "LOW"] += 1;
+  }
+  const health = computeHealthScore(counts);
+
   // Step 7: Serialise and return the response.
+  if (format === "pdf") {
+    // PDF export is Professional-only. The Step 3 paid-only check already ran
+    // (Standard passes it), so a Standard shop reaches here and is gated out.
+    if (!canExportPdf(shop.plan)) {
+      return new Response("Upgrade to Professional to export PDF reports.", { status: 403 });
+    }
+
+    const pdf = await renderScanReportPdf({
+      scan: { id: scan.id, themeName: scan.themeName, createdAt: scan.createdAt },
+      findings,
+      healthScore: { score: health.score, label: health.label },
+      exportedAt: new Date().toISOString(),
+    });
+
+    return new Response(new Uint8Array(pdf), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="ghost-code-scan-${scan.id}.pdf"`,
+      },
+    });
+  }
+
   if (format === "json") {
     const body = JSON.stringify(
       {
         scanId: scan.id,
         themeName: scan.themeName,
         exportedAt: new Date().toISOString(),
+        healthScore: { score: health.score, label: health.label },
         findings: findings.map((f) => ({
           severity: f.severity,
           type: f.findingType,
           file: f.filename,
           line: f.lineNumber,
           app: f.appName ?? null,
+          description: f.description,
           codeSnippet: f.codeSnippet,
         })),
       },
@@ -141,9 +176,25 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   }
 
   // CSV format
-  const headerRow = toCsvRow(["Severity", "Type", "File", "Line", "App", "Code Snippet"]);
+  const headerRow = toCsvRow([
+    "Severity",
+    "Type",
+    "File",
+    "Line",
+    "App",
+    "Code Snippet",
+    "Description",
+  ]);
   const dataRows = findings.map((f) =>
-    toCsvRow([f.severity, f.findingType, f.filename, f.lineNumber, f.appName, f.codeSnippet]),
+    toCsvRow([
+      f.severity,
+      f.findingType,
+      f.filename,
+      f.lineNumber,
+      f.appName,
+      f.codeSnippet,
+      f.description,
+    ]),
   );
   const csvBody = [headerRow, ...dataRows].join("\r\n");
 

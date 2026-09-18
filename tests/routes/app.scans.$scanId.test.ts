@@ -70,6 +70,7 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canViewFindingDetails: vi.fn(),
   canUseScanDiffing: vi.fn(),
+  canExportPdf: vi.fn(),
 }));
 
 vi.mock("../../app/lib/health-score", () => ({

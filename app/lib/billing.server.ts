@@ -185,6 +185,8 @@ export type PlanFeatures = {
    * (gc-b3c), mirroring canDetectDanglingReferences.
    */
   canDetectCheckoutSunset: boolean;
+  /** Whether the plan can export findings as a branded PDF report. Professional-only (gc-rrh.1). */
+  exportPdf: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -200,6 +202,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         scheduledScan: true, // Weekly scheduled scan, Sunday 6 AM UTC via weekly-scan cron
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
+        exportPdf: false, // PDF export is Professional-only (gc-rrh.1)
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -212,6 +215,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         scheduledScan: true, // Daily via poll-theme-changes coordinator
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
+        exportPdf: true, // Professional-only branded PDF export (gc-rrh.1)
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -226,6 +230,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         scheduledScan: false,
         canDetectDanglingReferences: false, // Free does NOT get dangling-reference detection (gc-m4h.7)
         canDetectCheckoutSunset: false, // Free does NOT get checkout-sunset detection (gc-b3c)
+        exportPdf: false, // Free does NOT get PDF export (gc-rrh.1)
       };
   }
 }

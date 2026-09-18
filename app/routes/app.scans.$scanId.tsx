@@ -31,7 +31,7 @@ import type { ScanStatus } from "../lib/format";
 import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
-import { canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
+import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import {
@@ -673,6 +673,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     findingSummary,
     canViewDetails,
     canUseDiffing,
+    canExportPdf: canExportPdf(shop.plan),
     healthScore,
     unknownScripts,
     appAttributionData,
@@ -906,6 +907,7 @@ export default function ScanDetail() {
     findingSummary,
     canViewDetails,
     canUseDiffing,
+    canExportPdf,
     healthScore,
     unknownScripts,
     appAttributionData,
@@ -1113,6 +1115,57 @@ export default function ScanDetail() {
     if (tone === "critical") return "critical";
     return "warning";
   }
+
+  /**
+   * Download a scan export in the requested format. Uses an authenticated fetch
+   * (App Bridge intercepts fetch in embedded apps and adds the session token
+   * automatically), then triggers a client-side blob download. Shared by the
+   * CSV, JSON, and PDF export buttons.
+   */
+  async function downloadExport(format: "csv" | "json" | "pdf", ext: string) {
+    const res = await fetch(`/app/scans/${scan.id}/export?format=${format}`);
+    if (!res.ok) {
+      shopify.toast.show("Export failed", { isError: true });
+      return;
+    }
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `ghost-code-scan-${scan.id}.${ext}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  }
+
+  // Shared styling for the export button cluster (CSV / JSON / PDF), matching
+  // the tokens used by the original single "Export CSV" button.
+  const exportButtonStyle: React.CSSProperties = {
+    display: "inline-flex",
+    alignItems: "center",
+    gap: "6px",
+    padding: "6px 12px",
+    borderRadius: "6px",
+    border: `1px solid ${BORDER_STRONG}`,
+    background: BG_WHITE,
+    color: TEXT_SUBDUED,
+    fontSize: "13px",
+    cursor: "pointer",
+  };
+
+  // Download glyph shared across the export buttons.
+  const downloadIcon = (
+    <svg width="14" height="14" viewBox="0 0 20 20" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path
+        d="M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 17h12"
+        stroke="currentColor"
+        strokeWidth="1.5"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  );
 
   return (
     <s-page heading={`Scan: ${scan.themeName}`}>
@@ -1560,56 +1613,43 @@ export default function ScanDetail() {
                   >
                     <h2 className="scan-section-title">Findings</h2>
                     {findings.length > 0 && (
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          // Use authenticated fetch (App Bridge intercepts fetch in
-                          // embedded apps and adds the session token automatically).
-                          const res = await fetch(`/app/scans/${scan.id}/export?format=csv`);
-                          if (!res.ok) {
-                            shopify.toast.show("Export failed", { isError: true });
-                            return;
-                          }
-                          const blob = await res.blob();
-                          const url = URL.createObjectURL(blob);
-                          const a = document.createElement("a");
-                          a.href = url;
-                          a.download = `ghost-code-scan-${scan.id}.csv`;
-                          document.body.appendChild(a);
-                          a.click();
-                          a.remove();
-                          URL.revokeObjectURL(url);
-                        }}
-                        style={{
-                          display: "inline-flex",
-                          alignItems: "center",
-                          gap: "6px",
-                          padding: "6px 12px",
-                          borderRadius: "6px",
-                          border: `1px solid ${BORDER_STRONG}`,
-                          background: BG_WHITE,
-                          color: TEXT_SUBDUED,
-                          fontSize: "13px",
-                          cursor: "pointer",
-                        }}
-                      >
-                        <svg
-                          width="14"
-                          height="14"
-                          viewBox="0 0 20 20"
-                          fill="none"
-                          xmlns="http://www.w3.org/2000/svg"
+                      <div style={{ display: "inline-flex", gap: "8px", alignItems: "center" }}>
+                        <button
+                          type="button"
+                          onClick={() => downloadExport("csv", "csv")}
+                          style={exportButtonStyle}
                         >
-                          <path
-                            d="M10 3v10m0 0l-3.5-3.5M10 13l3.5-3.5M4 17h12"
-                            stroke="currentColor"
-                            strokeWidth="1.5"
-                            strokeLinecap="round"
-                            strokeLinejoin="round"
-                          />
-                        </svg>
-                        Export CSV
-                      </button>
+                          {downloadIcon}
+                          Export CSV
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => downloadExport("json", "json")}
+                          style={exportButtonStyle}
+                        >
+                          {downloadIcon}
+                          Export JSON
+                        </button>
+                        {canExportPdf ? (
+                          <button
+                            type="button"
+                            onClick={() => downloadExport("pdf", "pdf")}
+                            style={exportButtonStyle}
+                          >
+                            {downloadIcon}
+                            Export PDF
+                          </button>
+                        ) : (
+                          // Locked affordance advertising the Professional-only
+                          // PDF export; routes the merchant to the upgrade path.
+                          <Link to="/app/settings" style={{ textDecoration: "none" }}>
+                            <span style={{ ...exportButtonStyle, opacity: 0.6 }}>
+                              {downloadIcon}
+                              Export PDF (Pro)
+                            </span>
+                          </Link>
+                        )}
+                      </div>
                     )}
                   </div>
                   {/* Filter bar — only when the scan actually has findings to

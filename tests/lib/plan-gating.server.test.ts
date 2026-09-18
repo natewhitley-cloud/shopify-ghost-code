@@ -47,6 +47,7 @@ import {
   canStartScan,
   canDetectCheckoutSunset,
   canDetectDanglingReferences,
+  canExportPdf,
   canViewFindingDetails,
   canUseAutoRescan,
   canUseMultipleThemes,
@@ -165,6 +166,28 @@ describe("canDetectCheckoutSunset", () => {
 
   it("defaults to free-tier behavior for unknown plan names", () => {
     expect(canDetectCheckoutSunset("unknown-plan")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canExportPdf — pure, plan-tier tests (gc-rrh.1: Professional-only)
+// ---------------------------------------------------------------------------
+
+describe("canExportPdf", () => {
+  it("returns false for free plan", () => {
+    expect(canExportPdf("free")).toBe(false);
+  });
+
+  it("returns false for Standard plan", () => {
+    expect(canExportPdf("Standard")).toBe(false);
+  });
+
+  it("returns true for Professional plan", () => {
+    expect(canExportPdf("Professional")).toBe(true);
+  });
+
+  it("defaults to free-tier behavior for unknown plan names", () => {
+    expect(canExportPdf("unknown-plan")).toBe(false);
   });
 });
 

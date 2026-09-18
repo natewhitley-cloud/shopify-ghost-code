@@ -158,3 +158,8 @@ export function canDetectCheckoutSunset(planName: string): boolean {
 export function canUseMultipleThemes(planName: string): boolean {
   return getPlanFeatures(planName).maxThemes > 1;
 }
+
+/** Whether the plan can export a scan as a branded PDF report. Professional-only (gc-rrh.1). */
+export function canExportPdf(planName: string): boolean {
+  return getPlanFeatures(planName).exportPdf;
+}

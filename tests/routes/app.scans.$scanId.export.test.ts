@@ -36,13 +36,20 @@ vi.mock("../../app/models/finding.server", () => ({
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canViewFindingDetails: vi.fn(),
+  canExportPdf: vi.fn(),
+}));
+
+// Mock the PDF renderer for speed and hermeticity — the real renderer is
+// exercised separately in tests/lib/scan-report-pdf.server.test.ts.
+vi.mock("../../app/lib/scan-report-pdf.server", () => ({
+  renderScanReportPdf: vi.fn().mockResolvedValue(Buffer.from("%PDF-1.7 fake")),
 }));
 
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { canViewFindingDetails } from "../../app/lib/plan-gating.server";
+import { canExportPdf, canViewFindingDetails } from "../../app/lib/plan-gating.server";
 import { getFindingsForScan } from "../../app/models/finding.server";
 import { getScanById } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
@@ -58,6 +65,7 @@ const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
 const mockCanViewFindingDetails = canViewFindingDetails as ReturnType<typeof vi.fn>;
+const mockCanExportPdf = canExportPdf as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -139,6 +147,7 @@ beforeEach(() => {
   });
   mockGetShopMetadata.mockResolvedValue(SHOP);
   mockCanViewFindingDetails.mockReturnValue(true);
+  mockCanExportPdf.mockReturnValue(true); // Professional happy path for PDF export
   mockGetScanById.mockResolvedValue(SCAN);
   mockGetFindingsForScan.mockResolvedValue(FINDINGS);
 });
@@ -174,6 +183,15 @@ describe("CSV export", () => {
     expect(firstLine).toContain("Line");
     expect(firstLine).toContain("App");
     expect(firstLine).toContain("Code Snippet");
+    expect(firstLine).toContain("Description");
+  });
+
+  it("includes each finding's description in the data rows", async () => {
+    const response = await callLoader("scan-abc", "csv");
+    const body = await response.text();
+
+    expect(body).toContain("Orphaned Klaviyo script tag");
+    expect(body).toContain("Orphaned stylesheet rule");
   });
 
   it("includes one data row per finding", async () => {
@@ -249,7 +267,7 @@ describe("CSV export", () => {
     // Split on commas that are NOT inside quotes to count fields
     // Since all fields are quoted, we can count by splitting on ","
     const fields = dataRow.match(/"[^"]*(?:""[^"]*)*"/g);
-    expect(fields).toHaveLength(6); // Severity, Type, File, Line, App, Code Snippet
+    expect(fields).toHaveLength(7); // Severity, Type, File, Line, App, Code Snippet, Description
   });
 
   it("handles fields containing newlines within quoted values", async () => {
@@ -301,7 +319,9 @@ describe("CSV formula injection", () => {
   /**
    * Returns the second line of the CSV body (the single data row) for a scan
    * whose only finding has the given codeSnippet. The codeSnippet column is the
-   * last field in the row.
+   * second-to-last field in the row (Description is now the final column), so
+   * these tests assert on the neutralized, uniquely-quoted snippet field via
+   * containment rather than a row-end match.
    */
   async function dataRowForSnippet(codeSnippet: string): Promise<string> {
     mockGetFindingsForScan.mockResolvedValue([{ ...FINDINGS[0], codeSnippet }]);
@@ -312,50 +332,50 @@ describe("CSV formula injection", () => {
 
   it("prefixes a value starting with = with a single quote", async () => {
     const row = await dataRowForSnippet("=SUM(A1:A2)");
-    expect(row.endsWith(`"'=SUM(A1:A2)"`)).toBe(true);
+    expect(row).toContain(`"'=SUM(A1:A2)"`);
   });
 
   it("prefixes a value starting with + with a single quote", async () => {
     const row = await dataRowForSnippet("+1+1");
-    expect(row.endsWith(`"'+1+1"`)).toBe(true);
+    expect(row).toContain(`"'+1+1"`);
   });
 
   it("prefixes a value starting with - with a single quote", async () => {
     const row = await dataRowForSnippet("-2+3");
-    expect(row.endsWith(`"'-2+3"`)).toBe(true);
+    expect(row).toContain(`"'-2+3"`);
   });
 
   it("prefixes a value starting with @ with a single quote", async () => {
     const row = await dataRowForSnippet("@SUM(1)");
-    expect(row.endsWith(`"'@SUM(1)"`)).toBe(true);
+    expect(row).toContain(`"'@SUM(1)"`);
   });
 
   it("prefixes a value starting with a tab with a single quote", async () => {
     const row = await dataRowForSnippet("\t=cmd");
-    expect(row.endsWith(`"'\t=cmd"`)).toBe(true);
+    expect(row).toContain(`"'\t=cmd"`);
   });
 
   it("prefixes a value starting with a carriage return with a single quote", async () => {
     const row = await dataRowForSnippet("\r=cmd");
-    expect(row.endsWith(`"'\r=cmd"`)).toBe(true);
+    expect(row).toContain(`"'\r=cmd"`);
   });
 
   it("does NOT prefix a value with = that is not at the start", async () => {
     const row = await dataRowForSnippet("color =red");
-    expect(row.endsWith(`"color =red"`)).toBe(true);
+    expect(row).toContain(`"color =red"`);
     expect(row).not.toContain(`"'color`);
   });
 
   it("does NOT prefix a benign value", async () => {
     const row = await dataRowForSnippet("display: none;");
-    expect(row.endsWith(`"display: none;"`)).toBe(true);
+    expect(row).toContain(`"display: none;"`);
   });
 
   it("composes with comma/quote escaping when a dangerous value also contains them", async () => {
     // Leading '=' must be neutralized AND internal quotes doubled AND the comma
     // kept inside the wrapping quotes (so it stays one field).
     const row = await dataRowForSnippet('=HYPERLINK("a,b")');
-    expect(row.endsWith(`"'=HYPERLINK(""a,b"")"`)).toBe(true);
+    expect(row).toContain(`"'=HYPERLINK(""a,b"")"`);
   });
 
   it("composes with newline escaping for a dangerous value containing a newline", async () => {
@@ -417,6 +437,22 @@ describe("JSON export", () => {
     expect(typeof first.codeSnippet).toBe("string");
   });
 
+  it("includes each finding's description", async () => {
+    const response = await callLoader("scan-abc", "json");
+    const body = await response.json();
+
+    expect(body.findings[0].description).toBe("Orphaned Klaviyo script tag");
+    expect(body.findings[1].description).toBe("Orphaned stylesheet rule");
+  });
+
+  it("includes a top-level healthScore with numeric score and string label", async () => {
+    const response = await callLoader("scan-abc", "json");
+    const body = await response.json();
+
+    expect(typeof body.healthScore.score).toBe("number");
+    expect(typeof body.healthScore.label).toBe("string");
+  });
+
   it("serialises null appName as null in JSON (not as a string)", async () => {
     const response = await callLoader("scan-abc", "json");
     const body = await response.json();
@@ -432,6 +468,42 @@ describe("JSON export", () => {
     const body = await response.json();
 
     expect(body.findings).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PDF export (Professional-only, gc-rrh.1)
+// ---------------------------------------------------------------------------
+
+describe("PDF export", () => {
+  it("returns 200 with application/pdf content-type when the plan can export PDF", async () => {
+    const response = await callLoader("scan-abc", "pdf");
+
+    expect(response.status).toBe(200);
+    expect(response.headers.get("Content-Type")).toContain("application/pdf");
+  });
+
+  it("returns Content-Disposition attachment with .pdf filename", async () => {
+    const response = await callLoader("scan-abc", "pdf");
+
+    const disposition = response.headers.get("Content-Disposition") ?? "";
+    expect(disposition).toContain("attachment");
+    expect(disposition).toContain(".pdf");
+  });
+
+  it("returns a body starting with the %PDF magic bytes", async () => {
+    const response = await callLoader("scan-abc", "pdf");
+    const body = await response.text();
+
+    expect(body.startsWith("%PDF")).toBe(true);
+  });
+
+  it("returns 403 when the plan cannot export PDF (Standard/Free)", async () => {
+    mockCanExportPdf.mockReturnValue(false);
+
+    const response = await callLoader("scan-abc", "pdf");
+
+    expect(response.status).toBe(403);
   });
 });
 
