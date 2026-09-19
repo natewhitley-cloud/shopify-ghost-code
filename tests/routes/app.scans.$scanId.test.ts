@@ -129,6 +129,7 @@ import {
   FindingRow,
   loader,
   nextFindingsFilterParams,
+  scanProgressLabel,
 } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
@@ -319,6 +320,20 @@ describe("app.scans.$scanId loader", () => {
     };
 
     expect(result.scan.skippedCategories).toEqual(["GHOST_PAGE", "GHOST_REDIRECT"]);
+  });
+
+  // gc-rzq: the in-progress "Found N so far…" line reads scan.findingCount on
+  // each 3s poll, so the loader must surface the live partial count even while
+  // the scan is still running (findingCount updates incrementally in the DB).
+  it("surfaces scan.findingCount for an in-progress scan (live poll count)", async () => {
+    mockGetScanById.mockResolvedValue({ ...SCAN, status: "IN_PROGRESS", findingCount: 12 });
+
+    const result = (await loader(makeLoaderArgs("scan-1"))) as {
+      scan: { status: string; findingCount: number };
+    };
+
+    expect(result.scan.status).toBe("IN_PROGRESS");
+    expect(result.scan.findingCount).toBe(12);
   });
 
   it("always calls getScanById with includeFindings: false (findings loaded separately)", async () => {
@@ -1162,5 +1177,45 @@ describe("CopyButton", () => {
     expect(html).toContain(">Copy<");
     // Not yet copied — the confirmation label must not be present initially.
     expect(html).not.toContain(">Copied<");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// scanProgressLabel — live "Scan In Progress" count copy (gc-rzq)
+//
+// Rules the wording must honor:
+//   - N=0: never "Found 0" (reads like a completed empty scan) — reassure instead.
+//   - N=1 vs N>1: singular "finding" vs plural "findings".
+//   - Always in-progress: "so far…", never a final-sounding count.
+// ---------------------------------------------------------------------------
+
+describe("scanProgressLabel", () => {
+  it("does not say 'Found 0' when no findings yet (N=0)", () => {
+    const label = scanProgressLabel(0);
+    expect(label).toBe("Scanning… no findings yet.");
+    expect(label).not.toContain("Found 0");
+  });
+
+  it("treats a negative/absent count as the no-findings-yet state", () => {
+    // Defensive: findingCount should never be negative, but the copy must not
+    // regress to "Found -1 so far…" if it ever is.
+    expect(scanProgressLabel(-1)).toBe("Scanning… no findings yet.");
+  });
+
+  it("uses the singular 'finding' for exactly one (N=1)", () => {
+    const label = scanProgressLabel(1);
+    expect(label).toBe("Found 1 finding so far…");
+    expect(label).not.toContain("findings");
+  });
+
+  it("uses the plural 'findings' for more than one (N>1)", () => {
+    expect(scanProgressLabel(2)).toBe("Found 2 findings so far…");
+    expect(scanProgressLabel(45)).toBe("Found 45 findings so far…");
+  });
+
+  it("always reads as in-progress, never final (ends with 'so far…')", () => {
+    for (const n of [1, 2, 45, 200]) {
+      expect(scanProgressLabel(n)).toMatch(/so far…$/);
+    }
   });
 });
