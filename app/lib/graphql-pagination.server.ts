@@ -30,6 +30,29 @@ export type GraphQLConnection<TNode> = {
   pageInfo?: { hasNextPage?: boolean; endCursor?: string | null };
 };
 
+/**
+ * Optional out-parameter the helper populates as it paginates (gc-1bd). Pass a
+ * fresh object; the helper MUTATES it in place so the caller can read walk
+ * observability without changing the return type (existing callers ignore it):
+ *
+ *   - `pageCount`:       number of GraphQL page requests that returned data
+ *                        (THROTTLED retries of the same cursor are not counted).
+ *   - `nodeCount`:       raw nodes consumed across all pages (after the cap trim).
+ *   - `truncated`:       true iff the `maxNodes` cap stopped the walk while the
+ *                        connection still reported `hasNextPage` — i.e. records
+ *                        beyond the cap were NOT scanned. Used to mark a coverage
+ *                        gap so the differ never false-resolves un-scanned records.
+ *   - `throttleSleepMs`: accumulated wall-clock spent in proactive rate-limit
+ *                        backoff (checkRateLimit sleeps only when headroom is low;
+ *                        otherwise it adds ~0), summed across all pages.
+ */
+export type PaginateStats = {
+  pageCount: number;
+  nodeCount: number;
+  truncated: boolean;
+  throttleSleepMs: number;
+};
+
 /** Minimal shape of the JSON envelope returned by `admin.graphql`. */
 type GraphQLResponseJson = {
   errors?: Array<{ message?: string; extensions?: { code?: unknown } | null }>;
@@ -86,6 +109,13 @@ export type PaginateOptions<TNode, TResult> = {
    * (e.g. one entry per translation on a node).
    */
   mapNode: (node: TNode) => TResult[];
+  /**
+   * Optional walk-observability out-parameter (gc-1bd). When provided, the
+   * helper mutates it with page/node counts, cap truncation, and accumulated
+   * throttle-backoff sleep. See {@link PaginateStats}. Omit it and pagination
+   * behaves exactly as before.
+   */
+  stats?: PaginateStats;
 };
 
 /**
@@ -109,6 +139,7 @@ export async function paginateConnection<TNode, TResult>(
     maxThrottleRetries = 5,
     getConnection,
     mapNode,
+    stats,
   } = options;
 
   const results: TResult[] = [];
@@ -148,7 +179,9 @@ export async function paginateConnection<TNode, TResult>(
         }
         // Back off using whatever throttle headroom the response reported; if it
         // carried none, checkRateLimit is a no-op and we retry promptly.
+        const sleepStart = Date.now();
         await checkRateLimit(json.extensions);
+        if (stats) stats.throttleSleepMs += Date.now() - sleepStart;
         continue; // retry the same page — cursor unchanged
       }
 
@@ -182,17 +215,29 @@ export async function paginateConnection<TNode, TResult>(
       }
     }
     totalNodes += nodes.length;
+    if (stats) {
+      stats.pageCount += 1;
+      stats.nodeCount += nodes.length;
+    }
 
     // Defensive: an empty page with hasNextPage still true would otherwise spin
     // forever (the cap is by node count, which is not advancing).
     if (allNodes.length === 0) break;
-    if (maxNodes !== undefined && totalNodes >= maxNodes) break;
+    if (maxNodes !== undefined && totalNodes >= maxNodes) {
+      // Cap reached. If the connection still had more, records beyond the cap
+      // were NOT scanned — flag the walk truncated so callers can record a
+      // coverage gap (the differ must not false-resolve un-scanned records).
+      if (stats && pageInfo.hasNextPage) stats.truncated = true;
+      break;
+    }
     if (!pageInfo.hasNextPage) break;
 
     cursor = pageInfo.endCursor ?? null;
 
     // Proactively back off before the next request, then log throttle proximity.
+    const sleepStart = Date.now();
     await checkRateLimit(json.extensions);
+    if (stats) stats.throttleSleepMs += Date.now() - sleepStart;
     if (shopDomain) {
       checkThrottleStatusFromExtensions(shopDomain, json.extensions);
     }

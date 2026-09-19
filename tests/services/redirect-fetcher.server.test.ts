@@ -135,6 +135,50 @@ describe("fetchRedirects", () => {
     expect(redirects).toHaveLength(30);
   });
 
+  // gc-1bd: when the cap cuts the walk short and more redirects existed, the
+  // optional stats out-param must report truncated so the caller records a
+  // coverage gap (the differ must not false-resolve redirects beyond the cap).
+  it("flags stats.truncated when the cap is hit while more redirects remain", async () => {
+    const nodes = Array.from({ length: 50 }, (_, i) => ({
+      id: `gid://shopify/UrlRedirect/${i}`,
+      path: `/old-${i}`,
+      target: `/new-${i}`,
+    }));
+    const admin = mockAdmin([
+      {
+        data: { urlRedirects: { nodes, pageInfo: { hasNextPage: true, endCursor: "cursor1" } } },
+        extensions: {},
+      },
+    ]);
+
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+    const redirects = await fetchRedirects(admin, 30, stats);
+
+    expect(redirects).toHaveLength(30);
+    expect(stats.truncated).toBe(true);
+    expect(stats.pageCount).toBe(1);
+  });
+
+  it("leaves stats.truncated false when the walk ends naturally under the cap", async () => {
+    const admin = mockAdmin([
+      {
+        data: {
+          urlRedirects: {
+            nodes: [{ id: "gid://shopify/UrlRedirect/1", path: "/o", target: "/n" }],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+        extensions: {},
+      },
+    ]);
+
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+    await fetchRedirects(admin, 1000, stats);
+
+    expect(stats.truncated).toBe(false);
+    expect(stats.pageCount).toBe(1);
+  });
+
   it("throws on API errors", async () => {
     const admin = mockAdmin([
       {

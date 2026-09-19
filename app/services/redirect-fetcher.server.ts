@@ -5,7 +5,12 @@
  * Requires `read_online_store_navigation` scope.
  */
 
-import { type GraphQLConnection, paginateConnection } from "../lib/graphql-pagination.server";
+import {
+  type GraphQLConnection,
+  type PaginateStats,
+  paginateConnection,
+} from "../lib/graphql-pagination.server";
+import { REDIRECT_CAP } from "../lib/scan-limits";
 import { probeScope } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -65,16 +70,21 @@ const REDIRECTS_QUERY = `
  * pagination.
  *
  * - Uses `first: 50` per page to stay within rate limits.
- * - Caps total redirects at `maxRedirects` (default 1000) to avoid
- *   excessive API calls on stores with thousands of redirects.
+ * - Caps total redirects at `maxRedirects` (default {@link REDIRECT_CAP}) to
+ *   avoid excessive API calls on stores with thousands of redirects.
  * - Backs off automatically when the rate-limit headroom falls below 100 pts.
  *
  * @param admin         Shopify admin API context.
- * @param maxRedirects  Maximum number of redirects to fetch (default 1000).
+ * @param maxRedirects  Maximum number of redirects to fetch (default REDIRECT_CAP).
+ * @param stats         Optional walk-observability out-param (gc-1bd). When the
+ *                      cap truncates the walk, `stats.truncated` is set so the
+ *                      caller can record a coverage gap (the differ must not
+ *                      false-resolve redirects beyond the cap).
  */
 export async function fetchRedirects(
   admin: AdminApiContext,
-  maxRedirects = 1000,
+  maxRedirects = REDIRECT_CAP,
+  stats?: PaginateStats,
 ): Promise<RedirectData[]> {
   const PAGE_SIZE = 50;
 
@@ -89,5 +99,6 @@ export async function fetchRedirects(
     getConnection: (data) =>
       (data as { urlRedirects?: GraphQLConnection<RedirectNode> } | null | undefined)?.urlRedirects,
     mapNode: (node) => [{ id: node.id, path: node.path, target: node.target }],
+    stats,
   });
 }

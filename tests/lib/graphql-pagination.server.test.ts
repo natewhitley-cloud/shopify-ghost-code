@@ -277,6 +277,56 @@ describe("paginateConnection", () => {
 });
 
 // ---------------------------------------------------------------------------
+// stats out-param (gc-1bd): pageCount / nodeCount / truncated
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection stats out-param", () => {
+  it("counts pages and nodes across a natural (untruncated) walk", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        page([{ id: "a" }, { id: "b" }], { hasNextPage: true, endCursor: "c1" }),
+      )
+      .mockResolvedValueOnce(page([{ id: "c" }], { hasNextPage: false, endCursor: null }));
+
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+    await paginateConnection({ ...baseOptions(graphql), stats });
+
+    expect(stats.pageCount).toBe(2);
+    expect(stats.nodeCount).toBe(3);
+    expect(stats.truncated).toBe(false);
+  });
+
+  it("sets truncated when the cap stops the walk while hasNextPage is still true", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        page([{ id: "a" }, { id: "b" }], { hasNextPage: true, endCursor: "c1" }),
+      );
+
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+    await paginateConnection({ ...baseOptions(graphql), pageSize: 2, maxNodes: 2, stats });
+
+    expect(stats.truncated).toBe(true);
+    expect(stats.nodeCount).toBe(2);
+    expect(graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT set truncated when the cap coincides with the last page (no next page)", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        page([{ id: "a" }, { id: "b" }], { hasNextPage: false, endCursor: null }),
+      );
+
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+    await paginateConnection({ ...baseOptions(graphql), pageSize: 2, maxNodes: 2, stats });
+
+    expect(stats.truncated).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // PRF-3: THROTTLED mid-pagination resume
 // ---------------------------------------------------------------------------
 
