@@ -1,11 +1,6 @@
-import { describe, it, expect, vi } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
-import {
-  hasProductScope,
-  fetchProductTags,
-  fetchProductPrices,
-  fetchProductMetafields,
-} from "../../app/services/product-fetcher.server";
+import { hasProductScope, fetchProductAuditData } from "../../app/services/product-fetcher.server";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -17,24 +12,39 @@ function makeAdmin(graphqlMock: ReturnType<typeof vi.fn>): AdminApiContext {
   return { graphql: graphqlMock } as unknown as AdminApiContext;
 }
 
-function makeProductsResponse(
-  nodes: Array<{ id: string; title: string; tags: string[] }>,
+type AuditNode = {
+  id: string;
+  title: string;
+  tags: string[];
+  variants: {
+    nodes: Array<{ id: string; title: string; price: string; compareAtPrice: string | null }>;
+  };
+  metafields: {
+    nodes: Array<{ namespace: string; key: string; value: string; type: string }>;
+  };
+};
+
+/**
+ * A successful products page for the consolidated audit query. `throttle`
+ * defaults to ample headroom so the walk never sleeps unless a test asks it to.
+ */
+function makeAuditResponse(
+  nodes: AuditNode[],
   pageInfo: { hasNextPage: boolean; endCursor: string | null } = {
     hasNextPage: false,
     endCursor: null,
   },
+  throttle?: { currentlyAvailable: number; restoreRate: number },
 ) {
   return {
     json: vi.fn().mockResolvedValue({
-      data: {
-        products: { nodes, pageInfo },
-      },
+      data: { products: { nodes, pageInfo } },
       extensions: {
         cost: {
           throttleStatus: {
             maximumAvailable: 2000,
-            currentlyAvailable: 1800,
-            restoreRate: 100,
+            currentlyAvailable: throttle?.currentlyAvailable ?? 1800,
+            restoreRate: throttle?.restoreRate ?? 100,
           },
         },
       },
@@ -44,15 +54,28 @@ function makeProductsResponse(
 
 function makeErrorResponse(message: string) {
   return {
-    json: vi.fn().mockResolvedValue({
-      errors: [{ message }],
-      data: null,
-    }),
+    json: vi.fn().mockResolvedValue({ errors: [{ message }], data: null }),
+  };
+}
+
+/** A product node with all three detectors' data present. */
+function fullNode(id: string, overrides?: Partial<AuditNode>): AuditNode {
+  return {
+    id,
+    title: `Product ${id}`,
+    tags: ["bold-sale"],
+    variants: {
+      nodes: [{ id: `${id}-v1`, title: "Default", price: "10.00", compareAtPrice: "20.00" }],
+    },
+    metafields: {
+      nodes: [{ namespace: "judgeme", key: "rating", value: "4.5", type: "number_decimal" }],
+    },
+    ...overrides,
   };
 }
 
 // ---------------------------------------------------------------------------
-// hasProductScope
+// hasProductScope (unchanged)
 // ---------------------------------------------------------------------------
 
 describe("hasProductScope", () => {
@@ -62,21 +85,14 @@ describe("hasProductScope", () => {
         data: { products: { nodes: [{ id: "gid://shopify/Product/1" }] } },
       }),
     });
-    const admin = makeAdmin(graphql);
-
-    expect(await hasProductScope(admin)).toBe(true);
+    expect(await hasProductScope(makeAdmin(graphql))).toBe(true);
   });
 
   it("returns false when ACCESS_DENIED error", async () => {
     const graphql = vi.fn().mockResolvedValue({
-      json: vi.fn().mockResolvedValue({
-        errors: [{ message: "Access denied" }],
-        data: null,
-      }),
+      json: vi.fn().mockResolvedValue({ errors: [{ message: "Access denied" }], data: null }),
     });
-    const admin = makeAdmin(graphql);
-
-    expect(await hasProductScope(admin)).toBe(false);
+    expect(await hasProductScope(makeAdmin(graphql))).toBe(false);
   });
 
   it("returns false when ACCESS_DENIED is carried in extensions.code", async () => {
@@ -86,21 +102,15 @@ describe("hasProductScope", () => {
         data: null,
       }),
     });
-    const admin = makeAdmin(graphql);
-
-    expect(await hasProductScope(admin)).toBe(false);
+    expect(await hasProductScope(makeAdmin(graphql))).toBe(false);
   });
 
-  // LOG-9: a transient transport failure must NOT be swallowed as "scope
-  // missing" — it must throw so the Inngest step retries.
+  // LOG-9: transient transport failure must throw (not be treated scope-missing).
   it("throws on network error (transient, not scope-missing)", async () => {
     const graphql = vi.fn().mockRejectedValue(new Error("Network error"));
-    const admin = makeAdmin(graphql);
-
-    await expect(hasProductScope(admin)).rejects.toThrow(/transient/i);
+    await expect(hasProductScope(makeAdmin(graphql))).rejects.toThrow(/transient/i);
   });
 
-  // LOG-9: a THROTTLED GraphQL error must throw, not be treated as scope-missing.
   it("throws on THROTTLED (transient, not scope-missing)", async () => {
     const graphql = vi.fn().mockResolvedValue({
       json: vi.fn().mockResolvedValue({
@@ -108,450 +118,185 @@ describe("hasProductScope", () => {
         data: null,
       }),
     });
-    const admin = makeAdmin(graphql);
-
-    await expect(hasProductScope(admin)).rejects.toThrow(/transient/i);
+    await expect(hasProductScope(makeAdmin(graphql))).rejects.toThrow(/transient/i);
   });
 });
 
 // ---------------------------------------------------------------------------
-// fetchProductTags
+// fetchProductAuditData — the consolidated single-walk fetcher (gc-1bd)
 // ---------------------------------------------------------------------------
 
-describe("fetchProductTags", () => {
-  it("paginates correctly across multiple pages", async () => {
-    const graphql = vi
-      .fn()
-      .mockResolvedValueOnce(
-        makeProductsResponse(
-          [
-            { id: "gid://shopify/Product/1", title: "Product 1", tags: ["tag1"] },
-            { id: "gid://shopify/Product/2", title: "Product 2", tags: ["tag2"] },
-          ],
-          { hasNextPage: true, endCursor: "cursor1" },
-        ),
-      )
-      .mockResolvedValueOnce(
-        makeProductsResponse(
-          [{ id: "gid://shopify/Product/3", title: "Product 3", tags: ["tag3"] }],
-          { hasNextPage: false, endCursor: null },
-        ),
-      );
-    const admin = makeAdmin(graphql);
+describe("fetchProductAuditData", () => {
+  it("yields data for all THREE detectors from ONE walk (one graphql query per page)", async () => {
+    const graphql = vi.fn().mockResolvedValue(makeAuditResponse([fullNode("1")]));
 
-    const products = await fetchProductTags(admin);
+    const result = await fetchProductAuditData(makeAdmin(graphql));
 
-    expect(products).toHaveLength(3);
-    expect(products[0].id).toBe("gid://shopify/Product/1");
-    expect(products[2].id).toBe("gid://shopify/Product/3");
-    expect(graphql).toHaveBeenCalledTimes(2);
-  });
-
-  it("caps at maxProducts", async () => {
-    // Return 3 products per page with more available
-    const graphql = vi.fn().mockResolvedValueOnce(
-      makeProductsResponse(
-        [
-          { id: "gid://shopify/Product/1", title: "P1", tags: [] },
-          { id: "gid://shopify/Product/2", title: "P2", tags: [] },
-          { id: "gid://shopify/Product/3", title: "P3", tags: [] },
-        ],
-        { hasNextPage: true, endCursor: "cursor1" },
-      ),
-    );
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductTags(admin, 3);
-
-    expect(products).toHaveLength(3);
-    // Should not fetch a second page since we hit maxProducts
+    // One product with tags + a compare-at variant + a metafield appears in all
+    // three detector-shaped arrays, produced by a SINGLE catalog walk.
+    expect(result.tags).toEqual([{ id: "1", title: "Product 1", tags: ["bold-sale"] }]);
+    expect(result.prices).toHaveLength(1);
+    expect(result.prices[0].id).toBe("1");
+    expect(result.metafields).toHaveLength(1);
+    expect(result.metafields[0].id).toBe("1");
+    // Critically: only ONE graphql call — not three separate walks.
     expect(graphql).toHaveBeenCalledTimes(1);
   });
 
-  it("handles empty result", async () => {
-    const graphql = vi
-      .fn()
-      .mockResolvedValue(makeProductsResponse([], { hasNextPage: false, endCursor: null }));
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductTags(admin);
-
-    expect(products).toEqual([]);
-  });
-
-  it("throws on API errors", async () => {
-    const graphql = vi.fn().mockResolvedValue(makeErrorResponse("Access denied"));
-    const admin = makeAdmin(graphql);
-
-    await expect(fetchProductTags(admin)).rejects.toThrow("Failed to fetch products");
-  });
-
-  it("passes cursor to subsequent pages", async () => {
-    const graphql = vi
-      .fn()
-      .mockResolvedValueOnce(
-        makeProductsResponse([{ id: "gid://shopify/Product/1", title: "P1", tags: [] }], {
-          hasNextPage: true,
-          endCursor: "abc123",
-        }),
-      )
-      .mockResolvedValueOnce(
-        makeProductsResponse([{ id: "gid://shopify/Product/2", title: "P2", tags: [] }], {
-          hasNextPage: false,
-          endCursor: null,
-        }),
-      );
-    const admin = makeAdmin(graphql);
-
-    await fetchProductTags(admin);
-
-    // Second call should include the cursor
-    const secondCallArgs = graphql.mock.calls[1];
-    expect(secondCallArgs[1]).toEqual(
-      expect.objectContaining({
-        variables: expect.objectContaining({ after: "abc123" }),
-      }),
-    );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// fetchProductPrices
-// ---------------------------------------------------------------------------
-
-function makeProductPricesResponse(
-  nodes: Array<{
-    id: string;
-    title: string;
-    variants: {
-      nodes: Array<{
-        id: string;
-        title: string;
-        price: string;
-        compareAtPrice: string | null;
-      }>;
-    };
-    metafields?: {
-      nodes: Array<{ namespace: string; key: string }>;
-    };
-  }>,
-  pageInfo: { hasNextPage: boolean; endCursor: string | null } = {
-    hasNextPage: false,
-    endCursor: null,
-  },
-) {
-  return {
-    json: vi.fn().mockResolvedValue({
-      data: {
-        products: { nodes, pageInfo },
-      },
-      extensions: {
-        cost: {
-          throttleStatus: {
-            maximumAvailable: 2000,
-            currentlyAvailable: 1800,
-            restoreRate: 100,
-          },
-        },
-      },
-    }),
-  };
-}
-
-describe("fetchProductPrices", () => {
-  it("paginates across multiple pages", async () => {
-    const graphql = vi
-      .fn()
-      .mockResolvedValueOnce(
-        makeProductPricesResponse(
-          [
-            {
-              id: "gid://shopify/Product/1",
-              title: "P1",
-              variants: {
-                nodes: [{ id: "v1", title: "Default", price: "10.00", compareAtPrice: "20.00" }],
-              },
-            },
-          ],
-          { hasNextPage: true, endCursor: "cursor1" },
-        ),
-      )
-      .mockResolvedValueOnce(
-        makeProductPricesResponse(
-          [
-            {
-              id: "gid://shopify/Product/2",
-              title: "P2",
-              variants: {
-                nodes: [{ id: "v2", title: "Default", price: "15.00", compareAtPrice: "25.00" }],
-              },
-            },
-          ],
-          { hasNextPage: false, endCursor: null },
-        ),
-      );
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductPrices(admin);
-
-    expect(products).toHaveLength(2);
-    expect(products[0].id).toBe("gid://shopify/Product/1");
-    expect(products[1].id).toBe("gid://shopify/Product/2");
-    expect(graphql).toHaveBeenCalledTimes(2);
-  });
-
-  it("returns products with variant pricing data", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      makeProductPricesResponse([
-        {
-          id: "gid://shopify/Product/1",
-          title: "Test Product",
-          variants: {
-            nodes: [
-              { id: "v1", title: "Small", price: "10.00", compareAtPrice: "20.00" },
-              { id: "v2", title: "Large", price: "15.00", compareAtPrice: null },
-            ],
-          },
-        },
-      ]),
-    );
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductPrices(admin);
-
-    expect(products).toHaveLength(1);
-    expect(products[0].variants).toHaveLength(2);
-    expect(products[0].variants[0].price).toBe("10.00");
-    expect(products[0].variants[0].compareAtPrice).toBe("20.00");
-  });
-
-  it("captures product metafields alongside pricing data", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      makeProductPricesResponse([
-        {
-          id: "gid://shopify/Product/1",
-          title: "On Sale",
-          variants: {
-            nodes: [{ id: "v1", title: "Default", price: "19.99", compareAtPrice: "29.99" }],
-          },
-          metafields: {
-            nodes: [{ namespace: "inventory", key: "ShappifySale" }],
-          },
-        },
-      ]),
-    );
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductPrices(admin);
-
-    expect(products).toHaveLength(1);
-    expect(products[0].metafields).toEqual([{ namespace: "inventory", key: "ShappifySale" }]);
-  });
-
-  it("defaults metafields to an empty array when the field is absent", async () => {
-    // Older/partial responses may omit the metafields connection entirely.
-    const graphql = vi.fn().mockResolvedValue(
-      makeProductPricesResponse([
-        {
-          id: "gid://shopify/Product/1",
-          title: "No Metafields",
-          variants: {
-            nodes: [{ id: "v1", title: "Default", price: "19.99", compareAtPrice: "29.99" }],
-          },
-        },
-      ]),
-    );
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductPrices(admin);
-
-    expect(products).toHaveLength(1);
-    expect(products[0].metafields).toEqual([]);
-  });
-
-  it("filters out products with no compareAtPrice set", async () => {
-    const graphql = vi.fn().mockResolvedValue(
-      makeProductPricesResponse([
-        {
-          id: "gid://shopify/Product/1",
-          title: "No Compare At",
-          variants: {
-            nodes: [{ id: "v1", title: "Default", price: "29.99", compareAtPrice: null }],
-          },
-        },
-        {
-          id: "gid://shopify/Product/2",
-          title: "Has Compare At",
-          variants: {
-            nodes: [{ id: "v2", title: "Default", price: "19.99", compareAtPrice: "29.99" }],
-          },
-        },
-      ]),
-    );
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductPrices(admin);
-
-    expect(products).toHaveLength(1);
-    expect(products[0].id).toBe("gid://shopify/Product/2");
-  });
-
-  it("handles empty result", async () => {
-    const graphql = vi
-      .fn()
-      .mockResolvedValue(makeProductPricesResponse([], { hasNextPage: false, endCursor: null }));
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductPrices(admin);
-
-    expect(products).toEqual([]);
-  });
-
-  it("throws on API errors", async () => {
-    const graphql = vi.fn().mockResolvedValue(makeErrorResponse("Access denied"));
-    const admin = makeAdmin(graphql);
-
-    await expect(fetchProductPrices(admin)).rejects.toThrow("Failed to fetch product prices");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// fetchProductMetafields
-// ---------------------------------------------------------------------------
-
-function makeProductMetafieldsResponse(
-  nodes: Array<{
-    id: string;
-    title: string;
-    metafields: {
-      nodes: Array<{
-        namespace: string;
-        key: string;
-        value: string;
-        type: string;
-      }>;
-    };
-  }>,
-  pageInfo: { hasNextPage: boolean; endCursor: string | null } = {
-    hasNextPage: false,
-    endCursor: null,
-  },
-) {
-  return {
-    json: vi.fn().mockResolvedValue({
-      data: {
-        products: { nodes, pageInfo },
-      },
-      extensions: {
-        cost: {
-          throttleStatus: {
-            maximumAvailable: 2000,
-            currentlyAvailable: 1800,
-            restoreRate: 100,
-          },
-        },
-      },
-    }),
-  };
-}
-
-describe("fetchProductMetafields", () => {
-  it("paginates across multiple pages", async () => {
-    const graphql = vi
-      .fn()
-      .mockResolvedValueOnce(
-        makeProductMetafieldsResponse(
-          [
-            {
-              id: "gid://shopify/Product/1",
-              title: "P1",
-              metafields: {
-                nodes: [
-                  {
-                    namespace: "judgeme",
-                    key: "review_count",
-                    value: "42",
-                    type: "number_integer",
-                  },
-                ],
-              },
-            },
-          ],
-          { hasNextPage: true, endCursor: "cursor1" },
-        ),
-      )
-      .mockResolvedValueOnce(
-        makeProductMetafieldsResponse(
-          [
-            {
-              id: "gid://shopify/Product/2",
-              title: "P2",
-              metafields: {
-                nodes: [
-                  { namespace: "yotpo", key: "rating", value: "4.5", type: "number_decimal" },
-                ],
-              },
-            },
-          ],
-          { hasNextPage: false, endCursor: null },
-        ),
-      );
-    const admin = makeAdmin(graphql);
-
-    const products = await fetchProductMetafields(admin);
-
-    expect(products).toHaveLength(2);
-    expect(products[0].id).toBe("gid://shopify/Product/1");
-    expect(products[1].id).toBe("gid://shopify/Product/2");
-    expect(graphql).toHaveBeenCalledTimes(2);
-  });
-
-  it("handles empty result", async () => {
+  it("keeps every product in `tags` (no filter), matching the legacy tag fetcher", async () => {
     const graphql = vi
       .fn()
       .mockResolvedValue(
-        makeProductMetafieldsResponse([], { hasNextPage: false, endCursor: null }),
+        makeAuditResponse([fullNode("1", { tags: [] }), fullNode("2", { tags: ["recharge-x"] })]),
       );
-    const admin = makeAdmin(graphql);
 
-    const products = await fetchProductMetafields(admin);
+    const result = await fetchProductAuditData(makeAdmin(graphql));
 
-    expect(products).toEqual([]);
+    expect(result.tags.map((t) => t.id)).toEqual(["1", "2"]);
+    expect(result.tags[0].tags).toEqual([]);
   });
 
-  it("filters out products with no metafields", async () => {
+  it("includes in `prices` only products with a compareAtPrice variant", async () => {
     const graphql = vi.fn().mockResolvedValue(
-      makeProductMetafieldsResponse([
-        {
-          id: "gid://shopify/Product/1",
-          title: "Has Metafields",
-          metafields: {
-            nodes: [
-              { namespace: "judgeme", key: "review_count", value: "42", type: "number_integer" },
-            ],
+      makeAuditResponse([
+        // No compare-at → excluded from prices (but still in tags).
+        fullNode("1", {
+          variants: {
+            nodes: [{ id: "1-v1", title: "Default", price: "10.00", compareAtPrice: null }],
           },
-        },
-        {
-          id: "gid://shopify/Product/2",
-          title: "No Metafields",
-          metafields: { nodes: [] },
-        },
+        }),
+        // Has compare-at → included.
+        fullNode("2"),
       ]),
     );
-    const admin = makeAdmin(graphql);
 
-    const products = await fetchProductMetafields(admin);
+    const result = await fetchProductAuditData(makeAdmin(graphql));
 
-    expect(products).toHaveLength(1);
-    expect(products[0].id).toBe("gid://shopify/Product/1");
+    expect(result.prices.map((p) => p.id)).toEqual(["2"]);
+    // Full variant list carried through, plus merchant-visible metafields as {namespace,key}.
+    expect(result.prices[0].variants).toHaveLength(1);
+    expect(result.prices[0].metafields).toEqual([{ namespace: "judgeme", key: "rating" }]);
+    // The compare-at-less product is still present for the tag detector.
+    expect(result.tags.map((t) => t.id)).toEqual(["1", "2"]);
   });
 
-  it("throws on API errors", async () => {
-    const graphql = vi.fn().mockResolvedValue(makeErrorResponse("Access denied"));
-    const admin = makeAdmin(graphql);
+  it("includes in `metafields` only products with at least one metafield, carrying value+type", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(
+        makeAuditResponse([fullNode("1", { metafields: { nodes: [] } }), fullNode("2")]),
+      );
 
-    await expect(fetchProductMetafields(admin)).rejects.toThrow(
-      "Failed to fetch product metafields",
+    const result = await fetchProductAuditData(makeAdmin(graphql));
+
+    expect(result.metafields.map((m) => m.id)).toEqual(["2"]);
+    expect(result.metafields[0].metafields).toEqual([
+      { namespace: "judgeme", key: "rating", value: "4.5", type: "number_decimal" },
+    ]);
+  });
+
+  it("paginates across pages and advances the cursor", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeAuditResponse([fullNode("1")], { hasNextPage: true, endCursor: "c1" }),
+      )
+      .mockResolvedValueOnce(
+        makeAuditResponse([fullNode("2")], { hasNextPage: false, endCursor: null }),
+      );
+
+    const result = await fetchProductAuditData(makeAdmin(graphql));
+
+    expect(result.tags.map((t) => t.id)).toEqual(["1", "2"]);
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(graphql.mock.calls[1][1].variables.after).toBe("c1");
+    expect(result.pageCount).toBe(2);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("reports truncated=true and does not over-fetch when the cap is hit mid-catalog", async () => {
+    // One page of 2 products, cap 2, and MORE available (hasNextPage true).
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeAuditResponse([fullNode("1"), fullNode("2")], { hasNextPage: true, endCursor: "c1" }),
+      );
+
+    const result = await fetchProductAuditData(makeAdmin(graphql), 2);
+
+    expect(result.tags).toHaveLength(2);
+    expect(result.truncated).toBe(true);
+    expect(result.pageCount).toBe(1);
+    // Cap reached → no second page fetched despite hasNextPage.
+    expect(graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("does NOT mark truncated when the catalog exactly fills the cap with no next page", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        makeAuditResponse([fullNode("1"), fullNode("2")], { hasNextPage: false, endCursor: null }),
+      );
+
+    const result = await fetchProductAuditData(makeAdmin(graphql), 2);
+
+    expect(result.tags).toHaveLength(2);
+    expect(result.truncated).toBe(false);
+  });
+
+  it("returns empty arrays (not truncated) for an empty catalog", async () => {
+    const graphql = vi.fn().mockResolvedValue(makeAuditResponse([]));
+
+    const result = await fetchProductAuditData(makeAdmin(graphql));
+
+    expect(result).toMatchObject({ tags: [], prices: [], metafields: [], truncated: false });
+  });
+
+  it("throws (does not swallow) on a non-throttled API error so the step retries/fails", async () => {
+    const graphql = vi.fn().mockResolvedValue(makeErrorResponse("Access denied"));
+    await expect(fetchProductAuditData(makeAdmin(graphql))).rejects.toThrow(
+      "Failed to fetch product audit data",
     );
+  });
+
+  describe("throttle-sleep accounting", () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it("accumulates throttleSleepMs when a page reports low rate-limit headroom", async () => {
+      // Page 1 reports low headroom (< 100 pts) → proactive backoff sleeps before
+      // page 2. Page 2 has ample headroom and ends the walk.
+      const graphql = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeAuditResponse(
+            [fullNode("1")],
+            { hasNextPage: true, endCursor: "c1" },
+            {
+              currentlyAvailable: 0,
+              restoreRate: 100,
+            },
+          ),
+        )
+        .mockResolvedValueOnce(
+          makeAuditResponse([fullNode("2")], { hasNextPage: false, endCursor: null }),
+        );
+
+      const promise = fetchProductAuditData(makeAdmin(graphql));
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(result.tags).toHaveLength(2);
+      // 100 pts needed / 100 per sec ≈ 1000ms of backoff was measured.
+      expect(result.throttleSleepMs).toBeGreaterThan(0);
+    });
+
+    it("records zero throttle sleep on a single page with ample headroom", async () => {
+      const graphql = vi.fn().mockResolvedValue(makeAuditResponse([fullNode("1")]));
+      const promise = fetchProductAuditData(makeAdmin(graphql));
+      await vi.runAllTimersAsync();
+      const result = await promise;
+      expect(result.throttleSleepMs).toBe(0);
+    });
   });
 });

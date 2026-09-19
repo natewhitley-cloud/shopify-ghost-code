@@ -114,9 +114,8 @@ vi.mock("../../app/services/translation-fetcher.server", () => ({
 
 vi.mock("../../app/services/product-fetcher.server", () => ({
   hasProductScope: vi.fn(),
-  fetchProductTags: vi.fn(),
-  fetchProductPrices: vi.fn(),
-  fetchProductMetafields: vi.fn(),
+  // gc-1bd: three product walks consolidated into one fetch.
+  fetchProductAuditData: vi.fn(),
 }));
 
 vi.mock("../../app/services/content-fetcher.server", () => ({

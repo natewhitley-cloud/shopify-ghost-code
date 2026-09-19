@@ -41,6 +41,7 @@
 import { FindingType, ScanStatus } from "@prisma/client";
 
 import { logger } from "../../app/lib/logger.server";
+import { PRODUCT_AUDIT_CAP } from "../../app/lib/scan-limits";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { saveThemeFindings } from "../../app/models/finding.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
@@ -71,7 +72,34 @@ import { inngest } from "../client";
  * categories (LOG-4) and a future "enable more checks" nudge. An
  * audit that ran but found nothing (or had no data to check) is NOT skipped.
  */
-type AuditStepResult = { findingCount: number; skipped: boolean };
+type AuditStepResult = {
+  findingCount: number;
+  skipped: boolean;
+  /**
+   * True when the audit's paginated walk hit its cap and left records
+   * un-scanned (gc-1bd). Distinct from `skipped` (which also covers scope
+   * absence): `truncated` drives the `truncatedWalks` telemetry, while both
+   * feed `skippedCategories` so the differ never false-resolves un-scanned
+   * records. Absent for audits with no bounded walk.
+   */
+  truncated?: boolean;
+  /** GraphQL page requests the walk made (walk observability, gc-1bd). */
+  pageCount?: number;
+  /** Accumulated proactive rate-limit backoff for this walk, ms (gc-1bd). */
+  throttleSleepMs?: number;
+};
+
+/**
+ * What an audit's `fetchAndDetect` returns. `truncated`/`pageCount`/
+ * `throttleSleepMs` are optional walk observability (gc-1bd) — an audit whose
+ * fetch has no bounded pagination simply returns `{ findings }`.
+ */
+type AuditFetchResult = {
+  findings: CreateFindingInput[];
+  truncated?: boolean;
+  pageCount?: number;
+  throttleSleepMs?: number;
+};
 
 /**
  * Persist a batch of audit findings with the delete-then-create idempotency
@@ -147,7 +175,7 @@ async function runAuditStep(opts: {
   stepName: string;
   findingType: FindingType;
   checkScope: (admin: AdminApiContext) => Promise<boolean>;
-  fetchAndDetect: (admin: AdminApiContext) => Promise<CreateFindingInput[]>;
+  fetchAndDetect: (admin: AdminApiContext) => Promise<AuditFetchResult>;
 }): Promise<AuditStepResult> {
   const db = (await import("../../app/db.server")).default;
   const shop = await db.shop.findUnique({ where: { id: opts.shopId } });
@@ -168,7 +196,7 @@ async function runAuditStep(opts: {
     return { findingCount: 0, skipped: true };
   }
 
-  const findings = await opts.fetchAndDetect(admin);
+  const { findings, truncated, pageCount, throttleSleepMs } = await opts.fetchAndDetect(admin);
 
   await persistAuditFindings({
     scanId: opts.scanId,
@@ -179,7 +207,16 @@ async function runAuditStep(opts: {
     logMessage: "audit step findings persisted",
   });
 
-  return { findingCount: findings.length, skipped: false };
+  // A truncated walk left records un-scanned: report the category skipped so the
+  // differ excludes its prior findings from "resolved" (gc-1bd), same coverage-
+  // gap mechanism scope-skips and the live-price lookup-budget truncation use.
+  return {
+    findingCount: findings.length,
+    skipped: truncated ?? false,
+    truncated: truncated ?? false,
+    pageCount,
+    throttleSleepMs,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -241,6 +278,8 @@ export const scanTheme = inngest.createFunction(
         staticProductCandidates,
         danglingOccurrences,
         danglingDistinctHandles,
+        themeFetchMs,
+        themeScanMs,
       } = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -250,7 +289,11 @@ export const scanTheme = inngest.createFunction(
 
         const { unauthenticated } = await import("../../app/shopify.server");
         const { admin } = await unauthenticated.admin(shop.domain);
+        // Per-phase timing (gc-1bd): wall-clock the fetch and the scan separately
+        // so the scan_signal can attribute duration to network vs CPU.
+        const themeFetchStart = Date.now();
         const files = await fetchThemeFiles(admin, themeId, shop.domain);
+        const themeFetchMs = Date.now() - themeFetchStart;
         const { logger } = await import("../../app/lib/logger.server");
         logger.info("theme files fetched", {
           function: "scan-theme",
@@ -259,6 +302,7 @@ export const scanTheme = inngest.createFunction(
           fileCount: files.length,
         });
 
+        const themeScanStart = Date.now();
         const {
           findings,
           unknownScripts,
@@ -267,6 +311,7 @@ export const scanTheme = inngest.createFunction(
           benignLibrarySkips,
           thirdPartyDomains,
         } = await scanThemeFilesInPool(files);
+        const themeScanMs = Date.now() - themeScanStart;
 
         // Checkout-extensibility sunset audit (gc-b3c): PURE, static, no Admin
         // API — it reads only the theme files already in scope here, so it runs
@@ -369,6 +414,9 @@ export const scanTheme = inngest.createFunction(
           // safely — no raw file content is carried.
           danglingOccurrences: dangling.occurrences,
           danglingDistinctHandles: dangling.distinctHandles,
+          // Per-phase timing (gc-1bd) — tiny scalars, safe across the boundary.
+          themeFetchMs,
+          themeScanMs,
         };
       });
 
@@ -435,47 +483,173 @@ export const scanTheme = inngest.createFunction(
 
       // Steps 4–8: Optional API-based audit steps (use runAuditStep helper)
 
-      const tagResult = await step.run("product-tag-audit", () =>
-        runAuditStep({
+      // CONSOLIDATED product audit (gc-1bd). The tag, price, and metafield audits
+      // used to be three separate steps that each exchanged a token, probed
+      // read_products, and paginated the SAME `products` connection — three full
+      // catalog walks by construction, the dominant cost of a scoped scan. This
+      // ONE step does a single walk (fetchProductAuditData) and fans it out to
+      // the three detectors. It emits GHOST_TAG, GHOST_PRICE, and GHOST_METAFIELD,
+      // each persisted with its own delete-then-create idempotency guard so a
+      // re-scan never duplicates or orphans findings (per-type, never clobbering
+      // another producer). Failure isolation: a SHARED fetch failure legitimately
+      // makes all three unavailable (they share the data source) and propagates so
+      // Inngest retries; but a single DETECTOR throwing is caught and recorded as a
+      // coverage gap for just that category, leaving the other two intact.
+      const productsStart = Date.now();
+      const productResult = await step.run("product-audit", async () => {
+        const db = (await import("../../app/db.server")).default;
+        const shop = await db.shop.findUnique({ where: { id: shopId } });
+        // No shop record: no-op, not a scope skip (mirrors runAuditStep).
+        if (!shop) {
+          return {
+            tagCount: 0,
+            priceCount: 0,
+            metafieldCount: 0,
+            scopeAbsent: false,
+            truncated: false,
+            tagGap: false,
+            priceGap: false,
+            metafieldGap: false,
+            pageCount: 0,
+            throttleSleepMs: 0,
+          };
+        }
+
+        const { unauthenticated } = await import("../../app/shopify.server");
+        const { admin } = await unauthenticated.admin(shop.domain);
+        const { hasProductScope, fetchProductAuditData } =
+          await import("../../app/services/product-fetcher.server");
+        const { logger } = await import("../../app/lib/logger.server");
+
+        const hasScope = await hasProductScope(admin);
+        if (!hasScope) {
+          logger.info("read_products scope not available — skipping product audits", {
+            function: "scan-theme",
+            stepName: "product-audit",
+            shopId,
+          });
+          // Scope not granted → all THREE product categories un-audited.
+          return {
+            tagCount: 0,
+            priceCount: 0,
+            metafieldCount: 0,
+            scopeAbsent: true,
+            truncated: false,
+            tagGap: false,
+            priceGap: false,
+            metafieldGap: false,
+            pageCount: 0,
+            throttleSleepMs: 0,
+          };
+        }
+
+        // ONE catalog walk feeds all three detectors.
+        const { tags, prices, metafields, truncated, pageCount, throttleSleepMs } =
+          await fetchProductAuditData(admin);
+
+        if (truncated) {
+          // Observable cap (gc-1bd): never silently drop the tail of the catalog.
+          logger.warn("product-audit walk hit the cap; products beyond it were not scanned", {
+            function: "scan-theme",
+            stepName: "product-audit",
+            shopId,
+            cap: PRODUCT_AUDIT_CAP,
+            pageCount,
+          });
+        }
+
+        const { detectOrphanedProductTags } =
+          await import("../../app/services/product-tag-detector.server");
+        const { detectPersistentDiscounts } =
+          await import("../../app/services/price-detector.server");
+        const { detectOrphanedMetafields } =
+          await import("../../app/services/metafield-detector.server");
+
+        // Per-detector isolation: a throw in one detector must not sink the other
+        // two. A throw records that category as a coverage gap (like truncation),
+        // so the differ never false-resolves its prior findings from a run we
+        // could not fully verify.
+        const runDetector = (
+          fn: () => CreateFindingInput[],
+          label: string,
+        ): { findings: CreateFindingInput[]; gap: boolean } => {
+          try {
+            return { findings: fn(), gap: false };
+          } catch (err) {
+            logger.warn("product detector threw — recording category as a coverage gap", {
+              function: "scan-theme",
+              stepName: "product-audit",
+              shopId,
+              detector: label,
+              error: err instanceof Error ? err.message : String(err),
+            });
+            return { findings: [], gap: true };
+          }
+        };
+
+        const tagOut = runDetector(() => detectOrphanedProductTags(tags), "GHOST_TAG");
+        const priceOut = runDetector(() => detectPersistentDiscounts(prices), "GHOST_PRICE");
+        const metafieldOut = runDetector(
+          () => detectOrphanedMetafields(metafields),
+          "GHOST_METAFIELD",
+        );
+
+        // Persist ALL THREE FindingTypes (invariant a). Each delete-then-create is
+        // scoped to its own type, so the three never clobber each other and a
+        // retry stays idempotent. persistAuditFindings no-ops on an empty batch,
+        // exactly as the three legacy steps did.
+        await persistAuditFindings({
           scanId,
           shopId,
-          stepName: "product-tag-audit",
           findingType: FindingType.GHOST_TAG,
-          checkScope: async (admin) => {
-            const { hasProductScope } = await import("../../app/services/product-fetcher.server");
-            return hasProductScope(admin);
-          },
-          fetchAndDetect: async (admin) => {
-            const { fetchProductTags } = await import("../../app/services/product-fetcher.server");
-            const products = await fetchProductTags(admin);
-            const { detectOrphanedProductTags } =
-              await import("../../app/services/product-tag-detector.server");
-            return detectOrphanedProductTags(products);
-          },
-        }),
-      );
-
-      const priceResult = await step.run("price-audit", () =>
-        runAuditStep({
+          findings: tagOut.findings,
+          event: "product_tag_findings",
+          logMessage: "product tag findings persisted",
+        });
+        await persistAuditFindings({
           scanId,
           shopId,
-          stepName: "price-audit",
           findingType: FindingType.GHOST_PRICE,
-          checkScope: async (admin) => {
-            const { hasProductScope } = await import("../../app/services/product-fetcher.server");
-            return hasProductScope(admin);
-          },
-          fetchAndDetect: async (admin) => {
-            const { fetchProductPrices } =
-              await import("../../app/services/product-fetcher.server");
-            const products = await fetchProductPrices(admin);
-            const { detectPersistentDiscounts } =
-              await import("../../app/services/price-detector.server");
-            return detectPersistentDiscounts(products);
-          },
-        }),
-      );
+          findings: priceOut.findings,
+          event: "product_price_findings",
+          logMessage: "product price findings persisted",
+        });
+        await persistAuditFindings({
+          scanId,
+          shopId,
+          findingType: FindingType.GHOST_METAFIELD,
+          findings: metafieldOut.findings,
+          event: "product_metafield_findings",
+          logMessage: "product metafield findings persisted",
+        });
 
+        return {
+          tagCount: tagOut.findings.length,
+          priceCount: priceOut.findings.length,
+          metafieldCount: metafieldOut.findings.length,
+          scopeAbsent: false,
+          truncated,
+          tagGap: tagOut.gap,
+          priceGap: priceOut.gap,
+          metafieldGap: metafieldOut.gap,
+          pageCount,
+          throttleSleepMs,
+        };
+      });
+      const productsMs = Date.now() - productsStart;
+
+      // Per-category skip (gc-1bd): a product category is un-audited (excluded
+      // from the differ's resolved-detection) when the scope was absent, OR the
+      // walk truncated (records beyond the cap unseen), OR that specific detector
+      // threw. Scope-absence and truncation apply to all three uniformly.
+      const tagSkipped =
+        productResult.scopeAbsent || productResult.truncated || productResult.tagGap;
+      const priceSkipped =
+        productResult.scopeAbsent || productResult.truncated || productResult.priceGap;
+      const metafieldSkipped =
+        productResult.scopeAbsent || productResult.truncated || productResult.metafieldGap;
+
+      const pagesStart = Date.now();
       const pageResult = await step.run("page-audit", () =>
         runAuditStep({
           scanId,
@@ -490,32 +664,13 @@ export const scanTheme = inngest.createFunction(
             const { fetchPages } = await import("../../app/services/content-fetcher.server");
             const pages = await fetchPages(admin);
             const { detectOrphanedPages } = await import("../../app/services/page-detector.server");
-            return detectOrphanedPages(pages);
+            return { findings: detectOrphanedPages(pages) };
           },
         }),
       );
+      const pagesMs = Date.now() - pagesStart;
 
-      const metafieldResult = await step.run("metafield-audit", () =>
-        runAuditStep({
-          scanId,
-          shopId,
-          stepName: "metafield-audit",
-          findingType: FindingType.GHOST_METAFIELD,
-          checkScope: async (admin) => {
-            const { hasProductScope } = await import("../../app/services/product-fetcher.server");
-            return hasProductScope(admin);
-          },
-          fetchAndDetect: async (admin) => {
-            const { fetchProductMetafields } =
-              await import("../../app/services/product-fetcher.server");
-            const products = await fetchProductMetafields(admin);
-            const { detectOrphanedMetafields } =
-              await import("../../app/services/metafield-detector.server");
-            return detectOrphanedMetafields(products);
-          },
-        }),
-      );
-
+      const redirectsStart = Date.now();
       const redirectResult = await step.run("redirect-audit", () =>
         runAuditStep({
           scanId,
@@ -528,14 +683,25 @@ export const scanTheme = inngest.createFunction(
             return hasNavigationScope(admin);
           },
           fetchAndDetect: async (admin) => {
+            const { REDIRECT_CAP } = await import("../../app/lib/scan-limits");
             const { fetchRedirects } = await import("../../app/services/redirect-fetcher.server");
-            const redirects = await fetchRedirects(admin);
+            // Thread a stats out-param so a cap-truncated redirect walk becomes a
+            // coverage gap (gc-1bd) instead of silently letting the differ resolve
+            // redirects beyond the cap.
+            const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+            const redirects = await fetchRedirects(admin, REDIRECT_CAP, stats);
             const { detectOrphanedRedirects } =
               await import("../../app/services/redirect-detector.server");
-            return detectOrphanedRedirects(redirects);
+            return {
+              findings: detectOrphanedRedirects(redirects),
+              truncated: stats.truncated,
+              pageCount: stats.pageCount,
+              throttleSleepMs: stats.throttleSleepMs,
+            };
           },
         }),
       );
+      const redirectsMs = Date.now() - redirectsStart;
 
       // Step 9: Live-price audit for stale static JSON-LD (optional — requires
       // read_products scope AND the JSONLD_LIVE_PRICE_ENABLED flag). Modeled on
@@ -701,10 +867,10 @@ export const scanTheme = inngest.createFunction(
       const totalFindings =
         findingCount +
         translationResult.findingCount +
-        tagResult.findingCount +
-        priceResult.findingCount +
+        productResult.tagCount +
+        productResult.priceCount +
         pageResult.findingCount +
-        metafieldResult.findingCount +
+        productResult.metafieldCount +
         redirectResult.findingCount +
         jsonLdPriceResult.findingCount +
         danglingRefResult.findingCount;
@@ -722,16 +888,23 @@ export const scanTheme = inngest.createFunction(
       // resolved-detection (LOG-4) without touching the worker's rows.
       const skippedCategories: string[] = [
         [translationResult.skipped, FindingType.GHOST_TRANSLATION],
-        [tagResult.skipped, FindingType.GHOST_TAG],
-        [priceResult.skipped, FindingType.GHOST_PRICE],
+        [tagSkipped, FindingType.GHOST_TAG],
+        [priceSkipped, FindingType.GHOST_PRICE],
         [pageResult.skipped, FindingType.GHOST_PAGE],
-        [metafieldResult.skipped, FindingType.GHOST_METAFIELD],
+        [metafieldSkipped, FindingType.GHOST_METAFIELD],
         [redirectResult.skipped, FindingType.GHOST_REDIRECT],
         [jsonLdPriceResult.skipped, FindingType.JSON_LD_PRICE_CONFLICT],
         [danglingRefResult.skipped, FindingType.DANGLING_REFERENCE],
       ]
         .filter(([skipped]) => skipped)
         .map(([, category]) => category as string);
+
+      // Walks that hit their cap this scan (gc-1bd). Surfaced in scan_signal for
+      // observability; the corresponding categories are already in
+      // skippedCategories (above) so the differ excludes their prior findings.
+      const truncatedWalks: string[] = [];
+      if (productResult.truncated) truncatedWalks.push("products");
+      if (redirectResult.truncated) truncatedWalks.push("redirects");
 
       // Zero-file sanity guard (LOG-5): a theme fetch that returns ZERO files is
       // suspicious for any real theme. If the most recent prior successful scan
@@ -878,6 +1051,26 @@ export const scanTheme = inngest.createFunction(
               detectorHits,
               findingCount: totalFindings,
               durationMs,
+              // Per-phase observability (gc-1bd). Additive JSON only — existing
+              // scan_signal consumers keep working. `phaseMs` attributes wall-clock
+              // to each major step; `pageCounts`/`throttleSleepMs` expose the
+              // consolidated product walk + redirect walk cost; `truncatedWalks`
+              // names any walk that hit its cap (a coverage gap, also reflected in
+              // skippedCategories so the differ never false-resolves un-scanned rows).
+              phaseMs: {
+                themeFetch: themeFetchMs,
+                themeScan: themeScanMs,
+                products: productsMs,
+                pages: pagesMs,
+                redirects: redirectsMs,
+              },
+              pageCounts: {
+                products: productResult.pageCount,
+                redirects: redirectResult.pageCount ?? 0,
+              },
+              throttleSleepMs:
+                productResult.throttleSleepMs + (redirectResult.throttleSleepMs ?? 0),
+              truncatedWalks,
             },
           });
         } catch (err) {
@@ -901,10 +1094,10 @@ export const scanTheme = inngest.createFunction(
         skippedCategories,
         skippedFiles: skippedFilePaths,
         translationFindings: translationResult.findingCount,
-        tagFindings: tagResult.findingCount,
-        priceFindings: priceResult.findingCount,
+        tagFindings: productResult.tagCount,
+        priceFindings: productResult.priceCount,
         pageFindings: pageResult.findingCount,
-        metafieldFindings: metafieldResult.findingCount,
+        metafieldFindings: productResult.metafieldCount,
         redirectFindings: redirectResult.findingCount,
         jsonLdPriceFindings: jsonLdPriceResult.findingCount,
         danglingRefFindings: danglingRefResult.findingCount,

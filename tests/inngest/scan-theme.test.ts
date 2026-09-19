@@ -104,9 +104,8 @@ vi.mock("../../app/services/translation-detector.server", () => ({
 
 vi.mock("../../app/services/product-fetcher.server", () => ({
   hasProductScope: vi.fn(),
-  fetchProductTags: vi.fn(),
-  fetchProductPrices: vi.fn(),
-  fetchProductMetafields: vi.fn(),
+  // gc-1bd: the three product walks are now ONE consolidated fetch.
+  fetchProductAuditData: vi.fn(),
 }));
 
 vi.mock("../../app/services/product-tag-detector.server", () => ({
@@ -178,12 +177,7 @@ import { auditStaticJsonLdPrices } from "../../app/services/jsonld-price-audit.s
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
 import { detectOrphanedPages } from "../../app/services/page-detector.server";
 import { detectPersistentDiscounts } from "../../app/services/price-detector.server";
-import {
-  hasProductScope,
-  fetchProductTags,
-  fetchProductPrices,
-  fetchProductMetafields,
-} from "../../app/services/product-fetcher.server";
+import { hasProductScope, fetchProductAuditData } from "../../app/services/product-fetcher.server";
 import { detectOrphanedProductTags } from "../../app/services/product-tag-detector.server";
 import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
 import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
@@ -232,9 +226,7 @@ const mockHasNavigationScope = hasNavigationScope as ReturnType<typeof vi.fn>;
 
 // Audit fetchers
 const mockAuditTranslations = auditTranslations as ReturnType<typeof vi.fn>;
-const mockFetchProductTags = fetchProductTags as ReturnType<typeof vi.fn>;
-const mockFetchProductPrices = fetchProductPrices as ReturnType<typeof vi.fn>;
-const mockFetchProductMetafields = fetchProductMetafields as ReturnType<typeof vi.fn>;
+const mockFetchProductAuditData = fetchProductAuditData as ReturnType<typeof vi.fn>;
 const mockFetchPages = fetchPages as ReturnType<typeof vi.fn>;
 const mockFetchRedirects = fetchRedirects as ReturnType<typeof vi.fn>;
 
@@ -376,9 +368,7 @@ beforeEach(() => {
   });
   mockDetectTranslationContent.mockReturnValue([]);
 
-  mockFetchProductTags.mockResolvedValue([]);
-  mockFetchProductPrices.mockResolvedValue([]);
-  mockFetchProductMetafields.mockResolvedValue([]);
+  mockFetchProductAuditData.mockResolvedValue(makeProductAuditData());
   mockFetchPages.mockResolvedValue([]);
   mockFetchRedirects.mockResolvedValue([]);
 
@@ -419,6 +409,20 @@ function makeAuditFinding(findingType: FindingType, overrides?: Record<string, u
     findingType,
     severity: Severity.MEDIUM,
     description: `Orphaned ${findingType}`,
+    ...overrides,
+  };
+}
+
+// gc-1bd: the consolidated product-audit fetch returns detector-shaped arrays
+// plus walk observability. Defaults are an empty, untruncated walk.
+function makeProductAuditData(overrides?: Record<string, unknown>) {
+  return {
+    tags: [],
+    prices: [],
+    metafields: [],
+    truncated: false,
+    pageCount: 0,
+    throttleSleepMs: 0,
     ...overrides,
   };
 }
@@ -687,7 +691,9 @@ describe("scanTheme — optional audit steps", () => {
   describe("persistence — finds and stores findings", () => {
     it("deletes prior findings, creates new ones, and recounts the total", async () => {
       const tagFinding = makeAuditFinding(FindingType.GHOST_TAG);
-      mockFetchProductTags.mockResolvedValue([{ id: "gid://shopify/Product/1" }]);
+      mockFetchProductAuditData.mockResolvedValue(
+        makeProductAuditData({ tags: [{ id: "gid://shopify/Product/1" }] }),
+      );
       mockDetectOrphanedProductTags.mockReturnValue([tagFinding]);
       // Recount returns the authoritative total across all finding types.
       mockDb.finding.count.mockResolvedValue(3);
@@ -794,7 +800,9 @@ describe("scanTheme — optional audit steps", () => {
   describe("retry idempotency — running an audit twice does not duplicate", () => {
     it("delete-then-create keeps exactly one copy of the findings after two runs", async () => {
       const tagFinding = makeAuditFinding(FindingType.GHOST_TAG);
-      mockFetchProductTags.mockResolvedValue([{ id: "gid://shopify/Product/1" }]);
+      mockFetchProductAuditData.mockResolvedValue(
+        makeProductAuditData({ tags: [{ id: "gid://shopify/Product/1" }] }),
+      );
       mockDetectOrphanedProductTags.mockReturnValue([tagFinding]);
 
       // Stateful fake table for GHOST_TAG findings: deleteMany clears it,
@@ -824,18 +832,19 @@ describe("scanTheme — optional audit steps", () => {
   describe("genuine ACCESS_DENIED — scope not granted", () => {
     it("skips the product-backed audits cleanly and finalizes the scan COMPLETED with those categories recorded", async () => {
       // hasProductScope reports the scope is genuinely missing. The three
-      // product-backed audits (tag, price, metafield) all gate on it.
+      // product-backed audits (tag, price, metafield) share the consolidated
+      // walk and all gate on it.
       mockHasProductScope.mockResolvedValue(false);
       // Even though data + detector would yield findings, the audit must skip.
-      mockFetchProductTags.mockResolvedValue([{ id: "gid://shopify/Product/1" }]);
+      mockFetchProductAuditData.mockResolvedValue(
+        makeProductAuditData({ tags: [{ id: "gid://shopify/Product/1" }] }),
+      );
       mockDetectOrphanedProductTags.mockReturnValue([makeAuditFinding(FindingType.GHOST_TAG)]);
 
       const result = await runScanTheme();
 
-      // Skipped before fetching / persisting anything for those audits.
-      expect(mockFetchProductTags).not.toHaveBeenCalled();
-      expect(mockFetchProductPrices).not.toHaveBeenCalled();
-      expect(mockFetchProductMetafields).not.toHaveBeenCalled();
+      // Skipped before the consolidated walk / any persist for those audits.
+      expect(mockFetchProductAuditData).not.toHaveBeenCalled();
       expect(mockCreateFindings).not.toHaveBeenCalled();
       expect(mockDb.finding.deleteMany).not.toHaveBeenCalled();
 
@@ -912,6 +921,164 @@ describe("scanTheme — optional audit steps", () => {
       expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
       expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Consolidated product audit (gc-1bd)
+//
+// The tag/price/metafield audits are ONE step over ONE catalog walk now. These
+// lock in the invariants the consolidation must preserve:
+//   (a) all three FindingTypes are delete-then-created (idempotent per type)
+//   (e) a cap-truncated walk marks ALL THREE categories as coverage gaps
+//   (d) one detector throwing isolates to just its category (others persist)
+// plus the redirect-walk truncation coverage gap.
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — consolidated product audit (gc-1bd)", () => {
+  it("does ONE product walk and persists all three FindingTypes (invariant a)", async () => {
+    const tagFinding = makeAuditFinding(FindingType.GHOST_TAG);
+    const priceFinding = makeAuditFinding(FindingType.GHOST_PRICE);
+    const metafieldFinding = makeAuditFinding(FindingType.GHOST_METAFIELD);
+
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({
+        tags: [{ id: "gid://shopify/Product/1", title: "P1", tags: ["bold-x"] }],
+        prices: [{ id: "gid://shopify/Product/1" }],
+        metafields: [{ id: "gid://shopify/Product/1" }],
+      }),
+    );
+    mockDetectOrphanedProductTags.mockReturnValue([tagFinding]);
+    mockDetectPersistentDiscounts.mockReturnValue([priceFinding]);
+    mockDetectOrphanedMetafields.mockReturnValue([metafieldFinding]);
+
+    await runScanTheme();
+
+    // A SINGLE consolidated fetch drove all three detectors.
+    expect(mockFetchProductAuditData).toHaveBeenCalledTimes(1);
+
+    // Each FindingType is delete-then-created (idempotency scoped per type).
+    for (const findingType of [
+      FindingType.GHOST_TAG,
+      FindingType.GHOST_PRICE,
+      FindingType.GHOST_METAFIELD,
+    ]) {
+      expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+        where: { scanId: SCAN_ID, findingType },
+      });
+    }
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [tagFinding]);
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [priceFinding]);
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [metafieldFinding]);
+  });
+
+  it("marks ALL THREE product categories skipped when the walk truncates (invariant e / Option 4)", async () => {
+    // Cap hit mid-catalog: findings for what WAS scanned still persist, but every
+    // product category is a coverage gap so the differ can't false-resolve the
+    // un-scanned tail. Detectors find nothing here to keep the assertion focused.
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({
+        tags: [{ id: "gid://shopify/Product/1", title: "P1", tags: [] }],
+        truncated: true,
+        pageCount: 10,
+      }),
+    );
+
+    await runScanTheme();
+
+    // Order preserved from the source array: TAG, PRICE, (PAGE not skipped), METAFIELD.
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({
+        skippedCategories: [
+          FindingType.GHOST_TAG,
+          FindingType.GHOST_PRICE,
+          FindingType.GHOST_METAFIELD,
+        ],
+      }),
+    );
+    // And the truncation is surfaced in telemetry.
+    const [signal] = mockRecordOpsEvent.mock.calls[0];
+    expect(signal.metadata.truncatedWalks).toEqual(["products"]);
+  });
+
+  it("isolates a throwing detector to its own category and keeps the others (invariant d)", async () => {
+    const tagFinding = makeAuditFinding(FindingType.GHOST_TAG);
+    const metafieldFinding = makeAuditFinding(FindingType.GHOST_METAFIELD);
+
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({
+        tags: [{ id: "gid://shopify/Product/1", title: "P1", tags: ["bold-x"] }],
+        prices: [{ id: "gid://shopify/Product/1" }],
+        metafields: [{ id: "gid://shopify/Product/1" }],
+      }),
+    );
+    mockDetectOrphanedProductTags.mockReturnValue([tagFinding]);
+    // The price detector throws — it must NOT sink the tag/metafield detectors.
+    mockDetectPersistentDiscounts.mockImplementation(() => {
+      throw new Error("price detector boom");
+    });
+    mockDetectOrphanedMetafields.mockReturnValue([metafieldFinding]);
+
+    const result = await runScanTheme();
+
+    // The other two categories still persist.
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [tagFinding]);
+    expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [metafieldFinding]);
+    // GHOST_PRICE alone is recorded as a coverage gap; the scan still COMPLETES.
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [FindingType.GHOST_PRICE] }),
+    );
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("records GHOST_REDIRECT as a coverage gap when the redirect walk truncates (Option 4)", async () => {
+    // The redirect step threads a stats out-param into fetchRedirects; simulate a
+    // cap-truncated walk by having the mock flip stats.truncated.
+    mockFetchRedirects.mockImplementation(
+      async (
+        _admin: unknown,
+        _cap: unknown,
+        stats?: { truncated: boolean; pageCount: number; throttleSleepMs: number },
+      ) => {
+        if (stats) {
+          stats.truncated = true;
+          stats.pageCount = 3;
+        }
+        return [];
+      },
+    );
+
+    await runScanTheme();
+
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [FindingType.GHOST_REDIRECT] }),
+    );
+    const [signal] = mockRecordOpsEvent.mock.calls[0];
+    expect(signal.metadata.truncatedWalks).toEqual(["redirects"]);
+  });
+
+  it("populates per-phase timing + walk observability in the scan_signal (Option 1)", async () => {
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({ pageCount: 4, throttleSleepMs: 250 }),
+    );
+    mockDb.finding.groupBy.mockResolvedValue([{ findingType: "GHOST_SCRIPT", _count: 2 }]);
+
+    await runScanTheme();
+
+    const [signal] = mockRecordOpsEvent.mock.calls[0];
+    const meta = signal.metadata;
+    // phaseMs carries a numeric entry for each major step (wall-clock in prod;
+    // ~0 under the synchronous test step, but always present + numeric).
+    for (const key of ["themeFetch", "themeScan", "products", "pages", "redirects"]) {
+      expect(typeof meta.phaseMs[key]).toBe("number");
+    }
+    // Consolidated walk cost is surfaced; redirects contributed nothing here.
+    expect(meta.pageCounts).toEqual({ products: 4, redirects: 0 });
+    expect(meta.throttleSleepMs).toBe(250);
+    expect(meta.truncatedWalks).toEqual([]);
   });
 });
 
