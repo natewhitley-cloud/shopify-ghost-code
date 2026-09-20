@@ -77,10 +77,10 @@ type AuditStepResult = {
   skipped: boolean;
   /**
    * True when the audit's paginated walk hit its cap and left records
-   * un-scanned (gc-1bd). Distinct from `skipped` (which also covers scope
-   * absence): `truncated` drives the `truncatedWalks` telemetry, while both
-   * feed `skippedCategories` so the differ never false-resolves un-scanned
-   * records. Absent for audits with no bounded walk.
+   * un-scanned (gc-1bd). Strictly distinct from `skipped`: truncation is
+   * TELEMETRY ONLY (Option C) — it drives the `truncatedWalks` metadata and a
+   * logger.warn, but it does NOT enter `skippedCategories`. Only a genuinely
+   * absent scope marks a category skipped. Absent for audits with no bounded walk.
    */
   truncated?: boolean;
   /** GraphQL page requests the walk made (walk observability, gc-1bd). */
@@ -207,12 +207,16 @@ async function runAuditStep(opts: {
     logMessage: "audit step findings persisted",
   });
 
-  // A truncated walk left records un-scanned: report the category skipped so the
-  // differ excludes its prior findings from "resolved" (gc-1bd), same coverage-
-  // gap mechanism scope-skips and the live-price lookup-budget truncation use.
+  // Scope was present (the scope-absence early return above is the ONLY skip
+  // path), so this category was audited: `skipped` is false. A truncated walk is
+  // TELEMETRY ONLY (gc-1bd, Option C) — it flows to `truncated`/`truncatedWalks`
+  // and the logger.warn, but must NOT enter skippedCategories. Feeding truncation
+  // into the diff's coverage-gap filter drops the prior findings for the scanned
+  // subset while their still-present current findings persist, so an unchanged
+  // finding in a truncated category reported as "new" on every rescan.
   return {
     findingCount: findings.length,
-    skipped: truncated ?? false,
+    skipped: false,
     truncated: truncated ?? false,
     pageCount,
     throttleSleepMs,
@@ -566,9 +570,10 @@ export const scanTheme = inngest.createFunction(
           await import("../../app/services/metafield-detector.server");
 
         // Per-detector isolation: a throw in one detector must not sink the other
-        // two. A throw records that category as a coverage gap (like truncation),
-        // so the differ never false-resolves its prior findings from a run we
-        // could not fully verify.
+        // two. A throw records that category as a coverage gap (a category we
+        // could not verify at all this run — unlike truncation, which still fully
+        // audited the scanned subset), so the differ never false-resolves its
+        // prior findings from a run we could not fully verify.
         const runDetector = (
           fn: () => CreateFindingInput[],
           label: string,
@@ -639,15 +644,16 @@ export const scanTheme = inngest.createFunction(
       const productsMs = Date.now() - productsStart;
 
       // Per-category skip (gc-1bd): a product category is un-audited (excluded
-      // from the differ's resolved-detection) when the scope was absent, OR the
-      // walk truncated (records beyond the cap unseen), OR that specific detector
-      // threw. Scope-absence and truncation apply to all three uniformly.
-      const tagSkipped =
-        productResult.scopeAbsent || productResult.truncated || productResult.tagGap;
-      const priceSkipped =
-        productResult.scopeAbsent || productResult.truncated || productResult.priceGap;
-      const metafieldSkipped =
-        productResult.scopeAbsent || productResult.truncated || productResult.metafieldGap;
+      // from the differ's resolved-detection) when the scope was absent (applies
+      // to all three uniformly), OR that specific detector threw. Truncation is
+      // deliberately NOT here (Option C): a cap-truncated walk still fully audited
+      // the scanned subset, so its findings must diff normally — treating it as a
+      // coverage gap dropped the prior findings for that subset and reported the
+      // still-present current ones as "new" every rescan. Truncation is telemetry
+      // only (see `truncatedWalks` below + the logger.warn in the walk).
+      const tagSkipped = productResult.scopeAbsent || productResult.tagGap;
+      const priceSkipped = productResult.scopeAbsent || productResult.priceGap;
+      const metafieldSkipped = productResult.scopeAbsent || productResult.metafieldGap;
 
       const pagesStart = Date.now();
       const pageResult = await step.run("page-audit", () =>
@@ -685,9 +691,10 @@ export const scanTheme = inngest.createFunction(
           fetchAndDetect: async (admin) => {
             const { REDIRECT_CAP } = await import("../../app/lib/scan-limits");
             const { fetchRedirects } = await import("../../app/services/redirect-fetcher.server");
-            // Thread a stats out-param so a cap-truncated redirect walk becomes a
-            // coverage gap (gc-1bd) instead of silently letting the differ resolve
-            // redirects beyond the cap.
+            // Thread a stats out-param so a cap-truncated redirect walk surfaces in
+            // `truncatedWalks` telemetry (gc-1bd). Telemetry ONLY (Option C): the
+            // truncation does NOT mark GHOST_REDIRECT skipped — runAuditStep audited
+            // the scanned subset, which must diff normally.
             const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
             const redirects = await fetchRedirects(admin, REDIRECT_CAP, stats);
             const { detectOrphanedRedirects } =
@@ -900,8 +907,8 @@ export const scanTheme = inngest.createFunction(
         .map(([, category]) => category as string);
 
       // Walks that hit their cap this scan (gc-1bd). Surfaced in scan_signal for
-      // observability; the corresponding categories are already in
-      // skippedCategories (above) so the differ excludes their prior findings.
+      // observability ONLY (Option C): truncation is deliberately NOT reflected in
+      // skippedCategories, so the differ still diffs the scanned subset normally.
       const truncatedWalks: string[] = [];
       if (productResult.truncated) truncatedWalks.push("products");
       if (redirectResult.truncated) truncatedWalks.push("redirects");
@@ -1055,8 +1062,9 @@ export const scanTheme = inngest.createFunction(
               // scan_signal consumers keep working. `phaseMs` attributes wall-clock
               // to each major step; `pageCounts`/`throttleSleepMs` expose the
               // consolidated product walk + redirect walk cost; `truncatedWalks`
-              // names any walk that hit its cap (a coverage gap, also reflected in
-              // skippedCategories so the differ never false-resolves un-scanned rows).
+              // names any walk that hit its cap. This is observability ONLY (Option
+              // C) — truncation is NOT reflected in skippedCategories, so the differ
+              // still diffs the scanned subset of a truncated category normally.
               phaseMs: {
                 themeFetch: themeFetchMs,
                 themeScan: themeScanMs,

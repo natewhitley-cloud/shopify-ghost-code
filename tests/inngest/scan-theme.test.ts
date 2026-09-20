@@ -160,6 +160,7 @@ vi.mock("../../app/services/dangling-reference-resolver.server", () => ({
 // ---------------------------------------------------------------------------
 
 import db from "../../app/db.server";
+import { logger } from "../../app/lib/logger.server";
 import { TransientScopeCheckError } from "../../app/lib/scope-check.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
@@ -930,9 +931,11 @@ describe("scanTheme — optional audit steps", () => {
 // The tag/price/metafield audits are ONE step over ONE catalog walk now. These
 // lock in the invariants the consolidation must preserve:
 //   (a) all three FindingTypes are delete-then-created (idempotent per type)
-//   (e) a cap-truncated walk marks ALL THREE categories as coverage gaps
+//   (e) a cap-truncated walk is TELEMETRY ONLY (Option C): it surfaces in
+//       truncatedWalks + a logger.warn, but does NOT enter skippedCategories, so
+//       the differ still diffs the scanned subset normally
 //   (d) one detector throwing isolates to just its category (others persist)
-// plus the redirect-walk truncation coverage gap.
+// plus the redirect-walk truncation, which is likewise telemetry-only.
 // ---------------------------------------------------------------------------
 
 describe("scanTheme — consolidated product audit (gc-1bd)", () => {
@@ -972,10 +975,14 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
     expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [metafieldFinding]);
   });
 
-  it("marks ALL THREE product categories skipped when the walk truncates (invariant e / Option 4)", async () => {
-    // Cap hit mid-catalog: findings for what WAS scanned still persist, but every
-    // product category is a coverage gap so the differ can't false-resolve the
-    // un-scanned tail. Detectors find nothing here to keep the assertion focused.
+  it("treats a truncated product walk as telemetry only — NOT a skipped category (Option C, gc-1bd)", async () => {
+    // Cap hit mid-catalog: findings for what WAS scanned still persist AND the
+    // category must NOT be marked skipped. Marking it skipped drops the prior
+    // findings for the scanned subset from the diff baseline while their still-
+    // present current findings persist, reporting an unchanged finding as "new"
+    // on every rescan (the exact regression Option C fixes). Detectors find
+    // nothing here to keep the assertion focused.
+    const warnSpy = vi.spyOn(logger, "warn");
     mockFetchProductAuditData.mockResolvedValue(
       makeProductAuditData({
         tags: [{ id: "gid://shopify/Product/1", title: "P1", tags: [] }],
@@ -986,20 +993,19 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
 
     await runScanTheme();
 
-    // Order preserved from the source array: TAG, PRICE, (PAGE not skipped), METAFIELD.
-    expect(mockFinalizeScan).toHaveBeenCalledWith(
-      SCAN_ID,
-      expect.objectContaining({
-        skippedCategories: [
-          FindingType.GHOST_TAG,
-          FindingType.GHOST_PRICE,
-          FindingType.GHOST_METAFIELD,
-        ],
-      }),
-    );
-    // And the truncation is surfaced in telemetry.
+    // NONE of the three product categories are skipped for truncation alone.
+    const finalizeArg = mockFinalizeScan.mock.calls[0][1];
+    expect(finalizeArg.skippedCategories).not.toContain(FindingType.GHOST_TAG);
+    expect(finalizeArg.skippedCategories).not.toContain(FindingType.GHOST_PRICE);
+    expect(finalizeArg.skippedCategories).not.toContain(FindingType.GHOST_METAFIELD);
+    // The truncation IS surfaced in telemetry.
     const [signal] = mockRecordOpsEvent.mock.calls[0];
     expect(signal.metadata.truncatedWalks).toEqual(["products"]);
+    // ...and the observable-cap warning fired so the tail is never silently dropped.
+    expect(
+      warnSpy.mock.calls.some(([msg]) => String(msg).includes("product-audit walk hit the cap")),
+    ).toBe(true);
+    warnSpy.mockRestore();
   });
 
   it("isolates a throwing detector to its own category and keeps the others (invariant d)", async () => {
@@ -1033,9 +1039,10 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
     expect(result.status).toBe("COMPLETED");
   });
 
-  it("records GHOST_REDIRECT as a coverage gap when the redirect walk truncates (Option 4)", async () => {
+  it("treats a truncated redirect walk as telemetry only — NOT a skipped category (Option C, gc-1bd)", async () => {
     // The redirect step threads a stats out-param into fetchRedirects; simulate a
-    // cap-truncated walk by having the mock flip stats.truncated.
+    // cap-truncated walk by having the mock flip stats.truncated. Under Option C
+    // the scanned subset was still audited, so GHOST_REDIRECT must NOT be skipped.
     mockFetchRedirects.mockImplementation(
       async (
         _admin: unknown,
@@ -1052,10 +1059,9 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
 
     await runScanTheme();
 
-    expect(mockFinalizeScan).toHaveBeenCalledWith(
-      SCAN_ID,
-      expect.objectContaining({ skippedCategories: [FindingType.GHOST_REDIRECT] }),
-    );
+    const finalizeArg = mockFinalizeScan.mock.calls[0][1];
+    expect(finalizeArg.skippedCategories).not.toContain(FindingType.GHOST_REDIRECT);
+    // Truncation is surfaced in telemetry only.
     const [signal] = mockRecordOpsEvent.mock.calls[0];
     expect(signal.metadata.truncatedWalks).toEqual(["redirects"]);
   });
@@ -1745,5 +1751,62 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
     expect(finalizeArg.skippedCategories).toContain("GHOST_TAG");
     expect(finalizeArg.resolvedFindingCount).toBe(0);
     expect(finalizeArg.newFindingCount).toBe(0);
+  });
+
+  it("does NOT re-report an unchanged finding as new when its walk truncated (Option C regression, gc-1bd)", async () => {
+    // REGRESSION (gc-1bd): the branch's observable-cap marked a truncated product
+    // walk as a skippedCategory. The differ filters PREVIOUS findings by
+    // skippedCategories but not CURRENT, so a store whose catalog truncates on
+    // every scan had its prior GHOST_TAG dropped from the baseline while the
+    // still-present current GHOST_TAG persisted — reported "new" forever. Under
+    // Option C truncation is telemetry only, so the scanned subset diffs normally
+    // and an unchanged finding is correctly "persisted", not "new".
+    //
+    // Fails on pre-fix code: GHOST_TAG lands in skippedCategories, so the prior
+    // finding is filtered out, newFindingCount is 1, persistedFindingCount is 0.
+    const tagFinding = {
+      filename: "n/a",
+      findingType: "GHOST_TAG",
+      codeSnippet: "orphaned-tag",
+      lineNumber: 0,
+      severity: "MEDIUM",
+      appName: null,
+      description: "Orphaned GHOST_TAG",
+    };
+    // Scope present so the walk actually runs and truncates (telemetry path).
+    mockHasProductScope.mockResolvedValue(true);
+    mockFetchProductAuditData.mockResolvedValue(
+      makeProductAuditData({
+        tags: [{ id: "gid://shopify/Product/1" }],
+        truncated: true,
+        pageCount: 9,
+      }),
+    );
+    // Current persisted findings (what the differ reads) + prior scan both hold
+    // the SAME GHOST_TAG → it is unchanged, not new and not resolved.
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+    mockDb.finding.findMany.mockResolvedValue([tagFinding]);
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+    });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prior",
+      findingCount: 1,
+      findings: [tagFinding],
+    });
+
+    await runScanTheme();
+
+    const finalizeArg = mockFinalizeScan.mock.calls[0][1];
+    // The category is NOT skipped for truncation...
+    expect(finalizeArg.skippedCategories).not.toContain("GHOST_TAG");
+    // ...so the unchanged finding diffs as persisted, never "new".
+    expect(finalizeArg.newFindingCount).toBe(0);
+    expect(finalizeArg.resolvedFindingCount).toBe(0);
+    expect(finalizeArg.persistedFindingCount).toBe(1);
+    // Non-vacuous: the walk genuinely truncated (telemetry proves it).
+    const [signal] = mockRecordOpsEvent.mock.calls[0];
+    expect(signal.metadata.truncatedWalks).toEqual(["products"]);
   });
 });
