@@ -109,6 +109,20 @@ function severityTone(severity: string): "critical" | "warning" | "info" {
 }
 
 /**
+ * Live progress label for the "Scan In Progress" state (gc-rzq). Surfaces the
+ * partial `findingCount` the loader re-reads on each 3s poll, so the merchant
+ * watches the number climb while the scan runs. Wording stays explicitly
+ * in-progress ("so far…") and never reads as a final count. N=0 avoids
+ * "Found 0" (which looks like a completed empty scan) in favour of a reassuring
+ * "still scanning" line.
+ */
+export function scanProgressLabel(findingCount: number): string {
+  if (findingCount <= 0) return "Scanning… no findings yet.";
+  if (findingCount === 1) return "Found 1 finding so far…";
+  return `Found ${findingCount} findings so far…`;
+}
+
+/**
  * The three valid Severity values, in display order. Used to (1) validate the
  * `?severity=` loader param — an unknown value is ignored rather than passed to
  * the DB — and (2) build the Severity filter dropdown. These are fixed and need
@@ -1376,8 +1390,13 @@ export default function ScanDetail() {
               <s-heading>Scan In Progress</s-heading>
               <s-paragraph>
                 Your theme is being scanned. Findings will appear here automatically when the scan
-                completes — no need to refresh.
+                completes, no need to refresh. This usually takes under a minute, but can take
+                several minutes if you&apos;ve enabled Product, Page, or Redirect checks or have a
+                large catalog.
               </s-paragraph>
+              {!pollingTimedOut && (
+                <s-paragraph>{scanProgressLabel(scan.findingCount)}</s-paragraph>
+              )}
             </s-stack>
           </s-card>
         ) : (
