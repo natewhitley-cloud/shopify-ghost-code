@@ -21,9 +21,12 @@
  *     compare-at prices, translations): these are NOT theme code, so guidance
  *     points at the correct Admin surface instead of the code editor.
  *
- * This is a pure, client-safe module (no .server suffix, no dependencies),
- * mirroring app/lib/finding-classification.ts.
+ * This is a pure, client-safe module (no .server suffix, only pure sibling-lib
+ * imports), mirroring app/lib/finding-classification.ts.
  */
+
+import { adminResourceLocatorLabel } from "./admin-resource-url";
+import { isAdminResourceFinding } from "./finding-classification";
 
 interface Remediation {
   /**
@@ -230,4 +233,68 @@ export function getFindingRemediation(findingType: string): string {
  */
 export function getFindingImpact(findingType: string): string | null {
   return REMEDIATION[findingType]?.impact ?? null;
+}
+
+/** The subset of a finding row this helper needs to compose an instruction. */
+export interface RemovalInstructionFinding {
+  findingType: string;
+  filename: string;
+  lineNumber: number;
+  codeSnippet: string;
+}
+
+/**
+ * Composes a precise, self-contained, copy-pasteable removal instruction for
+ * THIS specific finding — assembled at render time from data already on the row
+ * (no new model/data). The generic per-type `howTo` is combined with the
+ * finding's own file, line, and FULL code snippet so a merchant (or an agent
+ * acting for them) can act without cross-referencing anything.
+ *
+ * `typeLabel` is the human FindingType label (the same one the row's type column
+ * shows) — passed in so this module need not duplicate the label map.
+ *
+ * Shape for a theme-file finding:
+ *   Ghost Code finding: <typeLabel>
+ *   File: <filename>  (line <lineNumber>)
+ *   Remove this code:
+ *   <full codeSnippet>
+ *   How: <howTo>
+ *
+ * Graceful degradation:
+ *   - Admin-resource findings (product / page / redirect / metafield /
+ *     translation): the `filename` is a synthetic locator and there is no theme
+ *     snippet to delete, so the line reference and the "Remove this code" block
+ *     are omitted in favour of a plain-language "Location:" line and the `howTo`,
+ *     which already points at the correct Admin surface.
+ *   - Theme-file findings with no meaningful line (cross-file passes report
+ *     lineNumber 0) or an empty snippet omit just those parts.
+ *
+ * This is a pure function — no DOM, no clipboard, no side effects. The caller is
+ * responsible for copying the returned string.
+ */
+export function buildRemovalInstructions(
+  finding: RemovalInstructionFinding,
+  typeLabel: string,
+): string {
+  const lines: string[] = [`Ghost Code finding: ${typeLabel}`];
+  const howTo = getFindingRemediation(finding.findingType);
+
+  if (isAdminResourceFinding(finding.findingType)) {
+    // Admin resources are edited in the Shopify Admin, not deleted as theme code:
+    // show a human location label and lean on howTo (no line/snippet block).
+    lines.push(`Location: ${adminResourceLocatorLabel(finding.findingType, finding.filename)}`);
+  } else {
+    lines.push(
+      finding.lineNumber > 0
+        ? `File: ${finding.filename}  (line ${finding.lineNumber})`
+        : `File: ${finding.filename}`,
+    );
+    const snippet = finding.codeSnippet.trim();
+    if (snippet.length > 0) {
+      lines.push("Remove this code:", snippet);
+    }
+  }
+
+  lines.push(`How: ${howTo}`);
+  return lines.join("\n");
 }

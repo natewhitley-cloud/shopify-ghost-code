@@ -25,7 +25,11 @@ import {
   typesForLane,
 } from "../lib/finding-consequence";
 import type { LaneKey } from "../lib/finding-consequence";
-import { getFindingImpact, getFindingRemediation } from "../lib/finding-remediation";
+import {
+  buildRemovalInstructions,
+  getFindingImpact,
+  getFindingRemediation,
+} from "../lib/finding-remediation";
 import { getRemovalSafety, REMOVAL_SAFETY_LABELS } from "../lib/finding-safety";
 import type { RemovalSafety } from "../lib/finding-safety";
 import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
@@ -300,7 +304,17 @@ function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
  * execCommand fallback) and shows a brief "Copied" confirmation. Each button
  * owns its own confirmation state so rows are independent.
  */
-export function CopyButton({ text }: { text: string }) {
+export function CopyButton({
+  text,
+  label = "Copy",
+  copiedLabel = "Copied",
+  ariaLabel = "Copy code snippet",
+}: {
+  text: string;
+  label?: string;
+  copiedLabel?: string;
+  ariaLabel?: string;
+}) {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -327,7 +341,7 @@ export function CopyButton({ text }: { text: string }) {
     <button
       type="button"
       onClick={handleCopy}
-      aria-label="Copy code snippet"
+      aria-label={ariaLabel}
       style={{
         flexShrink: 0,
         padding: "2px 8px",
@@ -340,7 +354,7 @@ export function CopyButton({ text }: { text: string }) {
         whiteSpace: "nowrap",
       }}
     >
-      {copied ? "Copied" : "Copy"}
+      {copied ? copiedLabel : label}
     </button>
   );
 }
@@ -461,6 +475,21 @@ export function FindingRow({
           >
             <strong style={{ color: TEXT_PRIMARY, fontWeight: 600 }}>How to remove: </strong>
             {getFindingRemediation(finding.findingType)}
+          </div>
+          {/* Copy a precise, self-contained removal instruction for THIS finding
+            (file + line + full snippet + how-to) to the clipboard. Detection-only:
+            this never writes to the theme, it just hands the merchant something
+            exact to act on. */}
+          <div>
+            <CopyButton
+              text={buildRemovalInstructions(
+                finding,
+                FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " "),
+              )}
+              label="Copy removal instructions"
+              copiedLabel="Copied instructions"
+              ariaLabel="Copy removal instructions for this finding"
+            />
           </div>
           {/* Suppression control — only in the paid findings table (scanId set)
             and only when the finding has a stable id to fingerprint from. */}
