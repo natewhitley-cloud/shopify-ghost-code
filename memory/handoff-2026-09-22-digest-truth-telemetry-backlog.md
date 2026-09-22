@@ -56,8 +56,21 @@ All work is on branch **`feat/digest-truth-telemetry-backlog-2026-09-22`** — *
 2. Merge branch → `main`, **`git push main`** (Railway auto-deploy; migration applies via preDeployCommand). ONE push (batch).
 3. Post-deploy: confirm next 7am America/Denver digest shows Total active=10, Professional=0, MRR=$0 + new ACTIVITY section; run `smoke.mjs`.
 
+## Install-count root cause (investigated + partially fixed 2026-09-22)
+DB had 15 `uninstalledAt=null` rows vs Shopify's 10 active. Diagnosis (prod read-only): **the `app/uninstalled` webhook is effectively NOT executing** — only 1 `shop_uninstalled` OpsEvent EVER (vs ~20 dashboard uninstalls since the handler shipped 8-29), all 5 phantoms still have intact Session rows (handler deletes sessions → it never ran), 0 logged app/uninstalled webhook_failures (deliveries not reaching handler). MELTBUY's 9-18 uninstall isn't even in the DB.
+- **Done:** backfilled `uninstalledAt` on the 5 phantoms (`scripts/backfill-missed-uninstalls-2026-09-22.ts`) → active=10.
+- **Done (gc-dyt, commit `ee95016`):** daily install-status reconciler (`inngest/functions/reconcile-installs.ts`, cron 6am Denver, heartbeat-covered) — probes each active shop via `unauthenticated.admin` + a cheap Admin GraphQL call; marks uninstalled ONLY on a definitive 401 (throttle/5xx/network/no-session → skip, never mark). Shared `markShopUninstalledWithEvent` helper (webhook + reconciler, DRY, `source` in metadata).
+- **DEFERRED (gc-qkd):** GDPR hard-delete of the 5 churned shops. BLOCKED until deploy — `deleteShopData` uses the new `lastSeenAt` column via the regenerated client, which prod won't have until the branch's migration applies. Run post-deploy.
+- **OPEN (gc-c9v P2):** investigate WHY the webhook isn't executing (registration? delivery drops during Railway outages? HMAC/route?) — reconciler backstops it, but the webhook also drives `shop/redact`/GDPR, so fix it too.
+
+## ⚠️ Deploy-ordering note (schema skew)
+The local Prisma client is now ahead of prod (`lastSeenAt` generated but not applied). Read-only scripts with explicit `select`s are fine; anything using the full Shop model (e.g. `deleteShopData`) FAILS against un-migrated prod. On real deploy this is a non-issue (migration runs first via preDeployCommand). Don't run local full-model writes against prod before deploy.
+
 ## Follow-up beads filed
-- **gc-w7b** (P1 decision) — CLOSED 2026-09-22 (dahi5e-1d excluded; 0 real Professionals).
+- **gc-w7b** (P1 decision) — CLOSED 2026-09-22 (dahi5e-1d excluded; 0 real Professionals; 0 paid, MRR $0).
+- **gc-dyt** (P2 feature) — install-status reconciler. DONE (commit `ee95016`), pending deploy.
+- **gc-c9v** (P2 bug) — investigate app/uninstalled webhook not executing.
+- **gc-qkd** (P3 bug) — GDPR redact the 5 churned shops. DEFERRED to post-deploy (schema skew).
 - **gc-9ms** (P3 bug) — digest Billing-events line has NO store exclusion (same class as the uninstalls bug; pre-existing).
 - **gc-4cv** (P3 feature) — durable `Shop.isInternal` flag to replace the env-var domain list.
 - gc-qrf/rch/0ej annotated with commit SHAs; leave OPEN, close on deploy.
