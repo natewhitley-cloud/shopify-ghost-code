@@ -16,6 +16,7 @@
  *     recordOpsEvent, and assert exactly which shops are marked.
  */
 
+import { HttpResponseError, InvalidJwtError } from "@shopify/shopify-api";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +71,7 @@ import {
   classifyResponseStatus,
   extractHttpStatus,
   isDefinitiveAuthFailure,
+  isRefreshTokenRejected,
   reconcileInstalls,
 } from "../../inngest/functions/reconcile-installs";
 import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
@@ -166,6 +168,76 @@ describe("isDefinitiveAuthFailure", () => {
   });
 });
 
+describe("isRefreshTokenRejected", () => {
+  it("is TRUE for an InvalidJwtError (offline-token refresh rejected)", () => {
+    expect(isRefreshTokenRejected(new InvalidJwtError("invalid jwt"))).toBe(true);
+  });
+
+  it("is TRUE for an HttpResponseError 400 with body.error === 'invalid_subject_token'", () => {
+    expect(
+      isRefreshTokenRejected(
+        new HttpResponseError({
+          message: "Bad Request",
+          statusText: "Bad Request",
+          code: 400,
+          body: { error: "invalid_subject_token" },
+        }),
+      ),
+    ).toBe(true);
+  });
+
+  it("is FALSE for the library's transient new Response(500) refresh wrapper", () => {
+    expect(isRefreshTokenRejected(new Response(undefined, { status: 500 }))).toBe(false);
+  });
+
+  it("is FALSE for a plain Error (e.g. SessionNotFoundError / network)", () => {
+    expect(isRefreshTokenRejected(new Error("no session"))).toBe(false);
+  });
+
+  it("is FALSE for a 400 HttpResponseError whose body.error differs", () => {
+    expect(
+      isRefreshTokenRejected(
+        new HttpResponseError({
+          message: "Bad Request",
+          statusText: "Bad Request",
+          code: 400,
+          body: { error: "invalid_request" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is FALSE for a non-400 HttpResponseError (e.g. 500) even with the body.error", () => {
+    expect(
+      isRefreshTokenRejected(
+        new HttpResponseError({
+          message: "Server Error",
+          statusText: "Internal Server Error",
+          code: 500,
+          body: { error: "invalid_subject_token" },
+        }),
+      ),
+    ).toBe(false);
+  });
+
+  it("is FALSE (never throws) for a 400 HttpResponseError with a string body", () => {
+    // The library types body as an object, but be defensive against a raw string
+    // at runtime — the classifier must guard the shape, not throw.
+    const err = new HttpResponseError({
+      message: "Bad Request",
+      statusText: "Bad Request",
+      code: 400,
+    });
+    (err.response as { body?: unknown }).body = "invalid_subject_token";
+    expect(isRefreshTokenRejected(err)).toBe(false);
+  });
+
+  it("is FALSE for null / undefined", () => {
+    expect(isRefreshTokenRejected(null)).toBe(false);
+    expect(isRefreshTokenRejected(undefined)).toBe(false);
+  });
+});
+
 describe("classifyResponseStatus", () => {
   it("maps 401 → uninstalled, 200/undefined → installed, others → ambiguous", () => {
     expect(classifyResponseStatus(401)).toBe("uninstalled");
@@ -248,6 +320,49 @@ describe("reconcileInstalls handler", () => {
   it("does NOT mark when unauthenticated.admin throws (no session) — treated as ambiguous", async () => {
     mockFindMany.mockResolvedValue([{ id: "s1", domain: "nosession.myshopify.com" }]);
     mockAdmin.mockRejectedValue(new Error("no offline session found for shop"));
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("marks when unauthenticated.admin throws InvalidJwtError (expired offline token, refresh rejected)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "expired.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(new InvalidJwtError("invalid jwt"));
+
+    const result = await runReconcile();
+
+    expect(mockMark).toHaveBeenCalledWith(
+      "expired.myshopify.com",
+      expect.objectContaining({ source: "reconciler" }),
+    );
+    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+  });
+
+  it("marks when unauthenticated.admin throws HttpResponseError 400 invalid_subject_token", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "revoked.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(
+      new HttpResponseError({
+        message: "Bad Request",
+        statusText: "Bad Request",
+        code: 400,
+        body: { error: "invalid_subject_token" },
+      }),
+    );
+
+    const result = await runReconcile();
+
+    expect(mockMark).toHaveBeenCalledWith(
+      "revoked.myshopify.com",
+      expect.objectContaining({ source: "reconciler" }),
+    );
+    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+  });
+
+  it("does NOT mark when unauthenticated.admin throws the library's transient Response(500) refresh wrapper", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "transient.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(new Response(undefined, { status: 500 }));
 
     const result = await runReconcile();
 

@@ -10,12 +10,22 @@
  * signal), independent of the webhook.
  *
  * SAFETY RULE (this file can churn a live paying merchant if wrong):
- *   A shop is marked uninstalled ONLY on a DEFINITIVE auth failure — an HTTP 401
- *   / revoked-token error from the Admin API. EVERYTHING else — throttling
- *   (429 / THROTTLED), network errors, timeouts, 5xx, a missing session, or any
- *   ambiguous/unexpected error — is treated as "status unknown" and the shop is
- *   SKIPPED this run (never marked). When in doubt, do NOT mark. This mirrors the
- *   ACCESS_DENIED-vs-transient discipline in app/lib/scope-check.server.ts.
+ *   A shop is marked uninstalled ONLY on one of two DEFINITIVE uninstall signals:
+ *     (a) a 401 / revoked-token error from the Admin GraphQL probe — surfaced when
+ *         the offline token is NOT yet expired but has been revoked; and
+ *     (b) a REJECTED offline-token refresh surfaced by unauthenticated.admin —
+ *         because `future.expiringOfflineAccessTokens` is on, expired tokens are
+ *         refreshed BEFORE the admin client is returned, and Shopify rejects the
+ *         refresh (InvalidJwtError, or an HttpResponseError 400 with
+ *         body.error === 'invalid_subject_token') exactly when the app is no
+ *         longer installed. This is the COMMON case once the daily cron runs
+ *         after the token TTL, so it must be treated as an uninstall, not skipped.
+ *   EVERYTHING else — throttling (429 / THROTTLED), network errors, timeouts, 5xx
+ *   (including the library's `new Response(500)` refresh wrapper), a missing
+ *   session (SessionNotFoundError), or any ambiguous/unexpected error — is treated
+ *   as "status unknown" and the shop is SKIPPED this run (never marked). When in
+ *   doubt, do NOT mark. This mirrors the ACCESS_DENIED-vs-transient discipline in
+ *   app/lib/scope-check.server.ts.
  *
  * SCOPE: this job ONLY detects + marks uninstalled (reusing the shared
  * markShopUninstalledWithEvent path so the webhook and this reconciler can't
@@ -29,6 +39,8 @@
  * Wrapped in withCronHeartbeat so it participates in the dead-man's-switch
  * (registered in CRON_HEARTBEAT_EXPECTATIONS).
  */
+
+import { HttpResponseError, InvalidJwtError } from "@shopify/shopify-api";
 
 import { logger } from "../../app/lib/logger.server";
 import { inngest } from "../client";
@@ -91,6 +103,34 @@ export function isDefinitiveAuthFailure(error: unknown): boolean {
 }
 
 /**
+ * DEFINITIVE uninstall signal surfaced by `unauthenticated.admin` itself (before
+ * any GraphQL call). Because `future.expiringOfflineAccessTokens` is enabled, the
+ * library refreshes an expired offline token inside `unauthenticated.admin`; when
+ * the app has been uninstalled, Shopify REJECTS that refresh and the library
+ * re-throws the rejection. True ONLY for those definitive rejections:
+ *   - an InvalidJwtError, OR
+ *   - an HttpResponseError whose response is a 400 with body.error ===
+ *     'invalid_subject_token'.
+ * Everything else the library can throw here — its `new Response(500)` transient
+ * wrapper, a SessionNotFoundError, network errors, or anything unexpected — is
+ * NOT a definitive signal and returns false (SKIP, never mark). Defensive about
+ * the `response.body` shape (may be a string or object) and never throws.
+ */
+export function isRefreshTokenRejected(error: unknown): boolean {
+  if (error instanceof InvalidJwtError) return true;
+  if (error instanceof HttpResponseError) {
+    const response = error.response as { code?: unknown; body?: unknown } | undefined;
+    if (!response || response.code !== 400) return false;
+    const body = response.body;
+    if (body !== null && typeof body === "object") {
+      return (body as Record<string, unknown>).error === "invalid_subject_token";
+    }
+    return false;
+  }
+  return false;
+}
+
+/**
  * Classify a probe that RETURNED (did not throw), from its HTTP status:
  *   - 401                 → uninstalled (revoked token surfaced as a returned 401)
  *   - 200 / no status     → installed (a successful round-trip means the token works)
@@ -135,10 +175,19 @@ async function checkAndMarkInstall(domain: string): Promise<InstallStatus> {
   try {
     adminCtx = await unauthenticated.admin(domain);
   } catch (err) {
-    // No offline session / auth-context error. AMBIGUOUS by design: a missing
-    // Session row is NOT positive proof of an uninstall (it can also be a
-    // transient session-storage read or a race), and the safety rule is to mark
-    // ONLY on a definitive auth failure from Shopify. Never mark here.
+    // With `future.expiringOfflineAccessTokens` on, an expired offline token is
+    // refreshed INSIDE unauthenticated.admin. A REJECTED refresh
+    // (invalid_subject_token / InvalidJwtError) is positive proof the app is no
+    // longer installed — the definitive uninstall signal for an already-expired
+    // token, and the common case once the daily cron runs after the TTL. Mark it.
+    if (isRefreshTokenRejected(err)) {
+      await markUninstalled(domain);
+      return "uninstalled";
+    }
+    // Anything else here is AMBIGUOUS by design: a missing Session row
+    // (SessionNotFoundError), the library's `new Response(500)` transient refresh
+    // wrapper, a session-storage read, or a race is NOT positive proof of an
+    // uninstall. The safety rule is to mark ONLY on a definitive signal. Skip.
     logger.info("reconcile-installs: no admin context — skipping (ambiguous)", {
       function: "reconcile-installs",
       domain,
