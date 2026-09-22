@@ -127,7 +127,12 @@ const DEFAULT_REMOVAL_SAFETY: RemovalSafety = "verify-first";
  * the label stays in sync with the level and is unit-testable.
  */
 export const REMOVAL_SAFETY_LABELS: Record<RemovalSafety, string> = {
-  "safe-to-remove": "Safe to remove",
+  // Deliberately conservative wording: detection is signature-based with NO
+  // cross-check against the shop's currently-installed apps, so a still-installed
+  // app can match. This keeps the badge consistent with the per-type howTo copy
+  // ("once you have confirmed the app is uninstalled"). Final wording pending
+  // operator review.
+  "safe-to-remove": "Likely safe — confirm app removed",
   "verify-first": "Verify first",
   "leave-alone": "Leave in place",
 };

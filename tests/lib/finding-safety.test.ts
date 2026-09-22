@@ -115,7 +115,7 @@ describe("getRemovalSafety — fallback", () => {
 
 describe("REMOVAL_SAFETY_LABELS", () => {
   it("has a short, non-empty label for each level", () => {
-    expect(REMOVAL_SAFETY_LABELS["safe-to-remove"]).toBe("Safe to remove");
+    expect(REMOVAL_SAFETY_LABELS["safe-to-remove"]).toBe("Likely safe — confirm app removed");
     expect(REMOVAL_SAFETY_LABELS["verify-first"]).toBe("Verify first");
     expect(REMOVAL_SAFETY_LABELS["leave-alone"]).toBe("Leave in place");
   });

@@ -172,15 +172,19 @@ export function partitionShops(
 }
 
 /**
- * Count SHOP_UNINSTALLED events whose `key` (the shop domain) is not in the
- * exclude set, so the uninstalls line is dev-store-consistent with every other
- * metric. Case-insensitive on the domain; null keys are ignored.
+ * Count SHOP_UNINSTALLED events whose `key` (the shop domain) is not excluded, so
+ * the uninstalls line is dev-store-consistent with every other metric. Honors
+ * BOTH exact-domain and prefix exclusion via `isExcluded` (same as
+ * `partitionShops`), so an ephemeral `app-review-*` store excluded everywhere
+ * else isn't silently counted here. Null keys are ignored.
  */
 export function countUninstallEventsExcluding(
   events: Array<{ key: string | null }>,
   excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
 ): number {
-  return events.filter((e) => e.key != null && !excludeSet.has(e.key.toLowerCase())).length;
+  return events.filter((e) => e.key != null && !isExcluded(e.key, excludeSet, excludePrefixes))
+    .length;
 }
 
 /** Active-install counts per live plan tier. Keys mirror PLANS values. */
@@ -872,7 +876,7 @@ export const operatorDigest = inngest.createFunction(
         },
         select: { key: true },
       });
-      return countUninstallEventsExcluding(rows, excludeSet);
+      return countUninstallEventsExcluding(rows, excludeSet, excludePrefixes);
     })) as number;
 
     // In-window scans scoped to ACTIVE installs (excludes the dev store AND
@@ -962,10 +966,13 @@ export const operatorDigest = inngest.createFunction(
     })) as number;
 
     // Activity: durable last-seen per active install + trailing-7d page_visit
-    // volume (24h counts derived in-memory, so one query). Active shops
-    // (uninstalledAt null) are fetched here; aggregateActivity applies the SAME
-    // isExcluded predicate as partitionShops so dev/test/app-review stores are
-    // omitted from both the per-shop rows and the top-pages breakdown.
+    // volume (24h counts derived in-memory, so one query). The shop set is PINNED
+    // to get-shops' already-filtered activeShopIds (not a second independent
+    // `uninstalledAt: null` query) so the ACTIVITY section's "N active" can't
+    // disagree with the BUSINESS section's "Total active" in the same email. An
+    // `id IN []` returns [] cheaply when there are no active shops. aggregateActivity
+    // still applies the SAME isExcluded predicate as partitionShops to filter the
+    // page_visit event keys for the top-pages breakdown.
     const activity = (await step.run("get-activity", async () => {
       const db = (await import("../../app/db.server")).default;
       const { OPS_EVENT_TYPES } = await import("../../app/models/ops-event.server");
@@ -973,7 +980,7 @@ export const operatorDigest = inngest.createFunction(
       const sevenDaysAgo = new Date(now.getTime() - 7 * DAY_MS);
       const [shops, events] = await Promise.all([
         db.shop.findMany({
-          where: { uninstalledAt: null },
+          where: { id: { in: activeShopIds } },
           select: { domain: true, lastSeenAt: true },
         }),
         db.opsEvent.findMany({

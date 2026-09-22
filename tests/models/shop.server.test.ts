@@ -48,6 +48,7 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { OPS_EVENT_TYPES } from "../../app/models/ops-event.server";
 import {
   getShopMetadata,
   upsertShop,
@@ -678,11 +679,16 @@ describe("deleteShopData", () => {
   });
 
   it("removes page_visit OpsEvent rows keyed on the domain via the key clause", async () => {
-    // page_visit events are keyed on the shop domain (key = session.shop), so the
-    // `key: domain` OR-clause already reaches them — no dedicated clause needed.
+    // Cross-check that binds page_visit's WRITE contract to the redact clause:
+    // app/routes/app.tsx writes page_visit as { eventType: PAGE_VISIT, key: <domain> }.
+    // We shape an event exactly like that write and assert deleteShopData's OR
+    // predicate for this domain contains a clause matching THAT event's key. This
+    // FAILS if page_visit were ever keyed on something other than the domain
+    // (e.g. an internal shopId), which the domain-key clause would not reach.
+    const domain = "delete-me.myshopify.com";
     const existingShop = {
       id: "shop-gdpr-pv",
-      domain: "delete-me.myshopify.com",
+      domain,
       plan: "free",
     };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -690,10 +696,14 @@ describe("deleteShopData", () => {
     mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 7 });
     mockDb.shop.delete.mockResolvedValue(existingShop);
 
-    await deleteShopData("delete-me.myshopify.com");
+    await deleteShopData(domain);
 
+    // An event shaped like the ACTUAL page_visit write.
+    const pageVisitEvent = { eventType: OPS_EVENT_TYPES.PAGE_VISIT, key: domain };
     const opsWhere = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
-    expect(opsWhere.OR).toContainEqual({ key: "delete-me.myshopify.com" });
+    // The redact OR must target the SAME key page_visit is written with.
+    expect(pageVisitEvent.eventType).toBe(OPS_EVENT_TYPES.PAGE_VISIT);
+    expect(opsWhere.OR).toContainEqual({ key: pageVisitEvent.key });
   });
 
   it("purges scan_signal OpsEvent rows via the internal shopId clause (they carry no domain)", async () => {

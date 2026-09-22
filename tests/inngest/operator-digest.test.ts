@@ -297,11 +297,13 @@ describe("partitionShops", () => {
 
 describe("countUninstallEventsExcluding", () => {
   const excludeSet = new Set(["dev-store.myshopify.com"]);
+  const excludePrefixes = new Set(["app-review-"]);
 
   it("excludes dev-store keys case-insensitively and counts the rest", () => {
     const count = countUninstallEventsExcluding(
       [{ key: "a.myshopify.com" }, { key: "DEV-STORE.myshopify.com" }, { key: "b.myshopify.com" }],
       excludeSet,
+      excludePrefixes,
     );
     expect(count).toBe(2);
   });
@@ -310,12 +312,28 @@ describe("countUninstallEventsExcluding", () => {
     const count = countUninstallEventsExcluding(
       [{ key: null }, { key: "a.myshopify.com" }, { key: null }],
       excludeSet,
+      excludePrefixes,
+    );
+    expect(count).toBe(1);
+  });
+
+  it("honors PREFIX exclusion: an app-review-* uninstall is NOT counted, a normal key IS", () => {
+    // Mirrors the partitionShops prefix tests: an ephemeral app-review store
+    // excluded everywhere else must not sneak back into the uninstalls line.
+    const count = countUninstallEventsExcluding(
+      [
+        { key: "app-review-xyz.myshopify.com" }, // prefix-excluded
+        { key: "DEV-STORE.myshopify.com" }, // exact-excluded (case-insensitive)
+        { key: "real.myshopify.com" }, // normal — counted
+      ],
+      excludeSet,
+      excludePrefixes,
     );
     expect(count).toBe(1);
   });
 
   it("returns 0 for no events", () => {
-    expect(countUninstallEventsExcluding([], excludeSet)).toBe(0);
+    expect(countUninstallEventsExcluding([], excludeSet, excludePrefixes)).toBe(0);
   });
 });
 
