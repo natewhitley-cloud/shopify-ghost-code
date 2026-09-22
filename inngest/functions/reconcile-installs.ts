@@ -37,9 +37,9 @@
  *
  *   CIRCUIT BREAKER (defense-in-depth): the cron runs in two passes — probe all
  *   active shops (mark nothing), then mark them ONLY if the run does not look
- *   systemic. The run ABORTS when ALL probed shops (N>=3) are marked, OR when
- *   marks reach >=50% of the probed base (minimum CB_MIN_MARKS). This can no
- *   longer be silently bypassed at small base sizes. On a trip the run marks
+ *   systemic. The run ABORTS when ALL probed shops are marked (100% churn, at ANY
+ *   base size), OR when marks reach >=50% of the probed base (minimum CB_MIN_MARKS).
+ *   This can no longer be silently bypassed at small base sizes. On a trip the run marks
  *   NOTHING, records a RECONCILE_ABORTED OpsEvent, and pages the operator —
  *   turning a would-be base-wide churn into one skipped run + an alert.
  *   A RAW-refresh 200 means the app is STILL INSTALLED; Shopify ROTATES the
@@ -86,11 +86,12 @@ const PAUSE_BETWEEN_SHOPS = "500ms";
 // produced varied per-shop rejections that slipped past the body checks, a
 // SINGLE run must never be able to churn the whole active base. The reconciler
 // aborts a run — marking NOTHING and paging the operator — when it WOULD mark
-// ALL probed shops (N>=3), OR when the number it WOULD mark reaches >=50% of the
-// probed base (floor CB_MIN_MARKS). The fraction is PRIMARY (it protects a large
-// base); the all-probed-marked rule guarantees a systemic 100%-churn always trips
-// even at a small base — the old MAX(absolute-cap, fraction) form pinned the
-// threshold at the cap and could be silently bypassed when checked <= the cap.
+// ALL probed shops (100% churn, at ANY base size), OR when the number it WOULD
+// mark reaches >=50% of the probed base (floor CB_MIN_MARKS). The fraction is
+// PRIMARY (it protects a large base); the all-probed-marked rule guarantees a
+// systemic 100%-churn always trips even at N=1/N=2 — the old MAX(absolute-cap,
+// fraction) form pinned the threshold at the cap and could be silently bypassed
+// when checked <= the cap.
 // Tune conservatively: a genuine day never churns anywhere near half the base at
 // once, so a trip is a near-certain bug.
 const CB_FRACTION = 0.5; // trip when >= half the probed base is marked in one run
@@ -535,37 +536,51 @@ export const reconcileInstalls = inngest.createFunction(
     const skipped = probes.filter((p) => p.classification === "ambiguous").length;
 
     // --- Circuit-breaker gate ---------------------------------------------
-    // A run that WOULD mark the whole probed base (N>=3), or >=half of it, is the
+    // A run that WOULD mark the whole probed base, or >=half of it, is the
     // mass-churn signature of a systemic fault, not a real day of uninstalls.
     // ABORT: mark nothing, page the operator, and let a human confirm before any
     // churn happens. The fraction is primary; the all-probed-marked rule ensures a
-    // 100%-churn always trips even at a small base (the old MAX-with-cap form
-    // pinned the threshold at the cap and could be bypassed when checked was small).
+    // 100%-churn trips at ANY base size (checked >= 1) — the mass-churn signature
+    // of a wrong/rotated shared client_secret 401'ing every shop is identical at
+    // N=1, N=2, or N=100, so there is no safe floor below which auto-churn is OK.
+    // Design tradeoff: at N=1 a lone active shop that classifies "uninstalled" now
+    // PAGES-and-aborts instead of auto-marking. That is intended — this reconciler
+    // is only a BACKSTOP for MISSED app/uninstalled webhooks (real uninstalls are
+    // marked directly by that webhook), so refusing to auto-churn the entire
+    // remaining base on a single ambiguous-looking signal and asking a human to
+    // confirm is the conservative-correct call. wouldMark holds ONLY shops
+    // classified "uninstalled" (ambiguous/transient shops are excluded upstream),
+    // so this never trips on a network blip or throttle.
     const churnThreshold = Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * checked));
     const tripped =
-      (checked >= 3 && wouldMark.length === checked) || // ALL probed shops marked → always systemic at N>=3
+      (checked >= 1 && wouldMark.length === checked) || // 100% churn is systemic at ANY base size → always trip
       wouldMark.length >= churnThreshold; // or >= half the base (floor CB_MIN_MARKS)
     if (tripped) {
       await step.run("circuit-breaker-abort", async () => {
         const { recordOpsEvent, OPS_EVENT_TYPES } =
           await import("../../app/models/ops-event.server");
-        const message =
+        const summary =
           `reconcile ABORTED by circuit breaker: ${wouldMark.length} of ${checked} active shops ` +
           `classified uninstalled (threshold ${churnThreshold}) — likely a systemic misconfig ` +
-          `(e.g. wrong/rotated shared client_secret), NOT a real mass uninstall. Marked NOTHING. ` +
-          `Domains: ${wouldMark.join(", ")}`;
-        // Structured metadata stays counts-only (no per-shop domain fields) so this
-        // row needs no per-shop redact coverage; the domains ride the free-text
-        // message + the operator email, same residual as function_failure strings.
+          `(e.g. wrong/rotated shared client_secret), NOT a real mass uninstall. Marked NOTHING.`;
+        // The durable OpsEvent row is counts-only: NO per-shop domains in the
+        // message and none in the structured metadata, so deleteShopData (which
+        // purges OpsEvents by key / metadata.shop|shopDomain|shopId) leaves nothing
+        // per-shop to redact and this row needs no per-shop redact coverage. The
+        // domain list rides the operator EMAIL only (below) — the operator's own
+        // inbox is not a GDPR-scoped store.
         await recordOpsEvent({
           eventType: OPS_EVENT_TYPES.RECONCILE_ABORTED,
           key: RECONCILE_INSTALLS_KEY,
-          message,
+          message: summary,
           metadata: { checked, wouldMark: wouldMark.length, threshold: churnThreshold },
         });
         const { sendOpsAlert } = await import("../../app/services/ops-alert.server");
         try {
-          await sendOpsAlert("Reconciler circuit breaker tripped — no shops marked", message);
+          await sendOpsAlert(
+            "Reconciler circuit breaker tripped — no shops marked",
+            `${summary}\n\nDomains: ${wouldMark.join(", ")}`,
+          );
         } catch {
           // paging is best-effort; the OpsEvent row is the durable record.
         }

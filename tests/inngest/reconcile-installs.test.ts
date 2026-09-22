@@ -360,11 +360,20 @@ describe("reconcileInstalls handler", () => {
   });
 
   it("marks a shop that fails with a 401 (revoked token), with source=reconciler", async () => {
-    mockFindMany.mockResolvedValue([{ id: "s1", domain: "dead.myshopify.com" }]);
-    mockAdmin.mockResolvedValue(
-      adminGraphql(async () => {
-        throw { response: { code: 401, statusText: "Unauthorized" } };
-      }),
+    // A healthy companion shop (200) rides along so this stays a NORMAL single-real-
+    // uninstall case: post-gc-5ha the circuit breaker trips at 100% churn (checked>=1),
+    // so a lone 401 at N=1 now pages-and-aborts (covered by the dedicated N=1 abort
+    // test below). Here 1-of-2 is below the breaker → the dead shop IS marked.
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: "dead.myshopify.com" },
+      { id: "s2", domain: "live.myshopify.com" },
+    ]);
+    mockAdmin.mockImplementation(async (domain: string) =>
+      domain === "dead.myshopify.com"
+        ? adminGraphql(async () => {
+            throw { response: { code: 401, statusText: "Unauthorized" } };
+          })
+        : adminGraphql(async () => ({ status: 200 })),
     );
 
     const result = await runReconcile();
@@ -373,7 +382,7 @@ describe("reconcileInstalls handler", () => {
       source: "reconciler",
       message: expect.stringContaining("reconciler-detected uninstall"),
     });
-    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+    expect(result).toMatchObject({ checked: 2, marked: 1, skipped: 0 });
   });
 
   it("still classifies uninstalled (marked:1) when the shared mark reports an already-marked no-op (step retry)", async () => {
@@ -383,17 +392,24 @@ describe("reconcileInstalls handler", () => {
     // "uninstalled" and the summary counts it — the digest can't double-count
     // because the event is suppressed inside markShopUninstalledWithEvent.
     mockMark.mockResolvedValue({ newlyMarked: false, found: true });
-    mockFindMany.mockResolvedValue([{ id: "s1", domain: "already.myshopify.com" }]);
-    mockAdmin.mockResolvedValue(
-      adminGraphql(async () => {
-        throw { response: { code: 401 } };
-      }),
+    // Companion healthy shop keeps the breaker closed (1-of-2, not 100% churn) so
+    // the retry-marks-again path is still exercised post-gc-5ha (see the 401 test).
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: "already.myshopify.com" },
+      { id: "s2", domain: "live.myshopify.com" },
+    ]);
+    mockAdmin.mockImplementation(async (domain: string) =>
+      domain === "already.myshopify.com"
+        ? adminGraphql(async () => {
+            throw { response: { code: 401 } };
+          })
+        : adminGraphql(async () => ({ status: 200 })),
     );
 
     const result = await runReconcile();
 
     expect(mockMark).toHaveBeenCalledOnce();
-    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+    expect(result).toMatchObject({ checked: 2, marked: 1, skipped: 0 });
   });
 
   it("does NOT mark on THROTTLED / 429 (never churn a live merchant on a throttle)", async () => {
@@ -444,8 +460,16 @@ describe("reconcileInstalls handler", () => {
   });
 
   it("marks when unauthenticated.admin throws InvalidJwtError (expired offline token, refresh rejected)", async () => {
-    mockFindMany.mockResolvedValue([{ id: "s1", domain: "expired.myshopify.com" }]);
-    mockAdmin.mockRejectedValue(new InvalidJwtError("invalid jwt"));
+    // Companion healthy shop keeps the breaker closed so this classifier still
+    // drives a real mark post-gc-5ha (see the 401 test for the rationale).
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: "expired.myshopify.com" },
+      { id: "s2", domain: "live.myshopify.com" },
+    ]);
+    mockAdmin.mockImplementation(async (domain: string) => {
+      if (domain === "expired.myshopify.com") throw new InvalidJwtError("invalid jwt");
+      return adminGraphql(async () => ({ status: 200 }));
+    });
 
     const result = await runReconcile();
 
@@ -453,19 +477,26 @@ describe("reconcileInstalls handler", () => {
       "expired.myshopify.com",
       expect.objectContaining({ source: "reconciler" }),
     );
-    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+    expect(result).toMatchObject({ checked: 2, marked: 1, skipped: 0 });
   });
 
   it("marks when unauthenticated.admin throws HttpResponseError 400 invalid_subject_token", async () => {
-    mockFindMany.mockResolvedValue([{ id: "s1", domain: "revoked.myshopify.com" }]);
-    mockAdmin.mockRejectedValue(
-      new HttpResponseError({
-        message: "Bad Request",
-        statusText: "Bad Request",
-        code: 400,
-        body: { error: "invalid_subject_token" },
-      }),
-    );
+    // Companion healthy shop keeps the breaker closed so this classifier still
+    // drives a real mark post-gc-5ha (see the 401 test for the rationale).
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: "revoked.myshopify.com" },
+      { id: "s2", domain: "live.myshopify.com" },
+    ]);
+    mockAdmin.mockImplementation(async (domain: string) => {
+      if (domain === "revoked.myshopify.com")
+        throw new HttpResponseError({
+          message: "Bad Request",
+          statusText: "Bad Request",
+          code: 400,
+          body: { error: "invalid_subject_token" },
+        });
+      return adminGraphql(async () => ({ status: 200 }));
+    });
 
     const result = await runReconcile();
 
@@ -473,7 +504,7 @@ describe("reconcileInstalls handler", () => {
       "revoked.myshopify.com",
       expect.objectContaining({ source: "reconciler" }),
     );
-    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+    expect(result).toMatchObject({ checked: 2, marked: 1, skipped: 0 });
   });
 
   it("does NOT mark when unauthenticated.admin throws the library's transient Response(500) refresh wrapper", async () => {
@@ -492,8 +523,17 @@ describe("reconcileInstalls handler", () => {
   // Shopify's raw refresh endpoint to disambiguate installed vs uninstalled.
 
   it("masked-500 + raw refresh 401 WITH a refresh-token error body → MARKED uninstalled (source=reconciler)", async () => {
-    mockFindMany.mockResolvedValue([{ id: "s1", domain: "expired401.myshopify.com" }]);
-    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    // Companion healthy shop (200) keeps the breaker closed so this masked-500
+    // classifier still drives a real mark post-gc-5ha (see the 401 test). The live
+    // shop resolves before the raw-refresh path, so it never touches loadSession/fetch.
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: "expired401.myshopify.com" },
+      { id: "s2", domain: "live.myshopify.com" },
+    ]);
+    mockAdmin.mockImplementation(async (domain: string) => {
+      if (domain === "expired401.myshopify.com") throw maskedAdminFailure();
+      return adminGraphql(async () => ({ status: 200 }));
+    });
     mockLoadSession.mockResolvedValue(fakeOfflineSession());
     mockFetch.mockResolvedValue({
       status: 401,
@@ -513,7 +553,7 @@ describe("reconcileInstalls handler", () => {
       "expired401.myshopify.com",
       expect.objectContaining({ source: "reconciler" }),
     );
-    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+    expect(result).toMatchObject({ checked: 2, marked: 1, skipped: 0 });
   });
 
   it("masked-500 + raw refresh 401 invalid_client → NOT marked (credential error, the mass-churn guard)", async () => {
@@ -559,8 +599,16 @@ describe("reconcileInstalls handler", () => {
   });
 
   it("masked-500 + raw refresh 404 (closed store) → MARKED uninstalled", async () => {
-    mockFindMany.mockResolvedValue([{ id: "s1", domain: "closed404.myshopify.com" }]);
-    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    // Companion healthy shop keeps the breaker closed so this classifier still
+    // drives a real mark post-gc-5ha (see the 401 test for the rationale).
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: "closed404.myshopify.com" },
+      { id: "s2", domain: "live.myshopify.com" },
+    ]);
+    mockAdmin.mockImplementation(async (domain: string) => {
+      if (domain === "closed404.myshopify.com") throw maskedAdminFailure();
+      return adminGraphql(async () => ({ status: 200 }));
+    });
     mockLoadSession.mockResolvedValue(fakeOfflineSession());
     mockFetch.mockResolvedValue({ status: 404, json: async () => ({}) });
 
@@ -570,7 +618,7 @@ describe("reconcileInstalls handler", () => {
       "closed404.myshopify.com",
       expect.objectContaining({ source: "reconciler" }),
     );
-    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+    expect(result).toMatchObject({ checked: 2, marked: 1, skipped: 0 });
   });
 
   it("masked-500 + raw refresh 500 → NOT marked (ambiguous, never churn on a blip)", async () => {
@@ -776,7 +824,8 @@ describe("reconcileInstalls circuit breaker", () => {
 
     // The critical assertion: NOT ONE shop was marked.
     expect(mockMark).not.toHaveBeenCalled();
-    // An abort OpsEvent was recorded (counts-only metadata; domains in message).
+    // An abort OpsEvent was recorded (counts-only message AND metadata; domains
+    // ride the operator email only — see the GDPR test below).
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
@@ -948,6 +997,90 @@ describe("reconcileInstalls circuit breaker", () => {
       checked: 10,
       wouldMark: 5,
     });
+  });
+
+  it("TRIPS at checked=1 when the ONLY active shop probes uninstalled (100% churn) — marks NOTHING", async () => {
+    // Fix (gc-5ha): the all-probed clause now fires at ANY base size (checked>=1),
+    // not just N>=3. threshold = max(3, ceil(0.5*1)=1) = 3, so the fraction clause
+    // is 1 >= 3 = false; the trip comes SOLELY from all-probed (1===1). This is the
+    // intended conservative backstop behavior: a lone active shop classifying
+    // "uninstalled" pages-and-aborts rather than auto-churning the entire base.
+    // (Real single uninstalls are handled directly by the app/uninstalled webhook;
+    // this reconciler only catches MISSED webhooks.)
+    seedShops(1, 1);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        metadata: { checked: 1, wouldMark: 1, threshold: 3 },
+      }),
+    );
+    expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_summary" }),
+    );
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "aborted-circuit-breaker",
+      checked: 1,
+      wouldMark: 1,
+    });
+  });
+
+  it("TRIPS at checked=2 when BOTH active shops probe uninstalled (100% churn) — marks NOTHING", async () => {
+    // The exact silent hole the old `checked >= 3` guard left: at checked=2,
+    // wouldMark=2, threshold=max(3, ceil(0.5*2)=1)=3, the old form had all-probed
+    // gated off (2<3) AND the fraction false (2<3), so BOTH shops were auto-marked
+    // with no page. The new `checked >= 1` all-probed clause trips instead.
+    seedShops(2, 2);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        metadata: { checked: 2, wouldMark: 2, threshold: 3 },
+      }),
+    );
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "aborted-circuit-breaker",
+      checked: 2,
+      wouldMark: 2,
+    });
+  });
+
+  it("keeps shop domains OUT of the durable OpsEvent (message + metadata) and rides them on the operator email only", async () => {
+    // Fix (GDPR completeness): deleteShopData purges OpsEvents by key /
+    // metadata.shop|shopDomain|shopId — it CANNOT reach a domain buried in the
+    // free-text message. So the durable RECONCILE_ABORTED row must carry NO
+    // per-shop domain (message counts-only, metadata counts-only); the domain list
+    // rides the paged operator email only (the operator inbox is not a GDPR store).
+    seedShops(3, 3); // dead0/1/2.myshopify.com, all uninstalled → trips
+
+    await runReconcile();
+
+    const abortCall = mockRecordOpsEvent.mock.calls.find(
+      ([arg]) => arg.eventType === "reconcile_aborted",
+    );
+    expect(abortCall).toBeDefined();
+    const durableMessage = abortCall![0].message as string;
+    // No domain and no "Domains:" list survives in the durable row's message...
+    expect(durableMessage).not.toContain("Domains:");
+    expect(durableMessage).not.toContain(".myshopify.com");
+    // ...nor anywhere in the structured metadata (counts only).
+    expect(JSON.stringify(abortCall![0].metadata)).not.toContain(".myshopify.com");
+
+    // ...but the operator email body DOES include the full domain list.
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    const emailBody = mockSendOpsAlert.mock.calls[0][1] as string;
+    expect(emailBody).toContain("Domains:");
+    expect(emailBody).toContain("dead0.myshopify.com");
+    expect(emailBody).toContain("dead1.myshopify.com");
+    expect(emailBody).toContain("dead2.myshopify.com");
   });
 });
 
