@@ -1,4 +1,5 @@
 import db from "../db.server";
+import { isExcluded } from "../lib/store-exclusion";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -39,8 +40,24 @@ export async function recordBillingEvent(input: RecordBillingEventInput) {
 }
 
 /**
+ * Options for excluding dev/test/internal/app-review stores from the billing-event
+ * aggregation, mirroring the exclusion every other operator-digest metric applies.
+ */
+export type BillingEventExcludeOpts = {
+  excludeSet: Set<string>;
+  excludePrefixes: Set<string>;
+};
+
+/**
  * Return aggregate counts of each event type across all shops.
  * Optionally filter to events on or after `since`.
+ *
+ * When `opts` is provided, events belonging to a dev/test/internal/app-review
+ * store (per the shared `isExcluded` predicate on the event's `shop.domain`) are
+ * dropped BEFORE counting — so the operator digest's "Billing events (24h)" line
+ * is consistent with every other dev-store-excluded metric. Aggregation then
+ * happens in JS over the surviving rows. When `opts` is omitted, the original
+ * groupBy path is preserved so other callers are unaffected.
  *
  * Returns a plain object keyed by eventType string for easy consumption
  * in a future admin dashboard.
@@ -50,19 +67,38 @@ export async function recordBillingEvent(input: RecordBillingEventInput) {
  */
 export async function getBillingEventStats(
   since?: Date,
+  opts?: BillingEventExcludeOpts,
 ): Promise<Record<BillingEventType, number>> {
-  const rows = await db.billingEvent.groupBy({
-    by: ["eventType"],
-    where: since ? { createdAt: { gte: since } } : undefined,
-    _count: { eventType: true },
-  });
-
   const counts: Record<BillingEventType, number> = {
     upgrade: 0,
     downgrade: 0,
     cancellation: 0,
     reactivation: 0,
   };
+
+  if (opts) {
+    // Fetch each in-window event with its shop domain, drop excluded stores, then
+    // aggregate by eventType in JS (a groupBy can't filter on the related domain).
+    const rows = await db.billingEvent.findMany({
+      where: since ? { createdAt: { gte: since } } : undefined,
+      select: { eventType: true, shop: { select: { domain: true } } },
+    });
+
+    for (const row of rows) {
+      const domain = row.shop?.domain;
+      if (domain && isExcluded(domain, opts.excludeSet, opts.excludePrefixes)) continue;
+      const key = row.eventType as BillingEventType;
+      if (key in counts) counts[key] += 1;
+    }
+
+    return counts;
+  }
+
+  const rows = await db.billingEvent.groupBy({
+    by: ["eventType"],
+    where: since ? { createdAt: { gte: since } } : undefined,
+    _count: { eventType: true },
+  });
 
   for (const row of rows) {
     const key = row.eventType as BillingEventType;

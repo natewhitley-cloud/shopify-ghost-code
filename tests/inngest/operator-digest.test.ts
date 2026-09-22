@@ -36,6 +36,7 @@ vi.mock("../../app/models/ops-event.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { parseExcludeShops } from "../../app/lib/store-exclusion";
 import {
   aggregateActivity,
   buildDigestBody,
@@ -45,15 +46,11 @@ import {
   computeScanStatusCounts,
   computeScansPerStore,
   countUninstallEventsExcluding,
-  DEFAULT_EXCLUDE_PREFIXES,
-  DEFAULT_EXCLUDE_SHOPS,
   diffSnapshot,
   evaluateSnapshotMetrics,
   METRIC_THRESHOLDS,
   normalizeActivityPath,
   operatorDigest,
-  parseExcludePrefixes,
-  parseExcludeShops,
   parseSnapshotMetadata,
   partitionShops,
   sortFindingTypeCounts,
@@ -61,69 +58,10 @@ import {
   type OperatorDigestData,
 } from "../../inngest/functions/operator-digest";
 
-// ---------------------------------------------------------------------------
-// parseExcludeShops
-// ---------------------------------------------------------------------------
-
-describe("parseExcludeShops", () => {
-  // DEFAULT_EXCLUDE_SHOPS is a comma-separated superset of the KNOWN internal
-  // exact domains (dev store + throwaway test store + dahi5e-1d, the internal
-  // Professional-test store the operator confirmed 2026-09-22 has 0 real subs).
-  const defaultSet = new Set([
-    "nw-dev-store-2.myshopify.com",
-    "teststore22022.myshopify.com",
-    "dahi5e-1d.myshopify.com",
-  ]);
-
-  it("falls back to the default when unset", () => {
-    expect(parseExcludeShops(undefined)).toEqual(defaultSet);
-    expect(defaultSet.has("nw-dev-store-2.myshopify.com")).toBe(true);
-    expect(defaultSet.has("teststore22022.myshopify.com")).toBe(true);
-    expect(defaultSet.has("dahi5e-1d.myshopify.com")).toBe(true);
-  });
-
-  it("falls back to the default when blank/whitespace-only", () => {
-    expect(parseExcludeShops("   ")).toEqual(defaultSet);
-    expect(parseExcludeShops("")).toEqual(defaultSet);
-  });
-
-  it("splits a comma-separated list", () => {
-    expect(parseExcludeShops("a.myshopify.com,b.myshopify.com")).toEqual(
-      new Set(["a.myshopify.com", "b.myshopify.com"]),
-    );
-  });
-
-  it("trims whitespace and drops empty segments", () => {
-    expect(parseExcludeShops(" a.myshopify.com , , b.myshopify.com ")).toEqual(
-      new Set(["a.myshopify.com", "b.myshopify.com"]),
-    );
-  });
-
-  it("lowercases every domain", () => {
-    expect(parseExcludeShops("A.MyShopify.com")).toEqual(new Set(["a.myshopify.com"]));
-  });
-
-  it("parses the DEFAULT_EXCLUDE_SHOPS constant into its three known domains", () => {
-    expect(parseExcludeShops(DEFAULT_EXCLUDE_SHOPS)).toEqual(defaultSet);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// parseExcludePrefixes
-// ---------------------------------------------------------------------------
-
-describe("parseExcludePrefixes", () => {
-  it("falls back to the default (app-review-) when unset/blank", () => {
-    expect(parseExcludePrefixes(undefined)).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
-    expect(parseExcludePrefixes("   ")).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
-    expect(parseExcludePrefixes("")).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
-    expect(DEFAULT_EXCLUDE_PREFIXES).toBe("app-review-");
-  });
-
-  it("splits, trims, and lowercases a comma-separated list", () => {
-    expect(parseExcludePrefixes(" App-Review- , qa- , ")).toEqual(new Set(["app-review-", "qa-"]));
-  });
-});
+// NOTE: the parseExcludeShops / parseExcludePrefixes / isExcluded / defaults unit
+// tests moved to tests/lib/store-exclusion.test.ts (gc-4cv) alongside the module
+// they now live in. parseExcludeShops is still imported above for the
+// partitionShops default-exclude integration case below.
 
 // ---------------------------------------------------------------------------
 // partitionShops
