@@ -1,3 +1,4 @@
+import { OPS_EVENT_TYPES, recordOpsEvent } from "./ops-event.server";
 import db from "../db.server";
 
 /**
@@ -143,6 +144,40 @@ export async function markShopUninstalled(domain: string): Promise<{ found: bool
   ]);
 
   return { found: updateResult.count > 0 };
+}
+
+/**
+ * Record a SHOP_UNINSTALLED OpsEvent and mark the shop uninstalled, as one unit.
+ *
+ * This is the SINGLE shared uninstall path so the two producers — the
+ * `app/uninstalled` webhook and the periodic install-status reconciler (gc-dyt,
+ * the backstop for missed webhooks) — can never drift on how an uninstall is
+ * recorded vs. marked. Both call this; only the `source` (and message) differ.
+ *
+ * Order mirrors the original webhook handler: record the durable uninstall
+ * OpsEvent FIRST (recordOpsEvent never throws, so it can't block the mark), then
+ * revoke access + stamp uninstalledAt via markShopUninstalled. `metadata.source`
+ * distinguishes a webhook-delivered uninstall ("webhook") from a
+ * reconciler-detected one ("reconciler") for observability.
+ *
+ * The SHOP_UNINSTALLED event is keyed on the shop domain, so deleteShopData's
+ * domain-keyed OpsEvent purge already covers it at shop/redact — no new
+ * redact/prune coverage is needed for the `source` metadata.
+ *
+ * Returns markShopUninstalled's `{ found }` so the caller can log a miss and
+ * still succeed (webhook returns 200; reconciler counts it).
+ */
+export async function markShopUninstalledWithEvent(
+  domain: string,
+  opts: { source: "webhook" | "reconciler"; message: string },
+): Promise<{ found: boolean }> {
+  await recordOpsEvent({
+    eventType: OPS_EVENT_TYPES.SHOP_UNINSTALLED,
+    key: domain,
+    message: opts.message,
+    metadata: { source: opts.source },
+  });
+  return markShopUninstalled(domain);
 }
 
 /**

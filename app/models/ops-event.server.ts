@@ -29,6 +29,12 @@ export const OPS_EVENT_TYPES = {
   API_ERROR: "api_error",
   SCAN_SIGNAL: "scan_signal",
   PAGE_VISIT: "page_visit",
+  // One row per reconcile-installs cron run (gc-dyt): a counts-only summary
+  // (checked/marked/skipped). Keyed on a CONSTANT ("reconcile-installs"), never a
+  // shop domain, and carries no per-shop PII — so it needs no per-shop redact
+  // coverage in deleteShopData (which purges by domain) and no prune coverage in
+  // pruneOpsEvents (one row/day is not high-volume, like digest_snapshot).
+  RECONCILE_SUMMARY: "reconcile_summary",
 } as const;
 
 export interface RecordOpsEventInput {
@@ -236,6 +242,7 @@ export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
   { key: "snapshot-metrics", intervalMs: DAY_MS },
   { key: "poll-theme-changes", intervalMs: DAY_MS },
   { key: "operator-digest", intervalMs: DAY_MS },
+  { key: "reconcile-installs", intervalMs: DAY_MS },
   { key: "weekly-scan", intervalMs: 7 * DAY_MS },
 ];
 

@@ -34,6 +34,7 @@ const mockDb = vi.hoisted(() => ({
     deleteMany: vi.fn(),
   },
   opsEvent: {
+    create: vi.fn(),
     deleteMany: vi.fn(),
   },
   // Array-form $transaction: resolve each staged operation in parallel.
@@ -58,6 +59,7 @@ import {
   dismissReviewPrompt,
   deleteShopData,
   markShopUninstalled,
+  markShopUninstalledWithEvent,
   reactivateShop,
   isLastSeenStale,
   touchShopLastSeen,
@@ -819,6 +821,49 @@ describe("markShopUninstalled", () => {
     await expect(markShopUninstalled("err.myshopify.com")).rejects.toThrow(
       "Transaction rolled back",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markShopUninstalledWithEvent (shared webhook + reconciler path, gc-dyt)
+// ---------------------------------------------------------------------------
+
+describe("markShopUninstalledWithEvent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.opsEvent.create.mockResolvedValue(undefined);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("records a SHOP_UNINSTALLED OpsEvent (keyed on domain, with source metadata) then marks", async () => {
+    const result = await markShopUninstalledWithEvent("bye.myshopify.com", {
+      source: "reconciler",
+      message: "reconciler-detected uninstall",
+    });
+
+    const createArg = mockDb.opsEvent.create.mock.calls[0][0];
+    expect(createArg.data).toMatchObject({
+      eventType: OPS_EVENT_TYPES.SHOP_UNINSTALLED,
+      key: "bye.myshopify.com",
+      message: "reconciler-detected uninstall",
+      metadata: { source: "reconciler" },
+    });
+    // Delegates the mark to markShopUninstalled → returns its found result.
+    expect(mockDb.shop.updateMany).toHaveBeenCalledOnce();
+    expect(result).toEqual({ found: true });
+  });
+
+  it("carries source=webhook for the webhook caller and reports found:false when the row is gone", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    const result = await markShopUninstalledWithEvent("gone.myshopify.com", {
+      source: "webhook",
+      message: "app/uninstalled",
+    });
+
+    expect(mockDb.opsEvent.create.mock.calls[0][0].data.metadata).toEqual({ source: "webhook" });
+    expect(result).toEqual({ found: false });
   });
 });
 
