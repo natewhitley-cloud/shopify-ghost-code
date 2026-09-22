@@ -44,11 +44,13 @@ import {
   computeScanStatusCounts,
   computeScansPerStore,
   countUninstallEventsExcluding,
+  DEFAULT_EXCLUDE_PREFIXES,
   DEFAULT_EXCLUDE_SHOPS,
   diffSnapshot,
   evaluateSnapshotMetrics,
   METRIC_THRESHOLDS,
   operatorDigest,
+  parseExcludePrefixes,
   parseExcludeShops,
   parseSnapshotMetadata,
   partitionShops,
@@ -62,13 +64,19 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("parseExcludeShops", () => {
+  // DEFAULT_EXCLUDE_SHOPS is a comma-separated superset of the KNOWN internal
+  // exact domains (dev store + throwaway test store).
+  const defaultSet = new Set(["nw-dev-store-2.myshopify.com", "teststore22022.myshopify.com"]);
+
   it("falls back to the default when unset", () => {
-    expect(parseExcludeShops(undefined)).toEqual(new Set([DEFAULT_EXCLUDE_SHOPS]));
+    expect(parseExcludeShops(undefined)).toEqual(defaultSet);
+    expect(defaultSet.has("nw-dev-store-2.myshopify.com")).toBe(true);
+    expect(defaultSet.has("teststore22022.myshopify.com")).toBe(true);
   });
 
   it("falls back to the default when blank/whitespace-only", () => {
-    expect(parseExcludeShops("   ")).toEqual(new Set([DEFAULT_EXCLUDE_SHOPS]));
-    expect(parseExcludeShops("")).toEqual(new Set([DEFAULT_EXCLUDE_SHOPS]));
+    expect(parseExcludeShops("   ")).toEqual(defaultSet);
+    expect(parseExcludeShops("")).toEqual(defaultSet);
   });
 
   it("splits a comma-separated list", () => {
@@ -86,6 +94,27 @@ describe("parseExcludeShops", () => {
   it("lowercases every domain", () => {
     expect(parseExcludeShops("A.MyShopify.com")).toEqual(new Set(["a.myshopify.com"]));
   });
+
+  it("parses the DEFAULT_EXCLUDE_SHOPS constant into its two known domains", () => {
+    expect(parseExcludeShops(DEFAULT_EXCLUDE_SHOPS)).toEqual(defaultSet);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseExcludePrefixes
+// ---------------------------------------------------------------------------
+
+describe("parseExcludePrefixes", () => {
+  it("falls back to the default (app-review-) when unset/blank", () => {
+    expect(parseExcludePrefixes(undefined)).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
+    expect(parseExcludePrefixes("   ")).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
+    expect(parseExcludePrefixes("")).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
+    expect(DEFAULT_EXCLUDE_PREFIXES).toBe("app-review-");
+  });
+
+  it("splits, trims, and lowercases a comma-separated list", () => {
+    expect(parseExcludePrefixes(" App-Review- , qa- , ")).toEqual(new Set(["app-review-", "qa-"]));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -95,6 +124,7 @@ describe("parseExcludeShops", () => {
 describe("partitionShops", () => {
   const windowStart = new Date("2026-08-28T00:00:00Z");
   const excludeSet = new Set(["dev-store.myshopify.com"]);
+  const excludePrefixes = new Set(["app-review-"]);
 
   it("excludes the dev store from every bucket", () => {
     const result = partitionShops(
@@ -115,6 +145,7 @@ describe("partitionShops", () => {
         },
       ],
       excludeSet,
+      excludePrefixes,
       windowStart,
     );
 
@@ -144,6 +175,7 @@ describe("partitionShops", () => {
         },
       ],
       excludeSet,
+      excludePrefixes,
       windowStart,
     );
 
@@ -164,7 +196,7 @@ describe("partitionShops", () => {
   });
 
   it("returns empty buckets for no shops", () => {
-    const result = partitionShops([], excludeSet, windowStart);
+    const result = partitionShops([], excludeSet, excludePrefixes, windowStart);
     expect(result).toEqual({
       totalActive: 0,
       newIn24h: 0,
@@ -172,6 +204,88 @@ describe("partitionShops", () => {
       activeShopIds: [],
       domainById: {},
     });
+  });
+
+  it("excludes a shop matching an exclude PREFIX from active, plan mix, and MRR", () => {
+    const result = partitionShops(
+      [
+        {
+          id: "review",
+          // Shopify's ephemeral App Review store — new domain each cycle.
+          domain: "app-review-fe7f0c8b-r102735-a1-primary.myshopify.com",
+          plan: "Professional",
+          installedAt: new Date("2026-08-29T00:00:00Z"),
+          uninstalledAt: null,
+        },
+        {
+          id: "real",
+          domain: "real.myshopify.com",
+          plan: "Standard",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+      ],
+      excludeSet,
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShops).toEqual([
+      { id: "real", domain: "real.myshopify.com", plan: "Standard" },
+    ]);
+    // Plan mix and MRR derive from activeShops, so the excluded review store
+    // contributes to neither.
+    expect(computePlanMix(result.activeShops)).toEqual({ free: 0, Standard: 1, Professional: 0 });
+    expect(computeMrr(computePlanMix(result.activeShops))).toBe(1 * 9);
+  });
+
+  it("excludes an exact-list domain (teststore22022) while keeping a real store", () => {
+    const result = partitionShops(
+      [
+        {
+          id: "test",
+          domain: "teststore22022.myshopify.com",
+          plan: "free",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+        {
+          id: "real",
+          domain: "real.myshopify.com",
+          plan: "Standard",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+      ],
+      new Set(["teststore22022.myshopify.com"]),
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShopIds).toEqual(["real"]);
+  });
+
+  it("does NOT over-match: a domain that CONTAINS but does not START WITH the prefix is kept", () => {
+    const result = partitionShops(
+      [
+        {
+          id: "midmatch",
+          // Contains "app-review-" but does not start with it — must be kept.
+          domain: "my-app-review-tool.myshopify.com",
+          plan: "Professional",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+      ],
+      excludeSet,
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShopIds).toEqual(["midmatch"]);
   });
 });
 

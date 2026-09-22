@@ -42,10 +42,21 @@ export const DAY_MS = 86_400_000;
 export const DIGEST_SNAPSHOT_EVENT_TYPE = "digest_snapshot";
 export const DIGEST_SNAPSHOT_KEY = "operator-digest";
 
-// Dev/operator store(s) excluded from every count. Comma-separated shop domains
-// in OPERATOR_EXCLUDE_SHOPS; defaults to Nathan's dev store so it is never
-// counted before the env var is configured (referenced in billing.server.ts).
-export const DEFAULT_EXCLUDE_SHOPS = "nw-dev-store-2.myshopify.com";
+// Dev/operator + throwaway-test store(s) excluded from every BUSINESS count.
+// Comma-separated shop domains in OPERATOR_EXCLUDE_SHOPS; the prod env var
+// OVERRIDES this default. This default is a safe superset of the KNOWN internal
+// exact domains so they are never counted before the env var is configured
+// (referenced in billing.server.ts). dev-store / dahi5e-1d.myshopify.com
+// membership is operator-configured via the env var; dahi5e-1d is intentionally
+// NOT listed here pending an operator real-vs-internal decision.
+export const DEFAULT_EXCLUDE_SHOPS = "nw-dev-store-2.myshopify.com,teststore22022.myshopify.com";
+
+// Domain PREFIXES excluded from every BUSINESS count. Shopify's App Review team
+// installs on EPHEMERAL `app-review-*` stores (a fresh domain each review
+// cycle), so a static exact list leaks again next review — they must be matched
+// by prefix. Comma-separated in OPERATOR_EXCLUDE_PREFIXES; the prod env var
+// overrides this default.
+export const DEFAULT_EXCLUDE_PREFIXES = "app-review-";
 
 // Print caps so one noisy shop / long tail can't blow out the email. The true
 // totals are always reported alongside the capped list.
@@ -71,6 +82,21 @@ export function parseExcludeShops(raw: string | undefined): Set<string> {
 }
 
 /**
+ * Parse OPERATOR_EXCLUDE_PREFIXES into a lowercased Set of domain prefixes.
+ * Unset or all-blank falls back to DEFAULT_EXCLUDE_PREFIXES so the ephemeral
+ * `app-review-*` stores are excluded before the env var is configured. A shop is
+ * excluded when its lowercased domain `startsWith` any prefix in this set.
+ */
+export function parseExcludePrefixes(raw: string | undefined): Set<string> {
+  const source = raw && raw.trim().length > 0 ? raw : DEFAULT_EXCLUDE_PREFIXES;
+  const prefixes = source
+    .split(",")
+    .map((p) => p.trim().toLowerCase())
+    .filter((p) => p.length > 0);
+  return new Set(prefixes);
+}
+
+/**
  * Partition all fetched shops into the digest's install buckets, excluding the
  * dev/operator store(s). Consumes Date fields (installedAt/uninstalledAt) and
  * returns ONLY serialization-safe counts/strings/ids so nothing but plain data
@@ -92,6 +118,7 @@ export function partitionShops(
     uninstalledAt: Date | null;
   }>,
   excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
   windowStart: Date,
 ): {
   totalActive: number;
@@ -100,7 +127,22 @@ export function partitionShops(
   activeShopIds: string[];
   domainById: Record<string, string>;
 } {
-  const nonExcluded = allShops.filter((s) => !excludeSet.has(s.domain.toLowerCase()));
+  // A shop is excluded when its lowercased domain is an EXACT match in
+  // excludeSet OR startsWith any prefix in excludePrefixes. The prefix path
+  // catches Shopify's EPHEMERAL `app-review-*` review stores (a new domain each
+  // review cycle) that a static exact list would leak. NOTE:
+  // dahi5e-1d.myshopify.com is intentionally NOT excluded here pending an
+  // operator real-vs-internal ($29 MRR?) decision — add it to
+  // OPERATOR_EXCLUDE_SHOPS to exclude later (ref: this session's digest
+  // reconciliation).
+  const nonExcluded = allShops.filter((s) => {
+    const domain = s.domain.toLowerCase();
+    if (excludeSet.has(domain)) return false;
+    for (const prefix of excludePrefixes) {
+      if (domain.startsWith(prefix)) return false;
+    }
+    return true;
+  });
   const active = nonExcluded.filter((s) => s.uninstalledAt === null);
   const activeShops = active.map((s) => ({ id: s.id, domain: s.domain, plan: s.plan }));
   return {
@@ -616,6 +658,7 @@ export const operatorDigest = inngest.createFunction(
   withCronHeartbeat("operator-digest", async ({ step }) => {
     const windowStart = new Date(Date.now() - DAY_MS);
     const excludeSet = parseExcludeShops(process.env.OPERATOR_EXCLUDE_SHOPS);
+    const excludePrefixes = parseExcludePrefixes(process.env.OPERATOR_EXCLUDE_PREFIXES);
 
     // Fetch all shops once, exclude the dev/operator store(s), and compute the
     // trailing-24h install counts INSIDE the step where the Prisma Date fields
@@ -632,7 +675,7 @@ export const operatorDigest = inngest.createFunction(
         },
       });
       // Dates are consumed inside the helper; only counts/strings/ids are returned.
-      return partitionShops(all, excludeSet, windowStart);
+      return partitionShops(all, excludeSet, excludePrefixes, windowStart);
     })) as {
       totalActive: number;
       newIn24h: number;
