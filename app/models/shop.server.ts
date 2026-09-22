@@ -10,9 +10,41 @@ export type ShopMetadata = {
   planReconciledAt: Date | null;
   installedAt: Date;
   uninstalledAt: Date | null;
+  lastSeenAt: Date | null;
   lastThemePublishAt: Date | null;
   hasSeenReviewPrompt: boolean;
 };
+
+/**
+ * Freshness window for the durable `lastSeenAt` "last login" stamp. The app-load
+ * loader only writes lastSeenAt when it is null or older than this window, so a
+ * merchant clicking through several pages in a session produces at most one write
+ * per window rather than one per navigation. Mirrors the plan-reconcile freshness
+ * guard (isPlanReconcileStale). Tunable.
+ */
+export const LAST_SEEN_FRESHNESS_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * True when lastSeenAt is stale (null = never stamped, always stale) and should
+ * be refreshed. Pure predicate — no DB access — so it can gate the write in the
+ * loader without a round-trip.
+ */
+export function isLastSeenStale(lastSeenAt: Date | null, now: Date = new Date()): boolean {
+  if (lastSeenAt === null) return true;
+  return now.getTime() - lastSeenAt.getTime() >= LAST_SEEN_FRESHNESS_MS;
+}
+
+/**
+ * Stamp `lastSeenAt` = now() for a shop by internal id. Called from the app
+ * loader on merchant page loads, freshness-gated by isLastSeenStale.
+ *
+ * Uses updateMany keyed on id so a missing row is a safe no-op (count 0) rather
+ * than a throw — this is best-effort activity telemetry and must never break the
+ * app load. The caller still wraps it defensively.
+ */
+export async function touchShopLastSeen(shopId: string): Promise<void> {
+  await db.shop.updateMany({ where: { id: shopId }, data: { lastSeenAt: new Date() } });
+}
 
 /**
  * Lightweight shop lookup that returns all shop metadata fields.
@@ -31,6 +63,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       planReconciledAt: true,
       installedAt: true,
       uninstalledAt: true,
+      lastSeenAt: true,
       lastThemePublishAt: true,
       hasSeenReviewPrompt: true,
     },
@@ -232,6 +265,8 @@ export async function deleteShopData(domain: string) {
     db.session.deleteMany({ where: { shop: domain } }),
     // OpsEvent has no Shop FK, so cascade skips it — purge the rows carrying the
     // domain (key on uninstall, metadata.shop / metadata.shopDomain otherwise).
+    // The `page_visit` activity event is domain-keyed (key = session.shop), so
+    // the `key: domain` clause already reaches it — no extra clause needed.
     // The per-scan `scan_signal` event is the exception: it keys on scanId and
     // carries the INTERNAL shop cuid in metadata.shopId (not the domain), so the
     // shopId clause below is required to reach those rows.

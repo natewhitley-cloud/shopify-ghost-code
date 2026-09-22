@@ -58,6 +58,9 @@ import {
   deleteShopData,
   markShopUninstalled,
   reactivateShop,
+  isLastSeenStale,
+  touchShopLastSeen,
+  LAST_SEEN_FRESHNESS_MS,
 } from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +94,7 @@ describe("getShopMetadata", () => {
         planReconciledAt: true,
         installedAt: true,
         uninstalledAt: true,
+        lastSeenAt: true,
         lastThemePublishAt: true,
         hasSeenReviewPrompt: true,
       },
@@ -673,6 +677,25 @@ describe("deleteShopData", () => {
     });
   });
 
+  it("removes page_visit OpsEvent rows keyed on the domain via the key clause", async () => {
+    // page_visit events are keyed on the shop domain (key = session.shop), so the
+    // `key: domain` OR-clause already reaches them — no dedicated clause needed.
+    const existingShop = {
+      id: "shop-gdpr-pv",
+      domain: "delete-me.myshopify.com",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 7 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    const opsWhere = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
+    expect(opsWhere.OR).toContainEqual({ key: "delete-me.myshopify.com" });
+  });
+
   it("purges scan_signal OpsEvent rows via the internal shopId clause (they carry no domain)", async () => {
     // scan_signal events key on scanId and store the internal shop cuid in
     // metadata.shopId (not the domain), so only the shopId OR-clause reaches
@@ -828,5 +851,55 @@ describe("reactivateShop", () => {
 
     await expect(reactivateShop("gone.myshopify.com")).resolves.toBeUndefined();
     expect(mockDb.shop.updateMany).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isLastSeenStale
+// ---------------------------------------------------------------------------
+
+describe("isLastSeenStale", () => {
+  const now = new Date("2026-06-17T12:00:00Z");
+
+  it("treats null (never stamped) as stale", () => {
+    expect(isLastSeenStale(null, now)).toBe(true);
+  });
+
+  it("is fresh within the freshness window", () => {
+    const recent = new Date(now.getTime() - (LAST_SEEN_FRESHNESS_MS - 1000));
+    expect(isLastSeenStale(recent, now)).toBe(false);
+  });
+
+  it("is stale at/after the freshness window", () => {
+    const old = new Date(now.getTime() - LAST_SEEN_FRESHNESS_MS);
+    expect(isLastSeenStale(old, now)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// touchShopLastSeen
+// ---------------------------------------------------------------------------
+
+describe("touchShopLastSeen", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("stamps lastSeenAt to a Date via updateMany keyed on the internal id", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await touchShopLastSeen("shop-123");
+
+    const callArg = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(callArg.where).toEqual({ id: "shop-123" });
+    expect(callArg.data.lastSeenAt).toBeInstanceOf(Date);
+    // updateMany (not update) so a missing row is a safe no-op, not a throw.
+    expect(mockDb.shop.update).not.toHaveBeenCalled();
+  });
+
+  it("is a safe no-op (does not throw) when the shop row is absent", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(touchShopLastSeen("gone")).resolves.toBeUndefined();
   });
 });

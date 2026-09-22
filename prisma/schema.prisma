@@ -59,6 +59,11 @@ model Shop {
   // on reinstall (see upsertShop). Iterators/metrics exclude non-null rows so a
   // dead shop is never scanned or counted as an active install (gc-grd).
   uninstalledAt       DateTime?
+  // Last time a merchant loaded any authenticated app page (freshness-gated
+  // write). Null = never seen since this column shipped. Durable "last login";
+  // survives beyond the page_visit event retention window. Cleared/kept across
+  // reconciles; removed on shop delete (GDPR cascade).
+  lastSeenAt          DateTime?
   lastThemePublishAt  DateTime?
   hasSeenReviewPrompt Boolean          @default(false)
   scans               Scan[]

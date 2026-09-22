@@ -447,7 +447,16 @@ describe("getStaleCrons", () => {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 describe("pruneOpsEvents", () => {
-  it("deletes cron_heartbeat rows older than 30d by default and returns the count", async () => {
+  // The predicate is a two-branch OR, one branch per pruned event type. Helpers
+  // pull each branch out by eventType so assertions don't depend on OR order.
+  function branchFor(
+    where: { OR: Array<{ eventType: string; createdAt: { lt: Date } }> },
+    type: string,
+  ) {
+    return where.OR.find((clause) => clause.eventType === type);
+  }
+
+  it("deletes cron_heartbeat (30d) and page_visit (14d) rows and returns the total count", async () => {
     mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 42 });
     const before = Date.now();
 
@@ -455,35 +464,49 @@ describe("pruneOpsEvents", () => {
 
     expect(deleted).toBe(42);
     const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
-    expect(where.eventType).toBe(OPS_EVENT_TYPES.CRON_HEARTBEAT);
-    const cutoff = where.createdAt.lt as Date;
-    // Cutoff is ~30d before now (allow a small clock delta during the call).
-    expect(before - cutoff.getTime()).toBeGreaterThanOrEqual(30 * DAY_MS - 1000);
-    expect(before - cutoff.getTime()).toBeLessThanOrEqual(30 * DAY_MS + 1000);
+
+    const heartbeat = branchFor(where, OPS_EVENT_TYPES.CRON_HEARTBEAT);
+    expect(heartbeat).toBeDefined();
+    const hbCutoff = heartbeat!.createdAt.lt;
+    expect(before - hbCutoff.getTime()).toBeGreaterThanOrEqual(30 * DAY_MS - 1000);
+    expect(before - hbCutoff.getTime()).toBeLessThanOrEqual(30 * DAY_MS + 1000);
+
+    const pageVisit = branchFor(where, OPS_EVENT_TYPES.PAGE_VISIT);
+    expect(pageVisit).toBeDefined();
+    const pvCutoff = pageVisit!.createdAt.lt;
+    expect(before - pvCutoff.getTime()).toBeGreaterThanOrEqual(14 * DAY_MS - 1000);
+    expect(before - pvCutoff.getTime()).toBeLessThanOrEqual(14 * DAY_MS + 1000);
   });
 
-  it("only targets cron_heartbeat — function_failure is never in the delete predicate (preserved at any age)", async () => {
+  it("targets ONLY cron_heartbeat and page_visit — no other type can match (preserved at any age)", async () => {
     mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 0 });
 
     await pruneOpsEvents();
 
     const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
-    // The predicate pins a single eventType; function_failure (and every other
-    // type) is excluded, so no function_failure row can match regardless of age.
-    expect(where.eventType).toBe("cron_heartbeat");
-    expect(where.eventType).not.toBe("function_failure");
-    // Only the eventType + age bound the delete — nothing widens it.
-    expect(Object.keys(where).sort()).toEqual(["createdAt", "eventType"]);
+    // Every OR branch pins a single eventType, so function_failure (and every
+    // other type) is excluded and can never match regardless of age.
+    const types = where.OR.map((clause: { eventType: string }) => clause.eventType).sort();
+    expect(types).toEqual(["cron_heartbeat", "page_visit"]);
+    // Each branch is bounded only by eventType + createdAt — nothing widens it.
+    for (const clause of where.OR) {
+      expect(Object.keys(clause).sort()).toEqual(["createdAt", "eventType"]);
+    }
   });
 
-  it("honours a custom retention window", async () => {
+  it("honours custom retention windows for both types", async () => {
     mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 3 });
     const before = Date.now();
 
-    await pruneOpsEvents({ heartbeatOlderThanDays: 90 });
+    await pruneOpsEvents({ heartbeatOlderThanDays: 90, pageVisitOlderThanDays: 7 });
 
-    const cutoff = mockDb.opsEvent.deleteMany.mock.calls[0][0].where.createdAt.lt as Date;
-    expect(before - cutoff.getTime()).toBeGreaterThanOrEqual(90 * DAY_MS - 1000);
-    expect(before - cutoff.getTime()).toBeLessThanOrEqual(90 * DAY_MS + 1000);
+    const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
+    const hbCutoff = branchFor(where, OPS_EVENT_TYPES.CRON_HEARTBEAT)!.createdAt.lt;
+    expect(before - hbCutoff.getTime()).toBeGreaterThanOrEqual(90 * DAY_MS - 1000);
+    expect(before - hbCutoff.getTime()).toBeLessThanOrEqual(90 * DAY_MS + 1000);
+
+    const pvCutoff = branchFor(where, OPS_EVENT_TYPES.PAGE_VISIT)!.createdAt.lt;
+    expect(before - pvCutoff.getTime()).toBeGreaterThanOrEqual(7 * DAY_MS - 1000);
+    expect(before - pvCutoff.getTime()).toBeLessThanOrEqual(7 * DAY_MS + 1000);
   });
 });

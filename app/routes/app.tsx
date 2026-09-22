@@ -4,7 +4,14 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Outlet, useLoaderData, useRouteError } from "react-router";
 
 import { logger } from "../lib/logger.server";
-import { getShopMetadata, reactivateShop, upsertShop } from "../models/shop.server";
+import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
+import {
+  getShopMetadata,
+  isLastSeenStale,
+  reactivateShop,
+  touchShopLastSeen,
+  upsertShop,
+} from "../models/shop.server";
 import { isPlanReconcileStale, reconcileShopPlan } from "../services/billing-reconciler.server";
 import { authenticate } from "../shopify.server";
 
@@ -57,6 +64,35 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  // Activity telemetry (gc): capture a durable "last login" and a per-navigation
+  // page_visit on every authenticated merchant page load. Best-effort and
+  // NON-BLOCKING — a telemetry failure must never break the app load.
+  const path = new URL(request.url).pathname;
+  // Skip operator-only admin pages (gated by ADMIN_SHOP_DOMAINS) — that traffic
+  // is the operator's own, not merchant activity.
+  if (!path.startsWith("/app/admin")) {
+    // Freshness-gated lastSeenAt stamp: write at most once per window so a
+    // merchant clicking through pages doesn't write on every navigation. Wrapped
+    // so a write failure never breaks the loader.
+    if (shop && isLastSeenStale(shop.lastSeenAt)) {
+      try {
+        await touchShopLastSeen(shop.id);
+      } catch (err) {
+        logger.error("last-seen-touch-failed", {
+          shop: session.shop,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    // One page_visit per authenticated navigation. Domain-keyed so GDPR redact
+    // (deleteShopData's `key: domain` clause) reaches it. recordOpsEvent never throws.
+    await recordOpsEvent({
+      eventType: OPS_EVENT_TYPES.PAGE_VISIT,
+      key: session.shop,
+      metadata: { path },
+    });
   }
 
   // eslint-disable-next-line no-undef

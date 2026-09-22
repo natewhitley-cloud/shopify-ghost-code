@@ -190,7 +190,7 @@ describe("snapshotMetrics — ops-event prune", () => {
 
     expect(mockPruneOpsEvents).toHaveBeenCalledOnce();
     expect(mockLoggerInfo).toHaveBeenCalledWith("prune-ops-events-complete", {
-      deletedHeartbeats: 17,
+      deletedOpsEvents: 17,
     });
   });
 });
