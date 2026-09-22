@@ -33,6 +33,16 @@ vi.mock("../../app/models/scan.server", () => ({
   getDistinctThemesForShop: vi.fn(),
 }));
 
+vi.mock("../../app/models/ignored-finding.server", () => ({
+  getIgnoredFindingsForShop: vi.fn(),
+}));
+
+// gc-qrf: the Findings column recomputes each scan's total via
+// getFilteredFindingSummary only when the shop has active suppressions.
+vi.mock("../../app/services/finding-aggregation.server", () => ({
+  getFilteredFindingSummary: vi.fn(),
+}));
+
 vi.mock("../../app/lib/format", () => ({
   formatDate: vi.fn().mockReturnValue("2026-03-22"),
   statusTone: vi.fn().mockReturnValue("info"),
@@ -43,9 +53,11 @@ vi.mock("../../app/lib/format", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getScansForShop, getDistinctThemesForShop } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.scans._index";
+import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -56,6 +68,8 @@ const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
 const mockGetDistinctThemesForShop = getDistinctThemesForShop as ReturnType<typeof vi.fn>;
+const mockGetIgnoredFindings = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
+const mockGetFilteredFindingSummary = getFilteredFindingSummary as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -108,6 +122,12 @@ beforeEach(() => {
 
   mockGetShopMetadata.mockResolvedValue(SHOP);
   mockGetDistinctThemesForShop.mockResolvedValue(["Dawn"]);
+  // Default: shop has no suppressions, so the loader keeps the lean
+  // denormalized findingCount path (zero calls to getFilteredFindingSummary).
+  mockGetIgnoredFindings.mockResolvedValue({
+    fingerprints: new Set<string>(),
+    appNames: new Set<string>(),
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -293,6 +313,72 @@ describe("app.scans loader", () => {
       expect(result.theme).toBe("");
       expect(result.status).toBe("");
       expect(mockGetDistinctThemesForShop).not.toHaveBeenCalled();
+    });
+  });
+
+  // gc-qrf: the Findings column must be ignore-aware — the denormalized
+  // Scan.findingCount never drops after a merchant dismisses a finding.
+  describe("ignore-aware finding counts", () => {
+    it("keeps the raw findingCount and skips getFilteredFindingSummary when the shop has no ignores", async () => {
+      const scans = [makeScan("scan-1"), makeScan("scan-2")];
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
+
+      const result = (await loader(makeLoaderArgs())) as {
+        scans: Array<{ id: string; displayFindingCount: number }>;
+      };
+
+      expect(result.scans.map((s) => s.displayFindingCount)).toEqual([3, 3]);
+      expect(mockGetFilteredFindingSummary).not.toHaveBeenCalled();
+    });
+
+    it("drops the count after an INSTANCE (fingerprint) ignore", async () => {
+      const scans = [makeScan("scan-1")];
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set(["deadbeef"]),
+        appNames: new Set<string>(),
+      });
+      // Raw findingCount is 3; the ignore-filtered total is 2.
+      mockGetFilteredFindingSummary.mockResolvedValue({
+        total: 2,
+        bySeverity: { HIGH: 0, MEDIUM: 1, LOW: 1 },
+        byType: {},
+      });
+
+      const result = (await loader(makeLoaderArgs())) as {
+        scans: Array<{ id: string; displayFindingCount: number }>;
+      };
+
+      expect(result.scans[0].displayFindingCount).toBe(2);
+      expect(mockGetFilteredFindingSummary).toHaveBeenCalledWith("scan-1", {
+        fingerprints: new Set(["deadbeef"]),
+        appNames: new Set<string>(),
+      });
+    });
+
+    it("drops the count after an APP ignore", async () => {
+      const scans = [makeScan("scan-1")];
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["Acme Reviews"]),
+      });
+      // Raw findingCount is 3; suppressing the whole app leaves 0.
+      mockGetFilteredFindingSummary.mockResolvedValue({
+        total: 0,
+        bySeverity: { HIGH: 0, MEDIUM: 0, LOW: 0 },
+        byType: {},
+      });
+
+      const result = (await loader(makeLoaderArgs())) as {
+        scans: Array<{ id: string; displayFindingCount: number }>;
+      };
+
+      expect(result.scans[0].displayFindingCount).toBe(0);
+      expect(mockGetFilteredFindingSummary).toHaveBeenCalledWith("scan-1", {
+        fingerprints: new Set<string>(),
+        appNames: new Set(["Acme Reviews"]),
+      });
     });
   });
 });
