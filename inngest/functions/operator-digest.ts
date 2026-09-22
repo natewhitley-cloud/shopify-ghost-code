@@ -42,15 +42,29 @@ export const DAY_MS = 86_400_000;
 export const DIGEST_SNAPSHOT_EVENT_TYPE = "digest_snapshot";
 export const DIGEST_SNAPSHOT_KEY = "operator-digest";
 
-// Dev/operator store(s) excluded from every count. Comma-separated shop domains
-// in OPERATOR_EXCLUDE_SHOPS; defaults to Nathan's dev store so it is never
-// counted before the env var is configured (referenced in billing.server.ts).
-export const DEFAULT_EXCLUDE_SHOPS = "nw-dev-store-2.myshopify.com";
+// Dev/operator + throwaway-test + internal store(s) excluded from every BUSINESS
+// count. Comma-separated shop domains in OPERATOR_EXCLUDE_SHOPS; the prod env var
+// OVERRIDES this default. This default is a safe superset of the KNOWN internal
+// exact domains so they are never counted before the env var is configured
+// (referenced in billing.server.ts). dahi5e-1d.myshopify.com is an INTERNAL store
+// (Professional *test* charge, not a real merchant subscription) confirmed by the
+// operator 2026-09-22 (0 real Professional subscribers), so it is excluded from
+// all business metrics here.
+export const DEFAULT_EXCLUDE_SHOPS =
+  "nw-dev-store-2.myshopify.com,teststore22022.myshopify.com,dahi5e-1d.myshopify.com";
+
+// Domain PREFIXES excluded from every BUSINESS count. Shopify's App Review team
+// installs on EPHEMERAL `app-review-*` stores (a fresh domain each review
+// cycle), so a static exact list leaks again next review — they must be matched
+// by prefix. Comma-separated in OPERATOR_EXCLUDE_PREFIXES; the prod env var
+// overrides this default.
+export const DEFAULT_EXCLUDE_PREFIXES = "app-review-";
 
 // Print caps so one noisy shop / long tail can't blow out the email. The true
 // totals are always reported alongside the capped list.
 const SCANS_PER_STORE_LIMIT = 10;
 const FINDING_TYPES_LIMIT = 8;
+const TOP_PAGES_LIMIT = 8;
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit testing; no Prisma/Shopify/IO)
@@ -68,6 +82,42 @@ export function parseExcludeShops(raw: string | undefined): Set<string> {
     .map((d) => d.trim().toLowerCase())
     .filter((d) => d.length > 0);
   return new Set(domains);
+}
+
+/**
+ * Parse OPERATOR_EXCLUDE_PREFIXES into a lowercased Set of domain prefixes.
+ * Unset or all-blank falls back to DEFAULT_EXCLUDE_PREFIXES so the ephemeral
+ * `app-review-*` stores are excluded before the env var is configured. A shop is
+ * excluded when its lowercased domain `startsWith` any prefix in this set.
+ */
+export function parseExcludePrefixes(raw: string | undefined): Set<string> {
+  const source = raw && raw.trim().length > 0 ? raw : DEFAULT_EXCLUDE_PREFIXES;
+  const prefixes = source
+    .split(",")
+    .map((p) => p.trim().toLowerCase())
+    .filter((p) => p.length > 0);
+  return new Set(prefixes);
+}
+
+/**
+ * Shared exclusion predicate: a shop is excluded when its lowercased domain is an
+ * EXACT match in `excludeSet` OR `startsWith` any prefix in `excludePrefixes`.
+ * The prefix path catches Shopify's EPHEMERAL `app-review-*` review stores (a new
+ * domain each review cycle) that a static exact list would leak. Reused by
+ * `partitionShops` (install/plan/MRR buckets) and `aggregateActivity` (last-seen
+ * + page-visit section) so both sections exclude the SAME dev/test/review stores.
+ */
+export function isExcluded(
+  domain: string,
+  excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
+): boolean {
+  const d = domain.toLowerCase();
+  if (excludeSet.has(d)) return true;
+  for (const prefix of excludePrefixes) {
+    if (d.startsWith(prefix)) return true;
+  }
+  return false;
 }
 
 /**
@@ -92,6 +142,7 @@ export function partitionShops(
     uninstalledAt: Date | null;
   }>,
   excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
   windowStart: Date,
 ): {
   totalActive: number;
@@ -100,7 +151,12 @@ export function partitionShops(
   activeShopIds: string[];
   domainById: Record<string, string>;
 } {
-  const nonExcluded = allShops.filter((s) => !excludeSet.has(s.domain.toLowerCase()));
+  // Exclusion (exact-domain OR prefix) is shared with the activity section via
+  // isExcluded. NOTE: dahi5e-1d.myshopify.com IS excluded here (via the default
+  // exclude set) — the operator confirmed 2026-09-22 it is an internal store
+  // (Professional test charge), with 0 real Professional subscribers, so its MRR
+  // contribution is $0 and it must not appear in any business metric.
+  const nonExcluded = allShops.filter((s) => !isExcluded(s.domain, excludeSet, excludePrefixes));
   const active = nonExcluded.filter((s) => s.uninstalledAt === null);
   const activeShops = active.map((s) => ({ id: s.id, domain: s.domain, plan: s.plan }));
   return {
@@ -118,15 +174,19 @@ export function partitionShops(
 }
 
 /**
- * Count SHOP_UNINSTALLED events whose `key` (the shop domain) is not in the
- * exclude set, so the uninstalls line is dev-store-consistent with every other
- * metric. Case-insensitive on the domain; null keys are ignored.
+ * Count SHOP_UNINSTALLED events whose `key` (the shop domain) is not excluded, so
+ * the uninstalls line is dev-store-consistent with every other metric. Honors
+ * BOTH exact-domain and prefix exclusion via `isExcluded` (same as
+ * `partitionShops`), so an ephemeral `app-review-*` store excluded everywhere
+ * else isn't silently counted here. Null keys are ignored.
  */
 export function countUninstallEventsExcluding(
   events: Array<{ key: string | null }>,
   excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
 ): number {
-  return events.filter((e) => e.key != null && !excludeSet.has(e.key.toLowerCase())).length;
+  return events.filter((e) => e.key != null && !isExcluded(e.key, excludeSet, excludePrefixes))
+    .length;
 }
 
 /** Active-install counts per live plan tier. Keys mirror PLANS values. */
@@ -289,6 +349,131 @@ export function computeResolutionRollup(
 }
 
 // ---------------------------------------------------------------------------
+// Activity telemetry: last-seen + page-visit aggregation
+//
+// Backed by the durable Shop.lastSeenAt column and the domain-keyed `page_visit`
+// OpsEvent stream (one row per authenticated non-admin /app/* load). Surfaces,
+// per installed merchant, when they last logged in and how many pages they
+// viewed in the trailing 24h / 7d, plus a normalized top-pages breakdown.
+// ---------------------------------------------------------------------------
+
+/** Per-shop activity row (lastSeenAt serialized to an ISO string / null). */
+export interface ActivityShopRow {
+  domain: string;
+  lastSeenAt: string | null;
+  visits24h: number;
+  visits7d: number;
+}
+
+/** Serialization-safe activity rollup crossing the Inngest step boundary. */
+export interface ActivitySummary {
+  /** Active, non-excluded installs (the denominator for the seen-counts). */
+  totalActive: number;
+  /** Active shops whose lastSeenAt falls in the trailing 24h / 7d. */
+  seen24h: number;
+  seen7d: number;
+  perShop: ActivityShopRow[];
+  topPages: Array<{ path: string; count: number }>;
+}
+
+/**
+ * Collapse dynamic scan-id route segments so the top-pages breakdown groups by
+ * ROUTE, not by individual scan id. `/app/scans/<id>` → `/app/scans/:id`,
+ * `/app/scans/<id>/diff` → `/app/scans/:id/diff`, `/app/scans/<id>/export` →
+ * `/app/scans/:id/export`. Static paths (including the `/app/scans` index) are
+ * returned untouched. Pure and total — any non-matching path passes through.
+ */
+export function normalizeActivityPath(path: string): string {
+  return path.replace(/^(\/app\/scans\/)[^/]+/, "$1:id");
+}
+
+/** Read a page_visit event's `metadata.path`, or null if missing/malformed. */
+function extractVisitPath(metadata: unknown): string | null {
+  if (typeof metadata !== "object" || metadata === null) return null;
+  const p = (metadata as Record<string, unknown>).path;
+  return typeof p === "string" ? p : null;
+}
+
+/**
+ * Aggregate the trailing-7d page_visit stream + active shops into the digest's
+ * ActivitySummary. Pure (consumes Dates, emits serialization-safe output).
+ *
+ * Exclusion mirrors partitionShops via the SHARED isExcluded predicate, applied
+ * to BOTH the shop list (per-shop rows + seen-counts) AND each event's `key`
+ * (domain), so dev/test/`app-review-*` stores never appear in the per-shop rows
+ * OR the top-pages breakdown. 24h counts are derived in-memory from each event's
+ * createdAt so only one (7d) query is needed. Shops are sorted most-recently-seen
+ * first, with never-seen shops ("never") last.
+ */
+export function aggregateActivity(
+  events: Array<{ key: string | null; metadata: unknown; createdAt: Date }>,
+  shops: Array<{ domain: string; lastSeenAt: Date | null }>,
+  now: Date,
+  excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
+): ActivitySummary {
+  const dayAgo = now.getTime() - DAY_MS;
+  const weekAgo = now.getTime() - 7 * DAY_MS;
+
+  const activeShops = shops.filter((s) => !isExcluded(s.domain, excludeSet, excludePrefixes));
+
+  // Per-domain visit counts + normalized top-pages from real-merchant events only.
+  const visitsByDomain = new Map<string, { v24: number; v7: number }>();
+  const pageCounts = new Map<string, number>();
+  for (const e of events) {
+    if (e.key == null) continue;
+    const domain = e.key.toLowerCase();
+    if (isExcluded(domain, excludeSet, excludePrefixes)) continue;
+    const t = e.createdAt.getTime();
+    if (t < weekAgo) continue; // defensive; the query already bounds to 7d
+    const c = visitsByDomain.get(domain) ?? { v24: 0, v7: 0 };
+    c.v7 += 1;
+    if (t >= dayAgo) c.v24 += 1;
+    visitsByDomain.set(domain, c);
+    const rawPath = extractVisitPath(e.metadata);
+    if (rawPath !== null) {
+      const norm = normalizeActivityPath(rawPath);
+      pageCounts.set(norm, (pageCounts.get(norm) ?? 0) + 1);
+    }
+  }
+
+  const perShop: ActivityShopRow[] = activeShops.map((s) => {
+    const c = visitsByDomain.get(s.domain.toLowerCase()) ?? { v24: 0, v7: 0 };
+    return {
+      domain: s.domain,
+      lastSeenAt: s.lastSeenAt ? s.lastSeenAt.toISOString() : null,
+      visits24h: c.v24,
+      visits7d: c.v7,
+    };
+  });
+
+  // Most-recently-seen first; never-seen (null) last. ISO strings sort
+  // lexicographically = chronologically, so a descending string sort is correct.
+  perShop.sort((a, b) => {
+    if (a.lastSeenAt === b.lastSeenAt) return a.domain.localeCompare(b.domain);
+    if (a.lastSeenAt === null) return 1;
+    if (b.lastSeenAt === null) return -1;
+    return b.lastSeenAt.localeCompare(a.lastSeenAt);
+  });
+
+  // "Seen" is the durable lastSeenAt signal (not derived from page_visit rows).
+  let seen24h = 0;
+  let seen7d = 0;
+  for (const s of activeShops) {
+    if (!s.lastSeenAt) continue;
+    const t = s.lastSeenAt.getTime();
+    if (t >= weekAgo) seen7d += 1;
+    if (t >= dayAgo) seen24h += 1;
+  }
+
+  const topPages = [...pageCounts.entries()]
+    .map(([path, count]) => ({ path, count }))
+    .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+
+  return { totalActive: activeShops.length, seen24h, seen7d, perShop, topPages };
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot-metric threshold evaluation (gc-06e.13, sub-item 3)
 //
 // MetricSnapshot rows were collected but never evaluated. This adds conservative
@@ -414,6 +599,9 @@ export interface OperatorDigestData {
     submissionsByStatus: { PENDING: number; ACCEPTED: number; REJECTED: number };
   };
   activation: { activated: number; dormant: number; totalActive: number };
+  /** Last-seen + page-visit activity (last day / week). Optional so callers/tests
+   * that predate it still type-check; absent => rendered as "No activity data". */
+  activity?: ActivitySummary;
   ops: {
     functionFailures: number;
     workerFallbacks: number;
@@ -556,6 +744,39 @@ export function buildDigestBody(data: OperatorDigestData): string {
   lines.push(`  Dormant (0 scans ever): ${activation.dormant}`);
   lines.push("");
 
+  const { activity } = data;
+  lines.push("ACTIVITY (last-seen & page visits)");
+  if (!activity) {
+    lines.push("  No activity data");
+  } else {
+    lines.push(
+      `  Seen in last 24h: ${activity.seen24h} of ${activity.totalActive} active | last 7d: ${activity.seen7d} of ${activity.totalActive}`,
+    );
+    lines.push("  By shop (most-recently-seen first):");
+    if (activity.perShop.length === 0) {
+      lines.push("    No active shops");
+    } else {
+      for (const s of activity.perShop) {
+        const seen = s.lastSeenAt ?? "never";
+        lines.push(
+          `    ${s.domain} -- last seen ${seen} -- visits 24h/7d: ${s.visits24h} / ${s.visits7d}`,
+        );
+      }
+    }
+    lines.push("  Top pages (7d):");
+    if (activity.topPages.length === 0) {
+      lines.push("    No page visits in the last 7 days");
+    } else {
+      for (const p of activity.topPages.slice(0, TOP_PAGES_LIMIT)) {
+        lines.push(`    ${p.path} -- ${p.count}`);
+      }
+      if (activity.topPages.length > TOP_PAGES_LIMIT) {
+        lines.push(`    ...and ${activity.topPages.length - TOP_PAGES_LIMIT} more page(s)`);
+      }
+    }
+  }
+  lines.push("");
+
   // ----- Section B: Operational health -----
   lines.push("=== OPERATIONAL HEALTH (last 24h) ===");
   lines.push("");
@@ -616,6 +837,7 @@ export const operatorDigest = inngest.createFunction(
   withCronHeartbeat("operator-digest", async ({ step }) => {
     const windowStart = new Date(Date.now() - DAY_MS);
     const excludeSet = parseExcludeShops(process.env.OPERATOR_EXCLUDE_SHOPS);
+    const excludePrefixes = parseExcludePrefixes(process.env.OPERATOR_EXCLUDE_PREFIXES);
 
     // Fetch all shops once, exclude the dev/operator store(s), and compute the
     // trailing-24h install counts INSIDE the step where the Prisma Date fields
@@ -632,7 +854,7 @@ export const operatorDigest = inngest.createFunction(
         },
       });
       // Dates are consumed inside the helper; only counts/strings/ids are returned.
-      return partitionShops(all, excludeSet, windowStart);
+      return partitionShops(all, excludeSet, excludePrefixes, windowStart);
     })) as {
       totalActive: number;
       newIn24h: number;
@@ -656,7 +878,7 @@ export const operatorDigest = inngest.createFunction(
         },
         select: { key: true },
       });
-      return countUninstallEventsExcluding(rows, excludeSet);
+      return countUninstallEventsExcluding(rows, excludeSet, excludePrefixes);
     })) as number;
 
     // In-window scans scoped to ACTIVE installs (excludes the dev store AND
@@ -744,6 +966,32 @@ export const operatorDigest = inngest.createFunction(
       });
       return rows.length;
     })) as number;
+
+    // Activity: durable last-seen per active install + trailing-7d page_visit
+    // volume (24h counts derived in-memory, so one query). The shop set is PINNED
+    // to get-shops' already-filtered activeShopIds (not a second independent
+    // `uninstalledAt: null` query) so the ACTIVITY section's "N active" can't
+    // disagree with the BUSINESS section's "Total active" in the same email. An
+    // `id IN []` returns [] cheaply when there are no active shops. aggregateActivity
+    // still applies the SAME isExcluded predicate as partitionShops to filter the
+    // page_visit event keys for the top-pages breakdown.
+    const activity = (await step.run("get-activity", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const { OPS_EVENT_TYPES } = await import("../../app/models/ops-event.server");
+      const now = new Date();
+      const sevenDaysAgo = new Date(now.getTime() - 7 * DAY_MS);
+      const [shops, events] = await Promise.all([
+        db.shop.findMany({
+          where: { id: { in: activeShopIds } },
+          select: { domain: true, lastSeenAt: true },
+        }),
+        db.opsEvent.findMany({
+          where: { eventType: OPS_EVENT_TYPES.PAGE_VISIT, createdAt: { gte: sevenDaysAgo } },
+          select: { key: true, metadata: true, createdAt: true },
+        }),
+      ]);
+      return aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+    })) as ActivitySummary;
 
     // BillingEvent breakdown for the window.
     const billingEvents = (await step.run("get-billing-events", async () => {
@@ -868,6 +1116,7 @@ export const operatorDigest = inngest.createFunction(
         dormant: shopData.totalActive - activatedCount,
         totalActive: shopData.totalActive,
       },
+      activity,
       ops,
       anomalies: metricAnomalies.anomalies,
     };

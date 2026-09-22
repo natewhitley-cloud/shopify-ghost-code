@@ -28,6 +28,13 @@ export const OPS_EVENT_TYPES = {
   WEBHOOK_FAILURE: "webhook_failure",
   API_ERROR: "api_error",
   SCAN_SIGNAL: "scan_signal",
+  PAGE_VISIT: "page_visit",
+  // One row per reconcile-installs cron run (gc-dyt): a counts-only summary
+  // (checked/marked/skipped). Keyed on a CONSTANT ("reconcile-installs"), never a
+  // shop domain, and carries no per-shop PII — so it needs no per-shop redact
+  // coverage in deleteShopData (which purges by domain) and no prune coverage in
+  // pruneOpsEvents (one row/day is not high-volume, like digest_snapshot).
+  RECONCILE_SUMMARY: "reconcile_summary",
 } as const;
 
 export interface RecordOpsEventInput {
@@ -235,6 +242,7 @@ export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
   { key: "snapshot-metrics", intervalMs: DAY_MS },
   { key: "poll-theme-changes", intervalMs: DAY_MS },
   { key: "operator-digest", intervalMs: DAY_MS },
+  { key: "reconcile-installs", intervalMs: DAY_MS },
   { key: "weekly-scan", intervalMs: 7 * DAY_MS },
 ];
 
@@ -302,34 +310,50 @@ export async function getStaleCrons(
 /**
  * Retention prune for the OpsEvent table (gc-06e.17).
  *
- * Deletes stale `cron_heartbeat` rows older than `heartbeatOlderThanDays`
- * (default 30d) and returns the number deleted. Heartbeats are the
- * highest-volume, lowest-value rows in the table — one per cron per run
- * (~55k/yr, unbounded) whose only consumer is the dead-man's-switch, which reads
- * the LATEST heartbeat per key (getStaleCrons / getLatestHeartbeat). A heartbeat
- * older than a day is already dead weight, so a 30d window keeps ample recent
- * history for /health/deep while bounding table growth.
+ * Deletes two independently-bounded high-volume event types and returns the
+ * total number of rows deleted:
  *
- * DELIBERATELY MINIMAL: this prunes ONLY `cron_heartbeat`. `function_failure`
- * rows back the operator digest's failure history and are left untouched here at
- * any age. The remaining low-volume types (api_error, webhook_failure,
- * digest_snapshot, worker_fallback) are also left alone — they don't accumulate
- * the way heartbeats do. Widen this predicate only alongside a matching
- * per-type retention rationale.
+ *   - `cron_heartbeat` older than `heartbeatOlderThanDays` (default 30d).
+ *     Heartbeats are one per cron per run (~55k/yr, unbounded); the only consumer
+ *     is the dead-man's-switch, which reads the LATEST heartbeat per key
+ *     (getStaleCrons / getLatestHeartbeat). A heartbeat older than a day is
+ *     already dead weight, so 30d keeps ample recent history for /health/deep
+ *     while bounding table growth.
+ *   - `page_visit` older than `pageVisitOlderThanDays` (default 14d). Page visits
+ *     are the HIGHEST-volume type — one row per authenticated navigation, wholly
+ *     unbounded — and back only the operator digest's trailing per-shop activity
+ *     counts (last day / last 7 days). 14d covers the digest's 7-day window plus
+ *     a week of buffer for late/backfilled runs; anything older has no consumer
+ *     and must be pruned or the table grows without limit.
  *
- * The cutoff is computed from `new Date()` at call time, so each run trims
+ * DELIBERATELY NARROW: this prunes ONLY `cron_heartbeat` and `page_visit`.
+ * `function_failure` rows back the operator digest's failure history and are left
+ * untouched at any age. The remaining low-volume types (api_error,
+ * webhook_failure, digest_snapshot, worker_fallback, scan_signal) are also left
+ * alone — they don't accumulate the way heartbeats and page visits do. Widen this
+ * predicate only alongside a matching per-type retention rationale.
+ *
+ * Each cutoff is computed from `new Date()` at call time, so each run trims
  * relative to "now". deleteMany only — no schema change.
  */
 export async function pruneOpsEvents(options?: {
   heartbeatOlderThanDays?: number;
+  pageVisitOlderThanDays?: number;
 }): Promise<number> {
-  const days = options?.heartbeatOlderThanDays ?? 30;
-  const cutoff = new Date(Date.now() - days * DAY_MS);
+  const heartbeatDays = options?.heartbeatOlderThanDays ?? 30;
+  const pageVisitDays = options?.pageVisitOlderThanDays ?? 14;
+  const now = Date.now();
+  const heartbeatCutoff = new Date(now - heartbeatDays * DAY_MS);
+  const pageVisitCutoff = new Date(now - pageVisitDays * DAY_MS);
 
+  // One deleteMany, per-type age cutoffs. The nested OR pins each eventType to
+  // its own cutoff so no other event type can ever match, regardless of age.
   const { count } = await db.opsEvent.deleteMany({
     where: {
-      eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT,
-      createdAt: { lt: cutoff },
+      OR: [
+        { eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT, createdAt: { lt: heartbeatCutoff } },
+        { eventType: OPS_EVENT_TYPES.PAGE_VISIT, createdAt: { lt: pageVisitCutoff } },
+      ],
     },
   });
 

@@ -39,15 +39,16 @@ export const snapshotMetrics = inngest.createFunction(
       return saved;
     });
 
-    // Separate step: prune stale cron_heartbeat OpsEvents so the table doesn't
-    // grow unbounded. Isolated from the snapshot write above so a prune failure
-    // doesn't discard the metric snapshot, and its own failure is retried alone.
+    // Separate step: prune stale high-volume OpsEvents (cron_heartbeat + page_visit)
+    // so the table doesn't grow unbounded. Isolated from the snapshot write above
+    // so a prune failure doesn't discard the metric snapshot, and its own failure
+    // is retried alone.
     await step.run("prune-ops-events", async () => {
       const { pruneOpsEvents } = await import("../../app/models/ops-event.server");
 
       const deleted = await pruneOpsEvents();
 
-      logger.info("prune-ops-events-complete", { deletedHeartbeats: deleted });
+      logger.info("prune-ops-events-complete", { deletedOpsEvents: deleted });
 
       return deleted;
     });

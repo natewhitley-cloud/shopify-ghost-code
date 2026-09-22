@@ -7,8 +7,10 @@ import { readValue } from "../components/polaris-events";
 import { statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
+import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScansForShop, getDistinctThemesForShop } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
+import { getFilteredFindingSummary } from "../services/finding-aggregation.server";
 import { authenticate } from "../shopify.server";
 import {
   BORDER_DEFAULT,
@@ -73,14 +75,45 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? (rawStatus as ScanStatus)
       : undefined;
 
-  const [{ items: scans, hasNextPage }, themes] = await Promise.all([
+  const [{ items: scans, hasNextPage }, themes, ignores] = await Promise.all([
     getScansForShop(shop.id, { limit: PAGE_SIZE, cursor, theme, status }),
     getDistinctThemesForShop(shop.id),
+    getIgnoredFindingsForShop(shop.id),
   ]);
 
   const nextCursor = hasNextPage ? scans[scans.length - 1].id : null;
 
-  return { scans, nextCursor, themes, theme: theme ?? "", status: status ?? "" };
+  // Ignore-aware Findings column. Scan.findingCount is the denormalized raw
+  // detector count — it has no knowledge of the shop's IgnoredFinding
+  // suppressions, so it would never drop after a merchant dismisses a finding
+  // (the scan-detail count does). When this shop has active suppressions we
+  // recompute each displayed scan's total through the ignore-filtered aggregate,
+  // bounded to this page (PAGE_SIZE). Shops with NO suppressions keep the lean
+  // denormalized count (zero extra queries) — mirrors the guard in app._index.tsx.
+  const hasIgnores = ignores.fingerprints.size > 0 || ignores.appNames.size > 0;
+  const filteredTotalByScanId: Map<string, number> | null = hasIgnores
+    ? new Map(
+        await Promise.all(
+          scans.map(
+            async (scan) =>
+              [scan.id, (await getFilteredFindingSummary(scan.id, ignores)).total] as const,
+          ),
+        ),
+      )
+    : null;
+
+  const scansWithCounts = scans.map((scan) => ({
+    ...scan,
+    displayFindingCount: filteredTotalByScanId?.get(scan.id) ?? scan.findingCount,
+  }));
+
+  return {
+    scans: scansWithCounts,
+    nextCursor,
+    themes,
+    theme: theme ?? "",
+    status: status ?? "",
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -240,7 +273,7 @@ export default function ScanHistory() {
                               {statusLabel(scan.status as ScanStatus)}
                             </s-badge>
                           </td>
-                          <td>{scan.findingCount}</td>
+                          <td>{scan.displayFindingCount}</td>
                           <td>
                             <Link
                               to={`/app/scans/${scan.id}`}

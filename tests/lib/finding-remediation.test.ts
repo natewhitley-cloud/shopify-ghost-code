@@ -12,7 +12,11 @@
 import { FindingType } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
-import { getFindingImpact, getFindingRemediation } from "../../app/lib/finding-remediation";
+import {
+  buildRemovalInstructions,
+  getFindingImpact,
+  getFindingRemediation,
+} from "../../app/lib/finding-remediation";
 
 // The finding types that carry an agentic "why it matters" impact line — the
 // signals AI shopping agents and answer engines read (canonical/hreflang/meta
@@ -159,5 +163,82 @@ describe("getFindingRemediation — fallback", () => {
 
   it("returns the same fallback string for two different unknown types", () => {
     expect(getFindingRemediation("UNKNOWN_A")).toBe(getFindingRemediation("UNKNOWN_B"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// buildRemovalInstructions — copy-paste instruction composition
+// ---------------------------------------------------------------------------
+
+describe("buildRemovalInstructions", () => {
+  it("composes file, line, full snippet, and howTo for a theme-file finding", () => {
+    const snippet = '<script src="https://cdn.example-app.com/loader.js"></script>';
+    const out = buildRemovalInstructions(
+      {
+        findingType: "GHOST_SCRIPT",
+        filename: "layout/theme.liquid",
+        lineNumber: 42,
+        codeSnippet: snippet,
+      },
+      "Scripts",
+    );
+
+    expect(out).toContain("Ghost Code finding: Scripts");
+    expect(out).toContain("File: layout/theme.liquid  (line 42)");
+    expect(out).toContain("Remove this code:");
+    expect(out).toContain(snippet);
+    expect(out).toContain(`How: ${getFindingRemediation("GHOST_SCRIPT")}`);
+  });
+
+  it("uses the FULL snippet, not the 80-char truncation shown in the table", () => {
+    const longSnippet = `<script>${"x".repeat(200)}</script>`;
+    const out = buildRemovalInstructions(
+      {
+        findingType: "GHOST_SCRIPT",
+        filename: "assets/app.js",
+        lineNumber: 5,
+        codeSnippet: longSnippet,
+      },
+      "Scripts",
+    );
+    expect(out).toContain(longSnippet);
+    expect(out).not.toContain("…");
+  });
+
+  it("degrades gracefully for an Admin-resource finding (no bogus line/snippet)", () => {
+    const out = buildRemovalInstructions(
+      {
+        findingType: "GHOST_PRICE",
+        filename: "products/gid://shopify/Product/123",
+        lineNumber: 0,
+        codeSnippet: "",
+      },
+      "Compare-at Prices",
+    );
+
+    expect(out).toContain("Ghost Code finding: Compare-at Prices");
+    // No theme line reference and no "Remove this code" block for Admin resources.
+    expect(out).not.toContain("File:");
+    expect(out).not.toContain("(line");
+    expect(out).not.toContain("Remove this code:");
+    // Leans on a plain-language location + the Admin-surface howTo.
+    expect(out).toContain("Location:");
+    expect(out).toContain(`How: ${getFindingRemediation("GHOST_PRICE")}`);
+  });
+
+  it("omits the line reference when a theme-file finding has lineNumber 0", () => {
+    const out = buildRemovalInstructions(
+      {
+        findingType: "ORPHAN_ASSET",
+        filename: "assets/orphan.js",
+        lineNumber: 0,
+        codeSnippet: "",
+      },
+      "Orphan Assets",
+    );
+    expect(out).toContain("File: assets/orphan.js");
+    expect(out).not.toContain("(line");
+    // Empty snippet → no "Remove this code" block.
+    expect(out).not.toContain("Remove this code:");
   });
 });

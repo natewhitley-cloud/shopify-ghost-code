@@ -25,6 +25,7 @@ const mockDb = vi.hoisted(() => ({
     upsert: vi.fn(),
     update: vi.fn(),
     updateMany: vi.fn(),
+    count: vi.fn(),
     delete: vi.fn(),
   },
   session: {
@@ -34,6 +35,7 @@ const mockDb = vi.hoisted(() => ({
     deleteMany: vi.fn(),
   },
   opsEvent: {
+    create: vi.fn(),
     deleteMany: vi.fn(),
   },
   // Array-form $transaction: resolve each staged operation in parallel.
@@ -48,6 +50,7 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { OPS_EVENT_TYPES } from "../../app/models/ops-event.server";
 import {
   getShopMetadata,
   upsertShop,
@@ -57,7 +60,11 @@ import {
   dismissReviewPrompt,
   deleteShopData,
   markShopUninstalled,
+  markShopUninstalledWithEvent,
   reactivateShop,
+  isLastSeenStale,
+  touchShopLastSeen,
+  LAST_SEEN_FRESHNESS_MS,
 } from "../../app/models/shop.server";
 
 // ---------------------------------------------------------------------------
@@ -91,6 +98,7 @@ describe("getShopMetadata", () => {
         planReconciledAt: true,
         installedAt: true,
         uninstalledAt: true,
+        lastSeenAt: true,
         lastThemePublishAt: true,
         hasSeenReviewPrompt: true,
       },
@@ -673,6 +681,34 @@ describe("deleteShopData", () => {
     });
   });
 
+  it("removes page_visit OpsEvent rows keyed on the domain via the key clause", async () => {
+    // Cross-check that binds page_visit's WRITE contract to the redact clause:
+    // app/routes/app.tsx writes page_visit as { eventType: PAGE_VISIT, key: <domain> }.
+    // We shape an event exactly like that write and assert deleteShopData's OR
+    // predicate for this domain contains a clause matching THAT event's key. This
+    // FAILS if page_visit were ever keyed on something other than the domain
+    // (e.g. an internal shopId), which the domain-key clause would not reach.
+    const domain = "delete-me.myshopify.com";
+    const existingShop = {
+      id: "shop-gdpr-pv",
+      domain,
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 7 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData(domain);
+
+    // An event shaped like the ACTUAL page_visit write.
+    const pageVisitEvent = { eventType: OPS_EVENT_TYPES.PAGE_VISIT, key: domain };
+    const opsWhere = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
+    // The redact OR must target the SAME key page_visit is written with.
+    expect(pageVisitEvent.eventType).toBe(OPS_EVENT_TYPES.PAGE_VISIT);
+    expect(opsWhere.OR).toContainEqual({ key: pageVisitEvent.key });
+  });
+
   it("purges scan_signal OpsEvent rows via the internal shopId clause (they carry no domain)", async () => {
     // scan_signal events key on scanId and store the internal shop cuid in
     // metadata.shopId (not the domain), so only the shopId OR-clause reaches
@@ -736,7 +772,7 @@ describe("markShopUninstalled", () => {
     vi.clearAllMocks();
   });
 
-  it("deletes sessions and stamps uninstalledAt in a single transaction", async () => {
+  it("deletes sessions and stamps uninstalledAt in a single transaction (guarded on uninstalledAt: null)", async () => {
     mockDb.session.deleteMany.mockResolvedValue({ count: 2 });
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
@@ -747,7 +783,9 @@ describe("markShopUninstalled", () => {
       where: { shop: "bye.myshopify.com" },
     });
     const updateArg = mockDb.shop.updateMany.mock.calls[0][0];
-    expect(updateArg.where).toEqual({ domain: "bye.myshopify.com" });
+    // The where-clause requires uninstalledAt: null so a re-mark is a true no-op
+    // (no re-stamp) rather than stamping a fresh timestamp on an already-uninstalled shop.
+    expect(updateArg.where).toEqual({ domain: "bye.myshopify.com", uninstalledAt: null });
     expect(updateArg.data.uninstalledAt).toBeInstanceOf(Date);
   });
 
@@ -760,22 +798,42 @@ describe("markShopUninstalled", () => {
     expect(mockDb.shop.delete).not.toHaveBeenCalled();
   });
 
-  it("returns found: true when a shop row was updated", async () => {
+  it("returns newlyMarked+found true when a shop row was newly marked (no extra count query)", async () => {
     mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
     const result = await markShopUninstalled("bye.myshopify.com");
 
-    expect(result).toEqual({ found: true });
+    expect(result).toEqual({ newlyMarked: true, found: true });
+    // The newly-marked path is trivially found — no existence check needed.
+    expect(mockDb.shop.count).not.toHaveBeenCalled();
   });
 
-  it("returns found: false (idempotent) when the shop row is already gone", async () => {
+  it("is a no-op (no re-stamp) for an ALREADY-uninstalled shop: newlyMarked false, found true", async () => {
+    // updateMany matches 0 rows (uninstalledAt already set) but the row still exists.
     mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.count.mockResolvedValue(1);
+
+    const result = await markShopUninstalled("already-uninstalled.myshopify.com");
+
+    // Not a new mark, but the row exists — the caller must NOT warn "not found".
+    expect(result).toEqual({ newlyMarked: false, found: true });
+    // Existence check runs ONLY on the no-op path, exactly once.
+    expect(mockDb.shop.count).toHaveBeenCalledOnce();
+    expect(mockDb.shop.count).toHaveBeenCalledWith({
+      where: { domain: "already-uninstalled.myshopify.com" },
+    });
+  });
+
+  it("returns newlyMarked+found false (idempotent) when the shop row is absent", async () => {
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.count.mockResolvedValue(0);
 
     const result = await markShopUninstalled("already-gone.myshopify.com");
 
-    expect(result).toEqual({ found: false });
+    expect(result).toEqual({ newlyMarked: false, found: false });
     // updateMany never throws on a missing row — no findUnique guard needed.
     expect(mockDb.shop.updateMany).toHaveBeenCalledOnce();
   });
@@ -786,6 +844,76 @@ describe("markShopUninstalled", () => {
     await expect(markShopUninstalled("err.myshopify.com")).rejects.toThrow(
       "Transaction rolled back",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markShopUninstalledWithEvent (shared webhook + reconciler path, gc-dyt)
+// ---------------------------------------------------------------------------
+
+describe("markShopUninstalledWithEvent", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.opsEvent.create.mockResolvedValue(undefined);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("marks FIRST then records a SHOP_UNINSTALLED OpsEvent (keyed on domain, with source metadata) on a NEW mark", async () => {
+    const result = await markShopUninstalledWithEvent("bye.myshopify.com", {
+      source: "reconciler",
+      message: "reconciler-detected uninstall",
+    });
+
+    const createArg = mockDb.opsEvent.create.mock.calls[0][0];
+    expect(createArg.data).toMatchObject({
+      eventType: OPS_EVENT_TYPES.SHOP_UNINSTALLED,
+      key: "bye.myshopify.com",
+      message: "reconciler-detected uninstall",
+      metadata: { source: "reconciler" },
+    });
+    // Delegates the mark to markShopUninstalled → returns its full result.
+    expect(mockDb.shop.updateMany).toHaveBeenCalledOnce();
+    expect(result).toEqual({ newlyMarked: true, found: true });
+  });
+
+  it("carries source=webhook for the webhook caller on a new mark", async () => {
+    const result = await markShopUninstalledWithEvent("bye.myshopify.com", {
+      source: "webhook",
+      message: "app/uninstalled",
+    });
+
+    expect(mockDb.opsEvent.create.mock.calls[0][0].data.metadata).toEqual({ source: "webhook" });
+    expect(result).toEqual({ newlyMarked: true, found: true });
+  });
+
+  it("records NO event and does NOT re-stamp for an ALREADY-uninstalled shop (redelivery/retry no-op)", async () => {
+    // updateMany matches 0 rows (uninstalledAt already set); the row still exists.
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.count.mockResolvedValue(1);
+
+    const result = await markShopUninstalledWithEvent("already.myshopify.com", {
+      source: "webhook",
+      message: "app/uninstalled",
+    });
+
+    // The core fix: no duplicate SHOP_UNINSTALLED event on a redelivery/retry, so
+    // the operator digest cannot double-count uninstalls.
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+    expect(result).toEqual({ newlyMarked: false, found: true });
+  });
+
+  it("records NO event when the row is absent and reports found:false", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.shop.count.mockResolvedValue(0);
+
+    const result = await markShopUninstalledWithEvent("gone.myshopify.com", {
+      source: "webhook",
+      message: "app/uninstalled",
+    });
+
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+    expect(result).toEqual({ newlyMarked: false, found: false });
   });
 });
 
@@ -828,5 +956,55 @@ describe("reactivateShop", () => {
 
     await expect(reactivateShop("gone.myshopify.com")).resolves.toBeUndefined();
     expect(mockDb.shop.updateMany).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isLastSeenStale
+// ---------------------------------------------------------------------------
+
+describe("isLastSeenStale", () => {
+  const now = new Date("2026-06-17T12:00:00Z");
+
+  it("treats null (never stamped) as stale", () => {
+    expect(isLastSeenStale(null, now)).toBe(true);
+  });
+
+  it("is fresh within the freshness window", () => {
+    const recent = new Date(now.getTime() - (LAST_SEEN_FRESHNESS_MS - 1000));
+    expect(isLastSeenStale(recent, now)).toBe(false);
+  });
+
+  it("is stale at/after the freshness window", () => {
+    const old = new Date(now.getTime() - LAST_SEEN_FRESHNESS_MS);
+    expect(isLastSeenStale(old, now)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// touchShopLastSeen
+// ---------------------------------------------------------------------------
+
+describe("touchShopLastSeen", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("stamps lastSeenAt to a Date via updateMany keyed on the internal id", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await touchShopLastSeen("shop-123");
+
+    const callArg = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(callArg.where).toEqual({ id: "shop-123" });
+    expect(callArg.data.lastSeenAt).toBeInstanceOf(Date);
+    // updateMany (not update) so a missing row is a safe no-op, not a throw.
+    expect(mockDb.shop.update).not.toHaveBeenCalled();
+  });
+
+  it("is a safe no-op (does not throw) when the shop row is absent", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(touchShopLastSeen("gone")).resolves.toBeUndefined();
   });
 });

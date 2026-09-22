@@ -16,6 +16,7 @@ import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failur
 import { operatorDigest } from "../../inngest/functions/operator-digest";
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
 import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
+import { reconcileInstalls } from "../../inngest/functions/reconcile-installs";
 import { scanTheme } from "../../inngest/functions/scan-theme";
 import { snapshotMetrics } from "../../inngest/functions/snapshot-metrics";
 import { watchStaleScans } from "../../inngest/functions/watch-stale-scans";
@@ -38,6 +39,7 @@ const handler = serve({
     watchStaleScans,
     snapshotMetrics,
     operatorDigest,
+    reconcileInstalls,
   ],
 });
 

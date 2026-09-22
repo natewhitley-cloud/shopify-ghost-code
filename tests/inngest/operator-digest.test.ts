@@ -37,6 +37,7 @@ vi.mock("../../app/models/ops-event.server", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  aggregateActivity,
   buildDigestBody,
   computeMrr,
   computePlanMix,
@@ -44,11 +45,14 @@ import {
   computeScanStatusCounts,
   computeScansPerStore,
   countUninstallEventsExcluding,
+  DEFAULT_EXCLUDE_PREFIXES,
   DEFAULT_EXCLUDE_SHOPS,
   diffSnapshot,
   evaluateSnapshotMetrics,
   METRIC_THRESHOLDS,
+  normalizeActivityPath,
   operatorDigest,
+  parseExcludePrefixes,
   parseExcludeShops,
   parseSnapshotMetadata,
   partitionShops,
@@ -62,13 +66,25 @@ import {
 // ---------------------------------------------------------------------------
 
 describe("parseExcludeShops", () => {
+  // DEFAULT_EXCLUDE_SHOPS is a comma-separated superset of the KNOWN internal
+  // exact domains (dev store + throwaway test store + dahi5e-1d, the internal
+  // Professional-test store the operator confirmed 2026-09-22 has 0 real subs).
+  const defaultSet = new Set([
+    "nw-dev-store-2.myshopify.com",
+    "teststore22022.myshopify.com",
+    "dahi5e-1d.myshopify.com",
+  ]);
+
   it("falls back to the default when unset", () => {
-    expect(parseExcludeShops(undefined)).toEqual(new Set([DEFAULT_EXCLUDE_SHOPS]));
+    expect(parseExcludeShops(undefined)).toEqual(defaultSet);
+    expect(defaultSet.has("nw-dev-store-2.myshopify.com")).toBe(true);
+    expect(defaultSet.has("teststore22022.myshopify.com")).toBe(true);
+    expect(defaultSet.has("dahi5e-1d.myshopify.com")).toBe(true);
   });
 
   it("falls back to the default when blank/whitespace-only", () => {
-    expect(parseExcludeShops("   ")).toEqual(new Set([DEFAULT_EXCLUDE_SHOPS]));
-    expect(parseExcludeShops("")).toEqual(new Set([DEFAULT_EXCLUDE_SHOPS]));
+    expect(parseExcludeShops("   ")).toEqual(defaultSet);
+    expect(parseExcludeShops("")).toEqual(defaultSet);
   });
 
   it("splits a comma-separated list", () => {
@@ -86,6 +102,27 @@ describe("parseExcludeShops", () => {
   it("lowercases every domain", () => {
     expect(parseExcludeShops("A.MyShopify.com")).toEqual(new Set(["a.myshopify.com"]));
   });
+
+  it("parses the DEFAULT_EXCLUDE_SHOPS constant into its three known domains", () => {
+    expect(parseExcludeShops(DEFAULT_EXCLUDE_SHOPS)).toEqual(defaultSet);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// parseExcludePrefixes
+// ---------------------------------------------------------------------------
+
+describe("parseExcludePrefixes", () => {
+  it("falls back to the default (app-review-) when unset/blank", () => {
+    expect(parseExcludePrefixes(undefined)).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
+    expect(parseExcludePrefixes("   ")).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
+    expect(parseExcludePrefixes("")).toEqual(new Set([DEFAULT_EXCLUDE_PREFIXES]));
+    expect(DEFAULT_EXCLUDE_PREFIXES).toBe("app-review-");
+  });
+
+  it("splits, trims, and lowercases a comma-separated list", () => {
+    expect(parseExcludePrefixes(" App-Review- , qa- , ")).toEqual(new Set(["app-review-", "qa-"]));
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -95,6 +132,7 @@ describe("parseExcludeShops", () => {
 describe("partitionShops", () => {
   const windowStart = new Date("2026-08-28T00:00:00Z");
   const excludeSet = new Set(["dev-store.myshopify.com"]);
+  const excludePrefixes = new Set(["app-review-"]);
 
   it("excludes the dev store from every bucket", () => {
     const result = partitionShops(
@@ -115,6 +153,7 @@ describe("partitionShops", () => {
         },
       ],
       excludeSet,
+      excludePrefixes,
       windowStart,
     );
 
@@ -144,6 +183,7 @@ describe("partitionShops", () => {
         },
       ],
       excludeSet,
+      excludePrefixes,
       windowStart,
     );
 
@@ -164,7 +204,7 @@ describe("partitionShops", () => {
   });
 
   it("returns empty buckets for no shops", () => {
-    const result = partitionShops([], excludeSet, windowStart);
+    const result = partitionShops([], excludeSet, excludePrefixes, windowStart);
     expect(result).toEqual({
       totalActive: 0,
       newIn24h: 0,
@@ -172,6 +212,120 @@ describe("partitionShops", () => {
       activeShopIds: [],
       domainById: {},
     });
+  });
+
+  it("excludes a shop matching an exclude PREFIX from active, plan mix, and MRR", () => {
+    const result = partitionShops(
+      [
+        {
+          id: "review",
+          // Shopify's ephemeral App Review store — new domain each cycle.
+          domain: "app-review-fe7f0c8b-r102735-a1-primary.myshopify.com",
+          plan: "Professional",
+          installedAt: new Date("2026-08-29T00:00:00Z"),
+          uninstalledAt: null,
+        },
+        {
+          id: "real",
+          domain: "real.myshopify.com",
+          plan: "Standard",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+      ],
+      excludeSet,
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShops).toEqual([
+      { id: "real", domain: "real.myshopify.com", plan: "Standard" },
+    ]);
+    // Plan mix and MRR derive from activeShops, so the excluded review store
+    // contributes to neither.
+    expect(computePlanMix(result.activeShops)).toEqual({ free: 0, Standard: 1, Professional: 0 });
+    expect(computeMrr(computePlanMix(result.activeShops))).toBe(1 * 9);
+  });
+
+  it("excludes an exact-list domain (teststore22022) while keeping a real store", () => {
+    const result = partitionShops(
+      [
+        {
+          id: "test",
+          domain: "teststore22022.myshopify.com",
+          plan: "free",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+        {
+          id: "real",
+          domain: "real.myshopify.com",
+          plan: "Standard",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+      ],
+      new Set(["teststore22022.myshopify.com"]),
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShopIds).toEqual(["real"]);
+  });
+
+  it("excludes the internal dahi5e-1d store when using the DEFAULT exclude set", () => {
+    // Operator confirmed 2026-09-22: dahi5e-1d is an internal Professional-test
+    // store with 0 real Professional subscribers, so it must drop out of every
+    // business metric under the default exclude set (no env override).
+    const result = partitionShops(
+      [
+        {
+          id: "internal",
+          domain: "dahi5e-1d.myshopify.com",
+          plan: "Professional",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+        {
+          id: "real",
+          domain: "real.myshopify.com",
+          plan: "Standard",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+      ],
+      parseExcludeShops(undefined),
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShopIds).toEqual(["real"]);
+    // The internal Professional store contributes $0 MRR (it is gone entirely).
+    expect(computePlanMix(result.activeShops)).toEqual({ free: 0, Standard: 1, Professional: 0 });
+  });
+
+  it("does NOT over-match: a domain that CONTAINS but does not START WITH the prefix is kept", () => {
+    const result = partitionShops(
+      [
+        {
+          id: "midmatch",
+          // Contains "app-review-" but does not start with it — must be kept.
+          domain: "my-app-review-tool.myshopify.com",
+          plan: "Professional",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+      ],
+      excludeSet,
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShopIds).toEqual(["midmatch"]);
   });
 });
 
@@ -181,11 +335,13 @@ describe("partitionShops", () => {
 
 describe("countUninstallEventsExcluding", () => {
   const excludeSet = new Set(["dev-store.myshopify.com"]);
+  const excludePrefixes = new Set(["app-review-"]);
 
   it("excludes dev-store keys case-insensitively and counts the rest", () => {
     const count = countUninstallEventsExcluding(
       [{ key: "a.myshopify.com" }, { key: "DEV-STORE.myshopify.com" }, { key: "b.myshopify.com" }],
       excludeSet,
+      excludePrefixes,
     );
     expect(count).toBe(2);
   });
@@ -194,12 +350,28 @@ describe("countUninstallEventsExcluding", () => {
     const count = countUninstallEventsExcluding(
       [{ key: null }, { key: "a.myshopify.com" }, { key: null }],
       excludeSet,
+      excludePrefixes,
+    );
+    expect(count).toBe(1);
+  });
+
+  it("honors PREFIX exclusion: an app-review-* uninstall is NOT counted, a normal key IS", () => {
+    // Mirrors the partitionShops prefix tests: an ephemeral app-review store
+    // excluded everywhere else must not sneak back into the uninstalls line.
+    const count = countUninstallEventsExcluding(
+      [
+        { key: "app-review-xyz.myshopify.com" }, // prefix-excluded
+        { key: "DEV-STORE.myshopify.com" }, // exact-excluded (case-insensitive)
+        { key: "real.myshopify.com" }, // normal — counted
+      ],
+      excludeSet,
+      excludePrefixes,
     );
     expect(count).toBe(1);
   });
 
   it("returns 0 for no events", () => {
-    expect(countUninstallEventsExcluding([], excludeSet)).toBe(0);
+    expect(countUninstallEventsExcluding([], excludeSet, excludePrefixes)).toBe(0);
   });
 });
 
@@ -463,6 +635,150 @@ describe("computeResolutionRollup", () => {
 });
 
 // ---------------------------------------------------------------------------
+// normalizeActivityPath
+// ---------------------------------------------------------------------------
+
+describe("normalizeActivityPath", () => {
+  it("collapses a scan-detail id to :id", () => {
+    expect(normalizeActivityPath("/app/scans/clx9abc123")).toBe("/app/scans/:id");
+  });
+
+  it("collapses a scan-diff id, preserving the /diff suffix", () => {
+    expect(normalizeActivityPath("/app/scans/clx9abc123/diff")).toBe("/app/scans/:id/diff");
+  });
+
+  it("collapses a scan-export id, preserving the /export suffix", () => {
+    expect(normalizeActivityPath("/app/scans/clx9abc123/export")).toBe("/app/scans/:id/export");
+  });
+
+  it("leaves the /app/scans index (no id segment) untouched", () => {
+    expect(normalizeActivityPath("/app/scans")).toBe("/app/scans");
+  });
+
+  it("leaves an unrelated static path untouched", () => {
+    expect(normalizeActivityPath("/app/settings")).toBe("/app/settings");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// aggregateActivity
+// ---------------------------------------------------------------------------
+
+describe("aggregateActivity", () => {
+  const now = new Date("2026-09-22T12:00:00Z");
+  const hoursAgo = (h: number) => new Date(now.getTime() - h * 3_600_000);
+  const excludeSet = new Set(["dev-store.myshopify.com"]);
+  const excludePrefixes = new Set(["app-review-"]);
+
+  const visit = (key: string, path: string, h: number) => ({
+    key,
+    metadata: { path },
+    createdAt: hoursAgo(h),
+  });
+
+  it("computes per-shop 24h/7d visit counts and durable seen-counts", () => {
+    const shops = [
+      { domain: "a.myshopify.com", lastSeenAt: hoursAgo(2) }, // seen 24h & 7d
+      { domain: "b.myshopify.com", lastSeenAt: hoursAgo(72) }, // seen 7d only
+      { domain: "c.myshopify.com", lastSeenAt: null }, // never seen
+    ];
+    const events = [
+      visit("a.myshopify.com", "/app", 1), // a: 24h
+      visit("a.myshopify.com", "/app/scans", 3), // a: 24h
+      visit("a.myshopify.com", "/app/scans", 100), // a: 7d only (>24h)
+      visit("b.myshopify.com", "/app", 48), // b: 7d only
+    ];
+    const result = aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+
+    expect(result.totalActive).toBe(3);
+    expect(result.seen24h).toBe(1); // only a
+    expect(result.seen7d).toBe(2); // a + b
+
+    const byDomain = Object.fromEntries(result.perShop.map((s) => [s.domain, s]));
+    expect(byDomain["a.myshopify.com"]).toMatchObject({ visits24h: 2, visits7d: 3 });
+    expect(byDomain["b.myshopify.com"]).toMatchObject({ visits24h: 0, visits7d: 1 });
+    expect(byDomain["c.myshopify.com"]).toMatchObject({
+      visits24h: 0,
+      visits7d: 0,
+      lastSeenAt: null,
+    });
+  });
+
+  it("sorts most-recently-seen first with never-seen shops last", () => {
+    const shops = [
+      { domain: "never.myshopify.com", lastSeenAt: null },
+      { domain: "old.myshopify.com", lastSeenAt: hoursAgo(100) },
+      { domain: "recent.myshopify.com", lastSeenAt: hoursAgo(1) },
+    ];
+    const result = aggregateActivity([], shops, now, excludeSet, excludePrefixes);
+    expect(result.perShop.map((s) => s.domain)).toEqual([
+      "recent.myshopify.com",
+      "old.myshopify.com",
+      "never.myshopify.com",
+    ]);
+  });
+
+  it("normalizes and ranks top pages, collapsing scan ids", () => {
+    const shops = [{ domain: "a.myshopify.com", lastSeenAt: hoursAgo(1) }];
+    const events = [
+      visit("a.myshopify.com", "/app/scans/id-1", 1),
+      visit("a.myshopify.com", "/app/scans/id-2", 2),
+      visit("a.myshopify.com", "/app/scans/id-3/diff", 3),
+      visit("a.myshopify.com", "/app", 4),
+    ];
+    const result = aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+    expect(result.topPages).toEqual([
+      { path: "/app/scans/:id", count: 2 },
+      { path: "/app", count: 1 },
+      { path: "/app/scans/:id/diff", count: 1 },
+    ]);
+  });
+
+  it("omits excluded shops from BOTH per-shop rows AND top-pages (exact + prefix)", () => {
+    const shops = [
+      { domain: "real.myshopify.com", lastSeenAt: hoursAgo(1) },
+      { domain: "dev-store.myshopify.com", lastSeenAt: hoursAgo(1) }, // exact-excluded
+      { domain: "app-review-xyz.myshopify.com", lastSeenAt: hoursAgo(1) }, // prefix-excluded
+    ];
+    const events = [
+      visit("real.myshopify.com", "/app", 1),
+      visit("dev-store.myshopify.com", "/app/secret", 1), // must not appear in top-pages
+      visit("app-review-xyz.myshopify.com", "/app/review-only", 1), // must not appear
+    ];
+    const result = aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+
+    expect(result.totalActive).toBe(1);
+    expect(result.perShop.map((s) => s.domain)).toEqual(["real.myshopify.com"]);
+    expect(result.seen24h).toBe(1);
+    expect(result.topPages).toEqual([{ path: "/app", count: 1 }]);
+  });
+
+  it("ignores events with a null key or malformed metadata", () => {
+    const shops = [{ domain: "a.myshopify.com", lastSeenAt: hoursAgo(1) }];
+    const events = [
+      { key: null, metadata: { path: "/app" }, createdAt: hoursAgo(1) },
+      { key: "a.myshopify.com", metadata: null, createdAt: hoursAgo(1) }, // counts a visit, no path
+      { key: "a.myshopify.com", metadata: { path: "/app" }, createdAt: hoursAgo(1) },
+    ];
+    const result = aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+    expect(result.perShop[0]).toMatchObject({ visits24h: 2, visits7d: 2 });
+    // Only the well-formed metadata contributes a top-pages row.
+    expect(result.topPages).toEqual([{ path: "/app", count: 1 }]);
+  });
+
+  it("returns an empty summary for no shops and no events", () => {
+    const result = aggregateActivity([], [], now, excludeSet, excludePrefixes);
+    expect(result).toEqual({
+      totalActive: 0,
+      seen24h: 0,
+      seen7d: 0,
+      perShop: [],
+      topPages: [],
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
 // buildDigestBody
 // ---------------------------------------------------------------------------
 
@@ -513,6 +829,24 @@ function makeData(overrides: Partial<OperatorDigestData> = {}): OperatorDigestDa
       submissionsByStatus: { PENDING: 1, ACCEPTED: 1, REJECTED: 0 },
     },
     activation: { activated: 8, dormant: 4, totalActive: 12 },
+    activity: {
+      totalActive: 12,
+      seen24h: 3,
+      seen7d: 7,
+      perShop: [
+        {
+          domain: "a.myshopify.com",
+          lastSeenAt: "2026-08-29T09:00:00.000Z",
+          visits24h: 4,
+          visits7d: 11,
+        },
+        { domain: "c.myshopify.com", lastSeenAt: null, visits24h: 0, visits7d: 0 },
+      ],
+      topPages: [
+        { path: "/app/scans", count: 12 },
+        { path: "/app/scans/:id", count: 5 },
+      ],
+    },
     ops: {
       functionFailures: 0,
       workerFallbacks: 0,
@@ -543,6 +877,7 @@ describe("buildDigestBody — section structure (populated)", () => {
       "RESOLUTION (last 24h)",
       "SIGNATURE FLYWHEEL (last 24h)",
       "ACTIVATION",
+      "ACTIVITY (last-seen & page visits)",
       "=== OPERATIONAL HEALTH (last 24h) ===",
       "SCAN RUNS",
       "FUNCTIONS & WORKERS",
@@ -593,6 +928,48 @@ describe("buildDigestBody — section structure (populated)", () => {
     // makeData omits `resolution` → the section falls back to zeros.
     expect(body).toContain("Resolved: 0");
     expect(body).toContain("Net (resolved - new): 0");
+  });
+});
+
+describe("buildDigestBody — ACTIVITY section", () => {
+  it("renders seen-counts, per-shop rows (never for null lastSeenAt), and top pages", () => {
+    const body = buildDigestBody(makeData());
+    expect(body).toContain("Seen in last 24h: 3 of 12 active | last 7d: 7 of 12");
+    expect(body).toContain(
+      "a.myshopify.com -- last seen 2026-08-29T09:00:00.000Z -- visits 24h/7d: 4 / 11",
+    );
+    expect(body).toContain("c.myshopify.com -- last seen never -- visits 24h/7d: 0 / 0");
+    expect(body).toContain("/app/scans -- 12");
+    expect(body).toContain("/app/scans/:id -- 5");
+  });
+
+  it("notes truncation when more than the top-pages cap are present", () => {
+    const topPages = Array.from({ length: 10 }, (_, i) => ({ path: `/p${i}`, count: 10 - i }));
+    const body = buildDigestBody(
+      makeData({
+        activity: { totalActive: 1, seen24h: 1, seen7d: 1, perShop: [], topPages },
+      }),
+    );
+    expect(body).toContain("...and 2 more page(s)");
+  });
+
+  it("renders graceful empty states for zero activity", () => {
+    const body = buildDigestBody(
+      makeData({
+        activity: { totalActive: 0, seen24h: 0, seen7d: 0, perShop: [], topPages: [] },
+      }),
+    );
+    expect(body).toContain("Seen in last 24h: 0 of 0 active | last 7d: 0 of 0");
+    expect(body).toContain("No active shops");
+    expect(body).toContain("No page visits in the last 7 days");
+  });
+
+  it("falls back to 'No activity data' when the activity field is absent", () => {
+    const data = makeData();
+    delete data.activity;
+    const body = buildDigestBody(data);
+    expect(body).toContain("ACTIVITY (last-seen & page visits)");
+    expect(body).toContain("No activity data");
   });
 });
 

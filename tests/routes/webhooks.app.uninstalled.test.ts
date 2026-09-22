@@ -3,10 +3,11 @@
  *
  * Strategy:
  *   - Mock authenticate.webhook() to control the webhook context.
- *   - Mock markShopUninstalled + recordOpsEvent to verify the deferred-delete flow.
- *   - Verify the handler records a SHOP_UNINSTALLED OpsEvent, revokes access via
- *     markShopUninstalled (NOT a hard delete), and is idempotent (returns 200 even
- *     when the shop does not exist).
+ *   - Mock the shared markShopUninstalledWithEvent helper (gc-dyt) to verify the
+ *     deferred-delete flow.
+ *   - Verify the handler records + marks via the shared helper (source=webhook,
+ *     NOT a hard delete), and is idempotent (returns 200 even when the shop does
+ *     not exist).
  */
 
 import type { ActionFunctionArgs } from "react-router";
@@ -23,21 +24,14 @@ vi.mock("../../app/shopify.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  markShopUninstalled: vi.fn(),
+  // The webhook now records + marks via the SHARED path (gc-dyt); the direct
+  // recordOpsEvent + markShopUninstalled calls were folded into this helper.
+  markShopUninstalledWithEvent: vi.fn(),
   deleteShopData: vi.fn(),
 }));
 
 vi.mock("../../app/models/ops-event.server", () => ({
-  recordOpsEvent: vi.fn(),
   recordWebhookFailure: vi.fn(),
-  OPS_EVENT_TYPES: {
-    CRON_HEARTBEAT: "cron_heartbeat",
-    FUNCTION_FAILURE: "function_failure",
-    WORKER_FALLBACK: "worker_fallback",
-    SHOP_UNINSTALLED: "shop_uninstalled",
-    WEBHOOK_FAILURE: "webhook_failure",
-    API_ERROR: "api_error",
-  },
 }));
 
 vi.mock("../../app/lib/logger.server", () => ({
@@ -52,12 +46,9 @@ vi.mock("../../app/lib/logger.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import {
-  OPS_EVENT_TYPES,
-  recordOpsEvent,
-  recordWebhookFailure,
-} from "../../app/models/ops-event.server";
-import { deleteShopData, markShopUninstalled } from "../../app/models/shop.server";
+import { logger } from "../../app/lib/logger.server";
+import { recordWebhookFailure } from "../../app/models/ops-event.server";
+import { deleteShopData, markShopUninstalledWithEvent } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.app.uninstalled";
 import { authenticate } from "../../app/shopify.server";
 
@@ -66,10 +57,10 @@ import { authenticate } from "../../app/shopify.server";
 // ---------------------------------------------------------------------------
 
 const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>;
-const mockMarkShopUninstalled = markShopUninstalled as ReturnType<typeof vi.fn>;
+const mockMarkShopUninstalledWithEvent = markShopUninstalledWithEvent as ReturnType<typeof vi.fn>;
 const mockDeleteShopData = deleteShopData as ReturnType<typeof vi.fn>;
-const mockRecordOpsEvent = recordOpsEvent as ReturnType<typeof vi.fn>;
 const mockRecordWebhookFailure = recordWebhookFailure as ReturnType<typeof vi.fn>;
+const mockLoggerWarn = logger.warn as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -96,8 +87,7 @@ beforeEach(() => {
     shop: "test-shop.myshopify.com",
     topic: "APP_UNINSTALLED",
   });
-  mockRecordOpsEvent.mockResolvedValue(undefined);
-  mockMarkShopUninstalled.mockResolvedValue({ found: true });
+  mockMarkShopUninstalledWithEvent.mockResolvedValue({ newlyMarked: true, found: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -105,20 +95,13 @@ beforeEach(() => {
 // ---------------------------------------------------------------------------
 
 describe("webhooks.app.uninstalled action", () => {
-  it("records a SHOP_UNINSTALLED OpsEvent keyed on the shop domain", async () => {
+  it("records + marks via the shared helper, keyed on the shop domain with source=webhook", async () => {
     await action(makeActionArgs());
 
-    expect(mockRecordOpsEvent).toHaveBeenCalledWith({
-      eventType: OPS_EVENT_TYPES.SHOP_UNINSTALLED,
-      key: "test-shop.myshopify.com",
+    expect(mockMarkShopUninstalledWithEvent).toHaveBeenCalledWith("test-shop.myshopify.com", {
+      source: "webhook",
       message: "app/uninstalled",
     });
-  });
-
-  it("calls markShopUninstalled with the correct shop domain", async () => {
-    await action(makeActionArgs());
-
-    expect(mockMarkShopUninstalled).toHaveBeenCalledWith("test-shop.myshopify.com");
   });
 
   it("does NOT hard-delete the shop (deleteShopData stays deferred to shop/redact)", async () => {
@@ -134,29 +117,52 @@ describe("webhooks.app.uninstalled action", () => {
     expect((result as Response).status).toBe(200);
   });
 
-  it("returns 200 even when the shop does not exist (idempotent)", async () => {
-    mockMarkShopUninstalled.mockResolvedValue({ found: false });
+  it("returns 200 and warns when the shop does not exist (idempotent, found:false)", async () => {
+    mockMarkShopUninstalledWithEvent.mockResolvedValue({ newlyMarked: false, found: false });
 
     const result = await action(makeActionArgs());
 
     expect(result).toBeInstanceOf(Response);
     expect((result as Response).status).toBe(200);
-    expect(mockMarkShopUninstalled).toHaveBeenCalledWith("test-shop.myshopify.com");
+    expect(mockMarkShopUninstalledWithEvent).toHaveBeenCalledWith("test-shop.myshopify.com", {
+      source: "webhook",
+      message: "app/uninstalled",
+    });
+    // A genuine miss (no such row) still warns.
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "Shop not found in DB — nothing to mark uninstalled",
+      expect.objectContaining({ shop: "test-shop.myshopify.com" }),
+    );
   });
 
-  it("propagates the rejection when markShopUninstalled fails, relying on Shopify retry", async () => {
-    // Deliberate contract: the handler does NOT wrap markShopUninstalled in
-    // try/catch. When it fails, the rejection propagates out of the action (the
+  it("returns 200 and does NOT warn on a redelivery of an ALREADY-uninstalled shop (found:true, newlyMarked:false)", async () => {
+    // Webhook redelivery: the row exists but is already uninstalled → the shared
+    // helper reports no new mark (and records no duplicate event). The handler must
+    // stay quiet — this is a normal no-op, not a genuine "row missing" miss.
+    mockMarkShopUninstalledWithEvent.mockResolvedValue({ newlyMarked: false, found: true });
+
+    const result = await action(makeActionArgs());
+
+    expect((result as Response).status).toBe(200);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it("propagates the rejection when the shared mark helper fails, relying on Shopify retry", async () => {
+    // Deliberate contract: the handler does NOT wrap the mark in try/catch to
+    // swallow it. When it fails, the rejection propagates out of the action (the
     // returned promise rejects, surfacing as a 5xx) so Shopify retries the
     // uninstall webhook rather than us silently dropping the state change.
     const dbError = new Error("transient DB failure during app/uninstalled");
-    mockMarkShopUninstalled.mockRejectedValueOnce(dbError);
+    mockMarkShopUninstalledWithEvent.mockRejectedValueOnce(dbError);
 
     await expect(action(makeActionArgs())).rejects.toThrow(
       "transient DB failure during app/uninstalled",
     );
 
-    expect(mockMarkShopUninstalled).toHaveBeenCalledWith("test-shop.myshopify.com");
+    expect(mockMarkShopUninstalledWithEvent).toHaveBeenCalledWith("test-shop.myshopify.com", {
+      source: "webhook",
+      message: "app/uninstalled",
+    });
     // The failure is recorded durably before re-throwing (gc-6fb).
     expect(mockRecordWebhookFailure).toHaveBeenCalledWith({
       topic: "APP_UNINSTALLED",
@@ -176,7 +182,7 @@ describe("webhooks.app.uninstalled action", () => {
 
     await expect(action(makeActionArgs())).rejects.toBe(unauthorized);
 
-    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
-    expect(mockMarkShopUninstalled).not.toHaveBeenCalled();
+    expect(mockMarkShopUninstalledWithEvent).not.toHaveBeenCalled();
+    expect(mockRecordWebhookFailure).not.toHaveBeenCalled();
   });
 });

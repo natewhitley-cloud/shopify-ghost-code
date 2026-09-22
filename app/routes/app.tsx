@@ -4,7 +4,14 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Outlet, useLoaderData, useRouteError } from "react-router";
 
 import { logger } from "../lib/logger.server";
-import { getShopMetadata, reactivateShop, upsertShop } from "../models/shop.server";
+import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
+import {
+  getShopMetadata,
+  isLastSeenStale,
+  reactivateShop,
+  touchShopLastSeen,
+  upsertShop,
+} from "../models/shop.server";
 import { isPlanReconcileStale, reconcileShopPlan } from "../services/billing-reconciler.server";
 import { authenticate } from "../shopify.server";
 
@@ -57,6 +64,41 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         error: err instanceof Error ? err.message : String(err),
       });
     }
+  }
+
+  // Activity telemetry (gc): capture a durable "last login" and a per-navigation
+  // page_visit on every authenticated merchant page load. Best-effort and
+  // NON-BLOCKING — the page_visit write is fire-and-forget (not awaited) so it
+  // never sits on the response critical path, and a telemetry failure must never
+  // break the app load.
+  const path = new URL(request.url).pathname;
+  // Skip operator-only admin pages (gated by ADMIN_SHOP_DOMAINS) — that traffic
+  // is the operator's own, not merchant activity. SEGMENT match (not a bare
+  // prefix) so a future sibling like /app/administration can't be silently
+  // swallowed by the skip.
+  if (path !== "/app/admin" && !path.startsWith("/app/admin/")) {
+    // Freshness-gated lastSeenAt stamp: write at most once per window so a
+    // merchant clicking through pages doesn't write on every navigation. Wrapped
+    // so a write failure never breaks the loader.
+    if (shop && isLastSeenStale(shop.lastSeenAt)) {
+      try {
+        await touchShopLastSeen(shop.id);
+      } catch (err) {
+        logger.error("last-seen-touch-failed", {
+          shop: session.shop,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+    // One page_visit per authenticated navigation. Fire-and-forget (NOT awaited)
+    // so it never blocks the loader response — recordOpsEvent never throws (it
+    // try/catches internally). Domain-keyed so GDPR redact (deleteShopData's
+    // `key: domain` clause) reaches it.
+    void recordOpsEvent({
+      eventType: OPS_EVENT_TYPES.PAGE_VISIT,
+      key: session.shop,
+      metadata: { path },
+    });
   }
 
   // eslint-disable-next-line no-undef

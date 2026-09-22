@@ -1,3 +1,4 @@
+import { OPS_EVENT_TYPES, recordOpsEvent } from "./ops-event.server";
 import db from "../db.server";
 
 /**
@@ -10,9 +11,41 @@ export type ShopMetadata = {
   planReconciledAt: Date | null;
   installedAt: Date;
   uninstalledAt: Date | null;
+  lastSeenAt: Date | null;
   lastThemePublishAt: Date | null;
   hasSeenReviewPrompt: boolean;
 };
+
+/**
+ * Freshness window for the durable `lastSeenAt` "last login" stamp. The app-load
+ * loader only writes lastSeenAt when it is null or older than this window, so a
+ * merchant clicking through several pages in a session produces at most one write
+ * per window rather than one per navigation. Mirrors the plan-reconcile freshness
+ * guard (isPlanReconcileStale). Tunable.
+ */
+export const LAST_SEEN_FRESHNESS_MS = 5 * 60 * 1000; // 5 minutes
+
+/**
+ * True when lastSeenAt is stale (null = never stamped, always stale) and should
+ * be refreshed. Pure predicate — no DB access — so it can gate the write in the
+ * loader without a round-trip.
+ */
+export function isLastSeenStale(lastSeenAt: Date | null, now: Date = new Date()): boolean {
+  if (lastSeenAt === null) return true;
+  return now.getTime() - lastSeenAt.getTime() >= LAST_SEEN_FRESHNESS_MS;
+}
+
+/**
+ * Stamp `lastSeenAt` = now() for a shop by internal id. Called from the app
+ * loader on merchant page loads, freshness-gated by isLastSeenStale.
+ *
+ * Uses updateMany keyed on id so a missing row is a safe no-op (count 0) rather
+ * than a throw — this is best-effort activity telemetry and must never break the
+ * app load. The caller still wraps it defensively.
+ */
+export async function touchShopLastSeen(shopId: string): Promise<void> {
+  await db.shop.updateMany({ where: { id: shopId }, data: { lastSeenAt: new Date() } });
+}
 
 /**
  * Lightweight shop lookup that returns all shop metadata fields.
@@ -31,6 +64,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       planReconciledAt: true,
       installedAt: true,
       uninstalledAt: true,
+      lastSeenAt: true,
       lastThemePublishAt: true,
       hasSeenReviewPrompt: true,
     },
@@ -96,20 +130,89 @@ export async function upsertShop(domain: string) {
  * The full wipe (Shop + all scan data via cascade) stays deferred to shop/redact,
  * which Shopify delivers ~48h after uninstall and which calls deleteShopData.
  *
- * Both writes run in a single transaction. Uses updateMany keyed on domain so a
- * missing shop row is a safe no-op (count 0) rather than a throw — idempotent,
- * matching the null-safe style of deleteShopData. Returns whether a shop row was
- * found and updated, so the caller can log a warn on a miss and still return 200.
+ * Both writes run in a single transaction. Idempotent on TWO axes:
+ *   - updateMany keyed on domain means a missing shop row is a safe no-op (count
+ *     0) rather than a throw, matching the null-safe style of deleteShopData; and
+ *   - the where-clause also requires `uninstalledAt: null`, so re-marking an
+ *     ALREADY-uninstalled shop (webhook redelivery, or a reconciler step retry
+ *     after a successful mark) is a true no-op: it does NOT re-stamp uninstalledAt
+ *     to a later time and does NOT count as a new mark. Without this guard the
+ *     churn timestamp would drift later and the shared event path would record a
+ *     duplicate SHOP_UNINSTALLED OpsEvent, double-counting in the operator digest.
+ *
+ * Return contract:
+ *   - `newlyMarked` — true IFF this call transitioned the row from active to
+ *     uninstalled (updateMany count > 0). Callers key the SHOP_UNINSTALLED event
+ *     off this so a redelivery/retry records nothing.
+ *   - `found`       — whether a shop row exists for the domain at all. On the
+ *     newly-marked path this is trivially true. On the count-0 (no-op) path it is
+ *     resolved with ONE extra cheap count query so the caller can distinguish
+ *     "already uninstalled" (found=true, stay quiet) from "no such row"
+ *     (found=false, warn) — the webhook needs this precise distinction.
  */
-export async function markShopUninstalled(domain: string): Promise<{ found: boolean }> {
+export async function markShopUninstalled(
+  domain: string,
+): Promise<{ newlyMarked: boolean; found: boolean }> {
   const [, updateResult] = await db.$transaction([
     // Sessions use a plain string `shop` field (no FK) — delete explicitly to revoke access.
     db.session.deleteMany({ where: { shop: domain } }),
-    // updateMany is a no-op (count 0) if the shop row is already gone — idempotent.
-    db.shop.updateMany({ where: { domain }, data: { uninstalledAt: new Date() } }),
+    // Guarded on uninstalledAt: null so a re-mark (redelivery / retry) is count 0,
+    // not a re-stamp. count > 0 means we newly marked this call.
+    db.shop.updateMany({
+      where: { domain, uninstalledAt: null },
+      data: { uninstalledAt: new Date() },
+    }),
   ]);
 
-  return { found: updateResult.count > 0 };
+  const newlyMarked = updateResult.count > 0;
+  // count 0 is ambiguous — the row is either already-uninstalled (no-op) or
+  // absent. Only on that path do a single cheap existence check so the caller can
+  // tell an already-uninstalled redelivery (found=true) from a genuine miss.
+  const found = newlyMarked ? true : (await db.shop.count({ where: { domain } })) > 0;
+
+  return { newlyMarked, found };
+}
+
+/**
+ * Record a SHOP_UNINSTALLED OpsEvent and mark the shop uninstalled, as one unit.
+ *
+ * This is the SINGLE shared uninstall path so the two producers — the
+ * `app/uninstalled` webhook and the periodic install-status reconciler (gc-dyt,
+ * the backstop for missed webhooks) — can never drift on how an uninstall is
+ * recorded vs. marked. Both call this; only the `source` (and message) differ.
+ *
+ * Marks FIRST (revoke access + stamp uninstalledAt via markShopUninstalled),
+ * then records the durable SHOP_UNINSTALLED OpsEvent ONLY when the mark was NEW
+ * (newlyMarked). An already-uninstalled shop (webhook redelivery, reconciler
+ * step retry) produces NO re-stamp and NO second event — the operator digest
+ * counts SHOP_UNINSTALLED events, so a duplicate would double-count uninstalls.
+ * (The order is reversed from the original record-then-mark: we must know whether
+ * the mark was new before deciding to record. recordOpsEvent never throws, so it
+ * can't block anything; and a mark that throws now correctly records no event.)
+ * `metadata.source` distinguishes a webhook-delivered uninstall ("webhook") from
+ * a reconciler-detected one ("reconciler") for observability.
+ *
+ * The SHOP_UNINSTALLED event is keyed on the shop domain, so deleteShopData's
+ * domain-keyed OpsEvent purge already covers it at shop/redact — no new
+ * redact/prune coverage is needed for the `source` metadata.
+ *
+ * Returns markShopUninstalled's `{ newlyMarked, found }` so the caller can log a
+ * miss and still succeed (webhook returns 200; reconciler logs the outcome).
+ */
+export async function markShopUninstalledWithEvent(
+  domain: string,
+  opts: { source: "webhook" | "reconciler"; message: string },
+): Promise<{ newlyMarked: boolean; found: boolean }> {
+  const result = await markShopUninstalled(domain);
+  if (result.newlyMarked) {
+    await recordOpsEvent({
+      eventType: OPS_EVENT_TYPES.SHOP_UNINSTALLED,
+      key: domain,
+      message: opts.message,
+      metadata: { source: opts.source },
+    });
+  }
+  return result;
 }
 
 /**
@@ -232,6 +335,8 @@ export async function deleteShopData(domain: string) {
     db.session.deleteMany({ where: { shop: domain } }),
     // OpsEvent has no Shop FK, so cascade skips it — purge the rows carrying the
     // domain (key on uninstall, metadata.shop / metadata.shopDomain otherwise).
+    // The `page_visit` activity event is domain-keyed (key = session.shop), so
+    // the `key: domain` clause already reaches it — no extra clause needed.
     // The per-scan `scan_signal` event is the exception: it keys on scanId and
     // carries the INTERNAL shop cuid in metadata.shopId (not the domain), so the
     // shopId clause below is required to reach those rows.

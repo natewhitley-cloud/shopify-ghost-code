@@ -486,3 +486,95 @@ describe("auditStaticJsonLdPrices", () => {
     warnSpy.mockRestore();
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-8mi — END-TO-END live-path proof.
+//
+// The pure `compareStaticToLive` tests above prove the comparator gate, but
+// they hand it an already-resolved `ResolvedLiveProduct`. These tests drive the
+// FULL network path: `auditStaticJsonLdPrices` -> fetch shop currency ->
+// `admin.graphql(PRODUCT_BY_HANDLE_QUERY)` -> resolve the live product ->
+// compare -> emit. The mocked `admin.graphql` stands in for the live store the
+// operator must exercise manually (see docs/runbooks/gc-8mi-*.md); asserting
+// the graphql spy actually fired is what makes this a live-path proof rather
+// than a repeat of the pure comparator tests.
+//
+// NOTE ON THE BEAD LABEL: gc-8mi's title says "GHOST_PRICE", but its body
+// describes THIS detector (static JSON-LD price vs live product price ->
+// JSON_LD_PRICE_CONFLICT). GHOST_PRICE is a separate, already-unit-tested
+// detector and is intentionally untouched here.
+// ---------------------------------------------------------------------------
+
+describe("auditStaticJsonLdPrices — live-path resolve→compare→emit proof (gc-8mi)", () => {
+  it("resolves a live product via graphql, compares, and emits an attributed finding", async () => {
+    // Static block advertises 19.99; the live product's only variant is 29.99 —
+    // same currency, single unambiguous product, no matching variant/compareAt,
+    // so it clears every FP suppressor and MUST surface a finding.
+    const { admin, graphql } = mockAdmin({
+      currency: "USD",
+      byHandle: () =>
+        productByHandleResponse([{ price: "29.99", compareAtPrice: null, availableForSale: true }]),
+    });
+
+    const seeded = candidate({
+      filename: "sections/product-template.liquid",
+      lineNumber: 42,
+      codeSnippet:
+        '<script type="application/ld+json">{"@type":"Product","offers":{"price":"19.99","priceCurrency":"USD"}}</script>',
+      handle: "widget",
+      sku: undefined,
+      staticPrice: "19.99",
+      staticPriceCurrency: "USD",
+    });
+
+    const { findings, skipped } = await auditStaticJsonLdPrices(admin, [seeded], SHOP_ID);
+
+    // The network path actually fired: shop-currency + product-by-handle lookups.
+    expect(graphql).toHaveBeenCalled();
+    expect(graphql.mock.calls.some(([q]) => (q as string).includes("ProductByHandle"))).toBe(true);
+
+    // Exactly one finding, attributed to the seeded candidate.
+    expect(findings).toHaveLength(1);
+    const finding = findings[0];
+    expect(finding.findingType).toBe(FindingType.JSON_LD_PRICE_CONFLICT);
+    expect(finding.severity).toBe(Severity.HIGH);
+    expect(finding.appName).toBeUndefined();
+    expect(finding.filename).toBe("sections/product-template.liquid");
+    expect(finding.lineNumber).toBe(42);
+    expect(finding.codeSnippet).toBe(seeded.codeSnippet);
+    // Description reflects BOTH the static and the live price.
+    expect(finding.description.startsWith(STATIC_JSONLD_PRICE_DESC_PREFIX)).toBe(true);
+    expect(finding.description).toContain("19.99");
+    expect(finding.description).toContain("29.99");
+    expect(skipped).toBe(false);
+  });
+
+  it("suppresses a finding through the live path when static price equals a live compareAtPrice", async () => {
+    // Same resolve→compare path, but the live product carries the static price as
+    // its compareAtPrice (an intentional sale/original price). This proves the
+    // real suppression gate runs AFTER the graphql resolve — not a short-circuit
+    // before the network — so the live path emits NO finding.
+    const { admin, graphql } = mockAdmin({
+      currency: "USD",
+      byHandle: () =>
+        productByHandleResponse([
+          { price: "29.99", compareAtPrice: "39.99", availableForSale: true },
+        ]),
+    });
+
+    const seeded = candidate({
+      handle: "widget",
+      sku: undefined,
+      staticPrice: "39.99",
+      staticPriceCurrency: "USD",
+    });
+
+    const { findings, skipped } = await auditStaticJsonLdPrices(admin, [seeded], SHOP_ID);
+
+    // Resolution still happened (the suppressor is a real gate, not a bypass)...
+    expect(graphql.mock.calls.some(([q]) => (q as string).includes("ProductByHandle"))).toBe(true);
+    // ...but the compareAtPrice match suppressed the finding.
+    expect(findings).toHaveLength(0);
+    expect(skipped).toBe(false);
+  });
+});

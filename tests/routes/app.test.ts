@@ -26,6 +26,13 @@ vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
   upsertShop: vi.fn(),
   reactivateShop: vi.fn(),
+  isLastSeenStale: vi.fn(),
+  touchShopLastSeen: vi.fn(),
+}));
+
+vi.mock("../../app/models/ops-event.server", () => ({
+  OPS_EVENT_TYPES: { PAGE_VISIT: "page_visit" },
+  recordOpsEvent: vi.fn(),
 }));
 
 vi.mock("../../app/services/billing-reconciler.server", () => ({
@@ -42,7 +49,14 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { logger } from "../../app/lib/logger.server";
-import { getShopMetadata, reactivateShop, upsertShop } from "../../app/models/shop.server";
+import { recordOpsEvent } from "../../app/models/ops-event.server";
+import {
+  getShopMetadata,
+  isLastSeenStale,
+  reactivateShop,
+  touchShopLastSeen,
+  upsertShop,
+} from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app";
 import {
   isPlanReconcileStale,
@@ -60,6 +74,9 @@ const mockUpsert = upsertShop as ReturnType<typeof vi.fn>;
 const mockReactivate = reactivateShop as ReturnType<typeof vi.fn>;
 const mockIsStale = isPlanReconcileStale as ReturnType<typeof vi.fn>;
 const mockReconcile = reconcileShopPlan as ReturnType<typeof vi.fn>;
+const mockIsLastSeenStale = isLastSeenStale as ReturnType<typeof vi.fn>;
+const mockTouchLastSeen = touchShopLastSeen as ReturnType<typeof vi.fn>;
+const mockRecordOpsEvent = recordOpsEvent as ReturnType<typeof vi.fn>;
 
 const fakeAdmin = { graphql: vi.fn() };
 
@@ -71,6 +88,7 @@ function makeShop(overrides: Record<string, unknown> = {}) {
     planReconciledAt: null,
     installedAt: new Date("2026-01-01T00:00:00Z"),
     uninstalledAt: null,
+    lastSeenAt: null,
     lastThemePublishAt: null,
     hasSeenReviewPrompt: false,
     ...overrides,
@@ -98,6 +116,10 @@ describe("app.tsx loader — plan reconciliation hook", () => {
       admin: fakeAdmin,
     });
     mockReconcile.mockResolvedValue({ status: "matched", plan: "free" });
+    // Telemetry defaults: quiet unless a test opts in.
+    mockIsLastSeenStale.mockReturnValue(false);
+    mockTouchLastSeen.mockResolvedValue(undefined);
+    mockRecordOpsEvent.mockResolvedValue(undefined);
   });
 
   it("runs reconciliation when the stored plan is stale (no plan_handle → recordEvent false)", async () => {
@@ -198,5 +220,82 @@ describe("app.tsx loader — plan reconciliation hook", () => {
       "billing-reconcile-loader-failed",
       expect.objectContaining({ shop: "test-shop.myshopify.com", error: "boom" }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Activity telemetry (last-seen + page_visit)
+// ---------------------------------------------------------------------------
+
+describe("app.tsx loader — activity telemetry", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.SHOPIFY_API_KEY = "test-api-key";
+    mockAdminAuth.mockResolvedValue({
+      session: { shop: "test-shop.myshopify.com" },
+      admin: fakeAdmin,
+    });
+    mockReconcile.mockResolvedValue({ status: "matched", plan: "free" });
+    mockGetShop.mockResolvedValue(makeShop());
+    mockIsStale.mockReturnValue(false);
+    mockIsLastSeenStale.mockReturnValue(false);
+    mockTouchLastSeen.mockResolvedValue(undefined);
+    mockRecordOpsEvent.mockResolvedValue(undefined);
+  });
+
+  it("records a page_visit keyed on the domain with the request path on a normal /app load", async () => {
+    await runLoader("https://example.com/app/scans");
+
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith({
+      eventType: "page_visit",
+      key: "test-shop.myshopify.com",
+      metadata: { path: "/app/scans" },
+    });
+  });
+
+  it("does NOT record activity for operator /app/admin pages", async () => {
+    mockIsLastSeenStale.mockReturnValue(true);
+
+    await runLoader("https://example.com/app/admin/metrics");
+
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+    expect(mockTouchLastSeen).not.toHaveBeenCalled();
+  });
+
+  it("stamps lastSeenAt when it is stale", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ lastSeenAt: null }));
+    mockIsLastSeenStale.mockReturnValue(true);
+
+    await runLoader("https://example.com/app");
+
+    expect(mockIsLastSeenStale).toHaveBeenCalledWith(null);
+    expect(mockTouchLastSeen).toHaveBeenCalledWith("shop-1");
+  });
+
+  it("does NOT re-stamp lastSeenAt when it is fresh (within the window)", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ lastSeenAt: new Date("2026-06-17T11:59:00Z") }));
+    mockIsLastSeenStale.mockReturnValue(false);
+
+    await runLoader("https://example.com/app");
+
+    expect(mockTouchLastSeen).not.toHaveBeenCalled();
+    // A fresh last-seen still records the page_visit — the freshness guard only
+    // throttles the durable stamp, not the per-navigation event.
+    expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
+  });
+
+  it("does not break the loader when the lastSeenAt stamp throws", async () => {
+    mockIsLastSeenStale.mockReturnValue(true);
+    mockTouchLastSeen.mockRejectedValue(new Error("db down"));
+
+    const result = await runLoader("https://example.com/app");
+
+    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(logger.error).toHaveBeenCalledWith(
+      "last-seen-touch-failed",
+      expect.objectContaining({ shop: "test-shop.myshopify.com", error: "db down" }),
+    );
+    // The page_visit is still recorded despite the stamp failure.
+    expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
   });
 });
