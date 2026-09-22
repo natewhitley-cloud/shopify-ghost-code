@@ -47,7 +47,8 @@ All work is on branch **`feat/digest-truth-telemetry-backlog-2026-09-22`** — *
 - Clean: migration safety, prune correctness, MRR/PLAN_AMOUNTS untouched, regex anchoring, UTC window math, gc-qrf guard, gc-rch exhaustiveness, gc-0ej composition, gc-8mi non-vacuousness.
 
 ## ⚠️ DECISIONS
-1. **gc-w7b — RESOLVED 2026-09-22 (CLOSED):** operator confirmed ZERO real Professional subscribers; dahi5e-1d is internal → excluded in code default (commit `75c55f3`). Real=10, MRR=$0. Grandfathered-pricing MRR gap (2026-09-18 cut: Standard 29→9, Pro 49→29) is now MOOT for current state (0 real paid subs) — remains a latent code note only (`PLAN_AMOUNTS` = current prices; would under-report a future legacy sub).
+1. **gc-w7b — RESOLVED 2026-09-22 (CLOSED):** operator confirmed **0 paid subscribers, MRR=$0, nobody on any legacy price**. Both nw-dev-store-2 and dahi5e-1d are internal (Professional TEST charges) → excluded in code default (commit `75c55f3`). No revenue-accuracy risk; do not re-raise grandfathered pricing.
+   - **Install COUNT caveat (count-only, no $):** our DB shows 15 `uninstalledAt=null` rows but Shopify lists only 10 active installs (incl. dev store) → ~5 rows are stale from missed uninstall webhooks. Digest count will over-read until reconciled. Root cause = uninstall webhook silently missed; needs a periodic install-status reconciler (bead TBD).
 2. **gc-rch — STILL OPEN:** review the full RemovalSafety mapping + finalize the softened "safe-to-remove" label wording ("Likely safe — confirm app removed").
 
 ## DEPLOY STEPS (future session, when approved)
