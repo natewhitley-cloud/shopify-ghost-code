@@ -40,7 +40,12 @@ vi.mock("../../app/models/ops-event.server", () => ({
   OPS_EVENT_TYPES: {
     SHOP_UNINSTALLED: "shop_uninstalled",
     RECONCILE_SUMMARY: "reconcile_summary",
+    RECONCILE_ABORTED: "reconcile_aborted",
   },
+}));
+
+vi.mock("../../app/services/ops-alert.server", () => ({
+  sendOpsAlert: vi.fn(),
 }));
 
 vi.mock("../../app/lib/logger.server", () => ({
@@ -65,10 +70,13 @@ vi.mock("../../app/models/shop.server", () => ({
 // ---------------------------------------------------------------------------
 
 import db from "../../app/db.server";
+import { logger } from "../../app/lib/logger.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
 import { markShopUninstalledWithEvent } from "../../app/models/shop.server";
+import { sendOpsAlert } from "../../app/services/ops-alert.server";
 import { sessionStorage, unauthenticated } from "../../app/shopify.server";
 import {
+  classifyRefreshRejection,
   classifyResponseStatus,
   extractHttpStatus,
   isDefinitiveAuthFailure,
@@ -86,6 +94,8 @@ const mockFindMany = (db as unknown as { shop: { findMany: ReturnType<typeof vi.
 const mockAdmin = (unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> }).admin;
 const mockMark = markShopUninstalledWithEvent as ReturnType<typeof vi.fn>;
 const mockRecordOpsEvent = recordOpsEvent as ReturnType<typeof vi.fn>;
+const mockSendOpsAlert = sendOpsAlert as ReturnType<typeof vi.fn>;
+const mockLoggerWarn = logger.warn as ReturnType<typeof vi.fn>;
 const mockLoadSession = (sessionStorage as unknown as { loadSession: ReturnType<typeof vi.fn> })
   .loadSession;
 const mockStoreSession = (sessionStorage as unknown as { storeSession: ReturnType<typeof vi.fn> })
@@ -125,6 +135,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockMark.mockResolvedValue({ newlyMarked: true, found: true });
   mockRecordOpsEvent.mockResolvedValue(undefined);
+  mockSendOpsAlert.mockResolvedValue({ sent: false, reason: "disabled" });
   mockLoadSession.mockResolvedValue(undefined);
   mockStoreSession.mockResolvedValue(true);
   mockFetch.mockReset();
@@ -266,6 +277,60 @@ describe("isRefreshTokenRejected", () => {
   it("is FALSE for null / undefined", () => {
     expect(isRefreshTokenRejected(null)).toBe(false);
     expect(isRefreshTokenRejected(undefined)).toBe(false);
+  });
+});
+
+describe("classifyRefreshRejection", () => {
+  it("maps 404 → uninstalled (store gone, regardless of body)", () => {
+    expect(classifyRefreshRejection(404, {})).toBe("uninstalled");
+    expect(classifyRefreshRejection(404, null)).toBe("uninstalled");
+    expect(classifyRefreshRejection(404, "not found")).toBe("uninstalled");
+  });
+
+  it("maps 401 invalid_request + 'requires an active refresh_token' → uninstalled (the REAL uninstall body)", () => {
+    expect(
+      classifyRefreshRejection(401, {
+        error: "invalid_request",
+        error_description: "This request requires an active refresh_token to be present.",
+      }),
+    ).toBe("uninstalled");
+  });
+
+  it("maps 400 invalid_subject_token → uninstalled", () => {
+    expect(classifyRefreshRejection(400, { error: "invalid_subject_token" })).toBe("uninstalled");
+  });
+
+  it("maps 401/400 invalid_grant → uninstalled", () => {
+    expect(classifyRefreshRejection(401, { error: "invalid_grant" })).toBe("uninstalled");
+    expect(classifyRefreshRejection(400, { error: "invalid_grant" })).toBe("uninstalled");
+  });
+
+  it("maps 401/400 invalid_client → ambiguous (OUR credential problem, the mass-churn guard)", () => {
+    expect(classifyRefreshRejection(401, { error: "invalid_client" })).toBe("ambiguous");
+    expect(classifyRefreshRejection(400, { error: "invalid_client" })).toBe("ambiguous");
+  });
+
+  it("maps 401 invalid_request WITHOUT a refresh_token description → ambiguous", () => {
+    expect(
+      classifyRefreshRejection(401, {
+        error: "invalid_request",
+        error_description: "The client authentication failed.",
+      }),
+    ).toBe("ambiguous");
+  });
+
+  it("maps 401/400 with an empty / absent / string / null body → ambiguous (never throws)", () => {
+    expect(classifyRefreshRejection(401, {})).toBe("ambiguous");
+    expect(classifyRefreshRejection(401, null)).toBe("ambiguous");
+    expect(classifyRefreshRejection(401, "invalid_subject_token")).toBe("ambiguous");
+    expect(classifyRefreshRejection(400, undefined)).toBe("ambiguous");
+    expect(classifyRefreshRejection(400, { error: 42 })).toBe("ambiguous");
+  });
+
+  it("maps 5xx / other statuses → ambiguous", () => {
+    expect(classifyRefreshRejection(500, { error: "invalid_grant" })).toBe("ambiguous");
+    expect(classifyRefreshRejection(503, {})).toBe("ambiguous");
+    expect(classifyRefreshRejection(429, {})).toBe("ambiguous");
   });
 });
 
@@ -426,11 +491,17 @@ describe("reconcileInstalls handler", () => {
   // so unauthenticated.admin throws a 500 wrapper. The reconciler must re-probe
   // Shopify's raw refresh endpoint to disambiguate installed vs uninstalled.
 
-  it("masked-500 + raw refresh 401 → MARKED uninstalled (source=reconciler)", async () => {
+  it("masked-500 + raw refresh 401 WITH a refresh-token error body → MARKED uninstalled (source=reconciler)", async () => {
     mockFindMany.mockResolvedValue([{ id: "s1", domain: "expired401.myshopify.com" }]);
     mockAdmin.mockRejectedValue(maskedAdminFailure());
     mockLoadSession.mockResolvedValue(fakeOfflineSession());
-    mockFetch.mockResolvedValue({ status: 401, json: async () => ({}) });
+    mockFetch.mockResolvedValue({
+      status: 401,
+      json: async () => ({
+        error: "invalid_request",
+        error_description: "This request requires an active refresh_token to be present.",
+      }),
+    });
 
     const result = await runReconcile();
 
@@ -443,6 +514,48 @@ describe("reconcileInstalls handler", () => {
       expect.objectContaining({ source: "reconciler" }),
     );
     expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+  });
+
+  it("masked-500 + raw refresh 401 invalid_client → NOT marked (credential error, the mass-churn guard)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "credbad.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue({
+      status: 401,
+      json: async () => ({ error: "invalid_client" }),
+    });
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + raw refresh 400 invalid_client → NOT marked (credential error, the mass-churn guard)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "credbad400.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue({
+      status: 400,
+      json: async () => ({ error: "invalid_client" }),
+    });
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + raw refresh 401 with empty body → NOT marked (ambiguous, credential error can't be ruled out)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "empty401.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue({ status: 401, json: async () => ({}) });
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
   });
 
   it("masked-500 + raw refresh 404 (closed store) → MARKED uninstalled", async () => {
@@ -512,7 +625,8 @@ describe("reconcileInstalls handler", () => {
     expect(stored.expires).toBeInstanceOf(Date);
     expect(stored.refreshTokenExpires).toBeInstanceOf(Date);
     expect(stored.scope).toBe("read_themes,read_products");
-    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+    // A raw-200 is a CONFIRMED install, so it is neither marked nor skipped-transient.
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 0 });
   });
 
   it("masked-500 + no refreshToken → NOT marked (can't probe, ambiguous)", async () => {
@@ -596,6 +710,127 @@ describe("reconcileInstalls handler", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({ metadata: { checked: 0, marked: 0, skipped: 0 } }),
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Partial-rotation warning (Fix 3)
+// ---------------------------------------------------------------------------
+
+describe("reconcileInstalls partial-rotation warning", () => {
+  it("masked-500 + raw 200 with refresh_token but NO refresh_token_expires_in → warns, does NOT overwrite refreshToken", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "partial.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession("old-refresh"));
+    mockFetch.mockResolvedValue({
+      status: 200,
+      json: async () => ({
+        access_token: "new-access",
+        expires_in: 3600,
+        refresh_token: "new-refresh",
+        // refresh_token_expires_in deliberately absent (the partial signature)
+      }),
+    });
+
+    const result = await runReconcile();
+
+    // Warned about the unexpected shape...
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining("unexpected refresh response shape"),
+      expect.objectContaining({ hasRefreshToken: true, hasRefreshExpiry: false }),
+    );
+    // ...but did NOT rotate the refresh token (only both-present rotates). The
+    // access token still updates; the stale refresh_token is retained (surfaced).
+    expect(mockStoreSession).toHaveBeenCalledTimes(1);
+    const stored = mockStoreSession.mock.calls[0][0];
+    expect(stored.accessToken).toBe("new-access");
+    expect(stored.refreshToken).toBe("old-refresh");
+    expect(mockMark).not.toHaveBeenCalled();
+    // Still a confirmed install (raw 200), so neither marked nor skipped-transient.
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 0 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Run-level circuit breaker (Fix 2)
+// ---------------------------------------------------------------------------
+
+describe("reconcileInstalls circuit breaker", () => {
+  it("ABORTS and marks NOTHING when the count exceeds the threshold (mass-churn signature)", async () => {
+    // 12 active shops, EVERY one probes uninstalled (e.g. a systemic fault that
+    // produced 401s across the base). threshold = max(5, ceil(0.5*12)=6) = 6,
+    // so 12 > 6 trips the breaker: nothing is marked, the operator is paged.
+    const shops = Array.from({ length: 12 }, (_, i) => ({
+      id: `s${i}`,
+      domain: `shop${i}.myshopify.com`,
+    }));
+    mockFindMany.mockResolvedValue(shops);
+    mockAdmin.mockResolvedValue(
+      adminGraphql(async () => {
+        throw { response: { code: 401 } };
+      }),
+    );
+
+    const result = await runReconcile();
+
+    // The critical assertion: NOT ONE shop was marked.
+    expect(mockMark).not.toHaveBeenCalled();
+    // An abort OpsEvent was recorded (counts-only metadata; domains in message).
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        key: "reconcile-installs",
+        message: expect.stringContaining("ABORTED by circuit breaker"),
+        metadata: { checked: 12, wouldMark: 12, threshold: 6 },
+      }),
+    );
+    // The summary row is NOT written on abort (only the abort event).
+    expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_summary" }),
+    );
+    // The operator was paged.
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "aborted-circuit-breaker",
+      checked: 12,
+      wouldMark: 12,
+    });
+  });
+
+  it("does NOT trip for a small number of real uninstalls below the threshold — those ARE marked", async () => {
+    // 8 shops, 3 uninstalled, 5 installed. threshold = max(5, ceil(0.5*8)=4) = 5,
+    // so 3 <= 5: the breaker stays closed and the 3 real uninstalls are marked.
+    const dead = new Set(["dead1.myshopify.com", "dead2.myshopify.com", "dead3.myshopify.com"]);
+    const shops = [
+      ...[...dead].map((domain, i) => ({ id: `d${i}`, domain })),
+      ...Array.from({ length: 5 }, (_, i) => ({ id: `l${i}`, domain: `live${i}.myshopify.com` })),
+    ];
+    mockFindMany.mockResolvedValue(shops);
+    mockAdmin.mockImplementation(async (domain: string) =>
+      dead.has(domain)
+        ? adminGraphql(async () => {
+            throw { response: { code: 401 } };
+          })
+        : adminGraphql(async () => ({ status: 200 })),
+    );
+
+    const result = await runReconcile();
+
+    expect(mockMark).toHaveBeenCalledTimes(3);
+    for (const domain of dead) {
+      expect(mockMark).toHaveBeenCalledWith(
+        domain,
+        expect.objectContaining({ source: "reconciler" }),
+      );
+    }
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_summary",
+        metadata: { checked: 8, marked: 3, skipped: 0 },
+      }),
+    );
+    expect(result).toMatchObject({ status: "completed", checked: 8, marked: 3, skipped: 0 });
   });
 });
 
