@@ -42,14 +42,16 @@ export const DAY_MS = 86_400_000;
 export const DIGEST_SNAPSHOT_EVENT_TYPE = "digest_snapshot";
 export const DIGEST_SNAPSHOT_KEY = "operator-digest";
 
-// Dev/operator + throwaway-test store(s) excluded from every BUSINESS count.
-// Comma-separated shop domains in OPERATOR_EXCLUDE_SHOPS; the prod env var
+// Dev/operator + throwaway-test + internal store(s) excluded from every BUSINESS
+// count. Comma-separated shop domains in OPERATOR_EXCLUDE_SHOPS; the prod env var
 // OVERRIDES this default. This default is a safe superset of the KNOWN internal
 // exact domains so they are never counted before the env var is configured
-// (referenced in billing.server.ts). dev-store / dahi5e-1d.myshopify.com
-// membership is operator-configured via the env var; dahi5e-1d is intentionally
-// NOT listed here pending an operator real-vs-internal decision.
-export const DEFAULT_EXCLUDE_SHOPS = "nw-dev-store-2.myshopify.com,teststore22022.myshopify.com";
+// (referenced in billing.server.ts). dahi5e-1d.myshopify.com is an INTERNAL store
+// (Professional *test* charge, not a real merchant subscription) confirmed by the
+// operator 2026-09-22 (0 real Professional subscribers), so it is excluded from
+// all business metrics here.
+export const DEFAULT_EXCLUDE_SHOPS =
+  "nw-dev-store-2.myshopify.com,teststore22022.myshopify.com,dahi5e-1d.myshopify.com";
 
 // Domain PREFIXES excluded from every BUSINESS count. Shopify's App Review team
 // installs on EPHEMERAL `app-review-*` stores (a fresh domain each review
@@ -150,10 +152,10 @@ export function partitionShops(
   domainById: Record<string, string>;
 } {
   // Exclusion (exact-domain OR prefix) is shared with the activity section via
-  // isExcluded. NOTE: dahi5e-1d.myshopify.com is intentionally NOT excluded here
-  // pending an operator real-vs-internal ($29 MRR?) decision — add it to
-  // OPERATOR_EXCLUDE_SHOPS to exclude later (ref: this session's digest
-  // reconciliation).
+  // isExcluded. NOTE: dahi5e-1d.myshopify.com IS excluded here (via the default
+  // exclude set) — the operator confirmed 2026-09-22 it is an internal store
+  // (Professional test charge), with 0 real Professional subscribers, so its MRR
+  // contribution is $0 and it must not appear in any business metric.
   const nonExcluded = allShops.filter((s) => !isExcluded(s.domain, excludeSet, excludePrefixes));
   const active = nonExcluded.filter((s) => s.uninstalledAt === null);
   const activeShops = active.map((s) => ({ id: s.id, domain: s.domain, plan: s.plan }));

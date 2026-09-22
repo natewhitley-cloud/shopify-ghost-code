@@ -67,13 +67,19 @@ import {
 
 describe("parseExcludeShops", () => {
   // DEFAULT_EXCLUDE_SHOPS is a comma-separated superset of the KNOWN internal
-  // exact domains (dev store + throwaway test store).
-  const defaultSet = new Set(["nw-dev-store-2.myshopify.com", "teststore22022.myshopify.com"]);
+  // exact domains (dev store + throwaway test store + dahi5e-1d, the internal
+  // Professional-test store the operator confirmed 2026-09-22 has 0 real subs).
+  const defaultSet = new Set([
+    "nw-dev-store-2.myshopify.com",
+    "teststore22022.myshopify.com",
+    "dahi5e-1d.myshopify.com",
+  ]);
 
   it("falls back to the default when unset", () => {
     expect(parseExcludeShops(undefined)).toEqual(defaultSet);
     expect(defaultSet.has("nw-dev-store-2.myshopify.com")).toBe(true);
     expect(defaultSet.has("teststore22022.myshopify.com")).toBe(true);
+    expect(defaultSet.has("dahi5e-1d.myshopify.com")).toBe(true);
   });
 
   it("falls back to the default when blank/whitespace-only", () => {
@@ -97,7 +103,7 @@ describe("parseExcludeShops", () => {
     expect(parseExcludeShops("A.MyShopify.com")).toEqual(new Set(["a.myshopify.com"]));
   });
 
-  it("parses the DEFAULT_EXCLUDE_SHOPS constant into its two known domains", () => {
+  it("parses the DEFAULT_EXCLUDE_SHOPS constant into its three known domains", () => {
     expect(parseExcludeShops(DEFAULT_EXCLUDE_SHOPS)).toEqual(defaultSet);
   });
 });
@@ -267,6 +273,38 @@ describe("partitionShops", () => {
 
     expect(result.totalActive).toBe(1);
     expect(result.activeShopIds).toEqual(["real"]);
+  });
+
+  it("excludes the internal dahi5e-1d store when using the DEFAULT exclude set", () => {
+    // Operator confirmed 2026-09-22: dahi5e-1d is an internal Professional-test
+    // store with 0 real Professional subscribers, so it must drop out of every
+    // business metric under the default exclude set (no env override).
+    const result = partitionShops(
+      [
+        {
+          id: "internal",
+          domain: "dahi5e-1d.myshopify.com",
+          plan: "Professional",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+        {
+          id: "real",
+          domain: "real.myshopify.com",
+          plan: "Standard",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+        },
+      ],
+      parseExcludeShops(undefined),
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShopIds).toEqual(["real"]);
+    // The internal Professional store contributes $0 MRR (it is gone entirely).
+    expect(computePlanMix(result.activeShops)).toEqual({ free: 0, Standard: 1, Professional: 0 });
   });
 
   it("does NOT over-match: a domain that CONTAINS but does not START WITH the prefix is kept", () => {
