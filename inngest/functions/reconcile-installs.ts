@@ -10,22 +10,33 @@
  * signal), independent of the webhook.
  *
  * SAFETY RULE (this file can churn a live paying merchant if wrong):
- *   A shop is marked uninstalled ONLY on one of two DEFINITIVE uninstall signals:
+ *   A shop is marked uninstalled ONLY on one of three DEFINITIVE uninstall signals:
  *     (a) a 401 / revoked-token error from the Admin GraphQL probe — surfaced when
- *         the offline token is NOT yet expired but has been revoked; and
+ *         the offline token is NOT yet expired but has been revoked;
  *     (b) a REJECTED offline-token refresh surfaced by unauthenticated.admin —
  *         because `future.expiringOfflineAccessTokens` is on, expired tokens are
  *         refreshed BEFORE the admin client is returned, and Shopify rejects the
  *         refresh (InvalidJwtError, or an HttpResponseError 400 with
  *         body.error === 'invalid_subject_token') exactly when the app is no
  *         longer installed. This is the COMMON case once the daily cron runs
- *         after the token TTL, so it must be treated as an uninstall, not skipped.
+ *         after the token TTL, so it must be treated as an uninstall, not skipped;
+ *         and
+ *     (c) a RAW-refresh 401 / 404 / 400 from Shopify in the disambiguation path.
+ *         The library's `refreshToken` helper MASKS most refresh failures as a
+ *         generic `new Response(500)` wrapper, so a genuine "requires an active
+ *         refresh_token" 401 (or a 404 for a closed store) never reaches signal
+ *         (b). When unauthenticated.admin fails with such a masked/non-definitive
+ *         error, rawRefreshProbe() re-issues the refresh directly and reads
+ *         Shopify's real status: a 401/404/400 is a definitive uninstall.
+ *   A RAW-refresh 200 means the app is STILL INSTALLED; Shopify ROTATES the
+ *   offline refresh token on that success, so rawRefreshProbe stores the rotated
+ *   session and the shop is treated as installed (never marked).
  *   EVERYTHING else — throttling (429 / THROTTLED), network errors, timeouts, 5xx
- *   (including the library's `new Response(500)` refresh wrapper), a missing
- *   session (SessionNotFoundError), or any ambiguous/unexpected error — is treated
- *   as "status unknown" and the shop is SKIPPED this run (never marked). When in
- *   doubt, do NOT mark. This mirrors the ACCESS_DENIED-vs-transient discipline in
- *   app/lib/scope-check.server.ts.
+ *   (including the library's `new Response(500)` refresh wrapper AND a raw-refresh
+ *   5xx), a missing session (SessionNotFoundError), or any ambiguous/unexpected
+ *   error — is treated as "status unknown" and the shop is SKIPPED this run (never
+ *   marked). When in doubt, do NOT mark. This mirrors the ACCESS_DENIED-vs-transient
+ *   discipline in app/lib/scope-check.server.ts.
  *
  * SCOPE: this job ONLY detects + marks uninstalled (reusing the shared
  * markShopUninstalledWithEvent path so the webhook and this reconciler can't
@@ -169,6 +180,137 @@ async function markUninstalled(domain: string): Promise<void> {
 }
 
 /**
+ * RAW offline-token refresh probe — the disambiguator for a MASKED
+ * unauthenticated.admin failure, and the ONLY code path that reaches it.
+ *
+ * WHY THIS EXISTS: the library's `refreshToken` helper wraps ANY refresh failure
+ * that is not `invalid_subject_token` as a generic `new Response(500)`. So the
+ * common expired-token uninstall — Shopify replying HTTP 401
+ * `{error:"invalid_request", "requires an active refresh_token"}` (or 404 for a
+ * closed store) — is masked as a 500 and never matches isRefreshTokenRejected.
+ * This probe re-issues the refresh directly against Shopify and reads the REAL
+ * status, so a genuine uninstall isn't misclassified "ambiguous" and skipped.
+ *
+ * ROTATION-STORE INVARIANT (do not remove): Shopify ROTATES the offline refresh
+ * token on a SUCCESSFUL (HTTP 200) refresh — the response body carries a fresh
+ * `refresh_token`, and the library's create-session.js persists it. Because this
+ * probe issues that refresh itself, on a 200 it MUST write the rotated tokens
+ * back to session storage. If it doesn't, the stored refresh_token is now stale
+ * and a LATER reconciler run would get a definitive rejection and FALSE-CHURN a
+ * live, still-installed merchant. A store failure must NOT churn: on a 200 we
+ * always return "installed" even if storeSession throws.
+ *
+ * Status mapping: 200 → installed (rotated session stored); 401/404/400 →
+ * uninstalled (refresh token revoked / store gone / bad token); no session or no
+ * refreshToken → ambiguous (can't probe); network throw or any other status
+ * (5xx, ...) → ambiguous. Never marks; the caller marks on "uninstalled".
+ */
+async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
+  const { sessionStorage } = await import("../../app/shopify.server");
+
+  const session = await sessionStorage.loadSession(`offline_${domain}`);
+  if (!session || !session.refreshToken) {
+    logger.info(
+      "reconcile-installs: raw refresh probe — no session/refreshToken, skipping (ambiguous)",
+      {
+        function: "reconcile-installs",
+        domain,
+      },
+    );
+    return "ambiguous";
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`https://${domain}/admin/oauth/access_token`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        client_id: process.env.SHOPIFY_API_KEY,
+        client_secret: process.env.SHOPIFY_API_SECRET,
+        refresh_token: session.refreshToken,
+        grant_type: "refresh_token",
+      }),
+    });
+  } catch (err) {
+    // Network / fetch throw: status unknown → never mark.
+    logger.info("reconcile-installs: raw refresh probe network error — skipping (ambiguous)", {
+      function: "reconcile-installs",
+      domain,
+      reason: err instanceof Error ? err.message : String(err),
+    });
+    return "ambiguous";
+  }
+
+  const status = res.status;
+
+  if (status === 200) {
+    // STILL INSTALLED. Persist the rotated session BEFORE returning so a later
+    // run can't false-churn this shop on a now-stale stored refresh_token.
+    try {
+      const body = (await res.json()) as {
+        access_token?: string;
+        expires_in?: number;
+        refresh_token?: string;
+        refresh_token_expires_in?: number;
+        scope?: string;
+      };
+      if (typeof body.access_token === "string") session.accessToken = body.access_token;
+      if (typeof body.expires_in === "number") {
+        session.expires = new Date(Date.now() + body.expires_in * 1000);
+      }
+      if (
+        typeof body.refresh_token === "string" &&
+        typeof body.refresh_token_expires_in === "number"
+      ) {
+        session.refreshToken = body.refresh_token;
+        session.refreshTokenExpires = new Date(Date.now() + body.refresh_token_expires_in * 1000);
+      }
+      if (typeof body.scope === "string") session.scope = body.scope;
+      await sessionStorage.storeSession(session);
+      logger.info("reconcile-installs: raw refresh probe 200 — installed, rotated session stored", {
+        function: "reconcile-installs",
+        domain,
+        status,
+      });
+    } catch (err) {
+      // A store (or body-parse) failure must NEVER cause a churn: the app IS
+      // installed (Shopify returned 200). Log and still return installed.
+      logger.error(
+        "reconcile-installs: raw refresh probe 200 but storing rotated session failed — treating as installed (never mark)",
+        {
+          function: "reconcile-installs",
+          domain,
+          reason: err instanceof Error ? err.message : String(err),
+        },
+      );
+    }
+    return "installed";
+  }
+
+  if (status === 401 || status === 404 || status === 400) {
+    // Definitive: refresh token revoked / store gone / bad token → uninstalled.
+    logger.info("reconcile-installs: raw refresh probe rejected — uninstalled", {
+      function: "reconcile-installs",
+      domain,
+      status,
+    });
+    return "uninstalled";
+  }
+
+  // 5xx or any other status: transient/unknown → never mark.
+  logger.info(
+    "reconcile-installs: raw refresh probe non-definitive status — skipping (ambiguous)",
+    {
+      function: "reconcile-installs",
+      domain,
+      status,
+    },
+  );
+  return "ambiguous";
+}
+
+/**
  * Probe one shop's install status via the SAME auth path background jobs use
  * (unauthenticated.admin → one cheap Admin GraphQL call) and mark it uninstalled
  * IFF the probe is a definitive auth failure. Returns the classification so the
@@ -190,15 +332,25 @@ async function checkAndMarkInstall(domain: string): Promise<InstallStatus> {
       await markUninstalled(domain);
       return "uninstalled";
     }
-    // Anything else here is AMBIGUOUS by design: a missing Session row
-    // (SessionNotFoundError), the library's `new Response(500)` transient refresh
-    // wrapper, a session-storage read, or a race is NOT positive proof of an
-    // uninstall. The safety rule is to mark ONLY on a definitive signal. Skip.
-    logger.info("reconcile-installs: no admin context — skipping (ambiguous)", {
-      function: "reconcile-installs",
-      domain,
-      reason: err instanceof Error ? err.message : String(err),
-    });
+    // Otherwise the failure is MASKED: the library wraps a real 401/404 refresh
+    // rejection (and transient 5xx alike) as a generic `new Response(500)`, so we
+    // can't tell an uninstall from a blip here. Disambiguate with a raw refresh
+    // probe that reads Shopify's true status. Only a definitive raw 401/404/400
+    // marks; a raw 200 stored the rotated session (installed); anything else skips.
+    const raw = await rawRefreshProbe(domain);
+    if (raw === "uninstalled") {
+      await markUninstalled(domain);
+      return "uninstalled";
+    }
+    logger.info(
+      "reconcile-installs: masked admin failure — disambiguated as non-definitive, skipping",
+      {
+        function: "reconcile-installs",
+        domain,
+        rawProbe: raw,
+        reason: err instanceof Error ? err.message : String(err),
+      },
+    );
     return "ambiguous";
   }
 

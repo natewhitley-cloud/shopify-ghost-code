@@ -53,6 +53,7 @@ vi.mock("../../app/db.server", () => ({
 
 vi.mock("../../app/shopify.server", () => ({
   unauthenticated: { admin: vi.fn() },
+  sessionStorage: { loadSession: vi.fn(), storeSession: vi.fn() },
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
@@ -66,7 +67,7 @@ vi.mock("../../app/models/shop.server", () => ({
 import db from "../../app/db.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
 import { markShopUninstalledWithEvent } from "../../app/models/shop.server";
-import { unauthenticated } from "../../app/shopify.server";
+import { sessionStorage, unauthenticated } from "../../app/shopify.server";
 import {
   classifyResponseStatus,
   extractHttpStatus,
@@ -85,10 +86,34 @@ const mockFindMany = (db as unknown as { shop: { findMany: ReturnType<typeof vi.
 const mockAdmin = (unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> }).admin;
 const mockMark = markShopUninstalledWithEvent as ReturnType<typeof vi.fn>;
 const mockRecordOpsEvent = recordOpsEvent as ReturnType<typeof vi.fn>;
+const mockLoadSession = (sessionStorage as unknown as { loadSession: ReturnType<typeof vi.fn> })
+  .loadSession;
+const mockStoreSession = (sessionStorage as unknown as { storeSession: ReturnType<typeof vi.fn> })
+  .storeSession;
+const mockFetch = vi.fn();
 
 /** An unauthenticated.admin resolution whose graphql behaves as configured. */
 function adminGraphql(behavior: () => Promise<{ status?: number }>) {
   return { admin: { graphql: vi.fn(behavior) } };
+}
+
+/** The masked wrapper the library throws for a non-invalid_subject_token refresh failure. */
+function maskedAdminFailure() {
+  return new Response(undefined, { status: 500 });
+}
+
+/** A minimal offline Session stand-in the reconciler can mutate + store. */
+function fakeOfflineSession(refreshToken = "old-refresh") {
+  return {
+    id: "offline_shop.myshopify.com",
+    shop: "shop.myshopify.com",
+    isOnline: false,
+    accessToken: "old-access",
+    scope: "read_themes",
+    expires: new Date(0),
+    refreshToken,
+    refreshTokenExpires: new Date(0),
+  };
 }
 
 async function runReconcile() {
@@ -100,6 +125,12 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockMark.mockResolvedValue({ newlyMarked: true, found: true });
   mockRecordOpsEvent.mockResolvedValue(undefined);
+  mockLoadSession.mockResolvedValue(undefined);
+  mockStoreSession.mockResolvedValue(true);
+  mockFetch.mockReset();
+  vi.stubGlobal("fetch", mockFetch);
+  process.env.SHOPIFY_API_KEY = "test-key";
+  process.env.SHOPIFY_API_SECRET = "test-secret";
 });
 
 // ---------------------------------------------------------------------------
@@ -386,6 +417,124 @@ describe("reconcileInstalls handler", () => {
 
     const result = await runReconcile();
 
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  // --- Masked-failure disambiguation via rawRefreshProbe ------------------
+  // The library masks a real 401/404 refresh rejection as `new Response(500)`,
+  // so unauthenticated.admin throws a 500 wrapper. The reconciler must re-probe
+  // Shopify's raw refresh endpoint to disambiguate installed vs uninstalled.
+
+  it("masked-500 + raw refresh 401 → MARKED uninstalled (source=reconciler)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "expired401.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue({ status: 401, json: async () => ({}) });
+
+    const result = await runReconcile();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://expired401.myshopify.com/admin/oauth/access_token",
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(mockMark).toHaveBeenCalledWith(
+      "expired401.myshopify.com",
+      expect.objectContaining({ source: "reconciler" }),
+    );
+    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+  });
+
+  it("masked-500 + raw refresh 404 (closed store) → MARKED uninstalled", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "closed404.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue({ status: 404, json: async () => ({}) });
+
+    const result = await runReconcile();
+
+    expect(mockMark).toHaveBeenCalledWith(
+      "closed404.myshopify.com",
+      expect.objectContaining({ source: "reconciler" }),
+    );
+    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+  });
+
+  it("masked-500 + raw refresh 500 → NOT marked (ambiguous, never churn on a blip)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "blip500.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue({ status: 500, json: async () => ({}) });
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockStoreSession).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + raw refresh network throw → NOT marked (ambiguous)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "neterr.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockRejectedValue(new Error("network unreachable ECONNREFUSED"));
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + raw refresh 200 → NOT marked AND stores the rotated session", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "installed200.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession("old-refresh"));
+    mockFetch.mockResolvedValue({
+      status: 200,
+      json: async () => ({
+        access_token: "new-access",
+        expires_in: 3600,
+        refresh_token: "new-refresh",
+        refresh_token_expires_in: 7200,
+        scope: "read_themes,read_products",
+      }),
+    });
+
+    const result = await runReconcile();
+
+    // Invariant #2: a still-installed shop's rotated session MUST be persisted so
+    // a later run doesn't false-churn it on a now-stale stored refresh token.
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockStoreSession).toHaveBeenCalledTimes(1);
+    const stored = mockStoreSession.mock.calls[0][0];
+    expect(stored.accessToken).toBe("new-access");
+    expect(stored.refreshToken).toBe("new-refresh");
+    expect(stored.expires).toBeInstanceOf(Date);
+    expect(stored.refreshTokenExpires).toBeInstanceOf(Date);
+    expect(stored.scope).toBe("read_themes,read_products");
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + no refreshToken → NOT marked (can't probe, ambiguous)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "norefresh.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue({ ...fakeOfflineSession(), refreshToken: undefined });
+
+    const result = await runReconcile();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + no session → NOT marked (can't probe, ambiguous)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "nosession.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(undefined);
+
+    const result = await runReconcile();
+
+    expect(mockFetch).not.toHaveBeenCalled();
     expect(mockMark).not.toHaveBeenCalled();
     expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
   });
