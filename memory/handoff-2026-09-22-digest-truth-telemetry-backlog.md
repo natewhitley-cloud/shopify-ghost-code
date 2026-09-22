@@ -1,6 +1,6 @@
 # Handoff — 2026-09-22 — Digest truth + activity telemetry + backlog (qrf/0ej/rch) + gc-47c
 
-All work is on branch **`feat/digest-truth-telemetry-backlog-2026-09-22`** — **NOT pushed, NOT deployed** (per operator: no deploy this session). Full suite green: **tsc clean, 104 test files / 2836 tests pass**. One batched deploy remains for a future session.
+**✅ DEPLOYED to prod 2026-09-22** (merge `2d12d97` → origin/main; Railway deploy `c3c8e447` SUCCESS; migration applied — `lastSeenAt` present; health 200; Inngest synced via PUT /api/inngest so the new `reconcile-installs` cron is registered). Also: app CONFIG deployed separately (`ghostcode-10`) registering the app/uninstalled webhook. Full suite green at deploy: **2871 tests, tsc clean.** Every shipped piece adversarially audited (main batch by 3-reviewer pass + fixes; gc-dyt by its own audit → APPROVE + idempotency fix).
 
 ## Commits (11, newest first)
 | SHA | What |
