@@ -263,9 +263,27 @@ describe("getBillingEventStats with exclusion opts", () => {
 
     expect(mockDb.billingEvent.findMany).toHaveBeenCalledWith({
       where: { createdAt: { gte: since } },
-      select: { eventType: true, shop: { select: { domain: true } } },
+      select: { eventType: true, shop: { select: { domain: true, isInternal: true } } },
     });
     expect(mockDb.billingEvent.groupBy).not.toHaveBeenCalled();
+  });
+
+  it("drops an event whose shop is isInternal:true even when its domain is not in the exclude set", async () => {
+    // Durable primary signal: a renamed internal store has a clean-looking domain
+    // but its billing events must still be excluded from the digest line.
+    mockDb.billingEvent.findMany.mockResolvedValue([
+      { eventType: "upgrade", shop: { domain: "clean-domain.myshopify.com", isInternal: true } },
+      { eventType: "upgrade", shop: { domain: "real.myshopify.com", isInternal: false } },
+    ]);
+
+    const result = await getBillingEventStats(since, { excludeSet, excludePrefixes });
+
+    expect(result).toEqual({
+      upgrade: 1, // only the real store's upgrade; the internal one dropped
+      downgrade: 0,
+      cancellation: 0,
+      reactivation: 0,
+    });
   });
 
   it("counts a real-store event and ignores unknown event types", async () => {

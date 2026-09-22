@@ -1,5 +1,5 @@
 import db from "../db.server";
-import { isExcluded } from "../lib/store-exclusion";
+import { isExcludedShop } from "../lib/store-exclusion";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -53,8 +53,9 @@ export type BillingEventExcludeOpts = {
  * Optionally filter to events on or after `since`.
  *
  * When `opts` is provided, events belonging to a dev/test/internal/app-review
- * store (per the shared `isExcluded` predicate on the event's `shop.domain`) are
- * dropped BEFORE counting — so the operator digest's "Billing events (24h)" line
+ * store (per the shared shop-level `isExcludedShop` predicate — the durable
+ * `shop.isInternal` flag is primary, with the env list + `app-review-` prefix as
+ * override/ephemeral cover) are dropped BEFORE counting — so the operator digest's "Billing events (24h)" line
  * is consistent with every other dev-store-excluded metric. Aggregation then
  * happens in JS over the surviving rows. When `opts` is omitted, the original
  * groupBy path is preserved so other callers are unaffected.
@@ -81,12 +82,13 @@ export async function getBillingEventStats(
     // aggregate by eventType in JS (a groupBy can't filter on the related domain).
     const rows = await db.billingEvent.findMany({
       where: since ? { createdAt: { gte: since } } : undefined,
-      select: { eventType: true, shop: { select: { domain: true } } },
+      select: { eventType: true, shop: { select: { domain: true, isInternal: true } } },
     });
 
     for (const row of rows) {
-      const domain = row.shop?.domain;
-      if (domain && isExcluded(domain, opts.excludeSet, opts.excludePrefixes)) continue;
+      // Shop-level predicate: the durable isInternal flag is the primary signal,
+      // with the env exclude list + app-review- prefix as override/ephemeral cover.
+      if (row.shop && isExcludedShop(row.shop, opts.excludeSet, opts.excludePrefixes)) continue;
       const key = row.eventType as BillingEventType;
       if (key in counts) counts[key] += 1;
     }

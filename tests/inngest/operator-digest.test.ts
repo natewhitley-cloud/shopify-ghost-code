@@ -81,6 +81,7 @@ describe("partitionShops", () => {
           plan: "Professional",
           installedAt: new Date("2026-08-29T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
         {
           id: "s1",
@@ -88,6 +89,7 @@ describe("partitionShops", () => {
           plan: "Standard",
           installedAt: new Date("2026-01-01T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
       ],
       excludeSet,
@@ -111,6 +113,7 @@ describe("partitionShops", () => {
           plan: "Standard",
           installedAt: new Date("2026-08-28T06:00:00Z"), // in-window install
           uninstalledAt: new Date("2026-08-28T12:00:00Z"), // uninstalled same window
+          isInternal: false,
         },
         {
           id: "active",
@@ -118,6 +121,7 @@ describe("partitionShops", () => {
           plan: "free",
           installedAt: new Date("2026-01-01T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
       ],
       excludeSet,
@@ -162,6 +166,7 @@ describe("partitionShops", () => {
           plan: "Professional",
           installedAt: new Date("2026-08-29T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
         {
           id: "real",
@@ -169,6 +174,7 @@ describe("partitionShops", () => {
           plan: "Standard",
           installedAt: new Date("2026-01-01T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
       ],
       excludeSet,
@@ -195,6 +201,7 @@ describe("partitionShops", () => {
           plan: "free",
           installedAt: new Date("2026-01-01T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
         {
           id: "real",
@@ -202,6 +209,7 @@ describe("partitionShops", () => {
           plan: "Standard",
           installedAt: new Date("2026-01-01T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
       ],
       new Set(["teststore22022.myshopify.com"]),
@@ -225,6 +233,7 @@ describe("partitionShops", () => {
           plan: "Professional",
           installedAt: new Date("2026-01-01T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
         {
           id: "real",
@@ -232,6 +241,7 @@ describe("partitionShops", () => {
           plan: "Standard",
           installedAt: new Date("2026-01-01T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
       ],
       parseExcludeShops(undefined),
@@ -255,6 +265,7 @@ describe("partitionShops", () => {
           plan: "Professional",
           installedAt: new Date("2026-01-01T00:00:00Z"),
           uninstalledAt: null,
+          isInternal: false,
         },
       ],
       excludeSet,
@@ -264,6 +275,39 @@ describe("partitionShops", () => {
 
     expect(result.totalActive).toBe(1);
     expect(result.activeShopIds).toEqual(["midmatch"]);
+  });
+
+  it("excludes an isInternal:true shop even when its domain is NOT in the exclude set or a prefix", () => {
+    // Durable primary signal: a renamed internal store keeps a clean-looking
+    // domain but must still drop out of every business bucket.
+    const result = partitionShops(
+      [
+        {
+          id: "internal-renamed",
+          domain: "totally-normal-looking.myshopify.com",
+          plan: "Professional",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+          isInternal: true,
+        },
+        {
+          id: "real",
+          domain: "real.myshopify.com",
+          plan: "Standard",
+          installedAt: new Date("2026-01-01T00:00:00Z"),
+          uninstalledAt: null,
+          isInternal: false,
+        },
+      ],
+      excludeSet,
+      excludePrefixes,
+      windowStart,
+    );
+
+    expect(result.totalActive).toBe(1);
+    expect(result.activeShopIds).toEqual(["real"]);
+    // The internal Professional store contributes $0 MRR (it is gone entirely).
+    expect(computePlanMix(result.activeShops)).toEqual({ free: 0, Standard: 1, Professional: 0 });
   });
 });
 
@@ -616,9 +660,9 @@ describe("aggregateActivity", () => {
 
   it("computes per-shop 24h/7d visit counts and durable seen-counts", () => {
     const shops = [
-      { domain: "a.myshopify.com", lastSeenAt: hoursAgo(2) }, // seen 24h & 7d
-      { domain: "b.myshopify.com", lastSeenAt: hoursAgo(72) }, // seen 7d only
-      { domain: "c.myshopify.com", lastSeenAt: null }, // never seen
+      { domain: "a.myshopify.com", lastSeenAt: hoursAgo(2), isInternal: false }, // seen 24h & 7d
+      { domain: "b.myshopify.com", lastSeenAt: hoursAgo(72), isInternal: false }, // seen 7d only
+      { domain: "c.myshopify.com", lastSeenAt: null, isInternal: false }, // never seen
     ];
     const events = [
       visit("a.myshopify.com", "/app", 1), // a: 24h
@@ -644,9 +688,9 @@ describe("aggregateActivity", () => {
 
   it("sorts most-recently-seen first with never-seen shops last", () => {
     const shops = [
-      { domain: "never.myshopify.com", lastSeenAt: null },
-      { domain: "old.myshopify.com", lastSeenAt: hoursAgo(100) },
-      { domain: "recent.myshopify.com", lastSeenAt: hoursAgo(1) },
+      { domain: "never.myshopify.com", lastSeenAt: null, isInternal: false },
+      { domain: "old.myshopify.com", lastSeenAt: hoursAgo(100), isInternal: false },
+      { domain: "recent.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: false },
     ];
     const result = aggregateActivity([], shops, now, excludeSet, excludePrefixes);
     expect(result.perShop.map((s) => s.domain)).toEqual([
@@ -657,7 +701,7 @@ describe("aggregateActivity", () => {
   });
 
   it("normalizes and ranks top pages, collapsing scan ids", () => {
-    const shops = [{ domain: "a.myshopify.com", lastSeenAt: hoursAgo(1) }];
+    const shops = [{ domain: "a.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: false }];
     const events = [
       visit("a.myshopify.com", "/app/scans/id-1", 1),
       visit("a.myshopify.com", "/app/scans/id-2", 2),
@@ -674,9 +718,9 @@ describe("aggregateActivity", () => {
 
   it("omits excluded shops from BOTH per-shop rows AND top-pages (exact + prefix)", () => {
     const shops = [
-      { domain: "real.myshopify.com", lastSeenAt: hoursAgo(1) },
-      { domain: "dev-store.myshopify.com", lastSeenAt: hoursAgo(1) }, // exact-excluded
-      { domain: "app-review-xyz.myshopify.com", lastSeenAt: hoursAgo(1) }, // prefix-excluded
+      { domain: "real.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: false },
+      { domain: "dev-store.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: false }, // exact-excluded
+      { domain: "app-review-xyz.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: false }, // prefix-excluded
     ];
     const events = [
       visit("real.myshopify.com", "/app", 1),
@@ -691,8 +735,24 @@ describe("aggregateActivity", () => {
     expect(result.topPages).toEqual([{ path: "/app", count: 1 }]);
   });
 
+  it("omits an isInternal:true shop even when its domain is NOT excluded (durable primary signal)", () => {
+    const shops = [
+      { domain: "real.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: false },
+      // Clean-looking domain, but flagged internal — must drop from the per-shop
+      // rows and the seen-counts. Its event key still passes the domain filter, so
+      // this proves per-shop exclusion is driven by isExcludedShop, not the key.
+      { domain: "renamed-internal.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: true },
+    ];
+    const events = [visit("real.myshopify.com", "/app", 1)];
+    const result = aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+
+    expect(result.totalActive).toBe(1);
+    expect(result.perShop.map((s) => s.domain)).toEqual(["real.myshopify.com"]);
+    expect(result.seen24h).toBe(1);
+  });
+
   it("ignores events with a null key or malformed metadata", () => {
-    const shops = [{ domain: "a.myshopify.com", lastSeenAt: hoursAgo(1) }];
+    const shops = [{ domain: "a.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: false }];
     const events = [
       { key: null, metadata: { path: "/app" }, createdAt: hoursAgo(1) },
       { key: "a.myshopify.com", metadata: null, createdAt: hoursAgo(1) }, // counts a visit, no path

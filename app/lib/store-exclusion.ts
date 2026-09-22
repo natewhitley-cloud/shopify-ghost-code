@@ -79,3 +79,22 @@ export function isExcluded(
   }
   return false;
 }
+
+/**
+ * Shop-level exclusion predicate. The durable `Shop.isInternal` boolean is the
+ * PRIMARY exclusion signal — set once per known internal/dev/test store, it
+ * survives a store rename that the domain-based `isExcluded` list would miss.
+ * The env exclude list + `app-review-` prefix are retained (via the delegated
+ * `isExcluded(domain, ...)` call) as an operational override AND the only way to
+ * drop Shopify's EPHEMERAL `app-review-*` review stores, which get a fresh domain
+ * each cycle and so can never be pre-flagged with `isInternal`. Use this wherever
+ * a shop object is in hand; `isExcluded(domain, ...)` remains for domain-only /
+ * event-key checks (e.g. top-pages by `page_visit.key`) that have no shop row.
+ */
+export function isExcludedShop(
+  shop: { domain: string; isInternal?: boolean | null },
+  excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
+): boolean {
+  return shop.isInternal === true || isExcluded(shop.domain, excludeSet, excludePrefixes);
+}

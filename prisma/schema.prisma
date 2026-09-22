@@ -66,6 +66,11 @@ model Shop {
   lastSeenAt          DateTime?
   lastThemePublishAt  DateTime?
   hasSeenReviewPrompt Boolean          @default(false)
+  // Durable "internal/dev/test store — excluded from all business metrics" flag;
+  // the PRIMARY exclusion signal (the env exclude list + `app-review-` prefix
+  // remain as an operational override + ephemeral-review-store coverage). Set
+  // once per known internal store so a rename never re-leaks it into metrics.
+  isInternal          Boolean          @default(false)
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

@@ -13,6 +13,7 @@ import {
   DEFAULT_EXCLUDE_PREFIXES,
   DEFAULT_EXCLUDE_SHOPS,
   isExcluded,
+  isExcludedShop,
   parseExcludePrefixes,
   parseExcludeShops,
 } from "../../app/lib/store-exclusion";
@@ -109,5 +110,57 @@ describe("isExcluded", () => {
 
   it("returns false when both exclusion sets are empty", () => {
     expect(isExcluded("anything.myshopify.com", new Set(), new Set())).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// isExcludedShop
+// ---------------------------------------------------------------------------
+
+describe("isExcludedShop", () => {
+  // Intentionally EMPTY domain-based sets so these assertions isolate the durable
+  // isInternal signal from the domain/prefix paths.
+  const emptySet = new Set<string>();
+  const emptyPrefixes = new Set<string>();
+  const excludeSet = new Set(["dev-store.myshopify.com"]);
+  const excludePrefixes = new Set(["app-review-"]);
+
+  it("excludes an isInternal:true shop regardless of domain (durable primary signal)", () => {
+    expect(
+      isExcludedShop(
+        { domain: "real-merchant.myshopify.com", isInternal: true },
+        emptySet,
+        emptyPrefixes,
+      ),
+    ).toBe(true);
+  });
+
+  it("excludes an isInternal:false shop whose domain is an exact match", () => {
+    expect(
+      isExcludedShop(
+        { domain: "dev-store.myshopify.com", isInternal: false },
+        excludeSet,
+        excludePrefixes,
+      ),
+    ).toBe(true);
+  });
+
+  it("excludes a shop whose domain matches a prefix even when isInternal is undefined", () => {
+    expect(
+      isExcludedShop({ domain: "app-review-abc.myshopify.com" }, excludeSet, excludePrefixes),
+    ).toBe(true);
+  });
+
+  it("keeps a real shop that is not internal and matches neither the set nor a prefix", () => {
+    expect(
+      isExcludedShop(
+        { domain: "real-merchant.myshopify.com", isInternal: false },
+        excludeSet,
+        excludePrefixes,
+      ),
+    ).toBe(false);
+    expect(
+      isExcludedShop({ domain: "real-merchant.myshopify.com" }, excludeSet, excludePrefixes),
+    ).toBe(false);
   });
 });

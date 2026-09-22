@@ -27,7 +27,12 @@
  */
 
 import { PLAN_AMOUNTS, PLANS } from "../../app/lib/billing.server";
-import { isExcluded, parseExcludePrefixes, parseExcludeShops } from "../../app/lib/store-exclusion";
+import {
+  isExcluded,
+  isExcludedShop,
+  parseExcludePrefixes,
+  parseExcludeShops,
+} from "../../app/lib/store-exclusion";
 import type { BillingEventType } from "../../app/models/billing-event.server";
 import type { StaleCron } from "../../app/models/ops-event.server";
 import type { OpsAlertConfigStatus } from "../../app/services/ops-alert.server";
@@ -79,6 +84,7 @@ export function partitionShops(
     plan: string;
     installedAt: Date;
     uninstalledAt: Date | null;
+    isInternal: boolean;
   }>,
   excludeSet: Set<string>,
   excludePrefixes: Set<string>,
@@ -90,12 +96,13 @@ export function partitionShops(
   activeShopIds: string[];
   domainById: Record<string, string>;
 } {
-  // Exclusion (exact-domain OR prefix) is shared with the activity section via
-  // isExcluded. NOTE: dahi5e-1d.myshopify.com IS excluded here (via the default
+  // Exclusion (durable isInternal flag, OR exact-domain, OR prefix) is shared
+  // with the activity section via isExcludedShop; isInternal is the primary
+  // signal. NOTE: dahi5e-1d.myshopify.com IS excluded here (via the default
   // exclude set) — the operator confirmed 2026-09-22 it is an internal store
   // (Professional test charge), with 0 real Professional subscribers, so its MRR
   // contribution is $0 and it must not appear in any business metric.
-  const nonExcluded = allShops.filter((s) => !isExcluded(s.domain, excludeSet, excludePrefixes));
+  const nonExcluded = allShops.filter((s) => !isExcludedShop(s, excludeSet, excludePrefixes));
   const active = nonExcluded.filter((s) => s.uninstalledAt === null);
   const activeShops = active.map((s) => ({ id: s.id, domain: s.domain, plan: s.plan }));
   return {
@@ -337,16 +344,17 @@ function extractVisitPath(metadata: unknown): string | null {
  * Aggregate the trailing-7d page_visit stream + active shops into the digest's
  * ActivitySummary. Pure (consumes Dates, emits serialization-safe output).
  *
- * Exclusion mirrors partitionShops via the SHARED isExcluded predicate, applied
- * to BOTH the shop list (per-shop rows + seen-counts) AND each event's `key`
- * (domain), so dev/test/`app-review-*` stores never appear in the per-shop rows
- * OR the top-pages breakdown. 24h counts are derived in-memory from each event's
+ * Exclusion mirrors partitionShops: the shop list (per-shop rows + seen-counts)
+ * uses the shop-level isExcludedShop (durable isInternal is the primary signal),
+ * while each event's `key` (domain) uses isExcluded since events carry no shop
+ * object — so dev/test/internal/`app-review-*` stores never appear in the
+ * per-shop rows OR the top-pages breakdown. 24h counts are derived in-memory from each event's
  * createdAt so only one (7d) query is needed. Shops are sorted most-recently-seen
  * first, with never-seen shops ("never") last.
  */
 export function aggregateActivity(
   events: Array<{ key: string | null; metadata: unknown; createdAt: Date }>,
-  shops: Array<{ domain: string; lastSeenAt: Date | null }>,
+  shops: Array<{ domain: string; lastSeenAt: Date | null; isInternal: boolean }>,
   now: Date,
   excludeSet: Set<string>,
   excludePrefixes: Set<string>,
@@ -354,7 +362,9 @@ export function aggregateActivity(
   const dayAgo = now.getTime() - DAY_MS;
   const weekAgo = now.getTime() - 7 * DAY_MS;
 
-  const activeShops = shops.filter((s) => !isExcluded(s.domain, excludeSet, excludePrefixes));
+  // Per-shop rows use the shop-level predicate (durable isInternal is primary).
+  // Event keys (top-pages) have no shop object, so they stay on isExcluded(domain).
+  const activeShops = shops.filter((s) => !isExcludedShop(s, excludeSet, excludePrefixes));
 
   // Per-domain visit counts + normalized top-pages from real-merchant events only.
   const visitsByDomain = new Map<string, { v24: number; v7: number }>();
@@ -790,6 +800,7 @@ export const operatorDigest = inngest.createFunction(
           plan: true,
           installedAt: true,
           uninstalledAt: true,
+          isInternal: true,
         },
       });
       // Dates are consumed inside the helper; only counts/strings/ids are returned.
@@ -922,7 +933,7 @@ export const operatorDigest = inngest.createFunction(
       const [shops, events] = await Promise.all([
         db.shop.findMany({
           where: { id: { in: activeShopIds } },
-          select: { domain: true, lastSeenAt: true },
+          select: { domain: true, lastSeenAt: true, isInternal: true },
         }),
         db.opsEvent.findMany({
           where: { eventType: OPS_EVENT_TYPES.PAGE_VISIT, createdAt: { gte: sevenDaysAgo } },
