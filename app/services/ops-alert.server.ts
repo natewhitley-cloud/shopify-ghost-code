@@ -18,6 +18,7 @@
  */
 
 import { logger } from "../lib/logger.server";
+import { recordApiError } from "../models/ops-event.server";
 
 // All ops-alert subjects carry this prefix so they are trivially filterable
 // in the operator's inbox and never collide with any future merchant email.
@@ -61,6 +62,40 @@ export function getOpsAlertConfigStatus(): OpsAlertConfigStatus {
     return { configured: false, reason: "no_transport" };
   }
   return { configured: true, reason: "ok" };
+}
+
+/**
+ * Durably record a DELIVERY failure of an operator page so repeated paging
+ * failures surface in the DB-backed operator digest — which does NOT depend on
+ * email. A rotated/broken shared RESEND_API_KEY otherwise silently kills every
+ * page AND the digest's own emailed alerting self-check, so the failure would be
+ * invisible without this row.
+ *
+ * Reuses the existing `api_error` OpsEvent type (a new id-keyed type would open
+ * redact/prune coverage gaps). Best-effort: `recordApiError` is designed never to
+ * throw and NEVER calls back into `sendOpsAlert` (no recursion), but it is wrapped
+ * here anyway so that if the durable write somehow throws we fall back to the
+ * existing `logger.error` line only — never a new failure mode on the alert path.
+ */
+async function recordPagingFailure(
+  subject: string,
+  reason: "http_error" | "exception",
+  detail?: Record<string, string | number>,
+): Promise<void> {
+  try {
+    await recordApiError({
+      level: "error",
+      code: "ops_alert_delivery_failed",
+      message: `Ops alert delivery failed (${reason}): ${subject}`,
+      metadata: { reason, subject, ...detail },
+    });
+  } catch (error) {
+    logger.error("Ops alert delivery-failure record failed", {
+      context: "ops-alert",
+      subject,
+      error,
+    });
+  }
 }
 
 /**
@@ -118,6 +153,7 @@ export async function sendOpsAlert(subject: string, body: string): Promise<OpsAl
         subject,
         status: response.status,
       });
+      await recordPagingFailure(subject, "http_error", { status: response.status });
       return { sent: false, reason: "http_error" };
     }
 
@@ -128,6 +164,7 @@ export async function sendOpsAlert(subject: string, body: string): Promise<OpsAl
       subject,
       error,
     });
+    await recordPagingFailure(subject, "exception");
     return { sent: false, reason: "exception" };
   }
 }

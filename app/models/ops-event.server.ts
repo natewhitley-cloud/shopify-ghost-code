@@ -35,6 +35,16 @@ export const OPS_EVENT_TYPES = {
   // coverage in deleteShopData (which purges by domain) and no prune coverage in
   // pruneOpsEvents (one row/day is not high-volume, like digest_snapshot).
   RECONCILE_SUMMARY: "reconcile_summary",
+  // One row on the RARE run where the reconciler's circuit breaker trips (gc-5ha):
+  // more shops than the safety threshold classified "uninstalled" in a single run
+  // (the mass-churn signature of a credential misconfig), so the run marked
+  // NOTHING and aborted. Keyed on the same CONSTANT ("reconcile-installs"); the
+  // affected domains are surfaced ONLY in the free-text `message` + the operator
+  // email (like webhook_failure/function_failure error strings) — structured
+  // `metadata` stays counts-only, so this needs no per-shop redact coverage in
+  // deleteShopData and no prune coverage (a tripped breaker is near-never, not
+  // high-volume) beyond the accepted free-text-message residual.
+  RECONCILE_ABORTED: "reconcile_aborted",
 } as const;
 
 export interface RecordOpsEventInput {

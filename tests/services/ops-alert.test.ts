@@ -7,6 +7,11 @@ const mockLogger = vi.hoisted(() => ({
 }));
 vi.mock("../../app/lib/logger.server", () => ({ logger: mockLogger }));
 
+const mockRecordApiError = vi.hoisted(() => vi.fn());
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordApiError: mockRecordApiError,
+}));
+
 import { sendOpsAlert, getOpsAlertConfigStatus } from "../../app/services/ops-alert.server";
 
 const ORIGINAL_ENV = { ...process.env };
@@ -108,6 +113,15 @@ describe("sendOpsAlert — fully configured", () => {
       "Ops alert send returned non-OK",
       expect.objectContaining({ status: 422 }),
     );
+    // Durable record so repeated paging failures surface in the DB-backed digest
+    // even though email is dead. Reuses the api_error type.
+    expect(mockRecordApiError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "error",
+        code: "ops_alert_delivery_failed",
+        metadata: expect.objectContaining({ reason: "http_error", subject: "s", status: 422 }),
+      }),
+    );
   });
 
   it("never throws — swallows a fetch rejection into an exception result", async () => {
@@ -120,6 +134,21 @@ describe("sendOpsAlert — fully configured", () => {
       "Ops alert send failed",
       expect.objectContaining({ subject: "s" }),
     );
+    expect(mockRecordApiError).toHaveBeenCalledWith(
+      expect.objectContaining({
+        level: "error",
+        code: "ops_alert_delivery_failed",
+        metadata: expect.objectContaining({ reason: "exception", subject: "s" }),
+      }),
+    );
+  });
+
+  it("does NOT record a delivery failure on a successful send", async () => {
+    (fetch as unknown as ReturnType<typeof vi.fn>).mockResolvedValue({ ok: true, status: 200 });
+
+    await sendOpsAlert("s", "b");
+
+    expect(mockRecordApiError).not.toHaveBeenCalled();
   });
 });
 
