@@ -758,8 +758,9 @@ describe("reconcileInstalls partial-rotation warning", () => {
 describe("reconcileInstalls circuit breaker", () => {
   it("ABORTS and marks NOTHING when the count exceeds the threshold (mass-churn signature)", async () => {
     // 12 active shops, EVERY one probes uninstalled (e.g. a systemic fault that
-    // produced 401s across the base). threshold = max(5, ceil(0.5*12)=6) = 6,
-    // so 12 > 6 trips the breaker: nothing is marked, the operator is paged.
+    // produced 401s across the base). threshold = max(3, ceil(0.5*12)=6) = 6,
+    // so 12/12 trips the breaker (all-probed AND >=threshold): nothing is marked,
+    // the operator is paged.
     const shops = Array.from({ length: 12 }, (_, i) => ({
       id: `s${i}`,
       domain: `shop${i}.myshopify.com`,
@@ -798,8 +799,9 @@ describe("reconcileInstalls circuit breaker", () => {
   });
 
   it("does NOT trip for a small number of real uninstalls below the threshold — those ARE marked", async () => {
-    // 8 shops, 3 uninstalled, 5 installed. threshold = max(5, ceil(0.5*8)=4) = 5,
-    // so 3 <= 5: the breaker stays closed and the 3 real uninstalls are marked.
+    // 8 shops, 3 uninstalled, 5 installed. threshold = max(3, ceil(0.5*8)=4) = 4,
+    // so 3 < 4 and not all-probed: the breaker stays closed and the 3 real
+    // uninstalls are marked.
     const dead = new Set(["dead1.myshopify.com", "dead2.myshopify.com", "dead3.myshopify.com"]);
     const shops = [
       ...[...dead].map((domain, i) => ({ id: `d${i}`, domain })),
@@ -831,6 +833,121 @@ describe("reconcileInstalls circuit breaker", () => {
       }),
     );
     expect(result).toMatchObject({ status: "completed", checked: 8, marked: 3, skipped: 0 });
+  });
+
+  // Build N shops, the first `dead` of them probing 401 (uninstalled), the rest 200.
+  function seedShops(total: number, dead: number) {
+    const deadDomains = new Set(Array.from({ length: dead }, (_, i) => `dead${i}.myshopify.com`));
+    const shops = [
+      ...Array.from({ length: dead }, (_, i) => ({
+        id: `d${i}`,
+        domain: `dead${i}.myshopify.com`,
+      })),
+      ...Array.from({ length: total - dead }, (_, i) => ({
+        id: `l${i}`,
+        domain: `live${i}.myshopify.com`,
+      })),
+    ];
+    mockFindMany.mockResolvedValue(shops);
+    mockAdmin.mockImplementation(async (domain: string) =>
+      deadDomains.has(domain)
+        ? adminGraphql(async () => {
+            throw { response: { code: 401 } };
+          })
+        : adminGraphql(async () => ({ status: 200 })),
+    );
+  }
+
+  it("TRIPS at a SMALL base when ALL shops are wrongly classified uninstalled (the old silent hole: checked=5, 5/5)", async () => {
+    // The regression the old MAX(CB_ABS_CAP=5, ...) form silently PASSED: with
+    // checked=5, ceil(0.5*5)=3 and the old cap pinned the threshold at 5, so 5
+    // was NOT > 5 — the breaker never tripped and a systemic fault could churn
+    // the entire tiny base. New rule: all-probed-marked (N>=3) always trips.
+    // threshold = max(3, ceil(0.5*5)=3) = 3.
+    seedShops(5, 5);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        key: "reconcile-installs",
+        message: expect.stringContaining("ABORTED by circuit breaker"),
+        metadata: { checked: 5, wouldMark: 5, threshold: 3 },
+      }),
+    );
+    expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_summary" }),
+    );
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "aborted-circuit-breaker",
+      checked: 5,
+      wouldMark: 5,
+    });
+  });
+
+  it("TRIPS at checked=3 when 3/3 are uninstalled (all-probed at the N>=3 floor)", async () => {
+    // threshold = max(3, ceil(0.5*3)=2) = 3; all-probed (3===3, N>=3) trips.
+    seedShops(3, 3);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        metadata: { checked: 3, wouldMark: 3, threshold: 3 },
+      }),
+    );
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "aborted-circuit-breaker",
+      checked: 3,
+      wouldMark: 3,
+    });
+  });
+
+  it("does NOT trip at checked=10 with 4 marks (< half the base) — those 4 ARE marked", async () => {
+    // threshold = max(3, ceil(0.5*10)=5) = 5; 4 < 5 and not all-probed → closed.
+    seedShops(10, 4);
+
+    const result = await runReconcile();
+
+    expect(mockMark).toHaveBeenCalledTimes(4);
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_summary",
+        metadata: { checked: 10, marked: 4, skipped: 0 },
+      }),
+    );
+    expect(result).toMatchObject({ status: "completed", checked: 10, marked: 4, skipped: 0 });
+  });
+
+  it("TRIPS at checked=10 with 5 marks (>= half the base) — marks NOTHING", async () => {
+    // threshold = max(3, ceil(0.5*10)=5) = 5; 5 >= 5 trips via the fraction.
+    seedShops(10, 5);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        metadata: { checked: 10, wouldMark: 5, threshold: 5 },
+      }),
+    );
+    expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_summary" }),
+    );
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({
+      status: "aborted-circuit-breaker",
+      checked: 10,
+      wouldMark: 5,
+    });
   });
 });
 

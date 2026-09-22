@@ -36,11 +36,12 @@
  *         would otherwise 400/401 every shop into a mass churn.
  *
  *   CIRCUIT BREAKER (defense-in-depth): the cron runs in two passes — probe all
- *   active shops (mark nothing), then, ONLY if the count it would mark is at or
- *   below MAX(CB_ABS_CAP, CB_FRACTION * checked), mark them. If more than that
- *   threshold classify uninstalled in one run (the mass-churn signature), the run
- *   ABORTS: it marks NOTHING, records a RECONCILE_ABORTED OpsEvent, and pages the
- *   operator — turning a would-be base-wide churn into one skipped run + an alert.
+ *   active shops (mark nothing), then mark them ONLY if the run does not look
+ *   systemic. The run ABORTS when ALL probed shops (N>=3) are marked, OR when
+ *   marks reach >=50% of the probed base (minimum CB_MIN_MARKS). This can no
+ *   longer be silently bypassed at small base sizes. On a trip the run marks
+ *   NOTHING, records a RECONCILE_ABORTED OpsEvent, and pages the operator —
+ *   turning a would-be base-wide churn into one skipped run + an alert.
  *   A RAW-refresh 200 means the app is STILL INSTALLED; Shopify ROTATES the
  *   offline refresh token on that success, so rawRefreshProbe stores the rotated
  *   session and the shop is treated as installed (never marked).
@@ -84,13 +85,16 @@ const PAUSE_BETWEEN_SHOPS = "500ms";
 // classification: even if a systemic fault (e.g. a wrong shared client_secret)
 // produced varied per-shop rejections that slipped past the body checks, a
 // SINGLE run must never be able to churn the whole active base. The reconciler
-// aborts a run — marking NOTHING and paging the operator — when the number of
-// shops it WOULD mark uninstalled exceeds MAX(CB_ABS_CAP, CB_FRACTION * checked).
-// The absolute cap protects a tiny base (where a fraction is trivially small);
-// the fraction protects a large base. Tune conservatively: a genuine day never
-// churns anywhere near half the base at once, so a trip is a near-certain bug.
-const CB_ABS_CAP = 5;
-const CB_FRACTION = 0.5;
+// aborts a run — marking NOTHING and paging the operator — when it WOULD mark
+// ALL probed shops (N>=3), OR when the number it WOULD mark reaches >=50% of the
+// probed base (floor CB_MIN_MARKS). The fraction is PRIMARY (it protects a large
+// base); the all-probed-marked rule guarantees a systemic 100%-churn always trips
+// even at a small base — the old MAX(absolute-cap, fraction) form pinned the
+// threshold at the cap and could be silently bypassed when checked <= the cap.
+// Tune conservatively: a genuine day never churns anywhere near half the base at
+// once, so a trip is a near-certain bug.
+const CB_FRACTION = 0.5; // trip when >= half the probed base is marked in one run
+const CB_MIN_MARKS = 3; // ordinary-churn floor: fewer than this never trips
 
 /** Result of probing one shop's install status. */
 export type InstallStatus = "installed" | "uninstalled" | "ambiguous";
@@ -531,11 +535,17 @@ export const reconcileInstalls = inngest.createFunction(
     const skipped = probes.filter((p) => p.classification === "ambiguous").length;
 
     // --- Circuit-breaker gate ---------------------------------------------
-    // A run that WOULD mark more than the threshold is the mass-churn signature
-    // of a systemic fault, not a real day of uninstalls. ABORT: mark nothing,
-    // page the operator, and let a human confirm before any churn happens.
-    const churnThreshold = Math.max(CB_ABS_CAP, Math.ceil(CB_FRACTION * checked));
-    if (wouldMark.length > churnThreshold) {
+    // A run that WOULD mark the whole probed base (N>=3), or >=half of it, is the
+    // mass-churn signature of a systemic fault, not a real day of uninstalls.
+    // ABORT: mark nothing, page the operator, and let a human confirm before any
+    // churn happens. The fraction is primary; the all-probed-marked rule ensures a
+    // 100%-churn always trips even at a small base (the old MAX-with-cap form
+    // pinned the threshold at the cap and could be bypassed when checked was small).
+    const churnThreshold = Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * checked));
+    const tripped =
+      (checked >= 3 && wouldMark.length === checked) || // ALL probed shops marked → always systemic at N>=3
+      wouldMark.length >= churnThreshold; // or >= half the base (floor CB_MIN_MARKS)
+    if (tripped) {
       await step.run("circuit-breaker-abort", async () => {
         const { recordOpsEvent, OPS_EVENT_TYPES } =
           await import("../../app/models/ops-event.server");
