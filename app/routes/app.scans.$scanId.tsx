@@ -26,6 +26,8 @@ import {
 } from "../lib/finding-consequence";
 import type { LaneKey } from "../lib/finding-consequence";
 import { getFindingImpact, getFindingRemediation } from "../lib/finding-remediation";
+import { getRemovalSafety, REMOVAL_SAFETY_LABELS } from "../lib/finding-safety";
+import type { RemovalSafety } from "../lib/finding-safety";
 import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
@@ -105,6 +107,22 @@ function severityTone(severity: string): "critical" | "warning" | "info" {
       return "warning";
     default:
       return "info";
+  }
+}
+
+/**
+ * Maps a removal-safety level to an s-badge tone. Green = safe to delete, amber
+ * caution = check first, neutral grey = don't delete (migrate/fix instead), so
+ * the color reads as "how freely can I act", not severity.
+ */
+function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
+  switch (safety) {
+    case "safe-to-remove":
+      return "success";
+    case "leave-alone":
+      return "neutral";
+    default:
+      return "caution";
   }
 }
 
@@ -342,6 +360,7 @@ export function FindingRow({
 }) {
   const isVisual = finding.isVisual ?? hasVisualImpact(finding.findingType);
   const confidence = getFindingConfidence(finding.findingType);
+  const safety = getRemovalSafety(finding.findingType);
 
   // Theme-editor deep-link — only for theme-file-backed finding types (Admin
   // resource types like GHOST_PAGE/GHOST_PRICE use synthetic locators, not
@@ -379,6 +398,7 @@ export function FindingRow({
               Heuristic
             </span>
           )}
+          <s-badge tone={safetyTone(safety)}>{REMOVAL_SAFETY_LABELS[safety]}</s-badge>
         </div>
       </td>
       <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
