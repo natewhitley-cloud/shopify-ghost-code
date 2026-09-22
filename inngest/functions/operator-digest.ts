@@ -62,6 +62,7 @@ export const DEFAULT_EXCLUDE_PREFIXES = "app-review-";
 // totals are always reported alongside the capped list.
 const SCANS_PER_STORE_LIMIT = 10;
 const FINDING_TYPES_LIMIT = 8;
+const TOP_PAGES_LIMIT = 8;
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit testing; no Prisma/Shopify/IO)
@@ -97,6 +98,27 @@ export function parseExcludePrefixes(raw: string | undefined): Set<string> {
 }
 
 /**
+ * Shared exclusion predicate: a shop is excluded when its lowercased domain is an
+ * EXACT match in `excludeSet` OR `startsWith` any prefix in `excludePrefixes`.
+ * The prefix path catches Shopify's EPHEMERAL `app-review-*` review stores (a new
+ * domain each review cycle) that a static exact list would leak. Reused by
+ * `partitionShops` (install/plan/MRR buckets) and `aggregateActivity` (last-seen
+ * + page-visit section) so both sections exclude the SAME dev/test/review stores.
+ */
+export function isExcluded(
+  domain: string,
+  excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
+): boolean {
+  const d = domain.toLowerCase();
+  if (excludeSet.has(d)) return true;
+  for (const prefix of excludePrefixes) {
+    if (d.startsWith(prefix)) return true;
+  }
+  return false;
+}
+
+/**
  * Partition all fetched shops into the digest's install buckets, excluding the
  * dev/operator store(s). Consumes Date fields (installedAt/uninstalledAt) and
  * returns ONLY serialization-safe counts/strings/ids so nothing but plain data
@@ -127,22 +149,12 @@ export function partitionShops(
   activeShopIds: string[];
   domainById: Record<string, string>;
 } {
-  // A shop is excluded when its lowercased domain is an EXACT match in
-  // excludeSet OR startsWith any prefix in excludePrefixes. The prefix path
-  // catches Shopify's EPHEMERAL `app-review-*` review stores (a new domain each
-  // review cycle) that a static exact list would leak. NOTE:
-  // dahi5e-1d.myshopify.com is intentionally NOT excluded here pending an
-  // operator real-vs-internal ($29 MRR?) decision — add it to
+  // Exclusion (exact-domain OR prefix) is shared with the activity section via
+  // isExcluded. NOTE: dahi5e-1d.myshopify.com is intentionally NOT excluded here
+  // pending an operator real-vs-internal ($29 MRR?) decision — add it to
   // OPERATOR_EXCLUDE_SHOPS to exclude later (ref: this session's digest
   // reconciliation).
-  const nonExcluded = allShops.filter((s) => {
-    const domain = s.domain.toLowerCase();
-    if (excludeSet.has(domain)) return false;
-    for (const prefix of excludePrefixes) {
-      if (domain.startsWith(prefix)) return false;
-    }
-    return true;
-  });
+  const nonExcluded = allShops.filter((s) => !isExcluded(s.domain, excludeSet, excludePrefixes));
   const active = nonExcluded.filter((s) => s.uninstalledAt === null);
   const activeShops = active.map((s) => ({ id: s.id, domain: s.domain, plan: s.plan }));
   return {
@@ -331,6 +343,131 @@ export function computeResolutionRollup(
 }
 
 // ---------------------------------------------------------------------------
+// Activity telemetry: last-seen + page-visit aggregation
+//
+// Backed by the durable Shop.lastSeenAt column and the domain-keyed `page_visit`
+// OpsEvent stream (one row per authenticated non-admin /app/* load). Surfaces,
+// per installed merchant, when they last logged in and how many pages they
+// viewed in the trailing 24h / 7d, plus a normalized top-pages breakdown.
+// ---------------------------------------------------------------------------
+
+/** Per-shop activity row (lastSeenAt serialized to an ISO string / null). */
+export interface ActivityShopRow {
+  domain: string;
+  lastSeenAt: string | null;
+  visits24h: number;
+  visits7d: number;
+}
+
+/** Serialization-safe activity rollup crossing the Inngest step boundary. */
+export interface ActivitySummary {
+  /** Active, non-excluded installs (the denominator for the seen-counts). */
+  totalActive: number;
+  /** Active shops whose lastSeenAt falls in the trailing 24h / 7d. */
+  seen24h: number;
+  seen7d: number;
+  perShop: ActivityShopRow[];
+  topPages: Array<{ path: string; count: number }>;
+}
+
+/**
+ * Collapse dynamic scan-id route segments so the top-pages breakdown groups by
+ * ROUTE, not by individual scan id. `/app/scans/<id>` → `/app/scans/:id`,
+ * `/app/scans/<id>/diff` → `/app/scans/:id/diff`, `/app/scans/<id>/export` →
+ * `/app/scans/:id/export`. Static paths (including the `/app/scans` index) are
+ * returned untouched. Pure and total — any non-matching path passes through.
+ */
+export function normalizeActivityPath(path: string): string {
+  return path.replace(/^(\/app\/scans\/)[^/]+/, "$1:id");
+}
+
+/** Read a page_visit event's `metadata.path`, or null if missing/malformed. */
+function extractVisitPath(metadata: unknown): string | null {
+  if (typeof metadata !== "object" || metadata === null) return null;
+  const p = (metadata as Record<string, unknown>).path;
+  return typeof p === "string" ? p : null;
+}
+
+/**
+ * Aggregate the trailing-7d page_visit stream + active shops into the digest's
+ * ActivitySummary. Pure (consumes Dates, emits serialization-safe output).
+ *
+ * Exclusion mirrors partitionShops via the SHARED isExcluded predicate, applied
+ * to BOTH the shop list (per-shop rows + seen-counts) AND each event's `key`
+ * (domain), so dev/test/`app-review-*` stores never appear in the per-shop rows
+ * OR the top-pages breakdown. 24h counts are derived in-memory from each event's
+ * createdAt so only one (7d) query is needed. Shops are sorted most-recently-seen
+ * first, with never-seen shops ("never") last.
+ */
+export function aggregateActivity(
+  events: Array<{ key: string | null; metadata: unknown; createdAt: Date }>,
+  shops: Array<{ domain: string; lastSeenAt: Date | null }>,
+  now: Date,
+  excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
+): ActivitySummary {
+  const dayAgo = now.getTime() - DAY_MS;
+  const weekAgo = now.getTime() - 7 * DAY_MS;
+
+  const activeShops = shops.filter((s) => !isExcluded(s.domain, excludeSet, excludePrefixes));
+
+  // Per-domain visit counts + normalized top-pages from real-merchant events only.
+  const visitsByDomain = new Map<string, { v24: number; v7: number }>();
+  const pageCounts = new Map<string, number>();
+  for (const e of events) {
+    if (e.key == null) continue;
+    const domain = e.key.toLowerCase();
+    if (isExcluded(domain, excludeSet, excludePrefixes)) continue;
+    const t = e.createdAt.getTime();
+    if (t < weekAgo) continue; // defensive; the query already bounds to 7d
+    const c = visitsByDomain.get(domain) ?? { v24: 0, v7: 0 };
+    c.v7 += 1;
+    if (t >= dayAgo) c.v24 += 1;
+    visitsByDomain.set(domain, c);
+    const rawPath = extractVisitPath(e.metadata);
+    if (rawPath !== null) {
+      const norm = normalizeActivityPath(rawPath);
+      pageCounts.set(norm, (pageCounts.get(norm) ?? 0) + 1);
+    }
+  }
+
+  const perShop: ActivityShopRow[] = activeShops.map((s) => {
+    const c = visitsByDomain.get(s.domain.toLowerCase()) ?? { v24: 0, v7: 0 };
+    return {
+      domain: s.domain,
+      lastSeenAt: s.lastSeenAt ? s.lastSeenAt.toISOString() : null,
+      visits24h: c.v24,
+      visits7d: c.v7,
+    };
+  });
+
+  // Most-recently-seen first; never-seen (null) last. ISO strings sort
+  // lexicographically = chronologically, so a descending string sort is correct.
+  perShop.sort((a, b) => {
+    if (a.lastSeenAt === b.lastSeenAt) return a.domain.localeCompare(b.domain);
+    if (a.lastSeenAt === null) return 1;
+    if (b.lastSeenAt === null) return -1;
+    return b.lastSeenAt.localeCompare(a.lastSeenAt);
+  });
+
+  // "Seen" is the durable lastSeenAt signal (not derived from page_visit rows).
+  let seen24h = 0;
+  let seen7d = 0;
+  for (const s of activeShops) {
+    if (!s.lastSeenAt) continue;
+    const t = s.lastSeenAt.getTime();
+    if (t >= weekAgo) seen7d += 1;
+    if (t >= dayAgo) seen24h += 1;
+  }
+
+  const topPages = [...pageCounts.entries()]
+    .map(([path, count]) => ({ path, count }))
+    .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+
+  return { totalActive: activeShops.length, seen24h, seen7d, perShop, topPages };
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot-metric threshold evaluation (gc-06e.13, sub-item 3)
 //
 // MetricSnapshot rows were collected but never evaluated. This adds conservative
@@ -456,6 +593,9 @@ export interface OperatorDigestData {
     submissionsByStatus: { PENDING: number; ACCEPTED: number; REJECTED: number };
   };
   activation: { activated: number; dormant: number; totalActive: number };
+  /** Last-seen + page-visit activity (last day / week). Optional so callers/tests
+   * that predate it still type-check; absent => rendered as "No activity data". */
+  activity?: ActivitySummary;
   ops: {
     functionFailures: number;
     workerFallbacks: number;
@@ -596,6 +736,39 @@ export function buildDigestBody(data: OperatorDigestData): string {
     `  Activated (>= 1 scan ever): ${activation.activated} of ${activation.totalActive} active installs`,
   );
   lines.push(`  Dormant (0 scans ever): ${activation.dormant}`);
+  lines.push("");
+
+  const { activity } = data;
+  lines.push("ACTIVITY (last-seen & page visits)");
+  if (!activity) {
+    lines.push("  No activity data");
+  } else {
+    lines.push(
+      `  Seen in last 24h: ${activity.seen24h} of ${activity.totalActive} active | last 7d: ${activity.seen7d} of ${activity.totalActive}`,
+    );
+    lines.push("  By shop (most-recently-seen first):");
+    if (activity.perShop.length === 0) {
+      lines.push("    No active shops");
+    } else {
+      for (const s of activity.perShop) {
+        const seen = s.lastSeenAt ?? "never";
+        lines.push(
+          `    ${s.domain} -- last seen ${seen} -- visits 24h/7d: ${s.visits24h} / ${s.visits7d}`,
+        );
+      }
+    }
+    lines.push("  Top pages (7d):");
+    if (activity.topPages.length === 0) {
+      lines.push("    No page visits in the last 7 days");
+    } else {
+      for (const p of activity.topPages.slice(0, TOP_PAGES_LIMIT)) {
+        lines.push(`    ${p.path} -- ${p.count}`);
+      }
+      if (activity.topPages.length > TOP_PAGES_LIMIT) {
+        lines.push(`    ...and ${activity.topPages.length - TOP_PAGES_LIMIT} more page(s)`);
+      }
+    }
+  }
   lines.push("");
 
   // ----- Section B: Operational health -----
@@ -788,6 +961,29 @@ export const operatorDigest = inngest.createFunction(
       return rows.length;
     })) as number;
 
+    // Activity: durable last-seen per active install + trailing-7d page_visit
+    // volume (24h counts derived in-memory, so one query). Active shops
+    // (uninstalledAt null) are fetched here; aggregateActivity applies the SAME
+    // isExcluded predicate as partitionShops so dev/test/app-review stores are
+    // omitted from both the per-shop rows and the top-pages breakdown.
+    const activity = (await step.run("get-activity", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const { OPS_EVENT_TYPES } = await import("../../app/models/ops-event.server");
+      const now = new Date();
+      const sevenDaysAgo = new Date(now.getTime() - 7 * DAY_MS);
+      const [shops, events] = await Promise.all([
+        db.shop.findMany({
+          where: { uninstalledAt: null },
+          select: { domain: true, lastSeenAt: true },
+        }),
+        db.opsEvent.findMany({
+          where: { eventType: OPS_EVENT_TYPES.PAGE_VISIT, createdAt: { gte: sevenDaysAgo } },
+          select: { key: true, metadata: true, createdAt: true },
+        }),
+      ]);
+      return aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+    })) as ActivitySummary;
+
     // BillingEvent breakdown for the window.
     const billingEvents = (await step.run("get-billing-events", async () => {
       const { getBillingEventStats } = await import("../../app/models/billing-event.server");
@@ -911,6 +1107,7 @@ export const operatorDigest = inngest.createFunction(
         dormant: shopData.totalActive - activatedCount,
         totalActive: shopData.totalActive,
       },
+      activity,
       ops,
       anomalies: metricAnomalies.anomalies,
     };
