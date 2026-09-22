@@ -98,7 +98,7 @@ async function runReconcile() {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockMark.mockResolvedValue({ found: true });
+  mockMark.mockResolvedValue({ newlyMarked: true, found: true });
   mockRecordOpsEvent.mockResolvedValue(undefined);
 });
 
@@ -277,6 +277,26 @@ describe("reconcileInstalls handler", () => {
       source: "reconciler",
       message: expect.stringContaining("reconciler-detected uninstall"),
     });
+    expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
+  });
+
+  it("still classifies uninstalled (marked:1) when the shared mark reports an already-marked no-op (step retry)", async () => {
+    // Retry scenario: a prior step attempt already marked this shop, so the shared
+    // helper reports newlyMarked:false (no duplicate SHOP_UNINSTALLED event). The
+    // probe still sees a revoked token, so the install-status classification stays
+    // "uninstalled" and the summary counts it — the digest can't double-count
+    // because the event is suppressed inside markShopUninstalledWithEvent.
+    mockMark.mockResolvedValue({ newlyMarked: false, found: true });
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "already.myshopify.com" }]);
+    mockAdmin.mockResolvedValue(
+      adminGraphql(async () => {
+        throw { response: { code: 401 } };
+      }),
+    );
+
+    const result = await runReconcile();
+
+    expect(mockMark).toHaveBeenCalledOnce();
     expect(result).toMatchObject({ checked: 1, marked: 1, skipped: 0 });
   });
 

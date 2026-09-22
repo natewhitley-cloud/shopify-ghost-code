@@ -46,6 +46,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { logger } from "../../app/lib/logger.server";
 import { recordWebhookFailure } from "../../app/models/ops-event.server";
 import { deleteShopData, markShopUninstalledWithEvent } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.app.uninstalled";
@@ -59,6 +60,7 @@ const mockAuthenticateWebhook = authenticate.webhook as ReturnType<typeof vi.fn>
 const mockMarkShopUninstalledWithEvent = markShopUninstalledWithEvent as ReturnType<typeof vi.fn>;
 const mockDeleteShopData = deleteShopData as ReturnType<typeof vi.fn>;
 const mockRecordWebhookFailure = recordWebhookFailure as ReturnType<typeof vi.fn>;
+const mockLoggerWarn = logger.warn as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -85,7 +87,7 @@ beforeEach(() => {
     shop: "test-shop.myshopify.com",
     topic: "APP_UNINSTALLED",
   });
-  mockMarkShopUninstalledWithEvent.mockResolvedValue({ found: true });
+  mockMarkShopUninstalledWithEvent.mockResolvedValue({ newlyMarked: true, found: true });
 });
 
 // ---------------------------------------------------------------------------
@@ -115,8 +117,8 @@ describe("webhooks.app.uninstalled action", () => {
     expect((result as Response).status).toBe(200);
   });
 
-  it("returns 200 even when the shop does not exist (idempotent)", async () => {
-    mockMarkShopUninstalledWithEvent.mockResolvedValue({ found: false });
+  it("returns 200 and warns when the shop does not exist (idempotent, found:false)", async () => {
+    mockMarkShopUninstalledWithEvent.mockResolvedValue({ newlyMarked: false, found: false });
 
     const result = await action(makeActionArgs());
 
@@ -126,6 +128,23 @@ describe("webhooks.app.uninstalled action", () => {
       source: "webhook",
       message: "app/uninstalled",
     });
+    // A genuine miss (no such row) still warns.
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "Shop not found in DB — nothing to mark uninstalled",
+      expect.objectContaining({ shop: "test-shop.myshopify.com" }),
+    );
+  });
+
+  it("returns 200 and does NOT warn on a redelivery of an ALREADY-uninstalled shop (found:true, newlyMarked:false)", async () => {
+    // Webhook redelivery: the row exists but is already uninstalled → the shared
+    // helper reports no new mark (and records no duplicate event). The handler must
+    // stay quiet — this is a normal no-op, not a genuine "row missing" miss.
+    mockMarkShopUninstalledWithEvent.mockResolvedValue({ newlyMarked: false, found: true });
+
+    const result = await action(makeActionArgs());
+
+    expect((result as Response).status).toBe(200);
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
   });
 
   it("propagates the rejection when the shared mark helper fails, relying on Shopify retry", async () => {

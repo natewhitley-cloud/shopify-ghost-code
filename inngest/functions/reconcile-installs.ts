@@ -132,7 +132,10 @@ export function isRefreshTokenRejected(error: unknown): boolean {
 
 /**
  * Classify a probe that RETURNED (did not throw), from its HTTP status:
- *   - 401                 → uninstalled (revoked token surfaced as a returned 401)
+ *   - 401                 → uninstalled. Defensive/not currently reachable: the
+ *     @shopify/shopify-api client THROWS on an auth failure (handled by
+ *     isDefinitiveAuthFailure in the catch) rather than returning a 401 here.
+ *     Retained so a client that ever surfaces a returned 401 is still classified.
  *   - 200 / no status     → installed (a successful round-trip means the token works)
  *   - anything else (429, 5xx, ...) → ambiguous (transient; never proof of uninstall)
  */
@@ -149,16 +152,19 @@ export function classifyResponseStatus(status: number | undefined): InstallStatu
 /** Mark a shop uninstalled via the SHARED path (records event + revokes access). */
 async function markUninstalled(domain: string): Promise<void> {
   const { markShopUninstalledWithEvent } = await import("../../app/models/shop.server");
-  const { found } = await markShopUninstalledWithEvent(domain, {
+  const { newlyMarked } = await markShopUninstalledWithEvent(domain, {
     source: "reconciler",
     message: "reconciler-detected uninstall (missed app/uninstalled webhook)",
   });
   // NOTE (known gap): this only detects + marks. Redaction of the shop's data
   // still flows through shop/redact (48h grace) + gc-qkd cleanup, not here.
+  // newlyMarked=false means this shop was already uninstalled (e.g. a step retry
+  // after a successful mark): idempotent no-op, no duplicate SHOP_UNINSTALLED
+  // event. The probe still classifies "uninstalled" upstream either way.
   logger.warn("reconcile-installs: marked shop uninstalled", {
     function: "reconcile-installs",
     domain,
-    found,
+    newlyMarked,
   });
 }
 
