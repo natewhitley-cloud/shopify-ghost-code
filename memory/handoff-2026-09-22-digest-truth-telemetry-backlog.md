@@ -2,9 +2,11 @@
 
 All work is on branch **`feat/digest-truth-telemetry-backlog-2026-09-22`** — **NOT pushed, NOT deployed** (per operator: no deploy this session). Full suite green: **tsc clean, 104 test files / 2836 tests pass**. One batched deploy remains for a future session.
 
-## Commits (9, newest first)
+## Commits (11, newest first)
 | SHA | What |
 |---|---|
+| `fbec0a6` | docs: this handoff |
+| `75c55f3` | exclude dahi5e-1d (internal, 0 real Professionals per operator) — gc-w7b resolved |
 | `8a27847` | adversarial-audit fixes (uninstall-prefix, activity denominator, hot-path, safe-label) |
 | `a8fd2e1` | gc-8mi: JSON_LD_PRICE_CONFLICT live-path integration test + operator runbook |
 | `932898b` | gc-0ej: copy-paste removal instructions per finding |
@@ -20,8 +22,8 @@ All work is on branch **`feat/digest-truth-telemetry-backlog-2026-09-22`** — *
 ### 1. Digest truth (install count 14→ real, dev-store MRR)
 - **Root cause (enumerated against prod, read-only):** 15 Shop rows, ALL `uninstalledAt=null` (NOT a stale-uninstall problem). Inflation = internal/test/Shopify-review stores never excluded. `OPERATOR_EXCLUDE_SHOPS` env is UNSET in prod, so only the hardcoded default (`nw-dev-store-2`) was excluded.
 - **Fix:** added prefix-pattern exclusion (`DEFAULT_EXCLUDE_PREFIXES="app-review-"`) alongside exact-domain, via a shared `isExcluded()` predicate used by `partitionShops`, `aggregateActivity`, and (after audit) `countUninstallEventsExcluding`. Widened `DEFAULT_EXCLUDE_SHOPS="nw-dev-store-2.myshopify.com,teststore22022.myshopify.com"`.
-- **Reconciliation:** 15 rows − {nw-dev-store-2, teststore22022, 2×app-review-*} = 11. Minus `dahi5e-1d` (if internal) = **10 real installs**, matching operator's count.
-- **`PLAN_AMOUNTS`/MRR math untouched.** `dahi5e-1d` deliberately NOT excluded — see decisions.
+- **Reconciliation:** 15 rows − {nw-dev-store-2, teststore22022, 2×app-review-*, dahi5e-1d} = **10 real installs, Professional=0, MRR=$0** (operator confirmed 2026-09-22: zero real Professional subs; dahi5e-1d is internal, a Professional TEST charge). All 3 internal domains + `app-review-*` prefix are in the CODE defaults (commit `75c55f3`), so the digest is correct even if `OPERATOR_EXCLUDE_SHOPS` is never set.
+- **`PLAN_AMOUNTS`/MRR math untouched.**
 
 ### 2. Activity telemetry (NEW — last login + pages visited, in digest)
 - **`Shop.lastSeenAt DateTime?`** (durable "last login") — migration `20260922120000_add_shop_last_seen_at` (hand-authored; auto-applies on deploy via `railway.toml` preDeployCommand). Stamped in the `app/routes/app.tsx` loader (single auth choke point), freshness-gated 5 min, skips `/app/admin`, try/caught.
@@ -44,17 +46,17 @@ All work is on branch **`feat/digest-truth-telemetry-backlog-2026-09-22`** — *
 - **TRUST:** `safe-to-remove` badge out-promised a signature-only detector (no installed-app cross-check). Label softened → **"Likely safe — confirm app removed"** (pending operator wording review).
 - Clean: migration safety, prune correctness, MRR/PLAN_AMOUNTS untouched, regex anchoring, UTC window math, gc-qrf guard, gc-rch exhaustiveness, gc-0ej composition, gc-8mi non-vacuousness.
 
-## ⚠️ DECISIONS NEEDED FROM OPERATOR (before/at deploy)
-1. **gc-w7b (P1):** Is `dahi5e-1d.myshopify.com` a real customer or internal? If internal → add to `OPERATOR_EXCLUDE_SHOPS` (real=10, MRR=$0). If real → note it reconciled 2026-08-28, BEFORE the 2026-09-18 price change (Standard 29→9, Pro 49→29), so it may be a **legacy Pro $49 sub the digest under-reports as $29** (grandfathered subs are mis-valued; `PLAN_AMOUNTS` uses current prices only). Verify vs Partner Dashboard.
-2. **gc-rch:** Review the full RemovalSafety mapping + finalize the softened "safe-to-remove" label wording.
+## ⚠️ DECISIONS
+1. **gc-w7b — RESOLVED 2026-09-22 (CLOSED):** operator confirmed ZERO real Professional subscribers; dahi5e-1d is internal → excluded in code default (commit `75c55f3`). Real=10, MRR=$0. Grandfathered-pricing MRR gap (2026-09-18 cut: Standard 29→9, Pro 49→29) is now MOOT for current state (0 real paid subs) — remains a latent code note only (`PLAN_AMOUNTS` = current prices; would under-report a future legacy sub).
+2. **gc-rch — STILL OPEN:** review the full RemovalSafety mapping + finalize the softened "safe-to-remove" label wording ("Likely safe — confirm app removed").
 
 ## DEPLOY STEPS (future session, when approved)
-1. Resolve gc-w7b; set Railway env `OPERATOR_EXCLUDE_SHOPS` to confirmed internal domains (nw-dev-store-2, teststore22022, +dahi5e-1d if internal). `app-review-*` auto-excluded by default prefix; the two known domains are also in the code default, so even an unset env is correct-ish — but set it explicitly.
+1. (Optional) `OPERATOR_EXCLUDE_SHOPS` env — NOT required: all 3 internal domains (nw-dev-store-2, teststore22022, dahi5e-1d) are in the code `DEFAULT_EXCLUDE_SHOPS` and `app-review-*` in `DEFAULT_EXCLUDE_PREFIXES`, so an unset env is fully correct. Set the env only to add MORE stores without a code change.
 2. Merge branch → `main`, **`git push main`** (Railway auto-deploy; migration applies via preDeployCommand). ONE push (batch).
-3. Post-deploy: confirm next 7am America/Denver digest shows corrected install/plan/MRR + new ACTIVITY section; run `smoke.mjs`.
+3. Post-deploy: confirm next 7am America/Denver digest shows Total active=10, Professional=0, MRR=$0 + new ACTIVITY section; run `smoke.mjs`.
 
 ## Follow-up beads filed
-- **gc-w7b** (P1 decision) — dahi5e-1d real-vs-internal (+ grandfathered pricing MRR gap).
+- **gc-w7b** (P1 decision) — CLOSED 2026-09-22 (dahi5e-1d excluded; 0 real Professionals).
 - **gc-9ms** (P3 bug) — digest Billing-events line has NO store exclusion (same class as the uninstalls bug; pre-existing).
 - **gc-4cv** (P3 feature) — durable `Shop.isInternal` flag to replace the env-var domain list.
 - gc-qrf/rch/0ej annotated with commit SHAs; leave OPEN, close on deploy.
