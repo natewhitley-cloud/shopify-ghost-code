@@ -507,7 +507,10 @@ export const APP_SIGNATURES: AppSignature[] = [
   {
     appName: "JSON-LD for SEO",
     cdnDomains: [],
-    scriptPatterns: [/json-ld-for-seo/, /jsonld.*shopify/i],
+    // /jsonld.*shopify/i, written so it stays linear (gc-t7x): `a.*b` retried
+    // the rest of the line from every `a`. Anchoring at the line's FIRST `a`
+    // matches the same lines (any later `a` then `b` implies the first).
+    scriptPatterns: [/json-ld-for-seo/, /^(?:(?!jsonld).)*jsonld.*shopify/im],
     snippetNames: ["json-ld-for-seo", "schema-for-seo"],
     cssPatterns: [],
     jsonLdPatterns: [/json-ld-for-seo/i],
@@ -775,9 +778,11 @@ export const APP_SIGNATURES: AppSignature[] = [
   {
     appName: "Hextom Translate",
     cdnDomains: [],
-    scriptPatterns: [/hextom\.com\/.*translate/, /HextomTranslate/],
+    // /hextom\.com\/.*translate/ and /hextom.*translate/, linear form (see
+    // JSON-LD for SEO above, gc-t7x).
+    scriptPatterns: [/^(?:(?!hextom\.com\/).)*hextom\.com\/.*translate/m, /HextomTranslate/],
     snippetNames: ["hextom-translate", "hextom-translate-switcher"],
-    cssPatterns: [/hextom.*translate/],
+    cssPatterns: [/^(?:(?!hextom).)*hextom.*translate/m],
     hrefLangPatterns: [/hextom\.com/],
   },
   // Translate & Adapt uses Shopify's built-in locale paths — keep AFTER
@@ -1074,7 +1079,9 @@ export const APP_SIGNATURES: AppSignature[] = [
       /\bembedSocial-hashtag\b/,
       /\bembedSocial-reviews\b/,
       /\bembedSocial-albums\b/,
-      /\bdata-ref\b[^>]*embedsocial/i,
+      // /\bdata-ref\b[^>]*embedsocial/i, linear form (gc-t7x): only the first
+      // data-ref after the string start or a `>` is tried.
+      /(?:^|>)(?:(?!\bdata-ref\b)[^>])*\bdata-ref\b[^>]*embedsocial/i,
     ],
   },
   {

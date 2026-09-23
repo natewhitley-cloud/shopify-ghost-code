@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 
+import { APP_SIGNATURES } from "../../app/data/app-signatures.server";
 import {
   identifyAppFromUrl,
   identifyAppFromCode,
@@ -649,5 +650,120 @@ describe("resolveAttribution", () => {
     expect(
       resolveAttribution("Facebook Pixel", "snippets/spreadr.liquid", { contentIsTracker: true }),
     ).toEqual({ appName: "Spreadr", overriddenTracker: "Facebook Pixel" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-t7x: signature patterns stay linear on adversarial 1 MB input
+// ---------------------------------------------------------------------------
+
+describe("signature patterns on adversarial input (gc-t7x)", () => {
+  const MB = 1_000_000;
+  const flood = (fragment: string) => fragment.repeat(Math.ceil(MB / fragment.length)).slice(0, MB);
+  const timed = (fn: () => void) => {
+    const start = performance.now();
+    fn();
+    return performance.now() - start;
+  };
+  const signature = (appName: string) => APP_SIGNATURES.find((s) => s.appName === appName)!;
+
+  // `a.*b` / `a[^>]*b` rescanned the rest of the line from every `a`: the
+  // jsonld and data-ref floods took 103s and 62s at 1 MB before the rewrite.
+  it("identifyAppFromCode is fast on a jsonld flood with no shopify", () => {
+    expect(timed(() => identifyAppFromCode(flood("jsonld")))).toBeLessThan(1500);
+  });
+
+  it("identifyAppFromTextFragment is fast on a data-ref flood with no embedsocial", () => {
+    expect(timed(() => identifyAppFromTextFragment(flood("data-ref ")))).toBeLessThan(1500);
+  });
+
+  // Each rewritten pattern, the regex it replaced, and a flood that made the
+  // old one quadratic. The Hextom Translate patterns are currently shadowed by
+  // the earlier Sales Pop / Hextom signature (its /hextom/ matches first), so
+  // they are exercised directly rather than through identifyAppFrom*.
+  const REWRITTEN: Array<[string, () => RegExp, RegExp, string]> = [
+    [
+      "JSON-LD for SEO script",
+      () => signature("JSON-LD for SEO").scriptPatterns[1],
+      /jsonld.*shopify/i,
+      "jsonld",
+    ],
+    [
+      "Hextom Translate script",
+      () => signature("Hextom Translate").scriptPatterns[0],
+      /hextom\.com\/.*translate/,
+      "hextom.com/",
+    ],
+    [
+      "Hextom Translate css",
+      () => signature("Hextom Translate").cssPatterns[0],
+      /hextom.*translate/,
+      "hextom",
+    ],
+    [
+      "EmbedSocial text",
+      () => signature("EmbedSocial").textPatterns!.at(-1)!,
+      /\bdata-ref\b[^>]*embedsocial/i,
+      "data-ref ",
+    ],
+  ];
+
+  it.each(REWRITTEN)("%s pattern is fast on its flood", (_label, pattern, original, fragment) => {
+    expect(pattern().source).not.toBe(original.source);
+    expect(timed(() => pattern().test(flood(fragment)))).toBeLessThan(1500);
+  });
+
+  it.each(REWRITTEN)(
+    "%s pattern matches exactly like the regex it replaced",
+    (_label, pattern, original) => {
+      const pieces = [
+        "jsonld",
+        "JSONLD",
+        "shopify",
+        "Shopify",
+        "hextom",
+        "hextom.com/",
+        "HEXTOM",
+        "translate",
+        "data-ref",
+        "DATA-REF",
+        "embedsocial",
+        ">",
+        "\n",
+        "\r",
+        "\u2028",
+        "x",
+        "-",
+        " ",
+        "_",
+      ];
+      let seed = 0x5eed;
+      const rand = () => {
+        seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+        return seed / 0x80000000;
+      };
+      let matches = 0;
+      for (let i = 0; i < 20_000; i++) {
+        let input = "";
+        const parts = Math.floor(rand() * 12);
+        for (let j = 0; j < parts; j++) input += pieces[Math.floor(rand() * pieces.length)];
+        const expected = original.test(input);
+        if (expected) matches++;
+        if (pattern().test(input) !== expected) {
+          expect({ input, matches: pattern().test(input) }).toEqual({ input, matches: expected });
+        }
+      }
+      expect(matches).toBeGreaterThan(10);
+    },
+  );
+
+  it("still attributes through the rewritten patterns", () => {
+    expect(identifyAppFromCode('<script>var jsonld = "shopify";</script>')).toBe("JSON-LD for SEO");
+    expect(identifyAppFromTextFragment('<div data-ref="x" class="embedsocial-x">')).toBe(
+      "EmbedSocial",
+    );
+    // Not across a line break (`.` stops there) or a `>` (`[^>]` stops there).
+    expect(identifyAppFromCode("jsonld\nshopify")).not.toBe("JSON-LD for SEO");
+    expect(identifyAppFromTextFragment("data-ref><p>embedsocial")).toBeNull();
   });
 });
