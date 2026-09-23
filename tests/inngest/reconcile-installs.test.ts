@@ -927,7 +927,7 @@ describe("reconcileInstalls circuit breaker", () => {
         eventType: "reconcile_aborted",
         key: "reconcile-installs",
         message: expect.stringContaining("ABORTED by circuit breaker"),
-        metadata: { checked: 12, wouldMark: 12, threshold: 6 },
+        metadata: { checked: 12, probed: 12, skipped: 0, wouldMark: 12, threshold: 6 },
       }),
     );
     // The summary row is NOT written on abort (only the abort event).
@@ -1019,7 +1019,7 @@ describe("reconcileInstalls circuit breaker", () => {
         eventType: "reconcile_aborted",
         key: "reconcile-installs",
         message: expect.stringContaining("ABORTED by circuit breaker"),
-        metadata: { checked: 5, wouldMark: 5, threshold: 3 },
+        metadata: { checked: 5, probed: 5, skipped: 0, wouldMark: 5, threshold: 3 },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1043,7 +1043,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 3, wouldMark: 3, threshold: 3 },
+        metadata: { checked: 3, probed: 3, skipped: 0, wouldMark: 3, threshold: 3 },
       }),
     );
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
@@ -1081,7 +1081,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 10, wouldMark: 5, threshold: 5 },
+        metadata: { checked: 10, probed: 10, skipped: 0, wouldMark: 5, threshold: 5 },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1111,7 +1111,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 1, wouldMark: 1, threshold: 3 },
+        metadata: { checked: 1, probed: 1, skipped: 0, wouldMark: 1, threshold: 3 },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1138,7 +1138,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 2, wouldMark: 2, threshold: 3 },
+        metadata: { checked: 2, probed: 2, skipped: 0, wouldMark: 2, threshold: 3 },
       }),
     );
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
@@ -1176,13 +1176,13 @@ describe("reconcileInstalls circuit breaker", () => {
 
     expect(mockMark).not.toHaveBeenCalled();
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
-    // Metadata shape unchanged (the digest reads checked/wouldMark/threshold);
-    // threshold = max(3, ceil(0.5*2)=1) = 3.
+    // Metadata carries probed/skipped so the digest can show WHY it tripped
+    // (the breaker decides on probed, not checked); threshold = max(3, ceil(0.5*2)=1) = 3.
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
         message: expect.stringContaining("2 of 2 probed"),
-        metadata: { checked: 3, wouldMark: 2, threshold: 3 },
+        metadata: { checked: 3, probed: 2, skipped: 1, wouldMark: 2, threshold: 3 },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(

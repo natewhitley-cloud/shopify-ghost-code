@@ -598,7 +598,8 @@ export const reconcileInstalls = inngest.createFunction(
     // and (b) the threshold is non-decreasing in its input, so
     // threshold(probed) <= threshold(checked). probed = 0 implies wouldMark = 0,
     // which fails both clauses (0 < CB_MIN_MARKS), so an all-skipped run never
-    // trips. `checked`/`skipped` stay as-is in logs/summary/OpsEvent metadata.
+    // trips. The abort OpsEvent metadata carries `probed` and `skipped` too, so the
+    // operator digest can show the denominator the breaker actually used.
     const probed = checked - skipped;
     const churnThreshold = Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * probed));
     const tripped =
@@ -623,7 +624,13 @@ export const reconcileInstalls = inngest.createFunction(
           eventType: OPS_EVENT_TYPES.RECONCILE_ABORTED,
           key: RECONCILE_INSTALLS_KEY,
           message: summary,
-          metadata: { checked, wouldMark: wouldMark.length, threshold: churnThreshold },
+          metadata: {
+            checked,
+            probed,
+            skipped,
+            wouldMark: wouldMark.length,
+            threshold: churnThreshold,
+          },
         });
         const { sendOpsAlert } = await import("../../app/services/ops-alert.server");
         try {

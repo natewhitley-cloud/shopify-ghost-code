@@ -578,17 +578,29 @@ export interface OperatorDigestData {
 
 export type ReconcilerStatus =
   | { at: string; outcome: "completed"; checked: number; marked: number; skipped: number }
-  | { at: string; outcome: "aborted"; checked: number; wouldMark: number };
+  | {
+      at: string;
+      outcome: "aborted";
+      checked: number;
+      wouldMark: number;
+      /** The breaker's denominator (checked - skipped). Absent on legacy rows. */
+      probed?: number;
+      skipped?: number;
+    };
 
 interface ReconcilerEvent {
   createdAt: Date;
   metadata: unknown;
 }
 
-function metaNumber(metadata: unknown, field: string): number {
-  if (typeof metadata !== "object" || metadata === null) return 0;
+function metaOptionalNumber(metadata: unknown, field: string): number | undefined {
+  if (typeof metadata !== "object" || metadata === null) return undefined;
   const v = (metadata as Record<string, unknown>)[field];
-  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+  return typeof v === "number" && Number.isFinite(v) ? v : undefined;
+}
+
+function metaNumber(metadata: unknown, field: string): number {
+  return metaOptionalNumber(metadata, field) ?? 0;
 }
 
 /**
@@ -602,11 +614,16 @@ export function summarizeReconciler(
   aborted: ReconcilerEvent | null,
 ): ReconcilerStatus | null {
   if (aborted && (!summary || aborted.createdAt > summary.createdAt)) {
+    const probed = metaOptionalNumber(aborted.metadata, "probed");
+    const skipped = metaOptionalNumber(aborted.metadata, "skipped");
     return {
       at: aborted.createdAt.toISOString(),
       outcome: "aborted",
       checked: metaNumber(aborted.metadata, "checked"),
       wouldMark: metaNumber(aborted.metadata, "wouldMark"),
+      // Legacy rows (before the probed denominator) have neither field.
+      ...(probed !== undefined && { probed }),
+      ...(skipped !== undefined && { skipped }),
     };
   }
   if (!summary) return null;
@@ -823,8 +840,14 @@ export function buildDigestBody(data: OperatorDigestData): string {
     if (r === null) {
       lines.push("  No run recorded");
     } else if (r.outcome === "aborted") {
+      // The breaker decides on probed (checked - skipped); show it when recorded
+      // so the operator sees why it tripped. Legacy rows keep the old line.
+      const basis =
+        r.probed !== undefined && r.skipped !== undefined
+          ? `${r.probed} probed; ${r.checked} active, ${r.skipped} skipped`
+          : `${r.checked}`;
       lines.push(
-        `  ${r.at}: ABORTED by circuit breaker (would have marked ${r.wouldMark} of ${r.checked}); nothing marked`,
+        `  ${r.at}: ABORTED by circuit breaker (would have marked ${r.wouldMark} of ${basis}); nothing marked`,
       );
     } else {
       lines.push(
