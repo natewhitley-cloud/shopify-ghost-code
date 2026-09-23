@@ -460,3 +460,51 @@ describe("gc-t7x — tag attribute matching is linear on one huge tag", () => {
     });
   }
 });
+
+describe("gc-t7x — end-to-end: one 1 MB file mixing the worst patterns", () => {
+  // Equal slices of every super-linear pattern the gc-t7x sweep found. The
+  // self-contained slices come first; the unterminated floods come last,
+  // ordered so that nothing after a flood closes it (a later `>`, `}`,
+  // `</title>` or `</script>` would let the old regexes match instead of
+  // rescanning to EOF).
+  const slices: Array<[string, string, string]> = [
+    ["<title>", "{{a", "</title>\n"],
+    ["<style>@font-face{src:", "url(//a", "}</style>\n"],
+    ["", "@font-face{font-family ", "\n"],
+    ['<meta property="og:title" content="', "{{a", '">\n'],
+    ['<link rel="canonical" href="', "{{ url |", 'a}b{{x}}">\n'],
+    ["<link", ' rel="alternate"', ">\n"],
+    ["<link", ' rel="stylesheet"', ">\n"],
+    ["<meta", ' name="robots"', ">\n"],
+    ["", "jsonld", "\n"],
+    ["", "data-ref ", "\n"],
+    ["", '<meta name="description" content="a">' + "x".repeat(460), "\n"],
+    ["", "<title>a</title>" + "y".repeat(84), "\n"],
+    ["", "<title>", ""],
+    ["", '<script type="application/ld+json">{', ""],
+    ["", "<script ", ">"],
+    ["", "<link ", ">"],
+    ["", "<title", ""],
+    ["", "@font-face {", ""],
+  ];
+  const perSlice = Math.floor(MAX_SCANNABLE_FILE_BYTES / slices.length);
+  const content = slices
+    .map(([prefix, fragment, suffix]) => {
+      const body = perSlice - prefix.length - suffix.length;
+      return prefix + fragment.repeat(Math.ceil(body / fragment.length)).slice(0, body) + suffix;
+    })
+    .join("");
+
+  it("scanThemeFiles finishes far inside the 30s scan worker timeout", () => {
+    // WORKER_TIMEOUT_MS in scan-pool.server.ts is 30s; the scan now takes
+    // ~200ms, so a sixth of the timeout still leaves wide headroom.
+    expect(content.length).toBeLessThanOrEqual(MAX_SCANNABLE_FILE_BYTES);
+    let result: ReturnType<typeof scanThemeFiles> | undefined;
+    const elapsed = timed(() => {
+      result = scanThemeFiles([layout(content)]);
+    });
+    expect(elapsed).toBeLessThan(5000);
+    expect(result?.skippedFiles).toEqual([]);
+    expect(result?.findings.length).toBeGreaterThan(0);
+  });
+});
