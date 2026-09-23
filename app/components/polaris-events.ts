@@ -37,21 +37,3 @@ export function readValue(e: unknown): string {
   const el = eventElement(e);
   return typeof el?.value === "string" ? el.value : "";
 }
-
-/**
- * Numeric value of a numeric `s-text-field`. Empty or non-numeric input
- * returns `fallback` (keeps the prior value while a field is mid-edit).
- */
-export function readNumberValue(e: unknown, fallback: number): number {
-  const el = eventElement(e);
-  const raw = typeof el?.value === "string" ? el.value.trim() : "";
-  if (raw === "") return fallback;
-  const num = Number(raw);
-  return Number.isNaN(num) ? fallback : num;
-}
-
-/** Checked state of an `s-checkbox` / `s-switch` change event. */
-export function readChecked(e: unknown): boolean {
-  const el = eventElement(e);
-  return Boolean(el?.checked);
-}
