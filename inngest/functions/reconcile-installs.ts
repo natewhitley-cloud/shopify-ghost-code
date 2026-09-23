@@ -243,6 +243,22 @@ export function classifyResponseStatus(status: number | undefined): InstallStatu
   return "ambiguous";
 }
 
+/**
+ * A shop domain as our own storage normalizes it: lowercase, `*.myshopify.com`,
+ * no scheme/path/port. Deliberately case-SENSITIVE (no lowercasing before the
+ * match) — every domain we write to the Shop table already comes out of this
+ * shape, so a domain arriving with uppercase characters is unexpected input,
+ * not a legitimate variant to normalize away. Silently lowercasing it here
+ * would let a caller-supplied domain we've never validated end up dictating
+ * the host `rawRefreshProbe` sends the shared client_secret to.
+ */
+const MYSHOPIFY_DOMAIN_PATTERN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
+
+/** True for a well-formed `*.myshopify.com` domain (see MYSHOPIFY_DOMAIN_PATTERN). */
+export function isValidMyshopifyDomain(domain: string): boolean {
+  return MYSHOPIFY_DOMAIN_PATTERN.test(domain);
+}
+
 // ---------------------------------------------------------------------------
 // Per-shop probe + mark (I/O; runs inside a step)
 // ---------------------------------------------------------------------------
@@ -295,8 +311,24 @@ async function markUninstalled(domain: string): Promise<void> {
  * problem, NEVER mark); no session or no refreshToken → ambiguous (can't probe);
  * network throw or any other status (5xx, ...) → ambiguous. Never marks; the
  * caller marks on "uninstalled".
+ *
+ * DOMAIN GUARD: `domain` comes off the Shop row, and this probe POSTs the
+ * shared `client_secret` to `https://${domain}/...`. Before any fetch,
+ * `domain` must match MYSHOPIFY_DOMAIN_PATTERN — a mismatch (a non-Shopify
+ * host, or a lookalike such as `shop.myshopify.com.evil.com`) means the row is
+ * corrupt or hostile, so the probe skips the request entirely (ambiguous)
+ * rather than ever sending our credential to an arbitrary host.
  */
 async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
+  if (!isValidMyshopifyDomain(domain)) {
+    // Never log `domain` beyond this point — it already failed validation, and
+    // no secret is logged here regardless of outcome.
+    logger.warn("reconcile-installs: raw refresh probe — domain failed validation, skipping", {
+      function: "reconcile-installs",
+    });
+    return "ambiguous";
+  }
+
   const { sessionStorage } = await import("../../app/shopify.server");
 
   const session = await sessionStorage.loadSession(`offline_${domain}`);

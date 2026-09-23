@@ -81,6 +81,7 @@ import {
   extractHttpStatus,
   isDefinitiveAuthFailure,
   isRefreshTokenRejected,
+  isValidMyshopifyDomain,
   reconcileInstalls,
 } from "../../inngest/functions/reconcile-installs";
 import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
@@ -331,6 +332,29 @@ describe("classifyRefreshRejection", () => {
     expect(classifyRefreshRejection(500, { error: "invalid_grant" })).toBe("ambiguous");
     expect(classifyRefreshRejection(503, {})).toBe("ambiguous");
     expect(classifyRefreshRejection(429, {})).toBe("ambiguous");
+  });
+});
+
+describe("isValidMyshopifyDomain", () => {
+  it("is TRUE for a well-formed *.myshopify.com domain", () => {
+    expect(isValidMyshopifyDomain("shop.myshopify.com")).toBe(true);
+    expect(isValidMyshopifyDomain("my-cool-shop123.myshopify.com")).toBe(true);
+  });
+
+  it("is FALSE for a non-myshopify domain", () => {
+    expect(isValidMyshopifyDomain("evil.com")).toBe(false);
+  });
+
+  it("is FALSE for a lookalike suffix domain", () => {
+    expect(isValidMyshopifyDomain("shop.myshopify.com.evil.com")).toBe(false);
+  });
+
+  it("is FALSE for uppercase (case-sensitive; domains are stored lowercase)", () => {
+    expect(isValidMyshopifyDomain("SHOP.myshopify.com")).toBe(false);
+  });
+
+  it("is FALSE for an empty string", () => {
+    expect(isValidMyshopifyDomain("")).toBe(false);
   });
 });
 
@@ -699,6 +723,62 @@ describe("reconcileInstalls handler", () => {
     expect(mockFetch).not.toHaveBeenCalled();
     expect(mockMark).not.toHaveBeenCalled();
     expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + non-myshopify domain (evil.com) → NO fetch, NOT marked (ambiguous)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "evil.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+
+    const result = await runReconcile();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+    // No secret in the warning log.
+    for (const call of mockLoggerWarn.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain(process.env.SHOPIFY_API_SECRET ?? "");
+    }
+  });
+
+  it("masked-500 + lookalike domain (shop.myshopify.com.evil.com) → NO fetch, NOT marked (ambiguous)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "shop.myshopify.com.evil.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+
+    const result = await runReconcile();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + uppercase domain (SHOP.myshopify.com) → NO fetch, NOT marked (ambiguous, case-sensitive)", async () => {
+    // Domains are stored lowercase; uppercase is unexpected input, not a
+    // legitimate variant, so it is rejected rather than silently lowercased.
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "SHOP.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+
+    const result = await runReconcile();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + valid myshopify domain → STILL fetches (the guard doesn't block real shops)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "validguard.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue({ status: 500, json: async () => ({}) });
+
+    await runReconcile();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://validguard.myshopify.com/admin/oauth/access_token",
+      expect.objectContaining({ method: "POST" }),
+    );
   });
 
   it("mixed batch: marks ONLY the uninstalled shop and reports correct summary counts", async () => {

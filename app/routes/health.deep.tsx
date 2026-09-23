@@ -1,3 +1,4 @@
+import { timingSafeEqual } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
@@ -37,6 +38,20 @@ function readDeployedSha(): string | null {
   }
 }
 
+// Constant-time comparison of the received `x-health-token` header against the
+// expected token. A plain `!==` leaks timing information proportional to the
+// length of the matching prefix, letting an attacker recover the token
+// byte-by-byte; `timingSafeEqual` requires equal-length buffers (it throws
+// otherwise), so the length check must happen first and short-circuits to
+// false rather than throwing.
+export function timingSafeTokenMatch(received: string | null, expected: string): boolean {
+  if (received === null) return false;
+  const receivedBuf = Buffer.from(received);
+  const expectedBuf = Buffer.from(expected);
+  if (receivedBuf.length !== expectedBuf.length) return false;
+  return timingSafeEqual(receivedBuf, expectedBuf);
+}
+
 // Intentionally unauthenticated by Shopify session — this is an ops endpoint,
 // gated by HEALTH_CHECK_TOKEN rather than an embedded-app session token.
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -51,7 +66,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       );
     }
     // Dev convenience: allow when the token is unset outside production.
-  } else if (request.headers.get("x-health-token") !== expectedToken) {
+  } else if (!timingSafeTokenMatch(request.headers.get("x-health-token"), expectedToken)) {
     return Response.json({ status: "error", message: "unauthorized" }, { status: 401 });
   }
 
