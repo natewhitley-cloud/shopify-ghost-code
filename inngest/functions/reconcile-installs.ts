@@ -586,17 +586,32 @@ export const reconcileInstalls = inngest.createFunction(
     // confirm is the conservative-correct call. wouldMark holds ONLY shops
     // classified "uninstalled" (ambiguous/transient shops are excluded upstream),
     // so this never trips on a network blip or throttle.
-    const churnThreshold = Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * checked));
+    //
+    // DENOMINATOR = `probed` (shops DEFINITIVELY classified installed/uninstalled),
+    // NOT `checked`. Ambiguous (skipped) shops carry no signal, so counting them
+    // diluted the base: e.g. 3 active, 1 permanently skipped, 2 wrongly
+    // "uninstalled" by a systemic fault → with `checked` 2 !== 3 and
+    // 2 < max(3, ceil(0.5*3)=2)=3, so both real shops were auto-churned.
+    // Using `probed` can ONLY make the breaker trip MORE often, never less
+    // (a trip pages and marks nothing): since wouldMark <= probed <= checked,
+    // (a) wouldMark === checked implies wouldMark === probed (and probed >= 1),
+    // and (b) the threshold is non-decreasing in its input, so
+    // threshold(probed) <= threshold(checked). probed = 0 implies wouldMark = 0,
+    // which fails both clauses (0 < CB_MIN_MARKS), so an all-skipped run never
+    // trips. `checked`/`skipped` stay as-is in logs/summary/OpsEvent metadata.
+    const probed = checked - skipped;
+    const churnThreshold = Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * probed));
     const tripped =
-      (checked >= 1 && wouldMark.length === checked) || // 100% churn is systemic at ANY base size → always trip
-      wouldMark.length >= churnThreshold; // or >= half the base (floor CB_MIN_MARKS)
+      (probed >= 1 && wouldMark.length === probed) || // 100% churn is systemic at ANY base size → always trip
+      wouldMark.length >= churnThreshold; // or >= half the probed base (floor CB_MIN_MARKS)
     if (tripped) {
       await step.run("circuit-breaker-abort", async () => {
         const { recordOpsEvent, OPS_EVENT_TYPES } =
           await import("../../app/models/ops-event.server");
         const summary =
-          `reconcile ABORTED by circuit breaker: ${wouldMark.length} of ${checked} active shops ` +
-          `classified uninstalled (threshold ${churnThreshold}) — likely a systemic misconfig ` +
+          `reconcile ABORTED by circuit breaker: ${wouldMark.length} of ${probed} probed ` +
+          `(${checked} active, ${skipped} skipped) shops classified uninstalled ` +
+          `(threshold ${churnThreshold}) — likely a systemic misconfig ` +
           `(e.g. wrong/rotated shared client_secret), NOT a real mass uninstall. Marked NOTHING.`;
         // The durable OpsEvent row is counts-only: NO per-shop domains in the
         // message and none in the structured metadata, so deleteShopData (which
@@ -624,6 +639,7 @@ export const reconcileInstalls = inngest.createFunction(
       logger.error("reconcile-installs: circuit breaker tripped — aborted, marked nothing", {
         function: "reconcile-installs",
         checked,
+        probed,
         wouldMark: wouldMark.length,
         threshold: churnThreshold,
       });

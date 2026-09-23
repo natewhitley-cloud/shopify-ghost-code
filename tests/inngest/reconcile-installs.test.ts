@@ -1149,6 +1149,75 @@ describe("reconcileInstalls circuit breaker", () => {
     });
   });
 
+  // Build shops with explicit per-shop outcomes: "dead" probes 401 (uninstalled),
+  // "live" probes 200 (installed), "skip" probes 429 (ambiguous → skipped).
+  function seedOutcomes(outcomes: Array<"dead" | "live" | "skip">) {
+    const byDomain = new Map(outcomes.map((o, i) => [`${o}${i}.myshopify.com`, o]));
+    mockFindMany.mockResolvedValue(
+      [...byDomain.keys()].map((domain, i) => ({ id: `s${i}`, domain })),
+    );
+    mockAdmin.mockImplementation(async (domain: string) => {
+      const outcome = byDomain.get(domain);
+      if (outcome === "live") return adminGraphql(async () => ({ status: 200 }));
+      const code = outcome === "dead" ? 401 : 429;
+      return adminGraphql(async () => {
+        throw { response: { code } };
+      });
+    });
+  }
+
+  it("TRIPS when a permanently skipped row hides 100% churn of the PROBED base (3 shops, 1 skipped, 2 uninstalled)", async () => {
+    // Old denominator (checked=3): all-probed 2===3 false; threshold =
+    // max(3, ceil(0.5*3)=2) = 3, 2 >= 3 false → both real shops auto-churned.
+    // New denominator probed = 3 - 1 = 2: all-probed 2===2 → trips.
+    seedOutcomes(["skip", "dead", "dead"]);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    // Metadata shape unchanged (the digest reads checked/wouldMark/threshold);
+    // threshold = max(3, ceil(0.5*2)=1) = 3.
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        message: expect.stringContaining("2 of 2 probed"),
+        metadata: { checked: 3, wouldMark: 2, threshold: 3 },
+      }),
+    );
+    expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_summary" }),
+    );
+    expect(result).toMatchObject({ status: "aborted-circuit-breaker", checked: 3, wouldMark: 2 });
+  });
+
+  it("does NOT trip when EVERY shop is skipped (probed=0, wouldMark=0)", async () => {
+    seedOutcomes(["skip", "skip", "skip"]);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_summary",
+        metadata: { checked: 3, marked: 0, skipped: 3 },
+      }),
+    );
+    expect(result).toMatchObject({ status: "completed", checked: 3, marked: 0, skipped: 3 });
+  });
+
+  it("still marks a lone real uninstall at checked=10 with 0 skipped (normal path unchanged)", async () => {
+    // probed=10, threshold = max(3, ceil(0.5*10)=5) = 5; 1 < 5, 1 !== 10 → closed.
+    seedShops(10, 1);
+
+    const result = await runReconcile();
+
+    expect(mockMark).toHaveBeenCalledTimes(1);
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "completed", checked: 10, marked: 1, skipped: 0 });
+  });
+
   it("keeps shop domains OUT of the durable OpsEvent (message + metadata) and rides them on the operator email only", async () => {
     // Fix (GDPR completeness): deleteShopData purges OpsEvents by key /
     // metadata.shop|shopDomain|shopId — it CANNOT reach a domain buried in the
