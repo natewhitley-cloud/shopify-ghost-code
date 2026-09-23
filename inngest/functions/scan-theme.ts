@@ -285,6 +285,9 @@ export const scanTheme = inngest.createFunction(
         danglingDistinctHandles,
         themeFetchMs,
         themeScanMs,
+        totalTextBytes,
+        largestFileBytes,
+        scannableTextBytes,
       } = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -413,12 +416,31 @@ export const scanTheme = inngest.createFunction(
         // empty and at most a handful of paths.
         const skippedFilePaths = (skippedFiles ?? []).map((f) => f.filename);
 
+        // Theme-size calibration data (gc-d4e): sum/max of file content length
+        // (string length, UTF-16 code units — same unit as MAX_THEME_TOTAL_TEXT_BYTES)
+        // computed once from the `files` array already in scope, reusing the same
+        // isScannableFile predicate as scannableFileCount above. These are tiny
+        // scalars (like fileCount/scannableFileCount), safe across the 4MB step
+        // boundary.
+        let totalTextBytes = 0;
+        let largestFileBytes = 0;
+        let scannableTextBytes = 0;
+        for (const f of files) {
+          const bytes = f.content.length;
+          totalTextBytes += bytes;
+          if (bytes > largestFileBytes) largestFileBytes = bytes;
+          if (isScannableFile(f.filename)) scannableTextBytes += bytes;
+        }
+
         return {
           findingCount: themeFindings.length,
           fileCount: files.length,
           // Theme-shape scalars threaded to the finalize step's scan_signal
           // OpsEvent (Feature 2). All tiny — safe across the 4MB step boundary.
           scannableFileCount: files.filter((f) => isScannableFile(f.filename)).length,
+          totalTextBytes,
+          largestFileBytes,
+          scannableTextBytes,
           skippedFilePaths,
           skippedFileCount: skippedFilePaths.length,
           benignLibrarySkips: benignLibrarySkips ?? 0,
@@ -1069,6 +1091,9 @@ export const scanTheme = inngest.createFunction(
               themeId,
               fileCount,
               scannableFileCount,
+              totalTextBytes,
+              largestFileBytes,
+              scannableTextBytes,
               skippedFileCount,
               benignLibrarySkips,
               unknownScriptCount,

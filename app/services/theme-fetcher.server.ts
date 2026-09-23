@@ -169,6 +169,11 @@ export async function fetchAllThemes(admin: AdminApiContext): Promise<ThemeSumma
  * the scan worker) and OOM the shared, multi-tenant container. The per-file
  * detector cap (MAX_SCANNABLE_FILE_BYTES) does not bound the total.
  * Measured in string length (UTF-16 code units), matching that per-file cap.
+ *
+ * Chosen without real theme-size data (gc-d4e). Every scan_signal OpsEvent now
+ * carries totalTextBytes/largestFileBytes/scannableTextBytes; calibrate this
+ * cap against real distribution via `scripts/theme-size-report.ts` before
+ * changing it.
  */
 export const MAX_THEME_TOTAL_TEXT_BYTES = 50_000_000;
 

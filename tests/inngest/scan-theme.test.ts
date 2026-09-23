@@ -1662,6 +1662,9 @@ describe("scanTheme — scan_signal OpsEvent (Feature 2)", () => {
       themeId: THEME_ID,
       fileCount: MOCK_FILES.length,
       scannableFileCount: MOCK_FILES.length,
+      totalTextBytes: 30,
+      largestFileBytes: 17,
+      scannableTextBytes: 30,
       skippedFileCount: 0,
       benignLibrarySkips: 3,
       unknownScriptCount: 2,
@@ -1669,6 +1672,61 @@ describe("scanTheme — scan_signal OpsEvent (Feature 2)", () => {
       detectorHits: { GHOST_SCRIPT: 2, GHOST_STYLE: 1 },
       findingCount: MOCK_FINDINGS.length,
       durationMs: 5000,
+    });
+  });
+
+  it("computes totalTextBytes/largestFileBytes/scannableTextBytes over mixed file types (gc-d4e)", async () => {
+    // Mixed fixture: one scannable liquid template, one non-scannable asset JS
+    // file (the largest), and one non-scannable JSON file — so
+    // scannableTextBytes must exclude the JS/JSON content while totalTextBytes
+    // and largestFileBytes still account for it.
+    const mixedFiles = [
+      { filename: "templates/index.liquid", content: "A".repeat(10) },
+      { filename: "assets/app.js", content: "B".repeat(500) },
+      { filename: "assets/data.json", content: "C".repeat(50) },
+    ];
+    mockFetchThemeFiles.mockResolvedValue(mixedFiles);
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+      startedAt: new Date("2026-06-15T00:00:00Z"),
+      completedAt: new Date("2026-06-15T00:00:05Z"),
+    });
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.metadata).toMatchObject({
+      fileCount: 3,
+      scannableFileCount: 1,
+      totalTextBytes: 560,
+      largestFileBytes: 500,
+      scannableTextBytes: 10,
+    });
+  });
+
+  it("emits zero-valued size fields when the theme fetch returns no files", async () => {
+    mockFetchThemeFiles.mockResolvedValue([]);
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+      startedAt: new Date("2026-06-15T00:00:00Z"),
+      completedAt: new Date("2026-06-15T00:00:05Z"),
+    });
+    // No prior scan with findings, so the zero-file sanity guard does not fire
+    // (mockGetPreviousScanForTheme already defaults to null in beforeEach).
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.metadata).toMatchObject({
+      fileCount: 0,
+      scannableFileCount: 0,
+      totalTextBytes: 0,
+      largestFileBytes: 0,
+      scannableTextBytes: 0,
     });
   });
 
