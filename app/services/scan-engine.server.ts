@@ -3922,6 +3922,13 @@ function fontFaceFamilies(text: string): string[] {
  * Matches <link> tags loading from font services (Google Fonts, etc.).
  * Handles both attribute orderings (href before rel and rel before href).
  * Evaluated per tag by execTagPattern.
+ *
+ * The catch-all alternative used to be `["'](https?:\/\/[^"']*font[^"']*)["']`.
+ * With no closing quote, that regex rescanned to the end of the tag for every
+ * `font` in the value (a 1 MB href took > 25s). The value runs to the first
+ * quote either way, so a lookahead that finds `font` before that quote in one
+ * forward scan, followed by a plain `[^"']*` capture, accepts exactly the same
+ * values and captures the same text.
  */
 const FONT_LINK_TAG = tagPattern([
   {
@@ -3935,7 +3942,12 @@ const FONT_LINK_TAG = tagPattern([
   },
   {
     tag: "<link",
-    steps: [{ gap: "[^>]+", attr: `href${ATTR_EQ}["'](https?:\\/\\/[^"']*font[^"']*)["']` }],
+    steps: [
+      {
+        gap: "[^>]+",
+        attr: `href${ATTR_EQ}["'](?=https?:\\/\\/[^"']*?font)(https?:\\/\\/[^"']*)["']`,
+      },
+    ],
   },
 ]);
 

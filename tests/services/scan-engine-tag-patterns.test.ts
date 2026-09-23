@@ -6,7 +6,9 @@
  * candidate attribute positions), so execTagPattern evaluates them in linear
  * time instead. This file pins two things:
  *   1. Each pattern's regex source is exactly the regex it replaced, so the
- *      structured pattern is a faithful transcription.
+ *      structured pattern is a faithful transcription. (FONT_LINK_TAG's second
+ *      alternative is the one deliberate rewrite: it is pinned to its new
+ *      source and checked for equivalence with the old regex instead.)
  *   2. On a seeded corpus of random tags built from attribute fragments,
  *      execTagPattern returns exactly what the regex's exec returns (index,
  *      full match and every capture group).
@@ -159,13 +161,81 @@ function snapshot(match: RegExpExecArray | null): unknown {
   return match === null ? null : { index: match.index, values: [...match] };
 }
 
+// Patterns whose structured form was rewritten on purpose (so their source no
+// longer equals the regex they replaced) mapped to the regex they now encode.
+// Their behavior is still pinned to ORIGINAL_REGEXES by the random-corpus test.
+const REWRITTEN_SOURCES: Partial<Record<keyof typeof TAG_PATTERNS, RegExp>> = {
+  // The catch-all alternative `(https?:\/\/[^"']*font[^"']*)["']` rescanned to
+  // the end of the tag for every `font` when the closing quote was missing. The
+  // lookahead requires `font` somewhere in the value (the value runs to the
+  // first quote either way) with a single forward scan.
+  FONT_LINK_TAG:
+    /<link[^>]+href\s*=\s*["'](https?:\/\/fonts\.googleapis\.com\/[^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["'](?=https?:\/\/[^"']*?font)(https?:\/\/[^"']*)["'][^>]*>/gi,
+};
+
 describe("execTagPattern", () => {
   it.each(Object.keys(ORIGINAL_REGEXES) as Array<keyof typeof TAG_PATTERNS>)(
-    "%s has exactly the source of the regex it replaced",
+    "%s has exactly the source of the regex it replaced (or its pinned rewrite)",
     (name) => {
-      expect(TAG_PATTERNS[name].source).toBe(ORIGINAL_REGEXES[name].source);
+      const expected = REWRITTEN_SOURCES[name] ?? ORIGINAL_REGEXES[name];
+      expect(TAG_PATTERNS[name].source).toBe(expected.source);
     },
   );
+
+  it.each(Object.keys(REWRITTEN_SOURCES) as Array<keyof typeof TAG_PATTERNS>)(
+    "%s's rewritten regex matches exactly like the regex it replaced on 20K random tags",
+    (name) => {
+      const rand = prng(0x5eed + name.length);
+      const original = ORIGINAL_REGEXES[name];
+      const rewritten = REWRITTEN_SOURCES[name]!;
+      let matches = 0;
+      for (let i = 0; i < 20_000; i++) {
+        const tag = randomTag(rand);
+        original.lastIndex = 0;
+        rewritten.lastIndex = 0;
+        const expected = snapshot(original.exec(tag));
+        const actual = snapshot(rewritten.exec(tag));
+        if (expected !== null) matches++;
+        if (JSON.stringify(actual) !== JSON.stringify(expected)) {
+          expect({ tag, actual }).toEqual({ tag, actual: expected });
+        }
+      }
+      expect(matches).toBeGreaterThan(10);
+    },
+  );
+
+  it.each([
+    ['<link href="https://fonts.example.net/abc.css">', "https://fonts.example.net/abc.css"],
+    ['<link href="http://x.example/FONT.woff" rel="x">', "http://x.example/FONT.woff"],
+    ["<link rel='x' href='https://a.example/fonts/b'>", "https://a.example/fonts/b"],
+    ['<link href="https://font">', "https://font"],
+    // `font` must be inside the value: text after the closing quote is ignored.
+    ['<link href="https://a.example/x.css" data-font="1">', null],
+    ['<link href="https://a.example/x.css">', null],
+    ['<link href="//a.example/font.css">', null],
+    ['<link href="https://a.example/font.css>', null],
+    // The rightmost matching href wins, as with the greedy `[^>]+` gap.
+    [
+      '<link href="https://a.example/font1" href="https://b.example/font2">',
+      "https://b.example/font2",
+    ],
+    ['<link href="https://a.example/font1" href="https://b.example/x">', "https://a.example/font1"],
+  ])("FONT_LINK_TAG catch-all alternative on %s", (tag, href) => {
+    const original = ORIGINAL_REGEXES.FONT_LINK_TAG;
+    original.lastIndex = 0;
+    const expected = original.exec(tag);
+    const actual = execTagPattern(tag, TAG_PATTERNS.FONT_LINK_TAG);
+    expect(snapshot(actual)).toEqual(snapshot(expected));
+    expect(actual?.[2] ?? null).toBe(href);
+  });
+
+  it("FONT_LINK_TAG is linear on a huge href with many `font`s and no closing quote", () => {
+    // 1 MB took > 25s with the old catch-all alternative.
+    const tag = '<link href="https://' + "font".repeat(250_000) + ">";
+    const start = performance.now();
+    expect(execTagPattern(tag, TAG_PATTERNS.FONT_LINK_TAG)).toBeNull();
+    expect(performance.now() - start).toBeLessThan(1500);
+  });
 
   it.each(Object.keys(ORIGINAL_REGEXES) as Array<keyof typeof TAG_PATTERNS>)(
     "%s matches exactly like the regex on 20K random tags",

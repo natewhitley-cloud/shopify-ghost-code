@@ -461,6 +461,20 @@ describe("gc-t7x — tag attribute matching is linear on one huge tag", () => {
   }
 });
 
+describe("font <link> href matching is linear on one huge unterminated href", () => {
+  // FONT_LINK_TAG's catch-all alternative was `href="(https?://[^"']*font[^"']*)"`:
+  // with no closing quote, every `font` made the regex rescan to the end of the
+  // tag (100 KB ~1.5s, 1 MB > 25s). Both detectors that apply it are covered.
+  const content = atCap("font", '<link href="https://', ">");
+  const detectors: Array<[string, (file: ThemeFile) => unknown]> = [
+    ["detectGhostFont", detectGhostFont],
+    ["collectThirdPartyDomains", collectThirdPartyDomains],
+  ];
+  it.each(detectors)("%s: a font flood with no closing quote", (_name, detect) => {
+    expect(timed(() => detect(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+  });
+});
+
 describe("gc-t7x — end-to-end: one 1 MB file mixing the worst patterns", () => {
   // Equal slices of every super-linear pattern the gc-t7x sweep found. The
   // self-contained slices come first; the unterminated floods come last,
@@ -475,6 +489,7 @@ describe("gc-t7x — end-to-end: one 1 MB file mixing the worst patterns", () =>
     ['<link rel="canonical" href="', "{{ url |", 'a}b{{x}}">\n'],
     ["<link", ' rel="alternate"', ">\n"],
     ["<link", ' rel="stylesheet"', ">\n"],
+    ['<link href="https://', "font", ">\n"],
     ["<meta", ' name="robots"', ">\n"],
     ["", "jsonld", "\n"],
     ["", "data-ref ", "\n"],
