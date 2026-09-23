@@ -6878,14 +6878,21 @@ describe("blankLiquidComments — Liquid-faithful token walk", () => {
       commentWithRaw: fill("{% comment %}{% raw %}"),
       newlineMix: fill("{% comment %}\n{% raw %}\nx\n{% endcomment %}\n"),
     };
-    for (const [name, flood] of Object.entries(floods)) {
+    const timed = (flood: string) => {
       const start = performance.now();
       const out = blankLiquidComments(flood);
-      const elapsed = performance.now() - start;
-      expect(out.length, name).toBe(flood.length);
-      expect(elapsed, name).toBeLessThan(2000);
+      return { out, elapsed: performance.now() - start };
+    };
+    for (const [name, flood] of Object.entries(floods)) {
+      const first = timed(flood);
+      const second = timed(flood);
+      expect(first.out.length, name).toBe(flood.length);
+      // Min of two runs discards a transient stall under full-suite
+      // parallelism. A quadratic regression on 5 MB costs minutes, so 5 s
+      // still catches it while staying well under the 30 s worker timeout.
+      expect(Math.min(first.elapsed, second.elapsed), name).toBeLessThan(5000);
     }
-  });
+  }, 120_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -7059,12 +7066,22 @@ describe("scanThemeFiles — theme blocks (blocks/*.liquid, gc-zfl)", () => {
       content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>',
     });
 
-    const start = performance.now();
-    const { findings } = scanThemeFiles(files);
-    const elapsed = performance.now() - start;
+    const timedScan = () => {
+      const start = performance.now();
+      const result = scanThemeFiles(files);
+      return { result, elapsed: performance.now() - start };
+    };
+    const first = timedScan();
+    const second = timedScan();
 
-    expect(findingsOfType(findings, FindingType.GHOST_SCRIPT)).toHaveLength(1);
-    // WORKER_TIMEOUT_MS is 30s; stay an order of magnitude under it.
-    expect(elapsed).toBeLessThan(3_000);
-  });
+    expect(findingsOfType(first.result.findings, FindingType.GHOST_SCRIPT)).toHaveLength(1);
+    expect(second.result.findings).toEqual(first.result.findings);
+    // Catches pathological regressions (seconds PER FILE, which would push a
+    // real theme into the 30 s WORKER_TIMEOUT_MS), not ms drift: this runs in
+    // well under a second in isolation, but a single-shot 3 s budget flaked
+    // under full-suite parallelism. The min of two runs discards a transient
+    // stall; 10 s is still far below what a per-file regression would cost
+    // across 261 files.
+    expect(Math.min(first.elapsed, second.elapsed)).toBeLessThan(10_000);
+  }, 60_000);
 });
