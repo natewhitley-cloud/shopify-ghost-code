@@ -687,6 +687,33 @@ describe("aggregateActivity", () => {
     });
   });
 
+  // gc-zeh regression: page_visit events carry only a domain, so a store
+  // excluded solely by its durable isInternal flag leaked into top pages when
+  // events were filtered by domain rules alone.
+  it("excludes an isInternal-only store's visits from top pages and per-shop rows", () => {
+    const shops = [
+      { domain: "real.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: false },
+      { domain: "renamed-internal.myshopify.com", lastSeenAt: hoursAgo(1), isInternal: true },
+    ];
+    const events = [
+      visit("real.myshopify.com", "/app", 1),
+      visit("renamed-internal.myshopify.com", "/app/internal-only", 1),
+      visit("renamed-internal.myshopify.com", "/app/internal-only", 2),
+    ];
+    const result = aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+
+    expect(result.topPages.map((p) => p.path)).toEqual(["/app"]);
+    expect(result.perShop.map((s) => s.domain)).toEqual(["real.myshopify.com"]);
+  });
+
+  it("ignores visits from domains that are not active installs (e.g. churned)", () => {
+    const shops = [{ domain: "real.myshopify.com", lastSeenAt: null, isInternal: false }];
+    const events = [visit("churned.myshopify.com", "/app/churned-only", 1)];
+    const result = aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
+
+    expect(result.topPages).toEqual([]);
+  });
+
   it("sorts most-recently-seen first with never-seen shops last", () => {
     const shops = [
       { domain: "never.myshopify.com", lastSeenAt: null, isInternal: false },

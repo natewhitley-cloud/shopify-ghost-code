@@ -347,9 +347,10 @@ function extractVisitPath(metadata: unknown): string | null {
  *
  * Exclusion mirrors partitionShops: the shop list (per-shop rows + seen-counts)
  * uses the shop-level isExcludedShop (durable isInternal is the primary signal),
- * while each event's `key` (domain) uses isExcluded since events carry no shop
- * object — so dev/test/internal/`app-review-*` stores never appear in the
- * per-shop rows OR the top-pages breakdown. 24h counts are derived in-memory from each event's
+ * and each event's `key` (domain) is counted only if it belongs to that filtered
+ * active-shop set (events carry no shop object, so a domain-only check would
+ * miss isInternal) — so dev/test/internal/`app-review-*` stores never appear in
+ * the per-shop rows OR the top-pages breakdown. 24h counts are derived in-memory from each event's
  * createdAt so only one (7d) query is needed. Shops are sorted most-recently-seen
  * first, with never-seen shops ("never") last.
  */
@@ -364,8 +365,11 @@ export function aggregateActivity(
   const weekAgo = now.getTime() - 7 * DAY_MS;
 
   // Per-shop rows use the shop-level predicate (durable isInternal is primary).
-  // Event keys (top-pages) have no shop object, so they stay on isExcluded(domain).
   const activeShops = shops.filter((s) => !isExcludedShop(s, excludeSet, excludePrefixes));
+  // Event keys (top-pages) carry only a domain, so they are PINNED to the
+  // filtered active-shop set. A domain-only isExcluded check would miss a store
+  // excluded solely by its durable isInternal flag (gc-zeh e2e caught this leak).
+  const activeDomains = new Set(activeShops.map((s) => s.domain.toLowerCase()));
 
   // Per-domain visit counts + normalized top-pages from real-merchant events only.
   const visitsByDomain = new Map<string, { v24: number; v7: number }>();
@@ -373,7 +377,7 @@ export function aggregateActivity(
   for (const e of events) {
     if (e.key == null) continue;
     const domain = e.key.toLowerCase();
-    if (isExcluded(domain, excludeSet, excludePrefixes)) continue;
+    if (!activeDomains.has(domain)) continue;
     const t = e.createdAt.getTime();
     if (t < weekAgo) continue; // defensive; the query already bounds to 7d
     const c = visitsByDomain.get(domain) ?? { v24: 0, v7: 0 };
@@ -886,20 +890,28 @@ export const operatorDigest = inngest.createFunction(
         },
       });
       // Dates are consumed inside the helper; only counts/strings/ids are returned.
-      return partitionShops(all, excludeSet, excludePrefixes, windowStart);
+      return {
+        ...partitionShops(all, excludeSet, excludePrefixes, windowStart),
+        // Domains excluded ONLY by the durable isInternal flag. Domain-keyed
+        // event streams (uninstalls) carry no shop object, so they need these
+        // added to the domain exclude set to honour the flag (gc-zeh).
+        internalDomains: all.filter((s) => s.isInternal).map((s) => s.domain.toLowerCase()),
+      };
     })) as {
       totalActive: number;
       newIn24h: number;
       activeShops: Array<{ id: string; domain: string; plan: string }>;
       activeShopIds: string[];
       domainById: Record<string, string>;
+      internalDomains: string[];
     };
 
-    const { activeShops, activeShopIds, domainById } = shopData;
+    const { activeShops, activeShopIds, domainById, internalDomains } = shopData;
 
     // Uninstalls in 24h from the durable SHOP_UNINSTALLED OpsEvent stream, with
     // the dev/operator store excluded for consistency with every other metric.
-    // Each event's `key` is the uninstalled shop's domain.
+    // Each event's `key` is the uninstalled shop's domain; isInternal-flagged
+    // domains (row still present until shop/redact) are excluded too.
     const uninstallsIn24h = (await step.run("count-uninstalls", async () => {
       const db = (await import("../../app/db.server")).default;
       const { OPS_EVENT_TYPES } = await import("../../app/models/ops-event.server");
@@ -910,7 +922,11 @@ export const operatorDigest = inngest.createFunction(
         },
         select: { key: true },
       });
-      return countUninstallEventsExcluding(rows, excludeSet, excludePrefixes);
+      return countUninstallEventsExcluding(
+        rows,
+        new Set([...excludeSet, ...internalDomains]),
+        excludePrefixes,
+      );
     })) as number;
 
     // In-window scans scoped to ACTIVE installs (excludes the dev store AND
@@ -1005,8 +1021,7 @@ export const operatorDigest = inngest.createFunction(
     // `uninstalledAt: null` query) so the ACTIVITY section's "N active" can't
     // disagree with the BUSINESS section's "Total active" in the same email. An
     // `id IN []` returns [] cheaply when there are no active shops. aggregateActivity
-    // still applies the SAME isExcluded predicate as partitionShops to filter the
-    // page_visit event keys for the top-pages breakdown.
+    // pins the page_visit event keys (top-pages) to that same filtered shop set.
     const activity = (await step.run("get-activity", async () => {
       const db = (await import("../../app/db.server")).default;
       const { OPS_EVENT_TYPES } = await import("../../app/models/ops-event.server");
@@ -1101,10 +1116,6 @@ export const operatorDigest = inngest.createFunction(
       };
     })) as OperatorDigestData["ops"];
 
-    // Evaluate the collected MetricSnapshot rows (gc-06e.13, sub-item 3): the
-    // latest snapshot's 30d completion rate against thresholds, plus a coarse
-    // trend vs the prior snapshot. Read-only. Surfaced in the digest below and,
-    // on a HARD breach, paged separately via the critical list.
     // Latest reconcile-installs outcome (gc-dwp): both rows are counts-only and
     // keyed on a constant, so nothing per-shop crosses into the digest.
     const reconciler = (await step.run("get-reconciler-status", async () => {
@@ -1117,6 +1128,10 @@ export const operatorDigest = inngest.createFunction(
       return summarizeReconciler(summary, aborted);
     })) as ReconcilerStatus | null;
 
+    // Evaluate the collected MetricSnapshot rows (gc-06e.13, sub-item 3): the
+    // latest snapshot's 30d completion rate against thresholds, plus a coarse
+    // trend vs the prior snapshot. Read-only. Surfaced in the digest below and,
+    // on a HARD breach, paged separately via the critical list.
     const metricAnomalies = (await step.run("evaluate-snapshot-metrics", async () => {
       const { getSnapshotHistory } = await import("../../app/models/metric-snapshot.server");
       const [latest, prior] = await getSnapshotHistory(2);
