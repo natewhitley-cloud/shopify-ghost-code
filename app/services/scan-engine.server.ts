@@ -4448,6 +4448,14 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // finding and are truncated here. MALICIOUS_SCRIPT is never passed through
   // this: the security alert is shown in full on all plans, and its detector is
   // linear and cheap per finding.
+  //
+  // Known, accepted edge case: in an over-cap file, an edit that shifts which
+  // findings are the first N (e.g. a new line near the top) pushes a
+  // still-present finding past the cap, and the differ reports it "resolved"
+  // (and a later edit can bring it back as "new"). Accepted because it needs a
+  // file with more than 200 findings of one type (prod max is ~26 per SCAN, so
+  // orders of magnitude below), and the proper fix means persisting the capped
+  // (file, type) pairs so the differ can exclude them like a skipped category.
   const findingCapHits: Partial<Record<FindingType, number>> = {};
   const capped = (detected: CreateFindingInput[]): CreateFindingInput[] => {
     if (detected.length <= MAX_FINDINGS_PER_FILE_PER_TYPE) return detected;
