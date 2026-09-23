@@ -284,12 +284,14 @@ describe("new app signatures", () => {
       "CJ Dropshipping",
     );
   });
-  it("identifies the Google Merchant Center widget by exact script path", () => {
-    expect(identifyAppFromCode("https://www.gstatic.com/shopping/merchant/merchantwidget.js")).toBe(
-      "Google Merchant Center Widget",
-    );
+  // Merchant Center widget is benign, NOT an app (no uninstall lifecycle), so it
+  // must not be attributed: that would mint a false "safe-to-remove" finding.
+  it("does NOT attribute the Google Merchant Center widget to any app", () => {
+    const url = "https://www.gstatic.com/shopping/merchant/merchantwidget.js";
+    expect(identifyAppFromCode(url)).toBeNull();
+    expect(identifyAppFromUrl(url)).toBeNull();
   });
-  it("does NOT attribute other gstatic assets to the Merchant Center widget", () => {
+  it("does NOT attribute other gstatic assets to any app", () => {
     expect(
       identifyAppFromUrl("https://www.gstatic.com/recaptcha/releases/x/recaptcha__en.js"),
     ).toBeNull();

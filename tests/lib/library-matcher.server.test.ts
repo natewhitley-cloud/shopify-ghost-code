@@ -103,3 +103,26 @@ describe("isBenignLibrary (behavior preserved after parseLibrary refactor)", () 
     expect(isBenignLibrary("not a url")).toBe(false);
   });
 });
+
+// Google Merchant Center store widget: a hand-pasted Google script, not an app,
+// so it can never be "uninstalled". It must be benign (not an unknown script),
+// NOT an app signature (which would mint a false "safe-to-remove" GHOST_SCRIPT
+// and GHOST_LAYOUT). Adversarial audit 2026-09-23.
+describe("isBenignLibrary: exact benign script paths", () => {
+  it("treats the Merchant Center widget as benign (http/https, protocol-relative, query)", () => {
+    expect(isBenignLibrary("https://www.gstatic.com/shopping/merchant/merchantwidget.js")).toBe(
+      true,
+    );
+    expect(isBenignLibrary("//www.gstatic.com/shopping/merchant/merchantwidget.js?x=1")).toBe(true);
+  });
+
+  it("does not bless other gstatic paths or lookalike hosts", () => {
+    expect(isBenignLibrary("https://www.gstatic.com/recaptcha/releases/x/recaptcha__en.js")).toBe(
+      false,
+    );
+    expect(isBenignLibrary("https://evil.com/shopping/merchant/merchantwidget.js")).toBe(false);
+    expect(
+      isBenignLibrary("https://www.gstatic.com/shopping/merchant/merchantwidget.js.evil.js"),
+    ).toBe(false);
+  });
+});

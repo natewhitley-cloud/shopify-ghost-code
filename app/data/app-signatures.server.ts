@@ -80,17 +80,6 @@ export const APP_SIGNATURES: AppSignature[] = [
     isTracker: true,
   },
   {
-    // Google Merchant Center store widget, pasted into the theme by hand. Matched
-    // on the exact script path only: attributing the bare www.gstatic.com host
-    // would mis-attribute every other Google static asset (reCAPTCHA, etc.).
-    // Seen in prod 2026-09-22 as an unknown script.
-    appName: "Google Merchant Center Widget",
-    cdnDomains: [],
-    scriptPatterns: [/gstatic\.com\/shopping\/merchant\/merchantwidget\.js/],
-    snippetNames: [],
-    cssPatterns: [],
-  },
-  {
     appName: "Google Tag Manager",
     cdnDomains: ["www.googletagmanager.com"],
     scriptPatterns: [/gtm\.js/, /GTM-[A-Z0-9]+/, /googletagmanager\.com/],
