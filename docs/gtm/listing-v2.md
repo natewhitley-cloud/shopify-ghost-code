@@ -91,8 +91,8 @@ gated (free scanners never see it) and isn't strictly "leftover code from an uni
 app," so leading with it blurs the core promise. Use it in three places:
 
 1. **Standard-plan feature copy (Managed Pricing):** add an upgrade reason. Managed Pricing
-   feature bullets are capped at **40 chars**, so use `Catch checkout.liquid sunset risks`
-   (34/40). This detector (and Broken Links) are Standard-only but currently unnamed in the
+   feature bullets are capped at **40 chars**, so use `Find dead checkout.liquid code`
+   (30/40). This detector (and Broken Links) are Standard-only but currently unnamed in the
    Standard pricing card (see the "Pricing-card gap" note below).
 2. **Forum / content angle:** a "checkout.liquid no longer renders; here's how to find
    every script that already stopped running" post (see `marketing-plan.md §1`). Highest-leverage home for it.
@@ -107,7 +107,7 @@ decision point: **Broken Links** (`DANGLING_REFERENCE`) and **checkout.liquid su
 "more detail." Candidate bullets (all ≤40):
 
 - `Catch broken links from old apps` (32): names Broken Links
-- `Catch checkout.liquid sunset risks` (37): names checkout sunset, present-harm
+- `Find dead checkout.liquid code` (30): names checkout sunset, present-harm
 - `Weekly auto-scan + findings trend` (33): folds cadence + trend into one benefit line
 
 Also update `docs/pricing-and-plans.md` in the same pass; its Standard/Free listing bullets

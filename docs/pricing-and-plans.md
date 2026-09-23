@@ -53,7 +53,7 @@
 1. All features in Free
 2. Full finding details with code
 3. Catch broken links from old apps
-4. Catch checkout.liquid sunset risks
+4. Find dead checkout.liquid code
 5. Weekly auto-scan + findings trend
 6. 7-day free trial
 

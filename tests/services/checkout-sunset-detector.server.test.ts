@@ -388,4 +388,15 @@ describe("detectCheckoutSunset — sunset copy accuracy (gc-oam)", () => {
     expect(description).not.toMatch(/\bPlus\b/);
     expect(description).not.toMatch(/[—–]/);
   });
+
+  // A file that "no longer renders" cannot still be customizing checkout: the
+  // signal copy describes leftover customizations, not a live mechanism.
+  it.each(variants.slice(0, 2))(
+    "%s description says the theme contains customizations, not that it customizes checkout",
+    (_name, content) => {
+      const description = detectCheckoutSunset([file(content)])[0].description;
+      expect(description).toMatch(/^Your theme still contains checkout\.liquid customizations\. /);
+      expect(description).not.toMatch(/uses checkout\.liquid to customize/);
+    },
+  );
 });

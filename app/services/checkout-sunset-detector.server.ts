@@ -191,6 +191,12 @@ export function detectCheckoutSunset(files: ThemeFile[]): CreateFindingInput[] {
   const checkoutFile = files.find((f) => f.filename === CHECKOUT_LIQUID_PATH);
   if (!checkoutFile) return [];
 
+  // Accepted one-time transition (F1): if checkout.liquid grows past this size
+  // between scans, its specific-subtype finding becomes this generic "layout"
+  // finding, whose fingerprint differs, so the old one resolves, a new one
+  // opens, and an instance-level ignore no longer matches. Acceptable because
+  // a >1MB checkout layout is implausible in a real theme and the file's
+  // presence (the actual defect) is still reported.
   if (checkoutFile.content.length > MAX_SCANNABLE_FILE_BYTES) {
     return [sunsetFinding(checkoutFile, LAYOUT_SUBTYPE, 1, layoutDescription())];
   }
@@ -216,7 +222,7 @@ export function detectCheckoutSunset(files: ThemeFile[]): CreateFindingInput[] {
 
   const description =
     matched.length > 0
-      ? `Your theme still uses checkout.liquid to customize checkout. ${SUNSET_FACT} ` +
+      ? `Your theme still contains checkout.liquid customizations. ${SUNSET_FACT} ` +
         `What stopped working: ${joinClauses(matched.map((s) => s.breaks))}. ${REBUILD_HINT}`
       : layoutDescription();
 
