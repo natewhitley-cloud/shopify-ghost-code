@@ -1,6 +1,10 @@
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
+import {
+  CORE_STEP_OUTPUT_BUDGET_BYTES,
+  JSONLD_PRICE_CANDIDATE_CAP,
+} from "../../app/lib/scan-limits";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import {
   isScannableFile,
@@ -2493,6 +2497,38 @@ describe("extractStaticProductCandidates", () => {
     expect(result.staticProductCandidates?.[0].handle).toBe("pooled");
     // The static unsigned Product block must NOT itself produce a JSON-LD finding.
     expect(findingsOfType(result.findings, FindingType.GHOST_JSON_LD)).toHaveLength(0);
+  });
+
+  it("truncates over-long identity and offer strings to 255 chars (gc-4ce step-output bound)", () => {
+    const long = "S".repeat(9000);
+    const file: ThemeFile = {
+      filename: "snippets/ld.liquid",
+      content: `<script type="application/ld+json">{"@type":"Product","url":"https://s.com/products/${"h".repeat(9000)}","sku":"${long}","offers":{"price":"${"9".repeat(9000)}","priceCurrency":"${"U".repeat(9000)}","availability":"${"I".repeat(9000)}"}}</script>`,
+    };
+    const [candidate] = extractStaticProductCandidates(file);
+    expect(candidate.handle).toHaveLength(255);
+    expect(candidate.sku).toHaveLength(255);
+    expect(candidate.staticPrice).toHaveLength(255);
+    expect(candidate.staticPriceCurrency).toHaveLength(255);
+    expect(candidate.staticAvailability).toHaveLength(255);
+    expect(candidate.sku).toBe(long.slice(0, 255));
+  });
+
+  it("keeps 500 long-SKU candidates under the step-output budget (audit static.ts shape)", () => {
+    const sku = "S".repeat(9000);
+    const files: ThemeFile[] = Array.from({ length: 6 }, (_, f) => ({
+      filename: `snippets/ld-${f}.liquid`,
+      content: Array.from(
+        { length: 100 },
+        (_, i) =>
+          `<script type="application/ld+json">{"@type":"Product","sku":"${sku}${f}-${i}","offers":{"price":"9.99"}}</script>`,
+      ).join("\n"),
+    }));
+    const candidates = files.flatMap((f) => extractStaticProductCandidates(f));
+    const bounded = candidates.slice(0, JSONLD_PRICE_CANDIDATE_CAP);
+    expect(bounded).toHaveLength(JSONLD_PRICE_CANDIDATE_CAP);
+    const bytes = Buffer.byteLength(JSON.stringify({ staticProductCandidates: bounded }), "utf8");
+    expect(bytes).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES / 3);
   });
 });
 

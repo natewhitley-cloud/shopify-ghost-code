@@ -559,29 +559,45 @@ export const scanTheme = inngest.createFunction(
         // Defensive step-output budget (gc-4ce). The caps keep the worst case
         // far below Inngest's 4 MB limit, but if the output is still over
         // budget, drop the dangling candidates for this scan rather than fail
-        // the whole scan. The dangling audit then reports its category skipped
-        // so the differ keeps prior DANGLING_REFERENCE findings.
+        // the whole scan, then RE-MEASURE; if still over, drop the static
+        // JSON-LD candidates too. Each dropped audit reports its category
+        // skipped so the differ keeps its prior findings.
         const outputBytes = Buffer.byteLength(JSON.stringify(output), "utf8");
-        if (outputBytes > CORE_STEP_OUTPUT_BUDGET_BYTES) {
-          logger.warn(
-            "fetch-and-scan output over step-output budget; dropping dangling candidates",
-            {
-              function: "scan-theme",
-              event: "dangling_output_truncated",
-              shopId,
-              outputBytes,
-              budgetBytes: CORE_STEP_OUTPUT_BUDGET_BYTES,
-              danglingOccurrenceCount: dangling.occurrences.length,
-            },
-          );
-          return {
-            ...output,
-            danglingOccurrences: [],
-            danglingDistinctHandles: [],
-            danglingTruncated: true,
-          };
-        }
-        return output;
+        if (outputBytes <= CORE_STEP_OUTPUT_BUDGET_BYTES) return output;
+
+        logger.warn("fetch-and-scan output over step-output budget; dropping dangling candidates", {
+          function: "scan-theme",
+          event: "dangling_output_truncated",
+          shopId,
+          outputBytes,
+          budgetBytes: CORE_STEP_OUTPUT_BUDGET_BYTES,
+          danglingOccurrenceCount: dangling.occurrences.length,
+        });
+        const withoutDangling = {
+          ...output,
+          danglingOccurrences: [],
+          danglingDistinctHandles: [],
+          danglingTruncated: true,
+        };
+        const bytesWithoutDangling = Buffer.byteLength(JSON.stringify(withoutDangling), "utf8");
+        if (bytesWithoutDangling <= CORE_STEP_OUTPUT_BUDGET_BYTES) return withoutDangling;
+
+        logger.warn(
+          "fetch-and-scan output still over step-output budget; dropping static JSON-LD candidates",
+          {
+            function: "scan-theme",
+            event: "static_candidates_output_truncated",
+            shopId,
+            outputBytes: bytesWithoutDangling,
+            budgetBytes: CORE_STEP_OUTPUT_BUDGET_BYTES,
+            staticCandidateCount: boundedStaticCandidates.length,
+          },
+        );
+        return {
+          ...withoutDangling,
+          staticProductCandidates: [],
+          staticCandidatesCapped: true,
+        };
       });
 
       // Step 3: Translation audit (optional — requires read_translations scope)
@@ -889,9 +905,11 @@ export const scanTheme = inngest.createFunction(
         }
 
         // Nothing to correlate — the theme had no unsigned static Product
-        // JSON-LD. Audited (nothing to check), not a scope skip.
+        // JSON-LD. Audited (nothing to check), not a scope skip. Unless the
+        // step-output budget dropped every candidate (gc-4ce): then nothing was
+        // checked, so the category is skipped and prior findings are kept.
         if (staticProductCandidates.length === 0) {
-          return { findingCount: 0, skipped: false };
+          return { findingCount: 0, skipped: staticCandidatesCapped };
         }
 
         const db = (await import("../../app/db.server")).default;

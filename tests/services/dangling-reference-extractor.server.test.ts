@@ -386,6 +386,15 @@ describe("extractDanglingReferences — payload caps (gc-4ce)", () => {
     expect(result.capped).toBe(true);
   });
 
+  it("truncates an over-long handle to Shopify's 255-char maximum", () => {
+    const long = "a".repeat(1000);
+    const result = extractDanglingReferences([
+      file(`<a href="/products/${long}">x</a>\n{{ pages['${long}'] }}`),
+    ]);
+    expect(result.distinctHandles.map((h) => h.handle.length)).toEqual([255, 255]);
+    expect(result.occurrences.every((o) => o.handle.length === 255)).toBe(true);
+  });
+
   it("is not capped for an ordinary theme", () => {
     const result = extractDanglingReferences([
       file('<a href="/products/a">x</a>\n<a href="/pages/b">y</a>'),

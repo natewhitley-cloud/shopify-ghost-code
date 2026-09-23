@@ -1966,6 +1966,13 @@ function extractProductIdentity(node: Record<string, unknown>): {
   return { handle, sku };
 }
 
+/** Shopify's maximum handle / SKU length; bounds each static candidate string. */
+const MAX_CANDIDATE_FIELD_LENGTH = 255;
+
+function truncateCandidateField(value: string | undefined): string | undefined {
+  return value?.slice(0, MAX_CANDIDATE_FIELD_LENGTH);
+}
+
 /**
  * Extract UNSIGNED static Product JSON-LD blocks as compact candidates for the
  * live-price audit (gc-47c.10). A candidate is recorded only when the block is:
@@ -2009,15 +2016,18 @@ export function extractStaticProductCandidates(file: ThemeFile): StaticProductCa
       const offer = extractOfferFields(node);
       if (offer.price === undefined && offer.availability === undefined) continue; // nothing to compare
 
+      // Every string crosses the Inngest step boundary (4 MB limit), so each is
+      // truncated to Shopify's 255-char handle/SKU maximum (gc-4ce): 500
+      // candidates with 9 KB SKUs otherwise produced ~4.7 MB of step output.
       candidates.push({
         filename: file.filename,
         lineNumber,
         codeSnippet: buildSnippet(file.content, lineNumber),
-        handle,
-        sku,
-        staticPrice: offer.price,
-        staticPriceCurrency: offer.priceCurrency,
-        staticAvailability: offer.availability,
+        handle: truncateCandidateField(handle),
+        sku: truncateCandidateField(sku),
+        staticPrice: truncateCandidateField(offer.price),
+        staticPriceCurrency: truncateCandidateField(offer.priceCurrency),
+        staticAvailability: truncateCandidateField(offer.availability),
       });
     }
   }

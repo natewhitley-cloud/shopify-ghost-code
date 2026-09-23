@@ -88,6 +88,10 @@ interface RawHit {
   content: string;
 }
 
+// Shopify's maximum handle length. Longer literals are truncated at extraction so
+// one pathological reference cannot inflate the step output (gc-4ce).
+const MAX_HANDLE_LENGTH = 255;
+
 // A literal Shopify handle: lower-case, starts alphanumeric, then alphanumeric or
 // hyphen. This single test rejects every dynamic form the FP rules forbid —
 // anything containing `{{`, `{%`, `}`, `.`, `|`, whitespace, or uppercase fails.
@@ -179,7 +183,10 @@ function collectFromFile(file: ThemeFile, out: RawHit[]): void {
       if (!pathMatch) continue;
 
       const entityType = URL_SEGMENT_TO_TYPE[pathMatch[1]];
-      const handle = pathMatch[2].replace(URL_SUFFIX_RE, "").toLowerCase();
+      const handle = pathMatch[2]
+        .replace(URL_SUFFIX_RE, "")
+        .toLowerCase()
+        .slice(0, MAX_HANDLE_LENGTH);
       if (!HANDLE_RE.test(handle)) continue;
       if (entityType === "collection" && RESERVED_COLLECTION_HANDLES.has(handle)) continue;
 
@@ -191,7 +198,7 @@ function collectFromFile(file: ThemeFile, out: RawHit[]): void {
     let objMatch: RegExpExecArray | null;
     while ((objMatch = OBJECT_LOOKUP_RE.exec(text)) !== null) {
       const entityType = OBJECT_TO_TYPE[objMatch[1]];
-      const handle = objMatch[2].toLowerCase();
+      const handle = objMatch[2].toLowerCase().slice(0, MAX_HANDLE_LENGTH);
       if (!HANDLE_RE.test(handle)) continue; // rejects e.g. a leading hyphen
 
       out.push({ entityType, handle, filename: file.filename, lineNumber, content: file.content });

@@ -1914,6 +1914,83 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     expect(skippedCategories).toEqual([]);
   });
 
+  it("drops static candidates too (not the scan) when dropping dangling is not enough", async () => {
+    // Audit repro (static.ts shape): 500 candidates, each with a huge field,
+    // blow past the budget with no dangling candidates to drop at all.
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    const candidates = Array.from({ length: JSONLD_PRICE_CANDIDATE_CAP }, (_, i) => ({
+      filename: `snippets/ld-${i}.liquid`,
+      lineNumber: 1,
+      codeSnippet: "y".repeat(300),
+      sku: `${"S".repeat(9000)}-${i}`,
+      staticPrice: "9.99",
+    }));
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      staticProductCandidates: candidates,
+    });
+    const warnSpy = vi.spyOn(logger, "warn");
+
+    const out = await runAndCaptureCoreStep();
+
+    expect(jsonBytes(out)).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
+    expect(out.staticProductCandidates).toEqual([]);
+    expect(out.staticCandidatesCapped).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("step-output budget"),
+      expect.objectContaining({ event: "static_candidates_output_truncated", shopId: SHOP_ID }),
+    );
+    // Nothing to audit this scan, but the category is reported skipped so prior
+    // price findings are kept; the scan itself completes.
+    expect(mockAuditStaticJsonLdPrices).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({
+        status: "COMPLETED",
+        skippedCategories: expect.arrayContaining([FindingType.JSON_LD_PRICE_CONFLICT]),
+      }),
+    );
+  });
+
+  it("keeps static candidates when dropping dangling alone gets under the budget", async () => {
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    mockExtractDanglingReferences.mockReturnValue({
+      occurrences: Array.from({ length: 5000 }, (_, i) => ({
+        entityType: "page",
+        handle: `p${i}`,
+        filename: "sections/huge.liquid",
+        lineNumber: i + 1,
+        snippet: "x".repeat(1000),
+      })),
+      distinctHandles: [{ entityType: "page", handle: "p0", occurrenceCount: 1 }],
+      capped: false,
+    });
+    const candidates = [
+      {
+        filename: "snippets/ld.liquid",
+        lineNumber: 1,
+        codeSnippet: "y",
+        sku: "A",
+        staticPrice: "1",
+      },
+    ];
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      staticProductCandidates: candidates,
+    });
+    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: false });
+
+    const out = await runAndCaptureCoreStep();
+
+    expect(out.danglingTruncated).toBe(true);
+    expect(out.staticProductCandidates).toEqual(candidates);
+    expect(out.staticCandidatesCapped).toBe(false);
+  });
+
   it("leaves an ordinary theme's output and skippedCategories untouched", async () => {
     process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
     mockFetchThemeFiles.mockResolvedValue([

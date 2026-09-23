@@ -66,7 +66,8 @@ export const JSONLD_PRICE_CANDIDATE_CAP = 500;
  * Byte budget for the scan-theme `fetch-and-scan` step's return value (gc-4ce).
  * Inngest rejects step output over 4 MB; 3 MB leaves headroom for Inngest's own
  * envelope. The caps above keep the worst case well under this; the budget is a
- * defensive backstop that drops dangling candidates rather than failing a scan.
+ * defensive backstop that drops dangling candidates, re-measures, and then drops
+ * static JSON-LD candidates too if still over, rather than failing a scan.
  */
 export const CORE_STEP_OUTPUT_BUDGET_BYTES = 3_000_000;
 
