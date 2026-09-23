@@ -956,9 +956,18 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
 // Detector: GHOST_JSON_LD
 // ---------------------------------------------------------------------------
 
-// Multiline regex to extract <script type="application/ld+json">...</script> blocks.
-const JSON_LD_BLOCK_RE =
-  /<script\s+type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+// `<script type="application/ld+json">...</script>` delimiters for
+// extractTagBlocks (linear; the old whole-content
+// /<script\s+type...["'][^>]*>([\s\S]*?)<\/script>/gi scan was quadratic on
+// unterminated blocks, gc-t7x). The open prefix can only match one way (each
+// \s run is followed by a fixed non-space literal), as extractTagBlocks needs.
+const JSON_LD_OPEN_RE = /<script\s+type\s*=\s*["']application\/ld\+json["']/gi;
+const JSON_LD_CLOSE_RE = /<\/script>/gi;
+
+/** Every `<script type="application/ld+json">` block: start offset + raw content. */
+function extractJsonLdBlocks(content: string): Array<{ offset: number; inner: string }> {
+  return extractTagBlocks(content, JSON_LD_OPEN_RE, JSON_LD_CLOSE_RE);
+}
 
 // Regex to detect app-only @type values that Shopify themes never inject natively.
 const APP_ONLY_TYPE_RE =
@@ -992,17 +1001,12 @@ export function lineNumberAtOffset(content: string, offset: number): number {
 export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  let match: RegExpExecArray | null;
-  JSON_LD_BLOCK_RE.lastIndex = 0;
-
-  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
-    const blockContent = match[1];
-
+  for (const { offset, inner: blockContent } of extractJsonLdBlocks(file.content)) {
     // Skip blocks containing Liquid template tags — these are native theme
     // blocks rendered by the theme engine, not orphaned static injections.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset);
     const codeSnippet = buildSnippet(file.content, lineNumber);
 
     // Try app attribution via signature patterns first.
@@ -1072,12 +1076,7 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
 export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  let match: RegExpExecArray | null;
-  JSON_LD_BLOCK_RE.lastIndex = 0;
-
-  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
-    const blockContent = match[1];
-
+  for (const { offset, inner: blockContent } of extractJsonLdBlocks(file.content)) {
     // Liquid-templated blocks are rendered server-side; their raw form isn't
     // meant to be valid JSON. Same predicate as detectGhostJsonLd.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
@@ -1092,7 +1091,7 @@ export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
       // Falls through to emit the finding below.
     }
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset);
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.JSON_LD_INVALID, codeSnippet);
 
@@ -1587,12 +1586,7 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
   // arrays, and array @types), grouped by normalized @type across the whole file.
   const nodesByType = new Map<string, JsonLdNode[]>();
 
-  JSON_LD_BLOCK_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
-    const blockContent = match[1];
-
+  for (const { offset, inner: blockContent } of extractJsonLdBlocks(file.content)) {
     // Skip blocks containing Liquid template tags — these are dynamically
     // rendered and may produce different output at runtime.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
@@ -1605,7 +1599,7 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
       continue; // Malformed JSON — skip gracefully
     }
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset);
 
     for (const node of extractJsonLdNodes(parsed)) {
       const typeKey = normalizeAtType(node["@type"]);
@@ -1626,16 +1620,21 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
   for (const [atType, nodes] of nodesByType) {
     if (nodes.length < 2) continue;
 
+    // The earliest node that differs is nodes[0] unless the node equals nodes[0];
+    // then it is the first node that differs from nodes[0] (every node before
+    // it equals nodes[0], hence this node). Tracking that index keeps this O(n)
+    // instead of rescanning all earlier nodes per node (quadratic when a file
+    // repeats one block thousands of times, gc-t7x).
+    const head = nodes[0].rawContent;
+    let firstDiffFromHead = nodes.findIndex((n) => n.rawContent !== head);
+    if (firstDiffFromHead === -1) firstDiffFromHead = nodes.length;
+
     for (let i = 1; i < nodes.length; i++) {
       const node = nodes[i];
 
       let conflictsWith: JsonLdNode | null = null;
-      for (let j = 0; j < i; j++) {
-        if (nodes[j].rawContent !== node.rawContent) {
-          conflictsWith = nodes[j];
-          break;
-        }
-      }
+      if (node.rawContent !== head) conflictsWith = nodes[0];
+      else if (firstDiffFromHead < i) conflictsWith = nodes[firstDiffFromHead];
       // No earlier node differs — this node is an exact duplicate, not a conflict.
       if (!conflictsWith) continue;
 
@@ -1728,12 +1727,7 @@ function extractProductIdentity(node: Record<string, unknown>): {
 export function extractStaticProductCandidates(file: ThemeFile): StaticProductCandidate[] {
   const candidates: StaticProductCandidate[] = [];
 
-  JSON_LD_BLOCK_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
-    const blockContent = match[1];
-
+  for (const { offset, inner: blockContent } of extractJsonLdBlocks(file.content)) {
     // Liquid blocks are dynamically rendered by the theme engine — not stale
     // static injections. Mirrors both JSON-LD detectors.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
@@ -1749,7 +1743,7 @@ export function extractStaticProductCandidates(file: ThemeFile): StaticProductCa
       continue; // Malformed JSON — skip gracefully
     }
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset);
 
     for (const node of extractJsonLdNodes(parsed)) {
       if (normalizeAtType(node["@type"]) !== "Product") continue;

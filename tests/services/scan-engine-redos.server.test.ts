@@ -26,9 +26,13 @@ import {
   collectUnknownStylesheets,
   detectDuplicateMetaTags,
   detectGhostTitle,
+  detectInvalidJsonLd,
+  detectJsonLdConflicts,
+  extractStaticProductCandidates,
   detectDuplicateTrackers,
   detectGhostCanonical,
   detectGhostHrefLang,
+  detectGhostJsonLd,
   detectGhostOg,
   detectGhostPreconnect,
   detectGhostRobots,
@@ -295,5 +299,32 @@ describe("gc-t7x — detectGhostTitle is linear on unterminated / flooded titles
     expect(findings).toHaveLength(1);
     expect(findings[0].lineNumber).toBe(2);
     expect(findings[0].description).toContain("Duplicate title tag");
+  });
+});
+
+describe("gc-t7x — JSON-LD block extraction is linear on unterminated blocks", () => {
+  const detectors: Array<[string, (file: ThemeFile) => unknown]> = [
+    ["detectGhostJsonLd", detectGhostJsonLd],
+    ["detectInvalidJsonLd", detectInvalidJsonLd],
+    ["detectJsonLdConflicts", detectJsonLdConflicts],
+    ["extractStaticProductCandidates", extractStaticProductCandidates],
+  ];
+  const floods: Array<[string, string]> = [
+    ["ld+json openers with no </script>", atCap('<script type="application/ld+json">{')],
+    ["ld+json openers with no >", atCap('<script type="application/ld+json"')],
+  ];
+
+  for (const [name, detect] of detectors) {
+    it.each(floods)(`${name}: %s`, (_label, content) => {
+      expect(timed(() => detect(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+    });
+  }
+
+  it("detectJsonLdConflicts is linear in the number of identical blocks", () => {
+    // ~16K identical blocks of one @type: each used to be compared against
+    // every earlier block while searching for one that differs (~1.8s; now
+    // ~20ms, so the tighter budget still leaves wide headroom).
+    const content = atCap('<script type="application/ld+json">{"@type":"FAQPage"}</script>');
+    expect(timed(() => detectJsonLdConflicts(layout(content)))).toBeLessThan(REDOS_BUDGET_MS);
   });
 });
