@@ -9,7 +9,10 @@
  * because this is only ever used for equality comparison within the same shop.
  */
 
-import { CROSS_FILE_FINDING_TYPES } from "../lib/finding-classification";
+import {
+  CROSS_FILE_FINDING_TYPES,
+  SIZE_SKIP_STILL_SCANNED_FINDING_TYPES,
+} from "../lib/finding-classification";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -173,7 +176,9 @@ export function fingerprintFinding(
  *   still computed in the current scan and therefore diff normally: they are NOT
  *   excluded by the skipped-file filter. Excluding them would misreport a
  *   still-present cross-file finding as "new" every rescan and silently drop a
- *   genuine resolution.
+ *   genuine resolution. The same holds for the per-file MALICIOUS_SCRIPT
+ *   detector, which deliberately still runs on oversized files (gc-qqt — see
+ *   SIZE_SKIP_STILL_SCANNED_FINDING_TYPES).
  */
 export function diffScans(
   currentFindings: DiffableFinding[],
@@ -185,7 +190,8 @@ export function diffScans(
   // The oversized-file skip only invalidates PER-FILE detector findings: a
   // cross-file finding type (CROSS_FILE_FINDING_TYPES — ORPHAN_ASSET,
   // GHOST_LAYOUT) is STILL computed for a skipped file by Pass 2 / Pass 4, so it
-  // must diff normally and is NOT excluded by the skipped-file filter.
+  // must diff normally and is NOT excluded by the skipped-file filter. Neither
+  // is MALICIOUS_SCRIPT, whose detector still runs on skipped files (gc-qqt).
   // Current findings only ever exist for audited categories, and for scanned
   // files or the cross-file passes, so no symmetric filter is needed on
   // `currentFindings`.
@@ -201,7 +207,8 @@ export function diffScans(
             !(
               hasFileFilter &&
               skippedFiles!.has(f.filename) &&
-              !CROSS_FILE_FINDING_TYPES.has(f.findingType)
+              !CROSS_FILE_FINDING_TYPES.has(f.findingType) &&
+              !SIZE_SKIP_STILL_SCANNED_FINDING_TYPES.has(f.findingType)
             ),
         )
       : previousFindings;

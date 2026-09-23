@@ -33,6 +33,7 @@ import {
   detectDuplicateTrackers,
   detectOverlappingChatWidgets,
   scanThemeFiles,
+  MAX_SCANNABLE_FILE_BYTES,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
 import { REFERENCE_THEMES, DAWN_TITLE, DAWN_META_TAGS } from "../fixtures/reference-themes";
@@ -5724,5 +5725,58 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in non-Liquid theme files (gc-3pd)
     expect(performance.now() - start).toBeLessThan(1500);
     // Unterminated comment never closes, so the live line after it still counts.
     expect(findings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MALICIOUS_SCRIPT survives the oversized-file skip (gc-qqt)
+// ---------------------------------------------------------------------------
+
+describe("scanThemeFiles — MALICIOUS_SCRIPT in oversized scannable files (gc-qqt)", () => {
+  const EVIL_TAG = '<script src="https://shopify.jsdeliver.cloud/config.js"></script>';
+  const GHOST_TAG =
+    '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=X"></script>';
+
+  it("still flags a malicious line in a file padded past the 1MB cap, and keeps it in skippedFiles", () => {
+    const content = [GHOST_TAG, EVIL_TAG, " ".repeat(MAX_SCANNABLE_FILE_BYTES + 1)].join("\n");
+    const { findings, skippedFiles, unknownScripts, thirdPartyDomains } = scanThemeFiles([
+      { filename: "sections/padded.liquid", content },
+    ]);
+
+    expect(skippedFiles).toEqual([{ filename: "sections/padded.liquid", size: content.length }]);
+    // Only the malicious-domain pass ran: the ghost script is NOT reported.
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    expect(findings[0].filename).toBe("sections/padded.liquid");
+    expect(findings[0].lineNumber).toBe(2);
+    expect(unknownScripts).toHaveLength(0);
+    expect(thirdPartyDomains).toHaveLength(0);
+  });
+
+  it("emits nothing for a clean oversized file (still skipped)", () => {
+    const content = GHOST_TAG + "\n" + " ".repeat(MAX_SCANNABLE_FILE_BYTES + 1);
+    const { findings, skippedFiles } = scanThemeFiles([
+      { filename: "layout/theme.liquid", content },
+    ]);
+    expect(findings).toHaveLength(0);
+    expect(skippedFiles).toHaveLength(1);
+  });
+
+  it("stays fast on a 5MB padded file (single-line and multi-line padding)", () => {
+    const singleLine = EVIL_TAG + "x".repeat(5_000_000);
+    const multiLine = ("// " + "a".repeat(80) + "\n").repeat(60_000) + EVIL_TAG;
+    const start = performance.now();
+    const { findings, skippedFiles } = scanThemeFiles([
+      { filename: "sections/a.liquid", content: singleLine },
+      { filename: "sections/b.liquid", content: multiLine },
+    ]);
+    const elapsed = performance.now() - start;
+
+    expect((skippedFiles ?? []).map((f) => f.filename)).toEqual([
+      "sections/a.liquid",
+      "sections/b.liquid",
+    ]);
+    expect(findingsOfType(findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(2);
+    expect(elapsed).toBeLessThan(3_000);
   });
 });

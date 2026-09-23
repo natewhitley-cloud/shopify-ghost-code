@@ -1674,14 +1674,15 @@ export default function ScanDetail() {
         )}
 
         {/* Oversized-file skip notice — these files were too large (>1 MB) to
-          scan, so their findings are neither reported nor diffed (gc-06e.19). */}
+          scan, so their findings are neither reported nor diffed (gc-06e.19).
+          The known-malicious-domain check still runs on them (gc-qqt). */}
         {isCompleted && scan.skippedFiles.length > 0 && (
           <div>
             <s-banner tone="warning">
               {scan.skippedFiles.length} file{scan.skippedFiles.length !== 1 ? "s" : ""} skipped
               (over 1 MB, not scanned): {scan.skippedFiles.join(", ")}. Findings in{" "}
               {scan.skippedFiles.length !== 1 ? "these files" : "this file"} are not included in
-              this scan or its comparison.
+              this scan or its comparison, except the malicious-domain check, which still runs.
             </s-banner>
           </div>
         )}

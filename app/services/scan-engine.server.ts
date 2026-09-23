@@ -3423,13 +3423,7 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
-    // Non-Liquid files that can still carry injected code (gc-3pd) get ONLY the
-    // malicious-domain pass: no FP/perf change for the rest of the suite.
-    if (isMaliciousScanOnlyFile(file.filename)) {
-      findings.push(...detectMaliciousScripts(file));
-      continue;
-    }
-    if (!isScannableFile(file.filename)) continue;
+    const scannable = isScannableFile(file.filename);
 
     // File-size guard (gc-06e.2): a single oversized scannable file is anomalous
     // (real theme Liquid files are far under MAX_SCANNABLE_FILE_BYTES) and would
@@ -3440,10 +3434,22 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     // treat a skipped file's cross-file findings as unre-checked — the set of
     // cross-file types lives in CROSS_FILE_FINDING_TYPES (finding-classification);
     // update it when adding a new cross-file pass (Pass 2 / Pass 4 below).
-    if (file.content.length > MAX_SCANNABLE_FILE_BYTES) {
+    const oversized = scannable && file.content.length > MAX_SCANNABLE_FILE_BYTES;
+    if (oversized) {
       skippedFiles.push({ filename: file.filename, size: file.content.length });
+    }
+
+    // Malicious-domain-only pass: (a) non-Liquid files that can still carry
+    // injected code (gc-3pd) and (b) oversized scannable files, so padding a file
+    // past the cap cannot hide a malicious alert (gc-qqt). The detector is linear
+    // (safe on unbounded input); no other detector runs on these files, and the
+    // differ exempts MALICIOUS_SCRIPT from its skipped-file exclusion
+    // (SIZE_SKIP_STILL_SCANNED_FINDING_TYPES in finding-classification).
+    if (oversized || isMaliciousScanOnlyFile(file.filename)) {
+      findings.push(...detectMaliciousScripts(file));
       continue;
     }
+    if (!scannable) continue;
 
     findings.push(...detectGhostScripts(file));
     findings.push(...detectGhostStyles(file));
