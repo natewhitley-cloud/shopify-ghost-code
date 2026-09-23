@@ -54,6 +54,7 @@ import {
   parseSnapshotMetadata,
   partitionShops,
   sortFindingTypeCounts,
+  summarizeReconciler,
   type DigestSnapshot,
   type OperatorDigestData,
 } from "../../inngest/functions/operator-digest";
@@ -1140,6 +1141,102 @@ describe("buildDigestBody — crons with no heartbeat on record (gc-288)", () =>
       "All crons healthy",
     );
     expect(buildDigestBody(makeData({ ops: baseOps }))).toContain("All crons healthy");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-dwp: reconciler (install-status backstop) last-run line
+// ---------------------------------------------------------------------------
+
+describe("summarizeReconciler", () => {
+  const AT = new Date("2026-09-23T12:06:40.404Z");
+  const LATER = new Date("2026-09-23T12:10:00.000Z");
+
+  it("returns null when neither event exists (never run)", () => {
+    expect(summarizeReconciler(null, null)).toBeNull();
+  });
+
+  it("summarizes a completed run from reconcile_summary metadata", () => {
+    expect(
+      summarizeReconciler(
+        { createdAt: AT, metadata: { checked: 11, marked: 0, skipped: 1 } },
+        null,
+      ),
+    ).toEqual({ at: AT.toISOString(), outcome: "completed", checked: 11, marked: 0, skipped: 1 });
+  });
+
+  it("reports an ABORTED run when the breaker event is newer than the last summary", () => {
+    expect(
+      summarizeReconciler(
+        { createdAt: AT, metadata: { checked: 11, marked: 0, skipped: 1 } },
+        { createdAt: LATER, metadata: { checked: 11, wouldMark: 9, threshold: 0.5 } },
+      ),
+    ).toEqual({ at: LATER.toISOString(), outcome: "aborted", checked: 11, wouldMark: 9 });
+  });
+
+  it("prefers the completed run when it is newer than an old abort", () => {
+    const status = summarizeReconciler(
+      { createdAt: LATER, metadata: { checked: 11, marked: 0, skipped: 0 } },
+      { createdAt: AT, metadata: { checked: 11, wouldMark: 9 } },
+    );
+    expect(status?.outcome).toBe("completed");
+  });
+
+  it("degrades malformed metadata to zeros rather than throwing", () => {
+    expect(summarizeReconciler({ createdAt: AT, metadata: "garbage" }, null)).toEqual({
+      at: AT.toISOString(),
+      outcome: "completed",
+      checked: 0,
+      marked: 0,
+      skipped: 0,
+    });
+  });
+});
+
+describe("buildDigestBody — reconciler section (gc-dwp)", () => {
+  it("renders the last completed run", () => {
+    const body = buildDigestBody(
+      makeData({
+        reconciler: {
+          at: "2026-09-23T12:06:40.404Z",
+          outcome: "completed",
+          checked: 11,
+          marked: 0,
+          skipped: 1,
+        },
+      }),
+    );
+    expect(body).toContain("RECONCILER (install-status backstop, last run)");
+    expect(body).toContain(
+      "2026-09-23T12:06:40.404Z: checked 11, marked uninstalled 0, skipped-transient 1",
+    );
+    expect(body).not.toContain("WARN");
+  });
+
+  it("warns when at least half of checked shops were skipped", () => {
+    const body = buildDigestBody(
+      makeData({
+        reconciler: { at: "x", outcome: "completed", checked: 10, marked: 0, skipped: 5 },
+      }),
+    );
+    expect(body).toContain("WARN: 5 of 10 shops skipped");
+  });
+
+  it("renders an aborted run prominently", () => {
+    const body = buildDigestBody(
+      makeData({ reconciler: { at: "x", outcome: "aborted", checked: 11, wouldMark: 9 } }),
+    );
+    expect(body).toContain(
+      "ABORTED by circuit breaker (would have marked 9 of 11); nothing marked",
+    );
+  });
+
+  it("says no run is recorded when reconciler is null", () => {
+    expect(buildDigestBody(makeData({ reconciler: null }))).toContain("  No run recorded");
+  });
+
+  it("omits the section entirely when reconciler is undefined (older callers)", () => {
+    expect(buildDigestBody(makeData())).not.toContain("RECONCILER");
   });
 });
 

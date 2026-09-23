@@ -26,6 +26,7 @@
  * OPERATOR_EXCLUDE_SHOPS (defaults to Nathan's dev store).
  */
 
+import { RECONCILE_INSTALLS_KEY } from "./reconcile-installs";
 import { PLAN_AMOUNTS, PLANS } from "../../app/lib/billing.server";
 import {
   isExcluded,
@@ -563,6 +564,55 @@ export interface OperatorDigestData {
   /** Snapshot-metric threshold/trend anomalies (gc-06e.13). Optional so callers
    * that predate the metric evaluation still type-check; absent => none. */
   anomalies?: string[];
+  /** Latest reconcile-installs run (gc-dwp). null = never run; undefined = section omitted. */
+  reconciler?: ReconcilerStatus | null;
+}
+
+// ---------------------------------------------------------------------------
+// Reconciler last-run summary (gc-dwp)
+// ---------------------------------------------------------------------------
+
+export type ReconcilerStatus =
+  | { at: string; outcome: "completed"; checked: number; marked: number; skipped: number }
+  | { at: string; outcome: "aborted"; checked: number; wouldMark: number };
+
+interface ReconcilerEvent {
+  createdAt: Date;
+  metadata: unknown;
+}
+
+function metaNumber(metadata: unknown, field: string): number {
+  if (typeof metadata !== "object" || metadata === null) return 0;
+  const v = (metadata as Record<string, unknown>)[field];
+  return typeof v === "number" && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * The latest reconcile-installs outcome from its two counts-only OpsEvents:
+ * reconcile_summary (a completed run) and reconcile_aborted (breaker tripped,
+ * nothing marked). Whichever is newer is the latest run. Pure and defensive:
+ * malformed metadata degrades to zeros, never throws.
+ */
+export function summarizeReconciler(
+  summary: ReconcilerEvent | null,
+  aborted: ReconcilerEvent | null,
+): ReconcilerStatus | null {
+  if (aborted && (!summary || aborted.createdAt > summary.createdAt)) {
+    return {
+      at: aborted.createdAt.toISOString(),
+      outcome: "aborted",
+      checked: metaNumber(aborted.metadata, "checked"),
+      wouldMark: metaNumber(aborted.metadata, "wouldMark"),
+    };
+  }
+  if (!summary) return null;
+  return {
+    at: summary.createdAt.toISOString(),
+    outcome: "completed",
+    checked: metaNumber(summary.metadata, "checked"),
+    marked: metaNumber(summary.metadata, "marked"),
+    skipped: metaNumber(summary.metadata, "skipped"),
+  };
 }
 
 function fmtCountDelta(delta: number | null): string {
@@ -762,6 +812,30 @@ export function buildDigestBody(data: OperatorDigestData): string {
     }
   }
   lines.push("");
+
+  if (data.reconciler !== undefined) {
+    lines.push("RECONCILER (install-status backstop, last run)");
+    const r = data.reconciler;
+    if (r === null) {
+      lines.push("  No run recorded");
+    } else if (r.outcome === "aborted") {
+      lines.push(
+        `  ${r.at}: ABORTED by circuit breaker (would have marked ${r.wouldMark} of ${r.checked}); nothing marked`,
+      );
+    } else {
+      lines.push(
+        `  ${r.at}: checked ${r.checked}, marked uninstalled ${r.marked}, skipped-transient ${r.skipped}`,
+      );
+      // A high skip share is the early warning for rate limiting / auth trouble:
+      // skipped shops are neither confirmed installed nor marked.
+      if (r.checked > 0 && r.skipped * 2 >= r.checked) {
+        lines.push(
+          `  WARN: ${r.skipped} of ${r.checked} shops skipped (rate limiting or auth issue?)`,
+        );
+      }
+    }
+    lines.push("");
+  }
 
   lines.push("METRIC ANOMALIES (30d snapshot vs thresholds)");
   const anomalies = data.anomalies ?? [];
@@ -1031,6 +1105,18 @@ export const operatorDigest = inngest.createFunction(
     // latest snapshot's 30d completion rate against thresholds, plus a coarse
     // trend vs the prior snapshot. Read-only. Surfaced in the digest below and,
     // on a HARD breach, paged separately via the critical list.
+    // Latest reconcile-installs outcome (gc-dwp): both rows are counts-only and
+    // keyed on a constant, so nothing per-shop crosses into the digest.
+    const reconciler = (await step.run("get-reconciler-status", async () => {
+      const { getLatestOpsEvent, OPS_EVENT_TYPES } =
+        await import("../../app/models/ops-event.server");
+      const [summary, aborted] = await Promise.all([
+        getLatestOpsEvent(OPS_EVENT_TYPES.RECONCILE_SUMMARY, RECONCILE_INSTALLS_KEY),
+        getLatestOpsEvent(OPS_EVENT_TYPES.RECONCILE_ABORTED, RECONCILE_INSTALLS_KEY),
+      ]);
+      return summarizeReconciler(summary, aborted);
+    })) as ReconcilerStatus | null;
+
     const metricAnomalies = (await step.run("evaluate-snapshot-metrics", async () => {
       const { getSnapshotHistory } = await import("../../app/models/metric-snapshot.server");
       const [latest, prior] = await getSnapshotHistory(2);
@@ -1082,6 +1168,7 @@ export const operatorDigest = inngest.createFunction(
       activity,
       ops,
       anomalies: metricAnomalies.anomalies,
+      reconciler,
     };
 
     // Build + send. Best-effort: sendOpsAlert never throws, but wrap defensively
