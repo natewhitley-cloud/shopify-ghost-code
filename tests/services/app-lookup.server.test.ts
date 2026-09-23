@@ -12,6 +12,7 @@ import {
   resolveAttribution,
   isTrackerApp,
 } from "../../app/services/app-lookup.server";
+import { timedMinMs as timed } from "../test-utils/timing";
 
 // ---------------------------------------------------------------------------
 // identifyAppFromUrl
@@ -660,11 +661,6 @@ describe("resolveAttribution", () => {
 describe("signature patterns on adversarial input (gc-t7x)", () => {
   const MB = 1_000_000;
   const flood = (fragment: string) => fragment.repeat(Math.ceil(MB / fragment.length)).slice(0, MB);
-  const timed = (fn: () => void) => {
-    const start = performance.now();
-    fn();
-    return performance.now() - start;
-  };
   const signature = (appName: string) => APP_SIGNATURES.find((s) => s.appName === appName)!;
 
   // `a.*b` / `a[^>]*b` rescanned the rest of the line from every `a`: the

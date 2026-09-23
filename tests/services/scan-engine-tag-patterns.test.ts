@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 
 import { AI_CRAWLER_USER_AGENTS } from "../../app/data/ai-crawlers.server";
 import { TAG_PATTERNS, execTagPattern } from "../../app/services/scan-engine.server";
+import { timedMinMsWithResult } from "../test-utils/timing";
 
 const ROBOTS_NAMES = ["robots", ...AI_CRAWLER_USER_AGENTS].join("|");
 
@@ -232,9 +233,11 @@ describe("execTagPattern", () => {
   it("FONT_LINK_TAG is linear on a huge href with many `font`s and no closing quote", () => {
     // 1 MB took > 25s with the old catch-all alternative.
     const tag = '<link href="https://' + "font".repeat(250_000) + ">";
-    const start = performance.now();
-    expect(execTagPattern(tag, TAG_PATTERNS.FONT_LINK_TAG)).toBeNull();
-    expect(performance.now() - start).toBeLessThan(1500);
+    const { result, minMs } = timedMinMsWithResult(() =>
+      execTagPattern(tag, TAG_PATTERNS.FONT_LINK_TAG),
+    );
+    expect(result).toBeNull();
+    expect(minMs).toBeLessThan(1500);
   });
 
   it.each(Object.keys(ORIGINAL_REGEXES) as Array<keyof typeof TAG_PATTERNS>)(

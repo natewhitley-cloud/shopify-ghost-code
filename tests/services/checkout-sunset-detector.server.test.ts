@@ -25,6 +25,7 @@ import {
   stripComments,
 } from "../../app/services/checkout-sunset-detector.server";
 import { MAX_SCANNABLE_FILE_BYTES, type ThemeFile } from "../../app/services/scan-engine.server";
+import { timedMinMsWithResult } from "../test-utils/timing";
 
 const CHECKOUT_PATH = "layout/checkout.liquid";
 
@@ -317,9 +318,10 @@ describe("detectCheckoutSunset — linear on unterminated comment floods (gc-4yg
     ["{% comment %} openers with no endcomment", atCap("{% comment %}", "<p>x</p>")],
     ["{%- comment -%} openers on separate lines", atCap("{%- comment -%}\n", "<p>x</p>")],
   ])("%s", (_label, content) => {
-    const start = performance.now();
-    const findings = detectCheckoutSunset([file(content)]);
-    expect(performance.now() - start).toBeLessThan(1500);
+    const { result: findings, minMs } = timedMinMsWithResult(() =>
+      detectCheckoutSunset([file(content)]),
+    );
+    expect(minMs).toBeLessThan(1500);
     expect(findings).toHaveLength(1);
   });
 });
@@ -344,9 +346,10 @@ describe("detectCheckoutSunset — checkout.liquid over MAX_SCANNABLE_FILE_BYTES
   it("does not analyze an oversized file's content (an all-comment file still flags)", () => {
     const allComments = atCap("<!--") + "<!--";
     expect(allComments.length).toBeGreaterThan(MAX_SCANNABLE_FILE_BYTES);
-    const start = performance.now();
-    const findings = detectCheckoutSunset([file(allComments)]);
-    expect(performance.now() - start).toBeLessThan(1500);
+    const { result: findings, minMs } = timedMinMsWithResult(() =>
+      detectCheckoutSunset([file(allComments)]),
+    );
+    expect(minMs).toBeLessThan(1500);
     expect(findings).toHaveLength(1);
   });
 

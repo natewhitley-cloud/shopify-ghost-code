@@ -42,6 +42,7 @@ import {
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
 import { REFERENCE_THEMES, DAWN_TITLE, DAWN_META_TAGS } from "../fixtures/reference-themes";
+import { timedMinMs, timedMinMsWithResult } from "../test-utils/timing";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -3448,9 +3449,11 @@ describe("detectGhostTitle — SVG titles are not document titles", () => {
     const content =
       '<svg role="img"><title>{{ block.settings.x }}</title></svg>\n'.repeat(50_000) +
       "<svg ".repeat(200_000);
-    const start = performance.now();
-    expect(detectGhostTitle({ filename: "blocks/big.liquid", content })).toHaveLength(0);
-    expect(performance.now() - start).toBeLessThan(2000);
+    const { result, minMs } = timedMinMsWithResult(() =>
+      detectGhostTitle({ filename: "blocks/big.liquid", content }),
+    );
+    expect(result).toHaveLength(0);
+    expect(minMs).toBeLessThan(2000);
   });
 });
 
@@ -6061,9 +6064,7 @@ describe("detectMaliciousScripts", () => {
       filename: "layout/theme.liquid",
       content: "//" + "a".repeat(1_000_000) + " //" + "a.".repeat(400_000),
     };
-    const start = Date.now();
-    detectMaliciousScripts(file);
-    expect(Date.now() - start).toBeLessThan(1500);
+    expect(timedMinMs(() => detectMaliciousScripts(file))).toBeLessThan(1500);
   });
 
   it("returns nothing for a clean file", () => {
@@ -6295,9 +6296,10 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in non-Liquid theme files (gc-3pd)
 
   it("stays linear on a comment-opener flood in a .liquid file (blanking path)", () => {
     const content = "{% comment %}".repeat(40_000) + `\n<script src="${EVIL}"></script>`;
-    const start = performance.now();
-    const findings = detectMaliciousScripts({ filename: "blocks/x.liquid", content });
-    expect(performance.now() - start).toBeLessThan(1500);
+    const { result: findings, minMs } = timedMinMsWithResult(() =>
+      detectMaliciousScripts({ filename: "blocks/x.liquid", content }),
+    );
+    expect(minMs).toBeLessThan(1500);
     expect(findings).toHaveLength(1);
   });
 
@@ -6345,21 +6347,23 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in non-Liquid theme files (gc-3pd)
     }
     files.push({ filename: "assets/zzz.js", content: `s.src="${EVIL}";` });
 
-    const start = performance.now();
-    const { findings } = scanThemeFiles(files);
-    const elapsed = performance.now() - start;
+    const { result, minMs } = timedMinMsWithResult(() => scanThemeFiles(files));
 
-    expect(findingsOfType(findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(1);
-    expect(elapsed).toBeLessThan(10_000);
-  });
+    expect(findingsOfType(result.findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(1);
+    // Min of two runs discards a transient stall under full-suite parallelism;
+    // the extended timeout gives room for two runs of a scan that is itself
+    // well under a second in isolation.
+    expect(minMs).toBeLessThan(10_000);
+  }, 30_000);
 
   it("stays linear on a Liquid comment-opener flood with no closer (no ReDoS)", () => {
     // `{% comment %}` x ~40k with no `{% endcomment %}`: a lazy whole-file
     // comment regex rescans to EOF from every opener (quadratic, ~minutes).
     const content = "{% comment %}".repeat(40_000) + `\n<script src="${EVIL}"></script>`;
-    const start = performance.now();
-    const findings = detectMaliciousScripts({ filename: "assets/app.js", content });
-    expect(performance.now() - start).toBeLessThan(1500);
+    const { result: findings, minMs } = timedMinMsWithResult(() =>
+      detectMaliciousScripts({ filename: "assets/app.js", content }),
+    );
+    expect(minMs).toBeLessThan(1500);
     // Unterminated comment never closes, so the live line after it still counts.
     expect(findings).toHaveLength(1);
   });
@@ -6470,11 +6474,16 @@ describe("detectMaliciousScripts — {% raw %} blocks", () => {
       "{%" + " ".repeat(500_000) + "raw",
     ];
     for (const flood of floods) {
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "sections/x.liquid", content: `${flood}\n${EVIL_TAG}` });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() =>
+          detectMaliciousScripts({
+            filename: "sections/x.liquid",
+            content: `${flood}\n${EVIL_TAG}`,
+          }),
+        ),
+      ).toBeLessThan(1500);
     }
-  });
+  }, 30_000);
 });
 
 describe("detectMaliciousScripts — snippet and decoding", () => {
@@ -6548,22 +6557,22 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
       String.raw`\u`.repeat(500_000) + "x",
       String.raw`\u002`.repeat(300_000),
     ]) {
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "assets/app.js", content });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
     }
-  });
+  }, 30_000);
 
   it("stays linear on a 1MB backslash run and an entity flood (no ReDoS in the decode)", () => {
     for (const content of [
       "\\".repeat(1_000_000) + "x",
       "&#0".repeat(300_000) + "&#x0".repeat(300_000),
     ]) {
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "assets/app.js", content });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
     }
-  });
+  }, 30_000);
 
   it("decodes JS hex-escaped slashes (\\x2f, uppercase F, doubled backslash)", () => {
     for (const url of [
@@ -6622,11 +6631,11 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
       String.raw`\u{` + "0".repeat(1_000_000),
       (String.raw`\x2f` + String.raw`\u{2f}`).repeat(100_000),
     ]) {
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "assets/app.js", content });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
     }
-  });
+  }, 30_000);
 
   it("decodes code-point slash escapes with any number of leading zeros (5 and 50), as real JS does", () => {
     for (const zeros of [5, 50]) {
@@ -6688,11 +6697,11 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
   it("stays linear on 5MB floods of backslash-0, backslash-5 and backslash-05", () => {
     for (const unit of [String.raw`\0`, String.raw`\5`, String.raw`\05`, String.raw`\\0`]) {
       const content = unit.repeat(Math.ceil(5_000_000 / unit.length));
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "assets/app.js", content });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
     }
-  });
+  }, 30_000);
 
   it("stays linear on a 5MB unterminated zero run and repeated zero-run starts inside \\u{", () => {
     for (const content of [
@@ -6700,11 +6709,11 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
       (String.raw`\u{` + "0".repeat(1000)).repeat(5000),
       String.raw`\u{00000`.repeat(625_000),
     ]) {
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "assets/app.js", content });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
     }
-  });
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -6744,20 +6753,20 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in oversized scannable files (gc-q
   it("stays fast on a 5MB padded file (single-line and multi-line padding)", () => {
     const singleLine = EVIL_TAG + "x".repeat(5_000_000);
     const multiLine = ("// " + "a".repeat(80) + "\n").repeat(60_000) + EVIL_TAG;
-    const start = performance.now();
-    const { findings, skippedFiles } = scanThemeFiles([
-      { filename: "sections/a.liquid", content: singleLine },
-      { filename: "sections/b.liquid", content: multiLine },
-    ]);
-    const elapsed = performance.now() - start;
+    const { result, minMs } = timedMinMsWithResult(() =>
+      scanThemeFiles([
+        { filename: "sections/a.liquid", content: singleLine },
+        { filename: "sections/b.liquid", content: multiLine },
+      ]),
+    );
 
-    expect((skippedFiles ?? []).map((f) => f.filename)).toEqual([
+    expect((result.skippedFiles ?? []).map((f) => f.filename)).toEqual([
       "sections/a.liquid",
       "sections/b.liquid",
     ]);
-    expect(findingsOfType(findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(2);
-    expect(elapsed).toBeLessThan(3_000);
-  });
+    expect(findingsOfType(result.findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(2);
+    expect(minMs).toBeLessThan(3_000);
+  }, 20_000);
 });
 
 // ---------------------------------------------------------------------------

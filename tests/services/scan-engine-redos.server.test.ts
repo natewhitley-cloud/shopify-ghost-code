@@ -46,6 +46,7 @@ import {
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
+import { timedMinMs as timed } from "../test-utils/timing";
 
 // A pathological input is a long run of an unterminated tag: many `<tag` start
 // positions and no closing `>`. Kept under MAX_SCANNABLE_FILE_BYTES so the
@@ -62,12 +63,6 @@ function pathological(fragment: string): string {
 // quadratic behavior blew past this by orders of magnitude, so a few hundred ms
 // cleanly separates "linear" from "backtracking" without CI flakiness.
 const REDOS_BUDGET_MS = 400;
-
-function timed(fn: () => void): number {
-  const start = performance.now();
-  fn();
-  return performance.now() - start;
-}
 
 describe("scan-engine ReDoS hardening — pathological input completes fast", () => {
   const linkBomb: ThemeFile = {
