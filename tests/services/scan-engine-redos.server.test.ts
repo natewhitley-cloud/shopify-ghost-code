@@ -22,15 +22,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   MAX_SCANNABLE_FILE_BYTES,
+  collectThirdPartyDomains,
   collectUnknownScripts,
   collectUnknownStylesheets,
   detectDuplicateMetaTags,
-  detectGhostTitle,
-  detectInvalidJsonLd,
-  detectJsonLdConflicts,
-  extractStaticProductCandidates,
   detectDuplicateTrackers,
   detectGhostCanonical,
+  detectGhostFont,
   detectGhostHrefLang,
   detectGhostJsonLd,
   detectGhostOg,
@@ -38,7 +36,11 @@ import {
   detectGhostRobots,
   detectGhostScripts,
   detectGhostStyles,
+  detectGhostTitle,
+  detectInvalidJsonLd,
+  detectJsonLdConflicts,
   detectOverlappingChatWidgets,
+  extractStaticProductCandidates,
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
@@ -326,5 +328,25 @@ describe("gc-t7x — JSON-LD block extraction is linear on unterminated blocks",
     // ~20ms, so the tighter budget still leaves wide headroom).
     const content = atCap('<script type="application/ld+json">{"@type":"FAQPage"}</script>');
     expect(timed(() => detectJsonLdConflicts(layout(content)))).toBeLessThan(REDOS_BUDGET_MS);
+  });
+});
+
+describe("gc-t7x — @font-face scanning is linear on unterminated / flooded blocks", () => {
+  it.each([
+    ["@font-face { openers with no }", atCap("@font-face {")],
+    ["@font-face{font-family: openers with no }", atCap("@font-face{font-family:")],
+    ["one block holding a url(// flood", atCap("url(//a", "@font-face{src:", "}")],
+    ["one block holding a url(' flood", atCap("url('//a ", "@font-face{src:", "}")],
+  ])("collectThirdPartyDomains: %s", (_label, content) => {
+    expect(timed(() => collectThirdPartyDomains(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+  });
+
+  it.each([
+    ["@font-face { openers with no }", atCap("@font-face {")],
+    ["openers sharing one block with matching font-family", atCap("@font-face{font-family:x ")],
+    ["openers sharing one block with no font-family match", atCap("@font-face{font-family ")],
+    ["one opener then a font-family: flood", atCap("font-family:x ", "@font-face{")],
+  ])("detectGhostFont: %s", (_label, content) => {
+    expect(timed(() => detectGhostFont(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
   });
 });

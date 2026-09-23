@@ -2101,18 +2101,74 @@ export function collectUnknownStylesheets(
 type DomainSource = "script" | "stylesheet" | "preconnect" | "dns_prefetch" | "font" | "ajax";
 
 /**
- * Isolates a complete `@font-face { ... }` block. CSS `@font-face` blocks never
- * nest braces, so `[^}]*}` is linear (ReDoS-safe) and bounds URL extraction to
- * the font surface. Module-scope /g regex — MUST reset lastIndex = 0 before use.
+ * Opener of a `@font-face { ... }` block; fontFaceBlocks isolates each complete
+ * block to bound URL extraction to the font surface. Module-scope /g regex.
  */
-const FONT_FACE_BLOCK_RE = /@font-face\s*\{[^}]*\}/gi;
+const FONT_FACE_OPEN_RE = /@font-face\s*\{/gi;
 
 /**
- * Extracts each `url(...)` target inside a `@font-face` src declaration (absolute
- * or protocol-relative). Applied only to the bounded block text above.
- * Module-scope /g regex — MUST reset lastIndex = 0 before use.
+ * Every complete `@font-face { ... }` block, identical to the matches of
+ * /@font-face\s*\{[^}]*\}/gi but linear (gc-t7x): that regex rescans to EOF
+ * from every opener when no `}` follows (1 MB of openers: minutes). A block
+ * ends at the first `}` after its `{`; with none left, no later opener can
+ * complete either, so the scan stops.
  */
-const FONT_FACE_SRC_URL_RE = /url\(\s*["']?((?:https?:)?\/\/[^"')\s]+)["']?\s*\)/gi;
+function fontFaceBlocks(content: string): string[] {
+  const blocks: string[] = [];
+  FONT_FACE_OPEN_RE.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = FONT_FACE_OPEN_RE.exec(content)) !== null) {
+    const close = content.indexOf("}", open.index + open[0].length);
+    if (close === -1) break;
+    blocks.push(content.slice(open.index, close + 1));
+    FONT_FACE_OPEN_RE.lastIndex = close + 1;
+  }
+  return blocks;
+}
+
+/**
+ * Pieces of the former FONT_FACE_SRC_URL_RE,
+ * /url\(\s*["']?((?:https?:)?\/\/[^"')\s]+)["']?\s*\)/gi, which extracted each
+ * absolute or protocol-relative `url(...)` target in a `@font-face` block. The
+ * prefix (group 1 = its `(https?:)?//` part) and the URL body each match in
+ * exactly one way at a position, so fontFaceSrcUrls can evaluate them in order.
+ */
+const FONT_URL_PREFIX_RE = /url\(\s*["']?((?:https?:)?\/\/)/gi;
+const FONT_URL_BODY_RE = /[^"')\s]+/y;
+const FONT_URL_TAIL_RE = /["']?\s*\)/y;
+
+/**
+ * The `url(...)` targets of a `@font-face` block, identical to the group-1
+ * captures of the former FONT_FACE_SRC_URL_RE but linear (gc-t7x). The regex
+ * rescanned the URL body from every `url(` start: a block holding 1 MB of
+ * unterminated `url(//a` took minutes. When the tail after a body fails, a
+ * `url(` start inside that body is followed by body chars (never whitespace or
+ * a quote), so its own body ends at the same place and fails the same way. The
+ * one exception is a `url(` ending exactly at the body end, whose `\s*` can
+ * run on past it, so the scan resumes 4 chars before the body end.
+ */
+function fontFaceSrcUrls(block: string): string[] {
+  const urls: string[] = [];
+  FONT_URL_PREFIX_RE.lastIndex = 0;
+  let prefix: RegExpExecArray | null;
+  while ((prefix = FONT_URL_PREFIX_RE.exec(block)) !== null) {
+    const prefixEnd = prefix.index + prefix[0].length;
+    FONT_URL_BODY_RE.lastIndex = prefixEnd;
+    if (!FONT_URL_BODY_RE.test(block)) {
+      FONT_URL_PREFIX_RE.lastIndex = prefix.index + 1;
+      continue;
+    }
+    const bodyEnd = FONT_URL_BODY_RE.lastIndex;
+    FONT_URL_TAIL_RE.lastIndex = bodyEnd;
+    if (FONT_URL_TAIL_RE.test(block)) {
+      urls.push(block.slice(prefixEnd - prefix[1].length, bodyEnd));
+      FONT_URL_PREFIX_RE.lastIndex = FONT_URL_TAIL_RE.lastIndex;
+    } else {
+      FONT_URL_PREFIX_RE.lastIndex = Math.max(prefix.index + 1, bodyEnd - "url(".length);
+    }
+  }
+  return urls;
+}
 
 /**
  * Collect every NON-Shopify third-party host a single theme file references,
@@ -2227,14 +2283,8 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
   }
 
   // @font-face src url()s — bound extraction to each font-face block.
-  FONT_FACE_BLOCK_RE.lastIndex = 0;
-  let block: RegExpExecArray | null;
-  while ((block = FONT_FACE_BLOCK_RE.exec(file.content)) !== null) {
-    FONT_FACE_SRC_URL_RE.lastIndex = 0;
-    let urlMatch: RegExpExecArray | null;
-    while ((urlMatch = FONT_FACE_SRC_URL_RE.exec(block[0])) !== null) {
-      record(urlMatch[1], "font");
-    }
+  for (const block of fontFaceBlocks(file.content)) {
+    for (const url of fontFaceSrcUrls(block)) record(url, "font");
   }
 
   // fetch() / jQuery AJAX / XMLHttpRequest URL literals.
@@ -3542,11 +3592,88 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Matches @font-face declarations in inline styles.
- * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
- * before each use.
+ * The `font-family` declaration of the former FONT_FACE_RE,
+ * /@font-face\s*\{[^}]*font-family\s*:\s*["']?([^"';}\n]+)["']?/gi (whose
+ * opener is FONT_FACE_OPEN_RE), as a sticky matcher, plus its keyword.
  */
-const FONT_FACE_RE = /@font-face\s*\{[^}]*font-family\s*:\s*["']?([^"';}\n]+)["']?/gi;
+const FONT_FAMILY_DECL_RE = /font-family\s*:\s*["']?([^"';}\n]+)["']?/iy;
+const FONT_FAMILY_WORD_RE = /font-family/gi;
+
+/**
+ * The declared font families of the `@font-face` rules in `text`, identical to
+ * the group-1 captures of the former FONT_FACE_RE but linear (gc-t7x).
+ *
+ * For an opener ending at `e`, the regex's greedy `[^}]*` runs to the next `}`
+ * (or the end) at `c` and backtracks, so it matches the RIGHTMOST position in
+ * [e, c) where the declaration matches, then resumes after that declaration.
+ * The regex redid that scan for every opener: quadratic on a flood of openers
+ * in one brace-free run. Here the rightmost declaration before each `c` is
+ * found once and memoized: later openers have a larger `e`, so the answer for
+ * them is the same declaration if it starts at or after their `e`, else none.
+ */
+function fontFaceFamilies(text: string): string[] {
+  const families: string[] = [];
+  const keywords: number[] = [];
+  FONT_FAMILY_WORD_RE.lastIndex = 0;
+  let word: RegExpExecArray | null;
+  while ((word = FONT_FAMILY_WORD_RE.exec(text)) !== null) keywords.push(word.index);
+
+  // `}` lookups only move forward; cache the last hit and the first miss.
+  let lastBrace = -1;
+  let noBraceFrom = Infinity;
+  const regionEnd = (from: number): number => {
+    if (lastBrace >= from) return lastBrace;
+    if (from >= noBraceFrom) return text.length;
+    const brace = text.indexOf("}", from);
+    if (brace === -1) {
+      noBraceFrom = from;
+      return text.length;
+    }
+    lastBrace = brace;
+    return brace;
+  };
+  const rightmostDecl = new Map<number, { at: number; family: string; end: number } | null>();
+
+  FONT_FACE_OPEN_RE.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = FONT_FACE_OPEN_RE.exec(text)) !== null) {
+    const e = open.index + open[0].length;
+    const c = regionEnd(e);
+    if (!rightmostDecl.has(c)) {
+      // Last keyword before c, then walk left while still inside [e, c).
+      let lo = 0;
+      let hi = keywords.length - 1;
+      let k = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (keywords[mid] < c) {
+          k = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      let found: { at: number; family: string; end: number } | null = null;
+      for (; k >= 0 && keywords[k] >= e; k--) {
+        FONT_FAMILY_DECL_RE.lastIndex = keywords[k];
+        const decl = FONT_FAMILY_DECL_RE.exec(text);
+        if (decl) {
+          found = { at: keywords[k], family: decl[1], end: FONT_FAMILY_DECL_RE.lastIndex };
+          break;
+        }
+      }
+      rightmostDecl.set(c, found);
+    }
+    const decl = rightmostDecl.get(c);
+    if (decl && decl.at >= e) {
+      families.push(decl.family);
+      FONT_FACE_OPEN_RE.lastIndex = decl.end;
+    } else {
+      FONT_FACE_OPEN_RE.lastIndex = open.index + 1;
+    }
+  }
+  return families;
+}
 
 /**
  * Matches <link> tags loading from font services (Google Fonts, etc.).
@@ -3589,17 +3716,14 @@ export function detectGhostFont(file: ThemeFile): CreateFindingInput[] {
     if (LIQUID_CONDITIONAL_RE.test(text)) continue;
 
     // Check for @font-face declarations
-    let match: RegExpExecArray | null;
-    FONT_FACE_RE.lastIndex = 0;
-
-    while ((match = FONT_FACE_RE.exec(text)) !== null) {
+    for (const family of fontFaceFamilies(text)) {
       const codeSnippet = buildSnippet(file.content, lineNumber);
 
       // Only flag if we can attribute to a known app
       const appName = identifyAppFromCode(codeSnippet) ?? undefined;
       if (!appName) continue;
 
-      const fontFamily = match[1]?.trim();
+      const fontFamily = family.trim();
       const severity = classifySeverity(FindingType.GHOST_FONT, codeSnippet);
 
       findings.push({
