@@ -320,9 +320,12 @@ export function buildSnippet(content: string, lineNumber: number): string {
 }
 
 /**
- * Returns a Set of 1-based line numbers that fall inside Liquid comment blocks.
- * Includes the {% comment %} opener line, all body lines, and the {% endcomment %}
- * closing line, so callers can uniformly skip any line in the set.
+ * Returns a Set of 1-based line numbers that fall inside Liquid comment blocks
+ * or LiquidDoc `{% doc %}` blocks. Includes the opener line, all body lines, and
+ * the closing line, so callers can uniformly skip any line in the set. Doc
+ * bodies (e.g. an `@example {% render 'x' %}`) never render, so they get the
+ * same line-granular treatment; the two states are tracked independently so
+ * the comment semantics below are unchanged.
  *
  * Approximation: skipping is line-granular, so when live code shares a line with
  * {% endcomment %} the whole line is skipped. Code BEFORE the endcomment on that
@@ -340,10 +343,13 @@ export function buildSnippet(content: string, lineNumber: number): string {
 function buildCommentSkipLines(content: string): Set<number> {
   const skipLines = new Set<number>();
   let insideComment = false;
+  let insideDoc = false;
   for (const { lineNumber, text } of lines(content)) {
     if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-    if (insideComment) skipLines.add(lineNumber);
+    if (/\{%-?\s*doc\s*-?%\}/.test(text)) insideDoc = true;
+    if (insideComment || insideDoc) skipLines.add(lineNumber);
     if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) insideComment = false;
+    if (/\{%-?\s*enddoc\s*-?%\}/.test(text)) insideDoc = false;
   }
   return skipLines;
 }

@@ -453,6 +453,76 @@ describe("detectGhostSnippets", () => {
 // detectGhostSections
 // ---------------------------------------------------------------------------
 
+describe("shared comment skip covers LiquidDoc {% doc %} bodies", () => {
+  const liveRender = "{% render 'judgeme_widgets' %}";
+
+  it("does NOT flag an @example render inside a {% doc %} block", () => {
+    const file: ThemeFile = {
+      filename: "blocks/reviews.liquid",
+      content: [
+        "{% doc %}",
+        "  Renders the review widget.",
+        "  @param {string} product_id",
+        "  @example",
+        `  ${liveRender}`,
+        "{% enddoc %}",
+        '<div class="reviews"></div>',
+      ].join("\n"),
+    };
+    expect(detectGhostSnippets(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag a render inside a whitespace-controlled {%- doc -%} block", () => {
+    const file: ThemeFile = {
+      filename: "snippets/card.liquid",
+      content: ["{%- doc -%}", `  @example ${liveRender}`, "{%- enddoc -%}"].join("\n"),
+    };
+    expect(detectGhostSnippets(file)).toHaveLength(0);
+  });
+
+  it("STILL flags the same render outside the doc block", () => {
+    const file: ThemeFile = {
+      filename: "blocks/reviews.liquid",
+      content: ["{% doc %}", `  @example ${liveRender}`, "{% enddoc %}", liveRender].join("\n"),
+    };
+    const findings = detectGhostSnippets(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(4);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_SNIPPET);
+  });
+
+  it("STILL flags a render when there is no doc block at all", () => {
+    expect(detectGhostSnippets({ filename: "blocks/r.liquid", content: liveRender })).toHaveLength(
+      1,
+    );
+  });
+
+  it("keeps comment-block skipping unchanged alongside doc skipping", () => {
+    const file: ThemeFile = {
+      filename: "sections/x.liquid",
+      content: [
+        "{% comment %}",
+        liveRender,
+        "{% endcomment %}",
+        "{% doc %}",
+        liveRender,
+        "{% enddoc %}",
+        liveRender,
+      ].join("\n"),
+    };
+    const findings = detectGhostSnippets(file);
+    expect(findings.map((f) => f.lineNumber)).toEqual([7]);
+  });
+
+  it("does NOT treat a {% docs %}-like tag or a doc variable as a doc block", () => {
+    const file: ThemeFile = {
+      filename: "sections/x.liquid",
+      content: ["{% docs %}", "{{ doc }}", liveRender].join("\n"),
+    };
+    expect(detectGhostSnippets(file)).toHaveLength(1);
+  });
+});
+
 describe("detectGhostSections", () => {
   it("detects {% section %} referencing a known app section name", () => {
     const file = {
