@@ -13,6 +13,7 @@ import {
   detectGhostJsonLd,
   detectInvalidJsonLd,
   detectMaliciousScripts,
+  blankLiquidComments,
   isMaliciousScanOnlyFile,
   collectUnknownScripts,
   collectUnknownStylesheets,
@@ -6035,5 +6036,169 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in oversized scannable files (gc-q
     ]);
     expect(findingsOfType(findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(2);
     expect(elapsed).toBeLessThan(3_000);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MALICIOUS_SCRIPT: Liquid-faithful comment blanking (differential audit vs the
+// real Liquid 5.8.1 gem, 2026-09-23). Every "renders live" case below was
+// rendered by real Liquid and printed the script; the scanner must report it.
+// ---------------------------------------------------------------------------
+
+describe("blankLiquidComments — Liquid-faithful token walk", () => {
+  const EVIL = '<script src="https://jsdeliver.cloud/x.js"></script>';
+  const NBSP = "\u00a0";
+  const scan = (content: string) =>
+    detectMaliciousScripts({ filename: "sections/x.liquid", content });
+
+  describe("renders live in real Liquid, so it must be reported", () => {
+    const LIVE_CASES: Array<[string, string]> = [
+      [
+        "endraw is case-sensitive: {% EndRaw %} does not close raw",
+        `{% raw %}{% EndRaw %}{% comment %}${EVIL}{% endcomment %}{% endraw %}`,
+      ],
+      [
+        "NBSP around endraw is not Liquid whitespace, raw stays open",
+        `{% raw %}{%${NBSP}endraw${NBSP}%}{% comment %}${EVIL}{% endcomment %}{% endraw %}`,
+      ],
+      [
+        "endcomment with trailing markup closes the comment",
+        `{% comment %}x{% endcomment x %}${EVIL}{% comment %}{% endcomment %}`,
+      ],
+      [
+        "doc body hides a comment opener",
+        `{% doc %}{% comment %}{% enddoc %}${EVIL}{% doc %}{% endcomment %}{% enddoc %}`,
+      ],
+      [
+        "inline # comments are single tokens and never open a block",
+        `{% # {% comment %}${EVIL}{% # {% endcomment %}`,
+      ],
+      [
+        "raw inside a comment is consumed to endraw, so its endcomment is literal",
+        `{% comment %}{% raw %}{% endcomment %}{% endraw %}{% endcomment %}${EVIL}`,
+      ],
+      [
+        "Endcomment (mixed case) inside a comment does not close it",
+        `{% comment %}{% Endcomment %}{% endcomment %}${EVIL}`,
+      ],
+      ["comment tags inside a doc body are ignored", `{% doc %}{% comment %}{% enddoc %}${EVIL}`],
+    ];
+    it.each(LIVE_CASES)("%s", (_name, content) => {
+      expect(scan(content)).toHaveLength(1);
+    });
+  });
+
+  // Shopify-only tags (unknown to the open-source gem, so not differentially
+  // verified): their bodies are not rendered as Liquid, so comment tags inside
+  // them are literal text and must not hide what follows.
+  it.each(["javascript", "schema", "stylesheet"])(
+    "treats comment tags inside a Shopify %s block body as literal",
+    (tag) => {
+      const content = `{% ${tag} %}{% comment %}{% end${tag} %}${EVIL}{% ${tag} %}{% endcomment %}{% end${tag} %}`;
+      expect(scan(content)).toHaveLength(1);
+    },
+  );
+
+  describe("hidden in real Liquid, so it is blanked", () => {
+    const HIDDEN_CASES: Array<[string, string]> = [
+      ["plain comment", `{% comment %}${EVIL}{% endcomment %}`],
+      ["whitespace-control tags", `{%- comment -%}${EVIL}{%- endcomment -%}`],
+      ["no spaces", `{%comment%}${EVIL}{%endcomment%}`],
+      ["tags split across lines", `{%\ncomment\n%}\n${EVIL}\n{%\nendcomment\n%}`],
+      [
+        "nested comments close on the matching endcomment",
+        `{% comment %}{% comment %}{% endcomment %}${EVIL}{% endcomment %}`,
+      ],
+      ["comment with markup on the opener", `{% comment x %}${EVIL}{% endcomment %}`],
+      ["doc body", `{% doc %}${EVIL}{% enddoc %}`],
+      ["doc ignores raw inside it", `{% doc %}{% raw %}${EVIL}{% enddoc %}`],
+      [
+        "endraw with trailing markup closes raw",
+        `{% raw %}{% endraw x %}{% comment %}${EVIL}{% endcomment %}`,
+      ],
+    ];
+    it.each(HIDDEN_CASES)("%s", (_name, content) => {
+      expect(scan(content)).toHaveLength(0);
+    });
+  });
+
+  it("keeps a real comment's text blanked but live code on the same line visible", () => {
+    const findings = scan(`{% comment %}${EVIL}{% endcomment %}${EVIL}`);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(1);
+  });
+
+  it("leaves everything live after a Liquid parse error it can detect (raw with args, nested doc)", () => {
+    expect(scan(`{% raw x %}{% endraw %}{% comment %}${EVIL}{% endcomment %}`)).toHaveLength(1);
+    expect(scan(`{% doc %}{% doc %}{% enddoc %}${EVIL}{% enddoc %}`)).toHaveLength(1);
+    expect(scan(`{% comment %}${EVIL}`)).toHaveLength(1);
+    expect(scan(`{% comment %}${EVIL}{% endcomment`)).toHaveLength(1);
+  });
+
+  it("returns empty input unchanged and preserves length and newline offsets", () => {
+    expect(blankLiquidComments("")).toBe("");
+    const atoms = [
+      "{% comment %}",
+      "{%- endcomment -%}",
+      "{%raw%}",
+      "{% endraw %}",
+      "{% doc %}",
+      "{% enddoc %}",
+      "{% # x %}",
+      "{{ a }",
+      "{{",
+      "}}",
+      "\n",
+      "a",
+      "\u00e9",
+      "\ud83d\ude00",
+      "{%",
+      "%}",
+      "\r\n",
+      "{%\ncomment\n%}",
+    ];
+    let seed = 42;
+    const rand = (n: number) => {
+      seed = (seed * 1103515245 + 12345) % 2147483648;
+      return seed % n;
+    };
+    const newlines = (x: string) => [...x.matchAll(/\n/g)].map((m) => m.index).join(",");
+    for (let t = 0; t < 3000; t++) {
+      let s = "";
+      const n = rand(40);
+      for (let k = 0; k < n; k++) s += atoms[rand(atoms.length)];
+      const b = blankLiquidComments(s);
+      expect(b.length).toBe(s.length);
+      expect(newlines(b)).toBe(newlines(s));
+    }
+  });
+
+  it("stays linear on 5MB adversarial token floods", () => {
+    const MB5 = 5 * 1024 * 1024;
+    const fill = (unit: string) => unit.repeat(Math.ceil(MB5 / unit.length)).slice(0, MB5);
+    const floods: Record<string, string> = {
+      commentOpeners: fill("{% comment %}"),
+      endcomments: fill("{% endcomment %}"),
+      rawOpeners: fill("{% raw %}"),
+      docOpeners: fill("{% doc %}"),
+      unterminatedTag: fill("{%"),
+      unterminatedVar: fill("{{"),
+      varSwallowingTag: fill("{{{%"),
+      singleBrace: fill("{{ a }"),
+      innerTagStarts: "{% raw %}" + fill("{% {%") + "%}",
+      wsAfterTagStart: "{%" + " ".repeat(MB5) + "raw",
+      deepNesting:
+        fill("{% comment %}").slice(0, MB5 / 2) + fill("{% endcomment %}").slice(0, MB5 / 2),
+      alternatingRawComment: fill("{% raw %}{% comment %}{% endraw %}{% endcomment %}"),
+      commentWithRaw: fill("{% comment %}{% raw %}"),
+      newlineMix: fill("{% comment %}\n{% raw %}\nx\n{% endcomment %}\n"),
+    };
+    for (const [name, flood] of Object.entries(floods)) {
+      const start = performance.now();
+      const out = blankLiquidComments(flood);
+      const elapsed = performance.now() - start;
+      expect(out.length, name).toBe(flood.length);
+      expect(elapsed, name).toBeLessThan(2000);
+    }
   });
 });
