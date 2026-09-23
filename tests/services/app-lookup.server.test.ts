@@ -678,27 +678,13 @@ describe("signature patterns on adversarial input (gc-t7x)", () => {
   });
 
   // Each rewritten pattern, the regex it replaced, and a flood that made the
-  // old one quadratic. The Hextom Translate patterns are currently shadowed by
-  // the earlier Sales Pop / Hextom signature (its /hextom/ matches first), so
-  // they are exercised directly rather than through identifyAppFrom*.
+  // old one quadratic.
   const REWRITTEN: Array<[string, () => RegExp, RegExp, string]> = [
     [
       "JSON-LD for SEO script",
       () => signature("JSON-LD for SEO").scriptPatterns[1],
       /jsonld.*shopify/i,
       "jsonld",
-    ],
-    [
-      "Hextom Translate script",
-      () => signature("Hextom Translate").scriptPatterns[0],
-      /hextom\.com\/.*translate/,
-      "hextom.com/",
-    ],
-    [
-      "Hextom Translate css",
-      () => signature("Hextom Translate").cssPatterns[0],
-      /hextom.*translate/,
-      "hextom",
     ],
     [
       "EmbedSocial text",
@@ -757,6 +743,19 @@ describe("signature patterns on adversarial input (gc-t7x)", () => {
     },
   );
 
+  // The Hextom Translate patterns were narrowed to one URL / identifier token
+  // (gc-9rw), so they no longer transcribe an old regex; they must still be
+  // linear on floods of their own prefixes.
+  it.each([
+    ["script", () => signature("Hextom Translate").scriptPatterns[0], "hextom.com/"],
+    ["script (path run)", () => signature("Hextom Translate").scriptPatterns[0], "hextom.com/a"],
+    ["css", () => signature("Hextom Translate").cssPatterns[0], "hextom"],
+    ["css (identifier run)", () => signature("Hextom Translate").cssPatterns[0], "hextom-a"],
+  ])("Hextom Translate %s pattern is fast on its flood", (_label, pattern, fragment) => {
+    expect(timed(() => pattern().test(flood(fragment)))).toBeLessThan(1500);
+    expect(timed(() => pattern().test(fragment + "x".repeat(MB)))).toBeLessThan(1500);
+  });
+
   it("still attributes through the rewritten patterns", () => {
     expect(identifyAppFromCode('<script>var jsonld = "shopify";</script>')).toBe("JSON-LD for SEO");
     expect(identifyAppFromTextFragment('<div data-ref="x" class="embedsocial-x">')).toBe(
@@ -765,5 +764,123 @@ describe("signature patterns on adversarial input (gc-t7x)", () => {
     // Not across a line break (`.` stops there) or a `>` (`[^>]` stops there).
     expect(identifyAppFromCode("jsonld\nshopify")).not.toBe("JSON-LD for SEO");
     expect(identifyAppFromTextFragment("data-ref><p>embedsocial")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-9rw: first-match-wins shadowing
+// ---------------------------------------------------------------------------
+
+describe("Hextom attribution (gc-9rw)", () => {
+  // Lookups are first-match-wins over APP_SIGNATURES. The Sales Pop / Hextom
+  // catch-all (/hextom\.com/, /hextom/) used to sit ahead of Hextom Translate,
+  // so every translate signal was attributed to Sales Pop.
+  it.each([
+    "https://translate.hextom.com/js/x.js",
+    "https://cdn.hextom.com/translate/app.js",
+    "//cdn.hextom.com/js/hextom-translate.min.js",
+    "https://cdn.hextom.com/js/app.js?module=translate",
+  ])("attributes translate URL %s to Hextom Translate", (url) => {
+    expect(identifyAppFromUrl(url)).toBe("Hextom Translate");
+    expect(identifyAppFromCode(url)).toBe("Hextom Translate");
+  });
+
+  it("attributes translate css / inline code to Hextom Translate", () => {
+    expect(identifyAppFromCode('<div class="hextom-translate-switcher"></div>')).toBe(
+      "Hextom Translate",
+    );
+    expect(identifyAppFromCode(".hextom_translate_flag { display: none }")).toBe(
+      "Hextom Translate",
+    );
+    expect(identifyAppFromCode("window.HextomTranslate = {};")).toBe("Hextom Translate");
+    expect(
+      identifyAppFromCode(
+        '<link rel="stylesheet" href="https://cdn.hextom.com/css/translate.css">',
+      ),
+    ).toBe("Hextom Translate");
+  });
+
+  it("keeps translate snippet names and hreflang on Hextom Translate", () => {
+    expect(identifyAppFromSnippetName("hextom-translate")).toBe("Hextom Translate");
+    expect(identifyAppFromSnippetName("hextom-translate-switcher")).toBe("Hextom Translate");
+    expect(identifyAppFromHrefLang("https://cdn.hextom.com/translate/fr")).toBe("Hextom Translate");
+  });
+
+  it("leaves Sales Pop / shipping bar signals on Sales Pop / Hextom", () => {
+    const SALES_POP = "Sales Pop / Hextom";
+    expect(identifyAppFromUrl("https://cdn.hextom.com/js/salespop.js")).toBe(SALES_POP);
+    expect(identifyAppFromUrl("https://apps.hextom.com/fsb/app.js")).toBe(SALES_POP);
+    expect(identifyAppFromCode("window.hextom = {}")).toBe(SALES_POP);
+    expect(identifyAppFromCode('<div class="hextom-shipping-bar">')).toBe(SALES_POP);
+    expect(identifyAppFromSnippetName("hextom-shipping-bar")).toBe(SALES_POP);
+    expect(identifyAppFromSnippetName("hextom-sales-pop")).toBe(SALES_POP);
+    expect(identifyAppFromTextFragment("hextom_fsb_bar")).toBe(SALES_POP);
+    expect(identifyAppFromTextFragment("hextom-free-bar")).toBe(SALES_POP);
+  });
+
+  it("does not hand Sales Pop code to Translate just because `translate` is on the line", () => {
+    const SALES_POP = "Sales Pop / Hextom";
+    // CSS transforms and unrelated words are not a Hextom Translate signal.
+    expect(identifyAppFromCode(".hextom-shipping-bar { transform: translateY(0) }")).toBe(
+      SALES_POP,
+    );
+    expect(
+      identifyAppFromCode(
+        '<script src="https://cdn.hextom.com/js/salespop.js"></script><p class="translate">',
+      ),
+    ).toBe(SALES_POP);
+    expect(identifyAppFromCode("hextom translate")).toBe(SALES_POP);
+    expect(identifyAppFromCode("hextom\ntranslate")).toBe(SALES_POP);
+  });
+
+  it("returns null for non-Hextom translate text", () => {
+    expect(identifyAppFromCode("transform: translate(10px)")).toBeNull();
+  });
+});
+
+describe("signature shadowing (gc-9rw)", () => {
+  // Shared-infrastructure signals that genuinely cannot be told apart: Bold's
+  // apps all load from boldapps.net with a shared bold-common snippet, and
+  // SearchPie appears under two entries. First entry wins by design; anything
+  // NOT listed here must resolve to its own signature.
+  const KNOWN_SHARED = new Set([
+    "Bold Upsell|cdn.boldapps.net",
+    "Bold Upsell|boldapps.net",
+    "Bold Upsell|bold-common",
+    "Bold Discounts|cdn.boldapps.net",
+    "Bold Discounts|boldapps.net",
+    "Bold Discounts|bold-common",
+    "SEO Booster (Secomapp / SearchPie)|cdn.searchpie.io",
+    "SEO Booster (Secomapp / SearchPie)|searchpie",
+    "SEO Booster (Secomapp / SearchPie)|searchpie-seo",
+    // Not shadowing: a cdnDomain with a path can never equal a hostname, so
+    // this entry is a dead signal (pre-existing; reported, not changed here).
+    "Mailchimp|s3.amazonaws.com/downloads.mailchimp.com",
+  ]);
+
+  it("resolves every cdnDomain and snippetName to its own signature", () => {
+    const shadowed: string[] = [];
+    for (const sig of APP_SIGNATURES) {
+      for (const domain of sig.cdnDomains) {
+        const got = identifyAppFromUrl(`https://${domain}/x.js`);
+        if (got !== sig.appName && !KNOWN_SHARED.has(`${sig.appName}|${domain}`)) {
+          shadowed.push(`${sig.appName} cdn ${domain} -> ${got}`);
+        }
+      }
+      for (const name of sig.snippetNames) {
+        const got = identifyAppFromSnippetName(name);
+        if (got !== sig.appName && !KNOWN_SHARED.has(`${sig.appName}|${name}`)) {
+          shadowed.push(`${sig.appName} snippet ${name} -> ${got}`);
+        }
+      }
+    }
+    expect(shadowed).toEqual([]);
+  });
+
+  it("attributes LoyaltyLion and SearchPie snippets to their own vendor", () => {
+    expect(identifyAppFromSnippetName("loyalty-lion-initializer")).toBe("LoyaltyLion");
+    expect(identifyAppFromSnippetName("searchpie")).toBe("Searchie / SearchPie");
+    expect(identifyAppFromSnippetName("smile-initializer")).toBe("Smile.io");
+    expect(identifyAppFromSnippetName("seo-manager")).toBe("SEO Manager");
   });
 });

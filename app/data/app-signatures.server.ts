@@ -289,7 +289,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     appName: "Smile.io",
     cdnDomains: ["cdn.smile.io", "d2v9k67syz0xku.cloudfront.net"],
     scriptPatterns: [/smile\.io/, /sweetTooth/, /window\.SwellAPI/],
-    snippetNames: ["smile-initializer", "smile-ui", "loyalty-lion-initializer"],
+    snippetNames: ["smile-initializer", "smile-ui"],
     cssPatterns: [/smile-launcher/],
   },
   {
@@ -494,7 +494,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     appName: "SEO Manager",
     cdnDomains: [],
     scriptPatterns: [/SEOManager/, /seo-manager/],
-    snippetNames: ["seo-manager", "searchpie"],
+    snippetNames: ["seo-manager"],
     cssPatterns: [],
   },
   {
@@ -731,6 +731,26 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["fomo-notification"],
     cssPatterns: [/fomo/],
   },
+  // MUST stay BEFORE "Sales Pop / Hextom": that entry's /hextom\.com/ and
+  // /hextom/ match every Hextom URL and class, and lookups are first-match-wins,
+  // so translate signals were all attributed to Sales Pop (gc-9rw). Its script
+  // and css patterns are confined to ONE URL or identifier token, so Sales Pop
+  // code that only mentions `translate` elsewhere on the line (a CSS
+  // `transform: translateY(...)`, an unrelated class) still falls through to
+  // Sales Pop. Linear forms (gc-t7x): each run stops at the next
+  // `hextom.com/` / `hextom`, so no char is rescanned from many starts.
+  {
+    appName: "Hextom Translate",
+    cdnDomains: [],
+    scriptPatterns: [
+      /hextom\.com\/(?:(?!hextom\.com\/)[^\s"'<>])*translate/,
+      /\btranslate\.hextom\.com/,
+      /HextomTranslate/,
+    ],
+    snippetNames: ["hextom-translate", "hextom-translate-switcher"],
+    cssPatterns: [/hextom(?:(?!hextom)[\w-])*translate/],
+    hrefLangPatterns: [/hextom\.com/],
+  },
   {
     appName: "Sales Pop / Hextom",
     cdnDomains: ["cdn.hextom.com"],
@@ -774,16 +794,6 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["langshop", "langshop-switcher"],
     cssPatterns: [/langshop/],
     hrefLangPatterns: [/langshop\.app/],
-  },
-  {
-    appName: "Hextom Translate",
-    cdnDomains: [],
-    // /hextom\.com\/.*translate/ and /hextom.*translate/, linear form (see
-    // JSON-LD for SEO above, gc-t7x).
-    scriptPatterns: [/^(?:(?!hextom\.com\/).)*hextom\.com\/.*translate/m, /HextomTranslate/],
-    snippetNames: ["hextom-translate", "hextom-translate-switcher"],
-    cssPatterns: [/^(?:(?!hextom).)*hextom.*translate/m],
-    hrefLangPatterns: [/hextom\.com/],
   },
   // Translate & Adapt uses Shopify's built-in locale paths — keep AFTER
   // domain-specific translation apps so their patterns take priority.
