@@ -25,6 +25,7 @@ import {
   collectThirdPartyDomains,
   collectUnknownScripts,
   collectUnknownStylesheets,
+  detectDuplicateLibraries,
   detectDuplicateMetaTags,
   detectDuplicateTrackers,
   detectGhostCanonical,
@@ -268,6 +269,10 @@ function atCap(fragment: string, prefix = "", suffix = ""): string {
 // versions blew past it by 10x-1000x, the linear ones run in tens of ms.
 const CAP_BUDGET_MS = 1500;
 
+// For inputs that legitimately produce tens of thousands of findings, whose
+// per-finding work is linear but not free.
+const DENSE_FINDINGS_BUDGET_MS = 6000;
+
 function layout(content: string): ThemeFile {
   return { filename: "layout/theme.liquid", content };
 }
@@ -349,4 +354,109 @@ describe("gc-t7x — @font-face scanning is linear on unterminated / flooded blo
   ])("detectGhostFont: %s", (_label, content) => {
     expect(timed(() => detectGhostFont(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
   });
+});
+
+describe("gc-t7x — meta/canonical value checks are linear on adversarial input", () => {
+  it("detectGhostOg: OG tags packed on one 1 MB line", () => {
+    // ~27K findings on one line. Each still costs a linear amount (app
+    // attribution of its snippet, ~1.2s in total), but the per-tag re-test of
+    // the whole 1 MB line for a Liquid conditional made it ~12s. The looser
+    // budget keeps that separation without flaking under parallel test load.
+    const content = atCap('<meta property="og:title" content="">');
+    expect(timed(() => detectGhostOg(layout(content)))).toBeLessThan(DENSE_FINDINGS_BUDGET_MS);
+  });
+
+  it.each([
+    [
+      "OG tags spread along one 1 MB line",
+      atCap('<meta property="og:title" content="">' + "x".repeat(460)),
+    ],
+    [
+      "an OG content value holding a { flood",
+      atCap("{", '<meta property="og:title" content="', '">'),
+    ],
+    [
+      "an OG content value holding a {{a flood",
+      atCap("{{a", '<meta property="og:title" content="', '">'),
+    ],
+  ])("detectGhostOg: %s", (_label, content) => {
+    expect(timed(() => detectGhostOg(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+  });
+
+  it.each([
+    ["a canonical href holding a { flood", atCap("{", '<link rel="canonical" href="', '">')],
+    [
+      "a canonical href holding unclosed safe-variable heads",
+      atCap("{{ url |", '<link rel="canonical" href="', 'a}b{{x}}">'),
+    ],
+  ])("detectGhostCanonical: %s", (_label, content) => {
+    expect(timed(() => detectGhostCanonical(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+  });
+
+  it("detectDuplicateMetaTags: duplicate meta tags spread along one 1 MB line", () => {
+    // App attribution used to run against the whole 1 MB line once per duplicate.
+    const content = atCap('<meta name="description" content="a">' + "x".repeat(460));
+    expect(timed(() => detectDuplicateMetaTags(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+  });
+});
+
+describe("gc-t7x — tag attribute matching is linear on one huge tag", () => {
+  // extractTags cuts a tag at its first `>`, so each of these is ONE 1 MB tag.
+  // The per-tag regexes backtracked quadratically on it: from every inner
+  // `<link` start, and over every candidate position of an early attribute.
+  const linkTags: Array<[string, string]> = [
+    ["a <link flood", atCap("<link ", "", ">")],
+    ["rel=stylesheet candidates", atCap(' rel="stylesheet"', "<link", ">")],
+    ["href candidates", atCap(' href="//a"', "<link", ">")],
+    ["rel=alternate candidates", atCap(' rel="alternate"', "<link", ">")],
+    ["rel=preconnect candidates", atCap(' rel="preconnect"', "<link", ">")],
+    ["rel=canonical candidates", atCap(' rel="canonical"', "<link", ">")],
+  ];
+  const linkDetectors: Array<[string, (file: ThemeFile) => unknown]> = [
+    ["detectGhostStyles", detectGhostStyles],
+    ["detectGhostHrefLang", detectGhostHrefLang],
+    ["detectGhostCanonical", detectGhostCanonical],
+    ["detectGhostPreconnect", detectGhostPreconnect],
+    ["detectGhostFont", detectGhostFont],
+    ["collectUnknownStylesheets", collectUnknownStylesheets],
+    ["collectThirdPartyDomains", collectThirdPartyDomains],
+  ];
+  for (const [name, detect] of linkDetectors) {
+    it.each(linkTags)(`${name}: %s`, (_label, content) => {
+      expect(timed(() => detect(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+    });
+  }
+
+  const metaTags: Array<[string, string]> = [
+    ["a <meta flood", atCap("<meta ", "", ">")],
+    ["name=robots candidates", atCap(' name="robots"', "<meta", ">")],
+    ["content candidates", atCap(' content="noindex"', "<meta", ">")],
+    ["property=og candidates", atCap(' property="og:x"', "<meta", ">")],
+  ];
+  const metaDetectors: Array<[string, (file: ThemeFile) => unknown]> = [
+    ["detectDuplicateMetaTags", detectDuplicateMetaTags],
+    ["detectGhostRobots", detectGhostRobots],
+    ["detectGhostOg", detectGhostOg],
+  ];
+  for (const [name, detect] of metaDetectors) {
+    it.each(metaTags)(`${name}: %s`, (_label, content) => {
+      expect(timed(() => detect(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+    });
+  }
+
+  const scriptTags: Array<[string, string]> = [
+    ["a <script flood", atCap("<script ", "", ">")],
+    ["src candidates", atCap(' src="//a"', "<script", ">")],
+  ];
+  const scriptDetectors: Array<[string, (file: ThemeFile) => unknown]> = [
+    ["detectGhostScripts", detectGhostScripts],
+    ["collectUnknownScripts", collectUnknownScripts],
+    ["collectThirdPartyDomains", collectThirdPartyDomains],
+    ["detectDuplicateLibraries", (file) => detectDuplicateLibraries([file])],
+  ];
+  for (const [name, detect] of scriptDetectors) {
+    it.each(scriptTags)(`${name}: %s`, (_label, content) => {
+      expect(timed(() => detect(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+    });
+  }
 });

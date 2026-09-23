@@ -195,9 +195,10 @@ export const MAX_SCANNABLE_FILE_BYTES = 1_000_000;
  * engine to re-scan a tag's interior from every `<tag` start position — O(n^2),
  * effectively a process hang, on pathological input such as thousands of
  * unterminated `<link` fragments. Locating each tag with indexOf and slicing to
- * the next `>` is O(n) and never backtracks; detectors then apply their
- * (unchanged) attribute regexes to the short, bounded tag text, where the same
- * patterns cannot blow up.
+ * the next `>` is O(n) and never backtracks. Detectors then match their
+ * attribute patterns against each tag with execTagPattern, which is linear
+ * even when one tag is huge (running the regexes on the tag text was not:
+ * gc-t7x).
  *
  * Semantics match the previous whole-content regexes exactly:
  *   - The prefix match is case-insensitive and NOT word-boundary anchored, so a
@@ -224,6 +225,139 @@ function extractTags(content: string, tagPrefix: string): Array<{ tag: string; o
     from = close + 1;
   }
   return tags;
+}
+
+// Attribute sub-pattern pieces shared by the tag patterns below.
+const ATTR_EQ = "\\s*=\\s*";
+const QUOTED_VALUE = `["']([^"']+)["']`;
+const SRC_URL_ATTR = `src${ATTR_EQ}["']((https?:)?\\/\\/[^"']+)["']`;
+const HREF_URL_ATTR = `href${ATTR_EQ}["']((https?:)?\\/\\/[^"']+)["']`;
+
+/** A gap between tag-pattern parts: `[^>]+`, `[^>]*`, or (first gap only) `\s+[^>]*`. */
+type TagGap = "[^>]+" | "[^>]*" | "\\s+[^>]*";
+
+/**
+ * One alternative of a tag attribute pattern, i.e. the regex
+ *   tag + steps.map((s) => s.gap + s.attr).join("") + "[^>]*>"
+ * with flags "gi". Every `attr` must match in exactly one way (one length) at a
+ * given position and never span a `>`, which holds for the `name\s*=\s*"..."`
+ * shaped attribute sub-patterns used here.
+ */
+interface TagPatternAlt {
+  tag: "<link" | "<meta" | "<script";
+  steps: Array<{ gap: TagGap; attr: string }>;
+}
+
+/** Compiled form of a tag attribute pattern (alternatives tried in order). */
+interface TagPattern {
+  alts: Array<{
+    /** First position the alternative can start at: the tag (plus whitespace). */
+    start: RegExp;
+    tagLength: number;
+    steps: Array<{ gapMin: number; find: RegExp; at: RegExp; groups: number }>;
+  }>;
+  source: string;
+}
+
+function tagPattern(alts: TagPatternAlt[]): TagPattern {
+  // execTagPattern relies on every alternative starting at the same position.
+  const opening = (alt: TagPatternAlt) => alt.tag + alt.steps[0].gap;
+  if (alts.some((alt) => opening(alt) !== opening(alts[0]))) {
+    throw new Error("tagPattern alternatives must share their tag and first gap");
+  }
+  return {
+    alts: alts.map((alt) => ({
+      start: new RegExp(alt.steps[0].gap === "\\s+[^>]*" ? `${alt.tag}(?=\\s)` : alt.tag, "i"),
+      tagLength: alt.tag.length,
+      steps: alt.steps.map(({ gap, attr }) => ({
+        gapMin: gap === "[^>]*" ? 0 : 1,
+        find: new RegExp(attr, "gi"),
+        at: new RegExp(attr, "iy"),
+        groups: new RegExp(`${attr}|`).exec("")!.length - 1,
+      })),
+    })),
+    source: alts
+      .map((alt) => alt.tag + alt.steps.map((s) => s.gap + s.attr).join("") + "[^>]*>")
+      .join("|"),
+  };
+}
+
+/**
+ * Exactly what `new RegExp(pattern.source, "gi").exec(tag)` returns for a tag
+ * from extractTags, in linear time (gc-t7x). Such a tag's only `>` is its last
+ * char, so every `[^>]` gap spans anything inside it. The regex backtracks
+ * quadratically there: from every inner `<link` start, and for each candidate
+ * position of an early attribute it rescans for the later ones (a single
+ * 1 MB `<link rel="stylesheet" ...` tag took minutes).
+ *
+ * Why this evaluation is identical:
+ *   - Greedy gaps make the regex place each attribute at its RIGHTMOST
+ *     workable position, working back from the end: the last attribute at its
+ *     last match (ending before the `>`), each earlier one at its last match
+ *     that ends early enough for the next attribute after the gap's minimum.
+ *     Those positions do not depend on where the match starts.
+ *   - A later start only raises the lowest allowed first-attribute position,
+ *     so if the earliest start (the tag itself, or for `\s+` the first
+ *     `<meta` + whitespace) fails, every start fails; if it succeeds, the
+ *     regex matches there, running to the final `>`.
+ *   - Alternatives share their opening, so the first one that succeeds wins.
+ * Each attribute's candidates come from one forward scan (restarting one char
+ * after each hit so overlapping candidates are seen), so the work is linear.
+ */
+export function execTagPattern(tag: string, pattern: TagPattern): RegExpExecArray | null {
+  const groups: Array<string | undefined> = [];
+  let matched: { start: number; captures: Array<string | undefined> } | null = null;
+
+  for (const alt of pattern.alts) {
+    const altGroups = alt.steps.reduce((n, s) => n + s.groups, 0);
+    if (matched !== null) {
+      groups.push(...new Array<undefined>(altGroups));
+      continue;
+    }
+
+    // Earliest start of this alternative.
+    let start = alt.start.exec(tag)?.index ?? -1;
+
+    // Place attributes right to left at their rightmost workable positions.
+    const positions: number[] = [];
+    let maxEnd = tag.length - 1; // the last attribute must end before the `>`
+    for (let i = alt.steps.length - 1; i >= 0 && start !== -1; i--) {
+      const step = alt.steps[i];
+      let best = -1;
+      step.find.lastIndex = 0;
+      let hit: RegExpExecArray | null;
+      while ((hit = step.find.exec(tag)) !== null) {
+        if (hit.index + hit[0].length <= maxEnd) best = hit.index;
+        step.find.lastIndex = hit.index + 1;
+      }
+      if (best === -1) {
+        start = -1;
+        break;
+      }
+      positions[i] = best;
+      maxEnd = best - step.gapMin;
+    }
+    const firstAllowed = start + alt.tagLength + alt.steps[0].gapMin;
+    if (start === -1 || positions[0] < firstAllowed) {
+      groups.push(...new Array<undefined>(altGroups));
+      continue;
+    }
+
+    const captures: Array<string | undefined> = [];
+    alt.steps.forEach((step, i) => {
+      step.at.lastIndex = positions[i];
+      captures.push(...step.at.exec(tag)!.slice(1));
+    });
+    matched = { start, captures };
+    groups.push(...captures);
+  }
+
+  if (matched === null) return null;
+  return Object.assign([tag.slice(matched.start), ...groups] as string[], {
+    index: matched.start,
+    input: tag,
+    groups: undefined,
+  }) as RegExpExecArray;
 }
 
 /**
@@ -267,15 +401,15 @@ function extractTagBlocks(
 }
 
 /**
- * Every Liquid output token in `text`, identical to
- * `text.match(/\{\{[^}]*\}\}/g) ?? []` but linear (gc-t7x). That regex rescans
- * to the next `}` from every `{{`, so a `{{{{...` flood with no `}}` is
- * quadratic. Every `{{` before a given `}` shares that `}` as its first one, so
- * when the `}` is not followed by another `}` they all fail together and the
- * scan skips past it; with no `}` left, nothing later can match.
+ * The [start, end) span of every Liquid output token in `text`: the matches of
+ * /\{\{[^}]*\}\}/g, found in linear time (gc-t7x). That regex rescans to the
+ * next `}` from every `{{`, so a `{{{{...` flood with no `}}` is quadratic.
+ * Every `{{` before a given `}` shares that `}` as its first one, so when the
+ * `}` is not followed by another `}` they all fail together and the scan skips
+ * past it; with no `}` left, nothing later can match.
  */
-function liquidOutputTokens(text: string): string[] {
-  const tokens: string[] = [];
+function liquidOutputSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
   let from = 0;
   for (;;) {
     const open = text.indexOf("{{", from);
@@ -283,13 +417,18 @@ function liquidOutputTokens(text: string): string[] {
     const close = text.indexOf("}", open + 2);
     if (close === -1) break;
     if (text[close + 1] === "}") {
-      tokens.push(text.slice(open, close + 2));
+      spans.push([open, close + 2]);
       from = close + 2;
     } else {
       from = close + 1;
     }
   }
-  return tokens;
+  return spans;
+}
+
+/** Every Liquid output token in `text`, identical to `text.match(/\{\{[^}]*\}\}/g) ?? []`. */
+function liquidOutputTokens(text: string): string[] {
+  return liquidOutputSpans(text).map(([start, end]) => text.slice(start, end));
 }
 
 // ---------------------------------------------------------------------------
@@ -505,23 +644,24 @@ function buildAlwaysFalseConditionalSkipLines(content: string): Set<number> {
 // Detector: GHOST_SCRIPT
 // ---------------------------------------------------------------------------
 
-// Matches <script src="https://..." or <script src='//...'> (external URLs)
-// IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0 before
-// each use to avoid stale state between calls. See each detector function below.
-const SCRIPT_SRC_RE = /<script[^>]+src\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*>/gi;
+// Matches <script src="https://..." or <script src='//...'> (external URLs):
+// /<script[^>]+src\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*>/gi, evaluated on
+// one extracted tag by execTagPattern (linear, gc-t7x).
+const SCRIPT_SRC_TAG = tagPattern([
+  { tag: "<script", steps: [{ gap: "[^>]+", attr: SRC_URL_ATTR }] },
+]);
 
 export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Isolate each <script ...> tag first (linear, non-backtracking), then apply
-  // SCRIPT_SRC_RE to the bounded tag text. Multi-line tags like:
+  // SCRIPT_SRC_TAG to the bounded tag text. Multi-line tags like:
   //   <script
   //     src="https://static.klaviyo.com/...">
   // are still matched because a tag spans to its closing `>`. lineNumberAtOffset
   // maps the match position back to a line.
   for (const { tag, offset } of extractTags(file.content, "<script")) {
-    SCRIPT_SRC_RE.lastIndex = 0;
-    const match = SCRIPT_SRC_RE.exec(tag);
+    const match = execTagPattern(tag, SCRIPT_SRC_TAG);
     if (!match) continue;
 
     const url = match[1];
@@ -560,21 +700,35 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
 
 // Matches <link ... rel="stylesheet" ... href="https://...">
 // Order of attributes may vary — we capture the href value separately.
-const LINK_STYLESHEET_RE =
-  /<link[^>]+rel\s*=\s*["']stylesheet["'][^>]*href\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*rel\s*=\s*["']stylesheet["'][^>]*>/gi;
+// Groups 1/2 when rel comes first, 3/4 when href comes first (see tagPattern).
+const LINK_STYLESHEET_TAG = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["']stylesheet["']` },
+      { gap: "[^>]*", attr: HREF_URL_ATTR },
+    ],
+  },
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: HREF_URL_ATTR },
+      { gap: "[^>]*", attr: `rel${ATTR_EQ}["']stylesheet["']` },
+    ],
+  },
+]);
 
 export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Isolate each <link ...> tag first (linear, non-backtracking), then apply
-  // LINK_STYLESHEET_RE to the bounded tag text. Multi-line tags like:
+  // LINK_STYLESHEET_TAG to the bounded tag text. Multi-line tags like:
   //   <link
   //     rel="stylesheet"
   //     href="https://cdn.judge.me/...">
   // are still matched. lineNumberAtOffset maps the match position back to a line.
   for (const { tag, offset } of extractTags(file.content, "<link")) {
-    LINK_STYLESHEET_RE.lastIndex = 0;
-    const match = LINK_STYLESHEET_RE.exec(tag);
+    const match = execTagPattern(tag, LINK_STYLESHEET_TAG);
     if (!match) continue;
 
     // Group 1 captures href when rel comes first; group 3 when href comes first.
@@ -749,10 +903,26 @@ export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
 
 // Matches <link ... rel="alternate" ... hreflang="xx" ... href="..." ...>
 // Handles both attribute orderings: hreflang before href and href before hreflang.
-const HREFLANG_RE_1 =
-  /<link[^>]+rel\s*=\s*["']alternate["'][^>]+hreflang\s*=\s*["']([^"']+)["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi;
-const HREFLANG_RE_2 =
-  /<link[^>]+rel\s*=\s*["']alternate["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*hreflang\s*=\s*["']([^"']+)["'][^>]*>/gi;
+const HREFLANG_TAG_1 = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["']alternate["']` },
+      { gap: "[^>]+", attr: `hreflang${ATTR_EQ}${QUOTED_VALUE}` },
+      { gap: "[^>]*", attr: `href${ATTR_EQ}${QUOTED_VALUE}` },
+    ],
+  },
+]);
+const HREFLANG_TAG_2 = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["']alternate["']` },
+      { gap: "[^>]+", attr: `href${ATTR_EQ}${QUOTED_VALUE}` },
+      { gap: "[^>]*", attr: `hreflang${ATTR_EQ}${QUOTED_VALUE}` },
+    ],
+  },
+]);
 
 export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
@@ -766,8 +936,7 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
 
   // Pattern 1: hreflang before href — groups: [1]=lang, [2]=href
   for (const { tag, offset } of linkTags) {
-    HREFLANG_RE_1.lastIndex = 0;
-    const match = HREFLANG_RE_1.exec(tag);
+    const match = execTagPattern(tag, HREFLANG_TAG_1);
     if (!match) continue;
 
     const lang = match[1];
@@ -792,8 +961,7 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
 
   // Pattern 2: href before hreflang — groups: [1]=href, [2]=lang
   for (const { tag, offset } of linkTags) {
-    HREFLANG_RE_2.lastIndex = 0;
-    const match = HREFLANG_RE_2.exec(tag);
+    const match = execTagPattern(tag, HREFLANG_TAG_2);
     if (!match) continue;
 
     const href = match[1];
@@ -817,7 +985,7 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
   }
 
   // Deduplicate findings from overlapping regex patterns.
-  // A tag that matches both HREFLANG_RE_1 and HREFLANG_RE_2 (different attribute
+  // A tag that matches both HREFLANG_TAG_1 and HREFLANG_TAG_2 (different attribute
   // orderings) would otherwise produce two findings for the same location.
   const seen = new Set<string>();
   return findings.filter((f) => {
@@ -834,7 +1002,12 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
 
 // Matches <meta ... name="X" ...> or <meta ... property="X" ...>
 // Captures the name/property attribute value regardless of attribute order.
-const META_TAG_RE = /<meta\s+[^>]*(?:name|property)\s*=\s*["']([^"']+)["'][^>]*>/gi;
+const META_TAG = tagPattern([
+  {
+    tag: "<meta",
+    steps: [{ gap: "\\s+[^>]*", attr: `(?:name|property)${ATTR_EQ}${QUOTED_VALUE}` }],
+  },
+]);
 
 /**
  * OG / structured-data properties that the Open Graph spec explicitly allows to
@@ -905,10 +1078,9 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
     if (conditionalDepth > 0 || LIQUID_CONDITIONAL_RE.test(text)) continue;
 
     // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
-    // META_TAG_RE to the bounded tag text.
+    // META_TAG to the bounded tag text.
     for (const { tag } of extractTags(text, "<meta")) {
-      META_TAG_RE.lastIndex = 0;
-      const match = META_TAG_RE.exec(tag);
+      const match = execTagPattern(tag, META_TAG);
       if (!match) continue;
 
       const attrValue = match[1].toLowerCase();
@@ -924,6 +1096,7 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
   }
 
   // Emit findings for the 2nd+ occurrence of each duplicated meta tag
+  const appNameByLine = new Map<number, string | null>();
   for (const [attrValue, entries] of occurrences) {
     if (entries.length < 2) continue;
 
@@ -934,8 +1107,14 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
       const codeSnippet = buildSnippet(file.content, entry.lineNumber);
       const severity = classifySeverity(FindingType.DUPLICATE_META, codeSnippet);
 
-      // Attempt app attribution from the full meta tag text — optional
-      const appName = identifyAppFromCode(entry.text) ?? null;
+      // Attempt app attribution from the full meta tag text — optional.
+      // Memoized per line: entry.text is the whole line, and re-scanning a long
+      // line for every duplicate on it was quadratic (gc-t7x).
+      let appName = appNameByLine.get(entry.lineNumber);
+      if (appName === undefined) {
+        appName = identifyAppFromCode(entry.text) ?? null;
+        appNameByLine.set(entry.lineNumber, appName);
+      }
 
       findings.push({
         filename: file.filename,
@@ -1894,7 +2073,7 @@ export function detectGhostPixels(file: ThemeFile): CreateFindingInput[] {
 // ---------------------------------------------------------------------------
 
 /**
- * `name` attribute values recognized by META_ROBOTS_RE: the generic `robots`
+ * `name` attribute values recognized by META_ROBOTS_TAG: the generic `robots`
  * directive plus every maintained AI-crawler UA name. Orphaned AI-crawler
  * meta directives (e.g. `<meta name="GPTBot" content="noindex">`) are the
  * same failure mode as an orphaned `name="robots"` tag — an uninstalled app
@@ -1910,10 +2089,22 @@ const META_ROBOTS_NAME_RE = ["robots", ...AI_CRAWLER_USER_AGENTS].join("|");
  *   - content before name
  * Captures the content attribute value for directive analysis.
  */
-const META_ROBOTS_RE = new RegExp(
-  `<meta\\s+[^>]*name\\s*=\\s*["'](?:${META_ROBOTS_NAME_RE})["'][^>]*content\\s*=\\s*["']([^"']+)["'][^>]*>|<meta\\s+[^>]*content\\s*=\\s*["']([^"']+)["'][^>]*name\\s*=\\s*["'](?:${META_ROBOTS_NAME_RE})["'][^>]*>`,
-  "gi",
-);
+const META_ROBOTS_TAG = tagPattern([
+  {
+    tag: "<meta",
+    steps: [
+      { gap: "\\s+[^>]*", attr: `name${ATTR_EQ}["'](?:${META_ROBOTS_NAME_RE})["']` },
+      { gap: "[^>]*", attr: `content${ATTR_EQ}${QUOTED_VALUE}` },
+    ],
+  },
+  {
+    tag: "<meta",
+    steps: [
+      { gap: "\\s+[^>]*", attr: `content${ATTR_EQ}${QUOTED_VALUE}` },
+      { gap: "[^>]*", attr: `name${ATTR_EQ}["'](?:${META_ROBOTS_NAME_RE})["']` },
+    ],
+  },
+]);
 
 /**
  * Restrictive robots directives that can harm SEO when left orphaned.
@@ -1941,10 +2132,9 @@ export function detectGhostRobots(file: ThemeFile): CreateFindingInput[] {
     if (LIQUID_CONDITIONAL_RE.test(text)) continue;
 
     // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
-    // META_ROBOTS_RE to the bounded tag text.
+    // META_ROBOTS_TAG to the bounded tag text.
     for (const { tag } of extractTags(text, "<meta")) {
-      META_ROBOTS_RE.lastIndex = 0;
-      const match = META_ROBOTS_RE.exec(tag);
+      const match = execTagPattern(tag, META_ROBOTS_TAG);
       if (!match) continue;
 
       // Group 1 captures content when name comes first; group 2 when content comes first.
@@ -2009,8 +2199,7 @@ export function collectUnknownScripts(
 
   for (const { lineNumber, text } of lines(file.content)) {
     for (const { tag } of extractTags(text, "<script")) {
-      SCRIPT_SRC_RE.lastIndex = 0;
-      const match = SCRIPT_SRC_RE.exec(tag);
+      const match = execTagPattern(tag, SCRIPT_SRC_TAG);
       if (!match) continue;
 
       const url = match[1];
@@ -2056,8 +2245,7 @@ export function collectUnknownStylesheets(
 
   for (const { lineNumber, text } of lines(file.content)) {
     for (const { tag } of extractTags(text, "<link")) {
-      LINK_STYLESHEET_RE.lastIndex = 0;
-      const match = LINK_STYLESHEET_RE.exec(tag);
+      const match = execTagPattern(tag, LINK_STYLESHEET_TAG);
       if (!match) continue;
 
       const url = match[1] ?? match[3];
@@ -2241,27 +2429,24 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
 
   // <script src>
   for (const { tag } of extractTags(file.content, "<script")) {
-    SCRIPT_SRC_RE.lastIndex = 0;
-    const m = SCRIPT_SRC_RE.exec(tag);
+    const m = execTagPattern(tag, SCRIPT_SRC_TAG);
     if (m) record(m[1], "script");
   }
 
   // <link> tags: record AT MOST ONE surface per physical tag, precedence
   // stylesheet > preconnect > dns-prefetch > font. A single tag can match more
   // than one of these regexes (e.g. a Google Fonts stylesheet href also matches
-  // FONT_LINK_RE), so without this precedence a tag would double-count refCount
+  // FONT_LINK_TAG), so without this precedence a tag would double-count refCount
   // and emit a spurious `font` source. `continue` after the first surface that
   // records prevents that.
   for (const { tag } of extractTags(file.content, "<link")) {
-    LINK_STYLESHEET_RE.lastIndex = 0;
-    const styleMatch = LINK_STYLESHEET_RE.exec(tag);
+    const styleMatch = execTagPattern(tag, LINK_STYLESHEET_TAG);
     if (styleMatch) {
       record(styleMatch[1] ?? styleMatch[3], "stylesheet");
       continue;
     }
 
-    PRECONNECT_RE.lastIndex = 0;
-    const preMatch = PRECONNECT_RE.exec(tag);
+    const preMatch = execTagPattern(tag, PRECONNECT_TAG);
     if (preMatch) {
       const relType = preMatch[1] ?? preMatch[4];
       const href = preMatch[2] ?? preMatch[3];
@@ -2277,8 +2462,7 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
       }
     }
 
-    FONT_LINK_RE.lastIndex = 0;
-    const fontLinkMatch = FONT_LINK_RE.exec(tag);
+    const fontLinkMatch = execTagPattern(tag, FONT_LINK_TAG);
     if (fontLinkMatch) record(fontLinkMatch[1] ?? fontLinkMatch[2], "font");
   }
 
@@ -2336,8 +2520,7 @@ export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput
   for (const file of files) {
     for (const { lineNumber, text } of lines(file.content)) {
       for (const { tag } of extractTags(text, "<script")) {
-        SCRIPT_SRC_RE.lastIndex = 0;
-        const match = SCRIPT_SRC_RE.exec(tag);
+        const match = execTagPattern(tag, SCRIPT_SRC_TAG);
         if (!match) continue;
 
         const lib = parseLibrary(match[1]);
@@ -2836,20 +3019,56 @@ export function detectGhostLayouts(files: ThemeFile[]): CreateFindingInput[] {
  *   - href before rel
  * Captures the href value for analysis.
  */
-const CANONICAL_RE =
-  /<link[^>]+rel\s*=\s*["']canonical["'][^>]*href\s*=\s*["']([^"']*)["'][^>]*>|<link[^>]+href\s*=\s*["']([^"']*)["'][^>]*rel\s*=\s*["']canonical["'][^>]*>/gi;
+const CANONICAL_TAG = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["']canonical["']` },
+      { gap: "[^>]*", attr: `href${ATTR_EQ}["']([^"']*)["']` },
+    ],
+  },
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `href${ATTR_EQ}["']([^"']*)["']` },
+      { gap: "[^>]*", attr: `rel${ATTR_EQ}["']canonical["']` },
+    ],
+  },
+]);
 
 /**
  * Known safe Shopify-native Liquid variables used in canonical hrefs.
  * These resolve to valid URLs and should not trigger an "unresolved variable" finding.
+ *
+ * This is the head of the former SAFE_CANONICAL_VARS_RE,
+ * /\{\{\s*(canonical_url|request\.path|shop\.url|page_url|url)\s*(\|[^}]*)?\}\}/,
+ * whose optional filter chain and closing `}}` hasSafeCanonicalVar checks
+ * separately (that regex rescanned the filter chain from every `{{`: gc-t7x).
  */
-const SAFE_CANONICAL_VARS_RE =
-  /\{\{\s*(canonical_url|request\.path|shop\.url|page_url|url)\s*(\|[^}]*)?\}\}/;
+const SAFE_CANONICAL_VAR_HEAD_RE =
+  /\{\{\s*(?:canonical_url|request\.path|shop\.url|page_url|url)\s*/y;
 
 /**
- * Matches any Liquid variable expression in a string.
+ * Same result as the former SAFE_CANONICAL_VARS_RE.test(href), in linear time.
+ * A match is a `{{`, the head above, then either `}}` or `|` and a filter chain
+ * up to `}}`, with no `}` before the closing `}}`. So it starts at some `{{`
+ * inside a Liquid output token (liquidOutputSpans) and ends at that token's
+ * `}}`: after the head, the next char must be the token's closing `}` or a `|`.
+ * Each head test stops at the first char that is neither whitespace nor part of
+ * a name, and the head holds no `{`, so the next `{{` tried lies past it: the
+ * total work stays linear.
  */
-const LIQUID_VAR_RE = /\{\{[^}]*\}\}/;
+function hasSafeCanonicalVar(href: string): boolean {
+  for (const [start, end] of liquidOutputSpans(href)) {
+    for (let open = start; open !== -1 && open < end - 2; open = href.indexOf("{{", open + 1)) {
+      SAFE_CANONICAL_VAR_HEAD_RE.lastIndex = open;
+      if (!SAFE_CANONICAL_VAR_HEAD_RE.test(href)) continue;
+      const next = SAFE_CANONICAL_VAR_HEAD_RE.lastIndex;
+      if (next === end - 2 || href[next] === "|") return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Matches a plain absolute URL with a valid-looking domain.
@@ -2876,7 +3095,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   // Collect all canonical occurrences for duplicate detection
   const allCanonicals: Array<{ lineNumber: number; href: string }> = [];
 
-  // Precompute the lines to skip from a single line pass, then run CANONICAL_RE
+  // Precompute the lines to skip from a single line pass, then run CANONICAL_TAG
   // against the FULL file content so multi-line / prettier-wrapped tags like:
   //   <link
   //     rel="canonical"
@@ -2884,7 +3103,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   // are matched. lineNumberAtOffset maps each match offset back to a line, and
   // a match is skipped if its start line falls inside a {% comment %} block or
   // contains a Liquid conditional — preserving the prior per-line semantics.
-  // CANONICAL_RE is a single regex (rel-first | href-first alternation), so each
+  // CANONICAL_TAG is a single regex (rel-first | href-first alternation), so each
   // tag yields exactly one match — no double-count risk.
   const commentSkipLines = buildCommentSkipLines(file.content);
   const conditionalLines = new Set<number>();
@@ -2893,11 +3112,10 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   }
 
   // Isolate each <link ...> tag first (linear, non-backtracking), then apply
-  // CANONICAL_RE to the bounded tag text. Multi-line / prettier-wrapped tags are
+  // CANONICAL_TAG to the bounded tag text. Multi-line / prettier-wrapped tags are
   // still matched. lineNumberAtOffset maps each match offset back to a line.
   for (const { tag, offset } of extractTags(file.content, "<link")) {
-    CANONICAL_RE.lastIndex = 0;
-    const collectMatch = CANONICAL_RE.exec(tag);
+    const collectMatch = execTagPattern(tag, CANONICAL_TAG);
     if (!collectMatch) continue;
 
     const lineNumber = lineNumberAtOffset(file.content, offset + collectMatch.index);
@@ -2934,7 +3152,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check 2: Unresolved Liquid variables in href
-    if (LIQUID_VAR_RE.test(href) && !SAFE_CANONICAL_VARS_RE.test(href)) {
+    if (liquidOutputSpans(href).length > 0 && !hasSafeCanonicalVar(href)) {
       const appName = identifyAppFromCode(codeSnippet) ?? undefined;
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
       findings.push({
@@ -3290,8 +3508,17 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
  * Matches <meta> tags with property="og:*" or name="twitter:*".
  * Captures the OG/Twitter property name.
  */
-const OG_META_RE =
-  /<meta\s+[^>]*(?:property\s*=\s*["'](og:[^"']+)["']|name\s*=\s*["'](twitter:[^"']+)["'])[^>]*>/gi;
+const OG_META_TAG = tagPattern([
+  {
+    tag: "<meta",
+    steps: [
+      {
+        gap: "\\s+[^>]*",
+        attr: `(?:property${ATTR_EQ}["'](og:[^"']+)["']|name${ATTR_EQ}["'](twitter:[^"']+)["'])`,
+      },
+    ],
+  },
+]);
 
 /**
  * Extracts the content attribute value from a meta tag.
@@ -3386,13 +3613,13 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
 
   // Build a set of line numbers inside Liquid comment blocks (shared helper)
   const commentedLines = buildCommentSkipLines(file.content);
+  const conditionalLine = new Map<number, boolean>();
 
   // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
-  // OG_META_RE to the bounded tag text. lineNumberAtOffset maps the match offset
+  // OG_META_TAG to the bounded tag text. lineNumberAtOffset maps the match offset
   // back to a line.
   for (const { tag, offset } of extractTags(file.content, "<meta")) {
-    OG_META_RE.lastIndex = 0;
-    const match = OG_META_RE.exec(tag);
+    const match = execTagPattern(tag, OG_META_TAG);
     if (!match) continue;
 
     // Group 1 captures og:* via property, group 2 captures twitter:* via name
@@ -3404,10 +3631,14 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
     // Skip OG tags inside Liquid comment blocks
     if (commentedLines.has(matchLineNumber)) continue;
 
-    const matchLine = contentLines[matchLineNumber - 1] ?? "";
-
-    // Skip OG tags inside Liquid conditionals
-    if (LIQUID_CONDITIONAL_RE.test(matchLine)) continue;
+    // Skip OG tags inside Liquid conditionals (memoized per line: many tags on
+    // one long line must not re-test it, gc-t7x)
+    let isConditional = conditionalLine.get(matchLineNumber);
+    if (isConditional === undefined) {
+      isConditional = LIQUID_CONDITIONAL_RE.test(contentLines[matchLineNumber - 1] ?? "");
+      conditionalLine.set(matchLineNumber, isConditional);
+    }
+    if (isConditional) continue;
 
     const fullTag = match[0];
     const contentMatch = META_CONTENT_RE.exec(fullTag);
@@ -3433,8 +3664,8 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check 2: Unresolved Liquid variables in content
-    if (LIQUID_VAR_RE.test(contentValue)) {
-      const allVars = contentValue.match(/\{\{[^}]*\}\}/g) ?? [];
+    const allVars = liquidOutputTokens(contentValue);
+    if (allVars.length > 0) {
       const hasUnsafeVar = allVars.some(
         (v) => !SAFE_OG_VARS_RE.test(v) && !SAFE_OG_FILTER_RE.test(v),
       );
@@ -3482,12 +3713,25 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
 
 /**
  * Matches <link rel="preconnect|dns-prefetch|preload" href="..."> and the
- * reversed attribute order (href before rel).
- * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
- * before each use.
+ * reversed attribute order (href before rel). Evaluated per tag by
+ * execTagPattern.
  */
-const PRECONNECT_RE =
-  /<link[^>]+rel\s*=\s*["'](preconnect|dns-prefetch|preload)["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["']([^"']+)["'][^>]+rel\s*=\s*["'](preconnect|dns-prefetch|preload)["'][^>]*>/gi;
+const PRECONNECT_TAG = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["'](preconnect|dns-prefetch|preload)["']` },
+      { gap: "[^>]+", attr: `href${ATTR_EQ}${QUOTED_VALUE}` },
+    ],
+  },
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `href${ATTR_EQ}${QUOTED_VALUE}` },
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["'](preconnect|dns-prefetch|preload)["']` },
+    ],
+  },
+]);
 
 /**
  * Major shared CDNs commonly used by themes directly — not app-specific.
@@ -3538,12 +3782,11 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
   }
 
   // Isolate each <link ...> tag first (linear, non-backtracking), then apply
-  // PRECONNECT_RE to the bounded tag text. Multi-line <link> tags (e.g. from
+  // PRECONNECT_TAG to the bounded tag text. Multi-line <link> tags (e.g. from
   // Prettier-formatted theme files) are still matched. lineNumberAtOffset maps
   // each match offset back to a 1-based line number for skip-set checking.
   for (const { tag, offset } of extractTags(file.content, "<link")) {
-    PRECONNECT_RE.lastIndex = 0;
-    const match = PRECONNECT_RE.exec(tag);
+    const match = execTagPattern(tag, PRECONNECT_TAG);
     if (!match) continue;
 
     const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
@@ -3678,11 +3921,40 @@ function fontFaceFamilies(text: string): string[] {
 /**
  * Matches <link> tags loading from font services (Google Fonts, etc.).
  * Handles both attribute orderings (href before rel and rel before href).
- * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
- * before each use.
+ * Evaluated per tag by execTagPattern.
  */
-const FONT_LINK_RE =
-  /<link[^>]+href\s*=\s*["'](https?:\/\/fonts\.googleapis\.com\/[^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["'](https?:\/\/[^"']*font[^"']*)["'][^>]*>/gi;
+const FONT_LINK_TAG = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      {
+        gap: "[^>]+",
+        attr: `href${ATTR_EQ}["'](https?:\\/\\/fonts\\.googleapis\\.com\\/[^"']+)["']`,
+      },
+    ],
+  },
+  {
+    tag: "<link",
+    steps: [{ gap: "[^>]+", attr: `href${ATTR_EQ}["'](https?:\\/\\/[^"']*font[^"']*)["']` }],
+  },
+]);
+
+/**
+ * Every tag attribute pattern, exported so tests can pin each one's regex
+ * source to the regex it replaced and check execTagPattern against that regex.
+ */
+export const TAG_PATTERNS = {
+  SCRIPT_SRC_TAG,
+  LINK_STYLESHEET_TAG,
+  HREFLANG_TAG_1,
+  HREFLANG_TAG_2,
+  META_TAG,
+  META_ROBOTS_TAG,
+  CANONICAL_TAG,
+  OG_META_TAG,
+  PRECONNECT_TAG,
+  FONT_LINK_TAG,
+};
 
 /**
  * Detect orphaned font declarations left by uninstalled apps.
@@ -3738,10 +4010,9 @@ export function detectGhostFont(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check for font service <link> tags — isolate each <link ...> tag first
-    // (linear, non-backtracking), then apply FONT_LINK_RE to the bounded tag.
+    // (linear, non-backtracking), then apply FONT_LINK_TAG to the bounded tag.
     for (const { tag } of extractTags(text, "<link")) {
-      FONT_LINK_RE.lastIndex = 0;
-      const linkMatch = FONT_LINK_RE.exec(tag);
+      const linkMatch = execTagPattern(tag, FONT_LINK_TAG);
       if (!linkMatch) continue;
 
       const href = linkMatch[1] ?? linkMatch[2];
