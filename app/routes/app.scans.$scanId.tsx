@@ -159,6 +159,18 @@ export function scanProgressLabel(findingCount: number): string {
 }
 
 /**
+ * Oversized-file skip banner copy. Worded to be true for every scan: newer
+ * scans still run the malicious-domain check on these files (gc-qqt), older
+ * ones did not, and the banner has no way to tell them apart.
+ */
+export function skippedFilesNotice(files: string[]): string {
+  const one = files.length === 1;
+  return one
+    ? `1 file skipped (over 1 MB): ${files[0]}. It was too large for the full scan, so most checks were skipped for it and this scan and its comparison may not include all of its issues.`
+    : `${files.length} files skipped (over 1 MB): ${files.join(", ")}. These files were too large for the full scan, so most checks were skipped for them and this scan and its comparison may not include all of their issues.`;
+}
+
+/**
  * The three valid Severity values, in display order. Used to (1) validate the
  * `?severity=` loader param — an unknown value is ignored rather than passed to
  * the DB — and (2) build the Severity filter dropdown. These are fixed and need
@@ -1673,17 +1685,11 @@ export default function ScanDetail() {
           </div>
         )}
 
-        {/* Oversized-file skip notice — these files were too large (>1 MB) to
-          scan, so their findings are neither reported nor diffed (gc-06e.19).
-          The known-malicious-domain check still runs on them (gc-qqt). */}
+        {/* Oversized-file skip notice — these files were too large (>1 MB) for
+          the full detector suite (gc-06e.19); see skippedFilesNotice. */}
         {isCompleted && scan.skippedFiles.length > 0 && (
           <div>
-            <s-banner tone="warning">
-              {scan.skippedFiles.length} file{scan.skippedFiles.length !== 1 ? "s" : ""} skipped
-              (over 1 MB, not scanned): {scan.skippedFiles.join(", ")}. Findings in{" "}
-              {scan.skippedFiles.length !== 1 ? "these files" : "this file"} are not included in
-              this scan or its comparison, except the malicious-domain check, which still runs.
-            </s-banner>
+            <s-banner tone="warning">{skippedFilesNotice(scan.skippedFiles)}</s-banner>
           </div>
         )}
 

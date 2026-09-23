@@ -133,7 +133,7 @@ const REMEDIATION: Record<string, Remediation> = {
     impact:
       "This line loads code from a domain known to be used in attacks on Shopify stores. Code like this can steal shopper data, inject spam, or redirect customers, and it usually arrives through a rogue app or a compromised staff account.",
     howTo:
-      "Duplicate your theme as a backup, then remove the reference on the flagged line in the theme code editor. In a JSON template or section, it is usually inside a Custom Liquid block or app block setting; edit or remove that block. Search the rest of the theme for the same domain and remove every copy. Next, review your installed apps and remove any you do not recognize, check staff accounts and collaborator access, and change your admin passwords. If you bought the theme from an unofficial source, reinstall a clean copy from the Theme Store or the developer.",
+      "Duplicate your theme as a backup, then remove the reference on the flagged line in the theme code editor. In a JSON template or section, it is usually inside a Custom Liquid block or app block setting; edit or remove that block. For config/settings_data.json, make the change in the theme editor (Customize) instead of editing the JSON by hand. In minified JavaScript, remove only the malicious reference, not the whole line. Search the rest of the theme for the same domain and remove every copy. Next, review your installed apps and remove any you do not recognize, check staff accounts and collaborator access, and change your admin passwords. If you bought the theme from an unofficial source, reinstall a clean copy from the Theme Store or the developer.",
   },
   DUPLICATE_META: {
     impact:

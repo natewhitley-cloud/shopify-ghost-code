@@ -151,6 +151,14 @@ describe("getFindingRemediation — accuracy", () => {
     expect(blurb).toContain("app block");
     expect(blurb).not.toContain("this script line");
   });
+
+  it("steers settings_data.json fixes to the theme editor and minified JS to a surgical removal", () => {
+    const blurb = getFindingRemediation("MALICIOUS_SCRIPT").toLowerCase();
+    expect(blurb).toContain("settings_data.json");
+    expect(blurb).toContain("theme editor (customize)");
+    expect(blurb).toMatch(/minified/);
+    expect(blurb).toContain("not the whole line");
+  });
 });
 
 // ---------------------------------------------------------------------------

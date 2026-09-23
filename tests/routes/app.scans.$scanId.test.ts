@@ -131,6 +131,7 @@ import {
   loader,
   nextFindingsFilterParams,
   scanProgressLabel,
+  skippedFilesNotice,
 } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
@@ -1335,5 +1336,32 @@ describe("freeTierHiddenFindingCount", () => {
 
   it("never goes negative", () => {
     expect(freeTierHiddenFindingCount(0, [{ isIgnored: false }])).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Oversized-file skip banner copy
+// ---------------------------------------------------------------------------
+
+describe("skippedFilesNotice", () => {
+  it("lists the files and says most checks were skipped (accurate for old and new scans)", () => {
+    const text = skippedFilesNotice(["sections/a.liquid", "layout/theme.liquid"]);
+    expect(text).toContain("2 files skipped (over 1 MB): sections/a.liquid, layout/theme.liquid.");
+    expect(text).toContain("too large for the full scan");
+    expect(text).toContain("most checks were skipped");
+  });
+
+  it("uses singular wording for one file", () => {
+    const text = skippedFilesNotice(["sections/a.liquid"]);
+    expect(text).toMatch(/^1 file skipped \(over 1 MB\): sections\/a\.liquid\. It was/);
+    expect(text).not.toMatch(/\bfiles\b|\bthese\b|\bthem\b/);
+  });
+
+  it("does not claim the malicious-domain check ran (false for pre-gc-qqt scans)", () => {
+    const text = skippedFilesNotice(["sections/a.liquid"]).toLowerCase();
+    expect(text).not.toContain("malicious");
+    expect(text).not.toContain("still runs");
+    expect(text).not.toContain("not scanned");
+    expect(text).not.toMatch(/[\u2014\u2013]/);
   });
 });
