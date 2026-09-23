@@ -5239,6 +5239,97 @@ describe("detectDuplicateLibraries", () => {
     const { findings } = scanThemeFiles(files);
     expect(findingsOfType(findings, FindingType.DUPLICATE_LIBRARY)).toHaveLength(1);
   });
+
+  // gc-tus.12: floating dist-tags (@latest, @next, ...) resolve at load time,
+  // so their major is unknown. Each distinct tag counts as its own version: a
+  // tag alongside a pinned major (or another tag) is two copies loaded, but the
+  // SAME tag twice is one version, like two identical pinned versions.
+  describe("floating version tags (gc-tus.12)", () => {
+    const two = (a: string, b: string): ThemeFile[] => [
+      { filename: "layout/theme.liquid", content: scriptTag(a) },
+      { filename: "sections/hero.liquid", content: scriptTag(b) },
+    ];
+    const jsd = (spec: string) => `https://cdn.jsdelivr.net/npm/${spec}/dist/x.min.js`;
+
+    it.each(["latest", "next", "beta", "canary"])(
+      "flags swiper@%s alongside a pinned swiper@8.4.5",
+      (tag) => {
+        const findings = detectDuplicateLibraries(two(jsd(`swiper@${tag}`), jsd("swiper@8.4.5")));
+        expect(findings).toHaveLength(1);
+        const [finding] = findings;
+        expect(finding.findingType).toBe(FindingType.DUPLICATE_LIBRARY);
+        // Pinned majors sort before tags, so the anchor is the v8 copy.
+        expect(finding.filename).toBe("sections/hero.liquid");
+        expect(finding.description).toContain("v8 (sections/hero.liquid)");
+        expect(finding.description).toContain(`@${tag} (layout/theme.liquid)`);
+        expect(finding.description).toContain("2 conflicting versions");
+        expect(finding.description).toContain("major is unknown");
+      },
+    );
+
+    it("flags two different floating tags of the same package", () => {
+      const findings = detectDuplicateLibraries(two(jsd("swiper@next"), jsd("swiper@latest")));
+      expect(findings).toHaveLength(1);
+      // Tags sort alphabetically: @latest anchors.
+      expect(findings[0].filename).toBe("sections/hero.liquid");
+      expect(findings[0].description).toContain(
+        "@latest (sections/hero.liquid), @next (layout/theme.liquid)",
+      );
+    });
+
+    it("flags a tag against a pinned major on another npm CDN", () => {
+      const findings = detectDuplicateLibraries(
+        two("https://unpkg.com/swiper@latest/swiper-bundle.min.js", jsd("swiper@11.0.5")),
+      );
+      expect(findings).toHaveLength(1);
+    });
+
+    it("does NOT flag the same floating tag twice (one resolved version)", () => {
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("swiper@latest")))).toEqual([]);
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("swiper@LATEST")))).toEqual([]);
+    });
+
+    it("does NOT flag a floating tag of a DIFFERENT package", () => {
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("lodash@4.17.21")))).toEqual(
+        [],
+      );
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("swiper-extra@8")))).toEqual(
+        [],
+      );
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("lodash@next")))).toEqual([]);
+    });
+
+    it("treats range-like versions by their major (^1, ~2, bare 3)", () => {
+      // Same major: no conflict. (`^1` used to parse as major 5 from `%5E1`.)
+      expect(detectDuplicateLibraries(two(jsd("swiper@^1"), jsd("swiper@1.2.3")))).toEqual([]);
+      expect(detectDuplicateLibraries(two(jsd("swiper@3"), jsd("swiper@3.1.0")))).toEqual([]);
+      // Different majors: the usual major-version conflict and wording.
+      const findings = detectDuplicateLibraries(two(jsd("swiper@~2"), jsd("swiper@3")));
+      expect(findings).toHaveLength(1);
+      expect(findings[0].description).toBe(
+        'Library "swiper" is loaded at 2 conflicting major versions: v2 (layout/theme.liquid), v3 (sections/hero.liquid)',
+      );
+    });
+
+    it("lists every version when tags and several majors mix", () => {
+      const files: ThemeFile[] = [
+        ...two(jsd("swiper@11.0.5"), jsd("swiper@latest")),
+        { filename: "snippets/x.liquid", content: scriptTag(jsd("swiper@8")) },
+      ];
+      const findings = detectDuplicateLibraries(files);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].filename).toBe("snippets/x.liquid");
+      expect(findings[0].description).toContain(
+        "3 conflicting versions: v8 (snippets/x.liquid), v11 (layout/theme.liquid), @latest (sections/hero.liquid)",
+      );
+    });
+
+    it("keeps the benign-library suppression for floating swiper tags", () => {
+      const result = scanThemeFiles(two(jsd("swiper@latest"), jsd("swiper@8.4.5")));
+      expect(result.unknownScripts).toEqual([]);
+      expect(findingsOfType(result.findings, FindingType.DUPLICATE_LIBRARY)).toHaveLength(1);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -2546,6 +2546,14 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
  * in multiple files, or two copies of the identical version. Only a genuine
  * MAJOR-version split counts as a conflict.
  *
+ * Floating dist-tags (gc-tus.12): `swiper@latest` / `@next` / `@beta` / ...
+ * have no known major (the CDN resolves them at load time). Each distinct tag
+ * counts as its own version, so a tag next to a pinned major, or two different
+ * tags, is flagged (two copies loaded, very likely different majors); the SAME
+ * tag twice is one version and is not, matching identical pinned versions. The
+ * description says the tag's major is unknown. Range-likes (`^1`, `~2`, `3`)
+ * count by their major.
+ *
  * Size-guard-skipped files ARE scanned here (gc-tus.11), like the other
  * cross-file passes. DUPLICATE_LIBRARY is in CROSS_FILE_FINDING_TYPES, so the
  * differ keeps diffing it when its anchor file is size-skipped; if this pass
@@ -2557,8 +2565,12 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
  * tests/services/scan-engine-redos.server.test.ts.
  */
 export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput[] {
-  // library name -> (major -> first place that major was seen)
-  const byLibrary = new Map<string, Map<number, { file: ThemeFile; lineNumber: number }>>();
+  // library name -> (version label -> first place that version was seen). The
+  // label is `v<major>` for a pinned major or `@<tag>` for a floating dist-tag.
+  const byLibrary = new Map<
+    string,
+    Map<string, { major: number | null; file: ThemeFile; lineNumber: number }>
+  >();
 
   for (const file of files) {
     for (const { lineNumber, text } of lines(file.content)) {
@@ -2569,29 +2581,37 @@ export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput
         const lib = parseLibrary(match[1]);
         if (lib === null) continue;
 
-        let majors = byLibrary.get(lib.name);
-        if (!majors) {
-          majors = new Map();
-          byLibrary.set(lib.name, majors);
+        let versions = byLibrary.get(lib.name);
+        if (!versions) {
+          versions = new Map();
+          byLibrary.set(lib.name, versions);
         }
-        // Keep the FIRST occurrence of each major for stable attribution.
-        if (!majors.has(lib.major)) majors.set(lib.major, { file, lineNumber });
+        const label = lib.major === null ? `@${lib.tag}` : `v${lib.major}`;
+        // Keep the FIRST occurrence of each version for stable attribution.
+        if (!versions.has(label)) versions.set(label, { major: lib.major, file, lineNumber });
       }
     }
   }
 
   const findings: CreateFindingInput[] = [];
 
-  for (const [name, majors] of byLibrary) {
-    if (majors.size < 2) continue; // single major = no conflict
+  for (const [name, versions] of byLibrary) {
+    if (versions.size < 2) continue; // single version = no conflict
 
-    const sortedMajors = [...majors.keys()].sort((a, b) => a - b);
-    // Attribute the finding to the lowest-major occurrence (deterministic).
-    const anchor = majors.get(sortedMajors[0])!;
+    // Pinned majors ascending, then floating tags alphabetically (deterministic).
+    const sorted = [...versions.entries()].sort(([labelA, a], [labelB, b]) => {
+      if (a.major !== null && b.major !== null) return a.major - b.major;
+      if (a.major !== null) return -1;
+      if (b.major !== null) return 1;
+      return labelA < labelB ? -1 : 1;
+    });
+    // Attribute the finding to the lowest-major (else first-tag) occurrence.
+    const anchor = sorted[0][1];
 
-    const detail = sortedMajors.map((m) => `v${m} (${majors.get(m)!.file.filename})`).join(", ");
+    const detail = sorted.map(([label, v]) => `${label} (${v.file.filename})`).join(", ");
     const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
     const severity = classifySeverity(FindingType.DUPLICATE_LIBRARY, codeSnippet);
+    const hasFloatingTag = sorted.some(([, v]) => v.major === null);
 
     findings.push({
       filename: anchor.file.filename,
@@ -2599,7 +2619,11 @@ export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput
       codeSnippet,
       findingType: FindingType.DUPLICATE_LIBRARY,
       severity,
-      description: `Library "${name}" is loaded at ${sortedMajors.length} conflicting major versions: ${detail}`,
+      description: hasFloatingTag
+        ? `Library "${name}" is loaded at ${sorted.length} conflicting versions: ${detail}. ` +
+          "Floating tags like @latest resolve when the page loads, so their major is unknown; " +
+          "each distinct tag is counted as a separate copy"
+        : `Library "${name}" is loaded at ${sorted.length} conflicting major versions: ${detail}`,
     });
   }
 

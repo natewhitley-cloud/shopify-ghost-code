@@ -137,21 +137,51 @@ function parseCdnLibrary(url: string): ParsedCdnLibrary | null {
 }
 
 /**
- * Extract the library name + MAJOR version from a public-CDN URL, or null for
- * non-CDN / unparseable / unversioned URLs (or a version string with no leading
- * digit, e.g. `@latest`). The major is the first integer run in the version
- * segment, so `11.0.5` -> 11 and `v3.6.0` -> 3. The `/\d+/` match carries no
- * `/g` flag, so parseLibrary is a pure function of its input.
- *
- * Used by the cross-file duplicate-library detector to spot the SAME library
- * loaded at two or more distinct majors across a theme.
+ * Library name + version identity for the duplicate-library detector: either a
+ * pinned MAJOR (`11.0.5`, `^1`, `v3.6.0` -> a number) or, on the npm CDNs, a
+ * floating dist-tag (`@latest`, `@next`, `@beta`, `@canary`) whose major is
+ * unknown until the CDN resolves it (gc-tus.12).
  */
-export function parseLibrary(url: string): { name: string; major: number } | null {
+export type ParsedLibrary =
+  | { name: string; major: number }
+  | { name: string; major: null; tag: string };
+
+/** A dist-tag: letters with optional `.`, `_`, `-` (no digits, so never a range). */
+const DIST_TAG_RE = /^[a-z][a-z._-]*$/i;
+
+/**
+ * Extract the library name + version identity from a public-CDN URL, or null
+ * for non-CDN / unparseable / unversioned URLs.
+ *
+ * - The major is the first integer run of the percent-DECODED version, so
+ *   `11.0.5` -> 11, `v3.6.0` -> 3, and range-likes `^1` / `~2` / `>=1` / `1.x`
+ *   -> their major. Decoding matters: the URL parser escapes `^` and `>` in the
+ *   path (`%5E1`), whose digits used to be read as the major (`^1` -> 5).
+ * - A version with no digit is a floating dist-tag on jsdelivr / unpkg (where
+ *   `<pkg>@<tag>` is real syntax), returned lowercased with `major: null`.
+ *   cdnjs has no dist-tags, so a non-numeric cdnjs segment stays null, as does
+ *   anything else without a digit (`*`, undecodable escapes).
+ *
+ * The `/\d+/` match carries no `/g` flag, so parseLibrary is a pure function of
+ * its input. Used by the cross-file duplicate-library detector to spot the SAME
+ * library loaded as two or more distinct versions across a theme.
+ */
+export function parseLibrary(url: string): ParsedLibrary | null {
   const lib = parseCdnLibrary(url);
   if (lib === null) return null;
 
-  const digits = lib.version.match(/\d+/);
-  if (digits === null) return null;
+  let version: string;
+  try {
+    version = decodeURIComponent(lib.version);
+  } catch {
+    return null;
+  }
+
+  const digits = version.match(/\d+/);
+  if (digits === null) {
+    if (lib.host === "cdnjs" || !DIST_TAG_RE.test(version)) return null;
+    return { name: lib.name, major: null, tag: version.toLowerCase() };
+  }
 
   const major = Number(digits[0]);
   if (!Number.isFinite(major)) return null;
