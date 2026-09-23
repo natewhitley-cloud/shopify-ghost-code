@@ -57,8 +57,10 @@ export type BillingEventExcludeOpts = {
  * `shop.isInternal` flag is primary, with the env list + `app-review-` prefix as
  * override/ephemeral cover) are dropped BEFORE counting — so the operator digest's "Billing events (24h)" line
  * is consistent with every other dev-store-excluded metric. Aggregation then
- * happens in JS over the surviving rows. When `opts` is omitted, the original
- * groupBy path is preserved so other callers are unaffected.
+ * happens in JS over the surviving rows. `opts` is REQUIRED: there is exactly
+ * one aggregation path, so no caller can accidentally count internal stores
+ * (the old no-opts groupBy path was dead and removed, gc-m5d). An event with no
+ * resolvable shop is dropped (fail closed).
  *
  * Returns a plain object keyed by eventType string for easy consumption
  * in a future admin dashboard.
@@ -67,8 +69,8 @@ export type BillingEventExcludeOpts = {
  *   { upgrade: 12, downgrade: 3, cancellation: 5, reactivation: 2 }
  */
 export async function getBillingEventStats(
-  since?: Date,
-  opts?: BillingEventExcludeOpts,
+  since: Date | undefined,
+  opts: BillingEventExcludeOpts,
 ): Promise<Record<BillingEventType, number>> {
   const counts: Record<BillingEventType, number> = {
     upgrade: 0,
@@ -77,36 +79,22 @@ export async function getBillingEventStats(
     reactivation: 0,
   };
 
-  if (opts) {
-    // Fetch each in-window event with its shop domain, drop excluded stores, then
-    // aggregate by eventType in JS (a groupBy can't filter on the related domain).
-    const rows = await db.billingEvent.findMany({
-      where: since ? { createdAt: { gte: since } } : undefined,
-      select: { eventType: true, shop: { select: { domain: true, isInternal: true } } },
-    });
-
-    for (const row of rows) {
-      // Shop-level predicate: the durable isInternal flag is the primary signal,
-      // with the env exclude list + app-review- prefix as override/ephemeral cover.
-      if (row.shop && isExcludedShop(row.shop, opts.excludeSet, opts.excludePrefixes)) continue;
-      const key = row.eventType as BillingEventType;
-      if (key in counts) counts[key] += 1;
-    }
-
-    return counts;
-  }
-
-  const rows = await db.billingEvent.groupBy({
-    by: ["eventType"],
+  // Fetch each in-window event with its shop domain, drop excluded stores, then
+  // aggregate by eventType in JS (a groupBy can't filter on the related domain).
+  const rows = await db.billingEvent.findMany({
     where: since ? { createdAt: { gte: since } } : undefined,
-    _count: { eventType: true },
+    select: { eventType: true, shop: { select: { domain: true, isInternal: true } } },
   });
 
   for (const row of rows) {
+    // Fail closed: an event we can't tie to a shop can't be proven to be a real
+    // merchant's, so it is not counted.
+    if (!row.shop) continue;
+    // Shop-level predicate: the durable isInternal flag is the primary signal,
+    // with the env exclude list + app-review- prefix as override/ephemeral cover.
+    if (isExcludedShop(row.shop, opts.excludeSet, opts.excludePrefixes)) continue;
     const key = row.eventType as BillingEventType;
-    if (key in counts) {
-      counts[key] = row._count.eventType;
-    }
+    if (key in counts) counts[key] += 1;
   }
 
   return counts;

@@ -3,7 +3,8 @@
  *
  * Strategy:
  *   - Mock db.server (Prisma client) to control DB responses.
- *   - Test each exported function: recordBillingEvent, getBillingEventStats.
+ *   - Test each exported function: recordBillingEvent, getBillingEventStats
+ *     (exclusion opts are required; the old no-opts groupBy path was removed, gc-m5d).
  *   - Verify Prisma call shapes and return value transformations.
  */
 
@@ -16,7 +17,6 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 const mockDb = vi.hoisted(() => ({
   billingEvent: {
     create: vi.fn(),
-    groupBy: vi.fn(),
     findMany: vi.fn(),
   },
 }));
@@ -125,104 +125,6 @@ describe("recordBillingEvent", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getBillingEventStats
-// ---------------------------------------------------------------------------
-
-describe("getBillingEventStats", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns zero counts for all event types when no rows are returned", async () => {
-    mockDb.billingEvent.groupBy.mockResolvedValue([]);
-
-    const result = await getBillingEventStats();
-
-    expect(result).toEqual({
-      upgrade: 0,
-      downgrade: 0,
-      cancellation: 0,
-      reactivation: 0,
-    });
-  });
-
-  it("returns correct counts mapped from groupBy rows", async () => {
-    mockDb.billingEvent.groupBy.mockResolvedValue([
-      { eventType: "upgrade", _count: { eventType: 12 } },
-      { eventType: "downgrade", _count: { eventType: 3 } },
-      { eventType: "cancellation", _count: { eventType: 5 } },
-    ]);
-
-    const result = await getBillingEventStats();
-
-    expect(result).toEqual({
-      upgrade: 12,
-      downgrade: 3,
-      cancellation: 5,
-      reactivation: 0, // not in rows — should be 0
-    });
-  });
-
-  it("calls groupBy without a where clause when since is not provided", async () => {
-    mockDb.billingEvent.groupBy.mockResolvedValue([]);
-
-    await getBillingEventStats();
-
-    expect(mockDb.billingEvent.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({ where: undefined }),
-    );
-  });
-
-  it("adds a createdAt gte filter when since is provided", async () => {
-    mockDb.billingEvent.groupBy.mockResolvedValue([]);
-    const since = new Date("2026-01-01T00:00:00Z");
-
-    await getBillingEventStats(since);
-
-    expect(mockDb.billingEvent.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        where: { createdAt: { gte: since } },
-      }),
-    );
-  });
-
-  it("groups by eventType with count aggregation", async () => {
-    mockDb.billingEvent.groupBy.mockResolvedValue([]);
-
-    await getBillingEventStats();
-
-    expect(mockDb.billingEvent.groupBy).toHaveBeenCalledWith(
-      expect.objectContaining({
-        by: ["eventType"],
-        _count: { eventType: true },
-      }),
-    );
-  });
-
-  it("ignores unknown eventType values gracefully (does not throw)", async () => {
-    mockDb.billingEvent.groupBy.mockResolvedValue([
-      { eventType: "unknown-future-type", _count: { eventType: 7 } },
-    ]);
-
-    const result = await getBillingEventStats();
-
-    // Unknown types are ignored — known types remain 0
-    expect(result).toEqual({
-      upgrade: 0,
-      downgrade: 0,
-      cancellation: 0,
-      reactivation: 0,
-    });
-  });
-
-  it("propagates a database error", async () => {
-    mockDb.billingEvent.groupBy.mockRejectedValue(new Error("Query failed"));
-
-    await expect(getBillingEventStats()).rejects.toThrow("Query failed");
-  });
-});
-
-// ---------------------------------------------------------------------------
 // getBillingEventStats — with exclusion opts (gc-9ms)
 // ---------------------------------------------------------------------------
 
@@ -265,7 +167,6 @@ describe("getBillingEventStats with exclusion opts", () => {
       where: { createdAt: { gte: since } },
       select: { eventType: true, shop: { select: { domain: true, isInternal: true } } },
     });
-    expect(mockDb.billingEvent.groupBy).not.toHaveBeenCalled();
   });
 
   it("drops an event whose shop is isInternal:true even when its domain is not in the exclude set", async () => {
@@ -302,15 +203,43 @@ describe("getBillingEventStats with exclusion opts", () => {
     });
   });
 
-  it("without opts, uses groupBy and never calls findMany (behavior unchanged)", async () => {
-    mockDb.billingEvent.groupBy.mockResolvedValue([
-      { eventType: "upgrade", _count: { eventType: 4 } },
+  // gc-m5d: fail CLOSED. An event with no resolvable shop cannot be proven to
+  // belong to a real merchant, so it must not be counted (unreachable today via
+  // the required shopId FK, but the safe default must not be inverted).
+  it("drops an event whose shop is null (fail closed)", async () => {
+    mockDb.billingEvent.findMany.mockResolvedValue([
+      { eventType: "upgrade", shop: null },
+      { eventType: "upgrade", shop: { domain: "real.myshopify.com", isInternal: false } },
     ]);
 
-    const result = await getBillingEventStats(since);
+    const result = await getBillingEventStats(since, { excludeSet, excludePrefixes });
 
-    expect(mockDb.billingEvent.groupBy).toHaveBeenCalledOnce();
-    expect(mockDb.billingEvent.findMany).not.toHaveBeenCalled();
-    expect(result.upgrade).toBe(4);
+    expect(result.upgrade).toBe(1);
+  });
+
+  it("returns zero counts for all event types when there are no events", async () => {
+    mockDb.billingEvent.findMany.mockResolvedValue([]);
+
+    const result = await getBillingEventStats(since, { excludeSet, excludePrefixes });
+
+    expect(result).toEqual({ upgrade: 0, downgrade: 0, cancellation: 0, reactivation: 0 });
+  });
+
+  it("omits the where clause when since is undefined (all-time)", async () => {
+    mockDb.billingEvent.findMany.mockResolvedValue([]);
+
+    await getBillingEventStats(undefined, { excludeSet, excludePrefixes });
+
+    expect(mockDb.billingEvent.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({ where: undefined }),
+    );
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.billingEvent.findMany.mockRejectedValue(new Error("Query failed"));
+
+    await expect(getBillingEventStats(since, { excludeSet, excludePrefixes })).rejects.toThrow(
+      "Query failed",
+    );
   });
 });
