@@ -838,23 +838,14 @@ describe("Hextom attribution (gc-9rw)", () => {
   });
 });
 
-describe("signature shadowing (gc-9rw)", () => {
-  // Shared-infrastructure signals that genuinely cannot be told apart: Bold's
-  // apps all load from boldapps.net with a shared bold-common snippet, and
-  // SearchPie appears under two entries. First entry wins by design; anything
-  // NOT listed here must resolve to its own signature.
-  const KNOWN_SHARED = new Set([
-    "Bold Upsell|cdn.boldapps.net",
-    "Bold Upsell|boldapps.net",
-    "Bold Upsell|bold-common",
-    "Bold Discounts|cdn.boldapps.net",
-    "Bold Discounts|boldapps.net",
-    "Bold Discounts|bold-common",
-    "SEO Booster (Secomapp / SearchPie)|cdn.searchpie.io",
-    "SEO Booster (Secomapp / SearchPie)|searchpie",
-    "SEO Booster (Secomapp / SearchPie)|searchpie-seo",
+describe("signature shadowing (gc-9rw, gc-ovk)", () => {
+  // Every entry's own cdnDomain/snippetName must now resolve back to that
+  // same entry, INCLUDING vendor-neutral fallback entries like "Bold" —
+  // its cdnDomains/snippetNames are its own, so it must resolve to itself,
+  // not be shadowed by (or shadow) a specific vendor entry.
+  const KNOWN_SHARED = new Set<string>([
     // Not shadowing: a cdnDomain with a path can never equal a hostname, so
-    // this entry is a dead signal (pre-existing; reported, not changed here).
+    // this entry is a dead signal (gc-5v9, fixed separately).
     "Mailchimp|s3.amazonaws.com/downloads.mailchimp.com",
   ]);
 
@@ -882,5 +873,75 @@ describe("signature shadowing (gc-9rw)", () => {
     expect(identifyAppFromSnippetName("searchpie")).toBe("Searchie / SearchPie");
     expect(identifyAppFromSnippetName("smile-initializer")).toBe("Smile.io");
     expect(identifyAppFromSnippetName("seo-manager")).toBe("SEO Manager");
+  });
+});
+
+describe("Bold app attribution (gc-ovk)", () => {
+  // Bold Product Options, Bold Upsell, and Bold Discounts all ship from
+  // boldapps.net with a shared BOLD.common/BoldCommerce runtime and a shared
+  // "bold-common" snippet. Before this fix, Bold Product Options sat first in
+  // APP_SIGNATURES and its generic boldapps.net/BOLD.common/BoldCommerce
+  // patterns fully shadowed the other two apps' own script/CDN/CSS signals.
+  // Each app's OWN specific signal must now resolve to that app; the truly
+  // generic, indistinguishable signals resolve to the vendor-neutral "Bold"
+  // label (matching the "Loyalty App" pattern already used for loyalty-).
+  it("attributes Bold Product Options' own signals to Bold Product Options", () => {
+    expect(identifyAppFromCode("bold-options.min.js")).toBe("Bold Product Options");
+    expect(identifyAppFromCode(".bold-options-swatch { display: none }")).toBe(
+      "Bold Product Options",
+    );
+    expect(identifyAppFromSnippetName("bold-variant-option")).toBe("Bold Product Options");
+    expect(identifyAppFromSnippetName("bold-product-options")).toBe("Bold Product Options");
+  });
+
+  it("attributes Bold Upsell's own signals to Bold Upsell, not Bold Product Options", () => {
+    expect(identifyAppFromCode("https://cdn.boldapps.net/bold-upsell/app.js")).toBe("Bold Upsell");
+    expect(identifyAppFromUrl("https://cdn.boldapps.net/bold-upsell/app.js")).toBe("Bold Upsell");
+    expect(identifyAppFromCode(".bold-upsell-modal { display: none }")).toBe("Bold Upsell");
+    expect(identifyAppFromSnippetName("bold-upsell")).toBe("Bold Upsell");
+    expect(identifyAppFromSnippetName("bold-upsell-custom")).toBe("Bold Upsell");
+  });
+
+  it("attributes Bold Discounts' own signals to Bold Discounts, not Bold Product Options", () => {
+    expect(identifyAppFromCode("https://cdn.boldapps.net/bold-discount/app.js")).toBe(
+      "Bold Discounts",
+    );
+    expect(identifyAppFromUrl("https://cdn.boldapps.net/bold-discount/app.js")).toBe(
+      "Bold Discounts",
+    );
+    expect(identifyAppFromCode("window.shappify = {}")).toBe("Bold Discounts");
+    expect(identifyAppFromSnippetName("bold-discount")).toBe("Bold Discounts");
+    expect(identifyAppFromSnippetName("shappify-sales-clock")).toBe("Bold Discounts");
+  });
+
+  it("attributes shared, indistinguishable Bold signals to the vendor-neutral Bold label", () => {
+    // No app-specific token present — cdn.boldapps.net/BOLD.common/BoldCommerce
+    // alone can't tell which Bold app this is.
+    expect(identifyAppFromUrl("https://cdn.boldapps.net/loader.js")).toBe("Bold");
+    expect(identifyAppFromCode("window.BOLD.common.init()")).toBe("Bold");
+    expect(identifyAppFromCode("BoldCommerce")).toBe("Bold");
+    expect(identifyAppFromSnippetName("bold-common")).toBe("Bold");
+  });
+});
+
+describe("SearchPie attribution (gc-ovk)", () => {
+  // "Searchie / SearchPie" and "SEO Booster (Secomapp / SearchPie)" both
+  // listed cdn.searchpie.io / "searchpie" / "searchpie-seo" as signals with
+  // no way to tell which app they belong to. Those generic searchpie.io
+  // signals now live only on the canonical "Searchie / SearchPie" entry;
+  // SEO Booster keeps only its OWN distinct secomapp.com signals.
+  it("attributes generic searchpie.io signals to the canonical SearchPie entry", () => {
+    expect(identifyAppFromUrl("https://cdn.searchpie.io/widget.js")).toBe("Searchie / SearchPie");
+    expect(identifyAppFromSnippetName("searchpie")).toBe("Searchie / SearchPie");
+    expect(identifyAppFromSnippetName("searchpie-seo")).toBe("Searchie / SearchPie");
+  });
+
+  it("attributes SEO Booster's own secomapp.com signals to SEO Booster", () => {
+    expect(identifyAppFromUrl("https://sb.secomapp.com/app.js")).toBe(
+      "SEO Booster (Secomapp / SearchPie)",
+    );
+    expect(identifyAppFromCode("secomapp.com")).toBe("SEO Booster (Secomapp / SearchPie)");
+    expect(identifyAppFromSnippetName("seo-booster")).toBe("SEO Booster (Secomapp / SearchPie)");
+    expect(identifyAppFromSnippetName("secomapp-seo")).toBe("SEO Booster (Secomapp / SearchPie)");
   });
 });
