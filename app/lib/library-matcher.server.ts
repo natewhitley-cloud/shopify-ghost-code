@@ -139,15 +139,28 @@ function parseCdnLibrary(url: string): ParsedCdnLibrary | null {
 /**
  * Library name + version identity for the duplicate-library detector: either a
  * pinned MAJOR (`11.0.5`, `^1`, `v3.6.0` -> a number) or, on the npm CDNs, a
- * floating dist-tag (`@latest`, `@next`, `@beta`, `@canary`) whose major is
- * unknown until the CDN resolves it (gc-tus.12).
+ * floating dist-tag (one of FLOATING_TAGS) whose major is unknown until the
+ * CDN resolves it (gc-tus.12).
  */
 export type ParsedLibrary =
   | { name: string; major: number }
   | { name: string; major: null; tag: string };
 
-/** A dist-tag: letters with optional `.`, `_`, `-` (no digits, so never a range). */
-const DIST_TAG_RE = /^[a-z][a-z._-]*$/i;
+/**
+ * The conventional npm dist-tags treated as floating versions. Deliberately a
+ * closed list: npm allows arbitrary custom tags, but an unknown digit-free
+ * suffix (`@x`, `@v`, `@main`, a typo) is far more likely a malformed or
+ * non-version path than a real tag, and this detector is heuristic, so it
+ * fails toward NOT emitting (returns null, as before gc-tus.12).
+ */
+const FLOATING_TAGS: ReadonlySet<string> = new Set([
+  "latest",
+  "next",
+  "beta",
+  "canary",
+  "rc",
+  "alpha",
+]);
 
 /**
  * Extract the library name + version identity from a public-CDN URL, or null
@@ -157,10 +170,11 @@ const DIST_TAG_RE = /^[a-z][a-z._-]*$/i;
  *   `11.0.5` -> 11, `v3.6.0` -> 3, and range-likes `^1` / `~2` / `>=1` / `1.x`
  *   -> their major. Decoding matters: the URL parser escapes `^` and `>` in the
  *   path (`%5E1`), whose digits used to be read as the major (`^1` -> 5).
- * - A version with no digit is a floating dist-tag on jsdelivr / unpkg (where
- *   `<pkg>@<tag>` is real syntax), returned lowercased with `major: null`.
- *   cdnjs has no dist-tags, so a non-numeric cdnjs segment stays null, as does
- *   anything else without a digit (`*`, undecodable escapes).
+ * - A version with no digit that is one of FLOATING_TAGS (case-insensitive) is
+ *   a floating dist-tag on jsdelivr / unpkg (where `<pkg>@<tag>` is real
+ *   syntax), returned lowercased with `major: null`. cdnjs has no dist-tags,
+ *   so a non-numeric cdnjs segment stays null, as does anything else without a
+ *   digit (`*`, `@x`, custom tags, undecodable escapes).
  *
  * The `/\d+/` match carries no `/g` flag, so parseLibrary is a pure function of
  * its input. Used by the cross-file duplicate-library detector to spot the SAME
@@ -179,8 +193,9 @@ export function parseLibrary(url: string): ParsedLibrary | null {
 
   const digits = version.match(/\d+/);
   if (digits === null) {
-    if (lib.host === "cdnjs" || !DIST_TAG_RE.test(version)) return null;
-    return { name: lib.name, major: null, tag: version.toLowerCase() };
+    const tag = version.toLowerCase();
+    if (lib.host === "cdnjs" || !FLOATING_TAGS.has(tag)) return null;
+    return { name: lib.name, major: null, tag };
   }
 
   const major = Number(digits[0]);

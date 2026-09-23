@@ -57,7 +57,7 @@ describe("parseLibrary", () => {
 
   // gc-tus.12: floating dist-tags have no major; they are returned as a tag so
   // the duplicate detector can still count the copy.
-  it.each(["latest", "next", "beta", "canary"])(
+  it.each(["latest", "next", "beta", "canary", "rc", "alpha"])(
     "returns a floating tag with an unknown major for @%s",
     (tag) => {
       expect(parseLibrary(`https://cdn.jsdelivr.net/npm/swiper@${tag}/swiper.js`)).toEqual({
@@ -103,6 +103,17 @@ describe("parseLibrary", () => {
     expect(major("3")).toEqual({ name: "swiper", major: 3 });
     expect(major("8.0.0-beta.1")).toEqual({ name: "swiper", major: 8 });
   });
+
+  // Owner decision 1A: only the conventional dist-tags count. Anything else
+  // without a digit (@x, @v, @main, custom tags, typos) is unparseable, as it
+  // was before gc-tus.12, so it can never mint a duplicate finding.
+  it.each(["x", "v", "main", "stable", "lts", "dev", "latest.", "late-st", "foo"])(
+    "returns null for an unknown non-numeric version @%s",
+    (v) => {
+      expect(parseLibrary(`https://cdn.jsdelivr.net/npm/swiper@${v}/x.js`)).toBeNull();
+      expect(parseLibrary(`https://unpkg.com/swiper@${v}/x.js`)).toBeNull();
+    },
+  );
 
   it("returns null for a version that is neither numeric nor a tag", () => {
     expect(parseLibrary("https://cdn.jsdelivr.net/npm/swiper@*/x.js")).toBeNull();

@@ -5262,8 +5262,10 @@ describe("detectDuplicateLibraries", () => {
         expect(finding.filename).toBe("sections/hero.liquid");
         expect(finding.description).toContain("v8 (sections/hero.liquid)");
         expect(finding.description).toContain(`@${tag} (layout/theme.liquid)`);
-        expect(finding.description).toContain("2 conflicting versions");
-        expect(finding.description).toContain("major is unknown");
+        // Floating-tag match: a possible duplicate, not a proven conflict.
+        expect(finding.description).toContain("possible duplicate copies");
+        expect(finding.description).not.toContain("conflicting");
+        expect(finding.severity).toBe(Severity.LOW);
       },
     );
 
@@ -5309,6 +5311,55 @@ describe("detectDuplicateLibraries", () => {
       expect(findings[0].description).toBe(
         'Library "swiper" is loaded at 2 conflicting major versions: v2 (layout/theme.liquid), v3 (sections/hero.liquid)',
       );
+    });
+
+    // Owner decision 1A: when the match depends on a floating tag, whose
+    // resolved version is unknown, it is a POSSIBLE duplicate: LOW severity and
+    // "may be loaded more than once" wording instead of "conflicting versions".
+    it("reports @beta + @next as a LOW possible duplicate", () => {
+      const findings = detectDuplicateLibraries(two(jsd("alpinejs@beta"), jsd("alpinejs@next")));
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe(Severity.LOW);
+      expect(findings[0].description).toBe(
+        'Library "alpinejs" may be loaded more than once (possible duplicate copies): ' +
+          "@beta (layout/theme.liquid), @next (sections/hero.liquid). " +
+          "A floating tag like @latest resolves when the page loads, so its version is unknown",
+      );
+    });
+
+    it("reports @latest + 8.4.5 as a LOW possible duplicate", () => {
+      const findings = detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("swiper@8.4.5")));
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe(Severity.LOW);
+      expect(findings[0].description).toBe(
+        'Library "swiper" may be loaded more than once (possible duplicate copies): ' +
+          "v8 (sections/hero.liquid), @latest (layout/theme.liquid). " +
+          "A floating tag like @latest resolves when the page loads, so its version is unknown",
+      );
+    });
+
+    it("does NOT treat an unknown suffix like @x as a floating tag", () => {
+      expect(detectDuplicateLibraries(two(jsd("swiper@x"), jsd("swiper@latest")))).toEqual([]);
+      expect(detectDuplicateLibraries(two(jsd("swiper@v"), jsd("swiper@8.4.5")))).toEqual([]);
+    });
+
+    it("keeps pinned-vs-pinned conflicts (8.x vs 11.x) at MEDIUM with conflict wording", () => {
+      const findings = detectDuplicateLibraries(two(jsd("swiper@8.x"), jsd("swiper@11.x")));
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe(Severity.MEDIUM);
+      expect(findings[0].description).toBe(
+        'Library "swiper" is loaded at 2 conflicting major versions: v8 (layout/theme.liquid), v11 (sections/hero.liquid)',
+      );
+    });
+
+    it("keeps a genuine pinned conflict MEDIUM even when a floating tag is also present", () => {
+      const files: ThemeFile[] = [
+        ...two(jsd("swiper@11.0.5"), jsd("swiper@latest")),
+        { filename: "snippets/x.liquid", content: scriptTag(jsd("swiper@8")) },
+      ];
+      const [finding] = detectDuplicateLibraries(files);
+      expect(finding.severity).toBe(Severity.MEDIUM);
+      expect(finding.description).toContain("conflicting versions");
     });
 
     it("lists every version when tags and several majors mix", () => {

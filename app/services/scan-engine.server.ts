@@ -2547,12 +2547,16 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
  * MAJOR-version split counts as a conflict.
  *
  * Floating dist-tags (gc-tus.12): `swiper@latest` / `@next` / `@beta` / ...
- * have no known major (the CDN resolves them at load time). Each distinct tag
- * counts as its own version, so a tag next to a pinned major, or two different
- * tags, is flagged (two copies loaded, very likely different majors); the SAME
- * tag twice is one version and is not, matching identical pinned versions. The
- * description says the tag's major is unknown. Range-likes (`^1`, `~2`, `3`)
- * count by their major.
+ * (the closed list in parseLibrary) have no known major (the CDN resolves them
+ * at load time). Each distinct tag counts as its own version, so a tag next to
+ * a pinned major, or two different tags, is flagged (two copies loaded); the
+ * SAME tag twice is one version and is not, matching identical pinned
+ * versions. When the match DEPENDS on a tag (fewer than two distinct pinned
+ * majors), the tag may resolve to the same major, so it is only a possible
+ * duplicate: severity LOW and "may be loaded more than once" wording (owner
+ * decision 1A). Two or more distinct pinned majors are a proven conflict and
+ * keep the default severity and conflict wording even when a tag is also
+ * present. Range-likes (`^1`, `~2`, `3`) count by their major.
  *
  * Size-guard-skipped files ARE scanned here (gc-tus.11), like the other
  * cross-file passes. DUPLICATE_LIBRARY is in CROSS_FILE_FINDING_TYPES, so the
@@ -2610,20 +2614,34 @@ export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput
 
     const detail = sorted.map(([label, v]) => `${label} (${v.file.filename})`).join(", ");
     const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
-    const severity = classifySeverity(FindingType.DUPLICATE_LIBRARY, codeSnippet);
     const hasFloatingTag = sorted.some(([, v]) => v.major === null);
+    const pinnedMajors = sorted.filter(([, v]) => v.major !== null).length;
+    // Only a tag makes this a match: the versions may all resolve the same.
+    const possibleDuplicate = hasFloatingTag && pinnedMajors < 2;
+
+    let description: string;
+    if (possibleDuplicate) {
+      description =
+        `Library "${name}" may be loaded more than once (possible duplicate copies): ${detail}. ` +
+        "A floating tag like @latest resolves when the page loads, so its version is unknown";
+    } else if (hasFloatingTag) {
+      description =
+        `Library "${name}" is loaded at ${sorted.length} conflicting versions: ${detail}. ` +
+        "Floating tags like @latest resolve when the page loads, so their major is unknown; " +
+        "each distinct tag is counted as a separate copy";
+    } else {
+      description = `Library "${name}" is loaded at ${sorted.length} conflicting major versions: ${detail}`;
+    }
 
     findings.push({
       filename: anchor.file.filename,
       lineNumber: anchor.lineNumber,
       codeSnippet,
       findingType: FindingType.DUPLICATE_LIBRARY,
-      severity,
-      description: hasFloatingTag
-        ? `Library "${name}" is loaded at ${sorted.length} conflicting versions: ${detail}. ` +
-          "Floating tags like @latest resolve when the page loads, so their major is unknown; " +
-          "each distinct tag is counted as a separate copy"
-        : `Library "${name}" is loaded at ${sorted.length} conflicting major versions: ${detail}`,
+      severity: possibleDuplicate
+        ? Severity.LOW
+        : classifySeverity(FindingType.DUPLICATE_LIBRARY, codeSnippet),
+      description,
     });
   }
 
