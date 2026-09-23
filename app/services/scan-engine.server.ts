@@ -2827,6 +2827,46 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
 const TITLE_TAG_RE = /<title[^>]*>([\s\S]*?)<\/title>/gi;
 
 /**
+ * Matches an `<svg ...>` open tag or `</svg>` close tag. The lookahead stops
+ * custom elements such as `<svg-icon>` from matching. Group 1 is "/" on close.
+ * `[^<>]*` (not `[^>]*`) ends each attempt at the next `<`, so a flood of
+ * unterminated `<svg ` opens stays linear instead of rescanning to EOF.
+ */
+const SVG_TAG_RE = /<(\/?)svg(?=[\s/>])[^<>]*>/gi;
+
+/**
+ * Returns merged, start-sorted [start, end) offset ranges covered by closed
+ * `<svg>...</svg>` elements. A `<title>` inside an SVG is the graphic's
+ * accessible name, not the document title, so GHOST_TITLE ignores it.
+ *
+ * Only matched pairs count: an unclosed `<svg>` is malformed markup and covers
+ * nothing, so a genuine document title after it is still inspected. One regex
+ * pass plus a sort over the (few) SVG ranges keeps this linear in file size.
+ */
+function closedSvgRanges(content: string): Array<[number, number]> {
+  const openStack: number[] = [];
+  const ranges: Array<[number, number]> = [];
+  let tag: RegExpExecArray | null;
+  SVG_TAG_RE.lastIndex = 0;
+  while ((tag = SVG_TAG_RE.exec(content)) !== null) {
+    if (tag[1] !== "/") {
+      openStack.push(tag.index);
+      continue;
+    }
+    const openOffset = openStack.pop();
+    if (openOffset !== undefined) ranges.push([openOffset, tag.index + tag[0].length]);
+  }
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+    else merged.push(range);
+  }
+  return merged;
+}
+
+/**
  * Build a "safe Liquid variable" matcher for a single `{{ ... }}` expression.
  *
  * Each entry in `tokens` is a regex fragment describing an allowed leading
@@ -2883,6 +2923,15 @@ const SAFE_TITLE_VARS_RE = buildSafeVarRe([
   // Template name + Online Store header injection
   "template",
   "content_for_\\w+",
+  // Theme section/block objects (settings the merchant edits in the editor)
+  "section(?:\\.\\w+)*",
+  "block(?:\\.\\w+)*",
+  // A quoted locale key through the translation filter renders theme locale
+  // text, e.g. stock gift_card: {{ 'gift_cards.issued.title' | t: value: ... }}
+  // The lookahead only requires the FIRST filter to be t/translate (the shared
+  // filter-chain suffix consumes its arguments); the trailing word boundary
+  // stops `t` matching an app filter like `| toxicapp_title`.
+  "(?:'[^'}]*'|\"[^\"}]*\")(?=\\s*\\|\\s*(?:t|translate)\\b)",
   // Native Shopify objects (any property): shop.name, product.title, ...
   ...SHOPIFY_GLOBAL_OBJECTS,
 ]);
@@ -2900,6 +2949,7 @@ const SAFE_TITLE_VARS_RE = buildSafeVarRe([
  *   - Skips native Dawn title containing page_title
  *   - Skips titles inside Liquid conditionals
  *   - Skips empty titles in non-layout files
+ *   - Skips <title> elements inside a closed <svg> (accessible icon names)
  */
 export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
@@ -2916,11 +2966,21 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
     offset: number;
   }> = [];
 
+  // Titles arrive in increasing offset order, so one forward-moving cursor over
+  // the sorted SVG ranges answers "inside an SVG?" in linear total time.
+  const svgRanges = closedSvgRanges(file.content);
+  let svgCursor = 0;
+
   let match: RegExpExecArray | null;
   TITLE_TAG_RE.lastIndex = 0;
 
   while ((match = TITLE_TAG_RE.exec(file.content)) !== null) {
     const innerContent = match[1];
+
+    // Skip SVG accessible-name titles (not document titles)
+    while (svgCursor < svgRanges.length && svgRanges[svgCursor][1] <= match.index) svgCursor++;
+    if (svgCursor < svgRanges.length && svgRanges[svgCursor][0] <= match.index) continue;
+
     const matchLineNumber = lineNumberAtOffset(file.content, match.index);
 
     // Skip titles inside Liquid comment blocks

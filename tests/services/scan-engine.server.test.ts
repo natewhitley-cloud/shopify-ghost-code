@@ -3223,6 +3223,187 @@ describe("detectGhostTitle", () => {
 });
 
 // ---------------------------------------------------------------------------
+// detectGhostTitle: SVG <title> elements and stock gift_card title (gc-j93)
+// ---------------------------------------------------------------------------
+
+describe("detectGhostTitle — SVG titles are not document titles", () => {
+  it("does NOT flag a block-setting variable in an accessible SVG title", () => {
+    const file: ThemeFile = {
+      filename: "blocks/icon-list.liquid",
+      content: [
+        '<ul class="icon-list" {{ block.shopify_attributes }}>',
+        '  <li><svg role="img" viewBox="0 0 24 24"><title>{{ block.settings.first_label | escape }}</title><path d="M0 0h24v24H0z"/></svg></li>',
+        '  <li><svg role="img" viewBox="0 0 24 24"><title>{{ block.settings.second_label | escape }}</title><path d="M0 0h24v24H0z"/></svg></li>',
+        "</ul>",
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag an unknown variable inside an SVG title in a section", () => {
+    const file: ThemeFile = {
+      filename: "sections/icons.liquid",
+      content: '<svg role="img"><title>{{ icon_label }}</title></svg>',
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT report duplicate titles for two static SVG titles in one file", () => {
+    const file: ThemeFile = {
+      filename: "blocks/static-icons.liquid",
+      content: [
+        '<div class="trust">',
+        '  <svg role="img"><title>Free shipping</title></svg>',
+        '  <svg role="img"><title>Secure checkout</title></svg>',
+        "</div>",
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag titles in multi-line and nested SVGs", () => {
+    const file: ThemeFile = {
+      filename: "snippets/icon.liquid",
+      content: [
+        '<svg\n  role="img"\n  viewBox="0 0 24 24"\n>',
+        "  <svg><title>{{ inner_label }}</title></svg>",
+        "  <title>{{ outer_label }}</title>",
+        "</svg >",
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT count an SVG title as the first title of a duplicate pair", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<head><title>{{ page_title }}</title></head>",
+        '<body><svg role="img"><title>Cart</title></svg></body>',
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("STILL flags an unresolved document title that follows a closed SVG", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<svg><title>Logo</title></svg>", "<title>{{ seoapp_meta_title }}</title>"].join(
+        "\n",
+      ),
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(2);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("STILL flags duplicate document titles when SVG titles sit between them", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<title>{{ page_title }}</title>",
+        "<svg><title>Logo</title></svg>",
+        "<title>{{ page_title }}</title>",
+      ].join("\n"),
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(3);
+    expect(findings[0].description).toContain("Duplicate title tag — also found on line 1");
+  });
+
+  it("STILL flags a title after an unclosed <svg> (malformed markup is not an SVG element)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<svg>", "<title>{{ seoapp_meta_title }}</title>"].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(1);
+  });
+
+  it("does NOT treat a custom <svg-icon> element as an SVG", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<svg-icon><title>{{ seoapp_meta_title }}</title></svg-icon>",
+    };
+    expect(detectGhostTitle(file)).toHaveLength(1);
+  });
+
+  it("does NOT flag block or section settings in a document title", () => {
+    const file: ThemeFile = {
+      filename: "sections/main-page.liquid",
+      content:
+        "<title>{{ section.settings.heading | escape }} - {{ block.settings.suffix }}</title>",
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("stays linear on a large file of many SVG titles and unclosed SVG opens", () => {
+    const content =
+      '<svg role="img"><title>{{ block.settings.x }}</title></svg>\n'.repeat(50_000) +
+      "<svg ".repeat(200_000);
+    const start = performance.now();
+    expect(detectGhostTitle({ filename: "blocks/big.liquid", content })).toHaveLength(0);
+    expect(performance.now() - start).toBeLessThan(2000);
+  });
+});
+
+describe("detectGhostTitle — stock gift_card template (gc-j93)", () => {
+  // Verbatim <title> markup from Shopify Horizon and Dawn templates/gift_card.liquid.
+  const giftCardHead = [
+    "{% layout none %}",
+    "<!doctype html>",
+    "<html>",
+    "  <head>",
+    "    {%- assign formatted_balance = gift_card.balance | money_without_trailing_zeros | strip_html -%}",
+    "",
+    "    <title>{{ 'gift_cards.issued.title' | t: value: formatted_balance, shop: shop.name }}</title>",
+    "",
+    '    <meta name="description" content="{{ \'gift_cards.issued.subtext\' | t }}">',
+    "  </head>",
+  ].join("\n");
+
+  it("does NOT flag the stock translated gift card title in templates/", () => {
+    expect(
+      detectGhostTitle({ filename: "templates/gift_card.liquid", content: giftCardHead }),
+    ).toHaveLength(0);
+  });
+
+  it("does NOT flag the same title in layout/gift_card.liquid", () => {
+    expect(
+      detectGhostTitle({ filename: "layout/gift_card.liquid", content: giftCardHead }),
+    ).toHaveLength(0);
+  });
+
+  it("does NOT flag a double-quoted translation key", () => {
+    expect(
+      detectGhostTitle({
+        filename: "layout/theme.liquid",
+        content: '<title>{{ "general.title" | translate }}</title>',
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("STILL flags an unresolved variable piped through t", () => {
+    const findings = detectGhostTitle({
+      filename: "layout/theme.liquid",
+      content: "<title>{{ seoapp_title | t }}</title>",
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("STILL flags a string literal with a filter that merely starts with t", () => {
+    expect(
+      detectGhostTitle({
+        filename: "layout/theme.liquid",
+        content: "<title>{{ 'x' | toxicapp_title }}</title>",
+      }),
+    ).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // detectGhostOg
 // ---------------------------------------------------------------------------
 
