@@ -226,6 +226,72 @@ function extractTags(content: string, tagPrefix: string): Array<{ tag: string; o
   return tags;
 }
 
+/**
+ * Linear replacement for a whole-content `/OPEN[^>]*>([\s\S]*?)CLOSE/gi` scan
+ * (gc-t7x), e.g. `<title ...>inner</title>`. Returns each block's start offset
+ * and inner text, in the same order and with the same values as that regex.
+ *
+ * The regex is quadratic when blocks are unterminated: from EVERY `OPEN` start
+ * it rescans to EOF looking for `>` or `CLOSE` (1 MB of `<title>` took ~40s,
+ * past the scan worker timeout). Here each attempt is resolved with forward
+ * searches that never revisit text:
+ *   - `openRe` must match its prefix in exactly one way (a literal such as
+ *     `<title`, or tokens separated by `\s` runs that are followed by a
+ *     non-space literal), so the regex's `[^>]*>` can only end at the first `>`
+ *     after the prefix and its lazy body only at the first `CLOSE` after that.
+ *   - If that `>` or `CLOSE` is missing, every later `OPEN` fails too (its `>`
+ *     is the same one or later, and so is its `CLOSE`), so the regex could not
+ *     match again: stop.
+ *   - After a match, scanning resumes after `CLOSE`, exactly like the regex's
+ *     lastIndex, so the searched spans are disjoint and the total work is O(n).
+ * Both regexes must carry the /g flag (lastIndex is set here before each use).
+ */
+function extractTagBlocks(
+  content: string,
+  openRe: RegExp,
+  closeRe: RegExp,
+): Array<{ offset: number; inner: string }> {
+  const blocks: Array<{ offset: number; inner: string }> = [];
+  openRe.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = openRe.exec(content)) !== null) {
+    const gt = content.indexOf(">", open.index + open[0].length);
+    if (gt === -1) break;
+    closeRe.lastIndex = gt + 1;
+    const close = closeRe.exec(content);
+    if (close === null) break;
+    blocks.push({ offset: open.index, inner: content.slice(gt + 1, close.index) });
+    openRe.lastIndex = close.index + close[0].length;
+  }
+  return blocks;
+}
+
+/**
+ * Every Liquid output token in `text`, identical to
+ * `text.match(/\{\{[^}]*\}\}/g) ?? []` but linear (gc-t7x). That regex rescans
+ * to the next `}` from every `{{`, so a `{{{{...` flood with no `}}` is
+ * quadratic. Every `{{` before a given `}` shares that `}` as its first one, so
+ * when the `}` is not followed by another `}` they all fail together and the
+ * scan skips past it; with no `}` left, nothing later can match.
+ */
+function liquidOutputTokens(text: string): string[] {
+  const tokens: string[] = [];
+  let from = 0;
+  for (;;) {
+    const open = text.indexOf("{{", from);
+    if (open === -1) break;
+    const close = text.indexOf("}", open + 2);
+    if (close === -1) break;
+    if (text[close + 1] === "}") {
+      tokens.push(text.slice(open, close + 2));
+      from = close + 2;
+    } else {
+      from = close + 1;
+    }
+  }
+  return tokens;
+}
+
 // ---------------------------------------------------------------------------
 // File filtering
 // ---------------------------------------------------------------------------
@@ -316,7 +382,17 @@ export function buildSnippet(content: string, lineNumber: number): string {
   const { splitLines } = lineIndexFor(content);
   const start = Math.max(0, lineNumber - 2); // 0-indexed, one line before
   const end = Math.min(splitLines.length, lineNumber + 1); // one line after
-  return splitLines.slice(start, end).join("\n").slice(0, 300);
+  // Same result as `splitLines.slice(start, end).join("\n").slice(0, 300)`, but
+  // copies at most 300 chars per line: joining a long (minified, up to 1 MB)
+  // line for every finding on it made many findings on one line quadratic
+  // (gc-t7x). Truncating each piece to the cap cannot change the first 300
+  // chars of the concatenation.
+  const picked = splitLines.slice(start, end);
+  let snippet = "";
+  for (let i = 0; i < picked.length && snippet.length < 300; i++) {
+    snippet += (i > 0 ? "\n" : "") + picked[i].slice(0, 300);
+  }
+  return snippet.slice(0, 300);
 }
 
 /**
@@ -2882,9 +2958,11 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Matches <title>...</title> tags, capturing the inner content (may span lines).
+ * `<title>...</title>` delimiters for extractTagBlocks (the inner content may
+ * span lines). Module-scope /g regexes; extractTagBlocks sets lastIndex itself.
  */
-const TITLE_TAG_RE = /<title[^>]*>([\s\S]*?)<\/title>/gi;
+const TITLE_OPEN_RE = /<title/gi;
+const TITLE_CLOSE_RE = /<\/title>/gi;
 
 /**
  * Matches an `<svg ...>` open tag or `</svg>` close tag. The lookahead stops
@@ -3031,29 +3109,35 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
   const svgRanges = closedSvgRanges(file.content);
   let svgCursor = 0;
 
-  let match: RegExpExecArray | null;
-  TITLE_TAG_RE.lastIndex = 0;
+  // Per-line memo: many titles packed on one long line must not re-test it.
+  const conditionalLine = new Map<number, boolean>();
 
-  while ((match = TITLE_TAG_RE.exec(file.content)) !== null) {
-    const innerContent = match[1];
-
+  for (const { offset, inner: innerContent } of extractTagBlocks(
+    file.content,
+    TITLE_OPEN_RE,
+    TITLE_CLOSE_RE,
+  )) {
     // Skip SVG accessible-name titles (not document titles)
-    while (svgCursor < svgRanges.length && svgRanges[svgCursor][1] <= match.index) svgCursor++;
-    if (svgCursor < svgRanges.length && svgRanges[svgCursor][0] <= match.index) continue;
+    while (svgCursor < svgRanges.length && svgRanges[svgCursor][1] <= offset) svgCursor++;
+    if (svgCursor < svgRanges.length && svgRanges[svgCursor][0] <= offset) continue;
 
-    const matchLineNumber = lineNumberAtOffset(file.content, match.index);
+    const matchLineNumber = lineNumberAtOffset(file.content, offset);
 
     // Skip titles inside Liquid comment blocks
     if (commentedLines.has(matchLineNumber)) continue;
 
     // Skip titles inside Liquid conditionals
-    const matchLine = contentLines[matchLineNumber - 1] ?? "";
-    if (LIQUID_CONDITIONAL_RE.test(matchLine)) continue;
+    let isConditional = conditionalLine.get(matchLineNumber);
+    if (isConditional === undefined) {
+      isConditional = LIQUID_CONDITIONAL_RE.test(contentLines[matchLineNumber - 1] ?? "");
+      conditionalLine.set(matchLineNumber, isConditional);
+    }
+    if (isConditional) continue;
 
     allTitles.push({
       lineNumber: matchLineNumber,
       innerContent,
-      offset: match.index,
+      offset,
     });
   }
 
@@ -3085,9 +3169,9 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
 
     // Check 2: Unresolved Liquid variables in title
     // Extract all {{ ... }} expressions and check if any are NOT safe
-    if (LIQUID_VAR_RE.test(innerContent)) {
+    const allVarsInTitle = liquidOutputTokens(innerContent);
+    if (allVarsInTitle.length > 0) {
       // If ALL Liquid vars in the title are safe, skip
-      const allVarsInTitle = innerContent.match(/\{\{[^}]*\}\}/g) ?? [];
       const hasUnsafeVar = allVarsInTitle.some((v) => !SAFE_TITLE_VARS_RE.test(v));
 
       if (hasUnsafeVar) {

@@ -25,6 +25,7 @@ import {
   collectUnknownScripts,
   collectUnknownStylesheets,
   detectDuplicateMetaTags,
+  detectGhostTitle,
   detectDuplicateTrackers,
   detectGhostCanonical,
   detectGhostHrefLang,
@@ -241,5 +242,58 @@ describe("scan-engine file-size cap (gc-06e.2)", () => {
     );
     expect(scriptFindings).toHaveLength(1);
     expect(scriptFindings[0].filename).toBe("sections/header.liquid");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-t7x: super-linear scans on adversarial input at the full 1 MB per-file cap
+// ---------------------------------------------------------------------------
+
+// Fill exactly MAX_SCANNABLE_FILE_BYTES chars (the largest file the per-file
+// detectors still run on) by repeating `fragment`, optionally wrapped. At this
+// size a quadratic scan takes tens of seconds to minutes (past the scan worker
+// timeout), while the linear rewrites finish in well under a second.
+function atCap(fragment: string, prefix = "", suffix = ""): string {
+  const body = MAX_SCANNABLE_FILE_BYTES - prefix.length - suffix.length;
+  return prefix + fragment.repeat(Math.ceil(body / fragment.length)).slice(0, body) + suffix;
+}
+
+// Generous per-detector ceiling for a 1 MB adversarial file: the quadratic
+// versions blew past it by 10x-1000x, the linear ones run in tens of ms.
+const CAP_BUDGET_MS = 1500;
+
+function layout(content: string): ThemeFile {
+  return { filename: "layout/theme.liquid", content };
+}
+
+describe("gc-t7x — detectGhostTitle is linear on unterminated / flooded titles", () => {
+  it.each([
+    ["<title> openers with no closer", atCap("<title>")],
+    ["<title openers with no >", atCap("<title")],
+    ["alternating <title><title>", atCap("<title><title>")],
+    ["one <title> + 1 MB of text", atCap("a", "<title>")],
+    ["one closed title whose content is a {{ flood", atCap("{{", "<title>", "</title>")],
+    ["one closed title whose content is a {{a flood", atCap("{{a", "<title>", "</title>")],
+    // Many findings on a line between two long lines: the snippet builder used
+    // to join all three full lines per finding.
+    [
+      "duplicate titles on a line between two ~333 KB lines",
+      "x".repeat(333_000) +
+        "\n" +
+        "<title>a</title>".concat("y".repeat(84)).repeat(3330) +
+        "\n" +
+        "z".repeat(333_000),
+    ],
+  ])("%s", (_label, content) => {
+    expect(timed(() => detectGhostTitle(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+  });
+
+  it("still reports a duplicate title after an earlier unclosed-looking opener", () => {
+    const findings = detectGhostTitle(
+      layout("<title>{{ page_title }}</title>\n<title>Shop</title>\n<title"),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(2);
+    expect(findings[0].description).toContain("Duplicate title tag");
   });
 });
