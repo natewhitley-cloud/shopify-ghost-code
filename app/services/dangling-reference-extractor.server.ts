@@ -185,7 +185,7 @@ function distinctFrom(occurrences: DanglingRefOccurrence[]): DistinctDanglingHan
   const seen = new Set<string>();
   const distinct: DistinctDanglingHandle[] = [];
   for (const occ of occurrences) {
-    const key = `${occ.entityType} ${occ.handle}`;
+    const key = `${occ.entityType}\u0000${occ.handle}`;
     if (seen.has(key)) continue;
     seen.add(key);
     distinct.push({ entityType: occ.entityType, handle: occ.handle });
