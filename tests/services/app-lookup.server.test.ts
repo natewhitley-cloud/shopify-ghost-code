@@ -843,11 +843,7 @@ describe("signature shadowing (gc-9rw, gc-ovk)", () => {
   // same entry, INCLUDING vendor-neutral fallback entries like "Bold" —
   // its cdnDomains/snippetNames are its own, so it must resolve to itself,
   // not be shadowed by (or shadow) a specific vendor entry.
-  const KNOWN_SHARED = new Set<string>([
-    // Not shadowing: a cdnDomain with a path can never equal a hostname, so
-    // this entry is a dead signal (gc-5v9, fixed separately).
-    "Mailchimp|s3.amazonaws.com/downloads.mailchimp.com",
-  ]);
+  const KNOWN_SHARED = new Set<string>([]);
 
   it("resolves every cdnDomain and snippetName to its own signature", () => {
     const shadowed: string[] = [];
@@ -943,5 +939,38 @@ describe("SearchPie attribution (gc-ovk)", () => {
     expect(identifyAppFromCode("secomapp.com")).toBe("SEO Booster (Secomapp / SearchPie)");
     expect(identifyAppFromSnippetName("seo-booster")).toBe("SEO Booster (Secomapp / SearchPie)");
     expect(identifyAppFromSnippetName("secomapp-seo")).toBe("SEO Booster (Secomapp / SearchPie)");
+  });
+});
+
+describe("cdnDomains validation (gc-5v9)", () => {
+  // cdnDomains are matched against a parsed URL's hostname (see domainMatches
+  // in app-lookup.server.ts), never against a path. An entry containing a
+  // path segment (or a scheme, or whitespace) can never match anything and is
+  // a silent dead signal — like Mailchimp's old
+  // "s3.amazonaws.com/downloads.mailchimp.com" (gc-5v9). Any such value
+  // belongs in scriptPatterns instead.
+  it("has no cdnDomains entry containing a path, scheme, or whitespace", () => {
+    const offenders: string[] = [];
+    for (const sig of APP_SIGNATURES) {
+      for (const domain of sig.cdnDomains) {
+        if (/[/\s]/.test(domain) || /^[a-z]+:\/\//i.test(domain)) {
+          offenders.push(`${sig.appName}: "${domain}"`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("still attributes a Mailchimp S3 downloads URL via scriptPatterns", () => {
+    // No mc.js/mailchimp.js/chimpstatic.com token here — only the S3
+    // downloads.mailchimp.com path, which used to be a dead cdnDomains entry.
+    expect(
+      identifyAppFromUrl("https://s3.amazonaws.com/downloads.mailchimp.com/assets/logo.png"),
+    ).toBe("Mailchimp");
+    expect(
+      identifyAppFromCode(
+        '<img src="https://s3.amazonaws.com/downloads.mailchimp.com/assets/logo.png">',
+      ),
+    ).toBe("Mailchimp");
   });
 });

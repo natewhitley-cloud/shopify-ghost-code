@@ -62,12 +62,17 @@ export const APP_SIGNATURES: AppSignature[] = [
   },
   {
     appName: "Mailchimp",
-    cdnDomains: [
-      "chimpstatic.com",
-      "cdn-images.mailchimp.com",
-      "s3.amazonaws.com/downloads.mailchimp.com",
+    // "s3.amazonaws.com/downloads.mailchimp.com" (gc-5v9) can never match:
+    // cdnDomains is matched against a URL's HOSTNAME, never a path, so a
+    // domain string containing "/" is a dead signal. Moved to scriptPatterns,
+    // which matches against the full URL string.
+    cdnDomains: ["chimpstatic.com", "cdn-images.mailchimp.com"],
+    scriptPatterns: [
+      /mailchimp\.js/,
+      /mc\.js/,
+      /chimpstatic\.com/,
+      /s3\.amazonaws\.com\/downloads\.mailchimp\.com/,
     ],
-    scriptPatterns: [/mailchimp\.js/, /mc\.js/, /chimpstatic\.com/],
     snippetNames: ["mailchimp-popup", "mailchimp-form"],
     cssPatterns: [/mailchimp/, /chimpstatic/],
   },
@@ -650,7 +655,9 @@ export const APP_SIGNATURES: AppSignature[] = [
   // -------------------------------------------------------------------------
   {
     appName: "PageFly",
-    cdnDomains: ["ik.imagekit.io/pagefly", "cdn.pagefly.io"],
+    // "ik.imagekit.io/pagefly" (gc-5v9) contained a path and could never match
+    // a hostname; already covered by the /pagefly/i scriptPattern fallback.
+    cdnDomains: ["cdn.pagefly.io"],
     scriptPatterns: [/pagefly/i, /PageFly/],
     snippetNames: [
       "pagefly-head",
