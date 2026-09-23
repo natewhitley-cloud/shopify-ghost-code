@@ -939,6 +939,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
               name="suggestedAppName"
               placeholder="App name..."
               required
+              aria-label="Suggested app name"
               style={{
                 padding: "4px 8px",
                 border: `1px solid ${BORDER_STRONG}`,
