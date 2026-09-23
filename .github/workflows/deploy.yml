@@ -21,9 +21,16 @@ on:
       - "memory/**"
       - "docs/**"
       - "**/*.md"
+  # Manual trigger (Actions tab or `gh workflow run deploy.yml --ref main`) for
+  # redeploying when the only change was docs-only, now that those pushes skip
+  # this workflow. github.sha is the HEAD of the dispatched ref, so .deploy-sha
+  # and the smoke's EXPECTED_SHA still agree on manual runs.
+  workflow_dispatch:
 
 jobs:
   deploy:
+    # Guard: a manual dispatch from any other branch must not deploy to prod.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     container: ghcr.io/railwayapp/cli:latest
     env:
