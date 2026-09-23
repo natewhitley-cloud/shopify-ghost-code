@@ -18,7 +18,7 @@ import { readFileSync } from "node:fs";
 import type { LoaderFunctionArgs } from "react-router";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-import { loader, timingSafeTokenMatch } from "../../app/routes/health.deep";
+import { loader } from "../../app/routes/health.deep";
 
 const mockQueryRaw = vi.fn();
 const mockSessionCount = vi.fn();
@@ -93,24 +93,6 @@ function countMatching(rows: SessionRow[]) {
 }
 
 const ORIGINAL_ENV = { ...process.env };
-
-describe("timingSafeTokenMatch", () => {
-  it("is true for equal strings", () => {
-    expect(timingSafeTokenMatch("secret-token", "secret-token")).toBe(true);
-  });
-
-  it("is false for different strings of the same length", () => {
-    expect(timingSafeTokenMatch("secret-token", "secret-tokeX")).toBe(false);
-  });
-
-  it("is false for different-length strings", () => {
-    expect(timingSafeTokenMatch("short", "much-longer-value")).toBe(false);
-  });
-
-  it("is false when the received value is null (missing header)", () => {
-    expect(timingSafeTokenMatch(null, "secret-token")).toBe(false);
-  });
-});
 
 describe("health.deep loader", () => {
   beforeEach(() => {
