@@ -9,6 +9,11 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  CORE_STEP_OUTPUT_BUDGET_BYTES,
+  DANGLING_LOOKUP_CAP,
+  DANGLING_MAX_OCCURRENCES_PER_HANDLE,
+} from "../../app/lib/scan-limits";
+import {
   extractDanglingReferences,
   type DanglingRefOccurrence,
 } from "../../app/services/dangling-reference-extractor.server";
@@ -185,7 +190,9 @@ describe("extractDanglingReferences — comments, occurrences, file scope", () =
     expect(result.occurrences[0].lineNumber).toBe(1);
     expect(result.occurrences[1].lineNumber).toBe(2);
     // ...but the distinct view collapses them to one.
-    expect(result.distinctHandles).toEqual([{ entityType: "product", handle: "widget" }]);
+    expect(result.distinctHandles).toEqual([
+      { entityType: "product", handle: "widget", occurrenceCount: 2 },
+    ]);
   });
 
   it("captures multiple refs on a single line", () => {
@@ -232,23 +239,157 @@ describe("extractDanglingReferences — mixed file + distinct view", () => {
 
     // widget-a appears twice (P1 + P4) → collapses to one distinct product.
     expect(result.distinctHandles).toEqual([
-      { entityType: "product", handle: "widget-a" },
-      { entityType: "collection", handle: "summer" },
-      { entityType: "page", handle: "about" },
-      { entityType: "page", handle: "contact" },
+      { entityType: "product", handle: "widget-a", occurrenceCount: 2 },
+      { entityType: "collection", handle: "summer", occurrenceCount: 1 },
+      { entityType: "page", handle: "about", occurrenceCount: 1 },
+      { entityType: "page", handle: "contact", occurrenceCount: 1 },
     ]);
+    expect(result.capped).toBe(false);
   });
 
-  it("aggregates occurrences across multiple files", () => {
+  it("aggregates occurrences across multiple files, ordered by filename then line", () => {
     const result = extractDanglingReferences([
       file('<a href="/products/a">x</a>', "templates/index.liquid"),
       file('<a href="/products/a">x</a>', "sections/footer.liquid"),
     ]);
     expect(result.occurrences).toHaveLength(2);
+    // Deterministic (gc-4ce): sorted by filename, independent of fetch order.
     expect(result.occurrences.map((o) => o.filename)).toEqual([
-      "templates/index.liquid",
       "sections/footer.liquid",
+      "templates/index.liquid",
     ]);
-    expect(result.distinctHandles).toEqual([{ entityType: "product", handle: "a" }]);
+    expect(result.distinctHandles).toEqual([
+      { entityType: "product", handle: "a", occurrenceCount: 2 },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Payload bounds (gc-4ce): the result crosses the Inngest step boundary, whose
+// output limit is 4 MB. Uncapped, 1 MB of `pages['a']` produced ~39 MB.
+// ---------------------------------------------------------------------------
+
+const ONE_MB = 1_000_000;
+
+/** Byte size of a value as Inngest would serialize it. */
+function jsonBytes(value: unknown): number {
+  return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+/** A ~1 MB file where every line is packed with the same `pages['a']` lookup. */
+function denseSameHandleFile(filename = "sections/dense.liquid"): ThemeFile {
+  const line = "{{ pages['a'] }}".repeat(40); // 640 chars, 40 refs per line
+  return file(
+    Array.from({ length: Math.ceil(ONE_MB / line.length) }, () => line).join("\n"),
+    filename,
+  );
+}
+
+/** A ~1 MB file where every line references many DISTINCT handles, lines > 300 chars. */
+function denseDistinctHandlesFile(filename = "sections/distinct.liquid"): ThemeFile {
+  const lines: string[] = [];
+  let n = 0;
+  let size = 0;
+  while (size < ONE_MB) {
+    const refs = Array.from({ length: 20 }, () => `<a href="/products/h${n++}">x</a>`).join(" ");
+    lines.push(refs);
+    size += refs.length + 1;
+  }
+  return file(lines.join("\n"), filename);
+}
+
+describe("extractDanglingReferences — payload caps (gc-4ce)", () => {
+  it("keeps at most DANGLING_MAX_OCCURRENCES_PER_HANDLE per handle but reports the true count", () => {
+    const content = Array.from({ length: 30 }, (_, i) => `{{ pages['about'] }} line ${i}`).join(
+      "\n",
+    );
+    const result = extractDanglingReferences([file(content)]);
+
+    expect(result.occurrences).toHaveLength(DANGLING_MAX_OCCURRENCES_PER_HANDLE);
+    expect(result.distinctHandles).toEqual([
+      { entityType: "page", handle: "about", occurrenceCount: 30 },
+    ]);
+    expect(result.capped).toBe(true);
+    // The FIRST N by line are kept, in order.
+    expect(result.occurrences.map((o) => o.lineNumber)).toEqual(
+      Array.from({ length: DANGLING_MAX_OCCURRENCES_PER_HANDLE }, (_, i) => i + 1),
+    );
+  });
+
+  it("keeps the same occurrences regardless of the order files are supplied in", () => {
+    const files = [
+      file(Array.from({ length: 15 }, () => "{{ pages['x'] }}").join("\n"), "templates/b.liquid"),
+      file(Array.from({ length: 15 }, () => "{{ pages['x'] }}").join("\n"), "sections/a.liquid"),
+      file(Array.from({ length: 15 }, () => "{{ pages['x'] }}").join("\n"), "snippets/c.liquid"),
+    ];
+    const forward = extractDanglingReferences(files);
+    const reversed = extractDanglingReferences([...files].reverse());
+
+    expect(reversed).toEqual(forward);
+    // Sorted by filename then line before truncation: all 15 of sections/a,
+    // then the first 5 of snippets/c; templates/b is beyond the cap.
+    expect(forward.occurrences.map((o) => `${o.filename}:${o.lineNumber}`)).toEqual([
+      ...Array.from({ length: 15 }, (_, i) => `sections/a.liquid:${i + 1}`),
+      ...Array.from({ length: 5 }, (_, i) => `snippets/c.liquid:${i + 1}`),
+    ]);
+    expect(forward.distinctHandles[0].occurrenceCount).toBe(45);
+  });
+
+  it("keeps at most DANGLING_LOOKUP_CAP distinct handles and drops the rest's occurrences", () => {
+    const content = Array.from({ length: 60 }, (_, i) => `<a href="/pages/p${i}">x</a>`).join("\n");
+    const result = extractDanglingReferences([file(content)]);
+
+    expect(result.distinctHandles).toHaveLength(DANGLING_LOOKUP_CAP);
+    // First-seen (filename, line) order: p0..p49 kept, p50..p59 dropped.
+    expect(result.distinctHandles.map((h) => h.handle)).toEqual(
+      Array.from({ length: DANGLING_LOOKUP_CAP }, (_, i) => `p${i}`),
+    );
+    const kept = new Set(result.distinctHandles.map((h) => h.handle));
+    expect(result.occurrences.every((o) => kept.has(o.handle))).toBe(true);
+    expect(result.occurrences).toHaveLength(DANGLING_LOOKUP_CAP);
+    expect(result.capped).toBe(true);
+  });
+
+  it("is not capped for an ordinary theme", () => {
+    const result = extractDanglingReferences([
+      file('<a href="/products/a">x</a>\n<a href="/pages/b">y</a>'),
+    ]);
+    expect(result.capped).toBe(false);
+    expect(result.occurrences).toHaveLength(2);
+  });
+
+  it("returns an empty, uncapped result for no files", () => {
+    expect(extractDanglingReferences([])).toEqual({
+      occurrences: [],
+      distinctHandles: [],
+      capped: false,
+    });
+  });
+
+  it("keeps a 1 MB file dense with one handle far under the step-output budget", () => {
+    const result = extractDanglingReferences([denseSameHandleFile()]);
+
+    expect(result.occurrences).toHaveLength(DANGLING_MAX_OCCURRENCES_PER_HANDLE);
+    // ~62.5k refs on the page, all counted.
+    expect(result.distinctHandles[0].occurrenceCount).toBeGreaterThan(60_000);
+    expect(jsonBytes(result)).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
+  });
+
+  it("keeps the worst case (dense distinct handles + dense repeats, long lines) under budget", () => {
+    const result = extractDanglingReferences([
+      denseDistinctHandlesFile(),
+      denseSameHandleFile(),
+      denseSameHandleFile("snippets/dense-2.liquid"),
+    ]);
+
+    // Max carried = DANGLING_LOOKUP_CAP * DANGLING_MAX_OCCURRENCES_PER_HANDLE.
+    expect(result.occurrences.length).toBeLessThanOrEqual(
+      DANGLING_LOOKUP_CAP * DANGLING_MAX_OCCURRENCES_PER_HANDLE,
+    );
+    expect(result.distinctHandles).toHaveLength(DANGLING_LOOKUP_CAP);
+    const bytes = jsonBytes(result);
+    expect(JSON.stringify(result).length).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
+    // Headroom: well under a third of the budget.
+    expect(bytes).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES / 3);
   });
 });

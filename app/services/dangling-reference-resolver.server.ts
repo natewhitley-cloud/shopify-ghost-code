@@ -63,6 +63,7 @@ import type {
 import { hasProductScope } from "./product-fetcher.server";
 import { logger } from "../lib/logger.server";
 import { checkRateLimit, isThrottledError } from "../lib/rate-limit-monitor.server";
+import { DANGLING_LOOKUP_CAP } from "../lib/scan-limits";
 import { type GraphQLResponseError, isAccessDeniedError } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -105,9 +106,10 @@ export interface DanglingResolutionResult {
  * AND page candidates. Mirrors the live-price audit's budget (spike §D). Every
  * entity type resolves via a per-handle `handle:"..."` lookup, so all three draw
  * from this single budget; when it is exhausted, unchecked candidates are never
- * reported missing and `truncated` is set true.
+ * reported missing and `truncated` is set true. The extractor pre-caps distinct
+ * handles at the same number (gc-4ce), so the value lives in scan-limits.
  */
-const MAX_LOOKUPS = 50;
+const MAX_LOOKUPS = DANGLING_LOOKUP_CAP;
 
 /** Max times a single lookup is retried after THROTTLED before giving up. */
 const MAX_THROTTLE_RETRIES = 5;

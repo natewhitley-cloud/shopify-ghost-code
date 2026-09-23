@@ -152,7 +152,11 @@ vi.mock("../../app/services/jsonld-price-audit.server", () => ({
 // scan-engine.server, so leaving it real would call undefined mock members. The
 // resolver is mocked like auditStaticJsonLdPrices — the worker test controls
 // which handles are "missing" without touching the Admin API.
-vi.mock("../../app/services/dangling-reference-extractor.server", () => ({
+vi.mock("../../app/services/dangling-reference-extractor.server", async (importOriginal) => ({
+  // Real comparator (pure) — the worker reuses it to cap static candidates.
+  ...(await importOriginal<
+    typeof import("../../app/services/dangling-reference-extractor.server")
+  >()),
   extractDanglingReferences: vi.fn(),
 }));
 
@@ -166,6 +170,12 @@ vi.mock("../../app/services/dangling-reference-resolver.server", () => ({
 
 import db from "../../app/db.server";
 import { logger } from "../../app/lib/logger.server";
+import {
+  CORE_STEP_OUTPUT_BUDGET_BYTES,
+  DANGLING_LOOKUP_CAP,
+  DANGLING_MAX_OCCURRENCES_PER_HANDLE,
+  JSONLD_PRICE_CANDIDATE_CAP,
+} from "../../app/lib/scan-limits";
 import { TransientScopeCheckError } from "../../app/lib/scope-check.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
@@ -1553,6 +1563,282 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       expect.objectContaining({ skippedCategories: [] }),
     );
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Step-output budget (gc-4ce)
+//
+// The fetch-and-scan return crosses the Inngest step boundary (4 MB limit).
+// Dangling-reference candidates and static JSON-LD candidates are the only
+// unbounded-by-content arrays in it; both are capped, and a byte budget drops
+// dangling candidates as a last resort rather than failing the scan.
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
+  const ONE_MB = 1_000_000;
+
+  /** Run the scan and return the value the fetch-and-scan step handed Inngest. */
+  async function runAndCaptureCoreStep() {
+    const step = createMockInngestStep();
+    await runScanTheme(undefined, { run: step.run });
+    const idx = step.run.mock.calls.findIndex(([name]) => name === "fetch-and-scan");
+    return (await step.run.mock.results[idx].value) as Record<string, unknown>;
+  }
+
+  function jsonBytes(value: unknown): number {
+    return Buffer.byteLength(JSON.stringify(value), "utf8");
+  }
+
+  function danglingPersistCall() {
+    return mockCreateFindings.mock.calls.find(
+      ([, findings]) => findings[0]?.findingType === FindingType.DANGLING_REFERENCE,
+    );
+  }
+
+  /** ~1 MB of one handle, 40 refs per line. */
+  function denseSameHandleFile() {
+    const line = "{{ pages['a'] }}".repeat(40);
+    const lines = Array.from({ length: Math.ceil(ONE_MB / line.length) }, () => line);
+    return { filename: "sections/dense.liquid", content: lines.join("\n") };
+  }
+
+  /** ~1 MB of distinct product handles, 20 per line. */
+  function denseDistinctHandlesFile() {
+    const lines: string[] = [];
+    let n = 0;
+    let size = 0;
+    while (size < ONE_MB) {
+      const refs = Array.from({ length: 20 }, () => `<a href="/products/h${n++}">x</a>`).join(" ");
+      lines.push(refs);
+      size += refs.length + 1;
+    }
+    return { filename: "sections/distinct.liquid", content: lines.join("\n") };
+  }
+
+  function allMissing() {
+    mockResolveDanglingReferences.mockImplementation(
+      async (_admin: unknown, handles: Array<{ entityType: string; handle: string }>) => ({
+        missing: handles.map(({ entityType, handle }) => ({ entityType, handle })),
+        scopeStatus: { products: "checked", content: "checked" },
+        truncated: false,
+      }),
+    );
+  }
+
+  beforeEach(async () => {
+    // Real extractor (its scan-engine imports resolve to this file's stubs,
+    // whose buildSnippet returns 300 chars: the real cap).
+    const actual = await vi.importActual<
+      typeof import("../../app/services/dangling-reference-extractor.server")
+    >("../../app/services/dangling-reference-extractor.server");
+    mockExtractDanglingReferences.mockImplementation(actual.extractDanglingReferences);
+  });
+
+  it("keeps the worst-case output under budget and still emits findings with true counts", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    mockFetchThemeFiles.mockResolvedValue([denseSameHandleFile(), denseDistinctHandlesFile()]);
+    allMissing();
+
+    const out = await runAndCaptureCoreStep();
+
+    expect(JSON.stringify(out).length).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
+    expect(jsonBytes(out)).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
+    expect(out.danglingTruncated).toBe(false);
+
+    const handles = out.danglingDistinctHandles as Array<{
+      handle: string;
+      occurrenceCount: number;
+    }>;
+    expect(handles).toHaveLength(DANGLING_LOOKUP_CAP);
+    const pageA = handles.find((h) => h.handle === "a");
+    expect(pageA?.occurrenceCount).toBeGreaterThan(60_000);
+
+    // A finding for EVERY missing handle within the cap.
+    const persisted = danglingPersistCall()?.[1] as Array<{
+      description: string;
+      codeSnippet: string;
+      filename: string;
+    }>;
+    expect(persisted).toBeDefined();
+    const findingHandles = new Set(
+      persisted.map((f) => /\/(?:pages|products)\/([a-z0-9-]+)\./.exec(f.description)?.[1]),
+    );
+    for (const h of handles) expect(findingHandles.has(h.handle)).toBe(true);
+
+    // The capped handle: N findings, each describing the TRUE total.
+    const pageAFindings = persisted.filter((f) => f.description.includes("/pages/a."));
+    expect(pageAFindings).toHaveLength(DANGLING_MAX_OCCURRENCES_PER_HANDLE);
+    for (const f of pageAFindings) {
+      expect(f.description).toContain(`referenced ${pageA?.occurrenceCount} times`);
+    }
+    // An uncapped handle keeps the original description verbatim.
+    const h0 = persisted.find((f) => f.description.includes("/products/h0."));
+    expect(h0?.description).toBe(
+      "Broken product link: /products/h0. This product no longer exists (verified via Admin API).",
+    );
+
+    // Capping means some occurrences were not emitted: the category is not
+    // fully audited, so the differ must not false-resolve dropped ones.
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [FindingType.DANGLING_REFERENCE] }),
+    );
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata).toMatchObject({ danglingCapped: true, danglingTruncated: false });
+  });
+
+  it("drops dangling candidates (not the scan) when the output still exceeds the budget", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    // Simulate a payload the caps did not bound (defensive path): ~5 MB.
+    const big = "x".repeat(1000);
+    const occurrences = Array.from({ length: 5000 }, (_, i) => ({
+      entityType: "page",
+      handle: `p${i}`,
+      filename: "sections/huge.liquid",
+      lineNumber: i + 1,
+      snippet: big,
+    }));
+    mockExtractDanglingReferences.mockReturnValue({
+      occurrences,
+      distinctHandles: occurrences.map((o) => ({
+        entityType: "page",
+        handle: o.handle,
+        occurrenceCount: 1,
+      })),
+      capped: false,
+    });
+
+    const warnSpy = vi.spyOn(logger, "warn");
+
+    const out = await runAndCaptureCoreStep();
+
+    expect(jsonBytes(out)).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
+    expect(out.danglingOccurrences).toEqual([]);
+    expect(out.danglingDistinctHandles).toEqual([]);
+    expect(out.danglingTruncated).toBe(true);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("step-output budget"),
+      expect.objectContaining({ event: "dangling_output_truncated", shopId: SHOP_ID }),
+    );
+    // Nothing resolved or persisted; category recorded so prior findings are kept.
+    expect(mockResolveDanglingReferences).not.toHaveBeenCalled();
+    expect(danglingPersistCall()).toBeUndefined();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({
+        status: "COMPLETED",
+        skippedCategories: [FindingType.DANGLING_REFERENCE],
+      }),
+    );
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata).toMatchObject({ danglingTruncated: true });
+  });
+
+  it("stays inert when over budget but the dangling flag is OFF", async () => {
+    const occurrences = Array.from({ length: 5000 }, (_, i) => ({
+      entityType: "page",
+      handle: `p${i}`,
+      filename: "sections/huge.liquid",
+      lineNumber: i + 1,
+      snippet: "x".repeat(1000),
+    }));
+    mockExtractDanglingReferences.mockReturnValue({
+      occurrences,
+      distinctHandles: [{ entityType: "page", handle: "p0", occurrenceCount: 1 }],
+      capped: false,
+    });
+
+    const out = await runAndCaptureCoreStep();
+
+    expect(out.danglingTruncated).toBe(true);
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ status: "COMPLETED", skippedCategories: [] }),
+    );
+  });
+
+  it("stays inert when over budget on a Free plan with the flag ON", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
+    mockExtractDanglingReferences.mockReturnValue({
+      occurrences: Array.from({ length: 5000 }, (_, i) => ({
+        entityType: "page",
+        handle: `p${i}`,
+        filename: "sections/huge.liquid",
+        lineNumber: i + 1,
+        snippet: "x".repeat(1000),
+      })),
+      distinctHandles: [{ entityType: "page", handle: "p0", occurrenceCount: 1 }],
+      capped: false,
+    });
+
+    await runAndCaptureCoreStep();
+
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [] }),
+    );
+  });
+
+  it("caps static JSON-LD candidates deterministically and marks the price audit skipped", async () => {
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    const count = JSONLD_PRICE_CANDIDATE_CAP + 100;
+    // Supplied in reverse order so the cap must sort before truncating.
+    const candidates = Array.from({ length: count }, (_, i) => ({
+      filename: `sections/p${String(count - i).padStart(4, "0")}.liquid`,
+      lineNumber: 1,
+      codeSnippet: "y".repeat(300),
+      handle: `h${i}`,
+      staticPrice: "1.00",
+    }));
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      staticProductCandidates: candidates,
+    });
+    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: false });
+
+    const out = await runAndCaptureCoreStep();
+
+    const kept = out.staticProductCandidates as Array<{ filename: string }>;
+    expect(kept).toHaveLength(JSONLD_PRICE_CANDIDATE_CAP);
+    expect(kept[0].filename).toBe("sections/p0001.liquid");
+    expect(kept.at(-1)?.filename).toBe(
+      `sections/p${String(JSONLD_PRICE_CANDIDATE_CAP).padStart(4, "0")}.liquid`,
+    );
+    expect(jsonBytes(out)).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
+    expect(mockAuditStaticJsonLdPrices).toHaveBeenCalledWith(MOCK_ADMIN, kept, SHOP_ID);
+    // The audit covered everything it was given, but candidates were dropped.
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [FindingType.JSON_LD_PRICE_CONFLICT] }),
+    );
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata).toMatchObject({ staticCandidatesCapped: true });
+  });
+
+  it("leaves an ordinary theme's output and skippedCategories untouched", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    mockFetchThemeFiles.mockResolvedValue([
+      { filename: "sections/footer.liquid", content: '<a href="/pages/gone">x</a>' },
+    ]);
+    allMissing();
+
+    const out = await runAndCaptureCoreStep();
+
+    expect(out.danglingTruncated).toBe(false);
+    expect(out.danglingOccurrences).toHaveLength(1);
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [] }),
+    );
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata).toMatchObject({
+      danglingCapped: false,
+      danglingTruncated: false,
+      staticCandidatesCapped: false,
+    });
   });
 });
 

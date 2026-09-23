@@ -42,7 +42,12 @@ import { FindingType, ScanStatus } from "@prisma/client";
 import { NonRetriableError } from "inngest";
 
 import { logger } from "../../app/lib/logger.server";
-import { PRODUCT_AUDIT_CAP } from "../../app/lib/scan-limits";
+import {
+  CORE_STEP_OUTPUT_BUDGET_BYTES,
+  DANGLING_MAX_OCCURRENCES_PER_HANDLE,
+  JSONLD_PRICE_CANDIDATE_CAP,
+  PRODUCT_AUDIT_CAP,
+} from "../../app/lib/scan-limits";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { saveThemeFindings } from "../../app/models/finding.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
@@ -56,7 +61,10 @@ import {
   CHECKOUT_LIQUID_PATH,
   detectCheckoutSunset,
 } from "../../app/services/checkout-sunset-detector.server";
-import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
+import {
+  compareByFileThenLine,
+  extractDanglingReferences,
+} from "../../app/services/dangling-reference-extractor.server";
 import { isScannableFile, MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
@@ -284,8 +292,11 @@ export const scanTheme = inngest.createFunction(
         unknownScriptCount,
         thirdPartyDomainCount,
         staticProductCandidates,
+        staticCandidatesCapped,
         danglingOccurrences,
         danglingDistinctHandles,
+        danglingCapped,
+        danglingTruncated,
         themeFetchMs,
         themeScanMs,
         totalTextBytes,
@@ -449,11 +460,24 @@ export const scanTheme = inngest.createFunction(
         await createScanDomains(scanId, thirdPartyDomains ?? []);
 
         // Extract DANGLING_REFERENCE candidates (pure, static) here while the
-        // theme files are in scope. Only the tiny handle/occurrence arrays
-        // (handles + file/line + snippet — NOT raw file content) cross the
-        // step boundary; existence is resolved via the Admin API in the
-        // dangling-reference-audit step below (gc-m4h.5).
+        // theme files are in scope. Only the handle/occurrence arrays (handles +
+        // file/line + snippet — NOT raw file content) cross the step boundary;
+        // existence is resolved via the Admin API in the dangling-reference-audit
+        // step below (gc-m4h.5). The extractor caps both arrays (gc-4ce): a file
+        // dense with references otherwise produced tens of MB of step output.
         const dangling = extractDanglingReferences(files);
+
+        // Cap static JSON-LD candidates for the live-price audit (gc-4ce): each
+        // carries a ~300-char snippet and a file packed with tiny JSON-LD blocks
+        // can yield thousands. Sorted before truncating so the kept set is
+        // deterministic; a cap hit marks the price audit skipped (below).
+        const allStaticCandidates = staticProductCandidates ?? [];
+        const staticCandidatesCapped = allStaticCandidates.length > JSONLD_PRICE_CANDIDATE_CAP;
+        const boundedStaticCandidates = staticCandidatesCapped
+          ? [...allStaticCandidates]
+              .sort(compareByFileThenLine)
+              .slice(0, JSONLD_PRICE_CANDIDATE_CAP)
+          : allStaticCandidates;
 
         // Return only the counts and the (tiny) list of skipped file paths — not
         // the full findings array (Inngest's 4MB step-output limit). fileCount
@@ -479,7 +503,7 @@ export const scanTheme = inngest.createFunction(
           if (isScannableFile(f.filename)) scannableTextBytes += bytes;
         }
 
-        return {
+        const output = {
           findingCount: themeFindings.length,
           fileCount: files.length,
           // Theme-shape scalars threaded to the finalize step's scan_signal
@@ -495,20 +519,48 @@ export const scanTheme = inngest.createFunction(
           // Scalar count only — the full domain array is NOT returned across the
           // step boundary (already persisted above via createScanDomains).
           thirdPartyDomainCount: (thirdPartyDomains ?? []).length,
-          // Tiny (a handful per theme), so it safely crosses the step boundary
-          // unlike the full findings array. Threaded into the live-price audit
-          // step below (gc-47c.10).
-          staticProductCandidates: staticProductCandidates ?? [],
+          // Normally a handful per theme; capped at JSONLD_PRICE_CANDIDATE_CAP
+          // (gc-4ce). Threaded into the live-price audit step below (gc-47c.10).
+          staticProductCandidates: boundedStaticCandidates,
+          staticCandidatesCapped,
           // Dangling-reference candidates (gc-m4h.5): distinct handles for the
           // resolver + per-occurrence hits (file/line/snippet) for the findings.
-          // Both are small (a handful per theme), so they cross the boundary
-          // safely — no raw file content is carried.
+          // Capped by the extractor (gc-4ce); `danglingCapped` marks a cap hit.
           danglingOccurrences: dangling.occurrences,
           danglingDistinctHandles: dangling.distinctHandles,
+          danglingCapped: dangling.capped === true,
+          danglingTruncated: false,
           // Per-phase timing (gc-1bd) — tiny scalars, safe across the boundary.
           themeFetchMs,
           themeScanMs,
         };
+
+        // Defensive step-output budget (gc-4ce). The caps keep the worst case
+        // far below Inngest's 4 MB limit, but if the output is still over
+        // budget, drop the dangling candidates for this scan rather than fail
+        // the whole scan. The dangling audit then reports its category skipped
+        // so the differ keeps prior DANGLING_REFERENCE findings.
+        const outputBytes = Buffer.byteLength(JSON.stringify(output), "utf8");
+        if (outputBytes > CORE_STEP_OUTPUT_BUDGET_BYTES) {
+          logger.warn(
+            "fetch-and-scan output over step-output budget; dropping dangling candidates",
+            {
+              function: "scan-theme",
+              event: "dangling_output_truncated",
+              shopId,
+              outputBytes,
+              budgetBytes: CORE_STEP_OUTPUT_BUDGET_BYTES,
+              danglingOccurrenceCount: dangling.occurrences.length,
+            },
+          );
+          return {
+            ...output,
+            danglingOccurrences: [],
+            danglingDistinctHandles: [],
+            danglingTruncated: true,
+          };
+        }
+        return output;
       });
 
       // Step 3: Translation audit (optional — requires read_translations scope)
@@ -842,7 +894,7 @@ export const scanTheme = inngest.createFunction(
 
         const { auditStaticJsonLdPrices } =
           await import("../../app/services/jsonld-price-audit.server");
-        const { findings: priceFindings, skipped } = await auditStaticJsonLdPrices(
+        const { findings: priceFindings, skipped: auditSkipped } = await auditStaticJsonLdPrices(
           admin,
           staticProductCandidates,
           shopId,
@@ -858,9 +910,11 @@ export const scanTheme = inngest.createFunction(
         });
 
         // `skipped` is true when the audit could not fully cover the candidates
-        // (lookup-budget truncation or read_products revoked mid-scan), so the
-        // category is recorded in skippedCategories and the differ does not
-        // false-resolve the prior findings we could not re-check.
+        // (lookup-budget truncation, read_products revoked mid-scan, or the
+        // candidate cap dropped some before the audit, gc-4ce), so the category
+        // is recorded in skippedCategories and the differ does not false-resolve
+        // the prior findings we could not re-check.
+        const skipped = auditSkipped || staticCandidatesCapped;
         return { findingCount: priceFindings.length, skipped };
       });
 
@@ -884,8 +938,9 @@ export const scanTheme = inngest.createFunction(
           }
 
           // No static references in the theme — nothing to resolve. Audited
-          // (nothing to check), not a scope skip.
-          if (danglingDistinctHandles.length === 0) {
+          // (nothing to check), not a scope skip. (Candidates dropped by the
+          // step-output budget are NOT "nothing to check"; handled below.)
+          if (danglingDistinctHandles.length === 0 && !danglingTruncated) {
             return { findingCount: 0, skipped: false };
           }
 
@@ -905,6 +960,13 @@ export const scanTheme = inngest.createFunction(
             return { findingCount: 0, skipped: false };
           }
 
+          // Candidates were dropped by the step-output budget (gc-4ce): nothing
+          // was checked, so the category is un-audited this scan and prior
+          // DANGLING_REFERENCE findings must not be false-resolved.
+          if (danglingTruncated) {
+            return { findingCount: 0, skipped: true };
+          }
+
           const { unauthenticated } = await import("../../app/shopify.server");
           const { admin } = await unauthenticated.admin(shop.domain);
 
@@ -920,12 +982,23 @@ export const scanTheme = inngest.createFunction(
           // OCCURRENCE (the same handle can be linked from several files/lines,
           // and each broken link is its own finding). Key on (entityType, handle).
           const missingKeys = new Set(missing.map((m) => `${m.entityType} ${m.handle}`));
+          // TRUE occurrence count per handle (gc-4ce): the extractor keeps at most
+          // DANGLING_MAX_OCCURRENCES_PER_HANDLE occurrences, so the description
+          // states the real total rather than the truncated list length.
+          const occurrenceCounts = new Map(
+            danglingDistinctHandles.map((h) => [`${h.entityType} ${h.handle}`, h.occurrenceCount]),
+          );
           const { classifySeverity } =
             await import("../../app/services/severity-classifier.server");
           const danglingFindings: CreateFindingInput[] = danglingOccurrences
             .filter((occ) => missingKeys.has(`${occ.entityType} ${occ.handle}`))
             .map((occ) => {
               const meta = DANGLING_SUBTYPE_META[occ.entityType];
+              const total = occurrenceCounts.get(`${occ.entityType} ${occ.handle}`) ?? 0;
+              const countNote =
+                total > DANGLING_MAX_OCCURRENCES_PER_HANDLE
+                  ? ` This ${meta.label} is referenced ${total} times in the theme; the first ${DANGLING_MAX_OCCURRENCES_PER_HANDLE} are listed.`
+                  : "";
               return {
                 filename: occ.filename,
                 lineNumber: occ.lineNumber,
@@ -935,7 +1008,7 @@ export const scanTheme = inngest.createFunction(
                 // Structured subtype tag (spike §E): the UI can badge subtype
                 // without parsing the description.
                 appName: occ.entityType,
-                description: `Broken ${meta.label} link: /${meta.segment}/${occ.handle}. This ${meta.label} no longer exists (verified via Admin API).`,
+                description: `Broken ${meta.label} link: /${meta.segment}/${occ.handle}. This ${meta.label} no longer exists (verified via Admin API).${countNote}`,
               };
             });
 
@@ -950,10 +1023,14 @@ export const scanTheme = inngest.createFunction(
 
           // Precise-skip rule (spike §D / R1): mark the category skipped iff a
           // static ref of a type whose scope is absent was present, OR the
-          // lookup budget truncated — so the differ never false-resolves refs we
-          // could not re-check.
+          // lookup budget truncated, OR the extractor's caps dropped handles or
+          // occurrences (gc-4ce) — so the differ never false-resolves refs we
+          // could not re-check or did not emit.
           const skipped =
-            scopeStatus.products === "absent" || scopeStatus.content === "absent" || truncated;
+            scopeStatus.products === "absent" ||
+            scopeStatus.content === "absent" ||
+            truncated ||
+            danglingCapped;
           return { findingCount: danglingFindings.length, skipped };
         },
       );
@@ -1169,6 +1246,12 @@ export const scanTheme = inngest.createFunction(
               throttleSleepMs:
                 productResult.throttleSleepMs + (redirectResult.throttleSleepMs ?? 0),
               truncatedWalks,
+              // Step-output bounds (gc-4ce): a cap dropped dangling handles /
+              // occurrences, the byte budget dropped ALL dangling candidates, or
+              // the static JSON-LD candidate cap dropped some.
+              danglingCapped,
+              danglingTruncated,
+              staticCandidatesCapped,
             },
           });
         } catch (err) {

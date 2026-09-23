@@ -26,10 +26,14 @@
 // must NEVER be flagged.
 
 import { buildSnippet, isScannableFile, type ThemeFile } from "./scan-engine.server";
+import { DANGLING_LOOKUP_CAP, DANGLING_MAX_OCCURRENCES_PER_HANDLE } from "../lib/scan-limits";
 
 export type DanglingEntityType = "product" | "collection" | "page";
 
-/** One hardcoded reference at a specific file + line. Findings are 1:1 with these. */
+/**
+ * One hardcoded reference at a specific file + line. Findings are 1:1 with the
+ * occurrences that survive the per-handle cap (gc-4ce).
+ */
 export interface DanglingRefOccurrence {
   entityType: DanglingEntityType;
   /** Normalized (lower-cased, suffix-stripped) entity handle. */
@@ -46,15 +50,38 @@ export interface DistinctDanglingHandle {
   handle: string;
 }
 
+/** A distinct handle plus the TRUE number of times the theme references it. */
+export interface DanglingHandleSummary extends DistinctDanglingHandle {
+  /** Every occurrence found, including any dropped by the per-handle cap. */
+  occurrenceCount: number;
+}
+
 /**
- * Result of a scan. `occurrences` preserves every per-file/per-line hit (one
- * finding each, including repeats of the same handle). `distinctHandles` is the
- * de-duplicated `(entityType, handle)` view for the resolver, so the Admin API is
- * queried once per distinct entity rather than once per occurrence.
+ * Result of a scan. It crosses the Inngest step boundary (4 MB output limit), so
+ * it is BOUNDED (gc-4ce):
+ *   - `distinctHandles` is the de-duplicated `(entityType, handle)` view for the
+ *     resolver (one Admin API lookup each), capped at DANGLING_LOOKUP_CAP in
+ *     first-seen order (by filename, then line).
+ *   - `occurrences` holds up to DANGLING_MAX_OCCURRENCES_PER_HANDLE hits per kept
+ *     handle (one finding each), the first N by filename then line, so the kept
+ *     set is deterministic across rescans of an unchanged theme.
+ *   - `capped` is true when either cap dropped anything; the worker then treats
+ *     the category as not fully audited so the differ never false-resolves a
+ *     dropped occurrence.
  */
 export interface DanglingReferenceCandidates {
   occurrences: DanglingRefOccurrence[];
-  distinctHandles: DistinctDanglingHandle[];
+  distinctHandles: DanglingHandleSummary[];
+  capped: boolean;
+}
+
+/** A raw hit before capping; the snippet is built only for kept hits. */
+interface RawHit {
+  entityType: DanglingEntityType;
+  handle: string;
+  filename: string;
+  lineNumber: number;
+  content: string;
 }
 
 // A literal Shopify handle: lower-case, starts alphanumeric, then alphanumeric or
@@ -117,17 +144,17 @@ const RESERVED_COLLECTION_HANDLES = new Set(["all"]);
  * scan loop already applies the same filter upstream, so this is belt-and-braces.
  */
 export function extractDanglingReferences(files: ThemeFile[]): DanglingReferenceCandidates {
-  const occurrences: DanglingRefOccurrence[] = [];
+  const hits: RawHit[] = [];
 
   for (const file of files) {
     if (!isScannableFile(file.filename)) continue;
-    collectFromFile(file, occurrences);
+    collectFromFile(file, hits);
   }
 
-  return { occurrences, distinctHandles: distinctFrom(occurrences) };
+  return boundHits(hits);
 }
 
-function collectFromFile(file: ThemeFile, out: DanglingRefOccurrence[]): void {
+function collectFromFile(file: ThemeFile, out: RawHit[]): void {
   const fileLines = file.content.split("\n");
 
   for (let i = 0; i < fileLines.length; i++) {
@@ -152,13 +179,7 @@ function collectFromFile(file: ThemeFile, out: DanglingRefOccurrence[]): void {
       if (!HANDLE_RE.test(handle)) continue;
       if (entityType === "collection" && RESERVED_COLLECTION_HANDLES.has(handle)) continue;
 
-      out.push({
-        entityType,
-        handle,
-        filename: file.filename,
-        lineNumber,
-        snippet: buildSnippet(file.content, lineNumber),
-      });
+      out.push({ entityType, handle, filename: file.filename, lineNumber, content: file.content });
     }
 
     // P4–P6: Liquid object lookups by a quoted string literal.
@@ -169,26 +190,68 @@ function collectFromFile(file: ThemeFile, out: DanglingRefOccurrence[]): void {
       const handle = objMatch[2].toLowerCase();
       if (!HANDLE_RE.test(handle)) continue; // rejects e.g. a leading hyphen
 
-      out.push({
-        entityType,
-        handle,
-        filename: file.filename,
-        lineNumber,
-        snippet: buildSnippet(file.content, lineNumber),
-      });
+      out.push({ entityType, handle, filename: file.filename, lineNumber, content: file.content });
     }
   }
 }
 
-/** De-duplicate occurrences into distinct (entityType, handle) pairs, first-seen order. */
-function distinctFrom(occurrences: DanglingRefOccurrence[]): DistinctDanglingHandle[] {
-  const seen = new Set<string>();
-  const distinct: DistinctDanglingHandle[] = [];
-  for (const occ of occurrences) {
-    const key = `${occ.entityType}\u0000${occ.handle}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    distinct.push({ entityType: occ.entityType, handle: occ.handle });
+/**
+ * Order file-anchored items by filename, then line. Used with the (stable)
+ * Array sort before any cap truncates a list, so what survives the cap does not
+ * depend on the order the theme files were fetched in (gc-4ce).
+ */
+export function compareByFileThenLine(
+  a: { filename: string; lineNumber: number },
+  b: { filename: string; lineNumber: number },
+): number {
+  if (a.filename !== b.filename) return a.filename < b.filename ? -1 : 1;
+  return a.lineNumber - b.lineNumber;
+}
+
+/**
+ * Group hits into distinct handles (first-seen by filename, then line), keep the
+ * first DANGLING_LOOKUP_CAP handles and the first DANGLING_MAX_OCCURRENCES_PER_HANDLE
+ * hits of each, and build snippets only for the hits that are kept. Sorting
+ * before truncating makes the kept set independent of the order files arrive in.
+ */
+function boundHits(hits: RawHit[]): DanglingReferenceCandidates {
+  hits.sort(compareByFileThenLine);
+
+  const groups = new Map<
+    string,
+    { entityType: DanglingEntityType; handle: string; hits: RawHit[] }
+  >();
+  for (const hit of hits) {
+    const key = `${hit.entityType}\u0000${hit.handle}`;
+    let group = groups.get(key);
+    if (!group) {
+      group = { entityType: hit.entityType, handle: hit.handle, hits: [] };
+      groups.set(key, group);
+    }
+    group.hits.push(hit);
   }
-  return distinct;
+
+  let capped = groups.size > DANGLING_LOOKUP_CAP;
+  const distinctHandles: DanglingHandleSummary[] = [];
+  const kept: RawHit[] = [];
+  for (const group of [...groups.values()].slice(0, DANGLING_LOOKUP_CAP)) {
+    distinctHandles.push({
+      entityType: group.entityType,
+      handle: group.handle,
+      occurrenceCount: group.hits.length,
+    });
+    if (group.hits.length > DANGLING_MAX_OCCURRENCES_PER_HANDLE) capped = true;
+    kept.push(...group.hits.slice(0, DANGLING_MAX_OCCURRENCES_PER_HANDLE));
+  }
+
+  // Emit occurrences in global (filename, line) order, as before the caps.
+  const occurrences: DanglingRefOccurrence[] = kept.sort(compareByFileThenLine).map((hit) => ({
+    entityType: hit.entityType,
+    handle: hit.handle,
+    filename: hit.filename,
+    lineNumber: hit.lineNumber,
+    snippet: buildSnippet(hit.content, hit.lineNumber),
+  }));
+
+  return { occurrences, distinctHandles, capped };
 }
