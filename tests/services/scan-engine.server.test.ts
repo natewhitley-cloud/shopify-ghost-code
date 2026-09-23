@@ -5544,6 +5544,36 @@ describe("isMaliciousScanOnlyFile", () => {
     expect(isMaliciousScanOnlyFile("assets/theme.js.liquid")).toBe(true);
   });
 
+  it("accepts theme blocks, locales and ES-module assets (audit round 2)", () => {
+    expect(isMaliciousScanOnlyFile("blocks/custom-code.liquid")).toBe(true);
+    expect(isMaliciousScanOnlyFile("locales/en.default.json")).toBe(true);
+    expect(isMaliciousScanOnlyFile("locales/fr.json")).toBe(true);
+    expect(isMaliciousScanOnlyFile("assets/app.mjs")).toBe(true);
+    // Only the file types Shopify stores there as text/code.
+    expect(isMaliciousScanOnlyFile("blocks/readme.md")).toBe(false);
+    expect(isMaliciousScanOnlyFile("locales/en.txt")).toBe(false);
+  });
+
+  it("never overlaps isScannableFile (no file gets the malicious pass twice)", () => {
+    for (const f of [
+      "blocks/custom-code.liquid",
+      "locales/en.default.json",
+      "assets/app.mjs",
+      "assets/app.js",
+      "assets/theme.js.liquid",
+      "templates/product.json",
+      "sections/header-group.json",
+      "config/settings_data.json",
+      "templates/index.liquid",
+      "sections/header.liquid",
+      "snippets/x.liquid",
+      "layout/theme.liquid",
+    ]) {
+      expect(isMaliciousScanOnlyFile(f) && isScannableFile(f), f).toBe(false);
+    }
+    expect(isScannableFile("blocks/custom-code.liquid")).toBe(false);
+  });
+
   it("rejects files the full detector suite already scans (no double-run)", () => {
     expect(isMaliciousScanOnlyFile("templates/index.liquid")).toBe(false);
     expect(isMaliciousScanOnlyFile("sections/header.liquid")).toBe(false);
@@ -5551,9 +5581,8 @@ describe("isMaliciousScanOnlyFile", () => {
     expect(isMaliciousScanOnlyFile("layout/theme.liquid")).toBe(false);
   });
 
-  it("rejects files outside the globs (CSS, locales, settings schema, empty)", () => {
+  it("rejects files outside the globs (CSS, settings schema, empty)", () => {
     expect(isMaliciousScanOnlyFile("assets/app.css")).toBe(false);
-    expect(isMaliciousScanOnlyFile("locales/en.default.json")).toBe(false);
     expect(isMaliciousScanOnlyFile("config/settings_schema.json")).toBe(false);
     expect(isMaliciousScanOnlyFile("assets/logo.svg")).toBe(false);
     expect(isMaliciousScanOnlyFile("")).toBe(false);
@@ -5656,12 +5685,51 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in non-Liquid theme files (gc-3pd)
     expect(findings).toHaveLength(0);
   });
 
-  it("does not scan files outside the globs (assets/*.css, locales/*.json)", () => {
+  it("does not scan files outside the globs (assets/*.css)", () => {
     const { findings } = scanThemeFiles([
       { filename: "assets/app.css", content: `@import url("${EVIL}");` },
-      { filename: "locales/en.default.json", content: `{ "link": "${EVIL}" }` },
     ]);
     expect(findings).toHaveLength(0);
+  });
+
+  it("flags malicious references in locales/*.json, blocks/*.liquid and assets/*.mjs", () => {
+    const { findings } = scanThemeFiles([
+      // `_html` locale keys render unescaped on the storefront.
+      {
+        filename: "locales/en.default.json",
+        content: `{\n  "general": {\n    "banner_html": "<script src=\\"${EVIL}\\"></script>"\n  }\n}`,
+      },
+      {
+        filename: "blocks/custom-code.liquid",
+        content: `<div>\n<script src="${EVIL}"></script>\n</div>`,
+      },
+      { filename: "assets/loader.mjs", content: `export default import("${EVIL}");` },
+    ]);
+    expect(findings.map((f) => [f.findingType, f.filename, f.lineNumber])).toEqual([
+      [FindingType.MALICIOUS_SCRIPT, "locales/en.default.json", 3],
+      [FindingType.MALICIOUS_SCRIPT, "blocks/custom-code.liquid", 2],
+      [FindingType.MALICIOUS_SCRIPT, "assets/loader.mjs", 1],
+    ]);
+  });
+
+  it("runs ONLY the malicious detector on blocks/*.liquid (full suite tracked in gc-zfl)", () => {
+    const { findings, unknownScripts } = scanThemeFiles([
+      {
+        filename: "blocks/x.liquid",
+        content:
+          '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=X"></script>\n<script src="https://cdn.unknown-vendor.example/w.js"></script>',
+      },
+    ]);
+    expect(findings).toHaveLength(0);
+    expect(unknownScripts).toHaveLength(0);
+  });
+
+  it("stays linear on a comment-opener flood in a .liquid file (blanking path)", () => {
+    const content = "{% comment %}".repeat(40_000) + `\n<script src="${EVIL}"></script>`;
+    const start = performance.now();
+    const findings = detectMaliciousScripts({ filename: "blocks/x.liquid", content });
+    expect(performance.now() - start).toBeLessThan(1500);
+    expect(findings).toHaveLength(1);
   });
 
   it("runs ONLY the malicious detector on these files (no other detector fires)", () => {
@@ -5725,6 +5793,168 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in non-Liquid theme files (gc-3pd)
     expect(performance.now() - start).toBeLessThan(1500);
     // Unterminated comment never closes, so the live line after it still counts.
     expect(findings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MALICIOUS_SCRIPT adversarial-audit round 2 (2026-09-23b)
+// ---------------------------------------------------------------------------
+
+describe("detectMaliciousScripts — Liquid comments only count in .liquid files", () => {
+  it("flags a reference wrapped in literal {% comment %} text inside assets/*.js", () => {
+    // Liquid never renders assets/*.js, so the tags are plain JS comment text.
+    const findings = detectMaliciousScripts({
+      filename: "assets/theme.js",
+      content: '/*{% comment %}*/ s.src="https://jsdeliver.cloud/x.js"; /*{% endcomment %}*/',
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(1);
+  });
+
+  it("flags a Custom Liquid block between comment tags split across two JSON block settings", () => {
+    const content = [
+      "{",
+      '  "sections": {',
+      '    "a": { "type": "rich-text", "settings": { "text": "{% comment %}" } },',
+      String.raw`    "b": { "type": "custom-liquid", "settings": { "custom_liquid": "<script src=\"https:\/\/jsdeliver.cloud\/x.js\"><\/script>" } },`,
+      '    "c": { "type": "rich-text", "settings": { "text": "{% endcomment %}" } }',
+      "  },",
+      '  "order": ["a", "b", "c"]',
+      "}",
+    ].join("\n");
+    const findings = findingsOfType(
+      scanThemeFiles([{ filename: "templates/index.json", content }]).findings,
+      FindingType.MALICIOUS_SCRIPT,
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(4);
+  });
+
+  it("flags literal comment tags in config/settings_data.json and locales/*.json", () => {
+    const content =
+      '{ "x": "{% comment %}", "y": "<script src=\\"https://jsdeliver.cloud/x.js\\">", "z": "{% endcomment %}" }';
+    for (const filename of ["config/settings_data.json", "locales/en.default.json"]) {
+      expect(detectMaliciousScripts({ filename, content })).toHaveLength(1);
+    }
+  });
+
+  it("still blanks Liquid comments in assets/*.js.liquid and *.css.liquid (Liquid renders them)", () => {
+    for (const filename of ["assets/theme.js.liquid", "assets/theme.css.liquid"]) {
+      const findings = detectMaliciousScripts({
+        filename,
+        content: '{% comment %}s.src="https://jsdeliver.cloud/x.js";{% endcomment %}',
+      });
+      expect(findings).toHaveLength(0);
+    }
+  });
+});
+
+describe("detectMaliciousScripts — {% raw %} blocks", () => {
+  const EVIL_TAG = '<script src="https://jsdeliver.cloud/x.js"></script>';
+
+  it("ignores comment tags that are literal text inside raw blocks (script renders live)", () => {
+    const findings = detectMaliciousScripts({
+      filename: "sections/x.liquid",
+      content: `{% raw %}{% comment %}{% endraw %}${EVIL_TAG}{% raw %}{% endcomment %}{% endraw %}`,
+    });
+    expect(findings).toHaveLength(1);
+  });
+
+  it("handles whitespace-control raw tags ({%- raw -%})", () => {
+    const findings = detectMaliciousScripts({
+      filename: "sections/x.liquid",
+      content: `{%- raw -%}{%- comment -%}{%- endraw -%}\n${EVIL_TAG}\n{%- raw -%}{%- endcomment -%}{%- endraw -%}`,
+    });
+    expect(findings.map((f) => f.lineNumber)).toEqual([2]);
+  });
+
+  it("still blanks a real comment that contains a raw block", () => {
+    const findings = detectMaliciousScripts({
+      filename: "sections/x.liquid",
+      content: `{% comment %}{% raw %}${EVIL_TAG}{% endraw %}{% endcomment %}`,
+    });
+    expect(findings).toHaveLength(0);
+  });
+
+  it("still blanks a real comment that follows a closed raw block", () => {
+    const findings = detectMaliciousScripts({
+      filename: "sections/x.liquid",
+      content: `{% raw %}{{ x }}{% endraw %}{% comment %}${EVIL_TAG}{% endcomment %}`,
+    });
+    expect(findings).toHaveLength(0);
+  });
+
+  it("treats everything after an unterminated raw as live (fails toward reporting)", () => {
+    const findings = detectMaliciousScripts({
+      filename: "sections/x.liquid",
+      content: `{% raw %}{% comment %}${EVIL_TAG}{% endcomment %}`,
+    });
+    expect(findings).toHaveLength(1);
+  });
+
+  it("stays linear on raw/comment tag floods in a .liquid file", () => {
+    const floods = [
+      "{% comment %}".repeat(40_000),
+      "{% raw %}".repeat(40_000),
+      "{% raw %}{% endraw %}{% comment %}".repeat(20_000),
+      "{% comment %}{% raw %}".repeat(20_000),
+      "{%" + " ".repeat(500_000) + "raw",
+    ];
+    for (const flood of floods) {
+      const start = performance.now();
+      detectMaliciousScripts({ filename: "sections/x.liquid", content: `${flood}\n${EVIL_TAG}` });
+      expect(performance.now() - start).toBeLessThan(1500);
+    }
+  });
+});
+
+describe("detectMaliciousScripts — snippet and decoding", () => {
+  it("centres the snippet on the first LIVE occurrence, not one inside a comment", () => {
+    const [f, ...rest] = detectMaliciousScripts({
+      filename: "layout/theme.liquid",
+      content: `{% comment %}<script src="https://jsdeliver.cloud/a.js"></script>{% endcomment %}${"x".repeat(400)}<script src="https://jsdeliver.cloud/live.js"></script>`,
+    });
+    expect(rest).toHaveLength(0);
+    expect(f.codeSnippet).toContain("live.js");
+    expect(f.codeSnippet).not.toContain("a.js");
+  });
+
+  it("decodes HTML-entity slashes (&#47; and &#x2F;)", () => {
+    for (const url of [
+      "https:&#47;&#47;jsdeliver.cloud&#47;x.js",
+      "https:&#x2F;&#x2F;jsdeliver.cloud&#x2F;x.js",
+      "https:&#X2f;&#x2f;jsdeliver.cloud/x.js",
+    ]) {
+      const findings = detectMaliciousScripts({
+        filename: "layout/theme.liquid",
+        content: `<script src="${url}"></script>`,
+      });
+      expect(findings, url).toHaveLength(1);
+    }
+  });
+
+  it("collapses runs of backslashes before a slash (\\\\/ and \\\\\\/)", () => {
+    for (const url of [
+      String.raw`https:\\/\\/jsdeliver.cloud\\/x.js`,
+      String.raw`https:\\\/\\\/jsdeliver.cloud\\\/x.js`,
+    ]) {
+      const findings = detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `s.src="${url}";`,
+      });
+      expect(findings, url).toHaveLength(1);
+    }
+  });
+
+  it("stays linear on a 1MB backslash run and an entity flood (no ReDoS in the decode)", () => {
+    for (const content of [
+      "\\".repeat(1_000_000) + "x",
+      "&#0".repeat(300_000) + "&#x0".repeat(300_000),
+    ]) {
+      const start = performance.now();
+      detectMaliciousScripts({ filename: "assets/app.js", content });
+      expect(performance.now() - start).toBeLessThan(1500);
+    }
   });
 });
 

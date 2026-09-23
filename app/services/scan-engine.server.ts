@@ -251,19 +251,25 @@ export function isScannableFile(filename: string): boolean {
  *   - templates/**.json, sections/**.json — Custom Liquid block code is stored as
  *     (escaped) JSON strings in JSON templates and section groups.
  *   - config/settings_data.json — theme settings can carry raw HTML/URLs.
- *   - assets/*.js, assets/*.liquid (e.g. theme.js.liquid) — injected loaders are
- *     commonly appended to asset JS.
+ *   - assets/*.js, assets/*.mjs, assets/*.liquid (e.g. theme.js.liquid) — injected
+ *     loaders are commonly appended to asset JS.
+ *   - blocks/*.liquid — OS 2.0 theme blocks render on the storefront. They get
+ *     only this pass for now; full-detector coverage is tracked as gc-zfl.
+ *   - locales/*.json — `*_html` keys render unescaped, so they can carry markup.
  *
  * Deliberately excluded: CSS (cannot execute script; a CSS `url()` to a listed
- * host is not the skimmer/loader threat this list tracks), locales (translation
- * strings), config/settings_schema.json (developer-owned schema). Disjoint from
- * isScannableFile by construction, so no file is scanned twice.
+ * host is not the skimmer/loader threat this list tracks),
+ * config/settings_schema.json (developer-owned schema). Disjoint from
+ * isScannableFile by construction (blocks/ is not a scannable prefix), so no
+ * file is scanned twice.
  */
 export function isMaliciousScanOnlyFile(filename: string): boolean {
   if (filename === "config/settings_data.json") return true;
   if (filename.startsWith("assets/")) {
-    return filename.endsWith(".js") || filename.endsWith(".liquid");
+    return filename.endsWith(".js") || filename.endsWith(".mjs") || filename.endsWith(".liquid");
   }
+  if (filename.startsWith("blocks/")) return filename.endsWith(".liquid");
+  if (filename.startsWith("locales/")) return filename.endsWith(".json");
   return (
     (filename.startsWith("templates/") || filename.startsWith("sections/")) &&
     filename.endsWith(".json")
@@ -1035,11 +1041,18 @@ export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
 // on pathological 1MB single-line files (covered by a test).
 const URL_HOST_RE = /(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)/gi;
 
-// `{% comment %}` / `{% endcomment %}` incl. whitespace-control `{%-`/`-%}` forms.
-// Matched separately (not as one lazy `open[\s\S]*?close` regex, which rescans
-// to EOF from every unterminated opener: quadratic on an opener flood).
-const LIQUID_COMMENT_OPEN_RE = /\{%-?\s*comment\s*-?%\}/gi;
-const LIQUID_COMMENT_CLOSE_RE = /\{%-?\s*endcomment\s*-?%\}/gi;
+// `{% comment %}` / `{% endcomment %}` / `{% raw %}` / `{% endraw %}` incl.
+// whitespace-control `{%-`/`-%}` forms. One forward pass over these tags drives a
+// small state machine (not a lazy `open[\s\S]*?close` regex, which rescans to
+// EOF from every unterminated opener: quadratic on an opener flood).
+const LIQUID_COMMENT_RAW_TAG_RE = /\{%-?\s*(comment|endcomment|raw|endraw)\s*-?%\}/gi;
+
+// Slash encodings decoded before URL matching: any run of backslashes before `/`
+// (JSON `\/`, double-escaped `\\/`, `\\\/`) and HTML entities `&#47;` / `&#x2F;`
+// (optional leading zeros, optional `;`). The `(?<!\\)` lookbehind lets a
+// backslash run start a match only at its first char, so a huge run that is not
+// followed by `/` is scanned once, not once per backslash (linear).
+const ENCODED_SLASH_RE = /(?<!\\)\\+\/|&#0*47(?![0-9]);?|&#x0*2f(?![0-9a-f]);?/gi;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.
@@ -1051,21 +1064,37 @@ const MALICIOUS_SNIPPET_MAX = 300;
  * numbers still map 1:1 to the original file. Unlike the shared line-granular
  * buildCommentSkipLines, live code sharing a line with a comment stays visible:
  * a minified one-line theme with any comment in it must not evade detection.
+ *
+ * `{% raw %}...{% endraw %}` content is literal text, so comment tags inside a
+ * raw span are not real comments and are ignored. Inside a comment, the FIRST
+ * `{% endcomment %}` closes it (raw/nested tags there are not tracked): any
+ * mismatch with Liquid's parser can only leave more text live, i.e. fail toward
+ * reporting. An unterminated comment or raw leaves the rest of the file live.
  */
 function blankLiquidComments(content: string): string {
   let out = "";
   let from = 0;
-  LIQUID_COMMENT_OPEN_RE.lastIndex = 0;
-  let open: RegExpExecArray | null;
-  while ((open = LIQUID_COMMENT_OPEN_RE.exec(content)) !== null) {
-    LIQUID_COMMENT_CLOSE_RE.lastIndex = LIQUID_COMMENT_OPEN_RE.lastIndex;
-    const close = LIQUID_COMMENT_CLOSE_RE.exec(content);
-    // No closer after this opener means none after any later opener either.
-    if (close === null) break;
-    const end = close.index + close[0].length;
-    out += content.slice(from, open.index) + content.slice(open.index, end).replace(/[^\n]/g, " ");
-    from = end;
-    LIQUID_COMMENT_OPEN_RE.lastIndex = end;
+  let state: "live" | "raw" | "comment" = "live";
+  let commentStart = 0;
+  LIQUID_COMMENT_RAW_TAG_RE.lastIndex = 0;
+  let tag: RegExpExecArray | null;
+  while ((tag = LIQUID_COMMENT_RAW_TAG_RE.exec(content)) !== null) {
+    const name = tag[1].toLowerCase();
+    if (state === "live") {
+      if (name === "raw") state = "raw";
+      else if (name === "comment") {
+        state = "comment";
+        commentStart = tag.index;
+      }
+    } else if (state === "raw") {
+      if (name === "endraw") state = "live";
+    } else if (name === "endcomment") {
+      const end = LIQUID_COMMENT_RAW_TAG_RE.lastIndex;
+      out +=
+        content.slice(from, commentStart) + content.slice(commentStart, end).replace(/[^\n]/g, " ");
+      from = end;
+      state = "live";
+    }
   }
   return out + content.slice(from);
 }
@@ -1074,8 +1103,15 @@ function blankLiquidComments(content: string): string {
  * Emit one MALICIOUS_SCRIPT finding per (line, distinct domain) for every live
  * theme reference to a domain on the curated KNOWN_MALICIOUS_DOMAINS list.
  *
- *   - Liquid comment blocks are ignored; code outside them on the same line is not.
- *   - JSON-escaped slashes (`https:\/\/host`) are decoded before matching.
+ *   - Liquid comment blocks are ignored, but ONLY in `.liquid` files (incl.
+ *     `assets/*.js.liquid`), the only files Liquid renders. Elsewhere (asset
+ *     JS, JSON templates/sections, settings_data, locales) `{% comment %}` is
+ *     literal text an attacker can wrap around live code, so nothing is blanked.
+ *     Trade-off: a commented-out reference inside a JSON Custom Liquid string is
+ *     still reported (safer direction: a leftover reference is worth removing).
+ *     Code outside a comment on the same line is never skipped.
+ *   - Encoded slashes (`https:\/\/host`, `\\/`, `&#47;`, `&#x2F;`) are decoded
+ *     before matching.
  *   - Other inert forms (HTML/JS comments) are still reported: a leftover
  *     malicious reference is worth removing, and the description says
  *     "references", not "loads".
@@ -1088,10 +1124,12 @@ function blankLiquidComments(content: string): string {
 export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
   const originalLines = file.content.split("\n");
-  const scanLines = blankLiquidComments(file.content).split("\n");
+  const scanLines = (
+    file.filename.endsWith(".liquid") ? blankLiquidComments(file.content) : file.content
+  ).split("\n");
 
   scanLines.forEach((rawText, i) => {
-    const text = rawText.replace(/\\\//g, "/"); // decode JSON-escaped slashes
+    const text = rawText.replace(ENCODED_SLASH_RE, "/");
     const seen = new Set<string>();
     URL_HOST_RE.lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -1102,7 +1140,9 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
 
       const lineNumber = i + 1;
       const original = originalLines[i];
-      const at = original.toLowerCase().indexOf(hit.domain);
+      // Search the blanked (same length as original) but undecoded line so the
+      // snippet centres on the first LIVE occurrence, not one in a comment.
+      const at = rawText.toLowerCase().indexOf(hit.domain);
       const from = Math.max(0, at - MALICIOUS_SNIPPET_LEAD);
       findings.push({
         filename: file.filename,
