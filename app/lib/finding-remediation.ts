@@ -206,7 +206,7 @@ const REMEDIATION: Record<string, Remediation> = {
   // ---- Sunset checkout customization mechanism ----
   CHECKOUT_SUNSET: {
     howTo:
-      "Your theme still uses checkout.liquid to customize checkout. As of the sunset date (around August 13, 2026), Shopify stops rendering checkout.liquid for Plus stores, so any custom code, tracking, or content it holds will no longer run at checkout. Recreate these customizations with Checkout Extensibility: move custom scripts and pixels to the customer events (web pixels) or checkout UI extensions, and rebuild injected content as checkout UI extensions in the checkout editor. Migrate and test on a draft before the cutover, and duplicate your live theme as a backup first.",
+      "Your theme still includes checkout.liquid, which Shopify no longer renders for any store. It was retired for the Information, Shipping, and Payment steps on August 13, 2024, and for the Thank you and Order status pages on August 28, 2025, so any custom code, tracking, or content it holds has already stopped running and the file is now leftover code. Rebuild anything you still need with Checkout Extensibility: move custom scripts and pixels to customer events (web pixels), rebuild injected content as checkout UI extensions in the checkout editor, and use Shopify Functions for custom checkout logic. Keep the file as a reference until you have rebuilt what you need, and duplicate your live theme as a backup before editing it.",
   },
 
   // ---- Theme settings ----

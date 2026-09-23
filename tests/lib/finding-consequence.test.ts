@@ -109,6 +109,17 @@ describe("dominantPhraseForLane", () => {
   });
 });
 
+describe("CHECKOUT_SUNSET consequence (gc-oam)", () => {
+  it("stays act-now in the customers-see-it lane: the harm is already present", () => {
+    expect(CONSEQUENCE_MAP.CHECKOUT_SUNSET).toEqual({
+      primary: "customers-see-it",
+      secondary: [],
+      urgency: "act-now",
+      agentic: false,
+    });
+  });
+});
+
 describe("URGENCY_RANK", () => {
   it("orders act-now < compounding < whenever", () => {
     expect(URGENCY_RANK["act-now"]).toBe(0);

@@ -6,21 +6,23 @@
 // scan worker (scope `read_themes`; NOT scope-gated). No Admin API, DB, or
 // network access.
 //
-// Background: Shopify sunset the legacy `checkout.liquid` customization
-// mechanism. For Shopify Plus stores it is HARD-BLOCKED as of ~Aug 13, 2026 —
-// after that date `layout/checkout.liquid` no longer renders, so every
-// customization it carries (custom scripts, tracking/analytics pixels, injected
-// snippets, theme-injected content) silently stops working at checkout, the most
-// conversion-critical step.
+// Background: Shopify has fully sunset the legacy `checkout.liquid`
+// customization mechanism. It stopped rendering for the Information, Shipping,
+// and Payment steps on Aug 13, 2024, and for the Thank you and Order status
+// pages on Aug 28, 2025 (gc-oam; shopify.dev checkout-liquid layout docs). It
+// no longer renders anywhere, for any store, so every customization it carries
+// (custom scripts, tracking/analytics pixels, injected snippets, theme-injected
+// content) has ALREADY stopped working at checkout. The copy is past tense and
+// makes no Plus-specific claim: the detector cannot know a store's plan.
 //
 // Two checks (v1 scope — nothing more):
 //   1. PRESENCE: `layout/checkout.liquid` exists with non-trivial content →
-//      emit one CHECKOUT_SUNSET finding. The file itself is what the hard-block
-//      kills, so its mere presence (once it holds real content) is the defect.
+//      emit one CHECKOUT_SUNSET finding. The file no longer renders, so its mere
+//      presence (once it holds real content) means a customization is dead.
 //   2. CUSTOMIZATION DEPTH: within that file, detect customization signals
 //      (`<script>` tags, tracking/analytics snippets, `{% render %}` /
-//      `{% include %}`, `content_for_*`) to describe WHAT specifically will
-//      break. This does NOT emit a second finding — it enriches the single
+//      `{% include %}`, `content_for_*`) to describe WHAT specifically has
+//      stopped working. This does NOT emit a second finding — it enriches the single
 //      presence finding's `description` and sets the `appName` subtype tag
 //      (mirroring how DANGLING_REFERENCE carries its subtype at runtime: ONE
 //      FindingType, subtype in description + appName, no new DB column).
@@ -38,11 +40,19 @@ import { FindingType, Severity } from "@prisma/client";
 import { buildSnippet, MAX_SCANNABLE_FILE_BYTES, type ThemeFile } from "./scan-engine.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
-/** The single legacy checkout layout file the sunset hard-block targets. */
+/** The single legacy checkout layout file the sunset retired. */
 export const CHECKOUT_LIQUID_PATH = "layout/checkout.liquid";
 
-/** Human-facing sunset date used in copy. */
-const SUNSET_DATE = "around August 13, 2026";
+/** Sentence stating the (already past) sunset, shared by every description. */
+const SUNSET_FACT =
+  "Shopify no longer renders checkout.liquid for any store: it was retired for the " +
+  "Information, Shipping, and Payment steps on August 13, 2024, and for the Thank you " +
+  "and Order status pages on August 28, 2025.";
+
+/** Closing remediation pointer, shared by every description. */
+const REBUILD_HINT =
+  "Rebuild anything you still need with Checkout Extensibility (checkout UI " +
+  "extensions, Shopify Functions, or web pixels).";
 
 // Blank out Liquid comment blocks and HTML comments so commented-out code counts
 // as neither content (trivial-check) nor a customization signal (depth-check).
@@ -117,7 +127,7 @@ interface DepthSignal {
   subtype: string;
   /** Detection regex, run against comment-stripped content. */
   test: RegExp;
-  /** Merchant-facing description of what this customization loses at cutover. */
+  /** Merchant-facing description of what this customization has stopped doing. */
   breaks: string;
 }
 
@@ -128,24 +138,24 @@ const DEPTH_SIGNALS: DepthSignal[] = [
   {
     subtype: "scripts",
     test: /<script[\s>]/i,
-    breaks: "custom <script> code will stop executing at checkout",
+    breaks: "custom <script> code no longer runs at checkout",
   },
   {
     subtype: "tracking",
     // Common analytics/pixel identifiers merchants hand-place in checkout.liquid.
     // Specific tokens (not a bare "ga") to keep false positives low.
     test: /\b(?:gtag|fbq|dataLayer|_gaq|ttq\.|pintrk|snaptr|google-analytics|googletagmanager|analytics\.js)\b/i,
-    breaks: "checkout tracking and analytics pixels will stop firing",
+    breaks: "checkout tracking and analytics pixels no longer fire",
   },
   {
     subtype: "snippets",
     test: /\{%-?\s*(?:render|include)\s+/i,
-    breaks: "custom snippets rendered into checkout will no longer load",
+    breaks: "custom snippets rendered into checkout no longer load",
   },
   {
     subtype: "content-injection",
     test: /content_for_\w+/i,
-    breaks: "theme-injected checkout content (content_for_*) will no longer render",
+    breaks: "theme-injected checkout content (content_for_*) no longer renders",
   },
 ];
 
@@ -166,13 +176,13 @@ const LAYOUT_SUBTYPE = "layout";
  * Returns at most ONE finding: none when `layout/checkout.liquid` is absent or
  * trivial (empty / whitespace / comments only), otherwise a single
  * CHECKOUT_SUNSET finding whose `appName` is the dominant customization subtype
- * and whose `description` explains the dated hard-block plus every specific
- * customization that will break.
+ * and whose `description` states the (past) sunset plus every specific
+ * customization that has stopped working.
  *
  * A checkout.liquid over MAX_SCANNABLE_FILE_BYTES is not analyzed (this runs
  * on the main thread, and no real layout file is that large). It still gets
- * the presence finding: the file existing is itself the defect the hard-block
- * creates, and a file that large is certainly not an empty husk, so dropping
+ * the presence finding: the file existing is itself the defect the sunset
+ * left behind, and a file that large is certainly not an empty husk, so dropping
  * the finding would hide a real checkout breakage. The finding is the generic
  * "layout" one, claiming no specific customization. The scanner skips and
  * records the same file (ScanResult.skippedFiles), and the caller logs it.
@@ -206,10 +216,8 @@ export function detectCheckoutSunset(files: ThemeFile[]): CreateFindingInput[] {
 
   const description =
     matched.length > 0
-      ? `Your theme relies on checkout.liquid to customize checkout. Shopify hard-blocks ` +
-        `checkout.liquid for Plus stores ${SUNSET_DATE}; after that this file no longer ` +
-        `renders. What breaks: ${joinClauses(matched.map((s) => s.breaks))}. Migrate these ` +
-        `customizations to Checkout Extensibility.`
+      ? `Your theme still uses checkout.liquid to customize checkout. ${SUNSET_FACT} ` +
+        `What stopped working: ${joinClauses(matched.map((s) => s.breaks))}. ${REBUILD_HINT}`
       : layoutDescription();
 
   return [sunsetFinding(checkoutFile, subtype, lineNumber, description)];
@@ -218,9 +226,9 @@ export function detectCheckoutSunset(files: ThemeFile[]): CreateFindingInput[] {
 /** Description for a checkout.liquid with no recognized (or analyzed) signal. */
 function layoutDescription(): string {
   return (
-    `Your theme still includes checkout.liquid to customize checkout. Shopify hard-blocks ` +
-    `checkout.liquid for Plus stores ${SUNSET_DATE}; after that this file no longer ` +
-    `renders. Migrate any checkout customization to Checkout Extensibility.`
+    `Your theme still includes checkout.liquid to customize checkout. ${SUNSET_FACT} ` +
+    `Any tracking, scripts, or custom content in this file has already stopped running, ` +
+    `so it is now leftover code. ${REBUILD_HINT}`
   );
 }
 
@@ -235,8 +243,8 @@ function sunsetFinding(
     lineNumber,
     codeSnippet: buildSnippet(checkoutFile.content, lineNumber),
     findingType: FindingType.CHECKOUT_SUNSET,
-    // HIGH: the file stops rendering entirely at the hard-block; there is no
-    // higher tier than HIGH in this app.
+    // HIGH: the file no longer renders at all, so whatever it carried is already
+    // broken at checkout; there is no higher tier than HIGH in this app.
     severity: Severity.HIGH,
     // Structured subtype tag (mirrors DANGLING_REFERENCE): the UI can badge the
     // customization depth without parsing the description.

@@ -14,6 +14,7 @@
  *   - comment stripping is linear on unterminated comment floods (gc-4yg) and
  *     identical to the regexes it replaced on random input
  *   - checkout.liquid over MAX_SCANNABLE_FILE_BYTES: presence finding only
+ *   - sunset copy is past tense and accurate for every store (gc-oam)
  */
 
 import { FindingType, Severity } from "@prisma/client";
@@ -85,7 +86,7 @@ describe("detectCheckoutSunset — customization depth", () => {
     ]);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("scripts");
-    expect(findings[0].description).toContain("custom <script> code will stop executing");
+    expect(findings[0].description).toContain("custom <script> code no longer runs");
     expect(findings[0].description).toContain("Checkout Extensibility");
   });
 
@@ -93,7 +94,7 @@ describe("detectCheckoutSunset — customization depth", () => {
     const findings = detectCheckoutSunset([file("{{ 'x' }} gtag('config', 'GA-1');")]);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("tracking");
-    expect(findings[0].description).toContain("tracking and analytics pixels will stop firing");
+    expect(findings[0].description).toContain("tracking and analytics pixels no longer fire");
   });
 
   it('tags subtype "snippets" for a {% render %} with no scripts/tracking', () => {
@@ -117,7 +118,7 @@ describe("detectCheckoutSunset — customization depth", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("layout");
     // The generic (no-signal) description omits the "What breaks:" enumeration.
-    expect(findings[0].description).not.toContain("What breaks:");
+    expect(findings[0].description).not.toContain("What stopped working:");
     expect(findings[0].description).toContain("Checkout Extensibility");
   });
 
@@ -132,7 +133,7 @@ describe("detectCheckoutSunset — customization depth", () => {
     const findings = detectCheckoutSunset([file(content)]);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("scripts");
-    expect(findings[0].description).toContain("custom <script> code will stop executing");
+    expect(findings[0].description).toContain("custom <script> code no longer runs");
     expect(findings[0].description).toContain("custom snippets rendered into checkout");
     expect(findings[0].description).toContain("content_for_*");
   });
@@ -144,7 +145,7 @@ describe("detectCheckoutSunset — customization depth", () => {
     expect(findings).toHaveLength(1);
     // The live signal is content_for, not the commented script.
     expect(findings[0].appName).toBe("content-injection");
-    expect(findings[0].description).not.toContain("<script> code will stop executing");
+    expect(findings[0].description).not.toContain("<script> code no longer runs");
   });
 });
 
@@ -336,7 +337,7 @@ describe("detectCheckoutSunset — checkout.liquid over MAX_SCANNABLE_FILE_BYTES
     expect(findings[0].appName).toBe("layout");
     expect(findings[0].lineNumber).toBe(1);
     expect(findings[0].description).toContain("still includes checkout.liquid");
-    expect(findings[0].description).not.toContain("What breaks");
+    expect(findings[0].description).not.toContain("What stopped working");
     expect(findings[0].codeSnippet).toContain("<script>track()</script>");
   });
 
@@ -353,5 +354,38 @@ describe("detectCheckoutSunset — checkout.liquid over MAX_SCANNABLE_FILE_BYTES
     const content = "<script>track()</script>" + " ".repeat(MAX_SCANNABLE_FILE_BYTES - 24);
     expect(content).toHaveLength(MAX_SCANNABLE_FILE_BYTES);
     expect(detectCheckoutSunset([file(content)])[0].appName).toBe("scripts");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-oam — sunset copy is past tense and true for every store
+// ---------------------------------------------------------------------------
+
+describe("detectCheckoutSunset — sunset copy accuracy (gc-oam)", () => {
+  // One description per copy path: a single signal, several signals, the
+  // generic no-signal layout, and the oversized (unanalyzed) file.
+  const variants: Array<[string, string]> = [
+    ["scripts", "<script>x()</script>"],
+    ["multi-signal", "<script>x()</script>\n{% render 'a' %}\n{{ content_for_header }}"],
+    ["layout", "<div>Checkout</div>"],
+    ["oversized", "a".repeat(MAX_SCANNABLE_FILE_BYTES + 1)],
+  ];
+
+  it.each(variants)("%s description states the sunset has already happened", (_name, content) => {
+    const description = detectCheckoutSunset([file(content)])[0].description;
+    expect(description).toContain("no longer renders");
+    expect(description).toContain("August 28, 2025");
+    expect(description).toContain("Checkout Extensibility");
+  });
+
+  it.each(variants)("%s description makes no future-dated or Plus-only claim", (_name, content) => {
+    const description = detectCheckoutSunset([file(content)])[0].description;
+    expect(description).not.toMatch(/2026/);
+    expect(description).not.toMatch(/hard-block/i);
+    expect(description).not.toMatch(/\bwill\b/i);
+    expect(description).not.toMatch(/after that/i);
+    expect(description).not.toMatch(/cutover/i);
+    expect(description).not.toMatch(/\bPlus\b/);
+    expect(description).not.toMatch(/[—–]/);
   });
 });

@@ -324,8 +324,10 @@ export const CONSEQUENCE_MAP: Record<
   // CHECKOUT_SUNSET: reliance on the sunset checkout.liquid mechanism. Primary
   // lane is "customers-see-it" — the breakage lands at checkout, the most
   // shopper-facing step, and takes custom scripts/tracking/snippets down with it.
-  // act-now: the Plus hard-block is a dated, imminent event (~Aug 13, 2026), not
-  // a slow decay. Not agentic — it does not shape how Google/AI read the store.
+  // act-now: the harm is present, not pending. checkout.liquid no longer renders
+  // for any store (fully sunset Aug 28, 2025), so whatever it carried is already
+  // dead at checkout until rebuilt with Checkout Extensibility. Not agentic — it
+  // does not shape how Google/AI read the store.
   CHECKOUT_SUNSET: {
     primary: "customers-see-it",
     secondary: [],
