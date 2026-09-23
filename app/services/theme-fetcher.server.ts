@@ -185,6 +185,8 @@ export class ThemeTooLargeError extends Error {
   constructor(
     readonly themeId: string,
     readonly maxTotalBytes: number,
+    /** Cumulative text length (chars) at the moment the fetch aborted. */
+    readonly bytesAtAbort: number,
   ) {
     super(
       `[theme-fetcher] Theme ${themeId} exceeds the ${maxTotalBytes}-byte total text ceiling; ` +
@@ -251,7 +253,9 @@ export async function fetchThemeFiles(
       if (typeof node.body?.content !== "string") return [];
       totalBytes += node.body.content.length;
       // Throwing here aborts pagination before the next page is requested.
-      if (totalBytes > maxTotalBytes) throw new ThemeTooLargeError(themeId, maxTotalBytes);
+      if (totalBytes > maxTotalBytes) {
+        throw new ThemeTooLargeError(themeId, maxTotalBytes, totalBytes);
+      }
       return [{ filename: node.filename, content: node.body.content }];
     },
   });

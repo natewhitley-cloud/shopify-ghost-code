@@ -314,6 +314,33 @@ export const scanTheme = inngest.createFunction(
               event: "theme_too_large",
               shopId,
               maxTotalBytes: err.maxTotalBytes,
+              bytesAtAbort: err.bytesAtAbort,
+            });
+            // gc-d4e follow-up: without this row an over-cap theme is invisible
+            // to scripts/theme-size-report.ts, which could then never show the
+            // cap is too LOW. Reuses the scan_signal type with the SAME key
+            // (scanId) and identity field (metadata.shopId) as the success-path
+            // emit, so the existing GDPR redact + prune coverage applies — no
+            // new OpsEvent type. recordOpsEvent never throws, so the
+            // NonRetriableError below is unaffected. Idempotency: this write
+            // re-executes only if the step re-runs, and NonRetriableError
+            // prevents retries, so it is written at most once per scan in
+            // practice; any duplicate is harmless (consumers take one row per
+            // scanId, as for the success-path row).
+            const { recordOpsEvent, OPS_EVENT_TYPES } =
+              await import("../../app/models/ops-event.server");
+            await recordOpsEvent({
+              eventType: OPS_EVENT_TYPES.SCAN_SIGNAL,
+              key: scanId,
+              metadata: {
+                shopId,
+                scanId,
+                plan: shop.plan,
+                themeId,
+                aborted: "theme_too_large",
+                bytesAtAbort: err.bytesAtAbort,
+                maxTotalBytes: err.maxTotalBytes,
+              },
             });
             throw new NonRetriableError(err.message, { cause: err });
           }

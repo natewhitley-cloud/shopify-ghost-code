@@ -620,13 +620,46 @@ describe("scanTheme — error paths", () => {
   // gc-8s2: an over-ceiling theme is deterministic; retrying would just refetch
   // up to the cap again. It must fail the scan once, as NonRetriableError.
   it("converts ThemeTooLargeError to NonRetriableError and marks scan FAILED (no retries)", async () => {
-    mockFetchThemeFiles.mockRejectedValue(new ThemeTooLargeError("gid://shopify/Theme/1", 50));
+    mockFetchThemeFiles.mockRejectedValue(new ThemeTooLargeError("gid://shopify/Theme/1", 50, 57));
 
     const err = await runScanTheme().catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(NonRetriableError);
     expect((err as Error).message).toContain("total text ceiling");
     expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+
+  // gc-d4e follow-up: an over-cap theme must still leave a scan_signal row so
+  // the theme-size report can show the cap is too LOW. Same key + identity
+  // fields as the success-path scan_signal so existing redact/prune applies.
+  it("records an aborted scan_signal (key=scanId, metadata.shopId) before failing over the cap", async () => {
+    mockFetchThemeFiles.mockRejectedValue(new ThemeTooLargeError("gid://shopify/Theme/1", 50, 57));
+
+    const err = await runScanTheme().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(NonRetriableError);
+    expect(recordOpsEvent).toHaveBeenCalledTimes(1);
+    expect(recordOpsEvent).toHaveBeenCalledWith({
+      eventType: "scan_signal",
+      key: SCAN_ID,
+      metadata: expect.objectContaining({
+        shopId: SHOP_ID,
+        scanId: SCAN_ID,
+        themeId: THEME_ID,
+        aborted: "theme_too_large",
+        bytesAtAbort: 57,
+        maxTotalBytes: 50,
+      }),
+    });
+    expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+
+  it("does NOT record a scan_signal for an ordinary (retriable) fetch error", async () => {
+    mockFetchThemeFiles.mockRejectedValue(new Error("Shopify API unavailable"));
+
+    await runScanTheme().catch(() => undefined);
+
+    expect(recordOpsEvent).not.toHaveBeenCalled();
   });
 
   it("does NOT make an ordinary fetch error non-retriable (transient errors still retry)", async () => {

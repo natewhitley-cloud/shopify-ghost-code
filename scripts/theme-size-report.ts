@@ -1,7 +1,7 @@
 // READ-ONLY operator script: calibrate MAX_THEME_TOTAL_TEXT_BYTES against real
 // theme-size data (gc-d4e). Reads scan_signal OpsEvent rows and prints
-// count, max/p95/median of totalTextBytes and largestFileBytes, plus the
-// ratio of the observed max to the current cap.
+// count, max/p95/median of totalTextBytes and largestFileBytes, the ratio of
+// the observed max to the current cap, and how many scans aborted over the cap.
 // Run: npx tsx --env-file=.env scripts/theme-size-report.ts
 // No writes. Safe against prod.
 import { PrismaClient } from "@prisma/client";
@@ -10,22 +10,71 @@ import { MAX_THEME_TOTAL_TEXT_BYTES } from "../app/services/theme-fetcher.server
 
 const prisma = new PrismaClient();
 
-/** The subset of scan_signal metadata this report reads. */
+/** A completed scan's size fields from scan_signal metadata. */
 export interface ThemeSizeSample {
+  kind: "completed";
   totalTextBytes: number;
   largestFileBytes: number;
 }
 
 /**
- * Extract a ThemeSizeSample from a scan_signal row's metadata, or null when
- * the row predates the totalTextBytes/largestFileBytes fields (gc-d4e) or the
- * fields are malformed. Pure — no I/O — so it's unit-testable without a DB.
+ * A scan aborted over MAX_THEME_TOTAL_TEXT_BYTES (gc-d4e follow-up). Its
+ * scan_signal carries `aborted: "theme_too_large"` and the cumulative text
+ * length at abort — a LOWER bound on that theme's true size.
  */
-export function parseThemeSizeSample(metadata: unknown): ThemeSizeSample | null {
+export interface AbortedThemeSample {
+  kind: "aborted";
+  bytesAtAbort: number;
+  maxTotalBytes: number;
+}
+
+/**
+ * Classify a scan_signal row's metadata as a completed sample, an aborted
+ * over-cap sample, or null when the row predates the size fields (gc-d4e) or
+ * the fields are malformed. Pure — no I/O — so it's unit-testable without a DB.
+ */
+export function parseThemeSizeSample(
+  metadata: unknown,
+): ThemeSizeSample | AbortedThemeSample | null {
   if (typeof metadata !== "object" || metadata === null) return null;
-  const { totalTextBytes, largestFileBytes } = metadata as Record<string, unknown>;
+  const { totalTextBytes, largestFileBytes, aborted, bytesAtAbort, maxTotalBytes } =
+    metadata as Record<string, unknown>;
+  if (aborted !== undefined) {
+    if (aborted !== "theme_too_large") return null;
+    if (typeof bytesAtAbort !== "number" || typeof maxTotalBytes !== "number") return null;
+    return { kind: "aborted", bytesAtAbort, maxTotalBytes };
+  }
   if (typeof totalTextBytes !== "number" || typeof largestFileBytes !== "number") return null;
-  return { totalTextBytes, largestFileBytes };
+  return { kind: "completed", totalTextBytes, largestFileBytes };
+}
+
+/** Rollup of all scan_signal rows for the report. Pure, unit-testable. */
+export interface ScanSignalSummary {
+  completed: ThemeSizeSample[];
+  abortedCount: number;
+  maxBytesAtAbort: number;
+  skipped: number;
+}
+
+export function summarizeScanSignals(metadatas: unknown[]): ScanSignalSummary {
+  const summary: ScanSignalSummary = {
+    completed: [],
+    abortedCount: 0,
+    maxBytesAtAbort: 0,
+    skipped: 0,
+  };
+  for (const metadata of metadatas) {
+    const sample = parseThemeSizeSample(metadata);
+    if (sample === null) {
+      summary.skipped += 1;
+    } else if (sample.kind === "aborted") {
+      summary.abortedCount += 1;
+      summary.maxBytesAtAbort = Math.max(summary.maxBytesAtAbort, sample.bytesAtAbort);
+    } else {
+      summary.completed.push(sample);
+    }
+  }
+  return summary;
 }
 
 /** Aggregate stats over a numeric sample. Pure, unit-testable. */
@@ -69,16 +118,12 @@ async function main() {
     select: { metadata: true },
   });
 
-  const samples: ThemeSizeSample[] = [];
-  let skipped = 0;
-  for (const row of rows) {
-    const sample = parseThemeSizeSample(row.metadata);
-    if (sample) {
-      samples.push(sample);
-    } else {
-      skipped += 1;
-    }
-  }
+  const {
+    completed: samples,
+    abortedCount,
+    maxBytesAtAbort,
+    skipped,
+  } = summarizeScanSignals(rows.map((row) => row.metadata));
 
   const totalStats = computeStats(samples.map((s) => s.totalTextBytes));
   const largestStats = computeStats(samples.map((s) => s.largestFileBytes));
@@ -101,6 +146,12 @@ async function main() {
     );
   } else {
     console.log(`  no samples yet — cannot compute ratio`);
+  }
+  console.log(`\nAborted over the cap (theme_too_large): ${abortedCount}`);
+  if (abortedCount > 0) {
+    console.log(
+      `  max bytesAtAbort = ${fmtBytes(maxBytesAtAbort)} (a lower bound — the fetch stopped there)`,
+    );
   }
 }
 
