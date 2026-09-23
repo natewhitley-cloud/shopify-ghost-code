@@ -811,7 +811,7 @@ export function buildDigestBody(data: OperatorDigestData): string {
     }
     for (const key of neverSeen) {
       lines.push(
-        `  NO HEARTBEAT ON RECORD: ${key} (new cron not yet run, misregistered, or failing every run for 30d+ since heartbeats are pruned at 30d)`,
+        `  NO HEARTBEAT ON RECORD: ${key} (new cron not yet run, misregistered, or never succeeded)`,
       );
     }
   }

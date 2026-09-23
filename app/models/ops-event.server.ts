@@ -302,11 +302,12 @@ export async function getStaleCrons(
 /**
  * Crons with NO heartbeat on record at all (gc-288): the misregistered-cron case
  * (id typo, failed Inngest sync) that getStaleCrons' cold-start safety can never
- * flag. Heartbeats are retained 30d and the slowest cron is weekly, so an empty
- * record means the cron has not run in 30d, or has not run YET (a cron added in
- * the latest deploy). Because of that second case this is for the NON-gating
- * operator digest only; never wire it into /health/deep or the external
- * dead-man's-switch, or every deploy that adds a cron would fail the smoke gate.
+ * flag. The prune always keeps each key's newest heartbeat (gc-q8g), so an
+ * empty record means the cron has never succeeded: misregistered, or not run
+ * YET (a cron added in the latest deploy). Because of that second case this is
+ * for the NON-gating operator digest only; never wire it into /health/deep or
+ * the external dead-man's-switch, or every deploy that adds a cron would fail
+ * the smoke gate.
  */
 export async function getNeverSeenCrons(expectations: CronExpectation[]): Promise<string[]> {
   if (expectations.length === 0) return [];
@@ -352,6 +353,18 @@ async function getLatestHeartbeatByKey(
  *     (getStaleCrons / getLatestHeartbeat). A heartbeat older than a day is
  *     already dead weight, so 30d keeps ample recent history for /health/deep
  *     while bounding table growth.
+ *     EXCEPTION (gc-q8g): the NEWEST heartbeat per key is ALWAYS kept, whatever
+ *     its age. Heartbeats are written only when a run SUCCEEDS, so a cron that
+ *     fails every run for 30d+ would otherwise lose every heartbeat, fall out of
+ *     getStaleCrons (cold-start safe: no heartbeat = not flagged), and turn
+ *     /health/deep and the external dead-man's-switch GREEN for a dead cron.
+ *     That surviving row is exactly the evidence the switch needs. Two bounded
+ *     queries, no N+1: one groupBy for max(createdAt) per key, then the
+ *     deleteMany excludes each (key, createdAt = max) pair whose max is past
+ *     the cutoff. Ties (two rows sharing a key's max createdAt) are all kept,
+ *     which is harmless. A null key is its own group and keeps its newest row
+ *     too. (Not `findMany({ distinct })`: without the nativeDistinct preview,
+ *     Prisma dedupes in memory after fetching every heartbeat row.)
  *   - `page_visit` older than `pageVisitOlderThanDays` (default 14d). Page visits
  *     are the HIGHEST-volume type — one row per authenticated navigation, wholly
  *     unbounded — and back only the operator digest's trailing per-shop activity
@@ -379,12 +392,29 @@ export async function pruneOpsEvents(options?: {
   const heartbeatCutoff = new Date(now - heartbeatDays * DAY_MS);
   const pageVisitCutoff = new Date(now - pageVisitDays * DAY_MS);
 
+  // Newest heartbeat per key. Only keys whose newest row is itself past the
+  // cutoff need protecting; a recent newest row is never matched by `lt`.
+  const newestByKey = await db.opsEvent.groupBy({
+    by: ["key"],
+    where: { eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT },
+    _max: { createdAt: true },
+  });
+  const keepNewest = newestByKey.flatMap((row) =>
+    row._max.createdAt && row._max.createdAt < heartbeatCutoff
+      ? [{ key: row.key, createdAt: row._max.createdAt }]
+      : [],
+  );
+
   // One deleteMany, per-type age cutoffs. The nested OR pins each eventType to
   // its own cutoff so no other event type can ever match, regardless of age.
   const { count } = await db.opsEvent.deleteMany({
     where: {
       OR: [
-        { eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT, createdAt: { lt: heartbeatCutoff } },
+        {
+          eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT,
+          createdAt: { lt: heartbeatCutoff },
+          ...(keepNewest.length > 0 ? { NOT: { OR: keepNewest } } : {}),
+        },
         { eventType: OPS_EVENT_TYPES.PAGE_VISIT, createdAt: { lt: pageVisitCutoff } },
       ],
     },
