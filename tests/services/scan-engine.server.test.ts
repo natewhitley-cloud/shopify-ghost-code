@@ -6394,6 +6394,58 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
     }
   });
 
+  // Legacy octal escapes (sloppy-mode inline JS): a backslash then 57 or 057 is
+  // "/". Per the spec a 4-7 lead digit takes ONE more octal digit and a 0-3
+  // lead takes up to TWO, so "backslash 5 7 7" is "/7" and "backslash 0 5 7 7"
+  // is "/7" as well; only the lead digits decide, never a trailing digit.
+  const evalSloppy = (literal: string): string => new Function(`return "${literal}";`)() as string;
+  const scanOctal = (url: string) =>
+    detectMaliciousScripts({ filename: "assets/app.js", content: `var u = "${url}";` });
+
+  it("decodes legacy octal slash escapes (backslash 57 and backslash 057)", () => {
+    expect(evalSloppy(String.raw`\57`)).toBe("/");
+    expect(evalSloppy(String.raw`\057`)).toBe("/");
+    for (const url of [
+      String.raw`https:\57\57shopify.jsdeliver.cloud\57config.js`,
+      String.raw`https:\057\057shopify.jsdeliver.cloud\057config.js`,
+      String.raw`https:\\57\\57shopify.jsdeliver.cloud/config.js`,
+    ]) {
+      const findings = scanOctal(url);
+      expect(findings, url).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    }
+  });
+
+  it("decodes an octal slash followed by another digit, as real JS does (backslash 577 is slash then 7)", () => {
+    const url = String.raw`https:\57\5770.jsdeliver.cloud/x.js`;
+    expect(evalSloppy(url)).toBe("https://70.jsdeliver.cloud/x.js");
+    expect(scanOctal(url)).toHaveLength(1);
+    const url3 = String.raw`https:\057\05770.jsdeliver.cloud/x.js`;
+    expect(evalSloppy(url3)).toBe("https://70.jsdeliver.cloud/x.js");
+    expect(scanOctal(url3)).toHaveLength(1);
+  });
+
+  it("does not decode non-slash octal escapes into a false slash match", () => {
+    for (const url of [
+      String.raw`https:\58\58jsdeliver.cloud/x.js`, // \5 then "8"
+      String.raw`https:\0057\0057jsdeliver.cloud/x.js`, // \005 then "7"
+      String.raw`https:\157\157jsdeliver.cloud/x.js`, // "o"
+      String.raw`https:\5\5jsdeliver.cloud/x.js`,
+    ]) {
+      expect(evalSloppy(url), url).not.toContain("//");
+      expect(scanOctal(url), url).toHaveLength(0);
+    }
+  });
+
+  it("stays linear on 5MB floods of backslash-0, backslash-5 and backslash-05", () => {
+    for (const unit of [String.raw`\0`, String.raw`\5`, String.raw`\05`, String.raw`\\0`]) {
+      const content = unit.repeat(Math.ceil(5_000_000 / unit.length));
+      const start = performance.now();
+      detectMaliciousScripts({ filename: "assets/app.js", content });
+      expect(performance.now() - start).toBeLessThan(1500);
+    }
+  });
+
   it("stays linear on a 5MB unterminated zero run and repeated zero-run starts inside \\u{", () => {
     for (const content of [
       String.raw`\u{` + "0".repeat(5_000_000),

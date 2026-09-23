@@ -1062,7 +1062,11 @@ const LIQUID_LITERAL_BLOCKS = new Set(["raw", "javascript", "schema", "styleshee
 // Slash encodings decoded before URL matching: any run of backslashes before `/`
 // (JSON `\/`, double-escaped `\\/`, `\\\/`); before the JS/JSON unicode
 // escape `u002f` (`\u002f`, `\u002F`, `\\u002f`); before the JS hex escape
-// `x2f` (`\x2f`, `\x2F`, `\\x2f`); or before the JS code-point escape `u{2f}`
+// `x2f` (`\x2f`, `\x2F`, `\\x2f`); before the legacy octal escape `57` or
+// `057` (sloppy-mode JS; no lookahead, because real JS reads at most two digits
+// after a 4-7 lead and three after a 0-3 lead, so `\577` is "/7" and `\0057`
+// is not a slash: the leading `0?` admits exactly one zero); or before the JS
+// code-point escape `u{2f}`
 // (`\u{2f}`, `\u{002f}` or any number of leading zeros, `\u{2F}`,
 // `\\u{2f}`); or HTML entities `&#47;` / `&#x2F;`
 // (optional leading zeros, optional `;`), plus the named entity `&sol;` (HTML
@@ -1081,7 +1085,7 @@ const LIQUID_LITERAL_BLOCKS = new Set(["raw", "javascript", "schema", "styleshee
 // attempt can only start at the first backslash of a run, so each zero run is
 // walked by at most one attempt (plus its backtrack), even when unterminated.
 const ENCODED_SLASH_RE =
-  /(?<!\\)\\+(?:\/|[uU]002[fF]|[xX]2[fF]|[uU]\{0*2[fF]\})|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
+  /(?<!\\)\\+(?:\/|[uU]002[fF]|[xX]2[fF]|0?57|[uU]\{0*2[fF]\})|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.
