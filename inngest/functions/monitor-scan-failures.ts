@@ -26,6 +26,11 @@ const CRITICAL_THRESHOLD = 0.25; // 25%
 const MIN_FAILURES_TO_PAGE = 3;
 const ESCALATION_DEDUPE_MS = 24 * 60 * 60 * 1000;
 const FUNCTION_ID = "monitor-scan-failures";
+// Dedicated OpsEvent key for the escalation. The failure middleware records
+// function_failure rows under FUNCTION_ID on any step error, so sharing that key
+// would let a transient monitor error suppress a real critical page (and vice
+// versa, via notifyFunctionFailure's own 1h email dedupe).
+const ESCALATION_KEY = `${FUNCTION_ID}:critical`;
 
 export const monitorScanFailures = inngest.createFunction(
   { id: FUNCTION_ID, name: "Scan Failure Rate Monitor" },
@@ -59,19 +64,19 @@ export const monitorScanFailures = inngest.createFunction(
 /**
  * Record a durable function_failure + page the operator, at most once per 24h.
  * Mirrors scan-pool's maybeEscalateWorkerFallbacks: notifyFunctionFailure writes
- * the function_failure row keyed to FUNCTION_ID, which doubles as the dedupe
+ * the function_failure row keyed to ESCALATION_KEY, which doubles as the dedupe
  * marker. Best-effort: never throws, so it cannot fail the cron.
  */
 async function escalateCritical(total: number, failed: number, rate: number): Promise<void> {
   try {
     const { getLatestOpsEvent, OPS_EVENT_TYPES } =
       await import("../../app/models/ops-event.server");
-    const last = await getLatestOpsEvent(OPS_EVENT_TYPES.FUNCTION_FAILURE, FUNCTION_ID);
+    const last = await getLatestOpsEvent(OPS_EVENT_TYPES.FUNCTION_FAILURE, ESCALATION_KEY);
     if (last && Date.now() - new Date(last.createdAt).getTime() < ESCALATION_DEDUPE_MS) return;
 
     const { notifyFunctionFailure } = await import("../../app/lib/notifications.server");
     await notifyFunctionFailure({
-      functionId: FUNCTION_ID,
+      functionId: ESCALATION_KEY,
       eventName: "scan-failure-rate-critical",
       error:
         `scan failure rate ${(rate * 100).toFixed(1)}% (${failed} of ${total}) over the last ` +

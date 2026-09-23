@@ -249,7 +249,7 @@ describe("monitorScanFailures — critical escalation (gc-i1n)", () => {
 
     expect(mockNotify).toHaveBeenCalledOnce();
     const ctx = mockNotify.mock.calls[0][0];
-    expect(ctx.functionId).toBe("monitor-scan-failures");
+    expect(ctx.functionId).toBe("monitor-scan-failures:critical");
     expect(ctx.error).toContain("40.0%");
     expect(ctx.error).toContain("4 of 10");
   });
@@ -269,7 +269,12 @@ describe("monitorScanFailures — critical escalation (gc-i1n)", () => {
 
     await runMonitorScanFailures();
 
-    expect(mockGetLatestOpsEvent).toHaveBeenCalledWith("function_failure", "monitor-scan-failures");
+    // Dedupes on its OWN key, so a transient monitor step failure (recorded by
+    // the failure middleware under "monitor-scan-failures") cannot suppress it.
+    expect(mockGetLatestOpsEvent).toHaveBeenCalledWith(
+      "function_failure",
+      "monitor-scan-failures:critical",
+    );
     expect(mockNotify).not.toHaveBeenCalled();
   });
 

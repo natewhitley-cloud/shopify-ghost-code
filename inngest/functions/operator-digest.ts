@@ -811,7 +811,7 @@ export function buildDigestBody(data: OperatorDigestData): string {
     }
     for (const key of neverSeen) {
       lines.push(
-        `  NO HEARTBEAT ON RECORD: ${key} (new cron not yet run, or misregistered if this persists past its interval)`,
+        `  NO HEARTBEAT ON RECORD: ${key} (new cron not yet run, misregistered, or failing every run for 30d+ since heartbeats are pruned at 30d)`,
       );
     }
   }
@@ -924,7 +924,9 @@ export const operatorDigest = inngest.createFunction(
       });
       return countUninstallEventsExcluding(
         rows,
-        new Set([...excludeSet, ...internalDomains]),
+        // `?? []`: a get-shops result memoized by the PRE-deploy code (no
+        // internalDomains) must still replay cleanly if a deploy lands mid-run.
+        new Set([...excludeSet, ...(internalDomains ?? [])]),
         excludePrefixes,
       );
     })) as number;
