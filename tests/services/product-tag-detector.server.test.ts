@@ -31,11 +31,20 @@ describe("detectOrphanedProductTags", () => {
     expect(findings[0].findingType).toBe(FindingType.GHOST_TAG);
   });
 
-  it("detects Smile.io loyalty tag", () => {
+  // `loyalty-` is a generic prefix used across loyalty apps (and by merchants
+  // themselves), so it gets the vendor-neutral label the metafield detector
+  // uses for the same prefix, never a specific vendor.
+  it("attributes a generic loyalty- tag to a vendor-neutral Loyalty App, not Smile.io", () => {
     const products = [makeProduct({ tags: ["loyalty-member"] })];
     const findings = detectOrphanedProductTags(products);
 
     expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Loyalty App");
+    expect(findings[0].description).not.toContain("Smile.io");
+  });
+
+  it("still attributes a smile- tag to Smile.io", () => {
+    const findings = detectOrphanedProductTags([makeProduct({ tags: ["smile-rewards"] })]);
     expect(findings[0].appName).toBe("Smile.io");
   });
 
@@ -139,7 +148,7 @@ describe("detectOrphanedProductTags", () => {
     const testCases: Array<{ tag: string; expectedApp: string }> = [
       { tag: "__bold_variant", expectedApp: "Bold" },
       { tag: "bold-product", expectedApp: "Bold" },
-      { tag: "loyalty-member", expectedApp: "Smile.io" },
+      { tag: "loyalty-member", expectedApp: "Loyalty App" },
       { tag: "smile-rewards", expectedApp: "Smile.io" },
       { tag: "recharge-sub", expectedApp: "Recharge" },
       { tag: "yotpo-review", expectedApp: "Yotpo" },

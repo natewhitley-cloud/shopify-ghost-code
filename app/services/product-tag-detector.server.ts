@@ -18,7 +18,9 @@ import type { CreateFindingInput } from "../models/finding.server";
 const APP_TAG_PATTERNS: Array<{ pattern: RegExp; appName: string }> = [
   { pattern: /^__bold/i, appName: "Bold" },
   { pattern: /^bold[-_]/i, appName: "Bold" },
-  { pattern: /^loyalty[-_]/i, appName: "Smile.io" },
+  // Generic prefix shared by many loyalty apps (and merchants): vendor-neutral
+  // label, matching metafield-detector, never a specific vendor.
+  { pattern: /^loyalty[-_]/i, appName: "Loyalty App" },
   { pattern: /^smile[-_]/i, appName: "Smile.io" },
   { pattern: /^recharge[-_]/i, appName: "Recharge" },
   { pattern: /^yotpo[-_]/i, appName: "Yotpo" },
