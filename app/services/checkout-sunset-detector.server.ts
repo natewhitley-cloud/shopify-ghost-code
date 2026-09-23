@@ -232,7 +232,7 @@ export function detectCheckoutSunset(files: ThemeFile[]): CreateFindingInput[] {
 /** Description for a checkout.liquid with no recognized (or analyzed) signal. */
 function layoutDescription(): string {
   return (
-    `Your theme still includes checkout.liquid to customize checkout. ${SUNSET_FACT} ` +
+    `Your theme still contains a checkout.liquid file. ${SUNSET_FACT} ` +
     `Any tracking, scripts, or custom content in this file has already stopped running, ` +
     `so it is now leftover code. ${REBUILD_HINT}`
   );

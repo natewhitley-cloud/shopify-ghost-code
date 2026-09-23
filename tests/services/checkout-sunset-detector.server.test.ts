@@ -336,7 +336,7 @@ describe("detectCheckoutSunset — checkout.liquid over MAX_SCANNABLE_FILE_BYTES
     // No depth analysis ran, so no specific breakage is claimed.
     expect(findings[0].appName).toBe("layout");
     expect(findings[0].lineNumber).toBe(1);
-    expect(findings[0].description).toContain("still includes checkout.liquid");
+    expect(findings[0].description).toContain("still contains a checkout.liquid file");
     expect(findings[0].description).not.toContain("What stopped working");
     expect(findings[0].codeSnippet).toContain("<script>track()</script>");
   });
@@ -399,4 +399,12 @@ describe("detectCheckoutSunset — sunset copy accuracy (gc-oam)", () => {
       expect(description).not.toMatch(/uses checkout\.liquid to customize/);
     },
   );
+
+  // The generic layout copy describes the file as leftover, not as an active
+  // customization mechanism (present-tense "to customize checkout" would
+  // contradict the past-tense sunset fact that immediately follows it).
+  it.each(variants)("%s description never says the file customizes checkout", (_name, content) => {
+    const description = detectCheckoutSunset([file(content)])[0].description;
+    expect(description).not.toMatch(/to customize checkout/);
+  });
 });
