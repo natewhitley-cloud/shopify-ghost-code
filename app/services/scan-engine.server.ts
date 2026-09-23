@@ -1060,19 +1060,29 @@ const LIQUID_INNER_TAG_NAME_RE = /-?[ \t\n\v\f\r]*(\w+)/y;
 const LIQUID_LITERAL_BLOCKS = new Set(["raw", "javascript", "schema", "stylesheet"]);
 
 // Slash encodings decoded before URL matching: any run of backslashes before `/`
-// (JSON `\/`, double-escaped `\\/`, `\\\/`) or before the JS/JSON unicode
-// escape `u002f` (`\u002f`, `\u002F`, `\\u002f`), and HTML entities `&#47;` /
-// `&#x2F;` (optional leading zeros, optional `;`), plus the named entity `&sol;`
-// (HTML matches named references case-sensitively and this one only with its
-// `;`). No `i` flag, and no `(?-i:)` modifier group (a SyntaxError before
-// Node 23): the case-insensitive parts use explicit classes, which also accept
-// an uppercase `U`, which is not a real escape: that can only fail toward
-// reporting. The `(?<!\\)` lookbehind lets a backslash run start a match only at
-// its first char, so a huge run that is not followed by `/` or `u002f` is
-// scanned once, not once per backslash (linear); a `\u` flood fails after a
-// constant lookahead per position.
+// (JSON `\/`, double-escaped `\\/`, `\\\/`); before the JS/JSON unicode
+// escape `u002f` (`\u002f`, `\u002F`, `\\u002f`); before the JS hex escape
+// `x2f` (`\x2f`, `\x2F`, `\\x2f`); or before the JS code-point escape `u{2f}`
+// (`\u{2f}`, `\u{002f}` with any run of leading zeros up to the 6-hex-digit
+// bound below, `\u{2F}`, `\\u{2f}`); or HTML entities `&#47;` / `&#x2F;`
+// (optional leading zeros, optional `;`), plus the named entity `&sol;` (HTML
+// matches named references case-sensitively and this one only with its `;`).
+// No `i` flag, and no `(?-i:)` modifier group (a SyntaxError before Node 23):
+// the case-insensitive parts use explicit classes, which also accept an
+// uppercase `U` or `X`, neither of which is a real escape (real JS leaves
+// `\U002f` / `\X2f` as literal text): that can only fail toward reporting, so
+// it is accepted deliberately rather than special-cased away. The `(?<!\\)`
+// lookbehind lets a backslash run start a match only at its first char, so a
+// huge run that is not followed by a decodable form is scanned once, not once
+// per backslash (linear); a `\x` or `\u` flood fails after a constant
+// lookahead per position. The code-point escape's leading-zero run is bounded
+// to `0{0,4}` (4 zeros + the 2 required hex digits = 6 hex digits total):
+// real JS allows unlimited leading zeros there, but an unbounded `0*` inside an
+// unterminated `\u{000...` (no closing `}`) would let the engine retry the
+// zero run's length at every later failure point; 6 digits comfortably covers
+// any realistic encoded payload while keeping the scan linear.
 const ENCODED_SLASH_RE =
-  /(?<!\\)\\+(?:\/|[uU]002[fF])|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
+  /(?<!\\)\\+(?:\/|[uU]002[fF]|[xX]2[fF]|[uU]\{0{0,4}2[fF]\})|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.

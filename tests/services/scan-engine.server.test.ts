@@ -6007,6 +6007,69 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
       expect(performance.now() - start).toBeLessThan(1500);
     }
   });
+
+  it("decodes JS hex-escaped slashes (\\x2f, uppercase F, doubled backslash)", () => {
+    for (const url of [
+      String.raw`https:\x2f\x2fshopify.jsdeliver.cloud\x2fconfig.js`,
+      String.raw`https:\x2F\x2Fshopify.jsdeliver.cloud\x2Fconfig.js`,
+      String.raw`https:\\x2f\\x2fshopify.jsdeliver.cloud/config.js`,
+    ]) {
+      const findings = detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "${url}";`,
+      });
+      expect(findings, url).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    }
+  });
+
+  it("decodes JS code-point-escaped slashes (\\u{2f}, with/without leading zeros, uppercase F, doubled backslash)", () => {
+    for (const url of [
+      String.raw`https:\u{2f}\u{2f}shopify.jsdeliver.cloud\u{2f}config.js`,
+      String.raw`https:\u{00002f}\u{00002f}shopify.jsdeliver.cloud\u{00002f}config.js`,
+      String.raw`https:\u{2F}\u{2F}shopify.jsdeliver.cloud\u{2F}config.js`,
+      String.raw`https:\\u{2f}\\u{2f}shopify.jsdeliver.cloud/config.js`,
+    ]) {
+      const findings = detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "${url}";`,
+      });
+      expect(findings, url).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    }
+  });
+
+  it("does not decode invalid, unterminated, or unrelated hex/code-point escapes into a false slash match", () => {
+    const scanUrl = (url: string) =>
+      detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "${url}";`,
+      });
+    // \x2g is not a valid hex escape ('g' isn't hex) — must not decode as a slash.
+    expect(scanUrl(String.raw`https:\x2g\x2gshopify.jsdeliver.cloud\x2gconfig.js`)).toHaveLength(0);
+    // \u{2g} is not valid hex — must not decode.
+    expect(
+      scanUrl(String.raw`https:\u{2g}\u{2g}shopify.jsdeliver.cloud\u{2g}config.js`),
+    ).toHaveLength(0);
+    // \u{2f with no closing brace is unterminated — must not decode.
+    expect(scanUrl(String.raw`https:\u{2fshopify.jsdeliver.cloud\u{2fconfig.js`)).toHaveLength(0);
+    // \x2e is a real, DIFFERENT escape (decodes to '.' in real JS) — must not be
+    // mistaken for a slash, which would create a false "//" and a false match.
+    expect(scanUrl(String.raw`https:\x2e\x2eshopify.jsdeliver.cloud\x2econfig.js`)).toHaveLength(0);
+  });
+
+  it("stays linear on 1MB floods of \\x, \\u{, an unterminated long zero run inside \\u{, and alternating forms (no ReDoS in the decode)", () => {
+    for (const content of [
+      String.raw`\x`.repeat(500_000),
+      String.raw`\u{`.repeat(333_334),
+      String.raw`\u{` + "0".repeat(1_000_000),
+      (String.raw`\x2f` + String.raw`\u{2f}`).repeat(100_000),
+    ]) {
+      const start = performance.now();
+      detectMaliciousScripts({ filename: "assets/app.js", content });
+      expect(performance.now() - start).toBeLessThan(1500);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
