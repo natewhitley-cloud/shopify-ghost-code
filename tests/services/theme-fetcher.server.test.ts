@@ -117,6 +117,10 @@ describe("fetchThemeFiles", () => {
 
       expect(err).toBeInstanceOf(ThemeTooLargeError);
       expect((err as ThemeTooLargeError).maxTotalBytes).toBe(6);
+      // Cumulative text length at the moment of abort (4 + 4), so calibration
+      // can see how far over the cap a real theme ran (gc-d4e follow-up).
+      expect((err as ThemeTooLargeError).bytesAtAbort).toBe(8);
+      expect((err as ThemeTooLargeError).themeId).toBe("gid://shopify/Theme/1");
       expect((err as ThemeTooLargeError).message).toContain("gid://shopify/Theme/1");
       expect(graphql).toHaveBeenCalledTimes(1); // aborted before fetching page 2
     });

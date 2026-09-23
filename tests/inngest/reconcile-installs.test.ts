@@ -81,7 +81,11 @@ import {
   extractHttpStatus,
   isDefinitiveAuthFailure,
   isRefreshTokenRejected,
+  isValidMyshopifyDomain,
   reconcileInstalls,
+  CB_FRACTION,
+  CB_MIN_MARKS,
+  shouldTripCircuitBreaker,
 } from "../../inngest/functions/reconcile-installs";
 import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
@@ -331,6 +335,29 @@ describe("classifyRefreshRejection", () => {
     expect(classifyRefreshRejection(500, { error: "invalid_grant" })).toBe("ambiguous");
     expect(classifyRefreshRejection(503, {})).toBe("ambiguous");
     expect(classifyRefreshRejection(429, {})).toBe("ambiguous");
+  });
+});
+
+describe("isValidMyshopifyDomain", () => {
+  it("is TRUE for a well-formed *.myshopify.com domain", () => {
+    expect(isValidMyshopifyDomain("shop.myshopify.com")).toBe(true);
+    expect(isValidMyshopifyDomain("my-cool-shop123.myshopify.com")).toBe(true);
+  });
+
+  it("is FALSE for a non-myshopify domain", () => {
+    expect(isValidMyshopifyDomain("evil.com")).toBe(false);
+  });
+
+  it("is FALSE for a lookalike suffix domain", () => {
+    expect(isValidMyshopifyDomain("shop.myshopify.com.evil.com")).toBe(false);
+  });
+
+  it("is FALSE for uppercase (case-sensitive; domains are stored lowercase)", () => {
+    expect(isValidMyshopifyDomain("SHOP.myshopify.com")).toBe(false);
+  });
+
+  it("is FALSE for an empty string", () => {
+    expect(isValidMyshopifyDomain("")).toBe(false);
   });
 });
 
@@ -701,6 +728,78 @@ describe("reconcileInstalls handler", () => {
     expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
   });
 
+  it("masked-500 + non-myshopify domain (evil.com) → NO fetch, NOT marked (ambiguous)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "evil.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+
+    const result = await runReconcile();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+    // No secret in the warning log.
+    for (const call of mockLoggerWarn.mock.calls) {
+      expect(JSON.stringify(call)).not.toContain(process.env.SHOPIFY_API_SECRET ?? "");
+    }
+  });
+
+  it("masked-500 + lookalike domain (shop.myshopify.com.evil.com) → NO fetch, NOT marked (ambiguous)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "shop.myshopify.com.evil.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+
+    const result = await runReconcile();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("logs the invalid domain as a structured field so the corrupt row is traceable", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "shop.myshopify.com.evil.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+
+    await runReconcile();
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining("domain failed validation"),
+      expect.objectContaining({
+        function: "reconcile-installs",
+        domain: "shop.myshopify.com.evil.com",
+      }),
+    );
+  });
+
+  it("masked-500 + uppercase domain (SHOP.myshopify.com) → NO fetch, NOT marked (ambiguous, case-sensitive)", async () => {
+    // Domains are stored lowercase; uppercase is unexpected input, not a
+    // legitimate variant, so it is rejected rather than silently lowercased.
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "SHOP.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+
+    const result = await runReconcile();
+
+    expect(mockFetch).not.toHaveBeenCalled();
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
+  });
+
+  it("masked-500 + valid myshopify domain → STILL fetches (the guard doesn't block real shops)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "validguard.myshopify.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue({ status: 500, json: async () => ({}) });
+
+    await runReconcile();
+
+    expect(mockFetch).toHaveBeenCalledWith(
+      "https://validguard.myshopify.com/admin/oauth/access_token",
+      expect.objectContaining({ method: "POST" }),
+    );
+  });
+
   it("mixed batch: marks ONLY the uninstalled shop and reports correct summary counts", async () => {
     mockFindMany.mockResolvedValue([
       { id: "s1", domain: "live.myshopify.com" },
@@ -831,7 +930,7 @@ describe("reconcileInstalls circuit breaker", () => {
         eventType: "reconcile_aborted",
         key: "reconcile-installs",
         message: expect.stringContaining("ABORTED by circuit breaker"),
-        metadata: { checked: 12, wouldMark: 12, threshold: 6 },
+        metadata: { checked: 12, probed: 12, skipped: 0, wouldMark: 12, threshold: 6 },
       }),
     );
     // The summary row is NOT written on abort (only the abort event).
@@ -923,7 +1022,7 @@ describe("reconcileInstalls circuit breaker", () => {
         eventType: "reconcile_aborted",
         key: "reconcile-installs",
         message: expect.stringContaining("ABORTED by circuit breaker"),
-        metadata: { checked: 5, wouldMark: 5, threshold: 3 },
+        metadata: { checked: 5, probed: 5, skipped: 0, wouldMark: 5, threshold: 3 },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -947,7 +1046,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 3, wouldMark: 3, threshold: 3 },
+        metadata: { checked: 3, probed: 3, skipped: 0, wouldMark: 3, threshold: 3 },
       }),
     );
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
@@ -985,7 +1084,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 10, wouldMark: 5, threshold: 5 },
+        metadata: { checked: 10, probed: 10, skipped: 0, wouldMark: 5, threshold: 5 },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1015,7 +1114,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 1, wouldMark: 1, threshold: 3 },
+        metadata: { checked: 1, probed: 1, skipped: 0, wouldMark: 1, threshold: 3 },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1042,7 +1141,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 2, wouldMark: 2, threshold: 3 },
+        metadata: { checked: 2, probed: 2, skipped: 0, wouldMark: 2, threshold: 3 },
       }),
     );
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
@@ -1051,6 +1150,134 @@ describe("reconcileInstalls circuit breaker", () => {
       checked: 2,
       wouldMark: 2,
     });
+  });
+
+  // Build shops with explicit per-shop outcomes: "dead" probes 401 (uninstalled),
+  // "live" probes 200 (installed), "skip" probes 429 (ambiguous → skipped).
+  function seedOutcomes(outcomes: Array<"dead" | "live" | "skip">) {
+    const byDomain = new Map(outcomes.map((o, i) => [`${o}${i}.myshopify.com`, o]));
+    mockFindMany.mockResolvedValue(
+      [...byDomain.keys()].map((domain, i) => ({ id: `s${i}`, domain })),
+    );
+    mockAdmin.mockImplementation(async (domain: string) => {
+      const outcome = byDomain.get(domain);
+      if (outcome === "live") return adminGraphql(async () => ({ status: 200 }));
+      const code = outcome === "dead" ? 401 : 429;
+      return adminGraphql(async () => {
+        throw { response: { code } };
+      });
+    });
+  }
+
+  it("TRIPS when a permanently skipped row hides 100% churn of the PROBED base (3 shops, 1 skipped, 2 uninstalled)", async () => {
+    // Old denominator (checked=3): all-probed 2===3 false; threshold =
+    // max(3, ceil(0.5*3)=2) = 3, 2 >= 3 false → both real shops auto-churned.
+    // New denominator probed = 3 - 1 = 2: all-probed 2===2 → trips.
+    seedOutcomes(["skip", "dead", "dead"]);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    // Metadata carries probed/skipped so the digest can show WHY it tripped
+    // (the breaker decides on probed, not checked); threshold = max(3, ceil(0.5*2)=1) = 3.
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        message: expect.stringContaining("2 of 2 probed"),
+        metadata: { checked: 3, probed: 2, skipped: 1, wouldMark: 2, threshold: 3 },
+      }),
+    );
+    expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_summary" }),
+    );
+    expect(result).toMatchObject({ status: "aborted-circuit-breaker", checked: 3, wouldMark: 2 });
+  });
+
+  it("does NOT trip when EVERY shop is skipped (probed=0, wouldMark=0)", async () => {
+    seedOutcomes(["skip", "skip", "skip"]);
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_summary",
+        metadata: { checked: 3, marked: 0, skipped: 3 },
+      }),
+    );
+    expect(result).toMatchObject({ status: "completed", checked: 3, marked: 0, skipped: 3 });
+  });
+
+  it("still marks a lone real uninstall at checked=10 with 0 skipped (normal path unchanged)", async () => {
+    // probed=10, threshold = max(3, ceil(0.5*10)=5) = 5; 1 < 5, 1 !== 10 → closed.
+    seedShops(10, 1);
+
+    const result = await runReconcile();
+
+    expect(mockMark).toHaveBeenCalledTimes(1);
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "completed", checked: 10, marked: 1, skipped: 0 });
+  });
+
+  // --- Hybrid rule (owner decision 1A) -----------------------------------
+  // tripped = (checked>=1 && w===checked) || (probed>=2 && w===probed)
+  //           || w >= max(CB_MIN_MARKS, ceil(CB_FRACTION*probed))
+  function expectTripped(result: unknown, checked: number, wouldMark: number) {
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_aborted" }),
+    );
+    expect(result).toMatchObject({ status: "aborted-circuit-breaker", checked, wouldMark });
+  }
+  function expectMarked(result: unknown, checked: number, marked: number, skipped: number) {
+    expect(mockMark).toHaveBeenCalledTimes(marked);
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_aborted" }),
+    );
+    expect(result).toMatchObject({ status: "completed", checked, marked, skipped });
+  }
+
+  it("does NOT trip on ordinary churn hidden among many skips (checked=10, skipped=9, wouldMark=1) — marks the 1 shop", async () => {
+    // probed=1: the probed>=2 floor keeps a lone classified shop from being
+    // read as 100% systemic churn; 1 !== 10 and 1 < 3, so the real uninstall is marked.
+    seedOutcomes(["skip", "skip", "skip", "skip", "dead", "skip", "skip", "skip", "skip", "skip"]);
+    const result = await runReconcile();
+    expectMarked(result, 10, 1, 9);
+    expect(mockMark).toHaveBeenCalledWith("dead4.myshopify.com", expect.anything());
+  });
+
+  it("TRIPS at checked=1, skipped=0, wouldMark=1 (original N=1 design preserved)", async () => {
+    seedOutcomes(["dead"]);
+    const result = await runReconcile();
+    expectTripped(result, 1, 1);
+  });
+
+  it("does NOT trip at checked=2, skipped=1, wouldMark=1 — marks the 1 shop", async () => {
+    seedOutcomes(["skip", "dead"]);
+    const result = await runReconcile();
+    expectMarked(result, 2, 1, 1);
+  });
+
+  it("TRIPS at checked=5, skipped=3, wouldMark=2 (documented residual: 2 real uninstalls on a throttled day pages)", async () => {
+    seedOutcomes(["skip", "skip", "skip", "dead", "dead"]);
+    const result = await runReconcile();
+    expectTripped(result, 5, 2);
+  });
+
+  it("does NOT trip at checked=4, skipped=4, wouldMark=0 — marks nothing", async () => {
+    seedOutcomes(["skip", "skip", "skip", "skip"]);
+    const result = await runReconcile();
+    expectMarked(result, 4, 0, 4);
+  });
+
+  it("does NOT trip at checked=10, skipped=0, wouldMark=1 — marks the 1 shop", async () => {
+    seedOutcomes(["dead", "live", "live", "live", "live", "live", "live", "live", "live", "live"]);
+    const result = await runReconcile();
+    expectMarked(result, 10, 1, 0);
   });
 
   it("keeps shop domains OUT of the durable OpsEvent (message + metadata) and rides them on the operator email only", async () => {
@@ -1081,6 +1308,60 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(emailBody).toContain("dead0.myshopify.com");
     expect(emailBody).toContain("dead1.myshopify.com");
     expect(emailBody).toContain("dead2.myshopify.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldTripCircuitBreaker (pure predicate, owner decision 1A)
+// ---------------------------------------------------------------------------
+
+describe("shouldTripCircuitBreaker", () => {
+  it.each([
+    // [checked, skipped, wouldMark, expected]
+    [3, 1, 2, true], // the original-rule gap 02da341 closed
+    [10, 9, 1, false], // ordinary churn among many skips
+    [1, 0, 1, true], // original N=1 design
+    [2, 1, 1, false],
+    [5, 3, 2, true], // documented residual
+    [4, 4, 0, false],
+    [10, 0, 1, false],
+    [0, 0, 0, false], // empty base
+    [10, 0, 5, true], // fraction clause
+    [10, 0, 4, false],
+  ])("checked=%i skipped=%i wouldMark=%i → %s", (checked, skipped, wouldMark, expected) => {
+    expect(shouldTripCircuitBreaker({ checked, skipped, wouldMark })).toBe(expected);
+  });
+
+  it("trips in EVERY case the original pre-02da341 rule tripped (never less protective)", () => {
+    const originalTrips = (checked: number, w: number) =>
+      (checked >= 1 && w === checked) ||
+      w >= Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * checked));
+    let cases = 0;
+    let originalTripCases = 0;
+    const regressions: string[] = [];
+    for (let checked = 0; checked <= 12; checked++) {
+      for (let skipped = 0; skipped <= checked; skipped++) {
+        for (let wouldMark = 0; wouldMark <= checked - skipped; wouldMark++) {
+          cases++;
+          if (!originalTrips(checked, wouldMark)) continue;
+          originalTripCases++;
+          if (!shouldTripCircuitBreaker({ checked, skipped, wouldMark })) {
+            regressions.push(`checked=${checked} skipped=${skipped} wouldMark=${wouldMark}`);
+          }
+        }
+      }
+    }
+    expect(cases).toBe(455);
+    expect(originalTripCases).toBeGreaterThan(0);
+    expect(regressions).toEqual([]);
+  });
+
+  it("never trips when nothing would be marked", () => {
+    for (let checked = 0; checked <= 12; checked++) {
+      for (let skipped = 0; skipped <= checked; skipped++) {
+        expect(shouldTripCircuitBreaker({ checked, skipped, wouldMark: 0 })).toBe(false);
+      }
+    }
   });
 });
 

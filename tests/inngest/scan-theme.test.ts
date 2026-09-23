@@ -620,13 +620,46 @@ describe("scanTheme — error paths", () => {
   // gc-8s2: an over-ceiling theme is deterministic; retrying would just refetch
   // up to the cap again. It must fail the scan once, as NonRetriableError.
   it("converts ThemeTooLargeError to NonRetriableError and marks scan FAILED (no retries)", async () => {
-    mockFetchThemeFiles.mockRejectedValue(new ThemeTooLargeError("gid://shopify/Theme/1", 50));
+    mockFetchThemeFiles.mockRejectedValue(new ThemeTooLargeError("gid://shopify/Theme/1", 50, 57));
 
     const err = await runScanTheme().catch((e: unknown) => e);
 
     expect(err).toBeInstanceOf(NonRetriableError);
     expect((err as Error).message).toContain("total text ceiling");
     expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+
+  // gc-d4e follow-up: an over-cap theme must still leave a scan_signal row so
+  // the theme-size report can show the cap is too LOW. Same key + identity
+  // fields as the success-path scan_signal so existing redact/prune applies.
+  it("records an aborted scan_signal (key=scanId, metadata.shopId) before failing over the cap", async () => {
+    mockFetchThemeFiles.mockRejectedValue(new ThemeTooLargeError("gid://shopify/Theme/1", 50, 57));
+
+    const err = await runScanTheme().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(NonRetriableError);
+    expect(recordOpsEvent).toHaveBeenCalledTimes(1);
+    expect(recordOpsEvent).toHaveBeenCalledWith({
+      eventType: "scan_signal",
+      key: SCAN_ID,
+      metadata: expect.objectContaining({
+        shopId: SHOP_ID,
+        scanId: SCAN_ID,
+        themeId: THEME_ID,
+        aborted: "theme_too_large",
+        bytesAtAbort: 57,
+        maxTotalBytes: 50,
+      }),
+    });
+    expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+
+  it("does NOT record a scan_signal for an ordinary (retriable) fetch error", async () => {
+    mockFetchThemeFiles.mockRejectedValue(new Error("Shopify API unavailable"));
+
+    await runScanTheme().catch(() => undefined);
+
+    expect(recordOpsEvent).not.toHaveBeenCalled();
   });
 
   it("does NOT make an ordinary fetch error non-retriable (transient errors still retry)", async () => {
@@ -1662,6 +1695,9 @@ describe("scanTheme — scan_signal OpsEvent (Feature 2)", () => {
       themeId: THEME_ID,
       fileCount: MOCK_FILES.length,
       scannableFileCount: MOCK_FILES.length,
+      totalTextBytes: 30,
+      largestFileBytes: 17,
+      scannableTextBytes: 30,
       skippedFileCount: 0,
       benignLibrarySkips: 3,
       unknownScriptCount: 2,
@@ -1669,6 +1705,61 @@ describe("scanTheme — scan_signal OpsEvent (Feature 2)", () => {
       detectorHits: { GHOST_SCRIPT: 2, GHOST_STYLE: 1 },
       findingCount: MOCK_FINDINGS.length,
       durationMs: 5000,
+    });
+  });
+
+  it("computes totalTextBytes/largestFileBytes/scannableTextBytes over mixed file types (gc-d4e)", async () => {
+    // Mixed fixture: one scannable liquid template, one non-scannable asset JS
+    // file (the largest), and one non-scannable JSON file — so
+    // scannableTextBytes must exclude the JS/JSON content while totalTextBytes
+    // and largestFileBytes still account for it.
+    const mixedFiles = [
+      { filename: "templates/index.liquid", content: "A".repeat(10) },
+      { filename: "assets/app.js", content: "B".repeat(500) },
+      { filename: "assets/data.json", content: "C".repeat(50) },
+    ];
+    mockFetchThemeFiles.mockResolvedValue(mixedFiles);
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+      startedAt: new Date("2026-06-15T00:00:00Z"),
+      completedAt: new Date("2026-06-15T00:00:05Z"),
+    });
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.metadata).toMatchObject({
+      fileCount: 3,
+      scannableFileCount: 1,
+      totalTextBytes: 560,
+      largestFileBytes: 500,
+      scannableTextBytes: 10,
+    });
+  });
+
+  it("emits zero-valued size fields when the theme fetch returns no files", async () => {
+    mockFetchThemeFiles.mockResolvedValue([]);
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+      startedAt: new Date("2026-06-15T00:00:00Z"),
+      completedAt: new Date("2026-06-15T00:00:05Z"),
+    });
+    // No prior scan with findings, so the zero-file sanity guard does not fire
+    // (mockGetPreviousScanForTheme already defaults to null in beforeEach).
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.metadata).toMatchObject({
+      fileCount: 0,
+      scannableFileCount: 0,
+      totalTextBytes: 0,
+      largestFileBytes: 0,
+      scannableTextBytes: 0,
     });
   });
 

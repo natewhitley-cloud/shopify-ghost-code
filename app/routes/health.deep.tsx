@@ -4,6 +4,7 @@ import { join } from "node:path";
 import type { LoaderFunctionArgs } from "react-router";
 
 import { logger } from "../lib/logger.server";
+import { timingSafeTokenMatch } from "../lib/token-compare.server";
 import { performDeepHealthChecks } from "../services/deep-health.server";
 
 /**
@@ -51,7 +52,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       );
     }
     // Dev convenience: allow when the token is unset outside production.
-  } else if (request.headers.get("x-health-token") !== expectedToken) {
+  } else if (!timingSafeTokenMatch(request.headers.get("x-health-token"), expectedToken)) {
     return Response.json({ status: "error", message: "unauthorized" }, { status: 401 });
   }
 

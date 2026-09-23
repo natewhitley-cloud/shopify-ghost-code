@@ -37,8 +37,10 @@
  *
  *   CIRCUIT BREAKER (defense-in-depth): the cron runs in two passes — probe all
  *   active shops (mark nothing), then mark them ONLY if the run does not look
- *   systemic. The run ABORTS when ALL probed shops are marked (100% churn, at ANY
- *   base size), OR when marks reach >=50% of the probed base (minimum CB_MIN_MARKS).
+ *   systemic. The run ABORTS when ALL active shops are marked (100% churn, at ANY
+ *   base size), OR when ALL of >=2 classified shops are marked, OR when marks
+ *   reach >=50% of the classified base (minimum CB_MIN_MARKS). See
+ *   shouldTripCircuitBreaker.
  *   This can no longer be silently bypassed at small base sizes. On a trip the run marks
  *   NOTHING, records a RECONCILE_ABORTED OpsEvent, and pages the operator —
  *   turning a would-be base-wide churn into one skipped run + an alert.
@@ -84,18 +86,70 @@ const PAUSE_BETWEEN_SHOPS = "500ms";
 // Run-level circuit breaker (gc-5ha). Defense-in-depth on top of body-aware
 // classification: even if a systemic fault (e.g. a wrong shared client_secret)
 // produced varied per-shop rejections that slipped past the body checks, a
-// SINGLE run must never be able to churn the whole active base. The reconciler
-// aborts a run — marking NOTHING and paging the operator — when it WOULD mark
-// ALL probed shops (100% churn, at ANY base size), OR when the number it WOULD
-// mark reaches >=50% of the probed base (floor CB_MIN_MARKS). The fraction is
-// PRIMARY (it protects a large base); the all-probed-marked rule guarantees a
-// systemic 100%-churn always trips even at N=1/N=2 — the old MAX(absolute-cap,
-// fraction) form pinned the threshold at the cap and could be silently bypassed
-// when checked <= the cap.
+// SINGLE run must never be able to churn the whole active base. On a trip the
+// reconciler marks NOTHING and pages the operator. The rule lives in
+// shouldTripCircuitBreaker (below) so it can be tested exhaustively.
 // Tune conservatively: a genuine day never churns anywhere near half the base at
 // once, so a trip is a near-certain bug.
-const CB_FRACTION = 0.5; // trip when >= half the probed base is marked in one run
-const CB_MIN_MARKS = 3; // ordinary-churn floor: fewer than this never trips
+export const CB_FRACTION = 0.5; // trip when >= half the classified base is marked in one run
+export const CB_MIN_MARKS = 3; // ordinary-churn floor for the fraction clause
+
+/** Minimum marks that trip the fraction clause, given `probed` classified shops. */
+export function circuitBreakerThreshold(probed: number): number {
+  return Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * probed));
+}
+
+/**
+ * Circuit-breaker decision (owner decision 1A, hybrid rule). Inputs:
+ *   checked   = active shops probed this run
+ *   skipped   = shops classified "ambiguous" (no signal, never marked)
+ *   wouldMark = shops classified "uninstalled"
+ *   probed    = checked - skipped (shops DEFINITIVELY classified)
+ *
+ * Trips when ANY of three clauses holds:
+ *   1. checked >= 1 && wouldMark === checked — 100% of ALL active shops, at any
+ *      base size. This is the original rule and keeps the N=1 design: the
+ *      mass-churn signature of a wrong/rotated shared client_secret 401'ing
+ *      every shop is identical at N=1, N=2 or N=100, so there is no base size
+ *      below which auto-churning everything is safe. (At N=1 a lone active shop
+ *      that classifies "uninstalled" pages instead of auto-marking; intended,
+ *      since this job is only a BACKSTOP for missed app/uninstalled webhooks.)
+ *   2. probed >= 2 && wouldMark === probed — 100% of the CLASSIFIED shops. This
+ *      closes the dilution gap where permanently skipped rows hid a systemic
+ *      fault (3 active, 1 skipped, 2 wrongly "uninstalled" → clause 1 misses).
+ *      The probed >= 2 floor exists because a single classified shop among many
+ *      skipped ones (e.g. 10 active, 9 throttled, 1 uninstalled) is ordinary
+ *      churn, not a systemic signature; paging there would block a real
+ *      uninstall on every throttled day.
+ *   3. wouldMark >= max(CB_MIN_MARKS, ceil(CB_FRACTION * probed)) — the fraction
+ *      of the classified base; PRIMARY protection for a large base.
+ *
+ * INVARIANT: this trips in EVERY case the original (pre-02da341) rule tripped,
+ * i.e. `(checked >= 1 && wouldMark === checked) ||
+ * wouldMark >= max(CB_MIN_MARKS, ceil(CB_FRACTION * checked))`. Clause 1 is that
+ * rule's first clause verbatim, and since probed <= checked and the threshold is
+ * non-decreasing, threshold(probed) <= threshold(checked), so clause 3 covers
+ * its second. Proven exhaustively for checked 0..12 in the tests. wouldMark = 0
+ * never trips (clauses 1/2 need wouldMark >= 1, clause 3 needs >= CB_MIN_MARKS).
+ * Known residual: 2 real uninstalls on a heavily throttled day (e.g. 5 active,
+ * 3 skipped, 2 uninstalled) trips via clause 2 and pages; conservative-correct.
+ */
+export function shouldTripCircuitBreaker({
+  checked,
+  skipped,
+  wouldMark,
+}: {
+  checked: number;
+  skipped: number;
+  wouldMark: number;
+}): boolean {
+  const probed = checked - skipped;
+  return (
+    (checked >= 1 && wouldMark === checked) ||
+    (probed >= 2 && wouldMark === probed) ||
+    wouldMark >= circuitBreakerThreshold(probed)
+  );
+}
 
 /** Result of probing one shop's install status. */
 export type InstallStatus = "installed" | "uninstalled" | "ambiguous";
@@ -243,6 +297,22 @@ export function classifyResponseStatus(status: number | undefined): InstallStatu
   return "ambiguous";
 }
 
+/**
+ * A shop domain as our own storage normalizes it: lowercase, `*.myshopify.com`,
+ * no scheme/path/port. Deliberately case-SENSITIVE (no lowercasing before the
+ * match) — every domain we write to the Shop table already comes out of this
+ * shape, so a domain arriving with uppercase characters is unexpected input,
+ * not a legitimate variant to normalize away. Silently lowercasing it here
+ * would let a caller-supplied domain we've never validated end up dictating
+ * the host `rawRefreshProbe` sends the shared client_secret to.
+ */
+const MYSHOPIFY_DOMAIN_PATTERN = /^[a-z0-9][a-z0-9-]*\.myshopify\.com$/;
+
+/** True for a well-formed `*.myshopify.com` domain (see MYSHOPIFY_DOMAIN_PATTERN). */
+export function isValidMyshopifyDomain(domain: string): boolean {
+  return MYSHOPIFY_DOMAIN_PATTERN.test(domain);
+}
+
 // ---------------------------------------------------------------------------
 // Per-shop probe + mark (I/O; runs inside a step)
 // ---------------------------------------------------------------------------
@@ -295,8 +365,27 @@ async function markUninstalled(domain: string): Promise<void> {
  * problem, NEVER mark); no session or no refreshToken → ambiguous (can't probe);
  * network throw or any other status (5xx, ...) → ambiguous. Never marks; the
  * caller marks on "uninstalled".
+ *
+ * DOMAIN GUARD: `domain` comes off the Shop row, and this probe POSTs the
+ * shared `client_secret` to `https://${domain}/...`. Before any fetch,
+ * `domain` must match MYSHOPIFY_DOMAIN_PATTERN — a mismatch (a non-Shopify
+ * host, or a lookalike such as `shop.myshopify.com.evil.com`) means the row is
+ * corrupt or hostile, so the probe skips the request entirely (ambiguous)
+ * rather than ever sending our credential to an arbitrary host.
  */
 async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
+  if (!isValidMyshopifyDomain(domain)) {
+    // Log `domain` as a STRUCTURED field (JSON-encoded by the logger, so it is
+    // safe from log injection) — otherwise a corrupt row is untraceable while
+    // it adds +1 to `skipped` every run. The caller's logs already carry
+    // `domain`. No secret is logged here regardless of outcome.
+    logger.warn("reconcile-installs: raw refresh probe — domain failed validation, skipping", {
+      function: "reconcile-installs",
+      domain,
+    });
+    return "ambiguous";
+  }
+
   const { sessionStorage } = await import("../../app/shopify.server");
 
   const session = await sessionStorage.loadSession(`offline_${domain}`);
@@ -536,32 +625,24 @@ export const reconcileInstalls = inngest.createFunction(
     const skipped = probes.filter((p) => p.classification === "ambiguous").length;
 
     // --- Circuit-breaker gate ---------------------------------------------
-    // A run that WOULD mark the whole probed base, or >=half of it, is the
-    // mass-churn signature of a systemic fault, not a real day of uninstalls.
-    // ABORT: mark nothing, page the operator, and let a human confirm before any
-    // churn happens. The fraction is primary; the all-probed-marked rule ensures a
-    // 100%-churn trips at ANY base size (checked >= 1) — the mass-churn signature
-    // of a wrong/rotated shared client_secret 401'ing every shop is identical at
-    // N=1, N=2, or N=100, so there is no safe floor below which auto-churn is OK.
-    // Design tradeoff: at N=1 a lone active shop that classifies "uninstalled" now
-    // PAGES-and-aborts instead of auto-marking. That is intended — this reconciler
-    // is only a BACKSTOP for MISSED app/uninstalled webhooks (real uninstalls are
-    // marked directly by that webhook), so refusing to auto-churn the entire
-    // remaining base on a single ambiguous-looking signal and asking a human to
-    // confirm is the conservative-correct call. wouldMark holds ONLY shops
-    // classified "uninstalled" (ambiguous/transient shops are excluded upstream),
-    // so this never trips on a network blip or throttle.
-    const churnThreshold = Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * checked));
-    const tripped =
-      (checked >= 1 && wouldMark.length === checked) || // 100% churn is systemic at ANY base size → always trip
-      wouldMark.length >= churnThreshold; // or >= half the base (floor CB_MIN_MARKS)
+    // A run that looks like mass churn is the signature of a systemic fault, not
+    // a real day of uninstalls: ABORT, mark nothing, page the operator. The rule
+    // and its rationale live on shouldTripCircuitBreaker. wouldMark holds ONLY
+    // shops classified "uninstalled" (ambiguous/transient shops are excluded
+    // upstream and counted in `skipped`), so a network blip or throttle never
+    // adds to it. The abort OpsEvent metadata carries `probed` and `skipped` so
+    // the operator digest can show the denominator the breaker used.
+    const probed = checked - skipped;
+    const churnThreshold = circuitBreakerThreshold(probed);
+    const tripped = shouldTripCircuitBreaker({ checked, skipped, wouldMark: wouldMark.length });
     if (tripped) {
       await step.run("circuit-breaker-abort", async () => {
         const { recordOpsEvent, OPS_EVENT_TYPES } =
           await import("../../app/models/ops-event.server");
         const summary =
-          `reconcile ABORTED by circuit breaker: ${wouldMark.length} of ${checked} active shops ` +
-          `classified uninstalled (threshold ${churnThreshold}) — likely a systemic misconfig ` +
+          `reconcile ABORTED by circuit breaker: ${wouldMark.length} of ${probed} probed ` +
+          `(${checked} active, ${skipped} skipped) shops classified uninstalled ` +
+          `(threshold ${churnThreshold}) — likely a systemic misconfig ` +
           `(e.g. wrong/rotated shared client_secret), NOT a real mass uninstall. Marked NOTHING.`;
         // The durable OpsEvent row is counts-only: NO per-shop domains in the
         // message and none in the structured metadata, so deleteShopData (which
@@ -573,7 +654,13 @@ export const reconcileInstalls = inngest.createFunction(
           eventType: OPS_EVENT_TYPES.RECONCILE_ABORTED,
           key: RECONCILE_INSTALLS_KEY,
           message: summary,
-          metadata: { checked, wouldMark: wouldMark.length, threshold: churnThreshold },
+          metadata: {
+            checked,
+            probed,
+            skipped,
+            wouldMark: wouldMark.length,
+            threshold: churnThreshold,
+          },
         });
         const { sendOpsAlert } = await import("../../app/services/ops-alert.server");
         try {
@@ -589,6 +676,7 @@ export const reconcileInstalls = inngest.createFunction(
       logger.error("reconcile-installs: circuit breaker tripped — aborted, marked nothing", {
         function: "reconcile-installs",
         checked,
+        probed,
         wouldMark: wouldMark.length,
         threshold: churnThreshold,
       });

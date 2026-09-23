@@ -60,6 +60,26 @@ function formatShortDate(iso: string): string {
   return d.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 }
 
+/**
+ * Data-derived summary for the chart SVG's `aria-label`. A static label (the
+ * previous `"Findings trend stacked bar chart"`) satisfies `role="img"` but
+ * flattens the per-bar `aria-label`s below it out of the accessibility tree,
+ * so a screen-reader user got the chart's presence announced with none of its
+ * data. Building the label from the same data the bars render fixes that
+ * without adding a second (hidden-table) rendering of the chart.
+ */
+function buildTrendChartAriaLabel(scores: TrendScoreEntry[]): string {
+  const first = scores[0];
+  const latest = scores[scores.length - 1];
+  const totalOf = (e: TrendScoreEntry) => e.highCount + e.mediumCount + e.lowCount;
+  return (
+    `Findings trend stacked bar chart, ${scores.length} scan${scores.length !== 1 ? "s" : ""}. ` +
+    `Total findings went from ${totalOf(first)} on ${formatShortDate(first.completedAt)} ` +
+    `to ${totalOf(latest)} on ${formatShortDate(latest.completedAt)}. ` +
+    `Latest scan: ${latest.highCount} high, ${latest.mediumCount} medium, ${latest.lowCount} low.`
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
@@ -145,7 +165,7 @@ export function HealthScoreTrendChart({
             width="100%"
             preserveAspectRatio="xMidYMid meet"
             role="img"
-            aria-label="Findings trend stacked bar chart"
+            aria-label={buildTrendChartAriaLabel(scores)}
           >
             {/* Subtle slate baseline axis grounding the bars */}
             <line

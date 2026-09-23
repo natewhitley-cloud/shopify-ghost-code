@@ -505,6 +505,11 @@ describe("pruneOpsEvents", () => {
     return where.OR.find((clause) => clause.eventType === type);
   }
 
+  beforeEach(() => {
+    // Default: no heartbeat keys on record, so no newest-row exclusion is built.
+    mockDb.opsEvent.groupBy.mockResolvedValue([]);
+  });
+
   it("deletes cron_heartbeat (30d) and page_visit (14d) rows and returns the total count", async () => {
     mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 42 });
     const before = Date.now();
@@ -557,5 +562,125 @@ describe("pruneOpsEvents", () => {
     const pvCutoff = branchFor(where, OPS_EVENT_TYPES.PAGE_VISIT)!.createdAt.lt;
     expect(before - pvCutoff.getTime()).toBeGreaterThanOrEqual(7 * DAY_MS - 1000);
     expect(before - pvCutoff.getTime()).toBeLessThanOrEqual(7 * DAY_MS + 1000);
+  });
+
+  // gc-q8g: heartbeats are written only on SUCCESS, so a cron failing every run
+  // for 30d+ would have ALL its heartbeats pruned, drop out of getStaleCrons
+  // (cold-start safe), and turn /health/deep + the dead-man's-switch GREEN. The
+  // prune must always keep the newest heartbeat per key.
+  describe("retains the newest heartbeat per key (dead-man's-switch evidence)", () => {
+    type HeartbeatBranch = {
+      eventType: string;
+      createdAt: { lt: Date };
+      NOT?: { OR: Array<{ key: string | null; createdAt: Date }> };
+    };
+
+    function heartbeatBranch(): HeartbeatBranch {
+      const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
+      return where.OR.find(
+        (clause: HeartbeatBranch) => clause.eventType === OPS_EVENT_TYPES.CRON_HEARTBEAT,
+      );
+    }
+
+    it("reads max(createdAt) per key over ALL heartbeats in one grouped query", async () => {
+      mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 0 });
+
+      await pruneOpsEvents();
+
+      expect(mockDb.opsEvent.groupBy).toHaveBeenCalledTimes(1);
+      expect(mockDb.opsEvent.groupBy).toHaveBeenCalledWith({
+        by: ["key"],
+        where: { eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT },
+        _max: { createdAt: true },
+      });
+      expect(mockDb.opsEvent.deleteMany).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps exactly the newest row of a key whose heartbeats are ALL older than the cutoff", async () => {
+      const newest = new Date(Date.now() - 45 * DAY_MS);
+      mockDb.opsEvent.groupBy.mockResolvedValue([
+        { key: "reconcile-installs", _max: { createdAt: newest } },
+      ]);
+      mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 7 });
+
+      await pruneOpsEvents();
+
+      const branch = heartbeatBranch();
+      expect(branch.createdAt.lt).toBeInstanceOf(Date);
+      expect(branch.NOT).toEqual({
+        OR: [{ key: "reconcile-installs", createdAt: newest }],
+      });
+    });
+
+    it("builds no exclusion for a key whose newest heartbeat is recent (its old rows are all deletable)", async () => {
+      mockDb.opsEvent.groupBy.mockResolvedValue([
+        { key: "watch-stale-scans", _max: { createdAt: new Date(Date.now() - 60_000) } },
+      ]);
+      mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 4000 });
+
+      const deleted = await pruneOpsEvents();
+
+      expect(deleted).toBe(4000);
+      expect(heartbeatBranch().NOT).toBeUndefined();
+    });
+
+    it("handles multiple keys in the same two queries, excluding only the fully-stale keys", async () => {
+      const staleA = new Date(Date.now() - 31 * DAY_MS);
+      const staleB = new Date(Date.now() - 400 * DAY_MS);
+      mockDb.opsEvent.groupBy.mockResolvedValue([
+        { key: "weekly-scan", _max: { createdAt: staleA } },
+        { key: "watch-stale-scans", _max: { createdAt: new Date() } },
+        { key: "operator-digest", _max: { createdAt: staleB } },
+      ]);
+      mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 12 });
+
+      const deleted = await pruneOpsEvents();
+
+      expect(deleted).toBe(12);
+      expect(mockDb.opsEvent.groupBy).toHaveBeenCalledTimes(1);
+      expect(mockDb.opsEvent.deleteMany).toHaveBeenCalledTimes(1);
+      expect(heartbeatBranch().NOT!.OR).toEqual([
+        { key: "weekly-scan", createdAt: staleA },
+        { key: "operator-digest", createdAt: staleB },
+      ]);
+    });
+
+    it("treats a null key as its own group and keeps its newest row too", async () => {
+      const newest = new Date(Date.now() - 90 * DAY_MS);
+      mockDb.opsEvent.groupBy.mockResolvedValue([{ key: null, _max: { createdAt: newest } }]);
+      mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 1 });
+
+      await pruneOpsEvents();
+
+      expect(heartbeatBranch().NOT).toEqual({ OR: [{ key: null, createdAt: newest }] });
+    });
+
+    it("honours a custom heartbeat window when deciding which keys need protecting", async () => {
+      const fortyDaysAgo = new Date(Date.now() - 40 * DAY_MS);
+      mockDb.opsEvent.groupBy.mockResolvedValue([
+        { key: "weekly-scan", _max: { createdAt: fortyDaysAgo } },
+      ]);
+      mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 0 });
+
+      // 90d window: a 40d-old newest row is inside retention, so no exclusion.
+      await pruneOpsEvents({ heartbeatOlderThanDays: 90 });
+
+      expect(heartbeatBranch().NOT).toBeUndefined();
+    });
+
+    it("never adds the exclusion to the page_visit branch (other types unaffected)", async () => {
+      mockDb.opsEvent.groupBy.mockResolvedValue([
+        { key: "reconcile-installs", _max: { createdAt: new Date(Date.now() - 45 * DAY_MS) } },
+      ]);
+      mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 0 });
+
+      await pruneOpsEvents();
+
+      const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
+      const types = where.OR.map((clause: { eventType: string }) => clause.eventType).sort();
+      expect(types).toEqual(["cron_heartbeat", "page_visit"]);
+      const pageVisit = branchFor(where, OPS_EVENT_TYPES.PAGE_VISIT)!;
+      expect(Object.keys(pageVisit).sort()).toEqual(["createdAt", "eventType"]);
+    });
   });
 });

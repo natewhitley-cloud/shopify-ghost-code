@@ -285,6 +285,9 @@ export const scanTheme = inngest.createFunction(
         danglingDistinctHandles,
         themeFetchMs,
         themeScanMs,
+        totalTextBytes,
+        largestFileBytes,
+        scannableTextBytes,
       } = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -311,6 +314,33 @@ export const scanTheme = inngest.createFunction(
               event: "theme_too_large",
               shopId,
               maxTotalBytes: err.maxTotalBytes,
+              bytesAtAbort: err.bytesAtAbort,
+            });
+            // gc-d4e follow-up: without this row an over-cap theme is invisible
+            // to scripts/theme-size-report.ts, which could then never show the
+            // cap is too LOW. Reuses the scan_signal type with the SAME key
+            // (scanId) and identity field (metadata.shopId) as the success-path
+            // emit, so the existing GDPR redact + prune coverage applies — no
+            // new OpsEvent type. recordOpsEvent never throws, so the
+            // NonRetriableError below is unaffected. Idempotency: this write
+            // re-executes only if the step re-runs, and NonRetriableError
+            // prevents retries, so it is written at most once per scan in
+            // practice; any duplicate is harmless (consumers take one row per
+            // scanId, as for the success-path row).
+            const { recordOpsEvent, OPS_EVENT_TYPES } =
+              await import("../../app/models/ops-event.server");
+            await recordOpsEvent({
+              eventType: OPS_EVENT_TYPES.SCAN_SIGNAL,
+              key: scanId,
+              metadata: {
+                shopId,
+                scanId,
+                plan: shop.plan,
+                themeId,
+                aborted: "theme_too_large",
+                bytesAtAbort: err.bytesAtAbort,
+                maxTotalBytes: err.maxTotalBytes,
+              },
             });
             throw new NonRetriableError(err.message, { cause: err });
           }
@@ -413,12 +443,31 @@ export const scanTheme = inngest.createFunction(
         // empty and at most a handful of paths.
         const skippedFilePaths = (skippedFiles ?? []).map((f) => f.filename);
 
+        // Theme-size calibration data (gc-d4e): sum/max of file content length
+        // (string length, UTF-16 code units — same unit as MAX_THEME_TOTAL_TEXT_BYTES)
+        // computed once from the `files` array already in scope, reusing the same
+        // isScannableFile predicate as scannableFileCount above. These are tiny
+        // scalars (like fileCount/scannableFileCount), safe across the 4MB step
+        // boundary.
+        let totalTextBytes = 0;
+        let largestFileBytes = 0;
+        let scannableTextBytes = 0;
+        for (const f of files) {
+          const bytes = f.content.length;
+          totalTextBytes += bytes;
+          if (bytes > largestFileBytes) largestFileBytes = bytes;
+          if (isScannableFile(f.filename)) scannableTextBytes += bytes;
+        }
+
         return {
           findingCount: themeFindings.length,
           fileCount: files.length,
           // Theme-shape scalars threaded to the finalize step's scan_signal
           // OpsEvent (Feature 2). All tiny — safe across the 4MB step boundary.
           scannableFileCount: files.filter((f) => isScannableFile(f.filename)).length,
+          totalTextBytes,
+          largestFileBytes,
+          scannableTextBytes,
           skippedFilePaths,
           skippedFileCount: skippedFilePaths.length,
           benignLibrarySkips: benignLibrarySkips ?? 0,
@@ -1069,6 +1118,9 @@ export const scanTheme = inngest.createFunction(
               themeId,
               fileCount,
               scannableFileCount,
+              totalTextBytes,
+              largestFileBytes,
+              scannableTextBytes,
               skippedFileCount,
               benignLibrarySkips,
               unknownScriptCount,

@@ -238,6 +238,17 @@ export const CROSS_FILE_FINDING_TYPES = new Set([
   "OVERLAPPING_CHAT_WIDGET",
 ]);
 
+/**
+ * PER-FILE finding types whose detector still runs on a size-skipped file
+ * (gc-qqt): scanThemeFiles runs detectMaliciousScripts on every oversized
+ * scannable file so padding a file past MAX_SCANNABLE_FILE_BYTES cannot hide a
+ * malicious alert. Like CROSS_FILE_FINDING_TYPES, these are recomputed for a
+ * skipped file every scan, so the differ must diff them normally rather than
+ * exclude them as unre-checked (which would misreport a still-present finding
+ * as "new" every rescan and hide its genuine resolution).
+ */
+export const SIZE_SKIP_STILL_SCANNED_FINDING_TYPES = new Set(["MALICIOUS_SCRIPT"]);
+
 // ---------------------------------------------------------------------------
 // Theme-file-backed vs Admin-resource findings (gc-3on)
 // ---------------------------------------------------------------------------

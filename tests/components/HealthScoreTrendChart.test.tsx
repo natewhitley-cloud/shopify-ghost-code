@@ -217,6 +217,48 @@ describe("HealthScoreTrendChart — renders chart", () => {
     expect(span.props.className).toBe("trend-chart-direction--declining");
   });
 
+  it("derives the SVG aria-label from the trend data instead of a static string", () => {
+    const trend = makeTrend({
+      scores: [
+        makeEntry({
+          scanId: "s1",
+          completedAt: "2026-03-01T12:00:00Z",
+          highCount: 4,
+          mediumCount: 1,
+          lowCount: 1,
+        }),
+        makeEntry({
+          scanId: "s2",
+          completedAt: "2026-03-08T12:00:00Z",
+          highCount: 2,
+          mediumCount: 2,
+          lowCount: 1,
+        }),
+        makeEntry({
+          scanId: "s3",
+          completedAt: "2026-03-15T12:00:00Z",
+          highCount: 1,
+          mediumCount: 1,
+          lowCount: 1,
+        }),
+      ],
+    });
+    const result = HealthScoreTrendChart({ trendChartEnabled: true, healthScoreTrend: trend });
+    const div = result!.props.children[1]; // sectionCard <div>
+    const svgContainer = div.props.children[1]; // trend-chart-svg-container <div>
+    const svg = svgContainer.props.children;
+
+    // 3 scans, first total = 6 (Mar 1), last total = 3 (Mar 15), latest = 1/1/1.
+    expect(svg.props["aria-label"]).toContain("3 scans");
+    expect(svg.props["aria-label"]).toContain("6");
+    expect(svg.props["aria-label"]).toContain("3");
+    expect(svg.props["aria-label"]).toMatch(/1 high/i);
+    expect(svg.props["aria-label"]).toMatch(/1 medium/i);
+    expect(svg.props["aria-label"]).toMatch(/1 low/i);
+    // Not the old static, data-blind label.
+    expect(svg.props["aria-label"]).not.toBe("Findings trend stacked bar chart");
+  });
+
   it("applies the correct CSS class for the Stable direction", () => {
     const result = HealthScoreTrendChart({
       trendChartEnabled: true,

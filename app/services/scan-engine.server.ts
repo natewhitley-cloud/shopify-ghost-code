@@ -244,6 +244,38 @@ export function isScannableFile(filename: string): boolean {
   return SCANNABLE_PREFIXES.some((prefix) => filename.startsWith(prefix));
 }
 
+/**
+ * Returns true for theme files that get ONLY the MALICIOUS_SCRIPT pass (gc-3pd):
+ * places injected payloads live that the full Liquid detector suite never sees.
+ *
+ *   - templates/**.json, sections/**.json — Custom Liquid block code is stored as
+ *     (escaped) JSON strings in JSON templates and section groups.
+ *   - config/settings_data.json — theme settings can carry raw HTML/URLs.
+ *   - assets/*.js, assets/*.mjs, assets/*.liquid (e.g. theme.js.liquid) — injected
+ *     loaders are commonly appended to asset JS.
+ *   - blocks/*.liquid — OS 2.0 theme blocks render on the storefront. They get
+ *     only this pass for now; full-detector coverage is tracked as gc-zfl.
+ *   - locales/*.json — `*_html` keys render unescaped, so they can carry markup.
+ *
+ * Deliberately excluded: CSS (cannot execute script; a CSS `url()` to a listed
+ * host is not the skimmer/loader threat this list tracks),
+ * config/settings_schema.json (developer-owned schema). Disjoint from
+ * isScannableFile by construction (blocks/ is not a scannable prefix), so no
+ * file is scanned twice.
+ */
+export function isMaliciousScanOnlyFile(filename: string): boolean {
+  if (filename === "config/settings_data.json") return true;
+  if (filename.startsWith("assets/")) {
+    return filename.endsWith(".js") || filename.endsWith(".mjs") || filename.endsWith(".liquid");
+  }
+  if (filename.startsWith("blocks/")) return filename.endsWith(".liquid");
+  if (filename.startsWith("locales/")) return filename.endsWith(".json");
+  return (
+    (filename.startsWith("templates/") || filename.startsWith("sections/")) &&
+    filename.endsWith(".json")
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Line-level helpers
 // ---------------------------------------------------------------------------
@@ -1009,8 +1041,38 @@ export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
 // on pathological 1MB single-line files (covered by a test).
 const URL_HOST_RE = /(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)/gi;
 
-// `{% comment %}...{% endcomment %}` incl. whitespace-control `{%-`/`-%}` forms.
-const LIQUID_COMMENT_BLOCK_RE = /\{%-?\s*comment\s*-?%\}[\s\S]*?\{%-?\s*endcomment\s*-?%\}/gi;
+// Liquid tokenizer/parser patterns, mirrored from the Liquid 5.8.1 gem
+// (tokenizer.rb, block_body.rb). Whitespace is Ruby's ASCII-only `\s`
+// ([ \t\n\v\f\r]), never JS `\s` (which also matches NBSP etc.), and tag names
+// compare case-SENSITIVELY, exactly as Liquid does.
+//   - text runs to the next `{{` or `{%`;
+//   - LIQUID_TAG_HEAD_RE: gem `FullToken`, the tag name right after a token's
+//     leading `{%` (trailing markup is ignored, so `{% endcomment x %}` closes);
+//   - LIQUID_INNER_TAG_NAME_RE: gem `FullTokenPossiblyInvalid`, the name after the
+//     LAST `{%` inside a token (used by raw/doc/comment-raw to find their closer).
+const LIQUID_TOKEN_START_RE = /\{[{%]/g;
+const LIQUID_TAG_HEAD_RE = /\{%-?[ \t\n\v\f\r]*(#|\w+)[ \t\n\v\f\r]*/y;
+const LIQUID_INNER_TAG_NAME_RE = /-?[ \t\n\v\f\r]*(\w+)/y;
+// Blocks whose body is literal (never parsed), closed by `end<name>`. `raw` is
+// core Liquid; `javascript`/`schema`/`stylesheet` are Shopify tags whose bodies
+// Shopify does not render as Liquid. Treating a body as literal never blanks
+// anything, so an over-broad entry here can only fail toward reporting.
+const LIQUID_LITERAL_BLOCKS = new Set(["raw", "javascript", "schema", "stylesheet"]);
+
+// Slash encodings decoded before URL matching: any run of backslashes before `/`
+// (JSON `\/`, double-escaped `\\/`, `\\\/`) or before the JS/JSON unicode
+// escape `u002f` (`\u002f`, `\u002F`, `\\u002f`), and HTML entities `&#47;` /
+// `&#x2F;` (optional leading zeros, optional `;`), plus the named entity `&sol;`
+// (HTML matches named references case-sensitively and this one only with its
+// `;`). No `i` flag, and no `(?-i:)` modifier group (a SyntaxError before
+// Node 23): the case-insensitive parts use explicit classes, which also accept
+// an uppercase `U`, which is not a real escape: that can only fail toward
+// reporting. The `(?<!\\)` lookbehind lets a backslash run start a match only at
+// its first char, so a huge run that is not followed by `/` or `u002f` is
+// scanned once, not once per backslash (linear); a `\u` flood fails after a
+// constant lookahead per position.
+const ENCODED_SLASH_RE =
+  /(?<!\\)\\+(?:\/|[uU]002[fF])|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.
@@ -1018,21 +1080,183 @@ const MALICIOUS_SNIPPET_LEAD = 40;
 const MALICIOUS_SNIPPET_MAX = 300;
 
 /**
- * Blank out Liquid comment blocks while preserving every newline, so line
- * numbers still map 1:1 to the original file. Unlike the shared line-granular
- * buildCommentSkipLines, live code sharing a line with a comment stays visible:
- * a minified one-line theme with any comment in it must not evade detection.
+ * Offset one past the end of the Liquid variable token starting at `start`
+ * (content[start..start+1] === "{{"), mirroring the gem's next_variable_token:
+ * it ends at `}}` or a lone `}`, and a `{%` inside it swallows everything up to
+ * the next `%}`. An unclosed variable token consumes the rest of the source.
  */
-function blankLiquidComments(content: string): string {
-  return content.replace(LIQUID_COMMENT_BLOCK_RE, (m) => m.replace(/[^\n]/g, " "));
+function liquidVariableTokenEnd(
+  content: string,
+  start: number,
+  findTagClose: (from: number) => number,
+): number {
+  const n = content.length;
+  let p = start + 2;
+  if (p >= n) return n;
+  let a: string | undefined = content[p++];
+  for (;;) {
+    while (a !== undefined && a !== "}" && a !== "{") a = p < n ? content[p++] : undefined;
+    if (a === undefined || p >= n) return n;
+    const b = content[p++];
+    if (a === "}") return b === "}" ? p : p - 1;
+    if (a === "{" && b === "%") {
+      const close = findTagClose(p);
+      return close < 0 ? p : close + 2;
+    }
+    a = b;
+  }
+}
+
+/**
+ * Blank out Liquid comment and doc blocks while preserving length and every
+ * newline, so line numbers still map 1:1 to the original file. Unlike the shared
+ * line-granular buildCommentSkipLines, live code sharing a line with a comment
+ * stays visible: a minified one-line theme with any comment in it must not evade
+ * detection.
+ *
+ * A single linear walk over Liquid's own token stream (gem 5.8.1 semantics):
+ *   - a tag token runs from `{%` to the FIRST `%}`; so `{% # {% comment %}` is
+ *     one inline comment, and `#` comments never open a block;
+ *   - `comment` nests (depth-counted) and closes on `endcomment` with any trailing
+ *     markup; a `raw` inside it is consumed up to its `endraw`;
+ *   - `doc` closes on `enddoc` and ignores everything else inside it;
+ *   - literal blocks (`raw`, Shopify `javascript`/`schema`/`stylesheet`) are
+ *     output verbatim: never blanked, and comment tags inside them are text.
+ * Only comment/doc bodies (and their tags) are blanked. Anything Liquid would
+ * reject (unterminated block, `raw`/`doc` with arguments, nested `doc`, an
+ * unterminated `{%`) stops the walk and leaves the rest live: fail toward
+ * reporting.
+ */
+export function blankLiquidComments(content: string): string {
+  // `%}` lookups only move forward; cache the last hit and the first miss so an
+  // unterminated `{%` flood stays linear.
+  let lastClose = -1;
+  let noCloseFrom = Infinity;
+  const findTagClose = (from: number): number => {
+    if (lastClose >= from) return lastClose;
+    if (from >= noCloseFrom) return -1;
+    const close = content.indexOf("%}", from);
+    if (close < 0) noCloseFrom = from;
+    else lastClose = close;
+    return close;
+  };
+  // Gem FullToken: tag name at the token's leading `{%` (null for `{{` tokens).
+  // `markupEmpty` is true when nothing but an optional `-` follows the name.
+  const tagHead = (start: number, end: number) => {
+    if (content[start + 1] !== "%") return null;
+    LIQUID_TAG_HEAD_RE.lastIndex = start;
+    const m = LIQUID_TAG_HEAD_RE.exec(content);
+    if (!m) return null;
+    const rest = LIQUID_TAG_HEAD_RE.lastIndex;
+    return {
+      name: m[1],
+      markupEmpty: rest === end - 2 || (rest === end - 3 && content[rest] === "-"),
+    };
+  };
+  // Gem FullTokenPossiblyInvalid: name after the last `{%` (followed by a word)
+  // inside a token that ends with `%}`.
+  const innerTagName = (start: number, end: number): string | null => {
+    if (end - start < 4 || content[end - 2] !== "%" || content[end - 1] !== "}") return null;
+    for (let q = end - 3; q >= start; q--) {
+      if (content[q] !== "{" || content[q + 1] !== "%") continue;
+      LIQUID_INNER_TAG_NAME_RE.lastIndex = q + 2;
+      const m = LIQUID_INNER_TAG_NAME_RE.exec(content);
+      if (m) return m[1];
+    }
+    return null;
+  };
+
+  const blanked: Array<[number, number]> = [];
+  let state: "live" | "literal" | "comment" | "commentRaw" | "doc" = "live";
+  let literalCloser = "";
+  let depth = 0;
+  let blockStart = 0;
+  let pos = 0;
+  walk: for (;;) {
+    LIQUID_TOKEN_START_RE.lastIndex = pos;
+    const found = LIQUID_TOKEN_START_RE.exec(content);
+    if (!found) break;
+    const start = found.index;
+    let end: number;
+    if (content[start + 1] === "%") {
+      const close = findTagClose(start + 2);
+      // Unterminated `{%`: no `%}` follows, so no block can open or close.
+      if (close < 0) break;
+      end = close + 2;
+    } else {
+      end = liquidVariableTokenEnd(content, start, findTagClose);
+    }
+    pos = end;
+
+    switch (state) {
+      case "live": {
+        const head = tagHead(start, end);
+        if (!head) break;
+        if (head.name === "comment") {
+          state = "comment";
+          depth = 1;
+          blockStart = start;
+        } else if (head.name === "doc") {
+          if (!head.markupEmpty) break walk; // Liquid: syntax error
+          state = "doc";
+          blockStart = start;
+        } else if (LIQUID_LITERAL_BLOCKS.has(head.name)) {
+          if (head.name === "raw" && !head.markupEmpty) break walk; // Liquid: syntax error
+          state = "literal";
+          literalCloser = `end${head.name}`;
+        }
+        break;
+      }
+      case "literal":
+        if (innerTagName(start, end) === literalCloser) state = "live";
+        break;
+      case "doc": {
+        const name = innerTagName(start, end);
+        if (name === "doc") break walk; // Liquid: nested doc is a syntax error
+        if (name === "enddoc") {
+          blanked.push([blockStart, end]);
+          state = "live";
+        }
+        break;
+      }
+      case "commentRaw":
+        if (innerTagName(start, end) === "endraw") state = "comment";
+        break;
+      case "comment": {
+        const name = tagHead(start, end)?.name;
+        if (name === "raw") state = "commentRaw";
+        else if (name === "comment") depth++;
+        else if (name === "endcomment" && --depth === 0) {
+          blanked.push([blockStart, end]);
+          state = "live";
+        }
+        break;
+      }
+    }
+  }
+
+  let out = "";
+  let from = 0;
+  for (const [a, b] of blanked) {
+    out += content.slice(from, a) + content.slice(a, b).replace(/[^\n]/g, " ");
+    from = b;
+  }
+  return out + content.slice(from);
 }
 
 /**
  * Emit one MALICIOUS_SCRIPT finding per (line, distinct domain) for every live
  * theme reference to a domain on the curated KNOWN_MALICIOUS_DOMAINS list.
  *
- *   - Liquid comment blocks are ignored; code outside them on the same line is not.
- *   - JSON-escaped slashes (`https:\/\/host`) are decoded before matching.
+ *   - Liquid comment and doc blocks are ignored, but ONLY in `.liquid` files (incl.
+ *     `assets/*.js.liquid`), the only files Liquid renders. Elsewhere (asset
+ *     JS, JSON templates/sections, settings_data, locales) `{% comment %}` is
+ *     literal text an attacker can wrap around live code, so nothing is blanked.
+ *     Trade-off: a commented-out reference inside a JSON Custom Liquid string is
+ *     still reported (safer direction: a leftover reference is worth removing).
+ *     Code outside a comment on the same line is never skipped.
+ *   - Encoded slashes (`https:\/\/host`, `\\/`, `&#47;`, `&#x2F;`, `&sol;`) are decoded
+ *     before matching.
  *   - Other inert forms (HTML/JS comments) are still reported: a leftover
  *     malicious reference is worth removing, and the description says
  *     "references", not "loads".
@@ -1045,10 +1269,12 @@ function blankLiquidComments(content: string): string {
 export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
   const originalLines = file.content.split("\n");
-  const scanLines = blankLiquidComments(file.content).split("\n");
+  const scanLines = (
+    file.filename.endsWith(".liquid") ? blankLiquidComments(file.content) : file.content
+  ).split("\n");
 
   scanLines.forEach((rawText, i) => {
-    const text = rawText.replace(/\\\//g, "/"); // decode JSON-escaped slashes
+    const text = rawText.replace(ENCODED_SLASH_RE, "/");
     const seen = new Set<string>();
     URL_HOST_RE.lastIndex = 0;
     let match: RegExpExecArray | null;
@@ -1059,7 +1285,9 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
 
       const lineNumber = i + 1;
       const original = originalLines[i];
-      const at = original.toLowerCase().indexOf(hit.domain);
+      // Search the blanked (same length as original) but undecoded line so the
+      // snippet centres on the first LIVE occurrence, not one in a comment.
+      const at = rawText.toLowerCase().indexOf(hit.domain);
       const from = Math.max(0, at - MALICIOUS_SNIPPET_LEAD);
       findings.push({
         filename: file.filename,
@@ -3380,7 +3608,7 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
-    if (!isScannableFile(file.filename)) continue;
+    const scannable = isScannableFile(file.filename);
 
     // File-size guard (gc-06e.2): a single oversized scannable file is anomalous
     // (real theme Liquid files are far under MAX_SCANNABLE_FILE_BYTES) and would
@@ -3391,10 +3619,22 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     // treat a skipped file's cross-file findings as unre-checked — the set of
     // cross-file types lives in CROSS_FILE_FINDING_TYPES (finding-classification);
     // update it when adding a new cross-file pass (Pass 2 / Pass 4 below).
-    if (file.content.length > MAX_SCANNABLE_FILE_BYTES) {
+    const oversized = scannable && file.content.length > MAX_SCANNABLE_FILE_BYTES;
+    if (oversized) {
       skippedFiles.push({ filename: file.filename, size: file.content.length });
+    }
+
+    // Malicious-domain-only pass: (a) non-Liquid files that can still carry
+    // injected code (gc-3pd) and (b) oversized scannable files, so padding a file
+    // past the cap cannot hide a malicious alert (gc-qqt). The detector is linear
+    // (safe on unbounded input); no other detector runs on these files, and the
+    // differ exempts MALICIOUS_SCRIPT from its skipped-file exclusion
+    // (SIZE_SKIP_STILL_SCANNED_FINDING_TYPES in finding-classification).
+    if (oversized || isMaliciousScanOnlyFile(file.filename)) {
+      findings.push(...detectMaliciousScripts(file));
       continue;
     }
+    if (!scannable) continue;
 
     findings.push(...detectGhostScripts(file));
     findings.push(...detectGhostStyles(file));

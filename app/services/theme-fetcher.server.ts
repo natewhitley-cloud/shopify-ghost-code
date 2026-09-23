@@ -169,6 +169,11 @@ export async function fetchAllThemes(admin: AdminApiContext): Promise<ThemeSumma
  * the scan worker) and OOM the shared, multi-tenant container. The per-file
  * detector cap (MAX_SCANNABLE_FILE_BYTES) does not bound the total.
  * Measured in string length (UTF-16 code units), matching that per-file cap.
+ *
+ * Chosen without real theme-size data (gc-d4e). Every scan_signal OpsEvent now
+ * carries totalTextBytes/largestFileBytes/scannableTextBytes; calibrate this
+ * cap against real distribution via `scripts/theme-size-report.ts` before
+ * changing it.
  */
 export const MAX_THEME_TOTAL_TEXT_BYTES = 50_000_000;
 
@@ -180,6 +185,8 @@ export class ThemeTooLargeError extends Error {
   constructor(
     readonly themeId: string,
     readonly maxTotalBytes: number,
+    /** Cumulative text length (chars) at the moment the fetch aborted. */
+    readonly bytesAtAbort: number,
   ) {
     super(
       `[theme-fetcher] Theme ${themeId} exceeds the ${maxTotalBytes}-byte total text ceiling; ` +
@@ -246,7 +253,9 @@ export async function fetchThemeFiles(
       if (typeof node.body?.content !== "string") return [];
       totalBytes += node.body.content.length;
       // Throwing here aborts pagination before the next page is requested.
-      if (totalBytes > maxTotalBytes) throw new ThemeTooLargeError(themeId, maxTotalBytes);
+      if (totalBytes > maxTotalBytes) {
+        throw new ThemeTooLargeError(themeId, maxTotalBytes, totalBytes);
+      }
       return [{ filename: node.filename, content: node.body.content }];
     },
   });

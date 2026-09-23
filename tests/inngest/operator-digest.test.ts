@@ -1201,6 +1201,35 @@ describe("summarizeReconciler", () => {
     ).toEqual({ at: LATER.toISOString(), outcome: "aborted", checked: 11, wouldMark: 9 });
   });
 
+  it("carries probed/skipped from an aborted run's metadata when present", () => {
+    expect(
+      summarizeReconciler(null, {
+        createdAt: LATER,
+        metadata: { checked: 3, probed: 2, skipped: 1, wouldMark: 2, threshold: 3 },
+      }),
+    ).toEqual({
+      at: LATER.toISOString(),
+      outcome: "aborted",
+      checked: 3,
+      wouldMark: 2,
+      probed: 2,
+      skipped: 1,
+    });
+  });
+
+  it("omits probed/skipped for a legacy aborted row without them", () => {
+    const status = summarizeReconciler(null, {
+      createdAt: LATER,
+      metadata: { checked: 11, wouldMark: 9, probed: "x" },
+    });
+    expect(status).toEqual({
+      at: LATER.toISOString(),
+      outcome: "aborted",
+      checked: 11,
+      wouldMark: 9,
+    });
+  });
+
   it("prefers the completed run when it is newer than an old abort", () => {
     const status = summarizeReconciler(
       { createdAt: LATER, metadata: { checked: 11, marked: 0, skipped: 0 } },
@@ -1255,6 +1284,24 @@ describe("buildDigestBody — reconciler section (gc-dwp)", () => {
     );
     expect(body).toContain(
       "ABORTED by circuit breaker (would have marked 9 of 11); nothing marked",
+    );
+  });
+
+  it("shows the probed denominator and skipped count for an aborted run when present", () => {
+    const body = buildDigestBody(
+      makeData({
+        reconciler: {
+          at: "x",
+          outcome: "aborted",
+          checked: 3,
+          wouldMark: 2,
+          probed: 2,
+          skipped: 1,
+        },
+      }),
+    );
+    expect(body).toContain(
+      "ABORTED by circuit breaker (would have marked 2 of 2 probed; 3 active, 1 skipped); nothing marked",
     );
   });
 

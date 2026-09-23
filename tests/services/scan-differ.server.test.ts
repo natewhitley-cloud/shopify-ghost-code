@@ -570,6 +570,46 @@ describe("diffScans — cross-file findings survive the skipped-file filter (gc-
 });
 
 // ---------------------------------------------------------------------------
+// diffScans — MALICIOUS_SCRIPT on skipped files (gc-qqt)
+//
+// The malicious-domain pass is the ONE per-file detector that still runs on an
+// oversized (size-skipped) file, so its findings there are recomputed every
+// scan and must diff normally, exactly like the cross-file types above.
+// ---------------------------------------------------------------------------
+
+describe("diffScans — MALICIOUS_SCRIPT on a skipped file diffs normally (gc-qqt)", () => {
+  const SKIPPED = ["sections/padded.liquid"];
+  const malicious = makeFinding(
+    "sections/padded.liquid",
+    "MALICIOUS_SCRIPT",
+    '<script src="https://shopify.jsdeliver.cloud/config.js"></script>',
+  );
+
+  it("reports a malicious finding newly found in a skipped file as NEW", () => {
+    const diff = diffScans([malicious], [], { skippedFiles: SKIPPED });
+    expect(diff.newFindings).toHaveLength(1);
+    expect(diff.newFindings[0].findingType).toBe("MALICIOUS_SCRIPT");
+  });
+
+  it("reports it as UNCHANGED (not a false 'new') when present in both scans", () => {
+    const diff = diffScans([malicious], [malicious], { skippedFiles: SKIPPED });
+    expect(diff.unchangedCount).toBe(1);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.resolvedFindings).toHaveLength(0);
+  });
+
+  it("reports it as RESOLVED when removed while the file is still oversized", () => {
+    const stale = makeFinding("sections/padded.liquid", "GHOST_SCRIPT", "old-script");
+    const diff = diffScans([], [malicious, stale], { skippedFiles: SKIPPED });
+    // The malicious pass re-checked the file, so its absence is a real fix; the
+    // per-file GHOST_SCRIPT was not re-checked and stays excluded.
+    expect(diff.resolvedFindings.map((f) => f.findingType)).toEqual(["MALICIOUS_SCRIPT"]);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.unchangedCount).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LOG-10 — fingerprint stability across non-substantive snippet changes
 //
 // These are the acceptance criteria: a finding's identity must survive edits
