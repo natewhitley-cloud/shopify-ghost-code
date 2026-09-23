@@ -69,6 +69,16 @@ describe("isScannableFile", () => {
     expect(isScannableFile("layout/theme.liquid")).toBe(true);
   });
 
+  it("accepts liquid files in blocks/ (OS 2.0 theme blocks, gc-zfl)", () => {
+    expect(isScannableFile("blocks/group.liquid")).toBe(true);
+    // Horizon's private (nested-only) blocks are underscore-prefixed.
+    expect(isScannableFile("blocks/_header-menu.liquid")).toBe(true);
+  });
+
+  it("rejects non-liquid files in blocks/", () => {
+    expect(isScannableFile("blocks/readme.md")).toBe(false);
+  });
+
   it("rejects files in assets/ directory", () => {
     expect(isScannableFile("assets/theme.js")).toBe(false);
   });
@@ -5545,14 +5555,18 @@ describe("isMaliciousScanOnlyFile", () => {
     expect(isMaliciousScanOnlyFile("assets/theme.js.liquid")).toBe(true);
   });
 
-  it("accepts theme blocks, locales and ES-module assets (audit round 2)", () => {
-    expect(isMaliciousScanOnlyFile("blocks/custom-code.liquid")).toBe(true);
+  it("accepts locales and ES-module assets (audit round 2)", () => {
     expect(isMaliciousScanOnlyFile("locales/en.default.json")).toBe(true);
     expect(isMaliciousScanOnlyFile("locales/fr.json")).toBe(true);
     expect(isMaliciousScanOnlyFile("assets/app.mjs")).toBe(true);
     // Only the file types Shopify stores there as text/code.
     expect(isMaliciousScanOnlyFile("blocks/readme.md")).toBe(false);
     expect(isMaliciousScanOnlyFile("locales/en.txt")).toBe(false);
+  });
+
+  it("rejects blocks/*.liquid: theme blocks get the FULL detector suite now (gc-zfl)", () => {
+    expect(isMaliciousScanOnlyFile("blocks/custom-code.liquid")).toBe(false);
+    expect(isMaliciousScanOnlyFile("blocks/_nested-private.liquid")).toBe(false);
   });
 
   it("never overlaps isScannableFile (no file gets the malicious pass twice)", () => {
@@ -5572,7 +5586,6 @@ describe("isMaliciousScanOnlyFile", () => {
     ]) {
       expect(isMaliciousScanOnlyFile(f) && isScannableFile(f), f).toBe(false);
     }
-    expect(isScannableFile("blocks/custom-code.liquid")).toBe(false);
   });
 
   it("rejects files the full detector suite already scans (no double-run)", () => {
@@ -5580,6 +5593,7 @@ describe("isMaliciousScanOnlyFile", () => {
     expect(isMaliciousScanOnlyFile("sections/header.liquid")).toBe(false);
     expect(isMaliciousScanOnlyFile("snippets/loader.liquid")).toBe(false);
     expect(isMaliciousScanOnlyFile("layout/theme.liquid")).toBe(false);
+    expect(isMaliciousScanOnlyFile("blocks/custom-code.liquid")).toBe(false);
   });
 
   it("rejects files outside the globs (CSS, settings schema, empty)", () => {
@@ -5713,16 +5727,13 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in non-Liquid theme files (gc-3pd)
     ]);
   });
 
-  it("runs ONLY the malicious detector on blocks/*.liquid (full suite tracked in gc-zfl)", () => {
-    const { findings, unknownScripts } = scanThemeFiles([
-      {
-        filename: "blocks/x.liquid",
-        content:
-          '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=X"></script>\n<script src="https://cdn.unknown-vendor.example/w.js"></script>',
-      },
-    ]);
-    expect(findings).toHaveLength(0);
-    expect(unknownScripts).toHaveLength(0);
+  it("reports a malicious reference in blocks/*.liquid exactly once (full suite, gc-zfl)", () => {
+    const findings = maliciousFor({
+      filename: "blocks/custom-code.liquid",
+      content: `<div>\n<script src="${EVIL}"></script>\n</div>`,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(2);
   });
 
   it("stays linear on a comment-opener flood in a .liquid file (blanking path)", () => {
@@ -6212,5 +6223,186 @@ describe("blankLiquidComments — Liquid-faithful token walk", () => {
       expect(out.length, name).toBe(flood.length);
       expect(elapsed, name).toBeLessThan(2000);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// OS 2.0 / Horizon theme blocks get the full per-file suite (gc-zfl)
+// ---------------------------------------------------------------------------
+
+describe("scanThemeFiles — theme blocks (blocks/*.liquid, gc-zfl)", () => {
+  // Abridged from Shopify's stock Horizon theme blocks. First-party theme code:
+  // every one of these must scan clean (zero findings, zero unknown resources).
+  const STOCK_HORIZON_BLOCKS: ThemeFile[] = [
+    {
+      filename: "blocks/_marquee.liquid",
+      content: [
+        "<script",
+        "  src=\"{{ 'marquee.js' | asset_url }}\"",
+        '  type="module"',
+        '  fetchpriority="low"',
+        "></script>",
+        "",
+        "{% assign block_settings = block.settings %}",
+        "{% if block.settings.background_color != blank %}",
+        "  {% render 'contrast-override', background_color: block.settings.background_color, section_id: block.id %}",
+        "{% endif %}",
+        "<marquee-component class=\"spacing-style\">{% content_for 'blocks' %}</marquee-component>",
+        "{% schema %}",
+        '{ "name": "t:names.marquee", "blocks": [{ "type": "@theme" }] }',
+        "{% endschema %}",
+      ].join("\n"),
+    },
+    {
+      filename: "blocks/group.liquid",
+      content: [
+        '<div class="group-block" {{ block.shopify_attributes }}>',
+        "  {% content_for 'blocks' %}",
+        "</div>",
+        "{% schema %}",
+        '{ "name": "t:names.group", "blocks": [{ "type": "@theme" }, { "type": "@app" }] }',
+        "{% endschema %}",
+      ].join("\n"),
+    },
+    {
+      filename: "blocks/review.liquid",
+      content: [
+        "{% liquid",
+        "  assign product = closest.product",
+        "  assign rating = product.metafields.reviews.rating.value.rating",
+        "  if request.visual_preview_mode and product == blank",
+        "    assign product = collections.all.products.first",
+        "  endif",
+        "-%}",
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><use href="#star"></use></svg>',
+        "{% stylesheet %}.rating-wrapper { display: flex; }{% endstylesheet %}",
+        "{% schema %}",
+        '{ "name": "t:names.review", "settings": [] }',
+        "{% endschema %}",
+      ].join("\n"),
+    },
+  ];
+
+  it("reports zero findings on stock Horizon-style blocks (first-party theme code)", () => {
+    const { findings, unknownScripts, skippedFiles } = scanThemeFiles(STOCK_HORIZON_BLOCKS);
+    expect(findings).toEqual([]);
+    expect(unknownScripts).toEqual([]);
+    expect(skippedFiles).toEqual([]);
+  });
+
+  it("detects a leftover app script (Klaviyo) inside a block as GHOST_SCRIPT", () => {
+    const { findings } = scanThemeFiles([
+      {
+        filename: "blocks/newsletter.liquid",
+        content:
+          '<div>\n<script async src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=X"></script>\n</div>',
+      },
+    ]);
+    const ghost = findingsOfType(findings, FindingType.GHOST_SCRIPT);
+    expect(ghost).toHaveLength(1);
+    expect(ghost[0]).toMatchObject({
+      filename: "blocks/newsletter.liquid",
+      lineNumber: 2,
+      appName: "Klaviyo",
+    });
+  });
+
+  it("detects a render of a known app snippet (Judge.me) inside a block as GHOST_SNIPPET", () => {
+    const { findings } = scanThemeFiles([
+      {
+        filename: "blocks/product-reviews.liquid",
+        content:
+          "<div class=\"reviews\">\n  {% render 'judgeme_widgets', widget_type: 'judgeme_preview_badge' %}\n</div>",
+      },
+    ]);
+    const ghost = findingsOfType(findings, FindingType.GHOST_SNIPPET);
+    expect(ghost).toHaveLength(1);
+    expect(ghost[0]).toMatchObject({
+      filename: "blocks/product-reviews.liquid",
+      lineNumber: 2,
+      appName: "Judge.me",
+    });
+  });
+
+  it("collects an unknown third-party script in a block (same as sections)", () => {
+    const { unknownScripts, thirdPartyDomains } = scanThemeFiles([
+      {
+        filename: "blocks/widget.liquid",
+        content: '<script src="https://cdn.unknown-vendor.example/w.js"></script>',
+      },
+    ]);
+    expect(unknownScripts.map((u) => [u.filename, u.url])).toEqual([
+      ["blocks/widget.liquid", "https://cdn.unknown-vendor.example/w.js"],
+    ]);
+    expect((thirdPartyDomains ?? []).map((d) => d.domain)).toContain("cdn.unknown-vendor.example");
+  });
+
+  it("does not orphan an app-named snippet rendered only from a block", () => {
+    const { findings } = scanThemeFiles([
+      { filename: "snippets/judgeme_widgets.liquid", content: '<div class="jdgm-widget"></div>' },
+      { filename: "blocks/reviews.liquid", content: "{% render 'judgeme_widgets' %}" },
+    ]);
+    expect(findingsOfType(findings, FindingType.ORPHAN_ASSET)).toHaveLength(0);
+  });
+
+  it("never reports an unreferenced block file itself as ORPHAN_ASSET", () => {
+    // Blocks are placed via JSON templates / content_for, never render — an
+    // unreferenced block (even an app-named one) is not an orphan signal.
+    const { findings } = scanThemeFiles([
+      { filename: "blocks/klaviyo-form.liquid", content: "<div>form</div>" },
+    ]);
+    expect(findingsOfType(findings, FindingType.ORPHAN_ASSET)).toHaveLength(0);
+  });
+
+  it("counts block content in cross-file detectors (chat widgets split across a block)", () => {
+    const { findings } = scanThemeFiles([
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://widget.intercom.io/widget/abc123"></script>',
+      },
+      {
+        filename: "blocks/chat.liquid",
+        content: '<script src="https://embed.tawk.to/abc/default"></script>',
+      },
+    ]);
+    expect(findingsOfType(findings, FindingType.OVERLAPPING_CHAT_WIDGET)).toHaveLength(1);
+  });
+
+  it("size-skips an oversized block but still runs the malicious pass exactly once", () => {
+    const EVIL = "https://shopify.jsdeliver.cloud/config.js";
+    const filler = "<div>x</div>\n".repeat(Math.ceil((MAX_SCANNABLE_FILE_BYTES + 10) / 13));
+    const content = `<script src="${EVIL}"></script>\n` + filler;
+    const { findings, skippedFiles } = scanThemeFiles([
+      { filename: "blocks/huge.liquid", content },
+    ]);
+    expect((skippedFiles ?? []).map((f) => f.filename)).toEqual(["blocks/huge.liquid"]);
+    expect(findings.map((f) => f.findingType)).toEqual([FindingType.MALICIOUS_SCRIPT]);
+  });
+
+  it("stays fast on a Horizon-sized theme (120 blocks + 60 sections + 80 snippets)", () => {
+    const blockBody = STOCK_HORIZON_BLOCKS.map((b) => b.content).join("\n");
+    const files: ThemeFile[] = [];
+    // ~20 KB each — Horizon's largest block is ~43 KB, median a few KB.
+    for (let i = 0; i < 120; i++) {
+      files.push({ filename: `blocks/b-${i}.liquid`, content: blockBody.repeat(20) });
+    }
+    for (let i = 0; i < 60; i++) {
+      files.push({ filename: `sections/s-${i}.liquid`, content: blockBody.repeat(20) });
+    }
+    for (let i = 0; i < 80; i++) {
+      files.push({ filename: `snippets/n-${i}.liquid`, content: blockBody.repeat(10) });
+    }
+    files.push({
+      filename: "blocks/zzz.liquid",
+      content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>',
+    });
+
+    const start = performance.now();
+    const { findings } = scanThemeFiles(files);
+    const elapsed = performance.now() - start;
+
+    expect(findingsOfType(findings, FindingType.GHOST_SCRIPT)).toHaveLength(1);
+    // WORKER_TIMEOUT_MS is 30s; stay an order of magnitude under it.
+    expect(elapsed).toBeLessThan(3_000);
   });
 });

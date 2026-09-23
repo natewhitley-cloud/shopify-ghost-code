@@ -175,8 +175,8 @@ export type ScanResult = {
  * Maximum size (in characters) of a single scannable file that the per-file
  * regex detectors will process (gc-06e.2).
  *
- * Real Shopify theme Liquid files (templates/, sections/, snippets/, layout/)
- * are well under this: Dawn's largest Liquid file is ~70 KB, and even
+ * Real Shopify theme Liquid files (templates/, sections/, snippets/, layout/,
+ * blocks/) are well under this: Dawn's largest Liquid file is ~70 KB, and even
  * page-builder apps rarely emit a single Liquid file past a few hundred KB.
  * 1 MB is a deliberately generous ceiling — large enough that no legitimate
  * theme asset is ever dropped, small enough to bound worst-case detector cost
@@ -235,12 +235,14 @@ function extractTags(content: string, tagPrefix: string): Array<{ tag: string; o
  * Skips assets (binary/JS/CSS files), config, and locales — these are handled
  * differently or deferred to later tickets.
  *
- * Scannable directories: templates/, sections/, snippets/, layout/
+ * Scannable directories: templates/, sections/, snippets/, layout/, blocks/
+ * (OS 2.0 / Horizon theme blocks render on the storefront like sections, so app
+ * leftovers pasted into them get the full detector suite — gc-zfl).
  */
 export function isScannableFile(filename: string): boolean {
   if (!filename.endsWith(".liquid")) return false;
 
-  const SCANNABLE_PREFIXES = ["templates/", "sections/", "snippets/", "layout/"];
+  const SCANNABLE_PREFIXES = ["templates/", "sections/", "snippets/", "layout/", "blocks/"];
   return SCANNABLE_PREFIXES.some((prefix) => filename.startsWith(prefix));
 }
 
@@ -253,22 +255,20 @@ export function isScannableFile(filename: string): boolean {
  *   - config/settings_data.json — theme settings can carry raw HTML/URLs.
  *   - assets/*.js, assets/*.mjs, assets/*.liquid (e.g. theme.js.liquid) — injected
  *     loaders are commonly appended to asset JS.
- *   - blocks/*.liquid — OS 2.0 theme blocks render on the storefront. They get
- *     only this pass for now; full-detector coverage is tracked as gc-zfl.
  *   - locales/*.json — `*_html` keys render unescaped, so they can carry markup.
  *
  * Deliberately excluded: CSS (cannot execute script; a CSS `url()` to a listed
  * host is not the skimmer/loader threat this list tracks),
- * config/settings_schema.json (developer-owned schema). Disjoint from
- * isScannableFile by construction (blocks/ is not a scannable prefix), so no
- * file is scanned twice.
+ * config/settings_schema.json (developer-owned schema), and blocks/*.liquid
+ * (full suite via isScannableFile since gc-zfl). Disjoint from isScannableFile
+ * by construction (the only .liquid files admitted here live under assets/,
+ * which is not a scannable prefix), so no file is scanned twice.
  */
 export function isMaliciousScanOnlyFile(filename: string): boolean {
   if (filename === "config/settings_data.json") return true;
   if (filename.startsWith("assets/")) {
     return filename.endsWith(".js") || filename.endsWith(".mjs") || filename.endsWith(".liquid");
   }
-  if (filename.startsWith("blocks/")) return filename.endsWith(".liquid");
   if (filename.startsWith("locales/")) return filename.endsWith(".json");
   return (
     (filename.startsWith("templates/") || filename.startsWith("sections/")) &&
@@ -3561,7 +3561,7 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
  *
  *   Pass 1 — per-file pattern detection:
  *     Processes only scannable Liquid files (templates/, sections/, snippets/,
- *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
+ *     layout/, blocks/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
  *     GHOST_SECTION, GHOST_HREFLANG, DUPLICATE_META, GHOST_JSON_LD,
  *     JSON_LD_CONFLICT, GHOST_TEXT, GHOST_PIXEL, GHOST_ROBOTS,
  *     GHOST_CANONICAL, GHOST_TITLE, GHOST_OG, GHOST_PRECONNECT, GHOST_FONT,

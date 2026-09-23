@@ -263,6 +263,34 @@ describe("analyzeFileReferences — only snippets/ files are candidates", () => 
     ];
     expect(analyzeFileReferences(files)).toEqual([]);
   });
+
+  // gc-zfl: OS 2.0 theme blocks are placed by JSON templates / `content_for`,
+  // not render/include, so an unreferenced block is normal and never an orphan.
+  it("does not flag unreferenced blocks/ files as orphans", () => {
+    const files = [
+      file("blocks/pagefly-widget.liquid", "<div>block</div>"),
+      file("layout/theme.liquid", "{{ content_for_layout }}"),
+    ];
+    expect(analyzeFileReferences(files)).toEqual([]);
+  });
+});
+
+describe("analyzeFileReferences — theme blocks as referrers (gc-zfl)", () => {
+  it("does not flag a snippet rendered only from a blocks/ file", () => {
+    const files = [
+      file("snippets/price.liquid", "{{ product.price | money }}"),
+      file("blocks/price.liquid", "{% render 'price' %}\n{% schema %}{}{% endschema %}"),
+    ];
+    expect(analyzeFileReferences(files)).toEqual([]);
+  });
+
+  it("does not flag a snippet rendered bare inside a {% liquid %} tag in a block", () => {
+    const files = [
+      file("snippets/icon.liquid", "<svg></svg>"),
+      file("blocks/icon.liquid", "{% liquid\n  render 'icon'\n%}"),
+    ];
+    expect(analyzeFileReferences(files)).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

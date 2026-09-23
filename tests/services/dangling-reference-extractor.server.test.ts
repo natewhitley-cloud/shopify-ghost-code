@@ -201,6 +201,17 @@ describe("extractDanglingReferences — comments, occurrences, file scope", () =
     expect(scan(link, "locales/en.default.json")).toEqual([]);
     expect(scan(link, "templates/index.json")).toEqual([]);
   });
+
+  it("extracts refs from OS 2.0 theme blocks (blocks/*.liquid, gc-zfl)", () => {
+    const refs = scan('<a href="/products/widget">x</a>', "blocks/promo.liquid");
+    expect(refs).toHaveLength(1);
+    expect(refs[0]).toMatchObject({
+      entityType: "product",
+      handle: "widget",
+      filename: "blocks/promo.liquid",
+    });
+    expect(scan('<a href="/products/widget">x</a>', "blocks/readme.md")).toEqual([]);
+  });
 });
 
 describe("extractDanglingReferences — mixed file + distinct view", () => {

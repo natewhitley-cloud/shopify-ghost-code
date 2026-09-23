@@ -112,7 +112,7 @@ const RESERVED_COLLECTION_HANDLES = new Set(["all"]);
  * Extract dangling-reference candidates from a set of theme files.
  *
  * File scope is enforced defensively via `isScannableFile` (templates/, sections/,
- * snippets/, layout/ `.liquid` only) so the extractor is correct even if called
+ * snippets/, layout/, blocks/ `.liquid` only) so the extractor is correct even if called
  * with an unfiltered file list; assets/, config/, and locales/ are dropped. The
  * scan loop already applies the same filter upstream, so this is belt-and-braces.
  */
