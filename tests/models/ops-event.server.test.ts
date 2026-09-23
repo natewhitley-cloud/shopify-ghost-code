@@ -46,6 +46,7 @@ import {
   countOpsEvents,
   getLatestHeartbeat,
   getStaleCrons,
+  getNeverSeenCrons,
   OPS_EVENT_TYPES,
   pruneOpsEvents,
   recordApiError,
@@ -347,6 +348,54 @@ describe("countApiErrorsByLevel", () => {
 // ---------------------------------------------------------------------------
 // getStaleCrons (dead-man's-switch)
 // ---------------------------------------------------------------------------
+
+// gc-288: a misregistered cron (id typo, failed Inngest sync) never heartbeats,
+// so getStaleCrons (cold-start safe) can never flag it. getNeverSeenCrons feeds
+// the NON-gating daily digest only; heartbeats are retained 30d and the slowest
+// cron is weekly, so "none on record" means it has not run in 30d (or yet).
+describe("getNeverSeenCrons", () => {
+  const EXPECTATIONS: CronExpectation[] = [
+    { key: "watch-stale-scans", intervalMs: 10 * 60 * 1000 },
+    { key: "weekly-scan", intervalMs: 7 * 24 * 60 * 60 * 1000 },
+  ];
+
+  it("returns [] without querying when expectations is empty", async () => {
+    expect(await getNeverSeenCrons([])).toEqual([]);
+    expect(mockDb.opsEvent.groupBy).not.toHaveBeenCalled();
+  });
+
+  it("returns the keys with no heartbeat on record, in expectation order", async () => {
+    mockDb.opsEvent.groupBy.mockResolvedValue([
+      { key: "watch-stale-scans", _max: { createdAt: new Date() } },
+    ]);
+
+    expect(await getNeverSeenCrons(EXPECTATIONS)).toEqual(["weekly-scan"]);
+  });
+
+  it("returns [] when every cron has a heartbeat, however old", async () => {
+    mockDb.opsEvent.groupBy.mockResolvedValue([
+      { key: "watch-stale-scans", _max: { createdAt: new Date(0) } },
+      { key: "weekly-scan", _max: { createdAt: new Date(0) } },
+    ]);
+
+    expect(await getNeverSeenCrons(EXPECTATIONS)).toEqual([]);
+  });
+
+  it("uses the same per-key max-heartbeat query as getStaleCrons", async () => {
+    mockDb.opsEvent.groupBy.mockResolvedValue([]);
+
+    await getNeverSeenCrons(EXPECTATIONS);
+
+    expect(mockDb.opsEvent.groupBy).toHaveBeenCalledWith({
+      by: ["key"],
+      where: {
+        eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT,
+        key: { in: ["watch-stale-scans", "weekly-scan"] },
+      },
+      _max: { createdAt: true },
+    });
+  });
+});
 
 describe("getStaleCrons", () => {
   const NOW = 1_700_000_000_000;

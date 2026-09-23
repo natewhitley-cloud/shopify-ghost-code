@@ -557,6 +557,8 @@ export interface OperatorDigestData {
     webhookFailures: number;
     apiErrors: { error: number; warn: number };
     staleCrons: StaleCronSummary[];
+    /** Crons with no heartbeat on record (gc-288). Optional: absent = none. */
+    neverSeenCrons?: string[];
   };
   /** Snapshot-metric threshold/trend anomalies (gc-06e.13). Optional so callers
    * that predate the metric evaluation still type-check; absent => none. */
@@ -746,11 +748,17 @@ export function buildDigestBody(data: OperatorDigestData): string {
   lines.push("");
 
   lines.push("CRON HEALTH (dead-man's-switch)");
-  if (ops.staleCrons.length === 0) {
+  const neverSeen = ops.neverSeenCrons ?? [];
+  if (ops.staleCrons.length === 0 && neverSeen.length === 0) {
     lines.push("  All crons healthy");
   } else {
     for (const c of ops.staleCrons) {
       lines.push(`  OVERDUE: ${c.key} (last heartbeat ${c.lastHeartbeatAt}, ${c.ageMs} ms ago)`);
+    }
+    for (const key of neverSeen) {
+      lines.push(
+        `  NO HEARTBEAT ON RECORD: ${key} (new cron not yet run, or misregistered if this persists past its interval)`,
+      );
     }
   }
   lines.push("");
@@ -992,16 +1000,18 @@ export const operatorDigest = inngest.createFunction(
         countOpsEvents,
         countApiErrorsByLevel,
         getStaleCrons,
+        getNeverSeenCrons,
         CRON_HEARTBEAT_EXPECTATIONS,
         OPS_EVENT_TYPES,
       } = await import("../../app/models/ops-event.server");
-      const [functionFailures, workerFallbacks, webhookFailures, apiErrors, stale] =
+      const [functionFailures, workerFallbacks, webhookFailures, apiErrors, stale, neverSeen] =
         await Promise.all([
           countOpsEvents(OPS_EVENT_TYPES.FUNCTION_FAILURE, DAY_MS),
           countOpsEvents(OPS_EVENT_TYPES.WORKER_FALLBACK, DAY_MS),
           countOpsEvents(OPS_EVENT_TYPES.WEBHOOK_FAILURE, DAY_MS),
           countApiErrorsByLevel(DAY_MS),
           getStaleCrons(CRON_HEARTBEAT_EXPECTATIONS),
+          getNeverSeenCrons(CRON_HEARTBEAT_EXPECTATIONS),
         ]);
       return {
         functionFailures,
@@ -1013,6 +1023,7 @@ export const operatorDigest = inngest.createFunction(
           ageMs: c.ageMs,
           lastHeartbeatAt: c.lastHeartbeatAt.toISOString(),
         })),
+        neverSeenCrons: neverSeen,
       };
     })) as OperatorDigestData["ops"];
 

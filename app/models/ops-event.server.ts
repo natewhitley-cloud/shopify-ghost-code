@@ -267,9 +267,8 @@ export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
  * smoke gate hits /health/deep before any cron has run. Flagging never-seen
  * crons would false-degrade that first check and fail the deploy. The genuine
  * failure we care about (a scheduler that stops) always leaves prior heartbeats
- * behind, so this loses no real signal.
- *
- * One grouped query (no N+1): max(createdAt) per key over the heartbeat rows.
+ * behind. A cron that NEVER heartbeats (misregistered) is surfaced separately,
+ * in the non-gating digest only, via getNeverSeenCrons.
  */
 export async function getStaleCrons(
   expectations: CronExpectation[],
@@ -279,20 +278,7 @@ export async function getStaleCrons(
 
   const graceFactor = options?.graceFactor ?? DEFAULT_GRACE_FACTOR;
   const now = options?.now ?? Date.now();
-  const keys = expectations.map((e) => e.key);
-
-  const rows = await db.opsEvent.groupBy({
-    by: ["key"],
-    where: { eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT, key: { in: keys } },
-    _max: { createdAt: true },
-  });
-
-  const latestByKey = new Map<string, Date>();
-  for (const row of rows) {
-    if (row.key && row._max.createdAt) {
-      latestByKey.set(row.key, row._max.createdAt);
-    }
-  }
+  const latestByKey = await getLatestHeartbeatByKey(expectations);
 
   const stale: StaleCron[] = [];
   for (const exp of expectations) {
@@ -311,6 +297,43 @@ export async function getStaleCrons(
     }
   }
   return stale;
+}
+
+/**
+ * Crons with NO heartbeat on record at all (gc-288): the misregistered-cron case
+ * (id typo, failed Inngest sync) that getStaleCrons' cold-start safety can never
+ * flag. Heartbeats are retained 30d and the slowest cron is weekly, so an empty
+ * record means the cron has not run in 30d, or has not run YET (a cron added in
+ * the latest deploy). Because of that second case this is for the NON-gating
+ * operator digest only; never wire it into /health/deep or the external
+ * dead-man's-switch, or every deploy that adds a cron would fail the smoke gate.
+ */
+export async function getNeverSeenCrons(expectations: CronExpectation[]): Promise<string[]> {
+  if (expectations.length === 0) return [];
+  const latestByKey = await getLatestHeartbeatByKey(expectations);
+  return expectations.filter((e) => !latestByKey.has(e.key)).map((e) => e.key);
+}
+
+/** One grouped query (no N+1): max(createdAt) per key over the heartbeat rows. */
+async function getLatestHeartbeatByKey(
+  expectations: CronExpectation[],
+): Promise<Map<string, Date>> {
+  const rows = await db.opsEvent.groupBy({
+    by: ["key"],
+    where: {
+      eventType: OPS_EVENT_TYPES.CRON_HEARTBEAT,
+      key: { in: expectations.map((e) => e.key) },
+    },
+    _max: { createdAt: true },
+  });
+
+  const latestByKey = new Map<string, Date>();
+  for (const row of rows) {
+    if (row.key && row._max.createdAt) {
+      latestByKey.set(row.key, row._max.createdAt);
+    }
+  }
+  return latestByKey;
 }
 
 // ---------------------------------------------------------------------------

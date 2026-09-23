@@ -1102,6 +1102,47 @@ describe("buildDigestBody — cron health", () => {
   });
 });
 
+describe("buildDigestBody — crons with no heartbeat on record (gc-288)", () => {
+  const baseOps = {
+    functionFailures: 0,
+    workerFallbacks: 0,
+    webhookFailures: 0,
+    apiErrors: { error: 0, warn: 0 },
+    staleCrons: [],
+  };
+
+  it("lists never-seen crons and does NOT claim all crons are healthy", () => {
+    const body = buildDigestBody(
+      makeData({ ops: { ...baseOps, neverSeenCrons: ["reconcile-installs"] } }),
+    );
+    expect(body).toContain("NO HEARTBEAT ON RECORD: reconcile-installs");
+    expect(body).not.toContain("All crons healthy");
+  });
+
+  it("shows OVERDUE and NO HEARTBEAT lines together", () => {
+    const body = buildDigestBody(
+      makeData({
+        ops: {
+          ...baseOps,
+          staleCrons: [
+            { key: "weekly-scan", ageMs: 1, lastHeartbeatAt: "2026-08-20T00:00:00.000Z" },
+          ],
+          neverSeenCrons: ["reconcile-installs"],
+        },
+      }),
+    );
+    expect(body).toContain("OVERDUE: weekly-scan");
+    expect(body).toContain("NO HEARTBEAT ON RECORD: reconcile-installs");
+  });
+
+  it("still reports all crons healthy when neverSeenCrons is empty or absent", () => {
+    expect(buildDigestBody(makeData({ ops: { ...baseOps, neverSeenCrons: [] } }))).toContain(
+      "All crons healthy",
+    );
+    expect(buildDigestBody(makeData({ ops: baseOps }))).toContain("All crons healthy");
+  });
+});
+
 describe("buildDigestBody — metric anomalies", () => {
   it("reports none when no anomalies are present (default)", () => {
     const body = buildDigestBody(makeData());
