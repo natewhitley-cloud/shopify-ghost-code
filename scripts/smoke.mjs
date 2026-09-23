@@ -5,7 +5,7 @@
  * Waits for the freshly-deployed service to boot (polls /health), then polls the
  * token-gated /health/deep ops endpoint until it reports EXPECTED_SHA (Railway
  * keeps routing to the old container briefly after the new one is up, gc-7y2),
- * then asserts every deep check is green and the SHA still matches, then
+ * then asserts every deep check is green on that SAME matched response, then
  * probes PUT /api/inngest to verify the Inngest signing key is not just present
  * but VALID (the cold-start-safe health check and the "keys present" deep check
  * both pass on a stale-but-present key — gc-06e.18).
@@ -18,17 +18,25 @@
  *   SMOKE_BASE_URL     e.g. https://shopify-ghost-code-production.up.railway.app
  *   HEALTH_CHECK_TOKEN must match the app's HEALTH_CHECK_TOKEN env var
  *   EXPECTED_SHA       (optional) git commit SHA injected by CI; compared
- *                      against body.deployedSha. Polled until it matches, then
- *                      a mismatch FAILS the smoke (GC-59t, blocking since
- *                      GC-7ml). Unset (local/manual runs) logs a ⚠ WARN only.
+ *                      against body.deployedSha (hex, >= 7 chars). Polled until
+ *                      it matches, then a mismatch FAILS the smoke (GC-59t,
+ *                      blocking since GC-7ml). Unset (local/manual runs) logs a
+ *                      ⚠ WARN only. A 401/403 fails at once (bad/missing token).
  *   SMOKE_SHA_TIMEOUT_MS   (optional) total wait for the SHA to match.
- *                          Default 240000 (4 min).
- *   SMOKE_SHA_INTERVAL_MS  (optional) delay between SHA polls. Default 10000.
+ *                          Default 240000 (4 min); capped at 30 min.
+ *   SMOKE_SHA_INTERVAL_MS  (optional) delay between SHA polls. Default 10000;
+ *                          capped at 30 min.
  */
 
 import process from "node:process";
 
-import { parsePositiveIntEnv, shaMatches, waitForShaMatch } from "./smoke-lib.mjs";
+import {
+  MAX_ENV_MS,
+  evaluateDeepGate,
+  parsePositiveIntEnv,
+  toDeepReport,
+  waitForShaMatch,
+} from "./smoke-lib.mjs";
 
 const BASE_URL = process.env.SMOKE_BASE_URL;
 const HEALTH_CHECK_TOKEN = process.env.HEALTH_CHECK_TOKEN;
@@ -38,8 +46,8 @@ const BOOT_TIMEOUT_MS = 60_000;
 const RETRY_INTERVAL_MS = 3_000;
 const INNGEST_PROBE_RETRIES = 3;
 const INNGEST_PROBE_TIMEOUT_MS = 10_000;
-const SHA_TIMEOUT_MS = parsePositiveIntEnv(process.env.SMOKE_SHA_TIMEOUT_MS, 240_000);
-const SHA_INTERVAL_MS = parsePositiveIntEnv(process.env.SMOKE_SHA_INTERVAL_MS, 10_000);
+const SHA_TIMEOUT_MS = parsePositiveIntEnv(process.env.SMOKE_SHA_TIMEOUT_MS, 240_000, MAX_ENV_MS);
+const SHA_INTERVAL_MS = parsePositiveIntEnv(process.env.SMOKE_SHA_INTERVAL_MS, 10_000, MAX_ENV_MS);
 const SHA_REQUEST_TIMEOUT_MS = 10_000;
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -81,8 +89,11 @@ async function waitForBoot() {
   fail(`/health did not return 200 within ${BOOT_TIMEOUT_MS / 1000}s (last: ${lastError})`);
 }
 
-/** Read body.deployedSha from /health/deep; throws on network/auth/non-JSON. */
-async function fetchDeployedSha() {
+/**
+ * One /health/deep request as a validated report. Throws a retryable Error on
+ * network/non-JSON/no-deployedSha, and a PermanentSmokeError on 401/403.
+ */
+async function fetchDeepReport() {
   const res = await fetch(`${base}/health/deep`, {
     headers: deepHeaders,
     signal: AbortSignal.timeout(SHA_REQUEST_TIMEOUT_MS),
@@ -91,28 +102,35 @@ async function fetchDeployedSha() {
   try {
     body = await res.json();
   } catch {
-    throw new Error(`non-JSON response (HTTP ${res.status})`);
+    body = undefined;
   }
-  if (!("deployedSha" in body)) {
-    throw new Error(`HTTP ${res.status}${body.message ? `: ${body.message}` : ""}`);
-  }
-  return body.deployedSha;
+  return toDeepReport(res.status, body, { tokenSet: Boolean(HEALTH_CHECK_TOKEN) });
 }
 
 /**
- * Wait for the new container to serve traffic (gc-7y2). Right after
- * `railway up`, /health can already be green while requests still reach the
- * old container, so a one-shot SHA read false-fails a good deploy. Poll until
- * the SHA matches (bounded), then fail with the last-seen SHA if it never does.
+ * Get the /health/deep report to gate on. With EXPECTED_SHA set, poll until a
+ * response reports it (gc-7y2): right after `railway up`, /health can already
+ * be green while requests still reach the old container, so a one-shot read
+ * false-fails a good deploy. The MATCHED response is returned and gated on
+ * directly: a second request could land on the old container mid-swap and
+ * false-fail the SHA pin. 401/403 fails at once (retrying cannot fix a token).
  */
-async function waitForDeployedSha() {
-  if (!EXPECTED_SHA) return; // warn-only path handled in checkDeep
+async function getDeepReport() {
+  if (!EXPECTED_SHA) {
+    try {
+      return await fetchDeepReport();
+    } catch (error) {
+      fail(
+        `/health/deep request failed: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
   console.log(
     `Waiting up to ${SHA_TIMEOUT_MS / 1000}s for /health/deep to report ${EXPECTED_SHA}...`,
   );
   const result = await waitForShaMatch({
     expectedSha: EXPECTED_SHA,
-    fetchSha: fetchDeployedSha,
+    fetchReport: fetchDeepReport,
     timeoutMs: SHA_TIMEOUT_MS,
     intervalMs: SHA_INTERVAL_MS,
     onRetry: ({ attempt, lastSeen, lastError }) =>
@@ -122,8 +140,9 @@ async function waitForDeployedSha() {
   });
   if (result.ok) {
     console.log(`✓ deployed SHA ${result.sha} is serving (attempt ${result.attempts})`);
-    return;
+    return result.report;
   }
+  if (result.permanent) fail(`/health/deep ${result.lastError}`);
   fail(
     `SHA pin mismatch after ${SHA_TIMEOUT_MS / 1000}s (${result.attempts} attempts) — expected ` +
       `${EXPECTED_SHA}, last seen ${result.lastSeen ?? "null"}` +
@@ -131,25 +150,16 @@ async function waitForDeployedSha() {
   );
 }
 
-async function checkDeep() {
-  let res;
-  try {
-    res = await fetch(`${base}/health/deep`, { headers: deepHeaders });
-  } catch (error) {
-    fail(`/health/deep request failed: ${error instanceof Error ? error.message : String(error)}`);
-    return;
-  }
-
-  let body;
-  try {
-    body = await res.json();
-  } catch {
-    fail(`/health/deep returned non-JSON (HTTP ${res.status})`);
-    return;
-  }
-
+/**
+ * Print the deep report and apply the gate to that same response. SHA pin
+ * (GC-59t, BLOCKING since GC-7ml): a mismatch means the commit that triggered
+ * this run is not what's serving traffic. Warn-only when EXPECTED_SHA is unset
+ * (local/manual runs).
+ */
+function checkDeep(report) {
+  const { httpStatus, body } = report;
   const checks = body.checks ?? {};
-  console.log(`\nDeep health report (HTTP ${res.status}, status: ${body.status}):`);
+  console.log(`\nDeep health report (HTTP ${httpStatus}, status: ${body.status}):`);
   const mark = (ok) => (ok ? "✓" : "✗");
   console.log(`  ${mark(checks.db?.ok)} db: ${checks.db?.ok ? "reachable" : "UNREACHABLE"}`);
   console.log(
@@ -166,27 +176,14 @@ async function checkDeep() {
     } stuck PENDING`,
   );
 
-  if (body.status === "ok" && res.status === 200) {
-    console.log("\n✓ deep health checks green");
-
-    // SHA pin check (GC-59t, BLOCKING since GC-7ml): a mismatch means the
-    // commit that triggered this run is not what's serving traffic — fail the
-    // gate. waitForDeployedSha already waited out the container swap, so this
-    // confirms the deep report above came from the new container. Stays
-    // warn-only when EXPECTED_SHA is unset (local/manual runs).
-    const deployedSha = body.deployedSha ?? null;
-    if (shaMatches(EXPECTED_SHA, deployedSha)) {
-      console.log(`✓ deployed SHA matches (${deployedSha})`);
-    } else if (EXPECTED_SHA) {
-      fail(`SHA pin mismatch — expected ${EXPECTED_SHA}, got ${deployedSha ?? "null"}`);
-    } else {
-      warn(`SHA pin unverified — EXPECTED_SHA unset, deployed ${deployedSha ?? "null"}`);
-    }
-
-    return; // deep check green — control returns to run the inngest probe
+  const gate = evaluateDeepGate(report, EXPECTED_SHA);
+  if (!gate.ok) fail(gate.reason);
+  console.log("\n✓ deep health checks green");
+  if (gate.sha === "match") {
+    console.log(`✓ deployed SHA matches (${gate.deployedSha})`);
+  } else {
+    warn(`SHA pin unverified — EXPECTED_SHA unset, deployed ${gate.deployedSha ?? "null"}`);
   }
-
-  fail(`Smoke test failed — status "${body.status}"${body.message ? `: ${body.message}` : ""}`);
 }
 
 /**
@@ -242,8 +239,7 @@ async function probeInngestSigningKey() {
 // Every gate calls fail() (exit 1) on a blocking failure, so reaching the end
 // means health, deployed SHA, deep health, and the Inngest probe all passed.
 await waitForBoot();
-await waitForDeployedSha();
-await checkDeep();
+checkDeep(await getDeepReport());
 await probeInngestSigningKey();
 console.log(
   warnings > 0
