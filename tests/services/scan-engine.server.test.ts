@@ -6379,6 +6379,32 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
       expect(performance.now() - start).toBeLessThan(1500);
     }
   });
+
+  it("decodes code-point slash escapes with any number of leading zeros (5 and 50), as real JS does", () => {
+    for (const zeros of [5, 50]) {
+      const slash = String.raw`\u{` + "0".repeat(zeros) + "2f}";
+      // Sanity: real JS evaluates this escape to "/".
+      expect(new Function(`return "${slash}";`)()).toBe("/");
+      const findings = detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "https:${slash}${slash}shopify.jsdeliver.cloud${slash}config.js";`,
+      });
+      expect(findings, `${zeros} zeros`).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    }
+  });
+
+  it("stays linear on a 5MB unterminated zero run and repeated zero-run starts inside \\u{", () => {
+    for (const content of [
+      String.raw`\u{` + "0".repeat(5_000_000),
+      (String.raw`\u{` + "0".repeat(1000)).repeat(5000),
+      String.raw`\u{00000`.repeat(625_000),
+    ]) {
+      const start = performance.now();
+      detectMaliciousScripts({ filename: "assets/app.js", content });
+      expect(performance.now() - start).toBeLessThan(1500);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

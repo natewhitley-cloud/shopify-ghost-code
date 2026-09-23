@@ -1063,8 +1063,8 @@ const LIQUID_LITERAL_BLOCKS = new Set(["raw", "javascript", "schema", "styleshee
 // (JSON `\/`, double-escaped `\\/`, `\\\/`); before the JS/JSON unicode
 // escape `u002f` (`\u002f`, `\u002F`, `\\u002f`); before the JS hex escape
 // `x2f` (`\x2f`, `\x2F`, `\\x2f`); or before the JS code-point escape `u{2f}`
-// (`\u{2f}`, `\u{002f}` with any run of leading zeros up to the 6-hex-digit
-// bound below, `\u{2F}`, `\\u{2f}`); or HTML entities `&#47;` / `&#x2F;`
+// (`\u{2f}`, `\u{002f}` or any number of leading zeros, `\u{2F}`,
+// `\\u{2f}`); or HTML entities `&#47;` / `&#x2F;`
 // (optional leading zeros, optional `;`), plus the named entity `&sol;` (HTML
 // matches named references case-sensitively and this one only with its `;`).
 // No `i` flag, and no `(?-i:)` modifier group (a SyntaxError before Node 23):
@@ -1075,14 +1075,13 @@ const LIQUID_LITERAL_BLOCKS = new Set(["raw", "javascript", "schema", "styleshee
 // lookbehind lets a backslash run start a match only at its first char, so a
 // huge run that is not followed by a decodable form is scanned once, not once
 // per backslash (linear); a `\x` or `\u` flood fails after a constant
-// lookahead per position. The code-point escape's leading-zero run is bounded
-// to `0{0,4}` (4 zeros + the 2 required hex digits = 6 hex digits total):
-// real JS allows unlimited leading zeros there, but an unbounded `0*` inside an
-// unterminated `\u{000...` (no closing `}`) would let the engine retry the
-// zero run's length at every later failure point; 6 digits comfortably covers
-// any realistic encoded payload while keeping the scan linear.
+// lookahead per position. The code-point escape's leading-zero run is an
+// unbounded `0*` because real JS accepts any number of leading zeros there
+// (`\u{000002f}` is "/"). That stays linear: the same lookbehind means an
+// attempt can only start at the first backslash of a run, so each zero run is
+// walked by at most one attempt (plus its backtrack), even when unterminated.
 const ENCODED_SLASH_RE =
-  /(?<!\\)\\+(?:\/|[uU]002[fF]|[xX]2[fF]|[uU]\{0{0,4}2[fF]\})|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
+  /(?<!\\)\\+(?:\/|[uU]002[fF]|[xX]2[fF]|[uU]\{0*2[fF]\})|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.
