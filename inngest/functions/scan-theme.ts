@@ -46,6 +46,7 @@ import {
   CORE_STEP_OUTPUT_BUDGET_BYTES,
   DANGLING_MAX_OCCURRENCES_PER_HANDLE,
   JSONLD_PRICE_CANDIDATE_CAP,
+  MAX_FINDINGS_PER_FILE_PER_TYPE,
   PRODUCT_AUDIT_CAP,
 } from "../../app/lib/scan-limits";
 import type { CreateFindingInput } from "../../app/models/finding.server";
@@ -289,6 +290,7 @@ export const scanTheme = inngest.createFunction(
         skippedFilePaths,
         skippedFileCount,
         benignLibrarySkips,
+        findingCapHits,
         unknownScriptCount,
         thirdPartyDomainCount,
         staticProductCandidates,
@@ -376,6 +378,7 @@ export const scanTheme = inngest.createFunction(
           staticProductCandidates,
           benignLibrarySkips,
           thirdPartyDomains,
+          findingCapHits,
         } = await scanThemeFilesInPool(files);
         const themeScanMs = Date.now() - themeScanStart;
 
@@ -420,6 +423,21 @@ export const scanTheme = inngest.createFunction(
             shopId,
             cap: MAX_SCANNABLE_FILE_BYTES,
             skippedFiles,
+          });
+        }
+
+        // Surface files whose findings of a type hit the per-file cap (gc-ypk) so
+        // the truncation is never silent. Real themes never hit it (prod max is
+        // ~26 findings per scan), so a hit means a pathological file. Telemetry
+        // only: the cap is deterministic (first N by line), so the differ still
+        // diffs the kept findings normally; it is NOT a skipped category.
+        if (findingCapHits && Object.keys(findingCapHits).length > 0) {
+          logger.warn("theme scan capped findings per file", {
+            function: "scan-theme",
+            event: "findings_capped_per_file",
+            shopId,
+            cap: MAX_FINDINGS_PER_FILE_PER_TYPE,
+            findingCapHits,
           });
         }
 
@@ -515,6 +533,9 @@ export const scanTheme = inngest.createFunction(
           skippedFilePaths,
           skippedFileCount: skippedFilePaths.length,
           benignLibrarySkips: benignLibrarySkips ?? 0,
+          // Per type: files that hit MAX_FINDINGS_PER_FILE_PER_TYPE (gc-ypk). At
+          // most one key per finding type — safe across the step boundary.
+          findingCapHits: findingCapHits ?? {},
           unknownScriptCount: unknownScripts.length,
           // Scalar count only — the full domain array is NOT returned across the
           // step boundary (already persisted above via createScanDomains).
@@ -1220,6 +1241,9 @@ export const scanTheme = inngest.createFunction(
               scannableTextBytes,
               skippedFileCount,
               benignLibrarySkips,
+              // Per type: files that hit the per-file finding cap (gc-ypk).
+              // Telemetry only; {} on every real theme.
+              findingCapHits,
               unknownScriptCount,
               thirdPartyDomainCount,
               detectorHits,

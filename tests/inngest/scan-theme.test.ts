@@ -175,6 +175,7 @@ import {
   DANGLING_LOOKUP_CAP,
   DANGLING_MAX_OCCURRENCES_PER_HANDLE,
   JSONLD_PRICE_CANDIDATE_CAP,
+  MAX_FINDINGS_PER_FILE_PER_TYPE,
 } from "../../app/lib/scan-limits";
 import { TransientScopeCheckError } from "../../app/lib/scope-check.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
@@ -2032,6 +2033,52 @@ describe("scanTheme — scan_signal OpsEvent (Feature 2)", () => {
       findingCount: MOCK_FINDINGS.length,
       durationMs: 5000,
     });
+  });
+
+  it("threads per-file finding cap hits into the scan_signal and warns (gc-ypk)", async () => {
+    const warnSpy = vi.spyOn(logger, "warn");
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      findingCapHits: { GHOST_TITLE: 2, DUPLICATE_META: 1 },
+    });
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.metadata.findingCapHits).toEqual({ GHOST_TITLE: 2, DUPLICATE_META: 1 });
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("capped"),
+      expect.objectContaining({
+        event: "findings_capped_per_file",
+        shopId: SHOP_ID,
+        cap: MAX_FINDINGS_PER_FILE_PER_TYPE,
+        findingCapHits: { GHOST_TITLE: 2, DUPLICATE_META: 1 },
+      }),
+    );
+    // Telemetry only: a cap hit is never a skipped category (gc-11f banner).
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [] }),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("emits an empty findingCapHits and no cap warning for an uncapped scan (gc-ypk)", async () => {
+    const warnSpy = vi.spyOn(logger, "warn");
+    // Older/partial ScanResult without the field (e.g. a stale worker build).
+    mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
+
+    await runScanTheme();
+
+    const [arg] = mockRecordOpsEvent.mock.calls[0];
+    expect(arg.metadata.findingCapHits).toEqual({});
+    expect(
+      warnSpy.mock.calls.some(
+        ([, meta]) => (meta as { event?: string })?.event === "findings_capped_per_file",
+      ),
+    ).toBe(false);
+    warnSpy.mockRestore();
   });
 
   it("computes totalTextBytes/largestFileBytes/scannableTextBytes over mixed file types (gc-d4e)", async () => {

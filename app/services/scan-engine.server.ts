@@ -73,6 +73,7 @@ import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import { matchMaliciousDomain } from "../data/malicious-domains.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
+import { MAX_FINDINGS_PER_FILE_PER_TYPE } from "../lib/scan-limits";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 import type { ThirdPartyDomainRef } from "../models/scan-domain.server";
@@ -165,6 +166,12 @@ export type ScanResult = {
   // Optional for backward compatibility with ScanResult literals in tests;
   // scanThemeFiles always populates it (possibly empty).
   thirdPartyDomains?: ThirdPartyDomainRef[];
+  // Per finding type: how many files hit MAX_FINDINGS_PER_FILE_PER_TYPE this
+  // scan (gc-ypk), so a cap hit is observable (scan_signal + logger.warn), never
+  // silent. Telemetry ONLY: it is NOT a skipped category. Empty on real themes.
+  // Optional for backward compatibility with ScanResult literals in tests;
+  // scanThemeFiles always populates it (possibly empty).
+  findingCapHits?: Partial<Record<FindingType, number>>;
 };
 
 // ---------------------------------------------------------------------------
@@ -565,6 +572,22 @@ export function buildSnippet(content: string, lineNumber: number): string {
     snippet += (i > 0 ? "\n" : "") + picked[i].slice(0, 300);
   }
   return snippet.slice(0, 300);
+}
+
+/**
+ * Per-line memo of identifyAppFromCode over a line's buildSnippet (gc-ypk).
+ * buildSnippet depends only on the line, so every tag on one line gets the same
+ * attribution; memoizing keeps a flood of tags packed on one long line from
+ * paying the (dominant) attribution cost once per tag. Create one per file.
+ */
+function lineAppNamer(): (lineNumber: number, codeSnippet: string) => string | undefined {
+  const byLine = new Map<number, string | undefined>();
+  return (lineNumber, codeSnippet) => {
+    if (!byLine.has(lineNumber)) {
+      byLine.set(lineNumber, identifyAppFromCode(codeSnippet) ?? undefined);
+    }
+    return byLine.get(lineNumber);
+  };
 }
 
 /**
@@ -1076,7 +1099,10 @@ const REPEATABLE_META_PROPS = new Set([
   "book:tag",
 ]);
 
-export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
+export function detectDuplicateMetaTags(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Build a map of (name/property value) → array of occurrences.
@@ -1128,37 +1154,54 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
     }
   }
 
-  // Emit findings for the 2nd+ occurrence of each duplicated meta tag
-  const appNameByLine = new Map<number, string | null>();
+  // The 2nd+ occurrence of each duplicated meta tag, in emission order (grouped
+  // by tag). Cheap: the per-finding cost (snippet + attribution) comes below.
+  const duplicates: Array<{
+    attrValue: string;
+    firstLine: number;
+    entry: { lineNumber: number; text: string };
+  }> = [];
   for (const [attrValue, entries] of occurrences) {
-    if (entries.length < 2) continue;
-
-    const firstLine = entries[0].lineNumber;
-
     for (let i = 1; i < entries.length; i++) {
-      const entry = entries[i];
-      const codeSnippet = buildSnippet(file.content, entry.lineNumber);
-      const severity = classifySeverity(FindingType.DUPLICATE_META, codeSnippet);
-
-      // Attempt app attribution from the full meta tag text — optional.
-      // Memoized per line: entry.text is the whole line, and re-scanning a long
-      // line for every duplicate on it was quadratic (gc-t7x).
-      let appName = appNameByLine.get(entry.lineNumber);
-      if (appName === undefined) {
-        appName = identifyAppFromCode(entry.text) ?? null;
-        appNameByLine.set(entry.lineNumber, appName);
-      }
-
-      findings.push({
-        filename: file.filename,
-        lineNumber: entry.lineNumber,
-        codeSnippet,
-        findingType: FindingType.DUPLICATE_META,
-        severity,
-        appName: appName ?? undefined,
-        description: `Duplicate meta tag '${attrValue}' — also found on line ${firstLine}`,
-      });
+      duplicates.push({ attrValue, firstLine: entries[0].lineNumber, entry: entries[i] });
     }
+  }
+
+  // Early exit (gc-ypk): emission is grouped by tag, not line order, so when
+  // over `limit` pick the first `limit` duplicates by line (stable sort, the
+  // caller's cap order) and only build findings for those, in emission order.
+  let selected = duplicates;
+  if (duplicates.length > limit) {
+    const keep = new Set(
+      [...duplicates].sort((a, b) => a.entry.lineNumber - b.entry.lineNumber).slice(0, limit),
+    );
+    selected = duplicates.filter((d) => keep.has(d));
+  }
+
+  // Emit findings for the selected duplicates
+  const appNameByLine = new Map<number, string | null>();
+  for (const { attrValue, firstLine, entry } of selected) {
+    const codeSnippet = buildSnippet(file.content, entry.lineNumber);
+    const severity = classifySeverity(FindingType.DUPLICATE_META, codeSnippet);
+
+    // Attempt app attribution from the full meta tag text — optional.
+    // Memoized per line: entry.text is the whole line, and re-scanning a long
+    // line for every duplicate on it was quadratic (gc-t7x).
+    let appName = appNameByLine.get(entry.lineNumber);
+    if (appName === undefined) {
+      appName = identifyAppFromCode(entry.text) ?? null;
+      appNameByLine.set(entry.lineNumber, appName);
+    }
+
+    findings.push({
+      filename: file.filename,
+      lineNumber: entry.lineNumber,
+      codeSnippet,
+      findingType: FindingType.DUPLICATE_META,
+      severity,
+      appName: appName ?? undefined,
+      description: `Duplicate meta tag '${attrValue}' — also found on line ${firstLine}`,
+    });
   }
 
   return findings;
@@ -2157,7 +2200,10 @@ const LIQUID_CONDITIONAL_RE = /\{%-?\s*(if|unless|elsif)\b/;
  * Skips tags that appear on lines with Liquid conditionals, since those
  * represent intentional theme logic (e.g. noindex on 404 pages).
  */
-export function detectGhostRobots(file: ThemeFile): CreateFindingInput[] {
+export function detectGhostRobots(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   for (const { lineNumber, text } of lines(file.content)) {
@@ -2193,6 +2239,9 @@ export function detectGhostRobots(file: ThemeFile): CreateFindingInput[] {
         appName,
         description: `Orphaned meta robots directive "${contentValue}" — may block search engine indexing`,
       });
+      // Early exit (gc-ypk): emission is in line order, so the first `limit`
+      // findings are the first `limit` by line.
+      if (findings.length >= limit) return findings;
     }
   }
 
@@ -2918,7 +2967,10 @@ const BUILTIN_SECTION_TYPES = new Set([
  * After uninstall, the section files are removed but settings_data.json entries
  * often persist — these are "settings data drift."
  */
-export function detectSettingsDrift(files: ThemeFile[]): CreateFindingInput[] {
+export function detectSettingsDrift(
+  files: ThemeFile[],
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const settingsFile = files.find((f) => f.filename === "config/settings_data.json");
   if (!settingsFile) return [];
 
@@ -2949,6 +3001,9 @@ export function detectSettingsDrift(files: ThemeFile[]): CreateFindingInput[] {
   const sectionEntries = sections as Record<string, unknown>;
 
   for (const [sectionKey, sectionValue] of Object.entries(sectionEntries)) {
+    // Early exit (gc-ypk): every finding is on line 1 of settings_data.json, so
+    // the first `limit` in (deterministic) key order are the first by line.
+    if (findings.length >= limit) break;
     if (!sectionValue || typeof sectionValue !== "object") continue;
 
     const sectionType = (sectionValue as Record<string, unknown>).type;
@@ -3174,7 +3229,10 @@ const ABSOLUTE_URL_RE = /^https?:\/\/[a-z0-9.-]+\.[a-z]{2,}/i;
  *   - Skips canonicals inside Liquid conditionals
  *   - Skips single valid hardcoded URLs (unless app-attributed)
  */
-export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
+export function detectGhostCanonical(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Collect all canonical occurrences for duplicate detection
@@ -3215,13 +3273,31 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   // Track which lines already have a finding to avoid double-reporting
   const reportedLines = new Set<number>();
 
+  const appNameAt = lineAppNamer();
+
+  // Early exit (gc-ypk). Every line holding a canonical other than the first
+  // yields at least one finding: a check 1-3 hit, or else check 5 flags each of
+  // its canonicals as a duplicate. So once `limit` such lines have been fully
+  // examined, `limit` findings are guaranteed on them and nothing on a later
+  // line can rank in the first `limit` by line (the caller sorts by line,
+  // stable, and truncates): stop at that line boundary. Stopping only at a
+  // boundary keeps reportedLines (keyed by line) complete for every examined
+  // line, so check 5 below stays exact for them.
+  let dupLineBound = Number.POSITIVE_INFINITY;
+  let emittingLines = 0;
   for (let i = 0; i < allCanonicals.length; i++) {
+    const newLine = i > 0 && allCanonicals[i].lineNumber !== allCanonicals[i - 1].lineNumber;
+    if (newLine && emittingLines >= limit) {
+      dupLineBound = allCanonicals[i].lineNumber;
+      break;
+    }
+    if (i === 1 || newLine) emittingLines++;
     const { lineNumber, href } = allCanonicals[i];
     const codeSnippet = buildSnippet(file.content, lineNumber);
 
     // Check 1: Empty or whitespace-only href
     if (/^\s*$/.test(href)) {
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
       findings.push({
         filename: file.filename,
@@ -3238,7 +3314,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
 
     // Check 2: Unresolved Liquid variables in href
     if (liquidOutputSpans(href).length > 0 && !hasSafeCanonicalVar(href)) {
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
       findings.push({
         filename: file.filename,
@@ -3254,7 +3330,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check 3: App-attributed canonical (even if href looks valid)
-    const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+    const appName = appNameAt(lineNumber, codeSnippet);
     if (appName) {
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
       findings.push({
@@ -3277,12 +3353,14 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   // Check 5: Duplicate canonical tags — flag 2nd+ occurrence
   if (allCanonicals.length > 1) {
     const firstLine = allCanonicals[0].lineNumber;
-    for (let i = 1; i < allCanonicals.length; i++) {
+    let duplicates = 0;
+    for (let i = 1; i < allCanonicals.length && duplicates < limit; i++) {
       const { lineNumber } = allCanonicals[i];
+      if (lineNumber >= dupLineBound) break;
       if (reportedLines.has(lineNumber)) continue; // Already reported for another reason
 
       const codeSnippet = buildSnippet(file.content, lineNumber);
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
 
       findings.push({
@@ -3294,6 +3372,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
         appName,
         description: `Duplicate canonical tag — also found on line ${firstLine}`,
       });
+      duplicates++;
     }
   }
 
@@ -3436,7 +3515,10 @@ const SAFE_TITLE_VARS_RE = buildSafeVarRe([
  *   - Skips empty titles in non-layout files
  *   - Skips <title> elements inside a closed <svg> (accessible icon names)
  */
-export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
+export function detectGhostTitle(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
   const isLayoutFile = file.filename.startsWith("layout/");
   const contentLines = file.content.split("\n");
@@ -3491,13 +3573,28 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
   // Track which entries already have a finding to avoid double-reporting
   const reportedIndices = new Set<number>();
 
+  const appNameAt = lineAppNamer();
+
+  // Early exit (gc-ypk). Every title after the first yields exactly one finding
+  // (a check 1-3 hit, or else check 4 flags it as a duplicate). So once more
+  // than `limit` titles have been examined, `limit` findings are guaranteed on
+  // their lines and nothing on a LATER line can rank in the first `limit` by
+  // line (the caller sorts by line, stable, and truncates): stop at the next
+  // line boundary (ties on one line keep emission order, so the whole line must
+  // be examined). Check 4 then visits only the examined titles, whose
+  // reportedIndices are complete, and stops after `limit` duplicates.
+  let examined = allTitles.length;
   for (let i = 0; i < allTitles.length; i++) {
+    if (i > limit && allTitles[i].lineNumber !== allTitles[i - 1].lineNumber) {
+      examined = i;
+      break;
+    }
     const { lineNumber, innerContent } = allTitles[i];
     const codeSnippet = buildSnippet(file.content, lineNumber);
 
     // Check 1: Empty or whitespace-only title content (layout files only)
     if (/^\s*$/.test(innerContent) && isLayoutFile) {
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const description =
         "Empty title tag — search engines will display the URL instead of a descriptive title";
       const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
@@ -3522,7 +3619,7 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
       const hasUnsafeVar = allVarsInTitle.some((v) => !SAFE_TITLE_VARS_RE.test(v));
 
       if (hasUnsafeVar) {
-        const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+        const appName = appNameAt(lineNumber, codeSnippet);
         const description = `Unresolved Liquid variable in title tag`;
         const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
         findings.push({
@@ -3540,7 +3637,7 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check 3: App-attributed title (even if content looks valid)
-    const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+    const appName = appNameAt(lineNumber, codeSnippet);
     if (appName) {
       const description = `App-attributed title tag from ${appName}`;
       const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
@@ -3561,12 +3658,13 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
   // Check 4: Duplicate title tags — flag 2nd+ occurrence
   if (allTitles.length > 1) {
     const firstLine = allTitles[0].lineNumber;
-    for (let i = 1; i < allTitles.length; i++) {
+    let duplicates = 0;
+    for (let i = 1; i < examined && duplicates < limit; i++) {
       if (reportedIndices.has(i)) continue; // Already reported for another reason
 
       const { lineNumber } = allTitles[i];
       const codeSnippet = buildSnippet(file.content, lineNumber);
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const description = `Duplicate title tag — also found on line ${firstLine}`;
       const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
 
@@ -3579,6 +3677,7 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
         appName,
         description,
       });
+      duplicates++;
     }
   }
 
@@ -3692,7 +3791,10 @@ const SAFE_OG_FILTER_RE =
  *   - Skips low-impact empty properties (og:locale, og:site_name, etc.)
  *   - Does NOT re-detect duplicates (handled by DUPLICATE_META)
  */
-export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
+export function detectGhostOg(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
   const contentLines = file.content.split("\n");
 
@@ -3704,6 +3806,9 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
   // OG_META_TAG to the bounded tag text. lineNumberAtOffset maps the match offset
   // back to a line.
   for (const { tag, offset } of extractTags(file.content, "<meta")) {
+    // Early exit (gc-ypk): tags arrive in offset (= line) order, so the first
+    // `limit` findings are the first `limit` by line.
+    if (findings.length >= limit) break;
     const match = execTagPattern(tag, OG_META_TAG);
     if (!match) continue;
 
@@ -4295,6 +4400,23 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
  *
  * Returns all findings (all passes) ready for createFindings().
  */
+/**
+ * The first `n` findings by line: a stable sort by lineNumber (ties keep their
+ * emission order), then truncate. This is the cap order (gc-ypk): a
+ * deterministic function of the file content, so rescans of an unchanged file
+ * keep the same findings and their fingerprints.
+ */
+function firstFindingsByLine(findings: CreateFindingInput[], n: number): CreateFindingInput[] {
+  return [...findings].sort((a, b) => a.lineNumber - b.lineNumber).slice(0, n);
+}
+
+/**
+ * The `limit` passed to detectors that can stop early (gc-ypk). One past the cap,
+ * so a detector returning more than the cap proves the file really exceeded it
+ * (a file with exactly MAX_FINDINGS_PER_FILE_PER_TYPE findings is not a cap hit).
+ */
+const EARLY_EXIT_LIMIT = MAX_FINDINGS_PER_FILE_PER_TYPE + 1;
+
 export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   const findings: CreateFindingInput[] = [];
   const unknownScripts: UnknownExternalResource[] = [];
@@ -4305,6 +4427,24 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // Tally benign public-CDN libraries / web fonts dropped by the collectors so
   // the drop is observable (surfaced by the worker as an ops signal, gc-tus A2).
   const benignSkips: BenignSkipCounter = { count: 0 };
+
+  // Per-file, per-type finding cap (gc-ypk). A tag-dense file can emit tens of
+  // thousands of findings of one type at tens of µs each, enough across a few
+  // files to hit the scan worker timeout. Keep the first
+  // MAX_FINDINGS_PER_FILE_PER_TYPE by line and count the hit (telemetry only,
+  // NOT a skipped category). Each detector emits exactly one finding type, so
+  // one detector call is one (file, type). Detectors with a `limit` parameter
+  // stop early (bounding the work, not just the output); the rest are cheap per
+  // finding and are truncated here. MALICIOUS_SCRIPT is never passed through
+  // this: the security alert is shown in full on all plans, and its detector is
+  // linear and cheap per finding.
+  const findingCapHits: Partial<Record<FindingType, number>> = {};
+  const capped = (detected: CreateFindingInput[]): CreateFindingInput[] => {
+    if (detected.length <= MAX_FINDINGS_PER_FILE_PER_TYPE) return detected;
+    const type = detected[0].findingType;
+    findingCapHits[type] = (findingCapHits[type] ?? 0) + 1;
+    return firstFindingsByLine(detected, MAX_FINDINGS_PER_FILE_PER_TYPE);
+  };
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
@@ -4337,25 +4477,25 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     }
     if (!scannable) continue;
 
-    findings.push(...detectGhostScripts(file));
-    findings.push(...detectGhostStyles(file));
-    findings.push(...detectGhostSnippets(file));
-    findings.push(...detectGhostSections(file));
-    findings.push(...detectGhostHrefLang(file));
-    findings.push(...detectDuplicateMetaTags(file));
-    findings.push(...detectGhostJsonLd(file));
-    findings.push(...detectInvalidJsonLd(file));
-    findings.push(...detectMaliciousScripts(file));
-    findings.push(...detectJsonLdConflicts(file));
-    findings.push(...detectGhostTextFragments(file));
-    findings.push(...detectGhostPixels(file));
-    findings.push(...detectGhostRobots(file));
-    findings.push(...detectGhostCanonical(file));
-    findings.push(...detectGhostTitle(file));
-    findings.push(...detectGhostOg(file));
-    findings.push(...detectGhostPreconnect(file));
-    findings.push(...detectGhostFont(file));
-    findings.push(...detectGhostAjax(file));
+    findings.push(...capped(detectGhostScripts(file)));
+    findings.push(...capped(detectGhostStyles(file)));
+    findings.push(...capped(detectGhostSnippets(file)));
+    findings.push(...capped(detectGhostSections(file)));
+    findings.push(...capped(detectGhostHrefLang(file)));
+    findings.push(...capped(detectDuplicateMetaTags(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostJsonLd(file)));
+    findings.push(...capped(detectInvalidJsonLd(file)));
+    findings.push(...detectMaliciousScripts(file)); // uncapped, see findingCapHits
+    findings.push(...capped(detectJsonLdConflicts(file)));
+    findings.push(...capped(detectGhostTextFragments(file)));
+    findings.push(...capped(detectGhostPixels(file)));
+    findings.push(...capped(detectGhostRobots(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostCanonical(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostTitle(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostOg(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostPreconnect(file)));
+    findings.push(...capped(detectGhostFont(file)));
+    findings.push(...capped(detectGhostAjax(file)));
 
     // Collect unrecognized external resources (benign libraries are dropped and
     // counted into benignSkips rather than emitted).
@@ -4402,8 +4542,12 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     });
   }
 
-  // Pass 3: settings data drift detection
-  findings.push(...detectSettingsDrift(files));
+  // Pass 3: settings data drift detection. The only cross-file pass that can
+  // emit unbounded findings (one per stale section key in settings_data.json,
+  // all attributed to that one file), so it takes the same cap. The other
+  // cross-file passes emit at most one finding per theme file (orphan, layout)
+  // or per catalog entry (duplicate library / tracker / chat widget).
+  findings.push(...capped(detectSettingsDrift(files, EARLY_EXIT_LIMIT)));
 
   // Pass 4: page builder layout detection
   findings.push(...detectGhostLayouts(files));
@@ -4462,5 +4606,6 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     staticProductCandidates,
     benignLibrarySkips: benignSkips.count,
     thirdPartyDomains,
+    findingCapHits,
   };
 }

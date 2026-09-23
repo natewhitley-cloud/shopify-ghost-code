@@ -65,3 +65,20 @@ export const JSONLD_PRICE_CANDIDATE_CAP = 500;
  * defensive backstop that drops dangling candidates rather than failing a scan.
  */
 export const CORE_STEP_OUTPUT_BUDGET_BYTES = 3_000_000;
+
+/**
+ * Max findings kept per (theme file, finding type) by scanThemeFiles (gc-ypk).
+ *
+ * The per-file detectors cost tens of µs per emitted finding (mostly app
+ * attribution on the snippet), and a tag-dense 1 MB file can emit tens of
+ * thousands of findings of one type (~3 s for a `<title>` flood), so a theme
+ * with 10+ such files could run into the 30 s scan worker timeout and FAIL the
+ * scan. Real themes emit a handful per file (prod max per SCAN is ~26), so 200
+ * never bites on a real theme; it only bounds pathological files.
+ *
+ * The kept findings are the FIRST 200 by line, so rescans of an unchanged theme
+ * keep the same set (fingerprint stability). A cap hit is telemetry only
+ * (`findingCapHits` in the scan_signal + a logger.warn), NOT a skipped category.
+ * MALICIOUS_SCRIPT is exempt: the security alert is shown in full on all plans.
+ */
+export const MAX_FINDINGS_PER_FILE_PER_TYPE = 200;
