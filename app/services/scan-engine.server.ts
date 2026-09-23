@@ -244,6 +244,32 @@ export function isScannableFile(filename: string): boolean {
   return SCANNABLE_PREFIXES.some((prefix) => filename.startsWith(prefix));
 }
 
+/**
+ * Returns true for theme files that get ONLY the MALICIOUS_SCRIPT pass (gc-3pd):
+ * places injected payloads live that the full Liquid detector suite never sees.
+ *
+ *   - templates/**.json, sections/**.json — Custom Liquid block code is stored as
+ *     (escaped) JSON strings in JSON templates and section groups.
+ *   - config/settings_data.json — theme settings can carry raw HTML/URLs.
+ *   - assets/*.js, assets/*.liquid (e.g. theme.js.liquid) — injected loaders are
+ *     commonly appended to asset JS.
+ *
+ * Deliberately excluded: CSS (cannot execute script; a CSS `url()` to a listed
+ * host is not the skimmer/loader threat this list tracks), locales (translation
+ * strings), config/settings_schema.json (developer-owned schema). Disjoint from
+ * isScannableFile by construction, so no file is scanned twice.
+ */
+export function isMaliciousScanOnlyFile(filename: string): boolean {
+  if (filename === "config/settings_data.json") return true;
+  if (filename.startsWith("assets/")) {
+    return filename.endsWith(".js") || filename.endsWith(".liquid");
+  }
+  return (
+    (filename.startsWith("templates/") || filename.startsWith("sections/")) &&
+    filename.endsWith(".json")
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Line-level helpers
 // ---------------------------------------------------------------------------
@@ -1009,8 +1035,11 @@ export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
 // on pathological 1MB single-line files (covered by a test).
 const URL_HOST_RE = /(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)/gi;
 
-// `{% comment %}...{% endcomment %}` incl. whitespace-control `{%-`/`-%}` forms.
-const LIQUID_COMMENT_BLOCK_RE = /\{%-?\s*comment\s*-?%\}[\s\S]*?\{%-?\s*endcomment\s*-?%\}/gi;
+// `{% comment %}` / `{% endcomment %}` incl. whitespace-control `{%-`/`-%}` forms.
+// Matched separately (not as one lazy `open[\s\S]*?close` regex, which rescans
+// to EOF from every unterminated opener: quadratic on an opener flood).
+const LIQUID_COMMENT_OPEN_RE = /\{%-?\s*comment\s*-?%\}/gi;
+const LIQUID_COMMENT_CLOSE_RE = /\{%-?\s*endcomment\s*-?%\}/gi;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.
@@ -1024,7 +1053,21 @@ const MALICIOUS_SNIPPET_MAX = 300;
  * a minified one-line theme with any comment in it must not evade detection.
  */
 function blankLiquidComments(content: string): string {
-  return content.replace(LIQUID_COMMENT_BLOCK_RE, (m) => m.replace(/[^\n]/g, " "));
+  let out = "";
+  let from = 0;
+  LIQUID_COMMENT_OPEN_RE.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = LIQUID_COMMENT_OPEN_RE.exec(content)) !== null) {
+    LIQUID_COMMENT_CLOSE_RE.lastIndex = LIQUID_COMMENT_OPEN_RE.lastIndex;
+    const close = LIQUID_COMMENT_CLOSE_RE.exec(content);
+    // No closer after this opener means none after any later opener either.
+    if (close === null) break;
+    const end = close.index + close[0].length;
+    out += content.slice(from, open.index) + content.slice(open.index, end).replace(/[^\n]/g, " ");
+    from = end;
+    LIQUID_COMMENT_OPEN_RE.lastIndex = end;
+  }
+  return out + content.slice(from);
 }
 
 /**
@@ -3380,6 +3423,12 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
 
   // Pass 1: per-file ghost code detection
   for (const file of files) {
+    // Non-Liquid files that can still carry injected code (gc-3pd) get ONLY the
+    // malicious-domain pass: no FP/perf change for the rest of the suite.
+    if (isMaliciousScanOnlyFile(file.filename)) {
+      findings.push(...detectMaliciousScripts(file));
+      continue;
+    }
     if (!isScannableFile(file.filename)) continue;
 
     // File-size guard (gc-06e.2): a single oversized scannable file is anomalous
