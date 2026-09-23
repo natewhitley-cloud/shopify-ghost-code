@@ -222,6 +222,15 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "compounding",
     agentic: true,
   },
+  // MALICIOUS_SCRIPT: attacker code running on the live storefront (fake-CDN
+  // loaders, skimmers). privacy = shopper data at risk; customers-see-it = it
+  // can redirect or alter what shoppers see. act-now, always.
+  MALICIOUS_SCRIPT: {
+    primary: "privacy",
+    secondary: ["customers-see-it"],
+    urgency: "act-now",
+    agentic: false,
+  },
   GHOST_LAYOUT: {
     primary: "customers-see-it",
     secondary: ["housekeeping"],

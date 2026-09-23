@@ -12,6 +12,9 @@ import {
   detectDuplicateMetaTags,
   detectGhostJsonLd,
   detectInvalidJsonLd,
+  detectMaliciousScripts,
+  collectUnknownScripts,
+  collectUnknownStylesheets,
   detectJsonLdConflicts,
   extractStaticProductCandidates,
   detectGhostTextFragments,
@@ -5273,5 +5276,152 @@ describe("detectInvalidJsonLd", () => {
     ];
     const { findings } = scanThemeFiles(files);
     expect(findingsOfType(findings, FindingType.JSON_LD_INVALID)).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MALICIOUS_SCRIPT detection (detectMaliciousScripts)
+// ---------------------------------------------------------------------------
+
+describe("detectMaliciousScripts", () => {
+  // Real-world injection observed in prod 2026-09-22 (fake jsDelivr lookalike).
+  const INJECTED =
+    '<script src="{{ \'a-media-gallery.js\' | asset_url }}" defer="defer"></script> <script src="https://shopify.jsdeliver.cloud/config.js" async></script>';
+
+  it("flags a script loaded from a known-malicious lookalike domain as HIGH", () => {
+    const file: ThemeFile = { filename: "sections/a-dependencies.liquid", content: INJECTED };
+    const findings = detectMaliciousScripts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+    expect(findings[0].filename).toBe("sections/a-dependencies.liquid");
+    expect(findings[0].lineNumber).toBe(1);
+    expect(findings[0].description).toContain("jsdeliver.cloud");
+    expect(findings[0].codeSnippet).toContain("shopify.jsdeliver.cloud/config.js");
+  });
+
+  it("does NOT flag the legitimate jsDelivr CDN (lookalike FP guard)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js"></script>',
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(0);
+  });
+
+  it("matches on a dot boundary only (no substring false positives)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<script src="https://notjsdeliver.cloud/x.js"></script>',
+        '<script src="https://jsdeliver.cloud.example.com/x.js"></script>',
+      ].join("\n"),
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(0);
+  });
+
+  it("matches the bare domain, protocol-relative URLs, and is case-insensitive", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<script src="https://jsdeliver.cloud/a.js"></script>',
+        '<script src="//SHOPIFY.JSDELIVER.CLOUD/config.js"></script>',
+      ].join("\n"),
+    };
+    const findings = detectMaliciousScripts(file);
+    expect(findings.map((f) => f.lineNumber)).toEqual([1, 2]);
+  });
+
+  it("catches dynamic injection (URL in inline JS, not a src attribute)", () => {
+    const file: ThemeFile = {
+      filename: "snippets/loader.liquid",
+      content: [
+        "<script>",
+        "  var s = document.createElement('script');",
+        "  s.src = 'https://shopify.jsdeliver.cloud/config.js';",
+        "  document.head.appendChild(s);",
+        "</script>",
+      ].join("\n"),
+    };
+    const findings = detectMaliciousScripts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(3);
+  });
+
+  it("emits one finding per line even if the domain appears twice on it", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<link rel="preload" href="https://shopify.jsdeliver.cloud/config.js"><script src="https://shopify.jsdeliver.cloud/config.js"></script>',
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(1);
+  });
+
+  it("skips references inside a Liquid comment block (inert code)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}",
+        '<script src="https://shopify.jsdeliver.cloud/config.js"></script>',
+        "{% endcomment %}",
+      ].join("\n"),
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(0);
+  });
+
+  it("stays HIGH for a live line directly after a comment block (no snippet-context downgrade)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "{% comment %}note{% endcomment %}",
+        "",
+        '<script src="https://shopify.jsdeliver.cloud/config.js"></script>',
+      ].join("\n"),
+    };
+    const findings = detectMaliciousScripts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+  });
+
+  it("flags the hijacked cb28utrk.com skimmer domain (Netcraft-reported)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://www.cb28utrk.com/scripts/shopify/click.js?nid=733&intid=1&shop=x.myshopify.com"></script>',
+    };
+    const findings = detectMaliciousScripts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("cb28utrk.com");
+  });
+
+  it("returns nothing for a clean file", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://www.17track.net/externalcall.js"></script>',
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(0);
+  });
+
+  it("keeps malicious hosts OUT of the unknown-script/stylesheet flywheel (never ask a merchant to name malware)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<script src="https://shopify.jsdeliver.cloud/config.js"></script>',
+        '<link rel="stylesheet" href="https://shopify.jsdeliver.cloud/x.css">',
+        '<script src="https://frontend.cjdropshipping.com/egg/pod3.js"></script>',
+      ].join("\n"),
+    };
+    expect(collectUnknownScripts(file).map((u) => u.url)).toEqual([
+      "https://frontend.cjdropshipping.com/egg/pod3.js",
+    ]);
+    expect(collectUnknownStylesheets(file)).toHaveLength(0);
+  });
+
+  it("is wired into scanThemeFiles and removed from unknownScripts", () => {
+    const { findings, unknownScripts } = scanThemeFiles([
+      { filename: "sections/a-dependencies.liquid", content: INJECTED },
+    ]);
+    expect(findingsOfType(findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(1);
+    expect(unknownScripts.some((u) => u.url.includes("jsdeliver.cloud"))).toBe(false);
   });
 });

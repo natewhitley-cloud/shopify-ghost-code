@@ -473,13 +473,13 @@ describe("getTypeCountsForScan", () => {
     });
   });
 
-  it("returns a fully zero-seeded record covering all 33 FindingType members", async () => {
+  it("returns a fully zero-seeded record covering all 34 FindingType members", async () => {
     mockDb.finding.groupBy.mockResolvedValue([]);
 
     const result = await getTypeCountsForScan(SCAN_ID);
 
     const keys = Object.keys(result);
-    expect(keys).toHaveLength(33);
+    expect(keys).toHaveLength(34);
     // Every enum member present and defaulted to 0.
     for (const type of Object.values(FindingType)) {
       expect(result[type]).toBe(0);
@@ -547,7 +547,9 @@ describe("getHighestSeverityFinding", () => {
     expect(result).toBeNull();
   });
 
-  it("passes orderBy [{ severity: 'asc' }, { createdAt: 'asc' }] to ensure HIGH comes first", async () => {
+  // MALICIOUS_SCRIPT is excluded because the scan page shows every such finding
+  // in full on all plans (security alert); it must not also take the preview slot.
+  it("passes orderBy [{ severity: 'asc' }, { createdAt: 'asc' }] to ensure HIGH comes first, excluding MALICIOUS_SCRIPT", async () => {
     // Prisma sorts enums by declaration order; the schema declares HIGH, MEDIUM, LOW,
     // so ascending sort places HIGH first. The secondary createdAt sort is a tiebreaker.
     mockDb.finding.findFirst.mockResolvedValue(null);
@@ -555,7 +557,7 @@ describe("getHighestSeverityFinding", () => {
     await getHighestSeverityFinding(SCAN_ID);
 
     expect(mockDb.finding.findFirst).toHaveBeenCalledWith({
-      where: { scanId: SCAN_ID },
+      where: { scanId: SCAN_ID, findingType: { not: "MALICIOUS_SCRIPT" } },
       orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
     });
   });

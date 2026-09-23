@@ -129,6 +129,12 @@ const REMEDIATION: Record<string, Remediation> = {
     howTo:
       "Fix the broken application/ld+json block so it is valid JSON, or remove it if an active app or Shopify already generates the structured data. A JSON validator will point to the exact syntax error (often a trailing comma or an unquoted value). Duplicate the theme as a backup first.",
   },
+  MALICIOUS_SCRIPT: {
+    impact:
+      "This line loads code from a domain known to be used in attacks on Shopify stores. Code like this can steal shopper data, inject spam, or redirect customers, and it usually arrives through a rogue app or a compromised staff account.",
+    howTo:
+      "Duplicate your theme as a backup, then delete this script line in the theme code editor. Search the rest of the theme for the same domain and remove every copy. Next, review your installed apps and remove any you do not recognize, check staff accounts and collaborator access, and change your admin passwords. If you bought the theme from an unofficial source, reinstall a clean copy from the Theme Store or the developer.",
+  },
   DUPLICATE_META: {
     impact:
       "This meta tag appears twice on the same page, so crawlers and AI agents may read the wrong copy or discount the signal entirely.",

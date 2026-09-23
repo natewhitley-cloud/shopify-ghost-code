@@ -174,6 +174,7 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   JSON_LD_CONFLICT: "JSON-LD Conflicts",
   JSON_LD_PRICE_CONFLICT: "JSON-LD Price Mismatch",
   JSON_LD_INVALID: "Invalid JSON-LD",
+  MALICIOUS_SCRIPT: "Malicious Scripts",
   GHOST_LAYOUT: "Layout Code",
   GHOST_TAG: "Product Tags",
   GHOST_PRICE: "Compare-at Prices",
@@ -622,6 +623,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     appAttributionData,
     unknownScripts,
     filterOptions,
+    maliciousFindings,
   ] = await Promise.all([
     getFilteredFindingSummary(scanId, ignores),
     // Free-tier only: fetch a single preview finding (paid users get a page).
@@ -652,6 +654,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     canViewFindings
       ? getFindingFilterOptionsForScan(scanId)
       : Promise.resolve({ types: [], apps: [] }),
+    // Known-malicious scripts: shown IN FULL on EVERY plan (free included) and
+    // regardless of merchant ignores. A compromised theme is a shopper-safety
+    // issue, never an upsell; the free-tier paywall does not apply here.
+    isSuccessfulScan(scan.status)
+      ? getFindingsForScan(scanId, { findingType: "MALICIOUS_SCRIPT" })
+      : Promise.resolve([]),
   ]);
 
   // Compute health score for successful scans (COMPLETED or PARTIAL).
@@ -691,7 +699,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isFindingIgnored(rawPreviewFinding, ignores)
   ) {
     const { kept } = filterIgnoredFindings(await getFindingsForScan(scanId), ignores);
-    resolvedPreviewFinding = kept[0] ?? null;
+    // Skip MALICIOUS_SCRIPT here too, mirroring getHighestSeverityFinding: those
+    // are already shown in full by the security alert.
+    resolvedPreviewFinding = kept.find((f) => f.findingType !== "MALICIOUS_SCRIPT") ?? null;
   }
 
   // Enrich the preview finding with tracker flag (free-tier only).
@@ -735,6 +745,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       nextCursor: findingsPage.nextCursor,
     },
     previewFinding,
+    maliciousFindings,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -969,6 +980,7 @@ export default function ScanDetail() {
     findings,
     findingsPagination,
     previewFinding,
+    maliciousFindings,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -1399,6 +1411,33 @@ export default function ScanDetail() {
         {isFailed && (
           <s-banner tone="critical">
             This scan failed to complete. Please try running a new scan from the dashboard.
+          </s-banner>
+        )}
+
+        {/* Security alert: every known-malicious script, in full, on ALL plans
+            (free included). Never paywalled; see the loader comment. */}
+        {maliciousFindings.length > 0 && (
+          <s-banner tone="critical" heading="Malicious code found in your theme">
+            <s-stack direction="block" gap="base">
+              <s-text>
+                {maliciousFindings.length === 1
+                  ? "1 line in your theme loads"
+                  : `${maliciousFindings.length} lines in your theme load`}{" "}
+                code from a domain known to be used in attacks on Shopify stores. Remove{" "}
+                {maliciousFindings.length === 1 ? "it" : "them"} as soon as possible and follow the
+                steps under each finding. This is shown on every plan.
+              </s-text>
+              <FindingsTable>
+                {maliciousFindings.map((f) => (
+                  <FindingRow
+                    key={f.id}
+                    finding={f}
+                    shopDomain={shopDomain}
+                    themeId={scan.themeId}
+                  />
+                ))}
+              </FindingsTable>
+            </s-stack>
           </s-banner>
         )}
 
@@ -1892,10 +1931,12 @@ export default function ScanDetail() {
               </s-card>
             </div>
           ) : previewFinding === null ? (
-            /* Free tier, no findings at all */
-            <s-card>
-              <s-paragraph>No ghost code detected in this scan.</s-paragraph>
-            </s-card>
+            /* Free tier, no findings beyond any malicious ones (shown above) */
+            maliciousFindings.length === 0 && (
+              <s-card>
+                <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+              </s-card>
+            )
           ) : (
             /* Free tier with findings — show summary + one preview row + upgrade prompt */
             <>

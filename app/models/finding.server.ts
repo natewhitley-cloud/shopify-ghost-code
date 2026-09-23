@@ -55,6 +55,7 @@ export function createZeroTypeCounts(): Record<FindingType, number> {
     [FindingType.JSON_LD_CONFLICT]: 0,
     [FindingType.JSON_LD_PRICE_CONFLICT]: 0,
     [FindingType.JSON_LD_INVALID]: 0,
+    [FindingType.MALICIOUS_SCRIPT]: 0,
     [FindingType.GHOST_LAYOUT]: 0,
     [FindingType.GHOST_TAG]: 0,
     [FindingType.GHOST_PRICE]: 0,
@@ -220,8 +221,11 @@ export async function getTypeCountsForScan(scanId: string): Promise<Record<Findi
  * Returns null when the scan has no findings.
  */
 export async function getHighestSeverityFinding(scanId: string) {
+  // MALICIOUS_SCRIPT is excluded: every such finding is shown in full on all
+  // plans via the scan page's security alert, so it must not also occupy the
+  // single free-tier preview slot.
   return db.finding.findFirst({
-    where: { scanId },
+    where: { scanId, findingType: { not: FindingType.MALICIOUS_SCRIPT } },
     orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
   });
 }

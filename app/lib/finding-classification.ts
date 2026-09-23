@@ -172,6 +172,9 @@ const SIGNATURE_FINDING_TYPES = new Set([
   "GHOST_FONT",
   "GHOST_AJAX",
   "GHOST_PRICE",
+  // MALICIOUS_SCRIPT — emits only on a positive match against the curated
+  // KNOWN_MALICIOUS_DOMAINS list (a signature match, just not an app one).
+  "MALICIOUS_SCRIPT",
 ]);
 
 /**
@@ -280,6 +283,9 @@ const THEME_FILE_FINDING_TYPES = new Set([
   // JSON_LD_INVALID — attributed to the theme file whose static JSON-LD block
   // failed to parse, so it gets an "Open in theme editor" deep-link.
   "JSON_LD_INVALID",
+  // MALICIOUS_SCRIPT — anchored to the theme file carrying the injected line, so
+  // it gets an "Open in theme editor" deep-link.
+  "MALICIOUS_SCRIPT",
   "GHOST_LAYOUT",
   "ORPHAN_ASSET",
   "SETTINGS_DRIFT",

@@ -26,8 +26,8 @@ import {
 describe("REMOVAL_SAFETY — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 33 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(33);
+  it("has 34 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(34);
   });
 
   it("maps every FindingType enum member explicitly (exhaustiveness)", () => {
@@ -50,7 +50,14 @@ describe("REMOVAL_SAFETY — coverage", () => {
 describe("getRemovalSafety — representative mappings", () => {
   // The only four types allowed to be marked safe-to-remove: signature-matched
   // orphan code that is inert once the source app is gone.
-  const SAFE_TO_REMOVE = ["GHOST_SCRIPT", "GHOST_STYLE", "GHOST_SNIPPET", "GHOST_PRECONNECT"];
+  const SAFE_TO_REMOVE = [
+    "GHOST_SCRIPT",
+    "GHOST_STYLE",
+    "GHOST_SNIPPET",
+    "GHOST_PRECONNECT",
+    // Known-malicious domain: nothing legitimate depends on attacker code.
+    "MALICIOUS_SCRIPT",
+  ];
 
   it.each(SAFE_TO_REMOVE)('classifies %s as "safe-to-remove"', (type) => {
     expect(getRemovalSafety(type)).toBe("safe-to-remove");

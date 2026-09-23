@@ -57,7 +57,7 @@
  *                    Swiper v8 in one file and v11 in another)
  */
 
-import { FindingType } from "@prisma/client";
+import { FindingType, Severity } from "@prisma/client";
 
 import {
   identifyAppFromUrl,
@@ -71,6 +71,7 @@ import {
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
+import { matchMaliciousDomain } from "../data/malicious-domains.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
@@ -997,6 +998,58 @@ export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
 }
 
 // ---------------------------------------------------------------------------
+// Detector: MALICIOUS_SCRIPT (known-malicious domain references)
+// ---------------------------------------------------------------------------
+
+// Any absolute or protocol-relative URL host on a line. Deliberately NOT limited
+// to `<script src>`: injected loaders often build the URL in inline JS
+// (`s.src = "https://..."`) or preload it via `<link>`, and all of those load
+// attacker code just the same.
+const URL_HOST_RE = /(?:https?:)?\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi;
+
+/**
+ * Emit one MALICIOUS_SCRIPT finding per live theme line that references a domain
+ * on the curated KNOWN_MALICIOUS_DOMAINS list.
+ *
+ *   - Lines inside a Liquid comment block are skipped (inert, never rendered).
+ *   - One finding per line, even if the domain repeats on it.
+ *   - Severity is ALWAYS HIGH and is set directly rather than via
+ *     classifySeverity: that classifier downgrades on comment markers in the
+ *     surrounding snippet context, but we have already excluded commented lines,
+ *     so every emitted line is live attacker code.
+ *
+ * Theme-file only, NO scope gate, ALL plans.
+ */
+export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
+  const findings: CreateFindingInput[] = [];
+  const commentLines = buildCommentSkipLines(file.content);
+
+  for (const { lineNumber, text } of lines(file.content)) {
+    if (commentLines.has(lineNumber)) continue;
+
+    URL_HOST_RE.lastIndex = 0;
+    let match: RegExpExecArray | null;
+    while ((match = URL_HOST_RE.exec(text)) !== null) {
+      const hit = matchMaliciousDomain(match[1]);
+      if (!hit) continue;
+
+      findings.push({
+        filename: file.filename,
+        lineNumber,
+        codeSnippet: buildSnippet(file.content, lineNumber),
+        findingType: FindingType.MALICIOUS_SCRIPT,
+        severity: Severity.HIGH,
+        appName: undefined,
+        description: `Loads code from known-malicious domain ${hit.domain} (${hit.note}). Your theme may be compromised`,
+      });
+      break; // one finding per line
+    }
+  }
+
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Detector: JSON_LD_CONFLICT
 // ---------------------------------------------------------------------------
 
@@ -1621,6 +1674,9 @@ export function collectUnknownScripts(
       const hostname = hostnameFromUrl(url);
       if (hostname === null) continue; // Malformed URL — skip
       if (isShopifyDomain(hostname)) continue;
+      // Known-malicious hosts are reported as MALICIOUS_SCRIPT findings; never
+      // route them into the flywheel, which asks the merchant to name the app.
+      if (matchMaliciousDomain(hostname)) continue;
 
       // Drop benign public-CDN libraries / web fonts (not orphaned app code)
       if (isBenignLibrary(url)) {
@@ -1667,6 +1723,9 @@ export function collectUnknownStylesheets(
       const hostname = hostnameFromUrl(url);
       if (hostname === null) continue; // Malformed URL — skip
       if (isShopifyDomain(hostname)) continue;
+      // Known-malicious hosts are reported as MALICIOUS_SCRIPT findings; never
+      // route them into the flywheel, which asks the merchant to name the app.
+      if (matchMaliciousDomain(hostname)) continue;
 
       // Drop benign public-CDN libraries / web fonts (not orphaned app code)
       if (isBenignLibrary(url)) {
@@ -3315,6 +3374,7 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     findings.push(...detectDuplicateMetaTags(file));
     findings.push(...detectGhostJsonLd(file));
     findings.push(...detectInvalidJsonLd(file));
+    findings.push(...detectMaliciousScripts(file));
     findings.push(...detectJsonLdConflicts(file));
     findings.push(...detectGhostTextFragments(file));
     findings.push(...detectGhostPixels(file));

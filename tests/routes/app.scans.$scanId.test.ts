@@ -485,8 +485,76 @@ describe("app.scans.$scanId loader", () => {
         previewFinding: { id: string } | null;
       };
 
-      expect(mockGetFindingsForScan).not.toHaveBeenCalled();
+      // Only the always-on malicious-script query may run; no unfiltered load.
+      expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1");
       expect(result.previewFinding?.id).toBe("f-1");
+    });
+
+    // Known-malicious scripts are NEVER paywalled: a free merchant sees every one,
+    // in full (file, line, snippet), for shopper safety and merchant trust.
+    it("returns ALL malicious-script findings in full for free-plan shops", async () => {
+      const MAL_1 = { ...FINDING_ONE, id: "mal-1", findingType: "MALICIOUS_SCRIPT", lineNumber: 6 };
+      const MAL_2 = {
+        ...FINDING_ONE,
+        id: "mal-2",
+        findingType: "MALICIOUS_SCRIPT",
+        lineNumber: 365,
+      };
+      mockGetFindingsForScan.mockImplementation(
+        async (_id: string, filters?: { findingType?: string }) =>
+          filters?.findingType === "MALICIOUS_SCRIPT" ? [MAL_1, MAL_2] : [],
+      );
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        maliciousFindings: Array<{
+          id: string;
+          filename: string;
+          codeSnippet: string;
+          lineNumber: number;
+        }>;
+      };
+
+      expect(mockGetFindingsForScan).toHaveBeenCalledWith("scan-1", {
+        findingType: "MALICIOUS_SCRIPT",
+      });
+      expect(result.maliciousFindings.map((f) => f.id)).toEqual(["mal-1", "mal-2"]);
+      expect(result.maliciousFindings[1]).toMatchObject({
+        filename: FINDING_ONE.filename,
+        codeSnippet: FINDING_ONE.codeSnippet,
+        lineNumber: 365,
+      });
+    });
+
+    it("never uses a malicious finding as the ignore-fallback preview (it is shown in the alert)", async () => {
+      const ignoredTop = { ...FINDING_ONE, id: "ignored-top", appName: "BadApp" };
+      const mal = { ...FINDING_ONE, id: "mal-1", findingType: "MALICIOUS_SCRIPT", appName: null };
+      const keptNext = { ...FINDING_ONE, id: "kept-next", appName: "GoodApp" };
+      mockGetHighestSeverityFinding.mockResolvedValue(ignoredTop);
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["BadApp"]),
+      });
+      mockGetFindingsForScan.mockImplementation(
+        async (_id: string, filters?: { findingType?: string }) =>
+          filters?.findingType === "MALICIOUS_SCRIPT" ? [mal] : [ignoredTop, mal, keptNext],
+      );
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        previewFinding: { id: string } | null;
+      };
+
+      expect(result.previewFinding?.id).toBe("kept-next");
+    });
+
+    it("does not query malicious findings for a non-successful (FAILED) scan", async () => {
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "FAILED" });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { maliciousFindings: unknown[] };
+
+      expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1", {
+        findingType: "MALICIOUS_SCRIPT",
+      });
+      expect(result.maliciousFindings).toEqual([]);
     });
 
     it("does not call getAppAttributionForScan for free-plan shops", async () => {

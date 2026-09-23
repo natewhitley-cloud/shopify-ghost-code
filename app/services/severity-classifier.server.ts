@@ -42,6 +42,10 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   // tiers (JSON_LD_CONFLICT / JSON_LD_PRICE_CONFLICT feed agents WRONG data;
   // an invalid block simply yields NO data). MEDIUM matches GHOST_JSON_LD.
   [FindingType.JSON_LD_INVALID]: Severity.MEDIUM,
+  // MALICIOUS_SCRIPT is HIGH: live attacker code on the storefront. The detector
+  // sets HIGH directly (bypassing classifySeverity's comment downgrade); this
+  // entry keeps the exhaustive map honest.
+  [FindingType.MALICIOUS_SCRIPT]: Severity.HIGH,
   [FindingType.GHOST_LAYOUT]: Severity.MEDIUM,
   [FindingType.GHOST_TAG]: Severity.LOW,
   [FindingType.GHOST_PRICE]: Severity.HIGH,
