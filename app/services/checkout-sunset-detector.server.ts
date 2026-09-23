@@ -6,21 +6,23 @@
 // scan worker (scope `read_themes`; NOT scope-gated). No Admin API, DB, or
 // network access.
 //
-// Background: Shopify sunset the legacy `checkout.liquid` customization
-// mechanism. For Shopify Plus stores it is HARD-BLOCKED as of ~Aug 13, 2026 —
-// after that date `layout/checkout.liquid` no longer renders, so every
-// customization it carries (custom scripts, tracking/analytics pixels, injected
-// snippets, theme-injected content) silently stops working at checkout, the most
-// conversion-critical step.
+// Background: Shopify has fully sunset the legacy `checkout.liquid`
+// customization mechanism. It stopped rendering for the Information, Shipping,
+// and Payment steps on Aug 13, 2024, and for the Thank you and Order status
+// pages on Aug 28, 2025 (gc-oam; shopify.dev checkout-liquid layout docs). It
+// no longer renders anywhere, for any store, so every customization it carries
+// (custom scripts, tracking/analytics pixels, injected snippets, theme-injected
+// content) has ALREADY stopped working at checkout. The copy is past tense and
+// makes no Plus-specific claim: the detector cannot know a store's plan.
 //
 // Two checks (v1 scope — nothing more):
 //   1. PRESENCE: `layout/checkout.liquid` exists with non-trivial content →
-//      emit one CHECKOUT_SUNSET finding. The file itself is what the hard-block
-//      kills, so its mere presence (once it holds real content) is the defect.
+//      emit one CHECKOUT_SUNSET finding. The file no longer renders, so its mere
+//      presence (once it holds real content) means a customization is dead.
 //   2. CUSTOMIZATION DEPTH: within that file, detect customization signals
 //      (`<script>` tags, tracking/analytics snippets, `{% render %}` /
-//      `{% include %}`, `content_for_*`) to describe WHAT specifically will
-//      break. This does NOT emit a second finding — it enriches the single
+//      `{% include %}`, `content_for_*`) to describe WHAT specifically has
+//      stopped working. This does NOT emit a second finding — it enriches the single
 //      presence finding's `description` and sets the `appName` subtype tag
 //      (mirroring how DANGLING_REFERENCE carries its subtype at runtime: ONE
 //      FindingType, subtype in description + appName, no new DB column).
@@ -35,14 +37,22 @@
 
 import { FindingType, Severity } from "@prisma/client";
 
-import { buildSnippet, type ThemeFile } from "./scan-engine.server";
+import { buildSnippet, MAX_SCANNABLE_FILE_BYTES, type ThemeFile } from "./scan-engine.server";
 import type { CreateFindingInput } from "../models/finding.server";
 
-/** The single legacy checkout layout file the sunset hard-block targets. */
-const CHECKOUT_LIQUID_PATH = "layout/checkout.liquid";
+/** The single legacy checkout layout file the sunset retired. */
+export const CHECKOUT_LIQUID_PATH = "layout/checkout.liquid";
 
-/** Human-facing sunset date used in copy. */
-const SUNSET_DATE = "around August 13, 2026";
+/** Sentence stating the (already past) sunset, shared by every description. */
+const SUNSET_FACT =
+  "Shopify no longer renders checkout.liquid for any store: it was retired for the " +
+  "Information, Shipping, and Payment steps on August 13, 2024, and for the Thank you " +
+  "and Order status pages on August 28, 2025.";
+
+/** Closing remediation pointer, shared by every description. */
+const REBUILD_HINT =
+  "Rebuild anything you still need with Checkout Extensibility (checkout UI " +
+  "extensions, Shopify Functions, or web pixels).";
 
 // Blank out Liquid comment blocks and HTML comments so commented-out code counts
 // as neither content (trivial-check) nor a customization signal (depth-check).
@@ -50,18 +60,57 @@ const SUNSET_DATE = "around August 13, 2026";
 // stripped view keeps a 1:1 line-number mapping to the original file — the
 // evidence anchor (firstSignalLine) can scan the stripped view and its line
 // numbers still point at the right line in the file the merchant will open.
-const LIQUID_COMMENT_RE = /\{%-?\s*comment\s*-?%\}[\s\S]*?\{%-?\s*endcomment\s*-?%\}/gi;
-const HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+//
+// The comments are located with separate opener/closer searches rather than a
+// single lazy `OPEN[\s\S]*?CLOSE` regex (gc-4yg): with many openers and no
+// closer, that regex rescans to EOF from every opener, which is quadratic
+// (400 KB of `<!--` took ~23s). This detector runs on the MAIN thread in the
+// scan-theme step, so that would stall every tenant, not just one scan worker.
+const LIQUID_COMMENT_OPEN_RE = /\{%-?\s*comment\s*-?%\}/gi;
+const LIQUID_COMMENT_CLOSE_RE = /\{%-?\s*endcomment\s*-?%\}/gi;
+const HTML_COMMENT_OPEN_RE = /<!--/g;
+const HTML_COMMENT_CLOSE_RE = /-->/g;
 
 /** Replace every non-newline character in a match with a space. */
 function blankKeepingNewlines(match: string): string {
   return match.replace(/[^\n]/g, " ");
 }
 
-function stripComments(content: string): string {
-  return content
-    .replace(LIQUID_COMMENT_RE, blankKeepingNewlines)
-    .replace(HTML_COMMENT_RE, blankKeepingNewlines);
+/**
+ * Exactly `content.replace(/OPEN[\s\S]*?CLOSE/g, blankKeepingNewlines)`, in
+ * linear time. Both regexes must carry the /g flag and match in only one way at
+ * a given position (true of the delimiters above), so:
+ *   - the regex's match starts at the first OPEN at or after the resume point
+ *     that has a CLOSE after it, and its lazy body ends at the FIRST such CLOSE;
+ *   - if the first OPEN has no CLOSE after it, no later OPEN does either, so
+ *     the regex cannot match again: stop;
+ *   - after a match, scanning resumes after the CLOSE, like the regex's
+ *     lastIndex, so every searched span is visited once.
+ */
+function blankDelimited(content: string, openRe: RegExp, closeRe: RegExp): string {
+  let out = "";
+  let copied = 0;
+  openRe.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = openRe.exec(content)) !== null) {
+    closeRe.lastIndex = open.index + open[0].length;
+    const close = closeRe.exec(content);
+    if (close === null) break;
+    const end = close.index + close[0].length;
+    out += content.slice(copied, open.index) + blankKeepingNewlines(content.slice(open.index, end));
+    copied = end;
+    openRe.lastIndex = end;
+  }
+  return out + content.slice(copied);
+}
+
+/**
+ * Blank Liquid comment blocks, then HTML comments, keeping newlines (and so
+ * the length and every line number). Exported for tests.
+ */
+export function stripComments(content: string): string {
+  const withoutLiquid = blankDelimited(content, LIQUID_COMMENT_OPEN_RE, LIQUID_COMMENT_CLOSE_RE);
+  return blankDelimited(withoutLiquid, HTML_COMMENT_OPEN_RE, HTML_COMMENT_CLOSE_RE);
 }
 
 // ---------------------------------------------------------------------------
@@ -78,7 +127,7 @@ interface DepthSignal {
   subtype: string;
   /** Detection regex, run against comment-stripped content. */
   test: RegExp;
-  /** Merchant-facing description of what this customization loses at cutover. */
+  /** Merchant-facing description of what this customization has stopped doing. */
   breaks: string;
 }
 
@@ -89,28 +138,31 @@ const DEPTH_SIGNALS: DepthSignal[] = [
   {
     subtype: "scripts",
     test: /<script[\s>]/i,
-    breaks: "custom <script> code will stop executing at checkout",
+    breaks: "custom <script> code no longer runs at checkout",
   },
   {
     subtype: "tracking",
     // Common analytics/pixel identifiers merchants hand-place in checkout.liquid.
     // Specific tokens (not a bare "ga") to keep false positives low.
     test: /\b(?:gtag|fbq|dataLayer|_gaq|ttq\.|pintrk|snaptr|google-analytics|googletagmanager|analytics\.js)\b/i,
-    breaks: "checkout tracking and analytics pixels will stop firing",
+    breaks: "checkout tracking and analytics pixels no longer fire",
   },
   {
     subtype: "snippets",
     test: /\{%-?\s*(?:render|include)\s+/i,
-    breaks: "custom snippets rendered into checkout will no longer load",
+    breaks: "custom snippets rendered into checkout no longer load",
   },
   {
     subtype: "content-injection",
     test: /content_for_\w+/i,
-    breaks: "theme-injected checkout content (content_for_*) will no longer render",
+    breaks: "theme-injected checkout content (content_for_*) no longer renders",
   },
 ];
 
-/** Subtype used when the file is non-trivial but carries no recognized signal. */
+/**
+ * Subtype used when the file is non-trivial but carries no recognized signal,
+ * or is too large to analyze (see the size guard in detectCheckoutSunset).
+ */
 const LAYOUT_SUBTYPE = "layout";
 
 // ---------------------------------------------------------------------------
@@ -124,12 +176,30 @@ const LAYOUT_SUBTYPE = "layout";
  * Returns at most ONE finding: none when `layout/checkout.liquid` is absent or
  * trivial (empty / whitespace / comments only), otherwise a single
  * CHECKOUT_SUNSET finding whose `appName` is the dominant customization subtype
- * and whose `description` explains the dated hard-block plus every specific
- * customization that will break.
+ * and whose `description` states the (past) sunset plus every specific
+ * customization that has stopped working.
+ *
+ * A checkout.liquid over MAX_SCANNABLE_FILE_BYTES is not analyzed (this runs
+ * on the main thread, and no real layout file is that large). It still gets
+ * the presence finding: the file existing is itself the defect the sunset
+ * left behind, and a file that large is certainly not an empty husk, so dropping
+ * the finding would hide a real checkout breakage. The finding is the generic
+ * "layout" one, claiming no specific customization. The scanner skips and
+ * records the same file (ScanResult.skippedFiles), and the caller logs it.
  */
 export function detectCheckoutSunset(files: ThemeFile[]): CreateFindingInput[] {
   const checkoutFile = files.find((f) => f.filename === CHECKOUT_LIQUID_PATH);
   if (!checkoutFile) return [];
+
+  // Accepted one-time transition (F1): if checkout.liquid grows past this size
+  // between scans, its specific-subtype finding becomes this generic "layout"
+  // finding, whose fingerprint differs, so the old one resolves, a new one
+  // opens, and an instance-level ignore no longer matches. Acceptable because
+  // a >1MB checkout layout is implausible in a real theme and the file's
+  // presence (the actual defect) is still reported.
+  if (checkoutFile.content.length > MAX_SCANNABLE_FILE_BYTES) {
+    return [sunsetFinding(checkoutFile, LAYOUT_SUBTYPE, 1, layoutDescription())];
+  }
 
   // Check 1 — PRESENCE with non-trivial content. A file that is empty or holds
   // only comments/whitespace is a leftover husk, not a live customization, so it
@@ -152,29 +222,41 @@ export function detectCheckoutSunset(files: ThemeFile[]): CreateFindingInput[] {
 
   const description =
     matched.length > 0
-      ? `Your theme relies on checkout.liquid to customize checkout. Shopify hard-blocks ` +
-        `checkout.liquid for Plus stores ${SUNSET_DATE}; after that this file no longer ` +
-        `renders. What breaks: ${joinClauses(matched.map((s) => s.breaks))}. Migrate these ` +
-        `customizations to Checkout Extensibility.`
-      : `Your theme still includes checkout.liquid to customize checkout. Shopify hard-blocks ` +
-        `checkout.liquid for Plus stores ${SUNSET_DATE}; after that this file no longer ` +
-        `renders. Migrate any checkout customization to Checkout Extensibility.`;
+      ? `Your theme still contains checkout.liquid customizations. ${SUNSET_FACT} ` +
+        `What stopped working: ${joinClauses(matched.map((s) => s.breaks))}. ${REBUILD_HINT}`
+      : layoutDescription();
 
-  return [
-    {
-      filename: CHECKOUT_LIQUID_PATH,
-      lineNumber,
-      codeSnippet: buildSnippet(checkoutFile.content, lineNumber),
-      findingType: FindingType.CHECKOUT_SUNSET,
-      // HIGH: the file stops rendering entirely at the hard-block; there is no
-      // higher tier than HIGH in this app.
-      severity: Severity.HIGH,
-      // Structured subtype tag (mirrors DANGLING_REFERENCE): the UI can badge the
-      // customization depth without parsing the description.
-      appName: subtype,
-      description,
-    },
-  ];
+  return [sunsetFinding(checkoutFile, subtype, lineNumber, description)];
+}
+
+/** Description for a checkout.liquid with no recognized (or analyzed) signal. */
+function layoutDescription(): string {
+  return (
+    `Your theme still contains a checkout.liquid file. ${SUNSET_FACT} ` +
+    `Any tracking, scripts, or custom content in this file has already stopped running, ` +
+    `so it is now leftover code. ${REBUILD_HINT}`
+  );
+}
+
+function sunsetFinding(
+  checkoutFile: ThemeFile,
+  subtype: string,
+  lineNumber: number,
+  description: string,
+): CreateFindingInput {
+  return {
+    filename: CHECKOUT_LIQUID_PATH,
+    lineNumber,
+    codeSnippet: buildSnippet(checkoutFile.content, lineNumber),
+    findingType: FindingType.CHECKOUT_SUNSET,
+    // HIGH: the file no longer renders at all, so whatever it carried is already
+    // broken at checkout; there is no higher tier than HIGH in this app.
+    severity: Severity.HIGH,
+    // Structured subtype tag (mirrors DANGLING_REFERENCE): the UI can badge the
+    // customization depth without parsing the description.
+    appName: subtype,
+    description,
+  };
 }
 
 /**

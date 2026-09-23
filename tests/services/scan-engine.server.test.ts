@@ -1,6 +1,10 @@
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
+import {
+  CORE_STEP_OUTPUT_BUDGET_BYTES,
+  JSONLD_PRICE_CANDIDATE_CAP,
+} from "../../app/lib/scan-limits";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import {
   isScannableFile,
@@ -38,6 +42,7 @@ import {
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
 import { REFERENCE_THEMES, DAWN_TITLE, DAWN_META_TAGS } from "../fixtures/reference-themes";
+import { timedMinMs, timedMinMsWithResult } from "../test-utils/timing";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -67,6 +72,16 @@ describe("isScannableFile", () => {
 
   it("accepts liquid files in layout/", () => {
     expect(isScannableFile("layout/theme.liquid")).toBe(true);
+  });
+
+  it("accepts liquid files in blocks/ (OS 2.0 theme blocks, gc-zfl)", () => {
+    expect(isScannableFile("blocks/group.liquid")).toBe(true);
+    // Horizon's private (nested-only) blocks are underscore-prefixed.
+    expect(isScannableFile("blocks/_header-menu.liquid")).toBe(true);
+  });
+
+  it("rejects non-liquid files in blocks/", () => {
+    expect(isScannableFile("blocks/readme.md")).toBe(false);
   });
 
   it("rejects files in assets/ directory", () => {
@@ -442,6 +457,76 @@ describe("detectGhostSnippets", () => {
 // ---------------------------------------------------------------------------
 // detectGhostSections
 // ---------------------------------------------------------------------------
+
+describe("shared comment skip covers LiquidDoc {% doc %} bodies", () => {
+  const liveRender = "{% render 'judgeme_widgets' %}";
+
+  it("does NOT flag an @example render inside a {% doc %} block", () => {
+    const file: ThemeFile = {
+      filename: "blocks/reviews.liquid",
+      content: [
+        "{% doc %}",
+        "  Renders the review widget.",
+        "  @param {string} product_id",
+        "  @example",
+        `  ${liveRender}`,
+        "{% enddoc %}",
+        '<div class="reviews"></div>',
+      ].join("\n"),
+    };
+    expect(detectGhostSnippets(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag a render inside a whitespace-controlled {%- doc -%} block", () => {
+    const file: ThemeFile = {
+      filename: "snippets/card.liquid",
+      content: ["{%- doc -%}", `  @example ${liveRender}`, "{%- enddoc -%}"].join("\n"),
+    };
+    expect(detectGhostSnippets(file)).toHaveLength(0);
+  });
+
+  it("STILL flags the same render outside the doc block", () => {
+    const file: ThemeFile = {
+      filename: "blocks/reviews.liquid",
+      content: ["{% doc %}", `  @example ${liveRender}`, "{% enddoc %}", liveRender].join("\n"),
+    };
+    const findings = detectGhostSnippets(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(4);
+    expect(findings[0].findingType).toBe(FindingType.GHOST_SNIPPET);
+  });
+
+  it("STILL flags a render when there is no doc block at all", () => {
+    expect(detectGhostSnippets({ filename: "blocks/r.liquid", content: liveRender })).toHaveLength(
+      1,
+    );
+  });
+
+  it("keeps comment-block skipping unchanged alongside doc skipping", () => {
+    const file: ThemeFile = {
+      filename: "sections/x.liquid",
+      content: [
+        "{% comment %}",
+        liveRender,
+        "{% endcomment %}",
+        "{% doc %}",
+        liveRender,
+        "{% enddoc %}",
+        liveRender,
+      ].join("\n"),
+    };
+    const findings = detectGhostSnippets(file);
+    expect(findings.map((f) => f.lineNumber)).toEqual([7]);
+  });
+
+  it("does NOT treat a {% docs %}-like tag or a doc variable as a doc block", () => {
+    const file: ThemeFile = {
+      filename: "sections/x.liquid",
+      content: ["{% docs %}", "{{ doc }}", liveRender].join("\n"),
+    };
+    expect(detectGhostSnippets(file)).toHaveLength(1);
+  });
+});
 
 describe("detectGhostSections", () => {
   it("detects {% section %} referencing a known app section name", () => {
@@ -2414,6 +2499,38 @@ describe("extractStaticProductCandidates", () => {
     // The static unsigned Product block must NOT itself produce a JSON-LD finding.
     expect(findingsOfType(result.findings, FindingType.GHOST_JSON_LD)).toHaveLength(0);
   });
+
+  it("truncates over-long identity and offer strings to 255 chars (gc-4ce step-output bound)", () => {
+    const long = "S".repeat(9000);
+    const file: ThemeFile = {
+      filename: "snippets/ld.liquid",
+      content: `<script type="application/ld+json">{"@type":"Product","url":"https://s.com/products/${"h".repeat(9000)}","sku":"${long}","offers":{"price":"${"9".repeat(9000)}","priceCurrency":"${"U".repeat(9000)}","availability":"${"I".repeat(9000)}"}}</script>`,
+    };
+    const [candidate] = extractStaticProductCandidates(file);
+    expect(candidate.handle).toHaveLength(255);
+    expect(candidate.sku).toHaveLength(255);
+    expect(candidate.staticPrice).toHaveLength(255);
+    expect(candidate.staticPriceCurrency).toHaveLength(255);
+    expect(candidate.staticAvailability).toHaveLength(255);
+    expect(candidate.sku).toBe(long.slice(0, 255));
+  });
+
+  it("keeps 500 long-SKU candidates under the step-output budget (audit static.ts shape)", () => {
+    const sku = "S".repeat(9000);
+    const files: ThemeFile[] = Array.from({ length: 6 }, (_, f) => ({
+      filename: `snippets/ld-${f}.liquid`,
+      content: Array.from(
+        { length: 100 },
+        (_, i) =>
+          `<script type="application/ld+json">{"@type":"Product","sku":"${sku}${f}-${i}","offers":{"price":"9.99"}}</script>`,
+      ).join("\n"),
+    }));
+    const candidates = files.flatMap((f) => extractStaticProductCandidates(f));
+    const bounded = candidates.slice(0, JSONLD_PRICE_CANDIDATE_CAP);
+    expect(bounded).toHaveLength(JSONLD_PRICE_CANDIDATE_CAP);
+    const bytes = Buffer.byteLength(JSON.stringify({ staticProductCandidates: bounded }), "utf8");
+    expect(bytes).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES / 3);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -3209,6 +3326,189 @@ describe("detectGhostTitle", () => {
     const result = scanThemeFiles(files);
     const titleFindings = findingsOfType(result.findings, FindingType.GHOST_TITLE);
     expect(titleFindings).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectGhostTitle: SVG <title> elements and stock gift_card title (gc-j93)
+// ---------------------------------------------------------------------------
+
+describe("detectGhostTitle — SVG titles are not document titles", () => {
+  it("does NOT flag a block-setting variable in an accessible SVG title", () => {
+    const file: ThemeFile = {
+      filename: "blocks/icon-list.liquid",
+      content: [
+        '<ul class="icon-list" {{ block.shopify_attributes }}>',
+        '  <li><svg role="img" viewBox="0 0 24 24"><title>{{ block.settings.first_label | escape }}</title><path d="M0 0h24v24H0z"/></svg></li>',
+        '  <li><svg role="img" viewBox="0 0 24 24"><title>{{ block.settings.second_label | escape }}</title><path d="M0 0h24v24H0z"/></svg></li>',
+        "</ul>",
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag an unknown variable inside an SVG title in a section", () => {
+    const file: ThemeFile = {
+      filename: "sections/icons.liquid",
+      content: '<svg role="img"><title>{{ icon_label }}</title></svg>',
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT report duplicate titles for two static SVG titles in one file", () => {
+    const file: ThemeFile = {
+      filename: "blocks/static-icons.liquid",
+      content: [
+        '<div class="trust">',
+        '  <svg role="img"><title>Free shipping</title></svg>',
+        '  <svg role="img"><title>Secure checkout</title></svg>',
+        "</div>",
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag titles in multi-line and nested SVGs", () => {
+    const file: ThemeFile = {
+      filename: "snippets/icon.liquid",
+      content: [
+        '<svg\n  role="img"\n  viewBox="0 0 24 24"\n>',
+        "  <svg><title>{{ inner_label }}</title></svg>",
+        "  <title>{{ outer_label }}</title>",
+        "</svg >",
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT count an SVG title as the first title of a duplicate pair", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<head><title>{{ page_title }}</title></head>",
+        '<body><svg role="img"><title>Cart</title></svg></body>',
+      ].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("STILL flags an unresolved document title that follows a closed SVG", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<svg><title>Logo</title></svg>", "<title>{{ seoapp_meta_title }}</title>"].join(
+        "\n",
+      ),
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(2);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("STILL flags duplicate document titles when SVG titles sit between them", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<title>{{ page_title }}</title>",
+        "<svg><title>Logo</title></svg>",
+        "<title>{{ page_title }}</title>",
+      ].join("\n"),
+    };
+    const findings = detectGhostTitle(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(3);
+    expect(findings[0].description).toContain("Duplicate title tag — also found on line 1");
+  });
+
+  it("STILL flags a title after an unclosed <svg> (malformed markup is not an SVG element)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: ["<svg>", "<title>{{ seoapp_meta_title }}</title>"].join("\n"),
+    };
+    expect(detectGhostTitle(file)).toHaveLength(1);
+  });
+
+  it("does NOT treat a custom <svg-icon> element as an SVG", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<svg-icon><title>{{ seoapp_meta_title }}</title></svg-icon>",
+    };
+    expect(detectGhostTitle(file)).toHaveLength(1);
+  });
+
+  it("does NOT flag block or section settings in a document title", () => {
+    const file: ThemeFile = {
+      filename: "sections/main-page.liquid",
+      content:
+        "<title>{{ section.settings.heading | escape }} - {{ block.settings.suffix }}</title>",
+    };
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("stays linear on a large file of many SVG titles and unclosed SVG opens", () => {
+    const content =
+      '<svg role="img"><title>{{ block.settings.x }}</title></svg>\n'.repeat(50_000) +
+      "<svg ".repeat(200_000);
+    const { result, minMs } = timedMinMsWithResult(() =>
+      detectGhostTitle({ filename: "blocks/big.liquid", content }),
+    );
+    expect(result).toHaveLength(0);
+    expect(minMs).toBeLessThan(2000);
+  });
+});
+
+describe("detectGhostTitle — stock gift_card template (gc-j93)", () => {
+  // Verbatim <title> markup from Shopify Horizon and Dawn templates/gift_card.liquid.
+  const giftCardHead = [
+    "{% layout none %}",
+    "<!doctype html>",
+    "<html>",
+    "  <head>",
+    "    {%- assign formatted_balance = gift_card.balance | money_without_trailing_zeros | strip_html -%}",
+    "",
+    "    <title>{{ 'gift_cards.issued.title' | t: value: formatted_balance, shop: shop.name }}</title>",
+    "",
+    '    <meta name="description" content="{{ \'gift_cards.issued.subtext\' | t }}">',
+    "  </head>",
+  ].join("\n");
+
+  it("does NOT flag the stock translated gift card title in templates/", () => {
+    expect(
+      detectGhostTitle({ filename: "templates/gift_card.liquid", content: giftCardHead }),
+    ).toHaveLength(0);
+  });
+
+  it("does NOT flag the same title in layout/gift_card.liquid", () => {
+    expect(
+      detectGhostTitle({ filename: "layout/gift_card.liquid", content: giftCardHead }),
+    ).toHaveLength(0);
+  });
+
+  it("does NOT flag a double-quoted translation key", () => {
+    expect(
+      detectGhostTitle({
+        filename: "layout/theme.liquid",
+        content: '<title>{{ "general.title" | translate }}</title>',
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("STILL flags an unresolved variable piped through t", () => {
+    const findings = detectGhostTitle({
+      filename: "layout/theme.liquid",
+      content: "<title>{{ seoapp_title | t }}</title>",
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("STILL flags a string literal with a filter that merely starts with t", () => {
+    expect(
+      detectGhostTitle({
+        filename: "layout/theme.liquid",
+        content: "<title>{{ 'x' | toxicapp_title }}</title>",
+      }),
+    ).toHaveLength(1);
   });
 });
 
@@ -4978,6 +5278,148 @@ describe("detectDuplicateLibraries", () => {
     const { findings } = scanThemeFiles(files);
     expect(findingsOfType(findings, FindingType.DUPLICATE_LIBRARY)).toHaveLength(1);
   });
+
+  // gc-tus.12: floating dist-tags (@latest, @next, ...) resolve at load time,
+  // so their major is unknown. Each distinct tag counts as its own version: a
+  // tag alongside a pinned major (or another tag) is two copies loaded, but the
+  // SAME tag twice is one version, like two identical pinned versions.
+  describe("floating version tags (gc-tus.12)", () => {
+    const two = (a: string, b: string): ThemeFile[] => [
+      { filename: "layout/theme.liquid", content: scriptTag(a) },
+      { filename: "sections/hero.liquid", content: scriptTag(b) },
+    ];
+    const jsd = (spec: string) => `https://cdn.jsdelivr.net/npm/${spec}/dist/x.min.js`;
+
+    it.each(["latest", "next", "beta", "canary"])(
+      "flags swiper@%s alongside a pinned swiper@8.4.5",
+      (tag) => {
+        const findings = detectDuplicateLibraries(two(jsd(`swiper@${tag}`), jsd("swiper@8.4.5")));
+        expect(findings).toHaveLength(1);
+        const [finding] = findings;
+        expect(finding.findingType).toBe(FindingType.DUPLICATE_LIBRARY);
+        // Pinned majors sort before tags, so the anchor is the v8 copy.
+        expect(finding.filename).toBe("sections/hero.liquid");
+        expect(finding.description).toContain("v8 (sections/hero.liquid)");
+        expect(finding.description).toContain(`@${tag} (layout/theme.liquid)`);
+        // Floating-tag match: a possible duplicate, not a proven conflict.
+        expect(finding.description).toContain("possible duplicate copies");
+        expect(finding.description).not.toContain("conflicting");
+        expect(finding.severity).toBe(Severity.LOW);
+      },
+    );
+
+    it("flags two different floating tags of the same package", () => {
+      const findings = detectDuplicateLibraries(two(jsd("swiper@next"), jsd("swiper@latest")));
+      expect(findings).toHaveLength(1);
+      // Tags sort alphabetically: @latest anchors.
+      expect(findings[0].filename).toBe("sections/hero.liquid");
+      expect(findings[0].description).toContain(
+        "@latest (sections/hero.liquid), @next (layout/theme.liquid)",
+      );
+    });
+
+    it("flags a tag against a pinned major on another npm CDN", () => {
+      const findings = detectDuplicateLibraries(
+        two("https://unpkg.com/swiper@latest/swiper-bundle.min.js", jsd("swiper@11.0.5")),
+      );
+      expect(findings).toHaveLength(1);
+    });
+
+    it("does NOT flag the same floating tag twice (one resolved version)", () => {
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("swiper@latest")))).toEqual([]);
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("swiper@LATEST")))).toEqual([]);
+    });
+
+    it("does NOT flag a floating tag of a DIFFERENT package", () => {
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("lodash@4.17.21")))).toEqual(
+        [],
+      );
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("swiper-extra@8")))).toEqual(
+        [],
+      );
+      expect(detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("lodash@next")))).toEqual([]);
+    });
+
+    it("treats range-like versions by their major (^1, ~2, bare 3)", () => {
+      // Same major: no conflict. (`^1` used to parse as major 5 from `%5E1`.)
+      expect(detectDuplicateLibraries(two(jsd("swiper@^1"), jsd("swiper@1.2.3")))).toEqual([]);
+      expect(detectDuplicateLibraries(two(jsd("swiper@3"), jsd("swiper@3.1.0")))).toEqual([]);
+      // Different majors: the usual major-version conflict and wording.
+      const findings = detectDuplicateLibraries(two(jsd("swiper@~2"), jsd("swiper@3")));
+      expect(findings).toHaveLength(1);
+      expect(findings[0].description).toBe(
+        'Library "swiper" is loaded at 2 conflicting major versions: v2 (layout/theme.liquid), v3 (sections/hero.liquid)',
+      );
+    });
+
+    // Owner decision 1A: when the match depends on a floating tag, whose
+    // resolved version is unknown, it is a POSSIBLE duplicate: LOW severity and
+    // "may be loaded more than once" wording instead of "conflicting versions".
+    it("reports @beta + @next as a LOW possible duplicate", () => {
+      const findings = detectDuplicateLibraries(two(jsd("alpinejs@beta"), jsd("alpinejs@next")));
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe(Severity.LOW);
+      expect(findings[0].description).toBe(
+        'Library "alpinejs" may be loaded more than once (possible duplicate copies): ' +
+          "@beta (layout/theme.liquid), @next (sections/hero.liquid). " +
+          "A floating tag like @latest resolves when the page loads, so its version is unknown",
+      );
+    });
+
+    it("reports @latest + 8.4.5 as a LOW possible duplicate", () => {
+      const findings = detectDuplicateLibraries(two(jsd("swiper@latest"), jsd("swiper@8.4.5")));
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe(Severity.LOW);
+      expect(findings[0].description).toBe(
+        'Library "swiper" may be loaded more than once (possible duplicate copies): ' +
+          "v8 (sections/hero.liquid), @latest (layout/theme.liquid). " +
+          "A floating tag like @latest resolves when the page loads, so its version is unknown",
+      );
+    });
+
+    it("does NOT treat an unknown suffix like @x as a floating tag", () => {
+      expect(detectDuplicateLibraries(two(jsd("swiper@x"), jsd("swiper@latest")))).toEqual([]);
+      expect(detectDuplicateLibraries(two(jsd("swiper@v"), jsd("swiper@8.4.5")))).toEqual([]);
+    });
+
+    it("keeps pinned-vs-pinned conflicts (8.x vs 11.x) at MEDIUM with conflict wording", () => {
+      const findings = detectDuplicateLibraries(two(jsd("swiper@8.x"), jsd("swiper@11.x")));
+      expect(findings).toHaveLength(1);
+      expect(findings[0].severity).toBe(Severity.MEDIUM);
+      expect(findings[0].description).toBe(
+        'Library "swiper" is loaded at 2 conflicting major versions: v8 (layout/theme.liquid), v11 (sections/hero.liquid)',
+      );
+    });
+
+    it("keeps a genuine pinned conflict MEDIUM even when a floating tag is also present", () => {
+      const files: ThemeFile[] = [
+        ...two(jsd("swiper@11.0.5"), jsd("swiper@latest")),
+        { filename: "snippets/x.liquid", content: scriptTag(jsd("swiper@8")) },
+      ];
+      const [finding] = detectDuplicateLibraries(files);
+      expect(finding.severity).toBe(Severity.MEDIUM);
+      expect(finding.description).toContain("conflicting versions");
+    });
+
+    it("lists every version when tags and several majors mix", () => {
+      const files: ThemeFile[] = [
+        ...two(jsd("swiper@11.0.5"), jsd("swiper@latest")),
+        { filename: "snippets/x.liquid", content: scriptTag(jsd("swiper@8")) },
+      ];
+      const findings = detectDuplicateLibraries(files);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].filename).toBe("snippets/x.liquid");
+      expect(findings[0].description).toContain(
+        "3 conflicting versions: v8 (snippets/x.liquid), v11 (layout/theme.liquid), @latest (sections/hero.liquid)",
+      );
+    });
+
+    it("keeps the benign-library suppression for floating swiper tags", () => {
+      const result = scanThemeFiles(two(jsd("swiper@latest"), jsd("swiper@8.4.5")));
+      expect(result.unknownScripts).toEqual([]);
+      expect(findingsOfType(result.findings, FindingType.DUPLICATE_LIBRARY)).toHaveLength(1);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -5196,6 +5638,134 @@ describe("detectOverlappingChatWidgets", () => {
       },
     ];
     expect(detectOverlappingChatWidgets(files)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Cross-file anchor stability: DUPLICATE_TRACKER / OVERLAPPING_CHAT_WIDGET pick
+// their anchor by folder priority (layout > sections > snippets > blocks >
+// templates, then filename, then line), never by input order. The anchor feeds
+// the scan-differ fingerprint, so an input-order anchor churns "resolved"/"new".
+// ---------------------------------------------------------------------------
+
+describe("cross-file detectors anchor deterministically, independent of input order", () => {
+  const permutations = <T>(items: T[]): T[][] =>
+    items.length <= 1
+      ? [items]
+      : items.flatMap((item, i) =>
+          permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [
+            item,
+            ...rest,
+          ]),
+        );
+
+  const trackerFiles: ThemeFile[] = [
+    { filename: "blocks/ga-block.liquid", content: "gtag('config', 'G-BBBB2222');" },
+    {
+      filename: "layout/theme.liquid",
+      content: "<head>\n  gtag('config', 'G-AAAA1111');\n</head>",
+    },
+    { filename: "snippets/tracking.liquid", content: "gtag('config', 'G-CCCC3333');" },
+    { filename: "templates/page.liquid", content: "gtag('config', 'G-DDDD4444');" },
+  ];
+
+  const chatFiles: ThemeFile[] = [
+    {
+      filename: "blocks/chat.liquid",
+      content: '<script src="https://code.tidio.co/x.js"></script>',
+    },
+    {
+      filename: "layout/theme.liquid",
+      content: '<head></head>\n<script src="https://widget.intercom.io/widget/abc"></script>',
+    },
+    {
+      filename: "sections/help.liquid",
+      content: '<script src="https://js.driftt.com/d.js"></script>',
+    },
+  ];
+
+  it("anchors DUPLICATE_TRACKER on layout/theme.liquid when a block file comes first", () => {
+    const findings = detectDuplicateTrackers(trackerFiles);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].filename).toBe("layout/theme.liquid");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("anchors OVERLAPPING_CHAT_WIDGET on layout/theme.liquid when a block file comes first", () => {
+    const findings = detectOverlappingChatWidgets(chatFiles);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].filename).toBe("layout/theme.liquid");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("DUPLICATE_TRACKER yields the same finding for every input-order permutation", () => {
+    const outputs = permutations(trackerFiles).map((order) => detectDuplicateTrackers(order));
+    for (const out of outputs) expect(out).toEqual(outputs[0]);
+    expect(outputs).toHaveLength(24);
+  });
+
+  it("OVERLAPPING_CHAT_WIDGET yields the same finding for every input-order permutation", () => {
+    const outputs = permutations(chatFiles).map((order) => detectOverlappingChatWidgets(order));
+    for (const out of outputs) expect(out).toEqual(outputs[0]);
+  });
+
+  it("prefers sections > snippets > blocks > templates when there is no layout hit", () => {
+    const files: ThemeFile[] = [
+      { filename: "templates/a.liquid", content: "fbq('init', '111111111111111');" },
+      { filename: "blocks/a.liquid", content: "fbq('init', '222222222222222');" },
+      { filename: "snippets/z.liquid", content: "fbq('init', '333333333333333');" },
+    ];
+    expect(detectDuplicateTrackers(files)[0].filename).toBe("snippets/z.liquid");
+    expect(detectDuplicateTrackers(files.slice(0, 2))[0].filename).toBe("blocks/a.liquid");
+    const withSection = [
+      ...files,
+      { filename: "sections/b.liquid", content: "fbq('init', '4444444444');" },
+    ];
+    expect(detectDuplicateTrackers(withSection)[0].filename).toBe("sections/b.liquid");
+  });
+
+  it("breaks folder ties by filename, then by lowest line", () => {
+    const files: ThemeFile[] = [
+      { filename: "snippets/b.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      {
+        filename: "snippets/a.liquid",
+        content: "x\ngtag('config', 'G-BBBB2222');\ngtag('config', 'G-CCCC3333');",
+      },
+    ];
+    const [finding] = detectDuplicateTrackers(files);
+    expect(finding.filename).toBe("snippets/a.liquid");
+    expect(finding.lineNumber).toBe(2);
+  });
+
+  it("records the best location of an ID seen in both a block and layout in the description", () => {
+    const files: ThemeFile[] = [
+      { filename: "blocks/ga.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      { filename: "layout/theme.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      { filename: "snippets/s.liquid", content: "gtag('config', 'G-BBBB2222');" },
+    ];
+    const [finding] = detectDuplicateTrackers(files);
+    expect(finding.filename).toBe("layout/theme.liquid");
+    expect(finding.description).toContain("G-AAAA1111 (layout/theme.liquid)");
+    expect(finding.description).not.toContain("blocks/ga.liquid");
+  });
+
+  it("orders same-line platforms in the description independent of input order", () => {
+    const files: ThemeFile[] = [
+      { filename: "blocks/a.liquid", content: "Tawk_API = {};" },
+      { filename: "layout/theme.liquid", content: "Tawk_API = {}; window.Intercom('boot');" },
+    ];
+    const forward = detectOverlappingChatWidgets(files);
+    const reverse = detectOverlappingChatWidgets([...files].reverse());
+    expect(forward).toEqual(reverse);
+    expect(forward[0].description).toContain(
+      "Intercom (layout/theme.liquid), Tawk.to (layout/theme.liquid)",
+    );
+  });
+
+  it("keeps the anchor stable through scanThemeFiles with blocks sorted first", () => {
+    const result = scanThemeFiles(trackerFiles);
+    const [finding] = findingsOfType(result.findings, FindingType.DUPLICATE_TRACKER);
+    expect(finding.filename).toBe("layout/theme.liquid");
   });
 });
 
@@ -5494,9 +6064,7 @@ describe("detectMaliciousScripts", () => {
       filename: "layout/theme.liquid",
       content: "//" + "a".repeat(1_000_000) + " //" + "a.".repeat(400_000),
     };
-    const start = Date.now();
-    detectMaliciousScripts(file);
-    expect(Date.now() - start).toBeLessThan(1500);
+    expect(timedMinMs(() => detectMaliciousScripts(file))).toBeLessThan(1500);
   });
 
   it("returns nothing for a clean file", () => {
@@ -5545,14 +6113,18 @@ describe("isMaliciousScanOnlyFile", () => {
     expect(isMaliciousScanOnlyFile("assets/theme.js.liquid")).toBe(true);
   });
 
-  it("accepts theme blocks, locales and ES-module assets (audit round 2)", () => {
-    expect(isMaliciousScanOnlyFile("blocks/custom-code.liquid")).toBe(true);
+  it("accepts locales and ES-module assets (audit round 2)", () => {
     expect(isMaliciousScanOnlyFile("locales/en.default.json")).toBe(true);
     expect(isMaliciousScanOnlyFile("locales/fr.json")).toBe(true);
     expect(isMaliciousScanOnlyFile("assets/app.mjs")).toBe(true);
     // Only the file types Shopify stores there as text/code.
     expect(isMaliciousScanOnlyFile("blocks/readme.md")).toBe(false);
     expect(isMaliciousScanOnlyFile("locales/en.txt")).toBe(false);
+  });
+
+  it("rejects blocks/*.liquid: theme blocks get the FULL detector suite now (gc-zfl)", () => {
+    expect(isMaliciousScanOnlyFile("blocks/custom-code.liquid")).toBe(false);
+    expect(isMaliciousScanOnlyFile("blocks/_nested-private.liquid")).toBe(false);
   });
 
   it("never overlaps isScannableFile (no file gets the malicious pass twice)", () => {
@@ -5572,7 +6144,6 @@ describe("isMaliciousScanOnlyFile", () => {
     ]) {
       expect(isMaliciousScanOnlyFile(f) && isScannableFile(f), f).toBe(false);
     }
-    expect(isScannableFile("blocks/custom-code.liquid")).toBe(false);
   });
 
   it("rejects files the full detector suite already scans (no double-run)", () => {
@@ -5580,6 +6151,7 @@ describe("isMaliciousScanOnlyFile", () => {
     expect(isMaliciousScanOnlyFile("sections/header.liquid")).toBe(false);
     expect(isMaliciousScanOnlyFile("snippets/loader.liquid")).toBe(false);
     expect(isMaliciousScanOnlyFile("layout/theme.liquid")).toBe(false);
+    expect(isMaliciousScanOnlyFile("blocks/custom-code.liquid")).toBe(false);
   });
 
   it("rejects files outside the globs (CSS, settings schema, empty)", () => {
@@ -5713,23 +6285,21 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in non-Liquid theme files (gc-3pd)
     ]);
   });
 
-  it("runs ONLY the malicious detector on blocks/*.liquid (full suite tracked in gc-zfl)", () => {
-    const { findings, unknownScripts } = scanThemeFiles([
-      {
-        filename: "blocks/x.liquid",
-        content:
-          '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=X"></script>\n<script src="https://cdn.unknown-vendor.example/w.js"></script>',
-      },
-    ]);
-    expect(findings).toHaveLength(0);
-    expect(unknownScripts).toHaveLength(0);
+  it("reports a malicious reference in blocks/*.liquid exactly once (full suite, gc-zfl)", () => {
+    const findings = maliciousFor({
+      filename: "blocks/custom-code.liquid",
+      content: `<div>\n<script src="${EVIL}"></script>\n</div>`,
+    });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(2);
   });
 
   it("stays linear on a comment-opener flood in a .liquid file (blanking path)", () => {
     const content = "{% comment %}".repeat(40_000) + `\n<script src="${EVIL}"></script>`;
-    const start = performance.now();
-    const findings = detectMaliciousScripts({ filename: "blocks/x.liquid", content });
-    expect(performance.now() - start).toBeLessThan(1500);
+    const { result: findings, minMs } = timedMinMsWithResult(() =>
+      detectMaliciousScripts({ filename: "blocks/x.liquid", content }),
+    );
+    expect(minMs).toBeLessThan(1500);
     expect(findings).toHaveLength(1);
   });
 
@@ -5777,21 +6347,23 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in non-Liquid theme files (gc-3pd)
     }
     files.push({ filename: "assets/zzz.js", content: `s.src="${EVIL}";` });
 
-    const start = performance.now();
-    const { findings } = scanThemeFiles(files);
-    const elapsed = performance.now() - start;
+    const { result, minMs } = timedMinMsWithResult(() => scanThemeFiles(files));
 
-    expect(findingsOfType(findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(1);
-    expect(elapsed).toBeLessThan(10_000);
-  });
+    expect(findingsOfType(result.findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(1);
+    // Min of two runs discards a transient stall under full-suite parallelism;
+    // the extended timeout gives room for two runs of a scan that is itself
+    // well under a second in isolation.
+    expect(minMs).toBeLessThan(10_000);
+  }, 30_000);
 
   it("stays linear on a Liquid comment-opener flood with no closer (no ReDoS)", () => {
     // `{% comment %}` x ~40k with no `{% endcomment %}`: a lazy whole-file
     // comment regex rescans to EOF from every opener (quadratic, ~minutes).
     const content = "{% comment %}".repeat(40_000) + `\n<script src="${EVIL}"></script>`;
-    const start = performance.now();
-    const findings = detectMaliciousScripts({ filename: "assets/app.js", content });
-    expect(performance.now() - start).toBeLessThan(1500);
+    const { result: findings, minMs } = timedMinMsWithResult(() =>
+      detectMaliciousScripts({ filename: "assets/app.js", content }),
+    );
+    expect(minMs).toBeLessThan(1500);
     // Unterminated comment never closes, so the live line after it still counts.
     expect(findings).toHaveLength(1);
   });
@@ -5902,11 +6474,16 @@ describe("detectMaliciousScripts — {% raw %} blocks", () => {
       "{%" + " ".repeat(500_000) + "raw",
     ];
     for (const flood of floods) {
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "sections/x.liquid", content: `${flood}\n${EVIL_TAG}` });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() =>
+          detectMaliciousScripts({
+            filename: "sections/x.liquid",
+            content: `${flood}\n${EVIL_TAG}`,
+          }),
+        ),
+      ).toBeLessThan(1500);
     }
-  });
+  }, 30_000);
 });
 
 describe("detectMaliciousScripts — snippet and decoding", () => {
@@ -5980,22 +6557,163 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
       String.raw`\u`.repeat(500_000) + "x",
       String.raw`\u002`.repeat(300_000),
     ]) {
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "assets/app.js", content });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
     }
-  });
+  }, 30_000);
 
   it("stays linear on a 1MB backslash run and an entity flood (no ReDoS in the decode)", () => {
     for (const content of [
       "\\".repeat(1_000_000) + "x",
       "&#0".repeat(300_000) + "&#x0".repeat(300_000),
     ]) {
-      const start = performance.now();
-      detectMaliciousScripts({ filename: "assets/app.js", content });
-      expect(performance.now() - start).toBeLessThan(1500);
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
+    }
+  }, 30_000);
+
+  it("decodes JS hex-escaped slashes (\\x2f, uppercase F, doubled backslash)", () => {
+    for (const url of [
+      String.raw`https:\x2f\x2fshopify.jsdeliver.cloud\x2fconfig.js`,
+      String.raw`https:\x2F\x2Fshopify.jsdeliver.cloud\x2Fconfig.js`,
+      String.raw`https:\\x2f\\x2fshopify.jsdeliver.cloud/config.js`,
+    ]) {
+      const findings = detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "${url}";`,
+      });
+      expect(findings, url).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
     }
   });
+
+  it("decodes JS code-point-escaped slashes (\\u{2f}, with/without leading zeros, uppercase F, doubled backslash)", () => {
+    for (const url of [
+      String.raw`https:\u{2f}\u{2f}shopify.jsdeliver.cloud\u{2f}config.js`,
+      String.raw`https:\u{00002f}\u{00002f}shopify.jsdeliver.cloud\u{00002f}config.js`,
+      String.raw`https:\u{2F}\u{2F}shopify.jsdeliver.cloud\u{2F}config.js`,
+      String.raw`https:\\u{2f}\\u{2f}shopify.jsdeliver.cloud/config.js`,
+    ]) {
+      const findings = detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "${url}";`,
+      });
+      expect(findings, url).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    }
+  });
+
+  it("does not decode invalid, unterminated, or unrelated hex/code-point escapes into a false slash match", () => {
+    const scanUrl = (url: string) =>
+      detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "${url}";`,
+      });
+    // \x2g is not a valid hex escape ('g' isn't hex) — must not decode as a slash.
+    expect(scanUrl(String.raw`https:\x2g\x2gshopify.jsdeliver.cloud\x2gconfig.js`)).toHaveLength(0);
+    // \u{2g} is not valid hex — must not decode.
+    expect(
+      scanUrl(String.raw`https:\u{2g}\u{2g}shopify.jsdeliver.cloud\u{2g}config.js`),
+    ).toHaveLength(0);
+    // \u{2f with no closing brace is unterminated — must not decode.
+    expect(scanUrl(String.raw`https:\u{2fshopify.jsdeliver.cloud\u{2fconfig.js`)).toHaveLength(0);
+    // \x2e is a real, DIFFERENT escape (decodes to '.' in real JS) — must not be
+    // mistaken for a slash, which would create a false "//" and a false match.
+    expect(scanUrl(String.raw`https:\x2e\x2eshopify.jsdeliver.cloud\x2econfig.js`)).toHaveLength(0);
+  });
+
+  it("stays linear on 1MB floods of \\x, \\u{, an unterminated long zero run inside \\u{, and alternating forms (no ReDoS in the decode)", () => {
+    for (const content of [
+      String.raw`\x`.repeat(500_000),
+      String.raw`\u{`.repeat(333_334),
+      String.raw`\u{` + "0".repeat(1_000_000),
+      (String.raw`\x2f` + String.raw`\u{2f}`).repeat(100_000),
+    ]) {
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
+    }
+  }, 30_000);
+
+  it("decodes code-point slash escapes with any number of leading zeros (5 and 50), as real JS does", () => {
+    for (const zeros of [5, 50]) {
+      const slash = String.raw`\u{` + "0".repeat(zeros) + "2f}";
+      // Sanity: real JS evaluates this escape to "/".
+      expect(new Function(`return "${slash}";`)()).toBe("/");
+      const findings = detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "https:${slash}${slash}shopify.jsdeliver.cloud${slash}config.js";`,
+      });
+      expect(findings, `${zeros} zeros`).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    }
+  });
+
+  // Legacy octal escapes (sloppy-mode inline JS): a backslash then 57 or 057 is
+  // "/". Per the spec a 4-7 lead digit takes ONE more octal digit and a 0-3
+  // lead takes up to TWO, so "backslash 5 7 7" is "/7" and "backslash 0 5 7 7"
+  // is "/7" as well; only the lead digits decide, never a trailing digit.
+  const evalSloppy = (literal: string): string => new Function(`return "${literal}";`)() as string;
+  const scanOctal = (url: string) =>
+    detectMaliciousScripts({ filename: "assets/app.js", content: `var u = "${url}";` });
+
+  it("decodes legacy octal slash escapes (backslash 57 and backslash 057)", () => {
+    expect(evalSloppy(String.raw`\57`)).toBe("/");
+    expect(evalSloppy(String.raw`\057`)).toBe("/");
+    for (const url of [
+      String.raw`https:\57\57shopify.jsdeliver.cloud\57config.js`,
+      String.raw`https:\057\057shopify.jsdeliver.cloud\057config.js`,
+      String.raw`https:\\57\\57shopify.jsdeliver.cloud/config.js`,
+    ]) {
+      const findings = scanOctal(url);
+      expect(findings, url).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    }
+  });
+
+  it("decodes an octal slash followed by another digit, as real JS does (backslash 577 is slash then 7)", () => {
+    const url = String.raw`https:\57\5770.jsdeliver.cloud/x.js`;
+    expect(evalSloppy(url)).toBe("https://70.jsdeliver.cloud/x.js");
+    expect(scanOctal(url)).toHaveLength(1);
+    const url3 = String.raw`https:\057\05770.jsdeliver.cloud/x.js`;
+    expect(evalSloppy(url3)).toBe("https://70.jsdeliver.cloud/x.js");
+    expect(scanOctal(url3)).toHaveLength(1);
+  });
+
+  it("does not decode non-slash octal escapes into a false slash match", () => {
+    for (const url of [
+      String.raw`https:\58\58jsdeliver.cloud/x.js`, // \5 then "8"
+      String.raw`https:\0057\0057jsdeliver.cloud/x.js`, // \005 then "7"
+      String.raw`https:\157\157jsdeliver.cloud/x.js`, // "o"
+      String.raw`https:\5\5jsdeliver.cloud/x.js`,
+    ]) {
+      expect(evalSloppy(url), url).not.toContain("//");
+      expect(scanOctal(url), url).toHaveLength(0);
+    }
+  });
+
+  it("stays linear on 5MB floods of backslash-0, backslash-5 and backslash-05", () => {
+    for (const unit of [String.raw`\0`, String.raw`\5`, String.raw`\05`, String.raw`\\0`]) {
+      const content = unit.repeat(Math.ceil(5_000_000 / unit.length));
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
+    }
+  }, 30_000);
+
+  it("stays linear on a 5MB unterminated zero run and repeated zero-run starts inside \\u{", () => {
+    for (const content of [
+      String.raw`\u{` + "0".repeat(5_000_000),
+      (String.raw`\u{` + "0".repeat(1000)).repeat(5000),
+      String.raw`\u{00000`.repeat(625_000),
+    ]) {
+      expect(
+        timedMinMs(() => detectMaliciousScripts({ filename: "assets/app.js", content })),
+      ).toBeLessThan(1500);
+    }
+  }, 30_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -6035,20 +6753,20 @@ describe("scanThemeFiles — MALICIOUS_SCRIPT in oversized scannable files (gc-q
   it("stays fast on a 5MB padded file (single-line and multi-line padding)", () => {
     const singleLine = EVIL_TAG + "x".repeat(5_000_000);
     const multiLine = ("// " + "a".repeat(80) + "\n").repeat(60_000) + EVIL_TAG;
-    const start = performance.now();
-    const { findings, skippedFiles } = scanThemeFiles([
-      { filename: "sections/a.liquid", content: singleLine },
-      { filename: "sections/b.liquid", content: multiLine },
-    ]);
-    const elapsed = performance.now() - start;
+    const { result, minMs } = timedMinMsWithResult(() =>
+      scanThemeFiles([
+        { filename: "sections/a.liquid", content: singleLine },
+        { filename: "sections/b.liquid", content: multiLine },
+      ]),
+    );
 
-    expect((skippedFiles ?? []).map((f) => f.filename)).toEqual([
+    expect((result.skippedFiles ?? []).map((f) => f.filename)).toEqual([
       "sections/a.liquid",
       "sections/b.liquid",
     ]);
-    expect(findingsOfType(findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(2);
-    expect(elapsed).toBeLessThan(3_000);
-  });
+    expect(findingsOfType(result.findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(2);
+    expect(minMs).toBeLessThan(3_000);
+  }, 20_000);
 });
 
 // ---------------------------------------------------------------------------
@@ -6205,12 +6923,210 @@ describe("blankLiquidComments — Liquid-faithful token walk", () => {
       commentWithRaw: fill("{% comment %}{% raw %}"),
       newlineMix: fill("{% comment %}\n{% raw %}\nx\n{% endcomment %}\n"),
     };
-    for (const [name, flood] of Object.entries(floods)) {
+    const timed = (flood: string) => {
       const start = performance.now();
       const out = blankLiquidComments(flood);
-      const elapsed = performance.now() - start;
-      expect(out.length, name).toBe(flood.length);
-      expect(elapsed, name).toBeLessThan(2000);
+      return { out, elapsed: performance.now() - start };
+    };
+    for (const [name, flood] of Object.entries(floods)) {
+      const first = timed(flood);
+      const second = timed(flood);
+      expect(first.out.length, name).toBe(flood.length);
+      // Min of two runs discards a transient stall under full-suite
+      // parallelism. A quadratic regression on 5 MB costs minutes, so 5 s
+      // still catches it while staying well under the 30 s worker timeout.
+      expect(Math.min(first.elapsed, second.elapsed), name).toBeLessThan(5000);
     }
+  }, 120_000);
+});
+
+// ---------------------------------------------------------------------------
+// OS 2.0 / Horizon theme blocks get the full per-file suite (gc-zfl)
+// ---------------------------------------------------------------------------
+
+describe("scanThemeFiles — theme blocks (blocks/*.liquid, gc-zfl)", () => {
+  // Abridged from Shopify's stock Horizon theme blocks. First-party theme code:
+  // every one of these must scan clean (zero findings, zero unknown resources).
+  const STOCK_HORIZON_BLOCKS: ThemeFile[] = [
+    {
+      filename: "blocks/_marquee.liquid",
+      content: [
+        "<script",
+        "  src=\"{{ 'marquee.js' | asset_url }}\"",
+        '  type="module"',
+        '  fetchpriority="low"',
+        "></script>",
+        "",
+        "{% assign block_settings = block.settings %}",
+        "{% if block.settings.background_color != blank %}",
+        "  {% render 'contrast-override', background_color: block.settings.background_color, section_id: block.id %}",
+        "{% endif %}",
+        "<marquee-component class=\"spacing-style\">{% content_for 'blocks' %}</marquee-component>",
+        "{% schema %}",
+        '{ "name": "t:names.marquee", "blocks": [{ "type": "@theme" }] }',
+        "{% endschema %}",
+      ].join("\n"),
+    },
+    {
+      filename: "blocks/group.liquid",
+      content: [
+        '<div class="group-block" {{ block.shopify_attributes }}>',
+        "  {% content_for 'blocks' %}",
+        "</div>",
+        "{% schema %}",
+        '{ "name": "t:names.group", "blocks": [{ "type": "@theme" }, { "type": "@app" }] }',
+        "{% endschema %}",
+      ].join("\n"),
+    },
+    {
+      filename: "blocks/review.liquid",
+      content: [
+        "{% liquid",
+        "  assign product = closest.product",
+        "  assign rating = product.metafields.reviews.rating.value.rating",
+        "  if request.visual_preview_mode and product == blank",
+        "    assign product = collections.all.products.first",
+        "  endif",
+        "-%}",
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><use href="#star"></use></svg>',
+        "{% stylesheet %}.rating-wrapper { display: flex; }{% endstylesheet %}",
+        "{% schema %}",
+        '{ "name": "t:names.review", "settings": [] }',
+        "{% endschema %}",
+      ].join("\n"),
+    },
+  ];
+
+  it("reports zero findings on stock Horizon-style blocks (first-party theme code)", () => {
+    const { findings, unknownScripts, skippedFiles } = scanThemeFiles(STOCK_HORIZON_BLOCKS);
+    expect(findings).toEqual([]);
+    expect(unknownScripts).toEqual([]);
+    expect(skippedFiles).toEqual([]);
   });
+
+  it("detects a leftover app script (Klaviyo) inside a block as GHOST_SCRIPT", () => {
+    const { findings } = scanThemeFiles([
+      {
+        filename: "blocks/newsletter.liquid",
+        content:
+          '<div>\n<script async src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=X"></script>\n</div>',
+      },
+    ]);
+    const ghost = findingsOfType(findings, FindingType.GHOST_SCRIPT);
+    expect(ghost).toHaveLength(1);
+    expect(ghost[0]).toMatchObject({
+      filename: "blocks/newsletter.liquid",
+      lineNumber: 2,
+      appName: "Klaviyo",
+    });
+  });
+
+  it("detects a render of a known app snippet (Judge.me) inside a block as GHOST_SNIPPET", () => {
+    const { findings } = scanThemeFiles([
+      {
+        filename: "blocks/product-reviews.liquid",
+        content:
+          "<div class=\"reviews\">\n  {% render 'judgeme_widgets', widget_type: 'judgeme_preview_badge' %}\n</div>",
+      },
+    ]);
+    const ghost = findingsOfType(findings, FindingType.GHOST_SNIPPET);
+    expect(ghost).toHaveLength(1);
+    expect(ghost[0]).toMatchObject({
+      filename: "blocks/product-reviews.liquid",
+      lineNumber: 2,
+      appName: "Judge.me",
+    });
+  });
+
+  it("collects an unknown third-party script in a block (same as sections)", () => {
+    const { unknownScripts, thirdPartyDomains } = scanThemeFiles([
+      {
+        filename: "blocks/widget.liquid",
+        content: '<script src="https://cdn.unknown-vendor.example/w.js"></script>',
+      },
+    ]);
+    expect(unknownScripts.map((u) => [u.filename, u.url])).toEqual([
+      ["blocks/widget.liquid", "https://cdn.unknown-vendor.example/w.js"],
+    ]);
+    expect((thirdPartyDomains ?? []).map((d) => d.domain)).toContain("cdn.unknown-vendor.example");
+  });
+
+  it("does not orphan an app-named snippet rendered only from a block", () => {
+    const { findings } = scanThemeFiles([
+      { filename: "snippets/judgeme_widgets.liquid", content: '<div class="jdgm-widget"></div>' },
+      { filename: "blocks/reviews.liquid", content: "{% render 'judgeme_widgets' %}" },
+    ]);
+    expect(findingsOfType(findings, FindingType.ORPHAN_ASSET)).toHaveLength(0);
+  });
+
+  it("never reports an unreferenced block file itself as ORPHAN_ASSET", () => {
+    // Blocks are placed via JSON templates / content_for, never render — an
+    // unreferenced block (even an app-named one) is not an orphan signal.
+    const { findings } = scanThemeFiles([
+      { filename: "blocks/klaviyo-form.liquid", content: "<div>form</div>" },
+    ]);
+    expect(findingsOfType(findings, FindingType.ORPHAN_ASSET)).toHaveLength(0);
+  });
+
+  it("counts block content in cross-file detectors (chat widgets split across a block)", () => {
+    const { findings } = scanThemeFiles([
+      {
+        filename: "layout/theme.liquid",
+        content: '<script src="https://widget.intercom.io/widget/abc123"></script>',
+      },
+      {
+        filename: "blocks/chat.liquid",
+        content: '<script src="https://embed.tawk.to/abc/default"></script>',
+      },
+    ]);
+    expect(findingsOfType(findings, FindingType.OVERLAPPING_CHAT_WIDGET)).toHaveLength(1);
+  });
+
+  it("size-skips an oversized block but still runs the malicious pass exactly once", () => {
+    const EVIL = "https://shopify.jsdeliver.cloud/config.js";
+    const filler = "<div>x</div>\n".repeat(Math.ceil((MAX_SCANNABLE_FILE_BYTES + 10) / 13));
+    const content = `<script src="${EVIL}"></script>\n` + filler;
+    const { findings, skippedFiles } = scanThemeFiles([
+      { filename: "blocks/huge.liquid", content },
+    ]);
+    expect((skippedFiles ?? []).map((f) => f.filename)).toEqual(["blocks/huge.liquid"]);
+    expect(findings.map((f) => f.findingType)).toEqual([FindingType.MALICIOUS_SCRIPT]);
+  });
+
+  it("stays fast on a Horizon-sized theme (120 blocks + 60 sections + 80 snippets)", () => {
+    const blockBody = STOCK_HORIZON_BLOCKS.map((b) => b.content).join("\n");
+    const files: ThemeFile[] = [];
+    // ~20 KB each — Horizon's largest block is ~43 KB, median a few KB.
+    for (let i = 0; i < 120; i++) {
+      files.push({ filename: `blocks/b-${i}.liquid`, content: blockBody.repeat(20) });
+    }
+    for (let i = 0; i < 60; i++) {
+      files.push({ filename: `sections/s-${i}.liquid`, content: blockBody.repeat(20) });
+    }
+    for (let i = 0; i < 80; i++) {
+      files.push({ filename: `snippets/n-${i}.liquid`, content: blockBody.repeat(10) });
+    }
+    files.push({
+      filename: "blocks/zzz.liquid",
+      content: '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js"></script>',
+    });
+
+    const timedScan = () => {
+      const start = performance.now();
+      const result = scanThemeFiles(files);
+      return { result, elapsed: performance.now() - start };
+    };
+    const first = timedScan();
+    const second = timedScan();
+
+    expect(findingsOfType(first.result.findings, FindingType.GHOST_SCRIPT)).toHaveLength(1);
+    expect(second.result.findings).toEqual(first.result.findings);
+    // Catches pathological regressions (seconds PER FILE, which would push a
+    // real theme into the 30 s WORKER_TIMEOUT_MS), not ms drift: this runs in
+    // well under a second in isolation, but a single-shot 3 s budget flaked
+    // under full-suite parallelism. The min of two runs discards a transient
+    // stall; 10 s is still far below what a per-file regression would cost
+    // across 261 files.
+    expect(Math.min(first.elapsed, second.elapsed)).toBeLessThan(10_000);
+  }, 60_000);
 });

@@ -55,8 +55,74 @@ describe("parseLibrary", () => {
     expect(parseLibrary("https://unpkg.com/swiper/dist/swiper.js")).toBeNull();
   });
 
-  it("returns null when the version has no leading digit (e.g. @latest)", () => {
-    expect(parseLibrary("https://cdn.jsdelivr.net/npm/swiper@latest/swiper.js")).toBeNull();
+  // gc-tus.12: floating dist-tags have no major; they are returned as a tag so
+  // the duplicate detector can still count the copy.
+  it.each(["latest", "next", "beta", "canary", "rc", "alpha"])(
+    "returns a floating tag with an unknown major for @%s",
+    (tag) => {
+      expect(parseLibrary(`https://cdn.jsdelivr.net/npm/swiper@${tag}/swiper.js`)).toEqual({
+        name: "swiper",
+        major: null,
+        tag,
+      });
+      expect(parseLibrary(`https://unpkg.com/swiper@${tag}/swiper.js`)).toEqual({
+        name: "swiper",
+        major: null,
+        tag,
+      });
+    },
+  );
+
+  it("lowercases a floating tag and handles scoped packages and a bare tag", () => {
+    expect(parseLibrary("https://cdn.jsdelivr.net/npm/swiper@LATEST/x.js")).toEqual({
+      name: "swiper",
+      major: null,
+      tag: "latest",
+    });
+    expect(parseLibrary("https://unpkg.com/@scope/pkg@next/dist/x.js")).toEqual({
+      name: "@scope/pkg",
+      major: null,
+      tag: "next",
+    });
+    expect(parseLibrary("https://unpkg.com/swiper@latest")).toEqual({
+      name: "swiper",
+      major: null,
+      tag: "latest",
+    });
+  });
+
+  it("extracts the major from range-like versions (^1, ~2, >=1, 1.x, bare 3)", () => {
+    // The URL parser percent-encodes `^` and `>` in the path (`%5E1`, `%3E=1`);
+    // the major must come from the decoded version, not the escape's digits.
+    const major = (v: string) => parseLibrary(`https://cdn.jsdelivr.net/npm/swiper@${v}/x.js`);
+    expect(major("^1")).toEqual({ name: "swiper", major: 1 });
+    expect(major("%5E1")).toEqual({ name: "swiper", major: 1 });
+    expect(major("~2")).toEqual({ name: "swiper", major: 2 });
+    expect(major(">=1")).toEqual({ name: "swiper", major: 1 });
+    expect(major("1.x")).toEqual({ name: "swiper", major: 1 });
+    expect(major("3")).toEqual({ name: "swiper", major: 3 });
+    expect(major("8.0.0-beta.1")).toEqual({ name: "swiper", major: 8 });
+  });
+
+  // Owner decision 1A: only the conventional dist-tags count. Anything else
+  // without a digit (@x, @v, @main, custom tags, typos) is unparseable, as it
+  // was before gc-tus.12, so it can never mint a duplicate finding.
+  it.each(["x", "v", "main", "stable", "lts", "dev", "latest.", "late-st", "foo"])(
+    "returns null for an unknown non-numeric version @%s",
+    (v) => {
+      expect(parseLibrary(`https://cdn.jsdelivr.net/npm/swiper@${v}/x.js`)).toBeNull();
+      expect(parseLibrary(`https://unpkg.com/swiper@${v}/x.js`)).toBeNull();
+    },
+  );
+
+  it("returns null for a version that is neither numeric nor a tag", () => {
+    expect(parseLibrary("https://cdn.jsdelivr.net/npm/swiper@*/x.js")).toBeNull();
+    expect(parseLibrary("https://cdn.jsdelivr.net/npm/swiper@%ZZ/x.js")).toBeNull();
+  });
+
+  it("never treats a cdnjs non-numeric segment as a floating tag", () => {
+    expect(parseLibrary("https://cdnjs.cloudflare.com/ajax/libs/jquery/latest/x.js")).toBeNull();
+    expect(parseLibrary("https://cdnjs.cloudflare.com/ajax/libs/jquery/jquery.min.js")).toBeNull();
   });
 
   it("returns null for a jsdelivr non-/npm path (e.g. /gh/)", () => {
@@ -101,6 +167,14 @@ describe("isBenignLibrary (behavior preserved after parseLibrary refactor)", () 
 
   it("returns false for a malformed URL", () => {
     expect(isBenignLibrary("not a url")).toBe(false);
+  });
+
+  it("is unchanged for floating and range-like versions (gc-tus.12)", () => {
+    for (const v of ["latest", "next", "beta", "canary", "^1", "~2", "3"]) {
+      expect(isBenignLibrary(`https://cdn.jsdelivr.net/npm/swiper@${v}/x.js`)).toBe(true);
+      expect(isBenignLibrary(`https://unpkg.com/swiper@${v}/x.js`)).toBe(true);
+      expect(isBenignLibrary(`https://cdn.jsdelivr.net/npm/evil-tracker@${v}/x.js`)).toBe(false);
+    }
   });
 });
 

@@ -1,6 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import { buildSnippet, lineNumberAtOffset } from "../../app/services/scan-engine.server";
+import {
+  buildSnippet,
+  detectGhostPreconnect,
+  detectGhostSnippets,
+  lineNumberAtOffset,
+} from "../../app/services/scan-engine.server";
 
 // Regression guard for the per-file line-index cache (gc-06e.8). lineNumberAtOffset
 // (binary search) and buildSnippet (cached split) replaced O(offset)/O(N) implementations;
@@ -84,5 +89,41 @@ describe("single-entry cache stays correct across content switches", () => {
     expect(lineNumberAtOffset(original, 8)).toBe(refLine(original, 8));
     expect(lineNumberAtOffset(rebuilt, 8)).toBe(refLine(rebuilt, 8));
     expect(buildSnippet(rebuilt, 2)).toBe(refSnippet(rebuilt, 2));
+  });
+});
+
+// The comment-skip set is cached per file content (same single-entry pattern as
+// the line index). detectGhostPreconnect ADDS its conditional lines to the set it
+// gets back, so every call must hand out a fresh copy or those additions would
+// leak into the next comment-aware detector on the same file.
+describe("comment-skip-lines cache", () => {
+  const conditionalSnippet = [
+    '{% if a %}<link rel="preconnect" href="https://static.klaviyo.com">{% endif %}',
+    "{% if a %}{% render 'judgeme_widgets' %}{% endif %}",
+  ].join("\n");
+
+  it("is not polluted by detectGhostPreconnect's conditional-line additions", () => {
+    const file = { filename: "layout/theme.liquid", content: conditionalSnippet };
+    const before = detectGhostSnippets(file);
+    expect(before.map((f) => f.lineNumber)).toEqual([2]);
+
+    detectGhostPreconnect(file);
+
+    expect(detectGhostSnippets(file)).toEqual(before);
+    // A byte-identical copy (a value-equal cache hit) sees the same result.
+    const copy = { ...file, content: conditionalSnippet.split("\n").join("\n") };
+    expect(detectGhostSnippets(copy)).toEqual(before);
+  });
+
+  it("rebuilds when the content switches between commented and live", () => {
+    const live = "{% render 'judgeme_widgets' %}";
+    const commented = `{% comment %}\n${live}\n{% endcomment %}`;
+    const liveFile = { filename: "layout/theme.liquid", content: live };
+    const commentedFile = { filename: "layout/theme.liquid", content: commented };
+
+    expect(detectGhostSnippets(liveFile)).toHaveLength(1);
+    expect(detectGhostSnippets(commentedFile)).toHaveLength(0);
+    expect(detectGhostSnippets(liveFile)).toHaveLength(1);
+    expect(detectGhostSnippets(commentedFile)).toHaveLength(0);
   });
 });

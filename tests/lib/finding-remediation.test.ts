@@ -152,6 +152,18 @@ describe("getFindingRemediation — accuracy", () => {
     expect(blurb).not.toContain("this script line");
   });
 
+  it("describes the checkout.liquid sunset as past, for every store, for CHECKOUT_SUNSET (gc-oam)", () => {
+    const blurb = getFindingRemediation("CHECKOUT_SUNSET");
+    expect(blurb).toContain("no longer renders");
+    expect(blurb).toContain("August 28, 2025");
+    expect(blurb).toContain("Checkout Extensibility");
+    expect(blurb).not.toMatch(/2026/);
+    expect(blurb).not.toMatch(/hard-block/i);
+    expect(blurb).not.toMatch(/\bwill\b/i);
+    expect(blurb).not.toMatch(/cutover/i);
+    expect(blurb).not.toMatch(/\bPlus\b/);
+  });
+
   it("steers settings_data.json fixes to the theme editor and minified JS to a surgical removal", () => {
     const blurb = getFindingRemediation("MALICIOUS_SCRIPT").toLowerCase();
     expect(blurb).toContain("settings_data.json");

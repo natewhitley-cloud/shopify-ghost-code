@@ -73,6 +73,7 @@ import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import { matchMaliciousDomain } from "../data/malicious-domains.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
+import { MAX_FINDINGS_PER_FILE_PER_TYPE } from "../lib/scan-limits";
 import { hostnameFromUrl } from "../lib/url.server";
 import type { CreateFindingInput } from "../models/finding.server";
 import type { ThirdPartyDomainRef } from "../models/scan-domain.server";
@@ -165,6 +166,12 @@ export type ScanResult = {
   // Optional for backward compatibility with ScanResult literals in tests;
   // scanThemeFiles always populates it (possibly empty).
   thirdPartyDomains?: ThirdPartyDomainRef[];
+  // Per finding type: how many files hit MAX_FINDINGS_PER_FILE_PER_TYPE this
+  // scan (gc-ypk), so a cap hit is observable (scan_signal + logger.warn), never
+  // silent. Telemetry ONLY: it is NOT a skipped category. Empty on real themes.
+  // Optional for backward compatibility with ScanResult literals in tests;
+  // scanThemeFiles always populates it (possibly empty).
+  findingCapHits?: Partial<Record<FindingType, number>>;
 };
 
 // ---------------------------------------------------------------------------
@@ -175,8 +182,8 @@ export type ScanResult = {
  * Maximum size (in characters) of a single scannable file that the per-file
  * regex detectors will process (gc-06e.2).
  *
- * Real Shopify theme Liquid files (templates/, sections/, snippets/, layout/)
- * are well under this: Dawn's largest Liquid file is ~70 KB, and even
+ * Real Shopify theme Liquid files (templates/, sections/, snippets/, layout/,
+ * blocks/) are well under this: Dawn's largest Liquid file is ~70 KB, and even
  * page-builder apps rarely emit a single Liquid file past a few hundred KB.
  * 1 MB is a deliberately generous ceiling — large enough that no legitimate
  * theme asset is ever dropped, small enough to bound worst-case detector cost
@@ -184,6 +191,40 @@ export type ScanResult = {
  * per-file detectors and reported in ScanResult.skippedFiles (no silent drop).
  */
 export const MAX_SCANNABLE_FILE_BYTES = 1_000_000;
+
+/**
+ * Lowercase one UTF-16 code unit for comparison against a lowercase ASCII
+ * character, or -1 if it can never equal one. Besides A-Z, the only code unit
+ * whose toLowerCase() is a single ASCII char is U+212A KELVIN SIGN ("k");
+ * tests/services/scan-engine-casefold.test.ts pins that exhaustively.
+ */
+function lowerForAscii(code: number): number {
+  if (code < 128) return code >= 65 && code <= 90 ? code + 32 : code;
+  return code === 0x212a ? 107 : -1;
+}
+
+/**
+ * `haystack.toLowerCase().indexOf(lowerNeedle, from)`, but the result is an
+ * offset in `haystack` itself (gc-8jd). toLowerCase is not length-preserving:
+ * U+0130 (İ) becomes "i" + U+0307 (the only such code point), so offsets taken
+ * from the lowercased copy drift one unit per İ and slicing the original with
+ * them drops or mis-cuts every later match. Comparing unit by unit keeps the
+ * offsets exact and matches the old result on any input without an İ (İ
+ * itself never equals an ASCII char, just as "i̇" never matched before).
+ *
+ * `lowerNeedle` must be lowercase ASCII (tag prefixes, domain names). Linear
+ * in haystack length times needle length; needles here are short constants.
+ */
+export function indexOfIgnoreCase(haystack: string, lowerNeedle: string, from = 0): number {
+  const last = haystack.length - lowerNeedle.length;
+  outer: for (let i = Math.max(0, from); i <= last; i++) {
+    for (let j = 0; j < lowerNeedle.length; j++) {
+      if (lowerForAscii(haystack.charCodeAt(i + j)) !== lowerNeedle.charCodeAt(j)) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
 
 /**
  * Extract complete HTML tags (`<link ...>`, `<meta ...>`, `<script ...>`) from
@@ -195,9 +236,10 @@ export const MAX_SCANNABLE_FILE_BYTES = 1_000_000;
  * engine to re-scan a tag's interior from every `<tag` start position — O(n^2),
  * effectively a process hang, on pathological input such as thousands of
  * unterminated `<link` fragments. Locating each tag with indexOf and slicing to
- * the next `>` is O(n) and never backtracks; detectors then apply their
- * (unchanged) attribute regexes to the short, bounded tag text, where the same
- * patterns cannot blow up.
+ * the next `>` is O(n) and never backtracks. Detectors then match their
+ * attribute patterns against each tag with execTagPattern, which is linear
+ * even when one tag is huge (running the regexes on the tag text was not:
+ * gc-t7x).
  *
  * Semantics match the previous whole-content regexes exactly:
  *   - The prefix match is case-insensitive and NOT word-boundary anchored, so a
@@ -209,14 +251,27 @@ export const MAX_SCANNABLE_FILE_BYTES = 1_000_000;
  *     matches and their offsets. (The one theoretical divergence — a raw `>`
  *     inside a quoted attribute value — does not occur in real theme markup and
  *     is not something the old `[^>]` structural quantifiers tolerated either.)
+ *
+ * Exported for tests (the native/fallback search paths must agree).
  */
-function extractTags(content: string, tagPrefix: string): Array<{ tag: string; offset: number }> {
+export function extractTags(
+  content: string,
+  tagPrefix: string,
+): Array<{ tag: string; offset: number }> {
   const tags: Array<{ tag: string; offset: number }> = [];
-  const haystack = content.toLowerCase();
   const needle = tagPrefix.toLowerCase();
+  // Fast path: when lowercasing preserves the length (only U+0130 changes it),
+  // every offset in the lowercased copy is an offset in `content`, so native
+  // indexOf is exact. It also agrees with indexOfIgnoreCase on the one non-A-Z
+  // unit that lowercases to ASCII (U+212A Kelvin -> "k"). Otherwise fall back
+  // to the unit-wise scan (gc-8jd).
+  const lower = content.toLowerCase();
+  const lengthPreserved = lower.length === content.length;
   let from = 0;
   for (;;) {
-    const start = haystack.indexOf(needle, from);
+    const start = lengthPreserved
+      ? lower.indexOf(needle, from)
+      : indexOfIgnoreCase(content, needle, from);
     if (start === -1) break;
     const close = content.indexOf(">", start + needle.length);
     if (close === -1) break; // unterminated tag — no complete match possible
@@ -224,6 +279,210 @@ function extractTags(content: string, tagPrefix: string): Array<{ tag: string; o
     from = close + 1;
   }
   return tags;
+}
+
+// Attribute sub-pattern pieces shared by the tag patterns below.
+const ATTR_EQ = "\\s*=\\s*";
+const QUOTED_VALUE = `["']([^"']+)["']`;
+const SRC_URL_ATTR = `src${ATTR_EQ}["']((https?:)?\\/\\/[^"']+)["']`;
+const HREF_URL_ATTR = `href${ATTR_EQ}["']((https?:)?\\/\\/[^"']+)["']`;
+
+/** A gap between tag-pattern parts: `[^>]+`, `[^>]*`, or (first gap only) `\s+[^>]*`. */
+type TagGap = "[^>]+" | "[^>]*" | "\\s+[^>]*";
+
+/**
+ * One alternative of a tag attribute pattern, i.e. the regex
+ *   tag + steps.map((s) => s.gap + s.attr).join("") + "[^>]*>"
+ * with flags "gi". Every `attr` must match in exactly one way (one length) at a
+ * given position and never span a `>`, which holds for the `name\s*=\s*"..."`
+ * shaped attribute sub-patterns used here.
+ */
+interface TagPatternAlt {
+  tag: "<link" | "<meta" | "<script";
+  steps: Array<{ gap: TagGap; attr: string }>;
+}
+
+/** Compiled form of a tag attribute pattern (alternatives tried in order). */
+interface TagPattern {
+  alts: Array<{
+    /** First position the alternative can start at: the tag (plus whitespace). */
+    start: RegExp;
+    tagLength: number;
+    steps: Array<{ gapMin: number; find: RegExp; at: RegExp; groups: number }>;
+  }>;
+  source: string;
+}
+
+function tagPattern(alts: TagPatternAlt[]): TagPattern {
+  // execTagPattern relies on every alternative starting at the same position.
+  const opening = (alt: TagPatternAlt) => alt.tag + alt.steps[0].gap;
+  if (alts.some((alt) => opening(alt) !== opening(alts[0]))) {
+    throw new Error("tagPattern alternatives must share their tag and first gap");
+  }
+  return {
+    alts: alts.map((alt) => ({
+      start: new RegExp(alt.steps[0].gap === "\\s+[^>]*" ? `${alt.tag}(?=\\s)` : alt.tag, "i"),
+      tagLength: alt.tag.length,
+      steps: alt.steps.map(({ gap, attr }) => ({
+        gapMin: gap === "[^>]*" ? 0 : 1,
+        find: new RegExp(attr, "gi"),
+        at: new RegExp(attr, "iy"),
+        groups: new RegExp(`${attr}|`).exec("")!.length - 1,
+      })),
+    })),
+    source: alts
+      .map((alt) => alt.tag + alt.steps.map((s) => s.gap + s.attr).join("") + "[^>]*>")
+      .join("|"),
+  };
+}
+
+/**
+ * Exactly what `new RegExp(pattern.source, "gi").exec(tag)` returns for a tag
+ * from extractTags, in linear time (gc-t7x). Such a tag's only `>` is its last
+ * char, so every `[^>]` gap spans anything inside it. The regex backtracks
+ * quadratically there: from every inner `<link` start, and for each candidate
+ * position of an early attribute it rescans for the later ones (a single
+ * 1 MB `<link rel="stylesheet" ...` tag took minutes).
+ *
+ * Why this evaluation is identical:
+ *   - Greedy gaps make the regex place each attribute at its RIGHTMOST
+ *     workable position, working back from the end: the last attribute at its
+ *     last match (ending before the `>`), each earlier one at its last match
+ *     that ends early enough for the next attribute after the gap's minimum.
+ *     Those positions do not depend on where the match starts.
+ *   - A later start only raises the lowest allowed first-attribute position,
+ *     so if the earliest start (the tag itself, or for `\s+` the first
+ *     `<meta` + whitespace) fails, every start fails; if it succeeds, the
+ *     regex matches there, running to the final `>`.
+ *   - Alternatives share their opening, so the first one that succeeds wins.
+ * Each attribute's candidates come from one forward scan (restarting one char
+ * after each hit so overlapping candidates are seen), so the work is linear.
+ */
+export function execTagPattern(tag: string, pattern: TagPattern): RegExpExecArray | null {
+  const groups: Array<string | undefined> = [];
+  let matched: { start: number; captures: Array<string | undefined> } | null = null;
+
+  for (const alt of pattern.alts) {
+    const altGroups = alt.steps.reduce((n, s) => n + s.groups, 0);
+    if (matched !== null) {
+      groups.push(...new Array<undefined>(altGroups));
+      continue;
+    }
+
+    // Earliest start of this alternative.
+    let start = alt.start.exec(tag)?.index ?? -1;
+
+    // Place attributes right to left at their rightmost workable positions.
+    const positions: number[] = [];
+    let maxEnd = tag.length - 1; // the last attribute must end before the `>`
+    for (let i = alt.steps.length - 1; i >= 0 && start !== -1; i--) {
+      const step = alt.steps[i];
+      let best = -1;
+      step.find.lastIndex = 0;
+      let hit: RegExpExecArray | null;
+      while ((hit = step.find.exec(tag)) !== null) {
+        if (hit.index + hit[0].length <= maxEnd) best = hit.index;
+        step.find.lastIndex = hit.index + 1;
+      }
+      if (best === -1) {
+        start = -1;
+        break;
+      }
+      positions[i] = best;
+      maxEnd = best - step.gapMin;
+    }
+    const firstAllowed = start + alt.tagLength + alt.steps[0].gapMin;
+    if (start === -1 || positions[0] < firstAllowed) {
+      groups.push(...new Array<undefined>(altGroups));
+      continue;
+    }
+
+    const captures: Array<string | undefined> = [];
+    alt.steps.forEach((step, i) => {
+      step.at.lastIndex = positions[i];
+      captures.push(...step.at.exec(tag)!.slice(1));
+    });
+    matched = { start, captures };
+    groups.push(...captures);
+  }
+
+  if (matched === null) return null;
+  return Object.assign([tag.slice(matched.start), ...groups] as string[], {
+    index: matched.start,
+    input: tag,
+    groups: undefined,
+  }) as RegExpExecArray;
+}
+
+/**
+ * Linear replacement for a whole-content `/OPEN[^>]*>([\s\S]*?)CLOSE/gi` scan
+ * (gc-t7x), e.g. `<title ...>inner</title>`. Returns each block's start offset
+ * and inner text, in the same order and with the same values as that regex.
+ *
+ * The regex is quadratic when blocks are unterminated: from EVERY `OPEN` start
+ * it rescans to EOF looking for `>` or `CLOSE` (1 MB of `<title>` took ~40s,
+ * past the scan worker timeout). Here each attempt is resolved with forward
+ * searches that never revisit text:
+ *   - `openRe` must match its prefix in exactly one way (a literal such as
+ *     `<title`, or tokens separated by `\s` runs that are followed by a
+ *     non-space literal), so the regex's `[^>]*>` can only end at the first `>`
+ *     after the prefix and its lazy body only at the first `CLOSE` after that.
+ *   - If that `>` or `CLOSE` is missing, every later `OPEN` fails too (its `>`
+ *     is the same one or later, and so is its `CLOSE`), so the regex could not
+ *     match again: stop.
+ *   - After a match, scanning resumes after `CLOSE`, exactly like the regex's
+ *     lastIndex, so the searched spans are disjoint and the total work is O(n).
+ * Both regexes must carry the /g flag (lastIndex is set here before each use).
+ */
+function extractTagBlocks(
+  content: string,
+  openRe: RegExp,
+  closeRe: RegExp,
+): Array<{ offset: number; inner: string }> {
+  const blocks: Array<{ offset: number; inner: string }> = [];
+  openRe.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = openRe.exec(content)) !== null) {
+    const gt = content.indexOf(">", open.index + open[0].length);
+    if (gt === -1) break;
+    closeRe.lastIndex = gt + 1;
+    const close = closeRe.exec(content);
+    if (close === null) break;
+    blocks.push({ offset: open.index, inner: content.slice(gt + 1, close.index) });
+    openRe.lastIndex = close.index + close[0].length;
+  }
+  return blocks;
+}
+
+/**
+ * The [start, end) span of every Liquid output token in `text`: the matches of
+ * /\{\{[^}]*\}\}/g, found in linear time (gc-t7x). That regex rescans to the
+ * next `}` from every `{{`, so a `{{{{...` flood with no `}}` is quadratic.
+ * Every `{{` before a given `}` shares that `}` as its first one, so when the
+ * `}` is not followed by another `}` they all fail together and the scan skips
+ * past it; with no `}` left, nothing later can match.
+ */
+function liquidOutputSpans(text: string): Array<[number, number]> {
+  const spans: Array<[number, number]> = [];
+  let from = 0;
+  for (;;) {
+    const open = text.indexOf("{{", from);
+    if (open === -1) break;
+    const close = text.indexOf("}", open + 2);
+    if (close === -1) break;
+    if (text[close + 1] === "}") {
+      spans.push([open, close + 2]);
+      from = close + 2;
+    } else {
+      from = close + 1;
+    }
+  }
+  return spans;
+}
+
+/** Every Liquid output token in `text`, identical to `text.match(/\{\{[^}]*\}\}/g) ?? []`. */
+function liquidOutputTokens(text: string): string[] {
+  return liquidOutputSpans(text).map(([start, end]) => text.slice(start, end));
 }
 
 // ---------------------------------------------------------------------------
@@ -235,12 +494,14 @@ function extractTags(content: string, tagPrefix: string): Array<{ tag: string; o
  * Skips assets (binary/JS/CSS files), config, and locales — these are handled
  * differently or deferred to later tickets.
  *
- * Scannable directories: templates/, sections/, snippets/, layout/
+ * Scannable directories: templates/, sections/, snippets/, layout/, blocks/
+ * (OS 2.0 / Horizon theme blocks render on the storefront like sections, so app
+ * leftovers pasted into them get the full detector suite — gc-zfl).
  */
 export function isScannableFile(filename: string): boolean {
   if (!filename.endsWith(".liquid")) return false;
 
-  const SCANNABLE_PREFIXES = ["templates/", "sections/", "snippets/", "layout/"];
+  const SCANNABLE_PREFIXES = ["templates/", "sections/", "snippets/", "layout/", "blocks/"];
   return SCANNABLE_PREFIXES.some((prefix) => filename.startsWith(prefix));
 }
 
@@ -253,22 +514,20 @@ export function isScannableFile(filename: string): boolean {
  *   - config/settings_data.json — theme settings can carry raw HTML/URLs.
  *   - assets/*.js, assets/*.mjs, assets/*.liquid (e.g. theme.js.liquid) — injected
  *     loaders are commonly appended to asset JS.
- *   - blocks/*.liquid — OS 2.0 theme blocks render on the storefront. They get
- *     only this pass for now; full-detector coverage is tracked as gc-zfl.
  *   - locales/*.json — `*_html` keys render unescaped, so they can carry markup.
  *
  * Deliberately excluded: CSS (cannot execute script; a CSS `url()` to a listed
  * host is not the skimmer/loader threat this list tracks),
- * config/settings_schema.json (developer-owned schema). Disjoint from
- * isScannableFile by construction (blocks/ is not a scannable prefix), so no
- * file is scanned twice.
+ * config/settings_schema.json (developer-owned schema), and blocks/*.liquid
+ * (full suite via isScannableFile since gc-zfl). Disjoint from isScannableFile
+ * by construction (the only .liquid files admitted here live under assets/,
+ * which is not a scannable prefix), so no file is scanned twice.
  */
 export function isMaliciousScanOnlyFile(filename: string): boolean {
   if (filename === "config/settings_data.json") return true;
   if (filename.startsWith("assets/")) {
     return filename.endsWith(".js") || filename.endsWith(".mjs") || filename.endsWith(".liquid");
   }
-  if (filename.startsWith("blocks/")) return filename.endsWith(".liquid");
   if (filename.startsWith("locales/")) return filename.endsWith(".json");
   return (
     (filename.startsWith("templates/") || filename.startsWith("sections/")) &&
@@ -298,6 +557,10 @@ function lineIndexFor(content: string): { lineStarts: number[]; splitLines: stri
     }
     _cachedLineStarts = starts;
   }
+  // Adopt this string object: after a by-value hit (a byte-identical file, e.g.
+  // the same block shipped under several names) later calls with it take V8's
+  // same-object fast path instead of a full character compare on every call.
+  _cachedContent = content;
   return { lineStarts: _cachedLineStarts, splitLines: _cachedSplitLines };
 }
 
@@ -316,13 +579,42 @@ export function buildSnippet(content: string, lineNumber: number): string {
   const { splitLines } = lineIndexFor(content);
   const start = Math.max(0, lineNumber - 2); // 0-indexed, one line before
   const end = Math.min(splitLines.length, lineNumber + 1); // one line after
-  return splitLines.slice(start, end).join("\n").slice(0, 300);
+  // Same result as `splitLines.slice(start, end).join("\n").slice(0, 300)`, but
+  // copies at most 300 chars per line: joining a long (minified, up to 1 MB)
+  // line for every finding on it made many findings on one line quadratic
+  // (gc-t7x). Truncating each piece to the cap cannot change the first 300
+  // chars of the concatenation.
+  const picked = splitLines.slice(start, end);
+  let snippet = "";
+  for (let i = 0; i < picked.length && snippet.length < 300; i++) {
+    snippet += (i > 0 ? "\n" : "") + picked[i].slice(0, 300);
+  }
+  return snippet.slice(0, 300);
 }
 
 /**
- * Returns a Set of 1-based line numbers that fall inside Liquid comment blocks.
- * Includes the {% comment %} opener line, all body lines, and the {% endcomment %}
- * closing line, so callers can uniformly skip any line in the set.
+ * Per-line memo of identifyAppFromCode over a line's buildSnippet (gc-ypk).
+ * buildSnippet depends only on the line, so every tag on one line gets the same
+ * attribution; memoizing keeps a flood of tags packed on one long line from
+ * paying the (dominant) attribution cost once per tag. Create one per file.
+ */
+function lineAppNamer(): (lineNumber: number, codeSnippet: string) => string | undefined {
+  const byLine = new Map<number, string | undefined>();
+  return (lineNumber, codeSnippet) => {
+    if (!byLine.has(lineNumber)) {
+      byLine.set(lineNumber, identifyAppFromCode(codeSnippet) ?? undefined);
+    }
+    return byLine.get(lineNumber);
+  };
+}
+
+/**
+ * Returns a Set of 1-based line numbers that fall inside Liquid comment blocks
+ * or LiquidDoc `{% doc %}` blocks. Includes the opener line, all body lines, and
+ * the closing line, so callers can uniformly skip any line in the set. Doc
+ * bodies (e.g. an `@example {% render 'x' %}`) never render, so they get the
+ * same line-granular treatment; the two states are tracked independently so
+ * the comment semantics below are unchanged.
  *
  * Approximation: skipping is line-granular, so when live code shares a line with
  * {% endcomment %} the whole line is skipped. Code BEFORE the endcomment on that
@@ -338,12 +630,31 @@ export function buildSnippet(content: string, lineNumber: number): string {
  * therefore stays inline rather than being unified here.
  */
 function buildCommentSkipLines(content: string): Set<number> {
+  if (content !== _commentSkipContent) {
+    _commentSkipLines = computeCommentSkipLines(content);
+  }
+  // Adopt this string object for the same-object fast path (see lineIndexFor).
+  _commentSkipContent = content;
+  // A fresh copy every call: detectGhostPreconnect add()s its conditional lines
+  // to the returned set, which must not leak into other detectors.
+  return new Set(_commentSkipLines);
+}
+
+// Single-entry cache for buildCommentSkipLines, same pattern as lineIndexFor:
+// ~11 comment-aware detectors ask for the set of the same file in a row.
+let _commentSkipContent: string | null = null;
+let _commentSkipLines: Set<number> = new Set();
+
+function computeCommentSkipLines(content: string): Set<number> {
   const skipLines = new Set<number>();
   let insideComment = false;
+  let insideDoc = false;
   for (const { lineNumber, text } of lines(content)) {
     if (/\{%-?\s*comment\s*-?%\}/.test(text)) insideComment = true;
-    if (insideComment) skipLines.add(lineNumber);
+    if (/\{%-?\s*doc\s*-?%\}/.test(text)) insideDoc = true;
+    if (insideComment || insideDoc) skipLines.add(lineNumber);
     if (/\{%-?\s*endcomment\s*-?%\}/.test(text)) insideComment = false;
+    if (/\{%-?\s*enddoc\s*-?%\}/.test(text)) insideDoc = false;
   }
   return skipLines;
 }
@@ -423,23 +734,24 @@ function buildAlwaysFalseConditionalSkipLines(content: string): Set<number> {
 // Detector: GHOST_SCRIPT
 // ---------------------------------------------------------------------------
 
-// Matches <script src="https://..." or <script src='//...'> (external URLs)
-// IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0 before
-// each use to avoid stale state between calls. See each detector function below.
-const SCRIPT_SRC_RE = /<script[^>]+src\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*>/gi;
+// Matches <script src="https://..." or <script src='//...'> (external URLs):
+// /<script[^>]+src\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*>/gi, evaluated on
+// one extracted tag by execTagPattern (linear, gc-t7x).
+const SCRIPT_SRC_TAG = tagPattern([
+  { tag: "<script", steps: [{ gap: "[^>]+", attr: SRC_URL_ATTR }] },
+]);
 
 export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Isolate each <script ...> tag first (linear, non-backtracking), then apply
-  // SCRIPT_SRC_RE to the bounded tag text. Multi-line tags like:
+  // SCRIPT_SRC_TAG to the bounded tag text. Multi-line tags like:
   //   <script
   //     src="https://static.klaviyo.com/...">
   // are still matched because a tag spans to its closing `>`. lineNumberAtOffset
   // maps the match position back to a line.
   for (const { tag, offset } of extractTags(file.content, "<script")) {
-    SCRIPT_SRC_RE.lastIndex = 0;
-    const match = SCRIPT_SRC_RE.exec(tag);
+    const match = execTagPattern(tag, SCRIPT_SRC_TAG);
     if (!match) continue;
 
     const url = match[1];
@@ -478,21 +790,35 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
 
 // Matches <link ... rel="stylesheet" ... href="https://...">
 // Order of attributes may vary — we capture the href value separately.
-const LINK_STYLESHEET_RE =
-  /<link[^>]+rel\s*=\s*["']stylesheet["'][^>]*href\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["']((https?:)?\/\/[^"']+)["'][^>]*rel\s*=\s*["']stylesheet["'][^>]*>/gi;
+// Groups 1/2 when rel comes first, 3/4 when href comes first (see tagPattern).
+const LINK_STYLESHEET_TAG = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["']stylesheet["']` },
+      { gap: "[^>]*", attr: HREF_URL_ATTR },
+    ],
+  },
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: HREF_URL_ATTR },
+      { gap: "[^>]*", attr: `rel${ATTR_EQ}["']stylesheet["']` },
+    ],
+  },
+]);
 
 export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Isolate each <link ...> tag first (linear, non-backtracking), then apply
-  // LINK_STYLESHEET_RE to the bounded tag text. Multi-line tags like:
+  // LINK_STYLESHEET_TAG to the bounded tag text. Multi-line tags like:
   //   <link
   //     rel="stylesheet"
   //     href="https://cdn.judge.me/...">
   // are still matched. lineNumberAtOffset maps the match position back to a line.
   for (const { tag, offset } of extractTags(file.content, "<link")) {
-    LINK_STYLESHEET_RE.lastIndex = 0;
-    const match = LINK_STYLESHEET_RE.exec(tag);
+    const match = execTagPattern(tag, LINK_STYLESHEET_TAG);
     if (!match) continue;
 
     // Group 1 captures href when rel comes first; group 3 when href comes first.
@@ -667,10 +993,26 @@ export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
 
 // Matches <link ... rel="alternate" ... hreflang="xx" ... href="..." ...>
 // Handles both attribute orderings: hreflang before href and href before hreflang.
-const HREFLANG_RE_1 =
-  /<link[^>]+rel\s*=\s*["']alternate["'][^>]+hreflang\s*=\s*["']([^"']+)["'][^>]*href\s*=\s*["']([^"']+)["'][^>]*>/gi;
-const HREFLANG_RE_2 =
-  /<link[^>]+rel\s*=\s*["']alternate["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*hreflang\s*=\s*["']([^"']+)["'][^>]*>/gi;
+const HREFLANG_TAG_1 = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["']alternate["']` },
+      { gap: "[^>]+", attr: `hreflang${ATTR_EQ}${QUOTED_VALUE}` },
+      { gap: "[^>]*", attr: `href${ATTR_EQ}${QUOTED_VALUE}` },
+    ],
+  },
+]);
+const HREFLANG_TAG_2 = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["']alternate["']` },
+      { gap: "[^>]+", attr: `href${ATTR_EQ}${QUOTED_VALUE}` },
+      { gap: "[^>]*", attr: `hreflang${ATTR_EQ}${QUOTED_VALUE}` },
+    ],
+  },
+]);
 
 export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
@@ -684,8 +1026,7 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
 
   // Pattern 1: hreflang before href — groups: [1]=lang, [2]=href
   for (const { tag, offset } of linkTags) {
-    HREFLANG_RE_1.lastIndex = 0;
-    const match = HREFLANG_RE_1.exec(tag);
+    const match = execTagPattern(tag, HREFLANG_TAG_1);
     if (!match) continue;
 
     const lang = match[1];
@@ -710,8 +1051,7 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
 
   // Pattern 2: href before hreflang — groups: [1]=href, [2]=lang
   for (const { tag, offset } of linkTags) {
-    HREFLANG_RE_2.lastIndex = 0;
-    const match = HREFLANG_RE_2.exec(tag);
+    const match = execTagPattern(tag, HREFLANG_TAG_2);
     if (!match) continue;
 
     const href = match[1];
@@ -735,7 +1075,7 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
   }
 
   // Deduplicate findings from overlapping regex patterns.
-  // A tag that matches both HREFLANG_RE_1 and HREFLANG_RE_2 (different attribute
+  // A tag that matches both HREFLANG_TAG_1 and HREFLANG_TAG_2 (different attribute
   // orderings) would otherwise produce two findings for the same location.
   const seen = new Set<string>();
   return findings.filter((f) => {
@@ -752,7 +1092,12 @@ export function detectGhostHrefLang(file: ThemeFile): CreateFindingInput[] {
 
 // Matches <meta ... name="X" ...> or <meta ... property="X" ...>
 // Captures the name/property attribute value regardless of attribute order.
-const META_TAG_RE = /<meta\s+[^>]*(?:name|property)\s*=\s*["']([^"']+)["'][^>]*>/gi;
+const META_TAG = tagPattern([
+  {
+    tag: "<meta",
+    steps: [{ gap: "\\s+[^>]*", attr: `(?:name|property)${ATTR_EQ}${QUOTED_VALUE}` }],
+  },
+]);
 
 /**
  * OG / structured-data properties that the Open Graph spec explicitly allows to
@@ -788,7 +1133,10 @@ const REPEATABLE_META_PROPS = new Set([
   "book:tag",
 ]);
 
-export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
+export function detectDuplicateMetaTags(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Build a map of (name/property value) → array of occurrences.
@@ -823,10 +1171,9 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
     if (conditionalDepth > 0 || LIQUID_CONDITIONAL_RE.test(text)) continue;
 
     // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
-    // META_TAG_RE to the bounded tag text.
+    // META_TAG to the bounded tag text.
     for (const { tag } of extractTags(text, "<meta")) {
-      META_TAG_RE.lastIndex = 0;
-      const match = META_TAG_RE.exec(tag);
+      const match = execTagPattern(tag, META_TAG);
       if (!match) continue;
 
       const attrValue = match[1].toLowerCase();
@@ -841,30 +1188,54 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
     }
   }
 
-  // Emit findings for the 2nd+ occurrence of each duplicated meta tag
+  // The 2nd+ occurrence of each duplicated meta tag, in emission order (grouped
+  // by tag). Cheap: the per-finding cost (snippet + attribution) comes below.
+  const duplicates: Array<{
+    attrValue: string;
+    firstLine: number;
+    entry: { lineNumber: number; text: string };
+  }> = [];
   for (const [attrValue, entries] of occurrences) {
-    if (entries.length < 2) continue;
-
-    const firstLine = entries[0].lineNumber;
-
     for (let i = 1; i < entries.length; i++) {
-      const entry = entries[i];
-      const codeSnippet = buildSnippet(file.content, entry.lineNumber);
-      const severity = classifySeverity(FindingType.DUPLICATE_META, codeSnippet);
-
-      // Attempt app attribution from the full meta tag text — optional
-      const appName = identifyAppFromCode(entry.text) ?? null;
-
-      findings.push({
-        filename: file.filename,
-        lineNumber: entry.lineNumber,
-        codeSnippet,
-        findingType: FindingType.DUPLICATE_META,
-        severity,
-        appName: appName ?? undefined,
-        description: `Duplicate meta tag '${attrValue}' — also found on line ${firstLine}`,
-      });
+      duplicates.push({ attrValue, firstLine: entries[0].lineNumber, entry: entries[i] });
     }
+  }
+
+  // Early exit (gc-ypk): emission is grouped by tag, not line order, so when
+  // over `limit` pick the first `limit` duplicates by line (stable sort, the
+  // caller's cap order) and only build findings for those, in emission order.
+  let selected = duplicates;
+  if (duplicates.length > limit) {
+    const keep = new Set(
+      [...duplicates].sort((a, b) => a.entry.lineNumber - b.entry.lineNumber).slice(0, limit),
+    );
+    selected = duplicates.filter((d) => keep.has(d));
+  }
+
+  // Emit findings for the selected duplicates
+  const appNameByLine = new Map<number, string | null>();
+  for (const { attrValue, firstLine, entry } of selected) {
+    const codeSnippet = buildSnippet(file.content, entry.lineNumber);
+    const severity = classifySeverity(FindingType.DUPLICATE_META, codeSnippet);
+
+    // Attempt app attribution from the full meta tag text — optional.
+    // Memoized per line: entry.text is the whole line, and re-scanning a long
+    // line for every duplicate on it was quadratic (gc-t7x).
+    let appName = appNameByLine.get(entry.lineNumber);
+    if (appName === undefined) {
+      appName = identifyAppFromCode(entry.text) ?? null;
+      appNameByLine.set(entry.lineNumber, appName);
+    }
+
+    findings.push({
+      filename: file.filename,
+      lineNumber: entry.lineNumber,
+      codeSnippet,
+      findingType: FindingType.DUPLICATE_META,
+      severity,
+      appName: appName ?? undefined,
+      description: `Duplicate meta tag '${attrValue}' — also found on line ${firstLine}`,
+    });
   }
 
   return findings;
@@ -874,9 +1245,18 @@ export function detectDuplicateMetaTags(file: ThemeFile): CreateFindingInput[] {
 // Detector: GHOST_JSON_LD
 // ---------------------------------------------------------------------------
 
-// Multiline regex to extract <script type="application/ld+json">...</script> blocks.
-const JSON_LD_BLOCK_RE =
-  /<script\s+type\s*=\s*["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+// `<script type="application/ld+json">...</script>` delimiters for
+// extractTagBlocks (linear; the old whole-content
+// /<script\s+type...["'][^>]*>([\s\S]*?)<\/script>/gi scan was quadratic on
+// unterminated blocks, gc-t7x). The open prefix can only match one way (each
+// \s run is followed by a fixed non-space literal), as extractTagBlocks needs.
+const JSON_LD_OPEN_RE = /<script\s+type\s*=\s*["']application\/ld\+json["']/gi;
+const JSON_LD_CLOSE_RE = /<\/script>/gi;
+
+/** Every `<script type="application/ld+json">` block: start offset + raw content. */
+function extractJsonLdBlocks(content: string): Array<{ offset: number; inner: string }> {
+  return extractTagBlocks(content, JSON_LD_OPEN_RE, JSON_LD_CLOSE_RE);
+}
 
 // Regex to detect app-only @type values that Shopify themes never inject natively.
 const APP_ONLY_TYPE_RE =
@@ -910,17 +1290,12 @@ export function lineNumberAtOffset(content: string, offset: number): number {
 export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  let match: RegExpExecArray | null;
-  JSON_LD_BLOCK_RE.lastIndex = 0;
-
-  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
-    const blockContent = match[1];
-
+  for (const { offset, inner: blockContent } of extractJsonLdBlocks(file.content)) {
     // Skip blocks containing Liquid template tags — these are native theme
     // blocks rendered by the theme engine, not orphaned static injections.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset);
     const codeSnippet = buildSnippet(file.content, lineNumber);
 
     // Try app attribution via signature patterns first.
@@ -990,12 +1365,7 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
 export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
-  let match: RegExpExecArray | null;
-  JSON_LD_BLOCK_RE.lastIndex = 0;
-
-  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
-    const blockContent = match[1];
-
+  for (const { offset, inner: blockContent } of extractJsonLdBlocks(file.content)) {
     // Liquid-templated blocks are rendered server-side; their raw form isn't
     // meant to be valid JSON. Same predicate as detectGhostJsonLd.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
@@ -1010,7 +1380,7 @@ export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
       // Falls through to emit the finding below.
     }
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset);
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.JSON_LD_INVALID, codeSnippet);
 
@@ -1060,19 +1430,32 @@ const LIQUID_INNER_TAG_NAME_RE = /-?[ \t\n\v\f\r]*(\w+)/y;
 const LIQUID_LITERAL_BLOCKS = new Set(["raw", "javascript", "schema", "stylesheet"]);
 
 // Slash encodings decoded before URL matching: any run of backslashes before `/`
-// (JSON `\/`, double-escaped `\\/`, `\\\/`) or before the JS/JSON unicode
-// escape `u002f` (`\u002f`, `\u002F`, `\\u002f`), and HTML entities `&#47;` /
-// `&#x2F;` (optional leading zeros, optional `;`), plus the named entity `&sol;`
-// (HTML matches named references case-sensitively and this one only with its
-// `;`). No `i` flag, and no `(?-i:)` modifier group (a SyntaxError before
-// Node 23): the case-insensitive parts use explicit classes, which also accept
-// an uppercase `U`, which is not a real escape: that can only fail toward
-// reporting. The `(?<!\\)` lookbehind lets a backslash run start a match only at
-// its first char, so a huge run that is not followed by `/` or `u002f` is
-// scanned once, not once per backslash (linear); a `\u` flood fails after a
-// constant lookahead per position.
+// (JSON `\/`, double-escaped `\\/`, `\\\/`); before the JS/JSON unicode
+// escape `u002f` (`\u002f`, `\u002F`, `\\u002f`); before the JS hex escape
+// `x2f` (`\x2f`, `\x2F`, `\\x2f`); before the legacy octal escape `57` or
+// `057` (sloppy-mode JS; no lookahead, because real JS reads at most two digits
+// after a 4-7 lead and three after a 0-3 lead, so `\577` is "/7" and `\0057`
+// is not a slash: the leading `0?` admits exactly one zero); or before the JS
+// code-point escape `u{2f}`
+// (`\u{2f}`, `\u{002f}` or any number of leading zeros, `\u{2F}`,
+// `\\u{2f}`); or HTML entities `&#47;` / `&#x2F;`
+// (optional leading zeros, optional `;`), plus the named entity `&sol;` (HTML
+// matches named references case-sensitively and this one only with its `;`).
+// No `i` flag, and no `(?-i:)` modifier group (a SyntaxError before Node 23):
+// the case-insensitive parts use explicit classes, which also accept an
+// uppercase `U` or `X`, neither of which is a real escape (real JS leaves
+// `\U002f` / `\X2f` as literal text): that can only fail toward reporting, so
+// it is accepted deliberately rather than special-cased away. The `(?<!\\)`
+// lookbehind lets a backslash run start a match only at its first char, so a
+// huge run that is not followed by a decodable form is scanned once, not once
+// per backslash (linear); a `\x` or `\u` flood fails after a constant
+// lookahead per position. The code-point escape's leading-zero run is an
+// unbounded `0*` because real JS accepts any number of leading zeros there
+// (`\u{000002f}` is "/"). That stays linear: the same lookbehind means an
+// attempt can only start at the first backslash of a run, so each zero run is
+// walked by at most one attempt (plus its backtrack), even when unterminated.
 const ENCODED_SLASH_RE =
-  /(?<!\\)\\+(?:\/|[uU]002[fF])|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
+  /(?<!\\)\\+(?:\/|[uU]002[fF]|[xX]2[fF]|0?57|[uU]\{0*2[fF]\})|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.
@@ -1287,7 +1670,7 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
       const original = originalLines[i];
       // Search the blanked (same length as original) but undecoded line so the
       // snippet centres on the first LIVE occurrence, not one in a comment.
-      const at = rawText.toLowerCase().indexOf(hit.domain);
+      const at = indexOfIgnoreCase(rawText, hit.domain);
       const from = Math.max(0, at - MALICIOUS_SNIPPET_LEAD);
       findings.push({
         filename: file.filename,
@@ -1492,12 +1875,7 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
   // arrays, and array @types), grouped by normalized @type across the whole file.
   const nodesByType = new Map<string, JsonLdNode[]>();
 
-  JSON_LD_BLOCK_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
-    const blockContent = match[1];
-
+  for (const { offset, inner: blockContent } of extractJsonLdBlocks(file.content)) {
     // Skip blocks containing Liquid template tags — these are dynamically
     // rendered and may produce different output at runtime.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
@@ -1510,7 +1888,7 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
       continue; // Malformed JSON — skip gracefully
     }
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset);
 
     for (const node of extractJsonLdNodes(parsed)) {
       const typeKey = normalizeAtType(node["@type"]);
@@ -1531,16 +1909,21 @@ export function detectJsonLdConflicts(file: ThemeFile): CreateFindingInput[] {
   for (const [atType, nodes] of nodesByType) {
     if (nodes.length < 2) continue;
 
+    // The earliest node that differs is nodes[0] unless the node equals nodes[0];
+    // then it is the first node that differs from nodes[0] (every node before
+    // it equals nodes[0], hence this node). Tracking that index keeps this O(n)
+    // instead of rescanning all earlier nodes per node (quadratic when a file
+    // repeats one block thousands of times, gc-t7x).
+    const head = nodes[0].rawContent;
+    let firstDiffFromHead = nodes.findIndex((n) => n.rawContent !== head);
+    if (firstDiffFromHead === -1) firstDiffFromHead = nodes.length;
+
     for (let i = 1; i < nodes.length; i++) {
       const node = nodes[i];
 
       let conflictsWith: JsonLdNode | null = null;
-      for (let j = 0; j < i; j++) {
-        if (nodes[j].rawContent !== node.rawContent) {
-          conflictsWith = nodes[j];
-          break;
-        }
-      }
+      if (node.rawContent !== head) conflictsWith = nodes[0];
+      else if (firstDiffFromHead < i) conflictsWith = nodes[firstDiffFromHead];
       // No earlier node differs — this node is an exact duplicate, not a conflict.
       if (!conflictsWith) continue;
 
@@ -1617,6 +2000,13 @@ function extractProductIdentity(node: Record<string, unknown>): {
   return { handle, sku };
 }
 
+/** Shopify's maximum handle / SKU length; bounds each static candidate string. */
+const MAX_CANDIDATE_FIELD_LENGTH = 255;
+
+function truncateCandidateField(value: string | undefined): string | undefined {
+  return value?.slice(0, MAX_CANDIDATE_FIELD_LENGTH);
+}
+
 /**
  * Extract UNSIGNED static Product JSON-LD blocks as compact candidates for the
  * live-price audit (gc-47c.10). A candidate is recorded only when the block is:
@@ -1633,12 +2023,7 @@ function extractProductIdentity(node: Record<string, unknown>): {
 export function extractStaticProductCandidates(file: ThemeFile): StaticProductCandidate[] {
   const candidates: StaticProductCandidate[] = [];
 
-  JSON_LD_BLOCK_RE.lastIndex = 0;
-  let match: RegExpExecArray | null;
-
-  while ((match = JSON_LD_BLOCK_RE.exec(file.content)) !== null) {
-    const blockContent = match[1];
-
+  for (const { offset, inner: blockContent } of extractJsonLdBlocks(file.content)) {
     // Liquid blocks are dynamically rendered by the theme engine — not stale
     // static injections. Mirrors both JSON-LD detectors.
     if (LIQUID_TAG_RE.test(blockContent)) continue;
@@ -1654,7 +2039,7 @@ export function extractStaticProductCandidates(file: ThemeFile): StaticProductCa
       continue; // Malformed JSON — skip gracefully
     }
 
-    const lineNumber = lineNumberAtOffset(file.content, match.index);
+    const lineNumber = lineNumberAtOffset(file.content, offset);
 
     for (const node of extractJsonLdNodes(parsed)) {
       if (normalizeAtType(node["@type"]) !== "Product") continue;
@@ -1665,15 +2050,18 @@ export function extractStaticProductCandidates(file: ThemeFile): StaticProductCa
       const offer = extractOfferFields(node);
       if (offer.price === undefined && offer.availability === undefined) continue; // nothing to compare
 
+      // Every string crosses the Inngest step boundary (4 MB limit), so each is
+      // truncated to Shopify's 255-char handle/SKU maximum (gc-4ce): 500
+      // candidates with 9 KB SKUs otherwise produced ~4.7 MB of step output.
       candidates.push({
         filename: file.filename,
         lineNumber,
         codeSnippet: buildSnippet(file.content, lineNumber),
-        handle,
-        sku,
-        staticPrice: offer.price,
-        staticPriceCurrency: offer.priceCurrency,
-        staticAvailability: offer.availability,
+        handle: truncateCandidateField(handle),
+        sku: truncateCandidateField(sku),
+        staticPrice: truncateCandidateField(offer.price),
+        staticPriceCurrency: truncateCandidateField(offer.priceCurrency),
+        staticAvailability: truncateCandidateField(offer.availability),
       });
     }
   }
@@ -1805,7 +2193,7 @@ export function detectGhostPixels(file: ThemeFile): CreateFindingInput[] {
 // ---------------------------------------------------------------------------
 
 /**
- * `name` attribute values recognized by META_ROBOTS_RE: the generic `robots`
+ * `name` attribute values recognized by META_ROBOTS_TAG: the generic `robots`
  * directive plus every maintained AI-crawler UA name. Orphaned AI-crawler
  * meta directives (e.g. `<meta name="GPTBot" content="noindex">`) are the
  * same failure mode as an orphaned `name="robots"` tag — an uninstalled app
@@ -1821,10 +2209,22 @@ const META_ROBOTS_NAME_RE = ["robots", ...AI_CRAWLER_USER_AGENTS].join("|");
  *   - content before name
  * Captures the content attribute value for directive analysis.
  */
-const META_ROBOTS_RE = new RegExp(
-  `<meta\\s+[^>]*name\\s*=\\s*["'](?:${META_ROBOTS_NAME_RE})["'][^>]*content\\s*=\\s*["']([^"']+)["'][^>]*>|<meta\\s+[^>]*content\\s*=\\s*["']([^"']+)["'][^>]*name\\s*=\\s*["'](?:${META_ROBOTS_NAME_RE})["'][^>]*>`,
-  "gi",
-);
+const META_ROBOTS_TAG = tagPattern([
+  {
+    tag: "<meta",
+    steps: [
+      { gap: "\\s+[^>]*", attr: `name${ATTR_EQ}["'](?:${META_ROBOTS_NAME_RE})["']` },
+      { gap: "[^>]*", attr: `content${ATTR_EQ}${QUOTED_VALUE}` },
+    ],
+  },
+  {
+    tag: "<meta",
+    steps: [
+      { gap: "\\s+[^>]*", attr: `content${ATTR_EQ}${QUOTED_VALUE}` },
+      { gap: "[^>]*", attr: `name${ATTR_EQ}["'](?:${META_ROBOTS_NAME_RE})["']` },
+    ],
+  },
+]);
 
 /**
  * Restrictive robots directives that can harm SEO when left orphaned.
@@ -1844,7 +2244,10 @@ const LIQUID_CONDITIONAL_RE = /\{%-?\s*(if|unless|elsif)\b/;
  * Skips tags that appear on lines with Liquid conditionals, since those
  * represent intentional theme logic (e.g. noindex on 404 pages).
  */
-export function detectGhostRobots(file: ThemeFile): CreateFindingInput[] {
+export function detectGhostRobots(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   for (const { lineNumber, text } of lines(file.content)) {
@@ -1852,10 +2255,9 @@ export function detectGhostRobots(file: ThemeFile): CreateFindingInput[] {
     if (LIQUID_CONDITIONAL_RE.test(text)) continue;
 
     // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
-    // META_ROBOTS_RE to the bounded tag text.
+    // META_ROBOTS_TAG to the bounded tag text.
     for (const { tag } of extractTags(text, "<meta")) {
-      META_ROBOTS_RE.lastIndex = 0;
-      const match = META_ROBOTS_RE.exec(tag);
+      const match = execTagPattern(tag, META_ROBOTS_TAG);
       if (!match) continue;
 
       // Group 1 captures content when name comes first; group 2 when content comes first.
@@ -1881,6 +2283,9 @@ export function detectGhostRobots(file: ThemeFile): CreateFindingInput[] {
         appName,
         description: `Orphaned meta robots directive "${contentValue}" — may block search engine indexing`,
       });
+      // Early exit (gc-ypk): emission is in line order, so the first `limit`
+      // findings are the first `limit` by line.
+      if (findings.length >= limit) return findings;
     }
   }
 
@@ -1920,8 +2325,7 @@ export function collectUnknownScripts(
 
   for (const { lineNumber, text } of lines(file.content)) {
     for (const { tag } of extractTags(text, "<script")) {
-      SCRIPT_SRC_RE.lastIndex = 0;
-      const match = SCRIPT_SRC_RE.exec(tag);
+      const match = execTagPattern(tag, SCRIPT_SRC_TAG);
       if (!match) continue;
 
       const url = match[1];
@@ -1967,8 +2371,7 @@ export function collectUnknownStylesheets(
 
   for (const { lineNumber, text } of lines(file.content)) {
     for (const { tag } of extractTags(text, "<link")) {
-      LINK_STYLESHEET_RE.lastIndex = 0;
-      const match = LINK_STYLESHEET_RE.exec(tag);
+      const match = execTagPattern(tag, LINK_STYLESHEET_TAG);
       if (!match) continue;
 
       const url = match[1] ?? match[3];
@@ -2012,18 +2415,74 @@ export function collectUnknownStylesheets(
 type DomainSource = "script" | "stylesheet" | "preconnect" | "dns_prefetch" | "font" | "ajax";
 
 /**
- * Isolates a complete `@font-face { ... }` block. CSS `@font-face` blocks never
- * nest braces, so `[^}]*}` is linear (ReDoS-safe) and bounds URL extraction to
- * the font surface. Module-scope /g regex — MUST reset lastIndex = 0 before use.
+ * Opener of a `@font-face { ... }` block; fontFaceBlocks isolates each complete
+ * block to bound URL extraction to the font surface. Module-scope /g regex.
  */
-const FONT_FACE_BLOCK_RE = /@font-face\s*\{[^}]*\}/gi;
+const FONT_FACE_OPEN_RE = /@font-face\s*\{/gi;
 
 /**
- * Extracts each `url(...)` target inside a `@font-face` src declaration (absolute
- * or protocol-relative). Applied only to the bounded block text above.
- * Module-scope /g regex — MUST reset lastIndex = 0 before use.
+ * Every complete `@font-face { ... }` block, identical to the matches of
+ * /@font-face\s*\{[^}]*\}/gi but linear (gc-t7x): that regex rescans to EOF
+ * from every opener when no `}` follows (1 MB of openers: minutes). A block
+ * ends at the first `}` after its `{`; with none left, no later opener can
+ * complete either, so the scan stops.
  */
-const FONT_FACE_SRC_URL_RE = /url\(\s*["']?((?:https?:)?\/\/[^"')\s]+)["']?\s*\)/gi;
+function fontFaceBlocks(content: string): string[] {
+  const blocks: string[] = [];
+  FONT_FACE_OPEN_RE.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = FONT_FACE_OPEN_RE.exec(content)) !== null) {
+    const close = content.indexOf("}", open.index + open[0].length);
+    if (close === -1) break;
+    blocks.push(content.slice(open.index, close + 1));
+    FONT_FACE_OPEN_RE.lastIndex = close + 1;
+  }
+  return blocks;
+}
+
+/**
+ * Pieces of the former FONT_FACE_SRC_URL_RE,
+ * /url\(\s*["']?((?:https?:)?\/\/[^"')\s]+)["']?\s*\)/gi, which extracted each
+ * absolute or protocol-relative `url(...)` target in a `@font-face` block. The
+ * prefix (group 1 = its `(https?:)?//` part) and the URL body each match in
+ * exactly one way at a position, so fontFaceSrcUrls can evaluate them in order.
+ */
+const FONT_URL_PREFIX_RE = /url\(\s*["']?((?:https?:)?\/\/)/gi;
+const FONT_URL_BODY_RE = /[^"')\s]+/y;
+const FONT_URL_TAIL_RE = /["']?\s*\)/y;
+
+/**
+ * The `url(...)` targets of a `@font-face` block, identical to the group-1
+ * captures of the former FONT_FACE_SRC_URL_RE but linear (gc-t7x). The regex
+ * rescanned the URL body from every `url(` start: a block holding 1 MB of
+ * unterminated `url(//a` took minutes. When the tail after a body fails, a
+ * `url(` start inside that body is followed by body chars (never whitespace or
+ * a quote), so its own body ends at the same place and fails the same way. The
+ * one exception is a `url(` ending exactly at the body end, whose `\s*` can
+ * run on past it, so the scan resumes 4 chars before the body end.
+ */
+function fontFaceSrcUrls(block: string): string[] {
+  const urls: string[] = [];
+  FONT_URL_PREFIX_RE.lastIndex = 0;
+  let prefix: RegExpExecArray | null;
+  while ((prefix = FONT_URL_PREFIX_RE.exec(block)) !== null) {
+    const prefixEnd = prefix.index + prefix[0].length;
+    FONT_URL_BODY_RE.lastIndex = prefixEnd;
+    if (!FONT_URL_BODY_RE.test(block)) {
+      FONT_URL_PREFIX_RE.lastIndex = prefix.index + 1;
+      continue;
+    }
+    const bodyEnd = FONT_URL_BODY_RE.lastIndex;
+    FONT_URL_TAIL_RE.lastIndex = bodyEnd;
+    if (FONT_URL_TAIL_RE.test(block)) {
+      urls.push(block.slice(prefixEnd - prefix[1].length, bodyEnd));
+      FONT_URL_PREFIX_RE.lastIndex = FONT_URL_TAIL_RE.lastIndex;
+    } else {
+      FONT_URL_PREFIX_RE.lastIndex = Math.max(prefix.index + 1, bodyEnd - "url(".length);
+    }
+  }
+  return urls;
+}
 
 /**
  * Collect every NON-Shopify third-party host a single theme file references,
@@ -2096,27 +2555,24 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
 
   // <script src>
   for (const { tag } of extractTags(file.content, "<script")) {
-    SCRIPT_SRC_RE.lastIndex = 0;
-    const m = SCRIPT_SRC_RE.exec(tag);
+    const m = execTagPattern(tag, SCRIPT_SRC_TAG);
     if (m) record(m[1], "script");
   }
 
   // <link> tags: record AT MOST ONE surface per physical tag, precedence
   // stylesheet > preconnect > dns-prefetch > font. A single tag can match more
   // than one of these regexes (e.g. a Google Fonts stylesheet href also matches
-  // FONT_LINK_RE), so without this precedence a tag would double-count refCount
+  // FONT_LINK_TAG), so without this precedence a tag would double-count refCount
   // and emit a spurious `font` source. `continue` after the first surface that
   // records prevents that.
   for (const { tag } of extractTags(file.content, "<link")) {
-    LINK_STYLESHEET_RE.lastIndex = 0;
-    const styleMatch = LINK_STYLESHEET_RE.exec(tag);
+    const styleMatch = execTagPattern(tag, LINK_STYLESHEET_TAG);
     if (styleMatch) {
       record(styleMatch[1] ?? styleMatch[3], "stylesheet");
       continue;
     }
 
-    PRECONNECT_RE.lastIndex = 0;
-    const preMatch = PRECONNECT_RE.exec(tag);
+    const preMatch = execTagPattern(tag, PRECONNECT_TAG);
     if (preMatch) {
       const relType = preMatch[1] ?? preMatch[4];
       const href = preMatch[2] ?? preMatch[3];
@@ -2132,20 +2588,13 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
       }
     }
 
-    FONT_LINK_RE.lastIndex = 0;
-    const fontLinkMatch = FONT_LINK_RE.exec(tag);
+    const fontLinkMatch = execTagPattern(tag, FONT_LINK_TAG);
     if (fontLinkMatch) record(fontLinkMatch[1] ?? fontLinkMatch[2], "font");
   }
 
   // @font-face src url()s — bound extraction to each font-face block.
-  FONT_FACE_BLOCK_RE.lastIndex = 0;
-  let block: RegExpExecArray | null;
-  while ((block = FONT_FACE_BLOCK_RE.exec(file.content)) !== null) {
-    FONT_FACE_SRC_URL_RE.lastIndex = 0;
-    let urlMatch: RegExpExecArray | null;
-    while ((urlMatch = FONT_FACE_SRC_URL_RE.exec(block[0])) !== null) {
-      record(urlMatch[1], "font");
-    }
+  for (const block of fontFaceBlocks(file.content)) {
+    for (const url of fontFaceSrcUrls(block)) record(url, "font");
   }
 
   // fetch() / jQuery AJAX / XMLHttpRequest URL literals.
@@ -2189,56 +2638,156 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
  * Not flagged: a single library, two libraries each seen once, the same major
  * in multiple files, or two copies of the identical version. Only a genuine
  * MAJOR-version split counts as a conflict.
+ *
+ * Floating dist-tags (gc-tus.12): `swiper@latest` / `@next` / `@beta` / ...
+ * (the closed list in parseLibrary) have no known major (the CDN resolves them
+ * at load time). Each distinct tag counts as its own version, so a tag next to
+ * a pinned major, or two different tags, is flagged (two copies loaded); the
+ * SAME tag twice is one version and is not, matching identical pinned
+ * versions. When the match DEPENDS on a tag (fewer than two distinct pinned
+ * majors), the tag may resolve to the same major, so it is only a possible
+ * duplicate: severity LOW and "may be loaded more than once" wording (owner
+ * decision 1A). Two or more distinct pinned majors are a proven conflict and
+ * keep the default severity and conflict wording even when a tag is also
+ * present. Range-likes (`^1`, `~2`, `3`) count by their major.
+ *
+ * Size-guard-skipped files ARE scanned here (gc-tus.11), like the other
+ * cross-file passes. DUPLICATE_LIBRARY is in CROSS_FILE_FINDING_TYPES, so the
+ * differ keeps diffing it when its anchor file is size-skipped; if this pass
+ * dropped oversized files, a still-present conflict anchored in (or relying
+ * on a copy in) a file that grew past the cap would read as a false
+ * "resolved". Keeping them is safe because the pass is linear: one line split,
+ * extractTags (indexOf), execTagPattern (gc-t7x) and a URL parse per tag, with
+ * tags disjoint — pinned on >1 MB adversarial files in
+ * tests/services/scan-engine-redos.server.test.ts.
  */
 export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput[] {
-  // library name -> (major -> first place that major was seen)
-  const byLibrary = new Map<string, Map<number, { file: ThemeFile; lineNumber: number }>>();
+  // library name -> (version label -> first place that version was seen). The
+  // label is `v<major>` for a pinned major or `@<tag>` for a floating dist-tag.
+  const byLibrary = new Map<
+    string,
+    Map<string, { major: number | null; file: ThemeFile; lineNumber: number }>
+  >();
 
   for (const file of files) {
     for (const { lineNumber, text } of lines(file.content)) {
       for (const { tag } of extractTags(text, "<script")) {
-        SCRIPT_SRC_RE.lastIndex = 0;
-        const match = SCRIPT_SRC_RE.exec(tag);
+        const match = execTagPattern(tag, SCRIPT_SRC_TAG);
         if (!match) continue;
 
         const lib = parseLibrary(match[1]);
         if (lib === null) continue;
 
-        let majors = byLibrary.get(lib.name);
-        if (!majors) {
-          majors = new Map();
-          byLibrary.set(lib.name, majors);
+        let versions = byLibrary.get(lib.name);
+        if (!versions) {
+          versions = new Map();
+          byLibrary.set(lib.name, versions);
         }
-        // Keep the FIRST occurrence of each major for stable attribution.
-        if (!majors.has(lib.major)) majors.set(lib.major, { file, lineNumber });
+        const label = lib.major === null ? `@${lib.tag}` : `v${lib.major}`;
+        // Keep the FIRST occurrence of each version for stable attribution.
+        if (!versions.has(label)) versions.set(label, { major: lib.major, file, lineNumber });
       }
     }
   }
 
   const findings: CreateFindingInput[] = [];
 
-  for (const [name, majors] of byLibrary) {
-    if (majors.size < 2) continue; // single major = no conflict
+  for (const [name, versions] of byLibrary) {
+    if (versions.size < 2) continue; // single version = no conflict
 
-    const sortedMajors = [...majors.keys()].sort((a, b) => a - b);
-    // Attribute the finding to the lowest-major occurrence (deterministic).
-    const anchor = majors.get(sortedMajors[0])!;
+    // Pinned majors ascending, then floating tags alphabetically (deterministic).
+    const sorted = [...versions.entries()].sort(([labelA, a], [labelB, b]) => {
+      if (a.major !== null && b.major !== null) return a.major - b.major;
+      if (a.major !== null) return -1;
+      if (b.major !== null) return 1;
+      return labelA < labelB ? -1 : 1;
+    });
+    // Attribute the finding to the lowest-major (else first-tag) occurrence.
+    const anchor = sorted[0][1];
 
-    const detail = sortedMajors.map((m) => `v${m} (${majors.get(m)!.file.filename})`).join(", ");
+    const detail = sorted.map(([label, v]) => `${label} (${v.file.filename})`).join(", ");
     const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
-    const severity = classifySeverity(FindingType.DUPLICATE_LIBRARY, codeSnippet);
+    const hasFloatingTag = sorted.some(([, v]) => v.major === null);
+    const pinnedMajors = sorted.filter(([, v]) => v.major !== null).length;
+    // Only a tag makes this a match: the versions may all resolve the same.
+    const possibleDuplicate = hasFloatingTag && pinnedMajors < 2;
+
+    let description: string;
+    if (possibleDuplicate) {
+      description =
+        `Library "${name}" may be loaded more than once (possible duplicate copies): ${detail}. ` +
+        "A floating tag like @latest resolves when the page loads, so its version is unknown";
+    } else if (hasFloatingTag) {
+      description =
+        `Library "${name}" is loaded at ${sorted.length} conflicting versions: ${detail}. ` +
+        "Floating tags like @latest resolve when the page loads, so their major is unknown; " +
+        "each distinct tag is counted as a separate copy";
+    } else {
+      description = `Library "${name}" is loaded at ${sorted.length} conflicting major versions: ${detail}`;
+    }
 
     findings.push({
       filename: anchor.file.filename,
       lineNumber: anchor.lineNumber,
       codeSnippet,
       findingType: FindingType.DUPLICATE_LIBRARY,
-      severity,
-      description: `Library "${name}" is loaded at ${sortedMajors.length} conflicting major versions: ${detail}`,
+      severity: possibleDuplicate
+        ? Severity.LOW
+        : classifySeverity(FindingType.DUPLICATE_LIBRARY, codeSnippet),
+      description,
     });
   }
 
   return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Cross-file anchor selection
+// ---------------------------------------------------------------------------
+
+/** A place a cross-file signal was seen: candidate anchor for its finding. */
+type AnchorLocation = { file: ThemeFile; lineNumber: number };
+
+/**
+ * Folder priority for cross-file finding anchors. The anchor's filename + line
+ * feed the scan-differ fingerprint, so it must not depend on input order (a
+ * moved anchor reads as "resolved" + "new" and breaks INSTANCE-scope ignores).
+ * layout/sections/snippets/templates keep their historical alphabetical order;
+ * blocks/ (scannable since gc-zfl) slots in before templates/ so adding blocks
+ * never moves an existing anchor off layout/sections/snippets.
+ */
+const ANCHOR_FOLDER_PRIORITY = ["layout/", "sections/", "snippets/", "blocks/", "templates/"];
+
+function anchorFolderRank(filename: string): number {
+  const rank = ANCHOR_FOLDER_PRIORITY.findIndex((prefix) => filename.startsWith(prefix));
+  return rank === -1 ? ANCHOR_FOLDER_PRIORITY.length : rank;
+}
+
+/**
+ * Total order over anchor candidates: folder priority, then filename (plain
+ * code-unit comparison, locale-independent), then line. Negative = `a` first.
+ */
+function compareAnchorLocations(a: AnchorLocation, b: AnchorLocation): number {
+  const rankDiff = anchorFolderRank(a.file.filename) - anchorFolderRank(b.file.filename);
+  if (rankDiff !== 0) return rankDiff;
+  if (a.file.filename !== b.file.filename) return a.file.filename < b.file.filename ? -1 : 1;
+  return a.lineNumber - b.lineNumber;
+}
+
+/** Store `loc` under `key` unless an equal-or-better anchor is already there. */
+function keepBestAnchor<K>(map: Map<K, AnchorLocation>, key: K, loc: AnchorLocation): void {
+  const current = map.get(key);
+  if (!current || compareAnchorLocations(loc, current) < 0) map.set(key, loc);
+}
+
+/**
+ * Entries sorted by anchor order, ties (same file + line) broken by key so the
+ * description is input-order independent too. The first entry is the anchor.
+ */
+function sortedByAnchor(map: Map<string, AnchorLocation>): Array<[string, AnchorLocation]> {
+  return [...map.entries()].sort(
+    ([keyA, a], [keyB, b]) => compareAnchorLocations(a, b) || (keyA < keyB ? -1 : 1),
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -2291,16 +2840,16 @@ const TRACKER_PLATFORMS: ReadonlyArray<{
  *
  * HIGH PRECISION — distinct IDs only: a single ID, or the same ID repeated across
  * files, is normal and never flagged. Emits ONE DUPLICATE_TRACKER finding per
- * platform that has >= 2 distinct IDs, anchored at the FIRST-seen occurrence of
- * that platform for stable attribution.
+ * platform that has >= 2 distinct IDs, anchored at the platform's best location
+ * by compareAnchorLocations (folder priority, not input order).
  *
  * Theme-file content only. Runtime/app-injected pixels (Web Pixels, GTM-runtime
  * containers) are out of scope — this reads what is statically written in theme
  * files, mirroring detectDuplicateLibraries.
  */
 export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[] {
-  // platform name -> (distinct id -> first place that id was seen)
-  const byPlatform = new Map<string, Map<string, { file: ThemeFile; lineNumber: number }>>();
+  // platform name -> (distinct id -> best anchor location of that id)
+  const byPlatform = new Map<string, Map<string, AnchorLocation>>();
 
   for (const file of files) {
     if (!isScannableFile(file.filename)) continue;
@@ -2322,8 +2871,7 @@ export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[
             ids = new Map();
             byPlatform.set(platform.name, ids);
           }
-          // Keep the FIRST occurrence of each distinct id for stable attribution.
-          if (!ids.has(id)) ids.set(id, { file, lineNumber });
+          keepBestAnchor(ids, id, { file, lineNumber });
         }
       }
     }
@@ -2335,9 +2883,9 @@ export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[
     const ids = byPlatform.get(platform.name);
     if (!ids || ids.size < 2) continue; // one distinct id = normal, no conflict
 
-    // Anchor at the earliest occurrence of this platform (first inserted id).
-    const anchor = ids.values().next().value as { file: ThemeFile; lineNumber: number };
-    const detail = [...ids.entries()].map(([id, loc]) => `${id} (${loc.file.filename})`).join(", ");
+    const sorted = sortedByAnchor(ids);
+    const anchor = sorted[0][1];
+    const detail = sorted.map(([id, loc]) => `${id} (${loc.file.filename})`).join(", ");
     const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
     const severity = classifySeverity(FindingType.DUPLICATE_TRACKER, codeSnippet);
 
@@ -2388,38 +2936,41 @@ const CHAT_WIDGET_PLATFORMS: ReadonlyArray<{
  * duplicated widget weight and split chat sessions).
  *
  * One platform, even if referenced on many lines/files, is never flagged. Emits
- * ONE OVERLAPPING_CHAT_WIDGET finding, anchored at the FIRST-seen occurrence of
- * any detected platform for stable attribution.
+ * ONE OVERLAPPING_CHAT_WIDGET finding, anchored at the best location of any
+ * detected platform by compareAnchorLocations (folder priority, not input order).
  *
  * Theme-file content only, mirroring detectDuplicateLibraries.
  */
 export function detectOverlappingChatWidgets(files: ThemeFile[]): CreateFindingInput[] {
-  // platform name -> first place that platform was detected (insertion order is
-  // chronological across files/lines, so the first entry is the earliest anchor).
-  const firstSeen = new Map<string, { file: ThemeFile; lineNumber: number }>();
+  // platform name -> best anchor location where that platform was detected
+  const bestSeen = new Map<string, AnchorLocation>();
 
   for (const file of files) {
     if (!isScannableFile(file.filename)) continue;
     const commentSkip = buildCommentSkipLines(file.content);
+    // Lines are ascending, so a platform's first hit in a file is that file's
+    // best location for it; later lines of the same file can be skipped.
+    const foundInFile = new Set<string>();
     for (const { lineNumber, text } of lines(file.content)) {
       if (commentSkip.has(lineNumber)) continue;
       const lower = text.toLowerCase();
       for (const platform of CHAT_WIDGET_PLATFORMS) {
-        if (firstSeen.has(platform.name)) continue; // already recorded
+        if (foundInFile.has(platform.name)) continue;
         const hit = platform.signatures.some((sig) =>
           typeof sig === "string" ? lower.includes(sig) : sig.test(text),
         );
-        if (hit) firstSeen.set(platform.name, { file, lineNumber });
+        if (!hit) continue;
+        foundInFile.add(platform.name);
+        keepBestAnchor(bestSeen, platform.name, { file, lineNumber });
       }
     }
   }
 
-  if (firstSeen.size < 2) return []; // one (or zero) platform = no conflict
+  if (bestSeen.size < 2) return []; // one (or zero) platform = no conflict
 
-  const anchor = firstSeen.values().next().value as { file: ThemeFile; lineNumber: number };
-  const detail = [...firstSeen.entries()]
-    .map(([name, loc]) => `${name} (${loc.file.filename})`)
-    .join(", ");
+  const sorted = sortedByAnchor(bestSeen);
+  const anchor = sorted[0][1];
+  const detail = sorted.map(([name, loc]) => `${name} (${loc.file.filename})`).join(", ");
   const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
   const severity = classifySeverity(FindingType.OVERLAPPING_CHAT_WIDGET, codeSnippet);
 
@@ -2430,7 +2981,7 @@ export function detectOverlappingChatWidgets(files: ThemeFile[]): CreateFindingI
       codeSnippet,
       findingType: FindingType.OVERLAPPING_CHAT_WIDGET,
       severity,
-      description: `${firstSeen.size} chat widgets are loaded at once: ${detail} — shoppers may see conflicting chat bubbles.`,
+      description: `${bestSeen.size} chat widgets are loaded at once: ${detail} — shoppers may see conflicting chat bubbles.`,
     },
   ];
 }
@@ -2460,7 +3011,10 @@ const BUILTIN_SECTION_TYPES = new Set([
  * After uninstall, the section files are removed but settings_data.json entries
  * often persist — these are "settings data drift."
  */
-export function detectSettingsDrift(files: ThemeFile[]): CreateFindingInput[] {
+export function detectSettingsDrift(
+  files: ThemeFile[],
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const settingsFile = files.find((f) => f.filename === "config/settings_data.json");
   if (!settingsFile) return [];
 
@@ -2491,6 +3045,9 @@ export function detectSettingsDrift(files: ThemeFile[]): CreateFindingInput[] {
   const sectionEntries = sections as Record<string, unknown>;
 
   for (const [sectionKey, sectionValue] of Object.entries(sectionEntries)) {
+    // Early exit (gc-ypk): every finding is on line 1 of settings_data.json, so
+    // the first `limit` in (deterministic) key order are the first by line.
+    if (findings.length >= limit) break;
     if (!sectionValue || typeof sectionValue !== "object") continue;
 
     const sectionType = (sectionValue as Record<string, unknown>).type;
@@ -2646,20 +3203,56 @@ export function detectGhostLayouts(files: ThemeFile[]): CreateFindingInput[] {
  *   - href before rel
  * Captures the href value for analysis.
  */
-const CANONICAL_RE =
-  /<link[^>]+rel\s*=\s*["']canonical["'][^>]*href\s*=\s*["']([^"']*)["'][^>]*>|<link[^>]+href\s*=\s*["']([^"']*)["'][^>]*rel\s*=\s*["']canonical["'][^>]*>/gi;
+const CANONICAL_TAG = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["']canonical["']` },
+      { gap: "[^>]*", attr: `href${ATTR_EQ}["']([^"']*)["']` },
+    ],
+  },
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `href${ATTR_EQ}["']([^"']*)["']` },
+      { gap: "[^>]*", attr: `rel${ATTR_EQ}["']canonical["']` },
+    ],
+  },
+]);
 
 /**
  * Known safe Shopify-native Liquid variables used in canonical hrefs.
  * These resolve to valid URLs and should not trigger an "unresolved variable" finding.
+ *
+ * This is the head of the former SAFE_CANONICAL_VARS_RE,
+ * /\{\{\s*(canonical_url|request\.path|shop\.url|page_url|url)\s*(\|[^}]*)?\}\}/,
+ * whose optional filter chain and closing `}}` hasSafeCanonicalVar checks
+ * separately (that regex rescanned the filter chain from every `{{`: gc-t7x).
  */
-const SAFE_CANONICAL_VARS_RE =
-  /\{\{\s*(canonical_url|request\.path|shop\.url|page_url|url)\s*(\|[^}]*)?\}\}/;
+const SAFE_CANONICAL_VAR_HEAD_RE =
+  /\{\{\s*(?:canonical_url|request\.path|shop\.url|page_url|url)\s*/y;
 
 /**
- * Matches any Liquid variable expression in a string.
+ * Same result as the former SAFE_CANONICAL_VARS_RE.test(href), in linear time.
+ * A match is a `{{`, the head above, then either `}}` or `|` and a filter chain
+ * up to `}}`, with no `}` before the closing `}}`. So it starts at some `{{`
+ * inside a Liquid output token (liquidOutputSpans) and ends at that token's
+ * `}}`: after the head, the next char must be the token's closing `}` or a `|`.
+ * Each head test stops at the first char that is neither whitespace nor part of
+ * a name, and the head holds no `{`, so the next `{{` tried lies past it: the
+ * total work stays linear.
  */
-const LIQUID_VAR_RE = /\{\{[^}]*\}\}/;
+function hasSafeCanonicalVar(href: string): boolean {
+  for (const [start, end] of liquidOutputSpans(href)) {
+    for (let open = start; open !== -1 && open < end - 2; open = href.indexOf("{{", open + 1)) {
+      SAFE_CANONICAL_VAR_HEAD_RE.lastIndex = open;
+      if (!SAFE_CANONICAL_VAR_HEAD_RE.test(href)) continue;
+      const next = SAFE_CANONICAL_VAR_HEAD_RE.lastIndex;
+      if (next === end - 2 || href[next] === "|") return true;
+    }
+  }
+  return false;
+}
 
 /**
  * Matches a plain absolute URL with a valid-looking domain.
@@ -2680,13 +3273,16 @@ const ABSOLUTE_URL_RE = /^https?:\/\/[a-z0-9.-]+\.[a-z]{2,}/i;
  *   - Skips canonicals inside Liquid conditionals
  *   - Skips single valid hardcoded URLs (unless app-attributed)
  */
-export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
+export function detectGhostCanonical(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Collect all canonical occurrences for duplicate detection
   const allCanonicals: Array<{ lineNumber: number; href: string }> = [];
 
-  // Precompute the lines to skip from a single line pass, then run CANONICAL_RE
+  // Precompute the lines to skip from a single line pass, then run CANONICAL_TAG
   // against the FULL file content so multi-line / prettier-wrapped tags like:
   //   <link
   //     rel="canonical"
@@ -2694,7 +3290,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   // are matched. lineNumberAtOffset maps each match offset back to a line, and
   // a match is skipped if its start line falls inside a {% comment %} block or
   // contains a Liquid conditional — preserving the prior per-line semantics.
-  // CANONICAL_RE is a single regex (rel-first | href-first alternation), so each
+  // CANONICAL_TAG is a single regex (rel-first | href-first alternation), so each
   // tag yields exactly one match — no double-count risk.
   const commentSkipLines = buildCommentSkipLines(file.content);
   const conditionalLines = new Set<number>();
@@ -2703,11 +3299,10 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   }
 
   // Isolate each <link ...> tag first (linear, non-backtracking), then apply
-  // CANONICAL_RE to the bounded tag text. Multi-line / prettier-wrapped tags are
+  // CANONICAL_TAG to the bounded tag text. Multi-line / prettier-wrapped tags are
   // still matched. lineNumberAtOffset maps each match offset back to a line.
   for (const { tag, offset } of extractTags(file.content, "<link")) {
-    CANONICAL_RE.lastIndex = 0;
-    const collectMatch = CANONICAL_RE.exec(tag);
+    const collectMatch = execTagPattern(tag, CANONICAL_TAG);
     if (!collectMatch) continue;
 
     const lineNumber = lineNumberAtOffset(file.content, offset + collectMatch.index);
@@ -2722,13 +3317,31 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   // Track which lines already have a finding to avoid double-reporting
   const reportedLines = new Set<number>();
 
+  const appNameAt = lineAppNamer();
+
+  // Early exit (gc-ypk). Every line holding a canonical other than the first
+  // yields at least one finding: a check 1-3 hit, or else check 5 flags each of
+  // its canonicals as a duplicate. So once `limit` such lines have been fully
+  // examined, `limit` findings are guaranteed on them and nothing on a later
+  // line can rank in the first `limit` by line (the caller sorts by line,
+  // stable, and truncates): stop at that line boundary. Stopping only at a
+  // boundary keeps reportedLines (keyed by line) complete for every examined
+  // line, so check 5 below stays exact for them.
+  let dupLineBound = Number.POSITIVE_INFINITY;
+  let emittingLines = 0;
   for (let i = 0; i < allCanonicals.length; i++) {
+    const newLine = i > 0 && allCanonicals[i].lineNumber !== allCanonicals[i - 1].lineNumber;
+    if (newLine && emittingLines >= limit) {
+      dupLineBound = allCanonicals[i].lineNumber;
+      break;
+    }
+    if (i === 1 || newLine) emittingLines++;
     const { lineNumber, href } = allCanonicals[i];
     const codeSnippet = buildSnippet(file.content, lineNumber);
 
     // Check 1: Empty or whitespace-only href
     if (/^\s*$/.test(href)) {
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
       findings.push({
         filename: file.filename,
@@ -2744,8 +3357,8 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check 2: Unresolved Liquid variables in href
-    if (LIQUID_VAR_RE.test(href) && !SAFE_CANONICAL_VARS_RE.test(href)) {
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+    if (liquidOutputSpans(href).length > 0 && !hasSafeCanonicalVar(href)) {
+      const appName = appNameAt(lineNumber, codeSnippet);
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
       findings.push({
         filename: file.filename,
@@ -2761,7 +3374,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check 3: App-attributed canonical (even if href looks valid)
-    const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+    const appName = appNameAt(lineNumber, codeSnippet);
     if (appName) {
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
       findings.push({
@@ -2784,12 +3397,14 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
   // Check 5: Duplicate canonical tags — flag 2nd+ occurrence
   if (allCanonicals.length > 1) {
     const firstLine = allCanonicals[0].lineNumber;
-    for (let i = 1; i < allCanonicals.length; i++) {
+    let duplicates = 0;
+    for (let i = 1; i < allCanonicals.length && duplicates < limit; i++) {
       const { lineNumber } = allCanonicals[i];
+      if (lineNumber >= dupLineBound) break;
       if (reportedLines.has(lineNumber)) continue; // Already reported for another reason
 
       const codeSnippet = buildSnippet(file.content, lineNumber);
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const severity = classifySeverity(FindingType.GHOST_CANONICAL, codeSnippet);
 
       findings.push({
@@ -2801,6 +3416,7 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
         appName,
         description: `Duplicate canonical tag — also found on line ${firstLine}`,
       });
+      duplicates++;
     }
   }
 
@@ -2812,9 +3428,51 @@ export function detectGhostCanonical(file: ThemeFile): CreateFindingInput[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Matches <title>...</title> tags, capturing the inner content (may span lines).
+ * `<title>...</title>` delimiters for extractTagBlocks (the inner content may
+ * span lines). Module-scope /g regexes; extractTagBlocks sets lastIndex itself.
  */
-const TITLE_TAG_RE = /<title[^>]*>([\s\S]*?)<\/title>/gi;
+const TITLE_OPEN_RE = /<title/gi;
+const TITLE_CLOSE_RE = /<\/title>/gi;
+
+/**
+ * Matches an `<svg ...>` open tag or `</svg>` close tag. The lookahead stops
+ * custom elements such as `<svg-icon>` from matching. Group 1 is "/" on close.
+ * `[^<>]*` (not `[^>]*`) ends each attempt at the next `<`, so a flood of
+ * unterminated `<svg ` opens stays linear instead of rescanning to EOF.
+ */
+const SVG_TAG_RE = /<(\/?)svg(?=[\s/>])[^<>]*>/gi;
+
+/**
+ * Returns merged, start-sorted [start, end) offset ranges covered by closed
+ * `<svg>...</svg>` elements. A `<title>` inside an SVG is the graphic's
+ * accessible name, not the document title, so GHOST_TITLE ignores it.
+ *
+ * Only matched pairs count: an unclosed `<svg>` is malformed markup and covers
+ * nothing, so a genuine document title after it is still inspected. One regex
+ * pass plus a sort over the (few) SVG ranges keeps this linear in file size.
+ */
+function closedSvgRanges(content: string): Array<[number, number]> {
+  const openStack: number[] = [];
+  const ranges: Array<[number, number]> = [];
+  let tag: RegExpExecArray | null;
+  SVG_TAG_RE.lastIndex = 0;
+  while ((tag = SVG_TAG_RE.exec(content)) !== null) {
+    if (tag[1] !== "/") {
+      openStack.push(tag.index);
+      continue;
+    }
+    const openOffset = openStack.pop();
+    if (openOffset !== undefined) ranges.push([openOffset, tag.index + tag[0].length]);
+  }
+  ranges.sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const range of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && range[0] <= last[1]) last[1] = Math.max(last[1], range[1]);
+    else merged.push(range);
+  }
+  return merged;
+}
 
 /**
  * Build a "safe Liquid variable" matcher for a single `{{ ... }}` expression.
@@ -2873,6 +3531,15 @@ const SAFE_TITLE_VARS_RE = buildSafeVarRe([
   // Template name + Online Store header injection
   "template",
   "content_for_\\w+",
+  // Theme section/block objects (settings the merchant edits in the editor)
+  "section(?:\\.\\w+)*",
+  "block(?:\\.\\w+)*",
+  // A quoted locale key through the translation filter renders theme locale
+  // text, e.g. stock gift_card: {{ 'gift_cards.issued.title' | t: value: ... }}
+  // The lookahead only requires the FIRST filter to be t/translate (the shared
+  // filter-chain suffix consumes its arguments); the trailing word boundary
+  // stops `t` matching an app filter like `| toxicapp_title`.
+  "(?:'[^'}]*'|\"[^\"}]*\")(?=\\s*\\|\\s*(?:t|translate)\\b)",
   // Native Shopify objects (any property): shop.name, product.title, ...
   ...SHOPIFY_GLOBAL_OBJECTS,
 ]);
@@ -2890,8 +3557,12 @@ const SAFE_TITLE_VARS_RE = buildSafeVarRe([
  *   - Skips native Dawn title containing page_title
  *   - Skips titles inside Liquid conditionals
  *   - Skips empty titles in non-layout files
+ *   - Skips <title> elements inside a closed <svg> (accessible icon names)
  */
-export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
+export function detectGhostTitle(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
   const isLayoutFile = file.filename.startsWith("layout/");
   const contentLines = file.content.split("\n");
@@ -2906,37 +3577,68 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
     offset: number;
   }> = [];
 
-  let match: RegExpExecArray | null;
-  TITLE_TAG_RE.lastIndex = 0;
+  // Titles arrive in increasing offset order, so one forward-moving cursor over
+  // the sorted SVG ranges answers "inside an SVG?" in linear total time.
+  const svgRanges = closedSvgRanges(file.content);
+  let svgCursor = 0;
 
-  while ((match = TITLE_TAG_RE.exec(file.content)) !== null) {
-    const innerContent = match[1];
-    const matchLineNumber = lineNumberAtOffset(file.content, match.index);
+  // Per-line memo: many titles packed on one long line must not re-test it.
+  const conditionalLine = new Map<number, boolean>();
+
+  for (const { offset, inner: innerContent } of extractTagBlocks(
+    file.content,
+    TITLE_OPEN_RE,
+    TITLE_CLOSE_RE,
+  )) {
+    // Skip SVG accessible-name titles (not document titles)
+    while (svgCursor < svgRanges.length && svgRanges[svgCursor][1] <= offset) svgCursor++;
+    if (svgCursor < svgRanges.length && svgRanges[svgCursor][0] <= offset) continue;
+
+    const matchLineNumber = lineNumberAtOffset(file.content, offset);
 
     // Skip titles inside Liquid comment blocks
     if (commentedLines.has(matchLineNumber)) continue;
 
     // Skip titles inside Liquid conditionals
-    const matchLine = contentLines[matchLineNumber - 1] ?? "";
-    if (LIQUID_CONDITIONAL_RE.test(matchLine)) continue;
+    let isConditional = conditionalLine.get(matchLineNumber);
+    if (isConditional === undefined) {
+      isConditional = LIQUID_CONDITIONAL_RE.test(contentLines[matchLineNumber - 1] ?? "");
+      conditionalLine.set(matchLineNumber, isConditional);
+    }
+    if (isConditional) continue;
 
     allTitles.push({
       lineNumber: matchLineNumber,
       innerContent,
-      offset: match.index,
+      offset,
     });
   }
 
   // Track which entries already have a finding to avoid double-reporting
   const reportedIndices = new Set<number>();
 
+  const appNameAt = lineAppNamer();
+
+  // Early exit (gc-ypk). Every title after the first yields exactly one finding
+  // (a check 1-3 hit, or else check 4 flags it as a duplicate). So once more
+  // than `limit` titles have been examined, `limit` findings are guaranteed on
+  // their lines and nothing on a LATER line can rank in the first `limit` by
+  // line (the caller sorts by line, stable, and truncates): stop at the next
+  // line boundary (ties on one line keep emission order, so the whole line must
+  // be examined). Check 4 then visits only the examined titles, whose
+  // reportedIndices are complete, and stops after `limit` duplicates.
+  let examined = allTitles.length;
   for (let i = 0; i < allTitles.length; i++) {
+    if (i > limit && allTitles[i].lineNumber !== allTitles[i - 1].lineNumber) {
+      examined = i;
+      break;
+    }
     const { lineNumber, innerContent } = allTitles[i];
     const codeSnippet = buildSnippet(file.content, lineNumber);
 
     // Check 1: Empty or whitespace-only title content (layout files only)
     if (/^\s*$/.test(innerContent) && isLayoutFile) {
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const description =
         "Empty title tag — search engines will display the URL instead of a descriptive title";
       const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
@@ -2955,13 +3657,13 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
 
     // Check 2: Unresolved Liquid variables in title
     // Extract all {{ ... }} expressions and check if any are NOT safe
-    if (LIQUID_VAR_RE.test(innerContent)) {
+    const allVarsInTitle = liquidOutputTokens(innerContent);
+    if (allVarsInTitle.length > 0) {
       // If ALL Liquid vars in the title are safe, skip
-      const allVarsInTitle = innerContent.match(/\{\{[^}]*\}\}/g) ?? [];
       const hasUnsafeVar = allVarsInTitle.some((v) => !SAFE_TITLE_VARS_RE.test(v));
 
       if (hasUnsafeVar) {
-        const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+        const appName = appNameAt(lineNumber, codeSnippet);
         const description = `Unresolved Liquid variable in title tag`;
         const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
         findings.push({
@@ -2979,7 +3681,7 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check 3: App-attributed title (even if content looks valid)
-    const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+    const appName = appNameAt(lineNumber, codeSnippet);
     if (appName) {
       const description = `App-attributed title tag from ${appName}`;
       const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
@@ -3000,12 +3702,13 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
   // Check 4: Duplicate title tags — flag 2nd+ occurrence
   if (allTitles.length > 1) {
     const firstLine = allTitles[0].lineNumber;
-    for (let i = 1; i < allTitles.length; i++) {
+    let duplicates = 0;
+    for (let i = 1; i < examined && duplicates < limit; i++) {
       if (reportedIndices.has(i)) continue; // Already reported for another reason
 
       const { lineNumber } = allTitles[i];
       const codeSnippet = buildSnippet(file.content, lineNumber);
-      const appName = identifyAppFromCode(codeSnippet) ?? undefined;
+      const appName = appNameAt(lineNumber, codeSnippet);
       const description = `Duplicate title tag — also found on line ${firstLine}`;
       const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
 
@@ -3018,6 +3721,7 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
         appName,
         description,
       });
+      duplicates++;
     }
   }
 
@@ -3032,8 +3736,17 @@ export function detectGhostTitle(file: ThemeFile): CreateFindingInput[] {
  * Matches <meta> tags with property="og:*" or name="twitter:*".
  * Captures the OG/Twitter property name.
  */
-const OG_META_RE =
-  /<meta\s+[^>]*(?:property\s*=\s*["'](og:[^"']+)["']|name\s*=\s*["'](twitter:[^"']+)["'])[^>]*>/gi;
+const OG_META_TAG = tagPattern([
+  {
+    tag: "<meta",
+    steps: [
+      {
+        gap: "\\s+[^>]*",
+        attr: `(?:property${ATTR_EQ}["'](og:[^"']+)["']|name${ATTR_EQ}["'](twitter:[^"']+)["'])`,
+      },
+    ],
+  },
+]);
 
 /**
  * Extracts the content attribute value from a meta tag.
@@ -3122,19 +3835,25 @@ const SAFE_OG_FILTER_RE =
  *   - Skips low-impact empty properties (og:locale, og:site_name, etc.)
  *   - Does NOT re-detect duplicates (handled by DUPLICATE_META)
  */
-export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
+export function detectGhostOg(
+  file: ThemeFile,
+  limit = Number.POSITIVE_INFINITY,
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
   const contentLines = file.content.split("\n");
 
   // Build a set of line numbers inside Liquid comment blocks (shared helper)
   const commentedLines = buildCommentSkipLines(file.content);
+  const conditionalLine = new Map<number, boolean>();
 
   // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
-  // OG_META_RE to the bounded tag text. lineNumberAtOffset maps the match offset
+  // OG_META_TAG to the bounded tag text. lineNumberAtOffset maps the match offset
   // back to a line.
   for (const { tag, offset } of extractTags(file.content, "<meta")) {
-    OG_META_RE.lastIndex = 0;
-    const match = OG_META_RE.exec(tag);
+    // Early exit (gc-ypk): tags arrive in offset (= line) order, so the first
+    // `limit` findings are the first `limit` by line.
+    if (findings.length >= limit) break;
+    const match = execTagPattern(tag, OG_META_TAG);
     if (!match) continue;
 
     // Group 1 captures og:* via property, group 2 captures twitter:* via name
@@ -3146,10 +3865,14 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
     // Skip OG tags inside Liquid comment blocks
     if (commentedLines.has(matchLineNumber)) continue;
 
-    const matchLine = contentLines[matchLineNumber - 1] ?? "";
-
-    // Skip OG tags inside Liquid conditionals
-    if (LIQUID_CONDITIONAL_RE.test(matchLine)) continue;
+    // Skip OG tags inside Liquid conditionals (memoized per line: many tags on
+    // one long line must not re-test it, gc-t7x)
+    let isConditional = conditionalLine.get(matchLineNumber);
+    if (isConditional === undefined) {
+      isConditional = LIQUID_CONDITIONAL_RE.test(contentLines[matchLineNumber - 1] ?? "");
+      conditionalLine.set(matchLineNumber, isConditional);
+    }
+    if (isConditional) continue;
 
     const fullTag = match[0];
     const contentMatch = META_CONTENT_RE.exec(fullTag);
@@ -3175,8 +3898,8 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check 2: Unresolved Liquid variables in content
-    if (LIQUID_VAR_RE.test(contentValue)) {
-      const allVars = contentValue.match(/\{\{[^}]*\}\}/g) ?? [];
+    const allVars = liquidOutputTokens(contentValue);
+    if (allVars.length > 0) {
       const hasUnsafeVar = allVars.some(
         (v) => !SAFE_OG_VARS_RE.test(v) && !SAFE_OG_FILTER_RE.test(v),
       );
@@ -3224,12 +3947,25 @@ export function detectGhostOg(file: ThemeFile): CreateFindingInput[] {
 
 /**
  * Matches <link rel="preconnect|dns-prefetch|preload" href="..."> and the
- * reversed attribute order (href before rel).
- * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
- * before each use.
+ * reversed attribute order (href before rel). Evaluated per tag by
+ * execTagPattern.
  */
-const PRECONNECT_RE =
-  /<link[^>]+rel\s*=\s*["'](preconnect|dns-prefetch|preload)["'][^>]+href\s*=\s*["']([^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["']([^"']+)["'][^>]+rel\s*=\s*["'](preconnect|dns-prefetch|preload)["'][^>]*>/gi;
+const PRECONNECT_TAG = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["'](preconnect|dns-prefetch|preload)["']` },
+      { gap: "[^>]+", attr: `href${ATTR_EQ}${QUOTED_VALUE}` },
+    ],
+  },
+  {
+    tag: "<link",
+    steps: [
+      { gap: "[^>]+", attr: `href${ATTR_EQ}${QUOTED_VALUE}` },
+      { gap: "[^>]+", attr: `rel${ATTR_EQ}["'](preconnect|dns-prefetch|preload)["']` },
+    ],
+  },
+]);
 
 /**
  * Major shared CDNs commonly used by themes directly — not app-specific.
@@ -3280,12 +4016,11 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
   }
 
   // Isolate each <link ...> tag first (linear, non-backtracking), then apply
-  // PRECONNECT_RE to the bounded tag text. Multi-line <link> tags (e.g. from
+  // PRECONNECT_TAG to the bounded tag text. Multi-line <link> tags (e.g. from
   // Prettier-formatted theme files) are still matched. lineNumberAtOffset maps
   // each match offset back to a 1-based line number for skip-set checking.
   for (const { tag, offset } of extractTags(file.content, "<link")) {
-    PRECONNECT_RE.lastIndex = 0;
-    const match = PRECONNECT_RE.exec(tag);
+    const match = execTagPattern(tag, PRECONNECT_TAG);
     if (!match) continue;
 
     const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
@@ -3334,20 +4069,138 @@ export function detectGhostPreconnect(file: ThemeFile): CreateFindingInput[] {
 // ---------------------------------------------------------------------------
 
 /**
- * Matches @font-face declarations in inline styles.
- * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
- * before each use.
+ * The `font-family` declaration of the former FONT_FACE_RE,
+ * /@font-face\s*\{[^}]*font-family\s*:\s*["']?([^"';}\n]+)["']?/gi (whose
+ * opener is FONT_FACE_OPEN_RE), as a sticky matcher, plus its keyword.
  */
-const FONT_FACE_RE = /@font-face\s*\{[^}]*font-family\s*:\s*["']?([^"';}\n]+)["']?/gi;
+const FONT_FAMILY_DECL_RE = /font-family\s*:\s*["']?([^"';}\n]+)["']?/iy;
+const FONT_FAMILY_WORD_RE = /font-family/gi;
+
+/**
+ * The declared font families of the `@font-face` rules in `text`, identical to
+ * the group-1 captures of the former FONT_FACE_RE but linear (gc-t7x).
+ *
+ * For an opener ending at `e`, the regex's greedy `[^}]*` runs to the next `}`
+ * (or the end) at `c` and backtracks, so it matches the RIGHTMOST position in
+ * [e, c) where the declaration matches, then resumes after that declaration.
+ * The regex redid that scan for every opener: quadratic on a flood of openers
+ * in one brace-free run. Here the rightmost declaration before each `c` is
+ * found once and memoized: later openers have a larger `e`, so the answer for
+ * them is the same declaration if it starts at or after their `e`, else none.
+ */
+function fontFaceFamilies(text: string): string[] {
+  const families: string[] = [];
+  const keywords: number[] = [];
+  FONT_FAMILY_WORD_RE.lastIndex = 0;
+  let word: RegExpExecArray | null;
+  while ((word = FONT_FAMILY_WORD_RE.exec(text)) !== null) keywords.push(word.index);
+
+  // `}` lookups only move forward; cache the last hit and the first miss.
+  let lastBrace = -1;
+  let noBraceFrom = Infinity;
+  const regionEnd = (from: number): number => {
+    if (lastBrace >= from) return lastBrace;
+    if (from >= noBraceFrom) return text.length;
+    const brace = text.indexOf("}", from);
+    if (brace === -1) {
+      noBraceFrom = from;
+      return text.length;
+    }
+    lastBrace = brace;
+    return brace;
+  };
+  const rightmostDecl = new Map<number, { at: number; family: string; end: number } | null>();
+
+  FONT_FACE_OPEN_RE.lastIndex = 0;
+  let open: RegExpExecArray | null;
+  while ((open = FONT_FACE_OPEN_RE.exec(text)) !== null) {
+    const e = open.index + open[0].length;
+    const c = regionEnd(e);
+    if (!rightmostDecl.has(c)) {
+      // Last keyword before c, then walk left while still inside [e, c).
+      let lo = 0;
+      let hi = keywords.length - 1;
+      let k = -1;
+      while (lo <= hi) {
+        const mid = (lo + hi) >> 1;
+        if (keywords[mid] < c) {
+          k = mid;
+          lo = mid + 1;
+        } else {
+          hi = mid - 1;
+        }
+      }
+      let found: { at: number; family: string; end: number } | null = null;
+      for (; k >= 0 && keywords[k] >= e; k--) {
+        FONT_FAMILY_DECL_RE.lastIndex = keywords[k];
+        const decl = FONT_FAMILY_DECL_RE.exec(text);
+        if (decl) {
+          found = { at: keywords[k], family: decl[1], end: FONT_FAMILY_DECL_RE.lastIndex };
+          break;
+        }
+      }
+      rightmostDecl.set(c, found);
+    }
+    const decl = rightmostDecl.get(c);
+    if (decl && decl.at >= e) {
+      families.push(decl.family);
+      FONT_FACE_OPEN_RE.lastIndex = decl.end;
+    } else {
+      FONT_FACE_OPEN_RE.lastIndex = open.index + 1;
+    }
+  }
+  return families;
+}
 
 /**
  * Matches <link> tags loading from font services (Google Fonts, etc.).
  * Handles both attribute orderings (href before rel and rel before href).
- * IMPORTANT: Module-scope regex with /g flag — MUST reset lastIndex = 0
- * before each use.
+ * Evaluated per tag by execTagPattern.
+ *
+ * The catch-all alternative used to be `["'](https?:\/\/[^"']*font[^"']*)["']`.
+ * With no closing quote, that regex rescanned to the end of the tag for every
+ * `font` in the value (a 1 MB href took > 25s). The value runs to the first
+ * quote either way, so a lookahead that finds `font` before that quote in one
+ * forward scan, followed by a plain `[^"']*` capture, accepts exactly the same
+ * values and captures the same text.
  */
-const FONT_LINK_RE =
-  /<link[^>]+href\s*=\s*["'](https?:\/\/fonts\.googleapis\.com\/[^"']+)["'][^>]*>|<link[^>]+href\s*=\s*["'](https?:\/\/[^"']*font[^"']*)["'][^>]*>/gi;
+const FONT_LINK_TAG = tagPattern([
+  {
+    tag: "<link",
+    steps: [
+      {
+        gap: "[^>]+",
+        attr: `href${ATTR_EQ}["'](https?:\\/\\/fonts\\.googleapis\\.com\\/[^"']+)["']`,
+      },
+    ],
+  },
+  {
+    tag: "<link",
+    steps: [
+      {
+        gap: "[^>]+",
+        attr: `href${ATTR_EQ}["'](?=https?:\\/\\/[^"']*?font)(https?:\\/\\/[^"']*)["']`,
+      },
+    ],
+  },
+]);
+
+/**
+ * Every tag attribute pattern, exported so tests can pin each one's regex
+ * source to the regex it replaced and check execTagPattern against that regex.
+ */
+export const TAG_PATTERNS = {
+  SCRIPT_SRC_TAG,
+  LINK_STYLESHEET_TAG,
+  HREFLANG_TAG_1,
+  HREFLANG_TAG_2,
+  META_TAG,
+  META_ROBOTS_TAG,
+  CANONICAL_TAG,
+  OG_META_TAG,
+  PRECONNECT_TAG,
+  FONT_LINK_TAG,
+};
 
 /**
  * Detect orphaned font declarations left by uninstalled apps.
@@ -3381,17 +4234,14 @@ export function detectGhostFont(file: ThemeFile): CreateFindingInput[] {
     if (LIQUID_CONDITIONAL_RE.test(text)) continue;
 
     // Check for @font-face declarations
-    let match: RegExpExecArray | null;
-    FONT_FACE_RE.lastIndex = 0;
-
-    while ((match = FONT_FACE_RE.exec(text)) !== null) {
+    for (const family of fontFaceFamilies(text)) {
       const codeSnippet = buildSnippet(file.content, lineNumber);
 
       // Only flag if we can attribute to a known app
       const appName = identifyAppFromCode(codeSnippet) ?? undefined;
       if (!appName) continue;
 
-      const fontFamily = match[1]?.trim();
+      const fontFamily = family.trim();
       const severity = classifySeverity(FindingType.GHOST_FONT, codeSnippet);
 
       findings.push({
@@ -3406,10 +4256,9 @@ export function detectGhostFont(file: ThemeFile): CreateFindingInput[] {
     }
 
     // Check for font service <link> tags — isolate each <link ...> tag first
-    // (linear, non-backtracking), then apply FONT_LINK_RE to the bounded tag.
+    // (linear, non-backtracking), then apply FONT_LINK_TAG to the bounded tag.
     for (const { tag } of extractTags(text, "<link")) {
-      FONT_LINK_RE.lastIndex = 0;
-      const linkMatch = FONT_LINK_RE.exec(tag);
+      const linkMatch = execTagPattern(tag, FONT_LINK_TAG);
       if (!linkMatch) continue;
 
       const href = linkMatch[1] ?? linkMatch[2];
@@ -3561,7 +4410,7 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
  *
  *   Pass 1 — per-file pattern detection:
  *     Processes only scannable Liquid files (templates/, sections/, snippets/,
- *     layout/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
+ *     layout/, blocks/) and emits GHOST_SCRIPT, GHOST_STYLE, GHOST_SNIPPET,
  *     GHOST_SECTION, GHOST_HREFLANG, DUPLICATE_META, GHOST_JSON_LD,
  *     JSON_LD_CONFLICT, GHOST_TEXT, GHOST_PIXEL, GHOST_ROBOTS,
  *     GHOST_CANONICAL, GHOST_TITLE, GHOST_OG, GHOST_PRECONNECT, GHOST_FONT,
@@ -3595,6 +4444,23 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
  *
  * Returns all findings (all passes) ready for createFindings().
  */
+/**
+ * The first `n` findings by line: a stable sort by lineNumber (ties keep their
+ * emission order), then truncate. This is the cap order (gc-ypk): a
+ * deterministic function of the file content, so rescans of an unchanged file
+ * keep the same findings and their fingerprints.
+ */
+function firstFindingsByLine(findings: CreateFindingInput[], n: number): CreateFindingInput[] {
+  return [...findings].sort((a, b) => a.lineNumber - b.lineNumber).slice(0, n);
+}
+
+/**
+ * The `limit` passed to detectors that can stop early (gc-ypk). One past the cap,
+ * so a detector returning more than the cap proves the file really exceeded it
+ * (a file with exactly MAX_FINDINGS_PER_FILE_PER_TYPE findings is not a cap hit).
+ */
+const EARLY_EXIT_LIMIT = MAX_FINDINGS_PER_FILE_PER_TYPE + 1;
+
 export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   const findings: CreateFindingInput[] = [];
   const unknownScripts: UnknownExternalResource[] = [];
@@ -3606,6 +4472,32 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // the drop is observable (surfaced by the worker as an ops signal, gc-tus A2).
   const benignSkips: BenignSkipCounter = { count: 0 };
 
+  // Per-file, per-type finding cap (gc-ypk). A tag-dense file can emit tens of
+  // thousands of findings of one type at tens of µs each, enough across a few
+  // files to hit the scan worker timeout. Keep the first
+  // MAX_FINDINGS_PER_FILE_PER_TYPE by line and count the hit (telemetry only,
+  // NOT a skipped category). Each detector emits exactly one finding type, so
+  // one detector call is one (file, type). Detectors with a `limit` parameter
+  // stop early (bounding the work, not just the output); the rest are cheap per
+  // finding and are truncated here. MALICIOUS_SCRIPT is never passed through
+  // this: the security alert is shown in full on all plans, and its detector is
+  // linear and cheap per finding.
+  //
+  // Known, accepted edge case: in an over-cap file, an edit that shifts which
+  // findings are the first N (e.g. a new line near the top) pushes a
+  // still-present finding past the cap, and the differ reports it "resolved"
+  // (and a later edit can bring it back as "new"). Accepted because it needs a
+  // file with more than 200 findings of one type (prod max is ~26 per SCAN, so
+  // orders of magnitude below), and the proper fix means persisting the capped
+  // (file, type) pairs so the differ can exclude them like a skipped category.
+  const findingCapHits: Partial<Record<FindingType, number>> = {};
+  const capped = (detected: CreateFindingInput[]): CreateFindingInput[] => {
+    if (detected.length <= MAX_FINDINGS_PER_FILE_PER_TYPE) return detected;
+    const type = detected[0].findingType;
+    findingCapHits[type] = (findingCapHits[type] ?? 0) + 1;
+    return firstFindingsByLine(detected, MAX_FINDINGS_PER_FILE_PER_TYPE);
+  };
+
   // Pass 1: per-file ghost code detection
   for (const file of files) {
     const scannable = isScannableFile(file.filename);
@@ -3614,7 +4506,8 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     // (real theme Liquid files are far under MAX_SCANNABLE_FILE_BYTES) and would
     // let a pathological blob dominate detector cost. Skip the per-file detectors
     // for it and record the skip so the caller logs it — never a silent drop. The
-    // cross-file passes below still include the file (they are not regex-heavy).
+    // cross-file passes below still include the file (they are linear; Pass 5's
+    // duplicate-library scan is pinned on >1 MB input, gc-tus.11).
     // Because those passes still emit for a skipped file, the differ must NOT
     // treat a skipped file's cross-file findings as unre-checked — the set of
     // cross-file types lives in CROSS_FILE_FINDING_TYPES (finding-classification);
@@ -3636,25 +4529,25 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     }
     if (!scannable) continue;
 
-    findings.push(...detectGhostScripts(file));
-    findings.push(...detectGhostStyles(file));
-    findings.push(...detectGhostSnippets(file));
-    findings.push(...detectGhostSections(file));
-    findings.push(...detectGhostHrefLang(file));
-    findings.push(...detectDuplicateMetaTags(file));
-    findings.push(...detectGhostJsonLd(file));
-    findings.push(...detectInvalidJsonLd(file));
-    findings.push(...detectMaliciousScripts(file));
-    findings.push(...detectJsonLdConflicts(file));
-    findings.push(...detectGhostTextFragments(file));
-    findings.push(...detectGhostPixels(file));
-    findings.push(...detectGhostRobots(file));
-    findings.push(...detectGhostCanonical(file));
-    findings.push(...detectGhostTitle(file));
-    findings.push(...detectGhostOg(file));
-    findings.push(...detectGhostPreconnect(file));
-    findings.push(...detectGhostFont(file));
-    findings.push(...detectGhostAjax(file));
+    findings.push(...capped(detectGhostScripts(file)));
+    findings.push(...capped(detectGhostStyles(file)));
+    findings.push(...capped(detectGhostSnippets(file)));
+    findings.push(...capped(detectGhostSections(file)));
+    findings.push(...capped(detectGhostHrefLang(file)));
+    findings.push(...capped(detectDuplicateMetaTags(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostJsonLd(file)));
+    findings.push(...capped(detectInvalidJsonLd(file)));
+    findings.push(...detectMaliciousScripts(file)); // uncapped, see findingCapHits
+    findings.push(...capped(detectJsonLdConflicts(file)));
+    findings.push(...capped(detectGhostTextFragments(file)));
+    findings.push(...capped(detectGhostPixels(file)));
+    findings.push(...capped(detectGhostRobots(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostCanonical(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostTitle(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostOg(file, EARLY_EXIT_LIMIT)));
+    findings.push(...capped(detectGhostPreconnect(file)));
+    findings.push(...capped(detectGhostFont(file)));
+    findings.push(...capped(detectGhostAjax(file)));
 
     // Collect unrecognized external resources (benign libraries are dropped and
     // counted into benignSkips rather than emitted).
@@ -3701,8 +4594,12 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     });
   }
 
-  // Pass 3: settings data drift detection
-  findings.push(...detectSettingsDrift(files));
+  // Pass 3: settings data drift detection. The only cross-file pass that can
+  // emit unbounded findings (one per stale section key in settings_data.json,
+  // all attributed to that one file), so it takes the same cap. The other
+  // cross-file passes emit at most one finding per theme file (orphan, layout)
+  // or per catalog entry (duplicate library / tracker / chat widget).
+  findings.push(...capped(detectSettingsDrift(files, EARLY_EXIT_LIMIT)));
 
   // Pass 4: page builder layout detection
   findings.push(...detectGhostLayouts(files));
@@ -3761,5 +4658,6 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     staticProductCandidates,
     benignLibrarySkips: benignSkips.count,
     thirdPartyDomains,
+    findingCapHits,
   };
 }

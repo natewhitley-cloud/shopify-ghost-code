@@ -81,20 +81,21 @@ the AI angle in images and body copy instead.
 ### Timely hook: checkout.liquid sunset (do NOT put in the hero)
 
 `CHECKOUT_SUNSET` (shipped 2026-09-12, Standard+) flags reliance on the deprecated
-`checkout.liquid` mechanism. **Framing note (as of 2026-09-12):** the Plus hard-block date
-in the code (`SUNSET_DATE = "around August 13, 2026"`) is now ~1 month in the PAST, so
-"beat the deadline" is the wrong tense for Plus stores; the correct hook is present-harm
-("checkout.liquid no longer renders; code it held has already stopped running") for Plus,
-and pending-deprecation for non-Plus. Keep it out of the hero regardless: it's Standard+
+`checkout.liquid` mechanism. **Framing note (corrected 2026-09-23, gc-oam):** the sunset is
+fully in the PAST for every store. checkout.liquid stopped rendering for the Information,
+Shipping, and Payment steps on Aug 13, 2024, and for the Thank you and Order status pages on
+Aug 28, 2025 (shopify.dev checkout-liquid layout docs). "Beat the deadline" is the wrong
+tense for everyone; the hook is present-harm ("checkout.liquid no longer renders; code it
+held has already stopped running"). No Plus/non-Plus split: the detector cannot know plan. Keep it out of the hero regardless: it's Standard+
 gated (free scanners never see it) and isn't strictly "leftover code from an uninstalled
 app," so leading with it blurs the core promise. Use it in three places:
 
 1. **Standard-plan feature copy (Managed Pricing):** add an upgrade reason. Managed Pricing
-   feature bullets are capped at **40 chars**, so use `Catch checkout.liquid sunset risks`
-   (34/40). This detector (and Broken Links) are Standard-only but currently unnamed in the
+   feature bullets are capped at **40 chars**, so use `Find dead checkout.liquid code`
+   (30/40). This detector (and Broken Links) are Standard-only but currently unnamed in the
    Standard pricing card (see the "Pricing-card gap" note below).
-2. **Forum / content angle:** a "checkout.liquid is sunsetting; here's how to find every
-   script that will break" post (see `marketing-plan.md §1`). Highest-leverage home for it.
+2. **Forum / content angle:** a "checkout.liquid no longer renders; here's how to find
+   every script that already stopped running" post (see `marketing-plan.md §1`). Highest-leverage home for it.
 3. **Not** an App Store Ads keyword: near-zero merchant search volume (sell it in body/content).
 
 ### Pricing-card gap (Managed Pricing, 40 chars/bullet)
@@ -106,7 +107,7 @@ decision point: **Broken Links** (`DANGLING_REFERENCE`) and **checkout.liquid su
 "more detail." Candidate bullets (all ≤40):
 
 - `Catch broken links from old apps` (32): names Broken Links
-- `Catch checkout.liquid sunset risks` (37): names checkout sunset, deadline-driven
+- `Find dead checkout.liquid code` (30): names checkout sunset, present-harm
 - `Weekly auto-scan + findings trend` (33): folds cadence + trend into one benefit line
 
 Also update `docs/pricing-and-plans.md` in the same pass; its Standard/Free listing bullets

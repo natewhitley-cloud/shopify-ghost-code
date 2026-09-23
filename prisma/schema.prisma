@@ -348,8 +348,9 @@ enum FindingType {
   // carried at runtime in `description` + `appName` (no JSON column on Finding).
   DANGLING_REFERENCE
   // Emitted by the checkout-extensibility sunset auditor (gc-b3c): the theme
-  // still relies on the now-sunset `layout/checkout.liquid` customization
-  // mechanism, which Shopify hard-blocks for Plus stores as of ~Aug 13, 2026.
+  // still contains `layout/checkout.liquid`, a retired customization mechanism:
+  // Shopify stopped rendering it for Information/Shipping/Payment on Aug 13,
+  // 2024 and for the Thank you/Order status pages on Aug 28, 2025.
   // ONE FindingType covers all customization-depth subtypes (scripts / tracking
   // / snippets / content-injection / layout); the subtype is carried at runtime
   // in `description` + `appName` (no JSON column on Finding), mirroring

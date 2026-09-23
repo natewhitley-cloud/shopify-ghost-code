@@ -16,7 +16,10 @@
 import { describe, it, expect, vi } from "vitest";
 
 import { logger } from "../../app/lib/logger.server";
-import type { DistinctDanglingHandle } from "../../app/services/dangling-reference-extractor.server";
+import {
+  extractDanglingReferences,
+  type DistinctDanglingHandle,
+} from "../../app/services/dangling-reference-extractor.server";
 import { resolveDanglingReferences } from "../../app/services/dangling-reference-resolver.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 
@@ -342,6 +345,23 @@ describe("resolveDanglingReferences — scope gating", () => {
       (c[0] as string).includes("ExistsByHandle"),
     );
     expect(existenceCalls).toHaveLength(0);
+  });
+
+  it("still checks a page when 60 product handles sort first and read_products is absent", async () => {
+    // Extractor + resolver end to end (gc-4ce cap boundary): the product
+    // handles sort first but must not use up the page's slot in the cap.
+    const products = Array.from({ length: 60 }, (_, i) => `<a href="/products/p${i}">x</a>`);
+    const { distinctHandles } = extractDanglingReferences([
+      { filename: "sections/a.liquid", content: products.join("\n") },
+      { filename: "templates/z.liquid", content: '<a href="/pages/gone">x</a>' },
+    ]);
+
+    const { admin } = makeAdmin({ productScope: false, pages: [] });
+    const result = await resolveDanglingReferences(admin, distinctHandles, SHOP_ID);
+
+    expect(result.missing).toEqual([{ entityType: "page", handle: "gone" }]);
+    expect(result.scopeStatus).toEqual({ products: "absent", content: "checked" });
+    expect(result.truncated).toBe(false);
   });
 
   it("skips page candidates when read_content is absent", async () => {

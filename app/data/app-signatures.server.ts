@@ -62,12 +62,17 @@ export const APP_SIGNATURES: AppSignature[] = [
   },
   {
     appName: "Mailchimp",
-    cdnDomains: [
-      "chimpstatic.com",
-      "cdn-images.mailchimp.com",
-      "s3.amazonaws.com/downloads.mailchimp.com",
+    // "s3.amazonaws.com/downloads.mailchimp.com" (gc-5v9) can never match:
+    // cdnDomains is matched against a URL's HOSTNAME, never a path, so a
+    // domain string containing "/" is a dead signal. Moved to scriptPatterns,
+    // which matches against the full URL string.
+    cdnDomains: ["chimpstatic.com", "cdn-images.mailchimp.com"],
+    scriptPatterns: [
+      /mailchimp\.js/,
+      /mc\.js/,
+      /chimpstatic\.com/,
+      /s3\.amazonaws\.com\/downloads\.mailchimp\.com/,
     ],
-    scriptPatterns: [/mailchimp\.js/, /mc\.js/, /chimpstatic\.com/],
     snippetNames: ["mailchimp-popup", "mailchimp-form"],
     cssPatterns: [/mailchimp/, /chimpstatic/],
   },
@@ -289,7 +294,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     appName: "Smile.io",
     cdnDomains: ["cdn.smile.io", "d2v9k67syz0xku.cloudfront.net"],
     scriptPatterns: [/smile\.io/, /sweetTooth/, /window\.SwellAPI/],
-    snippetNames: ["smile-initializer", "smile-ui", "loyalty-lion-initializer"],
+    snippetNames: ["smile-initializer", "smile-ui"],
     cssPatterns: [/smile-launcher/],
   },
   {
@@ -345,38 +350,45 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["selleasy", "selleasy-widget"],
     cssPatterns: [/selleasy/],
   },
+  // Bold Product Options, Bold Upsell, and Bold Discounts all ship from
+  // boldapps.net with a shared BOLD.common/BoldCommerce runtime and a shared
+  // "bold-common" snippet (gc-ovk). Those signals alone can't tell the three
+  // apps apart, so each entry below carries ONLY its own app-specific
+  // signal; the truly generic, indistinguishable ones live on the
+  // vendor-neutral "Bold" entry that follows (same pattern as the
+  // "Loyalty App" label used for the generic loyalty- prefix).
   {
     appName: "Bold Product Options",
-    cdnDomains: ["cdn.boldapps.net", "boldapps.net"],
-    scriptPatterns: [/boldapps\.net/, /BOLD\.common/, /BoldCommerce/, /bold-options/i],
+    cdnDomains: [],
+    scriptPatterns: [/bold-options/i],
     snippetNames: [
-      "bold-common",
       "bold-variant-option",
       "bold-product-options",
       "bold-options-css",
       "bold-options-shared",
     ],
-    cssPatterns: [/boldapps/, /bold-options/],
+    cssPatterns: [/bold-options/],
   },
   {
     appName: "Bold Upsell",
-    cdnDomains: ["cdn.boldapps.net", "boldapps.net"],
-    scriptPatterns: [/boldapps\.net/, /BOLD\.common/, /BoldCommerce/, /bold-upsell/i],
-    snippetNames: ["bold-common", "bold-upsell", "bold-upsell-custom"],
-    cssPatterns: [/boldapps/, /bold-upsell/],
+    cdnDomains: [],
+    scriptPatterns: [/bold-upsell/i],
+    snippetNames: ["bold-upsell", "bold-upsell-custom"],
+    cssPatterns: [/bold-upsell/],
   },
   {
     appName: "Bold Discounts",
+    cdnDomains: [],
+    scriptPatterns: [/bold-discount/i, /shappify/i],
+    snippetNames: ["bold-discount", "shappify-sales-clock"],
+    cssPatterns: [/bold-discount/, /shappify/],
+  },
+  {
+    appName: "Bold",
     cdnDomains: ["cdn.boldapps.net", "boldapps.net"],
-    scriptPatterns: [
-      /boldapps\.net/,
-      /BOLD\.common/,
-      /BoldCommerce/,
-      /bold-discount/i,
-      /shappify/i,
-    ],
-    snippetNames: ["bold-common", "bold-discount", "shappify-sales-clock"],
-    cssPatterns: [/boldapps/, /bold-discount/, /shappify/],
+    scriptPatterns: [/boldapps\.net/, /BOLD\.common/, /BoldCommerce/],
+    snippetNames: ["bold-common"],
+    cssPatterns: [/boldapps/],
   },
   {
     appName: "ReConvert",
@@ -494,7 +506,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     appName: "SEO Manager",
     cdnDomains: [],
     scriptPatterns: [/SEOManager/, /seo-manager/],
-    snippetNames: ["seo-manager", "searchpie"],
+    snippetNames: ["seo-manager"],
     cssPatterns: [],
   },
   {
@@ -507,7 +519,10 @@ export const APP_SIGNATURES: AppSignature[] = [
   {
     appName: "JSON-LD for SEO",
     cdnDomains: [],
-    scriptPatterns: [/json-ld-for-seo/, /jsonld.*shopify/i],
+    // /jsonld.*shopify/i, written so it stays linear (gc-t7x): `a.*b` retried
+    // the rest of the line from every `a`. Anchoring at the line's FIRST `a`
+    // matches the same lines (any later `a` then `b` implies the first).
+    scriptPatterns: [/json-ld-for-seo/, /^(?:(?!jsonld).)*jsonld.*shopify/im],
     snippetNames: ["json-ld-for-seo", "schema-for-seo"],
     cssPatterns: [],
     jsonLdPatterns: [/json-ld-for-seo/i],
@@ -640,7 +655,9 @@ export const APP_SIGNATURES: AppSignature[] = [
   // -------------------------------------------------------------------------
   {
     appName: "PageFly",
-    cdnDomains: ["ik.imagekit.io/pagefly", "cdn.pagefly.io"],
+    // "ik.imagekit.io/pagefly" (gc-5v9) contained a path and could never match
+    // a hostname; already covered by the /pagefly/i scriptPattern fallback.
+    cdnDomains: ["cdn.pagefly.io"],
     scriptPatterns: [/pagefly/i, /PageFly/],
     snippetNames: [
       "pagefly-head",
@@ -728,6 +745,26 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["fomo-notification"],
     cssPatterns: [/fomo/],
   },
+  // MUST stay BEFORE "Sales Pop / Hextom": that entry's /hextom\.com/ and
+  // /hextom/ match every Hextom URL and class, and lookups are first-match-wins,
+  // so translate signals were all attributed to Sales Pop (gc-9rw). Its script
+  // and css patterns are confined to ONE URL or identifier token, so Sales Pop
+  // code that only mentions `translate` elsewhere on the line (a CSS
+  // `transform: translateY(...)`, an unrelated class) still falls through to
+  // Sales Pop. Linear forms (gc-t7x): each run stops at the next
+  // `hextom.com/` / `hextom`, so no char is rescanned from many starts.
+  {
+    appName: "Hextom Translate",
+    cdnDomains: [],
+    scriptPatterns: [
+      /hextom\.com\/(?:(?!hextom\.com\/)[^\s"'<>])*translate/,
+      /\btranslate\.hextom\.com/,
+      /HextomTranslate/,
+    ],
+    snippetNames: ["hextom-translate", "hextom-translate-switcher"],
+    cssPatterns: [/hextom(?:(?!hextom)[\w-])*translate/],
+    hrefLangPatterns: [/hextom\.com/],
+  },
   {
     appName: "Sales Pop / Hextom",
     cdnDomains: ["cdn.hextom.com"],
@@ -771,14 +808,6 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["langshop", "langshop-switcher"],
     cssPatterns: [/langshop/],
     hrefLangPatterns: [/langshop\.app/],
-  },
-  {
-    appName: "Hextom Translate",
-    cdnDomains: [],
-    scriptPatterns: [/hextom\.com\/.*translate/, /HextomTranslate/],
-    snippetNames: ["hextom-translate", "hextom-translate-switcher"],
-    cssPatterns: [/hextom.*translate/],
-    hrefLangPatterns: [/hextom\.com/],
   },
   // Translate & Adapt uses Shopify's built-in locale paths — keep AFTER
   // domain-specific translation apps so their patterns take priority.
@@ -1074,21 +1103,22 @@ export const APP_SIGNATURES: AppSignature[] = [
       /\bembedSocial-hashtag\b/,
       /\bembedSocial-reviews\b/,
       /\bembedSocial-albums\b/,
-      /\bdata-ref\b[^>]*embedsocial/i,
+      // /\bdata-ref\b[^>]*embedsocial/i, linear form (gc-t7x): only the first
+      // data-ref after the string start or a `>` is tried.
+      /(?:^|>)(?:(?!\bdata-ref\b)[^>])*\bdata-ref\b[^>]*embedsocial/i,
     ],
   },
+  // "Searchie / SearchPie" (above) and this entry both listed cdn.searchpie.io
+  // / "searchpie" / "searchpie-seo" with no way to tell which app they
+  // belong to (gc-ovk). Those generic searchpie.io signals stay on the
+  // canonical "Searchie / SearchPie" entry; this entry keeps only its OWN
+  // distinct secomapp.com signals.
   {
     appName: "SEO Booster (Secomapp / SearchPie)",
-    cdnDomains: ["sb.secomapp.com", "cdn.searchpie.io"],
-    scriptPatterns: [/secomapp\.com/, /searchpie\.io/, /sb\.secomapp/],
-    snippetNames: [
-      "SEO-with-JSON-LD-Article-Collection",
-      "seo-booster",
-      "secomapp-seo",
-      "searchpie",
-      "searchpie-seo",
-    ],
-    cssPatterns: [/secomapp/, /searchpie/],
+    cdnDomains: ["sb.secomapp.com"],
+    scriptPatterns: [/secomapp\.com/, /sb\.secomapp/],
+    snippetNames: ["SEO-with-JSON-LD-Article-Collection", "seo-booster", "secomapp-seo"],
+    cssPatterns: [/secomapp/],
     jsonLdPatterns: [/secomapp/i, /searchpie/i],
   },
 ];

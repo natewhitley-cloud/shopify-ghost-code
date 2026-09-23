@@ -53,7 +53,7 @@
 1. All features in Free
 2. Full finding details with code
 3. Catch broken links from old apps
-4. Catch checkout.liquid sunset risks
+4. Find dead checkout.liquid code
 5. Weekly auto-scan + findings trend
 6. 7-day free trial
 
@@ -61,8 +61,8 @@
 > `DANGLING_REFERENCE`, checkout.liquid sunset `CHECKOUT_SUNSET`) instead of *mechanics*, so
 > ad-driven visitors see concrete reasons to pay. The 1-manual-scan/week cap is unchanged and
 > still enforced; it's folded into "Weekly auto-scan" rather than stated as a limit. Checkout
-> bullet is tense-neutral on purpose; the Plus hard-block date has passed (see GhostCode
-> bead for the in-app copy fix). Apply these in Partner Dashboard → Managed Pricing.
+> bullet is tense-neutral on purpose; the checkout.liquid sunset fully passed on Aug 28,
+> 2025 for every store (in-app copy made past tense in gc-oam). Apply these in Partner Dashboard → Managed Pricing.
 
 ### Professional ($29/mo, 7-day free trial)
 

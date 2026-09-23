@@ -61,6 +61,12 @@ describe("buildThemeEditorUrl", () => {
     );
   });
 
+  it("deep-links an OS 2.0 theme block file (blocks/, gc-zfl)", () => {
+    expect(buildThemeEditorUrl(SHOP, GID, "blocks/group.liquid")).toBe(
+      "https://admin.shopify.com/store/my-store/themes/123456789/editor?key=blocks%2Fgroup.liquid",
+    );
+  });
+
   it("URL-encodes the filename (path separators and special chars)", () => {
     const url = buildThemeEditorUrl(SHOP, GID, "config/settings_data.json");
     expect(url).toContain("key=config%2Fsettings_data.json");

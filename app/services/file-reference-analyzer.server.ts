@@ -9,7 +9,8 @@
  *   - Only snippet files (keys starting with `snippets/`) are candidates for
  *     orphan status.
  *   - References are extracted from ALL other Liquid files (sections/, layout/,
- *     templates/).
+ *     templates/, blocks/). Theme blocks are never orphan candidates: they are
+ *     placed by JSON templates / `content_for`, not render/include (gc-zfl).
  *   - Variable-based render/include calls (e.g. `{% render variable %}`) cannot
  *     be resolved statically and are skipped.
  *

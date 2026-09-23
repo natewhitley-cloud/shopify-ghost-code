@@ -69,11 +69,11 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   [FindingType.DUPLICATE_LIBRARY]: Severity.MEDIUM,
   [FindingType.DANGLING_REFERENCE]: Severity.MEDIUM,
   // CHECKOUT_SUNSET is HIGH (the highest severity this app emits — there is no
-  // CRITICAL tier): once Shopify hard-blocks checkout.liquid for Plus stores
-  // (~Aug 13, 2026), the file stops rendering entirely, so every customization
-  // it carries (custom scripts, tracking, injected snippets) breaks at the
-  // single most conversion-critical step. This is a hard, dated breakage, not a
-  // cosmetic or discoverability decay.
+  // CRITICAL tier): Shopify no longer renders checkout.liquid for any store
+  // (fully sunset Aug 28, 2025), so every customization it carries (custom
+  // scripts, tracking, injected snippets) is already broken at the single most
+  // conversion-critical step. This is a present, hard breakage, not a cosmetic
+  // or discoverability decay.
   [FindingType.CHECKOUT_SUNSET]: Severity.HIGH,
   // DUPLICATE_TRACKER is MEDIUM: the same analytics platform configured with two
   // different IDs double-counts events or splits them across properties, quietly
