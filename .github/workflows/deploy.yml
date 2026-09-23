@@ -66,6 +66,9 @@ jobs:
       # body.deployedSha (written to .deploy-sha by the deploy job, baked into
       # the Docker image) against github.sha. A mismatch fails the gate — soft-
       # launch observed ✓ green on 2 consecutive deploys (33ad905, 91a0a04).
+      # The SHA is polled until it matches (gc-7y2) so Railway's container swap
+      # cannot false-fail a good deploy; bounded by SMOKE_SHA_TIMEOUT_MS
+      # (default 4 min) at SMOKE_SHA_INTERVAL_MS (default 10s).
       - name: Post-deploy smoke test
         env:
           SMOKE_BASE_URL: ${{ secrets.SMOKE_BASE_URL }}
