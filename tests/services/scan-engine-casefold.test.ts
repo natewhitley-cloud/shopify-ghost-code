@@ -5,6 +5,7 @@ import {
   detectGhostScripts,
   detectGhostStyles,
   detectMaliciousScripts,
+  extractTags,
   indexOfIgnoreCase,
 } from "../../app/services/scan-engine.server";
 
@@ -150,6 +151,79 @@ describe("tag detectors with length-changing characters before a tag (gc-8jd)", 
     const findings = detectDuplicateMetaTags({ filename: "layout/theme.liquid", content });
     expect(findings).toHaveLength(1);
     expect(findings[0].description).toContain("description");
+  });
+});
+
+// extractTags searches a native toLowerCase() copy when lowercasing preserves
+// the length (no U+0130 in the content) and falls back to indexOfIgnoreCase
+// otherwise. Both paths must return the same tags at the same ORIGINAL offsets,
+// including treating the Kelvin sign in a tag prefix as "k".
+describe("extractTags native and fallback search paths agree", () => {
+  const kelvinTag = "<lin\u212A rel=x>";
+
+  it("matches a Kelvin-sign prefix on the native path (no U+0130)", () => {
+    expect(extractTags(`a ${kelvinTag} <LINK b>`, "<link")).toEqual([
+      { tag: kelvinTag, offset: 2 },
+      { tag: "<LINK b>", offset: 2 + kelvinTag.length + 1 },
+    ]);
+  });
+
+  it("matches the same tags at original offsets on the fallback path (with U+0130)", () => {
+    const content = `İ ${kelvinTag} <LINK b>`;
+    expect(extractTags(content, "<link")).toEqual([
+      { tag: kelvinTag, offset: 2 },
+      { tag: "<LINK b>", offset: 2 + kelvinTag.length + 1 },
+    ]);
+    expect(content.slice(2, 2 + kelvinTag.length)).toBe(kelvinTag);
+  });
+
+  it("never treats an İ as the i in <link on either path", () => {
+    expect(extractTags("<lİnk a>", "<link")).toEqual([]);
+    expect(extractTags("<lİnk a> <link b>", "<link")).toEqual([{ tag: "<link b>", offset: 9 }]);
+  });
+
+  it("equals the indexOfIgnoreCase-based scan on seeded random inputs", () => {
+    // Reference: the pre-fast-path implementation, unit by unit.
+    const reference = (content: string, prefix: string) => {
+      const out: Array<{ tag: string; offset: number }> = [];
+      let from = 0;
+      for (;;) {
+        const start = indexOfIgnoreCase(content, prefix, from);
+        if (start === -1) break;
+        const close = content.indexOf(">", start + prefix.length);
+        if (close === -1) break;
+        out.push({ tag: content.slice(start, close + 1), offset: start });
+        from = close + 1;
+      }
+      return out;
+    };
+    const alphabet = [
+      "<",
+      ">",
+      "l",
+      "L",
+      "i",
+      "I",
+      "n",
+      "N",
+      "k",
+      "K",
+      "\u212A",
+      "\u0130",
+      "ß",
+      " ",
+      "\n",
+      "<link",
+      "<LINK",
+    ];
+    let seed = 42;
+    const rand = () => (seed = (seed * 1103515245 + 12345) % 2 ** 31) / 2 ** 31;
+    for (let n = 0; n < 1000; n++) {
+      const len = Math.floor(rand() * 40);
+      let s = "";
+      for (let i = 0; i < len; i++) s += alphabet[Math.floor(rand() * alphabet.length)];
+      expect(extractTags(s, "<link"), JSON.stringify(s)).toEqual(reference(s, "<link"));
+    }
   });
 });
 

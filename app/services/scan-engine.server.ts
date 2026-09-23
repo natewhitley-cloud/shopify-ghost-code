@@ -251,13 +251,27 @@ export function indexOfIgnoreCase(haystack: string, lowerNeedle: string, from = 
  *     matches and their offsets. (The one theoretical divergence — a raw `>`
  *     inside a quoted attribute value — does not occur in real theme markup and
  *     is not something the old `[^>]` structural quantifiers tolerated either.)
+ *
+ * Exported for tests (the native/fallback search paths must agree).
  */
-function extractTags(content: string, tagPrefix: string): Array<{ tag: string; offset: number }> {
+export function extractTags(
+  content: string,
+  tagPrefix: string,
+): Array<{ tag: string; offset: number }> {
   const tags: Array<{ tag: string; offset: number }> = [];
   const needle = tagPrefix.toLowerCase();
+  // Fast path: when lowercasing preserves the length (only U+0130 changes it),
+  // every offset in the lowercased copy is an offset in `content`, so native
+  // indexOf is exact. It also agrees with indexOfIgnoreCase on the one non-A-Z
+  // unit that lowercases to ASCII (U+212A Kelvin -> "k"). Otherwise fall back
+  // to the unit-wise scan (gc-8jd).
+  const lower = content.toLowerCase();
+  const lengthPreserved = lower.length === content.length;
   let from = 0;
   for (;;) {
-    const start = indexOfIgnoreCase(content, needle, from);
+    const start = lengthPreserved
+      ? lower.indexOf(needle, from)
+      : indexOfIgnoreCase(content, needle, from);
     if (start === -1) break;
     const close = content.indexOf(">", start + needle.length);
     if (close === -1) break; // unterminated tag — no complete match possible
@@ -543,6 +557,10 @@ function lineIndexFor(content: string): { lineStarts: number[]; splitLines: stri
     }
     _cachedLineStarts = starts;
   }
+  // Adopt this string object: after a by-value hit (a byte-identical file, e.g.
+  // the same block shipped under several names) later calls with it take V8's
+  // same-object fast path instead of a full character compare on every call.
+  _cachedContent = content;
   return { lineStarts: _cachedLineStarts, splitLines: _cachedSplitLines };
 }
 
@@ -612,6 +630,22 @@ function lineAppNamer(): (lineNumber: number, codeSnippet: string) => string | u
  * therefore stays inline rather than being unified here.
  */
 function buildCommentSkipLines(content: string): Set<number> {
+  if (content !== _commentSkipContent) {
+    _commentSkipLines = computeCommentSkipLines(content);
+  }
+  // Adopt this string object for the same-object fast path (see lineIndexFor).
+  _commentSkipContent = content;
+  // A fresh copy every call: detectGhostPreconnect add()s its conditional lines
+  // to the returned set, which must not leak into other detectors.
+  return new Set(_commentSkipLines);
+}
+
+// Single-entry cache for buildCommentSkipLines, same pattern as lineIndexFor:
+// ~11 comment-aware detectors ask for the set of the same file in a row.
+let _commentSkipContent: string | null = null;
+let _commentSkipLines: Set<number> = new Set();
+
+function computeCommentSkipLines(content: string): Set<number> {
   const skipLines = new Set<number>();
   let insideComment = false;
   let insideDoc = false;
