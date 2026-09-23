@@ -246,8 +246,15 @@ export const CROSS_FILE_FINDING_TYPES = new Set([
  * skipped file every scan, so the differ must diff them normally rather than
  * exclude them as unre-checked (which would misreport a still-present finding
  * as "new" every rescan and hide its genuine resolution).
+ *
+ * CHECKOUT_SUNSET (gc-4yg) belongs here too: detectCheckoutSunset runs outside
+ * scanThemeFiles and still emits its presence finding for a checkout.liquid
+ * over the cap, the same file the scanner reports as skipped.
  */
-export const SIZE_SKIP_STILL_SCANNED_FINDING_TYPES = new Set(["MALICIOUS_SCRIPT"]);
+export const SIZE_SKIP_STILL_SCANNED_FINDING_TYPES = new Set([
+  "MALICIOUS_SCRIPT",
+  "CHECKOUT_SUNSET",
+]);
 
 // ---------------------------------------------------------------------------
 // Theme-file-backed vs Admin-resource findings (gc-3on)

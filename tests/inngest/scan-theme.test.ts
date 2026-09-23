@@ -55,6 +55,8 @@ vi.mock("../../app/services/theme-fetcher.server", async (importOriginal) => ({
 vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
   MAX_SCANNABLE_FILE_BYTES: 1_000_000,
+  // Used by the real (unmocked) checkout-sunset detector.
+  buildSnippet: (content: string) => content.slice(0, 300),
   // Real-behaviour stub so the core step's scannableFileCount is meaningful.
   isScannableFile: (filename: string) =>
     filename.endsWith(".liquid") &&
@@ -532,6 +534,44 @@ describe("scanTheme — happy path", () => {
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
     });
+  });
+
+  it("logs an oversized checkout.liquid and still saves its presence finding (gc-4yg)", async () => {
+    // The checkout-sunset detector runs on the main thread, so it skips
+    // analyzing a checkout.liquid over the cap; the skip must be observable.
+    const warnSpy = vi.spyOn(logger, "warn");
+    const oversized = { filename: "layout/checkout.liquid", content: "x".repeat(1_000_001) };
+    mockFetchThemeFiles.mockResolvedValueOnce([...MOCK_FILES, oversized]);
+
+    await runScanTheme();
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("checkout.liquid"),
+      expect.objectContaining({
+        event: "checkout_sunset_oversized",
+        shopId: SHOP_ID,
+        size: 1_000_001,
+        cap: 1_000_000,
+      }),
+    );
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.filter((f) => f.findingType === FindingType.CHECKOUT_SUNSET)).toHaveLength(1);
+    warnSpy.mockRestore();
+  });
+
+  it("does not log the checkout.liquid skip for a file within the cap", async () => {
+    const warnSpy = vi.spyOn(logger, "warn");
+    const normal = { filename: "layout/checkout.liquid", content: "<script>x()</script>" };
+    mockFetchThemeFiles.mockResolvedValueOnce([...MOCK_FILES, normal]);
+
+    await runScanTheme();
+
+    expect(
+      warnSpy.mock.calls.some(
+        ([, meta]) => (meta as { event?: string })?.event === "checkout_sunset_oversized",
+      ),
+    ).toBe(false);
+    warnSpy.mockRestore();
   });
 
   it("executes the core steps in order: IN_PROGRESS, fetch, scan, save, then finalize last", async () => {

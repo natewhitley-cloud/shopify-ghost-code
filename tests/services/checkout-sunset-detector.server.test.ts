@@ -11,13 +11,19 @@
  *   - edge: empty / whitespace / comment-only checkout.liquid → no finding
  *   - commented-out signals are not counted as live customization
  *   - finding shape: filename, type, HIGH severity, evidence snippet, subtype tag
+ *   - comment stripping is linear on unterminated comment floods (gc-4yg) and
+ *     identical to the regexes it replaced on random input
+ *   - checkout.liquid over MAX_SCANNABLE_FILE_BYTES: presence finding only
  */
 
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
-import { detectCheckoutSunset } from "../../app/services/checkout-sunset-detector.server";
-import type { ThemeFile } from "../../app/services/scan-engine.server";
+import {
+  detectCheckoutSunset,
+  stripComments,
+} from "../../app/services/checkout-sunset-detector.server";
+import { MAX_SCANNABLE_FILE_BYTES, type ThemeFile } from "../../app/services/scan-engine.server";
 
 const CHECKOUT_PATH = "layout/checkout.liquid";
 
@@ -185,5 +191,167 @@ describe("detectCheckoutSunset — evidence", () => {
   it("emits no em-dash or en-dash in the description", () => {
     const findings = detectCheckoutSunset([file("<script>x()</script>")]);
     expect(findings[0].description).not.toMatch(/[—–]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-4yg — comment stripping is linear and unchanged
+// ---------------------------------------------------------------------------
+
+// The comment-stripping regexes as they were before gc-4yg (copied verbatim).
+const OLD_LIQUID_COMMENT_RE = /\{%-?\s*comment\s*-?%\}[\s\S]*?\{%-?\s*endcomment\s*-?%\}/gi;
+const OLD_HTML_COMMENT_RE = /<!--[\s\S]*?-->/g;
+
+function oldStripComments(content: string): string {
+  const blank = (match: string) => match.replace(/[^\n]/g, " ");
+  return content.replace(OLD_LIQUID_COMMENT_RE, blank).replace(OLD_HTML_COMMENT_RE, blank);
+}
+
+// Deterministic PRNG (mulberry32) so a failure is reproducible.
+function prng(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// Delimiter pieces, near misses, case and whitespace variants, and nesting.
+const COMMENT_FRAGMENTS = [
+  "{%",
+  "{%-",
+  "%}",
+  "-%}",
+  " ",
+  "  ",
+  "\n",
+  "\t",
+  "comment",
+  "COMMENT",
+  "endcomment",
+  "EndComment",
+  "{% comment %}",
+  "{% endcomment %}",
+  "{%- comment -%}",
+  "{%-endcomment-%}",
+  "{%comment%}",
+  "{% endcomment",
+  "<!--",
+  "-->",
+  "<!-->",
+  "<!--->",
+  "--",
+  "-",
+  "<!-",
+  "->",
+  "<",
+  ">",
+  "!",
+  "x",
+  "<script>",
+  "{{ a }}",
+];
+
+function randomCommentSoup(rand: () => number): string {
+  let out = "";
+  const parts = Math.floor(rand() * 16);
+  for (let i = 0; i < parts; i++) {
+    out += COMMENT_FRAGMENTS[Math.floor(rand() * COMMENT_FRAGMENTS.length)];
+  }
+  return out;
+}
+
+// At the per-file cap the old regexes took > 20s; the linear scan takes ms.
+function atCap(fragment: string, prefix = ""): string {
+  const body = MAX_SCANNABLE_FILE_BYTES - prefix.length;
+  return prefix + fragment.repeat(Math.ceil(body / fragment.length)).slice(0, body);
+}
+
+describe("stripComments (gc-4yg)", () => {
+  it("returns exactly what the old regexes returned on 50K random inputs", () => {
+    const rand = prng(0x4f9);
+    let changed = 0;
+    for (let i = 0; i < 50_000; i++) {
+      const content = randomCommentSoup(rand);
+      const expected = oldStripComments(content);
+      const actual = stripComments(content);
+      if (expected !== content) changed++;
+      if (actual !== expected) {
+        // Surface the offending input in the failure message.
+        expect({ content, actual }).toEqual({ content, actual: expected });
+      }
+    }
+    // Not vacuous: a good share of the corpus actually contains comments.
+    expect(changed).toBeGreaterThan(5_000);
+  });
+
+  it.each([
+    ["an unclosed Liquid comment", "a {% comment %} b\nc"],
+    ["an unclosed HTML comment", "a <!-- b\nc"],
+    ["a Liquid comment wrapping an HTML opener", "{% comment %}<!--{% endcomment %}x-->y"],
+    ["an HTML comment wrapping a Liquid opener", "<!--{% comment %}-->x{% endcomment %}"],
+    ["a self-overlapping <!-->", "<!-->x-->y"],
+    ["whitespace-controlled delimiters", "{%- COMMENT -%}\n<script>\n{%-endcomment-%}z"],
+    ["a later closer after an unclosed opener", "{% comment %}a{% comment %}b{% endcomment %}c"],
+  ])("matches the old regexes on %s", (_label, content) => {
+    expect(stripComments(content)).toBe(oldStripComments(content));
+  });
+
+  it("keeps the length and every newline", () => {
+    const content = "a\n{% comment %}\nb\n{% endcomment %}\n<!--\nc-->d";
+    const stripped = stripComments(content);
+    expect(stripped).toHaveLength(content.length);
+    expect(stripped.split("\n")).toHaveLength(content.split("\n").length);
+    expect(stripped).toBe("a\n" + " ".repeat(13) + "\n \n" + " ".repeat(16) + "\n    \n    d");
+  });
+});
+
+describe("detectCheckoutSunset — linear on unterminated comment floods (gc-4yg)", () => {
+  // Runs on the MAIN thread in the scan-theme step (not the scan worker), so a
+  // quadratic scan here stalls the whole multi-tenant process.
+  it.each([
+    ["<!-- openers with no -->", atCap("<!--")],
+    ["{% comment %} openers with no endcomment", atCap("{% comment %}", "<p>x</p>")],
+    ["{%- comment -%} openers on separate lines", atCap("{%- comment -%}\n", "<p>x</p>")],
+  ])("%s", (_label, content) => {
+    const start = performance.now();
+    const findings = detectCheckoutSunset([file(content)]);
+    expect(performance.now() - start).toBeLessThan(1500);
+    expect(findings).toHaveLength(1);
+  });
+});
+
+describe("detectCheckoutSunset — checkout.liquid over MAX_SCANNABLE_FILE_BYTES", () => {
+  const oversized = "<script>track()</script>\n" + " ".repeat(MAX_SCANNABLE_FILE_BYTES);
+
+  it("still emits the presence finding, without customization analysis", () => {
+    const findings = detectCheckoutSunset([file(oversized)]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.CHECKOUT_SUNSET);
+    expect(findings[0].severity).toBe(Severity.HIGH);
+    expect(findings[0].filename).toBe(CHECKOUT_PATH);
+    // No depth analysis ran, so no specific breakage is claimed.
+    expect(findings[0].appName).toBe("layout");
+    expect(findings[0].lineNumber).toBe(1);
+    expect(findings[0].description).toContain("still includes checkout.liquid");
+    expect(findings[0].description).not.toContain("What breaks");
+    expect(findings[0].codeSnippet).toContain("<script>track()</script>");
+  });
+
+  it("does not analyze an oversized file's content (an all-comment file still flags)", () => {
+    const allComments = atCap("<!--") + "<!--";
+    expect(allComments.length).toBeGreaterThan(MAX_SCANNABLE_FILE_BYTES);
+    const start = performance.now();
+    const findings = detectCheckoutSunset([file(allComments)]);
+    expect(performance.now() - start).toBeLessThan(1500);
+    expect(findings).toHaveLength(1);
+  });
+
+  it("analyzes a file exactly at the cap as usual", () => {
+    const content = "<script>track()</script>" + " ".repeat(MAX_SCANNABLE_FILE_BYTES - 24);
+    expect(content).toHaveLength(MAX_SCANNABLE_FILE_BYTES);
+    expect(detectCheckoutSunset([file(content)])[0].appName).toBe("scripts");
   });
 });

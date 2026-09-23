@@ -52,7 +52,10 @@ import {
   updateScanStatus,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
-import { detectCheckoutSunset } from "../../app/services/checkout-sunset-detector.server";
+import {
+  CHECKOUT_LIQUID_PATH,
+  detectCheckoutSunset,
+} from "../../app/services/checkout-sunset-detector.server";
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { isScannableFile, MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
@@ -374,10 +377,27 @@ export const scanTheme = inngest.createFunction(
         // trivial); its rows are persisted with the theme findings below, under
         // saveThemeFindings' scan-scoped idempotency guard.
         const { canDetectCheckoutSunset } = await import("../../app/lib/plan-gating.server");
-        const checkoutSunsetFindings = canDetectCheckoutSunset(shop.plan)
-          ? detectCheckoutSunset(files)
-          : [];
+        const runCheckoutSunset = canDetectCheckoutSunset(shop.plan);
+        const checkoutSunsetFindings = runCheckoutSunset ? detectCheckoutSunset(files) : [];
         const themeFindings = [...findings, ...checkoutSunsetFindings];
+
+        // The detector runs here on the main thread, not in the scan worker, so
+        // it does not analyze a checkout.liquid over the per-file cap (gc-4yg);
+        // it only emits the presence finding. Surface that reduced coverage.
+        const checkoutLiquid = files.find((f) => f.filename === CHECKOUT_LIQUID_PATH);
+        if (
+          runCheckoutSunset &&
+          checkoutLiquid &&
+          checkoutLiquid.content.length > MAX_SCANNABLE_FILE_BYTES
+        ) {
+          logger.warn("checkout sunset analysis skipped for oversized checkout.liquid", {
+            function: "scan-theme",
+            event: "checkout_sunset_oversized",
+            shopId,
+            size: checkoutLiquid.content.length,
+            cap: MAX_SCANNABLE_FILE_BYTES,
+          });
+        }
 
         // Surface any files skipped for exceeding the per-file size cap so the
         // drop is never silent (gc-06e.2). Real theme Liquid files are far under

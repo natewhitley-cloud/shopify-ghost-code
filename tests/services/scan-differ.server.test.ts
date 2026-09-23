@@ -610,6 +610,31 @@ describe("diffScans — MALICIOUS_SCRIPT on a skipped file diffs normally (gc-qq
 });
 
 // ---------------------------------------------------------------------------
+// diffScans — CHECKOUT_SUNSET on a skipped checkout.liquid (gc-4yg)
+//
+// detectCheckoutSunset still emits its presence finding for a checkout.liquid
+// over the size cap (the scanner size-skips the same file), so like
+// MALICIOUS_SCRIPT it is re-checked every scan and must diff normally.
+// ---------------------------------------------------------------------------
+
+describe("diffScans — CHECKOUT_SUNSET on a skipped checkout.liquid diffs normally (gc-4yg)", () => {
+  const SKIPPED = ["layout/checkout.liquid"];
+  const sunset = makeFinding("layout/checkout.liquid", "CHECKOUT_SUNSET", "<script>x()</script>");
+
+  it("reports it as UNCHANGED (not a false 'new') when present in both scans", () => {
+    const diff = diffScans([sunset], [sunset], { skippedFiles: SKIPPED });
+    expect(diff.unchangedCount).toBe(1);
+    expect(diff.newFindings).toHaveLength(0);
+    expect(diff.resolvedFindings).toHaveLength(0);
+  });
+
+  it("reports it as RESOLVED when the current scan no longer emits it", () => {
+    const diff = diffScans([], [sunset], { skippedFiles: SKIPPED });
+    expect(diff.resolvedFindings.map((f) => f.findingType)).toEqual(["CHECKOUT_SUNSET"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // LOG-10 — fingerprint stability across non-substantive snippet changes
 //
 // These are the acceptance criteria: a finding's identity must survive edits
