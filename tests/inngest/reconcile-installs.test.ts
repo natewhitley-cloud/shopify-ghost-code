@@ -753,6 +753,22 @@ describe("reconcileInstalls handler", () => {
     expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1 });
   });
 
+  it("logs the invalid domain as a structured field so the corrupt row is traceable", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "shop.myshopify.com.evil.com" }]);
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+
+    await runReconcile();
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      expect.stringContaining("domain failed validation"),
+      expect.objectContaining({
+        function: "reconcile-installs",
+        domain: "shop.myshopify.com.evil.com",
+      }),
+    );
+  });
+
   it("masked-500 + uppercase domain (SHOP.myshopify.com) → NO fetch, NOT marked (ambiguous, case-sensitive)", async () => {
     // Domains are stored lowercase; uppercase is unexpected input, not a
     // legitimate variant, so it is rejected rather than silently lowercased.

@@ -321,10 +321,13 @@ async function markUninstalled(domain: string): Promise<void> {
  */
 async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
   if (!isValidMyshopifyDomain(domain)) {
-    // Never log `domain` beyond this point — it already failed validation, and
-    // no secret is logged here regardless of outcome.
+    // Log `domain` as a STRUCTURED field (JSON-encoded by the logger, so it is
+    // safe from log injection) — otherwise a corrupt row is untraceable while
+    // it adds +1 to `skipped` every run. The caller's logs already carry
+    // `domain`. No secret is logged here regardless of outcome.
     logger.warn("reconcile-installs: raw refresh probe — domain failed validation, skipping", {
       function: "reconcile-installs",
+      domain,
     });
     return "ambiguous";
   }
