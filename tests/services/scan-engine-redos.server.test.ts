@@ -20,6 +20,7 @@
 import { FindingType } from "@prisma/client";
 import { describe, expect, it } from "vitest";
 
+import { diffScans } from "../../app/services/scan-differ.server";
 import {
   MAX_SCANNABLE_FILE_BYTES,
   collectThirdPartyDomains,
@@ -521,5 +522,136 @@ describe("gc-t7x — end-to-end: one 1 MB file mixing the worst patterns", () =>
     expect(elapsed).toBeLessThan(5000);
     expect(result?.skippedFiles).toEqual([]);
     expect(result?.findings.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-tus.11: Pass 5 (duplicate libraries) and size-guard-skipped files
+// ---------------------------------------------------------------------------
+
+describe("gc-tus.11 — duplicate-library pass over size-guard-skipped files", () => {
+  // Decision: Pass 5 KEEPS scanning files the per-file size guard skipped, like
+  // the other cross-file passes. DUPLICATE_LIBRARY is in CROSS_FILE_FINDING_TYPES,
+  // so the differ diffs it normally even when its anchor file is size-skipped.
+  // Dropping skipped files from this pass would make a still-present conflict
+  // anchored in (or depending on) the oversized file vanish from the current
+  // scan and read as a false "resolved" (and re-anchor elsewhere as "new").
+  // Keeping them is safe because the pass is linear (pinned below).
+  const scriptTag = (url: string) => `<script src="${url}"></script>`;
+  const SWIPER_8 = scriptTag("https://cdn.jsdelivr.net/npm/swiper@8.4.5/swiper-bundle.min.js");
+  const SWIPER_11 = scriptTag("https://cdn.jsdelivr.net/npm/swiper@11.0.5/swiper-bundle.min.js");
+  type Scan = ReturnType<typeof scanThemeFiles>;
+  const skippedNames = (r: Scan | undefined) => (r?.skippedFiles ?? []).map((f) => f.filename);
+  const dupsOnly = (r: Scan) =>
+    r.findings
+      .filter((f) => f.findingType === FindingType.DUPLICATE_LIBRARY)
+      .map((f) => ({ ...f, appName: f.appName ?? null }));
+  const oversized = (head: string): ThemeFile => ({
+    filename: "layout/theme.liquid",
+    content: head + "\n" + " ".repeat(MAX_SCANNABLE_FILE_BYTES + 1),
+  });
+
+  it("still reports a conflict whose copies include an oversized file", () => {
+    const files = [oversized(SWIPER_8), { filename: "sections/hero.liquid", content: SWIPER_11 }];
+    const result = scanThemeFiles(files);
+
+    expect(skippedNames(result)).toEqual(["layout/theme.liquid"]);
+    const dups = result.findings.filter((f) => f.findingType === FindingType.DUPLICATE_LIBRARY);
+    expect(dups).toHaveLength(1);
+    // Anchored at the lowest major, which lives in the oversized file.
+    expect(dups[0].filename).toBe("layout/theme.liquid");
+    expect(dups[0].lineNumber).toBe(1);
+  });
+
+  it("does not churn: a rescan with the file still oversized diffs as unchanged", () => {
+    const files = [oversized(SWIPER_8), { filename: "sections/hero.liquid", content: SWIPER_11 }];
+    const previous = scanThemeFiles(files);
+    const current = scanThemeFiles(files);
+
+    const diff = diffScans(dupsOnly(current), dupsOnly(previous), {
+      skippedFiles: skippedNames(current),
+    });
+    expect(diff.resolvedFindings).toEqual([]);
+    expect(diff.newFindings).toEqual([]);
+    expect(diff.unchangedCount).toBe(1);
+  });
+
+  it("does not report a false resolution when the anchor file grows past the cap", () => {
+    const hero = { filename: "sections/hero.liquid", content: SWIPER_11 };
+    const before = scanThemeFiles([{ filename: "layout/theme.liquid", content: SWIPER_8 }, hero]);
+    const after = scanThemeFiles([oversized(SWIPER_8), hero]);
+
+    expect(skippedNames(before)).toEqual([]);
+    expect(skippedNames(after)).toEqual(["layout/theme.liquid"]);
+    const diff = diffScans(dupsOnly(after), dupsOnly(before), {
+      skippedFiles: skippedNames(after),
+    });
+    expect(diff.resolvedFindings).toEqual([]);
+    expect(diff.newFindings).toEqual([]);
+    expect(diff.unchangedCount).toBe(1);
+  });
+
+  it("reports the genuine resolution when the oversized file's copy is removed", () => {
+    const before = scanThemeFiles([
+      oversized(SWIPER_8),
+      { filename: "sections/hero.liquid", content: SWIPER_11 },
+    ]);
+    const after = scanThemeFiles([
+      oversized("<p>no swiper here</p>"),
+      { filename: "sections/hero.liquid", content: SWIPER_11 },
+    ]);
+
+    const diff = diffScans(dupsOnly(after), dupsOnly(before), {
+      skippedFiles: skippedNames(after),
+    });
+    expect(diff.resolvedFindings).toHaveLength(1);
+    expect(diff.newFindings).toEqual([]);
+  });
+
+  // Just over the cap, so these files are size-skipped for the per-file
+  // detectors but still flow through Pass 5.
+  const OVER_CAP = MAX_SCANNABLE_FILE_BYTES + 200_000;
+  const fill = (fragment: string, prefix = "", suffix = "") => {
+    const body = OVER_CAP - prefix.length - suffix.length;
+    return prefix + fragment.repeat(Math.ceil(body / fragment.length)).slice(0, body) + suffix;
+  };
+  const adversarial: Array<[string, string, number]> = [
+    ["an unterminated <script flood", fill("<script "), CAP_BUDGET_MS],
+    [
+      "one tag with a src flood",
+      fill(' src="//cdn.jsdelivr.net/npm/a@1/x.js"', "<script", ">"),
+      CAP_BUDGET_MS,
+    ],
+    [
+      "one 1 MB package name",
+      fill("a", '<script src="https://cdn.jsdelivr.net/npm/', '@1/x.js">'),
+      CAP_BUDGET_MS,
+    ],
+    [
+      "an @ flood in an unpkg path",
+      fill("@", '<script src="https://unpkg.com/', '">'),
+      CAP_BUDGET_MS,
+    ],
+    [
+      "a 1 MB version segment",
+      fill("1.", '<script src="https://unpkg.com/a@', '/x.js">'),
+      CAP_BUDGET_MS,
+    ],
+    [
+      "a cdnjs segment flood",
+      fill("a/", '<script src="https://cdnjs.cloudflare.com/ajax/libs/', '">'),
+      CAP_BUDGET_MS,
+    ],
+    ["dense CDN library tags on one line", fill(SWIPER_8 + SWIPER_11), DENSE_FINDINGS_BUDGET_MS],
+    ["dense CDN library tags, one per line", fill(SWIPER_8 + "\n"), DENSE_FINDINGS_BUDGET_MS],
+  ];
+
+  it.each(adversarial)("Pass 5 is linear on an oversized file: %s", (_label, content, budget) => {
+    expect(content.length).toBeGreaterThan(MAX_SCANNABLE_FILE_BYTES);
+    const files = [layout(content), { filename: "sections/hero.liquid", content: SWIPER_11 }];
+    expect(timed(() => detectDuplicateLibraries(files))).toBeLessThan(budget);
+    let result: Scan | undefined;
+    expect(timed(() => (result = scanThemeFiles(files)))).toBeLessThan(budget);
+    expect(skippedNames(result)).toEqual(["layout/theme.liquid"]);
   });
 });

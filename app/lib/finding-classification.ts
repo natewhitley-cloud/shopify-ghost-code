@@ -211,6 +211,9 @@ export const CONFIDENCE_TYPE_SETS = {
  *
  *   - ORPHAN_ASSET — Pass 2 (analyzeFileReferences over ALL Liquid files).
  *   - GHOST_LAYOUT — Pass 4 (detectGhostLayouts over ALL layout files).
+ *   - DUPLICATE_LIBRARY, DUPLICATE_TRACKER, OVERLAPPING_CHAT_WIDGET — Pass 5.
+ *     detectDuplicateLibraries deliberately includes size-skipped files
+ *     (gc-tus.11) so its findings stay diffable here.
  *
  * These passes run over every file regardless of the per-file size cap
  * (MAX_SCANNABLE_FILE_BYTES). The oversized-file guard in Pass 1 only skips the

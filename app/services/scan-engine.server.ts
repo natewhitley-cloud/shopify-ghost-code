@@ -2545,6 +2545,16 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
  * Not flagged: a single library, two libraries each seen once, the same major
  * in multiple files, or two copies of the identical version. Only a genuine
  * MAJOR-version split counts as a conflict.
+ *
+ * Size-guard-skipped files ARE scanned here (gc-tus.11), like the other
+ * cross-file passes. DUPLICATE_LIBRARY is in CROSS_FILE_FINDING_TYPES, so the
+ * differ keeps diffing it when its anchor file is size-skipped; if this pass
+ * dropped oversized files, a still-present conflict anchored in (or relying
+ * on a copy in) a file that grew past the cap would read as a false
+ * "resolved". Keeping them is safe because the pass is linear: one line split,
+ * extractTags (indexOf), execTagPattern (gc-t7x) and a URL parse per tag, with
+ * tags disjoint — pinned on >1 MB adversarial files in
+ * tests/services/scan-engine-redos.server.test.ts.
  */
 export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput[] {
   // library name -> (major -> first place that major was seen)
@@ -4262,7 +4272,8 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
     // (real theme Liquid files are far under MAX_SCANNABLE_FILE_BYTES) and would
     // let a pathological blob dominate detector cost. Skip the per-file detectors
     // for it and record the skip so the caller logs it — never a silent drop. The
-    // cross-file passes below still include the file (they are not regex-heavy).
+    // cross-file passes below still include the file (they are linear; Pass 5's
+    // duplicate-library scan is pinned on >1 MB input, gc-tus.11).
     // Because those passes still emit for a skipped file, the differ must NOT
     // treat a skipped file's cross-file findings as unre-checked — the set of
     // cross-file types lives in CROSS_FILE_FINDING_TYPES (finding-classification);
