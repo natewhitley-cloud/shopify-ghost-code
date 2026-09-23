@@ -11,6 +11,16 @@ name: Deploy
 on:
   push:
     branches: [main]
+    # Docs-only pushes skip the Railway deploy + smoke (gc-cpa). None of these
+    # paths is read at build or runtime: the runtime image copies only build/,
+    # prisma/, node_modules, app/assets/fonts, the toml files, and .deploy-sha,
+    # and no app/inngest code reads docs/ or memory/. A push that mixes docs
+    # with any other file still deploys. CI (ci.yml) deliberately still runs on
+    # every push so its status is always present on each commit.
+    paths-ignore:
+      - "memory/**"
+      - "docs/**"
+      - "**/*.md"
 
 jobs:
   deploy:
