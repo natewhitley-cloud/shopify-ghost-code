@@ -5391,6 +5391,134 @@ describe("detectOverlappingChatWidgets", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Cross-file anchor stability: DUPLICATE_TRACKER / OVERLAPPING_CHAT_WIDGET pick
+// their anchor by folder priority (layout > sections > snippets > blocks >
+// templates, then filename, then line), never by input order. The anchor feeds
+// the scan-differ fingerprint, so an input-order anchor churns "resolved"/"new".
+// ---------------------------------------------------------------------------
+
+describe("cross-file detectors anchor deterministically, independent of input order", () => {
+  const permutations = <T>(items: T[]): T[][] =>
+    items.length <= 1
+      ? [items]
+      : items.flatMap((item, i) =>
+          permutations([...items.slice(0, i), ...items.slice(i + 1)]).map((rest) => [
+            item,
+            ...rest,
+          ]),
+        );
+
+  const trackerFiles: ThemeFile[] = [
+    { filename: "blocks/ga-block.liquid", content: "gtag('config', 'G-BBBB2222');" },
+    {
+      filename: "layout/theme.liquid",
+      content: "<head>\n  gtag('config', 'G-AAAA1111');\n</head>",
+    },
+    { filename: "snippets/tracking.liquid", content: "gtag('config', 'G-CCCC3333');" },
+    { filename: "templates/page.liquid", content: "gtag('config', 'G-DDDD4444');" },
+  ];
+
+  const chatFiles: ThemeFile[] = [
+    {
+      filename: "blocks/chat.liquid",
+      content: '<script src="https://code.tidio.co/x.js"></script>',
+    },
+    {
+      filename: "layout/theme.liquid",
+      content: '<head></head>\n<script src="https://widget.intercom.io/widget/abc"></script>',
+    },
+    {
+      filename: "sections/help.liquid",
+      content: '<script src="https://js.driftt.com/d.js"></script>',
+    },
+  ];
+
+  it("anchors DUPLICATE_TRACKER on layout/theme.liquid when a block file comes first", () => {
+    const findings = detectDuplicateTrackers(trackerFiles);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].filename).toBe("layout/theme.liquid");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("anchors OVERLAPPING_CHAT_WIDGET on layout/theme.liquid when a block file comes first", () => {
+    const findings = detectOverlappingChatWidgets(chatFiles);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].filename).toBe("layout/theme.liquid");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("DUPLICATE_TRACKER yields the same finding for every input-order permutation", () => {
+    const outputs = permutations(trackerFiles).map((order) => detectDuplicateTrackers(order));
+    for (const out of outputs) expect(out).toEqual(outputs[0]);
+    expect(outputs).toHaveLength(24);
+  });
+
+  it("OVERLAPPING_CHAT_WIDGET yields the same finding for every input-order permutation", () => {
+    const outputs = permutations(chatFiles).map((order) => detectOverlappingChatWidgets(order));
+    for (const out of outputs) expect(out).toEqual(outputs[0]);
+  });
+
+  it("prefers sections > snippets > blocks > templates when there is no layout hit", () => {
+    const files: ThemeFile[] = [
+      { filename: "templates/a.liquid", content: "fbq('init', '111111111111111');" },
+      { filename: "blocks/a.liquid", content: "fbq('init', '222222222222222');" },
+      { filename: "snippets/z.liquid", content: "fbq('init', '333333333333333');" },
+    ];
+    expect(detectDuplicateTrackers(files)[0].filename).toBe("snippets/z.liquid");
+    expect(detectDuplicateTrackers(files.slice(0, 2))[0].filename).toBe("blocks/a.liquid");
+    const withSection = [
+      ...files,
+      { filename: "sections/b.liquid", content: "fbq('init', '4444444444');" },
+    ];
+    expect(detectDuplicateTrackers(withSection)[0].filename).toBe("sections/b.liquid");
+  });
+
+  it("breaks folder ties by filename, then by lowest line", () => {
+    const files: ThemeFile[] = [
+      { filename: "snippets/b.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      {
+        filename: "snippets/a.liquid",
+        content: "x\ngtag('config', 'G-BBBB2222');\ngtag('config', 'G-CCCC3333');",
+      },
+    ];
+    const [finding] = detectDuplicateTrackers(files);
+    expect(finding.filename).toBe("snippets/a.liquid");
+    expect(finding.lineNumber).toBe(2);
+  });
+
+  it("records the best location of an ID seen in both a block and layout in the description", () => {
+    const files: ThemeFile[] = [
+      { filename: "blocks/ga.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      { filename: "layout/theme.liquid", content: "gtag('config', 'G-AAAA1111');" },
+      { filename: "snippets/s.liquid", content: "gtag('config', 'G-BBBB2222');" },
+    ];
+    const [finding] = detectDuplicateTrackers(files);
+    expect(finding.filename).toBe("layout/theme.liquid");
+    expect(finding.description).toContain("G-AAAA1111 (layout/theme.liquid)");
+    expect(finding.description).not.toContain("blocks/ga.liquid");
+  });
+
+  it("orders same-line platforms in the description independent of input order", () => {
+    const files: ThemeFile[] = [
+      { filename: "blocks/a.liquid", content: "Tawk_API = {};" },
+      { filename: "layout/theme.liquid", content: "Tawk_API = {}; window.Intercom('boot');" },
+    ];
+    const forward = detectOverlappingChatWidgets(files);
+    const reverse = detectOverlappingChatWidgets([...files].reverse());
+    expect(forward).toEqual(reverse);
+    expect(forward[0].description).toContain(
+      "Intercom (layout/theme.liquid), Tawk.to (layout/theme.liquid)",
+    );
+  });
+
+  it("keeps the anchor stable through scanThemeFiles with blocks sorted first", () => {
+    const result = scanThemeFiles(trackerFiles);
+    const [finding] = findingsOfType(result.findings, FindingType.DUPLICATE_TRACKER);
+    expect(finding.filename).toBe("layout/theme.liquid");
+  });
+});
+
+// ---------------------------------------------------------------------------
 // JSON_LD_INVALID detection (detectInvalidJsonLd)
 // ---------------------------------------------------------------------------
 

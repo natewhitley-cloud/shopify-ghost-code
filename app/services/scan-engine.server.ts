@@ -2252,6 +2252,55 @@ export function detectDuplicateLibraries(files: ThemeFile[]): CreateFindingInput
 }
 
 // ---------------------------------------------------------------------------
+// Cross-file anchor selection
+// ---------------------------------------------------------------------------
+
+/** A place a cross-file signal was seen: candidate anchor for its finding. */
+type AnchorLocation = { file: ThemeFile; lineNumber: number };
+
+/**
+ * Folder priority for cross-file finding anchors. The anchor's filename + line
+ * feed the scan-differ fingerprint, so it must not depend on input order (a
+ * moved anchor reads as "resolved" + "new" and breaks INSTANCE-scope ignores).
+ * layout/sections/snippets/templates keep their historical alphabetical order;
+ * blocks/ (scannable since gc-zfl) slots in before templates/ so adding blocks
+ * never moves an existing anchor off layout/sections/snippets.
+ */
+const ANCHOR_FOLDER_PRIORITY = ["layout/", "sections/", "snippets/", "blocks/", "templates/"];
+
+function anchorFolderRank(filename: string): number {
+  const rank = ANCHOR_FOLDER_PRIORITY.findIndex((prefix) => filename.startsWith(prefix));
+  return rank === -1 ? ANCHOR_FOLDER_PRIORITY.length : rank;
+}
+
+/**
+ * Total order over anchor candidates: folder priority, then filename (plain
+ * code-unit comparison, locale-independent), then line. Negative = `a` first.
+ */
+function compareAnchorLocations(a: AnchorLocation, b: AnchorLocation): number {
+  const rankDiff = anchorFolderRank(a.file.filename) - anchorFolderRank(b.file.filename);
+  if (rankDiff !== 0) return rankDiff;
+  if (a.file.filename !== b.file.filename) return a.file.filename < b.file.filename ? -1 : 1;
+  return a.lineNumber - b.lineNumber;
+}
+
+/** Store `loc` under `key` unless an equal-or-better anchor is already there. */
+function keepBestAnchor<K>(map: Map<K, AnchorLocation>, key: K, loc: AnchorLocation): void {
+  const current = map.get(key);
+  if (!current || compareAnchorLocations(loc, current) < 0) map.set(key, loc);
+}
+
+/**
+ * Entries sorted by anchor order, ties (same file + line) broken by key so the
+ * description is input-order independent too. The first entry is the anchor.
+ */
+function sortedByAnchor(map: Map<string, AnchorLocation>): Array<[string, AnchorLocation]> {
+  return [...map.entries()].sort(
+    ([keyA, a], [keyB, b]) => compareAnchorLocations(a, b) || (keyA < keyB ? -1 : 1),
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Detector: DUPLICATE_TRACKER
 // ---------------------------------------------------------------------------
 
@@ -2301,16 +2350,16 @@ const TRACKER_PLATFORMS: ReadonlyArray<{
  *
  * HIGH PRECISION — distinct IDs only: a single ID, or the same ID repeated across
  * files, is normal and never flagged. Emits ONE DUPLICATE_TRACKER finding per
- * platform that has >= 2 distinct IDs, anchored at the FIRST-seen occurrence of
- * that platform for stable attribution.
+ * platform that has >= 2 distinct IDs, anchored at the platform's best location
+ * by compareAnchorLocations (folder priority, not input order).
  *
  * Theme-file content only. Runtime/app-injected pixels (Web Pixels, GTM-runtime
  * containers) are out of scope — this reads what is statically written in theme
  * files, mirroring detectDuplicateLibraries.
  */
 export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[] {
-  // platform name -> (distinct id -> first place that id was seen)
-  const byPlatform = new Map<string, Map<string, { file: ThemeFile; lineNumber: number }>>();
+  // platform name -> (distinct id -> best anchor location of that id)
+  const byPlatform = new Map<string, Map<string, AnchorLocation>>();
 
   for (const file of files) {
     if (!isScannableFile(file.filename)) continue;
@@ -2332,8 +2381,7 @@ export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[
             ids = new Map();
             byPlatform.set(platform.name, ids);
           }
-          // Keep the FIRST occurrence of each distinct id for stable attribution.
-          if (!ids.has(id)) ids.set(id, { file, lineNumber });
+          keepBestAnchor(ids, id, { file, lineNumber });
         }
       }
     }
@@ -2345,9 +2393,9 @@ export function detectDuplicateTrackers(files: ThemeFile[]): CreateFindingInput[
     const ids = byPlatform.get(platform.name);
     if (!ids || ids.size < 2) continue; // one distinct id = normal, no conflict
 
-    // Anchor at the earliest occurrence of this platform (first inserted id).
-    const anchor = ids.values().next().value as { file: ThemeFile; lineNumber: number };
-    const detail = [...ids.entries()].map(([id, loc]) => `${id} (${loc.file.filename})`).join(", ");
+    const sorted = sortedByAnchor(ids);
+    const anchor = sorted[0][1];
+    const detail = sorted.map(([id, loc]) => `${id} (${loc.file.filename})`).join(", ");
     const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
     const severity = classifySeverity(FindingType.DUPLICATE_TRACKER, codeSnippet);
 
@@ -2398,38 +2446,41 @@ const CHAT_WIDGET_PLATFORMS: ReadonlyArray<{
  * duplicated widget weight and split chat sessions).
  *
  * One platform, even if referenced on many lines/files, is never flagged. Emits
- * ONE OVERLAPPING_CHAT_WIDGET finding, anchored at the FIRST-seen occurrence of
- * any detected platform for stable attribution.
+ * ONE OVERLAPPING_CHAT_WIDGET finding, anchored at the best location of any
+ * detected platform by compareAnchorLocations (folder priority, not input order).
  *
  * Theme-file content only, mirroring detectDuplicateLibraries.
  */
 export function detectOverlappingChatWidgets(files: ThemeFile[]): CreateFindingInput[] {
-  // platform name -> first place that platform was detected (insertion order is
-  // chronological across files/lines, so the first entry is the earliest anchor).
-  const firstSeen = new Map<string, { file: ThemeFile; lineNumber: number }>();
+  // platform name -> best anchor location where that platform was detected
+  const bestSeen = new Map<string, AnchorLocation>();
 
   for (const file of files) {
     if (!isScannableFile(file.filename)) continue;
     const commentSkip = buildCommentSkipLines(file.content);
+    // Lines are ascending, so a platform's first hit in a file is that file's
+    // best location for it; later lines of the same file can be skipped.
+    const foundInFile = new Set<string>();
     for (const { lineNumber, text } of lines(file.content)) {
       if (commentSkip.has(lineNumber)) continue;
       const lower = text.toLowerCase();
       for (const platform of CHAT_WIDGET_PLATFORMS) {
-        if (firstSeen.has(platform.name)) continue; // already recorded
+        if (foundInFile.has(platform.name)) continue;
         const hit = platform.signatures.some((sig) =>
           typeof sig === "string" ? lower.includes(sig) : sig.test(text),
         );
-        if (hit) firstSeen.set(platform.name, { file, lineNumber });
+        if (!hit) continue;
+        foundInFile.add(platform.name);
+        keepBestAnchor(bestSeen, platform.name, { file, lineNumber });
       }
     }
   }
 
-  if (firstSeen.size < 2) return []; // one (or zero) platform = no conflict
+  if (bestSeen.size < 2) return []; // one (or zero) platform = no conflict
 
-  const anchor = firstSeen.values().next().value as { file: ThemeFile; lineNumber: number };
-  const detail = [...firstSeen.entries()]
-    .map(([name, loc]) => `${name} (${loc.file.filename})`)
-    .join(", ");
+  const sorted = sortedByAnchor(bestSeen);
+  const anchor = sorted[0][1];
+  const detail = sorted.map(([name, loc]) => `${name} (${loc.file.filename})`).join(", ");
   const codeSnippet = buildSnippet(anchor.file.content, anchor.lineNumber);
   const severity = classifySeverity(FindingType.OVERLAPPING_CHAT_WIDGET, codeSnippet);
 
@@ -2440,7 +2491,7 @@ export function detectOverlappingChatWidgets(files: ThemeFile[]): CreateFindingI
       codeSnippet,
       findingType: FindingType.OVERLAPPING_CHAT_WIDGET,
       severity,
-      description: `${firstSeen.size} chat widgets are loaded at once: ${detail} — shoppers may see conflicting chat bubbles.`,
+      description: `${bestSeen.size} chat widgets are loaded at once: ${detail} — shoppers may see conflicting chat bubbles.`,
     },
   ];
 }
