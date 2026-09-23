@@ -37,8 +37,10 @@
  *
  *   CIRCUIT BREAKER (defense-in-depth): the cron runs in two passes — probe all
  *   active shops (mark nothing), then mark them ONLY if the run does not look
- *   systemic. The run ABORTS when ALL probed shops are marked (100% churn, at ANY
- *   base size), OR when marks reach >=50% of the probed base (minimum CB_MIN_MARKS).
+ *   systemic. The run ABORTS when ALL active shops are marked (100% churn, at ANY
+ *   base size), OR when ALL of >=2 classified shops are marked, OR when marks
+ *   reach >=50% of the classified base (minimum CB_MIN_MARKS). See
+ *   shouldTripCircuitBreaker.
  *   This can no longer be silently bypassed at small base sizes. On a trip the run marks
  *   NOTHING, records a RECONCILE_ABORTED OpsEvent, and pages the operator —
  *   turning a would-be base-wide churn into one skipped run + an alert.
@@ -84,18 +86,70 @@ const PAUSE_BETWEEN_SHOPS = "500ms";
 // Run-level circuit breaker (gc-5ha). Defense-in-depth on top of body-aware
 // classification: even if a systemic fault (e.g. a wrong shared client_secret)
 // produced varied per-shop rejections that slipped past the body checks, a
-// SINGLE run must never be able to churn the whole active base. The reconciler
-// aborts a run — marking NOTHING and paging the operator — when it WOULD mark
-// ALL probed shops (100% churn, at ANY base size), OR when the number it WOULD
-// mark reaches >=50% of the probed base (floor CB_MIN_MARKS). The fraction is
-// PRIMARY (it protects a large base); the all-probed-marked rule guarantees a
-// systemic 100%-churn always trips even at N=1/N=2 — the old MAX(absolute-cap,
-// fraction) form pinned the threshold at the cap and could be silently bypassed
-// when checked <= the cap.
+// SINGLE run must never be able to churn the whole active base. On a trip the
+// reconciler marks NOTHING and pages the operator. The rule lives in
+// shouldTripCircuitBreaker (below) so it can be tested exhaustively.
 // Tune conservatively: a genuine day never churns anywhere near half the base at
 // once, so a trip is a near-certain bug.
-const CB_FRACTION = 0.5; // trip when >= half the probed base is marked in one run
-const CB_MIN_MARKS = 3; // ordinary-churn floor: fewer than this never trips
+export const CB_FRACTION = 0.5; // trip when >= half the classified base is marked in one run
+export const CB_MIN_MARKS = 3; // ordinary-churn floor for the fraction clause
+
+/** Minimum marks that trip the fraction clause, given `probed` classified shops. */
+export function circuitBreakerThreshold(probed: number): number {
+  return Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * probed));
+}
+
+/**
+ * Circuit-breaker decision (owner decision 1A, hybrid rule). Inputs:
+ *   checked   = active shops probed this run
+ *   skipped   = shops classified "ambiguous" (no signal, never marked)
+ *   wouldMark = shops classified "uninstalled"
+ *   probed    = checked - skipped (shops DEFINITIVELY classified)
+ *
+ * Trips when ANY of three clauses holds:
+ *   1. checked >= 1 && wouldMark === checked — 100% of ALL active shops, at any
+ *      base size. This is the original rule and keeps the N=1 design: the
+ *      mass-churn signature of a wrong/rotated shared client_secret 401'ing
+ *      every shop is identical at N=1, N=2 or N=100, so there is no base size
+ *      below which auto-churning everything is safe. (At N=1 a lone active shop
+ *      that classifies "uninstalled" pages instead of auto-marking; intended,
+ *      since this job is only a BACKSTOP for missed app/uninstalled webhooks.)
+ *   2. probed >= 2 && wouldMark === probed — 100% of the CLASSIFIED shops. This
+ *      closes the dilution gap where permanently skipped rows hid a systemic
+ *      fault (3 active, 1 skipped, 2 wrongly "uninstalled" → clause 1 misses).
+ *      The probed >= 2 floor exists because a single classified shop among many
+ *      skipped ones (e.g. 10 active, 9 throttled, 1 uninstalled) is ordinary
+ *      churn, not a systemic signature; paging there would block a real
+ *      uninstall on every throttled day.
+ *   3. wouldMark >= max(CB_MIN_MARKS, ceil(CB_FRACTION * probed)) — the fraction
+ *      of the classified base; PRIMARY protection for a large base.
+ *
+ * INVARIANT: this trips in EVERY case the original (pre-02da341) rule tripped,
+ * i.e. `(checked >= 1 && wouldMark === checked) ||
+ * wouldMark >= max(CB_MIN_MARKS, ceil(CB_FRACTION * checked))`. Clause 1 is that
+ * rule's first clause verbatim, and since probed <= checked and the threshold is
+ * non-decreasing, threshold(probed) <= threshold(checked), so clause 3 covers
+ * its second. Proven exhaustively for checked 0..12 in the tests. wouldMark = 0
+ * never trips (clauses 1/2 need wouldMark >= 1, clause 3 needs >= CB_MIN_MARKS).
+ * Known residual: 2 real uninstalls on a heavily throttled day (e.g. 5 active,
+ * 3 skipped, 2 uninstalled) trips via clause 2 and pages; conservative-correct.
+ */
+export function shouldTripCircuitBreaker({
+  checked,
+  skipped,
+  wouldMark,
+}: {
+  checked: number;
+  skipped: number;
+  wouldMark: number;
+}): boolean {
+  const probed = checked - skipped;
+  return (
+    (checked >= 1 && wouldMark === checked) ||
+    (probed >= 2 && wouldMark === probed) ||
+    wouldMark >= circuitBreakerThreshold(probed)
+  );
+}
 
 /** Result of probing one shop's install status. */
 export type InstallStatus = "installed" | "uninstalled" | "ambiguous";
@@ -571,40 +625,16 @@ export const reconcileInstalls = inngest.createFunction(
     const skipped = probes.filter((p) => p.classification === "ambiguous").length;
 
     // --- Circuit-breaker gate ---------------------------------------------
-    // A run that WOULD mark the whole probed base, or >=half of it, is the
-    // mass-churn signature of a systemic fault, not a real day of uninstalls.
-    // ABORT: mark nothing, page the operator, and let a human confirm before any
-    // churn happens. The fraction is primary; the all-probed-marked rule ensures a
-    // 100%-churn trips at ANY base size (checked >= 1) — the mass-churn signature
-    // of a wrong/rotated shared client_secret 401'ing every shop is identical at
-    // N=1, N=2, or N=100, so there is no safe floor below which auto-churn is OK.
-    // Design tradeoff: at N=1 a lone active shop that classifies "uninstalled" now
-    // PAGES-and-aborts instead of auto-marking. That is intended — this reconciler
-    // is only a BACKSTOP for MISSED app/uninstalled webhooks (real uninstalls are
-    // marked directly by that webhook), so refusing to auto-churn the entire
-    // remaining base on a single ambiguous-looking signal and asking a human to
-    // confirm is the conservative-correct call. wouldMark holds ONLY shops
-    // classified "uninstalled" (ambiguous/transient shops are excluded upstream),
-    // so this never trips on a network blip or throttle.
-    //
-    // DENOMINATOR = `probed` (shops DEFINITIVELY classified installed/uninstalled),
-    // NOT `checked`. Ambiguous (skipped) shops carry no signal, so counting them
-    // diluted the base: e.g. 3 active, 1 permanently skipped, 2 wrongly
-    // "uninstalled" by a systemic fault → with `checked` 2 !== 3 and
-    // 2 < max(3, ceil(0.5*3)=2)=3, so both real shops were auto-churned.
-    // Using `probed` can ONLY make the breaker trip MORE often, never less
-    // (a trip pages and marks nothing): since wouldMark <= probed <= checked,
-    // (a) wouldMark === checked implies wouldMark === probed (and probed >= 1),
-    // and (b) the threshold is non-decreasing in its input, so
-    // threshold(probed) <= threshold(checked). probed = 0 implies wouldMark = 0,
-    // which fails both clauses (0 < CB_MIN_MARKS), so an all-skipped run never
-    // trips. The abort OpsEvent metadata carries `probed` and `skipped` too, so the
-    // operator digest can show the denominator the breaker actually used.
+    // A run that looks like mass churn is the signature of a systemic fault, not
+    // a real day of uninstalls: ABORT, mark nothing, page the operator. The rule
+    // and its rationale live on shouldTripCircuitBreaker. wouldMark holds ONLY
+    // shops classified "uninstalled" (ambiguous/transient shops are excluded
+    // upstream and counted in `skipped`), so a network blip or throttle never
+    // adds to it. The abort OpsEvent metadata carries `probed` and `skipped` so
+    // the operator digest can show the denominator the breaker used.
     const probed = checked - skipped;
-    const churnThreshold = Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * probed));
-    const tripped =
-      (probed >= 1 && wouldMark.length === probed) || // 100% churn is systemic at ANY base size → always trip
-      wouldMark.length >= churnThreshold; // or >= half the probed base (floor CB_MIN_MARKS)
+    const churnThreshold = circuitBreakerThreshold(probed);
+    const tripped = shouldTripCircuitBreaker({ checked, skipped, wouldMark: wouldMark.length });
     if (tripped) {
       await step.run("circuit-breaker-abort", async () => {
         const { recordOpsEvent, OPS_EVENT_TYPES } =

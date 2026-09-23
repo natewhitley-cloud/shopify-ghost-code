@@ -83,6 +83,9 @@ import {
   isRefreshTokenRejected,
   isValidMyshopifyDomain,
   reconcileInstalls,
+  CB_FRACTION,
+  CB_MIN_MARKS,
+  shouldTripCircuitBreaker,
 } from "../../inngest/functions/reconcile-installs";
 import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
@@ -1218,6 +1221,65 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(result).toMatchObject({ status: "completed", checked: 10, marked: 1, skipped: 0 });
   });
 
+  // --- Hybrid rule (owner decision 1A) -----------------------------------
+  // tripped = (checked>=1 && w===checked) || (probed>=2 && w===probed)
+  //           || w >= max(CB_MIN_MARKS, ceil(CB_FRACTION*probed))
+  function expectTripped(result: unknown, checked: number, wouldMark: number) {
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_aborted" }),
+    );
+    expect(result).toMatchObject({ status: "aborted-circuit-breaker", checked, wouldMark });
+  }
+  function expectMarked(result: unknown, checked: number, marked: number, skipped: number) {
+    expect(mockMark).toHaveBeenCalledTimes(marked);
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
+      expect.objectContaining({ eventType: "reconcile_aborted" }),
+    );
+    expect(result).toMatchObject({ status: "completed", checked, marked, skipped });
+  }
+
+  it("does NOT trip on ordinary churn hidden among many skips (checked=10, skipped=9, wouldMark=1) — marks the 1 shop", async () => {
+    // probed=1: the probed>=2 floor keeps a lone classified shop from being
+    // read as 100% systemic churn; 1 !== 10 and 1 < 3, so the real uninstall is marked.
+    seedOutcomes(["skip", "skip", "skip", "skip", "dead", "skip", "skip", "skip", "skip", "skip"]);
+    const result = await runReconcile();
+    expectMarked(result, 10, 1, 9);
+    expect(mockMark).toHaveBeenCalledWith("dead4.myshopify.com", expect.anything());
+  });
+
+  it("TRIPS at checked=1, skipped=0, wouldMark=1 (original N=1 design preserved)", async () => {
+    seedOutcomes(["dead"]);
+    const result = await runReconcile();
+    expectTripped(result, 1, 1);
+  });
+
+  it("does NOT trip at checked=2, skipped=1, wouldMark=1 — marks the 1 shop", async () => {
+    seedOutcomes(["skip", "dead"]);
+    const result = await runReconcile();
+    expectMarked(result, 2, 1, 1);
+  });
+
+  it("TRIPS at checked=5, skipped=3, wouldMark=2 (documented residual: 2 real uninstalls on a throttled day pages)", async () => {
+    seedOutcomes(["skip", "skip", "skip", "dead", "dead"]);
+    const result = await runReconcile();
+    expectTripped(result, 5, 2);
+  });
+
+  it("does NOT trip at checked=4, skipped=4, wouldMark=0 — marks nothing", async () => {
+    seedOutcomes(["skip", "skip", "skip", "skip"]);
+    const result = await runReconcile();
+    expectMarked(result, 4, 0, 4);
+  });
+
+  it("does NOT trip at checked=10, skipped=0, wouldMark=1 — marks the 1 shop", async () => {
+    seedOutcomes(["dead", "live", "live", "live", "live", "live", "live", "live", "live", "live"]);
+    const result = await runReconcile();
+    expectMarked(result, 10, 1, 0);
+  });
+
   it("keeps shop domains OUT of the durable OpsEvent (message + metadata) and rides them on the operator email only", async () => {
     // Fix (GDPR completeness): deleteShopData purges OpsEvents by key /
     // metadata.shop|shopDomain|shopId — it CANNOT reach a domain buried in the
@@ -1246,6 +1308,60 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(emailBody).toContain("dead0.myshopify.com");
     expect(emailBody).toContain("dead1.myshopify.com");
     expect(emailBody).toContain("dead2.myshopify.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// shouldTripCircuitBreaker (pure predicate, owner decision 1A)
+// ---------------------------------------------------------------------------
+
+describe("shouldTripCircuitBreaker", () => {
+  it.each([
+    // [checked, skipped, wouldMark, expected]
+    [3, 1, 2, true], // the original-rule gap 02da341 closed
+    [10, 9, 1, false], // ordinary churn among many skips
+    [1, 0, 1, true], // original N=1 design
+    [2, 1, 1, false],
+    [5, 3, 2, true], // documented residual
+    [4, 4, 0, false],
+    [10, 0, 1, false],
+    [0, 0, 0, false], // empty base
+    [10, 0, 5, true], // fraction clause
+    [10, 0, 4, false],
+  ])("checked=%i skipped=%i wouldMark=%i → %s", (checked, skipped, wouldMark, expected) => {
+    expect(shouldTripCircuitBreaker({ checked, skipped, wouldMark })).toBe(expected);
+  });
+
+  it("trips in EVERY case the original pre-02da341 rule tripped (never less protective)", () => {
+    const originalTrips = (checked: number, w: number) =>
+      (checked >= 1 && w === checked) ||
+      w >= Math.max(CB_MIN_MARKS, Math.ceil(CB_FRACTION * checked));
+    let cases = 0;
+    let originalTripCases = 0;
+    const regressions: string[] = [];
+    for (let checked = 0; checked <= 12; checked++) {
+      for (let skipped = 0; skipped <= checked; skipped++) {
+        for (let wouldMark = 0; wouldMark <= checked - skipped; wouldMark++) {
+          cases++;
+          if (!originalTrips(checked, wouldMark)) continue;
+          originalTripCases++;
+          if (!shouldTripCircuitBreaker({ checked, skipped, wouldMark })) {
+            regressions.push(`checked=${checked} skipped=${skipped} wouldMark=${wouldMark}`);
+          }
+        }
+      }
+    }
+    expect(cases).toBe(455);
+    expect(originalTripCases).toBeGreaterThan(0);
+    expect(regressions).toEqual([]);
+  });
+
+  it("never trips when nothing would be marked", () => {
+    for (let checked = 0; checked <= 12; checked++) {
+      for (let skipped = 0; skipped <= checked; skipped++) {
+        expect(shouldTripCircuitBreaker({ checked, skipped, wouldMark: 0 })).toBe(false);
+      }
+    }
   });
 });
 
