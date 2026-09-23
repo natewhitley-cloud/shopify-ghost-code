@@ -4,6 +4,9 @@
 // the observed max to the current cap, and how many scans aborted over the cap.
 // Run: npx tsx --env-file=.env scripts/theme-size-report.ts
 // No writes. Safe against prod.
+import { realpathSync } from "node:fs";
+import { pathToFileURL } from "node:url";
+
 import { PrismaClient } from "@prisma/client";
 
 import { MAX_THEME_TOTAL_TEXT_BYTES } from "../app/services/theme-fetcher.server";
@@ -155,9 +158,25 @@ async function main() {
   }
 }
 
+/**
+ * True when `argv1` (process.argv[1]) is the module at `metaUrl`. Resolves
+ * symlinks and URL-encodes the path, so a checkout under a path with spaces
+ * or a symlinked dir (macOS /tmp -> /private/tmp) still matches — the naive
+ * `file://${argv1}` string compare silently skipped main() there.
+ */
+export function isMainModule(metaUrl: string, argv1: string | undefined): boolean {
+  if (!argv1) return false;
+  try {
+    return pathToFileURL(realpathSync(argv1)).href === metaUrl;
+  } catch {
+    // argv[1] does not resolve to a file (e.g. deleted) — cannot be this module.
+    return false;
+  }
+}
+
 // Only run when executed directly (`npx tsx scripts/theme-size-report.ts`),
 // not when the pure helpers above are imported by unit tests.
-if (import.meta.url === `file://${process.argv[1]}`) {
+if (isMainModule(import.meta.url, process.argv[1])) {
   main()
     .then(() => prisma.$disconnect())
     .catch(async (e) => {

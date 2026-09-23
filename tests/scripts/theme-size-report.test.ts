@@ -1,7 +1,13 @@
-import { describe, it, expect } from "vitest";
+import { mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { pathToFileURL } from "node:url";
+
+import { afterAll, describe, it, expect } from "vitest";
 
 import {
   computeStats,
+  isMainModule,
   parseThemeSizeSample,
   summarizeScanSignals,
 } from "../../scripts/theme-size-report";
@@ -114,5 +120,36 @@ describe("summarizeScanSignals", () => {
       maxBytesAtAbort: 0,
       skipped: 0,
     });
+  });
+});
+
+describe("isMainModule", () => {
+  // A real file under a directory whose name contains a space — the naive
+  // `file://${argv[1]}` comparison fails here because the URL is %20-encoded.
+  const dir = mkdtempSync(join(tmpdir(), "theme size report "));
+  const script = join(dir, "script.ts");
+  writeFileSync(script, "");
+  const link = join(dir, "link.ts");
+  symlinkSync(script, link);
+  const metaUrl = pathToFileURL(realpathSync(script)).href;
+
+  afterAll(() => {
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("is true for a path containing a space", () => {
+    expect(isMainModule(metaUrl, script)).toBe(true);
+  });
+
+  it("is true when argv[1] is a symlink to the module", () => {
+    expect(isMainModule(metaUrl, link)).toBe(true);
+  });
+
+  it("is false for a different file", () => {
+    expect(isMainModule(metaUrl, join(dir, "missing.ts"))).toBe(false);
+  });
+
+  it("is false when argv[1] is missing", () => {
+    expect(isMainModule(metaUrl, undefined)).toBe(false);
   });
 });
