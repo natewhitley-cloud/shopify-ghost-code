@@ -186,6 +186,40 @@ export type ScanResult = {
 export const MAX_SCANNABLE_FILE_BYTES = 1_000_000;
 
 /**
+ * Lowercase one UTF-16 code unit for comparison against a lowercase ASCII
+ * character, or -1 if it can never equal one. Besides A-Z, the only code unit
+ * whose toLowerCase() is a single ASCII char is U+212A KELVIN SIGN ("k");
+ * tests/services/scan-engine-casefold.test.ts pins that exhaustively.
+ */
+function lowerForAscii(code: number): number {
+  if (code < 128) return code >= 65 && code <= 90 ? code + 32 : code;
+  return code === 0x212a ? 107 : -1;
+}
+
+/**
+ * `haystack.toLowerCase().indexOf(lowerNeedle, from)`, but the result is an
+ * offset in `haystack` itself (gc-8jd). toLowerCase is not length-preserving:
+ * U+0130 (İ) becomes "i" + U+0307 (the only such code point), so offsets taken
+ * from the lowercased copy drift one unit per İ and slicing the original with
+ * them drops or mis-cuts every later match. Comparing unit by unit keeps the
+ * offsets exact and matches the old result on any input without an İ (İ
+ * itself never equals an ASCII char, just as "i̇" never matched before).
+ *
+ * `lowerNeedle` must be lowercase ASCII (tag prefixes, domain names). Linear
+ * in haystack length times needle length; needles here are short constants.
+ */
+export function indexOfIgnoreCase(haystack: string, lowerNeedle: string, from = 0): number {
+  const last = haystack.length - lowerNeedle.length;
+  outer: for (let i = Math.max(0, from); i <= last; i++) {
+    for (let j = 0; j < lowerNeedle.length; j++) {
+      if (lowerForAscii(haystack.charCodeAt(i + j)) !== lowerNeedle.charCodeAt(j)) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+
+/**
  * Extract complete HTML tags (`<link ...>`, `<meta ...>`, `<script ...>`) from
  * `content` in a single linear left-to-right pass, returning each tag's text and
  * its byte offset in `content`.
@@ -213,11 +247,10 @@ export const MAX_SCANNABLE_FILE_BYTES = 1_000_000;
  */
 function extractTags(content: string, tagPrefix: string): Array<{ tag: string; offset: number }> {
   const tags: Array<{ tag: string; offset: number }> = [];
-  const haystack = content.toLowerCase();
   const needle = tagPrefix.toLowerCase();
   let from = 0;
   for (;;) {
-    const start = haystack.indexOf(needle, from);
+    const start = indexOfIgnoreCase(content, needle, from);
     if (start === -1) break;
     const close = content.indexOf(">", start + needle.length);
     if (close === -1) break; // unterminated tag — no complete match possible
@@ -1560,7 +1593,7 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
       const original = originalLines[i];
       // Search the blanked (same length as original) but undecoded line so the
       // snippet centres on the first LIVE occurrence, not one in a comment.
-      const at = rawText.toLowerCase().indexOf(hit.domain);
+      const at = indexOfIgnoreCase(rawText, hit.domain);
       const from = Math.max(0, at - MALICIOUS_SNIPPET_LEAD);
       findings.push({
         filename: file.filename,
