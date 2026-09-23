@@ -38,7 +38,8 @@ export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<{ domain: string; note: stri
  * (or a subdomain of one), else null. Case-insensitive.
  */
 export function matchMaliciousDomain(hostname: string): { domain: string; note: string } | null {
-  const host = hostname.toLowerCase();
+  // Strip a trailing FQDN dot ("jsdeliver.cloud.") so it cannot slip past.
+  const host = hostname.toLowerCase().replace(/\.$/, "");
   return (
     KNOWN_MALICIOUS_DOMAINS.find(({ domain }) => host === domain || host.endsWith(`.${domain}`)) ??
     null

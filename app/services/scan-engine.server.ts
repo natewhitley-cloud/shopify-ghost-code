@@ -1001,50 +1001,80 @@ export function detectInvalidJsonLd(file: ThemeFile): CreateFindingInput[] {
 // Detector: MALICIOUS_SCRIPT (known-malicious domain references)
 // ---------------------------------------------------------------------------
 
-// Any absolute or protocol-relative URL host on a line. Deliberately NOT limited
-// to `<script src>`: injected loaders often build the URL in inline JS
-// (`s.src = "https://..."`) or preload it via `<link>`, and all of those load
-// attacker code just the same.
-const URL_HOST_RE = /(?:https?:)?\/\/([a-z0-9-]+(?:\.[a-z0-9-]+)+)/gi;
+// Any absolute or protocol-relative URL host. Deliberately NOT limited to
+// `<script src>`: injected loaders often build the URL in inline JS
+// (`s.src = "https://..."`) or preload it via `<link>`. Tolerates an optional
+// userinfo prefix (`https://x@host`), underscores, and a trailing FQDN dot.
+// Every quantifier is bounded by a disjoint delimiter, so matching stays linear
+// on pathological 1MB single-line files (covered by a test).
+const URL_HOST_RE = /(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)/gi;
+
+// `{% comment %}...{% endcomment %}` incl. whitespace-control `{%-`/`-%}` forms.
+const LIQUID_COMMENT_BLOCK_RE = /\{%-?\s*comment\s*-?%\}[\s\S]*?\{%-?\s*endcomment\s*-?%\}/gi;
+
+// Chars on either side of the matched domain kept in the stored snippet. The
+// row UI previews the first 80 chars, so the domain must start within them.
+const MALICIOUS_SNIPPET_LEAD = 40;
+const MALICIOUS_SNIPPET_MAX = 300;
 
 /**
- * Emit one MALICIOUS_SCRIPT finding per live theme line that references a domain
- * on the curated KNOWN_MALICIOUS_DOMAINS list.
+ * Blank out Liquid comment blocks while preserving every newline, so line
+ * numbers still map 1:1 to the original file. Unlike the shared line-granular
+ * buildCommentSkipLines, live code sharing a line with a comment stays visible:
+ * a minified one-line theme with any comment in it must not evade detection.
+ */
+function blankLiquidComments(content: string): string {
+  return content.replace(LIQUID_COMMENT_BLOCK_RE, (m) => m.replace(/[^\n]/g, " "));
+}
+
+/**
+ * Emit one MALICIOUS_SCRIPT finding per (line, distinct domain) for every live
+ * theme reference to a domain on the curated KNOWN_MALICIOUS_DOMAINS list.
  *
- *   - Lines inside a Liquid comment block are skipped (inert, never rendered).
- *   - One finding per line, even if the domain repeats on it.
- *   - Severity is ALWAYS HIGH and is set directly rather than via
- *     classifySeverity: that classifier downgrades on comment markers in the
- *     surrounding snippet context, but we have already excluded commented lines,
- *     so every emitted line is live attacker code.
+ *   - Liquid comment blocks are ignored; code outside them on the same line is not.
+ *   - JSON-escaped slashes (`https:\/\/host`) are decoded before matching.
+ *   - Other inert forms (HTML/JS comments) are still reported: a leftover
+ *     malicious reference is worth removing, and the description says
+ *     "references", not "loads".
+ *   - The snippet is centred on the matched domain so the row preview shows it.
+ *   - Severity is ALWAYS HIGH, set directly rather than via classifySeverity
+ *     (whose comment-context downgrade does not apply: comments are excluded).
  *
  * Theme-file only, NO scope gate, ALL plans.
  */
 export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
-  const commentLines = buildCommentSkipLines(file.content);
+  const originalLines = file.content.split("\n");
+  const scanLines = blankLiquidComments(file.content).split("\n");
 
-  for (const { lineNumber, text } of lines(file.content)) {
-    if (commentLines.has(lineNumber)) continue;
-
+  scanLines.forEach((rawText, i) => {
+    const text = rawText.replace(/\\\//g, "/"); // decode JSON-escaped slashes
+    const seen = new Set<string>();
     URL_HOST_RE.lastIndex = 0;
     let match: RegExpExecArray | null;
     while ((match = URL_HOST_RE.exec(text)) !== null) {
       const hit = matchMaliciousDomain(match[1]);
-      if (!hit) continue;
+      if (!hit || seen.has(hit.domain)) continue;
+      seen.add(hit.domain);
 
+      const lineNumber = i + 1;
+      const original = originalLines[i];
+      const at = original.toLowerCase().indexOf(hit.domain);
+      const from = Math.max(0, at - MALICIOUS_SNIPPET_LEAD);
       findings.push({
         filename: file.filename,
         lineNumber,
-        codeSnippet: buildSnippet(file.content, lineNumber),
+        codeSnippet:
+          at === -1
+            ? buildSnippet(file.content, lineNumber)
+            : original.slice(from, from + MALICIOUS_SNIPPET_MAX),
         findingType: FindingType.MALICIOUS_SCRIPT,
         severity: Severity.HIGH,
         appName: undefined,
-        description: `Loads code from known-malicious domain ${hit.domain} (${hit.note}). Your theme may be compromised`,
+        description: `References known-malicious domain ${hit.domain} (${hit.note}), likely injected code. Your theme may be compromised`,
       });
-      break; // one finding per line
     }
-  }
+  });
 
   return findings;
 }

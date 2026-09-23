@@ -5394,6 +5394,108 @@ describe("detectMaliciousScripts", () => {
     expect(findings[0].description).toContain("cb28utrk.com");
   });
 
+  // ---- Adversarial-audit regressions (2026-09-23) ----
+
+  it("keeps the malicious URL visible in the snippet preview even with a preceding line", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<meta name="viewport" content="width=device-width,initial-scale=1">',
+        `<script>${"x".repeat(500)}</script><script src="https://shopify.jsdeliver.cloud/config.js"></script>`,
+      ].join("\n"),
+    };
+    const [f] = detectMaliciousScripts(file);
+    // FindingRow previews the first 80 chars; the domain must be inside them.
+    expect(f.codeSnippet.slice(0, 80)).toContain("jsdeliver.cloud");
+    expect(f.codeSnippet.length).toBeLessThanOrEqual(300);
+  });
+
+  it("detects code on the same line as an inline Liquid comment (no whole-line skip)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '{% comment %}note{% endcomment %}<script src="https://shopify.jsdeliver.cloud/config.js"></script>',
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(1);
+  });
+
+  it("detects code BEFORE a comment opener on the same line", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        '<script src="https://shopify.jsdeliver.cloud/config.js"></script>{% comment %}',
+        "still commented",
+        "{% endcomment %}",
+      ].join("\n"),
+    };
+    expect(detectMaliciousScripts(file).map((f) => f.lineNumber)).toEqual([1]);
+  });
+
+  it("still ignores a reference that is inside a whitespace-control comment block", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '{%- comment -%}<script src="https://shopify.jsdeliver.cloud/config.js"></script>{%- endcomment -%}',
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(0);
+  });
+
+  it("detects JSON-escaped slashes (https:\\/\\/)", () => {
+    const file: ThemeFile = {
+      filename: "snippets/loader.liquid",
+      content: '<script>var u = "https:\\/\\/shopify.jsdeliver.cloud\\/config.js";</script>',
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(1);
+  });
+
+  it("detects a userinfo-prefixed host (https://x@evil)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn@shopify.jsdeliver.cloud/config.js"></script>',
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(1);
+  });
+
+  it("detects a trailing-dot FQDN and keeps it out of the unknown-script flywheel", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://jsdeliver.cloud./x.js"></script>',
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(1);
+    expect(collectUnknownScripts(file)).toHaveLength(0);
+  });
+
+  it("emits one finding per DISTINCT malicious domain on the same line", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content:
+        '<script src="https://shopify.jsdeliver.cloud/a.js"></script><script src="https://www.cb28utrk.com/scripts/shopify/click.js"></script>',
+    };
+    const findings = detectMaliciousScripts(file);
+    expect(findings).toHaveLength(2);
+    expect(findings[0].description).toContain("jsdeliver.cloud");
+    expect(findings[1].description).toContain("cb28utrk.com");
+  });
+
+  it("describes a reference, not a confirmed load (it may be inert, e.g. an HTML comment)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<!-- <script src="https://shopify.jsdeliver.cloud/config.js"></script> -->',
+    };
+    const [f] = detectMaliciousScripts(file);
+    expect(f.description).toMatch(/^References known-malicious domain jsdeliver\.cloud/);
+  });
+
+  it("stays linear on a pathological 1MB single line (no ReDoS)", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "//" + "a".repeat(1_000_000) + " //" + "a.".repeat(400_000),
+    };
+    const start = Date.now();
+    detectMaliciousScripts(file);
+    expect(Date.now() - start).toBeLessThan(1500);
+  });
+
   it("returns nothing for a clean file", () => {
     const file: ThemeFile = {
       filename: "layout/theme.liquid",
