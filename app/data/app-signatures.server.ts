@@ -548,6 +548,22 @@ export const APP_SIGNATURES: AppSignature[] = [
     cssPatterns: [/aftership/],
   },
   {
+    // Seen in prod 2026-09-22 as an unknown script (//www.17track.net/externalcall.js).
+    appName: "17TRACK",
+    cdnDomains: ["www.17track.net"],
+    scriptPatterns: [/17track\.net\/externalcall/],
+    snippetNames: [],
+    cssPatterns: [],
+  },
+  {
+    // Seen in prod 2026-09-22 as an unknown script (frontend.cjdropshipping.com/egg/pod3.js).
+    appName: "CJ Dropshipping",
+    cdnDomains: ["frontend.cjdropshipping.com"],
+    scriptPatterns: [/cjdropshipping\.com\/egg\//],
+    snippetNames: [],
+    cssPatterns: [],
+  },
+  {
     appName: "ShipStation",
     cdnDomains: [],
     scriptPatterns: [/shipstation\.com/, /ShipStation/],

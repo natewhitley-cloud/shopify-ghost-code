@@ -371,6 +371,12 @@ enum FindingType {
   // gate, all plans. Like DUPLICATE_LIBRARY it is cross-file with no single-app
   // attribution.
   OVERLAPPING_CHAT_WIDGET
+  // Emitted by the malicious-script detector (detectMaliciousScripts in
+  // scan-engine.server.ts): a live theme line references a domain on the curated
+  // KNOWN_MALICIOUS_DOMAINS list (app/data/malicious-domains.server.ts), e.g. a
+  // fake-CDN loader injected by a rogue app. Always HIGH. Theme-file only, no
+  // scope gate, all plans; preferred as the free-plan preview finding.
+  MALICIOUS_SCRIPT
 }
 
 enum SubmissionStatus {

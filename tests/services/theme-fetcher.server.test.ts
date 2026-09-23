@@ -4,6 +4,8 @@ import {
   fetchMainTheme,
   fetchThemeFiles,
   fetchAllThemes,
+  ThemeTooLargeError,
+  MAX_THEME_TOTAL_TEXT_BYTES,
 } from "../../app/services/theme-fetcher.server";
 import { createMockGraphQLResponse } from "../mocks/shopify";
 
@@ -86,6 +88,78 @@ describe("fetchMainTheme", () => {
 // ---------------------------------------------------------------------------
 
 describe("fetchThemeFiles", () => {
+  // gc-8s2: aggregate text ceiling. Bounds memory DURING the fetch (not after),
+  // so a pathological theme can never be held whole in the main thread and
+  // again in the worker.
+  describe("total theme size ceiling", () => {
+    it("throws ThemeTooLargeError and stops paginating once cumulative text exceeds the cap", async () => {
+      const graphql = vi
+        .fn()
+        .mockResolvedValueOnce(
+          makeThemeFilesResponse(
+            [
+              { filename: "layout/theme.liquid", body: { content: "aaaa" } }, // 4
+              { filename: "templates/index.liquid", body: { content: "bbbb" } }, // 8 > 6
+            ],
+            { hasNextPage: true, endCursor: "cursor-1" },
+          ),
+        )
+        .mockResolvedValueOnce(
+          makeThemeFilesResponse([{ filename: "sections/x.liquid", body: { content: "c" } }], {
+            hasNextPage: false,
+            endCursor: null,
+          }),
+        );
+
+      const err = await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+        maxTotalBytes: 6,
+      }).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ThemeTooLargeError);
+      expect((err as ThemeTooLargeError).maxTotalBytes).toBe(6);
+      expect((err as ThemeTooLargeError).message).toContain("gid://shopify/Theme/1");
+      expect(graphql).toHaveBeenCalledTimes(1); // aborted before fetching page 2
+    });
+
+    it("allows a theme exactly at the cap", async () => {
+      const graphql = vi.fn().mockResolvedValue(
+        makeThemeFilesResponse(
+          [
+            { filename: "layout/theme.liquid", body: { content: "aaa" } },
+            { filename: "templates/index.liquid", body: { content: "bbb" } },
+          ],
+          { hasNextPage: false, endCursor: null },
+        ),
+      );
+
+      const files = await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+        maxTotalBytes: 6,
+      });
+      expect(files).toHaveLength(2);
+    });
+
+    it("does not count binary (no-text) files toward the cap", async () => {
+      const graphql = vi.fn().mockResolvedValue(
+        makeThemeFilesResponse(
+          [
+            { filename: "assets/logo.png", body: {} },
+            { filename: "layout/theme.liquid", body: { content: "aaaaaa" } },
+          ],
+          { hasNextPage: false, endCursor: null },
+        ),
+      );
+
+      const files = await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+        maxTotalBytes: 6,
+      });
+      expect(files.map((f) => f.filename)).toEqual(["layout/theme.liquid"]);
+    });
+
+    it("defaults to a ceiling far above any real theme (normal themes unaffected)", () => {
+      expect(MAX_THEME_TOTAL_TEXT_BYTES).toBeGreaterThanOrEqual(50_000_000);
+    });
+  });
+
   it("returns files from a single page", async () => {
     const graphql = vi.fn().mockResolvedValue(
       makeThemeFilesResponse(

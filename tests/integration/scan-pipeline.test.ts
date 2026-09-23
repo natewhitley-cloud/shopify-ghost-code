@@ -68,7 +68,9 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
   canDetectCheckoutSunset: vi.fn(() => false),
 }));
 
-vi.mock("../../app/services/theme-fetcher.server", () => ({
+vi.mock("../../app/services/theme-fetcher.server", async (importOriginal) => ({
+  // Keep the real ThemeTooLargeError class (scan-theme checks instanceof).
+  ...(await importOriginal<typeof import("../../app/services/theme-fetcher.server")>()),
   fetchMainTheme: vi.fn(),
   fetchThemeFiles: vi.fn(),
 }));

@@ -163,6 +163,33 @@ export async function fetchAllThemes(admin: AdminApiContext): Promise<ThemeSumma
 }
 
 /**
+ * Aggregate ceiling on theme TEXT content held in memory for one scan (gc-8s2).
+ * Deliberately far above any real Shopify theme: it exists only so a
+ * pathological theme can never be held whole in the main thread (and again in
+ * the scan worker) and OOM the shared, multi-tenant container. The per-file
+ * detector cap (MAX_SCANNABLE_FILE_BYTES) does not bound the total.
+ * Measured in string length (UTF-16 code units), matching that per-file cap.
+ */
+export const MAX_THEME_TOTAL_TEXT_BYTES = 50_000_000;
+
+/**
+ * Thrown by fetchThemeFiles when cumulative theme text exceeds the ceiling.
+ * Deterministic for a given theme, so callers should NOT retry it.
+ */
+export class ThemeTooLargeError extends Error {
+  constructor(
+    readonly themeId: string,
+    readonly maxTotalBytes: number,
+  ) {
+    super(
+      `[theme-fetcher] Theme ${themeId} exceeds the ${maxTotalBytes}-byte total text ceiling; ` +
+        "aborting fetch rather than risk exhausting process memory.",
+    );
+    this.name = "ThemeTooLargeError";
+  }
+}
+
+/**
  * Fetch every text file in a theme, handling cursor-based pagination.
  *
  * - Uses `first: 250` per page (maximum allowed).
@@ -171,13 +198,17 @@ export async function fetchAllThemes(admin: AdminApiContext): Promise<ThemeSumma
  *
  * @param admin    Shopify admin API context (from authenticate.admin or offline token).
  * @param themeId  Theme GID, e.g. `gid://shopify/Theme/123456789`.
+ * @throws ThemeTooLargeError once cumulative text exceeds `maxTotalBytes`
+ *         (checked per file, so memory is bounded at the cap plus one page).
  */
 export async function fetchThemeFiles(
   admin: AdminApiContext,
   themeId: string,
   shopDomain?: string,
+  { maxTotalBytes = MAX_THEME_TOTAL_TEXT_BYTES }: { maxTotalBytes?: number } = {},
 ): Promise<ThemeFile[]> {
   const PAGE_SIZE = 250;
+  let totalBytes = 0;
 
   type ThemeFileNode = { filename: string; body?: { content?: string } };
 
@@ -211,9 +242,12 @@ export async function fetchThemeFiles(
       return theme.files;
     },
     // body is a union type; only OnlineStoreThemeFileBodyText has content.
-    mapNode: (node) =>
-      typeof node.body?.content === "string"
-        ? [{ filename: node.filename, content: node.body.content }]
-        : [],
+    mapNode: (node) => {
+      if (typeof node.body?.content !== "string") return [];
+      totalBytes += node.body.content.length;
+      // Throwing here aborts pagination before the next page is requested.
+      if (totalBytes > maxTotalBytes) throw new ThemeTooLargeError(themeId, maxTotalBytes);
+      return [{ filename: node.filename, content: node.body.content }];
+    },
   });
 }

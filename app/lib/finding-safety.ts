@@ -49,6 +49,9 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   // <link rel="preconnect"> to an app CDN — a pure network hint; removing it is
   // the most inert change of all (opens one fewer dead connection).
   GHOST_PRECONNECT: "safe-to-remove",
+  // Known-malicious domain reference — nothing legitimate depends on attacker
+  // code, so deleting the line is always correct (and urgent).
+  MALICIOUS_SCRIPT: "safe-to-remove",
 
   // ---- leave-alone: removal is the wrong action; migrate or fix the data. ----
   // Two JSON-LD blocks disagree — fix/keep the correct one, don't blindly delete.

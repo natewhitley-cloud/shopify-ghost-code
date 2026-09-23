@@ -46,6 +46,12 @@ vi.mock("../../inngest/client", () => ({
 // Stub the heartbeat write so it does not touch the DB or logger in these tests.
 vi.mock("../../app/models/ops-event.server", () => ({
   recordCronHeartbeat: vi.fn(),
+  getLatestOpsEvent: vi.fn(),
+  OPS_EVENT_TYPES: { FUNCTION_FAILURE: "function_failure" },
+}));
+
+vi.mock("../../app/lib/notifications.server", () => ({
+  notifyFunctionFailure: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -53,6 +59,8 @@ vi.mock("../../app/models/ops-event.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { logger } from "../../app/lib/logger.server";
+import { notifyFunctionFailure } from "../../app/lib/notifications.server";
+import { getLatestOpsEvent } from "../../app/models/ops-event.server";
 import { getFailureRateStats } from "../../app/models/scan.server";
 import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failures";
 import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
@@ -62,6 +70,8 @@ import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 // ---------------------------------------------------------------------------
 
 const mockGetFailureRateStats = getFailureRateStats as ReturnType<typeof vi.fn>;
+const mockNotify = notifyFunctionFailure as ReturnType<typeof vi.fn>;
+const mockGetLatestOpsEvent = getLatestOpsEvent as ReturnType<typeof vi.fn>;
 const mockLoggerInfo = (logger as unknown as { info: ReturnType<typeof vi.fn> }).info;
 const mockLoggerWarn = (logger as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
 const mockLoggerError = (logger as unknown as { error: ReturnType<typeof vi.fn> }).error;
@@ -220,5 +230,76 @@ describe("monitorScanFailures — return value", () => {
     const result = await runMonitorScanFailures();
 
     expect(result).toEqual(stats);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-i1n: sustained CRITICAL → durable function_failure + page (deduped, floored)
+// ---------------------------------------------------------------------------
+
+describe("monitorScanFailures — critical escalation (gc-i1n)", () => {
+  beforeEach(() => {
+    mockGetLatestOpsEvent.mockResolvedValue(null);
+  });
+
+  it("pages via notifyFunctionFailure when rate > 25% and failures meet the floor", async () => {
+    mockGetFailureRateStats.mockResolvedValue({ total: 10, failed: 4, rate: 0.4 });
+
+    await runMonitorScanFailures();
+
+    expect(mockNotify).toHaveBeenCalledOnce();
+    const ctx = mockNotify.mock.calls[0][0];
+    expect(ctx.functionId).toBe("monitor-scan-failures:critical");
+    expect(ctx.error).toContain("40.0%");
+    expect(ctx.error).toContain("4 of 10");
+  });
+
+  it("does NOT page on a small-sample spike below the failure floor (e.g. 1 of 3)", async () => {
+    mockGetFailureRateStats.mockResolvedValue({ total: 3, failed: 1, rate: 1 / 3 });
+
+    await runMonitorScanFailures();
+
+    expect(mockLoggerError).toHaveBeenCalledOnce(); // still logged as critical
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("does NOT page again inside the 24h dedupe window", async () => {
+    mockGetFailureRateStats.mockResolvedValue({ total: 10, failed: 4, rate: 0.4 });
+    mockGetLatestOpsEvent.mockResolvedValue({ createdAt: new Date(Date.now() - 6 * 3600_000) });
+
+    await runMonitorScanFailures();
+
+    // Dedupes on its OWN key, so a transient monitor step failure (recorded by
+    // the failure middleware under "monitor-scan-failures") cannot suppress it.
+    expect(mockGetLatestOpsEvent).toHaveBeenCalledWith(
+      "function_failure",
+      "monitor-scan-failures:critical",
+    );
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("pages again once the prior escalation is older than 24h", async () => {
+    mockGetFailureRateStats.mockResolvedValue({ total: 10, failed: 4, rate: 0.4 });
+    mockGetLatestOpsEvent.mockResolvedValue({ createdAt: new Date(Date.now() - 25 * 3600_000) });
+
+    await runMonitorScanFailures();
+
+    expect(mockNotify).toHaveBeenCalledOnce();
+  });
+
+  it("does NOT page at an elevated (non-critical) rate", async () => {
+    mockGetFailureRateStats.mockResolvedValue({ total: 100, failed: 20, rate: 0.2 });
+
+    await runMonitorScanFailures();
+
+    expect(mockNotify).not.toHaveBeenCalled();
+  });
+
+  it("is best-effort: an escalation failure never fails the cron", async () => {
+    mockGetFailureRateStats.mockResolvedValue({ total: 10, failed: 4, rate: 0.4 });
+    mockGetLatestOpsEvent.mockRejectedValue(new Error("db down"));
+
+    await expect(runMonitorScanFailures()).resolves.toMatchObject({ failed: 4 });
+    expect(mockNotify).not.toHaveBeenCalled();
   });
 });

@@ -138,6 +138,20 @@ function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
  * "Found 0" (which looks like a completed empty scan) in favour of a reassuring
  * "still scanning" line.
  */
+/**
+ * Free-tier upsell count: findings actually hidden behind the paywall. The
+ * summary total excludes ignored findings; from it we remove the one preview
+ * row and every malicious finding the summary still counts (non-ignored),
+ * because those are all shown in full in the security alert. Never negative.
+ */
+export function freeTierHiddenFindingCount(
+  summaryTotal: number,
+  maliciousFindings: ReadonlyArray<{ isIgnored: boolean }>,
+): number {
+  const visibleMalicious = maliciousFindings.filter((f) => !f.isIgnored).length;
+  return Math.max(0, summaryTotal - 1 - visibleMalicious);
+}
+
 export function scanProgressLabel(findingCount: number): string {
   if (findingCount <= 0) return "Scanning… no findings yet.";
   if (findingCount === 1) return "Found 1 finding so far…";
@@ -174,6 +188,7 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   JSON_LD_CONFLICT: "JSON-LD Conflicts",
   JSON_LD_PRICE_CONFLICT: "JSON-LD Price Mismatch",
   JSON_LD_INVALID: "Invalid JSON-LD",
+  MALICIOUS_SCRIPT: "Malicious Scripts",
   GHOST_LAYOUT: "Layout Code",
   GHOST_TAG: "Product Tags",
   GHOST_PRICE: "Compare-at Prices",
@@ -622,6 +637,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     appAttributionData,
     unknownScripts,
     filterOptions,
+    maliciousFindings,
   ] = await Promise.all([
     getFilteredFindingSummary(scanId, ignores),
     // Free-tier only: fetch a single preview finding (paid users get a page).
@@ -652,6 +668,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     canViewFindings
       ? getFindingFilterOptionsForScan(scanId)
       : Promise.resolve({ types: [], apps: [] }),
+    // Known-malicious scripts: shown IN FULL on EVERY plan (free included) and
+    // regardless of merchant ignores. A compromised theme is a shopper-safety
+    // issue, never an upsell; the free-tier paywall does not apply here.
+    isSuccessfulScan(scan.status)
+      ? getFindingsForScan(scanId, { findingType: "MALICIOUS_SCRIPT" })
+      : Promise.resolve([]),
   ]);
 
   // Compute health score for successful scans (COMPLETED or PARTIAL).
@@ -668,6 +690,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // "Ignore" button. `isFindingIgnored` fingerprints each finding, so we only run
   // it when the shop actually has suppressions (mirrors E2.2's zero-cost path).
   const hasIgnores = ignores.fingerprints.size > 0 || ignores.appNames.size > 0;
+  // Malicious findings are shown regardless of ignores, but the summary counts
+  // exclude ignored rows; the flag lets the free upsell count subtract exactly
+  // the malicious rows the summary still counts.
+  const enrichedMaliciousFindings = maliciousFindings.map((f) => ({
+    ...f,
+    isIgnored: hasIgnores ? isFindingIgnored(f, ignores) : false,
+  }));
   const enrichedFindingsPage = findingsPage.items.map((f) => ({
     ...f,
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
@@ -691,7 +720,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isFindingIgnored(rawPreviewFinding, ignores)
   ) {
     const { kept } = filterIgnoredFindings(await getFindingsForScan(scanId), ignores);
-    resolvedPreviewFinding = kept[0] ?? null;
+    // Skip MALICIOUS_SCRIPT here too, mirroring getHighestSeverityFinding: those
+    // are already shown in full by the security alert.
+    resolvedPreviewFinding = kept.find((f) => f.findingType !== "MALICIOUS_SCRIPT") ?? null;
   }
 
   // Enrich the preview finding with tracker flag (free-tier only).
@@ -735,6 +766,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       nextCursor: findingsPage.nextCursor,
     },
     previewFinding,
+    maliciousFindings: enrichedMaliciousFindings,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -969,6 +1001,7 @@ export default function ScanDetail() {
     findings,
     findingsPagination,
     previewFinding,
+    maliciousFindings,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -983,6 +1016,8 @@ export default function ScanDetail() {
   } = useLoaderData<typeof loader>();
 
   const [, setSearchParams] = useFilterSearchParams();
+
+  const hiddenFindingCount = freeTierHiddenFindingCount(findingSummary.total, maliciousFindings);
 
   // Set (or clear) a single findings filter param and reset pagination. Clearing
   // the cursor is essential: a stale `?cursor=` from a previous page must not
@@ -1399,6 +1434,42 @@ export default function ScanDetail() {
         {isFailed && (
           <s-banner tone="critical">
             This scan failed to complete. Please try running a new scan from the dashboard.
+          </s-banner>
+        )}
+
+        {/* Security alert: every known-malicious script, in full, on ALL plans
+            (free included). Never paywalled; see the loader comment. */}
+        {maliciousFindings.length > 0 && (
+          <s-banner tone="critical" heading="Malicious code found in your theme">
+            <s-stack direction="block" gap="base">
+              <s-text>
+                {maliciousFindings.length === 1
+                  ? "1 line in your theme references"
+                  : `${maliciousFindings.length} lines in your theme reference`}{" "}
+                a domain known to be used in attacks on Shopify stores. Remove{" "}
+                {maliciousFindings.length === 1 ? "it" : "them"} as soon as possible and follow the
+                steps under each finding. This is shown on every plan.
+              </s-text>
+              <ul style={{ margin: 0, paddingLeft: "20px" }}>
+                {maliciousFindings.map((f) => (
+                  <li key={f.id}>
+                    <s-text>
+                      {f.filename}:{f.lineNumber}: {f.description}
+                    </s-text>
+                  </li>
+                ))}
+              </ul>
+              <FindingsTable>
+                {maliciousFindings.map((f) => (
+                  <FindingRow
+                    key={f.id}
+                    finding={f}
+                    shopDomain={shopDomain}
+                    themeId={scan.themeId}
+                  />
+                ))}
+              </FindingsTable>
+            </s-stack>
           </s-banner>
         )}
 
@@ -1892,10 +1963,12 @@ export default function ScanDetail() {
               </s-card>
             </div>
           ) : previewFinding === null ? (
-            /* Free tier, no findings at all */
-            <s-card>
-              <s-paragraph>No ghost code detected in this scan.</s-paragraph>
-            </s-card>
+            /* Free tier, no findings beyond any malicious ones (shown above) */
+            maliciousFindings.length === 0 && (
+              <s-card>
+                <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+              </s-card>
+            )
           ) : (
             /* Free tier with findings — show summary + one preview row + upgrade prompt */
             <>
@@ -1927,15 +2000,15 @@ export default function ScanDetail() {
                     />
                   </FindingsTable>
 
-                  {/* Upgrade banner: remaining count and upgrade CTA (hidden when only 1 finding total) */}
-                  {findingSummary.total > 1 && (
+                  {/* Upgrade banner: count of findings actually hidden (excludes preview + malicious) */}
+                  {hiddenFindingCount > 0 && (
                     <s-banner tone="info">
                       <s-stack direction="block" gap="base">
                         <s-text>
-                          {findingSummary.total - 1} more{" "}
-                          {findingSummary.total - 1 === 1 ? "finding" : "findings"} detected.
-                          Upgrade to Standard to see full details including all file names, line
-                          numbers, and code snippets.
+                          {hiddenFindingCount} more{" "}
+                          {hiddenFindingCount === 1 ? "finding" : "findings"} detected. Upgrade to
+                          Standard to see full details including all file names, line numbers, and
+                          code snippets.
                         </s-text>
                         <Link to="/app/settings">
                           <s-button variant="primary">Upgrade Plan</s-button>

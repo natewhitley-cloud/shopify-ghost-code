@@ -28,6 +28,14 @@
  */
 const FONT_HOSTS = new Set(["fonts.googleapis.com", "fonts.gstatic.com"]);
 
+// Exact host+path of first-party vendor scripts merchants paste by hand. They are
+// not apps (no uninstall lifecycle), so they are neither unknown scripts nor
+// app-signature ghosts. Matched exactly, ignoring scheme and query string.
+const BENIGN_SCRIPT_PATHS = new Set([
+  // Google Merchant Center store widget (seen in prod 2026-09-22).
+  "www.gstatic.com/shopping/merchant/merchantwidget.js",
+]);
+
 /**
  * Seed list of well-known, benign JS libraries recognized on shared package
  * CDNs. Kept deliberately tight: the three "weekend-scan" libraries that
@@ -166,14 +174,16 @@ export function parseLibrary(url: string): { name: string; major: number } | nul
  */
 export function isBenignLibrary(url: string): boolean {
   const normalized = url.startsWith("//") ? `https:${url}` : url;
-  let hostname: string;
+  let parsed: URL;
   try {
-    hostname = new URL(normalized).hostname;
+    parsed = new URL(normalized);
   } catch {
     return false;
   }
+  const { hostname } = parsed;
 
   if (FONT_HOSTS.has(hostname)) return true;
+  if (BENIGN_SCRIPT_PATHS.has(`${hostname}${parsed.pathname}`)) return true;
 
   const lib = parseCdnLibrary(url);
   if (lib === null || lib.host === "cdnjs") return false;

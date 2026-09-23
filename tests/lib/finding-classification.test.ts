@@ -103,6 +103,8 @@ describe("getFindingConfidence", () => {
     "GHOST_FONT",
     "GHOST_AJAX",
     "GHOST_PRICE",
+    // Positive match against the curated known-malicious domain list.
+    "MALICIOUS_SCRIPT",
   ];
 
   it.each(SIGNATURE_TYPES)('returns "signature" for %s', (type) => {
@@ -161,7 +163,7 @@ describe("getFindingConfidence", () => {
   // ---------------------------------------------------------------------------
   it("classifies every FindingType enum member in exactly one tier (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(33);
+    expect(allTypes).toHaveLength(34);
 
     for (const type of allTypes) {
       const inSignature = CONFIDENCE_TYPE_SETS.signature.has(type);
@@ -178,7 +180,7 @@ describe("getFindingConfidence", () => {
     const heuristic = [...CONFIDENCE_TYPE_SETS.heuristic];
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
-    expect(signature.length + heuristic.length).toBe(33);
+    expect(signature.length + heuristic.length).toBe(34);
   });
 });
 
@@ -210,6 +212,7 @@ describe("isThemeFileFinding", () => {
     "JSON_LD_CONFLICT",
     "JSON_LD_PRICE_CONFLICT",
     "JSON_LD_INVALID",
+    "MALICIOUS_SCRIPT",
     "GHOST_LAYOUT",
     "ORPHAN_ASSET",
     "SETTINGS_DRIFT",
@@ -250,7 +253,7 @@ describe("isThemeFileFinding", () => {
   // fails here, forcing a deliberate theme-file-vs-Admin-resource call.
   it("classifies every FindingType enum member in exactly one set (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(33);
+    expect(allTypes).toHaveLength(34);
 
     for (const type of allTypes) {
       const inThemeFile = THEME_FILE_TYPE_SETS.themeFile.has(type);
@@ -267,7 +270,7 @@ describe("isThemeFileFinding", () => {
     const adminResource = [...THEME_FILE_TYPE_SETS.adminResource];
     const overlap = themeFile.filter((t) => THEME_FILE_TYPE_SETS.adminResource.has(t));
     expect(overlap).toEqual([]);
-    expect(themeFile.length + adminResource.length).toBe(33);
+    expect(themeFile.length + adminResource.length).toBe(34);
   });
 });
 
