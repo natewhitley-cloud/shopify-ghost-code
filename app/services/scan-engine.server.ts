@@ -1062,13 +1062,17 @@ const LIQUID_LITERAL_BLOCKS = new Set(["raw", "javascript", "schema", "styleshee
 // Slash encodings decoded before URL matching: any run of backslashes before `/`
 // (JSON `\/`, double-escaped `\\/`, `\\\/`) or before the JS/JSON unicode
 // escape `u002f` (`\u002f`, `\u002F`, `\\u002f`), and HTML entities `&#47;` /
-// `&#x2F;` (optional leading zeros, optional `;`). The `i` flag also accepts an
-// uppercase `U`, which is not a real escape: that can only fail toward
+// `&#x2F;` (optional leading zeros, optional `;`), plus the named entity `&sol;`
+// (HTML matches named references case-sensitively and this one only with its
+// `;`). No `i` flag, and no `(?-i:)` modifier group (a SyntaxError before
+// Node 23): the case-insensitive parts use explicit classes, which also accept
+// an uppercase `U`, which is not a real escape: that can only fail toward
 // reporting. The `(?<!\\)` lookbehind lets a backslash run start a match only at
 // its first char, so a huge run that is not followed by `/` or `u002f` is
 // scanned once, not once per backslash (linear); a `\u` flood fails after a
 // constant lookahead per position.
-const ENCODED_SLASH_RE = /(?<!\\)\\+(?:\/|u002f)|&#0*47(?![0-9]);?|&#x0*2f(?![0-9a-f]);?/gi;
+const ENCODED_SLASH_RE =
+  /(?<!\\)\\+(?:\/|[uU]002[fF])|&#0*47(?![0-9]);?|&#[xX]0*2[fF](?![0-9a-fA-F]);?|&sol;/g;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.
@@ -1251,7 +1255,7 @@ export function blankLiquidComments(content: string): string {
  *     Trade-off: a commented-out reference inside a JSON Custom Liquid string is
  *     still reported (safer direction: a leftover reference is worth removing).
  *     Code outside a comment on the same line is never skipped.
- *   - Encoded slashes (`https:\/\/host`, `\\/`, `&#47;`, `&#x2F;`) are decoded
+ *   - Encoded slashes (`https:\/\/host`, `\\/`, `&#47;`, `&#x2F;`, `&sol;`) are decoded
  *     before matching.
  *   - Other inert forms (HTML/JS comments) are still reported: a leftover
  *     malicious reference is worth removing, and the description says

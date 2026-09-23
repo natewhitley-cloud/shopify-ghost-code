@@ -5934,6 +5934,18 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
     }
   });
 
+  it("decodes the HTML named entity &sol; (case-sensitive, requires the semicolon)", () => {
+    const scanUrl = (url: string) =>
+      detectMaliciousScripts({
+        filename: "layout/theme.liquid",
+        content: `<script src="${url}"></script>`,
+      });
+    expect(scanUrl("https:&sol;&sol;jsdeliver.cloud&sol;x.js")).toHaveLength(1);
+    // Browsers only decode the exact lowercase, semicolon-terminated form.
+    expect(scanUrl("https:&Sol;&SOL;jsdeliver.cloud/x.js")).toHaveLength(0);
+    expect(scanUrl("https:&sol&sol jsdeliver.cloud/x.js")).toHaveLength(0);
+  });
+
   it("collapses runs of backslashes before a slash (\\\\/ and \\\\\\/)", () => {
     for (const url of [
       String.raw`https:\\/\\/jsdeliver.cloud\\/x.js`,
