@@ -60,14 +60,18 @@ export interface DanglingHandleSummary extends DistinctDanglingHandle {
  * Result of a scan. It crosses the Inngest step boundary (4 MB output limit), so
  * it is BOUNDED (gc-4ce):
  *   - `distinctHandles` is the de-duplicated `(entityType, handle)` view for the
- *     resolver (one Admin API lookup each), capped at DANGLING_LOOKUP_CAP in
- *     first-seen order (by filename, then line).
+ *     resolver (one Admin API lookup each), in first-seen order (by filename,
+ *     then line), capped at DANGLING_LOOKUP_CAP per SCOPE GROUP (product +
+ *     collection = read_products, page = read_content). The resolver skips a
+ *     group whose scope is absent without spending lookups, so one shared cap
+ *     would let absent-scope handles crowd out checkable ones.
  *   - `occurrences` holds up to DANGLING_MAX_OCCURRENCES_PER_HANDLE hits per kept
  *     handle (one finding each), the first N by filename then line, so the kept
  *     set is deterministic across rescans of an unchanged theme.
- *   - `capped` is true when either cap dropped anything; the worker then treats
- *     the category as not fully audited so the differ never false-resolves a
- *     dropped occurrence.
+ *   - `capped` is true when the distinct-handle cap dropped a handle. The
+ *     per-handle occurrence cap does NOT set it: extra occurrences never change
+ *     which handles are missing, and only a MISSING handle over that cap loses
+ *     findings, which the worker decides after resolution from `occurrenceCount`.
  */
 export interface DanglingReferenceCandidates {
   occurrences: DanglingRefOccurrence[];
@@ -210,8 +214,8 @@ export function compareByFileThenLine(
 
 /**
  * Group hits into distinct handles (first-seen by filename, then line), keep the
- * first DANGLING_LOOKUP_CAP handles and the first DANGLING_MAX_OCCURRENCES_PER_HANDLE
- * hits of each, and build snippets only for the hits that are kept. Sorting
+ * first DANGLING_LOOKUP_CAP handles of each scope group and the first
+ * DANGLING_MAX_OCCURRENCES_PER_HANDLE hits of each kept handle, and build snippets only for the hits that are kept. Sorting
  * before truncating makes the kept set independent of the order files arrive in.
  */
 function boundHits(hits: RawHit[]): DanglingReferenceCandidates {
@@ -231,16 +235,22 @@ function boundHits(hits: RawHit[]): DanglingReferenceCandidates {
     group.hits.push(hit);
   }
 
-  let capped = groups.size > DANGLING_LOOKUP_CAP;
+  let capped = false;
+  const keptPerScopeGroup = { products: 0, content: 0 };
   const distinctHandles: DanglingHandleSummary[] = [];
   const kept: RawHit[] = [];
-  for (const group of [...groups.values()].slice(0, DANGLING_LOOKUP_CAP)) {
+  for (const group of groups.values()) {
+    const scopeGroup = group.entityType === "page" ? "content" : "products";
+    if (keptPerScopeGroup[scopeGroup] >= DANGLING_LOOKUP_CAP) {
+      capped = true;
+      continue;
+    }
+    keptPerScopeGroup[scopeGroup] += 1;
     distinctHandles.push({
       entityType: group.entityType,
       handle: group.handle,
       occurrenceCount: group.hits.length,
     });
-    if (group.hits.length > DANGLING_MAX_OCCURRENCES_PER_HANDLE) capped = true;
     kept.push(...group.hits.slice(0, DANGLING_MAX_OCCURRENCES_PER_HANDLE));
   }
 

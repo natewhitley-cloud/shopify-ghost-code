@@ -33,8 +33,10 @@ export const REDIRECT_CAP = 1000;
  * Max distinct `(entityType, handle)` pairs one scan resolves against the Admin
  * API in the dangling-reference audit (one GraphQL lookup each). Shared by the
  * resolver (its lookup budget) and the extractor (gc-4ce), which drops handles
- * beyond this cap BEFORE they cross the Inngest step boundary: a handle past the
- * budget could never be checked, so carrying it only inflates the step output.
+ * beyond this cap PER SCOPE GROUP (product + collection = read_products, page =
+ * read_content) BEFORE they cross the Inngest step boundary. Per group because
+ * the resolver skips a group whose scope is absent without spending lookups, so
+ * that group's handles must not crowd the other group out of the cap.
  */
 export const DANGLING_LOOKUP_CAP = 50;
 
@@ -44,7 +46,9 @@ export const DANGLING_LOOKUP_CAP = 50;
  * missing handle can produce. Real themes link a handle from a handful of places
  * (header, footer, a few sections); 20 leaves room for that while bounding a
  * pathological file (1 MB of `pages['a']` used to yield ~100k occurrences and
- * ~39 MB of step output). The true total is carried as `occurrenceCount`.
+ * ~39 MB of step output). The true total is carried as `occurrenceCount`. Only
+ * a MISSING handle over the cap marks the category skipped (its extra
+ * occurrences get no finding); an existing handle over it loses nothing.
  */
 export const DANGLING_MAX_OCCURRENCES_PER_HANDLE = 20;
 

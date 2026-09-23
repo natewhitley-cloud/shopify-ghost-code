@@ -1044,14 +1044,22 @@ export const scanTheme = inngest.createFunction(
 
           // Precise-skip rule (spike §D / R1): mark the category skipped iff a
           // static ref of a type whose scope is absent was present, OR the
-          // lookup budget truncated, OR the extractor's caps dropped handles or
-          // occurrences (gc-4ce) — so the differ never false-resolves refs we
-          // could not re-check or did not emit.
+          // lookup budget truncated, OR the extractor dropped handles (gc-4ce),
+          // OR a MISSING handle had occurrences past the per-handle cap (those
+          // got no finding). An EXISTING handle over the per-handle cap loses
+          // nothing, so it must not skip: that would drop the category from the
+          // diff, re-reporting every finding as new and never resolving fixes.
+          const missingOverOccurrenceCap = missing.some(
+            (m) =>
+              (occurrenceCounts.get(`${m.entityType} ${m.handle}`) ?? 0) >
+              DANGLING_MAX_OCCURRENCES_PER_HANDLE,
+          );
           const skipped =
             scopeStatus.products === "absent" ||
             scopeStatus.content === "absent" ||
             truncated ||
-            danglingCapped;
+            danglingCapped ||
+            missingOverOccurrenceCap;
           return { findingCount: danglingFindings.length, skipped };
         },
       );

@@ -309,7 +309,11 @@ describe("extractDanglingReferences — payload caps (gc-4ce)", () => {
     expect(result.distinctHandles).toEqual([
       { entityType: "page", handle: "about", occurrenceCount: 30 },
     ]);
-    expect(result.capped).toBe(true);
+    // The per-handle occurrence cap alone does NOT set `capped`: extra
+    // occurrences never change WHICH handles are missing, and the worker decides
+    // the skip after resolution from `occurrenceCount` (only a MISSING handle
+    // over the cap loses findings).
+    expect(result.capped).toBe(false);
     // The FIRST N by line are kept, in order.
     expect(result.occurrences.map((o) => o.lineNumber)).toEqual(
       Array.from({ length: DANGLING_MAX_OCCURRENCES_PER_HANDLE }, (_, i) => i + 1),
@@ -350,6 +354,38 @@ describe("extractDanglingReferences — payload caps (gc-4ce)", () => {
     expect(result.capped).toBe(true);
   });
 
+  it("caps distinct handles per scope group so absent-scope types cannot starve the other", () => {
+    // 60 product handles sort first (sections/ < templates/), then 1 page. The
+    // resolver skips product/collection handles when read_products is absent,
+    // so a single shared cap would have dropped the page before it was checked.
+    const products = Array.from({ length: 60 }, (_, i) => `<a href="/products/p${i}">x</a>`);
+    const result = extractDanglingReferences([
+      file(products.join("\n"), "sections/a.liquid"),
+      file('<a href="/pages/gone">x</a>', "templates/z.liquid"),
+    ]);
+
+    const productHandles = result.distinctHandles.filter((h) => h.entityType === "product");
+    expect(productHandles).toHaveLength(DANGLING_LOOKUP_CAP);
+    expect(result.distinctHandles.at(-1)).toEqual({
+      entityType: "page",
+      handle: "gone",
+      occurrenceCount: 1,
+    });
+    expect(result.occurrences.some((o) => o.handle === "gone")).toBe(true);
+    // Product handles were dropped, so the category is not fully audited.
+    expect(result.capped).toBe(true);
+  });
+
+  it("counts products and collections against one scope-group cap (read_products)", () => {
+    const refs = [
+      ...Array.from({ length: 30 }, (_, i) => `<a href="/products/p${i}">x</a>`),
+      ...Array.from({ length: 30 }, (_, i) => `<a href="/collections/c${i}">x</a>`),
+    ];
+    const result = extractDanglingReferences([file(refs.join("\n"))]);
+    expect(result.distinctHandles).toHaveLength(DANGLING_LOOKUP_CAP);
+    expect(result.capped).toBe(true);
+  });
+
   it("is not capped for an ordinary theme", () => {
     const result = extractDanglingReferences([
       file('<a href="/products/a">x</a>\n<a href="/pages/b">y</a>'),
@@ -382,11 +418,12 @@ describe("extractDanglingReferences — payload caps (gc-4ce)", () => {
       denseSameHandleFile("snippets/dense-2.liquid"),
     ]);
 
-    // Max carried = DANGLING_LOOKUP_CAP * DANGLING_MAX_OCCURRENCES_PER_HANDLE.
+    // Max carried = 2 scope groups * DANGLING_LOOKUP_CAP * DANGLING_MAX_OCCURRENCES_PER_HANDLE.
     expect(result.occurrences.length).toBeLessThanOrEqual(
-      DANGLING_LOOKUP_CAP * DANGLING_MAX_OCCURRENCES_PER_HANDLE,
+      2 * DANGLING_LOOKUP_CAP * DANGLING_MAX_OCCURRENCES_PER_HANDLE,
     );
-    expect(result.distinctHandles).toHaveLength(DANGLING_LOOKUP_CAP);
+    // 50 product handles (capped) + the one dense page handle.
+    expect(result.distinctHandles).toHaveLength(DANGLING_LOOKUP_CAP + 1);
     const bytes = jsonBytes(result);
     expect(JSON.stringify(result).length).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
     // Headroom: well under a third of the budget.

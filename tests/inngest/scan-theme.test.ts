@@ -198,6 +198,7 @@ import { hasProductScope, fetchProductAuditData } from "../../app/services/produ
 import { detectOrphanedProductTags } from "../../app/services/product-tag-detector.server";
 import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
 import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
+import { diffScans } from "../../app/services/scan-differ.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import { detectTranslationContent } from "../../app/services/translation-detector.server";
@@ -1651,7 +1652,8 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
       handle: string;
       occurrenceCount: number;
     }>;
-    expect(handles).toHaveLength(DANGLING_LOOKUP_CAP);
+    // 50 product handles (the per-scope-group cap) + the dense page handle.
+    expect(handles).toHaveLength(DANGLING_LOOKUP_CAP + 1);
     const pageA = handles.find((h) => h.handle === "a");
     expect(pageA?.occurrenceCount).toBeGreaterThan(60_000);
 
@@ -1817,6 +1819,99 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     );
     const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
     expect(signal.metadata).toMatchObject({ staticCandidatesCapped: true });
+  });
+
+  /** Resolver stub: only the given `"type handle"` keys are missing. */
+  function onlyMissing(...keys: string[]) {
+    mockResolveDanglingReferences.mockImplementation(
+      async (_admin: unknown, handles: Array<{ entityType: string; handle: string }>) => ({
+        missing: handles
+          .filter(({ entityType, handle }) => keys.includes(`${entityType} ${handle}`))
+          .map(({ entityType, handle }) => ({ entityType, handle })),
+        scopeStatus: { products: "checked", content: "checked" },
+        truncated: false,
+      }),
+    );
+  }
+
+  /** Run one scan; return the persisted dangling findings + skippedCategories. */
+  async function scanDangling(content: string) {
+    vi.clearAllMocks();
+    mockFetchThemeFiles.mockResolvedValue([{ filename: "sections/header.liquid", content }]);
+    await runAndCaptureCoreStep();
+    const findings = (danglingPersistCall()?.[1] ?? []) as Array<Record<string, unknown>>;
+    const { skippedCategories } = mockFinalizeScan.mock.calls.at(-1)?.[1] as {
+      skippedCategories: string[];
+    };
+    return {
+      findings: findings.map((f) => ({ ...f, id: "", scanId: "", shopId: "" })),
+      skippedCategories,
+    };
+  }
+
+  it("does not skip the category when an EXISTING handle exceeds the per-handle cap", async () => {
+    // Audit repro (churn.ts): a mega menu links an existing page 21x, plus one
+    // link to a deleted product. The existing page's extra occurrences change
+    // nothing, so the category is fully audited and diffs normally.
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    onlyMissing("product deleted-thing");
+    const menu = Array.from(
+      { length: DANGLING_MAX_OCCURRENCES_PER_HANDLE + 1 },
+      (_, i) => `<a href="/pages/contact">Contact ${i}</a>`,
+    );
+    const broken = [...menu, '<a href="/products/deleted-thing">Old</a>'].join("\n");
+
+    const first = await scanDangling(broken);
+    expect(first.findings).toHaveLength(1);
+    expect(first.skippedCategories).toEqual([]);
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata).toMatchObject({ danglingCapped: false });
+
+    // Identical rescan: the finding is unchanged, not new.
+    const rescan = await scanDangling(broken);
+    const same = diffScans(rescan.findings as never, first.findings as never, {
+      skippedCategories: rescan.skippedCategories,
+    });
+    expect(same.newFindings).toHaveLength(0);
+    expect(same.unchangedCount).toBe(1);
+
+    // Merchant fixes the link: the finding resolves.
+    const fixed = await scanDangling(menu.join("\n"));
+    expect(fixed.skippedCategories).toEqual([]);
+    const diff = diffScans(fixed.findings as never, first.findings as never, {
+      skippedCategories: fixed.skippedCategories,
+    });
+    expect(diff.resolvedFindings).toHaveLength(1);
+  });
+
+  it("skips the category when a MISSING handle exceeds the per-handle cap", async () => {
+    // Occurrences past the cap of a missing handle get no finding, so the
+    // category is not fully audited and prior findings must not false-resolve.
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    onlyMissing("page gone");
+    const lines = Array.from(
+      { length: DANGLING_MAX_OCCURRENCES_PER_HANDLE + 1 },
+      (_, i) => `<a href="/pages/gone">x ${i}</a>`,
+    );
+
+    const { findings, skippedCategories } = await scanDangling(lines.join("\n"));
+
+    expect(findings).toHaveLength(DANGLING_MAX_OCCURRENCES_PER_HANDLE);
+    expect(skippedCategories).toEqual([FindingType.DANGLING_REFERENCE]);
+  });
+
+  it("does not skip the category for a missing handle exactly at the per-handle cap", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    onlyMissing("page gone");
+    const lines = Array.from(
+      { length: DANGLING_MAX_OCCURRENCES_PER_HANDLE },
+      (_, i) => `<a href="/pages/gone">x ${i}</a>`,
+    );
+
+    const { findings, skippedCategories } = await scanDangling(lines.join("\n"));
+
+    expect(findings).toHaveLength(DANGLING_MAX_OCCURRENCES_PER_HANDLE);
+    expect(skippedCategories).toEqual([]);
   });
 
   it("leaves an ordinary theme's output and skippedCategories untouched", async () => {
