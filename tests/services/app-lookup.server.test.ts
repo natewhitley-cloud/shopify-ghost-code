@@ -275,6 +275,29 @@ describe("identifyAppFromJsonLd", () => {
 // ---------------------------------------------------------------------------
 
 describe("new app signatures", () => {
+  // Flywheel candidates from the 2026-09-22 prod scan.
+  it("identifies 17TRACK from its external-call script (protocol-relative)", () => {
+    expect(identifyAppFromUrl("//www.17track.net/externalcall.js")).toBe("17TRACK");
+  });
+  it("identifies CJ Dropshipping from its POD script", () => {
+    expect(identifyAppFromUrl("https://frontend.cjdropshipping.com/egg/pod3.js")).toBe(
+      "CJ Dropshipping",
+    );
+  });
+  it("identifies the Google Merchant Center widget by exact script path", () => {
+    expect(identifyAppFromCode("https://www.gstatic.com/shopping/merchant/merchantwidget.js")).toBe(
+      "Google Merchant Center Widget",
+    );
+  });
+  it("does NOT attribute other gstatic assets to the Merchant Center widget", () => {
+    expect(
+      identifyAppFromUrl("https://www.gstatic.com/recaptcha/releases/x/recaptcha__en.js"),
+    ).toBeNull();
+    expect(
+      identifyAppFromCode("https://www.gstatic.com/recaptcha/releases/x/recaptcha__en.js"),
+    ).toBeNull();
+  });
+
   // Pop Convert
   it("identifies Pop Convert from CDN URL", () => {
     expect(identifyAppFromUrl("https://cdn.popconvert.com/widget.js")).toBe("Pop Convert");

@@ -5408,11 +5408,11 @@ describe("detectMaliciousScripts", () => {
       content: [
         '<script src="https://shopify.jsdeliver.cloud/config.js"></script>',
         '<link rel="stylesheet" href="https://shopify.jsdeliver.cloud/x.css">',
-        '<script src="https://frontend.cjdropshipping.com/egg/pod3.js"></script>',
+        '<script src="https://cdn.unknown-vendor.example/widget.js"></script>',
       ].join("\n"),
     };
     expect(collectUnknownScripts(file).map((u) => u.url)).toEqual([
-      "https://frontend.cjdropshipping.com/egg/pod3.js",
+      "https://cdn.unknown-vendor.example/widget.js",
     ]);
     expect(collectUnknownStylesheets(file)).toHaveLength(0);
   });
