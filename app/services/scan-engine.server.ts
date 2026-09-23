@@ -1048,11 +1048,15 @@ const URL_HOST_RE = /(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_
 const LIQUID_COMMENT_RAW_TAG_RE = /\{%-?\s*(comment|endcomment|raw|endraw)\s*-?%\}/gi;
 
 // Slash encodings decoded before URL matching: any run of backslashes before `/`
-// (JSON `\/`, double-escaped `\\/`, `\\\/`) and HTML entities `&#47;` / `&#x2F;`
-// (optional leading zeros, optional `;`). The `(?<!\\)` lookbehind lets a
-// backslash run start a match only at its first char, so a huge run that is not
-// followed by `/` is scanned once, not once per backslash (linear).
-const ENCODED_SLASH_RE = /(?<!\\)\\+\/|&#0*47(?![0-9]);?|&#x0*2f(?![0-9a-f]);?/gi;
+// (JSON `\/`, double-escaped `\\/`, `\\\/`) or before the JS/JSON unicode
+// escape `u002f` (`\u002f`, `\u002F`, `\\u002f`), and HTML entities `&#47;` /
+// `&#x2F;` (optional leading zeros, optional `;`). The `i` flag also accepts an
+// uppercase `U`, which is not a real escape: that can only fail toward
+// reporting. The `(?<!\\)` lookbehind lets a backslash run start a match only at
+// its first char, so a huge run that is not followed by `/` or `u002f` is
+// scanned once, not once per backslash (linear); a `\u` flood fails after a
+// constant lookahead per position.
+const ENCODED_SLASH_RE = /(?<!\\)\\+(?:\/|u002f)|&#0*47(?![0-9]);?|&#x0*2f(?![0-9a-f]);?/gi;
 
 // Chars on either side of the matched domain kept in the stored snippet. The
 // row UI previews the first 80 chars, so the domain must start within them.

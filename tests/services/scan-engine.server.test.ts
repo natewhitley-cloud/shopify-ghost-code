@@ -5946,6 +5946,33 @@ describe("detectMaliciousScripts — snippet and decoding", () => {
     }
   });
 
+  it("decodes JS/JSON unicode-escaped slashes (\\u002f, case-insensitive hex)", () => {
+    for (const url of [
+      String.raw`https:\u002f\u002fjsdeliver.cloud\u002fx.js`,
+      String.raw`https:\u002F\u002Fjsdeliver.cloud\u002Fx.js`,
+      String.raw`https:\\u002f\\u002fjsdeliver.cloud/x.js`,
+    ]) {
+      const findings = detectMaliciousScripts({
+        filename: "assets/app.js",
+        content: `var u = "${url}";`,
+      });
+      expect(findings, url).toHaveLength(1);
+      expect(findings[0].findingType).toBe(FindingType.MALICIOUS_SCRIPT);
+    }
+  });
+
+  it("stays linear on a \\u002f flood and a bare \\u flood (no ReDoS in the decode)", () => {
+    for (const content of [
+      String.raw`\u002f`.repeat(300_000),
+      String.raw`\u`.repeat(500_000) + "x",
+      String.raw`\u002`.repeat(300_000),
+    ]) {
+      const start = performance.now();
+      detectMaliciousScripts({ filename: "assets/app.js", content });
+      expect(performance.now() - start).toBeLessThan(1500);
+    }
+  });
+
   it("stays linear on a 1MB backslash run and an entity flood (no ReDoS in the decode)", () => {
     for (const content of [
       "\\".repeat(1_000_000) + "x",
