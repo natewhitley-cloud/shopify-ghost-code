@@ -13,6 +13,7 @@
  */
 
 import { FindingType, Severity } from "@prisma/client";
+import { NonRetriableError } from "inngest";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -45,7 +46,9 @@ vi.mock("../../app/shopify.server", () => ({
   },
 }));
 
-vi.mock("../../app/services/theme-fetcher.server", () => ({
+vi.mock("../../app/services/theme-fetcher.server", async (importOriginal) => ({
+  // Keep the real ThemeTooLargeError class so instanceof checks are meaningful.
+  ...(await importOriginal<typeof import("../../app/services/theme-fetcher.server")>()),
   fetchThemeFiles: vi.fn(),
 }));
 
@@ -183,7 +186,7 @@ import { detectOrphanedProductTags } from "../../app/services/product-tag-detect
 import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
 import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
-import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
+import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import { detectTranslationContent } from "../../app/services/translation-detector.server";
 import {
   hasTranslationScope,
@@ -612,6 +615,26 @@ describe("scanTheme — error paths", () => {
     await expect(runScanTheme()).rejects.toThrow("Shopify API unavailable");
 
     expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+
+  // gc-8s2: an over-ceiling theme is deterministic; retrying would just refetch
+  // up to the cap again. It must fail the scan once, as NonRetriableError.
+  it("converts ThemeTooLargeError to NonRetriableError and marks scan FAILED (no retries)", async () => {
+    mockFetchThemeFiles.mockRejectedValue(new ThemeTooLargeError("gid://shopify/Theme/1", 50));
+
+    const err = await runScanTheme().catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(NonRetriableError);
+    expect((err as Error).message).toContain("total text ceiling");
+    expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "FAILED");
+  });
+
+  it("does NOT make an ordinary fetch error non-retriable (transient errors still retry)", async () => {
+    mockFetchThemeFiles.mockRejectedValue(new Error("Shopify API unavailable"));
+
+    const err = await runScanTheme().catch((e: unknown) => e);
+
+    expect(err).not.toBeInstanceOf(NonRetriableError);
   });
 
   it("marks scan FAILED and re-throws when scanThemeFiles throws", async () => {

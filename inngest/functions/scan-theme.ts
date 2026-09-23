@@ -39,6 +39,7 @@
  */
 
 import { FindingType, ScanStatus } from "@prisma/client";
+import { NonRetriableError } from "inngest";
 
 import { logger } from "../../app/lib/logger.server";
 import { PRODUCT_AUDIT_CAP } from "../../app/lib/scan-limits";
@@ -55,7 +56,7 @@ import { detectCheckoutSunset } from "../../app/services/checkout-sunset-detecto
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { isScannableFile, MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
-import { fetchThemeFiles } from "../../app/services/theme-fetcher.server";
+import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 import { inngest } from "../client";
 
@@ -295,10 +296,27 @@ export const scanTheme = inngest.createFunction(
         const { admin } = await unauthenticated.admin(shop.domain);
         // Per-phase timing (gc-1bd): wall-clock the fetch and the scan separately
         // so the scan_signal can attribute duration to network vs CPU.
-        const themeFetchStart = Date.now();
-        const files = await fetchThemeFiles(admin, themeId, shop.domain);
-        const themeFetchMs = Date.now() - themeFetchStart;
         const { logger } = await import("../../app/lib/logger.server");
+        const themeFetchStart = Date.now();
+        let files: Awaited<ReturnType<typeof fetchThemeFiles>>;
+        try {
+          files = await fetchThemeFiles(admin, themeId, shop.domain);
+        } catch (err) {
+          // gc-8s2: an over-ceiling theme is deterministic, so a retry would only
+          // refetch up to the cap again. Fail the scan once; the outer catch
+          // marks it FAILED and prior findings are kept (never a false-clean).
+          if (err instanceof ThemeTooLargeError) {
+            logger.warn("theme exceeds total text ceiling; scan aborted", {
+              function: "scan-theme",
+              event: "theme_too_large",
+              shopId,
+              maxTotalBytes: err.maxTotalBytes,
+            });
+            throw new NonRetriableError(err.message, { cause: err });
+          }
+          throw err;
+        }
+        const themeFetchMs = Date.now() - themeFetchStart;
         logger.info("theme files fetched", {
           function: "scan-theme",
           event: "files_fetched",
