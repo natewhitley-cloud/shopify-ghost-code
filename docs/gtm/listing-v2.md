@@ -56,10 +56,11 @@ Remove leftover app code: fix theme speed, SEO & AI errors
 Scan your theme for orphaned code left by uninstalled apps, then see what it's costing you.
 ```
 
-### Description (500 max) — 498 chars
+### Description (500 max) — 500 chars (LIVE 2026-09-23, adds malicious detection + theme blocks)
 ```
-Every app you uninstall leaves code behind: scripts, tracking pixels, SEO tags, and metadata across your theme. You can't see it, but it slows your pages, feeds wrong info to Google and AI agents, and pings services you dropped. GhostCode scans 8 surfaces with 30+ checks and attributes every fragment to the app that left it, with file, line, and snippet. Findings are grouped by what they actually cost you, not by severity. Track your health score, re-scan to confirm it's gone. First scan free.
+Every app you uninstall leaves code behind: scripts, tracking pixels, SEO tags, and metadata across your theme, including Horizon theme blocks. It slows your pages, feeds wrong info to Google and AI agents, and pings services you dropped. GhostCode runs 30+ checks across 8 surfaces, traces every fragment to the app that left it (file, line, snippet), and flags scripts from known malicious domains on every plan. Findings are grouped by what they cost you. Track your health score. First scan free.
 ```
+Guardrail: keep the malicious claim factual ("flags scripts from known malicious domains"); never "protects", "prevents hacks", or "security scanner" (listing review rejects unsubstantiated outcome claims). Not in hero or keywords.
 
 ### Keywords (5 slots)
 Swaps "theme speed" (wrong intent, owned by speed-optimizer apps) for "leftover code".
@@ -69,12 +70,12 @@ theme cleanup · orphaned code · leftover code · app cleanup · theme audit
 Do NOT spend a slot on "AI" terms yet: merchant search volume for that is near-zero. Sell
 the AI angle in images and body copy instead.
 
-### Feature bullets (5)
+### Feature bullets (5) — LIVE 2026-09-23 (bullet 4 replaced; the counts it held live in the description)
 ```
 1. See what leftover code is costing you, grouped by consequence not severity
 2. Every fragment traced to the app that left it, with file, line, and snippet
 3. Catch schema prices that disagree with your live price before AI quotes it
-4. 30+ checks across 8 theme surfaces, 100+ app signatures
+4. Flag scripts from known malicious domains, shown in full on every plan
 5. Track your health score and re-scan to confirm it's gone. First scan free
 ```
 
@@ -100,6 +101,10 @@ app," so leading with it blurs the core promise. Use it in three places:
 
 ### Pricing-card gap (Managed Pricing, 40 chars/bullet)
 
+> **Update 2026-09-23:** the live Standard card had a stale "sunset risks" bullet (future-tense
+> deadline framing for a sunset that already happened); owner replaced it with
+> `Find dead checkout.liquid code`. Broken Links is still unnamed on the card.
+
 The live Standard card sells **mechanics** (full detail, scan cadence, trend) but names none
 of its **outcome** detectors. Two flagship Standard-only detectors are invisible at the $29
 decision point: **Broken Links** (`DANGLING_REFERENCE`) and **checkout.liquid sunset**
@@ -119,9 +124,9 @@ are live; the doc still says "Severity counts" and "Theme Health Score + delta")
 GhostCode: Find & Remove Leftover App Code in Shopify Themes
 ```
 
-### Meta description (160 max, Google) — 157 chars
+### Meta description (160 max, Google) — 154 chars (LIVE 2026-09-23)
 ```
-Scan your Shopify theme for orphaned code left by uninstalled apps. 30+ checks, 100+ app signatures, file-level attribution, AI & SEO fixes. First scan free.
+Scan your Shopify theme for orphaned code left by uninstalled apps. 30+ checks, 100+ signatures, malicious script alerts, AI & SEO fixes. First scan free.
 ```
 
 ### Category
