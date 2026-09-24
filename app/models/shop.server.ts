@@ -17,6 +17,9 @@ export type ShopMetadata = {
   lastThemePublishAt: Date | null;
   hasSeenReviewPrompt: boolean;
   upgradePreviewShownAt: Date | null;
+  feedbackNudgeShownAt: Date | null;
+  feedbackNudgeDismissedAt: Date | null;
+  feedbackSubmittedAt: Date | null;
 };
 
 /**
@@ -71,6 +74,9 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       lastThemePublishAt: true,
       hasSeenReviewPrompt: true,
       upgradePreviewShownAt: true,
+      feedbackNudgeShownAt: true,
+      feedbackNudgeDismissedAt: true,
+      feedbackSubmittedAt: true,
     },
   });
 }
@@ -265,33 +271,38 @@ export async function stampPlanReconciledAt(domain: string): Promise<{ id: strin
   });
 }
 
-/** A stage of the free-tier upgrade-preview nudge funnel (gc-97k.4). */
-export type UpgradePreviewStage = "shown" | "clicked" | "converted";
-
-const UPGRADE_PREVIEW_STAMP_COLUMN = {
-  shown: "upgradePreviewShownAt",
-  clicked: "upgradePreviewClickedAt",
-  converted: "upgradePreviewConvertedAt",
-} as const satisfies Record<UpgradePreviewStage, keyof Prisma.ShopWhereInput>;
+/**
+ * The Shop stamp columns that in-app nudges claim once per merchant (gc-97k.4
+ * upgrade preview, gc-97k.3 feedback). Typed so a claim can only target one of
+ * these nullable DateTime columns.
+ */
+export type NudgeStageColumn =
+  | "upgradePreviewShownAt"
+  | "upgradePreviewClickedAt"
+  | "upgradePreviewConvertedAt"
+  | "feedbackNudgeShownAt"
+  | "feedbackNudgeClickedAt"
+  | "feedbackNudgeDismissedAt"
+  | "feedbackSubmittedAt";
 
 /**
- * Atomically claim the once-per-merchant stamp for an upgrade-preview stage.
+ * Atomically claim a once-per-merchant nudge stamp.
  *
  * A conditional updateMany (`where <column> IS NULL`) stamps the column to now()
  * only if it is still unset, so of any number of concurrent callers exactly one
  * sees count === 1. Returns true IFF this call made the first stamp; the caller
  * emits the funnel event only then. A missing shop row is a safe false.
  *
- * `converted` additionally requires `upgradePreviewClickedAt` to be set: only a
- * merchant who clicked the preview CTA counts as a conversion of this nudge.
+ * `extraWhere` adds preconditions the row must also meet for the claim to win
+ * (e.g. the upgrade preview's `converted` requires `upgradePreviewClickedAt` to
+ * be set). It cannot override `domain` or the column's IS NULL guard.
  */
-export async function claimUpgradePreviewStage(
+export async function claimNudgeStage(
   domain: string,
-  stage: UpgradePreviewStage,
+  column: NudgeStageColumn,
+  extraWhere?: Prisma.ShopWhereInput,
 ): Promise<boolean> {
-  const column = UPGRADE_PREVIEW_STAMP_COLUMN[stage];
-  const where: Prisma.ShopWhereInput = { domain, [column]: null };
-  if (stage === "converted") where.upgradePreviewClickedAt = { not: null };
+  const where: Prisma.ShopWhereInput = { ...extraWhere, domain, [column]: null };
   const { count } = await db.shop.updateMany({ where, data: { [column]: new Date() } });
   return count === 1;
 }
@@ -347,6 +358,7 @@ export async function dismissReviewPrompt(shopId: string): Promise<{ id: string 
  *   Shop → Scans → UnknownScripts → SignatureSubmissions
  *   Shop → BillingEvents
  *   Shop → IgnoredFinding
+ *   Shop → MerchantFeedback (also deleted explicitly below: personal data)
  *
  * OpsEvent has NO Shop FK, so cascade never touches it — yet observability rows
  * carry the shop's myshopify domain (webhook-failure `metadata.shop`, api-error
@@ -390,6 +402,10 @@ export async function deleteShopData(domain: string) {
         ],
       },
     }),
+    // MerchantFeedback (gc-97k.3) cascades from Shop too, but it holds the
+    // merchant's optional contact email and free text, so the redact path names
+    // it explicitly rather than relying on the FK alone (same as ClearSignal).
+    db.merchantFeedback.deleteMany({ where: { shopId: shop.id } }),
     // Shop delete cascades to: Scans → Findings, UnknownScripts → SignatureSubmissions,
     // and BillingEvents (all have onDelete: Cascade on their Shop/Scan FK).
     db.shop.delete({ where: { domain } }),

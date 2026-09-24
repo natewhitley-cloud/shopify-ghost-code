@@ -490,6 +490,24 @@ export async function hasCompletedScans(shopId: string): Promise<boolean> {
 }
 
 /**
+ * completedAt of the shop's FIRST successful (COMPLETED or PARTIAL) scan, or
+ * null when it has none. Failed, pending and in-progress scans never count.
+ * Drives the feedback nudge's "came back on a later day" gate (gc-97k.3).
+ */
+export async function getFirstSuccessfulScanCompletedAt(shopId: string): Promise<Date | null> {
+  const row = await db.scan.findFirst({
+    where: {
+      shopId,
+      status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+      completedAt: { not: null },
+    },
+    orderBy: { completedAt: "asc" },
+    select: { completedAt: true },
+  });
+  return row?.completedAt ?? null;
+}
+
+/**
  * Fetch the N most recent successful (COMPLETED or PARTIAL) scans for a shop,
  * newest first. Used by the dashboard trend chart — only returns successful
  * scans since in-progress/failed scans have no health score. PARTIAL scans have

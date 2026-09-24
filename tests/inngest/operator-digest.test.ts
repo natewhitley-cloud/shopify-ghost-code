@@ -42,6 +42,7 @@ vi.mock("../../app/models/ops-event.server", async (importOriginal) => ({
 import { parseExcludeShops } from "../../app/lib/store-exclusion";
 import {
   aggregateActivity,
+  aggregateFeedback,
   aggregateNudgeFunnel,
   buildDigestBody,
   computeMrr,
@@ -62,6 +63,7 @@ import {
   sortFindingTypeCounts,
   summarizeReconciler,
   type DigestSnapshot,
+  type FeedbackDigest,
   type NudgeFunnelRow,
   type OperatorDigestData,
 } from "../../inngest/functions/operator-digest";
@@ -1652,3 +1654,162 @@ function zeroCounts() {
 function oneShown() {
   return { shown: 1, clicked: 0, dismissed: 0, converted: 0 };
 }
+
+// ---------------------------------------------------------------------------
+// aggregateFeedback + FEEDBACK section (gc-97k.3)
+// ---------------------------------------------------------------------------
+
+describe("aggregateFeedback", () => {
+  const now = new Date("2026-09-24T12:00:00Z");
+  const HOUR_MS = 3_600_000;
+  const REAL = "shop-real";
+  const REAL_2 = "shop-real-2";
+  const INTERNAL = "shop-internal";
+  const allowed = [REAL, REAL_2];
+
+  const row = (
+    csat: number,
+    msAgo: number,
+    opts: { shopId?: string; email?: string | null; wtp?: string | null } = {},
+  ) => ({
+    shopId: opts.shopId ?? REAL,
+    csat,
+    contactEmail: opts.email ?? null,
+    wtp: opts.wtp ?? null,
+    createdAt: new Date(now.getTime() - msAgo),
+  });
+
+  it("counts 24h / 7d submissions, the 7d CSAT histogram and average, email and WTP", () => {
+    const result = aggregateFeedback(
+      [
+        row(5, HOUR_MS, { email: "a@b.co" }),
+        row(1, 2 * HOUR_MS, { shopId: REAL_2, wtp: "Auto-fix" }),
+        row(4, 30 * HOUR_MS, { email: "c@d.co", wtp: "Reports" }),
+        row(4, 100 * HOUR_MS),
+      ],
+      allowed,
+      now,
+    );
+
+    expect(result).toEqual<FeedbackDigest>({
+      submissions24h: 2,
+      submissions7d: 4,
+      csatCounts7d: [1, 0, 0, 2, 1],
+      avgCsat7d: 3.5,
+      withEmail7d: 2,
+      withWtp7d: 2,
+    });
+  });
+
+  it("excludes internal / excluded shops (not in the allowed set)", () => {
+    const result = aggregateFeedback(
+      [row(5, HOUR_MS), row(1, HOUR_MS, { shopId: INTERNAL, email: "x@y.co", wtp: "leak" })],
+      allowed,
+      now,
+    );
+
+    expect(result.submissions24h).toBe(1);
+    expect(result.submissions7d).toBe(1);
+    expect(result.csatCounts7d).toEqual([0, 0, 0, 0, 1]);
+    expect(result.avgCsat7d).toBe(5);
+    expect(result.withEmail7d).toBe(0);
+    expect(result.withWtp7d).toBe(0);
+  });
+
+  it("treats both window boundaries as inclusive and drops anything older than 7d", () => {
+    const result = aggregateFeedback(
+      [row(3, DAY_MS), row(3, DAY_MS + 1), row(3, 7 * DAY_MS), row(3, 7 * DAY_MS + 1)],
+      allowed,
+      now,
+    );
+
+    expect(result.submissions24h).toBe(1);
+    expect(result.submissions7d).toBe(3);
+  });
+
+  it("returns zeros and a null average when there is nothing (or nothing allowed)", () => {
+    const empty: FeedbackDigest = {
+      submissions24h: 0,
+      submissions7d: 0,
+      csatCounts7d: [0, 0, 0, 0, 0],
+      avgCsat7d: null,
+      withEmail7d: 0,
+      withWtp7d: 0,
+    };
+    expect(aggregateFeedback([], allowed, now)).toEqual(empty);
+    expect(aggregateFeedback([row(5, HOUR_MS)], [], now)).toEqual(empty);
+  });
+
+  it("keeps an out-of-range CSAT out of the histogram and average but counts the submission", () => {
+    const result = aggregateFeedback([row(4, HOUR_MS), row(9, HOUR_MS)], allowed, now);
+
+    expect(result.submissions7d).toBe(2);
+    expect(result.csatCounts7d).toEqual([0, 0, 0, 1, 0]);
+    expect(result.avgCsat7d).toBe(4);
+  });
+});
+
+describe("buildDigestBody: FEEDBACK section (gc-97k.3)", () => {
+  const HEADER = "FEEDBACK (merchant survey submissions, 24h / 7d)";
+  const section = (body: string) => {
+    const start = body.indexOf(HEADER);
+    expect(start).toBeGreaterThan(-1);
+    return body.slice(start, body.indexOf("\n\n", start));
+  };
+
+  it("renders counts, histogram, average, email and WTP lines", () => {
+    const body = buildDigestBody(
+      makeData({
+        feedback: {
+          submissions24h: 1,
+          submissions7d: 3,
+          csatCounts7d: [0, 1, 0, 1, 1],
+          avgCsat7d: 11 / 3,
+          withEmail7d: 2,
+          withWtp7d: 1,
+        },
+      }),
+    );
+
+    expect(section(body)).toBe(
+      [
+        HEADER,
+        "  Submissions: 1 / 3",
+        "  CSAT (7d): 1:0  2:1  3:0  4:1  5:1 | avg 3.7/5",
+        "  With follow-up email (7d): 2 | With WTP answer (7d): 1",
+      ].join("\n"),
+    );
+  });
+
+  it("renders the empty state when there were no submissions in 7d", () => {
+    const body = buildDigestBody(
+      makeData({
+        feedback: {
+          submissions24h: 0,
+          submissions7d: 0,
+          csatCounts7d: [0, 0, 0, 0, 0],
+          avgCsat7d: null,
+          withEmail7d: 0,
+          withWtp7d: 0,
+        },
+      }),
+    );
+
+    expect(section(body)).toBe([HEADER, "  No feedback submissions in the last 7d"].join("\n"));
+  });
+
+  it("falls back to 'No feedback data' when the field is absent", () => {
+    expect(section(buildDigestBody(makeData()))).toBe([HEADER, "  No feedback data"].join("\n"));
+  });
+
+  it("sits right after NUDGES and before the ops section, with no em dashes", () => {
+    const body = buildDigestBody(makeData({ nudges: [] }));
+    const nudges = body.indexOf("NUDGES (funnel per nudge, 24h / 7d)");
+    const feedback = body.indexOf(HEADER);
+    const ops = body.indexOf("=== OPERATIONAL HEALTH");
+
+    expect(feedback).toBeGreaterThan(nudges);
+    expect(ops).toBeGreaterThan(feedback);
+    expect(section(body)).not.toContain("\u2014");
+  });
+});

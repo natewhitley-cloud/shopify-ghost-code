@@ -30,6 +30,7 @@ const tables = vi.hoisted(() => ({
   signatureSubmission: [] as Record<string, unknown>[],
   billingEvent: [] as Record<string, unknown>[],
   metricSnapshot: [] as Record<string, unknown>[],
+  merchantFeedback: [] as Record<string, unknown>[],
 }));
 
 const fakeDb = vi.hoisted(() => {
@@ -127,6 +128,7 @@ const fakeDb = vi.hoisted(() => {
     signatureSubmission: delegate("signatureSubmission"),
     billingEvent: delegate("billingEvent"),
     metricSnapshot: delegate("metricSnapshot"),
+    merchantFeedback: delegate("merchantFeedback"),
   };
 });
 
@@ -382,6 +384,52 @@ function seed() {
     },
   );
 
+  // Merchant feedback (gc-97k.3): real + churned-real rows, one too old, and a
+  // CSAT-1 row with an email and WTP answer for EVERY excluded store (incl. the
+  // isInternal-only uninstalled one) that would skew every line if it leaked.
+  tables.merchantFeedback.push(
+    {
+      id: "f1",
+      shopId: "shop-a",
+      csat: 5,
+      contactEmail: "owner@real-a.test",
+      wtp: null,
+      createdAt: ago(HOUR),
+    },
+    {
+      id: "f2",
+      shopId: "shop-b",
+      csat: 2,
+      contactEmail: null,
+      wtp: "Reports",
+      createdAt: ago(30 * HOUR),
+    },
+    {
+      id: "f3",
+      shopId: "shop-churned",
+      csat: 4,
+      contactEmail: null,
+      wtp: null,
+      createdAt: ago(5 * HOUR),
+    },
+    {
+      id: "f4",
+      shopId: "shop-a",
+      csat: 1,
+      contactEmail: null,
+      wtp: null,
+      createdAt: ago(8 * 24 * HOUR),
+    },
+    ...[...EXCLUDED.map((s) => s.id), "shop-internal-2"].map((shopId, i) => ({
+      id: `fx${i}`,
+      shopId,
+      csat: 1,
+      contactEmail: "leak@excluded.test",
+      wtp: "excluded-wtp",
+      createdAt: ago(HOUR),
+    })),
+  );
+
   // Billing: 1 real downgrade; each excluded store has a reactivation.
   tables.billingEvent.push(
     { id: "b1", shopId: "shop-b", eventType: "downgrade", createdAt: ago(HOUR) },
@@ -475,6 +523,31 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
     const body = await runDigest();
 
     expect(body).toContain("NUDGES (funnel per nudge, 24h / 7d)\n  No nudge events in the last 7d");
+  });
+
+  it("counts feedback from real (incl. churned) shops only, never excluded stores (gc-97k.3)", async () => {
+    const body = await runDigest();
+
+    const header = "FEEDBACK (merchant survey submissions, 24h / 7d)";
+    const start = body.indexOf(header);
+    expect(body.slice(start, body.indexOf("\n\n", start))).toBe(
+      [
+        header,
+        "  Submissions: 2 / 3",
+        "  CSAT (7d): 1:0  2:1  3:0  4:1  5:1 | avg 3.7/5",
+        "  With follow-up email (7d): 1 | With WTP answer (7d): 1",
+      ].join("\n"),
+    );
+  });
+
+  it("renders the feedback empty state when there are no submissions", async () => {
+    tables.merchantFeedback.length = 0;
+
+    const body = await runDigest();
+
+    expect(body).toContain(
+      "FEEDBACK (merchant survey submissions, 24h / 7d)\n  No feedback submissions in the last 7d",
+    );
   });
 
   it("writes today's plan-mix snapshot from real installs only", async () => {

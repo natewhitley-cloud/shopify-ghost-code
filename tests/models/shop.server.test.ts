@@ -38,6 +38,9 @@ const mockDb = vi.hoisted(() => ({
     create: vi.fn(),
     deleteMany: vi.fn(),
   },
+  merchantFeedback: {
+    deleteMany: vi.fn(),
+  },
   // Array-form $transaction: resolve each staged operation in parallel.
   $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
 }));
@@ -65,6 +68,7 @@ import {
   isLastSeenStale,
   touchShopLastSeen,
   LAST_SEEN_FRESHNESS_MS,
+  claimNudgeStage,
 } from "../../app/models/shop.server";
 import {
   NUDGE_KEYS,
@@ -110,6 +114,10 @@ describe("getShopMetadata", () => {
         hasSeenReviewPrompt: true,
         // gc-97k.4: lets the scan page skip the `shown` claim once it is stamped.
         upgradePreviewShownAt: true,
+        // gc-97k.3: the home loader's feedback-nudge gate and shown pre-check.
+        feedbackNudgeShownAt: true,
+        feedbackNudgeDismissedAt: true,
+        feedbackSubmittedAt: true,
       },
     });
   });
@@ -785,6 +793,28 @@ describe("deleteShopData", () => {
     expect(written.filter((r) => r.key === other).some(matchesRedact)).toBe(false);
   });
 
+  it("deletes the shop's MerchantFeedback rows by shopId inside the same transaction (gc-97k.3)", async () => {
+    const existingShop = { id: "shop-gdpr-fb", domain: "delete-me.myshopify.com", plan: "free" };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.merchantFeedback.deleteMany.mockResolvedValue({ count: 2 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    expect(mockDb.merchantFeedback.deleteMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.merchantFeedback.deleteMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-gdpr-fb" },
+    });
+    // Staged in the one atomic transaction, before the shop delete.
+    const staged = mockDb.$transaction.mock.calls[0][0] as unknown[];
+    expect(staged).toHaveLength(4);
+    const feedbackDeleteOrder = mockDb.merchantFeedback.deleteMany.mock.invocationCallOrder[0];
+    const shopDeleteOrder = mockDb.shop.delete.mock.invocationCallOrder[0];
+    expect(feedbackDeleteOrder).toBeLessThan(shopDeleteOrder);
+  });
+
   it("returns the shop object (pre-deletion snapshot) on success", async () => {
     const existingShop = {
       id: "shop-gdpr-5",
@@ -1059,5 +1089,48 @@ describe("touchShopLastSeen", () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
 
     await expect(touchShopLastSeen("gone")).resolves.toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// claimNudgeStage (shared once-per-merchant nudge claim, gc-97k.4 / gc-97k.3)
+// ---------------------------------------------------------------------------
+
+describe("claimNudgeStage", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("stamps only the given column, only while it is null, keyed on the domain", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await expect(claimNudgeStage("s.myshopify.com", "feedbackNudgeShownAt")).resolves.toBe(true);
+
+    const call = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ domain: "s.myshopify.com", feedbackNudgeShownAt: null });
+    expect(Object.keys(call.data)).toEqual(["feedbackNudgeShownAt"]);
+    expect(call.data.feedbackNudgeShownAt).toBeInstanceOf(Date);
+  });
+
+  it("returns false when the column is already stamped or the shop is missing (count 0)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(claimNudgeStage("s.myshopify.com", "feedbackSubmittedAt")).resolves.toBe(false);
+  });
+
+  it("adds extraWhere preconditions without letting them override domain or the null guard", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await claimNudgeStage("s.myshopify.com", "upgradePreviewConvertedAt", {
+      upgradePreviewClickedAt: { not: null },
+      domain: "other.myshopify.com",
+      upgradePreviewConvertedAt: { not: null },
+    });
+
+    expect(mockDb.shop.updateMany.mock.calls[0][0].where).toEqual({
+      domain: "s.myshopify.com",
+      upgradePreviewConvertedAt: null,
+      upgradePreviewClickedAt: { not: null },
+    });
   });
 });

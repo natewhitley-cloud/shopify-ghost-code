@@ -35,6 +35,13 @@ vi.mock("../../app/models/scan.server", () => ({
   getScansForShop: vi.fn(),
   hasCompletedScans: vi.fn(),
   getCompletedScansForShop: vi.fn(),
+  getFirstSuccessfulScanCompletedAt: vi.fn(),
+}));
+
+// gc-97k.3: the feedback nudge's once-per-merchant stage recorder. Its claim
+// dedupe is covered in tests/services/nudge-stage.server.test.ts.
+vi.mock("../../app/services/nudge-stage.server", () => ({
+  recordNudgeStageOnce: vi.fn(),
 }));
 
 vi.mock("../../app/services/scan-dispatch.server", () => ({
@@ -101,6 +108,7 @@ vi.mock("../../app/lib/format", () => ({
 
 vi.mock("../../app/lib/plans", () => ({
   PLANS: { FREE: "Free", STANDARD: "Standard", PROFESSIONAL: "Professional" },
+  APP_HANDLE: "ghost-code",
 }));
 
 // ---------------------------------------------------------------------------
@@ -122,10 +130,12 @@ import {
   getScansForShop,
   hasCompletedScans,
   getCompletedScansForShop,
+  getFirstSuccessfulScanCompletedAt,
 } from "../../app/models/scan.server";
 import { getShopMetadata, dismissReviewPrompt } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
 import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
+import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
@@ -155,6 +165,8 @@ const mockFetchAllThemes = fetchAllThemes as ReturnType<typeof vi.fn>;
 const mockGetWeekStartUTC = getWeekStartUTC as ReturnType<typeof vi.fn>;
 const mockGetCompletedScansForShop = getCompletedScansForShop as ReturnType<typeof vi.fn>;
 const mockDismissReviewPrompt = dismissReviewPrompt as ReturnType<typeof vi.fn>;
+const mockGetFirstSuccessfulScanAt = getFirstSuccessfulScanCompletedAt as ReturnType<typeof vi.fn>;
+const mockRecordNudgeStage = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1777,5 +1789,216 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
     await loader(makeLoaderArgs());
 
     expect(mockGetFilteredFindingSummary).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Feedback nudge + one-prompt-per-page (gc-97k.3)
+// ---------------------------------------------------------------------------
+
+describe("app._index loader: feedback nudge", () => {
+  // Visit "now" is pinned; the shop installed well over 7 days ago and first
+  // scanned successfully on an earlier UTC day, so the nudge is eligible.
+  const NOW = new Date("2026-09-24T12:00:00Z");
+  const FEEDBACK_SHOP = {
+    ...SHOP,
+    installedAt: new Date("2026-09-01T00:00:00Z"),
+    feedbackNudgeShownAt: null,
+    feedbackNudgeDismissedAt: null,
+    feedbackSubmittedAt: null,
+  };
+
+  type FeedbackLoaderResult = { showFeedbackNudge: boolean; showReviewPrompt: boolean };
+  const run = async () => (await loader(makeLoaderArgs())) as FeedbackLoaderResult;
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(NOW);
+    mockGetShopMetadata.mockResolvedValue(FEEDBACK_SHOP);
+    mockGetFirstSuccessfulScanAt.mockResolvedValue(new Date("2026-09-20T10:05:00Z"));
+    mockRecordNudgeStage.mockResolvedValue(true);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("shows the nudge and records `shown` once with the unmodified session shop", async () => {
+    const result = await run();
+
+    expect(result.showFeedbackNudge).toBe(true);
+    expect(mockGetFirstSuccessfulScanAt).toHaveBeenCalledWith("shop-1");
+    expect(mockRecordNudgeStage).toHaveBeenCalledTimes(1);
+    expect(mockRecordNudgeStage).toHaveBeenCalledWith("feedback", "shown", SHOP.domain);
+  });
+
+  it("does not re-claim `shown` once feedbackNudgeShownAt is stamped", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...FEEDBACK_SHOP,
+      feedbackNudgeShownAt: new Date("2026-09-23T00:00:00Z"),
+    });
+
+    const result = await run();
+
+    expect(result.showFeedbackNudge).toBe(true);
+    expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+  });
+
+  it("hides the nudge and skips the first-scan query once dismissed", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...FEEDBACK_SHOP,
+      feedbackNudgeDismissedAt: new Date("2026-09-22T00:00:00Z"),
+    });
+
+    const result = await run();
+
+    expect(result.showFeedbackNudge).toBe(false);
+    expect(mockGetFirstSuccessfulScanAt).not.toHaveBeenCalled();
+    expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+  });
+
+  it("hides the nudge and skips the first-scan query once submitted", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...FEEDBACK_SHOP,
+      feedbackSubmittedAt: new Date("2026-09-22T00:00:00Z"),
+    });
+
+    const result = await run();
+
+    expect(result.showFeedbackNudge).toBe(false);
+    expect(mockGetFirstSuccessfulScanAt).not.toHaveBeenCalled();
+  });
+
+  it("hides the nudge when the shop has no successful scan (failed / in-progress only)", async () => {
+    mockGetFirstSuccessfulScanAt.mockResolvedValue(null);
+    mockGetScansForShop.mockResolvedValue({
+      items: [{ ...COMPLETED_SCAN, status: "FAILED", findingCount: 0 }],
+      hasNextPage: false,
+    });
+
+    const result = await run();
+
+    expect(result.showFeedbackNudge).toBe(false);
+    expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+  });
+
+  it("hides the nudge before 7 days installed (6d 23h)", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...FEEDBACK_SHOP,
+      installedAt: new Date(NOW.getTime() - (7 * 24 - 1) * 60 * 60 * 1000),
+    });
+    mockGetFirstSuccessfulScanAt.mockResolvedValue(new Date("2026-09-18T00:00:00Z"));
+
+    expect((await run()).showFeedbackNudge).toBe(false);
+  });
+
+  it("shows the nudge at exactly 7 days installed", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...FEEDBACK_SHOP,
+      installedAt: new Date(NOW.getTime() - 7 * 24 * 60 * 60 * 1000),
+    });
+    mockGetFirstSuccessfulScanAt.mockResolvedValue(new Date("2026-09-18T00:00:00Z"));
+
+    expect((await run()).showFeedbackNudge).toBe(true);
+  });
+
+  it("hides the nudge on the same UTC day as the first successful scan", async () => {
+    mockGetFirstSuccessfulScanAt.mockResolvedValue(new Date("2026-09-24T00:30:00Z"));
+
+    expect((await run()).showFeedbackNudge).toBe(false);
+  });
+
+  it.each(["Free", "Standard", "Professional"])("is eligible on the %s plan", async (plan) => {
+    mockGetShopMetadata.mockResolvedValue({ ...FEEDBACK_SHOP, plan });
+
+    expect((await run()).showFeedbackNudge).toBe(true);
+  });
+
+  describe("one prompt per page", () => {
+    it("both eligible: feedback renders and the review prompt does not", async () => {
+      // Default COMPLETED_SCAN has 5 findings and hasSeenReviewPrompt is false.
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(true);
+      expect(result.showReviewPrompt).toBe(false);
+    });
+
+    it("only review eligible: the review prompt renders", async () => {
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        feedbackNudgeDismissedAt: new Date("2026-09-22T00:00:00Z"),
+      });
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(false);
+      expect(result.showReviewPrompt).toBe(true);
+    });
+
+    it("neither eligible: nothing renders and nothing is recorded", async () => {
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        hasSeenReviewPrompt: true,
+        feedbackSubmittedAt: new Date("2026-09-22T00:00:00Z"),
+      });
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(false);
+      expect(result.showReviewPrompt).toBe(false);
+      expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe("app._index action: dismiss-feedback-nudge intent", () => {
+  const dismissRequest = () =>
+    new Request("https://test-shop.myshopify.com/app", {
+      method: "POST",
+      body: new URLSearchParams({ intent: "dismiss-feedback-nudge" }),
+    });
+
+  it("records the once-per-merchant `dismissed` stage with the session shop", async () => {
+    mockRecordNudgeStage.mockResolvedValue(true);
+
+    const result = (await action(makeActionArgs({ request: dismissRequest() }))) as {
+      dismissed: boolean;
+    };
+
+    expect(result.dismissed).toBe(true);
+    expect(mockRecordNudgeStage).toHaveBeenCalledTimes(1);
+    expect(mockRecordNudgeStage).toHaveBeenCalledWith("feedback", "dismissed", SHOP.domain);
+  });
+
+  it("still returns dismissed when the claim loses (already dismissed)", async () => {
+    mockRecordNudgeStage.mockResolvedValue(false);
+
+    const result = (await action(makeActionArgs({ request: dismissRequest() }))) as {
+      dismissed: boolean;
+    };
+
+    expect(result.dismissed).toBe(true);
+  });
+
+  it("does not touch the review prompt, plan gating or scan dispatch", async () => {
+    await action(makeActionArgs({ request: dismissRequest() }));
+
+    expect(mockDismissReviewPrompt).not.toHaveBeenCalled();
+    expect(mockCanStartScan).not.toHaveBeenCalled();
+    expect(mockDispatchScan).not.toHaveBeenCalled();
+  });
+});
+
+describe("app._index review banner copy (neutral review ask)", () => {
+  it("contains no sentiment-targeted wording and uses the shared neutral copy", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(
+      new URL("../../app/routes/app._index.tsx", import.meta.url),
+      "utf8",
+    );
+
+    expect(source.toLowerCase()).not.toContain("if this was helpful");
+    expect(source).toContain("{REVIEW_BANNER_TEXT}");
+    expect(source).toContain("APP_STORE_REVIEW_URL");
   });
 });

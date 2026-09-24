@@ -73,6 +73,7 @@ import {
   countScansForShopSince,
   hasCompletedScans,
   getCompletedScansForShop,
+  getFirstSuccessfulScanCompletedAt,
 } from "../../app/models/scan.server";
 
 const mockLoggerWarn = (logger as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
@@ -1374,5 +1375,49 @@ describe("getCompletedScansForShop", () => {
     mockDb.scan.findMany.mockRejectedValue(new Error("Connection refused"));
 
     await expect(getCompletedScansForShop(SHOP_ID)).rejects.toThrow("Connection refused");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getFirstSuccessfulScanCompletedAt (gc-97k.3 feedback nudge gate)
+// ---------------------------------------------------------------------------
+
+describe("getFirstSuccessfulScanCompletedAt", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("queries the EARLIEST successful (COMPLETED or PARTIAL) scan with a completedAt", async () => {
+    const completedAt = new Date("2026-09-20T10:05:00Z");
+    mockDb.scan.findFirst.mockResolvedValue({ completedAt });
+
+    await expect(getFirstSuccessfulScanCompletedAt(SHOP_ID)).resolves.toBe(completedAt);
+
+    expect(mockDb.scan.findFirst).toHaveBeenCalledWith({
+      where: {
+        shopId: SHOP_ID,
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL] },
+        completedAt: { not: null },
+      },
+      orderBy: { completedAt: "asc" },
+      select: { completedAt: true },
+    });
+  });
+
+  it("never counts FAILED, PENDING or IN_PROGRESS scans", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+
+    await getFirstSuccessfulScanCompletedAt(SHOP_ID);
+
+    const statuses = mockDb.scan.findFirst.mock.calls[0][0].where.status.in;
+    for (const excluded of [ScanStatus.FAILED, ScanStatus.PENDING, ScanStatus.IN_PROGRESS]) {
+      expect(statuses).not.toContain(excluded);
+    }
+  });
+
+  it("returns null when the shop has no successful scan", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+
+    await expect(getFirstSuccessfulScanCompletedAt(SHOP_ID)).resolves.toBeNull();
   });
 });

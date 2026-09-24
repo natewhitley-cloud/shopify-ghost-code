@@ -79,9 +79,38 @@ model Shop {
   upgradePreviewShownAt     DateTime?
   upgradePreviewClickedAt   DateTime?
   upgradePreviewConvertedAt DateTime?
+  // Merchant feedback nudge funnel (gc-97k.3). Same once-per-merchant atomic
+  // claim as the upgrade-preview stamps above (claimNudgeStage). Dismissed or
+  // submitted permanently suppresses the home-page nudge; feedbackSubmittedAt is
+  // the FIRST submission only (later MerchantFeedback rows do not re-stamp it).
+  feedbackNudgeShownAt      DateTime?
+  feedbackNudgeClickedAt    DateTime?
+  feedbackNudgeDismissedAt  DateTime?
+  feedbackSubmittedAt       DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]
+  merchantFeedback    MerchantFeedback[]
+}
+
+// Merchant feedback survey submissions (gc-97k.3, ported from ClearSignal
+// ba-1zbf.1). CSAT 1-5 is required; the three open-text answers and the
+// follow-up email are optional (null = left blank). Several rows per shop are
+// allowed. Cascade-deleted with the Shop, and ALSO deleted explicitly in
+// deleteShopData (the email is personal data, so the redact path names it).
+model MerchantFeedback {
+  id           String   @id @default(cuid())
+  shopId       String
+  shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  csat         Int
+  valuable     String?
+  improvement  String?
+  wtp          String?
+  contactEmail String?
+  createdAt    DateTime @default(now())
+
+  @@index([shopId])
+  @@index([createdAt])
 }
 
 model BillingEvent {

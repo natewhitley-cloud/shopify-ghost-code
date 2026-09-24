@@ -18,15 +18,17 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../../app/models/shop.server", () => ({
   updateShopPlanByDomain: vi.fn(),
   stampPlanReconciledAt: vi.fn(),
-  claimUpgradePreviewStage: vi.fn(),
+  claimNudgeStage: vi.fn(),
 }));
 
-// gc-97k.4: the REAL upgrade-preview-nudge service runs between the reconciler
-// and these two boundaries: the Shop stamp claim (above) and the emitter.
+// gc-97k.4: the REAL upgrade-preview-nudge service (and the shared nudge-stage
+// claim it delegates to, gc-97k.3) runs between the reconciler and these two
+// boundaries: the Shop stamp claim (above) and the emitter.
 vi.mock("../../app/services/nudge-telemetry.server", () => ({
   NUDGE_KEYS: { UPGRADE_PREVIEW: "upgrade_preview", FEEDBACK: "feedback" },
   recordNudgeShown: vi.fn(),
   recordNudgeClicked: vi.fn(),
+  recordNudgeDismissed: vi.fn(),
   recordNudgeConverted: vi.fn(),
 }));
 
@@ -50,7 +52,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 import { logger } from "../../app/lib/logger.server";
 import { recordBillingEvent } from "../../app/models/billing-event.server";
 import {
-  claimUpgradePreviewStage,
+  claimNudgeStage,
   stampPlanReconciledAt,
   updateShopPlanByDomain,
 } from "../../app/models/shop.server";
@@ -98,7 +100,7 @@ function makeAdminThatThrows(err: Error) {
 const mockUpdate = updateShopPlanByDomain as ReturnType<typeof vi.fn>;
 const mockStamp = stampPlanReconciledAt as ReturnType<typeof vi.fn>;
 const mockRecordEvent = recordBillingEvent as ReturnType<typeof vi.fn>;
-const mockClaimStage = claimUpgradePreviewStage as ReturnType<typeof vi.fn>;
+const mockClaimStage = claimNudgeStage as ReturnType<typeof vi.fn>;
 const mockRecordConverted = recordNudgeConverted as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
@@ -561,7 +563,9 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
       await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
 
       expect(mockClaimStage).toHaveBeenCalledTimes(1);
-      expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "converted");
+      expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "upgradePreviewConvertedAt", {
+        upgradePreviewClickedAt: { not: null },
+      });
       expect(mockRecordConverted).toHaveBeenCalledTimes(1);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_preview", DOMAIN);
     },
