@@ -36,10 +36,12 @@ const NUDGE_STAGE_CLAIMS = {
   [NUDGE_KEYS.UPGRADE_PREVIEW]: {
     shown: { column: "upgradePreviewShownAt" },
     clicked: { column: "upgradePreviewClickedAt" },
-    // Only a merchant who clicked the preview CTA counts as a conversion of it.
+    // Only a merchant who SAW the preview counts as a conversion of it. Keyed on
+    // shown, not clicked: the click ping is a best-effort keepalive fetch that
+    // can be lost when the top-level navigation unloads the iframe.
     converted: {
       column: "upgradePreviewConvertedAt",
-      extraWhere: { upgradePreviewClickedAt: { not: null } },
+      extraWhere: { upgradePreviewShownAt: { not: null } },
     },
   },
   [NUDGE_KEYS.FEEDBACK]: {

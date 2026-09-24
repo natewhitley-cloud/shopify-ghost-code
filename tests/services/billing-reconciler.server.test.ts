@@ -539,9 +539,10 @@ describe("reconcileShopPlan", () => {
 // ---------------------------------------------------------------------------
 // Upgrade-preview nudge conversion (gc-97k.4)
 //
-// The claim's DB conditions (converted stamp still null AND clicked stamp set)
+// The claim's DB conditions (converted stamp still null AND shown stamp set)
 // are asserted in tests/services/upgrade-preview-nudge.server.test.ts; here the
-// mocked claim stands in for what the DB would return.
+// mocked claim stands in for what the DB would return. The "against a stamped
+// Shop row" block below evaluates the claim's where-clause against a fake row.
 // ---------------------------------------------------------------------------
 
 describe("reconcileShopPlan: upgrade-preview conversion", () => {
@@ -556,7 +557,7 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
   });
 
   it.each(["Standard", "Professional"])(
-    "emits converted once on a redirect-path free -> %s upgrade after a prior click",
+    "emits converted once on a redirect-path free -> %s upgrade after the teaser was shown",
     async (plan) => {
       const admin = makeAdmin([{ name: plan, status: "ACTIVE" }]);
 
@@ -564,14 +565,14 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
 
       expect(mockClaimStage).toHaveBeenCalledTimes(1);
       expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "upgradePreviewConvertedAt", {
-        upgradePreviewClickedAt: { not: null },
+        upgradePreviewShownAt: { not: null },
       });
       expect(mockRecordConverted).toHaveBeenCalledTimes(1);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_preview", DOMAIN);
     },
   );
 
-  it("does not emit when the merchant never clicked the teaser (claim finds no clicked stamp)", async () => {
+  it("does not emit when the merchant was never shown the teaser (claim finds no shown stamp)", async () => {
     mockClaimStage.mockResolvedValue(false);
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
@@ -655,5 +656,86 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
       "upgrade-preview-nudge-claim-failed",
       expect.objectContaining({ shop: DOMAIN, stage: "converted" }),
     );
+  });
+});
+
+// The claim evaluated against a fake Shop row: a where-clause of
+// `{ [column]: null, ...{ X: { not: null } } }` wins only when the row matches,
+// and a win stamps the column, as the real conditional updateMany does.
+describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop row", () => {
+  const DOMAIN = "s.myshopify.com";
+  type Row = Record<string, Date | null>;
+  let row: Row;
+
+  function claimAgainstRow(
+    _domain: string,
+    column: string,
+    extraWhere: Record<string, { not: null }> = {},
+  ): Promise<boolean> {
+    const matches =
+      row[column] === null &&
+      Object.keys(extraWhere).every((key) => row[key] !== null && row[key] !== undefined);
+    if (matches) row[column] = new Date();
+    return Promise.resolve(matches);
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdate.mockResolvedValue({ id: "shop-1", domain: DOMAIN, plan: "x" });
+    mockStamp.mockResolvedValue({ id: "shop-1" });
+    mockRecordEvent.mockResolvedValue({});
+    mockClaimStage.mockImplementation(claimAgainstRow);
+    row = {
+      upgradePreviewShownAt: null,
+      upgradePreviewClickedAt: null,
+      upgradePreviewConvertedAt: null,
+    };
+  });
+
+  const upgrade = () =>
+    reconcileShopPlan(
+      makeAdmin([{ name: "Standard", status: "ACTIVE" }]),
+      { domain: DOMAIN, plan: "free" },
+      { recordEvent: true },
+    );
+
+  it("emits converted once when the teaser was shown but the click ping was lost", async () => {
+    row.upgradePreviewShownAt = new Date();
+
+    await upgrade();
+
+    expect(mockRecordConverted).toHaveBeenCalledTimes(1);
+    expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_preview", DOMAIN);
+    expect(row.upgradePreviewConvertedAt).toBeInstanceOf(Date);
+  });
+
+  it("does not emit when the teaser was neither shown nor clicked", async () => {
+    await upgrade();
+
+    expect(mockRecordConverted).not.toHaveBeenCalled();
+    expect(row.upgradePreviewConvertedAt).toBeNull();
+  });
+
+  it("does not re-emit on a repeat upgrade", async () => {
+    row.upgradePreviewShownAt = new Date();
+
+    await upgrade();
+    await upgrade();
+
+    expect(mockClaimStage).toHaveBeenCalledTimes(2);
+    expect(mockRecordConverted).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not emit on a downgrade even when the teaser was shown", async () => {
+    row.upgradePreviewShownAt = new Date();
+
+    await reconcileShopPlan(
+      makeAdmin([{ name: "Standard", status: "ACTIVE" }]),
+      { domain: DOMAIN, plan: "Professional" },
+      { recordEvent: true },
+    );
+
+    expect(mockClaimStage).not.toHaveBeenCalled();
+    expect(mockRecordConverted).not.toHaveBeenCalled();
   });
 });

@@ -99,8 +99,8 @@ describe.each(["shown", "clicked", "converted"] as const)("stage %s", (stage) =>
   });
 });
 
-describe("converted requires a prior click", () => {
-  it("only claims when upgradePreviewClickedAt is set", async () => {
+describe("converted requires a prior shown (not a click, whose ping can be lost)", () => {
+  it("only claims when upgradePreviewShownAt is set", async () => {
     mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
 
     await recordUpgradePreviewStageOnce("converted", DOMAIN);
@@ -108,7 +108,7 @@ describe("converted requires a prior click", () => {
     expect(mockDb.shop.updateMany.mock.calls[0][0].where).toEqual({
       domain: DOMAIN,
       upgradePreviewConvertedAt: null,
-      upgradePreviewClickedAt: { not: null },
+      upgradePreviewShownAt: { not: null },
     });
   });
 

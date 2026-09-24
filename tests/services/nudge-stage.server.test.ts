@@ -99,7 +99,7 @@ describe.each(Object.keys(FEEDBACK_STAGES) as Array<keyof typeof FEEDBACK_STAGES
   },
 );
 
-it("upgrade_preview converted keeps its prior-click precondition through the shared helper", async () => {
+it("upgrade_preview converted keeps its prior-shown precondition through the shared helper", async () => {
   mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
 
   await recordNudgeStageOnce("upgrade_preview", "converted", DOMAIN);
@@ -107,7 +107,7 @@ it("upgrade_preview converted keeps its prior-click precondition through the sha
   expect(mockDb.shop.updateMany.mock.calls[0][0].where).toEqual({
     domain: DOMAIN,
     upgradePreviewConvertedAt: null,
-    upgradePreviewClickedAt: { not: null },
+    upgradePreviewShownAt: { not: null },
   });
   expect(mockDb.opsEvent.create.mock.calls[0][0].data.metadata).toEqual({
     nudgeKey: "upgrade_preview",

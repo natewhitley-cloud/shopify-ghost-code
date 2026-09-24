@@ -294,7 +294,7 @@ export type NudgeStageColumn =
  * emits the funnel event only then. A missing shop row is a safe false.
  *
  * `extraWhere` adds preconditions the row must also meet for the claim to win
- * (e.g. the upgrade preview's `converted` requires `upgradePreviewClickedAt` to
+ * (e.g. the upgrade preview's `converted` requires `upgradePreviewShownAt` to
  * be set). It cannot override `domain` or the column's IS NULL guard.
  */
 export async function claimNudgeStage(

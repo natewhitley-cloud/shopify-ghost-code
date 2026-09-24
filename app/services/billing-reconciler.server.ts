@@ -227,7 +227,7 @@ export async function reconcileShopPlan(
   if (options.recordEvent) {
     recordReconcileBillingEvent(updated.id, shop.plan, effectivePlan);
     // Upgrade-preview nudge conversion (gc-97k.4): a merchant-initiated move
-    // from Free to a paid plan, by a merchant who clicked the teaser CTA
+    // from Free to a paid plan, by a merchant who was shown the teaser
     // (enforced by the claim), counts once ever. Never throws.
     if (
       shop.plan === PLANS.FREE &&

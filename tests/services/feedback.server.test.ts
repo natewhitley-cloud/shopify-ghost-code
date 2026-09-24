@@ -188,7 +188,7 @@ describe("createFeedback", () => {
     );
   });
 
-  it("emails the operator with the CSAT, domain and every field", async () => {
+  it("emails the operator with the CSAT, domain and every answer", async () => {
     await createFeedback(SHOP, INPUT);
     await flush();
 
@@ -201,10 +201,38 @@ describe("createFeedback", () => {
       "Finds leftovers",
       "Faster scans",
       "Auto cleanup",
-      "owner@shop.com",
     ]) {
       expect(body).toContain(value);
     }
+  });
+
+  // Inbox copies are beyond shop/redact's reach, so the address stays in the DB
+  // row only; the operator email carries a yes/no flag.
+  it("never puts the contact email in the ops alert, but still persists it", async () => {
+    const email = "zq-distinct-owner-7731@example-merchant.test";
+    await createFeedback(SHOP, { ...INPUT, contactEmail: email });
+    await flush();
+
+    expect(mockCreate).toHaveBeenCalledWith(
+      "shop-1",
+      expect.objectContaining({ contactEmail: email }),
+    );
+    const [subject, body] = mockSendOpsAlert.mock.calls[0];
+    for (const text of [subject, body]) {
+      expect(text).not.toContain(email);
+      expect(text).not.toContain("zq-distinct-owner-7731");
+      expect(text).not.toContain("example-merchant.test");
+    }
+    expect(body).toContain("Contact email provided: yes");
+  });
+
+  it("flags `no` when no contact email was left", async () => {
+    await createFeedback(SHOP, { ...INPUT, contactEmail: null });
+    await flush();
+
+    const [, body] = mockSendOpsAlert.mock.calls[0];
+    expect(body).toContain("Contact email provided: no");
+    expect(body).not.toContain("Contact email provided: yes");
   });
 
   it("does not fail the submit when the ops alert rejects", async () => {
@@ -265,6 +293,6 @@ describe("formatFeedbackEmail", () => {
     });
     expect(body).toContain("CSAT: 1/5");
     expect(body.match(/\(no answer\)/g)).toHaveLength(3);
-    expect(body).toContain("Contact: (merchant did not leave an email)");
+    expect(body).toContain("Contact email provided: no");
   });
 });

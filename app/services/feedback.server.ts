@@ -4,7 +4,9 @@
  * Owns: (1) validation of the submitted survey, (2) the durable write to
  * MerchantFeedback, (3) the once-per-merchant `converted` stage (which also
  * stamps Shop.feedbackSubmittedAt and so retires the nudge), and (4) the
- * fire-and-forget operator email.
+ * fire-and-forget operator email. The contact email lives ONLY in the DB row
+ * (which shop/redact deletes); the operator email says only whether one was
+ * left, because inbox copies are beyond redact's reach.
  *
  * Deliberately NOT ported: ClearSignal's CSAT-gated review CTA. Review asks
  * must be neutral (Shopify App Store policy), so the success state shows the
@@ -127,7 +129,11 @@ export async function createFeedback(shop: { id: string; domain: string }, input
   return record;
 }
 
-/** Plaintext operator email body with every field. */
+/**
+ * Plaintext operator email body. Carries every answer EXCEPT the contact email
+ * itself: only a yes/no flag, so the operator looks the address up in the DB.
+ * The body is also logged when email is not configured (ops-alert.server).
+ */
 export function formatFeedbackEmail(shopDomain: string, input: FeedbackInput): string {
   return [
     `Shop: ${shopDomain}`,
@@ -139,8 +145,6 @@ export function formatFeedbackEmail(shopDomain: string, input: FeedbackInput): s
     "",
     `Worth paying for: ${input.wtp ?? "(no answer)"}`,
     "",
-    input.contactEmail
-      ? `Contact: ${input.contactEmail} (merchant asked to be contacted)`
-      : "Contact: (merchant did not leave an email)",
+    `Contact email provided: ${input.contactEmail ? "yes (see MerchantFeedback in the DB)" : "no"}`,
   ].join("\n");
 }
