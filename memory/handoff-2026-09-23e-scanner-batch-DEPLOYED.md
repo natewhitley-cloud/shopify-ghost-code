@@ -19,7 +19,9 @@ Supersedes 23b/23c/23d on-hold handoffs. Three deploys today, all CI + Deploy + 
 ## Expected churn on first scans after efa9493
 Block findings "new"; Turkish-text stores may gain tags; Sales Pop -> Hextom Translate and Bold Product Options -> Bold/Bold Upsell/Bold Discounts relabels (prod has ZERO IgnoredFinding rows, so no ignore breakage).
 
-## NEXT SESSION: listing copy (owner will review)
+## Listing copy: DONE 2026-09-23 (owner pasted into Partner Dashboard; pricing card's stale 'sunset risks' bullet replaced with 'Find dead checkout.liquid code'). docs/gtm/listing-v2.md synced (ed624c1). Remaining optional: malicious-alert gallery screenshot (dev store only); Broken Links still unnamed on Standard card.
+
+## (Historical) listing draft
 Update Partner Dashboard listing AFTER confirming efa9493 healthy. Draft (docs/gtm/listing-v2.md to be updated):
 - Feature bullet 4 -> `Flag scripts from known malicious domains, shown in full on every plan` (70)
 - Description (500/500): "Every app you uninstall leaves code behind: scripts, tracking pixels, SEO tags, and metadata across your theme, including Horizon theme blocks. It slows your pages, feeds wrong info to Google and AI agents, and pings services you dropped. GhostCode runs 30+ checks across 8 surfaces, traces every fragment to the app that left it (file, line, snippet), and flags scripts from known malicious domains on every plan. Findings are grouped by what they cost you. Track your health score. First scan free."
