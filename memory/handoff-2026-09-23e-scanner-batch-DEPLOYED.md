@@ -33,6 +33,11 @@ Update Partner Dashboard listing AFTER confirming efa9493 healthy. Draft (docs/g
 - gc-11f (P2) cap-truncated audits shown as "grant permissions" skipped checks (banner/PARTIAL).
 - gc-8sd (P3) memoize/index app-signature lookups (tag-dense 1MB ~3s, zero findings).
 - gc-b0m (P3) move heavy perf tests to a non-parallel vitest project + CI step.
+- gc-90v (P4) optional malicious-alert gallery screenshot (dev store only), deferred by owner.
+- Optional pricing tweaks (owner's call): name malicious alerts on the Free card; 'Standard' card's '7-day free trial' bullet is redundant with the trial shown under the price.
+
+## Resume here
+Start with tomorrow's digest check, then gc-11f (most useful next fix). Session ended 2026-09-23 with main == origin/main, tree clean.
 - Owner: check tomorrow's digest (RECONCILER section present; no NO HEARTBEAT line).
 - sex-eshop: owner chose NOT to contact; alert appears on their next scan.
 
