@@ -50,7 +50,7 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { OPS_EVENT_TYPES } from "../../app/models/ops-event.server";
+import { NUDGE_FUNNEL_EVENT_TYPES, OPS_EVENT_TYPES } from "../../app/models/ops-event.server";
 import {
   getShopMetadata,
   upsertShop,
@@ -66,6 +66,13 @@ import {
   touchShopLastSeen,
   LAST_SEEN_FRESHNESS_MS,
 } from "../../app/models/shop.server";
+import {
+  NUDGE_KEYS,
+  recordNudgeClicked,
+  recordNudgeConverted,
+  recordNudgeDismissed,
+  recordNudgeShown,
+} from "../../app/services/nudge-telemetry.server";
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -730,6 +737,50 @@ describe("deleteShopData", () => {
     expect(opsWhere.OR).toContainEqual({
       metadata: { path: ["shopId"], equals: "shop-gdpr-signal" },
     });
+  });
+
+  it("purges nudge-funnel rows for the redacted domain and leaves other shops' rows (gc-97k.1)", async () => {
+    // Bind the REAL emitter write shape to the redact predicate: record every
+    // nudge stage for two shops through the actual emitters, capture the rows
+    // they write, then evaluate deleteShopData's OR clause against them the way
+    // Postgres would (key equality + metadata JSON-path equality).
+    const target = "delete-me.myshopify.com";
+    const other = "keep-me.myshopify.com";
+    for (const domain of [target, other]) {
+      for (const key of Object.values(NUDGE_KEYS)) {
+        await recordNudgeShown(key, domain);
+        await recordNudgeClicked(key, domain);
+        await recordNudgeDismissed(key, domain);
+        await recordNudgeConverted(key, domain);
+      }
+    }
+    const written = mockDb.opsEvent.create.mock.calls.map(
+      (c) => c[0].data as { eventType: string; key: string; metadata: Record<string, unknown> },
+    );
+    expect(written).toHaveLength(16);
+
+    const existingShop = { id: "shop-gdpr-nudge", domain: target, plan: "free" };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 8 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData(target);
+
+    type Clause = { key?: string; metadata?: { path: string[]; equals: string } };
+    const opsWhere = mockDb.opsEvent.deleteMany.mock.calls[0][0].where as { OR: Clause[] };
+    const matchesRedact = (row: (typeof written)[number]) =>
+      opsWhere.OR.some((c) =>
+        c.key !== undefined
+          ? row.key === c.key
+          : c.metadata !== undefined && row.metadata?.[c.metadata.path[0]] === c.metadata.equals,
+      );
+
+    const purged = written.filter(matchesRedact);
+    expect(purged).toHaveLength(8);
+    expect(purged.every((r) => r.key === target)).toBe(true);
+    expect(new Set(purged.map((r) => r.eventType))).toEqual(new Set(NUDGE_FUNNEL_EVENT_TYPES));
+    expect(written.filter((r) => r.key === other).some(matchesRedact)).toBe(false);
   });
 
   it("returns the shop object (pre-deletion snapshot) on success", async () => {

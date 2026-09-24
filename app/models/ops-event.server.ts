@@ -45,7 +45,31 @@ export const OPS_EVENT_TYPES = {
   // deleteShopData and no prune coverage (a tripped breaker is near-never, not
   // high-volume) beyond the accepted free-text-message residual.
   RECONCILE_ABORTED: "reconcile_aborted",
+  // Nudge-funnel telemetry (gc-97k.1): one row per funnel stage of an in-app
+  // nudge (shown / clicked / dismissed / converted), written only via
+  // app/services/nudge-telemetry.server. Keyed on the shop DOMAIN (OpsEvent has
+  // no shopId column), with `metadata.nudgeKey` naming the nudge. Redact:
+  // deleteShopData's existing `key: domain` clause reaches these rows (same as
+  // page_visit), so no new clause is needed. Prune: pruneOpsEvents ages them out
+  // at 90 days (NUDGE_RETENTION_DAYS): long enough to read a funnel at our
+  // install volume, while `shown` can fire on page loads and would otherwise
+  // grow without bound.
+  NUDGE_SHOWN: "nudge_shown",
+  NUDGE_CLICKED: "nudge_clicked",
+  NUDGE_DISMISSED: "nudge_dismissed",
+  NUDGE_CONVERTED: "nudge_converted",
 } as const;
+
+/** All nudge-funnel event types, for the prune and the digest's grouped read. */
+export const NUDGE_FUNNEL_EVENT_TYPES = [
+  OPS_EVENT_TYPES.NUDGE_SHOWN,
+  OPS_EVENT_TYPES.NUDGE_CLICKED,
+  OPS_EVENT_TYPES.NUDGE_DISMISSED,
+  OPS_EVENT_TYPES.NUDGE_CONVERTED,
+] as const;
+
+/** Default retention for nudge-funnel rows (see pruneOpsEvents). */
+export const NUDGE_RETENTION_DAYS = 90;
 
 export interface RecordOpsEventInput {
   eventType: string;
@@ -371,8 +395,15 @@ async function getLatestHeartbeatByKey(
  *     counts (last day / last 7 days). 14d covers the digest's 7-day window plus
  *     a week of buffer for late/backfilled runs; anything older has no consumer
  *     and must be pruned or the table grows without limit.
+ *   - the four nudge-funnel types (`nudge_shown`, `nudge_clicked`,
+ *     `nudge_dismissed`, `nudge_converted`) older than `nudgeOlderThanDays`
+ *     (default NUDGE_RETENTION_DAYS = 90d) (gc-97k.1). The digest only reads the
+ *     trailing 7d, but at our install volume a funnel needs months of rows to be
+ *     readable by hand, so they are kept far longer than page visits. `shown`
+ *     can fire on page loads, so without a cutoff these grow unbounded.
  *
- * DELIBERATELY NARROW: this prunes ONLY `cron_heartbeat` and `page_visit`.
+ * DELIBERATELY NARROW: this prunes ONLY `cron_heartbeat`, `page_visit` and the
+ * nudge-funnel types.
  * `function_failure` rows back the operator digest's failure history and are left
  * untouched at any age. The remaining low-volume types (api_error,
  * webhook_failure, digest_snapshot, worker_fallback, scan_signal) are also left
@@ -385,12 +416,15 @@ async function getLatestHeartbeatByKey(
 export async function pruneOpsEvents(options?: {
   heartbeatOlderThanDays?: number;
   pageVisitOlderThanDays?: number;
+  nudgeOlderThanDays?: number;
 }): Promise<number> {
   const heartbeatDays = options?.heartbeatOlderThanDays ?? 30;
   const pageVisitDays = options?.pageVisitOlderThanDays ?? 14;
+  const nudgeDays = options?.nudgeOlderThanDays ?? NUDGE_RETENTION_DAYS;
   const now = Date.now();
   const heartbeatCutoff = new Date(now - heartbeatDays * DAY_MS);
   const pageVisitCutoff = new Date(now - pageVisitDays * DAY_MS);
+  const nudgeCutoff = new Date(now - nudgeDays * DAY_MS);
 
   // Newest heartbeat per key. Only keys whose newest row is itself past the
   // cutoff need protecting; a recent newest row is never matched by `lt`.
@@ -416,6 +450,11 @@ export async function pruneOpsEvents(options?: {
           ...(keepNewest.length > 0 ? { NOT: { OR: keepNewest } } : {}),
         },
         { eventType: OPS_EVENT_TYPES.PAGE_VISIT, createdAt: { lt: pageVisitCutoff } },
+        // One branch per nudge type, so every branch still pins a single eventType.
+        ...NUDGE_FUNNEL_EVENT_TYPES.map((eventType) => ({
+          eventType,
+          createdAt: { lt: nudgeCutoff },
+        })),
       ],
     },
   });

@@ -337,6 +337,8 @@ export async function deleteShopData(domain: string) {
     // domain (key on uninstall, metadata.shop / metadata.shopDomain otherwise).
     // The `page_visit` activity event is domain-keyed (key = session.shop), so
     // the `key: domain` clause already reaches it — no extra clause needed.
+    // The nudge-funnel events (nudge_shown/clicked/dismissed/converted, gc-97k.1)
+    // are domain-keyed the same way, so the `key: domain` clause covers them too.
     // The per-scan `scan_signal` event is the exception: it keys on scanId and
     // carries the INTERNAL shop cuid in metadata.shopId (not the domain), so the
     // shopId clause below is required to reach those rows.

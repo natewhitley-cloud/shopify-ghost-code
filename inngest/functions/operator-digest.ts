@@ -17,7 +17,8 @@
  *
  * Sections (each "in 24h" = trailing 24h unless noted):
  *   A. Business  — installs, plan mix + net change, MRR + net change, scans by
- *      status + per store, findings, signature flywheel, activation.
+ *      status + per store, findings, signature flywheel, activation, activity,
+ *      nudge funnel (24h / 7d).
  *   B. Ops health — scan runs (derived from A's status map), function/worker/
  *      webhook failures, API errors/warns, cron dead-man's-switch, an alerting
  *      self-check (loud banner at top if the paging channel is misconfigured).
@@ -35,7 +36,8 @@ import {
   parseExcludeShops,
 } from "../../app/lib/store-exclusion";
 import type { BillingEventType } from "../../app/models/billing-event.server";
-import type { StaleCron } from "../../app/models/ops-event.server";
+import { OPS_EVENT_TYPES, type StaleCron } from "../../app/models/ops-event.server";
+import { NUDGE_KEYS } from "../../app/services/nudge-telemetry.server";
 import type { OpsAlertConfigStatus } from "../../app/services/ops-alert.server";
 import { inngest } from "../client";
 import { withCronHeartbeat } from "../lib/heartbeat";
@@ -428,6 +430,108 @@ export function aggregateActivity(
 }
 
 // ---------------------------------------------------------------------------
+// Nudge funnel (gc-97k.1)
+//
+// Backed by the domain-keyed nudge-funnel OpsEvent stream written by
+// app/services/nudge-telemetry.server (key = shop domain, metadata.nudgeKey).
+// Per nudge: shown / clicked / dismissed / converted over the trailing 24h and
+// 7d, plus click-through and conversion rates against shown.
+// ---------------------------------------------------------------------------
+
+export interface NudgeStageCounts {
+  shown: number;
+  clicked: number;
+  dismissed: number;
+  converted: number;
+}
+
+/** One nudge's funnel (serialization-safe; crosses the Inngest step boundary). */
+export interface NudgeFunnelRow {
+  /** A NUDGE_KEYS value, or NUDGE_OTHER_KEY for unrecognized/missing keys. */
+  nudgeKey: string;
+  last24h: NudgeStageCounts;
+  last7d: NudgeStageCounts;
+}
+
+/** Bucket for events whose metadata.nudgeKey is missing or not in NUDGE_KEYS. */
+export const NUDGE_OTHER_KEY = "other";
+
+const NUDGE_STAGE_BY_EVENT_TYPE: Record<string, keyof NudgeStageCounts> = {
+  [OPS_EVENT_TYPES.NUDGE_SHOWN]: "shown",
+  [OPS_EVENT_TYPES.NUDGE_CLICKED]: "clicked",
+  [OPS_EVENT_TYPES.NUDGE_DISMISSED]: "dismissed",
+  [OPS_EVENT_TYPES.NUDGE_CONVERTED]: "converted",
+};
+
+const KNOWN_NUDGE_KEYS: readonly string[] = Object.values(NUDGE_KEYS);
+
+function emptyStageCounts(): NudgeStageCounts {
+  return { shown: 0, clicked: 0, dismissed: 0, converted: 0 };
+}
+
+/**
+ * Group trailing-7d nudge-funnel events into per-nudge 24h/7d stage counts.
+ * Pure (consumes Dates, emits serialization-safe output).
+ *
+ * Exclusion: each event's `key` (domain) is counted only if it is in
+ * `allowedDomains`, the handler's already-filtered non-excluded shop set (so
+ * the durable isInternal flag, OPERATOR_EXCLUDE_SHOPS and prefix rules all
+ * apply). A domain-only check would miss isInternal (gc-zeh leak class).
+ *
+ * Unknown keys: an event whose metadata.nudgeKey is missing, non-string, or not
+ * a NUDGE_KEYS value is counted under NUDGE_OTHER_KEY rather than dropped, so a
+ * mis-keyed emitter is visible in the digest. Non-nudge event types and events
+ * older than 7d are ignored. The 24h window is inclusive of its boundary.
+ *
+ * Rows: known keys in NUDGE_KEYS order, then "other"; only nudges with at least
+ * one event in the 7d window appear (empty array = no nudge activity).
+ */
+export function aggregateNudgeFunnel(
+  events: Array<{ eventType: string; key: string | null; metadata: unknown; createdAt: Date }>,
+  allowedDomains: Iterable<string>,
+  now: Date,
+): NudgeFunnelRow[] {
+  const dayAgo = now.getTime() - DAY_MS;
+  const weekAgo = now.getTime() - 7 * DAY_MS;
+  const allowed = new Set([...allowedDomains].map((d) => d.toLowerCase()));
+
+  const byKey = new Map<string, NudgeFunnelRow>();
+  for (const e of events) {
+    const stage = NUDGE_STAGE_BY_EVENT_TYPE[e.eventType];
+    if (!stage) continue;
+    if (e.key == null || !allowed.has(e.key.toLowerCase())) continue;
+    const t = e.createdAt.getTime();
+    if (t < weekAgo) continue; // defensive; the query already bounds to 7d
+
+    const raw =
+      typeof e.metadata === "object" && e.metadata !== null
+        ? (e.metadata as Record<string, unknown>).nudgeKey
+        : undefined;
+    const nudgeKey =
+      typeof raw === "string" && KNOWN_NUDGE_KEYS.includes(raw) ? raw : NUDGE_OTHER_KEY;
+
+    const row = byKey.get(nudgeKey) ?? {
+      nudgeKey,
+      last24h: emptyStageCounts(),
+      last7d: emptyStageCounts(),
+    };
+    row.last7d[stage] += 1;
+    if (t >= dayAgo) row.last24h[stage] += 1;
+    byKey.set(nudgeKey, row);
+  }
+
+  return [...KNOWN_NUDGE_KEYS, NUDGE_OTHER_KEY].flatMap((k) => {
+    const row = byKey.get(k);
+    return row ? [row] : [];
+  });
+}
+
+/** `part / shown` as a percentage, or "n/a" when nothing was shown. */
+function fmtNudgeRate(part: number, shown: number): string {
+  return shown > 0 ? fmtPct(part / shown) : "n/a";
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot-metric threshold evaluation (gc-06e.13, sub-item 3)
 //
 // MetricSnapshot rows were collected but never evaluated. This adds conservative
@@ -556,6 +660,9 @@ export interface OperatorDigestData {
   /** Last-seen + page-visit activity (last day / week). Optional so callers/tests
    * that predate it still type-check; absent => rendered as "No activity data". */
   activity?: ActivitySummary;
+  /** Nudge funnel per nudgeKey (gc-97k.1). Optional so callers/tests that
+   * predate it still type-check; absent => rendered as "No nudge data". */
+  nudges?: NudgeFunnelRow[];
   ops: {
     functionFailures: number;
     workerFallbacks: number;
@@ -795,6 +902,29 @@ export function buildDigestBody(data: OperatorDigestData): string {
       if (activity.topPages.length > TOP_PAGES_LIMIT) {
         lines.push(`    ...and ${activity.topPages.length - TOP_PAGES_LIMIT} more page(s)`);
       }
+    }
+  }
+  lines.push("");
+
+  const { nudges } = data;
+  lines.push("NUDGES (funnel per nudge, 24h / 7d)");
+  if (!nudges) {
+    lines.push("  No nudge data");
+  } else if (nudges.length === 0) {
+    lines.push("  No nudge events in the last 7d");
+  } else {
+    for (const n of nudges) {
+      const d = n.last24h;
+      const w = n.last7d;
+      const label =
+        n.nudgeKey === NUDGE_OTHER_KEY ? `${NUDGE_OTHER_KEY} (unrecognized nudgeKey)` : n.nudgeKey;
+      lines.push(`  ${label}`);
+      lines.push(
+        `    shown ${d.shown} / ${w.shown} | clicked ${d.clicked} / ${w.clicked} | dismissed ${d.dismissed} / ${w.dismissed} | converted ${d.converted} / ${w.converted}`,
+      );
+      lines.push(
+        `    click-through ${fmtNudgeRate(d.clicked, d.shown)} / ${fmtNudgeRate(w.clicked, w.shown)} | conversion ${fmtNudgeRate(d.converted, d.shown)} / ${fmtNudgeRate(w.converted, w.shown)}`,
+      );
     }
   }
   lines.push("");
@@ -1065,6 +1195,26 @@ export const operatorDigest = inngest.createFunction(
       return aggregateActivity(events, shops, now, excludeSet, excludePrefixes);
     })) as ActivitySummary;
 
+    // Nudge funnel (gc-97k.1): trailing-7d nudge events (24h derived in-memory).
+    // Event keys are domains, so they are PINNED to get-shops' filtered
+    // non-excluded domain set (domainById: honours isInternal, the env exclude
+    // list and prefixes). Unlike ACTIVITY this includes uninstalled-pending-
+    // redact real shops, so a merchant who saw a nudge and then churned still
+    // counts in its funnel.
+    const nudges = (await step.run("get-nudge-funnel", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const { NUDGE_FUNNEL_EVENT_TYPES } = await import("../../app/models/ops-event.server");
+      const now = new Date();
+      const events = await db.opsEvent.findMany({
+        where: {
+          eventType: { in: [...NUDGE_FUNNEL_EVENT_TYPES] },
+          createdAt: { gte: new Date(now.getTime() - 7 * DAY_MS) },
+        },
+        select: { eventType: true, key: true, metadata: true, createdAt: true },
+      });
+      return aggregateNudgeFunnel(events, Object.values(domainById), now);
+    })) as NudgeFunnelRow[];
+
     // BillingEvent breakdown for the window. Excludes dev/test/internal/app-review
     // stores (via the SAME isExcluded predicate as every other metric) so a dev
     // store's test upgrade/downgrade can't leak into the "Billing events" line.
@@ -1206,6 +1356,7 @@ export const operatorDigest = inngest.createFunction(
         totalActive: shopData.totalActive,
       },
       activity,
+      nudges,
       ops,
       anomalies: metricAnomalies.anomalies,
       reconciler,

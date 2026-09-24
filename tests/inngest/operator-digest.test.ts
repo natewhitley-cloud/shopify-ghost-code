@@ -28,7 +28,10 @@ vi.mock("../../inngest/client", () => ({
   },
 }));
 
-vi.mock("../../app/models/ops-event.server", () => ({
+// Spread the real module so pure constants (OPS_EVENT_TYPES, read by the
+// nudge-funnel aggregator at load) stay real; only the DB write is stubbed.
+vi.mock("../../app/models/ops-event.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../app/models/ops-event.server")>()),
   recordCronHeartbeat: vi.fn(),
 }));
 
@@ -39,6 +42,7 @@ vi.mock("../../app/models/ops-event.server", () => ({
 import { parseExcludeShops } from "../../app/lib/store-exclusion";
 import {
   aggregateActivity,
+  aggregateNudgeFunnel,
   buildDigestBody,
   computeMrr,
   computePlanMix,
@@ -46,16 +50,19 @@ import {
   computeScanStatusCounts,
   computeScansPerStore,
   countUninstallEventsExcluding,
+  DAY_MS,
   diffSnapshot,
   evaluateSnapshotMetrics,
   METRIC_THRESHOLDS,
   normalizeActivityPath,
+  NUDGE_OTHER_KEY,
   operatorDigest,
   parseSnapshotMetadata,
   partitionShops,
   sortFindingTypeCounts,
   summarizeReconciler,
   type DigestSnapshot,
+  type NudgeFunnelRow,
   type OperatorDigestData,
 } from "../../inngest/functions/operator-digest";
 
@@ -1399,3 +1406,249 @@ describe("operatorDigest registration", () => {
     expect(operatorDigest).toBeDefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// aggregateNudgeFunnel (gc-97k.1)
+// ---------------------------------------------------------------------------
+
+describe("aggregateNudgeFunnel", () => {
+  const now = new Date("2026-09-24T12:00:00Z");
+  const HOUR_MS = 3_600_000;
+  const at = (msAgo: number) => new Date(now.getTime() - msAgo);
+  const REAL = "real.myshopify.com";
+  const REAL_2 = "real-2.myshopify.com";
+  const allowed = [REAL, REAL_2];
+
+  const ev = (eventType: string, nudgeKey: unknown, msAgo: number, key: string | null = REAL) => ({
+    eventType,
+    key,
+    metadata: nudgeKey === undefined ? {} : { nudgeKey },
+    createdAt: at(msAgo),
+  });
+
+  const zero = { shown: 0, clicked: 0, dismissed: 0, converted: 0 };
+
+  it("counts each stage per nudgeKey across the 24h and 7d windows", () => {
+    const events = [
+      ev("nudge_shown", "upgrade_preview", 1 * HOUR_MS),
+      ev("nudge_shown", "upgrade_preview", 2 * HOUR_MS, REAL_2),
+      ev("nudge_shown", "upgrade_preview", 30 * HOUR_MS),
+      ev("nudge_shown", "upgrade_preview", 100 * HOUR_MS),
+      ev("nudge_clicked", "upgrade_preview", 3 * HOUR_MS),
+      ev("nudge_clicked", "upgrade_preview", 50 * HOUR_MS),
+      ev("nudge_dismissed", "upgrade_preview", 60 * HOUR_MS),
+      ev("nudge_converted", "upgrade_preview", 4 * HOUR_MS),
+      ev("nudge_shown", "feedback", 5 * HOUR_MS),
+      ev("nudge_dismissed", "feedback", 6 * HOUR_MS),
+    ];
+
+    const rows = aggregateNudgeFunnel(events, allowed, now);
+
+    expect(rows).toEqual<NudgeFunnelRow[]>([
+      {
+        nudgeKey: "upgrade_preview",
+        last24h: { shown: 2, clicked: 1, dismissed: 0, converted: 1 },
+        last7d: { shown: 4, clicked: 2, dismissed: 1, converted: 1 },
+      },
+      {
+        nudgeKey: "feedback",
+        last24h: { shown: 1, clicked: 0, dismissed: 1, converted: 0 },
+        last7d: { shown: 1, clicked: 0, dismissed: 1, converted: 0 },
+      },
+    ]);
+  });
+
+  it("treats the 24h and 7d boundaries as inclusive and drops anything older than 7d", () => {
+    const events = [
+      ev("nudge_shown", "feedback", DAY_MS), // exactly 24h: in 24h and 7d
+      ev("nudge_shown", "feedback", DAY_MS + 1), // just past 24h: 7d only
+      ev("nudge_shown", "feedback", 7 * DAY_MS), // exactly 7d: in 7d
+      ev("nudge_shown", "feedback", 7 * DAY_MS + 1), // just past 7d: dropped
+    ];
+
+    const [row] = aggregateNudgeFunnel(events, allowed, now);
+
+    expect(row.last24h.shown).toBe(1);
+    expect(row.last7d.shown).toBe(3);
+  });
+
+  it("orders rows by NUDGE_KEYS declaration, then other, and omits nudges with no events", () => {
+    const events = [ev("nudge_shown", "mystery", HOUR_MS), ev("nudge_shown", "feedback", HOUR_MS)];
+
+    const rows = aggregateNudgeFunnel(events, allowed, now);
+
+    expect(rows.map((r) => r.nudgeKey)).toEqual(["feedback", NUDGE_OTHER_KEY]);
+  });
+
+  it("buckets unknown, missing, empty and non-string nudgeKeys under 'other' (not dropped)", () => {
+    const events = [
+      ev("nudge_shown", "retired_nudge", HOUR_MS),
+      ev("nudge_clicked", undefined, HOUR_MS), // metadata {} (no nudgeKey)
+      ev("nudge_dismissed", "", HOUR_MS),
+      ev("nudge_converted", 42, HOUR_MS),
+      { eventType: "nudge_shown", key: REAL, metadata: null, createdAt: at(HOUR_MS) },
+      { eventType: "nudge_shown", key: REAL, metadata: "garbage", createdAt: at(HOUR_MS) },
+      ev("nudge_shown", "UPGRADE_PREVIEW", HOUR_MS), // the constant NAME, not its value
+    ];
+
+    const rows = aggregateNudgeFunnel(events, allowed, now);
+
+    expect(rows).toEqual([
+      {
+        nudgeKey: NUDGE_OTHER_KEY,
+        last24h: { shown: 4, clicked: 1, dismissed: 1, converted: 1 },
+        last7d: { shown: 4, clicked: 1, dismissed: 1, converted: 1 },
+      },
+    ]);
+  });
+
+  // gc-zeh leak class: nudge events carry only a domain key, so they must be
+  // pinned to the handler's already-filtered domain set. A store absent from
+  // that set (isInternal / env-excluded / app-review-) contributes nothing.
+  it("excludes events from domains outside the allowed (non-excluded) shop set", () => {
+    const events = [
+      ev("nudge_shown", "upgrade_preview", HOUR_MS),
+      ev("nudge_shown", "upgrade_preview", HOUR_MS, "renamed-internal.myshopify.com"),
+      ev("nudge_converted", "upgrade_preview", HOUR_MS, "app-review-abc.myshopify.com"),
+      ev("nudge_shown", "mystery", HOUR_MS, "leaky-dev.myshopify.com"), // not even as other
+      ev("nudge_shown", "feedback", HOUR_MS, null), // null key
+    ];
+
+    const rows = aggregateNudgeFunnel(events, allowed, now);
+
+    expect(rows).toEqual([
+      {
+        nudgeKey: "upgrade_preview",
+        last24h: { ...zero, shown: 1 },
+        last7d: { ...zero, shown: 1 },
+      },
+    ]);
+  });
+
+  it("matches the allowed domain case-insensitively", () => {
+    const rows = aggregateNudgeFunnel(
+      [ev("nudge_shown", "feedback", HOUR_MS, "REAL.myshopify.com")],
+      ["Real.MyShopify.com"],
+      now,
+    );
+
+    expect(rows[0].last7d.shown).toBe(1);
+  });
+
+  it("ignores non-nudge event types that slip into the input", () => {
+    const rows = aggregateNudgeFunnel(
+      [ev("page_visit", "feedback", HOUR_MS), ev("nudge_shownX", "feedback", HOUR_MS)],
+      allowed,
+      now,
+    );
+
+    expect(rows).toEqual([]);
+  });
+
+  it("returns [] for no events, and for an empty allowed set", () => {
+    expect(aggregateNudgeFunnel([], allowed, now)).toEqual([]);
+    expect(aggregateNudgeFunnel([ev("nudge_shown", "feedback", HOUR_MS)], [], now)).toEqual([]);
+  });
+});
+
+describe("buildDigestBody — NUDGES section (gc-97k.1)", () => {
+  const section = (body: string) => {
+    const start = body.indexOf("NUDGES (funnel per nudge, 24h / 7d)");
+    expect(start).toBeGreaterThan(-1);
+    return body.slice(start, body.indexOf("\n\n", start));
+  };
+
+  it("renders per-nudge 24h / 7d stage counts and rates against shown", () => {
+    const body = buildDigestBody(
+      makeData({
+        nudges: [
+          {
+            nudgeKey: "upgrade_preview",
+            last24h: { shown: 3, clicked: 1, dismissed: 0, converted: 0 },
+            last7d: { shown: 10, clicked: 4, dismissed: 2, converted: 1 },
+          },
+        ],
+      }),
+    );
+
+    expect(section(body)).toBe(
+      [
+        "NUDGES (funnel per nudge, 24h / 7d)",
+        "  upgrade_preview",
+        "    shown 3 / 10 | clicked 1 / 4 | dismissed 0 / 2 | converted 0 / 1",
+        "    click-through 33.3% / 40.0% | conversion 0.0% / 10.0%",
+      ].join("\n"),
+    );
+  });
+
+  it("prints n/a (never NaN or Infinity) for a window where nothing was shown", () => {
+    const body = buildDigestBody(
+      makeData({
+        nudges: [
+          {
+            nudgeKey: "feedback",
+            last24h: { shown: 0, clicked: 2, dismissed: 1, converted: 1 },
+            last7d: { shown: 0, clicked: 0, dismissed: 1, converted: 0 },
+          },
+        ],
+      }),
+    );
+
+    const s = section(body);
+    expect(s).toContain("click-through n/a / n/a | conversion n/a / n/a");
+    expect(s).not.toMatch(/NaN|Infinity/);
+  });
+
+  it("labels the 'other' bucket as unrecognized", () => {
+    const body = buildDigestBody(
+      makeData({
+        nudges: [{ nudgeKey: NUDGE_OTHER_KEY, last24h: { ...zeroCounts() }, last7d: oneShown() }],
+      }),
+    );
+
+    expect(section(body)).toContain("  other (unrecognized nudgeKey)");
+  });
+
+  it("renders the empty state when there are no nudge events", () => {
+    const body = buildDigestBody(makeData({ nudges: [] }));
+
+    expect(section(body)).toBe(
+      ["NUDGES (funnel per nudge, 24h / 7d)", "  No nudge events in the last 7d"].join("\n"),
+    );
+  });
+
+  it("falls back to 'No nudge data' when the nudges field is absent", () => {
+    const body = buildDigestBody(makeData());
+
+    expect(section(body)).toContain("  No nudge data");
+  });
+
+  it("sits in BUSINESS, right after ACTIVITY and before the ops section", () => {
+    const body = buildDigestBody(makeData({ nudges: [] }));
+    const activity = body.indexOf("ACTIVITY (last-seen & page visits)");
+    const nudges = body.indexOf("NUDGES (funnel per nudge, 24h / 7d)");
+    const ops = body.indexOf("=== OPERATIONAL HEALTH");
+
+    expect(activity).toBeGreaterThan(-1);
+    expect(nudges).toBeGreaterThan(activity);
+    expect(ops).toBeGreaterThan(nudges);
+  });
+
+  it("uses no em dashes in the section", () => {
+    const body = buildDigestBody(
+      makeData({
+        nudges: [{ nudgeKey: "feedback", last24h: zeroCounts(), last7d: oneShown() }],
+      }),
+    );
+
+    expect(section(body)).not.toContain("—");
+  });
+});
+
+function zeroCounts() {
+  return { shown: 0, clicked: 0, dismissed: 0, converted: 0 };
+}
+
+function oneShown() {
+  return { shown: 1, clicked: 0, dismissed: 0, converted: 0 };
+}

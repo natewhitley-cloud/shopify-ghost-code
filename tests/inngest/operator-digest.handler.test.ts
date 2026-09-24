@@ -315,6 +315,64 @@ function seed() {
       metadata: { path: "/app/excluded-leak-path" },
       createdAt: ago(HOUR),
     })),
+    // Nudge funnel (gc-97k.1): real shops' events, plus a shown + converted
+    // for EVERY excluded store (incl. the isInternal-only uninstalled one) that
+    // would visibly inflate the counts if the domain pinning leaked.
+    {
+      id: "n1",
+      eventType: "nudge_shown",
+      key: "real-a.myshopify.com",
+      metadata: { nudgeKey: "upgrade_preview" },
+      createdAt: ago(HOUR),
+    },
+    {
+      id: "n2",
+      eventType: "nudge_clicked",
+      key: "real-a.myshopify.com",
+      metadata: { nudgeKey: "upgrade_preview" },
+      createdAt: ago(HOUR),
+    },
+    {
+      id: "n3",
+      eventType: "nudge_shown",
+      key: "real-b.myshopify.com",
+      metadata: { nudgeKey: "upgrade_preview" },
+      createdAt: ago(30 * HOUR), // 7d only
+    },
+    {
+      // A churned-but-real shop still counts in its nudge funnel.
+      id: "n4",
+      eventType: "nudge_shown",
+      key: "churned-real.myshopify.com",
+      metadata: { nudgeKey: "feedback" },
+      createdAt: ago(5 * HOUR),
+    },
+    {
+      // Older than the 7d window: never counted.
+      id: "n5",
+      eventType: "nudge_converted",
+      key: "real-a.myshopify.com",
+      metadata: { nudgeKey: "upgrade_preview" },
+      createdAt: ago(8 * 24 * HOUR),
+    },
+    ...[...EXCLUDED.map((s) => s.domain), "renamed-internal-2.myshopify.com"].flatMap(
+      (domain, i) => [
+        {
+          id: `nx-shown-${i}`,
+          eventType: "nudge_shown",
+          key: domain,
+          metadata: { nudgeKey: "upgrade_preview" },
+          createdAt: ago(HOUR),
+        },
+        {
+          id: `nx-conv-${i}`,
+          eventType: "nudge_converted",
+          key: domain,
+          metadata: { nudgeKey: "excluded-only-nudge" },
+          createdAt: ago(HOUR),
+        },
+      ],
+    ),
     {
       id: "r1",
       eventType: "reconcile_summary",
@@ -388,6 +446,35 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
     expect(body).toContain("0 upgrade, 1 downgrade, 0 cancellation, 0 reactivation");
     expect(body).toContain("Activated (>= 1 scan ever): 1 of 2");
     expect(body).toContain("Seen in last 24h: 1 of 2");
+  });
+
+  it("counts nudge funnel events from real (incl. churned) shops only, never excluded stores (gc-97k.1)", async () => {
+    const body = await runDigest();
+
+    const start = body.indexOf("NUDGES (funnel per nudge, 24h / 7d)");
+    const section = body.slice(start, body.indexOf("\n\n", start));
+    expect(section).toBe(
+      [
+        "NUDGES (funnel per nudge, 24h / 7d)",
+        "  upgrade_preview",
+        "    shown 1 / 2 | clicked 1 / 1 | dismissed 0 / 0 | converted 0 / 0",
+        "    click-through 100.0% / 50.0% | conversion 0.0% / 0.0%",
+        "  feedback",
+        "    shown 1 / 1 | clicked 0 / 0 | dismissed 0 / 0 | converted 0 / 0",
+        "    click-through 0.0% / 0.0% | conversion 0.0% / 0.0%",
+      ].join("\n"),
+    );
+    // The excluded stores' converted events used an unknown key; had they leaked
+    // they would surface as an "other" row.
+    expect(section).not.toContain("other");
+  });
+
+  it("renders the nudge empty state when there are no nudge events", async () => {
+    tables.opsEvent = tables.opsEvent.filter((e) => !String(e.eventType).startsWith("nudge_"));
+
+    const body = await runDigest();
+
+    expect(body).toContain("NUDGES (funnel per nudge, 24h / 7d)\n  No nudge events in the last 7d");
   });
 
   it("writes today's plan-mix snapshot from real installs only", async () => {
