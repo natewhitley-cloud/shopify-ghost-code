@@ -1,3 +1,5 @@
+import type { Prisma } from "@prisma/client";
+
 import { OPS_EVENT_TYPES, recordOpsEvent } from "./ops-event.server";
 import db from "../db.server";
 
@@ -14,6 +16,7 @@ export type ShopMetadata = {
   lastSeenAt: Date | null;
   lastThemePublishAt: Date | null;
   hasSeenReviewPrompt: boolean;
+  upgradePreviewShownAt: Date | null;
 };
 
 /**
@@ -67,6 +70,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       lastSeenAt: true,
       lastThemePublishAt: true,
       hasSeenReviewPrompt: true,
+      upgradePreviewShownAt: true,
     },
   });
 }
@@ -259,6 +263,37 @@ export async function stampPlanReconciledAt(domain: string): Promise<{ id: strin
     data: { planReconciledAt: new Date() },
     select: { id: true },
   });
+}
+
+/** A stage of the free-tier upgrade-preview nudge funnel (gc-97k.4). */
+export type UpgradePreviewStage = "shown" | "clicked" | "converted";
+
+const UPGRADE_PREVIEW_STAMP_COLUMN = {
+  shown: "upgradePreviewShownAt",
+  clicked: "upgradePreviewClickedAt",
+  converted: "upgradePreviewConvertedAt",
+} as const satisfies Record<UpgradePreviewStage, keyof Prisma.ShopWhereInput>;
+
+/**
+ * Atomically claim the once-per-merchant stamp for an upgrade-preview stage.
+ *
+ * A conditional updateMany (`where <column> IS NULL`) stamps the column to now()
+ * only if it is still unset, so of any number of concurrent callers exactly one
+ * sees count === 1. Returns true IFF this call made the first stamp; the caller
+ * emits the funnel event only then. A missing shop row is a safe false.
+ *
+ * `converted` additionally requires `upgradePreviewClickedAt` to be set: only a
+ * merchant who clicked the preview CTA counts as a conversion of this nudge.
+ */
+export async function claimUpgradePreviewStage(
+  domain: string,
+  stage: UpgradePreviewStage,
+): Promise<boolean> {
+  const column = UPGRADE_PREVIEW_STAMP_COLUMN[stage];
+  const where: Prisma.ShopWhereInput = { domain, [column]: null };
+  if (stage === "converted") where.upgradePreviewClickedAt = { not: null };
+  const { count } = await db.shop.updateMany({ where, data: { [column]: new Date() } });
+  return count === 1;
 }
 
 /**

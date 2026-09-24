@@ -21,6 +21,8 @@
 
 **Purpose:** Let merchants discover they have a problem. The first scan is the marketing moment — generous on surface, tight on actionability. Showing the worst finding with full detail (file, line, snippet) creates maximum urgency while keeping the rest locked behind upgrade.
 
+Below the preview, the scan page's upgrade teaser counts the locked findings by consequence lane (for example "12 more findings on Standard: Found by Google & AI (5), Speed (4), Housekeeping (3).") and its CTA goes through `/app/upgrade`, which records the click and opens the Managed Pricing plan page. Known-malicious findings are never counted as locked: they are shown in full on every plan. The teaser's shown / clicked / converted events are recorded once per merchant (gc-97k.4).
+
 **App listing features (max 40 chars each):**
 
 1. First scan always free

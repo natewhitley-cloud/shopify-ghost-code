@@ -39,6 +39,8 @@ import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
+import { buildUpgradePreview, upgradePreviewHeadline } from "../lib/upgrade-preview";
+import type { UpgradePreview } from "../lib/upgrade-preview";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import {
   getAppAttributionForScan,
@@ -68,6 +70,7 @@ import {
 } from "../services/finding-aggregation.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
+import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
 import { authenticate } from "../shopify.server";
 import {
   BG_BADGE_SUCCESS,
@@ -131,6 +134,29 @@ function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
 }
 
 /**
+ * Free-tier upgrade teaser (gc-97k.4). The CTA goes through /app/upgrade, which
+ * records the click and then top-level redirects to the Managed Pricing plan
+ * page (an iframe cannot navigate to the admin itself).
+ */
+export const UPGRADE_PREVIEW_CTA_HREF = "/app/upgrade?src=upgrade_preview";
+
+export function UpgradePreviewBanner({ preview }: { preview: UpgradePreview }) {
+  return (
+    <s-banner tone="info">
+      <s-stack direction="block" gap="base">
+        <s-text>
+          {upgradePreviewHeadline(preview)} Upgrade to see full details including all file names,
+          line numbers, and code snippets.
+        </s-text>
+        <Link to={UPGRADE_PREVIEW_CTA_HREF}>
+          <s-button variant="primary">Upgrade Plan</s-button>
+        </Link>
+      </s-stack>
+    </s-banner>
+  );
+}
+
+/**
  * Live progress label for the "Scan In Progress" state (gc-rzq). Surfaces the
  * partial `findingCount` the loader re-reads on each 3s poll, so the merchant
  * watches the number climb while the scan runs. Wording stays explicitly
@@ -138,20 +164,6 @@ function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
  * "Found 0" (which looks like a completed empty scan) in favour of a reassuring
  * "still scanning" line.
  */
-/**
- * Free-tier upsell count: findings actually hidden behind the paywall. The
- * summary total excludes ignored findings; from it we remove the one preview
- * row and every malicious finding the summary still counts (non-ignored),
- * because those are all shown in full in the security alert. Never negative.
- */
-export function freeTierHiddenFindingCount(
-  summaryTotal: number,
-  maliciousFindings: ReadonlyArray<{ isIgnored: boolean }>,
-): number {
-  const visibleMalicious = maliciousFindings.filter((f) => !f.isIgnored).length;
-  return Math.max(0, summaryTotal - 1 - visibleMalicious);
-}
-
 export function scanProgressLabel(findingCount: number): string {
   if (findingCount <= 0) return "Scanning… no findings yet.";
   if (findingCount === 1) return "Found 1 finding so far…";
@@ -809,6 +821,22 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       }
     : null;
 
+  // Free-tier upgrade teaser (gc-97k.4): per-lane counts of the findings hidden
+  // behind the paywall, from the summary's existing groupBy (ignores already
+  // excluded). Mirrors the render gate exactly: successful scan, Free view, a
+  // preview row, and at least one hidden finding. Malicious findings are never
+  // counted as hidden (they are shown in full above on every plan).
+  const upgradePreview =
+    isSuccessfulScan(scan.status) && !canViewDetails && previewFinding
+      ? buildUpgradePreview(findingSummary.byType, previewFinding.findingType)
+      : null;
+  // `shown` fires once per merchant, on the first render of the teaser. The
+  // stored stamp skips the claim query on every later load; the atomic claim
+  // itself dedupes concurrent first loads. Never throws.
+  if (upgradePreview && shop.upgradePreviewShownAt === null) {
+    await recordUpgradePreviewStageOnce("shown", session.shop);
+  }
+
   // Whether this shop+plan combination can trigger the diff resource route.
   // Exposed to the component so it knows whether to issue the useFetcher call.
   const canUseDiffing = isSuccessfulScan(scan.status) && canUseScanDiffing(shop.plan);
@@ -843,6 +871,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       nextCursor: findingsPage.nextCursor,
     },
     previewFinding,
+    upgradePreview,
     maliciousFindings: enrichedMaliciousFindings,
     findingSummary,
     canViewDetails,
@@ -1079,6 +1108,7 @@ export default function ScanDetail() {
     findings,
     findingsPagination,
     previewFinding,
+    upgradePreview,
     maliciousFindings,
     findingSummary,
     canViewDetails,
@@ -1094,8 +1124,6 @@ export default function ScanDetail() {
   } = useLoaderData<typeof loader>();
 
   const [, setSearchParams] = useFilterSearchParams();
-
-  const hiddenFindingCount = freeTierHiddenFindingCount(findingSummary.total, maliciousFindings);
 
   // Set (or clear) a single findings filter param and reset pagination. Clearing
   // the cursor is essential: a stale `?cursor=` from a previous page must not
@@ -2060,22 +2088,8 @@ export default function ScanDetail() {
                     />
                   </FindingsTable>
 
-                  {/* Upgrade banner: count of findings actually hidden (excludes preview + malicious) */}
-                  {hiddenFindingCount > 0 && (
-                    <s-banner tone="info">
-                      <s-stack direction="block" gap="base">
-                        <s-text>
-                          {hiddenFindingCount} more{" "}
-                          {hiddenFindingCount === 1 ? "finding" : "findings"} detected. Upgrade to
-                          Standard to see full details including all file names, line numbers, and
-                          code snippets.
-                        </s-text>
-                        <Link to="/app/settings">
-                          <s-button variant="primary">Upgrade Plan</s-button>
-                        </Link>
-                      </s-stack>
-                    </s-banner>
-                  )}
+                  {/* Upgrade teaser: findings actually hidden (excludes preview + malicious) */}
+                  {upgradePreview && <UpgradePreviewBanner preview={upgradePreview} />}
                 </s-stack>
               </s-card>
             </>

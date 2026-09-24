@@ -18,6 +18,16 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../../app/models/shop.server", () => ({
   updateShopPlanByDomain: vi.fn(),
   stampPlanReconciledAt: vi.fn(),
+  claimUpgradePreviewStage: vi.fn(),
+}));
+
+// gc-97k.4: the REAL upgrade-preview-nudge service runs between the reconciler
+// and these two boundaries: the Shop stamp claim (above) and the emitter.
+vi.mock("../../app/services/nudge-telemetry.server", () => ({
+  NUDGE_KEYS: { UPGRADE_PREVIEW: "upgrade_preview", FEEDBACK: "feedback" },
+  recordNudgeShown: vi.fn(),
+  recordNudgeClicked: vi.fn(),
+  recordNudgeConverted: vi.fn(),
 }));
 
 vi.mock("../../app/models/billing-event.server", () => ({
@@ -39,13 +49,18 @@ vi.mock("../../app/lib/logger.server", () => ({
 
 import { logger } from "../../app/lib/logger.server";
 import { recordBillingEvent } from "../../app/models/billing-event.server";
-import { stampPlanReconciledAt, updateShopPlanByDomain } from "../../app/models/shop.server";
+import {
+  claimUpgradePreviewStage,
+  stampPlanReconciledAt,
+  updateShopPlanByDomain,
+} from "../../app/models/shop.server";
 import {
   PLAN_RECONCILE_FRESHNESS_MS,
   isPlanReconcileStale,
   reconcileShopPlan,
   resolveEffectivePlan,
 } from "../../app/services/billing-reconciler.server";
+import { recordNudgeConverted } from "../../app/services/nudge-telemetry.server";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -83,6 +98,8 @@ function makeAdminThatThrows(err: Error) {
 const mockUpdate = updateShopPlanByDomain as ReturnType<typeof vi.fn>;
 const mockStamp = stampPlanReconciledAt as ReturnType<typeof vi.fn>;
 const mockRecordEvent = recordBillingEvent as ReturnType<typeof vi.fn>;
+const mockClaimStage = claimUpgradePreviewStage as ReturnType<typeof vi.fn>;
+const mockRecordConverted = recordNudgeConverted as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // isPlanReconcileStale
@@ -514,5 +531,125 @@ describe("reconcileShopPlan", () => {
     expect(admin.graphql).toHaveBeenCalledTimes(2);
     expect(mockRecordEvent).not.toHaveBeenCalled();
     expect(result).toEqual({ status: "skipped-error" });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Upgrade-preview nudge conversion (gc-97k.4)
+//
+// The claim's DB conditions (converted stamp still null AND clicked stamp set)
+// are asserted in tests/services/upgrade-preview-nudge.server.test.ts; here the
+// mocked claim stands in for what the DB would return.
+// ---------------------------------------------------------------------------
+
+describe("reconcileShopPlan: upgrade-preview conversion", () => {
+  const DOMAIN = "s.myshopify.com";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdate.mockResolvedValue({ id: "shop-1", domain: DOMAIN, plan: "x" });
+    mockStamp.mockResolvedValue({ id: "shop-1" });
+    mockRecordEvent.mockResolvedValue({});
+    mockClaimStage.mockResolvedValue(true);
+  });
+
+  it.each(["Standard", "Professional"])(
+    "emits converted once on a redirect-path free -> %s upgrade after a prior click",
+    async (plan) => {
+      const admin = makeAdmin([{ name: plan, status: "ACTIVE" }]);
+
+      await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+
+      expect(mockClaimStage).toHaveBeenCalledTimes(1);
+      expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "converted");
+      expect(mockRecordConverted).toHaveBeenCalledTimes(1);
+      expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_preview", DOMAIN);
+    },
+  );
+
+  it("does not emit when the merchant never clicked the teaser (claim finds no clicked stamp)", async () => {
+    mockClaimStage.mockResolvedValue(false);
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+
+    expect(mockRecordConverted).not.toHaveBeenCalled();
+    // The billing event itself is unaffected.
+    expect(mockRecordEvent).toHaveBeenCalledWith(expect.objectContaining({ eventType: "upgrade" }));
+  });
+
+  it("does not re-emit on a repeat upgrade (cancel, then upgrade again)", async () => {
+    mockClaimStage.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+
+    expect(mockClaimStage).toHaveBeenCalledTimes(2);
+    expect(mockRecordConverted).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["Professional", [{ name: "Standard", status: "ACTIVE" }], "downgrade"],
+    ["Standard", [], "cancellation"],
+    ["Professional", [], "cancellation"],
+    ["Standard", [{ name: "Professional", status: "ACTIVE" }], "paid -> paid upgrade"],
+  ])("does not emit for %s -> %j (%s)", async (fromPlan, subs) => {
+    const admin = makeAdmin(subs as Sub[]);
+
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: fromPlan }, { recordEvent: true });
+
+    expect(mockClaimStage).not.toHaveBeenCalled();
+    expect(mockRecordConverted).not.toHaveBeenCalled();
+  });
+
+  it("does not emit on a routine (backstop) reconcile, which records no billing event", async () => {
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" });
+
+    expect(mockRecordEvent).not.toHaveBeenCalled();
+    expect(mockClaimStage).not.toHaveBeenCalled();
+    expect(mockRecordConverted).not.toHaveBeenCalled();
+  });
+
+  it("does not emit when the plan already matches (no plan change)", async () => {
+    const admin = makeAdmin([]);
+
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+
+    expect(mockClaimStage).not.toHaveBeenCalled();
+  });
+
+  it("does not emit when the shop row vanished mid-correction", async () => {
+    mockUpdate.mockResolvedValue(null);
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    const result = await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(result).toEqual({ status: "shop-not-found" });
+    expect(mockClaimStage).not.toHaveBeenCalled();
+  });
+
+  it("never breaks the reconcile when the conversion claim fails", async () => {
+    mockClaimStage.mockRejectedValue(new Error("db down"));
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+
+    const result = await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: "free" },
+      { recordEvent: true },
+    );
+
+    expect(result).toEqual({ status: "corrected", fromPlan: "free", toPlan: "Standard" });
+    expect(mockRecordConverted).not.toHaveBeenCalled();
+    expect(logger.error).toHaveBeenCalledWith(
+      "upgrade-preview-nudge-claim-failed",
+      expect.objectContaining({ shop: DOMAIN, stage: "converted" }),
+    );
   });
 });

@@ -24,6 +24,7 @@
  * plan untouched so reconciliation can never break the app load.
  */
 
+import { recordUpgradePreviewStageOnce } from "./upgrade-preview-nudge.server";
 import {
   PLAN_RANK,
   PLANS,
@@ -225,6 +226,15 @@ export async function reconcileShopPlan(
 
   if (options.recordEvent) {
     recordReconcileBillingEvent(updated.id, shop.plan, effectivePlan);
+    // Upgrade-preview nudge conversion (gc-97k.4): a merchant-initiated move
+    // from Free to a paid plan, by a merchant who clicked the teaser CTA
+    // (enforced by the claim), counts once ever. Never throws.
+    if (
+      shop.plan === PLANS.FREE &&
+      determineBillingEventType(shop.plan, effectivePlan) === "upgrade"
+    ) {
+      await recordUpgradePreviewStageOnce("converted", shop.domain);
+    }
   }
 
   return { status: "corrected", fromPlan: shop.plan, toPlan: effectivePlan };

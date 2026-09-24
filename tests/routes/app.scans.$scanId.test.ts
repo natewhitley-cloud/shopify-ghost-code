@@ -96,6 +96,12 @@ vi.mock("../../app/services/app-lookup.server", () => ({
   isTrackerApp: vi.fn().mockReturnValue(false),
 }));
 
+// gc-97k.4: the once-per-merchant nudge recorder (its claim/dedupe logic is
+// covered in tests/services/upgrade-preview-nudge.server.test.ts).
+vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
+  recordUpgradePreviewStageOnce: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
@@ -129,15 +135,17 @@ import {
   cappedCategoriesNotice,
   CopyButton,
   FindingRow,
-  freeTierHiddenFindingCount,
   loader,
   nextFindingsFilterParams,
   ScanCoverageNotices,
   scanProgressLabel,
   skippedFilesNotice,
+  UPGRADE_PREVIEW_CTA_HREF,
+  UpgradePreviewBanner,
 } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
+import { recordUpgradePreviewStageOnce } from "../../app/services/upgrade-preview-nudge.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -165,6 +173,7 @@ const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
 const mockFindUnknownScriptForShop = findUnknownScriptForShop as ReturnType<typeof vi.fn>;
 const mockIsTrackerApp = isTrackerApp as ReturnType<typeof vi.fn>;
 const mockSubmitSignatureSuggestion = submitSignatureSuggestion as ReturnType<typeof vi.fn>;
+const mockRecordUpgradePreviewStage = recordUpgradePreviewStageOnce as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -608,6 +617,150 @@ describe("app.scans.$scanId loader", () => {
 
       expect(mockGetAppAttributionForScan).not.toHaveBeenCalled();
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // Free-tier upgrade preview teaser + `shown` telemetry (gc-97k.4)
+  // -------------------------------------------------------------------------
+
+  describe("free-tier upgrade preview (gc-97k.4)", () => {
+    type PreviewResult = {
+      upgradePreview: { hiddenCount: number; groups: Array<{ label: string; count: number }> };
+    };
+
+    function freeShop(overrides: Record<string, unknown> = {}) {
+      mockGetShopMetadata.mockResolvedValue({
+        ...SHOP,
+        plan: "free",
+        upgradePreviewShownAt: null,
+        ...overrides,
+      });
+      mockCanViewFindingDetails.mockReturnValue(false);
+    }
+
+    function summary(byType: Record<string, number>) {
+      const total = Object.values(byType).reduce((a, b) => a + b, 0);
+      mockGetFindingSummary.mockResolvedValue({
+        total,
+        bySeverity: { HIGH: total, MEDIUM: 0, LOW: 0 },
+        byType,
+      });
+    }
+
+    beforeEach(() => {
+      freeShop();
+      mockGetHighestSeverityFinding.mockResolvedValue(FINDING_ONE); // a GHOST_SCRIPT
+      mockRecordUpgradePreviewStage.mockResolvedValue(true);
+    });
+
+    it("returns the per-lane breakdown of hidden findings (excluding the preview row)", async () => {
+      summary({ GHOST_SCRIPT: 3, GHOST_STYLE: 2, GHOST_HREFLANG: 4, DUPLICATE_META: 1 });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewResult;
+
+      expect(result.upgradePreview).toEqual({
+        hiddenCount: 9,
+        groups: [
+          { label: "Found by Google & AI", count: 5 },
+          { label: "Speed", count: 4 },
+        ],
+      });
+    });
+
+    it("excludes malicious findings from the hidden count and breakdown", async () => {
+      summary({ MALICIOUS_SCRIPT: 4, GHOST_SCRIPT: 2, GHOST_PIXEL: 1 });
+      const mal = { ...FINDING_ONE, id: "mal-1", findingType: "MALICIOUS_SCRIPT" };
+      mockGetFindingsForScan.mockImplementation(
+        async (_id: string, filters?: { findingType?: string }) =>
+          filters?.findingType === "MALICIOUS_SCRIPT" ? [mal, mal, mal, mal] : [],
+      );
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewResult & {
+        maliciousFindings: unknown[];
+      };
+
+      // Malicious are still returned in full for the security alert...
+      expect(result.maliciousFindings).toHaveLength(4);
+      // ...but never counted as paywalled.
+      expect(result.upgradePreview).toEqual({
+        hiddenCount: 2,
+        groups: [
+          { label: "Speed", count: 1 },
+          { label: "Still tracking you", count: 1 },
+        ],
+      });
+    });
+
+    it("stamps and emits `shown` on the first render of the teaser", async () => {
+      summary({ GHOST_SCRIPT: 3 });
+
+      await loader(makeLoaderArgs("scan-1"));
+
+      expect(mockRecordUpgradePreviewStage).toHaveBeenCalledTimes(1);
+      expect(mockRecordUpgradePreviewStage).toHaveBeenCalledWith("shown", SHOP.domain);
+    });
+
+    it("does not attempt `shown` again once the shop's stamp is set", async () => {
+      summary({ GHOST_SCRIPT: 3 });
+      freeShop({ upgradePreviewShownAt: new Date("2026-09-24T00:00:00Z") });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewResult;
+
+      expect(result.upgradePreview.hiddenCount).toBe(2); // teaser still renders
+      expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
+    });
+
+    it("still renders the teaser when a concurrent load already won the `shown` claim", async () => {
+      summary({ GHOST_SCRIPT: 3 });
+      mockRecordUpgradePreviewStage.mockResolvedValue(false); // claim count 0
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewResult;
+
+      expect(result.upgradePreview.hiddenCount).toBe(2);
+    });
+
+    it("returns no teaser and emits nothing when zero findings are hidden", async () => {
+      summary({ GHOST_SCRIPT: 1, MALICIOUS_SCRIPT: 2 });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { upgradePreview: unknown };
+
+      expect(result.upgradePreview).toBeNull();
+      expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
+    });
+
+    it("returns no teaser and emits nothing when there is no preview finding", async () => {
+      summary({ GHOST_SCRIPT: 3 });
+      mockGetHighestSeverityFinding.mockResolvedValue(null);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { upgradePreview: unknown };
+
+      expect(result.upgradePreview).toBeNull();
+      expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
+    });
+
+    it("returns no teaser and emits nothing for an unsuccessful (FAILED) scan", async () => {
+      summary({ GHOST_SCRIPT: 3 });
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "FAILED" });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { upgradePreview: unknown };
+
+      expect(result.upgradePreview).toBeNull();
+      expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
+    });
+
+    it.each(["Standard", "Professional"])(
+      "never returns a teaser or emits for a paid %s shop",
+      async (plan) => {
+        summary({ GHOST_SCRIPT: 5, GHOST_HREFLANG: 3 });
+        mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan, upgradePreviewShownAt: null });
+        mockCanViewFindingDetails.mockReturnValue(true);
+
+        const result = (await loader(makeLoaderArgs("scan-1"))) as { upgradePreview: unknown };
+
+        expect(result.upgradePreview).toBeNull();
+        expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
+      },
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -1335,26 +1488,55 @@ describe("scanProgressLabel", () => {
 });
 
 // ---------------------------------------------------------------------------
-// freeTierHiddenFindingCount (adversarial audit 2026-09-23): the free upsell must
-// not claim malicious findings are paywalled when the alert shows them in full.
+// UpgradePreviewBanner (gc-97k.4): the free-tier teaser's copy + CTA
 // ---------------------------------------------------------------------------
 
-describe("freeTierHiddenFindingCount", () => {
-  it("subtracts the preview row only when there are no malicious findings", () => {
-    expect(freeTierHiddenFindingCount(4, [])).toBe(3);
+describe("UpgradePreviewBanner", () => {
+  function render(preview: {
+    hiddenCount: number;
+    groups: Array<{ label: string; count: number }>;
+  }) {
+    return renderToStaticMarkup(
+      createElement(MemoryRouter, null, createElement(UpgradePreviewBanner, { preview })),
+    );
+  }
+
+  it("shows the breakdown headline and the upgrade copy", () => {
+    const html = render({
+      hiddenCount: 12,
+      groups: [
+        { label: "Found by Google & AI", count: 5 },
+        { label: "Speed", count: 4 },
+        { label: "Housekeeping", count: 3 },
+      ],
+    });
+
+    expect(html).toContain(
+      "12 more findings on Standard: Found by Google &amp; AI (5), Speed (4), Housekeeping (3).",
+    );
+    expect(html).toContain("Upgrade to see full details");
   });
 
-  it("subtracts every non-ignored malicious finding (3 malicious + 1 other => 0 hidden)", () => {
-    const mal = [{ isIgnored: false }, { isIgnored: false }, { isIgnored: false }];
-    expect(freeTierHiddenFindingCount(4, mal)).toBe(0);
+  it("points the CTA at the click-recording upgrade route, not Settings", () => {
+    const html = render({ hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] });
+
+    expect(UPGRADE_PREVIEW_CTA_HREF).toBe("/app/upgrade?src=upgrade_preview");
+    expect(html).toContain('href="/app/upgrade?src=upgrade_preview"');
+    expect(html).not.toContain('href="/app/settings"');
+    expect(html).toContain("1 more finding on Standard: Speed (1).");
   });
 
-  it("does not subtract ignored malicious findings (the summary already excludes them)", () => {
-    expect(freeTierHiddenFindingCount(3, [{ isIgnored: true }, { isIgnored: false }])).toBe(1);
-  });
+  it("never implies security or malicious alerts need an upgrade, and has no em dash", () => {
+    const html = render({
+      hiddenCount: 5,
+      groups: [
+        { label: "Still tracking you", count: 3 },
+        { label: "Speed", count: 2 },
+      ],
+    });
 
-  it("never goes negative", () => {
-    expect(freeTierHiddenFindingCount(0, [{ isIgnored: false }])).toBe(0);
+    expect(html).not.toMatch(/malicious|security|attack|threat/i);
+    expect(html).not.toContain("\u2014");
   });
 });
 

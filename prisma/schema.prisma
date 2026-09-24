@@ -71,6 +71,14 @@ model Shop {
   // remain as an operational override + ephemeral-review-store coverage). Set
   // once per known internal store so a rename never re-leaks it into metrics.
   isInternal          Boolean          @default(false)
+  // Free-tier upgrade-preview nudge funnel (gc-97k.4). Each is stamped ONCE, on
+  // the first time the stage happens, via an atomic conditional updateMany
+  // (where <col> IS NULL); the nudge_* OpsEvent is emitted only when that claim
+  // wins, so each stage counts at most once per merchant. Null = the stage has
+  // not happened. Deleted with the Shop row on shop/redact (deleteShopData).
+  upgradePreviewShownAt     DateTime?
+  upgradePreviewClickedAt   DateTime?
+  upgradePreviewConvertedAt DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

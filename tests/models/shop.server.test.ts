@@ -108,6 +108,8 @@ describe("getShopMetadata", () => {
         lastSeenAt: true,
         lastThemePublishAt: true,
         hasSeenReviewPrompt: true,
+        // gc-97k.4: lets the scan page skip the `shown` claim once it is stamped.
+        upgradePreviewShownAt: true,
       },
     });
   });
