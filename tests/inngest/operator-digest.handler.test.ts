@@ -504,12 +504,11 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
     expect(section).toBe(
       [
         "NUDGES (funnel per nudge, 24h / 7d)",
+        "  counts per stage; each merchant counted once per stage, on the day it happened",
         "  upgrade_preview",
         "    shown 1 / 2 | clicked 1 / 1 | dismissed 0 / 0 | converted 0 / 0",
-        "    click-through 100.0% / 50.0% | conversion 0.0% / 0.0%",
         "  feedback",
         "    shown 1 / 1 | clicked 0 / 0 | dismissed 0 / 0 | converted 0 / 0",
-        "    click-through 0.0% / 0.0% | conversion 0.0% / 0.0%",
       ].join("\n"),
     );
     // The excluded stores' converted events used an unknown key; had they leaked

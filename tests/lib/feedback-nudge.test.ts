@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 
 import {
   APP_STORE_REVIEW_URL,
+  feedbackNudgeInstallAgeReached,
   FEEDBACK_NUDGE_COPY,
   FEEDBACK_NUDGE_HREF,
   FEEDBACK_THANKS_COPY,
@@ -30,6 +31,17 @@ function gate(overrides: Partial<FeedbackNudgeGateInput> = {}): FeedbackNudgeGat
     ...overrides,
   };
 }
+
+describe("feedbackNudgeInstallAgeReached", () => {
+  it("is false below 7 days and true from exactly 7 days (inclusive)", () => {
+    expect(feedbackNudgeInstallAgeReached(new Date(NOW.getTime() - 3 * DAY), NOW)).toBe(false);
+    expect(feedbackNudgeInstallAgeReached(new Date(NOW.getTime() - 7 * DAY + HOUR), NOW)).toBe(
+      false,
+    );
+    expect(feedbackNudgeInstallAgeReached(new Date(NOW.getTime() - 7 * DAY), NOW)).toBe(true);
+    expect(feedbackNudgeInstallAgeReached(new Date(NOW.getTime() - 8 * DAY), NOW)).toBe(true);
+  });
+});
 
 describe("shouldShowFeedbackNudge", () => {
   it("is true when every condition holds", () => {

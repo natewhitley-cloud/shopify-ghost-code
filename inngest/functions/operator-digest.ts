@@ -435,7 +435,8 @@ export function aggregateActivity(
 // Backed by the domain-keyed nudge-funnel OpsEvent stream written by
 // app/services/nudge-telemetry.server (key = shop domain, metadata.nudgeKey).
 // Per nudge: shown / clicked / dismissed / converted over the trailing 24h and
-// 7d, plus click-through and conversion rates against shown.
+// 7d. Raw counts only: each stage is stamped once per merchant on the day it
+// happened, so same-window ratios compare different merchants (can exceed 100%).
 // ---------------------------------------------------------------------------
 
 export interface NudgeStageCounts {
@@ -598,11 +599,6 @@ export function aggregateFeedback(
   }
   out.avgCsat7d = csatN > 0 ? csatSum / csatN : null;
   return out;
-}
-
-/** `part / shown` as a percentage, or "n/a" when nothing was shown. */
-function fmtNudgeRate(part: number, shown: number): string {
-  return shown > 0 ? fmtPct(part / shown) : "n/a";
 }
 
 // ---------------------------------------------------------------------------
@@ -990,6 +986,8 @@ export function buildDigestBody(data: OperatorDigestData): string {
   } else if (nudges.length === 0) {
     lines.push("  No nudge events in the last 7d");
   } else {
+    // Raw counts only (no ratios): stages are stamped on different days.
+    lines.push("  counts per stage; each merchant counted once per stage, on the day it happened");
     for (const n of nudges) {
       const d = n.last24h;
       const w = n.last7d;
@@ -998,9 +996,6 @@ export function buildDigestBody(data: OperatorDigestData): string {
       lines.push(`  ${label}`);
       lines.push(
         `    shown ${d.shown} / ${w.shown} | clicked ${d.clicked} / ${w.clicked} | dismissed ${d.dismissed} / ${w.dismissed} | converted ${d.converted} / ${w.converted}`,
-      );
-      lines.push(
-        `    click-through ${fmtNudgeRate(d.clicked, d.shown)} / ${fmtNudgeRate(w.clicked, w.shown)} | conversion ${fmtNudgeRate(d.converted, d.shown)} / ${fmtNudgeRate(w.converted, w.shown)}`,
       );
     }
   }

@@ -1560,7 +1560,7 @@ describe("buildDigestBody — NUDGES section (gc-97k.1)", () => {
     return body.slice(start, body.indexOf("\n\n", start));
   };
 
-  it("renders per-nudge 24h / 7d stage counts and rates against shown", () => {
+  it("renders per-nudge 24h / 7d raw stage counts under an explanatory header", () => {
     const body = buildDigestBody(
       makeData({
         nudges: [
@@ -1576,14 +1576,14 @@ describe("buildDigestBody — NUDGES section (gc-97k.1)", () => {
     expect(section(body)).toBe(
       [
         "NUDGES (funnel per nudge, 24h / 7d)",
+        "  counts per stage; each merchant counted once per stage, on the day it happened",
         "  upgrade_preview",
         "    shown 3 / 10 | clicked 1 / 4 | dismissed 0 / 2 | converted 0 / 1",
-        "    click-through 33.3% / 40.0% | conversion 0.0% / 10.0%",
       ].join("\n"),
     );
   });
 
-  it("prints n/a (never NaN or Infinity) for a window where nothing was shown", () => {
+  it("prints no ratios: stages hit on different days would compare different merchants", () => {
     const body = buildDigestBody(
       makeData({
         nudges: [
@@ -1597,8 +1597,8 @@ describe("buildDigestBody — NUDGES section (gc-97k.1)", () => {
     );
 
     const s = section(body);
-    expect(s).toContain("click-through n/a / n/a | conversion n/a / n/a");
-    expect(s).not.toMatch(/NaN|Infinity/);
+    expect(s).toContain("shown 0 / 0 | clicked 2 / 0 | dismissed 1 / 1 | converted 1 / 0");
+    expect(s).not.toMatch(/click-through|conversion|%|n\/a|NaN|Infinity/);
   });
 
   it("labels the 'other' bucket as unrecognized", () => {

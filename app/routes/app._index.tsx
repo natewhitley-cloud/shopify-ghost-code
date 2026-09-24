@@ -19,6 +19,7 @@ import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScor
 import { getPlanFeatures } from "../lib/billing.server";
 import {
   APP_STORE_REVIEW_URL,
+  feedbackNudgeInstallAgeReached,
   FEEDBACK_NUDGE_COPY,
   FEEDBACK_NUDGE_HREF,
   pickHomePrompt,
@@ -201,10 +202,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // uses getTypeCountsForScan rather than getFindingSummary so we don't re-run
   // the severity groupBy the batch severity query above already covers.
   // The feedback nudge's first-successful-scan lookup only runs while the nudge
-  // is still open (never dismissed, never submitted), so a retired nudge costs
-  // no query.
+  // is still open (never dismissed, never submitted) AND the shop is old enough
+  // to qualify, so a retired nudge or a young shop costs no query (ineligible).
+  const now = new Date();
   const feedbackNudgeOpen =
-    shop.feedbackNudgeDismissedAt === null && shop.feedbackSubmittedAt === null;
+    shop.feedbackNudgeDismissedAt === null &&
+    shop.feedbackSubmittedAt === null &&
+    feedbackNudgeInstallAgeReached(shop.installedAt, now);
   const [severityCounts, usage, completedScanCheck, typeCounts, ignores, firstSuccessfulScanAt] =
     await Promise.all([
       getSeverityCountsForScans(severityScanIds),
@@ -405,7 +409,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       feedbackNudgeDismissedAt: shop.feedbackNudgeDismissedAt,
       feedbackSubmittedAt: shop.feedbackSubmittedAt,
     },
-    new Date(),
+    now,
   );
 
   // One merchant prompt per page: feedback wins over the review prompt.

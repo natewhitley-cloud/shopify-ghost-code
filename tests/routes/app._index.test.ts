@@ -1892,6 +1892,32 @@ describe("app._index loader: feedback nudge", () => {
     expect((await run()).showFeedbackNudge).toBe(false);
   });
 
+  it("skips the first-scan query for a young shop (3 days installed) and hides the nudge", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...FEEDBACK_SHOP,
+      installedAt: new Date(NOW.getTime() - 3 * 24 * 60 * 60 * 1000),
+    });
+
+    const result = await run();
+
+    expect(result.showFeedbackNudge).toBe(false);
+    expect(mockGetFirstSuccessfulScanAt).not.toHaveBeenCalled();
+    expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+  });
+
+  it("runs the first-scan query for a shop installed 8 days ago", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...FEEDBACK_SHOP,
+      installedAt: new Date(NOW.getTime() - 8 * 24 * 60 * 60 * 1000),
+    });
+
+    const result = await run();
+
+    expect(mockGetFirstSuccessfulScanAt).toHaveBeenCalledTimes(1);
+    expect(mockGetFirstSuccessfulScanAt).toHaveBeenCalledWith("shop-1");
+    expect(result.showFeedbackNudge).toBe(true);
+  });
+
   it("shows the nudge at exactly 7 days installed", async () => {
     mockGetShopMetadata.mockResolvedValue({
       ...FEEDBACK_SHOP,

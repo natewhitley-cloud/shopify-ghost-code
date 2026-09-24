@@ -19,7 +19,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { MemoryRouter } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
@@ -140,7 +140,7 @@ import {
   ScanCoverageNotices,
   scanProgressLabel,
   skippedFilesNotice,
-  UPGRADE_PREVIEW_CTA_HREF,
+  recordUpgradeClick,
   UpgradePreviewBanner,
 } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
@@ -698,6 +698,16 @@ describe("app.scans.$scanId loader", () => {
 
       expect(mockRecordUpgradePreviewStage).toHaveBeenCalledTimes(1);
       expect(mockRecordUpgradePreviewStage).toHaveBeenCalledWith("shown", SHOP.domain);
+    });
+
+    it("returns the Managed Pricing plan URL for the session shop (teaser CTA target)", async () => {
+      summary({ GHOST_SCRIPT: 3 });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { pricingPlansUrl: string };
+
+      expect(result.pricingPlansUrl).toBe(
+        "https://admin.shopify.com/store/test-shop/charges/ghost-code/pricing_plans",
+      );
     });
 
     it("does not attempt `shown` again once the shop's stamp is set", async () => {
@@ -1492,12 +1502,18 @@ describe("scanProgressLabel", () => {
 // ---------------------------------------------------------------------------
 
 describe("UpgradePreviewBanner", () => {
+  const PRICING_URL = "https://admin.shopify.com/store/test-shop/charges/ghost-code/pricing_plans";
+
   function render(preview: {
     hiddenCount: number;
     groups: Array<{ label: string; count: number }>;
   }) {
     return renderToStaticMarkup(
-      createElement(MemoryRouter, null, createElement(UpgradePreviewBanner, { preview })),
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(UpgradePreviewBanner, { preview, pricingPlansUrl: PRICING_URL }),
+      ),
     );
   }
 
@@ -1517,13 +1533,42 @@ describe("UpgradePreviewBanner", () => {
     expect(html).toContain("Upgrade to see full details");
   });
 
-  it("points the CTA at the click-recording upgrade route, not Settings", () => {
+  it("CTA is a plain top-level link to the Managed Pricing plan page (proven Settings pattern)", () => {
     const html = render({ hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] });
 
-    expect(UPGRADE_PREVIEW_CTA_HREF).toBe("/app/upgrade?src=upgrade_preview");
-    expect(html).toContain('href="/app/upgrade?src=upgrade_preview"');
+    const anchors = html.match(/<a [^>]*>/g) ?? [];
+    expect(anchors).toHaveLength(1);
+    expect(anchors[0]).toContain(`href="${PRICING_URL}"`);
+    expect(anchors[0]).toContain('target="_top"');
+    expect(html).not.toContain("/app/upgrade");
     expect(html).not.toContain('href="/app/settings"');
     expect(html).toContain("1 more finding on Standard: Speed (1).");
+  });
+
+  it("wires the anchor's onClick to the best-effort click ping (no preventDefault)", () => {
+    const tree = UpgradePreviewBanner({
+      preview: { hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] },
+      pricingPlansUrl: PRICING_URL,
+    });
+    type El = { type: unknown; props: { children?: unknown; [k: string]: unknown } };
+    function findAnchor(node: unknown): El | null {
+      if (!node || typeof node !== "object") return null;
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          const hit = findAnchor(child);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      const el = node as El;
+      if (el.type === "a") return el;
+      return findAnchor(el.props?.children);
+    }
+
+    const anchor = findAnchor(tree);
+    expect(anchor?.props.href).toBe(PRICING_URL);
+    expect(anchor?.props.target).toBe("_top");
+    expect(anchor?.props.onClick).toBe(recordUpgradeClick);
   });
 
   it("never implies security or malicious alerts need an upgrade, and has no em dash", () => {
@@ -1689,5 +1734,55 @@ describe("cappedCategoriesNotice", () => {
     expect(text.toLowerCase()).not.toContain("permission");
     expect(text.toLowerCase()).not.toContain("grant");
     expect(text).not.toContain("Settings");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// recordUpgradeClick (gc-97k review): best-effort keepalive click ping
+// ---------------------------------------------------------------------------
+
+describe("recordUpgradeClick", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  it("POSTs src=upgrade_preview to /app/upgrade with keepalive", () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    recordUpgradeClick();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/app/upgrade");
+    expect(init.method).toBe("POST");
+    expect(init.keepalive).toBe(true);
+    expect(String(init.body)).toBe("src=upgrade_preview");
+  });
+
+  it("swallows a rejected fetch (no unhandled rejection, no throw)", async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
+    vi.stubGlobal("fetch", fetchMock);
+    const unhandled = vi.fn();
+    process.on("unhandledRejection", unhandled);
+
+    try {
+      expect(() => recordUpgradeClick()).not.toThrow();
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(unhandled).not.toHaveBeenCalled();
+    } finally {
+      process.off("unhandledRejection", unhandled);
+    }
+  });
+
+  it("swallows a synchronous fetch throw", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        throw new Error("boom");
+      }),
+    );
+
+    expect(() => recordUpgradeClick()).not.toThrow();
   });
 });

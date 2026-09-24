@@ -4,9 +4,11 @@
  * Pure and client-safe: the eligibility gate, the one-prompt-per-page picker,
  * and the merchant-facing copy shared by the home page and /app/feedback.
  *
- * Review asks are NEUTRAL and go to everyone (Shopify App Store policy: review
- * requests must not target or bias toward satisfied merchants). Nothing here may
- * depend on a CSAT score or on how many findings a scan produced.
+ * Review asks are NEUTRAL (Shopify App Store policy: review requests must not
+ * target or bias toward satisfied merchants). The FEEDBACK nudge and the
+ * post-feedback review ask never depend on a CSAT score or on how many findings
+ * a scan produced. The standalone home-page review banner keeps its existing
+ * >= REVIEW_PROMPT_MIN_FINDINGS (4) trigger by owner decision (2026-09-24).
  */
 import { APP_HANDLE } from "./plans";
 
@@ -25,6 +27,15 @@ const MS_PER_DAY = 24 * 60 * 60 * 1000;
 /** Whole UTC calendar days since the epoch (the UTC date, as a number). */
 function utcDayNumber(d: Date): number {
   return Math.floor(d.getTime() / MS_PER_DAY);
+}
+
+/**
+ * Installed at least FEEDBACK_NUDGE_MIN_INSTALL_DAYS (inclusive) as of `now`.
+ * Part of shouldShowFeedbackNudge; also used by the home loader to skip the
+ * first-successful-scan query for younger shops.
+ */
+export function feedbackNudgeInstallAgeReached(installedAt: Date, now: Date): boolean {
+  return now.getTime() - installedAt.getTime() >= FEEDBACK_NUDGE_MIN_INSTALL_DAYS * MS_PER_DAY;
 }
 
 export type FeedbackNudgeGateInput = {
@@ -48,9 +59,7 @@ export type FeedbackNudgeGateInput = {
 export function shouldShowFeedbackNudge(input: FeedbackNudgeGateInput, now: Date): boolean {
   if (input.feedbackNudgeDismissedAt !== null || input.feedbackSubmittedAt !== null) return false;
   if (input.firstSuccessfulScanAt === null) return false;
-  if (now.getTime() - input.installedAt.getTime() < FEEDBACK_NUDGE_MIN_INSTALL_DAYS * MS_PER_DAY) {
-    return false;
-  }
+  if (!feedbackNudgeInstallAgeReached(input.installedAt, now)) return false;
   return utcDayNumber(now) > utcDayNumber(input.firstSuccessfulScanAt);
 }
 

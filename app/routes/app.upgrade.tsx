@@ -1,35 +1,30 @@
 /**
- * Resource route: /app/upgrade?src=upgrade_preview (gc-97k.4)
+ * Resource route: POST /app/upgrade (gc-97k.4, reworked in the gc-97k review)
  *
- * The free-tier upgrade teaser's CTA. Records the nudge click (once per
- * merchant) when `src=upgrade_preview`, then sends the merchant to the Shopify
- * Managed Pricing plan page, the same URL the Settings upgrade buttons open
- * (buildPricingPlansUrl) with the same `_top` target.
+ * Best-effort click ping for the free-tier upgrade teaser. The teaser's CTA is
+ * a plain `<a href={pricingPlansUrl} target="_top">` (the same proven pattern
+ * as the Settings upgrade buttons), so navigation never depends on this route.
+ * On click the banner fires a keepalive `fetch` POST here with
+ * `src=upgrade_preview`; App Bridge's patched global `fetch` adds the session
+ * token, so authenticate.admin works as for any other in-app fetch.
  *
- * The redirect must be TOP-LEVEL: the app runs inside the admin iframe and the
- * admin cannot be framed. The admin `redirect` helper from authenticate.admin
- * handles that for every request shape: a client-side navigation (.data fetch
- * carrying the session token) gets a 401 with the reauthorize-URL header that
- * App Bridge follows at the top level, and an embedded document load gets an
- * App Bridge page that opens the URL in `_top`. A bare react-router redirect
- * would try to load the admin inside the iframe.
- *
- * No UI component: this route only exports a loader.
+ * Records `clicked` once per merchant only when `src=upgrade_preview`, always
+ * for the SESSION shop (never a shop from the request body), and returns 204.
+ * No loader and no redirect: nothing here can be pointed at another URL.
  */
-import type { LoaderFunctionArgs } from "react-router";
+import type { ActionFunctionArgs } from "react-router";
 
-import { buildPricingPlansUrl } from "../lib/billing.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
 import { authenticate } from "../shopify.server";
 
-export const loader = async ({ request }: LoaderFunctionArgs) => {
-  const { session, redirect } = await authenticate.admin(request);
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
 
-  const src = new URL(request.url).searchParams.get("src");
-  if (src === NUDGE_KEYS.UPGRADE_PREVIEW) {
+  const formData = await request.formData();
+  if (formData.get("src") === NUDGE_KEYS.UPGRADE_PREVIEW) {
     await recordUpgradePreviewStageOnce("clicked", session.shop);
   }
 
-  return redirect(buildPricingPlansUrl(session.shop), { target: "_top" });
+  return new Response(null, { status: 204 });
 };

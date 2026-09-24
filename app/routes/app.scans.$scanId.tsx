@@ -10,6 +10,7 @@ import {
   adminResourceLocatorLabel,
   buildAdminResourceUrl,
 } from "../lib/admin-resource-url";
+import { buildPricingPlansUrl } from "../lib/billing.server";
 import { copyToClipboard } from "../lib/clipboard";
 import {
   getFindingConfidence,
@@ -134,13 +135,17 @@ function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
 }
 
 /**
- * Free-tier upgrade teaser (gc-97k.4). The CTA goes through /app/upgrade, which
- * records the click and then top-level redirects to the Managed Pricing plan
- * page (an iframe cannot navigate to the admin itself).
+ * Free-tier upgrade teaser (gc-97k.4). The CTA is a plain top-level link to the
+ * Managed Pricing plan page, exactly like the Settings upgrade buttons (an
+ * iframe cannot navigate to the admin itself, so `target="_top"`).
  */
-export const UPGRADE_PREVIEW_CTA_HREF = "/app/upgrade?src=upgrade_preview";
-
-export function UpgradePreviewBanner({ preview }: { preview: UpgradePreview }) {
+export function UpgradePreviewBanner({
+  preview,
+  pricingPlansUrl,
+}: {
+  preview: UpgradePreview;
+  pricingPlansUrl: string;
+}) {
   return (
     <s-banner tone="info">
       <s-stack direction="block" gap="base">
@@ -148,12 +153,31 @@ export function UpgradePreviewBanner({ preview }: { preview: UpgradePreview }) {
           {upgradePreviewHeadline(preview)} Upgrade to see full details including all file names,
           line numbers, and code snippets.
         </s-text>
-        <Link to={UPGRADE_PREVIEW_CTA_HREF}>
+        <a href={pricingPlansUrl} target="_top" rel="noreferrer" onClick={recordUpgradeClick}>
           <s-button variant="primary">Upgrade Plan</s-button>
-        </Link>
+        </a>
       </s-stack>
     </s-banner>
   );
+}
+
+/**
+ * Best-effort `clicked` ping for the upgrade teaser. Never prevents or blocks
+ * the link's navigation: no preventDefault, no await, and any error (sync or
+ * async) is swallowed. `keepalive` lets the request outlive the iframe as the
+ * top frame navigates away. The session token is added by App Bridge's patched
+ * global `fetch`, as for the export download above.
+ */
+export function recordUpgradeClick(): void {
+  try {
+    fetch("/app/upgrade", {
+      method: "POST",
+      keepalive: true,
+      body: new URLSearchParams({ src: "upgrade_preview" }),
+    }).catch(() => {});
+  } catch {
+    // Telemetry must never break the upgrade click.
+  }
 }
 
 /**
@@ -872,6 +896,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     },
     previewFinding,
     upgradePreview,
+    // Managed Pricing plan page for the upgrade teaser's top-level CTA (same
+    // helper as the Settings upgrade buttons).
+    pricingPlansUrl: buildPricingPlansUrl(session.shop),
     maliciousFindings: enrichedMaliciousFindings,
     findingSummary,
     canViewDetails,
@@ -1109,6 +1136,7 @@ export default function ScanDetail() {
     findingsPagination,
     previewFinding,
     upgradePreview,
+    pricingPlansUrl,
     maliciousFindings,
     findingSummary,
     canViewDetails,
@@ -2089,7 +2117,12 @@ export default function ScanDetail() {
                   </FindingsTable>
 
                   {/* Upgrade teaser: findings actually hidden (excludes preview + malicious) */}
-                  {upgradePreview && <UpgradePreviewBanner preview={upgradePreview} />}
+                  {upgradePreview && (
+                    <UpgradePreviewBanner
+                      preview={upgradePreview}
+                      pricingPlansUrl={pricingPlansUrl}
+                    />
+                  )}
                 </s-stack>
               </s-card>
             </>
