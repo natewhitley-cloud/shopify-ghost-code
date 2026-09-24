@@ -103,7 +103,11 @@ app," so leading with it blurs the core promise. Use it in three places:
 
 > **Update 2026-09-23:** the live Standard card had a stale "sunset risks" bullet (future-tense
 > deadline framing for a sunset that already happened); owner replaced it with
-> `Find dead checkout.liquid code`. Broken Links is still unnamed on the card.
+> `Find dead checkout.liquid code`. Live Standard card (verified from dashboard 2026-09-23):
+> All features in Free · Full finding details with code · Catch broken links from old apps ·
+> Find dead checkout.liquid code · Weekly auto-scan + findings trend · 7-day free trial.
+> Both Standard-only outcome detectors are now named. Malicious-script alerts are free on every
+> plan, so they belong on the Free card (candidate: `Malicious script alerts on every plan`, 37/40).
 
 The live Standard card sells **mechanics** (full detail, scan cadence, trend) but names none
 of its **outcome** detectors. Two flagship Standard-only detectors are invisible at the $29

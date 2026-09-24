@@ -19,7 +19,7 @@ Supersedes 23b/23c/23d on-hold handoffs. Three deploys today, all CI + Deploy + 
 ## Expected churn on first scans after efa9493
 Block findings "new"; Turkish-text stores may gain tags; Sales Pop -> Hextom Translate and Bold Product Options -> Bold/Bold Upsell/Bold Discounts relabels (prod has ZERO IgnoredFinding rows, so no ignore breakage).
 
-## Listing copy: DONE 2026-09-23 (owner pasted into Partner Dashboard; pricing card's stale 'sunset risks' bullet replaced with 'Find dead checkout.liquid code'). docs/gtm/listing-v2.md synced (ed624c1). Remaining optional: malicious-alert gallery screenshot (dev store only); Broken Links still unnamed on Standard card.
+## Listing copy: DONE 2026-09-23 (owner pasted into Partner Dashboard; pricing card's stale 'sunset risks' bullet replaced with 'Find dead checkout.liquid code'). docs/gtm/listing-v2.md synced (ed624c1). Remaining optional: malicious-alert screenshot (gc-90v, deferred); Free card could name malicious alerts (`Malicious script alerts on every plan`, 37/40). Standard card verified: names Broken Links + checkout.liquid.
 
 ## (Historical) listing draft
 Update Partner Dashboard listing AFTER confirming efa9493 healthy. Draft (docs/gtm/listing-v2.md to be updated):
