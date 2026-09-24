@@ -17,15 +17,18 @@
  *                                  data, runs a detector, and persists findings.
  *                                  Uses runAuditStep() to avoid boilerplate. Each
  *                                  reports whether it was skipped for missing
- *                                  scope.
+ *                                  scope; the JSON-LD live-price and dangling-
+ *                                  reference audits also report whether a size
+ *                                  cap truncated them (gc-11f).
  *   9. finalize-scan             — sets the terminal status to COMPLETED. The
  *                                  core theme audit ran, so success is COMPLETED
  *                                  even when optional categories were skipped for
- *                                  missing scope; `skippedCategories` still
- *                                  records which ones were skipped (for the diff
- *                                  engine and a future "enable more checks"
- *                                  nudge). This is the ONLY place the scan leaves
- *                                  IN_PROGRESS on success.
+ *                                  missing scope or capped; `skippedCategories`
+ *                                  (scope-only) and `cappedCategories` (size
+ *                                  caps, gc-11f) record which ones (for the diff
+ *                                  engine and the scan-detail notices). This is
+ *                                  the ONLY place the scan leaves IN_PROGRESS on
+ *                                  success.
  *
  * Why completion is decoupled from persistence (LOG-4): if the scan were marked
  * COMPLETED inside step 2, a failure in steps 3–8 could not mark it FAILED (the
@@ -101,6 +104,31 @@ type AuditStepResult = {
   /** Accumulated proactive rate-limit backoff for this walk, ms (gc-1bd). */
   throttleSleepMs?: number;
 };
+
+/**
+ * Result of an optional audit step that can also be cut short by a SIZE cap
+ * (gc-11f): the JSON-LD live-price audit and the dangling-reference audit.
+ *
+ * `capped` is true when the audit ran (scope granted) but a cap left part of
+ * the category unchecked: a candidate/handle/occurrence cap, a lookup budget,
+ * or the step-output budget. It drives `cappedCategories`, which the differ
+ * excludes from "resolved" alongside `skippedCategories`, but which does NOT
+ * trigger the permissions banner (the merchant already granted access). It is
+ * independent of `skipped`: both are true only when both happened.
+ *
+ * Distinct from `truncated` (gc-1bd product/redirect walks, Option C): a walk
+ * truncation is telemetry only and never enters either category list.
+ */
+type CappableAuditStepResult = AuditStepResult & { capped: boolean };
+
+/**
+ * Build a category list from `[flag, category]` pairs, keeping the categories
+ * whose flag is true. Shared by the `skippedCategories` and `cappedCategories`
+ * builders so both lists are derived the same way.
+ */
+function flaggedCategories(pairs: Array<[boolean, FindingType]>): string[] {
+  return pairs.filter(([flagged]) => flagged).map(([, category]) => category);
+}
 
 /**
  * What an audit's `fetchAndDetect` returns. `truncated`/`pageCount`/
@@ -488,7 +516,7 @@ export const scanTheme = inngest.createFunction(
         // Cap static JSON-LD candidates for the live-price audit (gc-4ce): each
         // carries a ~300-char snippet and a file packed with tiny JSON-LD blocks
         // can yield thousands. Sorted before truncating so the kept set is
-        // deterministic; a cap hit marks the price audit skipped (below).
+        // deterministic; a cap hit marks the price audit capped (below, gc-11f).
         const allStaticCandidates = staticProductCandidates ?? [];
         const staticCandidatesCapped = allStaticCandidates.length > JSONLD_PRICE_CANDIDATE_CAP;
         const boundedStaticCandidates = staticCandidatesCapped
@@ -561,7 +589,7 @@ export const scanTheme = inngest.createFunction(
         // budget, drop the dangling candidates for this scan rather than fail
         // the whole scan, then RE-MEASURE; if still over, drop the static
         // JSON-LD candidates too. Each dropped audit reports its category
-        // skipped so the differ keeps its prior findings.
+        // capped (gc-11f) so the differ keeps its prior findings.
         const outputBytes = Buffer.byteLength(JSON.stringify(output), "utf8");
         if (outputBytes <= CORE_STEP_OUTPUT_BUDGET_BYTES) return output;
 
@@ -895,67 +923,77 @@ export const scanTheme = inngest.createFunction(
       // fully inert and returns skipped:false (NOT a scope skip — the category is
       // not "un-audited due to missing scope", it is deliberately disabled). Only
       // once the flag is ON does a genuinely missing read_products scope report
-      // skipped:true → skippedCategories.
-      const jsonLdPriceResult: AuditStepResult = await step.run("product-price-audit", async () => {
-        const { logger } = await import("../../app/lib/logger.server");
+      // skipped:true → skippedCategories, and a size cap report capped:true →
+      // cappedCategories (gc-11f).
+      const jsonLdPriceResult: CappableAuditStepResult = await step.run(
+        "product-price-audit",
+        async () => {
+          const { logger } = await import("../../app/lib/logger.server");
 
-        if (process.env.JSONLD_LIVE_PRICE_ENABLED !== "true") {
-          // Flag off: inert. Not a scope skip.
-          return { findingCount: 0, skipped: false };
-        }
+          if (process.env.JSONLD_LIVE_PRICE_ENABLED !== "true") {
+            // Flag off: inert. Not a scope skip, not capped.
+            return { findingCount: 0, skipped: false, capped: false };
+          }
 
-        // Nothing to correlate — the theme had no unsigned static Product
-        // JSON-LD. Audited (nothing to check), not a scope skip. Unless the
-        // step-output budget dropped every candidate (gc-4ce): then nothing was
-        // checked, so the category is skipped and prior findings are kept.
-        if (staticProductCandidates.length === 0) {
-          return { findingCount: 0, skipped: staticCandidatesCapped };
-        }
+          // Nothing to correlate — the theme had no unsigned static Product
+          // JSON-LD. Audited (nothing to check), not a scope skip. Unless the
+          // step-output budget dropped every candidate (gc-4ce): then nothing was
+          // checked, so the category is capped and prior findings are kept.
+          if (staticProductCandidates.length === 0) {
+            return { findingCount: 0, skipped: false, capped: staticCandidatesCapped };
+          }
 
-        const db = (await import("../../app/db.server")).default;
-        const shop = await db.shop.findUnique({ where: { id: shopId } });
-        if (!shop) return { findingCount: 0, skipped: false };
+          const db = (await import("../../app/db.server")).default;
+          const shop = await db.shop.findUnique({ where: { id: shopId } });
+          if (!shop) return { findingCount: 0, skipped: false, capped: false };
 
-        const { unauthenticated } = await import("../../app/shopify.server");
-        const { admin } = await unauthenticated.admin(shop.domain);
+          const { unauthenticated } = await import("../../app/shopify.server");
+          const { admin } = await unauthenticated.admin(shop.domain);
 
-        const { hasProductScope } = await import("../../app/services/product-fetcher.server");
-        const hasScope = await hasProductScope(admin);
-        if (!hasScope) {
-          logger.info("read_products scope not available — skipping live-price audit", {
-            function: "scan-theme",
-            stepName: "product-price-audit",
+          const { hasProductScope } = await import("../../app/services/product-fetcher.server");
+          const hasScope = await hasProductScope(admin);
+          if (!hasScope) {
+            logger.info("read_products scope not available — skipping live-price audit", {
+              function: "scan-theme",
+              stepName: "product-price-audit",
+              shopId,
+            });
+            // Scope not granted → category NOT audited (recorded in skippedCategories).
+            // The candidate cap may ALSO have dropped some (recorded in cappedCategories).
+            return { findingCount: 0, skipped: true, capped: staticCandidatesCapped };
+          }
+
+          const { auditStaticJsonLdPrices } =
+            await import("../../app/services/jsonld-price-audit.server");
+          const {
+            findings: priceFindings,
+            skipped: auditSkipped,
+            capped: auditCapped,
+          } = await auditStaticJsonLdPrices(admin, staticProductCandidates, shopId);
+
+          await persistAuditFindings({
+            scanId,
             shopId,
+            findingType: FindingType.JSON_LD_PRICE_CONFLICT,
+            findings: priceFindings,
+            event: "jsonld_price_findings",
+            logMessage: "live-price JSON-LD findings persisted",
           });
-          // Scope not granted → category NOT audited (recorded in skippedCategories).
-          return { findingCount: 0, skipped: true };
-        }
 
-        const { auditStaticJsonLdPrices } =
-          await import("../../app/services/jsonld-price-audit.server");
-        const { findings: priceFindings, skipped: auditSkipped } = await auditStaticJsonLdPrices(
-          admin,
-          staticProductCandidates,
-          shopId,
-        );
-
-        await persistAuditFindings({
-          scanId,
-          shopId,
-          findingType: FindingType.JSON_LD_PRICE_CONFLICT,
-          findings: priceFindings,
-          event: "jsonld_price_findings",
-          logMessage: "live-price JSON-LD findings persisted",
-        });
-
-        // `skipped` is true when the audit could not fully cover the candidates
-        // (lookup-budget truncation, read_products revoked mid-scan, or the
-        // candidate cap dropped some before the audit, gc-4ce), so the category
-        // is recorded in skippedCategories and the differ does not false-resolve
-        // the prior findings we could not re-check.
-        const skipped = auditSkipped || staticCandidatesCapped;
-        return { findingCount: priceFindings.length, skipped };
-      });
+          // The audit could not fully cover the candidates for one of two
+          // distinct reasons (gc-11f), each recorded so the differ does not
+          // false-resolve the prior findings we could not re-check:
+          //   - skipped: read_products revoked mid-scan (a scope problem →
+          //     skippedCategories, drives the permissions banner);
+          //   - capped:  lookup-budget truncation, or the candidate cap dropped
+          //     some before the audit (gc-4ce) (a size cap → cappedCategories).
+          return {
+            findingCount: priceFindings.length,
+            skipped: auditSkipped,
+            capped: auditCapped || staticCandidatesCapped,
+          };
+        },
+      );
 
       // Step 10: Dangling-reference audit (optional — requires a Standard+ plan
       // AND read_products and/or read_content scope AND the
@@ -966,44 +1004,48 @@ export const scanTheme = inngest.createFunction(
       // Double-inert soft-launch (gc-m4h.5): when the flag is OFF the step is
       // fully inert — it does NOT resolve, persist, or count — and returns
       // skipped:false (flag-off is a deliberate disable, not an un-audited scope
-      // skip). Only once the flag is ON does a missing scope / lookup-budget
-      // truncation report skipped:true → skippedCategories.
-      const danglingRefResult: AuditStepResult = await step.run(
+      // skip). Only once the flag is ON does a missing scope report
+      // skipped:true → skippedCategories, and a lookup-budget / handle /
+      // occurrence / step-output cap report capped:true → cappedCategories
+      // (gc-11f).
+      const danglingRefResult: CappableAuditStepResult = await step.run(
         "dangling-reference-audit",
         async () => {
           if (process.env.DANGLING_REFERENCE_LIVE_ENABLED !== "true") {
-            // Flag off: inert. Not a scope skip.
-            return { findingCount: 0, skipped: false };
+            // Flag off: inert. Not a scope skip, not capped.
+            return { findingCount: 0, skipped: false, capped: false };
           }
 
           // No static references in the theme — nothing to resolve. Audited
           // (nothing to check), not a scope skip. (Candidates dropped by the
           // step-output budget are NOT "nothing to check"; handled below.)
           if (danglingDistinctHandles.length === 0 && !danglingTruncated) {
-            return { findingCount: 0, skipped: false };
+            return { findingCount: 0, skipped: false, capped: false };
           }
 
           const db = (await import("../../app/db.server")).default;
           const shop = await db.shop.findUnique({ where: { id: shopId } });
-          if (!shop) return { findingCount: 0, skipped: false };
+          if (!shop) return { findingCount: 0, skipped: false, capped: false };
 
           // Plan gate (gc-m4h.7): dangling-reference detection is Standard+.
           // For Free shops the step is inert exactly like the flag-off path — no
           // resolve, no persist, no count. This is NOT a scope skip: the category
           // is deliberately withheld by plan (like flag-off), not left un-audited
-          // for lack of scope, so it must NOT enter skippedCategories (that would
-          // misreport an un-run category and suppress the differ's resolved-detection).
+          // for lack of scope, so it must NOT enter skippedCategories or
+          // cappedCategories (that would misreport an un-run category and
+          // suppress the differ's resolved-detection).
           // Checked before any Admin API work so the cheap gate short-circuits first.
           const { canDetectDanglingReferences } = await import("../../app/lib/plan-gating.server");
           if (!canDetectDanglingReferences(shop.plan)) {
-            return { findingCount: 0, skipped: false };
+            return { findingCount: 0, skipped: false, capped: false };
           }
 
           // Candidates were dropped by the step-output budget (gc-4ce): nothing
           // was checked, so the category is un-audited this scan and prior
-          // DANGLING_REFERENCE findings must not be false-resolved.
+          // DANGLING_REFERENCE findings must not be false-resolved. A size cap,
+          // not a scope problem → capped (gc-11f).
           if (danglingTruncated) {
-            return { findingCount: 0, skipped: true };
+            return { findingCount: 0, skipped: false, capped: true };
           }
 
           const { unauthenticated } = await import("../../app/shopify.server");
@@ -1060,25 +1102,23 @@ export const scanTheme = inngest.createFunction(
             logMessage: "dangling-reference findings persisted",
           });
 
-          // Precise-skip rule (spike §D / R1): mark the category skipped iff a
-          // static ref of a type whose scope is absent was present, OR the
-          // lookup budget truncated, OR the extractor dropped handles (gc-4ce),
-          // OR a MISSING handle had occurrences past the per-handle cap (those
-          // got no finding). An EXISTING handle over the per-handle cap loses
-          // nothing, so it must not skip: that would drop the category from the
-          // diff, re-reporting every finding as new and never resolving fixes.
+          // Precise-skip rule (spike §D / R1), split by reason (gc-11f):
+          //   - skipped (scope): a static ref of a type whose scope is absent
+          //     was present.
+          //   - capped (size): the lookup budget truncated, OR the extractor
+          //     dropped handles (gc-4ce), OR a MISSING handle had occurrences
+          //     past the per-handle cap (those got no finding).
+          // An EXISTING handle over the per-handle cap loses nothing, so it must
+          // not cap: that would drop the category from the diff, re-reporting
+          // every finding as new and never resolving fixes.
           const missingOverOccurrenceCap = missing.some(
             (m) =>
               (occurrenceCounts.get(`${m.entityType} ${m.handle}`) ?? 0) >
               DANGLING_MAX_OCCURRENCES_PER_HANDLE,
           );
-          const skipped =
-            scopeStatus.products === "absent" ||
-            scopeStatus.content === "absent" ||
-            truncated ||
-            danglingCapped ||
-            missingOverOccurrenceCap;
-          return { findingCount: danglingFindings.length, skipped };
+          const skipped = scopeStatus.products === "absent" || scopeStatus.content === "absent";
+          const capped = truncated || danglingCapped || missingOverOccurrenceCap;
+          return { findingCount: danglingFindings.length, skipped, capped };
         },
       );
 
@@ -1096,15 +1136,16 @@ export const scanTheme = inngest.createFunction(
       // Collect the optional categories that were skipped because their scope
       // was not granted. Each entry maps 1:1 to a FindingType so the differ can
       // exclude that category's prior findings from "resolved" (LOG-4). The scan
-      // still finalizes COMPLETED (below); this list also seeds a future
-      // "enable more checks" nudge.
+      // still finalizes COMPLETED (below); this list drives the scan-detail
+      // permissions banner, so it is SCOPE-ONLY (gc-11f; the product detector-
+      // throw gaps above are the one pre-existing non-scope entry).
       // NOTE (gc-47c.10): the live-price audit emits JSON_LD_PRICE_CONFLICT, a
       // type EXCLUSIVE to it (the worker's same-file conflict detector uses the
       // separate JSON_LD_CONFLICT type). So listing JSON_LD_PRICE_CONFLICT here
-      // when the audit is skipped (scope not granted, lookup-budget truncation,
-      // or mid-scan revocation) excludes exactly this audit's prior findings from
-      // resolved-detection (LOG-4) without touching the worker's rows.
-      const skippedCategories: string[] = [
+      // when the audit is skipped (scope not granted, or mid-scan revocation)
+      // excludes exactly this audit's prior findings from resolved-detection
+      // (LOG-4) without touching the worker's rows.
+      const skippedCategories: string[] = flaggedCategories([
         [translationResult.skipped, FindingType.GHOST_TRANSLATION],
         [tagSkipped, FindingType.GHOST_TAG],
         [priceSkipped, FindingType.GHOST_PRICE],
@@ -1113,13 +1154,22 @@ export const scanTheme = inngest.createFunction(
         [redirectResult.skipped, FindingType.GHOST_REDIRECT],
         [jsonLdPriceResult.skipped, FindingType.JSON_LD_PRICE_CONFLICT],
         [danglingRefResult.skipped, FindingType.DANGLING_REFERENCE],
-      ]
-        .filter(([skipped]) => skipped)
-        .map(([, category]) => category as string);
+      ]);
+
+      // Categories whose audit ran (scope granted) but a SIZE cap left part of
+      // it unchecked (gc-11f). The differ excludes these from "resolved" too
+      // (via unauditedCategories), but they drive an info notice, never the
+      // permissions banner, and never change the status. A category is in both
+      // lists only when both happened this scan.
+      const cappedCategories: string[] = flaggedCategories([
+        [jsonLdPriceResult.capped, FindingType.JSON_LD_PRICE_CONFLICT],
+        [danglingRefResult.capped, FindingType.DANGLING_REFERENCE],
+      ]);
 
       // Walks that hit their cap this scan (gc-1bd). Surfaced in scan_signal for
       // observability ONLY (Option C): truncation is deliberately NOT reflected in
-      // skippedCategories, so the differ still diffs the scanned subset normally.
+      // skippedCategories or cappedCategories, so the differ still diffs the
+      // scanned subset normally.
       const truncatedWalks: string[] = [];
       if (productResult.truncated) truncatedWalks.push("products");
       if (redirectResult.truncated) truncatedWalks.push("redirects");
@@ -1156,9 +1206,9 @@ export const scanTheme = inngest.createFunction(
 
       // Always COMPLETED on the success path: the core theme audit ran, so the
       // scan succeeded even if optional categories were skipped for missing
-      // scope. `skippedCategories` (built above) still records which optional
-      // categories were skipped, for (a) the diff engine (LOG-4) and (b) a
-      // future "enable more checks" nudge.
+      // scope or capped. `skippedCategories` / `cappedCategories` (built above)
+      // record which, for (a) the diff engine (LOG-4) and (b) the scan-detail
+      // permissions warning / cap notice. Caps never change status (gc-11f).
       const finalStatus = ScanStatus.COMPLETED;
 
       // FINAL step: compute resolution counts vs the previous scan, then set the
@@ -1168,8 +1218,9 @@ export const scanTheme = inngest.createFunction(
         const db = (await import("../../app/db.server")).default;
 
         // Diff this scan's persisted findings against the previous completed scan
-        // for this theme (Feature 3). REUSE the differ so scope-skipped categories
-        // and unscanned oversized files are excluded from "resolved" (LOG-4).
+        // for this theme (Feature 3). REUSE the differ so scope-skipped and
+        // capped categories and unscanned oversized files are excluded from
+        // "resolved" (LOG-4, gc-11f).
         const currentScan = await db.scan.findUnique({
           where: { id: scanId },
           select: { createdAt: true },
@@ -1183,9 +1234,10 @@ export const scanTheme = inngest.createFunction(
         let resolvedFindingCount: number;
         let persistedFindingCount: number;
         if (previousScan) {
-          const { diffScans } = await import("../../app/services/scan-differ.server");
+          const { diffScans, unauditedCategories } =
+            await import("../../app/services/scan-differ.server");
           const diff = diffScans(currentFindings, previousScan.findings, {
-            skippedCategories,
+            skippedCategories: unauditedCategories({ skippedCategories, cappedCategories }),
             skippedFiles: skippedFilePaths,
           });
           newFindingCount = diff.newFindings.length;
@@ -1203,6 +1255,7 @@ export const scanTheme = inngest.createFunction(
           status: finalStatus,
           findingCount: totalFindings,
           skippedCategories,
+          cappedCategories,
           skippedFiles: skippedFilePaths,
           newFindingCount,
           resolvedFindingCount,
@@ -1280,7 +1333,7 @@ export const scanTheme = inngest.createFunction(
               // to each major step; `pageCounts`/`throttleSleepMs` expose the
               // consolidated product walk + redirect walk cost; `truncatedWalks`
               // names any walk that hit its cap. This is observability ONLY (Option
-              // C) — truncation is NOT reflected in skippedCategories, so the differ
+              // C) — truncation is NOT reflected in skipped/cappedCategories, so the differ
               // still diffs the scanned subset of a truncated category normally.
               phaseMs: {
                 themeFetch: themeFetchMs,
@@ -1323,6 +1376,7 @@ export const scanTheme = inngest.createFunction(
         status: finalStatus,
         findingCount: totalFindings,
         skippedCategories,
+        cappedCategories,
         skippedFiles: skippedFilePaths,
         translationFindings: translationResult.findingCount,
         tagFindings: productResult.tagCount,

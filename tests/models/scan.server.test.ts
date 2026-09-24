@@ -1018,6 +1018,7 @@ describe("finalizeScan", () => {
     status: ScanStatus.COMPLETED as typeof ScanStatus.COMPLETED,
     findingCount: 3,
     skippedCategories: [],
+    cappedCategories: [],
     skippedFiles: [],
   };
 
@@ -1037,6 +1038,7 @@ describe("finalizeScan", () => {
     expect(callArg.data.status).toBe(ScanStatus.COMPLETED);
     expect(callArg.data.findingCount).toBe(3);
     expect(callArg.data.skippedCategories).toEqual([]);
+    expect(callArg.data.cappedCategories).toEqual([]);
     expect(callArg.data).toHaveProperty("completedAt");
     expect(result).toEqual({ finalized: true });
   });
@@ -1048,6 +1050,7 @@ describe("finalizeScan", () => {
       status: ScanStatus.PARTIAL,
       findingCount: 5,
       skippedCategories: ["GHOST_TAG", "GHOST_PRICE"],
+      cappedCategories: [],
       skippedFiles: ["sections/bloated.liquid"],
     });
 
@@ -1055,6 +1058,22 @@ describe("finalizeScan", () => {
     expect(callArg.data.status).toBe(ScanStatus.PARTIAL);
     expect(callArg.data.skippedCategories).toEqual(["GHOST_TAG", "GHOST_PRICE"]);
     expect(callArg.data.skippedFiles).toEqual(["sections/bloated.liquid"]);
+  });
+
+  it("persists cappedCategories separately from skippedCategories (gc-11f)", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", {
+      ...FINALIZE_ARGS,
+      skippedCategories: ["GHOST_PAGE"],
+      cappedCategories: ["DANGLING_REFERENCE", "JSON_LD_PRICE_CONFLICT"],
+    });
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    // A cap never changes status: the caller's COMPLETED is written as-is.
+    expect(callArg.data.status).toBe(ScanStatus.COMPLETED);
+    expect(callArg.data.skippedCategories).toEqual(["GHOST_PAGE"]);
+    expect(callArg.data.cappedCategories).toEqual(["DANGLING_REFERENCE", "JSON_LD_PRICE_CONFLICT"]);
   });
 
   it("persists the resolution counts when supplied (Feature 3)", async () => {

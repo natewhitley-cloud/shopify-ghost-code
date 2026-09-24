@@ -14,6 +14,7 @@ import {
   fingerprintFinding,
   normalizeForFingerprint,
   diffScans,
+  unauditedCategories,
   type DiffableFinding,
 } from "../../app/services/scan-differ.server";
 
@@ -347,6 +348,54 @@ describe("diffScans — duplicate findings (same fingerprint multiple times)", (
 // granted → PARTIAL), prior findings in that category must NOT be reported as
 // "resolved" — we never re-checked them, so we cannot claim they are gone.
 // ---------------------------------------------------------------------------
+
+describe("unauditedCategories (gc-11f)", () => {
+  it("returns the union of scope-skipped and size-capped categories", () => {
+    expect(
+      unauditedCategories({
+        skippedCategories: ["GHOST_PAGE"],
+        cappedCategories: ["DANGLING_REFERENCE"],
+      }),
+    ).toEqual(["GHOST_PAGE", "DANGLING_REFERENCE"]);
+  });
+
+  it("dedupes a category that was both skipped and capped", () => {
+    expect(
+      unauditedCategories({
+        skippedCategories: ["JSON_LD_PRICE_CONFLICT"],
+        cappedCategories: ["JSON_LD_PRICE_CONFLICT"],
+      }),
+    ).toEqual(["JSON_LD_PRICE_CONFLICT"]);
+  });
+
+  it("returns an empty list for a fully-audited (or legacy, cappedCategories = []) scan", () => {
+    expect(unauditedCategories({ skippedCategories: [], cappedCategories: [] })).toEqual([]);
+  });
+
+  it("returns capped-only categories when nothing was scope-skipped", () => {
+    expect(
+      unauditedCategories({ skippedCategories: [], cappedCategories: ["DANGLING_REFERENCE"] }),
+    ).toEqual(["DANGLING_REFERENCE"]);
+  });
+
+  it("keeps a prior finding in a CAPPED category from being reported resolved", () => {
+    // The dangling audit ran but hit its lookup budget, so the prior broken
+    // link was not re-checked. It must be excluded, not falsely "resolved",
+    // while an audited category still resolves normally.
+    const priorDangling = makeFinding("sections/footer.liquid", "DANGLING_REFERENCE", "gone");
+    const priorScript = makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "old-script");
+
+    const diff = diffScans([], [priorDangling, priorScript], {
+      skippedCategories: unauditedCategories({
+        skippedCategories: [],
+        cappedCategories: ["DANGLING_REFERENCE"],
+      }),
+    });
+
+    expect(diff.resolvedFindings).toHaveLength(1);
+    expect(diff.resolvedFindings[0].findingType).toBe("GHOST_SCRIPT");
+  });
+});
 
 describe("diffScans — skipped categories (LOG-4 un-audited exclusion)", () => {
   it("does NOT mark a prior finding as resolved when its category was skipped this run", () => {

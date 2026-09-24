@@ -59,7 +59,10 @@ vi.mock("../../app/lib/format", () => ({
   isSuccessfulScan: (status: string) => status === "COMPLETED" || status === "PARTIAL",
 }));
 
-vi.mock("../../app/services/scan-differ.server", () => ({
+// Keep the REAL unauditedCategories (gc-11f) so the loader's skipped+capped
+// union is exercised; only the differ itself is stubbed.
+vi.mock("../../app/services/scan-differ.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../app/services/scan-differ.server")>()),
   diffScans: vi.fn(),
 }));
 
@@ -114,6 +117,7 @@ const SCAN = {
   completedAt: new Date("2026-03-20T10:05:00Z"),
   createdAt: new Date("2026-03-20T10:00:00Z"),
   skippedCategories: [] as string[],
+  cappedCategories: [] as string[],
   skippedFiles: [] as string[],
 };
 
@@ -237,6 +241,37 @@ describe("app.scans.$scanId.diff loader", () => {
 
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
       skippedCategories: ["GHOST_TAG"],
+      skippedFiles: [],
+    });
+  });
+
+  it("excludes capped categories from resolved too, via the skipped+capped union (gc-11f)", async () => {
+    // A capped category was only partly re-checked, so its prior findings must
+    // be excluded exactly like a scope skip. GHOST_TAG in both lists is deduped.
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      skippedCategories: ["GHOST_TAG"],
+      cappedCategories: ["DANGLING_REFERENCE", "GHOST_TAG"],
+    });
+
+    await loader(makeLoaderArgs("scan-1"));
+
+    expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
+      skippedCategories: ["GHOST_TAG", "DANGLING_REFERENCE"],
+      skippedFiles: [],
+    });
+  });
+
+  it("excludes a capped-only category from resolved (gc-11f)", async () => {
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      cappedCategories: ["JSON_LD_PRICE_CONFLICT"],
+    });
+
+    await loader(makeLoaderArgs("scan-1"));
+
+    expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
+      skippedCategories: ["JSON_LD_PRICE_CONFLICT"],
       skippedFiles: [],
     });
   });

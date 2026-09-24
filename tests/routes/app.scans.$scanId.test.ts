@@ -18,6 +18,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { MemoryRouter } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -125,11 +126,13 @@ import {
 } from "../../app/models/unknown-script.server";
 import {
   action,
+  cappedCategoriesNotice,
   CopyButton,
   FindingRow,
   freeTierHiddenFindingCount,
   loader,
   nextFindingsFilterParams,
+  ScanCoverageNotices,
   scanProgressLabel,
   skippedFilesNotice,
 } from "../../app/routes/app.scans.$scanId";
@@ -185,6 +188,7 @@ const SCAN = {
   completedAt: new Date("2026-03-20T10:05:00Z"),
   createdAt: new Date("2026-03-20T10:00:00Z"),
   skippedCategories: [] as string[],
+  cappedCategories: [] as string[],
   skippedFiles: [] as string[],
 };
 
@@ -322,6 +326,21 @@ describe("app.scans.$scanId loader", () => {
     };
 
     expect(result.scan.skippedCategories).toEqual(["GHOST_PAGE", "GHOST_REDIRECT"]);
+  });
+
+  it("exposes scan.cappedCategories separately for the size-cap notice (gc-11f)", async () => {
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      skippedCategories: ["GHOST_PAGE"],
+      cappedCategories: ["DANGLING_REFERENCE"],
+    });
+
+    const result = (await loader(makeLoaderArgs("scan-1"))) as {
+      scan: { skippedCategories: string[]; cappedCategories: string[] };
+    };
+
+    expect(result.scan.skippedCategories).toEqual(["GHOST_PAGE"]);
+    expect(result.scan.cappedCategories).toEqual(["DANGLING_REFERENCE"]);
   });
 
   // gc-rzq: the in-progress "Found N so far…" line reads scan.findingCount on
@@ -1363,5 +1382,130 @@ describe("skippedFilesNotice", () => {
     expect(text).not.toContain("still runs");
     expect(text).not.toContain("not scanned");
     expect(text).not.toMatch(/[\u2014\u2013]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scan-coverage notices: missing-scope warning vs size-cap info (gc-11f)
+//
+// A size cap is NOT a permissions problem: the merchant already granted access.
+// Capped categories get their own info notice with no CTA; only scope-skipped
+// categories get the warning that links to Settings.
+// ---------------------------------------------------------------------------
+
+describe("ScanCoverageNotices", () => {
+  const PERMISSIONS_TEXT = "required permissions";
+  const CAP_TEXT = "limited this scan";
+
+  function renderNotices(overrides: Partial<Parameters<typeof ScanCoverageNotices>[0]> = {}) {
+    return renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(ScanCoverageNotices, {
+          isCompleted: true,
+          canViewDetails: true,
+          status: "COMPLETED",
+          skippedCategories: [],
+          cappedCategories: [],
+          ...overrides,
+        }),
+      ),
+    );
+  }
+
+  it("scope-only: renders the permissions warning with a Settings link, and no cap notice", () => {
+    const html = renderNotices({ skippedCategories: ["GHOST_PAGE"] });
+    expect(html).toContain('tone="warning"');
+    expect(html).toContain(PERMISSIONS_TEXT);
+    expect(html).toContain('href="/app/settings"');
+    expect(html).toContain("Content pages");
+    expect(html).not.toContain('tone="info"');
+    expect(html).not.toContain(CAP_TEXT);
+  });
+
+  it("capped-only: renders the info notice with no Settings link and no permissions wording", () => {
+    const html = renderNotices({ cappedCategories: ["DANGLING_REFERENCE"] });
+    expect(html).toContain('tone="info"');
+    expect(html).toContain(CAP_TEXT);
+    expect(html).toContain("Broken links");
+    expect(html).not.toContain('tone="warning"');
+    expect(html).not.toContain(PERMISSIONS_TEXT);
+    expect(html.toLowerCase()).not.toContain("permission");
+    expect(html).not.toContain("/app/settings");
+    expect(html).not.toContain("Settings");
+  });
+
+  it("both: renders the warning (scope categories only) AND the info notice (capped only)", () => {
+    const html = renderNotices({
+      skippedCategories: ["GHOST_PAGE"],
+      cappedCategories: ["JSON_LD_PRICE_CONFLICT"],
+    });
+    expect(html).toContain('tone="warning"');
+    expect(html).toContain('tone="info"');
+    // Warning comes first, the cap notice right below it.
+    expect(html.indexOf('tone="warning"')).toBeLessThan(html.indexOf('tone="info"'));
+    const [warning, info] = html.split('tone="info"');
+    expect(warning).toContain("This scan skipped 1 check because");
+    expect(warning).toContain("Content pages");
+    expect(warning).not.toContain("Structured-data prices");
+    expect(info).toContain("Structured-data prices");
+    expect(info).not.toContain("Content pages");
+  });
+
+  it("neither: renders nothing", () => {
+    expect(renderNotices()).toBe("");
+  });
+
+  it("Free plan (!canViewDetails): renders nothing even when both lists are non-empty", () => {
+    const html = renderNotices({
+      canViewDetails: false,
+      skippedCategories: ["GHOST_PAGE"],
+      cappedCategories: ["DANGLING_REFERENCE"],
+    });
+    expect(html).toBe("");
+  });
+
+  it("renders nothing for a scan that is not completed", () => {
+    const html = renderNotices({
+      isCompleted: false,
+      skippedCategories: ["GHOST_PAGE"],
+      cappedCategories: ["DANGLING_REFERENCE"],
+    });
+    expect(html).toBe("");
+  });
+
+  it("still renders the permissions warning for a legacy PARTIAL scan with no categories", () => {
+    const html = renderNotices({ status: "PARTIAL" });
+    expect(html).toContain(PERMISSIONS_TEXT);
+    expect(html).not.toContain(CAP_TEXT);
+  });
+});
+
+describe("cappedCategoriesNotice", () => {
+  it("uses plural wording and lists every label for several capped checks", () => {
+    const text = cappedCategoriesNotice(["JSON_LD_PRICE_CONFLICT", "DANGLING_REFERENCE"]);
+    expect(text).toBe(
+      "Some checks were limited this scan: Structured-data prices, Broken links. Your theme has more references than Ghost Code checks in a single scan, so these results cover the ones we checked. Anything we didn't check keeps its status from your previous scan.",
+    );
+  });
+
+  it("uses singular wording for one capped check", () => {
+    const text = cappedCategoriesNotice(["DANGLING_REFERENCE"]);
+    expect(text).toMatch(/^One check was limited this scan: Broken links\. /);
+    expect(text).not.toMatch(/^Some checks/);
+  });
+
+  it("dedupes repeated categories before choosing singular/plural", () => {
+    const text = cappedCategoriesNotice(["DANGLING_REFERENCE", "DANGLING_REFERENCE"]);
+    expect(text).toMatch(/^One check was limited this scan: Broken links\. /);
+  });
+
+  it("has no em/en dashes, no permissions wording, and no call to action", () => {
+    const text = cappedCategoriesNotice(["DANGLING_REFERENCE", "JSON_LD_PRICE_CONFLICT"]);
+    expect(text).not.toMatch(/[\u2014\u2013]/);
+    expect(text.toLowerCase()).not.toContain("permission");
+    expect(text.toLowerCase()).not.toContain("grant");
+    expect(text).not.toContain("Settings");
   });
 });

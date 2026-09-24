@@ -30,7 +30,7 @@
  *
  * Composition with the differ's existing exclusions: `filterIgnoredFindings`
  * removes findings from BOTH the current and previous sets BEFORE they reach
- * `diffScans`, while the differ's own `skippedCategories` (LOG-4) /
+ * `diffScans`, while the differ's own unaudited-category (LOG-4, gc-11f) /
  * `skippedFiles` (gc-06e.19) filters remove from the previous set INSIDE
  * `diffScans`. All three are monotonic removals, so they compose without
  * conflict regardless of order.

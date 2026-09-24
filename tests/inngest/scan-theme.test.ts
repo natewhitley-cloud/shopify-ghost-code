@@ -198,7 +198,7 @@ import { hasProductScope, fetchProductAuditData } from "../../app/services/produ
 import { detectOrphanedProductTags } from "../../app/services/product-tag-detector.server";
 import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
 import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
-import { diffScans } from "../../app/services/scan-differ.server";
+import { diffScans, unauditedCategories } from "../../app/services/scan-differ.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import { detectTranslationContent } from "../../app/services/translation-detector.server";
@@ -514,6 +514,7 @@ describe("scanTheme — happy path", () => {
       status: "COMPLETED",
       findingCount: MOCK_FINDINGS.length,
       skippedCategories: [],
+      cappedCategories: [],
       skippedFiles: [],
       // First-ever scan (no prior) → every finding is new; nothing resolved/carried.
       newFindingCount: MOCK_FINDINGS.length,
@@ -541,6 +542,7 @@ describe("scanTheme — happy path", () => {
       status: "COMPLETED",
       findingCount: MOCK_FINDINGS.length,
       skippedCategories: [],
+      cappedCategories: [],
       skippedFiles: ["sections/bloated.liquid", "assets/huge.js"],
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
@@ -970,6 +972,7 @@ describe("scanTheme — optional audit steps", () => {
           FindingType.GHOST_PRICE,
           FindingType.GHOST_METAFIELD,
         ],
+        cappedCategories: [],
         skippedFiles: [],
         newFindingCount: MOCK_FINDINGS.length,
         resolvedFindingCount: 0,
@@ -1248,6 +1251,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       findingCount: MOCK_FINDINGS.length,
       // JSON_LD_PRICE_CONFLICT must NOT appear — flag-off is not a scope skip.
       skippedCategories: [],
+      cappedCategories: [],
       skippedFiles: [],
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
@@ -1260,7 +1264,11 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
     process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
     withCandidates([PRICE_CANDIDATE]);
     mockHasProductScope.mockResolvedValue(true);
-    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [PRICE_FINDING], skipped: false });
+    mockAuditStaticJsonLdPrices.mockResolvedValue({
+      findings: [PRICE_FINDING],
+      skipped: false,
+      capped: false,
+    });
     mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length + 1);
 
     const result = await runScanTheme();
@@ -1282,25 +1290,78 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
     expect(result.findingCount).toBe(MOCK_FINDINGS.length + 1);
   });
 
-  it("records JSON_LD_PRICE_CONFLICT in skippedCategories when the audit truncates (cap hit)", async () => {
+  it("records JSON_LD_PRICE_CONFLICT in cappedCategories (NOT skipped) when the lookup budget truncates (gc-11f)", async () => {
     process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
     withCandidates([PRICE_CANDIDATE]);
     mockHasProductScope.mockResolvedValue(true);
     // Flag on + scope granted + findings persisted, but the audit reports it
-    // could not fully cover the candidates (lookup-budget truncation), so the
-    // category is still recorded for the differ (LOG-4).
-    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [PRICE_FINDING], skipped: true });
+    // could not fully cover the candidates (lookup-budget truncation). That is a
+    // size cap, not a scope problem: capped (for the differ), never skipped (the
+    // permissions banner), and the scan stays COMPLETED.
+    mockAuditStaticJsonLdPrices.mockResolvedValue({
+      findings: [PRICE_FINDING],
+      skipped: false,
+      capped: true,
+    });
     mockDb.finding.count.mockResolvedValue(MOCK_FINDINGS.length + 1);
 
-    await runScanTheme();
+    const result = await runScanTheme();
 
     expect(mockCreateFindings).toHaveBeenCalledWith(SCAN_ID, [PRICE_FINDING]);
     expect(mockFinalizeScan).toHaveBeenCalledWith(
       SCAN_ID,
       expect.objectContaining({
-        skippedCategories: [FindingType.JSON_LD_PRICE_CONFLICT],
+        status: "COMPLETED",
+        skippedCategories: [],
+        cappedCategories: [FindingType.JSON_LD_PRICE_CONFLICT],
       }),
     );
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("records JSON_LD_PRICE_CONFLICT in skippedCategories (NOT capped) when read_products is revoked mid-scan (gc-11f)", async () => {
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    withCandidates([PRICE_CANDIDATE]);
+    mockHasProductScope.mockResolvedValue(true);
+    // The upfront probe passed, but the audit hit ACCESS_DENIED mid-run: a
+    // genuine scope problem, so it belongs on the permissions banner.
+    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: true, capped: false });
+
+    await runScanTheme();
+
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({
+        status: "COMPLETED",
+        skippedCategories: [FindingType.JSON_LD_PRICE_CONFLICT],
+        cappedCategories: [],
+      }),
+    );
+  });
+
+  it("records JSON_LD_PRICE_CONFLICT in BOTH lists when revoked mid-scan AND the candidate cap hit (gc-11f)", async () => {
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    // More candidates than the cap → staticCandidatesCapped; then the audit
+    // itself reports a mid-scan revocation. Both happened, so both are recorded.
+    withCandidates(
+      Array.from({ length: JSONLD_PRICE_CANDIDATE_CAP + 1 }, (_, i) => ({
+        ...PRICE_CANDIDATE,
+        lineNumber: i + 1,
+      })),
+    );
+    mockHasProductScope.mockResolvedValue(true);
+    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: true, capped: false });
+
+    const result = await runScanTheme();
+
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({
+        skippedCategories: [FindingType.JSON_LD_PRICE_CONFLICT],
+        cappedCategories: [FindingType.JSON_LD_PRICE_CONFLICT],
+      }),
+    );
+    expect(result.status).toBe("COMPLETED");
   });
 
   it("is inert (not skipped) when the flag is ON but there are no candidates", async () => {
@@ -1337,6 +1398,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
         FindingType.GHOST_METAFIELD,
         FindingType.JSON_LD_PRICE_CONFLICT,
       ],
+      cappedCategories: [],
       skippedFiles: [],
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
@@ -1383,6 +1445,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       findingCount: MOCK_FINDINGS.length,
       // Flag-off is a deliberate disable, NOT a scope skip.
       skippedCategories: [],
+      cappedCategories: [],
       skippedFiles: [],
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
@@ -1408,6 +1471,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       findingCount: MOCK_FINDINGS.length,
       // Plan gate is a deliberate disable, NOT a scope skip.
       skippedCategories: [],
+      cappedCategories: [],
       skippedFiles: [],
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
@@ -1523,16 +1587,19 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       SCAN_ID,
       expect.objectContaining({
         skippedCategories: [FindingType.DANGLING_REFERENCE],
+        // A missing scope is not a size cap (gc-11f).
+        cappedCategories: [],
       }),
     );
     expect(result.status).toBe("COMPLETED");
   });
 
-  it("records DANGLING_REFERENCE in skippedCategories when the lookup budget truncates", async () => {
+  it("records DANGLING_REFERENCE in cappedCategories (NOT skipped) when the lookup budget truncates (gc-11f)", async () => {
     process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
     withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
     // Truncated: findings for what WAS checked still persist, but the category is
     // recorded so the differ never false-resolves the refs we could not re-check.
+    // A size cap, not a scope problem → capped, never the permissions banner.
     mockResolveDanglingReferences.mockResolvedValue({
       missing: [DANGLING_DISTINCT],
       scopeStatus: { products: "checked", content: "checked" },
@@ -1548,9 +1615,32 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
     expect(mockFinalizeScan).toHaveBeenCalledWith(
       SCAN_ID,
       expect.objectContaining({
-        skippedCategories: [FindingType.DANGLING_REFERENCE],
+        status: "COMPLETED",
+        skippedCategories: [],
+        cappedCategories: [FindingType.DANGLING_REFERENCE],
       }),
     );
+  });
+
+  it("records DANGLING_REFERENCE in BOTH lists when a scope is absent AND the budget truncated (gc-11f)", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    withCandidates([DANGLING_OCCURRENCE], [DANGLING_DISTINCT]);
+    mockResolveDanglingReferences.mockResolvedValue({
+      missing: [],
+      scopeStatus: { products: "checked", content: "absent" },
+      truncated: true,
+    });
+
+    const result = await runScanTheme();
+
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({
+        skippedCategories: [FindingType.DANGLING_REFERENCE],
+        cappedCategories: [FindingType.DANGLING_REFERENCE],
+      }),
+    );
+    expect(result.status).toBe("COMPLETED");
   });
 
   it("is inert (not skipped) when the flag is ON but there are no candidates", async () => {
@@ -1682,10 +1772,14 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     );
 
     // Capping means some occurrences were not emitted: the category is not
-    // fully audited, so the differ must not false-resolve dropped ones.
+    // fully audited, so the differ must not false-resolve dropped ones. A size
+    // cap, so capped, not skipped (gc-11f).
     expect(mockFinalizeScan).toHaveBeenCalledWith(
       SCAN_ID,
-      expect.objectContaining({ skippedCategories: [FindingType.DANGLING_REFERENCE] }),
+      expect.objectContaining({
+        skippedCategories: [],
+        cappedCategories: [FindingType.DANGLING_REFERENCE],
+      }),
     );
     const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
     expect(signal.metadata).toMatchObject({ danglingCapped: true, danglingTruncated: false });
@@ -1724,14 +1818,16 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
       expect.stringContaining("step-output budget"),
       expect.objectContaining({ event: "dangling_output_truncated", shopId: SHOP_ID }),
     );
-    // Nothing resolved or persisted; category recorded so prior findings are kept.
+    // Nothing resolved or persisted; category recorded (capped, gc-11f) so
+    // prior findings are kept.
     expect(mockResolveDanglingReferences).not.toHaveBeenCalled();
     expect(danglingPersistCall()).toBeUndefined();
     expect(mockFinalizeScan).toHaveBeenCalledWith(
       SCAN_ID,
       expect.objectContaining({
         status: "COMPLETED",
-        skippedCategories: [FindingType.DANGLING_REFERENCE],
+        skippedCategories: [],
+        cappedCategories: [FindingType.DANGLING_REFERENCE],
       }),
     );
     const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
@@ -1757,7 +1853,7 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     expect(out.danglingTruncated).toBe(true);
     expect(mockFinalizeScan).toHaveBeenCalledWith(
       SCAN_ID,
-      expect.objectContaining({ status: "COMPLETED", skippedCategories: [] }),
+      expect.objectContaining({ status: "COMPLETED", skippedCategories: [], cappedCategories: [] }),
     );
   });
 
@@ -1778,13 +1874,14 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
 
     await runAndCaptureCoreStep();
 
+    // Free plan: inert, so neither skipped nor capped (gc-11f).
     expect(mockFinalizeScan).toHaveBeenCalledWith(
       SCAN_ID,
-      expect.objectContaining({ skippedCategories: [] }),
+      expect.objectContaining({ skippedCategories: [], cappedCategories: [] }),
     );
   });
 
-  it("caps static JSON-LD candidates deterministically and marks the price audit skipped", async () => {
+  it("caps static JSON-LD candidates deterministically and marks the price audit capped (gc-11f)", async () => {
     process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
     const count = JSONLD_PRICE_CANDIDATE_CAP + 100;
     // Supplied in reverse order so the cap must sort before truncating.
@@ -1800,7 +1897,7 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
       unknownScripts: [],
       staticProductCandidates: candidates,
     });
-    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: false });
+    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: false, capped: false });
 
     const out = await runAndCaptureCoreStep();
 
@@ -1812,10 +1909,15 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     );
     expect(jsonBytes(out)).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
     expect(mockAuditStaticJsonLdPrices).toHaveBeenCalledWith(MOCK_ADMIN, kept, SHOP_ID);
-    // The audit covered everything it was given, but candidates were dropped.
+    // The audit covered everything it was given, but candidates were dropped:
+    // capped (size), not skipped (scope), and the scan stays COMPLETED.
     expect(mockFinalizeScan).toHaveBeenCalledWith(
       SCAN_ID,
-      expect.objectContaining({ skippedCategories: [FindingType.JSON_LD_PRICE_CONFLICT] }),
+      expect.objectContaining({
+        status: "COMPLETED",
+        skippedCategories: [],
+        cappedCategories: [FindingType.JSON_LD_PRICE_CONFLICT],
+      }),
     );
     const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
     expect(signal.metadata).toMatchObject({ staticCandidatesCapped: true });
@@ -1834,18 +1936,22 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     );
   }
 
-  /** Run one scan; return the persisted dangling findings + skippedCategories. */
+  /** Run one scan; return the persisted dangling findings + skipped/capped categories. */
   async function scanDangling(content: string) {
     vi.clearAllMocks();
     mockFetchThemeFiles.mockResolvedValue([{ filename: "sections/header.liquid", content }]);
     await runAndCaptureCoreStep();
     const findings = (danglingPersistCall()?.[1] ?? []) as Array<Record<string, unknown>>;
-    const { skippedCategories } = mockFinalizeScan.mock.calls.at(-1)?.[1] as {
+    const { skippedCategories, cappedCategories } = mockFinalizeScan.mock.calls.at(-1)?.[1] as {
       skippedCategories: string[];
+      cappedCategories: string[];
     };
     return {
       findings: findings.map((f) => ({ ...f, id: "", scanId: "", shopId: "" })),
       skippedCategories,
+      cappedCategories,
+      // What the differ is actually handed (gc-11f).
+      unaudited: unauditedCategories({ skippedCategories, cappedCategories }),
     };
   }
 
@@ -1864,13 +1970,14 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     const first = await scanDangling(broken);
     expect(first.findings).toHaveLength(1);
     expect(first.skippedCategories).toEqual([]);
+    expect(first.cappedCategories).toEqual([]);
     const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
     expect(signal.metadata).toMatchObject({ danglingCapped: false });
 
     // Identical rescan: the finding is unchanged, not new.
     const rescan = await scanDangling(broken);
     const same = diffScans(rescan.findings as never, first.findings as never, {
-      skippedCategories: rescan.skippedCategories,
+      skippedCategories: rescan.unaudited,
     });
     expect(same.newFindings).toHaveLength(0);
     expect(same.unchangedCount).toBe(1);
@@ -1878,13 +1985,14 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     // Merchant fixes the link: the finding resolves.
     const fixed = await scanDangling(menu.join("\n"));
     expect(fixed.skippedCategories).toEqual([]);
+    expect(fixed.cappedCategories).toEqual([]);
     const diff = diffScans(fixed.findings as never, first.findings as never, {
-      skippedCategories: fixed.skippedCategories,
+      skippedCategories: fixed.unaudited,
     });
     expect(diff.resolvedFindings).toHaveLength(1);
   });
 
-  it("skips the category when a MISSING handle exceeds the per-handle cap", async () => {
+  it("caps (not skips) the category when a MISSING handle exceeds the per-handle cap (gc-11f)", async () => {
     // Occurrences past the cap of a missing handle get no finding, so the
     // category is not fully audited and prior findings must not false-resolve.
     process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
@@ -1894,10 +2002,11 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
       (_, i) => `<a href="/pages/gone">x ${i}</a>`,
     );
 
-    const { findings, skippedCategories } = await scanDangling(lines.join("\n"));
+    const { findings, skippedCategories, cappedCategories } = await scanDangling(lines.join("\n"));
 
     expect(findings).toHaveLength(DANGLING_MAX_OCCURRENCES_PER_HANDLE);
-    expect(skippedCategories).toEqual([FindingType.DANGLING_REFERENCE]);
+    expect(skippedCategories).toEqual([]);
+    expect(cappedCategories).toEqual([FindingType.DANGLING_REFERENCE]);
   });
 
   it("does not skip the category for a missing handle exactly at the per-handle cap", async () => {
@@ -1908,10 +2017,11 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
       (_, i) => `<a href="/pages/gone">x ${i}</a>`,
     );
 
-    const { findings, skippedCategories } = await scanDangling(lines.join("\n"));
+    const { findings, skippedCategories, cappedCategories } = await scanDangling(lines.join("\n"));
 
     expect(findings).toHaveLength(DANGLING_MAX_OCCURRENCES_PER_HANDLE);
     expect(skippedCategories).toEqual([]);
+    expect(cappedCategories).toEqual([]);
   });
 
   it("drops static candidates too (not the scan) when dropping dangling is not enough", async () => {
@@ -1942,16 +2052,13 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
       expect.stringContaining("step-output budget"),
       expect.objectContaining({ event: "static_candidates_output_truncated", shopId: SHOP_ID }),
     );
-    // Nothing to audit this scan, but the category is reported skipped so prior
-    // price findings are kept; the scan itself completes.
+    // Nothing to audit this scan, but the category is reported capped (size,
+    // not scope, gc-11f) so prior price findings are kept; the scan completes.
     expect(mockAuditStaticJsonLdPrices).not.toHaveBeenCalled();
-    expect(mockFinalizeScan).toHaveBeenCalledWith(
-      SCAN_ID,
-      expect.objectContaining({
-        status: "COMPLETED",
-        skippedCategories: expect.arrayContaining([FindingType.JSON_LD_PRICE_CONFLICT]),
-      }),
-    );
+    const finalizeArg = mockFinalizeScan.mock.calls.at(-1)?.[1];
+    expect(finalizeArg.status).toBe("COMPLETED");
+    expect(finalizeArg.cappedCategories).toContain(FindingType.JSON_LD_PRICE_CONFLICT);
+    expect(finalizeArg.skippedCategories).not.toContain(FindingType.JSON_LD_PRICE_CONFLICT);
   });
 
   it("keeps static candidates when dropping dangling alone gets under the budget", async () => {
@@ -1982,7 +2089,7 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
       unknownScripts: [],
       staticProductCandidates: candidates,
     });
-    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: false });
+    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: false, capped: false });
 
     const out = await runAndCaptureCoreStep();
 
@@ -2004,7 +2111,7 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     expect(out.danglingOccurrences).toHaveLength(1);
     expect(mockFinalizeScan).toHaveBeenCalledWith(
       SCAN_ID,
-      expect.objectContaining({ skippedCategories: [] }),
+      expect.objectContaining({ skippedCategories: [], cappedCategories: [] }),
     );
     const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
     expect(signal.metadata).toMatchObject({
@@ -2064,6 +2171,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       status: "COMPLETED",
       findingCount: 0,
       skippedCategories: [],
+      cappedCategories: [],
       skippedFiles: [],
       // No prior scan → first-scan baseline: all zeros.
       newFindingCount: 0,
@@ -2410,6 +2518,62 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
     expect(finalizeArg.skippedCategories).toContain("GHOST_TAG");
     expect(finalizeArg.resolvedFindingCount).toBe(0);
     expect(finalizeArg.newFindingCount).toBe(0);
+  });
+
+  it("does NOT count a CAPPED category's prior findings as resolved (gc-11f)", async () => {
+    // The dangling audit ran with scope but hit its lookup budget, so
+    // DANGLING_REFERENCE is capped (NOT skipped). A prior dangling finding that
+    // this run did not re-check must still be excluded from "resolved": the
+    // finalize diff passes the skipped+capped union to the differ.
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    mockExtractDanglingReferences.mockReturnValue({
+      occurrences: [
+        {
+          entityType: "page",
+          handle: "checked",
+          filename: "sections/a.liquid",
+          lineNumber: 1,
+          snippet: "x",
+        },
+      ],
+      distinctHandles: [{ entityType: "page", handle: "checked", occurrenceCount: 1 }],
+    });
+    mockResolveDanglingReferences.mockResolvedValue({
+      missing: [],
+      scopeStatus: { products: "checked", content: "checked" },
+      truncated: true,
+    });
+    const priorDangling = {
+      filename: "sections/footer.liquid",
+      findingType: "DANGLING_REFERENCE",
+      codeSnippet: '<a href="/pages/unchecked">x</a>',
+      lineNumber: 7,
+      severity: "MEDIUM",
+      appName: "page",
+      description: "prior dangling",
+    };
+    mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+    mockDb.finding.findMany.mockResolvedValue([]);
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+    });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prior",
+      findingCount: 1,
+      findings: [priorDangling],
+    });
+
+    const result = await runScanTheme();
+
+    const finalizeArg = mockFinalizeScan.mock.calls[0][1];
+    expect(finalizeArg.skippedCategories).toEqual([]);
+    expect(finalizeArg.cappedCategories).toEqual(["DANGLING_REFERENCE"]);
+    expect(finalizeArg.resolvedFindingCount).toBe(0);
+    expect(finalizeArg.newFindingCount).toBe(0);
+    // Caps never change status.
+    expect(finalizeArg.status).toBe("COMPLETED");
+    expect(result.status).toBe("COMPLETED");
   });
 
   it("does NOT re-report an unchanged finding as new when its walk truncated (Option C regression, gc-1bd)", async () => {

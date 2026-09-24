@@ -220,10 +220,11 @@ export type FinalizeScanResult = { finalized: boolean };
  *
  * Decides nothing itself: the caller (the scan-theme finalize step) passes the
  * already-decided status, the authoritative findingCount, the set of optional
- * categories that were skipped for missing scope, and the theme files skipped
- * for exceeding the size cap. skippedCategories and skippedFiles are persisted
- * so the diff engine never treats an un-audited category's — or an unscanned
- * oversized file's — prior findings as "resolved".
+ * categories that were skipped for missing scope, the set that ran but hit a
+ * size cap (gc-11f), and the theme files skipped for exceeding the size cap.
+ * skippedCategories, cappedCategories, and skippedFiles are persisted so the
+ * diff engine never treats an un-audited (or partly audited) category's — or
+ * an unscanned oversized file's — prior findings as "resolved".
  *
  * Resurrection guard (LOG-6, #2-A): the watchdog (watch-stale-scans) can mark a
  * still-running scan FAILED if it overruns the in-progress threshold. Without a
@@ -252,6 +253,7 @@ export async function finalizeScan(
     status: typeof ScanStatus.COMPLETED | typeof ScanStatus.PARTIAL;
     findingCount: number;
     skippedCategories: string[];
+    cappedCategories: string[];
     skippedFiles: string[];
     // Resolution-tracking counts (Feature 3 of the scan-observability spec),
     // computed by the caller via the scan differ. All three are OPTIONAL and
@@ -272,6 +274,7 @@ export async function finalizeScan(
       completedAt: new Date(),
       findingCount: args.findingCount,
       skippedCategories: args.skippedCategories,
+      cappedCategories: args.cappedCategories,
       skippedFiles: args.skippedFiles,
       ...(args.newFindingCount !== undefined ? { newFindingCount: args.newFindingCount } : {}),
       ...(args.resolvedFindingCount !== undefined

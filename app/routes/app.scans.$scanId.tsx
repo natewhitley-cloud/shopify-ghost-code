@@ -171,6 +171,68 @@ export function skippedFilesNotice(files: string[]): string {
 }
 
 /**
+ * Size-cap info notice copy (gc-11f): checks that ran with access granted but
+ * hit a size cap. Deliberately says nothing about permissions and has no CTA.
+ */
+export function cappedCategoriesNotice(categories: readonly string[]): string {
+  const labels = skippedCategoryLabels(categories);
+  const lead =
+    labels.length === 1 ? "One check was limited this scan" : "Some checks were limited this scan";
+  return `${lead}: ${labels.join(", ")}. Your theme has more references than Ghost Code checks in a single scan, so these results cover the ones we checked. Anything we didn't check keeps its status from your previous scan.`;
+}
+
+/**
+ * Scan-coverage notices shown under a completed scan (Standard+ only: Free
+ * merchants can't grant these scopes or view the resulting findings).
+ *
+ *   - Missing-scope warning (H5 / gc-1wf): optional audits were skipped because
+ *     the app lacks the required read-only permission. Links to the settings
+ *     Permissions card to re-consent. Reads `skippedCategories`, which is
+ *     scope-only.
+ *   - Size-cap notice (gc-11f): optional audits ran (access granted) but hit a
+ *     size cap, so only part of the category was checked. Info only: no CTA and
+ *     no Settings link, since there is nothing to grant.
+ *
+ * Both can render at once when both happened this scan.
+ */
+export function ScanCoverageNotices({
+  isCompleted,
+  canViewDetails,
+  status,
+  skippedCategories,
+  cappedCategories,
+}: {
+  isCompleted: boolean;
+  canViewDetails: boolean;
+  status: string;
+  skippedCategories: string[];
+  cappedCategories: string[];
+}) {
+  if (!isCompleted || !canViewDetails) return null;
+  return (
+    <>
+      {scanSkippedForScopes({ status, skippedCategories }) && (
+        <div>
+          <s-banner tone="warning">
+            This scan skipped {skippedCategories.length}{" "}
+            {skippedCategories.length !== 1 ? "checks" : "check"} because Ghost Code didn&apos;t
+            have the required permissions when it ran:{" "}
+            {skippedCategoryLabels(skippedCategories).join(", ")}. Grant access on the{" "}
+            <Link to="/app/settings">Settings</Link> page, then run a new scan to include{" "}
+            {skippedCategories.length !== 1 ? "them" : "it"}.
+          </s-banner>
+        </div>
+      )}
+      {cappedCategories.length > 0 && (
+        <div>
+          <s-banner tone="info">{cappedCategoriesNotice(cappedCategories)}</s-banner>
+        </div>
+      )}
+    </>
+  );
+}
+
+/**
  * The three valid Severity values, in display order. Used to (1) validate the
  * `?severity=` loader param — an unknown value is ignored rather than passed to
  * the DB — and (2) build the Severity filter dropdown. These are fixed and need
@@ -771,6 +833,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       // granted (H5 / gc-1wf). Drives the "checks skipped" banner that links to
       // the settings Permissions card.
       skippedCategories: scan.skippedCategories,
+      // Optional-audit categories that ran but hit a size cap (gc-11f). Drives
+      // the separate "checks were limited" info notice (no Settings CTA).
+      cappedCategories: scan.cappedCategories,
     },
     findings: enrichedFindingsPage,
     findingsPagination: {
@@ -1693,27 +1758,14 @@ export default function ScanDetail() {
           </div>
         )}
 
-        {/* Missing-scope skip notice (H5 / gc-1wf) — optional audits were skipped
-          because the app lacks the required read-only permission. Standard+ only:
-          Free merchants can't grant these scopes or view the resulting findings.
-          Links to the settings Permissions card to re-consent. */}
-        {isCompleted &&
-          canViewDetails &&
-          scanSkippedForScopes({
-            status: scan.status,
-            skippedCategories: scan.skippedCategories,
-          }) && (
-            <div>
-              <s-banner tone="warning">
-                This scan skipped {scan.skippedCategories.length}{" "}
-                {scan.skippedCategories.length !== 1 ? "checks" : "check"} because Ghost Code
-                didn&apos;t have the required permissions when it ran:{" "}
-                {skippedCategoryLabels(scan.skippedCategories).join(", ")}. Grant access on the{" "}
-                <Link to="/app/settings">Settings</Link> page, then run a new scan to include{" "}
-                {scan.skippedCategories.length !== 1 ? "them" : "it"}.
-              </s-banner>
-            </div>
-          )}
+        {/* Missing-scope warning + size-cap notice (gc-1wf, gc-11f). */}
+        <ScanCoverageNotices
+          isCompleted={isCompleted}
+          canViewDetails={canViewDetails}
+          status={scan.status}
+          skippedCategories={scan.skippedCategories}
+          cappedCategories={scan.cappedCategories}
+        />
 
         {/* Lane-context banner — shown when the merchant arrived via a dashboard
           consequence-lane deep link (`?lane=`). Rendered ABOVE the paid/free

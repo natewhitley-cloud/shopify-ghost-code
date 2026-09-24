@@ -128,23 +128,35 @@ describe("SKIPPABLE_CATEGORY_INFO mapping", () => {
   });
 
   // Drift guard: every FindingType the scan engine can push into
-  // `skippedCategories` MUST be labeled here, or the banner would render a raw
-  // enum name (or an unlabeled skip) for a real, merchant-facing skip.
-  it("covers every category the scan engine can emit into skippedCategories", () => {
-    const src = readFileSync(
+  // `skippedCategories` or `cappedCategories` (gc-11f) MUST be labeled here, or
+  // a banner would render a raw enum name for a real, merchant-facing skip/cap.
+  const scanThemeSrc = () =>
+    readFileSync(
       fileURLToPath(new URL("../../inngest/functions/scan-theme.ts", import.meta.url)),
       "utf8",
     );
-    const block = src.match(/const skippedCategories:\s*string\[\]\s*=\s*\[([\s\S]*?)\]\s*\n/);
-    expect(block, "could not locate the skippedCategories array in scan-theme.ts").not.toBeNull();
-    const emitted = [...block![1].matchAll(/FindingType\.(\w+)/g)].map((m) => m[1]);
-    // Sanity: the extraction found the categories we expect (guards the regex
-    // itself from silently matching nothing).
-    expect(emitted.length).toBeGreaterThanOrEqual(8);
+
+  function emittedCategories(listName: string): string[] {
+    const block = scanThemeSrc().match(
+      new RegExp(
+        `const ${listName}:\\s*string\\[\\]\\s*=\\s*flaggedCategories\\(\\[([\\s\\S]*?)\\]\\);`,
+      ),
+    );
+    expect(block, `could not locate the ${listName} builder in scan-theme.ts`).not.toBeNull();
+    return [...block![1].matchAll(/FindingType\.(\w+)/g)].map((m) => m[1]);
+  }
+
+  it.each([
+    // Sanity minimums guard the regex itself from silently matching nothing.
+    ["skippedCategories", 8],
+    ["cappedCategories", 2],
+  ])("covers every category the scan engine can emit into %s", (listName, minCount) => {
+    const emitted = emittedCategories(listName);
+    expect(emitted.length).toBeGreaterThanOrEqual(minCount);
     for (const category of emitted) {
       expect(
         SKIPPABLE_CATEGORY_INFO[category],
-        `scan engine can skip ${category} but SKIPPABLE_CATEGORY_INFO has no entry`,
+        `scan engine can emit ${category} into ${listName} but SKIPPABLE_CATEGORY_INFO has no entry`,
       ).toBeDefined();
     }
   });

@@ -595,6 +595,8 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
             FindingType.GHOST_METAFIELD,
             FindingType.GHOST_REDIRECT,
           ],
+          // Scope skips are not size caps (gc-11f).
+          cappedCategories: [],
         }),
       );
     });

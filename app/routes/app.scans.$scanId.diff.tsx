@@ -24,7 +24,7 @@ import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import { filterIgnoredFindings } from "../services/finding-aggregation.server";
-import { diffScans } from "../services/scan-differ.server";
+import { diffScans, unauditedCategories } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
 
@@ -69,7 +69,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Drop findings the merchant has suppressed (E2.2, gc-57t) from BOTH the
   // current and previous sets before diffing, so an ignored finding is never
   // reported as "new" (dropped from current) or "resolved" (dropped from
-  // previous). This composes with the differ's own skippedCategories /
+  // previous). This composes with the differ's own unaudited-category /
   // skippedFiles exclusions below — all are monotonic removals from the sets.
   const ignores = await getIgnoredFindingsForShop(shop.id);
   const keptCurrent = filterIgnoredFindings(currentFindings, ignores).kept;
@@ -77,8 +77,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   const scanDiff: ScanDiff = diffScans(keptCurrent, keptPrevious, {
     // Exclude prior findings in categories the current scan skipped (missing
-    // scope) so they are never reported as falsely "resolved" (LOG-4).
-    skippedCategories: scan.skippedCategories,
+    // scope) or capped (size cap, gc-11f) so they are never reported as falsely
+    // "resolved" (LOG-4).
+    skippedCategories: unauditedCategories(scan),
     // Likewise exclude prior findings in files the current scan skipped for
     // exceeding the size cap — an unscanned file is unknown, not fixed
     // (gc-06e.19).

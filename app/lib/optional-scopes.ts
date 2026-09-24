@@ -61,8 +61,9 @@ export const OPTIONAL_SCOPE_INFO: Record<OptionalScope, { label: string; unlocks
  *   - DANGLING_REFERENCE                             → read_products + read_content (either unlocks part)
  *
  * The `optional-scopes.test.ts` drift guard reads the scan engine and asserts
- * every category it can emit into `skippedCategories` is covered here, so a new
- * skipped category can never render as an unlabeled banner.
+ * every category it can emit into `skippedCategories` or `cappedCategories`
+ * (gc-11f) is covered here, so a new skipped or capped category can never
+ * render as an unlabeled banner.
  */
 export const SKIPPABLE_CATEGORY_INFO: Record<string, { label: string; scopes: OptionalScope[] }> = {
   GHOST_TRANSLATION: { label: "Translations", scopes: ["read_translations"] },
@@ -94,6 +95,11 @@ export function allOptionalScopesGranted(granted: readonly string[]): boolean {
  * Whether a scan skipped any optional audit for a missing scope. Drives the
  * scan-detail Permissions banner.
  *
+ * Scope-only (gc-11f): a check that ran but hit a size cap is recorded in
+ * `cappedCategories`, never `skippedCategories`, so a capped scan does not
+ * trigger this banner (the merchant already granted access). Caps get their
+ * own info notice instead.
+ *
  * `PARTIAL` is the terminal status reserved for a scope-skip, and
  * `skippedCategories` is the precise per-category signal. Either is sufficient:
  * the engine currently finalizes `COMPLETED` even when categories were skipped,
@@ -109,7 +115,8 @@ export function scanSkippedForScopes(scan: {
 }
 
 /**
- * Distinct human labels for a scan's skipped categories, in first-seen order.
+ * Distinct human labels for a scan's skipped (or capped, gc-11f) categories,
+ * in first-seen order.
  * An unknown category falls back to its raw enum name so nothing is silently
  * dropped (the drift-guard test prevents this in practice).
  */

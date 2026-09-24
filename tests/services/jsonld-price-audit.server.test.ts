@@ -283,6 +283,7 @@ describe("auditStaticJsonLdPrices", () => {
     expect(await auditStaticJsonLdPrices(admin, [], SHOP_ID)).toEqual({
       findings: [],
       skipped: false,
+      capped: false,
     });
     expect(graphql).not.toHaveBeenCalled();
   });
@@ -440,9 +441,10 @@ describe("auditStaticJsonLdPrices", () => {
 
   // -------------------------------------------------------------------------
   // Nice-to-have — read_products revoked mid-scan returns a clean skip rather
-  // than throwing, so the category lands in skippedCategories.
+  // than throwing, so the category lands in skippedCategories. It is a SCOPE
+  // problem, not a cap, so `capped` stays false (gc-11f).
   // -------------------------------------------------------------------------
-  it("returns skipped when read_products is revoked mid-scan (ACCESS_DENIED)", async () => {
+  it("returns skipped (not capped) when read_products is revoked mid-scan (ACCESS_DENIED)", async () => {
     const graphql = vi.fn(async (query: string) => {
       if (query.includes("shop {")) {
         return { json: async () => ({ data: { shop: { currencyCode: "USD" } } }) };
@@ -451,20 +453,22 @@ describe("auditStaticJsonLdPrices", () => {
     });
     const admin = { graphql } as unknown as AdminApiContext;
 
-    const { findings, skipped } = await auditStaticJsonLdPrices(
+    const { findings, skipped, capped } = await auditStaticJsonLdPrices(
       admin,
       [candidate({ handle: "widget", sku: undefined, staticPrice: "19.99" })],
       SHOP_ID,
     );
     expect(findings).toHaveLength(0);
     expect(skipped).toBe(true);
+    expect(capped).toBe(false);
   });
 
   // -------------------------------------------------------------------------
   // FIX 3 — the MAX_LOOKUPS cap: past the budget, extra candidates go
-  // unresolved (never false-resolved), the audit warns, and reports skipped.
+  // unresolved (never false-resolved), the audit warns, and reports CAPPED —
+  // a size cap, not a scope problem, so NOT skipped (gc-11f).
   // -------------------------------------------------------------------------
-  it("warns and reports skipped when the lookup cap truncates the candidate list", async () => {
+  it("warns and reports capped (not skipped) when the lookup cap truncates the candidate list", async () => {
     const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => {});
     // Each distinct handle resolves to a matching price (no finding), so the
     // only observable effect is the cap: 60 distinct handles > MAX_LOOKUPS (50).
@@ -476,14 +480,31 @@ describe("auditStaticJsonLdPrices", () => {
       candidate({ handle: `h-${i}`, sku: undefined, staticPrice: "19.99", lineNumber: i }),
     );
 
-    const { skipped } = await auditStaticJsonLdPrices(admin, many, SHOP_ID);
+    const { skipped, capped } = await auditStaticJsonLdPrices(admin, many, SHOP_ID);
 
-    expect(skipped).toBe(true);
+    expect(capped).toBe(true);
+    expect(skipped).toBe(false);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("lookup cap"),
       expect.objectContaining({ shopId: SHOP_ID, dropped: 10 }),
     );
     warnSpy.mockRestore();
+  });
+
+  it("is neither capped nor skipped when distinct lookups land exactly on the cap (gc-11f)", async () => {
+    const { admin } = mockAdmin({
+      byHandle: () =>
+        productByHandleResponse([{ price: "19.99", compareAtPrice: null, availableForSale: true }]),
+    });
+    // 50 distinct handles == MAX_LOOKUPS: every candidate is checked.
+    const atCap = Array.from({ length: 50 }, (_, i) =>
+      candidate({ handle: `h-${i}`, sku: undefined, staticPrice: "19.99", lineNumber: i }),
+    );
+
+    const { skipped, capped } = await auditStaticJsonLdPrices(admin, atCap, SHOP_ID);
+
+    expect(capped).toBe(false);
+    expect(skipped).toBe(false);
   });
 });
 

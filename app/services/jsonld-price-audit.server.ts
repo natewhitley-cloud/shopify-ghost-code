@@ -476,15 +476,20 @@ async function resolveCandidate(
 /**
  * Result of an audit run.
  *   - `findings`: the JSON_LD_PRICE_CONFLICT findings for material mismatches.
- *   - `skipped`:  true when the audit could NOT fully cover the candidates, so
- *                 the caller records JSON_LD_PRICE_CONFLICT in skippedCategories
- *                 and the differ does not false-resolve prior findings. Set when
- *                 the per-scan lookup budget (MAX_LOOKUPS) truncated the
- *                 candidate list, or read_products was revoked mid-scan.
+ *   - `skipped`:  true when read_products was revoked mid-scan (a SCOPE
+ *                 problem). The caller records JSON_LD_PRICE_CONFLICT in
+ *                 skippedCategories (scope-only, drives the permissions banner).
+ *   - `capped`:   true when the per-scan lookup budget (MAX_LOOKUPS) truncated
+ *                 the candidate list (a SIZE cap, not a scope problem). The
+ *                 caller records JSON_LD_PRICE_CONFLICT in cappedCategories
+ *                 (gc-11f).
+ * Either one means the audit could NOT fully cover the candidates, so the
+ * differ must not false-resolve prior findings; both can be true at once.
  */
 export type AuditResult = {
   findings: CreateFindingInput[];
   skipped: boolean;
+  capped: boolean;
 };
 
 /**
@@ -493,15 +498,15 @@ export type AuditResult = {
  * Assumes the caller has already confirmed `read_products` is granted (via
  * `hasProductScope`). Returns the JSON_LD_PRICE_CONFLICT findings for material,
  * high-confidence mismatches; unresolvable or matching candidates contribute
- * nothing. `skipped` reports whether coverage was incomplete (cap truncation or
- * mid-scan scope revocation) — see {@link AuditResult}.
+ * nothing. `skipped` (mid-scan scope revocation) and `capped` (lookup-budget
+ * truncation) report why coverage was incomplete — see {@link AuditResult}.
  */
 export async function auditStaticJsonLdPrices(
   admin: AdminApiContext,
   candidates: StaticProductCandidate[],
   shopId: string,
 ): Promise<AuditResult> {
-  if (candidates.length === 0) return { findings: [], skipped: false };
+  if (candidates.length === 0) return { findings: [], skipped: false, capped: false };
 
   const skuCache = new Map<string, LiveVariant | null>();
   const handleCache = new Map<string, LiveVariant[] | null>();
@@ -529,7 +534,7 @@ export async function auditStaticJsonLdPrices(
         function: "jsonld-price-audit",
         shopId,
       });
-      return { findings, skipped: true };
+      return { findings, skipped: true, capped: counter.capHit };
     }
     throw err;
   }
@@ -543,5 +548,5 @@ export async function auditStaticJsonLdPrices(
     });
   }
 
-  return { findings, skipped: counter.capHit };
+  return { findings, skipped: false, capped: counter.capHit };
 }

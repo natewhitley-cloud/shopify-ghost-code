@@ -106,7 +106,14 @@ model Scan {
   // required Shopify scope was not granted (ACCESS_DENIED). Drives PARTIAL status
   // and prevents the diff engine from falsely marking un-audited categories as
   // "resolved" (LOG-4). Empty for fully-audited scans and all legacy scans.
+  // Scope-only (gc-11f): a size cap never lands here, see cappedCategories.
   skippedCategories String[]        @default([])
+  // FindingType categories whose OPTIONAL audit ran (scope granted) but hit a
+  // size cap this run, so only part of the category was checked (gc-11f). The
+  // differ excludes skipped + capped from "resolved"; the scan-detail UI shows
+  // an info notice (not the permissions warning). Does NOT change status.
+  // Empty for uncapped scans and all legacy scans.
+  cappedCategories  String[]        @default([])
   // Theme file paths whose per-file detectors were SKIPPED this run because the
   // file exceeded MAX_SCANNABLE_FILE_BYTES (gc-06e.19). Those files were not
   // scanned, so the diff engine must exclude their prior findings from

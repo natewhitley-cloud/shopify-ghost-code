@@ -164,6 +164,9 @@ export function fingerprintFinding(
  *   neither "resolved" (we did not re-check them, so we cannot claim they are
  *   gone) nor "unchanged". Without this guard, a missing optional scope would
  *   silently turn every prior finding in that category into a false "resolved".
+ *   Callers pass the UNION of the scan's scope-skipped and size-capped
+ *   categories via {@link unauditedCategories} (gc-11f): a capped category was
+ *   only partly re-checked, so its prior findings are equally unknown.
  *
  * Unscanned oversized files (gc-06e.19):
  *   `opts.skippedFiles` is the set of theme file paths the CURRENT scan did NOT
@@ -180,6 +183,20 @@ export function fingerprintFinding(
  *   detector, which deliberately still runs on oversized files (gc-qqt — see
  *   SIZE_SKIP_STILL_SCANNED_FINDING_TYPES).
  */
+/**
+ * The categories a scan did NOT fully audit (gc-11f): the union of
+ * `skippedCategories` (scope not granted) and `cappedCategories` (a size cap
+ * left part of the category unchecked), de-duplicated. This is what every
+ * `diffScans` caller passes as `opts.skippedCategories`, so a prior finding in
+ * either kind of category is never reported "resolved".
+ */
+export function unauditedCategories(scan: {
+  skippedCategories: readonly string[];
+  cappedCategories: readonly string[];
+}): string[] {
+  return [...new Set([...scan.skippedCategories, ...scan.cappedCategories])];
+}
+
 export function diffScans(
   currentFindings: DiffableFinding[],
   previousFindings: DiffableFinding[],
