@@ -145,6 +145,20 @@ export function fingerprintFinding(
 // ---------------------------------------------------------------------------
 
 /**
+ * The categories a scan did NOT fully audit (gc-11f): the union of
+ * `skippedCategories` (scope not granted) and `cappedCategories` (a size cap
+ * left part of the category unchecked), de-duplicated. This is what every
+ * `diffScans` caller passes as `opts.skippedCategories`, so a prior finding in
+ * either kind of category is never reported "resolved".
+ */
+export function unauditedCategories(scan: {
+  skippedCategories: readonly string[];
+  cappedCategories: readonly string[];
+}): string[] {
+  return [...new Set([...scan.skippedCategories, ...scan.cappedCategories])];
+}
+
+/**
  * Diff two sets of scan findings.
  *
  * A finding is considered:
@@ -183,20 +197,6 @@ export function fingerprintFinding(
  *   detector, which deliberately still runs on oversized files (gc-qqt — see
  *   SIZE_SKIP_STILL_SCANNED_FINDING_TYPES).
  */
-/**
- * The categories a scan did NOT fully audit (gc-11f): the union of
- * `skippedCategories` (scope not granted) and `cappedCategories` (a size cap
- * left part of the category unchecked), de-duplicated. This is what every
- * `diffScans` caller passes as `opts.skippedCategories`, so a prior finding in
- * either kind of category is never reported "resolved".
- */
-export function unauditedCategories(scan: {
-  skippedCategories: readonly string[];
-  cappedCategories: readonly string[];
-}): string[] {
-  return [...new Set([...scan.skippedCategories, ...scan.cappedCategories])];
-}
-
 export function diffScans(
   currentFindings: DiffableFinding[],
   previousFindings: DiffableFinding[],
