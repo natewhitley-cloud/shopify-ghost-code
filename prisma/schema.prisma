@@ -109,6 +109,19 @@ model Shop {
   // so the request is never repeated. Null = never requested. Deleted with the
   // Shop row on shop/redact.
   reviewPopupRequestedAt    DateTime?
+  // Return-visit upgrade nudge, Free only (gc-97k.9). Episode state: when the
+  // current weekly episode started (plain update each new episode), when the
+  // merchant last clicked "Not now" (ends the episode early), and how many
+  // times they have (3 retires the nudge; atomic increment).
+  upgradeReturnLastShownAt     DateTime?
+  upgradeReturnLastDismissedAt DateTime?
+  upgradeReturnDismissCount    Int       @default(0)
+  // Funnel stamps: once per merchant via claimShopStamp, same as the
+  // upgrade-preview stamps above. Deleted with the Shop row on shop/redact.
+  upgradeReturnShownAt         DateTime?
+  upgradeReturnClickedAt       DateTime?
+  upgradeReturnDismissedAt     DateTime?
+  upgradeReturnConvertedAt     DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

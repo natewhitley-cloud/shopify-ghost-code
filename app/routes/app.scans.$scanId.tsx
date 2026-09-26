@@ -43,7 +43,12 @@ import type { PromptKey } from "../lib/prompt-cap";
 import { isReviewPopupEligible, runReviewRequestOnce } from "../lib/review-request";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
-import type { UpgradePreview } from "../lib/upgrade-preview";
+import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
+import {
+  isUpgradeReturnEligible,
+  UPGRADE_RETURN_DISMISS_LABEL,
+  UPGRADE_RETURN_HEADING,
+} from "../lib/upgrade-return";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import {
   getAppAttributionForScan,
@@ -57,7 +62,7 @@ import {
   ignoreFindingApp,
   ignoreFindingInstance,
 } from "../models/ignored-finding.server";
-import { getScanById } from "../models/scan.server";
+import { getFirstSuccessfulScanCompletedAt, getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
   findUnknownScriptForShop,
@@ -76,6 +81,7 @@ import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
+import { dismissUpgradeReturn, markUpgradeReturnShown } from "../services/upgrade-return.server";
 import { authenticate } from "../shopify.server";
 import {
   BG_BADGE_SUCCESS,
@@ -139,10 +145,33 @@ function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
 }
 
 /**
- * Free-tier upgrade teaser (gc-97k.4). The CTA is a plain top-level link to the
- * Managed Pricing plan page, exactly like the Settings upgrade buttons (an
- * iframe cannot navigate to the admin itself, so `target="_top"`).
+ * The Free upgrade asks' CTA (gc-97k.4, gc-97k.9): a plain top-level link to
+ * the Managed Pricing plan page, exactly like the Settings upgrade buttons (an
+ * iframe cannot navigate to the admin itself, so `target="_top"`), plus the
+ * best-effort click ping tagged with the ask's `src`.
  */
+function UpgradeCtaLink({
+  pricingPlansUrl,
+  src,
+  label,
+}: {
+  pricingPlansUrl: string;
+  src: UpgradeAskKey;
+  label: string;
+}) {
+  return (
+    <a
+      href={pricingPlansUrl}
+      target="_top"
+      rel="noreferrer"
+      onClick={() => recordUpgradeClick(src)}
+    >
+      <s-button variant="primary">{label}</s-button>
+    </a>
+  );
+}
+
+/** Free-tier upgrade teaser (gc-97k.4), inline in the results body. */
 export function UpgradePreviewBanner({
   preview,
   pricingPlansUrl,
@@ -158,27 +187,58 @@ export function UpgradePreviewBanner({
     <s-banner tone="info">
       <s-stack direction="block" gap="base">
         <s-text>{copy.body}</s-text>
-        <a href={pricingPlansUrl} target="_top" rel="noreferrer" onClick={recordUpgradeClick}>
-          <s-button variant="primary">{copy.cta}</s-button>
-        </a>
+        <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} src="upgrade_preview" label={copy.cta} />
       </s-stack>
     </s-banner>
   );
 }
 
 /**
- * Best-effort `clicked` ping for the upgrade teaser. Never prevents or blocks
+ * Return-visit upgrade banner, Free only (gc-97k.9), at the top of the
+ * results. Same copy source as the teaser (which is hidden while this shows),
+ * under its own heading, with a "Not now" that the page wires to the
+ * `dismiss-upgrade-return` action intent.
+ */
+export function UpgradeReturnBanner({
+  preview,
+  pricingPlansUrl,
+  trialEligible,
+  onDismiss,
+}: {
+  preview: UpgradePreview;
+  pricingPlansUrl: string;
+  trialEligible: boolean;
+  onDismiss: () => void;
+}) {
+  const copy = upgradePreviewCopy(preview, trialEligible);
+  return (
+    <s-banner tone="info" heading={UPGRADE_RETURN_HEADING}>
+      <s-stack direction="block" gap="base">
+        <s-text>{copy.body}</s-text>
+        <s-stack direction="inline" gap="base">
+          <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} src="upgrade_return" label={copy.cta} />
+          <s-button variant="secondary" onClick={onDismiss}>
+            {UPGRADE_RETURN_DISMISS_LABEL}
+          </s-button>
+        </s-stack>
+      </s-stack>
+    </s-banner>
+  );
+}
+
+/**
+ * Best-effort `clicked` ping for a Free upgrade ask. Never prevents or blocks
  * the link's navigation: no preventDefault, no await, and any error (sync or
  * async) is swallowed. `keepalive` lets the request outlive the iframe as the
  * top frame navigates away. The session token is added by App Bridge's patched
  * global `fetch`, as for the export download above.
  */
-export function recordUpgradeClick(): void {
+export function recordUpgradeClick(src: UpgradeAskKey): void {
   try {
     fetch("/app/upgrade", {
       method: "POST",
       keepalive: true,
-      body: new URLSearchParams({ src: "upgrade_preview" }),
+      body: new URLSearchParams({ src }),
     }).catch(() => {});
   } catch {
     // Telemetry must never break the upgrade click.
@@ -838,12 +898,31 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
 
+  // Free-tier hidden-findings breakdown (gc-97k.4): per-lane counts of the
+  // findings hidden behind the paywall, from the summary's existing groupBy
+  // (ignores already excluded), minus EVERY preview row shown (gc-97k.10).
+  // Non-null only for a successful scan's Free view with at least one preview
+  // row and at least one hidden finding. Malicious findings are never counted
+  // as hidden (they are shown in full above on every plan). It is CONTENT for
+  // exactly one upgrade ask: the return-visit banner when that renders,
+  // otherwise the inline teaser.
+  const hiddenBreakdown =
+    previewFindings.length > 0
+      ? buildUpgradePreview(
+          findingSummary.byType,
+          previewFindings.map((f) => f.findingType),
+        )
+      : null;
+
   // Interruptive prompts on this page (gc-97k.6 cap): at most one per view, and
   // one distinct prompt per shop per 24h, so resolvePrompt runs ONCE per load
   // with every prompt whose own rule passes.
   //   review_popup (gc-97k.7): Shopify's native review modal, all plans, once
   //     ever, on a LATER visit to a successful scan's results (2h+ after the
   //     first results view, which is read before this load stamps it).
+  //   upgrade_return (gc-97k.9): the Free return-visit banner (see
+  //     isUpgradeReturnEligible). Only a page with hidden findings can show it,
+  //     so the first-scan read runs only then.
   const now = new Date();
   const eligiblePrompts: PromptKey[] = [];
   if (
@@ -858,6 +937,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   ) {
     eligiblePrompts.push("review_popup");
   }
+  if (
+    hiddenBreakdown !== null &&
+    isUpgradeReturnEligible(
+      { ...shop, firstSuccessfulScanAt: await getFirstSuccessfulScanCompletedAt(shop.id) },
+      true,
+      now,
+    )
+  ) {
+    eligiblePrompts.push("upgrade_return");
+  }
   const pagePrompt = await resolvePrompt({
     shopDomain: session.shop,
     eligible: eligiblePrompts,
@@ -866,27 +955,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     now,
   });
 
-  // Free-tier upgrade teaser (gc-97k.4): per-lane counts of the findings hidden
-  // behind the paywall, from the summary's existing groupBy (ignores already
-  // excluded), minus EVERY preview row shown (gc-97k.10). Mirrors the render
-  // gate exactly: successful scan, Free view, at least one preview row, and at
-  // least one hidden finding. Malicious findings are never counted as hidden
-  // (they are shown in full above on every plan).
-  const upgradePreview =
-    previewFindings.length > 0
-      ? buildUpgradePreview(
-          findingSummary.byType,
-          previewFindings.map((f) => f.findingType),
-        )
-      : null;
-  // `shown` fires once per merchant, on the first render of the teaser. The
-  // stored stamp skips the claim query on every later load; the atomic claim
-  // itself dedupes concurrent first loads. Never throws.
+  // Return-visit banner (gc-97k.9): starts a weekly episode when none is open
+  // and emits `shown` once per merchant. Never throws.
+  const showUpgradeReturn = pagePrompt === "upgrade_return";
+  if (showUpgradeReturn) await markUpgradeReturnShown(session.shop, shop, now);
+
+  // Inline teaser (gc-97k.4): hidden while the return banner renders, so the
+  // page carries one upgrade ask. Its `shown` means the teaser rendered, so it
+  // fires only then, once per merchant: the stored stamp skips the claim query
+  // on every later load; the atomic claim dedupes concurrent first loads.
+  const upgradePreview = showUpgradeReturn ? null : hiddenBreakdown;
   if (upgradePreview && shop.upgradePreviewShownAt === null) {
     await recordUpgradePreviewStageOnce("shown", session.shop);
   }
-  // Trial vs upgrade framing for the teaser (gc-97k.8); read only when it renders.
-  const trialEligible = upgradePreview ? await getTrialEligibility(shop) : false;
+  // Trial vs upgrade framing for whichever ask renders (gc-97k.8).
+  const trialEligible = hiddenBreakdown ? await getTrialEligibility(shop) : false;
 
   // Durable "first viewed results" milestone (gc-dpm.1): the first load of a
   // SUCCESSFUL scan's detail page. Gated on the stored value, so an
@@ -930,6 +1013,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       nextCursor: findingsPage.nextCursor,
     },
     previewFindings,
+    // Exactly one of these is non-null when the page has hidden findings: the
+    // return-visit banner (gc-97k.9) or the inline teaser (gc-97k.4).
+    upgradeReturn: showUpgradeReturn ? hiddenBreakdown : null,
     upgradePreview,
     // Managed Pricing plan page for the upgrade teaser's top-level CTA (same
     // helper as the Settings upgrade buttons).
@@ -967,6 +1053,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 //     scoped to the shop) so it matches E2.2's filter key exactly — the client
 //     only sends a finding id, never a forgeable fingerprint.
 //   - "ignore-app": suppress every finding attributed to an app (E2.3).
+//   - "dismiss-upgrade-return": "Not now" on the Free return-visit banner
+//     (gc-97k.9); always the SESSION shop.
 //   - default (no intent): merchant feedback on unknown scripts (unchanged).
 // E2 is a trust/accuracy feature available to ALL plans — no plan gate here.
 // ---------------------------------------------------------------------------
@@ -986,6 +1074,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const formData = await request.formData();
   const intent = formData.get("intent");
+
+  // gc-97k.9: "Not now" on the return-visit upgrade banner.
+  if (intent === "dismiss-upgrade-return") {
+    await dismissUpgradeReturn(session.shop, new Date());
+    return { success: true, dismissed: "upgrade-return" as const };
+  }
 
   // E2.3 — suppress a single finding instance.
   if (intent === "ignore-instance") {
@@ -1174,6 +1268,7 @@ export default function ScanDetail() {
     findings,
     findingsPagination,
     previewFindings,
+    upgradeReturn,
     upgradePreview,
     pricingPlansUrl,
     trialEligible,
@@ -1229,6 +1324,15 @@ export default function ScanDetail() {
   const diffLoadTriggered = useRef(false);
 
   const revalidator = useRevalidator();
+
+  // Return-visit banner "Not now" (gc-97k.9): hide optimistically, then post
+  // the dismissal to this route's action (same idiom as the home-page nudges).
+  const dismissFetcher = useFetcher();
+  const [upgradeReturnDismissed, setUpgradeReturnDismissed] = useState(false);
+  const handleDismissUpgradeReturn = () => {
+    setUpgradeReturnDismissed(true);
+    dismissFetcher.submit({ intent: "dismiss-upgrade-return" }, { method: "POST" });
+  };
 
   // Native review popup (gc-97k.7): requested at most once per mount; the ref
   // survives StrictMode's double-invoked effect and every re-render/poll.
@@ -1653,6 +1757,18 @@ export default function ScanDetail() {
               </FindingsTable>
             </s-stack>
           </s-banner>
+        )}
+
+        {/* Return-visit upgrade banner (gc-97k.9), Free only: at the top of the
+            results, below only the security alert (safety outranks an upsell).
+            While it shows, the inline teaser below is not rendered. */}
+        {upgradeReturn && !upgradeReturnDismissed && (
+          <UpgradeReturnBanner
+            preview={upgradeReturn}
+            pricingPlansUrl={pricingPlansUrl}
+            trialEligible={trialEligible}
+            onDismiss={handleDismissUpgradeReturn}
+          />
         )}
 
         {/* Row 1: Status bar — compact metadata line */}

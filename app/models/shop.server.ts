@@ -25,6 +25,10 @@ export type ShopMetadata = {
   lastPromptKey: string | null;
   lastPromptShownAt: Date | null;
   reviewPopupRequestedAt: Date | null;
+  upgradeReturnLastShownAt: Date | null;
+  upgradeReturnLastDismissedAt: Date | null;
+  upgradeReturnDismissCount: number;
+  upgradeReturnShownAt: Date | null;
 };
 
 /**
@@ -87,6 +91,10 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       lastPromptKey: true,
       lastPromptShownAt: true,
       reviewPopupRequestedAt: true,
+      upgradeReturnLastShownAt: true,
+      upgradeReturnLastDismissedAt: true,
+      upgradeReturnDismissCount: true,
+      upgradeReturnShownAt: true,
     },
   });
 }
@@ -326,12 +334,16 @@ export async function stampPlanReconciledAt(domain: string): Promise<{ id: strin
 
 /**
  * The Shop stamp columns that in-app nudges claim once per merchant (gc-97k.4
- * upgrade preview, gc-97k.3 feedback).
+ * upgrade preview, gc-97k.3 feedback, gc-97k.9 upgrade return).
  */
 export type NudgeStageColumn =
   | "upgradePreviewShownAt"
   | "upgradePreviewClickedAt"
   | "upgradePreviewConvertedAt"
+  | "upgradeReturnShownAt"
+  | "upgradeReturnClickedAt"
+  | "upgradeReturnDismissedAt"
+  | "upgradeReturnConvertedAt"
   | "feedbackNudgeShownAt"
   | "feedbackNudgeClickedAt"
   | "feedbackNudgeDismissedAt"
@@ -396,6 +408,32 @@ export async function claimPromptSlot(
     data: { lastPromptKey: promptKey, lastPromptShownAt: now },
   });
   return count === 1;
+}
+
+/**
+ * Start a new weekly episode of the return-visit upgrade nudge (gc-97k.9):
+ * a plain update of upgradeReturnLastShownAt. Concurrent first loads of the
+ * same episode each write a near-identical `now`, which is harmless. A missing
+ * shop row is a safe no-op.
+ */
+export async function startUpgradeReturnEpisode(domain: string, now: Date): Promise<void> {
+  await db.shop.updateMany({ where: { domain }, data: { upgradeReturnLastShownAt: now } });
+}
+
+/**
+ * Record a "Not now" on the return-visit upgrade nudge (gc-97k.9) in ONE
+ * statement: the count increments in SQL (`SET count = count + 1`), so
+ * concurrent dismissals never lose an increment, and upgradeReturnLastDismissedAt
+ * ends the current episode. A missing shop row is a safe no-op.
+ */
+export async function recordUpgradeReturnDismissal(domain: string, now: Date): Promise<void> {
+  await db.shop.updateMany({
+    where: { domain },
+    data: {
+      upgradeReturnDismissCount: { increment: 1 },
+      upgradeReturnLastDismissedAt: now,
+    },
+  });
 }
 
 /**

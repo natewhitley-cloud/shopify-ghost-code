@@ -119,3 +119,61 @@ it("rejects, at compile time, a stage the nudge does not have", () => {
   const invalid = () => recordNudgeStageOnce("upgrade_preview", "dismissed", DOMAIN);
   expect(typeof invalid).toBe("function");
 });
+
+// ---------------------------------------------------------------------------
+// Return-visit upgrade nudge stages (gc-97k.9)
+// ---------------------------------------------------------------------------
+
+describe("upgrade_return stages (gc-97k.9)", () => {
+  const RETURN_STAGES = {
+    shown: { column: "upgradeReturnShownAt", event: "nudge_shown", extra: {} },
+    clicked: { column: "upgradeReturnClickedAt", event: "nudge_clicked", extra: {} },
+    dismissed: { column: "upgradeReturnDismissedAt", event: "nudge_dismissed", extra: {} },
+    converted: {
+      column: "upgradeReturnConvertedAt",
+      event: "nudge_converted",
+      // Only a merchant who SAW the banner converts it (the click ping can be lost).
+      extra: { upgradeReturnShownAt: { not: null } },
+    },
+  } as const;
+
+  it.each(Object.keys(RETURN_STAGES) as Array<keyof typeof RETURN_STAGES>)(
+    "%s claims its own column (with its precondition) and emits one upgrade_return event",
+    async (stage) => {
+      const { column, event, extra } = RETURN_STAGES[stage];
+      mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+
+      await expect(recordNudgeStageOnce("upgrade_return", stage, DOMAIN)).resolves.toBe(true);
+
+      expect(mockDb.shop.updateMany.mock.calls[0][0].where).toEqual({
+        ...extra,
+        domain: DOMAIN,
+        [column]: null,
+      });
+      expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          eventType: event,
+          key: DOMAIN,
+          metadata: { nudgeKey: "upgrade_return" },
+        }),
+      });
+    },
+  );
+
+  it.each(Object.keys(RETURN_STAGES) as Array<keyof typeof RETURN_STAGES>)(
+    "%s emits once across concurrent calls",
+    async (stage) => {
+      mockDb.shop.updateMany
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 });
+
+      const results = await Promise.all([
+        recordNudgeStageOnce("upgrade_return", stage, DOMAIN),
+        recordNudgeStageOnce("upgrade_return", stage, DOMAIN),
+      ]);
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+    },
+  );
+});

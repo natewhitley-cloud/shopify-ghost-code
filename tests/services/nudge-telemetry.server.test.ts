@@ -54,11 +54,12 @@ beforeEach(() => {
 });
 
 describe("nudge constants", () => {
-  it("exposes the two planned nudge keys with stable string values", () => {
+  it("exposes the nudge keys with stable string values", () => {
     expect(NUDGE_KEYS).toEqual({
       UPGRADE_PREVIEW: "upgrade_preview",
       FEEDBACK: "feedback",
       REVIEW_REQUEST: "review_request",
+      UPGRADE_RETURN: "upgrade_return",
     });
   });
 

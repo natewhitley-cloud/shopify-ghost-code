@@ -56,6 +56,17 @@ const NUDGE_STAGE_CLAIMS = {
   // event (app/services/review-request.server). Empty here means
   // recordNudgeStageOnce cannot be called for it (no stage type-checks).
   [NUDGE_KEYS.REVIEW_REQUEST]: {},
+  // Return-visit upgrade nudge (gc-97k.9). Like the upgrade preview, converted
+  // counts only a merchant who SAW it (the click ping can be lost).
+  [NUDGE_KEYS.UPGRADE_RETURN]: {
+    shown: { column: "upgradeReturnShownAt" },
+    clicked: { column: "upgradeReturnClickedAt" },
+    dismissed: { column: "upgradeReturnDismissedAt" },
+    converted: {
+      column: "upgradeReturnConvertedAt",
+      extraWhere: { upgradeReturnShownAt: { not: null } },
+    },
+  },
 } as const satisfies Record<NudgeKey, Partial<Record<NudgeStage, StageClaim>>>;
 
 /** The stages a given nudge supports (e.g. no `dismissed` for the upgrade preview). */

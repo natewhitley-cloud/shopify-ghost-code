@@ -24,7 +24,7 @@
  * plan untouched so reconciliation can never break the app load.
  */
 
-import { recordUpgradePreviewStageOnce } from "./upgrade-preview-nudge.server";
+import { recordNudgeStageOnce } from "./nudge-stage.server";
 import {
   PLAN_RANK,
   PLANS,
@@ -34,6 +34,7 @@ import {
 } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { isAccessDeniedError, type GraphQLResponseError } from "../lib/scope-check.server";
+import { UPGRADE_ASK_KEYS } from "../lib/upgrade-preview";
 import { recordBillingEvent } from "../models/billing-event.server";
 import { stampPlanReconciledAt, updateShopPlanByDomain } from "../models/shop.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -226,14 +227,17 @@ export async function reconcileShopPlan(
 
   if (options.recordEvent) {
     recordReconcileBillingEvent(updated.id, shop.plan, effectivePlan);
-    // Upgrade-preview nudge conversion (gc-97k.4): a merchant-initiated move
-    // from Free to a paid plan, by a merchant who was shown the teaser
-    // (enforced by the claim), counts once ever. Never throws.
+    // Upgrade nudge conversions (gc-97k.4 teaser, gc-97k.9 return banner): a
+    // merchant-initiated move from Free to a paid plan counts once ever for
+    // EACH upgrade ask the merchant was shown (enforced by each claim's shown
+    // precondition). Never throws.
     if (
       shop.plan === PLANS.FREE &&
       determineBillingEventType(shop.plan, effectivePlan) === "upgrade"
     ) {
-      await recordUpgradePreviewStageOnce("converted", shop.domain);
+      for (const nudgeKey of UPGRADE_ASK_KEYS) {
+        await recordNudgeStageOnce(nudgeKey, "converted", shop.domain);
+      }
     }
   }
 

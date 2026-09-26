@@ -1,11 +1,12 @@
 /**
  * Tests for app/routes/app.upgrade.tsx (gc-97k.4, reworked in the gc-97k
- * review): the upgrade-preview CTA's best-effort click ping (POST action).
+ * review; gc-97k.9 added the return banner): the Free upgrade asks' best-effort
+ * click ping (POST action).
  *
  * Strategy:
  *   - Mock authenticate.admin() to control the session.
  *   - Mock the once-per-merchant stage recorder; its dedupe is covered in
- *     tests/services/upgrade-preview-nudge.server.test.ts.
+ *     tests/services/nudge-stage.server.test.ts.
  *   - Navigation is NOT this route's job (the CTA is a plain top-level link),
  *     so the action must never redirect: always 204.
  */
@@ -16,17 +17,17 @@ vi.mock("../../app/shopify.server", () => ({
   authenticate: { admin: vi.fn() },
 }));
 
-vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
-  recordUpgradePreviewStageOnce: vi.fn(),
+vi.mock("../../app/services/nudge-stage.server", () => ({
+  recordNudgeStageOnce: vi.fn(),
 }));
 
 import * as upgradeRoute from "../../app/routes/app.upgrade";
 import { action } from "../../app/routes/app.upgrade";
-import { recordUpgradePreviewStageOnce } from "../../app/services/upgrade-preview-nudge.server";
+import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
-const mockRecordStage = recordUpgradePreviewStageOnce as ReturnType<typeof vi.fn>;
+const mockRecordStage = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
 
 const SHOP = "nw-dev-store-2.myshopify.com";
 
@@ -48,14 +49,17 @@ beforeEach(() => {
 });
 
 describe("app.upgrade action", () => {
-  it("records the upgrade-preview click once with the unmodified session shop, returns 204", async () => {
-    const res = await action(args({ src: "upgrade_preview" }));
+  it.each(["upgrade_preview", "upgrade_return"])(
+    "records the %s click once with the unmodified session shop, returns 204",
+    async (src) => {
+      const res = await action(args({ src }));
 
-    expect(mockRecordStage).toHaveBeenCalledTimes(1);
-    expect(mockRecordStage).toHaveBeenCalledWith("clicked", SHOP);
-    expect(res.status).toBe(204);
-    expect(res.headers.get("Location")).toBeNull();
-  });
+      expect(mockRecordStage).toHaveBeenCalledTimes(1);
+      expect(mockRecordStage).toHaveBeenCalledWith(src, "clicked", SHOP);
+      expect(res.status).toBe(204);
+      expect(res.headers.get("Location")).toBeNull();
+    },
+  );
 
   it("does not record without src (still 204)", async () => {
     const res = await action(args({}));
@@ -64,12 +68,15 @@ describe("app.upgrade action", () => {
     expect(res.status).toBe(204);
   });
 
-  it("does not record for an unknown src value", async () => {
-    const res = await action(args({ src: "settings" }));
+  it.each(["settings", "feedback", "review_request", "UPGRADE_RETURN", "upgrade_return "])(
+    "does not record for an unknown src value %j",
+    async (src) => {
+      const res = await action(args({ src }));
 
-    expect(mockRecordStage).not.toHaveBeenCalled();
-    expect(res.status).toBe(204);
-  });
+      expect(mockRecordStage).not.toHaveBeenCalled();
+      expect(res.status).toBe(204);
+    },
+  );
 
   it("returns 204 when the click was already recorded (claim lost)", async () => {
     mockRecordStage.mockResolvedValue(false);
@@ -89,7 +96,7 @@ describe("app.upgrade action", () => {
     );
 
     expect(mockRecordStage).toHaveBeenCalledTimes(1);
-    expect(mockRecordStage).toHaveBeenCalledWith("clicked", SHOP);
+    expect(mockRecordStage).toHaveBeenCalledWith("upgrade_preview", "clicked", SHOP);
     expect(res.status).toBe(204);
   });
 

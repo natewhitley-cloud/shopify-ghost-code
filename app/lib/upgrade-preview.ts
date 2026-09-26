@@ -15,6 +15,20 @@ import { computeLaneSummary } from "./finding-consequence";
 import { PLANS } from "./plans";
 import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "./trial-cta";
 
+/**
+ * Every Free upgrade ask, by its NUDGE_KEYS value: the inline teaser (gc-97k.4)
+ * and the return-visit banner (gc-97k.9). The /app/upgrade click ping accepts
+ * exactly these as `src`, and a Free -> paid upgrade converts each one the
+ * merchant was shown.
+ */
+export const UPGRADE_ASK_KEYS = ["upgrade_preview", "upgrade_return"] as const;
+
+export type UpgradeAskKey = (typeof UPGRADE_ASK_KEYS)[number];
+
+export function isUpgradeAskKey(value: unknown): value is UpgradeAskKey {
+  return typeof value === "string" && (UPGRADE_ASK_KEYS as readonly string[]).includes(value);
+}
+
 /** Most entries the breakdown lists; any overflow folds into one "Other" entry. */
 export const UPGRADE_PREVIEW_MAX_GROUPS = 4;
 

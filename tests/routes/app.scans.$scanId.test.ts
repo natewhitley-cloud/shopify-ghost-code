@@ -42,6 +42,9 @@ vi.mock("../../app/models/shop.server", () => ({
   // gc-97k.6/7: the REAL resolvePrompt runs; only its slot write is mocked.
   claimPromptSlot: vi.fn(),
   getShopMetadata: vi.fn(),
+  // gc-97k.9: the REAL upgrade-return service runs; only its writes are mocked.
+  startUpgradeReturnEpisode: vi.fn(),
+  recordUpgradeReturnDismissal: vi.fn(),
 }));
 
 // gc-97k.8: the BillingEvent history read behind trial eligibility, mocked at
@@ -52,6 +55,8 @@ vi.mock("../../app/models/billing-event.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   getScanById: vi.fn(),
+  // gc-97k.9: the return-visit banner's "first successful scan 24h+ ago" read.
+  getFirstSuccessfulScanCompletedAt: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => ({
@@ -142,8 +147,14 @@ import {
   ignoreFindingApp,
   ignoreFindingInstance,
 } from "../../app/models/ignored-finding.server";
-import { getScanById } from "../../app/models/scan.server";
-import { claimPromptSlot, claimShopStamp, getShopMetadata } from "../../app/models/shop.server";
+import { getFirstSuccessfulScanCompletedAt, getScanById } from "../../app/models/scan.server";
+import {
+  claimPromptSlot,
+  claimShopStamp,
+  getShopMetadata,
+  recordUpgradeReturnDismissal,
+  startUpgradeReturnEpisode,
+} from "../../app/models/shop.server";
 import {
   findUnknownScriptForShop,
   getUnknownScriptsForScan,
@@ -162,6 +173,7 @@ import {
   skippedFilesNotice,
   recordUpgradeClick,
   UpgradePreviewBanner,
+  UpgradeReturnBanner,
 } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
@@ -176,7 +188,10 @@ const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockClaimShopStamp = claimShopStamp as ReturnType<typeof vi.fn>;
 const mockClaimPromptSlot = claimPromptSlot as ReturnType<typeof vi.fn>;
+const mockStartEpisode = startUpgradeReturnEpisode as ReturnType<typeof vi.fn>;
+const mockRecordDismissal = recordUpgradeReturnDismissal as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
+const mockGetFirstSuccessfulScan = getFirstSuccessfulScanCompletedAt as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
 const mockGetFindingsPageForScan = getFindingsPageForScan as ReturnType<typeof vi.fn>;
 const mockGetAppAttributionForScan = getAppAttributionForScan as ReturnType<typeof vi.fn>;
@@ -212,6 +227,11 @@ const SHOP = {
   lastPromptKey: null as string | null,
   lastPromptShownAt: null as Date | null,
   reviewPopupRequestedAt: null as Date | null,
+  // gc-97k.9: the return-visit banner never shown or dismissed.
+  upgradeReturnLastShownAt: null as Date | null,
+  upgradeReturnLastDismissedAt: null as Date | null,
+  upgradeReturnDismissCount: 0,
+  upgradeReturnShownAt: null as Date | null,
 };
 
 /** Scan fixture — no findings included; loader always uses includeFindings: false. */
@@ -321,6 +341,9 @@ beforeEach(() => {
   mockGetShopMetadata.mockResolvedValue(SHOP);
   mockClaimPromptSlot.mockResolvedValue(true);
   mockGetScanById.mockResolvedValue(SCAN);
+  // No successful scan on record by default, so the return banner stays off
+  // unless a test opts in.
+  mockGetFirstSuccessfulScan.mockResolvedValue(null);
   mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
   mockGetFindingsPageForScan.mockResolvedValue(SINGLE_FINDING_PAGE);
   mockGetAppAttributionForScan.mockResolvedValue([]);
@@ -1131,6 +1154,279 @@ describe("app.scans.$scanId loader", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Return-visit upgrade banner, Free only (gc-97k.9)
+  // -------------------------------------------------------------------------
+
+  describe("return-visit upgrade banner (gc-97k.9)", () => {
+    const NOW = new Date("2026-09-26T12:00:00Z");
+    const MIN = 60 * 1000;
+    const HOUR = 60 * MIN;
+    const DAY = 24 * HOUR;
+    const ago = (ms: number) => new Date(NOW.getTime() - ms);
+
+    type Result = {
+      upgradeReturn: { hiddenCount: number; groups: unknown[] } | null;
+      upgradePreview: { hiddenCount: number } | null;
+      requestReview: boolean;
+      trialEligible: boolean;
+      previewFindings: unknown[];
+    };
+
+    /** A Free shop with 10 findings (5 shown, 5 hidden), review popup already requested. */
+    function freeShop(overrides: Record<string, unknown> = {}) {
+      mockGetShopMetadata.mockResolvedValue({
+        ...SHOP,
+        plan: "free",
+        upgradePreviewShownAt: null,
+        reviewPopupRequestedAt: ago(30 * DAY),
+        ...overrides,
+      });
+      mockCanViewFindingDetails.mockReturnValue(false);
+    }
+
+    function tenFindings() {
+      const rows = Array.from({ length: 10 }, (_, i) => ({
+        ...FINDING_ONE,
+        id: `f-${i}`,
+        findingType: i < 6 ? "GHOST_SCRIPT" : "GHOST_HREFLANG",
+        createdAt: new Date(Date.UTC(2026, 2, 20, 10, i)),
+      }));
+      mockGetFindingSummary.mockResolvedValue({
+        total: 10,
+        bySeverity: { HIGH: 10, MEDIUM: 0, LOW: 0 },
+        byType: { GHOST_SCRIPT: 6, GHOST_HREFLANG: 4 },
+      });
+      serveTopFindings(rows);
+    }
+
+    const load = async () => (await loader(makeLoaderArgs("scan-1"))) as unknown as Result;
+    const claimedColumns = () => mockClaimShopStamp.mock.calls.map((c) => c[1]);
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      freeShop();
+      tenFindings();
+      mockGetFirstSuccessfulScan.mockResolvedValue(ago(2 * DAY));
+      mockClaimShopStamp.mockResolvedValue(true);
+      mockRecordUpgradePreviewStage.mockResolvedValue(true);
+      mockHasBillingHistory.mockResolvedValue(false);
+      mockStartEpisode.mockResolvedValue(undefined);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("shows the banner with the hidden breakdown and HIDES the teaser", async () => {
+      const result = await load();
+
+      expect(result.upgradeReturn).toEqual({
+        hiddenCount: 5,
+        groups: [
+          { label: "Speed", count: 3 },
+          { label: "Found by Google & AI", count: 2 },
+        ],
+      });
+      expect(result.upgradePreview).toBeNull();
+      // The preview rows themselves stay.
+      expect(result.previewFindings).toHaveLength(5);
+      expect(result.trialEligible).toBe(true);
+      expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+        SHOP.domain,
+        "upgrade_return",
+        expect.anything(),
+        NOW,
+      );
+    });
+
+    it("banner rendered: starts the episode, emits upgrade_return `shown`, never upgrade_preview `shown`", async () => {
+      await load();
+
+      expect(mockStartEpisode).toHaveBeenCalledWith(SHOP.domain, NOW);
+      expect(claimedColumns()).toEqual(["upgradeReturnShownAt"]);
+      expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
+    });
+
+    it("banner not rendered: the teaser shows exactly as before, with its `shown`", async () => {
+      freeShop({ upgradeReturnDismissCount: 3 });
+
+      const result = await load();
+
+      expect(result.upgradeReturn).toBeNull();
+      expect(result.upgradePreview?.hiddenCount).toBe(5);
+      expect(mockRecordUpgradePreviewStage).toHaveBeenCalledWith("shown", SHOP.domain);
+      expect(mockStartEpisode).not.toHaveBeenCalled();
+      expect(claimedColumns()).not.toContain("upgradeReturnShownAt");
+    });
+
+    it("does not re-emit `shown` once stamped (pre-check skips the claim)", async () => {
+      freeShop({ upgradeReturnShownAt: ago(8 * DAY), upgradeReturnLastShownAt: ago(8 * DAY) });
+
+      await load();
+
+      expect(mockStartEpisode).toHaveBeenCalledWith(SHOP.domain, NOW); // new weekly episode
+      expect(claimedColumns()).not.toContain("upgradeReturnShownAt");
+    });
+
+    describe("eligibility boundaries", () => {
+      it("first successful scan exactly 24h ago: shows", async () => {
+        mockGetFirstSuccessfulScan.mockResolvedValue(ago(DAY));
+
+        expect((await load()).upgradeReturn).not.toBeNull();
+      });
+
+      it("first successful scan 23h59m ago: no banner, teaser instead", async () => {
+        mockGetFirstSuccessfulScan.mockResolvedValue(ago(DAY - MIN));
+
+        const result = await load();
+
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.upgradePreview).not.toBeNull();
+      });
+
+      it("no successful scan on record: no banner", async () => {
+        mockGetFirstSuccessfulScan.mockResolvedValue(null);
+
+        expect((await load()).upgradeReturn).toBeNull();
+      });
+
+      it("dismissed twice: still shows; three times: retired", async () => {
+        freeShop({ upgradeReturnDismissCount: 2 });
+        expect((await load()).upgradeReturn).not.toBeNull();
+
+        freeShop({ upgradeReturnDismissCount: 3 });
+        expect((await load()).upgradeReturn).toBeNull();
+      });
+
+      it("last episode started exactly 7 days ago: a new episode shows", async () => {
+        freeShop({ upgradeReturnLastShownAt: ago(7 * DAY), upgradeReturnShownAt: ago(7 * DAY) });
+
+        expect((await load()).upgradeReturn).not.toBeNull();
+        expect(mockStartEpisode).toHaveBeenCalledWith(SHOP.domain, NOW);
+      });
+
+      it("last episode started 1ms short of 7 days ago: no banner", async () => {
+        freeShop({
+          upgradeReturnLastShownAt: ago(7 * DAY - 1),
+          upgradeReturnShownAt: ago(7 * DAY),
+        });
+
+        expect((await load()).upgradeReturn).toBeNull();
+      });
+
+      it.each(["Standard", "Professional"])("never on a paid %s shop", async (plan) => {
+        freeShop({ plan });
+        mockCanViewFindingDetails.mockReturnValue(true);
+
+        const result = await load();
+
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.upgradePreview).toBeNull();
+        expect(mockGetFirstSuccessfulScan).not.toHaveBeenCalled();
+        expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+      });
+
+      it("never without hidden findings (skips the first-scan read)", async () => {
+        mockGetFindingSummary.mockResolvedValue({
+          total: 1,
+          bySeverity: { HIGH: 1, MEDIUM: 0, LOW: 0 },
+          byType: { GHOST_SCRIPT: 1 },
+        });
+        serveTopFindings([FINDING_ONE]);
+
+        const result = await load();
+
+        expect(result.upgradeReturn).toBeNull();
+        expect(mockGetFirstSuccessfulScan).not.toHaveBeenCalled();
+      });
+
+      it.each(["FAILED", "IN_PROGRESS"])("never on a %s scan", async (status) => {
+        mockGetScanById.mockResolvedValue({ ...SCAN, status });
+
+        expect((await load()).upgradeReturn).toBeNull();
+      });
+    });
+
+    describe("episodes and reloads", () => {
+      it("persists on a reload inside its 24h window without a new episode or claim", async () => {
+        freeShop({
+          upgradeReturnLastShownAt: ago(3 * HOUR),
+          upgradeReturnShownAt: ago(3 * HOUR),
+          lastPromptKey: "upgrade_return",
+          lastPromptShownAt: ago(3 * HOUR),
+        });
+
+        const result = await load();
+
+        expect(result.upgradeReturn).not.toBeNull();
+        expect(mockStartEpisode).not.toHaveBeenCalled();
+        expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+      });
+
+      it('stays gone after "Not now" for the rest of the window, with no other prompt either', async () => {
+        freeShop({
+          upgradeReturnLastShownAt: ago(3 * HOUR),
+          upgradeReturnLastDismissedAt: ago(2 * HOUR),
+          upgradeReturnDismissCount: 1,
+          upgradeReturnShownAt: ago(3 * HOUR),
+          lastPromptKey: "upgrade_return",
+          lastPromptShownAt: ago(3 * HOUR),
+          // Would be eligible for the popup, but the window is held.
+          reviewPopupRequestedAt: null,
+        });
+
+        const result = await load();
+
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.requestReview).toBe(false);
+        expect(result.upgradePreview).not.toBeNull(); // the teaser is content, never capped
+      });
+
+      it("returns the following week (dismissed once, 7 days later)", async () => {
+        freeShop({
+          upgradeReturnLastShownAt: ago(7 * DAY),
+          upgradeReturnLastDismissedAt: ago(7 * DAY - HOUR),
+          upgradeReturnDismissCount: 1,
+          upgradeReturnShownAt: ago(7 * DAY),
+          lastPromptKey: "upgrade_return",
+          lastPromptShownAt: ago(7 * DAY),
+        });
+
+        expect((await load()).upgradeReturn).not.toBeNull();
+      });
+    });
+
+    describe("cap interplay", () => {
+      it("the review popup wins priority when both are eligible (teaser shows instead)", async () => {
+        freeShop({ reviewPopupRequestedAt: null });
+
+        const result = await load();
+
+        expect(result.requestReview).toBe(true);
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.upgradePreview).not.toBeNull();
+        expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+          SHOP.domain,
+          "review_popup",
+          expect.anything(),
+          NOW,
+        );
+      });
+
+      it("is blocked while another prompt holds the 24h window", async () => {
+        freeShop({ lastPromptKey: "feedback", lastPromptShownAt: ago(23 * HOUR) });
+
+        const result = await load();
+
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.upgradePreview).not.toBeNull();
+        expect(mockStartEpisode).not.toHaveBeenCalled();
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Durable firstResultsViewedAt milestone (gc-dpm.1)
   // -------------------------------------------------------------------------
 
@@ -1931,6 +2227,43 @@ describe("scanProgressLabel", () => {
 // UpgradePreviewBanner (gc-97k.4): the free-tier teaser's copy + CTA
 // ---------------------------------------------------------------------------
 
+type El = { type: unknown; props: { children?: unknown; [k: string]: unknown } };
+
+/**
+ * The first <a> in a component's element tree, expanding function components
+ * (e.g. the shared upgrade CTA link) by calling them with their props.
+ */
+function findAnchor(node: unknown): El | null {
+  if (!node || typeof node !== "object") return null;
+  if (Array.isArray(node)) {
+    for (const child of node) {
+      const hit = findAnchor(child);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  const el = node as El;
+  if (el.type === "a") return el;
+  if (typeof el.type === "function") {
+    return findAnchor((el.type as (p: unknown) => unknown)(el.props));
+  }
+  return findAnchor(el.props?.children);
+}
+
+/** Click the anchor with fetch stubbed; returns the click ping's POST body. */
+function clickPingBody(anchor: El | null): string | undefined {
+  const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+  vi.stubGlobal("fetch", fetchMock);
+  try {
+    (anchor?.props.onClick as () => void)();
+    const [url, init] = (fetchMock.mock.calls[0] ?? []) as [string, RequestInit];
+    expect(url).toBe("/app/upgrade");
+    return init ? String(init.body) : undefined;
+  } finally {
+    vi.unstubAllGlobals();
+  }
+}
+
 describe("UpgradePreviewBanner", () => {
   const PRICING_URL = "https://admin.shopify.com/store/test-shop/charges/ghost-code/pricing_plans";
 
@@ -2009,32 +2342,18 @@ describe("UpgradePreviewBanner", () => {
   );
 
   it.each([true, false])(
-    "wires the anchor's onClick to the best-effort click ping (trialEligible=%s)",
+    "wires the anchor's onClick to the best-effort click ping, src=upgrade_preview (trialEligible=%s)",
     (trialEligible) => {
-      const tree = UpgradePreviewBanner({
-        preview: { hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] },
-        pricingPlansUrl: PRICING_URL,
-        trialEligible,
-      });
-      type El = { type: unknown; props: { children?: unknown; [k: string]: unknown } };
-      function findAnchor(node: unknown): El | null {
-        if (!node || typeof node !== "object") return null;
-        if (Array.isArray(node)) {
-          for (const child of node) {
-            const hit = findAnchor(child);
-            if (hit) return hit;
-          }
-          return null;
-        }
-        const el = node as El;
-        if (el.type === "a") return el;
-        return findAnchor(el.props?.children);
-      }
-
-      const anchor = findAnchor(tree);
+      const anchor = findAnchor(
+        UpgradePreviewBanner({
+          preview: { hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] },
+          pricingPlansUrl: PRICING_URL,
+          trialEligible,
+        }),
+      );
       expect(anchor?.props.href).toBe(PRICING_URL);
       expect(anchor?.props.target).toBe("_top");
-      expect(anchor?.props.onClick).toBe(recordUpgradeClick);
+      expect(clickPingBody(anchor)).toBe("src=upgrade_preview");
     },
   );
 
@@ -2061,6 +2380,150 @@ describe("UpgradePreviewBanner", () => {
 // ---------------------------------------------------------------------------
 // Oversized-file skip banner copy
 // ---------------------------------------------------------------------------
+
+describe("UpgradeReturnBanner (gc-97k.9)", () => {
+  const PRICING_URL = "https://admin.shopify.com/store/test-shop/charges/ghost-code/pricing_plans";
+  const PREVIEW = {
+    hiddenCount: 14,
+    groups: [
+      { label: "Speed", count: 8 },
+      { label: "Found by Google & AI", count: 6 },
+    ],
+  };
+
+  function element(trialEligible: boolean, onDismiss = vi.fn()) {
+    return UpgradeReturnBanner({
+      preview: PREVIEW,
+      pricingPlansUrl: PRICING_URL,
+      trialEligible,
+      onDismiss,
+    });
+  }
+
+  const render = (trialEligible: boolean) => renderToStaticMarkup(element(trialEligible));
+
+  it("never-paid Free shop: heading, shared teaser body (trial), and 'Start 7-day free trial'", () => {
+    const html = render(true);
+
+    expect(html).toContain('heading="Ready to clean up the rest?"');
+    expect(html).toContain('tone="info"');
+    expect(html).toContain(
+      "14 more findings on Standard: Speed (8), Found by Google &amp; AI (6). Try Standard free for 7 days to see every file, line, and fix.",
+    );
+    expect(html).toContain(">Start 7-day free trial</s-button>");
+    expect(html).toContain(">Not now</s-button>");
+  });
+
+  it("previously-paid shop: upgrade body and 'Upgrade to Standard', no trial promise", () => {
+    const html = render(false);
+
+    expect(html).toContain(
+      "14 more findings on Standard: Speed (8), Found by Google &amp; AI (6). Upgrade to Standard to see every file, line, and fix.",
+    );
+    expect(html).toContain(">Upgrade to Standard</s-button>");
+    expect(html).not.toMatch(/trial|free for/i);
+  });
+
+  it("uses the SAME copy source as the teaser (body and CTA identical)", () => {
+    for (const trialEligible of [true, false]) {
+      const teaser = renderToStaticMarkup(
+        UpgradePreviewBanner({ preview: PREVIEW, pricingPlansUrl: PRICING_URL, trialEligible }),
+      );
+      const banner = render(trialEligible);
+      const body = (html: string) => html.match(/<s-text>([^<]*)<\/s-text>/)?.[1];
+      const cta = (html: string) => html.match(/<s-button variant="primary">([^<]*)</)?.[1];
+      expect(body(banner)).toBe(body(teaser));
+      expect(cta(banner)).toBe(cta(teaser));
+    }
+  });
+
+  it.each([true, false])(
+    "CTA is a plain top-level link to the plan page, pinging src=upgrade_return (trialEligible=%s)",
+    (trialEligible) => {
+      const html = render(trialEligible);
+      const anchors = html.match(/<a [^>]*>/g) ?? [];
+      expect(anchors).toHaveLength(1);
+      expect(anchors[0]).toContain(`href="${PRICING_URL}"`);
+      expect(anchors[0]).toContain('target="_top"');
+
+      const anchor = findAnchor(element(trialEligible));
+      expect(clickPingBody(anchor)).toBe("src=upgrade_return");
+    },
+  );
+
+  it("'Not now' calls onDismiss (the page posts the dismiss intent)", () => {
+    const onDismiss = vi.fn();
+    type Node = { type: unknown; props: Record<string, unknown> };
+    function findButton(node: unknown, label: string): Node | null {
+      if (!node || typeof node !== "object") return null;
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          const hit = findButton(child, label);
+          if (hit) return hit;
+        }
+        return null;
+      }
+      const el = node as Node;
+      if (el.type === "s-button" && el.props.children === label) return el;
+      return findButton(el.props?.children, label);
+    }
+
+    const button = findButton(element(true, onDismiss), "Not now");
+    (button?.props.onClick as () => void)();
+
+    expect(onDismiss).toHaveBeenCalledTimes(1);
+  });
+
+  it("has no em or en dash and never mentions security or malicious findings", () => {
+    for (const trialEligible of [true, false]) {
+      const html = render(trialEligible);
+      expect(html).not.toMatch(/[–—]/);
+      expect(html).not.toMatch(/malicious|security/i);
+    }
+  });
+});
+
+describe("app.scans.$scanId action: dismiss-upgrade-return (gc-97k.9)", () => {
+  beforeEach(() => {
+    mockClaimShopStamp.mockResolvedValue(true);
+    mockRecordDismissal.mockResolvedValue(undefined);
+  });
+
+  it("records the dismissal for the SESSION shop and claims `dismissed` once", async () => {
+    const result = await action(
+      makeActionArgs({ intent: "dismiss-upgrade-return", shop: "attacker.myshopify.com" }),
+    );
+
+    expect(result).toEqual({ success: true, dismissed: "upgrade-return" });
+    expect(mockRecordDismissal).toHaveBeenCalledTimes(1);
+    expect(mockRecordDismissal).toHaveBeenCalledWith(SHOP.domain, expect.any(Date));
+    expect(mockClaimShopStamp).toHaveBeenCalledWith(
+      SHOP.domain,
+      "upgradeReturnDismissedAt",
+      undefined,
+    );
+  });
+
+  it("still succeeds (logged) when the write fails", async () => {
+    const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+    mockRecordDismissal.mockRejectedValue(new Error("db down"));
+
+    const result = await action(makeActionArgs({ intent: "dismiss-upgrade-return" }));
+
+    expect(result).toEqual({ success: true, dismissed: "upgrade-return" });
+    expect(mockClaimShopStamp).not.toHaveBeenCalled();
+    errorSpy.mockRestore();
+  });
+
+  it("throws 404 when the shop cannot be resolved", async () => {
+    mockGetShopMetadata.mockResolvedValue(null);
+
+    await expect(
+      action(makeActionArgs({ intent: "dismiss-upgrade-return" })),
+    ).rejects.toMatchObject({ status: 404 });
+    expect(mockRecordDismissal).not.toHaveBeenCalled();
+  });
+});
 
 describe("skippedFilesNotice", () => {
   it("lists the files and says most checks were skipped (accurate for old and new scans)", () => {
@@ -2219,19 +2682,22 @@ describe("recordUpgradeClick", () => {
     vi.unstubAllGlobals();
   });
 
-  it("POSTs src=upgrade_preview to /app/upgrade with keepalive", () => {
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
-    vi.stubGlobal("fetch", fetchMock);
+  it.each(["upgrade_preview", "upgrade_return"] as const)(
+    "POSTs src=%s to /app/upgrade with keepalive",
+    (src) => {
+      const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+      vi.stubGlobal("fetch", fetchMock);
 
-    recordUpgradeClick();
+      recordUpgradeClick(src);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
-    expect(url).toBe("/app/upgrade");
-    expect(init.method).toBe("POST");
-    expect(init.keepalive).toBe(true);
-    expect(String(init.body)).toBe("src=upgrade_preview");
-  });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe("/app/upgrade");
+      expect(init.method).toBe("POST");
+      expect(init.keepalive).toBe(true);
+      expect(String(init.body)).toBe(`src=${src}`);
+    },
+  );
 
   it("swallows a rejected fetch (no unhandled rejection, no throw)", async () => {
     const fetchMock = vi.fn().mockRejectedValue(new TypeError("Failed to fetch"));
@@ -2240,7 +2706,7 @@ describe("recordUpgradeClick", () => {
     process.on("unhandledRejection", unhandled);
 
     try {
-      expect(() => recordUpgradeClick()).not.toThrow();
+      expect(() => recordUpgradeClick("upgrade_preview")).not.toThrow();
       await new Promise((resolve) => setTimeout(resolve, 0));
       expect(unhandled).not.toHaveBeenCalled();
     } finally {
@@ -2256,6 +2722,6 @@ describe("recordUpgradeClick", () => {
       }),
     );
 
-    expect(() => recordUpgradeClick()).not.toThrow();
+    expect(() => recordUpgradeClick("upgrade_preview")).not.toThrow();
   });
 });

@@ -24,8 +24,9 @@ vi.mock("../../app/models/shop.server", () => ({
 // gc-97k.4: the REAL upgrade-preview-nudge service (and the shared nudge-stage
 // claim it delegates to, gc-97k.3) runs between the reconciler and these two
 // boundaries: the Shop stamp claim (above) and the emitter.
-vi.mock("../../app/services/nudge-telemetry.server", () => ({
-  NUDGE_KEYS: { UPGRADE_PREVIEW: "upgrade_preview", FEEDBACK: "feedback" },
+vi.mock("../../app/services/nudge-telemetry.server", async (importOriginal) => ({
+  NUDGE_KEYS: (await importOriginal<typeof import("../../app/services/nudge-telemetry.server")>())
+    .NUDGE_KEYS,
   recordNudgeShown: vi.fn(),
   recordNudgeClicked: vi.fn(),
   recordNudgeDismissed: vi.fn(),
@@ -563,12 +564,18 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
 
       await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
 
-      expect(mockClaimStage).toHaveBeenCalledTimes(1);
+      // One claim per Free upgrade ask (gc-97k.4 teaser, gc-97k.9 return banner),
+      // each requiring that ask's own `shown` stamp.
+      expect(mockClaimStage).toHaveBeenCalledTimes(2);
       expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "upgradePreviewConvertedAt", {
         upgradePreviewShownAt: { not: null },
       });
-      expect(mockRecordConverted).toHaveBeenCalledTimes(1);
+      expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "upgradeReturnConvertedAt", {
+        upgradeReturnShownAt: { not: null },
+      });
+      expect(mockRecordConverted).toHaveBeenCalledTimes(2);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_preview", DOMAIN);
+      expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_return", DOMAIN);
     },
   );
 
@@ -584,14 +591,15 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
   });
 
   it("does not re-emit on a repeat upgrade (cancel, then upgrade again)", async () => {
-    mockClaimStage.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    // First upgrade: both claims win; second: both lose.
+    mockClaimStage.mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValue(false);
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
     await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
     await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
 
-    expect(mockClaimStage).toHaveBeenCalledTimes(2);
-    expect(mockRecordConverted).toHaveBeenCalledTimes(1);
+    expect(mockClaimStage).toHaveBeenCalledTimes(4);
+    expect(mockRecordConverted).toHaveBeenCalledTimes(2);
   });
 
   it.each([
@@ -656,6 +664,11 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
       "upgrade-preview-nudge-claim-failed",
       expect.objectContaining({ shop: DOMAIN, stage: "converted" }),
     );
+    // The return banner's claim is still attempted (and fails the same way).
+    expect(logger.error).toHaveBeenCalledWith(
+      "upgrade-return-nudge-claim-failed",
+      expect.objectContaining({ shop: DOMAIN, stage: "converted" }),
+    );
   });
 });
 
@@ -689,6 +702,9 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
       upgradePreviewShownAt: null,
       upgradePreviewClickedAt: null,
       upgradePreviewConvertedAt: null,
+      upgradeReturnShownAt: null,
+      upgradeReturnClickedAt: null,
+      upgradeReturnConvertedAt: null,
     };
   });
 
@@ -722,8 +738,32 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
     await upgrade();
     await upgrade();
 
-    expect(mockClaimStage).toHaveBeenCalledTimes(2);
+    expect(mockClaimStage).toHaveBeenCalledTimes(4); // 2 asks x 2 upgrades
     expect(mockRecordConverted).toHaveBeenCalledTimes(1);
+  });
+
+  it("converts the return banner (gc-97k.9) only for a merchant who saw it", async () => {
+    row.upgradeReturnShownAt = new Date();
+
+    await upgrade();
+
+    expect(mockRecordConverted).toHaveBeenCalledTimes(1);
+    expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_return", DOMAIN);
+    expect(row.upgradeReturnConvertedAt).toBeInstanceOf(Date);
+    expect(row.upgradePreviewConvertedAt).toBeNull();
+  });
+
+  it("converts BOTH asks once each when the merchant saw both", async () => {
+    row.upgradePreviewShownAt = new Date();
+    row.upgradeReturnShownAt = new Date();
+
+    await upgrade();
+    await upgrade();
+
+    expect(mockRecordConverted.mock.calls).toEqual([
+      ["upgrade_preview", DOMAIN],
+      ["upgrade_return", DOMAIN],
+    ]);
   });
 
   it("does not emit on a downgrade even when the teaser was shown", async () => {

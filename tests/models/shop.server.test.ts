@@ -71,6 +71,8 @@ import {
   LAST_SEEN_FRESHNESS_MS,
   claimShopStamp,
   claimPromptSlot,
+  recordUpgradeReturnDismissal,
+  startUpgradeReturnEpisode,
 } from "../../app/models/shop.server";
 import {
   NUDGE_KEYS,
@@ -128,6 +130,12 @@ describe("getShopMetadata", () => {
         lastPromptShownAt: true,
         // gc-97k.7: the scan page's once-ever review popup gate.
         reviewPopupRequestedAt: true,
+        // gc-97k.9: the return-visit banner's episode + dismissal gates and
+        // its shown pre-check.
+        upgradeReturnLastShownAt: true,
+        upgradeReturnLastDismissedAt: true,
+        upgradeReturnDismissCount: true,
+        upgradeReturnShownAt: true,
       },
     });
   });
@@ -1306,5 +1314,62 @@ describe("claimPromptSlot", () => {
         NOW,
       ),
     ).resolves.toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Return-visit upgrade nudge episode writes (gc-97k.9)
+// ---------------------------------------------------------------------------
+
+describe("startUpgradeReturnEpisode", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("is a plain update of upgradeReturnLastShownAt keyed on the domain", async () => {
+    const now = new Date("2026-09-26T12:00:00Z");
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await startUpgradeReturnEpisode("s.myshopify.com", now);
+
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { domain: "s.myshopify.com" },
+      data: { upgradeReturnLastShownAt: now },
+    });
+  });
+
+  it("is a safe no-op for a missing shop row", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      startUpgradeReturnEpisode("gone.myshopify.com", new Date()),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("recordUpgradeReturnDismissal", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("increments the count atomically in SQL and stamps the dismissal in one statement", async () => {
+    const now = new Date("2026-09-26T12:00:00Z");
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await recordUpgradeReturnDismissal("s.myshopify.com", now);
+
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { domain: "s.myshopify.com" },
+      data: { upgradeReturnDismissCount: { increment: 1 }, upgradeReturnLastDismissedAt: now },
+    });
+  });
+
+  it("propagates a DB error (the service logs it)", async () => {
+    mockDb.shop.updateMany.mockRejectedValue(new Error("db down"));
+
+    await expect(recordUpgradeReturnDismissal("s.myshopify.com", new Date())).rejects.toThrow(
+      "db down",
+    );
   });
 });
