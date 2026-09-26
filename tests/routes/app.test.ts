@@ -30,8 +30,7 @@ vi.mock("../../app/models/shop.server", () => ({
 }));
 
 vi.mock("../../app/models/ops-event.server", () => ({
-  OPS_EVENT_TYPES: { PAGE_VISIT: "page_visit" },
-  recordOpsEvent: vi.fn(),
+  recordPageVisit: vi.fn(),
 }));
 
 vi.mock("../../app/services/billing-reconciler.server", () => ({
@@ -48,7 +47,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { logger } from "../../app/lib/logger.server";
-import { recordOpsEvent } from "../../app/models/ops-event.server";
+import { recordPageVisit } from "../../app/models/ops-event.server";
 import {
   getOrCreateShopMetadata,
   isLastSeenStale,
@@ -75,7 +74,7 @@ const mockIsStale = isPlanReconcileStale as ReturnType<typeof vi.fn>;
 const mockReconcile = reconcileShopPlan as ReturnType<typeof vi.fn>;
 const mockIsLastSeenStale = isLastSeenStale as ReturnType<typeof vi.fn>;
 const mockTouchLastSeen = touchShopLastSeen as ReturnType<typeof vi.fn>;
-const mockRecordOpsEvent = recordOpsEvent as ReturnType<typeof vi.fn>;
+const mockRecordPageVisit = recordPageVisit as ReturnType<typeof vi.fn>;
 
 const fakeAdmin = { graphql: vi.fn() };
 
@@ -118,7 +117,7 @@ describe("app.tsx loader — plan reconciliation hook", () => {
     // Telemetry defaults: quiet unless a test opts in.
     mockIsLastSeenStale.mockReturnValue(false);
     mockTouchLastSeen.mockResolvedValue(undefined);
-    mockRecordOpsEvent.mockResolvedValue(undefined);
+    mockRecordPageVisit.mockResolvedValue(undefined);
   });
 
   it("runs reconciliation when the stored plan is stale (no plan_handle → recordEvent false)", async () => {
@@ -236,17 +235,14 @@ describe("app.tsx loader — activity telemetry", () => {
     mockIsStale.mockReturnValue(false);
     mockIsLastSeenStale.mockReturnValue(false);
     mockTouchLastSeen.mockResolvedValue(undefined);
-    mockRecordOpsEvent.mockResolvedValue(undefined);
+    mockRecordPageVisit.mockResolvedValue(undefined);
   });
 
-  it("records a page_visit keyed on the domain with the request path on a normal /app load", async () => {
+  it("records a page_visit for the domain + concrete request path on a normal /app load", async () => {
     await runLoader("https://example.com/app/scans");
 
-    expect(mockRecordOpsEvent).toHaveBeenCalledWith({
-      eventType: "page_visit",
-      key: "test-shop.myshopify.com",
-      metadata: { path: "/app/scans" },
-    });
+    // Dedupe (gc-0lo) lives inside recordPageVisit; see ops-event.server tests.
+    expect(mockRecordPageVisit).toHaveBeenCalledWith("test-shop.myshopify.com", "/app/scans");
   });
 
   it("does NOT record activity for operator /app/admin pages", async () => {
@@ -254,7 +250,7 @@ describe("app.tsx loader — activity telemetry", () => {
 
     await runLoader("https://example.com/app/admin/metrics");
 
-    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+    expect(mockRecordPageVisit).not.toHaveBeenCalled();
     expect(mockTouchLastSeen).not.toHaveBeenCalled();
   });
 
@@ -277,7 +273,7 @@ describe("app.tsx loader — activity telemetry", () => {
     expect(mockTouchLastSeen).not.toHaveBeenCalled();
     // A fresh last-seen still records the page_visit — the freshness guard only
     // throttles the durable stamp, not the per-navigation event.
-    expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
+    expect(mockRecordPageVisit).toHaveBeenCalledOnce();
   });
 
   it("does not break the loader when the lastSeenAt stamp throws", async () => {
@@ -292,6 +288,25 @@ describe("app.tsx loader — activity telemetry", () => {
       expect.objectContaining({ shop: "test-shop.myshopify.com", error: "db down" }),
     );
     // The page_visit is still recorded despite the stamp failure.
-    expect(mockRecordOpsEvent).toHaveBeenCalledOnce();
+    expect(mockRecordPageVisit).toHaveBeenCalledOnce();
+  });
+
+  it("passes the concrete scan path so different scans are separate pages (gc-0lo)", async () => {
+    await runLoader("https://example.com/app/scans/scan-abc?index");
+
+    expect(mockRecordPageVisit).toHaveBeenCalledWith(
+      "test-shop.myshopify.com",
+      "/app/scans/scan-abc",
+    );
+  });
+
+  it("never blocks the loader on the page_visit write (fire-and-forget, gc-0lo)", async () => {
+    // A dedupe read + insert that never settles must not hold the response.
+    mockRecordPageVisit.mockReturnValue(new Promise(() => {}));
+
+    const result = await runLoader("https://example.com/app/scans/scan-abc");
+
+    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(mockRecordPageVisit).toHaveBeenCalledOnce();
   });
 });

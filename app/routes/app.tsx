@@ -4,7 +4,7 @@ import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Outlet, useLoaderData, useRouteError } from "react-router";
 
 import { logger } from "../lib/logger.server";
-import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
+import { recordPageVisit } from "../models/ops-event.server";
 import {
   getOrCreateShopMetadata,
   isLastSeenStale,
@@ -65,8 +65,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     }
   }
 
-  // Activity telemetry (gc): capture a durable "last login" and a per-navigation
-  // page_visit on every authenticated merchant page load. Best-effort and
+  // Activity telemetry (gc): capture a durable "last login" and a page_visit
+  // (deduped per shop + path per 10 minutes, gc-0lo) on authenticated merchant
+  // page loads. Best-effort and
   // NON-BLOCKING — the page_visit write is fire-and-forget (not awaited) so it
   // never sits on the response critical path, and a telemetry failure must never
   // break the app load.
@@ -89,15 +90,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         });
       }
     }
-    // One page_visit per authenticated navigation. Fire-and-forget (NOT awaited)
-    // so it never blocks the loader response — recordOpsEvent never throws (it
-    // try/catches internally). Domain-keyed so GDPR redact (deleteShopData's
-    // `key: domain` clause) reaches it.
-    void recordOpsEvent({
-      eventType: OPS_EVENT_TYPES.PAGE_VISIT,
-      key: session.shop,
-      metadata: { path },
-    });
+    // One page_visit per shop + path per 10-minute window (gc-0lo): this loader
+    // re-runs on EVERY revalidation (the scan page's ~3s poll, fetcher/form
+    // actions), so recordPageVisit skips a repeat of the same path inside the
+    // window. Fire-and-forget (NOT awaited) so neither the dedupe read nor the
+    // insert blocks the loader response; recordPageVisit never throws.
+    // Domain-keyed so GDPR redact (deleteShopData's `key: domain` clause)
+    // reaches it.
+    void recordPageVisit(session.shop, path);
   }
 
   // eslint-disable-next-line no-undef

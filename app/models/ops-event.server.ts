@@ -108,6 +108,66 @@ export async function recordOpsEvent(input: RecordOpsEventInput): Promise<void> 
 }
 
 /**
+ * page_visit dedupe window (gc-0lo). Owner-approved semantics: a "visit" is the
+ * FIRST load of a given shop + path within this window. Without it, every
+ * revalidation of the parent app.tsx loader counted as a visit: the scan page
+ * polls `revalidator.revalidate()` every ~3s while a scan runs (ortho-india
+ * logged 25 "visits" in 75s), and every fetcher/form action (start scan,
+ * dismiss a nudge, ignore/un-ignore) revalidates it too.
+ */
+export const PAGE_VISIT_DEDUPE_WINDOW_MS = 10 * 60 * 1000; // 10 minutes
+
+/**
+ * Record a page_visit for `domain` + `path` unless one already exists for that
+ * exact pair within PAGE_VISIT_DEDUPE_WINDOW_MS. Best-effort: NEVER throws, and
+ * callers fire-and-forget it (not awaited) so neither the check nor the insert
+ * sits on the loader's critical path.
+ *
+ * `path` is the concrete pathname (e.g. /app/scans/<id>), so different scans
+ * are different pages; the digest normalizes ids separately.
+ *
+ * Query cost: the lookup is keyed on `key` (the shop domain) + a createdAt
+ * lower bound, served by the existing @@index([key, createdAt]); that narrows
+ * to one shop's last-10-minute rows (a handful), and eventType + the JSON
+ * metadata.path equality filter run on that tiny set. No new index needed.
+ *
+ * Race: check-then-insert is not atomic, so two truly simultaneous first loads
+ * of the same path could both record. Acceptable for telemetry; the poll is
+ * sequential (~3s apart) and never races itself.
+ *
+ * On a dedupe-query failure we log and RECORD anyway (fail-open): a real visit
+ * is never silently dropped, and the worst case is the pre-gc-0lo over-count,
+ * a known and visible state. If the DB is actually down, the insert fails too
+ * and recordOpsEvent swallows it, so failing open adds no new failure mode.
+ */
+export async function recordPageVisit(domain: string, path: string): Promise<void> {
+  try {
+    const recent = await db.opsEvent.findFirst({
+      where: {
+        key: domain,
+        eventType: OPS_EVENT_TYPES.PAGE_VISIT,
+        createdAt: { gte: new Date(Date.now() - PAGE_VISIT_DEDUPE_WINDOW_MS) },
+        metadata: { path: ["path"], equals: path },
+      },
+      select: { id: true },
+    });
+    if (recent) return;
+  } catch (error) {
+    logger.warn("page-visit-dedupe-failed", {
+      key: domain,
+      path,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+
+  await recordOpsEvent({
+    eventType: OPS_EVENT_TYPES.PAGE_VISIT,
+    key: domain,
+    metadata: { path },
+  });
+}
+
+/**
  * Record a webhook that FAILED (its handler threw after HMAC auth). Thin
  * convenience over recordOpsEvent — same never-throws guarantee, so wrapping a
  * webhook body with this and re-throwing preserves Shopify's retry behavior

@@ -59,8 +59,7 @@ const fakeDb = vi.hoisted(() => {
 vi.mock("../../app/db.server", () => ({ default: fakeDb }));
 
 vi.mock("../../app/models/ops-event.server", () => ({
-  OPS_EVENT_TYPES: { PAGE_VISIT: "page_visit" },
-  recordOpsEvent: vi.fn(),
+  recordPageVisit: vi.fn(),
 }));
 
 vi.mock("../../app/services/billing-reconciler.server", () => ({

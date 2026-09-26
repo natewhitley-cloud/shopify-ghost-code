@@ -9,7 +9,7 @@
  *     interval*grace threshold, and the cold-start rule (never-seen = not stale).
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted)
@@ -50,10 +50,12 @@ import {
   NUDGE_FUNNEL_EVENT_TYPES,
   NUDGE_RETENTION_DAYS,
   OPS_EVENT_TYPES,
+  PAGE_VISIT_DEDUPE_WINDOW_MS,
   pruneOpsEvents,
   recordApiError,
   recordCronHeartbeat,
   recordOpsEvent,
+  recordPageVisit,
   recordWebhookFailure,
   type CronExpectation,
 } from "../../app/models/ops-event.server";
@@ -128,6 +130,142 @@ describe("recordOpsEvent", () => {
 // ---------------------------------------------------------------------------
 // recordCronHeartbeat
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// recordPageVisit (gc-0lo): one visit per shop + path per 10-minute window
+// ---------------------------------------------------------------------------
+
+describe("recordPageVisit", () => {
+  type Row = { eventType: string; key: string | null; metadata: unknown; createdAt: Date };
+  type Where = {
+    key: string;
+    eventType: string;
+    createdAt: { gte: Date };
+    metadata: { path: string[]; equals: string };
+  };
+  let rows: Row[];
+  const T0 = new Date("2026-09-26T05:00:42Z");
+
+  // Stateful fake OpsEvent table that evaluates the exact where-shape the real
+  // query sends (asserted below), so the window/key/path semantics are real.
+  beforeEach(() => {
+    rows = [];
+    vi.useFakeTimers();
+    vi.setSystemTime(T0);
+    mockDb.opsEvent.create.mockImplementation(
+      async ({ data }: { data: Omit<Row, "createdAt"> }) => {
+        rows.push({ ...data, createdAt: new Date() });
+        return data;
+      },
+    );
+    mockDb.opsEvent.findFirst.mockImplementation(async ({ where }: { where: Where }) => {
+      const [field] = where.metadata.path;
+      return (
+        rows.find(
+          (r) =>
+            r.key === where.key &&
+            r.eventType === where.eventType &&
+            r.createdAt >= where.createdAt.gte &&
+            (r.metadata as Record<string, unknown> | null)?.[field] === where.metadata.equals,
+        ) ?? null
+      );
+    });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const SHOP = "ortho-india.myshopify.com";
+  const SCAN_PATH = "/app/scans/scan-1";
+  const visits = () => rows.filter((r) => r.eventType === OPS_EVENT_TYPES.PAGE_VISIT);
+
+  it("queries by domain + page_visit + 10-minute lower bound + exact metadata.path", async () => {
+    await recordPageVisit(SHOP, SCAN_PATH);
+
+    expect(mockDb.opsEvent.findFirst).toHaveBeenCalledWith({
+      where: {
+        key: SHOP,
+        eventType: "page_visit",
+        createdAt: { gte: new Date(T0.getTime() - 10 * 60 * 1000) },
+        metadata: { path: ["path"], equals: SCAN_PATH },
+      },
+      select: { id: true },
+    });
+    expect(PAGE_VISIT_DEDUPE_WINDOW_MS).toBe(10 * 60 * 1000);
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: { eventType: "page_visit", key: SHOP, message: null, metadata: { path: SCAN_PATH } },
+    });
+  });
+
+  it("25 polls over 75s of a running scan produce exactly 1 visit", async () => {
+    for (let i = 0; i < 25; i++) {
+      await recordPageVisit(SHOP, SCAN_PATH);
+      vi.advanceTimersByTime(3_000);
+    }
+
+    expect(visits()).toHaveLength(1);
+  });
+
+  it("the same path after 10+ minutes records a new visit", async () => {
+    await recordPageVisit(SHOP, SCAN_PATH);
+    vi.advanceTimersByTime(9 * 60 * 1000);
+    await recordPageVisit(SHOP, SCAN_PATH);
+    expect(visits()).toHaveLength(1);
+
+    vi.advanceTimersByTime(PAGE_VISIT_DEDUPE_WINDOW_MS + 1);
+    await recordPageVisit(SHOP, SCAN_PATH);
+
+    expect(visits()).toHaveLength(2);
+  });
+
+  it("different paths within the window are separate visits (incl. different scan ids)", async () => {
+    for (const path of ["/app", "/app/scans", "/app/ignored", SCAN_PATH, "/app/scans/scan-2"]) {
+      await recordPageVisit(SHOP, path);
+      vi.advanceTimersByTime(5_000);
+    }
+    await recordPageVisit(SHOP, "/app"); // revisit inside the window: deduped
+
+    expect(visits().map((r) => (r.metadata as { path: string }).path)).toEqual([
+      "/app",
+      "/app/scans",
+      "/app/ignored",
+      SCAN_PATH,
+      "/app/scans/scan-2",
+    ]);
+  });
+
+  it("a different shop on the same path is NOT deduped", async () => {
+    await recordPageVisit(SHOP, SCAN_PATH);
+    await recordPageVisit("other.myshopify.com", SCAN_PATH);
+
+    expect(visits().map((r) => r.key)).toEqual([SHOP, "other.myshopify.com"]);
+  });
+
+  it("a failed dedupe query never throws: logs and records the visit (fail-open)", async () => {
+    mockDb.opsEvent.findFirst.mockRejectedValueOnce(new Error("statement timeout"));
+
+    await expect(recordPageVisit(SHOP, SCAN_PATH)).resolves.toBeUndefined();
+
+    expect(mockLoggerWarn).toHaveBeenCalledWith("page-visit-dedupe-failed", {
+      key: SHOP,
+      path: SCAN_PATH,
+      error: "statement timeout",
+    });
+    expect(visits()).toHaveLength(1);
+  });
+
+  it("never throws when both the dedupe query and the insert fail (DB down)", async () => {
+    mockDb.opsEvent.findFirst.mockRejectedValueOnce(new Error("db down"));
+    mockDb.opsEvent.create.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(recordPageVisit(SHOP, SCAN_PATH)).resolves.toBeUndefined();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "ops-event-record-failed",
+      expect.objectContaining({ eventType: "page_visit", key: SHOP }),
+    );
+  });
+});
 
 describe("recordCronHeartbeat", () => {
   it("writes a cron_heartbeat event keyed to the function id", async () => {

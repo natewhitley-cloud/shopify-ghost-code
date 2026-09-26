@@ -301,7 +301,8 @@ export function computeResolutionRollup(
 // Activity telemetry: last-seen + page-visit aggregation
 //
 // Backed by the durable Shop.lastSeenAt column and the domain-keyed `page_visit`
-// OpsEvent stream (one row per authenticated non-admin /app/* load). Surfaces,
+// OpsEvent stream (one row per shop + concrete non-admin /app/* path per 10-minute
+// window, gc-0lo; see recordPageVisit). Surfaces,
 // per installed merchant, when they last logged in and how many pages they
 // viewed in the trailing 24h / 7d, plus a normalized top-pages breakdown.
 // ---------------------------------------------------------------------------
