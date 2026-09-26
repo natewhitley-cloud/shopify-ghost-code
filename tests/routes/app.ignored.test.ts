@@ -9,7 +9,10 @@
  *     rejects unsupported intents, and 404s when the shop cannot be resolved.
  */
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { createRoutesStub } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -26,6 +29,10 @@ vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
 }));
 
+vi.mock("../../app/models/scan.server", () => ({
+  hasAnyScans: vi.fn(),
+}));
+
 vi.mock("../../app/models/ignored-finding.server", () => ({
   listIgnoredFindings: vi.fn(),
   deleteIgnoredFindingForShop: vi.fn(),
@@ -39,14 +46,16 @@ import {
   deleteIgnoredFindingForShop,
   listIgnoredFindings,
 } from "../../app/models/ignored-finding.server";
+import { hasAnyScans } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
-import { action, loader } from "../../app/routes/app.ignored";
+import IgnoredFindings, { action, loader } from "../../app/routes/app.ignored";
 import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockListIgnoredFindings = listIgnoredFindings as ReturnType<typeof vi.fn>;
 const mockDeleteIgnoredFindingForShop = deleteIgnoredFindingForShop as ReturnType<typeof vi.fn>;
+const mockHasAnyScans = hasAnyScans as ReturnType<typeof vi.fn>;
 
 const SHOP = { id: "shop-1", domain: "test-shop.myshopify.com", plan: "Standard" };
 
@@ -76,6 +85,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   mockAuthenticateAdmin.mockResolvedValue({ session: { shop: SHOP.domain } });
   mockGetShopMetadata.mockResolvedValue(SHOP);
+  mockHasAnyScans.mockResolvedValue(true);
 });
 
 // ---------------------------------------------------------------------------
@@ -174,5 +184,84 @@ describe("app.ignored action", () => {
       Response,
     );
     expect(mockDeleteIgnoredFindingForShop).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-vg4: "Run your first scan" CTA only when the shop has zero scans ever
+// ---------------------------------------------------------------------------
+
+describe("app.ignored zero-scans CTA (gc-vg4)", () => {
+  function renderPage(loaderData: unknown): string {
+    const Stub = createRoutesStub([
+      {
+        id: "ignored",
+        path: "/app/ignored",
+        Component: IgnoredFindings as never,
+        loader: () => loaderData,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/ignored"],
+        hydrationData: { loaderData: { ignored: loaderData } },
+      }),
+    );
+  }
+
+  it("loader reports hasAnyScans=false and the page shows the CTA linking Home", async () => {
+    mockListIgnoredFindings.mockResolvedValue([]);
+    mockHasAnyScans.mockResolvedValue(false);
+
+    const data = await loader(makeLoaderArgs());
+
+    expect(mockHasAnyScans).toHaveBeenCalledWith(SHOP.id);
+    expect(data).toEqual({ ignores: [], hasAnyScans: false });
+    const html = renderPage(data);
+    expect(html).toContain("No suppressed findings");
+    expect(html).toContain("Ghost Code hasn&#x27;t scanned your theme yet.");
+    expect(html).toMatch(
+      /<a href="\/app"[^>]*><s-button variant="primary">Run your first scan<\/s-button><\/a>/,
+    );
+  });
+
+  it("empty list but the shop HAS scanned: no CTA", async () => {
+    mockListIgnoredFindings.mockResolvedValue([]);
+    mockHasAnyScans.mockResolvedValue(true);
+
+    const data = await loader(makeLoaderArgs());
+
+    expect(data).toEqual({ ignores: [], hasAnyScans: true });
+    const html = renderPage(data);
+    expect(html).toContain("No suppressed findings");
+    expect(html).not.toContain("Run your first scan");
+  });
+
+  it("skips the scan query when ignores exist (an ignore implies a scan)", async () => {
+    mockListIgnoredFindings.mockResolvedValue([
+      {
+        id: "i1",
+        scope: "INSTANCE",
+        fingerprint: "f",
+        appName: null,
+        reason: null,
+        createdAt: new Date("2026-03-20T10:00:00Z"),
+      },
+    ]);
+
+    const data = await loader(makeLoaderArgs());
+
+    expect(mockHasAnyScans).not.toHaveBeenCalled();
+    expect(data).toMatchObject({ hasAnyScans: true });
+    expect(renderPage(data)).not.toContain("Run your first scan");
+  });
+
+  it("an unresolvable shop gets the CTA (Home creates the shop on load)", async () => {
+    mockGetShopMetadata.mockResolvedValue(null);
+
+    const data = await loader(makeLoaderArgs());
+
+    expect(data).toEqual({ ignores: [], hasAnyScans: false });
+    expect(mockHasAnyScans).not.toHaveBeenCalled();
   });
 });

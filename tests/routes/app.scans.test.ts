@@ -7,7 +7,10 @@
  *   - Verify the loader returns scans and correct pagination cursors.
  */
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { LoaderFunctionArgs } from "react-router";
+import { createRoutesStub } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -56,7 +59,7 @@ vi.mock("../../app/lib/format", () => ({
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getScansForShop, getDistinctThemesForShop } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
-import { loader } from "../../app/routes/app.scans._index";
+import ScanHistory, { loader } from "../../app/routes/app.scans._index";
 import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
 import { authenticate } from "../../app/shopify.server";
 
@@ -380,5 +383,63 @@ describe("app.scans loader", () => {
         appNames: new Set(["Acme Reviews"]),
       });
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-vg4: "Run your first scan" CTA on the zero-scans empty state
+// ---------------------------------------------------------------------------
+
+describe("ScanHistory empty states (gc-vg4)", () => {
+  function renderPage(loaderData: unknown, url = "/app/scans"): string {
+    const Stub = createRoutesStub([
+      {
+        id: "scans",
+        path: "/app/scans",
+        Component: ScanHistory as never,
+        loader: () => loaderData,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: [url],
+        hydrationData: { loaderData: { scans: loaderData } },
+      }),
+    );
+  }
+
+  it("shows the Run your first scan CTA linking Home when the shop has zero scans", async () => {
+    mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+    mockGetDistinctThemesForShop.mockResolvedValue([]);
+
+    const html = renderPage(await loader(makeLoaderArgs()));
+
+    expect(html).toContain("No scans yet");
+    expect(html).toContain("Ghost Code hasn&#x27;t scanned your theme yet.");
+    expect(html).toMatch(
+      /<a href="\/app"[^>]*><s-button variant="primary">Run your first scan<\/s-button><\/a>/,
+    );
+  });
+
+  it("does NOT show the CTA on 'No scans match these filters' once any scan exists", async () => {
+    mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+    mockGetDistinctThemesForShop.mockResolvedValue(["Dawn"]);
+
+    const html = renderPage(
+      await loader(makeLoaderArgs("https://test-shop.myshopify.com/app/scans?status=FAILED")),
+      "/app/scans?status=FAILED",
+    );
+
+    expect(html).toContain("No scans match these filters");
+    expect(html).not.toContain("Run your first scan");
+    expect(html).not.toContain("No scans yet");
+  });
+
+  it("does NOT show the CTA when the shop has scans listed", async () => {
+    mockGetScansForShop.mockResolvedValue({ items: [makeScan("scan-1")], hasNextPage: false });
+
+    const html = renderPage(await loader(makeLoaderArgs()));
+
+    expect(html).not.toContain("Run your first scan");
   });
 });

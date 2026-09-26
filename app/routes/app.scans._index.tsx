@@ -4,6 +4,7 @@ import { Link, useLoaderData } from "react-router";
 
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
+import { RunFirstScanCta } from "../components/RunFirstScanCta";
 import { statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
@@ -191,7 +192,7 @@ export default function ScanHistory() {
 
         {!hasAnyScans ? (
           <s-empty-state heading="No scans yet">
-            <s-paragraph>Run your first scan from the dashboard.</s-paragraph>
+            <RunFirstScanCta />
           </s-empty-state>
         ) : (
           <>

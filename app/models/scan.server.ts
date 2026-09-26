@@ -170,6 +170,17 @@ export async function getDistinctThemesForShop(shopId: string): Promise<string[]
   return rows.map((row) => row.themeName);
 }
 
+/**
+ * True when the shop has at least one scan of ANY status (pending, running,
+ * failed, or finished). Drives the "Run your first scan" empty-state CTA
+ * (gc-vg4), which must disappear once any scan exists. A single indexed
+ * findFirst on shopId, selecting only the id.
+ */
+export async function hasAnyScans(shopId: string): Promise<boolean> {
+  const row = await db.scan.findFirst({ where: { shopId }, select: { id: true } });
+  return row !== null;
+}
+
 /** True for terminal statuses where completedAt should be stamped. */
 function isTerminalStatus(status: ScanStatus): boolean {
   return (

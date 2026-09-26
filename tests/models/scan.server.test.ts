@@ -72,6 +72,7 @@ import {
   getLatestSuccessfulScanForTheme,
   countScansForShopSince,
   hasCompletedScans,
+  hasAnyScans,
   getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
 } from "../../app/models/scan.server";
@@ -829,6 +830,29 @@ describe("countScansForShopSince", () => {
 // ---------------------------------------------------------------------------
 // hasCompletedScans
 // ---------------------------------------------------------------------------
+
+describe("hasAnyScans (gc-vg4)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns false when the shop has no scan of any status", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+
+    await expect(hasAnyScans(SHOP_ID)).resolves.toBe(false);
+    // No status filter: a pending/failed scan still counts as "has scanned".
+    expect(mockDb.scan.findFirst).toHaveBeenCalledWith({
+      where: { shopId: SHOP_ID },
+      select: { id: true },
+    });
+  });
+
+  it("returns true when any scan exists", async () => {
+    mockDb.scan.findFirst.mockResolvedValue({ id: "scan-1" });
+
+    await expect(hasAnyScans(SHOP_ID)).resolves.toBe(true);
+  });
+});
 
 describe("hasCompletedScans", () => {
   beforeEach(() => {

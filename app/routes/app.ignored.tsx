@@ -2,7 +2,9 @@ import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData } from "react-router";
 
 import { FormattedDate } from "../components/FormattedDate";
+import { RunFirstScanCta } from "../components/RunFirstScanCta";
 import { deleteIgnoredFindingForShop, listIgnoredFindings } from "../models/ignored-finding.server";
+import { hasAnyScans } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -27,10 +29,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const shop = await getShopMetadata(session.shop);
 
   if (!shop) {
-    return { ignores: [] };
+    return { ignores: [], hasAnyScans: false };
   }
 
   const rows = await listIgnoredFindings(shop.id);
+
+  // gc-vg4: the "Run your first scan" CTA shows only when the shop has never
+  // scanned. Suppressions come from scan findings, so any ignore implies a scan
+  // and the extra query only runs on the empty list.
+  const shopHasAnyScans = rows.length > 0 ? true : await hasAnyScans(shop.id);
 
   // Send only the fields the view needs. Serialize createdAt to ISO so it
   // survives the loader boundary (FormattedDate accepts a string).
@@ -43,7 +50,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     createdAt: row.createdAt.toISOString(),
   }));
 
-  return { ignores };
+  return { ignores, hasAnyScans: shopHasAnyScans };
 };
 
 // ---------------------------------------------------------------------------
@@ -144,7 +151,7 @@ function IgnoreRow({ row }: { row: IgnoreRowData }) {
 }
 
 export default function IgnoredFindings() {
-  const { ignores } = useLoaderData<typeof loader>();
+  const { ignores, hasAnyScans: shopHasAnyScans } = useLoaderData<typeof loader>();
 
   return (
     <s-page heading="Ignored Findings">
@@ -184,6 +191,7 @@ export default function IgnoredFindings() {
               Findings you ignore from a scan appear here. Ignored findings are excluded from your
               theme health score and finding counts, and you can restore any of them at any time.
             </s-paragraph>
+            {!shopHasAnyScans && <RunFirstScanCta />}
           </s-empty-state>
         ) : (
           <s-card>
