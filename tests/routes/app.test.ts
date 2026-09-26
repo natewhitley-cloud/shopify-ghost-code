@@ -23,8 +23,7 @@ vi.mock("../../app/shopify.server", () => ({
 }));
 
 vi.mock("../../app/models/shop.server", () => ({
-  getShopMetadata: vi.fn(),
-  upsertShop: vi.fn(),
+  getOrCreateShopMetadata: vi.fn(),
   reactivateShop: vi.fn(),
   isLastSeenStale: vi.fn(),
   touchShopLastSeen: vi.fn(),
@@ -51,11 +50,10 @@ vi.mock("../../app/lib/logger.server", () => ({
 import { logger } from "../../app/lib/logger.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
 import {
-  getShopMetadata,
+  getOrCreateShopMetadata,
   isLastSeenStale,
   reactivateShop,
   touchShopLastSeen,
-  upsertShop,
 } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app";
 import {
@@ -69,8 +67,9 @@ import { authenticate } from "../../app/shopify.server";
 // ---------------------------------------------------------------------------
 
 const mockAdminAuth = authenticate.admin as ReturnType<typeof vi.fn>;
-const mockGetShop = getShopMetadata as ReturnType<typeof vi.fn>;
-const mockUpsert = upsertShop as ReturnType<typeof vi.fn>;
+// The loader reads the shop through get-or-create (gc-bj4); the create-when-
+// absent and P2002-race behavior is covered in tests/models/shop.server.test.ts.
+const mockGetShop = getOrCreateShopMetadata as ReturnType<typeof vi.fn>;
 const mockReactivate = reactivateShop as ReturnType<typeof vi.fn>;
 const mockIsStale = isPlanReconcileStale as ReturnType<typeof vi.fn>;
 const mockReconcile = reconcileShopPlan as ReturnType<typeof vi.fn>;
@@ -164,16 +163,16 @@ describe("app.tsx loader — plan reconciliation hook", () => {
     );
   });
 
-  it("creates the shop on first visit then reconciles the freshly created record", async () => {
-    // First lookup misses, upsert creates, second lookup returns the record.
-    mockGetShop.mockResolvedValueOnce(null).mockResolvedValueOnce(makeShop());
-    mockUpsert.mockResolvedValue(makeShop());
+  it("get-or-creates the shop on first visit then reconciles the freshly created record", async () => {
+    // get-or-create returns the freshly created row (uninstalledAt null).
+    mockGetShop.mockResolvedValue(makeShop());
     mockIsStale.mockReturnValue(true);
 
     await runLoader();
 
-    expect(mockUpsert).toHaveBeenCalledWith("test-shop.myshopify.com");
+    expect(mockGetShop).toHaveBeenCalledWith("test-shop.myshopify.com");
     expect(mockReconcile).toHaveBeenCalledOnce();
+    expect(mockReactivate).not.toHaveBeenCalled();
   });
 
   it("reactivates an existing shop that is still flagged uninstalled (reinstall)", async () => {
@@ -183,8 +182,6 @@ describe("app.tsx loader — plan reconciliation hook", () => {
     await runLoader();
 
     expect(mockReactivate).toHaveBeenCalledWith("test-shop.myshopify.com");
-    // Existing row → upsertShop is NOT the reinstall path.
-    expect(mockUpsert).not.toHaveBeenCalled();
   });
 
   it("does NOT reactivate an existing active shop (uninstalledAt null)", async () => {
@@ -194,17 +191,16 @@ describe("app.tsx loader — plan reconciliation hook", () => {
     await runLoader();
 
     expect(mockReactivate).not.toHaveBeenCalled();
-    expect(mockUpsert).not.toHaveBeenCalled();
   });
 
-  it("creates (upsert) a brand-new shop without calling reactivateShop", async () => {
-    mockGetShop.mockResolvedValueOnce(null).mockResolvedValueOnce(makeShop());
-    mockUpsert.mockResolvedValue(makeShop());
-    mockIsStale.mockReturnValue(false);
+  it("skips reconcile and telemetry stamps gracefully when the shop is still missing", async () => {
+    mockGetShop.mockResolvedValue(null);
+    mockIsStale.mockReturnValue(true);
 
-    await runLoader();
+    const result = await runLoader();
 
-    expect(mockUpsert).toHaveBeenCalledWith("test-shop.myshopify.com");
+    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(mockReconcile).not.toHaveBeenCalled();
     expect(mockReactivate).not.toHaveBeenCalled();
   });
 

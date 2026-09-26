@@ -6,11 +6,10 @@ import { Outlet, useLoaderData, useRouteError } from "react-router";
 import { logger } from "../lib/logger.server";
 import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
 import {
-  getShopMetadata,
+  getOrCreateShopMetadata,
   isLastSeenStale,
   reactivateShop,
   touchShopLastSeen,
-  upsertShop,
 } from "../models/shop.server";
 import { isPlanReconcileStale, reconcileShopPlan } from "../services/billing-reconciler.server";
 import { authenticate } from "../shopify.server";
@@ -18,13 +17,13 @@ import { authenticate } from "../shopify.server";
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
 
-  let shop = await getShopMetadata(session.shop);
-  if (!shop) {
-    // Shop record doesn't exist yet — create it on first authenticated visit.
-    // This covers the case where the app/installed webhook isn't available.
-    await upsertShop(session.shop);
-    shop = await getShopMetadata(session.shop);
-  } else if (shop.uninstalledAt) {
+  // Create the Shop row on the first authenticated visit (covers the case where
+  // the app/installed webhook isn't available). getOrCreateShopMetadata upserts
+  // ONLY when the row is absent and tolerates the child route loader creating
+  // it concurrently (gc-bj4). A freshly created row has uninstalledAt null, so
+  // the reinstall branch below only fires for a pre-existing row.
+  const shop = await getOrCreateShopMetadata(session.shop);
+  if (shop?.uninstalledAt) {
     // Reinstall: the row exists but is still flagged uninstalled-pending-redact
     // (gc-grd stamps uninstalledAt instead of deleting). Clear the flag so the
     // shop rejoins the active set. This writes ONLY on an actual reinstall, not

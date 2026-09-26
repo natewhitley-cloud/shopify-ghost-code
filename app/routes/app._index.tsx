@@ -37,6 +37,7 @@ import type { LaneKey, LaneSummaryRow, UrgencyKey } from "../lib/finding-consequ
 import { isSuccessfulScan } from "../lib/format";
 import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
+import { logger } from "../lib/logger.server";
 import { mergeSearchParams } from "../lib/merge-search-params";
 import {
   canStartScan,
@@ -55,7 +56,11 @@ import {
   getFirstSuccessfulScanCompletedAt,
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
-import { dismissReviewPrompt, getShopMetadata } from "../models/shop.server";
+import {
+  dismissReviewPrompt,
+  getOrCreateShopMetadata,
+  getShopMetadata,
+} from "../models/shop.server";
 import { getFilteredFindingSummary } from "../services/finding-aggregation.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
@@ -116,13 +121,20 @@ import {
 export const loader = async ({ request }: LoaderFunctionArgs) => {
   const { session, admin } = await authenticate.admin(request);
 
-  const shop = await getShopMetadata(session.shop);
+  // gc-bj4: get-or-create, NOT a plain read. The parent app.tsx loader creates
+  // the Shop row on first visit, but React Router runs it IN PARALLEL with this
+  // loader, so on the first post-install load a plain read could miss the row
+  // and hide the onboarding card. Ensuring the row here closes that race.
+  const shop = await getOrCreateShopMetadata(session.shop);
 
   const trendChartEnabled = process.env.ENABLE_TREND_CHART === "true";
 
   if (!shop) {
-    // Shop hasn't been upserted yet (e.g. install is still in progress).
-    // Return minimal data so the page renders without crashing.
+    // Defensive fallback only: unreachable on an authenticated load unless the
+    // row is deleted between create and re-read (e.g. a shop/redact landing in
+    // between). Return minimal data so the page renders without crashing. This
+    // renders the dashboard shell with a disabled scan button, not onboarding.
+    logger.warn("dashboard-shop-missing-after-create", { shop: session.shop });
     return {
       shop: null,
       latestScan: null,

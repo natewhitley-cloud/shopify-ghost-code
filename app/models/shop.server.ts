@@ -127,6 +127,49 @@ export async function upsertShop(domain: string) {
 }
 
 /**
+ * True when `err` is Prisma's unique-constraint violation (P2002). Duck-typed on
+ * `code` so it holds regardless of which Prisma error class instance is thrown.
+ */
+function isUniqueConstraintError(err: unknown): boolean {
+  return typeof err === "object" && err !== null && (err as { code?: unknown }).code === "P2002";
+}
+
+/**
+ * Return the shop's metadata, creating the Shop row first if it does not exist.
+ *
+ * Used by BOTH the parent app.tsx loader and the dashboard (app._index) loader.
+ * React Router runs those loaders IN PARALLEL, so on the very first post-install
+ * load the child could read before the parent's create committed and see no row
+ * (gc-bj4: the onboarding card with "Start First Scan" never rendered).
+ * Having each loader get-or-create closes that race.
+ *
+ * upsertShop runs ONLY when the row is absent (the reinstall path relies on
+ * reactivateShop in app.tsx, never on upsertShop running every load; see the
+ * gc-grd note on upsertShop).
+ *
+ * Concurrency: two loaders can both miss the read and both upsert. Prisma issues
+ * a native `INSERT ... ON CONFLICT DO UPDATE` for this upsert shape on Postgres,
+ * so the loser normally just no-op updates. If the upsert still raises a
+ * unique-constraint error (P2002, e.g. a non-native upsert path), the other
+ * request created the row, so we swallow ONLY that error and re-read. Any other
+ * error propagates.
+ *
+ * Returns null only if the row vanished between create and re-read (e.g. a
+ * shop/redact delete landing in between). Callers keep an explicit fallback.
+ */
+export async function getOrCreateShopMetadata(domain: string): Promise<ShopMetadata | null> {
+  const existing = await getShopMetadata(domain);
+  if (existing) return existing;
+
+  try {
+    await upsertShop(domain);
+  } catch (err) {
+    if (!isUniqueConstraintError(err)) throw err;
+  }
+  return getShopMetadata(domain);
+}
+
+/**
  * Revoke access and mark a shop as uninstalled WITHOUT hard-deleting its data.
  *
  * Called by the app/uninstalled webhook. Instead of wiping the Shop + scan data

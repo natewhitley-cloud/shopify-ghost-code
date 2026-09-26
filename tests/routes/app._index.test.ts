@@ -28,6 +28,7 @@ vi.mock("../../app/db.server", () => ({
 
 vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
+  getOrCreateShopMetadata: vi.fn(),
   dismissReviewPrompt: vi.fn(),
 }));
 
@@ -132,7 +133,11 @@ import {
   getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
 } from "../../app/models/scan.server";
-import { getShopMetadata, dismissReviewPrompt } from "../../app/models/shop.server";
+import {
+  getOrCreateShopMetadata,
+  getShopMetadata,
+  dismissReviewPrompt,
+} from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
 import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
 import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
@@ -147,6 +152,7 @@ import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
+const mockGetOrCreateShopMetadata = getOrCreateShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
 const mockDispatchScan = dispatchScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
@@ -269,6 +275,12 @@ beforeEach(() => {
   });
 
   mockGetShopMetadata.mockResolvedValue(SHOP);
+  // gc-bj4: the loader reads via get-or-create (the action still uses the plain
+  // read). Delegate so each test's getShopMetadata fixture drives both; the
+  // create-on-miss path is covered in app._index.onboarding.test.tsx.
+  mockGetOrCreateShopMetadata.mockImplementation((domain: string) =>
+    (getShopMetadata as (d: string) => unknown)(domain),
+  );
   mockFetchMainTheme.mockResolvedValue(MAIN_THEME);
   mockGetScansForShop.mockResolvedValue({ items: [COMPLETED_SCAN], hasNextPage: false });
   mockGetSeverityCounts.mockImplementation(severityCountsImpl());

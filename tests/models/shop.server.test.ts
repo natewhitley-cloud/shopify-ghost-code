@@ -55,6 +55,7 @@ vi.mock("../../app/db.server", () => ({
 
 import { NUDGE_FUNNEL_EVENT_TYPES, OPS_EVENT_TYPES } from "../../app/models/ops-event.server";
 import {
+  getOrCreateShopMetadata,
   getShopMetadata,
   upsertShop,
   updateShopPlanByDomain,
@@ -171,6 +172,92 @@ describe("getShopMetadata", () => {
     const result = await getShopMetadata("test-shop.myshopify.com");
 
     expect(result).not.toHaveProperty("accessToken");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getOrCreateShopMetadata (gc-bj4)
+// ---------------------------------------------------------------------------
+
+describe("getOrCreateShopMetadata", () => {
+  const DOMAIN = "race-shop.myshopify.com";
+  const ROW = { id: "shop-race", domain: DOMAIN, plan: "free", uninstalledAt: null };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // clearAllMocks keeps implementations; reset the two this block drives.
+    mockDb.shop.findUnique.mockReset();
+    mockDb.shop.upsert.mockReset();
+  });
+
+  it("returns the existing row WITHOUT upserting (reinstall path stays on reactivateShop)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(ROW);
+
+    const result = await getOrCreateShopMetadata(DOMAIN);
+
+    expect(result).toEqual(ROW);
+    expect(mockDb.shop.upsert).not.toHaveBeenCalled();
+    expect(mockDb.shop.findUnique).toHaveBeenCalledOnce();
+  });
+
+  it("creates the row when absent and returns the re-read metadata", async () => {
+    mockDb.shop.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(ROW);
+    mockDb.shop.upsert.mockResolvedValue(ROW);
+
+    const result = await getOrCreateShopMetadata(DOMAIN);
+
+    expect(result).toEqual(ROW);
+    expect(mockDb.shop.upsert).toHaveBeenCalledWith({
+      where: { domain: DOMAIN },
+      create: { domain: DOMAIN },
+      update: { uninstalledAt: null },
+    });
+    expect(mockDb.shop.findUnique).toHaveBeenCalledTimes(2);
+  });
+
+  it("swallows a unique-constraint race (P2002) and returns the row the other request created", async () => {
+    mockDb.shop.findUnique.mockResolvedValueOnce(null).mockResolvedValueOnce(ROW);
+    mockDb.shop.upsert.mockRejectedValue(
+      Object.assign(new Error("Unique constraint failed on the fields: (`domain`)"), {
+        code: "P2002",
+      }),
+    );
+
+    await expect(getOrCreateShopMetadata(DOMAIN)).resolves.toEqual(ROW);
+  });
+
+  it("rethrows any non-unique-constraint upsert error", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+    mockDb.shop.upsert.mockRejectedValue(new Error("connection refused"));
+
+    await expect(getOrCreateShopMetadata(DOMAIN)).rejects.toThrow("connection refused");
+  });
+
+  it("two concurrent first loads (parent + child loader) both resolve to the same row", async () => {
+    // Stateful fake: both reads miss, the first upsert creates the row, the
+    // second upsert loses the race with P2002. Neither caller may throw.
+    let created: typeof ROW | null = null;
+    let upserts = 0;
+    mockDb.shop.findUnique.mockImplementation(async () => created);
+    mockDb.shop.upsert.mockImplementation(async () => {
+      upserts += 1;
+      // Yield so both callers finish their initial (missing) read first.
+      await Promise.resolve();
+      if (created) {
+        throw Object.assign(new Error("Unique constraint failed"), { code: "P2002" });
+      }
+      created = ROW;
+      return ROW;
+    });
+
+    const [parent, child] = await Promise.all([
+      getOrCreateShopMetadata(DOMAIN),
+      getOrCreateShopMetadata(DOMAIN),
+    ]);
+
+    expect(upserts).toBe(2);
+    expect(parent).toEqual(ROW);
+    expect(child).toEqual(ROW);
   });
 });
 
