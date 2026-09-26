@@ -22,7 +22,10 @@ vi.mock("../../app/shopify.server", () => ({
   },
 }));
 
+// claimShopStamp is mocked at the model boundary so the REAL
+// journey-milestone service (gc-dpm.1) runs, including its never-throw guard.
 vi.mock("../../app/models/shop.server", () => ({
+  claimShopStamp: vi.fn(),
   getOrCreateShopMetadata: vi.fn(),
   reactivateShop: vi.fn(),
   isLastSeenStale: vi.fn(),
@@ -49,6 +52,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 import { logger } from "../../app/lib/logger.server";
 import { recordPageVisit } from "../../app/models/ops-event.server";
 import {
+  claimShopStamp,
   getOrCreateShopMetadata,
   isLastSeenStale,
   reactivateShop,
@@ -75,6 +79,7 @@ const mockReconcile = reconcileShopPlan as ReturnType<typeof vi.fn>;
 const mockIsLastSeenStale = isLastSeenStale as ReturnType<typeof vi.fn>;
 const mockTouchLastSeen = touchShopLastSeen as ReturnType<typeof vi.fn>;
 const mockRecordPageVisit = recordPageVisit as ReturnType<typeof vi.fn>;
+const mockClaimShopStamp = claimShopStamp as ReturnType<typeof vi.fn>;
 
 const fakeAdmin = { graphql: vi.fn() };
 
@@ -89,6 +94,8 @@ function makeShop(overrides: Record<string, unknown> = {}) {
     lastSeenAt: null,
     lastThemePublishAt: null,
     hasSeenReviewPrompt: false,
+    // Already stamped by default: the normal (non-first) load (gc-dpm.1).
+    firstOpenedAt: new Date("2026-01-01T00:00:00Z"),
     ...overrides,
   };
 }
@@ -308,5 +315,92 @@ describe("app.tsx loader — activity telemetry", () => {
 
     expect(result).toEqual({ apiKey: "test-api-key" });
     expect(mockRecordPageVisit).toHaveBeenCalledOnce();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Durable firstOpenedAt milestone (gc-dpm.1)
+// ---------------------------------------------------------------------------
+
+describe("app.tsx loader — firstOpenedAt milestone (gc-dpm.1)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.SHOPIFY_API_KEY = "test-api-key";
+    mockAdminAuth.mockResolvedValue({
+      session: { shop: "test-shop.myshopify.com" },
+      admin: fakeAdmin,
+    });
+    mockIsStale.mockReturnValue(false);
+    mockIsLastSeenStale.mockReturnValue(false);
+    mockRecordPageVisit.mockResolvedValue(undefined);
+    mockClaimShopStamp.mockResolvedValue(true);
+  });
+
+  it("claims firstOpenedAt for the session shop on the first load (value null)", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ firstOpenedAt: null }));
+
+    const result = await runLoader("https://example.com/app");
+
+    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(mockClaimShopStamp).toHaveBeenCalledTimes(1);
+    expect(mockClaimShopStamp).toHaveBeenCalledWith("test-shop.myshopify.com", "firstOpenedAt");
+  });
+
+  it("issues no claim query at all once firstOpenedAt is stamped", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ firstOpenedAt: new Date("2026-09-20T00:00:00Z") }));
+
+    await runLoader("https://example.com/app/scans");
+
+    expect(mockClaimShopStamp).not.toHaveBeenCalled();
+  });
+
+  it("stamps on a reinstall load too when the milestone was never recorded", async () => {
+    mockGetShop.mockResolvedValue(
+      makeShop({ firstOpenedAt: null, uninstalledAt: new Date("2026-09-01T00:00:00Z") }),
+    );
+
+    await runLoader("https://example.com/app");
+
+    expect(mockReactivate).toHaveBeenCalledOnce();
+    expect(mockClaimShopStamp).toHaveBeenCalledWith("test-shop.myshopify.com", "firstOpenedAt");
+  });
+
+  it("does not stamp on operator /app/admin pages (not merchant activity)", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ firstOpenedAt: null }));
+
+    await runLoader("https://example.com/app/admin/metrics");
+
+    expect(mockClaimShopStamp).not.toHaveBeenCalled();
+  });
+
+  it("does not stamp when the shop row is still missing", async () => {
+    mockGetShop.mockResolvedValue(null);
+
+    await runLoader("https://example.com/app");
+
+    expect(mockClaimShopStamp).not.toHaveBeenCalled();
+  });
+
+  it("never breaks the loader when the claim throws (logged, page still loads)", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ firstOpenedAt: null }));
+    mockClaimShopStamp.mockRejectedValue(new Error("db down"));
+
+    const result = await runLoader("https://example.com/app");
+
+    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(logger.error).toHaveBeenCalledWith(
+      "journey-milestone-claim-failed",
+      expect.objectContaining({ shop: "test-shop.myshopify.com", milestone: "firstOpenedAt" }),
+    );
+    expect(mockRecordPageVisit).toHaveBeenCalledOnce();
+  });
+
+  it("loads normally when a concurrent load already won the claim (count 0)", async () => {
+    mockGetShop.mockResolvedValue(makeShop({ firstOpenedAt: null }));
+    mockClaimShopStamp.mockResolvedValue(false);
+
+    const result = await runLoader("https://example.com/app");
+
+    expect(result).toEqual({ apiKey: "test-api-key" });
   });
 });

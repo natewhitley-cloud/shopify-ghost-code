@@ -4,7 +4,7 @@
  * nudge-telemetry.server writes one nudge_* OpsEvent per call and leaves dedup
  * to the caller. This module supplies it for every nudge: each (nudge, stage)
  * maps to a Shop stamp column, the stage first claims that column atomically
- * (claimNudgeStage: updateMany where the column IS NULL) and the event is
+ * (claimShopStamp: updateMany where the column IS NULL) and the event is
  * emitted only when the claim wins. Reloads, concurrent renders, repeat clicks
  * and repeat submits therefore never double-count.
  *
@@ -25,7 +25,7 @@ import {
 } from "./nudge-telemetry.server";
 import type { NudgeKey } from "./nudge-telemetry.server";
 import { logger } from "../lib/logger.server";
-import { claimNudgeStage } from "../models/shop.server";
+import { claimShopStamp } from "../models/shop.server";
 import type { NudgeStageColumn } from "../models/shop.server";
 
 export type NudgeStage = "shown" | "clicked" | "dismissed" | "converted";
@@ -80,7 +80,7 @@ export async function recordNudgeStageOnce<K extends NudgeKey>(
   const claim = claims[stage] as StageClaim;
   let claimed: boolean;
   try {
-    claimed = await claimNudgeStage(shopDomain, claim.column, claim.extraWhere);
+    claimed = await claimShopStamp(shopDomain, claim.column, claim.extraWhere);
   } catch (err) {
     logger.error(`${nudgeKey.replaceAll("_", "-")}-nudge-claim-failed`, {
       shop: shopDomain,

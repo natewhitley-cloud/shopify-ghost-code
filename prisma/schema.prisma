@@ -80,13 +80,21 @@ model Shop {
   upgradePreviewClickedAt   DateTime?
   upgradePreviewConvertedAt DateTime?
   // Merchant feedback nudge funnel (gc-97k.3). Same once-per-merchant atomic
-  // claim as the upgrade-preview stamps above (claimNudgeStage). Dismissed or
+  // claim as the upgrade-preview stamps above (claimShopStamp). Dismissed or
   // submitted permanently suppresses the home-page nudge; feedbackSubmittedAt is
   // the FIRST submission only (later MerchantFeedback rows do not re-stamp it).
   feedbackNudgeShownAt      DateTime?
   feedbackNudgeClickedAt    DateTime?
   feedbackNudgeDismissedAt  DateTime?
   feedbackSubmittedAt       DateTime?
+  // Durable journey milestones (gc-dpm.1). Stamped ONCE via the same atomic
+  // claim as the nudge stamps (claimShopStamp): firstOpenedAt on the first
+  // authenticated app load, firstResultsViewedAt on the first load of a
+  // successful (COMPLETED/PARTIAL) scan's detail page. Unlike page_visit rows
+  // (pruned at 14 days) these never age out. Null = not happened, or (for shops
+  // whose history predates the 14-day page_visit window at backfill) unknown.
+  firstOpenedAt             DateTime?
+  firstResultsViewedAt      DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

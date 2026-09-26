@@ -69,7 +69,7 @@ import {
   isLastSeenStale,
   touchShopLastSeen,
   LAST_SEEN_FRESHNESS_MS,
-  claimNudgeStage,
+  claimShopStamp,
 } from "../../app/models/shop.server";
 import {
   NUDGE_KEYS,
@@ -119,6 +119,9 @@ describe("getShopMetadata", () => {
         feedbackNudgeShownAt: true,
         feedbackNudgeDismissedAt: true,
         feedbackSubmittedAt: true,
+        // gc-dpm.1: loaders skip the milestone claim once it is stamped.
+        firstOpenedAt: true,
+        firstResultsViewedAt: true,
       },
     });
   });
@@ -1180,10 +1183,11 @@ describe("touchShopLastSeen", () => {
 });
 
 // ---------------------------------------------------------------------------
-// claimNudgeStage (shared once-per-merchant nudge claim, gc-97k.4 / gc-97k.3)
+// claimShopStamp (shared once-per-merchant stamp claim: nudges gc-97k.4 / gc-97k.3,
+// journey milestones gc-dpm.1)
 // ---------------------------------------------------------------------------
 
-describe("claimNudgeStage", () => {
+describe("claimShopStamp", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
@@ -1191,7 +1195,7 @@ describe("claimNudgeStage", () => {
   it("stamps only the given column, only while it is null, keyed on the domain", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
-    await expect(claimNudgeStage("s.myshopify.com", "feedbackNudgeShownAt")).resolves.toBe(true);
+    await expect(claimShopStamp("s.myshopify.com", "feedbackNudgeShownAt")).resolves.toBe(true);
 
     const call = mockDb.shop.updateMany.mock.calls[0][0];
     expect(call.where).toEqual({ domain: "s.myshopify.com", feedbackNudgeShownAt: null });
@@ -1202,13 +1206,13 @@ describe("claimNudgeStage", () => {
   it("returns false when the column is already stamped or the shop is missing (count 0)", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
 
-    await expect(claimNudgeStage("s.myshopify.com", "feedbackSubmittedAt")).resolves.toBe(false);
+    await expect(claimShopStamp("s.myshopify.com", "feedbackSubmittedAt")).resolves.toBe(false);
   });
 
   it("adds extraWhere preconditions without letting them override domain or the null guard", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
-    await claimNudgeStage("s.myshopify.com", "upgradePreviewConvertedAt", {
+    await claimShopStamp("s.myshopify.com", "upgradePreviewConvertedAt", {
       upgradePreviewClickedAt: { not: null },
       domain: "other.myshopify.com",
       upgradePreviewConvertedAt: { not: null },
@@ -1220,4 +1224,18 @@ describe("claimNudgeStage", () => {
       upgradePreviewClickedAt: { not: null },
     });
   });
+
+  it.each(["firstOpenedAt", "firstResultsViewedAt"] as const)(
+    "claims the %s journey milestone with the same once-only null guard (gc-dpm.1)",
+    async (column) => {
+      mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(claimShopStamp("s.myshopify.com", column)).resolves.toBe(true);
+
+      const call = mockDb.shop.updateMany.mock.calls[0][0];
+      expect(call.where).toEqual({ domain: "s.myshopify.com", [column]: null });
+      expect(Object.keys(call.data)).toEqual([column]);
+      expect(call.data[column]).toBeInstanceOf(Date);
+    },
+  );
 });

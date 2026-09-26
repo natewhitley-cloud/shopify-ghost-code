@@ -1,7 +1,7 @@
 /**
  * Tests for app/services/nudge-stage.server.ts (gc-97k.3): the shared
  * once-per-merchant nudge stage claim, exercised for the FEEDBACK nudge with the
- * real claimNudgeStage (shop model) and the real emitters against a mocked
+ * real claimShopStamp (shop model) and the real emitters against a mocked
  * Prisma client. The upgrade-preview path through the same helper is covered by
  * tests/services/upgrade-preview-nudge.server.test.ts.
  */

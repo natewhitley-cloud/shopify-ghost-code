@@ -69,6 +69,7 @@ import {
   getFilteredFindingSummary,
   isFindingIgnored,
 } from "../services/finding-aggregation.server";
+import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
@@ -859,6 +860,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // itself dedupes concurrent first loads. Never throws.
   if (upgradePreview && shop.upgradePreviewShownAt === null) {
     await recordUpgradePreviewStageOnce("shown", session.shop);
+  }
+
+  // Durable "first viewed results" milestone (gc-dpm.1): the first load of a
+  // SUCCESSFUL scan's detail page. Gated on the stored value, so an
+  // already-stamped shop issues no query; the atomic claim dedupes concurrent
+  // first loads (and the ~3s in-progress poll). Never throws.
+  if (isSuccessfulScan(scan.status) && shop.firstResultsViewedAt === null) {
+    await recordJourneyMilestoneOnce("firstResultsViewedAt", session.shop);
   }
 
   // Whether this shop+plan combination can trigger the diff resource route.

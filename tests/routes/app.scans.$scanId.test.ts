@@ -35,7 +35,10 @@ vi.mock("../../app/db.server", () => ({
   default: {},
 }));
 
+// claimShopStamp is mocked at the model boundary so the REAL journey-milestone
+// service (gc-dpm.1) runs, including its never-throw guard.
 vi.mock("../../app/models/shop.server", () => ({
+  claimShopStamp: vi.fn(),
   getShopMetadata: vi.fn(),
 }));
 
@@ -108,6 +111,7 @@ vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
 
 import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/finding-consequence";
 import { computeHealthScore } from "../../app/lib/health-score";
+import { logger } from "../../app/lib/logger.server";
 import { canUseScanDiffing, canViewFindingDetails } from "../../app/lib/plan-gating.server";
 import {
   getAppAttributionForScan,
@@ -124,7 +128,7 @@ import {
   ignoreFindingInstance,
 } from "../../app/models/ignored-finding.server";
 import { getScanById } from "../../app/models/scan.server";
-import { getShopMetadata } from "../../app/models/shop.server";
+import { claimShopStamp, getShopMetadata } from "../../app/models/shop.server";
 import {
   findUnknownScriptForShop,
   getUnknownScriptsForScan,
@@ -154,6 +158,7 @@ import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
+const mockClaimShopStamp = claimShopStamp as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
 const mockGetFindingsPageForScan = getFindingsPageForScan as ReturnType<typeof vi.fn>;
@@ -183,6 +188,8 @@ const SHOP = {
   id: "shop-1",
   domain: "test-shop.myshopify.com",
   plan: "Standard",
+  // Already stamped by default: the normal (non-first) results view (gc-dpm.1).
+  firstResultsViewedAt: new Date("2026-03-01T00:00:00Z") as Date | null,
 };
 
 /** Scan fixture — no findings included; loader always uses includeFindings: false. */
@@ -771,6 +778,69 @@ describe("app.scans.$scanId loader", () => {
         expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
       },
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Durable firstResultsViewedAt milestone (gc-dpm.1)
+  // -------------------------------------------------------------------------
+
+  describe("firstResultsViewedAt milestone (gc-dpm.1)", () => {
+    beforeEach(() => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, firstResultsViewedAt: null });
+      mockClaimShopStamp.mockResolvedValue(true);
+    });
+
+    it.each(["COMPLETED", "PARTIAL"])(
+      "claims the milestone for the session shop on a %s scan",
+      async (status) => {
+        mockGetScanById.mockResolvedValue({ ...SCAN, status });
+
+        await loader(makeLoaderArgs("scan-1"));
+
+        expect(mockClaimShopStamp).toHaveBeenCalledTimes(1);
+        expect(mockClaimShopStamp).toHaveBeenCalledWith(SHOP.domain, "firstResultsViewedAt");
+      },
+    );
+
+    it.each(["FAILED", "IN_PROGRESS", "PENDING"])(
+      "does not claim for an unsuccessful or unfinished (%s) scan",
+      async (status) => {
+        mockGetScanById.mockResolvedValue({ ...SCAN, status });
+
+        await loader(makeLoaderArgs("scan-1"));
+
+        expect(mockClaimShopStamp).not.toHaveBeenCalled();
+      },
+    );
+
+    it("issues no claim query at all once the milestone is stamped", async () => {
+      mockGetShopMetadata.mockResolvedValue(SHOP);
+
+      await loader(makeLoaderArgs("scan-1"));
+
+      expect(mockClaimShopStamp).not.toHaveBeenCalled();
+    });
+
+    it("does not claim when the scan belongs to another shop (404 first)", async () => {
+      mockGetScanById.mockResolvedValue({ ...SCAN, shopId: "other-shop" });
+
+      await expect(loader(makeLoaderArgs("scan-1"))).rejects.toMatchObject({ status: 404 });
+      expect(mockClaimShopStamp).not.toHaveBeenCalled();
+    });
+
+    it("never breaks the loader when the claim throws (logged, page still loads)", async () => {
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+      mockClaimShopStamp.mockRejectedValue(new Error("db down"));
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { scan: { id: string } };
+
+      expect(result.scan.id).toBe("scan-1");
+      expect(errorSpy).toHaveBeenCalledWith(
+        "journey-milestone-claim-failed",
+        expect.objectContaining({ shop: SHOP.domain, milestone: "firstResultsViewedAt" }),
+      );
+      errorSpy.mockRestore();
+    });
   });
 
   // -------------------------------------------------------------------------

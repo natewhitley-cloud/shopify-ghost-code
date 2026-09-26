@@ -18,7 +18,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 vi.mock("../../app/models/shop.server", () => ({
   updateShopPlanByDomain: vi.fn(),
   stampPlanReconciledAt: vi.fn(),
-  claimNudgeStage: vi.fn(),
+  claimShopStamp: vi.fn(),
 }));
 
 // gc-97k.4: the REAL upgrade-preview-nudge service (and the shared nudge-stage
@@ -52,7 +52,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 import { logger } from "../../app/lib/logger.server";
 import { recordBillingEvent } from "../../app/models/billing-event.server";
 import {
-  claimNudgeStage,
+  claimShopStamp,
   stampPlanReconciledAt,
   updateShopPlanByDomain,
 } from "../../app/models/shop.server";
@@ -100,7 +100,7 @@ function makeAdminThatThrows(err: Error) {
 const mockUpdate = updateShopPlanByDomain as ReturnType<typeof vi.fn>;
 const mockStamp = stampPlanReconciledAt as ReturnType<typeof vi.fn>;
 const mockRecordEvent = recordBillingEvent as ReturnType<typeof vi.fn>;
-const mockClaimStage = claimNudgeStage as ReturnType<typeof vi.fn>;
+const mockClaimStage = claimShopStamp as ReturnType<typeof vi.fn>;
 const mockRecordConverted = recordNudgeConverted as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------

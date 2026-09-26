@@ -12,6 +12,7 @@ import {
   touchShopLastSeen,
 } from "../models/shop.server";
 import { isPlanReconcileStale, reconcileShopPlan } from "../services/billing-reconciler.server";
+import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -89,6 +90,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           error: err instanceof Error ? err.message : String(err),
         });
       }
+    }
+    // Durable "first opened" milestone (gc-dpm.1). Gated on the value already in
+    // the shop metadata, so it is ONE atomic claim on the very first load and no
+    // query at all afterwards. recordJourneyMilestoneOnce never throws.
+    if (shop && shop.firstOpenedAt === null) {
+      await recordJourneyMilestoneOnce("firstOpenedAt", session.shop);
     }
     // One page_visit per shop + path per 10-minute window (gc-0lo): this loader
     // re-runs on EVERY revalidation (the scan page's ~3s poll, fetcher/form

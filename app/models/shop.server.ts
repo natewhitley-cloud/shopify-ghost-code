@@ -20,6 +20,8 @@ export type ShopMetadata = {
   feedbackNudgeShownAt: Date | null;
   feedbackNudgeDismissedAt: Date | null;
   feedbackSubmittedAt: Date | null;
+  firstOpenedAt: Date | null;
+  firstResultsViewedAt: Date | null;
 };
 
 /**
@@ -77,6 +79,8 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       feedbackNudgeShownAt: true,
       feedbackNudgeDismissedAt: true,
       feedbackSubmittedAt: true,
+      firstOpenedAt: true,
+      firstResultsViewedAt: true,
     },
   });
 }
@@ -316,8 +320,7 @@ export async function stampPlanReconciledAt(domain: string): Promise<{ id: strin
 
 /**
  * The Shop stamp columns that in-app nudges claim once per merchant (gc-97k.4
- * upgrade preview, gc-97k.3 feedback). Typed so a claim can only target one of
- * these nullable DateTime columns.
+ * upgrade preview, gc-97k.3 feedback).
  */
 export type NudgeStageColumn =
   | "upgradePreviewShownAt"
@@ -328,21 +331,31 @@ export type NudgeStageColumn =
   | "feedbackNudgeDismissedAt"
   | "feedbackSubmittedAt";
 
+/** The durable journey milestone stamps (gc-dpm.1). */
+export type JourneyMilestoneColumn = "firstOpenedAt" | "firstResultsViewedAt";
+
 /**
- * Atomically claim a once-per-merchant nudge stamp.
+ * Every once-per-merchant Shop stamp column. Typed so a claim can only target
+ * one of these nullable DateTime columns.
+ */
+export type ShopStampColumn = NudgeStageColumn | JourneyMilestoneColumn;
+
+/**
+ * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey
+ * milestone).
  *
  * A conditional updateMany (`where <column> IS NULL`) stamps the column to now()
  * only if it is still unset, so of any number of concurrent callers exactly one
  * sees count === 1. Returns true IFF this call made the first stamp; the caller
- * emits the funnel event only then. A missing shop row is a safe false.
+ * emits any follow-up event only then. A missing shop row is a safe false.
  *
  * `extraWhere` adds preconditions the row must also meet for the claim to win
  * (e.g. the upgrade preview's `converted` requires `upgradePreviewShownAt` to
  * be set). It cannot override `domain` or the column's IS NULL guard.
  */
-export async function claimNudgeStage(
+export async function claimShopStamp(
   domain: string,
-  column: NudgeStageColumn,
+  column: ShopStampColumn,
   extraWhere?: Prisma.ShopWhereInput,
 ): Promise<boolean> {
   const where: Prisma.ShopWhereInput = { ...extraWhere, domain, [column]: null };
