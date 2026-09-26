@@ -40,7 +40,7 @@ import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
-import { buildUpgradePreview, upgradePreviewHeadline } from "../lib/upgrade-preview";
+import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
 import type { UpgradePreview } from "../lib/upgrade-preview";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import {
@@ -72,6 +72,7 @@ import {
 import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
+import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -143,19 +144,20 @@ function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
 export function UpgradePreviewBanner({
   preview,
   pricingPlansUrl,
+  trialEligible,
 }: {
   preview: UpgradePreview;
   pricingPlansUrl: string;
+  /** gc-97k.8: trial framing only for a shop that can still get the trial. */
+  trialEligible: boolean;
 }) {
+  const copy = upgradePreviewCopy(preview, trialEligible);
   return (
     <s-banner tone="info">
       <s-stack direction="block" gap="base">
-        <s-text>
-          {upgradePreviewHeadline(preview)} Upgrade to see full details including all file names,
-          line numbers, and code snippets.
-        </s-text>
+        <s-text>{copy.body}</s-text>
         <a href={pricingPlansUrl} target="_top" rel="noreferrer" onClick={recordUpgradeClick}>
-          <s-button variant="primary">Upgrade Plan</s-button>
+          <s-button variant="primary">{copy.cta}</s-button>
         </a>
       </s-stack>
     </s-banner>
@@ -861,6 +863,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   if (upgradePreview && shop.upgradePreviewShownAt === null) {
     await recordUpgradePreviewStageOnce("shown", session.shop);
   }
+  // Trial vs upgrade framing for the teaser (gc-97k.8); read only when it renders.
+  const trialEligible = upgradePreview ? await getTrialEligibility(shop) : false;
 
   // Durable "first viewed results" milestone (gc-dpm.1): the first load of a
   // SUCCESSFUL scan's detail page. Gated on the stored value, so an
@@ -908,6 +912,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // Managed Pricing plan page for the upgrade teaser's top-level CTA (same
     // helper as the Settings upgrade buttons).
     pricingPlansUrl: buildPricingPlansUrl(session.shop),
+    trialEligible,
     maliciousFindings: enrichedMaliciousFindings,
     findingSummary,
     canViewDetails,
@@ -1146,6 +1151,7 @@ export default function ScanDetail() {
     previewFinding,
     upgradePreview,
     pricingPlansUrl,
+    trialEligible,
     maliciousFindings,
     findingSummary,
     canViewDetails,
@@ -2130,6 +2136,7 @@ export default function ScanDetail() {
                     <UpgradePreviewBanner
                       preview={upgradePreview}
                       pricingPlansUrl={pricingPlansUrl}
+                      trialEligible={trialEligible}
                     />
                   )}
                 </s-stack>

@@ -12,6 +12,8 @@
 import type { FindingType } from "@prisma/client";
 
 import { computeLaneSummary } from "./finding-consequence";
+import { PLANS } from "./plans";
+import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "./trial-cta";
 
 /** Most entries the breakdown lists; any overflow folds into one "Other" entry. */
 export const UPGRADE_PREVIEW_MAX_GROUPS = 4;
@@ -72,4 +74,23 @@ export function upgradePreviewHeadline(preview: UpgradePreview): string {
   const noun = preview.hiddenCount === 1 ? "finding" : "findings";
   const breakdown = preview.groups.map((g) => `${g.label} (${g.count})`).join(", ");
   return `${preview.hiddenCount} more ${noun} on Standard: ${breakdown}.`;
+}
+
+/**
+ * The teaser's body and button (gc-97k.8). Trial framing for a shop that can
+ * still get the trial, plain upgrade framing for one that has had a paid plan:
+ *   trial:    "<headline> Try Standard free for 7 days to see every file, line, and fix."
+ *   fallback: "<headline> Upgrade to Standard to see every file, line, and fix."
+ */
+export function upgradePreviewCopy(
+  preview: UpgradePreview,
+  trialEligible: boolean,
+): { body: string; cta: string } {
+  const ask = trialEligible
+    ? `Try ${PLANS.STANDARD} free for ${FREE_TRIAL_DAYS} days`
+    : `Upgrade to ${PLANS.STANDARD}`;
+  return {
+    body: `${upgradePreviewHeadline(preview)} ${ask} to see every file, line, and fix.`,
+    cta: upgradeCtaLabel(PLANS.STANDARD, trialEligible),
+  };
 }

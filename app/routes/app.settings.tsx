@@ -10,7 +10,9 @@ import {
   OPTIONAL_SCOPES,
 } from "../lib/optional-scopes";
 import { PLANS } from "../lib/plans";
+import { upgradeCtaLabel } from "../lib/trial-cta";
 import { getShopMetadata } from "../models/shop.server";
+import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { authenticate } from "../shopify.server";
 import {
   BORDER_DEFAULT,
@@ -40,7 +42,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Shopify Managed Pricing — plan changes happen on Shopify's native UI.
   const pricingPlansUrl = buildPricingPlansUrl(session.shop);
 
-  return { shop: { plan: shop.plan, domain: shop.domain }, features, pricingPlansUrl };
+  // gc-97k.8: promise the free trial only to a Free shop with no paid history.
+  const trialEligible = await getTrialEligibility(shop);
+
+  return {
+    shop: { plan: shop.plan, domain: shop.domain },
+    features,
+    pricingPlansUrl,
+    trialEligible,
+  };
 };
 
 // ---------------------------------------------------------------------------
@@ -229,7 +239,7 @@ function PermissionsCard() {
 // ---------------------------------------------------------------------------
 
 export default function Settings() {
-  const { shop, pricingPlansUrl } = useLoaderData<typeof loader>();
+  const { shop, pricingPlansUrl, trialEligible } = useLoaderData<typeof loader>();
 
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
@@ -348,7 +358,11 @@ export default function Settings() {
             </div>
             {!isStandard &&
               planButton(
-                isFree ? "Start Free Trial" : isProfessional ? "Downgrade to Standard" : "Select",
+                isFree
+                  ? upgradeCtaLabel(PLANS.STANDARD, trialEligible)
+                  : isProfessional
+                    ? "Downgrade to Standard"
+                    : "Select",
                 isProfessional ? "secondary" : "primary",
               )}
           </div>
@@ -371,7 +385,7 @@ export default function Settings() {
                 <s-list-item>7-day free trial</s-list-item>
               </s-unordered-list>
             </div>
-            {!isProfessional && planButton(isFree ? "Start Free Trial" : "Upgrade to Professional")}
+            {!isProfessional && planButton(upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligible))}
           </div>
         </div>
 

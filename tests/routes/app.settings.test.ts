@@ -10,7 +10,10 @@
  *     happen on Shopify's native pricing_plans page, not via an in-app action.
  */
 
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import type { LoaderFunctionArgs } from "react-router";
+import { createRoutesStub } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -33,6 +36,12 @@ vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
 }));
 
+// gc-97k.8: BillingEvent history behind trial eligibility, mocked at the model
+// boundary so the REAL trial-eligibility service runs.
+vi.mock("../../app/models/billing-event.server", () => ({
+  hasBillingHistory: vi.fn(),
+}));
+
 vi.mock("../../app/lib/billing.server", () => ({
   getPlanFeatures: vi.fn(),
   buildPricingPlansUrl: vi.fn(),
@@ -47,8 +56,9 @@ vi.mock("../../app/lib/plans", () => ({
 // ---------------------------------------------------------------------------
 
 import { buildPricingPlansUrl, getPlanFeatures } from "../../app/lib/billing.server";
+import { hasBillingHistory } from "../../app/models/billing-event.server";
 import { getShopMetadata } from "../../app/models/shop.server";
-import { loader, scopeBadge } from "../../app/routes/app.settings";
+import Settings, { loader, scopeBadge } from "../../app/routes/app.settings";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -59,6 +69,7 @@ const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockBuildPricingPlansUrl = buildPricingPlansUrl as ReturnType<typeof vi.fn>;
+const mockHasBillingHistory = hasBillingHistory as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -107,6 +118,7 @@ beforeEach(() => {
   mockGetShopMetadata.mockResolvedValue(SHOP);
   mockGetPlanFeatures.mockReturnValue(FREE_FEATURES);
   mockBuildPricingPlansUrl.mockReturnValue(PRICING_PLANS_URL);
+  mockHasBillingHistory.mockResolvedValue(false);
 });
 
 // ---------------------------------------------------------------------------
@@ -126,6 +138,30 @@ describe("app.settings loader", () => {
     expect(result.pricingPlansUrl).toBe(PRICING_PLANS_URL);
     expect(mockBuildPricingPlansUrl).toHaveBeenCalledWith(SHOP_DOMAIN);
     expect(result.features).toEqual(FREE_FEATURES);
+  });
+
+  it("never-paid Free shop: trialEligible", async () => {
+    const result = (await loader(makeLoaderArgs())) as { trialEligible: boolean };
+
+    expect(result.trialEligible).toBe(true);
+    expect(mockHasBillingHistory).toHaveBeenCalledWith("shop-1");
+  });
+
+  it("previously-paid Free shop (has a BillingEvent): not trialEligible", async () => {
+    mockHasBillingHistory.mockResolvedValue(true);
+
+    const result = (await loader(makeLoaderArgs())) as { trialEligible: boolean };
+
+    expect(result.trialEligible).toBe(false);
+  });
+
+  it("paid shop: not trialEligible, and no billing-history read", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+
+    const result = (await loader(makeLoaderArgs())) as { trialEligible: boolean };
+
+    expect(result.trialEligible).toBe(false);
+    expect(mockHasBillingHistory).not.toHaveBeenCalled();
   });
 
   it("throws 404 when shop not found", async () => {
@@ -171,5 +207,83 @@ describe("scopeBadge (PermissionsCard)", () => {
       tone: "neutral",
       text: "Status unavailable",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Plan tile buttons (gc-97k.8): trial vs previously-paid copy
+// ---------------------------------------------------------------------------
+
+describe("Settings plan tile buttons", () => {
+  /** Render the real Settings page with the given loader data. */
+  function renderSettings(plan: string, trialEligible: boolean): string {
+    const loaderData = {
+      shop: { plan, domain: SHOP_DOMAIN },
+      features: FREE_FEATURES,
+      pricingPlansUrl: PRICING_PLANS_URL,
+      trialEligible,
+    };
+    const Stub = createRoutesStub([
+      {
+        id: "settings",
+        path: "/app/settings",
+        Component: Settings as never,
+        loader: () => loaderData,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/settings"],
+        hydrationData: { loaderData: { settings: loaderData } },
+      }),
+    );
+  }
+
+  /** Every plan-tile / manage button label, in page order. */
+  function buttonLabels(html: string): string[] {
+    return [...html.matchAll(/<s-button[^>]*>([^<]*)<\/s-button>/g)].map((m) => m[1]);
+  }
+
+  it("never-paid Free shop: both paid tiles offer the 7-day trial", () => {
+    expect(buttonLabels(renderSettings("free", true))).toEqual([
+      "Start 7-day free trial",
+      "Start 7-day free trial",
+      "Manage subscription in Shopify",
+    ]);
+  });
+
+  it("previously-paid Free shop: plain upgrade labels, no trial promise on a button", () => {
+    expect(buttonLabels(renderSettings("free", false))).toEqual([
+      "Upgrade to Standard",
+      "Upgrade to Professional",
+      "Manage subscription in Shopify",
+    ]);
+  });
+
+  it("Standard shop: unchanged (Upgrade to Professional)", () => {
+    expect(buttonLabels(renderSettings("Standard", false))).toEqual([
+      "Upgrade to Professional",
+      "Manage subscription in Shopify",
+    ]);
+  });
+
+  it("Professional shop: unchanged (Downgrade to Standard)", () => {
+    expect(buttonLabels(renderSettings("Professional", false))).toEqual([
+      "Downgrade to Standard",
+      "Manage subscription in Shopify",
+    ]);
+  });
+
+  it("every plan button links top-level to the Managed Pricing page", () => {
+    const html = renderSettings("free", true);
+    const pricingAnchors = (html.match(/<a [^>]*>/g) ?? []).filter((a) =>
+      a.includes("pricing_plans"),
+    );
+    // Standard tile, Professional tile, Manage subscription.
+    expect(pricingAnchors).toHaveLength(3);
+    for (const a of pricingAnchors) {
+      expect(a).toContain(`href="${PRICING_PLANS_URL}"`);
+      expect(a).toContain('target="_top"');
+    }
   });
 });

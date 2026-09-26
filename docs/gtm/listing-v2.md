@@ -110,7 +110,7 @@ app," so leading with it blurs the core promise. Use it in three places:
 > plan, so they belong on the Free card (candidate: `Malicious script alerts on every plan`, 37/40).
 
 The live Standard card sells **mechanics** (full detail, scan cadence, trend) but names none
-of its **outcome** detectors. Two flagship Standard-only detectors are invisible at the $29
+of its **outcome** detectors. Two flagship Standard-only detectors are invisible at the $9
 decision point: **Broken Links** (`DANGLING_REFERENCE`) and **checkout.liquid sunset**
 (`CHECKOUT_SUNSET`). For ad-driven traffic deciding whether to pay, concrete outcomes beat
 "more detail." Candidate bullets (all ≤40):

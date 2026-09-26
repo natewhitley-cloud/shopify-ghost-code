@@ -15,6 +15,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildUpgradePreview,
   UPGRADE_PREVIEW_MAX_GROUPS,
+  upgradePreviewCopy,
   upgradePreviewHeadline,
 } from "../../app/lib/upgrade-preview";
 
@@ -168,5 +169,53 @@ describe("upgradePreviewHeadline", () => {
     );
     expect(text).not.toContain("—");
     expect(text).not.toMatch(/malicious|security|attack|threat/i);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// upgradePreviewCopy (gc-97k.8): trial vs previously-paid framing
+// ---------------------------------------------------------------------------
+
+describe("upgradePreviewCopy", () => {
+  const PREVIEW = {
+    hiddenCount: 12,
+    groups: [
+      { label: "Found by Google & AI", count: 5 },
+      { label: "Speed", count: 4 },
+      { label: "Housekeeping", count: 3 },
+    ],
+  };
+  const HEADLINE =
+    "12 more findings on Standard: Found by Google & AI (5), Speed (4), Housekeeping (3).";
+
+  it("never-paid Free shop: trial body and button", () => {
+    expect(upgradePreviewCopy(PREVIEW, true)).toEqual({
+      body: `${HEADLINE} Try Standard free for 7 days to see every file, line, and fix.`,
+      cta: "Start 7-day free trial",
+    });
+  });
+
+  it("previously-paid shop: upgrade body and button, no trial promise", () => {
+    const copy = upgradePreviewCopy(PREVIEW, false);
+    expect(copy).toEqual({
+      body: `${HEADLINE} Upgrade to Standard to see every file, line, and fix.`,
+      cta: "Upgrade to Standard",
+    });
+    expect(`${copy.body} ${copy.cta}`).not.toMatch(/trial|free for/i);
+  });
+
+  it("keeps the singular headline", () => {
+    expect(
+      upgradePreviewCopy({ hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] }, true).body,
+    ).toBe(
+      "1 more finding on Standard: Speed (1). Try Standard free for 7 days to see every file, line, and fix.",
+    );
+  });
+
+  it("no em dash in either state", () => {
+    for (const eligible of [true, false]) {
+      const copy = upgradePreviewCopy(PREVIEW, eligible);
+      expect(copy.body + copy.cta).not.toContain("—");
+    }
   });
 });

@@ -40,6 +40,15 @@ export async function recordBillingEvent(input: RecordBillingEventInput) {
 }
 
 /**
+ * True when the shop has ANY BillingEvent row, i.e. it has had a paid plan at
+ * some point (gc-97k.8 trial eligibility). One indexed existence read.
+ */
+export async function hasBillingHistory(shopId: string): Promise<boolean> {
+  const row = await db.billingEvent.findFirst({ where: { shopId }, select: { id: true } });
+  return row !== null;
+}
+
+/**
  * Options for excluding dev/test/internal/app-review stores from the billing-event
  * aggregation, mirroring the exclusion every other operator-digest metric applies.
  */

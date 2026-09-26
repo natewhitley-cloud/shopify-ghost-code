@@ -42,6 +42,12 @@ vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
 }));
 
+// gc-97k.8: the BillingEvent history read behind trial eligibility, mocked at
+// the model boundary so the REAL trial-eligibility service runs.
+vi.mock("../../app/models/billing-event.server", () => ({
+  hasBillingHistory: vi.fn(),
+}));
+
 vi.mock("../../app/models/scan.server", () => ({
   getScanById: vi.fn(),
 }));
@@ -113,6 +119,7 @@ import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/fin
 import { computeHealthScore } from "../../app/lib/health-score";
 import { logger } from "../../app/lib/logger.server";
 import { canUseScanDiffing, canViewFindingDetails } from "../../app/lib/plan-gating.server";
+import { hasBillingHistory } from "../../app/models/billing-event.server";
 import {
   getAppAttributionForScan,
   getFindingByIdForShop,
@@ -179,6 +186,7 @@ const mockFindUnknownScriptForShop = findUnknownScriptForShop as ReturnType<type
 const mockIsTrackerApp = isTrackerApp as ReturnType<typeof vi.fn>;
 const mockSubmitSignatureSuggestion = submitSignatureSuggestion as ReturnType<typeof vi.fn>;
 const mockRecordUpgradePreviewStage = recordUpgradePreviewStageOnce as ReturnType<typeof vi.fn>;
+const mockHasBillingHistory = hasBillingHistory as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -658,6 +666,34 @@ describe("app.scans.$scanId loader", () => {
       freeShop();
       mockGetHighestSeverityFinding.mockResolvedValue(FINDING_ONE); // a GHOST_SCRIPT
       mockRecordUpgradePreviewStage.mockResolvedValue(true);
+      mockHasBillingHistory.mockResolvedValue(false);
+    });
+
+    it("trial-eligible for a never-paid Free shop (no BillingEvent)", async () => {
+      summary({ GHOST_SCRIPT: 3 });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { trialEligible: boolean };
+
+      expect(result.trialEligible).toBe(true);
+      expect(mockHasBillingHistory).toHaveBeenCalledWith(SHOP.id);
+    });
+
+    it("not trial-eligible for a previously-paid Free shop (has a BillingEvent)", async () => {
+      summary({ GHOST_SCRIPT: 3 });
+      mockHasBillingHistory.mockResolvedValue(true);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { trialEligible: boolean };
+
+      expect(result.trialEligible).toBe(false);
+    });
+
+    it("skips the billing-history read when no teaser renders", async () => {
+      summary({ GHOST_SCRIPT: 1 }); // only the preview row: nothing hidden
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { trialEligible: boolean };
+
+      expect(result.trialEligible).toBe(false);
+      expect(mockHasBillingHistory).not.toHaveBeenCalled();
     });
 
     it("returns the per-lane breakdown of hidden findings (excluding the preview row)", async () => {
@@ -1574,85 +1610,128 @@ describe("scanProgressLabel", () => {
 describe("UpgradePreviewBanner", () => {
   const PRICING_URL = "https://admin.shopify.com/store/test-shop/charges/ghost-code/pricing_plans";
 
-  function render(preview: {
-    hiddenCount: number;
-    groups: Array<{ label: string; count: number }>;
-  }) {
+  function render(
+    preview: {
+      hiddenCount: number;
+      groups: Array<{ label: string; count: number }>;
+    },
+    trialEligible = true,
+  ) {
     return renderToStaticMarkup(
       createElement(
         MemoryRouter,
         null,
-        createElement(UpgradePreviewBanner, { preview, pricingPlansUrl: PRICING_URL }),
+        createElement(UpgradePreviewBanner, {
+          preview,
+          pricingPlansUrl: PRICING_URL,
+          trialEligible,
+        }),
       ),
     );
   }
 
-  it("shows the breakdown headline and the upgrade copy", () => {
-    const html = render({
-      hiddenCount: 12,
-      groups: [
-        { label: "Found by Google & AI", count: 5 },
-        { label: "Speed", count: 4 },
-        { label: "Housekeeping", count: 3 },
-      ],
-    });
+  const TWELVE = {
+    hiddenCount: 12,
+    groups: [
+      { label: "Found by Google & AI", count: 5 },
+      { label: "Speed", count: 4 },
+      { label: "Housekeeping", count: 3 },
+    ],
+  };
+  const TWELVE_HEADLINE =
+    "12 more findings on Standard: Found by Google &amp; AI (5), Speed (4), Housekeeping (3).";
+
+  /** The CTA button's visible label. */
+  function buttonText(html: string): string | undefined {
+    return html.match(/<s-button[^>]*>([^<]*)<\/s-button>/)?.[1];
+  }
+
+  it("never-paid Free shop: trial body and 'Start 7-day free trial' button", () => {
+    const html = render(TWELVE, true);
 
     expect(html).toContain(
-      "12 more findings on Standard: Found by Google &amp; AI (5), Speed (4), Housekeeping (3).",
+      `${TWELVE_HEADLINE} Try Standard free for 7 days to see every file, line, and fix.`,
     );
-    expect(html).toContain("Upgrade to see full details");
+    expect(buttonText(html)).toBe("Start 7-day free trial");
+    expect(html).not.toContain("Upgrade Plan");
   });
 
-  it("CTA is a plain top-level link to the Managed Pricing plan page (proven Settings pattern)", () => {
-    const html = render({ hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] });
+  it("previously-paid shop: upgrade body and 'Upgrade to Standard' button, no trial promise", () => {
+    const html = render(TWELVE, false);
 
-    const anchors = html.match(/<a [^>]*>/g) ?? [];
-    expect(anchors).toHaveLength(1);
-    expect(anchors[0]).toContain(`href="${PRICING_URL}"`);
-    expect(anchors[0]).toContain('target="_top"');
-    expect(html).not.toContain("/app/upgrade");
-    expect(html).not.toContain('href="/app/settings"');
-    expect(html).toContain("1 more finding on Standard: Speed (1).");
+    expect(html).toContain(
+      `${TWELVE_HEADLINE} Upgrade to Standard to see every file, line, and fix.`,
+    );
+    expect(buttonText(html)).toBe("Upgrade to Standard");
+    expect(html).not.toMatch(/trial|free for/i);
   });
 
-  it("wires the anchor's onClick to the best-effort click ping (no preventDefault)", () => {
-    const tree = UpgradePreviewBanner({
-      preview: { hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] },
-      pricingPlansUrl: PRICING_URL,
-    });
-    type El = { type: unknown; props: { children?: unknown; [k: string]: unknown } };
-    function findAnchor(node: unknown): El | null {
-      if (!node || typeof node !== "object") return null;
-      if (Array.isArray(node)) {
-        for (const child of node) {
-          const hit = findAnchor(child);
-          if (hit) return hit;
+  it.each([true, false])(
+    "CTA is a plain top-level link to the Managed Pricing plan page (trialEligible=%s)",
+    (trialEligible) => {
+      const html = render(
+        { hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] },
+        trialEligible,
+      );
+
+      const anchors = html.match(/<a [^>]*>/g) ?? [];
+      expect(anchors).toHaveLength(1);
+      expect(anchors[0]).toContain(`href="${PRICING_URL}"`);
+      expect(anchors[0]).toContain('target="_top"');
+      expect(html).not.toContain("/app/upgrade");
+      expect(html).not.toContain('href="/app/settings"');
+      expect(html).toContain("1 more finding on Standard: Speed (1).");
+    },
+  );
+
+  it.each([true, false])(
+    "wires the anchor's onClick to the best-effort click ping (trialEligible=%s)",
+    (trialEligible) => {
+      const tree = UpgradePreviewBanner({
+        preview: { hiddenCount: 1, groups: [{ label: "Speed", count: 1 }] },
+        pricingPlansUrl: PRICING_URL,
+        trialEligible,
+      });
+      type El = { type: unknown; props: { children?: unknown; [k: string]: unknown } };
+      function findAnchor(node: unknown): El | null {
+        if (!node || typeof node !== "object") return null;
+        if (Array.isArray(node)) {
+          for (const child of node) {
+            const hit = findAnchor(child);
+            if (hit) return hit;
+          }
+          return null;
         }
-        return null;
+        const el = node as El;
+        if (el.type === "a") return el;
+        return findAnchor(el.props?.children);
       }
-      const el = node as El;
-      if (el.type === "a") return el;
-      return findAnchor(el.props?.children);
-    }
 
-    const anchor = findAnchor(tree);
-    expect(anchor?.props.href).toBe(PRICING_URL);
-    expect(anchor?.props.target).toBe("_top");
-    expect(anchor?.props.onClick).toBe(recordUpgradeClick);
-  });
+      const anchor = findAnchor(tree);
+      expect(anchor?.props.href).toBe(PRICING_URL);
+      expect(anchor?.props.target).toBe("_top");
+      expect(anchor?.props.onClick).toBe(recordUpgradeClick);
+    },
+  );
 
-  it("never implies security or malicious alerts need an upgrade, and has no em dash", () => {
-    const html = render({
-      hiddenCount: 5,
-      groups: [
-        { label: "Still tracking you", count: 3 },
-        { label: "Speed", count: 2 },
-      ],
-    });
+  it.each([true, false])(
+    "never implies security or malicious alerts need an upgrade, and has no em dash (trialEligible=%s)",
+    (trialEligible) => {
+      const html = render(
+        {
+          hiddenCount: 5,
+          groups: [
+            { label: "Still tracking you", count: 3 },
+            { label: "Speed", count: 2 },
+          ],
+        },
+        trialEligible,
+      );
 
-    expect(html).not.toMatch(/malicious|security|attack|threat/i);
-    expect(html).not.toContain("\u2014");
-  });
+      expect(html).not.toMatch(/malicious|security|attack|threat/i);
+      expect(html).not.toContain("\u2014");
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------
