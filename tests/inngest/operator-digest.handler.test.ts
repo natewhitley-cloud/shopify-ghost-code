@@ -86,6 +86,14 @@ const fakeDb = vi.hoisted(() => {
             return true;
           });
         }
+        if (args.orderBy !== undefined) {
+          const [[field, dir]] = Object.entries(args.orderBy as R);
+          const sign = dir === "desc" ? -1 : 1;
+          out = [...out].sort(
+            (a, b) => sign * ((a[field] as Date).getTime() - (b[field] as Date).getTime()),
+          );
+        }
+        if (typeof args.take === "number") out = out.slice(0, args.take);
         return out.map((r) => withSelectedRelations(model, r, args.select as R));
       }),
       findFirst: vi.fn(async (args: R = {}) => {
@@ -182,6 +190,14 @@ const NULL_STAMPS = {
   upgradePreviewShownAt: null,
   upgradePreviewClickedAt: null,
   upgradePreviewConvertedAt: null,
+  upgradeReturnShownAt: null,
+  upgradeReturnClickedAt: null,
+  upgradeReturnDismissedAt: null,
+  upgradeReturnConvertedAt: null,
+  reviewPopupRequestedAt: null,
+  reviewPopupLastResult: null,
+  reviewPopupLastAttemptAt: null,
+  reviewPopupAttemptCount: 0,
   feedbackNudgeShownAt: null,
   feedbackNudgeClickedAt: null,
   feedbackNudgeDismissedAt: null,
@@ -523,6 +539,7 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
       [
         "NUDGES (funnel per nudge, 24h / 7d)",
         "  counts per stage; each merchant counted once per stage, on the day it happened",
+        "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return); do not add them together",
         "  upgrade_preview",
         "    shown 1 / 2 | clicked 1 / 1 | dismissed 0 / 0 | converted 0 / 0",
         "  feedback",
@@ -601,7 +618,7 @@ describe("operator-digest handler: JOURNEY section wiring (gc-dpm.3)", () => {
     expect(body).toContain("Total active: 2");
   });
 
-  it("lists only real shops seen or installed in the last 7d in the timeline", async () => {
+  it("lists only real shops seen, installed or uninstalled in the last 7d in the timeline", async () => {
     const body = await runDigest();
     const lines = section(body).split("\n");
 
@@ -610,10 +627,14 @@ describe("operator-digest handler: JOURNEY section wiring (gc-dpm.3)", () => {
     expect(lines[i + 1]).toMatch(
       /^ {6}\d\d-\d\d \d\d:\d\d installed > (\d\d-\d\d )?\d\d:\d\d scan COMPLETED \(7\) > last seen (\d\d-\d\d )?\d\d:\d\d$/,
     );
-    // real-b (installed 10d ago, never seen) and churned-real (installed 21d
-    // ago) are outside the 7d window; excluded stores never appear at all.
+    // real-b (installed 10d ago, never seen) is outside the 7d window.
+    // Changed on purpose (audit 2 #6): churned-real (installed 21d ago, never
+    // seen) uninstalled 5h ago, so it now IS in the timeline. Excluded stores
+    // never appear at all.
     expect(section(body)).not.toContain("real-b.myshopify.com");
-    expect(section(body)).not.toContain("churned-real.myshopify.com");
+    expect(section(body)).toContain(
+      "    churned-real.myshopify.com [opened -> stage: opened, no scan; currently uninstalled]",
+    );
     for (const s of EXCLUDED) expect(section(body)).not.toContain(s.domain);
   });
 
@@ -653,5 +674,66 @@ describe("operator-digest handler: JOURNEY section wiring (gc-dpm.3)", () => {
     expect(lines[i]).toBe("    came-back.myshopify.com [opened -> stage: opened, no scan]");
     expect(lines[i + 1]).toMatch(/installed > .*uninstalled > .*reinstalled > last seen/);
     expect(section(body)).toContain("  Funnel: Installed 3 > Opened 2 >");
+  });
+
+  it("reads each timeline shop's scans BOUNDED (latest TIMELINE_EVENTS_LIMIT, newest first) with an exact earlier count", async () => {
+    const now = Date.now();
+    tables.shop.push({
+      ...NULL_STAMPS,
+      id: "shop-busy",
+      domain: "busy.myshopify.com",
+      plan: "free",
+      installedAt: new Date(now - 3 * HOUR),
+      uninstalledAt: null,
+      isInternal: false,
+      lastSeenAt: new Date(now - 1 * HOUR),
+    });
+    for (let i = 0; i < 25; i++) {
+      tables.scan.push({
+        id: `busy-scan-${i}`,
+        shopId: "shop-busy",
+        status: "FAILED",
+        findingCount: 0,
+        createdAt: new Date(now - 2 * HOUR + i * 60_000),
+      });
+    }
+
+    const body = await runDigest();
+
+    const scanReads = (fakeDb.scan.findMany.mock.calls as Array<[Record<string, unknown>]>).filter(
+      ([args]) => (args.where as Record<string, unknown>)?.shopId === "shop-busy",
+    );
+    expect(scanReads).toHaveLength(1);
+    expect(scanReads[0][0]).toMatchObject({ orderBy: { createdAt: "desc" }, take: 8 });
+    const lines = section(body).split("\n");
+    const i = lines.findIndex((l) => l.startsWith("    busy.myshopify.com ["));
+    // 25 scans + installed + last seen = 27 events; 8 shown, 19 earlier.
+    expect(lines[i + 1]).toMatch(/^ {6}\(19 earlier\) > /);
+  });
+
+  it("includes a real shop that uninstalled in the last 7 days though it was not seen this week", async () => {
+    const now = Date.now();
+    tables.shop.push({
+      ...NULL_STAMPS,
+      id: "shop-left",
+      domain: "left-recently.myshopify.com",
+      plan: "free",
+      installedAt: new Date(now - 60 * 24 * HOUR),
+      uninstalledAt: new Date(now - 2 * 24 * HOUR),
+      isInternal: false,
+      lastSeenAt: new Date(now - 30 * 24 * HOUR),
+    });
+    tables.opsEvent.push({
+      id: "u-left",
+      eventType: "shop_uninstalled",
+      key: "left-recently.myshopify.com",
+      createdAt: new Date(now - 2 * 24 * HOUR),
+    });
+
+    const body = await runDigest();
+
+    expect(section(body)).toContain(
+      "    left-recently.myshopify.com [opened -> stage: opened, no scan; currently uninstalled]",
+    );
   });
 });

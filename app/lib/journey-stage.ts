@@ -13,8 +13,11 @@
  *                   which are chosen inside the app.
  *   scanned         at least one SUCCESSFUL (COMPLETED or PARTIAL) scan.
  *   viewedResults   firstResultsViewedAt.
- *   sawUpgrade      upgradePreviewShownAt.
- *   clickedUpgrade  upgradePreviewClickedAt.
+ *   sawUpgrade      EITHER Free upgrade ask was shown: upgradePreviewShownAt
+ *                   (inline teaser, gc-97k.4) or upgradeReturnShownAt (return
+ *                   banner, gc-97k.9).
+ *   clickedUpgrade  EITHER ask was clicked: upgradePreviewClickedAt or
+ *                   upgradeReturnClickedAt.
  *   paid            plan is a paid tier (Standard / Professional). Any other
  *                   value counts as free, matching the digest's plan mix.
  *
@@ -32,6 +35,8 @@ export interface JourneyFacts {
   firstResultsViewedAt: Date | null;
   upgradePreviewShownAt: Date | null;
   upgradePreviewClickedAt: Date | null;
+  upgradeReturnShownAt: Date | null;
+  upgradeReturnClickedAt: Date | null;
   /** Any Scan row at all, whatever its status. */
   hasAnyScan: boolean;
   /** At least one COMPLETED or PARTIAL scan. */
@@ -92,8 +97,8 @@ export function deriveJourneyMilestones(facts: JourneyFacts): JourneyMilestones 
     opened: facts.firstOpenedAt !== null || facts.lastSeenAt !== null || facts.hasAnyScan,
     scanned: facts.hasSuccessfulScan,
     viewedResults: facts.firstResultsViewedAt !== null,
-    sawUpgrade: facts.upgradePreviewShownAt !== null,
-    clickedUpgrade: facts.upgradePreviewClickedAt !== null,
+    sawUpgrade: facts.upgradePreviewShownAt !== null || facts.upgradeReturnShownAt !== null,
+    clickedUpgrade: facts.upgradePreviewClickedAt !== null || facts.upgradeReturnClickedAt !== null,
     paid: isPaidPlan(facts.plan),
   };
 }

@@ -24,6 +24,8 @@ const NO_FACTS: JourneyFacts = {
   firstResultsViewedAt: null,
   upgradePreviewShownAt: null,
   upgradePreviewClickedAt: null,
+  upgradeReturnShownAt: null,
+  upgradeReturnClickedAt: null,
   hasAnyScan: false,
   hasSuccessfulScan: false,
 };
@@ -83,11 +85,40 @@ describe("deriveJourneyMilestones", () => {
       ...NONE,
       clickedUpgrade: true,
     });
+    // The return banner (gc-97k.9) counts exactly like the teaser.
+    expect(deriveJourneyMilestones({ ...NO_FACTS, upgradeReturnShownAt: T })).toEqual({
+      ...NONE,
+      sawUpgrade: true,
+    });
+    expect(deriveJourneyMilestones({ ...NO_FACTS, upgradeReturnClickedAt: T })).toEqual({
+      ...NONE,
+      clickedUpgrade: true,
+    });
     // Paid via the Billing page without ever seeing the preview.
     expect(deriveJourneyMilestones({ ...NO_FACTS, plan: "Standard" })).toEqual({
       ...NONE,
       paid: true,
     });
+  });
+});
+
+describe("deriveJourneyMilestones: either upgrade ask (audit 2 #2)", () => {
+  it.each([
+    ["teaser only", { upgradePreviewShownAt: T }, true],
+    ["return banner only", { upgradeReturnShownAt: T }, true],
+    ["both", { upgradePreviewShownAt: T, upgradeReturnShownAt: T }, true],
+    ["neither", {}, false],
+  ])("saw upgrade: %s -> %s", (_name, facts, expected) => {
+    expect(deriveJourneyMilestones({ ...NO_FACTS, ...facts }).sawUpgrade).toBe(expected);
+  });
+
+  it.each([
+    ["teaser only", { upgradePreviewClickedAt: T }, true],
+    ["return banner only", { upgradeReturnClickedAt: T }, true],
+    ["both", { upgradePreviewClickedAt: T, upgradeReturnClickedAt: T }, true],
+    ["neither", {}, false],
+  ])("clicked: %s -> %s", (_name, facts, expected) => {
+    expect(deriveJourneyMilestones({ ...NO_FACTS, ...facts }).clickedUpgrade).toBe(expected);
   });
 });
 

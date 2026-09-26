@@ -64,6 +64,10 @@ import {
   parseSnapshotMetadata,
   partitionShops,
   rankPageCounts,
+  recentUninstallTimes,
+  REINSTALL_MIN_GAP_MS,
+  reviewPopupStamps,
+  selectTimelineShops,
   SHOP_PAGES_LIMIT,
   sortFindingTypeCounts,
   summarizeReconciler,
@@ -1850,6 +1854,7 @@ describe("buildDigestBody — NUDGES section (gc-97k.1)", () => {
       [
         "NUDGES (funnel per nudge, 24h / 7d)",
         "  counts per stage; each merchant counted once per stage, on the day it happened",
+        "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return); do not add them together",
         "  upgrade_preview",
         "    shown 3 / 10 | clicked 1 / 4 | dismissed 0 / 2 | converted 0 / 1",
       ].join("\n"),
@@ -2108,6 +2113,14 @@ describe("journey (gc-dpm.3)", () => {
       upgradePreviewShownAt: null,
       upgradePreviewClickedAt: null,
       upgradePreviewConvertedAt: null,
+      upgradeReturnShownAt: null,
+      upgradeReturnClickedAt: null,
+      upgradeReturnDismissedAt: null,
+      upgradeReturnConvertedAt: null,
+      reviewPopupRequestedAt: null,
+      reviewPopupLastResult: null,
+      reviewPopupLastAttemptAt: null,
+      reviewPopupAttemptCount: 0,
       feedbackNudgeShownAt: null,
       feedbackNudgeClickedAt: null,
       feedbackNudgeDismissedAt: null,
@@ -2119,6 +2132,8 @@ describe("journey (gc-dpm.3)", () => {
   const NO_ROWS: JourneyTimelineRows = {
     scans: [],
     billingEvents: [],
+    scanCounts: [],
+    billingEventCounts: [],
     uninstallEvents: [],
     pageVisits: [],
   };
@@ -2172,6 +2187,7 @@ describe("journey (gc-dpm.3)", () => {
   };
 
   describe("isTimelineShop", () => {
+    const D = "s.myshopify.com";
     it.each([
       ["installed within 7d", { installedAt: daysAgo(6.9), lastSeenAt: null }, true],
       ["installed exactly 7d ago (inclusive)", { installedAt: daysAgo(7), lastSeenAt: null }, true],
@@ -2179,7 +2195,35 @@ describe("journey (gc-dpm.3)", () => {
       ["neither", { installedAt: daysAgo(90), lastSeenAt: daysAgo(8) }, false],
       ["never seen, old install", { installedAt: daysAgo(8), lastSeenAt: null }, false],
     ])("%s -> %s", (_name, s, expected) => {
-      expect(isTimelineShop(s, NOW)).toBe(expected);
+      expect(isTimelineShop({ domain: D, ...s }, NOW, new Map())).toBe(expected);
+    });
+
+    it("an old, unseen shop with a shop_uninstalled event in the last 7d is included", () => {
+      const old = { domain: D, installedAt: daysAgo(90), lastSeenAt: daysAgo(30) };
+      expect(isTimelineShop(old, NOW, new Map([[D, daysAgo(1)]]))).toBe(true);
+      expect(isTimelineShop(old, NOW, new Map([["other.myshopify.com", daysAgo(1)]]))).toBe(false);
+    });
+
+    it("matches the uninstalled domain case-insensitively", () => {
+      const old = { domain: "S.MyShopify.com", installedAt: daysAgo(90), lastSeenAt: null };
+      expect(isTimelineShop(old, NOW, new Map([[D, daysAgo(1)]]))).toBe(true);
+    });
+  });
+
+  describe("recentUninstallTimes", () => {
+    it("keeps events within 7d (inclusive), lowercased, latest per domain, skipping null keys", () => {
+      const times = recentUninstallTimes(
+        [
+          { key: "A.myshopify.com", createdAt: daysAgo(1) },
+          { key: "b.myshopify.com", createdAt: daysAgo(7) },
+          { key: "c.myshopify.com", createdAt: new Date(daysAgo(7).getTime() - 1) },
+          { key: null, createdAt: daysAgo(1) },
+          { key: "a.myshopify.com", createdAt: daysAgo(3) },
+        ],
+        NOW,
+      );
+      expect([...times.keys()].sort()).toEqual(["a.myshopify.com", "b.myshopify.com"]);
+      expect(times.get("a.myshopify.com")).toEqual(daysAgo(1));
     });
   });
 
@@ -2236,6 +2280,30 @@ describe("journey (gc-dpm.3)", () => {
       expect(j.timeline[0].uninstalled).toBe(true);
     });
 
+    it("Saw upgrade / Clicked count EITHER ask (teaser or return banner), never twice", () => {
+      const shops = [
+        shop({ id: "teaser-only", upgradePreviewShownAt: daysAgo(3) }),
+        shop({ id: "banner-only", upgradeReturnShownAt: daysAgo(3) }),
+        shop({
+          id: "both",
+          upgradePreviewShownAt: daysAgo(4),
+          upgradeReturnShownAt: daysAgo(3),
+          upgradePreviewClickedAt: daysAgo(3),
+          upgradeReturnClickedAt: daysAgo(2),
+        }),
+        shop({
+          id: "banner-click",
+          upgradeReturnShownAt: daysAgo(3),
+          upgradeReturnClickedAt: daysAgo(3),
+        }),
+        shop({ id: "neither" }),
+      ];
+      const j = run(shops);
+      const byLabel = Object.fromEntries(j.funnel.map((f) => [f.label, f.count]));
+      expect(byLabel["Saw upgrade"]).toBe(4);
+      expect(byLabel.Clicked).toBe(2);
+    });
+
     it("is all zeros for no shops", () => {
       const j = run([]);
       expect(j.funnel.every((f) => f.count === 0)).toBe(true);
@@ -2268,6 +2336,119 @@ describe("journey (gc-dpm.3)", () => {
       expect(formatTimelineLine(row.events, row.earlierOmitted)).toBe(
         "09-26 05:00 installed > 05:04 uninstalled > 05:30 reinstalled > 05:30 scan COMPLETED (36) > 05:31 viewed results > 05:31 saw upgrade > last seen 08:52",
       );
+    });
+
+    it("labels the return banner's shown / clicked / dismissed / converted stamps", () => {
+      const s = shop({
+        id: "ret",
+        installedAt: at("01:00"),
+        upgradeReturnShownAt: at("02:00"),
+        upgradeReturnDismissedAt: at("02:01"),
+        upgradeReturnClickedAt: at("02:02"),
+        upgradeReturnConvertedAt: at("02:03"),
+      });
+      expect(run([s]).timeline[0].events.map((e) => e.label)).toEqual([
+        "installed",
+        "return banner shown",
+        "return banner dismissed",
+        "return banner clicked",
+        "return banner converted",
+      ]);
+    });
+
+    it("shows the review popup outcome in the timeline", () => {
+      const s = shop({
+        id: "pop",
+        installedAt: at("01:00"),
+        reviewPopupRequestedAt: at("03:00"),
+        reviewPopupLastResult: "success",
+        reviewPopupLastAttemptAt: at("03:00"),
+        reviewPopupAttemptCount: 2,
+      });
+      expect(run([s]).timeline[0].events.map((e) => e.label)).toEqual([
+        "installed",
+        "review popup shown",
+      ]);
+    });
+
+    it("a page_visit within 60s of the uninstall is NOT a reinstall (in-flight fire-and-forget visit)", () => {
+      expect(REINSTALL_MIN_GAP_MS).toBe(60_000);
+      const s = shop({ id: "race", installedAt: at("01:00") });
+      const u = at("02:00");
+      const visitsAt = (offsetsMs: number[]) =>
+        run([s], {
+          rows: {
+            uninstallEvents: [{ key: "race.myshopify.com", createdAt: u }],
+            pageVisits: offsetsMs.map((ms) => ({
+              key: "race.myshopify.com",
+              createdAt: new Date(u.getTime() + ms),
+            })),
+          },
+        }).timeline[0].events.map((e) => e.label);
+
+      expect(visitsAt([30_000])).not.toContain("reinstalled");
+      expect(visitsAt([60_000])).not.toContain("reinstalled"); // exactly 60s: not MORE than
+      expect(visitsAt([60_001])).toContain("reinstalled");
+      // The in-flight visit is skipped; a real later visit still counts.
+      const later = run([s], {
+        rows: {
+          uninstallEvents: [{ key: "race.myshopify.com", createdAt: u }],
+          pageVisits: [
+            { key: "race.myshopify.com", createdAt: new Date(u.getTime() + 5_000) },
+            { key: "race.myshopify.com", createdAt: at("04:00") },
+          ],
+        },
+      }).timeline[0].events;
+      expect(later.find((e) => e.label === "reinstalled")?.at).toBe(at("04:00").toISOString());
+    });
+
+    it("includes an old, unseen shop that uninstalled in the last 7d", () => {
+      const s = shop({ id: "left", installedAt: daysAgo(90), lastSeenAt: daysAgo(40) });
+      const j = run([s], {
+        rows: { uninstallEvents: [{ key: "left.myshopify.com", createdAt: daysAgo(2) }] },
+      });
+      expect(j.timeline.map((t) => t.domain)).toEqual(["left.myshopify.com"]);
+      const stale = run([s], {
+        rows: { uninstallEvents: [{ key: "left.myshopify.com", createdAt: daysAgo(8) }] },
+      });
+      expect(stale.timeline).toEqual([]);
+    });
+
+    it("counts the scans and billing events the bounded read left out in (N earlier)", () => {
+      const s = shop({ id: "big", installedAt: at("00:00") });
+      // The handler read only the latest 8 scans; the shop has 30 in total.
+      const scans = Array.from({ length: 8 }, (_, i) => ({
+        shopId: "big",
+        createdAt: at(`0${i + 1}:00`),
+        status: "COMPLETED",
+        findingCount: i,
+      }));
+      const bounded = run([s], {
+        rows: {
+          scans,
+          scanCounts: [{ shopId: "big", count: 30 }],
+          billingEvents: [
+            { shopId: "big", eventType: "upgrade", toPlan: "Standard", createdAt: at("09:00") },
+          ],
+          billingEventCounts: [{ shopId: "big", count: 3 }],
+        },
+      }).timeline[0];
+      // 10 events read (installed + 8 scans + 1 billing); 8 shown; 2 read-but-
+      // dropped + 22 scans + 2 billing events never read = 26 earlier.
+      expect(bounded.events).toHaveLength(8);
+      expect(bounded.earlierOmitted).toBe(26);
+      expect(bounded.events.at(-1)?.label).toBe("billing upgrade to Standard");
+    });
+
+    it("a count lower than the rows passed never makes (N earlier) negative", () => {
+      const s = shop({ id: "odd", installedAt: at("00:00") });
+      const j = run([s], {
+        rows: {
+          scans: [{ shopId: "odd", createdAt: at("01:00"), status: "FAILED", findingCount: 0 }],
+          scanCounts: [{ shopId: "odd", count: 0 }],
+        },
+      });
+      expect(j.timeline[0].earlierOmitted).toBe(0);
     });
 
     it("leaves the reinstall out when no page_visit after the uninstall is retained", () => {
@@ -2453,6 +2634,77 @@ describe("journey (gc-dpm.3)", () => {
     });
   });
 
+  describe("reviewPopupStamps", () => {
+    const T = at("03:00");
+    const base = {
+      reviewPopupRequestedAt: null as Date | null,
+      reviewPopupLastResult: null as string | null,
+      reviewPopupLastAttemptAt: null as Date | null,
+      reviewPopupAttemptCount: 0,
+    };
+
+    it.each([
+      ["success", "review popup shown"],
+      ["cancelled", "review popup shown, closed"],
+      ["already-reviewed", "review popup declined (already-reviewed)"],
+      ["merchant-ineligible", "review popup declined (merchant-ineligible)"],
+      ["annual-limit-reached", "review popup declined (annual-limit-reached)"],
+      [null, "review popup requested"],
+    ])("terminal %s -> %s", (code, label) => {
+      expect(
+        reviewPopupStamps({
+          ...base,
+          reviewPopupRequestedAt: T,
+          reviewPopupLastResult: code,
+          reviewPopupLastAttemptAt: T,
+          reviewPopupAttemptCount: 1,
+        }),
+      ).toEqual([[T, label]]);
+    });
+
+    it("an attempt with a retryable result shows the attempt number and code", () => {
+      expect(
+        reviewPopupStamps({
+          ...base,
+          reviewPopupLastResult: "mobile-app",
+          reviewPopupLastAttemptAt: T,
+          reviewPopupAttemptCount: 2,
+        }),
+      ).toEqual([[T, "review popup attempt 2 (mobile-app)"]]);
+    });
+
+    it("an attempt whose report never arrived says so", () => {
+      expect(
+        reviewPopupStamps({ ...base, reviewPopupLastAttemptAt: T, reviewPopupAttemptCount: 1 }),
+      ).toEqual([[T, "review popup attempt 1 (no result)"]]);
+    });
+
+    it("never requested: no entry", () => {
+      expect(reviewPopupStamps(base)).toEqual([]);
+    });
+  });
+
+  describe("selectTimelineShops", () => {
+    it("filters and orders exactly as the rendered timeline does (uncapped)", () => {
+      const shops = [
+        shop({ id: "b", installedAt: daysAgo(3) }),
+        shop({ id: "c", installedAt: daysAgo(60), lastSeenAt: daysAgo(0.1) }),
+        shop({ id: "a", installedAt: daysAgo(3) }),
+        shop({ id: "out", installedAt: daysAgo(60), lastSeenAt: daysAgo(9) }),
+        shop({ id: "gone", installedAt: daysAgo(60), lastSeenAt: daysAgo(30) }),
+      ];
+      // "gone" last opened 30 days ago but uninstalled yesterday: the uninstall
+      // is its latest activity, so it ranks between c and the 3-day installs.
+      const picked = selectTimelineShops(shops, NOW, new Map([["gone.myshopify.com", daysAgo(1)]]));
+      expect(picked.map((x) => x.id)).toEqual(["c", "gone", "a", "b"]);
+      expect(
+        run(shops, {
+          rows: { uninstallEvents: [{ key: "gone.myshopify.com", createdAt: daysAgo(1) }] },
+        }).timeline.map((t) => t.domain),
+      ).toEqual(picked.map((x) => x.domain));
+    });
+  });
+
   describe("formatTimelineLine", () => {
     it("prints the date on the first event and whenever the UTC day changes", () => {
       expect(
@@ -2491,7 +2743,7 @@ describe("journey (gc-dpm.3)", () => {
         [
           "JOURNEY (active installs, counted ever)",
           "  Funnel: Installed 1 > Opened 1 > Scanned 1 > Viewed results 1 > Saw upgrade 1 > Clicked 0 > Paid 0",
-          "  Timeline (shops seen or installed in the last 7d; UTC; latest events):",
+          "  Timeline (shops seen, installed or uninstalled in the last 7d; UTC; latest events):",
           "    ortho-india.myshopify.com [opened, scanned, viewed results, saw upgrade -> stage: saw upgrade]",
           "      09-26 05:00 installed > 05:04 uninstalled > 05:30 reinstalled > 05:30 scan COMPLETED (36) > 05:31 viewed results > 05:31 saw upgrade > last seen 08:52",
           "    quiet.myshopify.com [stage: never opened; currently uninstalled]",
@@ -2515,8 +2767,8 @@ describe("journey (gc-dpm.3)", () => {
         [
           "JOURNEY (active installs, counted ever)",
           "  Funnel: no active installs",
-          "  Timeline (shops seen or installed in the last 7d; UTC; latest events):",
-          "    No shops seen or installed in the last 7 days",
+          "  Timeline (shops seen, installed or uninstalled in the last 7d; UTC; latest events):",
+          "    No shops seen, installed or uninstalled in the last 7 days",
         ].join("\n"),
       );
       const absent = makeData();
