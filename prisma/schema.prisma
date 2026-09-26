@@ -103,6 +103,12 @@ model Shop {
   // column shipped. Deleted with the Shop row on shop/redact.
   lastPromptKey             String?
   lastPromptShownAt         DateTime?
+  // Native App Store review popup (gc-97k.7): when the app first asked App
+  // Bridge (shopify.reviews.request) to show Shopify's review modal. Stamped
+  // ONCE ever via claimShopStamp, whatever the result (displayed or declined),
+  // so the request is never repeated. Null = never requested. Deleted with the
+  // Shop row on shop/redact.
+  reviewPopupRequestedAt    DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

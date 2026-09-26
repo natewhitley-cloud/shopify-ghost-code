@@ -6,6 +6,9 @@
  *
  *     shown -> clicked -> { converted | dismissed }
  *
+ * plus `not_shown` for a nudge the platform declined to display (gc-97k.7:
+ * Shopify's native review modal), with a short allow-listed reason `code`.
+ *
  * Each stage is one `OpsEvent` row: eventType = one of NUDGE_FUNNEL_EVENT_TYPES,
  * key = the shop DOMAIN, metadata = { nudgeKey }. The operator digest groups
  * them per nudgeKey (aggregateNudgeFunnel), so a new nudge needs no
@@ -34,6 +37,7 @@ import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
 export const NUDGE_KEYS = {
   UPGRADE_PREVIEW: "upgrade_preview", // gc-97k.4
   FEEDBACK: "feedback", // gc-97k.3
+  REVIEW_REQUEST: "review_request", // gc-97k.7
 } as const;
 
 export type NudgeKey = (typeof NUDGE_KEYS)[keyof typeof NUDGE_KEYS];
@@ -42,14 +46,16 @@ type NudgeEventType =
   | typeof OPS_EVENT_TYPES.NUDGE_SHOWN
   | typeof OPS_EVENT_TYPES.NUDGE_CLICKED
   | typeof OPS_EVENT_TYPES.NUDGE_DISMISSED
-  | typeof OPS_EVENT_TYPES.NUDGE_CONVERTED;
+  | typeof OPS_EVENT_TYPES.NUDGE_CONVERTED
+  | typeof OPS_EVENT_TYPES.NUDGE_NOT_SHOWN;
 
 function recordNudgeEvent(
   eventType: NudgeEventType,
   nudgeKey: NudgeKey,
   shopDomain: string,
+  extra?: { code: string },
 ): Promise<void> {
-  return recordOpsEvent({ eventType, key: shopDomain, metadata: { nudgeKey } });
+  return recordOpsEvent({ eventType, key: shopDomain, metadata: { nudgeKey, ...extra } });
 }
 
 /** The nudge was rendered to the merchant (guard to once-per-merchant upstream). */
@@ -65,6 +71,19 @@ export function recordNudgeClicked(nudgeKey: NudgeKey, shopDomain: string): Prom
 /** The merchant dismissed the nudge ("Not now"). Terminal (negative). */
 export function recordNudgeDismissed(nudgeKey: NudgeKey, shopDomain: string): Promise<void> {
   return recordNudgeEvent(OPS_EVENT_TYPES.NUDGE_DISMISSED, nudgeKey, shopDomain);
+}
+
+/**
+ * The app asked the platform to show the nudge and it declined (e.g. Shopify's
+ * review modal in its cooldown), so the merchant saw nothing. `code` is the
+ * reason; pass only an allow-listed value, never free text (counts-only).
+ */
+export function recordNudgeNotShown(
+  nudgeKey: NudgeKey,
+  shopDomain: string,
+  code: string,
+): Promise<void> {
+  return recordNudgeEvent(OPS_EVENT_TYPES.NUDGE_NOT_SHOWN, nudgeKey, shopDomain, { code });
 }
 
 /** The merchant completed the nudge's goal (e.g. upgraded). Terminal (positive). */

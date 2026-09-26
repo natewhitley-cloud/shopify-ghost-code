@@ -686,6 +686,7 @@ describe("pruneOpsEvents", () => {
       "nudge_clicked",
       "nudge_converted",
       "nudge_dismissed",
+      "nudge_not_shown",
       "nudge_shown",
       "page_visit",
     ]);
@@ -830,6 +831,7 @@ describe("pruneOpsEvents", () => {
         "nudge_clicked",
         "nudge_converted",
         "nudge_dismissed",
+        "nudge_not_shown",
         "nudge_shown",
         "page_visit",
       ]);

@@ -35,6 +35,7 @@ import {
   recordNudgeClicked,
   recordNudgeConverted,
   recordNudgeDismissed,
+  recordNudgeNotShown,
   recordNudgeShown,
 } from "../../app/services/nudge-telemetry.server";
 
@@ -54,7 +55,11 @@ beforeEach(() => {
 
 describe("nudge constants", () => {
   it("exposes the two planned nudge keys with stable string values", () => {
-    expect(NUDGE_KEYS).toEqual({ UPGRADE_PREVIEW: "upgrade_preview", FEEDBACK: "feedback" });
+    expect(NUDGE_KEYS).toEqual({
+      UPGRADE_PREVIEW: "upgrade_preview",
+      FEEDBACK: "feedback",
+      REVIEW_REQUEST: "review_request",
+    });
   });
 
   it("uses stable event type strings (the digest and prune read these; do not rename)", () => {
@@ -62,11 +67,13 @@ describe("nudge constants", () => {
     expect(OPS_EVENT_TYPES.NUDGE_CLICKED).toBe("nudge_clicked");
     expect(OPS_EVENT_TYPES.NUDGE_DISMISSED).toBe("nudge_dismissed");
     expect(OPS_EVENT_TYPES.NUDGE_CONVERTED).toBe("nudge_converted");
+    expect(OPS_EVENT_TYPES.NUDGE_NOT_SHOWN).toBe("nudge_not_shown");
     expect([...NUDGE_FUNNEL_EVENT_TYPES]).toEqual([
       "nudge_shown",
       "nudge_clicked",
       "nudge_dismissed",
       "nudge_converted",
+      "nudge_not_shown",
     ]);
   });
 
@@ -119,5 +126,29 @@ describe.each(EMITTERS)("$name", ({ fn, eventType }) => {
 
     await expect(fn(NUDGE_KEYS.FEEDBACK, DOMAIN)).resolves.toBeUndefined();
     expect(mockLoggerWarn).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("recordNudgeNotShown (gc-97k.7)", () => {
+  it("writes one nudge_not_shown row carrying the nudgeKey and the reason code", async () => {
+    await recordNudgeNotShown(NUDGE_KEYS.REVIEW_REQUEST, DOMAIN, "cooldown-period");
+
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: {
+        eventType: "nudge_not_shown",
+        key: DOMAIN,
+        message: null,
+        metadata: { nudgeKey: "review_request", code: "cooldown-period" },
+      },
+    });
+  });
+
+  it("never throws when the write fails", async () => {
+    mockDb.opsEvent.create.mockRejectedValue(new Error("db down"));
+
+    await expect(
+      recordNudgeNotShown(NUDGE_KEYS.REVIEW_REQUEST, DOMAIN, "error"),
+    ).resolves.toBeUndefined();
   });
 });

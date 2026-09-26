@@ -58,6 +58,13 @@ export const OPS_EVENT_TYPES = {
   NUDGE_CLICKED: "nudge_clicked",
   NUDGE_DISMISSED: "nudge_dismissed",
   NUDGE_CONVERTED: "nudge_converted",
+  // A nudge the app asked the PLATFORM to show but the platform declined (so it
+  // never rendered), e.g. Shopify's native review modal in its cooldown
+  // (gc-97k.7). metadata = { nudgeKey, code } where code is a short allow-listed
+  // reason (counts-only, no free text). Domain-keyed and listed in
+  // NUDGE_FUNNEL_EVENT_TYPES, so it shares the funnel rows' redact (`key:
+  // domain`) and 90-day prune coverage.
+  NUDGE_NOT_SHOWN: "nudge_not_shown",
 } as const;
 
 /** All nudge-funnel event types, for the prune and the digest's grouped read. */
@@ -66,6 +73,7 @@ export const NUDGE_FUNNEL_EVENT_TYPES = [
   OPS_EVENT_TYPES.NUDGE_CLICKED,
   OPS_EVENT_TYPES.NUDGE_DISMISSED,
   OPS_EVENT_TYPES.NUDGE_CONVERTED,
+  OPS_EVENT_TYPES.NUDGE_NOT_SHOWN,
 ] as const;
 
 /** Default retention for nudge-funnel rows (see pruneOpsEvents). */

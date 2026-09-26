@@ -2540,3 +2540,122 @@ describe("journey (gc-dpm.3)", () => {
     });
   });
 });
+
+describe("aggregateNudgeFunnel: not_shown reasons (gc-97k.7)", () => {
+  const now = new Date("2026-09-24T12:00:00Z");
+  const HOUR_MS = 3_600_000;
+  const REAL = "real.myshopify.com";
+  const notShown = (code: unknown, msAgo: number, key: string | null = REAL) => ({
+    eventType: "nudge_not_shown",
+    key,
+    metadata:
+      code === undefined ? { nudgeKey: "review_request" } : { nudgeKey: "review_request", code },
+    createdAt: new Date(now.getTime() - msAgo),
+  });
+
+  it("counts declined requests per reason alongside the shown stage", () => {
+    const rows = aggregateNudgeFunnel(
+      [
+        {
+          eventType: "nudge_shown",
+          key: REAL,
+          metadata: { nudgeKey: "review_request" },
+          createdAt: new Date(now.getTime() - HOUR_MS),
+        },
+        notShown("cooldown-period", HOUR_MS),
+        notShown("cooldown-period", 30 * HOUR_MS),
+        notShown("already-reviewed", 2 * HOUR_MS),
+      ],
+      [REAL],
+      now,
+    );
+
+    expect(rows).toEqual<NudgeFunnelRow[]>([
+      {
+        nudgeKey: "review_request",
+        last24h: { shown: 1, clicked: 0, dismissed: 0, converted: 0 },
+        last7d: { shown: 1, clicked: 0, dismissed: 0, converted: 0 },
+        notShown: {
+          last24h: 2,
+          last7d: 3,
+          byCode7d: { "cooldown-period": 2, "already-reviewed": 1 },
+        },
+      },
+    ]);
+  });
+
+  it("buckets a missing, non-string or malformed code as unknown", () => {
+    const [row] = aggregateNudgeFunnel(
+      [
+        notShown(undefined, HOUR_MS),
+        notShown(42, HOUR_MS),
+        notShown("<b>free text</b>", HOUR_MS),
+        notShown("x".repeat(60), HOUR_MS),
+      ],
+      [REAL],
+      now,
+    );
+
+    expect(row.notShown).toEqual({ last24h: 4, last7d: 4, byCode7d: { unknown: 4 } });
+  });
+
+  it("applies the same domain pin and 7d window as the stages", () => {
+    const rows = aggregateNudgeFunnel(
+      [
+        notShown("cooldown-period", HOUR_MS, "excluded.myshopify.com"),
+        notShown("error", 8 * DAY_MS),
+      ],
+      [REAL],
+      now,
+    );
+
+    expect(rows).toEqual([]);
+  });
+
+  it("omits notShown for nudges that never had a declined request", () => {
+    const [row] = aggregateNudgeFunnel(
+      [
+        {
+          eventType: "nudge_shown",
+          key: REAL,
+          metadata: { nudgeKey: "feedback" },
+          createdAt: new Date(now.getTime() - HOUR_MS),
+        },
+      ],
+      [REAL],
+      now,
+    );
+
+    expect(row).not.toHaveProperty("notShown");
+  });
+});
+
+describe("buildDigestBody: NUDGES not_shown line (gc-97k.7)", () => {
+  it("adds a not-shown line with 7d reasons, most frequent first (ties alphabetical)", () => {
+    const body = buildDigestBody(
+      makeData({
+        nudges: [
+          {
+            nudgeKey: "review_request",
+            last24h: { shown: 1, clicked: 0, dismissed: 0, converted: 0 },
+            last7d: { shown: 2, clicked: 0, dismissed: 0, converted: 0 },
+            notShown: {
+              last24h: 1,
+              last7d: 4,
+              byCode7d: { "mobile-app": 1, "cooldown-period": 2, "already-reviewed": 1 },
+            },
+          },
+        ],
+      }),
+    );
+
+    expect(body).toContain(
+      [
+        "  review_request",
+        "    shown 1 / 2 | clicked 0 / 0 | dismissed 0 / 0 | converted 0 / 0",
+        "    not shown 1 / 4 (7d reasons: cooldown-period 2, already-reviewed 1, mobile-app 1)",
+      ].join("\n"),
+    );
+    expect(body).not.toMatch(/[–—]/);
+  });
+});

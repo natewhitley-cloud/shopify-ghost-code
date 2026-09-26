@@ -39,6 +39,8 @@ vi.mock("../../app/db.server", () => ({
 // service (gc-dpm.1) runs, including its never-throw guard.
 vi.mock("../../app/models/shop.server", () => ({
   claimShopStamp: vi.fn(),
+  // gc-97k.6/7: the REAL resolvePrompt runs; only its slot write is mocked.
+  claimPromptSlot: vi.fn(),
   getShopMetadata: vi.fn(),
 }));
 
@@ -141,7 +143,7 @@ import {
   ignoreFindingInstance,
 } from "../../app/models/ignored-finding.server";
 import { getScanById } from "../../app/models/scan.server";
-import { claimShopStamp, getShopMetadata } from "../../app/models/shop.server";
+import { claimPromptSlot, claimShopStamp, getShopMetadata } from "../../app/models/shop.server";
 import {
   findUnknownScriptForShop,
   getUnknownScriptsForScan,
@@ -173,6 +175,7 @@ import { authenticate } from "../../app/shopify.server";
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockClaimShopStamp = claimShopStamp as ReturnType<typeof vi.fn>;
+const mockClaimPromptSlot = claimPromptSlot as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
 const mockGetFindingsPageForScan = getFindingsPageForScan as ReturnType<typeof vi.fn>;
@@ -205,6 +208,10 @@ const SHOP = {
   plan: "Standard",
   // Already stamped by default: the normal (non-first) results view (gc-dpm.1).
   firstResultsViewedAt: new Date("2026-03-01T00:00:00Z") as Date | null,
+  // gc-97k.6/7: no prompt shown yet and the review popup never requested.
+  lastPromptKey: null as string | null,
+  lastPromptShownAt: null as Date | null,
+  reviewPopupRequestedAt: null as Date | null,
 };
 
 /** Scan fixture — no findings included; loader always uses includeFindings: false. */
@@ -312,6 +319,7 @@ beforeEach(() => {
   });
 
   mockGetShopMetadata.mockResolvedValue(SHOP);
+  mockClaimPromptSlot.mockResolvedValue(true);
   mockGetScanById.mockResolvedValue(SCAN);
   mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
   mockGetFindingsPageForScan.mockResolvedValue(SINGLE_FINDING_PAGE);
@@ -998,6 +1006,128 @@ describe("app.scans.$scanId loader", () => {
         expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
       },
     );
+  });
+
+  // -------------------------------------------------------------------------
+  // Native App Store review popup (gc-97k.7)
+  // -------------------------------------------------------------------------
+
+  describe("native review popup (gc-97k.7)", () => {
+    const NOW = new Date("2026-09-26T12:00:00Z");
+    const HOUR = 60 * 60 * 1000;
+    const ago = (ms: number) => new Date(NOW.getTime() - ms);
+
+    function shopState(overrides: Record<string, unknown> = {}) {
+      mockGetShopMetadata.mockResolvedValue({
+        ...SHOP,
+        firstResultsViewedAt: ago(3 * HOUR),
+        ...overrides,
+      });
+    }
+
+    async function requestReview(): Promise<boolean> {
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { requestReview: boolean };
+      return result.requestReview;
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      shopState();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("requests on a later visit exactly 2h after the first results view, claiming the slot", async () => {
+      shopState({ firstResultsViewedAt: ago(2 * HOUR) });
+
+      await expect(requestReview()).resolves.toBe(true);
+      expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+        SHOP.domain,
+        "review_popup",
+        expect.objectContaining({ lastPromptKey: null, lastPromptShownAt: null }),
+        NOW,
+      );
+    });
+
+    it("does not request 1ms short of 2h after the first results view", async () => {
+      shopState({ firstResultsViewedAt: new Date(ago(2 * HOUR).getTime() + 1) });
+
+      await expect(requestReview()).resolves.toBe(false);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it("never requests on the FIRST results view (stays out of onboarding)", async () => {
+      shopState({ firstResultsViewedAt: null });
+      mockClaimShopStamp.mockResolvedValue(true);
+
+      await expect(requestReview()).resolves.toBe(false);
+      // The first-view milestone is still stamped by this load.
+      expect(mockClaimShopStamp).toHaveBeenCalledWith(SHOP.domain, "firstResultsViewedAt");
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it.each(["FAILED", "IN_PROGRESS", "PENDING"])(
+      "never requests on a %s scan's page",
+      async (status) => {
+        mockGetScanById.mockResolvedValue({ ...SCAN, status });
+
+        await expect(requestReview()).resolves.toBe(false);
+        expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+      },
+    );
+
+    it("requests on a PARTIAL scan's page (a successful scan)", async () => {
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "PARTIAL" });
+
+      await expect(requestReview()).resolves.toBe(true);
+    });
+
+    it("never requests again once requested (once ever)", async () => {
+      shopState({ reviewPopupRequestedAt: ago(90 * 24 * HOUR) });
+
+      await expect(requestReview()).resolves.toBe(false);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it.each(["free", "Standard", "Professional"])("requests on every plan (%s)", async (plan) => {
+      shopState({ plan });
+      mockCanViewFindingDetails.mockReturnValue(plan !== "free");
+
+      await expect(requestReview()).resolves.toBe(true);
+    });
+
+    it("is blocked while another prompt holds the shop's 24h window", async () => {
+      shopState({ lastPromptKey: "feedback", lastPromptShownAt: ago(23 * HOUR) });
+
+      await expect(requestReview()).resolves.toBe(false);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it("requests once that window has fully passed (exactly 24h)", async () => {
+      shopState({ lastPromptKey: "feedback", lastPromptShownAt: ago(24 * HOUR) });
+
+      await expect(requestReview()).resolves.toBe(true);
+      expect(mockClaimPromptSlot).toHaveBeenCalledTimes(1);
+    });
+
+    it("keeps requesting inside its own window without a new claim (result not reported yet)", async () => {
+      shopState({ lastPromptKey: "review_popup", lastPromptShownAt: ago(HOUR) });
+
+      await expect(requestReview()).resolves.toBe(true);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it("does not request when a concurrent load claimed the slot for another prompt", async () => {
+      mockClaimPromptSlot.mockResolvedValue(false);
+      mockGetShopMetadata
+        .mockResolvedValueOnce({ ...SHOP, firstResultsViewedAt: ago(3 * HOUR) })
+        .mockResolvedValueOnce({ ...SHOP, lastPromptKey: "feedback", lastPromptShownAt: NOW });
+
+      await expect(requestReview()).resolves.toBe(false);
+    });
   });
 
   // -------------------------------------------------------------------------

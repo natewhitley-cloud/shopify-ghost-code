@@ -39,6 +39,8 @@ import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
+import type { PromptKey } from "../lib/prompt-cap";
+import { isReviewPopupEligible, runReviewRequestOnce } from "../lib/review-request";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
 import type { UpgradePreview } from "../lib/upgrade-preview";
@@ -69,6 +71,7 @@ import {
 } from "../services/finding-aggregation.server";
 import { getFreePreviewFindings } from "../services/free-preview.server";
 import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
+import { resolvePrompt } from "../services/prompt-cap.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
@@ -835,6 +838,34 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
 
+  // Interruptive prompts on this page (gc-97k.6 cap): at most one per view, and
+  // one distinct prompt per shop per 24h, so resolvePrompt runs ONCE per load
+  // with every prompt whose own rule passes.
+  //   review_popup (gc-97k.7): Shopify's native review modal, all plans, once
+  //     ever, on a LATER visit to a successful scan's results (2h+ after the
+  //     first results view, which is read before this load stamps it).
+  const now = new Date();
+  const eligiblePrompts: PromptKey[] = [];
+  if (
+    isReviewPopupEligible(
+      {
+        scanSuccessful: isSuccessfulScan(scan.status),
+        firstResultsViewedAt: shop.firstResultsViewedAt,
+        reviewPopupRequestedAt: shop.reviewPopupRequestedAt,
+      },
+      now,
+    )
+  ) {
+    eligiblePrompts.push("review_popup");
+  }
+  const pagePrompt = await resolvePrompt({
+    shopDomain: session.shop,
+    eligible: eligiblePrompts,
+    lastPromptKey: shop.lastPromptKey,
+    lastPromptShownAt: shop.lastPromptShownAt,
+    now,
+  });
+
   // Free-tier upgrade teaser (gc-97k.4): per-lane counts of the findings hidden
   // behind the paywall, from the summary's existing groupBy (ignores already
   // excluded), minus EVERY preview row shown (gc-97k.10). Mirrors the render
@@ -904,6 +935,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // helper as the Settings upgrade buttons).
     pricingPlansUrl: buildPricingPlansUrl(session.shop),
     trialEligible,
+    // gc-97k.7: the client asks App Bridge for the review modal once, then
+    // reports the result to /app/review-request (which stamps the request).
+    requestReview: pagePrompt === "review_popup",
     maliciousFindings: enrichedMaliciousFindings,
     findingSummary,
     canViewDetails,
@@ -1143,6 +1177,7 @@ export default function ScanDetail() {
     upgradePreview,
     pricingPlansUrl,
     trialEligible,
+    requestReview,
     maliciousFindings,
     findingSummary,
     canViewDetails,
@@ -1194,6 +1229,13 @@ export default function ScanDetail() {
   const diffLoadTriggered = useRef(false);
 
   const revalidator = useRevalidator();
+
+  // Native review popup (gc-97k.7): requested at most once per mount; the ref
+  // survives StrictMode's double-invoked effect and every re-render/poll.
+  const reviewRequested = useRef(false);
+  useEffect(() => {
+    void runReviewRequestOnce(reviewRequested, requestReview);
+  }, [requestReview]);
 
   // Track how many polls have been fired so we can enforce a timeout ceiling.
   const pollCount = useRef(0);

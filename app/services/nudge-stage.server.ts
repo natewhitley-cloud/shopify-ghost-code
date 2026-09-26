@@ -51,6 +51,11 @@ const NUDGE_STAGE_CLAIMS = {
     // The FIRST submission, whether or not it came through the nudge.
     converted: { column: "feedbackSubmittedAt" },
   },
+  // No per-stage stamps: the review popup request is once-ever on its own
+  // reviewPopupRequestedAt claim, which gates its single shown / not_shown
+  // event (app/services/review-request.server). Empty here means
+  // recordNudgeStageOnce cannot be called for it (no stage type-checks).
+  [NUDGE_KEYS.REVIEW_REQUEST]: {},
 } as const satisfies Record<NudgeKey, Partial<Record<NudgeStage, StageClaim>>>;
 
 /** The stages a given nudge supports (e.g. no `dismissed` for the upgrade preview). */

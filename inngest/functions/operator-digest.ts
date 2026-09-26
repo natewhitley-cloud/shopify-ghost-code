@@ -488,13 +488,32 @@ export interface NudgeStageCounts {
   converted: number;
 }
 
+/**
+ * Platform-declined requests for a nudge (gc-97k.7: Shopify's review modal),
+ * from nudge_not_shown events: 24h / 7d totals plus the 7d count per reason.
+ */
+export interface NudgeNotShownCounts {
+  last24h: number;
+  last7d: number;
+  /** Reason code -> 7d count, e.g. { "cooldown-period": 2 }. */
+  byCode7d: Record<string, number>;
+}
+
 /** One nudge's funnel (serialization-safe; crosses the Inngest step boundary). */
 export interface NudgeFunnelRow {
   /** A NUDGE_KEYS value, or NUDGE_OTHER_KEY for unrecognized/missing keys. */
   nudgeKey: string;
   last24h: NudgeStageCounts;
   last7d: NudgeStageCounts;
+  /** Present only when the nudge had at least one nudge_not_shown event in 7d. */
+  notShown?: NudgeNotShownCounts;
 }
+
+/** Reason code bucket for a not_shown event whose code is missing or malformed. */
+export const NUDGE_UNKNOWN_CODE = "unknown";
+
+/** Codes are short kebab-case tokens written from an allow-list; anything else is unknown. */
+const NUDGE_CODE_PATTERN = /^[a-z][a-z-]{0,39}$/;
 
 /** Bucket for events whose metadata.nudgeKey is missing or not in NUDGE_KEYS. */
 export const NUDGE_OTHER_KEY = "other";
@@ -526,6 +545,9 @@ function emptyStageCounts(): NudgeStageCounts {
  * mis-keyed emitter is visible in the digest. Non-nudge event types and events
  * older than 7d are ignored. The 24h window is inclusive of its boundary.
  *
+ * nudge_not_shown (gc-97k.7) feeds row.notShown instead of a stage: totals plus
+ * a per-reason 7d count; a missing or malformed code counts as "unknown".
+ *
  * Rows: known keys in NUDGE_KEYS order, then "other"; only nudges with at least
  * one event in the 7d window appear (empty array = no nudge activity).
  */
@@ -541,7 +563,8 @@ export function aggregateNudgeFunnel(
   const byKey = new Map<string, NudgeFunnelRow>();
   for (const e of events) {
     const stage = NUDGE_STAGE_BY_EVENT_TYPE[e.eventType];
-    if (!stage) continue;
+    const notShown = e.eventType === OPS_EVENT_TYPES.NUDGE_NOT_SHOWN;
+    if (!stage && !notShown) continue;
     if (e.key == null || !allowed.has(e.key.toLowerCase())) continue;
     const t = e.createdAt.getTime();
     if (t < weekAgo) continue; // defensive; the query already bounds to 7d
@@ -558,8 +581,21 @@ export function aggregateNudgeFunnel(
       last24h: emptyStageCounts(),
       last7d: emptyStageCounts(),
     };
-    row.last7d[stage] += 1;
-    if (t >= dayAgo) row.last24h[stage] += 1;
+    if (stage) {
+      row.last7d[stage] += 1;
+      if (t >= dayAgo) row.last24h[stage] += 1;
+    } else {
+      const rawCode = (e.metadata as Record<string, unknown> | null)?.code;
+      const code =
+        typeof rawCode === "string" && NUDGE_CODE_PATTERN.test(rawCode)
+          ? rawCode
+          : NUDGE_UNKNOWN_CODE;
+      const counts = row.notShown ?? { last24h: 0, last7d: 0, byCode7d: {} };
+      counts.last7d += 1;
+      if (t >= dayAgo) counts.last24h += 1;
+      counts.byCode7d[code] = (counts.byCode7d[code] ?? 0) + 1;
+      row.notShown = counts;
+    }
     byKey.set(nudgeKey, row);
   }
 
@@ -1362,6 +1398,16 @@ export function buildDigestBody(data: OperatorDigestData): string {
       lines.push(
         `    shown ${d.shown} / ${w.shown} | clicked ${d.clicked} / ${w.clicked} | dismissed ${d.dismissed} / ${w.dismissed} | converted ${d.converted} / ${w.converted}`,
       );
+      if (n.notShown) {
+        // Most frequent reason first; ties alphabetical, so the line is stable.
+        const reasons = Object.entries(n.notShown.byCode7d)
+          .sort(([a, x], [b, y]) => y - x || a.localeCompare(b))
+          .map(([code, count]) => `${code} ${count}`)
+          .join(", ");
+        lines.push(
+          `    not shown ${n.notShown.last24h} / ${n.notShown.last7d} (7d reasons: ${reasons})`,
+        );
+      }
     }
   }
   lines.push("");

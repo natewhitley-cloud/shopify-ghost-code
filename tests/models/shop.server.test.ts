@@ -77,6 +77,7 @@ import {
   recordNudgeClicked,
   recordNudgeConverted,
   recordNudgeDismissed,
+  recordNudgeNotShown,
   recordNudgeShown,
 } from "../../app/services/nudge-telemetry.server";
 
@@ -125,6 +126,8 @@ describe("getShopMetadata", () => {
         firstResultsViewedAt: true,
         lastPromptKey: true,
         lastPromptShownAt: true,
+        // gc-97k.7: the scan page's once-ever review popup gate.
+        reviewPopupRequestedAt: true,
       },
     });
   });
@@ -855,12 +858,14 @@ describe("deleteShopData", () => {
         await recordNudgeClicked(key, domain);
         await recordNudgeDismissed(key, domain);
         await recordNudgeConverted(key, domain);
+        await recordNudgeNotShown(key, domain, "cooldown-period");
       }
     }
     const written = mockDb.opsEvent.create.mock.calls.map(
       (c) => c[0].data as { eventType: string; key: string; metadata: Record<string, unknown> },
     );
-    expect(written).toHaveLength(16);
+    const perShop = Object.values(NUDGE_KEYS).length * NUDGE_FUNNEL_EVENT_TYPES.length;
+    expect(written).toHaveLength(2 * perShop);
 
     const existingShop = { id: "shop-gdpr-nudge", domain: target, plan: "free" };
     mockDb.shop.findUnique.mockResolvedValue(existingShop);
@@ -880,7 +885,7 @@ describe("deleteShopData", () => {
       );
 
     const purged = written.filter(matchesRedact);
-    expect(purged).toHaveLength(8);
+    expect(purged).toHaveLength(perShop);
     expect(purged.every((r) => r.key === target)).toBe(true);
     expect(new Set(purged.map((r) => r.eventType))).toEqual(new Set(NUDGE_FUNNEL_EVENT_TYPES));
     expect(written.filter((r) => r.key === other).some(matchesRedact)).toBe(false);

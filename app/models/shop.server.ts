@@ -24,6 +24,7 @@ export type ShopMetadata = {
   firstResultsViewedAt: Date | null;
   lastPromptKey: string | null;
   lastPromptShownAt: Date | null;
+  reviewPopupRequestedAt: Date | null;
 };
 
 /**
@@ -85,6 +86,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       firstResultsViewedAt: true,
       lastPromptKey: true,
       lastPromptShownAt: true,
+      reviewPopupRequestedAt: true,
     },
   });
 }
@@ -338,11 +340,14 @@ export type NudgeStageColumn =
 /** The durable journey milestone stamps (gc-dpm.1). */
 export type JourneyMilestoneColumn = "firstOpenedAt" | "firstResultsViewedAt";
 
+/** The once-ever native review popup request stamp (gc-97k.7). */
+export type ReviewPopupColumn = "reviewPopupRequestedAt";
+
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target
  * one of these nullable DateTime columns.
  */
-export type ShopStampColumn = NudgeStageColumn | JourneyMilestoneColumn;
+export type ShopStampColumn = NudgeStageColumn | JourneyMilestoneColumn | ReviewPopupColumn;
 
 /**
  * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey
