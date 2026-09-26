@@ -16,12 +16,14 @@ import { describe, it, expect } from "vitest";
 
 import {
   HOME_PROMPTS,
+  isStillBlocking,
+  pagePendingPrompt,
   pickPrompt,
   promptClaimNeeded,
+  PROMPT_BLOCK_MAX_MS,
   PROMPT_CAP_WINDOW_MS,
   PROMPT_KEYS,
   scanResultsPrompts,
-  topEligiblePrompt,
 } from "../../app/lib/prompt-cap";
 import type { PickPromptInput, PromptKey } from "../../app/lib/prompt-cap";
 
@@ -38,8 +40,9 @@ const FRESH = { lastPromptKey: null, lastPromptShownAt: null };
 /** A page that can render every prompt, so only priority and the window decide. */
 const ALL = PROMPT_KEYS;
 
+/** Defaults: renders everything, and no eligibleSince (prompts never stop blocking). */
 function pick(overrides: Partial<PickPromptInput> & Pick<PickPromptInput, "eligible">) {
-  return pickPrompt({ ...FRESH, renderable: ALL, now: NOW, ...overrides });
+  return pickPrompt({ ...FRESH, renderable: ALL, eligibleSince: {}, now: NOW, ...overrides });
 }
 
 describe("PROMPT_KEYS / PROMPT_CAP_WINDOW_MS", () => {
@@ -87,13 +90,108 @@ describe("page renderability", () => {
   });
 });
 
-describe("topEligiblePrompt", () => {
-  it("is the highest-priority eligible key whatever the order", () => {
-    expect(topEligiblePrompt(["feedback", "upgrade_return"])).toBe("upgrade_return");
+describe("pagePendingPrompt", () => {
+  const base = { eligibleSince: {}, now: NOW };
+
+  it("is the highest-priority eligible key the page can render, whatever the order", () => {
+    expect(
+      pagePendingPrompt({ ...base, eligible: ["feedback", "upgrade_return"], renderable: ALL }),
+    ).toBe("upgrade_return");
   });
 
   it("is null when nothing is eligible", () => {
-    expect(topEligiblePrompt([])).toBeNull();
+    expect(pagePendingPrompt({ ...base, eligible: [], renderable: ALL })).toBeNull();
+  });
+});
+
+describe("bounded blocking (PROMPT_BLOCK_MAX_MS)", () => {
+  const DAY = 24 * HOUR;
+
+  it("is exactly 7 days", () => {
+    expect(PROMPT_BLOCK_MAX_MS).toBe(7 * DAY);
+  });
+
+  it.each([
+    ["no eligibleSince", undefined, true],
+    ["just eligible", ago(0), true],
+    ["6d23h59m59.999s ago", ago(7 * DAY - 1), true],
+    ["exactly 7d ago", ago(7 * DAY), false],
+    ["30d ago", ago(30 * DAY), false],
+  ])("isStillBlocking: %s -> %s", (_label, since, expected) => {
+    expect(isStillBlocking(since, NOW)).toBe(expected);
+  });
+
+  it("review_popup pending for 6d23h blocks feedback on Home; at 7d it does not", () => {
+    const at = (age: number) =>
+      pick({
+        eligible: ["review_popup", "feedback"],
+        eligibleSince: { review_popup: ago(age) },
+        renderable: HOME_PROMPTS,
+      });
+    expect(at(7 * DAY - HOUR)).toBeNull();
+    expect(at(7 * DAY - 1)).toBeNull();
+    expect(at(7 * DAY)).toBe("feedback");
+  });
+
+  it("upgrade_return pending 7d+ stops blocking feedback on Home too", () => {
+    expect(
+      pick({
+        eligible: ["upgrade_return", "feedback"],
+        eligibleSince: { upgrade_return: ago(8 * DAY) },
+        renderable: HOME_PROMPTS,
+      }),
+    ).toBe("feedback");
+  });
+
+  it("a stale higher prompt still renders on its OWN page when the slot is free", () => {
+    expect(
+      pick({
+        eligible: ["review_popup", "feedback"],
+        eligibleSince: { review_popup: ago(30 * DAY) },
+        renderable: ["review_popup"],
+      }),
+    ).toBe("review_popup");
+  });
+
+  it("a fresh higher prompt behind a stale one still blocks (each is checked in order)", () => {
+    expect(
+      pick({
+        eligible: ["review_popup", "upgrade_return", "feedback"],
+        eligibleSince: { review_popup: ago(30 * DAY), upgrade_return: ago(DAY) },
+        renderable: HOME_PROMPTS,
+      }),
+    ).toBeNull();
+  });
+
+  it("the stale prompt renders on its page only AFTER the lower prompt's 24h window expires", () => {
+    const holder = { lastPromptKey: "feedback", eligibleSince: { review_popup: ago(30 * DAY) } };
+    // Feedback took the slot on Home 23h ago: the popup waits on its page...
+    expect(
+      pick({
+        ...holder,
+        lastPromptShownAt: ago(23 * HOUR),
+        eligible: ["review_popup", "feedback"],
+        renderable: ["review_popup"],
+      }),
+    ).toBeNull();
+    // ...while Home keeps re-rendering the holder inside its window...
+    expect(
+      pick({
+        ...holder,
+        lastPromptShownAt: ago(23 * HOUR),
+        eligible: ["review_popup", "feedback"],
+        renderable: HOME_PROMPTS,
+      }),
+    ).toBe("feedback");
+    // ...and at exactly 24h the popup renders on its page.
+    expect(
+      pick({
+        ...holder,
+        lastPromptShownAt: ago(PROMPT_CAP_WINDOW_MS),
+        eligible: ["review_popup", "feedback"],
+        renderable: ["review_popup"],
+      }),
+    ).toBe("review_popup");
   });
 });
 

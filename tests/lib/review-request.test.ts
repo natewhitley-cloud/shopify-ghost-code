@@ -45,7 +45,6 @@ const hookRuntime = vi.hoisted(() => {
 });
 
 vi.mock("react", () => ({
-  useState: hookRuntime.useState,
   useRef: hookRuntime.useRef,
   useEffect: hookRuntime.useEffect,
 }));
@@ -57,7 +56,11 @@ import {
   REVIEW_POPUP_MAX_ATTEMPTS,
   REVIEW_POPUP_MIN_DELAY_MS,
   REVIEW_REQUEST_CODES,
+  claimReviewAttempt,
+  parseReviewAttemptNonce,
+  REVIEW_ATTEMPT_NONCE_NONE,
   requestAppReview,
+  reviewAttemptNonce,
   runReviewRequestOnce,
   sendReviewRequestResult,
   useReviewRequestOnMount,
@@ -344,43 +347,102 @@ describe("sendReviewRequestResult", () => {
   });
 });
 
+/**
+ * A fetch stub for the review-request route: the attempt POST answers
+ * `attemptStatus` (204 = recorded), the result POST answers 204.
+ */
+function routeFetch(attemptStatus = 204) {
+  return vi.fn(async (_url: string, init: RequestInit) => {
+    const body = init.body as URLSearchParams;
+    return new Response(null, { status: body.get("intent") === "attempt" ? attemptStatus : 204 });
+  });
+}
+
+const posted = (fetchMock: ReturnType<typeof vi.fn>) =>
+  fetchMock.mock.calls.map(([, init]) => Object.fromEntries(init.body as URLSearchParams));
+
+describe("reviewAttemptNonce / parseReviewAttemptNonce", () => {
+  it("round-trips a last-attempt time and the no-attempt value", () => {
+    const t = new Date("2026-09-25T10:11:12.345Z");
+    expect(reviewAttemptNonce(t)).toBe("2026-09-25T10:11:12.345Z");
+    expect(parseReviewAttemptNonce(reviewAttemptNonce(t))).toEqual(t);
+    expect(reviewAttemptNonce(null)).toBe(REVIEW_ATTEMPT_NONCE_NONE);
+    expect(parseReviewAttemptNonce(REVIEW_ATTEMPT_NONCE_NONE)).toBeNull();
+  });
+
+  it.each([undefined, null, "", "yesterday", "2026-09-25", "2026-09-25T10:11:12Z", 42])(
+    "rejects %s (undefined)",
+    (value) => {
+      expect(parseReviewAttemptNonce(value)).toBeUndefined();
+    },
+  );
+});
+
+describe("claimReviewAttempt", () => {
+  it("POSTs intent=attempt with the nonce and is true only on 204", async () => {
+    const fetchMock = routeFetch(204);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(claimReviewAttempt("none")).resolves.toBe(true);
+    expect(fetchMock.mock.calls[0][0]).toBe("/app/review-request");
+    expect(posted(fetchMock)).toEqual([{ intent: "attempt", nonce: "none" }]);
+  });
+
+  it.each([409, 400, 500])("is false on %s", async (status) => {
+    vi.stubGlobal("fetch", routeFetch(status));
+    await expect(claimReviewAttempt("none")).resolves.toBe(false);
+  });
+
+  it("is false (never throws) on a network error", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("offline")));
+    await expect(claimReviewAttempt("none")).resolves.toBe(false);
+  });
+});
+
 describe("runReviewRequestOnce (the results page effect)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
-    fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    fetchMock = routeFetch(204);
     vi.stubGlobal("fetch", fetchMock);
   });
 
-  it("requests once and reports the result once", async () => {
+  it("records the attempt FIRST, then requests once and reports the result once", async () => {
     const request = installReviews(async () => ({ success: true, code: "success" }));
     const guard = { current: false };
 
-    await runReviewRequestOnce(guard, true);
+    await runReviewRequestOnce(guard, "none");
 
     expect(request).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    expect((fetchMock.mock.calls[0][1].body as URLSearchParams).get("code")).toBe("success");
+    expect(posted(fetchMock)).toEqual([{ intent: "attempt", nonce: "none" }, { code: "success" }]);
+  });
+
+  it("does NOT call the Reviews API when the attempt was not recorded (another tab won)", async () => {
+    vi.stubGlobal("fetch", (fetchMock = routeFetch(409)));
+    const request = installReviews(async () => ({ success: true, code: "success" }));
+
+    await runReviewRequestOnce({ current: false }, "none");
+
+    expect(request).not.toHaveBeenCalled();
+    expect(posted(fetchMock)).toEqual([{ intent: "attempt", nonce: "none" }]);
   });
 
   it("fires once under StrictMode's double-invoked effect and later re-renders", async () => {
     const request = installReviews(async () => ({ success: false, code: "cooldown-period" }));
     const guard = { current: false };
 
-    // StrictMode: mount effect, cleanup, effect again (same ref), both in flight.
-    await Promise.all([runReviewRequestOnce(guard, true), runReviewRequestOnce(guard, true)]);
-    // A later re-render or poll revalidation re-running the effect.
-    await runReviewRequestOnce(guard, true);
+    await Promise.all([runReviewRequestOnce(guard, "none"), runReviewRequestOnce(guard, "none")]);
+    await runReviewRequestOnce(guard, "none");
 
     expect(request).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(2); // one attempt, one result
   });
 
-  it("does nothing when the loader did not ask for a review", async () => {
+  it("does nothing (no POST at all) when the loader did not pick the popup", async () => {
     const request = installReviews(async () => ({ success: true, code: "success" }));
     const guard = { current: false };
 
-    await runReviewRequestOnce(guard, false);
+    await runReviewRequestOnce(guard, null);
 
     expect(request).not.toHaveBeenCalled();
     expect(fetchMock).not.toHaveBeenCalled();
@@ -388,9 +450,9 @@ describe("runReviewRequestOnce (the results page effect)", () => {
   });
 
   it("reports unavailable (so the server backs off) when App Bridge has no Reviews API", async () => {
-    await runReviewRequestOnce({ current: false }, true);
+    await runReviewRequestOnce({ current: false }, "none");
 
-    expect((fetchMock.mock.calls[0][1].body as URLSearchParams).get("code")).toBe("unavailable");
+    expect(posted(fetchMock).at(-1)).toEqual({ code: "unavailable" });
   });
 
   it("never throws when request() rejects; reports error", async () => {
@@ -398,64 +460,87 @@ describe("runReviewRequestOnce (the results page effect)", () => {
       throw new Error("boom");
     });
 
-    await expect(runReviewRequestOnce({ current: false }, true)).resolves.toBeUndefined();
-    expect((fetchMock.mock.calls[0][1].body as URLSearchParams).get("code")).toBe("error");
+    await expect(runReviewRequestOnce({ current: false }, "none")).resolves.toBeUndefined();
+    expect(posted(fetchMock).at(-1)).toEqual({ code: "error" });
   });
 });
 
-describe("useReviewRequestOnMount (navigation mount only, never mid-session)", () => {
+describe("useReviewRequestOnMount (per-scan mount only, never mid-session)", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
     hookRuntime.reset();
-    fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    fetchMock = routeFetch(204);
     vi.stubGlobal("fetch", fetchMock);
   });
 
-  /** Flush the effect's async request and report. */
+  /** Flush the effect's async attempt, request and report. */
   const settle = () => new Promise((r) => setTimeout(r, 0));
+  const attempts = () => posted(fetchMock).filter((b) => b.intent === "attempt");
 
-  it("requests once when the page mounts with requestReview true", async () => {
+  it("requests once when a scan's page mounts with a nonce", async () => {
     const request = installReviews(async () => ({ success: true, code: "success" }));
 
-    hookRuntime.render(() => useReviewRequestOnMount(true));
+    hookRuntime.render(() => useReviewRequestOnMount("none", "scan-a"));
     await settle();
 
     expect(request).toHaveBeenCalledTimes(1);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(attempts()).toHaveLength(1);
   });
 
-  it("never fires when a later revalidation flips requestReview to true mid-session", async () => {
+  it("a revalidation on the SAME scan that now carries a nonce fires nothing and records no attempt", async () => {
     const request = installReviews(async () => ({ success: true, code: "success" }));
 
-    hookRuntime.render(() => useReviewRequestOnMount(false)); // mount
-    hookRuntime.render(() => useReviewRequestOnMount(true)); // revalidation
-    hookRuntime.render(() => useReviewRequestOnMount(true)); // another poll
+    hookRuntime.render(() => useReviewRequestOnMount(null, "scan-a")); // mount
+    hookRuntime.render(() => useReviewRequestOnMount("none", "scan-a")); // revalidation
+    hookRuntime.render(() => useReviewRequestOnMount("none", "scan-a")); // another poll
     await settle();
 
     expect(request).not.toHaveBeenCalled();
-    expect(fetchMock).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled(); // no attempt burned
   });
 
-  it("fires once only, whatever later renders carry", async () => {
-    const request = installReviews(async () => ({ success: false, code: "cooldown-period" }));
-
-    hookRuntime.render(() => useReviewRequestOnMount(true));
-    hookRuntime.render(() => useReviewRequestOnMount(false));
-    hookRuntime.render(() => useReviewRequestOnMount(true));
-    await settle();
-
-    expect(request).toHaveBeenCalledTimes(1);
-  });
-
-  it("a fresh mount (new navigation) with requestReview true fires again", async () => {
+  it("moving to ANOTHER scan (same component) captures that scan's value and fires", async () => {
     const request = installReviews(async () => ({ success: true, code: "success" }));
 
-    hookRuntime.render(() => useReviewRequestOnMount(false));
-    hookRuntime.reset(); // unmount, then mount on the next navigation
-    hookRuntime.render(() => useReviewRequestOnMount(true));
+    hookRuntime.render(() => useReviewRequestOnMount(null, "scan-a"));
+    hookRuntime.render(() => useReviewRequestOnMount("none", "scan-b")); // navigation
     await settle();
 
     expect(request).toHaveBeenCalledTimes(1);
+    expect(attempts()).toHaveLength(1);
+  });
+
+  it("fires once per scan, whatever later renders of that scan carry", async () => {
+    const request = installReviews(async () => ({ success: false, code: "cooldown-period" }));
+
+    hookRuntime.render(() => useReviewRequestOnMount("none", "scan-a"));
+    hookRuntime.render(() => useReviewRequestOnMount(null, "scan-a"));
+    hookRuntime.render(() => useReviewRequestOnMount("none", "scan-a"));
+    await settle();
+
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("a fresh mount (new navigation) with a nonce fires", async () => {
+    const request = installReviews(async () => ({ success: true, code: "success" }));
+
+    hookRuntime.render(() => useReviewRequestOnMount(null, "scan-a"));
+    hookRuntime.reset(); // unmount, then mount on the next navigation
+    hookRuntime.render(() => useReviewRequestOnMount("none", "scan-a"));
+    await settle();
+
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("the results page wires the hook per scan", () => {
+  it("passes the loader's nonce and the scan id (a new scan remounts the capture)", async () => {
+    const { readFileSync } = await import("node:fs");
+    const source = readFileSync(
+      new URL("../../app/routes/app.scans.$scanId.tsx", import.meta.url),
+      "utf8",
+    );
+    expect(source).toContain("useReviewRequestOnMount(reviewRequestNonce, scan.id);");
   });
 });

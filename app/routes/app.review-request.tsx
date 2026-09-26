@@ -1,6 +1,13 @@
 /**
  * Resource route: POST /app/review-request (gc-97k.7)
  *
+ * Two intents, both for the SESSION shop only:
+ *   - `intent=attempt&nonce=<loader nonce>`: record the attempt the client is
+ *     about to make (claimReviewRequestAttempt). 204 when recorded (the client
+ *     may call the Reviews API), 409 when not (another tab won, cooldown, or
+ *     done). A malformed nonce is a 400 with no write.
+ *   - otherwise (`code=<result code>`, as below): the result report.
+ *
  * The scan results page calls App Bridge's shopify.reviews.request() once and
  * reports the outcome here with a keepalive `fetch` (`code=<result code>`);
  * App Bridge's patched global `fetch` adds the session token, so
@@ -13,14 +20,25 @@
  */
 import type { ActionFunctionArgs } from "react-router";
 
-import { isReviewRequestCode } from "../lib/review-request";
-import { recordReviewRequestResult } from "../services/review-request.server";
+import { isReviewRequestCode, parseReviewAttemptNonce } from "../lib/review-request";
+import {
+  claimReviewRequestAttempt,
+  recordReviewRequestResult,
+} from "../services/review-request.server";
 import { authenticate } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
   const formData = await request.formData();
+
+  if (formData.get("intent") === "attempt") {
+    const previous = parseReviewAttemptNonce(formData.get("nonce"));
+    if (previous === undefined) return new Response(null, { status: 400 });
+    const recorded = await claimReviewRequestAttempt(session.shop, previous, new Date());
+    return new Response(null, { status: recorded ? 204 : 409 });
+  }
+
   const code = formData.get("code");
   if (!isReviewRequestCode(code)) {
     return new Response(null, { status: 400 });

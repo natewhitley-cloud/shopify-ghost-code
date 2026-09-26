@@ -22,22 +22,25 @@
  * merchant actually left a review.
  *
  * Lifecycle (server side: app/services/prompt-cap.server.ts and
- * app/services/review-request.server.ts):
- *   1. A results page load that picks the popup records an ATTEMPT on the
- *      server (reviewPopupAttemptCount + 1, reviewPopupLastAttemptAt = now)
- *      before the client ever asks. The popup does NOT claim the shop's 24h
- *      prompt slot here.
- *   2. The client asks App Bridge once, on navigation mount, and reports the
- *      code. The result policy below decides what happens next:
+ *   app/services/review-request.server.ts):
+ *   1. A results page load that picks the popup writes NOTHING; it hands the
+ *      client an attempt nonce. The popup does NOT claim the 24h prompt slot.
+ *   2. On a scan page's mount only, the client asks the server to record the
+ *      ATTEMPT (reviewPopupAttemptCount + 1, reviewPopupLastAttemptAt = now,
+ *      compare-and-set on the nonce), and only if that succeeds calls App
+ *      Bridge once and reports the code. The result policy below decides what
+ *      happens next:
  *        terminal:  reviewPopupRequestedAt is stamped; never requested again.
  *                   Only "success" (the modal was displayed) claims the slot.
  *        retryable: reviewPopupRetryAfter = now + the code's delay.
- *   3. If the report is lost (keepalive POST dropped, tab closed), the attempt
- *      stands: the popup is not eligible again until 24h after it, and never
- *      after REVIEW_POPUP_MAX_ATTEMPTS attempts, so a lost report cannot hog
- *      the top prompt priority forever.
+ *   3. If the RESULT report is lost (keepalive POST dropped, tab closed), the
+ *      attempt stands: the popup is not eligible again until 24h after it, and
+ *      never after REVIEW_POPUP_MAX_ATTEMPTS attempts. If the client never
+ *      even records an attempt, nothing is burned, and the 7-day bounded
+ *      blocking (PROMPT_BLOCK_MAX_MS in ./prompt-cap) stops the pending popup
+ *      from blocking lower prompts forever.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 
 /** A later results visit: at least this long after the first results view. */
 export const REVIEW_POPUP_MIN_DELAY_MS = 2 * 60 * 60 * 1000;
@@ -92,6 +95,23 @@ export function isReviewPopupEligible(input: ReviewPopupEligibilityInput, now: D
   }
   const retryAfter = input.reviewPopupRetryAfter;
   return retryAfter === null || now.getTime() >= retryAfter.getTime();
+}
+
+/**
+ * When the popup last BECAME eligible (bounded blocking, ./prompt-cap): the
+ * latest of the first results view + 2h, the end of a retry backoff, and the
+ * end of the last attempt's 24h cooldown. Only meaningful while
+ * isReviewPopupEligible is true.
+ */
+export function reviewPopupEligibleSince(input: ReviewPopupEligibilityInput): Date {
+  const times = [
+    (input.firstResultsViewedAt?.getTime() ?? 0) + REVIEW_POPUP_MIN_DELAY_MS,
+    input.reviewPopupRetryAfter?.getTime() ?? -Infinity,
+    input.reviewPopupLastAttemptAt === null
+      ? -Infinity
+      : input.reviewPopupLastAttemptAt.getTime() + REVIEW_POPUP_ATTEMPT_COOLDOWN_MS,
+  ];
+  return new Date(Math.max(...times));
 }
 
 /**
@@ -201,34 +221,91 @@ export function sendReviewRequestResult(code: ReviewRequestCode): void {
   }
 }
 
+/** The nonce value that stands for "no attempt recorded yet". */
+export const REVIEW_ATTEMPT_NONCE_NONE = "none";
+
 /**
- * The body of the results page's effect: request the popup and report the
- * result, at most once per `guard`. The guard flips synchronously, before any
- * await, so React StrictMode's double-invoked effect and any re-render cannot
- * request twice. Every outcome, including "unavailable" and "error", is
- * reported so the server can apply its result policy.
+ * The attempt nonce the loader issues with a review request: the
+ * reviewPopupLastAttemptAt it read (ISO, millisecond precision like the
+ * TIMESTAMP(3) column), or REVIEW_ATTEMPT_NONCE_NONE. The attempt action
+ * records an attempt only while the stored value still equals it
+ * (compare-and-set), so of several tabs or loads issued the same nonce
+ * exactly one gets to call the Reviews API.
+ */
+export function reviewAttemptNonce(lastAttemptAt: Date | null): string {
+  return lastAttemptAt === null ? REVIEW_ATTEMPT_NONCE_NONE : lastAttemptAt.toISOString();
+}
+
+/**
+ * Parse an untrusted nonce back to the last-attempt time it stands for:
+ * null for REVIEW_ATTEMPT_NONCE_NONE, a Date for a canonical ISO timestamp,
+ * undefined for anything else (the action answers 400).
+ */
+export function parseReviewAttemptNonce(value: unknown): Date | null | undefined {
+  if (value === REVIEW_ATTEMPT_NONCE_NONE) return null;
+  if (typeof value !== "string") return undefined;
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) || date.toISOString() !== value ? undefined : date;
+}
+
+/**
+ * Ask the server to record the attempt for `nonce` before calling the Reviews
+ * API. True only on 204 (this call recorded it). Any other status or a network
+ * error is false: the client then does NOT call the API, so nothing is
+ * requested that the server has not counted. NEVER THROWS.
+ */
+export async function claimReviewAttempt(nonce: string): Promise<boolean> {
+  try {
+    const res = await fetch("/app/review-request", {
+      method: "POST",
+      body: new URLSearchParams({ intent: "attempt", nonce }),
+    });
+    return res.status === 204;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The body of the results page's effect: at most once per `guard`, record the
+ * attempt on the server (keyed by the loader's `nonce`), and only if that won,
+ * request the popup and report the result. The guard flips synchronously,
+ * before any await, so React StrictMode's double-invoked effect cannot run it
+ * twice. A null nonce means the loader did not pick the popup.
  */
 export async function runReviewRequestOnce(
   guard: { current: boolean },
-  requestReview: boolean,
+  nonce: string | null,
 ): Promise<void> {
-  if (!requestReview || guard.current) return;
+  if (nonce === null || guard.current) return;
   guard.current = true;
+  if (!(await claimReviewAttempt(nonce))) return;
   sendReviewRequestResult(await requestAppReview());
 }
 
 /**
- * The results page's hook: request the popup only for the loader value seen
- * when the page MOUNTED (a navigation), never mid-session. The value is
- * captured once (useState initializer), so a later revalidation (the ~3s
- * in-progress poll, an ignore action, a dismiss) that flips `requestReview`
- * to true does not pop Shopify's modal while the merchant is working. The ref
- * guard keeps StrictMode's double-invoked effect to one request.
+ * The results page's hook. Fires only for the nonce captured when a SCAN's
+ * page mounted (a navigation), never mid-session:
+ *   - the capture is keyed by `scanId`, so moving to another scan (React
+ *     Router reuses the component) captures that scan's value afresh;
+ *   - a revalidation on the same scan (the ~3s poll, an ignore, a dismiss)
+ *     keeps the first capture, so a nonce that appears later never pops
+ *     Shopify's modal while the merchant is working. Such a load recorded
+ *     nothing (the attempt is recorded only by runReviewRequestOnce), so no
+ *     attempt is wasted.
+ * The per-capture guard keeps StrictMode's double-invoked effect to one run.
  */
-export function useReviewRequestOnMount(requestReview: boolean): void {
-  const [requestReviewAtMount] = useState(() => requestReview);
-  const guard = useRef(false);
+export function useReviewRequestOnMount(nonce: string | null, scanId: string): void {
+  const capture = useRef<{
+    scanId: string;
+    nonce: string | null;
+    fired: { current: boolean };
+  } | null>(null);
+  if (capture.current === null || capture.current.scanId !== scanId) {
+    capture.current = { scanId, nonce, fired: { current: false } };
+  }
+  const current = capture.current;
   useEffect(() => {
-    void runReviewRequestOnce(guard, requestReviewAtMount);
-  }, [requestReviewAtMount]);
+    void runReviewRequestOnce(current.fired, current.nonce);
+  }, [current]);
 }

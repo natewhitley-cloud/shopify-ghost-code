@@ -17,6 +17,7 @@ import {
   FREE_PREVIEW_MAX,
   freePreviewCount,
   pickFreePreviewFindings,
+  freePreviewHiddenCount,
 } from "../../app/lib/free-preview";
 
 function c(id: string, findingType: FindingType, severity: Severity, minute = 0) {
@@ -144,5 +145,23 @@ describe("pickFreePreviewFindings", () => {
     const picked = pickFreePreviewFindings(input, 1);
     expect(picked[0]).toBe(row);
     expect(input).toEqual(snapshot);
+  });
+});
+
+describe("freePreviewHiddenCount", () => {
+  it.each([
+    [0, 0],
+    [1, 0], // the single finding is shown
+    [2, 1],
+    [3, 2],
+    [10, 5],
+    [11, 6],
+    [100, 95],
+  ])("%i findings -> %i hidden", (total, hidden) => {
+    expect(freePreviewHiddenCount(total)).toBe(hidden);
+  });
+
+  it("never goes negative", () => {
+    expect(freePreviewHiddenCount(-3)).toBe(0);
   });
 });

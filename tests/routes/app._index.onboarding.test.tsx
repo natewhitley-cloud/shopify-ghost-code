@@ -37,6 +37,8 @@ vi.mock("../../app/models/scan.server", () => ({
   hasCompletedScans: vi.fn(),
   getCompletedScansForShop: vi.fn(),
   getFirstSuccessfulScanCompletedAt: vi.fn(),
+  // The return banner's "latest results hide findings" read (starvation fix).
+  getLatestSuccessfulScanNonMaliciousCount: vi.fn(),
 }));
 
 vi.mock("../../app/services/nudge-stage.server", () => ({

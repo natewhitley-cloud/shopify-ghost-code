@@ -75,6 +75,7 @@ import {
   hasAnyScans,
   getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
+  getLatestSuccessfulScanNonMaliciousCount,
 } from "../../app/models/scan.server";
 
 const mockLoggerWarn = (logger as unknown as { warn: ReturnType<typeof vi.fn> }).warn;
@@ -1443,5 +1444,45 @@ describe("getFirstSuccessfulScanCompletedAt", () => {
     mockDb.scan.findFirst.mockResolvedValue(null);
 
     await expect(getFirstSuccessfulScanCompletedAt(SHOP_ID)).resolves.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getLatestSuccessfulScanNonMaliciousCount (return banner hidden-findings rule)
+// ---------------------------------------------------------------------------
+
+describe("getLatestSuccessfulScanNonMaliciousCount", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("counts the LATEST successful scan's non-malicious findings in one query (no rows loaded)", async () => {
+    mockDb.scan.findFirst.mockResolvedValue({ _count: { findings: 7 } });
+
+    await expect(getLatestSuccessfulScanNonMaliciousCount(SHOP_ID)).resolves.toBe(7);
+    expect(mockDb.scan.findFirst).toHaveBeenCalledTimes(1);
+    expect(mockDb.scan.findFirst).toHaveBeenCalledWith({
+      where: {
+        shopId: SHOP_ID,
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL] },
+        completedAt: { not: null },
+      },
+      orderBy: { completedAt: "desc" },
+      select: {
+        _count: { select: { findings: { where: { findingType: { not: "MALICIOUS_SCRIPT" } } } } },
+      },
+    });
+  });
+
+  it("returns 0 for a successful scan with no non-malicious findings", async () => {
+    mockDb.scan.findFirst.mockResolvedValue({ _count: { findings: 0 } });
+
+    await expect(getLatestSuccessfulScanNonMaliciousCount(SHOP_ID)).resolves.toBe(0);
+  });
+
+  it("returns null when the shop has no successful scan", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+
+    await expect(getLatestSuccessfulScanNonMaliciousCount(SHOP_ID)).resolves.toBeNull();
   });
 });

@@ -17,7 +17,14 @@
  *      SHOP is eligible for, whatever page is loading. Each page declares which
  *      prompts it can render (HOME_PROMPTS, scanResultsPrompts). A page that
  *      cannot render the top prompt renders NOTHING: a lower-priority prompt
- *      never takes the slot while a higher one is pending.
+ *      does not take the slot while a higher one is pending.
+ *      BOUNDED BLOCKING: a higher prompt blocks lower ones for at most
+ *      PROMPT_BLOCK_MAX_MS (7 days) after it became eligible (its
+ *      `eligibleSince`). After that, on a page that cannot render it, it is
+ *      skipped and a lower prompt that page CAN render may take the slot. It
+ *      stays eligible and still renders on its own page whenever the slot is
+ *      free (rule 3). This stops a prompt the merchant never reaches (e.g. a
+ *      results page they never reopen) from starving the others forever.
  *   3. At most one DISTINCT prompt per shop per PROMPT_CAP_WINDOW_MS (24h).
  *      Within the window after a prompt was first shown, only that SAME prompt
  *      may render again (so it does not vanish on reload before the merchant
@@ -42,6 +49,13 @@ export type PromptKey = (typeof PROMPT_KEYS)[number];
 
 /** How long a shown prompt holds the shop's single prompt slot. */
 export const PROMPT_CAP_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * Bounded blocking: the longest an eligible prompt that has not rendered
+ * blocks lower-priority prompts, counted from when it became eligible.
+ * Exactly 7 days no longer blocks.
+ */
+export const PROMPT_BLOCK_MAX_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** The shop's durable cap state (Shop.lastPromptKey / Shop.lastPromptShownAt). */
 export type PromptCapState = {
@@ -84,6 +98,12 @@ export function scanResultsPrompts(page: {
 export type PickPromptInput = PromptCapState & {
   /** Every prompt the SHOP is eligible for (shopPromptEligibility), any order. */
   eligible: readonly PromptKey[];
+  /**
+   * When each eligible prompt became eligible (shopPromptEligibility). A key
+   * without a date never stops blocking (used for the lowest-priority prompt,
+   * which blocks nothing).
+   */
+  eligibleSince: Partial<Record<PromptKey, Date>>;
   /** The prompts THIS page can render (HOME_PROMPTS / scanResultsPrompts). */
   renderable: readonly PromptKey[];
   now: Date;
@@ -100,27 +120,44 @@ function isWindowOpen(state: PromptCapState, now: Date): boolean {
 }
 
 /**
- * The highest-priority prompt the shop is eligible for (the PENDING prompt),
- * or null when none is.
+ * True while an eligible prompt still blocks lower ones: less than
+ * PROMPT_BLOCK_MAX_MS since it became eligible, or no eligibleSince at all.
  */
-export function topEligiblePrompt(eligible: readonly PromptKey[]): PromptKey | null {
-  return PROMPT_KEYS.find((key) => eligible.includes(key)) ?? null;
+export function isStillBlocking(since: Date | undefined, now: Date): boolean {
+  return since === undefined || now.getTime() - since.getTime() < PROMPT_BLOCK_MAX_MS;
+}
+
+/**
+ * The prompt this PAGE should consider (before the 24h window), or null.
+ * Walks the eligible prompts in priority order: the first one this page can
+ * render is the candidate; an earlier one it cannot render blocks (null)
+ * while isStillBlocking, and is skipped once its 7 days are up.
+ */
+export function pagePendingPrompt(
+  input: Pick<PickPromptInput, "eligible" | "eligibleSince" | "renderable" | "now">,
+): PromptKey | null {
+  for (const key of PROMPT_KEYS) {
+    if (!input.eligible.includes(key)) continue;
+    if (input.renderable.includes(key)) return key;
+    if (isStillBlocking(input.eligibleSince[key], input.now)) return null;
+  }
+  return null;
 }
 
 /**
  * The single interruptive prompt to render on this page view, or null.
  *
- *   1. Take the highest-priority GLOBALLY eligible prompt (none: null).
- *   2. Inside an open 24h window only the prompt that opened it may render; any
- *      other top prompt (including when the holder is no longer eligible) gets
- *      null until the window passes.
- *   3. Render it only if this page can; otherwise null (and no claim).
+ *   1. pagePendingPrompt: the highest-priority eligible prompt this page can
+ *      render, unless a higher one it cannot render still blocks (7-day bound).
+ *   2. Inside an open 24h window only the prompt that opened it may render;
+ *      any other candidate (including when the holder is no longer eligible)
+ *      gets null until the window passes. Nothing is ever claimed on null.
  */
 export function pickPrompt(input: PickPromptInput): PromptKey | null {
-  const top = topEligiblePrompt(input.eligible);
-  if (top === null) return null;
-  if (isWindowOpen(input, input.now) && top !== input.lastPromptKey) return null;
-  return input.renderable.includes(top) ? top : null;
+  const candidate = pagePendingPrompt(input);
+  if (candidate === null) return null;
+  if (isWindowOpen(input, input.now) && candidate !== input.lastPromptKey) return null;
+  return candidate;
 }
 
 /**

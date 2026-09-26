@@ -12,6 +12,7 @@
  * merchant acts. "Not now" ends the episode early and counts toward retiring
  * the nudge after UPGRADE_RETURN_MAX_DISMISSALS.
  */
+import { freePreviewHiddenCount } from "./free-preview";
 import { PLANS } from "./plans";
 import { PROMPT_CAP_WINDOW_MS } from "./prompt-cap";
 
@@ -37,6 +38,15 @@ export type UpgradeReturnState = UpgradeReturnEpisode & {
   plan: string;
   /** completedAt of the shop's first successful scan, or null if none. */
   firstSuccessfulScanAt: Date | null;
+  /**
+   * Non-malicious findings in the shop's LATEST successful scan, or null when
+   * there is none (getLatestSuccessfulScanNonMaliciousCount). Ignores are NOT
+   * subtracted: an instance ignore is a computed fingerprint, so subtracting
+   * it would need the scan's full findings on every page. The error is one
+   * way (it can only over-count hidden findings), and the 7-day bounded
+   * blocking in ./prompt-cap limits what an over-count can cost.
+   */
+  latestScanNonMaliciousCount: number | null;
   upgradeReturnDismissCount: number;
 };
 
@@ -55,6 +65,9 @@ export function isUpgradeReturnEpisodeOpen(state: UpgradeReturnEpisode, now: Dat
 /**
  * Is the SHOP eligible for the banner (before the cross-prompt cap)?
  *   - Free plan only;
+ *   - the LATEST successful scan has hidden findings to talk about
+ *     (freePreviewHiddenCount > 0, i.e. 2+ non-malicious findings), so a shop
+ *     whose results never hide anything never has the banner pending;
  *   - the first successful scan completed 24h+ ago (exactly 24h qualifies);
  *   - fewer than 3 "Not now" clicks ever;
  *   - and either the current episode is still open (reload persistence), or a
@@ -66,6 +79,7 @@ export function isUpgradeReturnEpisodeOpen(state: UpgradeReturnEpisode, now: Dat
  */
 export function isUpgradeReturnEligible(state: UpgradeReturnState, now: Date): boolean {
   if (state.plan !== PLANS.FREE) return false;
+  if (freePreviewHiddenCount(state.latestScanNonMaliciousCount ?? 0) === 0) return false;
   if (state.firstSuccessfulScanAt === null) return false;
   if (now.getTime() - state.firstSuccessfulScanAt.getTime() < UPGRADE_RETURN_MIN_AGE_MS) {
     return false;
@@ -74,4 +88,20 @@ export function isUpgradeReturnEligible(state: UpgradeReturnState, now: Date): b
   if (isUpgradeReturnEpisodeOpen(state, now)) return true;
   const last = state.upgradeReturnLastShownAt;
   return last === null || now.getTime() - last.getTime() >= UPGRADE_RETURN_RESHOW_MS;
+}
+
+/**
+ * When the banner last BECAME eligible (bounded blocking, ./prompt-cap). Only
+ * meaningful while isUpgradeReturnEligible is true:
+ *   - inside an open episode: the episode's start (it is being shown);
+ *   - otherwise the later of the first successful scan + 24h and, once shown,
+ *     the weekly re-show opening (last episode start + 7d).
+ */
+export function upgradeReturnEligibleSince(state: UpgradeReturnState, now: Date): Date {
+  const last = state.upgradeReturnLastShownAt;
+  if (last !== null && isUpgradeReturnEpisodeOpen(state, now)) return last;
+  const firstAge =
+    (state.firstSuccessfulScanAt?.getTime() ?? now.getTime()) + UPGRADE_RETURN_MIN_AGE_MS;
+  const reshow = last === null ? -Infinity : last.getTime() + UPGRADE_RETURN_RESHOW_MS;
+  return new Date(Math.max(firstAge, reshow));
 }

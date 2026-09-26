@@ -28,7 +28,10 @@ vi.mock("../../app/lib/logger.server", () => ({
 
 import { REVIEW_REQUEST_CODES, REVIEW_RESULT_POLICY } from "../../app/lib/review-request";
 import type { ReviewRequestCode } from "../../app/lib/review-request";
-import { recordReviewRequestResult } from "../../app/services/review-request.server";
+import {
+  claimReviewRequestAttempt,
+  recordReviewRequestResult,
+} from "../../app/services/review-request.server";
 import { installFakeShopRow } from "../mocks/fake-shop-row";
 import type { FakeRow } from "../mocks/fake-shop-row";
 
@@ -231,6 +234,82 @@ describe("recordReviewRequestResult: concurrency and failure", () => {
     expect(mockLoggerError).toHaveBeenCalledWith(
       "review-request-record-failed",
       expect.objectContaining({ shop: DOMAIN, code: "success", error: "db down" }),
+    );
+  });
+});
+
+describe("claimReviewRequestAttempt (the attempt is recorded only when the client calls the API)", () => {
+  beforeEach(() => {
+    row = installFakeShopRow(mockDb.shop, {
+      domain: DOMAIN,
+      reviewPopupRequestedAt: null,
+      reviewPopupRetryAfter: null,
+      reviewPopupAttemptCount: 0,
+      reviewPopupLastAttemptAt: null,
+      reviewPopupLastResult: "mobile-app",
+    });
+  });
+
+  it("first attempt (nonce none): records it, increments, clears the last result", async () => {
+    await expect(claimReviewRequestAttempt(DOMAIN, null, NOW)).resolves.toBe(true);
+
+    expect(row.reviewPopupAttemptCount).toBe(1);
+    expect(row.reviewPopupLastAttemptAt).toEqual(NOW);
+    expect(row.reviewPopupLastResult).toBeNull();
+  });
+
+  it("two tabs holding the same nonce: exactly one records the attempt", async () => {
+    const results = await Promise.all([
+      claimReviewRequestAttempt(DOMAIN, null, NOW),
+      claimReviewRequestAttempt(DOMAIN, null, NOW),
+      claimReviewRequestAttempt(DOMAIN, null, NOW),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(row.reviewPopupAttemptCount).toBe(1);
+  });
+
+  it("a stale nonce (an attempt happened since the load) records nothing", async () => {
+    row.reviewPopupLastAttemptAt = new Date(NOW.getTime() - 2 * DAY);
+    row.reviewPopupAttemptCount = 1;
+
+    await expect(claimReviewRequestAttempt(DOMAIN, null, NOW)).resolves.toBe(false);
+    expect(row.reviewPopupAttemptCount).toBe(1);
+  });
+
+  it("refuses without a write while the nonce's attempt is inside its 24h cooldown (exactly 24h too)", async () => {
+    const last = new Date(NOW.getTime() - DAY);
+    row.reviewPopupLastAttemptAt = last;
+
+    await expect(claimReviewRequestAttempt(DOMAIN, last, NOW)).resolves.toBe(false);
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+
+    await expect(
+      claimReviewRequestAttempt(DOMAIN, last, new Date(NOW.getTime() + 1)),
+    ).resolves.toBe(true);
+  });
+
+  it("stops at 5 attempts", async () => {
+    const last = new Date(NOW.getTime() - 2 * DAY);
+    Object.assign(row, { reviewPopupAttemptCount: 5, reviewPopupLastAttemptAt: last });
+
+    await expect(claimReviewRequestAttempt(DOMAIN, last, NOW)).resolves.toBe(false);
+    expect(row.reviewPopupAttemptCount).toBe(5);
+  });
+
+  it("never after a terminal result", async () => {
+    row.reviewPopupRequestedAt = new Date(NOW.getTime() - DAY);
+
+    await expect(claimReviewRequestAttempt(DOMAIN, null, NOW)).resolves.toBe(false);
+  });
+
+  it("never throws: a failed write logs and is false", async () => {
+    mockDb.shop.updateMany.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(claimReviewRequestAttempt(DOMAIN, null, NOW)).resolves.toBe(false);
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      "review-request-attempt-claim-failed",
+      expect.objectContaining({ shop: DOMAIN, error: "db down" }),
     );
   });
 });

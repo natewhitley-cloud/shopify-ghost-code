@@ -30,6 +30,8 @@ function state(overrides: Partial<UpgradeReturnState> = {}): UpgradeReturnState 
     upgradeReturnLastShownAt: null,
     upgradeReturnLastDismissedAt: null,
     upgradeReturnDismissCount: 0,
+    // The latest results hide findings (2+ non-malicious) unless a test says not.
+    latestScanNonMaliciousCount: 10,
     ...overrides,
   };
 }
@@ -74,9 +76,16 @@ describe("isUpgradeReturnEligible", () => {
     expect(eligible(state({ plan }))).toBe(false);
   });
 
-  // Hidden findings are no longer part of the SHOP-level rule (owner decision
-  // 1A): whether a page has something to show is page renderability, pinned in
-  // tests/lib/prompt-cap.test.ts (scanResultsPrompts).
+  // Starvation fix: the LATEST successful scan must hide something (2+
+  // non-malicious findings under the gc-97k.10 formula).
+  it.each([
+    [null, false],
+    [0, false],
+    [1, false],
+    [2, true],
+  ])("latest scan with %s non-malicious findings -> %s", (count, expected) => {
+    expect(eligible(state({ latestScanNonMaliciousCount: count }))).toBe(expected);
+  });
 
   describe("dismissals", () => {
     it.each([0, 1, 2])("is eligible after %i dismissals", (count) => {

@@ -39,10 +39,9 @@ vi.mock("../../app/db.server", () => ({
 // service (gc-dpm.1) runs, including its never-throw guard.
 vi.mock("../../app/models/shop.server", () => ({
   claimShopStamp: vi.fn(),
-  // gc-97k.6/7: the REAL resolvePrompt runs; only its slot and popup-attempt
-  // writes are mocked.
+  // gc-97k.6/7: the REAL resolvePrompt runs; only its slot write is mocked.
+  // (The popup attempt is recorded by the review-request action, not here.)
   claimPromptSlot: vi.fn(),
-  claimReviewPopupAttempt: vi.fn(),
   getShopMetadata: vi.fn(),
   // gc-97k.9: the REAL upgrade-return service runs; only its writes are mocked.
   startUpgradeReturnEpisode: vi.fn(),
@@ -59,6 +58,8 @@ vi.mock("../../app/models/scan.server", () => ({
   getScanById: vi.fn(),
   // gc-97k.9: the return-visit banner's "first successful scan 24h+ ago" read.
   getFirstSuccessfulScanCompletedAt: vi.fn(),
+  // The return banner's "latest results hide findings" read (starvation fix).
+  getLatestSuccessfulScanNonMaliciousCount: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => ({
@@ -149,10 +150,13 @@ import {
   ignoreFindingApp,
   ignoreFindingInstance,
 } from "../../app/models/ignored-finding.server";
-import { getFirstSuccessfulScanCompletedAt, getScanById } from "../../app/models/scan.server";
+import {
+  getFirstSuccessfulScanCompletedAt,
+  getLatestSuccessfulScanNonMaliciousCount,
+  getScanById,
+} from "../../app/models/scan.server";
 import {
   claimPromptSlot,
-  claimReviewPopupAttempt,
   claimShopStamp,
   getShopMetadata,
   recordUpgradeReturnDismissal,
@@ -191,11 +195,11 @@ const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockClaimShopStamp = claimShopStamp as ReturnType<typeof vi.fn>;
 const mockClaimPromptSlot = claimPromptSlot as ReturnType<typeof vi.fn>;
-const mockClaimPopupAttempt = claimReviewPopupAttempt as ReturnType<typeof vi.fn>;
 const mockStartEpisode = startUpgradeReturnEpisode as ReturnType<typeof vi.fn>;
 const mockRecordDismissal = recordUpgradeReturnDismissal as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 const mockGetFirstSuccessfulScan = getFirstSuccessfulScanCompletedAt as ReturnType<typeof vi.fn>;
+const mockGetLatestCount = getLatestSuccessfulScanNonMaliciousCount as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
 const mockGetFindingsPageForScan = getFindingsPageForScan as ReturnType<typeof vi.fn>;
 const mockGetAppAttributionForScan = getAppAttributionForScan as ReturnType<typeof vi.fn>;
@@ -355,11 +359,12 @@ beforeEach(() => {
 
   mockGetShopMetadata.mockResolvedValue(SHOP);
   mockClaimPromptSlot.mockResolvedValue(true);
-  mockClaimPopupAttempt.mockResolvedValue(true);
   mockGetScanById.mockResolvedValue(SCAN);
   // No successful scan on record by default, so the return banner stays off
   // unless a test opts in.
   mockGetFirstSuccessfulScan.mockResolvedValue(null);
+  // The latest successful scan hides findings (10 non-malicious) by default.
+  mockGetLatestCount.mockResolvedValue(10);
   mockGetFindingSummary.mockResolvedValue(FINDING_SUMMARY);
   mockGetFindingsPageForScan.mockResolvedValue(SINGLE_FINDING_PAGE);
   mockGetAppAttributionForScan.mockResolvedValue([]);
@@ -1089,10 +1094,14 @@ describe("app.scans.$scanId loader", () => {
       });
     }
 
-    async function requestReview(): Promise<boolean> {
-      const result = (await loader(makeLoaderArgs("scan-1"))) as { requestReview: boolean };
-      return result.requestReview;
+    /** The attempt nonce the loader hands the client (null = no popup). */
+    async function nonce(): Promise<string | null> {
+      const result = (await loader(makeLoaderArgs("scan-1"))) as unknown as {
+        reviewRequestNonce: string | null;
+      };
+      return result.reviewRequestNonce;
     }
+    const requestReview = async () => (await nonce()) !== null;
 
     beforeEach(() => {
       vi.useFakeTimers();
@@ -1104,43 +1113,33 @@ describe("app.scans.$scanId loader", () => {
       vi.useRealTimers();
     });
 
-    // Changed on purpose (audit, gc-97k.7): the loader used to claim the 24h
-    // prompt slot for the popup. It now records an ATTEMPT instead; the slot is
-    // claimed only when the client reports that Shopify displayed the modal.
-    it("requests on a later visit exactly 2h after the first results view, recording an attempt, NOT claiming the slot", async () => {
+    // Changed on purpose (per-scan popup mount): the loader used to record the
+    // attempt itself. It now writes NOTHING for the popup and hands the client
+    // a nonce; the client records the attempt only when it actually fires.
+    it("requests on a later visit exactly 2h after the first results view: a nonce, no write", async () => {
       shopState({ firstResultsViewedAt: ago(2 * HOUR) });
 
-      await expect(requestReview()).resolves.toBe(true);
-      expect(mockClaimPopupAttempt).toHaveBeenCalledWith(SHOP.domain, null, NOW);
+      await expect(nonce()).resolves.toBe("none");
       expect(mockClaimPromptSlot).not.toHaveBeenCalled();
-    });
-
-    it("does not request when a concurrent load recorded this attempt first", async () => {
-      mockClaimPopupAttempt.mockResolvedValue(false);
-
-      await expect(requestReview()).resolves.toBe(false);
     });
 
     it("does not request while the last attempt is under 24h old (report pending or lost)", async () => {
       shopState({ reviewPopupAttemptCount: 1, reviewPopupLastAttemptAt: ago(23 * HOUR) });
 
       await expect(requestReview()).resolves.toBe(false);
-      expect(mockClaimPopupAttempt).not.toHaveBeenCalled();
     });
 
-    it("retries more than 24h after a lost report, keyed on that attempt", async () => {
+    it("retries more than 24h after a lost report, with that attempt as the nonce", async () => {
       const last = ago(24 * HOUR + 1);
       shopState({ reviewPopupAttemptCount: 1, reviewPopupLastAttemptAt: last });
 
-      await expect(requestReview()).resolves.toBe(true);
-      expect(mockClaimPopupAttempt).toHaveBeenCalledWith(SHOP.domain, last, NOW);
+      await expect(nonce()).resolves.toBe(last.toISOString());
     });
 
     it("stops after 5 attempts", async () => {
       shopState({ reviewPopupAttemptCount: 5, reviewPopupLastAttemptAt: ago(30 * 24 * HOUR) });
 
       await expect(requestReview()).resolves.toBe(false);
-      expect(mockClaimPopupAttempt).not.toHaveBeenCalled();
     });
 
     it("waits out a retryable result's backoff", async () => {
@@ -1211,7 +1210,6 @@ describe("app.scans.$scanId loader", () => {
       shopState({ lastPromptKey: "feedback", lastPromptShownAt: ago(24 * HOUR) });
 
       await expect(requestReview()).resolves.toBe(true);
-      expect(mockClaimPopupAttempt).toHaveBeenCalledTimes(1);
       expect(mockClaimPromptSlot).not.toHaveBeenCalled();
     });
   });
@@ -1230,7 +1228,7 @@ describe("app.scans.$scanId loader", () => {
     type Result = {
       upgradeReturn: { hiddenCount: number; groups: unknown[] } | null;
       upgradePreview: { hiddenCount: number } | null;
-      requestReview: boolean;
+      reviewRequestNonce: string | null;
       trialEligible: boolean;
       previewFindings: unknown[];
     };
@@ -1413,7 +1411,7 @@ describe("app.scans.$scanId loader", () => {
         const result = await load();
 
         expect(result.upgradeReturn).toBeNull();
-        expect(result.requestReview).toBe(false);
+        expect(result.reviewRequestNonce).toBeNull();
         expect(mockClaimPromptSlot).not.toHaveBeenCalled();
         expect(mockStartEpisode).not.toHaveBeenCalled();
       });
@@ -1456,7 +1454,7 @@ describe("app.scans.$scanId loader", () => {
         const result = await load();
 
         expect(result.upgradeReturn).toBeNull();
-        expect(result.requestReview).toBe(false);
+        expect(result.reviewRequestNonce).toBeNull();
         expect(result.upgradePreview).not.toBeNull(); // the teaser is content, never capped
       });
 
@@ -1482,7 +1480,7 @@ describe("app.scans.$scanId loader", () => {
         const result = await load();
 
         expect(result.upgradeReturn).toBeNull();
-        expect(result.requestReview).toBe(false);
+        expect(result.reviewRequestNonce).toBeNull();
         expect(result.upgradePreview).not.toBeNull();
         expect(mockClaimPromptSlot).not.toHaveBeenCalled();
       });
@@ -1494,10 +1492,9 @@ describe("app.scans.$scanId loader", () => {
 
         const result = await load();
 
-        expect(result.requestReview).toBe(true);
+        expect(result.reviewRequestNonce).toBe("none");
         expect(result.upgradeReturn).toBeNull();
         expect(result.upgradePreview).not.toBeNull();
-        expect(mockClaimPopupAttempt).toHaveBeenCalledWith(SHOP.domain, null, NOW);
         expect(mockClaimPromptSlot).not.toHaveBeenCalled();
       });
 
@@ -1510,7 +1507,7 @@ describe("app.scans.$scanId loader", () => {
 
         const result = await load();
 
-        expect(result.requestReview).toBe(false);
+        expect(result.reviewRequestNonce).toBeNull();
         expect(result.upgradeReturn).not.toBeNull();
       });
 
@@ -1552,7 +1549,7 @@ describe("app.scans.$scanId loader", () => {
         getFirstSuccessfulScanCompletedAt: mockGetFirstSuccessfulScan.mock.calls.length,
         hasBillingHistory: mockHasBillingHistory.mock.calls.length,
         claimPromptSlot: mockClaimPromptSlot.mock.calls.length,
-        claimReviewPopupAttempt: mockClaimPopupAttempt.mock.calls.length,
+        getLatestSuccessfulScanNonMaliciousCount: mockGetLatestCount.mock.calls.length,
         claimShopStamp: mockClaimShopStamp.mock.calls.length,
         startUpgradeReturnEpisode: mockStartEpisode.mock.calls.length,
       };

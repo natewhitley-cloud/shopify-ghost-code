@@ -37,6 +37,8 @@ vi.mock("../../app/models/scan.server", () => ({
   hasCompletedScans: vi.fn(),
   getCompletedScansForShop: vi.fn(),
   getFirstSuccessfulScanCompletedAt: vi.fn(),
+  // The return banner's "latest results hide findings" read (starvation fix).
+  getLatestSuccessfulScanNonMaliciousCount: vi.fn(),
 }));
 
 // gc-97k.3: the feedback nudge's once-per-merchant stage recorder. Its claim
@@ -132,6 +134,7 @@ import {
   hasCompletedScans,
   getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
+  getLatestSuccessfulScanNonMaliciousCount,
 } from "../../app/models/scan.server";
 import {
   getOrCreateShopMetadata,
@@ -281,6 +284,8 @@ beforeEach(() => {
   // gc-97k.6: the prompt-slot claim wins by default (the service's own race
   // handling is covered in tests/services/prompt-cap.server.test.ts).
   mockClaimPromptSlot.mockResolvedValue(true);
+  // The latest successful scan hides findings (10 non-malicious) by default.
+  (getLatestSuccessfulScanNonMaliciousCount as ReturnType<typeof vi.fn>).mockResolvedValue(10);
   // gc-bj4: the loader reads via get-or-create (the action still uses the plain
   // read). Delegate so each test's getShopMetadata fixture drives both; the
   // create-on-miss path is covered in app._index.onboarding.test.tsx.
@@ -1969,6 +1974,38 @@ describe("app._index loader: feedback nudge", () => {
         expect.anything(),
         NOW,
       );
+    });
+
+    it("a Free shop whose latest results hide nothing (0 or 1 finding) sees feedback on Home", async () => {
+      for (const count of [0, 1]) {
+        (getLatestSuccessfulScanNonMaliciousCount as ReturnType<typeof vi.fn>).mockResolvedValue(
+          count,
+        );
+        // Never shown the banner: without the hidden-findings rule it would be
+        // pending (and block Home) forever.
+        mockGetShopMetadata.mockResolvedValue({
+          ...FEEDBACK_SHOP,
+          plan: "Free",
+          upgradeReturnLastShownAt: null,
+          upgradeReturnLastDismissedAt: null,
+          upgradeReturnDismissCount: 0,
+        });
+
+        expect((await run()).showFeedbackNudge).toBe(true);
+      }
+    });
+
+    it("the same Free shop with 2+ findings in its latest results: the banner is pending, Home empty", async () => {
+      (getLatestSuccessfulScanNonMaliciousCount as ReturnType<typeof vi.fn>).mockResolvedValue(2);
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        plan: "Free",
+        upgradeReturnLastShownAt: null,
+        upgradeReturnLastDismissedAt: null,
+        upgradeReturnDismissCount: 0,
+      });
+
+      expect((await run()).showFeedbackNudge).toBe(false);
     });
 
     it("feedback shows once the return banner is retired (3 dismissals)", async () => {

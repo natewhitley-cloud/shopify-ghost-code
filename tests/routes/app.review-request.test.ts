@@ -12,15 +12,20 @@ vi.mock("../../app/shopify.server", () => ({
 
 vi.mock("../../app/services/review-request.server", () => ({
   recordReviewRequestResult: vi.fn(),
+  claimReviewRequestAttempt: vi.fn(),
 }));
 
 import * as reviewRoute from "../../app/routes/app.review-request";
 import { action } from "../../app/routes/app.review-request";
-import { recordReviewRequestResult } from "../../app/services/review-request.server";
+import {
+  claimReviewRequestAttempt,
+  recordReviewRequestResult,
+} from "../../app/services/review-request.server";
 import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockRecord = recordReviewRequestResult as ReturnType<typeof vi.fn>;
+const mockClaimAttempt = claimReviewRequestAttempt as ReturnType<typeof vi.fn>;
 
 const SHOP = "nw-dev-store-2.myshopify.com";
 
@@ -88,4 +93,52 @@ describe("app.review-request action", () => {
   it("exports no loader (no GET surface)", () => {
     expect("loader" in reviewRoute).toBe(false);
   });
+});
+
+describe("app.review-request action: intent=attempt (gc-97k.7)", () => {
+  it("records the attempt for the SESSION shop with the parsed nonce: 204 when recorded", async () => {
+    mockClaimAttempt.mockResolvedValue(true);
+
+    const res = await action(
+      args({
+        intent: "attempt",
+        nonce: "2026-09-25T10:00:00.000Z",
+        shop: "attacker.myshopify.com",
+      }),
+    );
+
+    expect(res.status).toBe(204);
+    expect(mockClaimAttempt).toHaveBeenCalledWith(
+      SHOP,
+      new Date("2026-09-25T10:00:00.000Z"),
+      expect.any(Date),
+    );
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it("the no-attempt nonce is passed as null", async () => {
+    mockClaimAttempt.mockResolvedValue(true);
+
+    await action(args({ intent: "attempt", nonce: "none" }));
+
+    expect(mockClaimAttempt).toHaveBeenCalledWith(SHOP, null, expect.any(Date));
+  });
+
+  it("409 when not recorded (another tab won, cooldown, or done)", async () => {
+    mockClaimAttempt.mockResolvedValue(false);
+
+    const res = await action(args({ intent: "attempt", nonce: "none" }));
+
+    expect(res.status).toBe(409);
+  });
+
+  it.each([{}, { nonce: "" }, { nonce: "yesterday" }, { nonce: "2026-09-25T10:00:00Z" }])(
+    "400 with no write for a missing or malformed nonce (%o)",
+    async (body) => {
+      const res = await action(args({ intent: "attempt", ...(body as Record<string, string>) }));
+
+      expect(res.status).toBe(400);
+      expect(mockClaimAttempt).not.toHaveBeenCalled();
+    },
+  );
 });

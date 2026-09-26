@@ -40,7 +40,7 @@ import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
 import { scanResultsPrompts } from "../lib/prompt-cap";
-import { useReviewRequestOnMount } from "../lib/review-request";
+import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
 import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
@@ -1024,10 +1024,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // helper as the Settings upgrade buttons).
     pricingPlansUrl: buildPricingPlansUrl(session.shop),
     trialEligible,
-    // gc-97k.7: the client asks App Bridge for the review modal once, on
-    // navigation mount, then reports the result to /app/review-request (which
-    // applies the result policy). This load already recorded the attempt.
-    requestReview: pagePrompt === "review_popup",
+    // gc-97k.7: non-null when this load picked the review popup. On a scan
+    // page's mount the client records the attempt with this nonce, and only
+    // if that wins asks App Bridge for the modal and reports the result to
+    // /app/review-request. This load wrote nothing for the popup.
+    reviewRequestNonce:
+      pagePrompt === "review_popup" ? reviewAttemptNonce(shop.reviewPopupLastAttemptAt) : null,
     maliciousFindings: enrichedMaliciousFindings,
     findingSummary,
     canViewDetails,
@@ -1276,7 +1278,7 @@ export default function ScanDetail() {
     upgradePreview,
     pricingPlansUrl,
     trialEligible,
-    requestReview,
+    reviewRequestNonce,
     maliciousFindings,
     findingSummary,
     canViewDetails,
@@ -1338,10 +1340,10 @@ export default function ScanDetail() {
     dismissFetcher.submit({ intent: "dismiss-upgrade-return" }, { method: "POST" });
   };
 
-  // Native review popup (gc-97k.7): only for the loader value captured when the
-  // page mounted (a navigation), at most once; a later revalidation (poll,
-  // ignore, dismiss) never pops the modal mid-session.
-  useReviewRequestOnMount(requestReview);
+  // Native review popup (gc-97k.7): only for the loader value captured when
+  // THIS scan's page mounted (keyed by scan id), at most once; a later
+  // revalidation on the same scan (poll, ignore, dismiss) never pops the modal.
+  useReviewRequestOnMount(reviewRequestNonce, scan.id);
 
   // Track how many polls have been fired so we can enforce a timeout ceiling.
   const pollCount = useRef(0);

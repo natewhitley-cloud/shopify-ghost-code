@@ -419,24 +419,26 @@ export async function claimPromptSlot(
 }
 
 /**
- * Record a native review popup ATTEMPT (gc-97k.7) before the client asks App
- * Bridge. A compare-and-set on the last attempt time this load read: of two
- * concurrent loads that both picked the popup, exactly one wins (count === 1),
- * so the modal is requested once. The winner increments the attempt count in
- * SQL and clears the last result (this attempt's report is still to come).
- * Never after a terminal result. Returns true IFF this call won; a missing
- * shop row is a safe false.
+ * Record a native review popup ATTEMPT (gc-97k.7), called by the review-request
+ * action right before the client asks App Bridge. A compare-and-set on the
+ * last attempt time the loader read (the nonce): of several tabs issued the
+ * same nonce, exactly one wins (count === 1), so the modal is requested once.
+ * Never after a terminal result or at `maxAttempts`. The winner increments the
+ * attempt count in SQL and clears the last result (this attempt's report is
+ * still to come). Returns true IFF this call won; a missing row is a safe false.
  */
 export async function claimReviewPopupAttempt(
   domain: string,
   previousLastAttemptAt: Date | null,
   now: Date,
+  maxAttempts: number,
 ): Promise<boolean> {
   const { count } = await db.shop.updateMany({
     where: {
       domain,
       reviewPopupRequestedAt: null,
       reviewPopupLastAttemptAt: previousLastAttemptAt,
+      reviewPopupAttemptCount: { lt: maxAttempts },
     },
     data: {
       reviewPopupAttemptCount: { increment: 1 },

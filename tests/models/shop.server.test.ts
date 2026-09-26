@@ -1204,17 +1204,18 @@ describe("claimReviewPopupAttempt", () => {
     vi.clearAllMocks();
   });
 
-  it("compare-and-sets on the previous attempt time, increments in SQL, clears the result", async () => {
+  it("compare-and-sets on the previous attempt time under the attempt cap, increments in SQL, clears the result", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
     const prev = new Date("2026-09-24T09:00:00Z");
 
-    await expect(claimReviewPopupAttempt("s.myshopify.com", prev, NOW)).resolves.toBe(true);
+    await expect(claimReviewPopupAttempt("s.myshopify.com", prev, NOW, 5)).resolves.toBe(true);
 
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
       where: {
         domain: "s.myshopify.com",
         reviewPopupRequestedAt: null,
         reviewPopupLastAttemptAt: prev,
+        reviewPopupAttemptCount: { lt: 5 },
       },
       data: {
         reviewPopupAttemptCount: { increment: 1 },
@@ -1227,7 +1228,7 @@ describe("claimReviewPopupAttempt", () => {
   it("matches a never-attempted shop on an explicit null", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
-    await claimReviewPopupAttempt("s.myshopify.com", null, NOW);
+    await claimReviewPopupAttempt("s.myshopify.com", null, NOW, 5);
 
     expect(mockDb.shop.updateMany.mock.calls[0][0].where.reviewPopupLastAttemptAt).toBeNull();
   });
@@ -1235,7 +1236,7 @@ describe("claimReviewPopupAttempt", () => {
   it("returns false when another load won or the shop is missing (count 0)", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
 
-    await expect(claimReviewPopupAttempt("s.myshopify.com", null, NOW)).resolves.toBe(false);
+    await expect(claimReviewPopupAttempt("s.myshopify.com", null, NOW, 5)).resolves.toBe(false);
   });
 });
 

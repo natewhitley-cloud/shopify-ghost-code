@@ -519,6 +519,32 @@ export async function getFirstSuccessfulScanCompletedAt(shopId: string): Promise
 }
 
 /**
+ * Non-malicious finding count of the shop's LATEST successful (COMPLETED or
+ * PARTIAL) scan, or null when it has none: ONE indexed query (the latest scan
+ * plus a filtered relation _count over Finding's scanId index), no finding rows
+ * loaded. Drives the return banner's "latest results have hidden findings"
+ * rule (gc-97k.9, app/lib/upgrade-return.ts). MALICIOUS_SCRIPT is excluded
+ * because it is never paywalled; ignores are not subtracted (see
+ * UpgradeReturnState.latestScanNonMaliciousCount).
+ */
+export async function getLatestSuccessfulScanNonMaliciousCount(
+  shopId: string,
+): Promise<number | null> {
+  const row = await db.scan.findFirst({
+    where: {
+      shopId,
+      status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+      completedAt: { not: null },
+    },
+    orderBy: { completedAt: "desc" },
+    select: {
+      _count: { select: { findings: { where: { findingType: { not: "MALICIOUS_SCRIPT" } } } } },
+    },
+  });
+  return row === null ? null : row._count.findings;
+}
+
+/**
  * Fetch the N most recent successful (COMPLETED or PARTIAL) scans for a shop,
  * newest first. Used by the dashboard trend chart — only returns successful
  * scans since in-progress/failed scans have no health score. PARTIAL scans have

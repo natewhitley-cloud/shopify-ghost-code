@@ -45,7 +45,10 @@ import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { NUDGE_KEYS } from "../../app/services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../../app/services/prompt-cap.server";
 import type { ShopPromptContext } from "../../app/services/prompt-cap.server";
-import { recordReviewRequestResult } from "../../app/services/review-request.server";
+import {
+  claimReviewRequestAttempt,
+  recordReviewRequestResult,
+} from "../../app/services/review-request.server";
 import { markUpgradeReturnShown } from "../../app/services/upgrade-return.server";
 import { installFakeShopRow } from "../mocks/fake-shop-row";
 import type { FakeRow } from "../mocks/fake-shop-row";
@@ -74,6 +77,7 @@ function stateFor(
     installedAt: keys.includes("feedback") ? ago(10 * DAY) : NOW,
     firstSuccessfulScanAt:
       keys.includes("upgrade_return") || keys.includes("feedback") ? ago(2 * DAY) : null,
+    latestScanNonMaliciousCount: keys.includes("upgrade_return") ? 10 : null,
     firstResultsViewedAt: keys.includes("review_popup") ? ago(3 * HOUR) : null,
     reviewPopupRequestedAt: null,
     reviewPopupRetryAfter: null,
@@ -100,6 +104,18 @@ beforeEach(() => {
   vi.resetAllMocks();
 });
 
+/**
+ * Serve both scan reads loadShopPromptState makes: the FIRST successful scan's
+ * completedAt (orderBy asc) and the LATEST one's non-malicious count (desc).
+ */
+function serveScans(firstCompletedAt: Date, latestNonMaliciousCount: number) {
+  mockDb.scan.findFirst.mockImplementation(async (args: { orderBy: { completedAt: string } }) =>
+    args.orderBy.completedAt === "asc"
+      ? { completedAt: firstCompletedAt }
+      : { _count: { findings: latestNonMaliciousCount } },
+  );
+}
+
 describe("loadShopPromptState", () => {
   const SHOP = {
     id: "shop-1",
@@ -107,22 +123,49 @@ describe("loadShopPromptState", () => {
     ...stateFor([]),
   } as unknown as ShopMetadata;
 
-  it("reads the first successful scan when a rule can use it (Free shop)", async () => {
+  it("Free shop: reads the first successful scan AND the latest scan's count, in parallel", async () => {
     const first = ago(3 * DAY);
-    mockDb.scan.findFirst.mockResolvedValue({ completedAt: first });
+    serveScans(first, 7);
 
     const state = await loadShopPromptState({ ...SHOP, plan: "free" }, NOW);
 
-    expect(mockDb.scan.findFirst).toHaveBeenCalledTimes(1);
+    expect(mockDb.scan.findFirst).toHaveBeenCalledTimes(2);
     expect(state.firstSuccessfulScanAt).toEqual(first);
-    expect(state.plan).toBe("free");
+    expect(state.latestScanNonMaliciousCount).toBe(7);
+    // The count query: latest successful scan, malicious excluded, no rows loaded.
+    expect(mockDb.scan.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        orderBy: { completedAt: "desc" },
+        select: {
+          _count: {
+            select: { findings: { where: { findingType: { not: "MALICIOUS_SCRIPT" } } } },
+          },
+        },
+      }),
+    );
   });
 
-  it("skips the read (null) when no rule can use it (young paid shop)", async () => {
+  it("a Free shop with no successful scan: both null", async () => {
+    mockDb.scan.findFirst.mockResolvedValue(null);
+
+    const state = await loadShopPromptState({ ...SHOP, plan: "free" }, NOW);
+
+    expect(state.firstSuccessfulScanAt).toBeNull();
+    expect(state.latestScanNonMaliciousCount).toBeNull();
+  });
+
+  it("a Free shop that retired the banner skips the count query", async () => {
+    await loadShopPromptState({ ...SHOP, plan: "free", upgradeReturnDismissCount: 3 }, NOW);
+
+    expect(mockDb.scan.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("skips both reads (null) when no rule can use them (young paid shop)", async () => {
     const state = await loadShopPromptState(SHOP, NOW);
 
     expect(mockDb.scan.findFirst).not.toHaveBeenCalled();
     expect(state.firstSuccessfulScanAt).toBeNull();
+    expect(state.latestScanNonMaliciousCount).toBeNull();
   });
 });
 
@@ -255,54 +298,12 @@ describe("resolvePrompt", () => {
 });
 
 describe("resolvePrompt: the review popup (gc-97k.7)", () => {
-  it("records an ATTEMPT (compare-and-set on the last attempt it read) and claims NO slot", async () => {
-    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
-
+  // Changed on purpose (per-scan popup mount): the loader used to record the
+  // popup ATTEMPT here. It now writes nothing; the attempt is recorded only
+  // when the client is about to call the Reviews API (claimReviewRequestAttempt).
+  it("is returned with NO write at all (no attempt, no slot)", async () => {
     await expect(resolvePrompt(input(["review_popup"]))).resolves.toBe("review_popup");
-
-    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
-    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
-      where: { domain: DOMAIN, reviewPopupRequestedAt: null, reviewPopupLastAttemptAt: null },
-      data: {
-        reviewPopupAttemptCount: { increment: 1 },
-        reviewPopupLastAttemptAt: NOW,
-        reviewPopupLastResult: null,
-      },
-    });
-  });
-
-  it("keys a retry's attempt claim on the previous attempt time", async () => {
-    const previous = ago(25 * HOUR);
-    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
-
-    await resolvePrompt({
-      ...input(["review_popup"]),
-      state: { ...stateFor(["review_popup"]), reviewPopupLastAttemptAt: previous },
-    });
-
-    expect(mockDb.shop.updateMany.mock.calls[0][0].where).toEqual({
-      domain: DOMAIN,
-      reviewPopupRequestedAt: null,
-      reviewPopupLastAttemptAt: previous,
-    });
-  });
-
-  it("a lost attempt claim (another load won): null, no re-read, no slot write", async () => {
-    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
-
-    await expect(resolvePrompt(input(["review_popup"]))).resolves.toBeNull();
-    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
-    expect(mockDb.shop.findUnique).not.toHaveBeenCalled();
-  });
-
-  it("never throws: a failed attempt claim logs and fails closed", async () => {
-    mockDb.shop.updateMany.mockRejectedValueOnce(new Error("db down"));
-
-    await expect(resolvePrompt(input(["review_popup"]))).resolves.toBeNull();
-    expect(mockLoggerError).toHaveBeenCalledWith("review-popup-attempt-claim-failed", {
-      shop: DOMAIN,
-      error: "db down",
-    });
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
   });
 
   it("an attempt within 24h is not pending: a lower prompt the page can render shows", async () => {
@@ -334,20 +335,18 @@ describe("resolvePrompt: the review popup (gc-97k.7)", () => {
     expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
   });
 
-  it("a popup blocked by another prompt's open window records no attempt", async () => {
+  it("a popup blocked by another prompt's open window is not returned", async () => {
     const cap = { lastPromptKey: "feedback", lastPromptShownAt: ago(HOUR) };
 
     await expect(resolvePrompt(input(["review_popup"], cap))).resolves.toBeNull();
-    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
   });
 
-  describe("a lost result report (keepalive POST never arrives)", () => {
-    it("retries after 24h, and stops for good at 5 attempts", async () => {
+  describe("lost reports and never-fired loads", () => {
+    /** Visit the results page every 12h for `days`; the client does `client`. */
+    async function visits(days: number, client: "never-fires" | "attempt-only") {
       const row = installRow({ domain: DOMAIN, ...stateFor(["review_popup"]) });
-      const requested: boolean[] = [];
-
-      // Visit the results page every 12h for 7 days; no report ever arrives.
-      for (let h = 0; h <= 7 * 24; h += 12) {
+      const requested: number[] = [];
+      for (let h = 0; h <= days * 24; h += 12) {
         const now = new Date(NOW.getTime() + h * HOUR);
         const state = { ...stateFor(["review_popup"]), ...row } as ShopPromptContext;
         const picked = await resolvePrompt({
@@ -356,16 +355,49 @@ describe("resolvePrompt: the review popup (gc-97k.7)", () => {
           renderable: ["review_popup"],
           now,
         });
-        requested.push(picked === "review_popup");
+        if (picked !== "review_popup") continue;
+        requested.push(h);
+        if (client === "attempt-only") {
+          // The client records the attempt, then its result POST is lost.
+          await claimReviewRequestAttempt(DOMAIN, state.reviewPopupLastAttemptAt, now);
+        }
       }
+      return { row, requested };
+    }
+
+    it("a load that never fires burns NO attempt (it is picked again next time)", async () => {
+      const { row, requested } = await visits(2, "never-fires");
+
+      expect(requested).toEqual([0, 12, 24, 36, 48]);
+      expect(row.reviewPopupAttemptCount).toBe(0);
+    });
+
+    it("a lost RESULT report: retried more than 24h later, and stops for good at 5 attempts", async () => {
+      const { row, requested } = await visits(7, "attempt-only");
 
       // Attempts at 0h, then every 36h (the first visit MORE than 24h later).
-      const hours = requested.flatMap((r, i) => (r ? [i * 12] : []));
-      expect(hours).toEqual([0, 36, 72, 108, 144]);
+      expect(requested).toEqual([0, 36, 72, 108, 144]);
       expect(row.reviewPopupAttemptCount).toBe(5);
-      // Never claimed the slot (never displayed) and never went terminal.
       expect(row.lastPromptKey).toBeNull();
       expect(row.reviewPopupRequestedAt).toBeNull();
+    });
+
+    it("a popup that never fires stops blocking Home's feedback after 7 days", async () => {
+      const state = (eligibleFor: number) => ({
+        ...stateFor(["review_popup", "feedback"]),
+        firstResultsViewedAt: ago(eligibleFor + 2 * HOUR),
+      });
+      const home = (eligibleFor: number) =>
+        resolvePrompt({
+          shopDomain: DOMAIN,
+          state: state(eligibleFor),
+          renderable: HOME_PROMPTS,
+          now: NOW,
+        });
+      mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+      await expect(home(7 * DAY - HOUR)).resolves.toBeNull();
+      await expect(home(7 * DAY)).resolves.toBe("feedback");
     });
   });
 });
@@ -389,24 +421,28 @@ describe("resolvePrompt: concurrency", () => {
 
     expect(home).toBeNull();
     expect(scan).toBe("review_popup");
-    // The popup records an attempt; it does not claim the slot until displayed.
-    expect(row.reviewPopupAttemptCount).toBe(1);
+    // Nothing is written by either load; the client records the attempt.
+    expect(row.reviewPopupAttemptCount).toBe(0);
     expect(row.lastPromptKey).toBeNull();
   });
 
-  it("two scan loads picking the popup at once: exactly one requests it (one attempt)", async () => {
+  it("two scan pages picking the popup at once: exactly one client gets to request it", async () => {
     const row = installRow({ domain: DOMAIN, ...stateFor(["review_popup"]) });
+    const state = stateFor(["review_popup"]);
 
-    const results = await Promise.all([
-      resolvePrompt(input(["review_popup"])),
+    const picks = await Promise.all([
       resolvePrompt(input(["review_popup"])),
       resolvePrompt(input(["review_popup"])),
     ]);
+    expect(picks).toEqual(["review_popup", "review_popup"]);
+    // Both clients hold the same nonce; the attempt compare-and-set lets one through.
+    const claims = await Promise.all([
+      claimReviewRequestAttempt(DOMAIN, state.reviewPopupLastAttemptAt, NOW),
+      claimReviewRequestAttempt(DOMAIN, state.reviewPopupLastAttemptAt, NOW),
+    ]);
 
-    expect(results.filter((r) => r === "review_popup")).toHaveLength(1);
-    expect(results.filter((r) => r === null)).toHaveLength(2);
+    expect(claims.filter(Boolean)).toHaveLength(1);
     expect(row.reviewPopupAttemptCount).toBe(1);
-    expect(row.reviewPopupLastAttemptAt).toEqual(NOW);
   });
 
   it("two loads claiming the SAME prompt both render it, with one write winning", async () => {
@@ -461,8 +497,13 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
     const shop = { ...row } as unknown as ShopMetadata;
     const state = await loadShopPromptState(shop, now);
     const prompt = await resolvePrompt({ shopDomain: DOMAIN, state, renderable, now });
-    // What the rendered prompt leads to, as the page and its client do it.
-    if (prompt === "review_popup") await recordReviewRequestResult(DOMAIN, "success", now);
+    // What the rendered prompt leads to, as the page and its client do it:
+    // the popup's client records the attempt (nonce = the value the loader
+    // read), then Shopify displays the modal and the client reports success.
+    if (prompt === "review_popup") {
+      await claimReviewRequestAttempt(DOMAIN, state.reviewPopupLastAttemptAt, now);
+      await recordReviewRequestResult(DOMAIN, "success", now);
+    }
     if (prompt === "upgrade_return") {
       await markUpgradeReturnShown(DOMAIN, { ...row } as never, now);
     }
@@ -476,9 +517,9 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
     hasHiddenFindings: true,
   });
 
-  async function simulate(days: number) {
+  async function simulate(days: number, latestNonMaliciousCount = 10) {
     const row = freshFreeShop();
-    mockDb.scan.findFirst.mockResolvedValue({ completedAt: DAY0 });
+    serveScans(DAY0, latestNonMaliciousCount);
     const log: Array<[day: number, home: PromptKey | null, scan: PromptKey | null]> = [];
     for (let d = 1; d <= days; d++) {
       vi.setSystemTime(at(d, 12, 0));
@@ -527,5 +568,38 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
 
     expect(scan).toBe("review_popup");
     expect(home).toBeNull();
+  });
+
+  it("a Free shop whose latest results hide nothing (1 finding) sees feedback on Home", async () => {
+    const log = await simulate(8, 1);
+
+    // The banner is never pending (nothing hidden), so after the popup (day 1)
+    // Home shows feedback as soon as it is eligible (day 7).
+    expect(log.map(([, home]) => home)).toEqual([
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      "feedback",
+      "feedback",
+    ]);
+    expect(log.map(([, , scan]) => scan)).toEqual([
+      "review_popup",
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+  });
+
+  it("a Free shop with 0 non-malicious findings sees feedback on Home too", async () => {
+    const log = await simulate(7, 0);
+
+    expect(log.at(-1)).toEqual([7, "feedback", null]);
   });
 });

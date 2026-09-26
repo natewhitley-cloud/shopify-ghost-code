@@ -19,10 +19,17 @@
 import { logger } from "../lib/logger.server";
 import { pickPrompt, promptClaimNeeded } from "../lib/prompt-cap";
 import type { PromptCapState, PromptKey } from "../lib/prompt-cap";
-import { firstSuccessfulScanNeeded, shopPromptEligibility } from "../lib/prompt-eligibility";
+import {
+  firstSuccessfulScanNeeded,
+  shopPromptEligibility,
+  upgradeReturnPossible,
+} from "../lib/prompt-eligibility";
 import type { ShopPromptState } from "../lib/prompt-eligibility";
-import { getFirstSuccessfulScanCompletedAt } from "../models/scan.server";
-import { claimPromptSlot, claimReviewPopupAttempt, getShopMetadata } from "../models/shop.server";
+import {
+  getFirstSuccessfulScanCompletedAt,
+  getLatestSuccessfulScanNonMaliciousCount,
+} from "../models/scan.server";
+import { claimPromptSlot, getShopMetadata } from "../models/shop.server";
 import type { ShopMetadata } from "../models/shop.server";
 
 /** The shop's prompt eligibility inputs plus its cap state. */
@@ -30,18 +37,30 @@ export type ShopPromptContext = ShopPromptState & PromptCapState;
 
 /**
  * Load the shop's prompt state. `shop` is the metadata the loader already
- * read; the only query is the first successful scan, and only when a prompt
- * rule can use it (firstSuccessfulScanNeeded). Throws only if that read does,
- * like any other loader read.
+ * read. At most two cheap queries, in parallel, each only when a prompt rule
+ * can use it:
+ *   - the first successful scan's completedAt (firstSuccessfulScanNeeded);
+ *   - the latest successful scan's non-malicious finding count, for the
+ *     return banner's hidden-findings rule (upgradeReturnPossible: Free, not
+ *     retired). Both pages need the SAME shop-level value, and neither page
+ *     has it already (Home loads the latest scan of any status, the results
+ *     page loads the scan being viewed), so it is one indexed count query
+ *     rather than page data.
+ * Throws only if a read does, like any other loader read.
  */
 export async function loadShopPromptState(
   shop: ShopMetadata,
   now: Date,
 ): Promise<ShopPromptContext> {
-  const firstSuccessfulScanAt = firstSuccessfulScanNeeded(shop, now)
-    ? await getFirstSuccessfulScanCompletedAt(shop.id)
-    : null;
-  return { ...shop, firstSuccessfulScanAt };
+  const [firstSuccessfulScanAt, latestScanNonMaliciousCount] = await Promise.all([
+    firstSuccessfulScanNeeded(shop, now)
+      ? getFirstSuccessfulScanCompletedAt(shop.id)
+      : Promise.resolve(null),
+    upgradeReturnPossible(shop)
+      ? getLatestSuccessfulScanNonMaliciousCount(shop.id)
+      : Promise.resolve(null),
+  ]);
+  return { ...shop, firstSuccessfulScanAt, latestScanNonMaliciousCount };
 }
 
 export type ResolvePromptInput = {
@@ -59,11 +78,11 @@ export type ResolvePromptInput = {
  *
  * - Nothing pending, the cap blocks the pending prompt, or this page cannot
  *   render it: null, no write.
- * - The review popup (gc-97k.7) never claims the slot here: the slot is
- *   claimed only when the client reports that Shopify displayed it. Instead
- *   this load records an ATTEMPT (claimReviewPopupAttempt, compare-and-set on
- *   the last attempt time it read), so exactly one of any concurrent loads
- *   requests it, and a lost result report blocks the next attempt for 24h.
+ * - The review popup (gc-97k.7) is returned with NO write: the slot is claimed
+ *   only when the client reports that Shopify displayed it, and the ATTEMPT is
+ *   recorded only when the client is about to call the Reviews API (the
+ *   review-request action, keyed by the nonce the loader issues). A load that
+ *   picks it but never fires (a revalidation) therefore burns nothing.
  * - The same prompt re-rendering inside its window: that prompt, no write.
  * - Otherwise the pick claims the slot (claimPromptSlot, keyed on the state this
  *   load read). If a concurrent load changed the slot first, the claim loses:
@@ -73,27 +92,8 @@ export type ResolvePromptInput = {
  */
 export async function resolvePrompt(input: ResolvePromptInput): Promise<PromptKey | null> {
   const { shopDomain, state, renderable, now } = input;
-  const picked = pickPrompt({
-    ...state,
-    eligible: shopPromptEligibility(state, now),
-    renderable,
-    now,
-  });
-  if (picked === null) return null;
-
-  if (picked === "review_popup") {
-    try {
-      const won = await claimReviewPopupAttempt(shopDomain, state.reviewPopupLastAttemptAt, now);
-      return won ? picked : null;
-    } catch (err) {
-      logger.error("review-popup-attempt-claim-failed", {
-        shop: shopDomain,
-        error: err instanceof Error ? err.message : String(err),
-      });
-      return null;
-    }
-  }
-
+  const picked = pickPrompt({ ...state, ...shopPromptEligibility(state, now), renderable, now });
+  if (picked === null || picked === "review_popup") return picked;
   if (!promptClaimNeeded(picked, state, now)) return picked;
 
   try {
@@ -101,19 +101,20 @@ export async function resolvePrompt(input: ResolvePromptInput): Promise<PromptKe
 
     const fresh = await getShopMetadata(shopDomain);
     if (fresh === null) return null;
-    // The first successful scan cannot change between the two reads that
-    // matter here, so the value this load already read is reused.
+    // The scan facts cannot change between the two reads that matter here, so
+    // the values this load already read are reused.
     const freshState: ShopPromptContext = {
       ...fresh,
       firstSuccessfulScanAt: state.firstSuccessfulScanAt,
+      latestScanNonMaliciousCount: state.latestScanNonMaliciousCount,
     };
     const repicked = pickPrompt({
       ...freshState,
-      eligible: shopPromptEligibility(freshState, now),
+      ...shopPromptEligibility(freshState, now),
       renderable,
       now,
     });
-    // A re-pick never records a popup attempt: that needs its own claim.
+    // A re-pick of the popup is left alone (this load claimed another slot).
     return repicked !== null &&
       repicked !== "review_popup" &&
       !promptClaimNeeded(repicked, freshState, now)

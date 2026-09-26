@@ -30,6 +30,15 @@ export function freePreviewCount(total: number): number {
   return Math.max(1, Math.min(FREE_PREVIEW_MAX, Math.floor(total / 2)));
 }
 
+/**
+ * How many of `total` findings the Free view hides behind the paywall:
+ * total - freePreviewCount(total). Zero for 0 or 1 finding (the single
+ * finding is shown), and positive from 2 up.
+ */
+export function freePreviewHiddenCount(total: number): number {
+  return Math.max(0, total - freePreviewCount(total));
+}
+
 /** The fields the picker reads; loader rows carry more and are returned as-is. */
 export type PreviewCandidate = {
   id: string;
