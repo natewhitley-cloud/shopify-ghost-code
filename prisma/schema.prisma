@@ -95,6 +95,14 @@ model Shop {
   // whose history predates the 14-day page_visit window at backfill) unknown.
   firstOpenedAt             DateTime?
   firstResultsViewedAt      DateTime?
+  // Cross-prompt frequency cap (gc-97k.6): the interruptive prompt (a
+  // PROMPT_KEYS value in app/lib/prompt-cap.ts) that last opened the shop's 24h
+  // prompt window, and when. Rewritten (not once-ever) whenever a different
+  // prompt renders or the window has expired, via a conditional updateMany keyed
+  // on the previous values (claimPromptSlot). Null = no prompt shown since this
+  // column shipped. Deleted with the Shop row on shop/redact.
+  lastPromptKey             String?
+  lastPromptShownAt         DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

@@ -114,6 +114,8 @@ const NEW_SHOP = {
   feedbackNudgeShownAt: null,
   feedbackNudgeDismissedAt: null,
   feedbackSubmittedAt: null,
+  lastPromptKey: null,
+  lastPromptShownAt: null,
 };
 
 function runLoader() {

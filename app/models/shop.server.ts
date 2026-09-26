@@ -22,6 +22,8 @@ export type ShopMetadata = {
   feedbackSubmittedAt: Date | null;
   firstOpenedAt: Date | null;
   firstResultsViewedAt: Date | null;
+  lastPromptKey: string | null;
+  lastPromptShownAt: Date | null;
 };
 
 /**
@@ -81,6 +83,8 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       feedbackSubmittedAt: true,
       firstOpenedAt: true,
       firstResultsViewedAt: true,
+      lastPromptKey: true,
+      lastPromptShownAt: true,
     },
   });
 }
@@ -360,6 +364,32 @@ export async function claimShopStamp(
 ): Promise<boolean> {
   const where: Prisma.ShopWhereInput = { ...extraWhere, domain, [column]: null };
   const { count } = await db.shop.updateMany({ where, data: { [column]: new Date() } });
+  return count === 1;
+}
+
+/**
+ * Claim the shop's single interruptive-prompt slot for `promptKey` (gc-97k.6).
+ *
+ * A conditional updateMany keyed on the PREVIOUS cap state the caller read
+ * (`lastPromptKey` and `lastPromptShownAt` both unchanged) writes the new key
+ * and `now`. Of two concurrent loads that read the same state, exactly one sees
+ * count === 1, so they can never both claim (different) prompts. Returns true
+ * IFF this call won. A missing shop row is a safe false.
+ */
+export async function claimPromptSlot(
+  domain: string,
+  promptKey: string,
+  previous: { lastPromptKey: string | null; lastPromptShownAt: Date | null },
+  now: Date,
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: {
+      domain,
+      lastPromptKey: previous.lastPromptKey,
+      lastPromptShownAt: previous.lastPromptShownAt,
+    },
+    data: { lastPromptKey: promptKey, lastPromptShownAt: now },
+  });
   return count === 1;
 }
 

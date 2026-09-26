@@ -70,6 +70,7 @@ import {
   touchShopLastSeen,
   LAST_SEEN_FRESHNESS_MS,
   claimShopStamp,
+  claimPromptSlot,
 } from "../../app/models/shop.server";
 import {
   NUDGE_KEYS,
@@ -122,6 +123,8 @@ describe("getShopMetadata", () => {
         // gc-dpm.1: loaders skip the milestone claim once it is stamped.
         firstOpenedAt: true,
         firstResultsViewedAt: true,
+        lastPromptKey: true,
+        lastPromptShownAt: true,
       },
     });
   });
@@ -1238,4 +1241,65 @@ describe("claimShopStamp", () => {
       expect(call.data[column]).toBeInstanceOf(Date);
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// claimPromptSlot (cross-prompt frequency cap, gc-97k.6)
+// ---------------------------------------------------------------------------
+
+describe("claimPromptSlot", () => {
+  const NOW = new Date("2026-09-26T12:00:00Z");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("writes the new key and now, keyed on the domain AND the previous state (compare-and-set)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    const prevAt = new Date("2026-09-24T09:00:00Z");
+
+    await expect(
+      claimPromptSlot(
+        "s.myshopify.com",
+        "review_banner",
+        { lastPromptKey: "feedback", lastPromptShownAt: prevAt },
+        NOW,
+      ),
+    ).resolves.toBe(true);
+
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { domain: "s.myshopify.com", lastPromptKey: "feedback", lastPromptShownAt: prevAt },
+      data: { lastPromptKey: "review_banner", lastPromptShownAt: NOW },
+    });
+  });
+
+  it("matches a never-prompted shop on explicit nulls", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+
+    await claimPromptSlot(
+      "s.myshopify.com",
+      "feedback",
+      { lastPromptKey: null, lastPromptShownAt: null },
+      NOW,
+    );
+
+    expect(mockDb.shop.updateMany.mock.calls[0][0].where).toEqual({
+      domain: "s.myshopify.com",
+      lastPromptKey: null,
+      lastPromptShownAt: null,
+    });
+  });
+
+  it("returns false when the state changed underneath or the shop is missing (count 0)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      claimPromptSlot(
+        "s.myshopify.com",
+        "feedback",
+        { lastPromptKey: null, lastPromptShownAt: null },
+        NOW,
+      ),
+    ).resolves.toBe(false);
+  });
 });

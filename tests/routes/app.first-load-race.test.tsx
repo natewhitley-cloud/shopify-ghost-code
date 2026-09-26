@@ -47,6 +47,8 @@ const fakeDb = vi.hoisted(() => {
           feedbackNudgeShownAt: null,
           feedbackNudgeDismissedAt: null,
           feedbackSubmittedAt: null,
+          lastPromptKey: null,
+          lastPromptShownAt: null,
         };
         return state.row;
       },

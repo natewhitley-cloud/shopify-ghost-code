@@ -22,7 +22,6 @@ import {
   feedbackNudgeInstallAgeReached,
   FEEDBACK_NUDGE_COPY,
   FEEDBACK_NUDGE_HREF,
-  pickHomePrompt,
   REVIEW_BANNER_TEXT,
   shouldShowFeedbackNudge,
 } from "../lib/feedback-nudge";
@@ -47,6 +46,7 @@ import {
   getWeekStartUTC,
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
+import type { PromptKey } from "../lib/prompt-cap";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import {
@@ -64,6 +64,7 @@ import {
 import { getFilteredFindingSummary } from "../services/finding-aggregation.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
+import { resolvePrompt } from "../services/prompt-cap.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
@@ -424,13 +425,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     now,
   );
 
-  // One merchant prompt per page: feedback wins over the review prompt.
-  const homePrompt = pickHomePrompt({
-    feedback: feedbackNudgeEligible,
-    review: reviewPromptEligible,
+  // One interruptive prompt per page, and one distinct prompt per shop per 24h
+  // (gc-97k.6): feedback outranks the review banner; resolvePrompt applies the
+  // cap and claims the shop's prompt slot.
+  const eligiblePrompts: PromptKey[] = [];
+  if (feedbackNudgeEligible) eligiblePrompts.push("feedback");
+  if (reviewPromptEligible) eligiblePrompts.push("review_banner");
+  const homePrompt = await resolvePrompt({
+    shopDomain: session.shop,
+    eligible: eligiblePrompts,
+    lastPromptKey: shop.lastPromptKey,
+    lastPromptShownAt: shop.lastPromptShownAt,
+    now,
   });
   const showFeedbackNudge = homePrompt === "feedback";
-  const showReviewPrompt = homePrompt === "review";
+  const showReviewPrompt = homePrompt === "review_banner";
 
   // `shown` counts only a nudge that actually renders, once per merchant. The
   // stamp pre-check skips the claim write on every later load.
@@ -875,7 +884,7 @@ export default function Dashboard() {
         )}
 
         {/* Merchant feedback nudge (gc-97k.3). At most one of this and the review
-          prompt renders (pickHomePrompt in the loader). */}
+          prompt renders (resolvePrompt in the loader). */}
         {showFeedbackBanner && (
           <s-banner tone="info" heading={FEEDBACK_NUDGE_COPY.heading}>
             <s-stack direction="block" gap="base">

@@ -30,6 +30,7 @@ vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
   getOrCreateShopMetadata: vi.fn(),
   dismissReviewPrompt: vi.fn(),
+  claimPromptSlot: vi.fn(),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -137,6 +138,7 @@ import {
   getOrCreateShopMetadata,
   getShopMetadata,
   dismissReviewPrompt,
+  claimPromptSlot,
 } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
 import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
@@ -173,6 +175,7 @@ const mockGetCompletedScansForShop = getCompletedScansForShop as ReturnType<type
 const mockDismissReviewPrompt = dismissReviewPrompt as ReturnType<typeof vi.fn>;
 const mockGetFirstSuccessfulScanAt = getFirstSuccessfulScanCompletedAt as ReturnType<typeof vi.fn>;
 const mockRecordNudgeStage = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
+const mockClaimPromptSlot = claimPromptSlot as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -184,6 +187,9 @@ const SHOP = {
   plan: "Free",
   lastThemePublishAt: null,
   hasSeenReviewPrompt: false,
+  // gc-97k.6 cap state: no interruptive prompt shown yet.
+  lastPromptKey: null,
+  lastPromptShownAt: null,
 };
 
 const MOCK_ADMIN = {
@@ -275,6 +281,9 @@ beforeEach(() => {
   });
 
   mockGetShopMetadata.mockResolvedValue(SHOP);
+  // gc-97k.6: the prompt-slot claim wins by default (the service's own race
+  // handling is covered in tests/services/prompt-cap.server.test.ts).
+  mockClaimPromptSlot.mockResolvedValue(true);
   // gc-bj4: the loader reads via get-or-create (the action still uses the plain
   // read). Delegate so each test's getShopMetadata fixture drives both; the
   // create-on-miss path is covered in app._index.onboarding.test.tsx.
@@ -1985,6 +1994,117 @@ describe("app._index loader: feedback nudge", () => {
       expect(result.showFeedbackNudge).toBe(false);
       expect(result.showReviewPrompt).toBe(false);
       expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("24h cross-prompt cap (gc-97k.6)", () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    // Feedback was shown yesterday and has since been dismissed; only the review
+    // banner is eligible today.
+    const feedbackShownAt = (msAgo: number) => ({
+      ...FEEDBACK_SHOP,
+      feedbackNudgeShownAt: new Date(NOW.getTime() - msAgo),
+      feedbackNudgeDismissedAt: new Date(NOW.getTime() - msAgo),
+      lastPromptKey: "feedback",
+      lastPromptShownAt: new Date(NOW.getTime() - msAgo),
+    });
+
+    it("feedback shown yesterday (under 24h ago) blocks the review banner today", async () => {
+      mockGetShopMetadata.mockResolvedValue(feedbackShownAt(20 * 60 * 60 * 1000));
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(false);
+      expect(result.showReviewPrompt).toBe(false);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it("the review banner is allowed once 24h have passed, and claims the slot", async () => {
+      const shop = feedbackShownAt(DAY_MS);
+      mockGetShopMetadata.mockResolvedValue(shop);
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(false);
+      expect(result.showReviewPrompt).toBe(true);
+      expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+        SHOP.domain,
+        "review_banner",
+        expect.objectContaining({
+          lastPromptKey: "feedback",
+          lastPromptShownAt: shop.lastPromptShownAt,
+        }),
+        NOW,
+      );
+    });
+
+    it("the same feedback nudge re-renders within 24h without a new claim", async () => {
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        feedbackNudgeShownAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+        lastPromptKey: "feedback",
+        lastPromptShownAt: new Date(NOW.getTime() - 60 * 60 * 1000),
+      });
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(true);
+      expect(result.showReviewPrompt).toBe(false);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it("a first-time feedback nudge claims the slot from the empty state", async () => {
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(true);
+      expect(mockClaimPromptSlot).toHaveBeenCalledTimes(1);
+      expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+        SHOP.domain,
+        "feedback",
+        expect.objectContaining({ lastPromptKey: null, lastPromptShownAt: null }),
+        NOW,
+      );
+    });
+
+    it("a lost claim to a prompt not eligible here hides everything and records no `shown`", async () => {
+      mockClaimPromptSlot.mockResolvedValue(false);
+      // The re-read sees a concurrent load's claim (e.g. the scan page's popup).
+      mockGetShopMetadata.mockResolvedValueOnce(FEEDBACK_SHOP).mockResolvedValueOnce({
+        ...FEEDBACK_SHOP,
+        lastPromptKey: "review_popup",
+        lastPromptShownAt: NOW,
+      });
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(false);
+      expect(result.showReviewPrompt).toBe(false);
+      expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+    });
+
+    it("a lost claim to the review banner (also eligible here) renders the banner, not feedback", async () => {
+      mockClaimPromptSlot.mockResolvedValue(false);
+      mockGetShopMetadata.mockResolvedValueOnce(FEEDBACK_SHOP).mockResolvedValueOnce({
+        ...FEEDBACK_SHOP,
+        lastPromptKey: "review_banner",
+        lastPromptShownAt: NOW,
+      });
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(false);
+      expect(result.showReviewPrompt).toBe(true);
+      expect(mockClaimPromptSlot).toHaveBeenCalledTimes(1);
+      expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+    });
+
+    it("a failing claim never throws into the loader: no prompt renders", async () => {
+      mockClaimPromptSlot.mockRejectedValue(new Error("db down"));
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(false);
+      expect(result.showReviewPrompt).toBe(false);
     });
   });
 });

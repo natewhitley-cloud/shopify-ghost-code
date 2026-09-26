@@ -10,7 +10,6 @@ import {
   FEEDBACK_NUDGE_COPY,
   FEEDBACK_NUDGE_HREF,
   FEEDBACK_THANKS_COPY,
-  pickHomePrompt,
   REVIEW_BANNER_TEXT,
   shouldShowFeedbackNudge,
 } from "../../app/lib/feedback-nudge";
@@ -118,24 +117,6 @@ describe("shouldShowFeedbackNudge", () => {
     expect(
       shouldShowFeedbackNudge(gate({ feedbackSubmittedAt: new Date(NOW.getTime() - DAY) }), NOW),
     ).toBe(false);
-  });
-});
-
-describe("pickHomePrompt", () => {
-  it("both eligible: feedback wins", () => {
-    expect(pickHomePrompt({ feedback: true, review: true })).toBe("feedback");
-  });
-
-  it("only feedback eligible: feedback", () => {
-    expect(pickHomePrompt({ feedback: true, review: false })).toBe("feedback");
-  });
-
-  it("only review eligible: review", () => {
-    expect(pickHomePrompt({ feedback: false, review: true })).toBe("review");
-  });
-
-  it("neither eligible: none", () => {
-    expect(pickHomePrompt({ feedback: false, review: false })).toBeNull();
   });
 });
 

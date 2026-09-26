@@ -1,8 +1,9 @@
 /**
  * Merchant feedback nudge + neutral App Store review asks (gc-97k.3).
  *
- * Pure and client-safe: the eligibility gate, the one-prompt-per-page picker,
- * and the merchant-facing copy shared by the home page and /app/feedback.
+ * Pure and client-safe: the eligibility gate and the merchant-facing copy
+ * shared by the home page and /app/feedback. Which prompt renders (one per page,
+ * one distinct prompt per 24h) is decided by pickPrompt in ./prompt-cap.
  *
  * Review asks are NEUTRAL (Shopify App Store policy: review requests must not
  * target or bias toward satisfied merchants). The FEEDBACK nudge and the
@@ -61,19 +62,6 @@ export function shouldShowFeedbackNudge(input: FeedbackNudgeGateInput, now: Date
   if (input.firstSuccessfulScanAt === null) return false;
   if (!feedbackNudgeInstallAgeReached(input.installedAt, now)) return false;
   return utcDayNumber(now) > utcDayNumber(input.firstSuccessfulScanAt);
-}
-
-/** The single merchant prompt the home page shows, if any. */
-export type HomePrompt = "feedback" | "review" | null;
-
-/**
- * At most one of {feedback nudge, review prompt} renders on the home page.
- * Feedback wins when both are eligible.
- */
-export function pickHomePrompt(eligible: { feedback: boolean; review: boolean }): HomePrompt {
-  if (eligible.feedback) return "feedback";
-  if (eligible.review) return "review";
-  return null;
 }
 
 /** App Store listing deep link that opens the "Write a review" modal. */
