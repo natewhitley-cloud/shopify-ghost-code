@@ -106,12 +106,22 @@ model Shop {
   // column shipped. Deleted with the Shop row on shop/redact.
   lastPromptKey             String?
   lastPromptShownAt         DateTime?
-  // Native App Store review popup (gc-97k.7): when the app first asked App
-  // Bridge (shopify.reviews.request) to show Shopify's review modal. Stamped
-  // ONCE ever via claimShopStamp, whatever the result (displayed or declined),
-  // so the request is never repeated. Null = never requested. Deleted with the
-  // Shop row on shop/redact.
+  // Native App Store review popup (gc-97k.7): when App Bridge
+  // (shopify.reviews.request) reported a TERMINAL result (displayed, closed, or
+  // Shopify will never show it to this merchant). Stamped ONCE ever, so the
+  // request is never repeated. Null = not done yet. Deleted with the Shop row
+  // on shop/redact.
   reviewPopupRequestedAt    DateTime?
+  // Review popup attempts and results (audit fix, gc-97k.7). reviewPopupRequestedAt
+  // above is stamped ONLY by a TERMINAL result (app/lib/review-request.ts
+  // REVIEW_RESULT_POLICY). A RETRYABLE result sets reviewPopupRetryAfter. The
+  // loader records each attempt (count + 1, lastAttemptAt = now) before the
+  // client asks, so a lost result report retries after 24h and stops at 5.
+  // reviewPopupLastResult is the last reported code (null = attempt in flight).
+  reviewPopupRetryAfter     DateTime?
+  reviewPopupAttemptCount   Int       @default(0)
+  reviewPopupLastAttemptAt  DateTime?
+  reviewPopupLastResult     String?
   // Return-visit upgrade nudge, Free only (gc-97k.9). Episode state: when the
   // current weekly episode started (plain update each new episode), when the
   // merchant last clicked "Not now" (ends the episode early), and how many

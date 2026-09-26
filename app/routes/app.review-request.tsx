@@ -6,7 +6,8 @@
  * App Bridge's patched global `fetch` adds the session token, so
  * authenticate.admin works as for any other in-app fetch.
  *
- * Stamps the SESSION shop's once-ever request and records its telemetry
+ * Applies the code's result policy to the SESSION shop (terminal: done for
+ * good; retryable: back off) and records its telemetry
  * (recordReviewRequestResult). The code is untrusted input: anything outside
  * the allow-list is a 400 with no write. Otherwise 204. No loader, no redirect.
  */
@@ -25,6 +26,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return new Response(null, { status: 400 });
   }
 
-  await recordReviewRequestResult(session.shop, code);
+  await recordReviewRequestResult(session.shop, code, new Date());
   return new Response(null, { status: 204 });
 };

@@ -40,7 +40,7 @@ import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
 import { scanResultsPrompts } from "../lib/prompt-cap";
-import { runReviewRequestOnce } from "../lib/review-request";
+import { useReviewRequestOnMount } from "../lib/review-request";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
 import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
@@ -1005,8 +1005,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // helper as the Settings upgrade buttons).
     pricingPlansUrl: buildPricingPlansUrl(session.shop),
     trialEligible,
-    // gc-97k.7: the client asks App Bridge for the review modal once, then
-    // reports the result to /app/review-request (which stamps the request).
+    // gc-97k.7: the client asks App Bridge for the review modal once, on
+    // navigation mount, then reports the result to /app/review-request (which
+    // applies the result policy). This load already recorded the attempt.
     requestReview: pagePrompt === "review_popup",
     maliciousFindings: enrichedMaliciousFindings,
     findingSummary,
@@ -1318,12 +1319,10 @@ export default function ScanDetail() {
     dismissFetcher.submit({ intent: "dismiss-upgrade-return" }, { method: "POST" });
   };
 
-  // Native review popup (gc-97k.7): requested at most once per mount; the ref
-  // survives StrictMode's double-invoked effect and every re-render/poll.
-  const reviewRequested = useRef(false);
-  useEffect(() => {
-    void runReviewRequestOnce(reviewRequested, requestReview);
-  }, [requestReview]);
+  // Native review popup (gc-97k.7): only for the loader value captured when the
+  // page mounted (a navigation), at most once; a later revalidation (poll,
+  // ignore, dismiss) never pops the modal mid-session.
+  useReviewRequestOnMount(requestReview);
 
   // Track how many polls have been fired so we can enforce a timeout ceiling.
   const pollCount = useRef(0);

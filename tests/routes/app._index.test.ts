@@ -1766,6 +1766,9 @@ describe("app._index loader: feedback nudge", () => {
     // weekly re-show is not due. Tests opt back in to either one.
     firstResultsViewedAt: new Date("2026-09-20T10:10:00Z"),
     reviewPopupRequestedAt: new Date("2026-09-21T00:00:00Z"),
+    reviewPopupRetryAfter: null,
+    reviewPopupAttemptCount: 1,
+    reviewPopupLastAttemptAt: new Date("2026-09-21T00:00:00Z"),
     upgradeReturnLastShownAt: new Date("2026-09-22T12:00:00Z"),
     upgradeReturnLastDismissedAt: new Date("2026-09-22T12:05:00Z"),
     upgradeReturnDismissCount: 1,
@@ -1925,6 +1928,16 @@ describe("app._index loader: feedback nudge", () => {
       expect(result.showFeedbackNudge).toBe(false);
       expect(mockClaimPromptSlot).not.toHaveBeenCalled();
       expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+    });
+
+    it("the popup's last attempt under 24h ago (report pending or lost): feedback shows", async () => {
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        reviewPopupRequestedAt: null,
+        reviewPopupLastAttemptAt: new Date(NOW.getTime() - 2 * HOUR_MS),
+      });
+
+      expect((await run()).showFeedbackNudge).toBe(true);
     });
 
     it("the Free return banner pending (scan page only): Home shows nothing", async () => {

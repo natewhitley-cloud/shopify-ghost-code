@@ -47,6 +47,8 @@ import { loadShopPromptState, resolvePrompt } from "../../app/services/prompt-ca
 import type { ShopPromptContext } from "../../app/services/prompt-cap.server";
 import { recordReviewRequestResult } from "../../app/services/review-request.server";
 import { markUpgradeReturnShown } from "../../app/services/upgrade-return.server";
+import { installFakeShopRow } from "../mocks/fake-shop-row";
+import type { FakeRow } from "../mocks/fake-shop-row";
 
 const DOMAIN = "merchant.myshopify.com";
 const NOW = new Date("2026-09-26T12:00:00Z");
@@ -74,6 +76,9 @@ function stateFor(
       keys.includes("upgrade_return") || keys.includes("feedback") ? ago(2 * DAY) : null,
     firstResultsViewedAt: keys.includes("review_popup") ? ago(3 * HOUR) : null,
     reviewPopupRequestedAt: null,
+    reviewPopupRetryAfter: null,
+    reviewPopupAttemptCount: 0,
+    reviewPopupLastAttemptAt: null,
     upgradeReturnLastShownAt: null,
     upgradeReturnLastDismissedAt: null,
     upgradeReturnDismissCount: 0,
@@ -249,65 +254,129 @@ describe("resolvePrompt", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// A stateful in-memory Shop row
-// ---------------------------------------------------------------------------
+describe("resolvePrompt: the review popup (gc-97k.7)", () => {
+  it("records an ATTEMPT (compare-and-set on the last attempt it read) and claims NO slot", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
 
-type Row = Record<string, unknown>;
+    await expect(resolvePrompt(input(["review_popup"]))).resolves.toBe("review_popup");
 
-/** True when `current` satisfies one Prisma where-value (equality or filter). */
-function matchesValue(current: unknown, cond: unknown): boolean {
-  if (cond instanceof Date) return current instanceof Date && current.getTime() === cond.getTime();
-  if (cond !== null && typeof cond === "object") {
-    const c = cond as Record<string, unknown>;
-    const t = (v: unknown) => (v instanceof Date ? v.getTime() : (v as number));
-    if ("not" in c && matchesValue(current, c.not)) return false;
-    if ("equals" in c && !matchesValue(current, c.equals)) return false;
-    if (current === null || current === undefined) {
-      return !("gt" in c || "gte" in c || "lt" in c || "lte" in c);
-    }
-    if ("gt" in c && !(t(current) > t(c.gt))) return false;
-    if ("gte" in c && !(t(current) >= t(c.gte))) return false;
-    if ("lt" in c && !(t(current) < t(c.lt))) return false;
-    if ("lte" in c && !(t(current) <= t(c.lte))) return false;
-    return true;
-  }
-  return current === cond;
-}
-
-function matchesWhere(row: Row, where: Row): boolean {
-  return Object.entries(where).every(([k, v]) => {
-    if (k === "OR") return (v as Row[]).some((w) => matchesWhere(row, w));
-    if (k === "AND") return (v as Row[]).every((w) => matchesWhere(row, w));
-    return matchesValue(row[k], v);
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { domain: DOMAIN, reviewPopupRequestedAt: null, reviewPopupLastAttemptAt: null },
+      data: {
+        reviewPopupAttemptCount: { increment: 1 },
+        reviewPopupLastAttemptAt: NOW,
+        reviewPopupLastResult: null,
+      },
+    });
   });
-}
 
-/**
- * Install one in-memory Shop row. updateMany applies its data only when every
- * where clause still matches (Postgres row-level compare-and-set), supports
- * `{ increment }`, and yields first so concurrent calls interleave.
- */
-function installRow(initial: Row): Row {
-  const row: Row = { ...initial };
-  mockDb.shop.updateMany.mockImplementation(async ({ where, data }: { where: Row; data: Row }) => {
-    await Promise.resolve();
-    if (!matchesWhere(row, where)) return { count: 0 };
-    for (const [k, v] of Object.entries(data)) {
-      if (v !== null && typeof v === "object" && "increment" in (v as Row)) {
-        row[k] = (row[k] as number) + ((v as Row).increment as number);
-      } else {
-        row[k] = v;
+  it("keys a retry's attempt claim on the previous attempt time", async () => {
+    const previous = ago(25 * HOUR);
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    await resolvePrompt({
+      ...input(["review_popup"]),
+      state: { ...stateFor(["review_popup"]), reviewPopupLastAttemptAt: previous },
+    });
+
+    expect(mockDb.shop.updateMany.mock.calls[0][0].where).toEqual({
+      domain: DOMAIN,
+      reviewPopupRequestedAt: null,
+      reviewPopupLastAttemptAt: previous,
+    });
+  });
+
+  it("a lost attempt claim (another load won): null, no re-read, no slot write", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(resolvePrompt(input(["review_popup"]))).resolves.toBeNull();
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.shop.findUnique).not.toHaveBeenCalled();
+  });
+
+  it("never throws: a failed attempt claim logs and fails closed", async () => {
+    mockDb.shop.updateMany.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(resolvePrompt(input(["review_popup"]))).resolves.toBeNull();
+    expect(mockLoggerError).toHaveBeenCalledWith("review-popup-attempt-claim-failed", {
+      shop: DOMAIN,
+      error: "db down",
+    });
+  });
+
+  it("an attempt within 24h is not pending: a lower prompt the page can render shows", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    const result = await resolvePrompt({
+      ...input(["review_popup", "feedback"], FRESH, HOME_PROMPTS),
+      state: {
+        ...stateFor(["review_popup", "feedback"]),
+        reviewPopupAttemptCount: 1,
+        reviewPopupLastAttemptAt: ago(HOUR),
+      },
+    });
+
+    expect(result).toBe("feedback");
+  });
+
+  it("a pending popup blocks Home's feedback when its last attempt was 24h+ ago", async () => {
+    const result = await resolvePrompt({
+      ...input(["review_popup", "feedback"], FRESH, HOME_PROMPTS),
+      state: {
+        ...stateFor(["review_popup", "feedback"]),
+        reviewPopupAttemptCount: 1,
+        reviewPopupLastAttemptAt: ago(24 * HOUR + 1),
+      },
+    });
+
+    expect(result).toBeNull();
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("a popup blocked by another prompt's open window records no attempt", async () => {
+    const cap = { lastPromptKey: "feedback", lastPromptShownAt: ago(HOUR) };
+
+    await expect(resolvePrompt(input(["review_popup"], cap))).resolves.toBeNull();
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+  });
+
+  describe("a lost result report (keepalive POST never arrives)", () => {
+    it("retries after 24h, and stops for good at 5 attempts", async () => {
+      const row = installRow({ domain: DOMAIN, ...stateFor(["review_popup"]) });
+      const requested: boolean[] = [];
+
+      // Visit the results page every 12h for 7 days; no report ever arrives.
+      for (let h = 0; h <= 7 * 24; h += 12) {
+        const now = new Date(NOW.getTime() + h * HOUR);
+        const state = { ...stateFor(["review_popup"]), ...row } as ShopPromptContext;
+        const picked = await resolvePrompt({
+          shopDomain: DOMAIN,
+          state,
+          renderable: ["review_popup"],
+          now,
+        });
+        requested.push(picked === "review_popup");
       }
-    }
-    return { count: 1 };
+
+      // Attempts at 0h, then every 36h (the first visit MORE than 24h later).
+      const hours = requested.flatMap((r, i) => (r ? [i * 12] : []));
+      expect(hours).toEqual([0, 36, 72, 108, 144]);
+      expect(row.reviewPopupAttemptCount).toBe(5);
+      // Never claimed the slot (never displayed) and never went terminal.
+      expect(row.lastPromptKey).toBeNull();
+      expect(row.reviewPopupRequestedAt).toBeNull();
+    });
   });
-  mockDb.shop.findUnique.mockImplementation(async () => ({ ...row }));
-  return row;
+});
+
+/** One in-memory Shop row behind the mocked Prisma client (tests/mocks). */
+function installRow(initial: FakeRow): FakeRow {
+  return installFakeShopRow(mockDb.shop, initial);
 }
 
 describe("resolvePrompt: concurrency", () => {
-  it("a Home load and a scan load racing on a fresh window: at most one prompt claims", async () => {
+  it("a Home load and a scan load racing on a fresh window: Home never steals the slot", async () => {
     // The scan page (popup) and Home (feedback) both read the same fresh state.
     // Under strict priority only the popup is pending, so Home renders nothing.
     const row = installRow({ domain: DOMAIN, ...stateFor(["review_popup", "feedback"]) });
@@ -320,7 +389,24 @@ describe("resolvePrompt: concurrency", () => {
 
     expect(home).toBeNull();
     expect(scan).toBe("review_popup");
-    expect(row.lastPromptKey).toBe("review_popup");
+    // The popup records an attempt; it does not claim the slot until displayed.
+    expect(row.reviewPopupAttemptCount).toBe(1);
+    expect(row.lastPromptKey).toBeNull();
+  });
+
+  it("two scan loads picking the popup at once: exactly one requests it (one attempt)", async () => {
+    const row = installRow({ domain: DOMAIN, ...stateFor(["review_popup"]) });
+
+    const results = await Promise.all([
+      resolvePrompt(input(["review_popup"])),
+      resolvePrompt(input(["review_popup"])),
+      resolvePrompt(input(["review_popup"])),
+    ]);
+
+    expect(results.filter((r) => r === "review_popup")).toHaveLength(1);
+    expect(results.filter((r) => r === null)).toHaveLength(2);
+    expect(row.reviewPopupAttemptCount).toBe(1);
+    expect(row.reviewPopupLastAttemptAt).toEqual(NOW);
   });
 
   it("two loads claiming the SAME prompt both render it, with one write winning", async () => {
@@ -346,7 +432,7 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
     new Date(DAY0.getTime() + day * DAY + (hh - 10) * HOUR + mm * 60 * 1000);
 
   /** A Free shop: installed, scanned and first viewed its results on day 0. */
-  function freshFreeShop(): Row {
+  function freshFreeShop(): FakeRow {
     return installRow({
       id: "shop-1",
       domain: DOMAIN,
@@ -354,6 +440,10 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
       installedAt: DAY0,
       firstResultsViewedAt: at(0, 10, 5),
       reviewPopupRequestedAt: null,
+      reviewPopupRetryAfter: null,
+      reviewPopupAttemptCount: 0,
+      reviewPopupLastAttemptAt: null,
+      reviewPopupLastResult: null,
       upgradeReturnLastShownAt: null,
       upgradeReturnLastDismissedAt: null,
       upgradeReturnDismissCount: 0,
@@ -367,12 +457,12 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
   }
 
   /** One page view through the real services, as the loaders do it. */
-  async function visit(row: Row, renderable: readonly PromptKey[], now: Date) {
+  async function visit(row: FakeRow, renderable: readonly PromptKey[], now: Date) {
     const shop = { ...row } as unknown as ShopMetadata;
     const state = await loadShopPromptState(shop, now);
     const prompt = await resolvePrompt({ shopDomain: DOMAIN, state, renderable, now });
     // What the rendered prompt leads to, as the page and its client do it.
-    if (prompt === "review_popup") await recordReviewRequestResult(DOMAIN, "success");
+    if (prompt === "review_popup") await recordReviewRequestResult(DOMAIN, "success", now);
     if (prompt === "upgrade_return") {
       await markUpgradeReturnShown(DOMAIN, { ...row } as never, now);
     }

@@ -22,7 +22,7 @@ import type { PromptCapState, PromptKey } from "../lib/prompt-cap";
 import { firstSuccessfulScanNeeded, shopPromptEligibility } from "../lib/prompt-eligibility";
 import type { ShopPromptState } from "../lib/prompt-eligibility";
 import { getFirstSuccessfulScanCompletedAt } from "../models/scan.server";
-import { claimPromptSlot, getShopMetadata } from "../models/shop.server";
+import { claimPromptSlot, claimReviewPopupAttempt, getShopMetadata } from "../models/shop.server";
 import type { ShopMetadata } from "../models/shop.server";
 
 /** The shop's prompt eligibility inputs plus its cap state. */
@@ -59,6 +59,11 @@ export type ResolvePromptInput = {
  *
  * - Nothing pending, the cap blocks the pending prompt, or this page cannot
  *   render it: null, no write.
+ * - The review popup (gc-97k.7) never claims the slot here: the slot is
+ *   claimed only when the client reports that Shopify displayed it. Instead
+ *   this load records an ATTEMPT (claimReviewPopupAttempt, compare-and-set on
+ *   the last attempt time it read), so exactly one of any concurrent loads
+ *   requests it, and a lost result report blocks the next attempt for 24h.
  * - The same prompt re-rendering inside its window: that prompt, no write.
  * - Otherwise the pick claims the slot (claimPromptSlot, keyed on the state this
  *   load read). If a concurrent load changed the slot first, the claim loses:
@@ -74,7 +79,22 @@ export async function resolvePrompt(input: ResolvePromptInput): Promise<PromptKe
     renderable,
     now,
   });
-  if (picked === null || !promptClaimNeeded(picked, state, now)) return picked;
+  if (picked === null) return null;
+
+  if (picked === "review_popup") {
+    try {
+      const won = await claimReviewPopupAttempt(shopDomain, state.reviewPopupLastAttemptAt, now);
+      return won ? picked : null;
+    } catch (err) {
+      logger.error("review-popup-attempt-claim-failed", {
+        shop: shopDomain,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return null;
+    }
+  }
+
+  if (!promptClaimNeeded(picked, state, now)) return picked;
 
   try {
     if (await claimPromptSlot(shopDomain, picked, state, now)) return picked;
@@ -93,7 +113,12 @@ export async function resolvePrompt(input: ResolvePromptInput): Promise<PromptKe
       renderable,
       now,
     });
-    return repicked !== null && !promptClaimNeeded(repicked, freshState, now) ? repicked : null;
+    // A re-pick never records a popup attempt: that needs its own claim.
+    return repicked !== null &&
+      repicked !== "review_popup" &&
+      !promptClaimNeeded(repicked, freshState, now)
+      ? repicked
+      : null;
   } catch (err) {
     logger.error("prompt-cap-claim-failed", {
       shop: shopDomain,

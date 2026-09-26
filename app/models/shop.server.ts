@@ -24,6 +24,10 @@ export type ShopMetadata = {
   lastPromptKey: string | null;
   lastPromptShownAt: Date | null;
   reviewPopupRequestedAt: Date | null;
+  reviewPopupRetryAfter: Date | null;
+  reviewPopupAttemptCount: number;
+  reviewPopupLastAttemptAt: Date | null;
+  reviewPopupLastResult: string | null;
   upgradeReturnLastShownAt: Date | null;
   upgradeReturnLastDismissedAt: Date | null;
   upgradeReturnDismissCount: number;
@@ -89,6 +93,10 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       lastPromptKey: true,
       lastPromptShownAt: true,
       reviewPopupRequestedAt: true,
+      reviewPopupRetryAfter: true,
+      reviewPopupAttemptCount: true,
+      reviewPopupLastAttemptAt: true,
+      reviewPopupLastResult: true,
       upgradeReturnLastShownAt: true,
       upgradeReturnLastDismissedAt: true,
       upgradeReturnDismissCount: true,
@@ -350,14 +358,11 @@ export type NudgeStageColumn =
 /** The durable journey milestone stamps (gc-dpm.1). */
 export type JourneyMilestoneColumn = "firstOpenedAt" | "firstResultsViewedAt";
 
-/** The once-ever native review popup request stamp (gc-97k.7). */
-export type ReviewPopupColumn = "reviewPopupRequestedAt";
-
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target
  * one of these nullable DateTime columns.
  */
-export type ShopStampColumn = NudgeStageColumn | JourneyMilestoneColumn | ReviewPopupColumn;
+export type ShopStampColumn = NudgeStageColumn | JourneyMilestoneColumn;
 
 /**
  * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey
@@ -404,6 +409,84 @@ export async function claimPromptSlot(
       lastPromptShownAt: previous.lastPromptShownAt,
     },
     data: { lastPromptKey: promptKey, lastPromptShownAt: now },
+  });
+  return count === 1;
+}
+
+/**
+ * Record a native review popup ATTEMPT (gc-97k.7) before the client asks App
+ * Bridge. A compare-and-set on the last attempt time this load read: of two
+ * concurrent loads that both picked the popup, exactly one wins (count === 1),
+ * so the modal is requested once. The winner increments the attempt count in
+ * SQL and clears the last result (this attempt's report is still to come).
+ * Never after a terminal result. Returns true IFF this call won; a missing
+ * shop row is a safe false.
+ */
+export async function claimReviewPopupAttempt(
+  domain: string,
+  previousLastAttemptAt: Date | null,
+  now: Date,
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: {
+      domain,
+      reviewPopupRequestedAt: null,
+      reviewPopupLastAttemptAt: previousLastAttemptAt,
+    },
+    data: {
+      reviewPopupAttemptCount: { increment: 1 },
+      reviewPopupLastAttemptAt: now,
+      reviewPopupLastResult: null,
+    },
+  });
+  return count === 1;
+}
+
+/**
+ * Record a TERMINAL review popup result (gc-97k.7): stamp reviewPopupRequestedAt
+ * (the popup is done for good) and the code, once ever (`where
+ * reviewPopupRequestedAt IS NULL`). When the modal was actually displayed the
+ * caller passes `claimPromptKey`, and the SAME statement claims the shop's 24h
+ * prompt slot (lastPromptKey / lastPromptShownAt), so a displayed popup and
+ * its slot can never disagree. Returns true IFF this call made the stamp.
+ */
+export async function recordReviewPopupTerminal(
+  domain: string,
+  code: string,
+  now: Date,
+  claimPromptKey: string | null,
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: { domain, reviewPopupRequestedAt: null },
+    data: {
+      reviewPopupRequestedAt: now,
+      reviewPopupLastResult: code,
+      ...(claimPromptKey === null ? {} : { lastPromptKey: claimPromptKey, lastPromptShownAt: now }),
+    },
+  });
+  return count === 1;
+}
+
+/**
+ * Record a RETRYABLE review popup result (gc-97k.7): no request before
+ * `retryAfter`. Counts once per attempt: only while the popup is not done, an
+ * attempt was recorded, and that attempt has no result yet
+ * (reviewPopupLastResult IS NULL, cleared by claimReviewPopupAttempt), so a
+ * replayed report is a no-op. Returns true IFF this call recorded it.
+ */
+export async function recordReviewPopupRetry(
+  domain: string,
+  code: string,
+  retryAfter: Date,
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: {
+      domain,
+      reviewPopupRequestedAt: null,
+      reviewPopupLastAttemptAt: { not: null },
+      reviewPopupLastResult: null,
+    },
+    data: { reviewPopupRetryAfter: retryAfter, reviewPopupLastResult: code },
   });
   return count === 1;
 }

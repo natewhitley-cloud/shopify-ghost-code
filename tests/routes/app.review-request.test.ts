@@ -48,7 +48,7 @@ describe("app.review-request action", () => {
       const res = await action(args({ code }));
 
       expect(mockRecord).toHaveBeenCalledTimes(1);
-      expect(mockRecord).toHaveBeenCalledWith(SHOP, code);
+      expect(mockRecord).toHaveBeenCalledWith(SHOP, code, expect.any(Date));
       expect(res.status).toBe(204);
     },
   );
@@ -74,7 +74,7 @@ describe("app.review-request action", () => {
   it("ignores cross-shop input: the domain always comes from the session", async () => {
     await action(args({ code: "success", shop: "attacker.myshopify.com" }));
 
-    expect(mockRecord).toHaveBeenCalledWith(SHOP, "success");
+    expect(mockRecord).toHaveBeenCalledWith(SHOP, "success", expect.any(Date));
   });
 
   it("propagates an auth bounce without recording", async () => {

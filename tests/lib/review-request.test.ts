@@ -6,14 +6,61 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
+/**
+ * A minimal hook runtime standing in for React (no DOM in these tests): one
+ * component instance whose useState keeps its FIRST value, useRef keeps one
+ * object, and useEffect runs its callback when its deps change. `render`
+ * re-runs the hook like a React re-render (e.g. a loader revalidation).
+ */
+const hookRuntime = vi.hoisted(() => {
+  const slots: unknown[] = [];
+  let cursor = 0;
+  return {
+    reset() {
+      slots.length = 0;
+    },
+    render<T>(hook: () => T): T {
+      cursor = 0;
+      return hook();
+    },
+    useState<T>(init: () => T): [T, (v: T) => void] {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = init();
+      return [slots[i] as T, (v: T) => (slots[i] = v)];
+    },
+    useRef<T>(init: T): { current: T } {
+      const i = cursor++;
+      if (!(i in slots)) slots[i] = { current: init };
+      return slots[i] as { current: T };
+    },
+    useEffect(effect: () => void, deps: unknown[]) {
+      const i = cursor++;
+      const prev = slots[i] as unknown[] | undefined;
+      if (prev === undefined || deps.some((d, k) => !Object.is(d, prev[k]))) {
+        slots[i] = deps;
+        effect();
+      }
+    },
+  };
+});
+
+vi.mock("react", () => ({
+  useState: hookRuntime.useState,
+  useRef: hookRuntime.useRef,
+  useEffect: hookRuntime.useEffect,
+}));
+
 import {
   isReviewPopupEligible,
   isReviewRequestCode,
+  REVIEW_POPUP_ATTEMPT_COOLDOWN_MS,
+  REVIEW_POPUP_MAX_ATTEMPTS,
   REVIEW_POPUP_MIN_DELAY_MS,
   REVIEW_REQUEST_CODES,
   requestAppReview,
   runReviewRequestOnce,
   sendReviewRequestResult,
+  useReviewRequestOnMount,
 } from "../../app/lib/review-request";
 
 const NOW = new Date("2026-09-26T12:00:00Z");
@@ -23,6 +70,9 @@ describe("isReviewPopupEligible", () => {
   const base = {
     firstResultsViewedAt: ago(REVIEW_POPUP_MIN_DELAY_MS),
     reviewPopupRequestedAt: null,
+    reviewPopupRetryAfter: null,
+    reviewPopupAttemptCount: 0,
+    reviewPopupLastAttemptAt: null,
   };
 
   it("is 2 hours", () => {
@@ -64,6 +114,90 @@ describe("isReviewPopupEligible", () => {
 
   it("treats a first view in the future (clock skew) as not yet 2h", () => {
     expect(isReviewPopupEligible({ ...base, firstResultsViewedAt: ago(-60_000) }, NOW)).toBe(false);
+  });
+
+  describe("attempts (server-side accounting)", () => {
+    it("the constants are 24h and 5 attempts", () => {
+      expect(REVIEW_POPUP_ATTEMPT_COOLDOWN_MS).toBe(24 * 60 * 60 * 1000);
+      expect(REVIEW_POPUP_MAX_ATTEMPTS).toBe(5);
+    });
+
+    it("an attempt exactly 24h ago still blocks (strictly MORE than 24h)", () => {
+      expect(
+        isReviewPopupEligible(
+          {
+            ...base,
+            reviewPopupAttemptCount: 1,
+            reviewPopupLastAttemptAt: ago(REVIEW_POPUP_ATTEMPT_COOLDOWN_MS),
+          },
+          NOW,
+        ),
+      ).toBe(false);
+    });
+
+    it("an attempt 24h + 1ms ago no longer blocks", () => {
+      expect(
+        isReviewPopupEligible(
+          {
+            ...base,
+            reviewPopupAttemptCount: 1,
+            reviewPopupLastAttemptAt: ago(REVIEW_POPUP_ATTEMPT_COOLDOWN_MS + 1),
+          },
+          NOW,
+        ),
+      ).toBe(true);
+    });
+
+    it("an attempt an hour ago (report pending or lost) blocks", () => {
+      expect(
+        isReviewPopupEligible(
+          { ...base, reviewPopupAttemptCount: 1, reviewPopupLastAttemptAt: ago(60 * 60 * 1000) },
+          NOW,
+        ),
+      ).toBe(false);
+    });
+
+    it.each([4, 5, 6])("attempt count %i (last attempt long ago)", (count) => {
+      expect(
+        isReviewPopupEligible(
+          {
+            ...base,
+            reviewPopupAttemptCount: count,
+            reviewPopupLastAttemptAt: ago(30 * 86400000),
+          },
+          NOW,
+        ),
+      ).toBe(count < 5);
+    });
+  });
+
+  describe("retry backoff (retryable results)", () => {
+    const retry = (retryAfter: Date) =>
+      isReviewPopupEligible(
+        {
+          ...base,
+          reviewPopupAttemptCount: 1,
+          reviewPopupLastAttemptAt: ago(3 * 86400000),
+          reviewPopupRetryAfter: retryAfter,
+        },
+        NOW,
+      );
+
+    it("is blocked 1ms before retryAfter", () => {
+      expect(retry(new Date(NOW.getTime() + 1))).toBe(false);
+    });
+
+    it("is eligible exactly at retryAfter", () => {
+      expect(retry(NOW)).toBe(true);
+    });
+
+    it("is eligible after retryAfter", () => {
+      expect(retry(ago(1))).toBe(true);
+    });
+
+    it("a 60-day cooldown backoff blocks for 60 days", () => {
+      expect(retry(new Date(NOW.getTime() + 59 * 86400000))).toBe(false);
+    });
   });
 });
 
@@ -253,7 +387,7 @@ describe("runReviewRequestOnce (the results page effect)", () => {
     expect(guard.current).toBe(false);
   });
 
-  it("reports unavailable (so the server stamps it) when App Bridge has no Reviews API", async () => {
+  it("reports unavailable (so the server backs off) when App Bridge has no Reviews API", async () => {
     await runReviewRequestOnce({ current: false }, true);
 
     expect((fetchMock.mock.calls[0][1].body as URLSearchParams).get("code")).toBe("unavailable");
@@ -266,5 +400,62 @@ describe("runReviewRequestOnce (the results page effect)", () => {
 
     await expect(runReviewRequestOnce({ current: false }, true)).resolves.toBeUndefined();
     expect((fetchMock.mock.calls[0][1].body as URLSearchParams).get("code")).toBe("error");
+  });
+});
+
+describe("useReviewRequestOnMount (navigation mount only, never mid-session)", () => {
+  let fetchMock: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    hookRuntime.reset();
+    fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+  });
+
+  /** Flush the effect's async request and report. */
+  const settle = () => new Promise((r) => setTimeout(r, 0));
+
+  it("requests once when the page mounts with requestReview true", async () => {
+    const request = installReviews(async () => ({ success: true, code: "success" }));
+
+    hookRuntime.render(() => useReviewRequestOnMount(true));
+    await settle();
+
+    expect(request).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("never fires when a later revalidation flips requestReview to true mid-session", async () => {
+    const request = installReviews(async () => ({ success: true, code: "success" }));
+
+    hookRuntime.render(() => useReviewRequestOnMount(false)); // mount
+    hookRuntime.render(() => useReviewRequestOnMount(true)); // revalidation
+    hookRuntime.render(() => useReviewRequestOnMount(true)); // another poll
+    await settle();
+
+    expect(request).not.toHaveBeenCalled();
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("fires once only, whatever later renders carry", async () => {
+    const request = installReviews(async () => ({ success: false, code: "cooldown-period" }));
+
+    hookRuntime.render(() => useReviewRequestOnMount(true));
+    hookRuntime.render(() => useReviewRequestOnMount(false));
+    hookRuntime.render(() => useReviewRequestOnMount(true));
+    await settle();
+
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it("a fresh mount (new navigation) with requestReview true fires again", async () => {
+    const request = installReviews(async () => ({ success: true, code: "success" }));
+
+    hookRuntime.render(() => useReviewRequestOnMount(false));
+    hookRuntime.reset(); // unmount, then mount on the next navigation
+    hookRuntime.render(() => useReviewRequestOnMount(true));
+    await settle();
+
+    expect(request).toHaveBeenCalledTimes(1);
   });
 });
