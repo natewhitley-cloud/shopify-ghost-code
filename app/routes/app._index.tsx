@@ -39,7 +39,7 @@ import {
   getWeekStartUTC,
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
-import { HOME_PROMPTS } from "../lib/prompt-cap";
+import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS } from "../lib/prompt-cap";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import {
@@ -396,6 +396,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     shopDomain: session.shop,
     state: promptState,
     renderable: HOME_PROMPTS,
+    deferred: HOME_DEFERRED_PROMPTS,
     now,
   });
   const showFeedbackNudge = homePrompt === "feedback";

@@ -28,6 +28,8 @@ export type ShopMetadata = {
   reviewPopupAttemptCount: number;
   reviewPopupLastAttemptAt: Date | null;
   reviewPopupLastResult: string | null;
+  reviewPopupPrevPromptKey: string | null;
+  reviewPopupPrevPromptShownAt: Date | null;
   upgradeReturnLastShownAt: Date | null;
   upgradeReturnLastDismissedAt: Date | null;
   upgradeReturnDismissCount: number;
@@ -98,6 +100,8 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       reviewPopupAttemptCount: true,
       reviewPopupLastAttemptAt: true,
       reviewPopupLastResult: true,
+      reviewPopupPrevPromptKey: true,
+      reviewPopupPrevPromptShownAt: true,
       upgradeReturnLastShownAt: true,
       upgradeReturnLastDismissedAt: true,
       upgradeReturnDismissCount: true,
@@ -419,31 +423,87 @@ export async function claimPromptSlot(
 }
 
 /**
- * Record a native review popup ATTEMPT (gc-97k.7), called by the review-request
- * action right before the client asks App Bridge. A compare-and-set on the
- * last attempt time the loader read (the nonce): of several tabs issued the
- * same nonce, exactly one wins (count === 1), so the modal is requested once.
- * Never after a terminal result or at `maxAttempts`. The winner increments the
- * attempt count in SQL and clears the last result (this attempt's report is
- * still to come). Returns true IFF this call won; a missing row is a safe false.
+ * The expected state an attempt claim compare-and-sets against: the nonce (the
+ * last attempt time the loader read) and the shop's prompt slot as the action
+ * just read it.
+ */
+export type ReviewPopupAttemptExpected = {
+  lastAttemptAt: Date | null;
+  lastPromptKey: string | null;
+  lastPromptShownAt: Date | null;
+};
+
+/** The popup's eligibility limits, re-checked in SQL by the attempt claim. */
+export type ReviewPopupAttemptLimits = {
+  maxAttempts: number;
+  /** firstResultsViewedAt must be at or before this (now - 2h). */
+  firstResultsViewedBy: Date;
+};
+
+/**
+ * Record a native review popup ATTEMPT (gc-97k.7) AND claim the shop's 24h
+ * prompt slot for it, in ONE compare-and-set, right before the client asks App
+ * Bridge. The where clause pins the nonce and the slot to the values the
+ * action read (so of several tabs, or a tab racing another prompt's claim,
+ * exactly one wins) and re-checks the popup's limits in SQL, so a hand-made
+ * POST cannot skip them: no terminal result, under `maxAttempts`, the first
+ * results view 2h+ ago, and no retry backoff still running. The winner
+ * increments the attempt count, clears the last result (this attempt's report
+ * is still to come), takes the slot (lastPromptKey = review_popup,
+ * lastPromptShownAt = now) and remembers the slot it replaced, so a
+ * non-success result can hand it back (releaseReviewPopupSlot). Returns true
+ * IFF this call won; a missing row is a safe false.
  */
 export async function claimReviewPopupAttempt(
   domain: string,
-  previousLastAttemptAt: Date | null,
+  expected: ReviewPopupAttemptExpected,
   now: Date,
-  maxAttempts: number,
+  limits: ReviewPopupAttemptLimits,
+  promptKey: string,
 ): Promise<boolean> {
   const { count } = await db.shop.updateMany({
     where: {
       domain,
       reviewPopupRequestedAt: null,
-      reviewPopupLastAttemptAt: previousLastAttemptAt,
-      reviewPopupAttemptCount: { lt: maxAttempts },
+      reviewPopupLastAttemptAt: expected.lastAttemptAt,
+      reviewPopupAttemptCount: { lt: limits.maxAttempts },
+      firstResultsViewedAt: { lte: limits.firstResultsViewedBy },
+      OR: [{ reviewPopupRetryAfter: null }, { reviewPopupRetryAfter: { lte: now } }],
+      lastPromptKey: expected.lastPromptKey,
+      lastPromptShownAt: expected.lastPromptShownAt,
     },
     data: {
       reviewPopupAttemptCount: { increment: 1 },
       reviewPopupLastAttemptAt: now,
       reviewPopupLastResult: null,
+      reviewPopupPrevPromptKey: expected.lastPromptKey,
+      reviewPopupPrevPromptShownAt: expected.lastPromptShownAt,
+      lastPromptKey: promptKey,
+      lastPromptShownAt: now,
+    },
+  });
+  return count === 1;
+}
+
+/**
+ * Hand the prompt slot back after a NON-success popup result (gc-97k.7): the
+ * modal was not displayed, so the slot the attempt took returns to the holder
+ * it replaced. Compare-and-set: only while the popup STILL holds the slot from
+ * THIS attempt (lastPromptKey = `promptKey` and lastPromptShownAt = the
+ * attempt time), so a slot another prompt has taken since is never clobbered.
+ * Returns true IFF it released.
+ */
+export async function releaseReviewPopupSlot(
+  domain: string,
+  promptKey: string,
+  attemptAt: Date,
+  previous: { lastPromptKey: string | null; lastPromptShownAt: Date | null },
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: { domain, lastPromptKey: promptKey, lastPromptShownAt: attemptAt },
+    data: {
+      lastPromptKey: previous.lastPromptKey,
+      lastPromptShownAt: previous.lastPromptShownAt,
     },
   });
   return count === 1;
@@ -452,24 +512,19 @@ export async function claimReviewPopupAttempt(
 /**
  * Record a TERMINAL review popup result (gc-97k.7): stamp reviewPopupRequestedAt
  * (the popup is done for good) and the code, once ever (`where
- * reviewPopupRequestedAt IS NULL`). When the modal was actually displayed the
- * caller passes `claimPromptKey`, and the SAME statement claims the shop's 24h
- * prompt slot (lastPromptKey / lastPromptShownAt), so a displayed popup and
- * its slot can never disagree. Returns true IFF this call made the stamp.
+ * reviewPopupRequestedAt IS NULL`). It never touches the prompt slot: the
+ * attempt already claimed it (claimReviewPopupAttempt), a "success" keeps it,
+ * and any other result releases it with releaseReviewPopupSlot. Returns true
+ * IFF this call made the stamp.
  */
 export async function recordReviewPopupTerminal(
   domain: string,
   code: string,
   now: Date,
-  claimPromptKey: string | null,
 ): Promise<boolean> {
   const { count } = await db.shop.updateMany({
     where: { domain, reviewPopupRequestedAt: null },
-    data: {
-      reviewPopupRequestedAt: now,
-      reviewPopupLastResult: code,
-      ...(claimPromptKey === null ? {} : { lastPromptKey: claimPromptKey, lastPromptShownAt: now }),
-    },
+    data: { reviewPopupRequestedAt: now, reviewPopupLastResult: code },
   });
   return count === 1;
 }

@@ -90,7 +90,6 @@ const SAMPLE_SHOP = {
   plan: "professional",
   installedAt: new Date(),
   lastThemePublishAt: null,
-  hasSeenReviewPrompt: false,
 };
 
 const SAMPLE_SNAPSHOT = {

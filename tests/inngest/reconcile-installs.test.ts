@@ -1691,18 +1691,18 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
     expect(result).toMatchObject({ checked: 3, marked: 1, skipped: 0, tokenExpired: 1 });
   });
 
-  // Changed on purpose (audit 2 #3): token-expired shops are now PROBED and
-  // definitively classified, so they count in the breaker's denominator like
-  // any shop. Here 1 dormant + 2 uninstalled of 3: probed = 3, 2 < threshold 3,
-  // so both real uninstalls ARE marked (the old rule excluded the dormant shop,
-  // saw 2 of 2 and paged instead).
-  it("counts token-expired shops as PROBED in the breaker's base (3 active, 1 dormant, 2 uninstalled)", async () => {
+  // Changed on purpose (re-audit #1): a token_expired outcome can never be
+  // marked, so it is EXCLUDED from the breaker's probed base (it only diluted
+  // it). Here 1 dormant + 2 classified uninstalled of 3: probed = 2 and 2 of 2
+  // would mark, the systemic signature: abort and mark NOTHING.
+  it("excludes token_expired outcomes from the probed base (3 active, 1 dormant, 2 uninstalled): trips", async () => {
     mockFindMany.mockResolvedValue([
       { id: "s1", domain: EXPIRED },
       { id: "s2", domain: "dead1.myshopify.com" },
       { id: "s3", domain: "dead2.myshopify.com" },
     ]);
     sessionsFor([[EXPIRED, PAST]]);
+    maskedWithUnrecognized401();
     mockAdmin.mockResolvedValue(
       adminGraphql(async () => {
         throw { response: { code: 401 } };
@@ -1711,24 +1711,49 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
 
     const result = await runReconcile();
 
-    expect(mockSendOpsAlert).not.toHaveBeenCalled();
-    expect(mockMark).toHaveBeenCalledTimes(2);
-    expect(result).toMatchObject({ status: "completed", checked: 3, marked: 2, tokenExpired: 1 });
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "aborted-circuit-breaker", checked: 3, wouldMark: 2 });
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        metadata: expect.objectContaining({ checked: 3, probed: 2, tokenExpired: 1, wouldMark: 2 }),
+      }),
+    );
   });
 
-  describe("the breaker with the real numbers (12 active, 1 dormant)", () => {
-    const LIVE = Array.from({ length: 11 }, (_, i) => `live${i}.myshopify.com`);
+  it("a 404 expired-token shop stays in probed AND wouldMark (it is markable)", async () => {
+    // 4 active: 1 expired-token shop whose store is gone (404) + 3 live.
+    mockFindMany.mockResolvedValue([
+      { id: "s0", domain: EXPIRED },
+      { id: "s1", domain: "live1.myshopify.com" },
+      { id: "s2", domain: "live2.myshopify.com" },
+      { id: "s3", domain: "live3.myshopify.com" },
+    ]);
+    sessionsFor([[EXPIRED, PAST]]);
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({}), { status: 404 }));
+    mockAdmin.mockResolvedValue(adminGraphql(async () => ({ status: 200 })));
 
-    function base(deadCount: number) {
-      mockFindMany.mockResolvedValue([
-        { id: "s0", domain: EXPIRED },
-        ...LIVE.map((domain, i) => ({ id: `s${i + 1}`, domain })),
-      ]);
-      sessionsFor([[EXPIRED, PAST]]);
-      maskedWithUnrecognized401(); // what the dormant shop's raw refresh returns
-      const dead = new Set(LIVE.slice(0, deadCount));
+    const result = await runReconcile();
+
+    // probed = 4, wouldMark = 1 < threshold 3: marked, not paged.
+    expect(mockMark).toHaveBeenCalledWith(EXPIRED, expect.anything());
+    expect(result).toMatchObject({ status: "completed", checked: 4, marked: 1, tokenExpired: 0 });
+  });
+
+  describe("dormant shops can never dilute the breaker", () => {
+    /** `live` active shops (the first `dead` of them 401) plus `dormant` expired-token shops. */
+    function base(live: number, dead: number, dormant: number) {
+      const liveDomains = Array.from({ length: live }, (_, i) => `live${i}.myshopify.com`);
+      const dormantDomains = Array.from({ length: dormant }, (_, i) => `dormant${i}.myshopify.com`);
+      mockFindMany.mockResolvedValue(
+        [...liveDomains, ...dormantDomains].map((domain, i) => ({ id: `s${i}`, domain })),
+      );
+      sessionsFor(dormantDomains.map((d) => [d, PAST]));
+      maskedWithUnrecognized401(); // every dormant shop's raw refresh: 401, unknown body
+      const deadSet = new Set(liveDomains.slice(0, dead));
       mockAdmin.mockImplementation(async (domain: string) =>
-        dead.has(domain)
+        deadSet.has(domain)
           ? adminGraphql(async () => {
               throw { response: { code: 401 } };
             })
@@ -1736,14 +1761,49 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
       );
     }
 
-    it("an ordinary day: nothing marked, the dormant shop counted, no page", async () => {
-      base(0);
+    it("12 active + 13 dormant, a fault marking ALL 12 active: TRIPS (probed 12, not 25)", async () => {
+      base(12, 12, 13);
+
+      const result = await runReconcile();
+
+      expect(mockMark).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        status: "aborted-circuit-breaker",
+        checked: 25,
+        wouldMark: 12,
+      });
+      expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "reconcile_aborted",
+          metadata: {
+            checked: 25,
+            probed: 12,
+            skipped: 0,
+            tokenExpired: 13,
+            wouldMark: 12,
+            threshold: 6,
+          },
+        }),
+      );
+    });
+
+    it("2 active + 5 dormant, both active classified uninstalled: TRIPS", async () => {
+      base(2, 2, 5);
+
+      const result = await runReconcile();
+
+      expect(mockMark).not.toHaveBeenCalled();
+      expect(result).toMatchObject({ status: "aborted-circuit-breaker", checked: 7, wouldMark: 2 });
+    });
+
+    it("12 active + 1 dormant, an ordinary day: nothing marked, no page", async () => {
+      base(12, 0, 1);
 
       const result = await runReconcile();
 
       expect(result).toMatchObject({
         status: "completed",
-        checked: 12,
+        checked: 13,
         marked: 0,
         skipped: 0,
         tokenExpired: 1,
@@ -1751,38 +1811,38 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
       expect(mockSendOpsAlert).not.toHaveBeenCalled();
     });
 
-    it("5 real uninstalls: below half of 12 probed, all 5 marked", async () => {
-      base(5);
+    it("12 active + 1 dormant, 5 real uninstalls: below half of 12 probed, all 5 marked", async () => {
+      base(12, 5, 1);
 
       const result = await runReconcile();
 
       expect(result).toMatchObject({
         status: "completed",
-        checked: 12,
+        checked: 13,
         marked: 5,
         tokenExpired: 1,
       });
     });
 
-    it("6 classified uninstalled: trips at half of 12 PROBED (the dormant shop is in the denominator)", async () => {
-      base(6);
+    it("12 active + 1 dormant, 6 classified uninstalled: trips at half of 12 probed", async () => {
+      base(12, 6, 1);
 
       const result = await runReconcile();
 
-      expect(mockMark).not.toHaveBeenCalled();
       expect(result).toMatchObject({
         status: "aborted-circuit-breaker",
-        checked: 12,
+        checked: 13,
         wouldMark: 6,
       });
+      expect(mockMark).not.toHaveBeenCalled();
       expect(mockRecordOpsEvent).toHaveBeenCalledWith(
         expect.objectContaining({
           eventType: "reconcile_aborted",
           message: expect.stringContaining(
-            "6 of 12 probed (12 active, 0 skipped, 1 token-expired)",
+            "6 of 12 probed (13 active, 0 skipped, 1 token-expired)",
           ),
           metadata: {
-            checked: 12,
+            checked: 13,
             probed: 12,
             skipped: 0,
             tokenExpired: 1,

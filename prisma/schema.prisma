@@ -122,6 +122,10 @@ model Shop {
   reviewPopupAttemptCount   Int       @default(0)
   reviewPopupLastAttemptAt  DateTime?
   reviewPopupLastResult     String?
+  // The prompt slot an attempt replaced when it claimed the slot (audit fix):
+  // a non-success result hands the slot back to exactly this holder.
+  reviewPopupPrevPromptKey     String?
+  reviewPopupPrevPromptShownAt DateTime?
   // Return-visit upgrade nudge, Free only (gc-97k.9). Episode state: when the
   // current weekly episode started (plain update each new episode), when the
   // merchant last clicked "Not now" (ends the episode early), and how many

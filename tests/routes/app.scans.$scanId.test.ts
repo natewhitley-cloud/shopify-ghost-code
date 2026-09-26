@@ -1498,6 +1498,35 @@ describe("app.scans.$scanId loader", () => {
         expect(mockClaimPromptSlot).not.toHaveBeenCalled();
       });
 
+      it("a scan that completed 1 minute ago (watched finishing): no popup pick, the banner renders", async () => {
+        freeShop({ reviewPopupRequestedAt: null });
+        mockGetScanById.mockResolvedValue({ ...SCAN, completedAt: new Date(NOW.getTime() - MIN) });
+
+        const result = await load();
+
+        expect(result.reviewRequestNonce).toBeNull();
+        expect(result.upgradeReturn).not.toBeNull();
+        expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+          SHOP.domain,
+          "upgrade_return",
+          expect.anything(),
+          NOW,
+        );
+      });
+
+      it("a scan that completed 10+ minutes ago: the popup is picked as before", async () => {
+        freeShop({ reviewPopupRequestedAt: null });
+        mockGetScanById.mockResolvedValue({
+          ...SCAN,
+          completedAt: new Date(NOW.getTime() - 10 * MIN),
+        });
+
+        const result = await load();
+
+        expect(result.reviewRequestNonce).toBe("none");
+        expect(result.upgradeReturn).toBeNull();
+      });
+
       it("the banner shows while the popup's attempt is under 24h old (popup not pending)", async () => {
         freeShop({
           reviewPopupRequestedAt: null,

@@ -70,6 +70,8 @@ export type ResolvePromptInput = {
   state: ShopPromptContext;
   /** The prompts THIS page can render (HOME_PROMPTS / scanResultsPrompts). */
   renderable: readonly PromptKey[];
+  /** The prompts THIS page defers (HOME_DEFERRED_PROMPTS / scanResultsDeferredPrompts). */
+  deferred: readonly PromptKey[];
   now: Date;
 };
 
@@ -78,11 +80,11 @@ export type ResolvePromptInput = {
  *
  * - Nothing pending, the cap blocks the pending prompt, or this page cannot
  *   render it: null, no write.
- * - The review popup (gc-97k.7) is returned with NO write: the slot is claimed
- *   only when the client reports that Shopify displayed it, and the ATTEMPT is
- *   recorded only when the client is about to call the Reviews API (the
- *   review-request action, keyed by the nonce the loader issues). A load that
- *   picks it but never fires (a revalidation) therefore burns nothing.
+ * - The review popup (gc-97k.7) is returned with NO write: the ATTEMPT and the
+ *   slot claim happen together only when the client is about to call the
+ *   Reviews API (the review-request action, keyed by the nonce the loader
+ *   issues). A load that picks it but never fires (a revalidation) therefore
+ *   burns nothing and holds no slot.
  * - The same prompt re-rendering inside its window: that prompt, no write.
  * - Otherwise the pick claims the slot (claimPromptSlot, keyed on the state this
  *   load read). If a concurrent load changed the slot first, the claim loses:
@@ -91,8 +93,14 @@ export type ResolvePromptInput = {
  *   one, this load renders nothing.
  */
 export async function resolvePrompt(input: ResolvePromptInput): Promise<PromptKey | null> {
-  const { shopDomain, state, renderable, now } = input;
-  const picked = pickPrompt({ ...state, ...shopPromptEligibility(state, now), renderable, now });
+  const { shopDomain, state, renderable, deferred, now } = input;
+  const picked = pickPrompt({
+    ...state,
+    ...shopPromptEligibility(state, now),
+    renderable,
+    deferred,
+    now,
+  });
   if (picked === null || picked === "review_popup") return picked;
   if (!promptClaimNeeded(picked, state, now)) return picked;
 
@@ -112,6 +120,7 @@ export async function resolvePrompt(input: ResolvePromptInput): Promise<PromptKe
       ...freshState,
       ...shopPromptEligibility(freshState, now),
       renderable,
+      deferred,
       now,
     });
     // A re-pick of the popup is left alone (this load claimed another slot).

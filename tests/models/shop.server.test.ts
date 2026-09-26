@@ -73,6 +73,7 @@ import {
   claimReviewPopupAttempt,
   recordReviewPopupRetry,
   recordReviewPopupTerminal,
+  releaseReviewPopupSlot,
   recordUpgradeReturnDismissal,
   startUpgradeReturnEpisode,
 } from "../../app/models/shop.server";
@@ -137,6 +138,8 @@ describe("getShopMetadata", () => {
         reviewPopupAttemptCount: true,
         reviewPopupLastAttemptAt: true,
         reviewPopupLastResult: true,
+        reviewPopupPrevPromptKey: true,
+        reviewPopupPrevPromptShownAt: true,
         // gc-97k.9: the return-visit banner's episode + dismissal gates and
         // its shown pre-check.
         upgradeReturnLastShownAt: true,
@@ -1199,44 +1202,120 @@ describe("claimShopStamp", () => {
 
 describe("claimReviewPopupAttempt", () => {
   const NOW = new Date("2026-09-26T12:00:00Z");
+  const LIMITS = { maxAttempts: 5, firstResultsViewedBy: new Date("2026-09-26T10:00:00Z") };
+  const HOLDER = { lastPromptKey: "feedback", lastPromptShownAt: new Date("2026-09-24T09:00:00Z") };
 
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("compare-and-sets on the previous attempt time under the attempt cap, increments in SQL, clears the result", async () => {
+  it("ONE compare-and-set: pins nonce + slot, re-checks every limit, records the attempt AND takes the slot", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
     const prev = new Date("2026-09-24T09:00:00Z");
 
-    await expect(claimReviewPopupAttempt("s.myshopify.com", prev, NOW, 5)).resolves.toBe(true);
+    await expect(
+      claimReviewPopupAttempt(
+        "s.myshopify.com",
+        { lastAttemptAt: prev, ...HOLDER },
+        NOW,
+        LIMITS,
+        "review_popup",
+      ),
+    ).resolves.toBe(true);
 
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
       where: {
         domain: "s.myshopify.com",
         reviewPopupRequestedAt: null,
         reviewPopupLastAttemptAt: prev,
         reviewPopupAttemptCount: { lt: 5 },
+        firstResultsViewedAt: { lte: LIMITS.firstResultsViewedBy },
+        OR: [{ reviewPopupRetryAfter: null }, { reviewPopupRetryAfter: { lte: NOW } }],
+        lastPromptKey: "feedback",
+        lastPromptShownAt: HOLDER.lastPromptShownAt,
       },
       data: {
         reviewPopupAttemptCount: { increment: 1 },
         reviewPopupLastAttemptAt: NOW,
         reviewPopupLastResult: null,
+        reviewPopupPrevPromptKey: "feedback",
+        reviewPopupPrevPromptShownAt: HOLDER.lastPromptShownAt,
+        lastPromptKey: "review_popup",
+        lastPromptShownAt: NOW,
       },
     });
   });
 
-  it("matches a never-attempted shop on an explicit null", async () => {
+  it("matches a never-attempted, never-prompted shop on explicit nulls", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
-    await claimReviewPopupAttempt("s.myshopify.com", null, NOW, 5);
+    await claimReviewPopupAttempt(
+      "s.myshopify.com",
+      { lastAttemptAt: null, lastPromptKey: null, lastPromptShownAt: null },
+      NOW,
+      LIMITS,
+      "review_popup",
+    );
 
-    expect(mockDb.shop.updateMany.mock.calls[0][0].where.reviewPopupLastAttemptAt).toBeNull();
+    const { where } = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(where.reviewPopupLastAttemptAt).toBeNull();
+    expect(where.lastPromptKey).toBeNull();
+    expect(where.lastPromptShownAt).toBeNull();
   });
 
-  it("returns false when another load won or the shop is missing (count 0)", async () => {
+  it("returns false when another tab or prompt won, or the shop is missing (count 0)", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
 
-    await expect(claimReviewPopupAttempt("s.myshopify.com", null, NOW, 5)).resolves.toBe(false);
+    await expect(
+      claimReviewPopupAttempt(
+        "s.myshopify.com",
+        { lastAttemptAt: null, lastPromptKey: null, lastPromptShownAt: null },
+        NOW,
+        LIMITS,
+        "review_popup",
+      ),
+    ).resolves.toBe(false);
+  });
+});
+
+describe("releaseReviewPopupSlot", () => {
+  const ATTEMPT = new Date("2026-09-26T12:00:00Z");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("hands the slot back to the previous holder only while the popup still holds it from this attempt", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    const previous = {
+      lastPromptKey: "feedback",
+      lastPromptShownAt: new Date("2026-09-24T09:00:00Z"),
+    };
+
+    await expect(
+      releaseReviewPopupSlot("s.myshopify.com", "review_popup", ATTEMPT, previous),
+    ).resolves.toBe(true);
+
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: {
+        domain: "s.myshopify.com",
+        lastPromptKey: "review_popup",
+        lastPromptShownAt: ATTEMPT,
+      },
+      data: previous,
+    });
+  });
+
+  it("returns false when another holder took the slot since (count 0)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      releaseReviewPopupSlot("s.myshopify.com", "review_popup", ATTEMPT, {
+        lastPromptKey: null,
+        lastPromptShownAt: null,
+      }),
+    ).resolves.toBe(false);
   });
 });
 
@@ -1247,42 +1326,28 @@ describe("recordReviewPopupTerminal", () => {
     vi.clearAllMocks();
   });
 
-  it("stamps once ever and claims the prompt slot in the SAME statement when displayed", async () => {
-    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+  // Changed on purpose (re-audit #3): a success no longer writes the slot
+  // unconditionally here; the attempt already claimed it.
+  it.each(["success", "already-reviewed", "cancelled"])(
+    "%s: stamps once ever and records the code, NEVER touching the prompt slot",
+    async (code) => {
+      mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
-    await expect(
-      recordReviewPopupTerminal("s.myshopify.com", "success", NOW, "review_popup"),
-    ).resolves.toBe(true);
+      await expect(recordReviewPopupTerminal("s.myshopify.com", code, NOW)).resolves.toBe(true);
 
-    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
-    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
-      where: { domain: "s.myshopify.com", reviewPopupRequestedAt: null },
-      data: {
-        reviewPopupRequestedAt: NOW,
-        reviewPopupLastResult: "success",
-        lastPromptKey: "review_popup",
-        lastPromptShownAt: NOW,
-      },
-    });
-  });
-
-  it("does not touch the slot when no prompt key is passed", async () => {
-    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
-
-    await recordReviewPopupTerminal("s.myshopify.com", "already-reviewed", NOW, null);
-
-    expect(mockDb.shop.updateMany.mock.calls[0][0].data).toEqual({
-      reviewPopupRequestedAt: NOW,
-      reviewPopupLastResult: "already-reviewed",
-    });
-  });
+      expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+        where: { domain: "s.myshopify.com", reviewPopupRequestedAt: null },
+        data: { reviewPopupRequestedAt: NOW, reviewPopupLastResult: code },
+      });
+    },
+  );
 
   it("returns false once already stamped (count 0)", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
 
-    await expect(
-      recordReviewPopupTerminal("s.myshopify.com", "cancelled", NOW, null),
-    ).resolves.toBe(false);
+    await expect(recordReviewPopupTerminal("s.myshopify.com", "cancelled", NOW)).resolves.toBe(
+      false,
+    );
   });
 });
 
@@ -1333,7 +1398,7 @@ describe("claimPromptSlot", () => {
     await expect(
       claimPromptSlot(
         "s.myshopify.com",
-        "review_banner",
+        "upgrade_return",
         { lastPromptKey: "feedback", lastPromptShownAt: prevAt },
         NOW,
       ),
@@ -1341,7 +1406,7 @@ describe("claimPromptSlot", () => {
 
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
       where: { domain: "s.myshopify.com", lastPromptKey: "feedback", lastPromptShownAt: prevAt },
-      data: { lastPromptKey: "review_banner", lastPromptShownAt: NOW },
+      data: { lastPromptKey: "upgrade_return", lastPromptShownAt: NOW },
     });
   });
 

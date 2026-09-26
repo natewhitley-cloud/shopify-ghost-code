@@ -114,9 +114,10 @@ export function circuitBreakerThreshold(probed: number): number {
 /**
  * Circuit-breaker decision (owner decision 1A, hybrid rule). Inputs:
  *   checked   = active shops probed this run
- *   skipped   = shops classified "ambiguous" (no signal, never marked)
+ *   skipped   = shops that can never be marked this run: "ambiguous" (no
+ *               signal) plus "token_expired" (expired token, refresh not a 404)
  *   wouldMark = shops classified "uninstalled"
- *   probed    = checked - skipped (shops DEFINITIVELY classified)
+ *   probed    = checked - skipped (shops that could have been marked)
  *
  * Trips when ANY of three clauses holds:
  *   1. checked >= 1 && wouldMark === checked — 100% of ALL active shops, at any
@@ -757,17 +758,19 @@ export const reconcileInstalls = inngest.createFunction(
     // upstream and counted in `skipped`), so a network blip or throttle never
     // adds to it. The abort OpsEvent metadata carries `probed` and `skipped` so
     // the operator digest can show the denominator the breaker used.
-    // Token-expired shops ARE probed (raw refresh) and definitively classified
-    // (404 = uninstalled, else token_expired), so they count in the probed
-    // denominator like any other classified shop; only ambiguous (skipped)
-    // shops are excluded. With dormant shops in the base this makes `probed`
-    // (and so the fraction threshold) larger than excluding them would: the
-    // honest denominator, not a stricter one.
-    const probed = checked - skipped;
+    // The breaker's denominator is the shops that COULD have been marked.
+    // A token_expired outcome (an expired-token shop whose raw refresh was
+    // NOT a 404) can never be marked, so, like an ambiguous (skipped) shop, it
+    // is excluded: counting it would inflate `probed` and dilute the breaker
+    // (e.g. 12 active + 13 dormant with a fault marking all 12 would no longer
+    // trip). An expired-token shop whose refresh WAS a 404 classified
+    // "uninstalled": it stays in `probed` and in wouldMark like any shop.
+    const unmarkable = skipped + tokenExpired;
+    const probed = checked - unmarkable;
     const churnThreshold = circuitBreakerThreshold(probed);
     const tripped = shouldTripCircuitBreaker({
       checked,
-      skipped,
+      skipped: unmarkable,
       wouldMark: wouldMark.length,
     });
     if (tripped) {

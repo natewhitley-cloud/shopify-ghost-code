@@ -24,17 +24,21 @@
  * Lifecycle (server side: app/services/prompt-cap.server.ts and
  *   app/services/review-request.server.ts):
  *   1. A results page load that picks the popup writes NOTHING; it hands the
- *      client an attempt nonce. The popup does NOT claim the 24h prompt slot.
+ *      client an attempt nonce. It is never picked on a scan that completed
+ *      under REVIEW_POPUP_MIN_SCAN_AGE_MS ago (see that constant).
  *   2. On a scan page's mount only, the client asks the server to record the
  *      ATTEMPT (reviewPopupAttemptCount + 1, reviewPopupLastAttemptAt = now,
- *      compare-and-set on the nonce), and only if that succeeds calls App
- *      Bridge once and reports the code. The result policy below decides what
- *      happens next:
+ *      compare-and-set on the nonce, every eligibility rule re-checked) and
+ *      to claim the 24h prompt slot in the same statement; only if that
+ *      succeeds does it call App Bridge once and report the code. The result
+ *      policy below decides what happens next:
  *        terminal:  reviewPopupRequestedAt is stamped; never requested again.
- *                   Only "success" (the modal was displayed) claims the slot.
  *        retryable: reviewPopupRetryAfter = now + the code's delay.
+ *      "success" keeps the slot; any other code hands it back to the holder
+ *      the attempt replaced.
  *   3. If the RESULT report is lost (keepalive POST dropped, tab closed), the
- *      attempt stands: the popup is not eligible again until 24h after it, and
+ *      attempt stands and keeps the slot for its 24h (accepted: the modal may
+ *      well have been shown): the popup is not eligible again until 24h after it, and
  *      never after REVIEW_POPUP_MAX_ATTEMPTS attempts. If the client never
  *      even records an attempt, nothing is burned, and the 7-day bounded
  *      blocking (PROMPT_BLOCK_MAX_MS in ./prompt-cap) stops the pending popup
@@ -44,6 +48,17 @@ import { useEffect, useRef } from "react";
 
 /** A later results visit: at least this long after the first results view. */
 export const REVIEW_POPUP_MIN_DELAY_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * The popup is never requested on the results of a scan that completed less
+ * than this long ago. A merchant watching a scan finish gets the result by the
+ * ~3s poll REVALIDATION, which can never fire the popup (it fires only on a
+ * page mount), so picking it there would render nothing and block the return
+ * banner. Deferring it to a later, deliberate visit also keeps it out of the
+ * "just finished a task" moment Shopify advises against. Exactly 10 minutes
+ * qualifies.
+ */
+export const REVIEW_POPUP_MIN_SCAN_AGE_MS = 10 * 60 * 1000;
 
 /** An attempt blocks the next one for this long (a lost report's retry delay). */
 export const REVIEW_POPUP_ATTEMPT_COOLDOWN_MS = 24 * 60 * 60 * 1000;

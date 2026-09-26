@@ -97,7 +97,7 @@ function input(
   cap: { lastPromptKey: string | null; lastPromptShownAt: Date | null } = FRESH,
   renderable: readonly PromptKey[] = ALL,
 ) {
-  return { shopDomain: DOMAIN, state: stateFor(keys, cap), renderable, now: NOW };
+  return { shopDomain: DOMAIN, state: stateFor(keys, cap), renderable, now: NOW, deferred: [] };
 }
 
 beforeEach(() => {
@@ -353,6 +353,7 @@ describe("resolvePrompt: the review popup (gc-97k.7)", () => {
           shopDomain: DOMAIN,
           state,
           renderable: ["review_popup"],
+          deferred: [],
           now,
         });
         if (picked !== "review_popup") continue;
@@ -378,7 +379,10 @@ describe("resolvePrompt: the review popup (gc-97k.7)", () => {
       // Attempts at 0h, then every 36h (the first visit MORE than 24h later).
       expect(requested).toEqual([0, 36, 72, 108, 144]);
       expect(row.reviewPopupAttemptCount).toBe(5);
-      expect(row.lastPromptKey).toBeNull();
+      // Changed on purpose (re-audit #3): each attempt claims the slot, and a
+      // lost report keeps it for that attempt's 24h (the modal may have shown).
+      expect(row.lastPromptKey).toBe("review_popup");
+      expect(row.lastPromptShownAt).toEqual(new Date(NOW.getTime() + 144 * HOUR));
       expect(row.reviewPopupRequestedAt).toBeNull();
     });
 
@@ -392,6 +396,7 @@ describe("resolvePrompt: the review popup (gc-97k.7)", () => {
           shopDomain: DOMAIN,
           state: state(eligibleFor),
           renderable: HOME_PROMPTS,
+          deferred: [],
           now: NOW,
         });
       mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
@@ -415,8 +420,20 @@ describe("resolvePrompt: concurrency", () => {
     const state = stateFor(["review_popup", "feedback"]);
 
     const [scan, home] = await Promise.all([
-      resolvePrompt({ shopDomain: DOMAIN, state, renderable: ["review_popup"], now: NOW }),
-      resolvePrompt({ shopDomain: DOMAIN, state, renderable: HOME_PROMPTS, now: NOW }),
+      resolvePrompt({
+        shopDomain: DOMAIN,
+        state,
+        renderable: ["review_popup"],
+        now: NOW,
+        deferred: [],
+      }),
+      resolvePrompt({
+        shopDomain: DOMAIN,
+        state,
+        renderable: HOME_PROMPTS,
+        now: NOW,
+        deferred: [],
+      }),
     ]);
 
     expect(home).toBeNull();
@@ -496,7 +513,13 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
   async function visit(row: FakeRow, renderable: readonly PromptKey[], now: Date) {
     const shop = { ...row } as unknown as ShopMetadata;
     const state = await loadShopPromptState(shop, now);
-    const prompt = await resolvePrompt({ shopDomain: DOMAIN, state, renderable, now });
+    const prompt = await resolvePrompt({
+      shopDomain: DOMAIN,
+      state,
+      renderable,
+      now,
+      deferred: [],
+    });
     // What the rendered prompt leads to, as the page and its client do it:
     // the popup's client records the attempt (nonce = the value the loader
     // read), then Shopify displays the modal and the client reports success.
@@ -511,10 +534,13 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
     return prompt;
   }
 
+  // The scan completed on day 0: every later visit is a deliberate one.
   const SCAN_PAGE = scanResultsPrompts({
     scanSuccessful: true,
     plan: "free",
     hasHiddenFindings: true,
+    scanCompletedAt: DAY0,
+    now: at(1, 0, 0),
   });
 
   async function simulate(days: number, latestNonMaliciousCount = 10) {

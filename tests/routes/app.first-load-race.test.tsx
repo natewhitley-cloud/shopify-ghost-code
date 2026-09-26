@@ -42,7 +42,6 @@ const fakeDb = vi.hoisted(() => {
           uninstalledAt: null,
           lastSeenAt: null,
           lastThemePublishAt: null,
-          hasSeenReviewPrompt: false,
           upgradePreviewShownAt: null,
           feedbackNudgeShownAt: null,
           feedbackNudgeDismissedAt: null,

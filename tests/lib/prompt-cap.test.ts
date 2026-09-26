@@ -15,6 +15,7 @@
 import { describe, it, expect } from "vitest";
 
 import {
+  HOME_DEFERRED_PROMPTS,
   HOME_PROMPTS,
   isStillBlocking,
   pagePendingPrompt,
@@ -23,9 +24,11 @@ import {
   PROMPT_BLOCK_MAX_MS,
   PROMPT_CAP_WINDOW_MS,
   PROMPT_KEYS,
+  scanResultsDeferredPrompts,
   scanResultsPrompts,
 } from "../../app/lib/prompt-cap";
 import type { PickPromptInput, PromptKey } from "../../app/lib/prompt-cap";
+import { REVIEW_POPUP_MIN_SCAN_AGE_MS } from "../../app/lib/review-request";
 
 const NOW = new Date("2026-09-26T12:00:00Z");
 const MS = 1;
@@ -33,6 +36,7 @@ const HOUR = 60 * 60 * 1000;
 
 /** A timestamp `ms` before NOW. */
 const ago = (ms: number) => new Date(NOW.getTime() - ms);
+const DAY_MS = 24 * HOUR;
 
 /** No prompt ever shown. */
 const FRESH = { lastPromptKey: null, lastPromptShownAt: null };
@@ -42,7 +46,14 @@ const ALL = PROMPT_KEYS;
 
 /** Defaults: renders everything, and no eligibleSince (prompts never stop blocking). */
 function pick(overrides: Partial<PickPromptInput> & Pick<PickPromptInput, "eligible">) {
-  return pickPrompt({ ...FRESH, renderable: ALL, eligibleSince: {}, now: NOW, ...overrides });
+  return pickPrompt({
+    ...FRESH,
+    renderable: ALL,
+    deferred: [],
+    eligibleSince: {},
+    now: NOW,
+    ...overrides,
+  });
 }
 
 describe("PROMPT_KEYS / PROMPT_CAP_WINDOW_MS", () => {
@@ -62,22 +73,40 @@ describe("page renderability", () => {
 
   it("a successful Free scan with hidden findings renders the popup and the return banner", () => {
     expect(
-      scanResultsPrompts({ scanSuccessful: true, plan: "free", hasHiddenFindings: true }),
+      scanResultsPrompts({
+        scanCompletedAt: ago(DAY_MS),
+        now: NOW,
+        scanSuccessful: true,
+        plan: "free",
+        hasHiddenFindings: true,
+      }),
     ).toEqual(["review_popup", "upgrade_return"]);
   });
 
   it("a successful Free scan with nothing hidden renders only the popup", () => {
     expect(
-      scanResultsPrompts({ scanSuccessful: true, plan: "free", hasHiddenFindings: false }),
+      scanResultsPrompts({
+        scanCompletedAt: ago(DAY_MS),
+        now: NOW,
+        scanSuccessful: true,
+        plan: "free",
+        hasHiddenFindings: false,
+      }),
     ).toEqual(["review_popup"]);
   });
 
   it.each(["Standard", "Professional"])(
     "a successful %s scan renders only the popup (return banner is Free only)",
     (plan) => {
-      expect(scanResultsPrompts({ scanSuccessful: true, plan, hasHiddenFindings: true })).toEqual([
-        "review_popup",
-      ]);
+      expect(
+        scanResultsPrompts({
+          scanCompletedAt: ago(DAY_MS),
+          now: NOW,
+          scanSuccessful: true,
+          plan,
+          hasHiddenFindings: true,
+        }),
+      ).toEqual(["review_popup"]);
     },
   );
 
@@ -86,12 +115,20 @@ describe("page renderability", () => {
     ["free", false],
     ["Standard", true],
   ])("an unsuccessful scan renders nothing (plan %s, hidden %s)", (plan, hasHiddenFindings) => {
-    expect(scanResultsPrompts({ scanSuccessful: false, plan, hasHiddenFindings })).toEqual([]);
+    expect(
+      scanResultsPrompts({
+        scanCompletedAt: ago(DAY_MS),
+        now: NOW,
+        scanSuccessful: false,
+        plan,
+        hasHiddenFindings,
+      }),
+    ).toEqual([]);
   });
 });
 
 describe("pagePendingPrompt", () => {
-  const base = { eligibleSince: {}, now: NOW };
+  const base = { eligibleSince: {}, deferred: [], now: NOW };
 
   it("is the highest-priority eligible key the page can render, whatever the order", () => {
     expect(
@@ -254,6 +291,8 @@ describe("pickPrompt: page renderability", () => {
       pick({
         eligible: ["feedback"],
         renderable: scanResultsPrompts({
+          scanCompletedAt: ago(DAY_MS),
+          now: NOW,
           scanSuccessful: true,
           plan: "free",
           hasHiddenFindings: true,
@@ -267,6 +306,8 @@ describe("pickPrompt: page renderability", () => {
       pick({
         eligible: ["upgrade_return"],
         renderable: scanResultsPrompts({
+          scanCompletedAt: ago(DAY_MS),
+          now: NOW,
           scanSuccessful: true,
           plan: "Standard",
           hasHiddenFindings: true,
@@ -462,5 +503,73 @@ describe("promptClaimNeeded", () => {
     expect(
       promptClaimNeeded("feedback", { lastPromptKey: "feedback", lastPromptShownAt: null }, NOW),
     ).toBe(true);
+  });
+});
+
+describe("a just-finished scan defers the review popup (re-audit #2)", () => {
+  const MIN = 60 * 1000;
+  const page = (completedAgo: number | null, plan = "free") => ({
+    scanSuccessful: true,
+    plan,
+    hasHiddenFindings: true,
+    scanCompletedAt: completedAgo === null ? null : ago(completedAgo),
+    now: NOW,
+  });
+
+  it("is 10 minutes, and Home defers nothing", () => {
+    expect(REVIEW_POPUP_MIN_SCAN_AGE_MS).toBe(10 * MIN);
+    expect(HOME_DEFERRED_PROMPTS).toEqual([]);
+  });
+
+  it.each([
+    ["just now", 0, false],
+    ["9m59.999s ago", 10 * MIN - 1, false],
+    ["exactly 10m ago", 10 * MIN, true],
+    ["a day ago", DAY_MS, true],
+  ])("scan completed %s: popup renderable %s", (_label, ago_, renderable) => {
+    expect(scanResultsPrompts(page(ago_)).includes("review_popup")).toBe(renderable);
+    expect(scanResultsDeferredPrompts(page(ago_))).toEqual(renderable ? [] : ["review_popup"]);
+  });
+
+  it("a scan with no completedAt is never deferred", () => {
+    expect(scanResultsDeferredPrompts(page(null))).toEqual([]);
+    expect(scanResultsPrompts(page(null))).toContain("review_popup");
+  });
+
+  it("an unsuccessful scan defers nothing (it renders nothing either)", () => {
+    expect(scanResultsDeferredPrompts({ ...page(0), scanSuccessful: false })).toEqual([]);
+  });
+
+  it("just finished, popup and banner both pending: the BANNER renders (the popup does not block)", () => {
+    const p = page(MIN);
+    expect(
+      pick({
+        eligible: ["review_popup", "upgrade_return"],
+        renderable: scanResultsPrompts(p),
+        deferred: scanResultsDeferredPrompts(p),
+      }),
+    ).toBe("upgrade_return");
+  });
+
+  it("finished more than 10 minutes ago: the popup is picked as before", () => {
+    const p = page(11 * MIN);
+    expect(
+      pick({
+        eligible: ["review_popup", "upgrade_return"],
+        renderable: scanResultsPrompts(p),
+        deferred: scanResultsDeferredPrompts(p),
+      }),
+    ).toBe("review_popup");
+  });
+
+  it("just finished on a PAID shop: nothing renders, and the popup is not picked", () => {
+    const p = page(MIN, "Standard");
+    expect(
+      pick({
+        eligible: ["review_popup"],
+        renderable: scanResultsPrompts(p),
+        deferred: scanResultsDeferredPrompts(p),
+      }),
+    ).toBeNull();
   });
 });

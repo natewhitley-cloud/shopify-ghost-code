@@ -39,7 +39,7 @@ import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
-import { scanResultsPrompts } from "../lib/prompt-cap";
+import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
@@ -941,20 +941,26 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // most one per view, one distinct prompt per shop per 24h, and only the
   // shop's highest-priority pending prompt, so resolvePrompt runs ONCE per load
   // against what this page can render (scanResultsPrompts):
-  //   review_popup (gc-97k.7): Shopify's native review modal, all plans.
+  //   review_popup (gc-97k.7): Shopify's native review modal, all plans, but
+  //     deferred on a scan that completed under 10 minutes ago (the merchant
+  //     watching it finish gets it by poll revalidation, which never fires).
   //   upgrade_return (gc-97k.9): the Free return-visit banner, only when this
   //     page has hidden findings to talk about.
+  const page = {
+    scanSuccessful,
+    plan: shop.plan,
+    hasHiddenFindings: hiddenBreakdown !== null,
+    scanCompletedAt: scan.completedAt,
+    now,
+  };
   const pagePrompt =
     promptState === null
       ? null
       : await resolvePrompt({
           shopDomain: session.shop,
           state: promptState,
-          renderable: scanResultsPrompts({
-            scanSuccessful,
-            plan: shop.plan,
-            hasHiddenFindings: hiddenBreakdown !== null,
-          }),
+          renderable: scanResultsPrompts(page),
+          deferred: scanResultsDeferredPrompts(page),
           now,
         });
 

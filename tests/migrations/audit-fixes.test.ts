@@ -36,6 +36,8 @@ describe("audit_fixes migration", () => {
       'ALTER TABLE "Shop" ADD COLUMN "reviewPopupAttemptCount" INTEGER NOT NULL DEFAULT 0, ' +
         'ADD COLUMN "reviewPopupLastAttemptAt" TIMESTAMP(3), ' +
         'ADD COLUMN "reviewPopupLastResult" TEXT, ' +
+        'ADD COLUMN "reviewPopupPrevPromptKey" TEXT, ' +
+        'ADD COLUMN "reviewPopupPrevPromptShownAt" TIMESTAMP(3), ' +
         'ADD COLUMN "reviewPopupRetryAfter" TIMESTAMP(3);',
     );
   });
@@ -78,6 +80,8 @@ describe("audit_fixes migration", () => {
     expect(SCHEMA).toMatch(/\n\s+reviewPopupLastAttemptAt\s+DateTime\?\n/);
     expect(SCHEMA).toMatch(/\n\s+reviewPopupLastResult\s+String\?\n/);
     expect(SCHEMA).toMatch(/\n\s+everPaidAt\s+DateTime\?\n/);
+    expect(SCHEMA).toMatch(/\n\s+reviewPopupPrevPromptKey\s+String\?\n/);
+    expect(SCHEMA).toMatch(/\n\s+reviewPopupPrevPromptShownAt\s+DateTime\?\n/);
   });
 
   it("keeps the retired hasSeenReviewPrompt column (owner decision 2A: never drop)", () => {

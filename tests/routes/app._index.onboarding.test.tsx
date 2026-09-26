@@ -29,7 +29,6 @@ vi.mock("../../app/lib/logger.server", () => ({
 vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
   getOrCreateShopMetadata: vi.fn(),
-  dismissReviewPrompt: vi.fn(),
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -111,7 +110,6 @@ const NEW_SHOP = {
   uninstalledAt: null,
   lastSeenAt: null,
   lastThemePublishAt: null,
-  hasSeenReviewPrompt: false,
   upgradePreviewShownAt: null,
   feedbackNudgeShownAt: null,
   feedbackNudgeDismissedAt: null,
@@ -187,7 +185,6 @@ describe("gc-bj4: what the old `!shop` minimal data renders", () => {
       showRescanNudge: false,
       showThemeChangeNudge: false,
       showMultiThemeNudge: false,
-      showReviewPrompt: false,
       showFeedbackNudge: false,
       healthScoreTrend: null,
       showTrendEmptyState: false,

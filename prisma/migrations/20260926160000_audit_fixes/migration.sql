@@ -9,6 +9,9 @@
 --                              needs 24h+, so a lost report retries after 24h).
 --   reviewPopupLastResult:     the last reported result code (digest: tells a
 --                              displayed popup from a declined one).
+--   reviewPopupPrevPromptKey / reviewPopupPrevPromptShownAt: the prompt slot
+--                              an attempt replaced when it claimed the slot, so
+--                              a non-success result can hand it back.
 --   reviewPopupRequestedAt (existing) now means a TERMINAL result.
 --
 -- gc-97k.8 durable ever-paid signal for the free-trial promise:
@@ -30,12 +33,15 @@
 -- Reversible:
 --   ALTER TABLE "Shop" DROP COLUMN "reviewPopupRetryAfter",
 --     DROP COLUMN "reviewPopupAttemptCount", DROP COLUMN "reviewPopupLastAttemptAt",
---     DROP COLUMN "reviewPopupLastResult", DROP COLUMN "everPaidAt";
+--     DROP COLUMN "reviewPopupLastResult", DROP COLUMN "reviewPopupPrevPromptKey",
+--     DROP COLUMN "reviewPopupPrevPromptShownAt", DROP COLUMN "everPaidAt";
 
 -- AlterTable
 ALTER TABLE "Shop" ADD COLUMN     "reviewPopupAttemptCount" INTEGER NOT NULL DEFAULT 0,
 ADD COLUMN     "reviewPopupLastAttemptAt" TIMESTAMP(3),
 ADD COLUMN     "reviewPopupLastResult" TEXT,
+ADD COLUMN     "reviewPopupPrevPromptKey" TEXT,
+ADD COLUMN     "reviewPopupPrevPromptShownAt" TIMESTAMP(3),
 ADD COLUMN     "reviewPopupRetryAfter" TIMESTAMP(3);
 ALTER TABLE "Shop" ADD COLUMN     "everPaidAt" TIMESTAMP(3);
 

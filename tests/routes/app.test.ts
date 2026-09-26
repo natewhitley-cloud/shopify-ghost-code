@@ -93,7 +93,6 @@ function makeShop(overrides: Record<string, unknown> = {}) {
     uninstalledAt: null,
     lastSeenAt: null,
     lastThemePublishAt: null,
-    hasSeenReviewPrompt: false,
     // Already stamped by default: the normal (non-first) load (gc-dpm.1).
     firstOpenedAt: new Date("2026-01-01T00:00:00Z"),
     // gc-97k.8: never seen on a paid plan by default.

@@ -186,7 +186,6 @@ const SHOP = {
   domain: "test-shop.myshopify.com",
   plan: "Free",
   lastThemePublishAt: null,
-  hasSeenReviewPrompt: false,
   // gc-97k.6 cap state: no interruptive prompt shown yet.
   lastPromptKey: null,
   lastPromptShownAt: null,
@@ -653,7 +652,7 @@ describe("app._index loader — finding trend", () => {
 
 describe("app._index loader: retired review banner", () => {
   it("never returns a review-banner flag, even for the old trigger (4+ findings, never seen)", async () => {
-    // Default SHOP has hasSeenReviewPrompt: false; COMPLETED_SCAN has 5 findings.
+    // COMPLETED_SCAN has 5 findings, the old banner's trigger.
     const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
 
     expect(result).not.toHaveProperty("showReviewPrompt");

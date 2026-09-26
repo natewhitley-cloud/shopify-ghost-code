@@ -32,6 +32,7 @@
  *      is no longer eligible, nothing renders until the window has passed.
  */
 import { PLANS } from "./plans";
+import { REVIEW_POPUP_MIN_SCAN_AGE_MS } from "./review-request";
 
 /** Every interruptive prompt, in priority order (first = highest). */
 export const PROMPT_KEYS = ["review_popup", "upgrade_return", "feedback"] as const;
@@ -71,24 +72,54 @@ export type PromptCapState = {
 /** Home (/app) can render only the feedback nudge. */
 export const HOME_PROMPTS: readonly PromptKey[] = ["feedback"];
 
+/** Home defers nothing. */
+export const HOME_DEFERRED_PROMPTS: readonly PromptKey[] = [];
+
 /**
  * The scan results page (/app/scans/:id) can render, for a SUCCESSFUL
  * (COMPLETED / PARTIAL) scan only:
- *   - review_popup on every plan;
+ *   - review_popup on every plan, unless the scan completed less than
+ *     REVIEW_POPUP_MIN_SCAN_AGE_MS ago (then it is DEFERRED on this page, see
+ *     scanResultsDeferredPrompts);
  *   - upgrade_return on the Free plan, when the page has hidden findings for
  *     the banner to talk about.
  * An unsuccessful scan's page (including the ~3s in-progress poll) renders no
  * prompt at all.
  */
-export function scanResultsPrompts(page: {
+export function scanResultsPrompts(page: ScanResultsPage): PromptKey[] {
+  if (!page.scanSuccessful) return [];
+  const prompts: PromptKey[] = [];
+  if (!isScanJustFinished(page)) prompts.push("review_popup");
+  if (page.plan === PLANS.FREE && page.hasHiddenFindings) prompts.push("upgrade_return");
+  return prompts;
+}
+
+/** What the scan results page knows about itself. */
+export type ScanResultsPage = {
   scanSuccessful: boolean;
   plan: string;
   hasHiddenFindings: boolean;
-}): PromptKey[] {
-  if (!page.scanSuccessful) return [];
-  const prompts: PromptKey[] = ["review_popup"];
-  if (page.plan === PLANS.FREE && page.hasHiddenFindings) prompts.push("upgrade_return");
-  return prompts;
+  /** The scan's completedAt (null: not completed). */
+  scanCompletedAt: Date | null;
+  now: Date;
+};
+
+/** The scan completed less than REVIEW_POPUP_MIN_SCAN_AGE_MS ago. */
+function isScanJustFinished(page: ScanResultsPage): boolean {
+  return (
+    page.scanCompletedAt !== null &&
+    page.now.getTime() - page.scanCompletedAt.getTime() < REVIEW_POPUP_MIN_SCAN_AGE_MS
+  );
+}
+
+/**
+ * Prompts the scan results page DEFERS: it neither renders them nor lets them
+ * block a lower prompt it can render. review_popup on a successful scan that
+ * just finished (the merchant is watching it complete): the return banner may
+ * render meanwhile, and the popup waits for a later visit.
+ */
+export function scanResultsDeferredPrompts(page: ScanResultsPage): PromptKey[] {
+  return page.scanSuccessful && isScanJustFinished(page) ? ["review_popup"] : [];
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +137,11 @@ export type PickPromptInput = PromptCapState & {
   eligibleSince: Partial<Record<PromptKey, Date>>;
   /** The prompts THIS page can render (HOME_PROMPTS / scanResultsPrompts). */
   renderable: readonly PromptKey[];
+  /**
+   * Prompts THIS page deliberately defers (HOME_DEFERRED_PROMPTS /
+   * scanResultsDeferredPrompts): skipped here, never blocking.
+   */
+  deferred: readonly PromptKey[];
   now: Date;
 };
 
@@ -114,7 +150,7 @@ export type PickPromptInput = PromptCapState & {
  * and less than PROMPT_CAP_WINDOW_MS has elapsed. Exactly 24h is expired.
  * A missing key or timestamp means no prompt holds the slot.
  */
-function isWindowOpen(state: PromptCapState, now: Date): boolean {
+export function isPromptWindowOpen(state: PromptCapState, now: Date): boolean {
   if (state.lastPromptKey === null || state.lastPromptShownAt === null) return false;
   return now.getTime() - state.lastPromptShownAt.getTime() < PROMPT_CAP_WINDOW_MS;
 }
@@ -129,15 +165,15 @@ export function isStillBlocking(since: Date | undefined, now: Date): boolean {
 
 /**
  * The prompt this PAGE should consider (before the 24h window), or null.
- * Walks the eligible prompts in priority order: the first one this page can
- * render is the candidate; an earlier one it cannot render blocks (null)
+ * Walks the eligible prompts in priority order, skipping those this page
+ * defers: the first one this page can render is the candidate; an earlier one it cannot render blocks (null)
  * while isStillBlocking, and is skipped once its 7 days are up.
  */
 export function pagePendingPrompt(
-  input: Pick<PickPromptInput, "eligible" | "eligibleSince" | "renderable" | "now">,
+  input: Pick<PickPromptInput, "eligible" | "eligibleSince" | "renderable" | "deferred" | "now">,
 ): PromptKey | null {
   for (const key of PROMPT_KEYS) {
-    if (!input.eligible.includes(key)) continue;
+    if (!input.eligible.includes(key) || input.deferred.includes(key)) continue;
     if (input.renderable.includes(key)) return key;
     if (isStillBlocking(input.eligibleSince[key], input.now)) return null;
   }
@@ -156,7 +192,7 @@ export function pagePendingPrompt(
 export function pickPrompt(input: PickPromptInput): PromptKey | null {
   const candidate = pagePendingPrompt(input);
   if (candidate === null) return null;
-  if (isWindowOpen(input, input.now) && candidate !== input.lastPromptKey) return null;
+  if (isPromptWindowOpen(input, input.now) && candidate !== input.lastPromptKey) return null;
   return candidate;
 }
 
@@ -166,5 +202,5 @@ export function pickPrompt(input: PickPromptInput): PromptKey | null {
  * prompt re-rendering inside its window (the window is NOT extended).
  */
 export function promptClaimNeeded(picked: PromptKey, state: PromptCapState, now: Date): boolean {
-  return picked !== state.lastPromptKey || !isWindowOpen(state, now);
+  return picked !== state.lastPromptKey || !isPromptWindowOpen(state, now);
 }

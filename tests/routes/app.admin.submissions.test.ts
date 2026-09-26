@@ -94,7 +94,6 @@ const SAMPLE_SHOP = {
   plan: "professional",
   installedAt: new Date(),
   lastThemePublishAt: null,
-  hasSeenReviewPrompt: false,
 };
 
 const SAMPLE_STATS = { total: 10, pending: 4, accepted: 5, rejected: 1 };
