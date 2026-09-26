@@ -1062,7 +1062,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // gc-97k.9: "Not now" on the return-visit upgrade banner.
   if (intent === "dismiss-upgrade-return") {
-    await dismissUpgradeReturn(session.shop, new Date());
+    await dismissUpgradeReturn(session.shop, shop, new Date());
     return { success: true, dismissed: "upgrade-return" as const };
   }
 

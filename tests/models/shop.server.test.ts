@@ -1410,24 +1410,75 @@ describe("recordUpgradeReturnDismissal", () => {
     vi.clearAllMocks();
   });
 
-  it("increments the count atomically in SQL and stamps the dismissal in one statement", async () => {
-    const now = new Date("2026-09-26T12:00:00Z");
+  const now = new Date("2026-09-26T12:00:00Z");
+  const shownAt = new Date("2026-09-26T09:00:00Z");
+  const DAY_MS = 24 * 60 * 60 * 1000;
+
+  // Changed on purpose (audit 1 #8): the dismissal used to increment
+  // unconditionally (`where: { domain }`), so every submit counted. It now
+  // counts only inside the open episode it read, once per episode.
+  it("counts only inside the open episode it read: pinned episode + 24h window, one statement", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
 
-    await recordUpgradeReturnDismissal("s.myshopify.com", now);
+    await expect(
+      recordUpgradeReturnDismissal(
+        "s.myshopify.com",
+        { upgradeReturnLastShownAt: shownAt, upgradeReturnLastDismissedAt: null },
+        now,
+        DAY_MS,
+      ),
+    ).resolves.toBe(true);
 
     expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
-      where: { domain: "s.myshopify.com" },
+      where: {
+        domain: "s.myshopify.com",
+        upgradeReturnLastShownAt: { equals: shownAt, gt: new Date(now.getTime() - DAY_MS) },
+        upgradeReturnLastDismissedAt: null,
+      },
       data: { upgradeReturnDismissCount: { increment: 1 }, upgradeReturnLastDismissedAt: now },
     });
+  });
+
+  it("pins a previous episode's dismissal time (dismissed earlier, re-shown since)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    const earlier = new Date("2026-09-18T09:00:00Z");
+
+    await recordUpgradeReturnDismissal(
+      "s.myshopify.com",
+      { upgradeReturnLastShownAt: shownAt, upgradeReturnLastDismissedAt: earlier },
+      now,
+      DAY_MS,
+    );
+
+    expect(mockDb.shop.updateMany.mock.calls[0][0].where.upgradeReturnLastDismissedAt).toEqual(
+      earlier,
+    );
+  });
+
+  it("returns false when the episode changed underneath (count 0)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+
+    await expect(
+      recordUpgradeReturnDismissal(
+        "s.myshopify.com",
+        { upgradeReturnLastShownAt: shownAt, upgradeReturnLastDismissedAt: null },
+        now,
+        DAY_MS,
+      ),
+    ).resolves.toBe(false);
   });
 
   it("propagates a DB error (the service logs it)", async () => {
     mockDb.shop.updateMany.mockRejectedValue(new Error("db down"));
 
-    await expect(recordUpgradeReturnDismissal("s.myshopify.com", new Date())).rejects.toThrow(
-      "db down",
-    );
+    await expect(
+      recordUpgradeReturnDismissal(
+        "s.myshopify.com",
+        { upgradeReturnLastShownAt: shownAt, upgradeReturnLastDismissedAt: null },
+        now,
+        DAY_MS,
+      ),
+    ).rejects.toThrow("db down");
   });
 });

@@ -507,19 +507,43 @@ export async function startUpgradeReturnEpisode(domain: string, now: Date): Prom
 }
 
 /**
- * Record a "Not now" on the return-visit upgrade nudge (gc-97k.9) in ONE
- * statement: the count increments in SQL (`SET count = count + 1`), so
- * concurrent dismissals never lose an increment, and upgradeReturnLastDismissedAt
- * ends the current episode. A missing shop row is a safe no-op.
+ * Record a "Not now" on the return-visit upgrade nudge (gc-97k.9), counting at
+ * most ONCE per episode, in ONE conditional statement.
+ *
+ * `episode` is the OPEN episode the caller read (the service checks
+ * isUpgradeReturnEpisodeOpen first). The where clause pins both episode
+ * columns to exactly those values AND re-checks in SQL that the episode
+ * started less than `windowMs` before `now`, so the row can only match while
+ * that same episode is still open and undismissed:
+ *   - a repeated submit re-reads a dismissal at or after the start: closed,
+ *     and the service never calls this;
+ *   - concurrent submits that read the same state race on the compare-and-set:
+ *     the first ends the episode (lastDismissedAt changes), so the rest match
+ *     nothing (count 0).
+ * The winner increments the count in SQL (`count = count + 1`) and stamps the
+ * dismissal. Returns true IFF this call counted. A missing row is a safe false.
  */
-export async function recordUpgradeReturnDismissal(domain: string, now: Date): Promise<void> {
-  await db.shop.updateMany({
-    where: { domain },
+export async function recordUpgradeReturnDismissal(
+  domain: string,
+  episode: { upgradeReturnLastShownAt: Date; upgradeReturnLastDismissedAt: Date | null },
+  now: Date,
+  windowMs: number,
+): Promise<boolean> {
+  const { count } = await db.shop.updateMany({
+    where: {
+      domain,
+      upgradeReturnLastShownAt: {
+        equals: episode.upgradeReturnLastShownAt,
+        gt: new Date(now.getTime() - windowMs),
+      },
+      upgradeReturnLastDismissedAt: episode.upgradeReturnLastDismissedAt,
+    },
     data: {
       upgradeReturnDismissCount: { increment: 1 },
       upgradeReturnLastDismissedAt: now,
     },
   });
+  return count === 1;
 }
 
 /**

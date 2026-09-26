@@ -2569,24 +2569,51 @@ describe("UpgradeReturnBanner (gc-97k.9)", () => {
 });
 
 describe("app.scans.$scanId action: dismiss-upgrade-return (gc-97k.9)", () => {
+  // An episode the action reads as open: started an hour ago, not dismissed.
+  const shownAt = new Date(Date.now() - 60 * 60 * 1000);
+
   beforeEach(() => {
     mockClaimShopStamp.mockResolvedValue(true);
-    mockRecordDismissal.mockResolvedValue(undefined);
+    mockRecordDismissal.mockResolvedValue(true);
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, upgradeReturnLastShownAt: shownAt });
   });
 
-  it("records the dismissal for the SESSION shop and claims `dismissed` once", async () => {
+  it("records the dismissal for the SESSION shop's open episode and claims `dismissed` once", async () => {
     const result = await action(
       makeActionArgs({ intent: "dismiss-upgrade-return", shop: "attacker.myshopify.com" }),
     );
 
     expect(result).toEqual({ success: true, dismissed: "upgrade-return" });
     expect(mockRecordDismissal).toHaveBeenCalledTimes(1);
-    expect(mockRecordDismissal).toHaveBeenCalledWith(SHOP.domain, expect.any(Date));
+    expect(mockRecordDismissal).toHaveBeenCalledWith(
+      SHOP.domain,
+      { upgradeReturnLastShownAt: shownAt, upgradeReturnLastDismissedAt: null },
+      expect.any(Date),
+      24 * 60 * 60 * 1000,
+    );
     expect(mockClaimShopStamp).toHaveBeenCalledWith(
       SHOP.domain,
       "upgradeReturnDismissedAt",
       undefined,
     );
+  });
+
+  it("no open episode (never shown): succeeds without writing or claiming", async () => {
+    mockGetShopMetadata.mockResolvedValue(SHOP);
+
+    const result = await action(makeActionArgs({ intent: "dismiss-upgrade-return" }));
+
+    expect(result).toEqual({ success: true, dismissed: "upgrade-return" });
+    expect(mockRecordDismissal).not.toHaveBeenCalled();
+    expect(mockClaimShopStamp).not.toHaveBeenCalled();
+  });
+
+  it("a lost compare-and-set (another tab counted it) claims nothing", async () => {
+    mockRecordDismissal.mockResolvedValue(false);
+
+    await action(makeActionArgs({ intent: "dismiss-upgrade-return" }));
+
+    expect(mockClaimShopStamp).not.toHaveBeenCalled();
   });
 
   it("still succeeds (logged) when the write fails", async () => {
