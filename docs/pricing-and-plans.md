@@ -30,8 +30,10 @@ Return-visit banner (gc-97k.9, Free only): on a later results visit (first succe
 1. First scan always free
 2. 1 scan per month after first
 3. Findings grouped by impact, with counts
-4. Preview of top finding in full
+4. Up to 5 findings shown in full
 5. Single theme scanning
+
+> Owner action after deploy: paste bullet 4 ("Up to 5 findings shown in full", 30 of 40 chars) into the Managed Pricing Free plan card in the Partner Dashboard, replacing "Preview of top finding in full". It matches the in-app Settings Free tile (gc-97k.10: up to 5 findings, never more than half).
 
 ### Standard ($9/mo, 7-day free trial)
 

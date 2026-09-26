@@ -339,7 +339,7 @@ export default function Settings() {
                 <s-list-item>First scan always free</s-list-item>
                 <s-list-item>1 scan per month after first</s-list-item>
                 <s-list-item>Findings grouped by impact, with counts</s-list-item>
-                <s-list-item>Preview of top finding in full</s-list-item>
+                <s-list-item>Up to 5 findings shown in full</s-list-item>
                 <s-list-item>Single theme scanning</s-list-item>
               </s-unordered-list>
             </div>

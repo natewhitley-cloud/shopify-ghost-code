@@ -312,6 +312,30 @@ describe("Settings plan tile buttons", () => {
     expect(bullets(html)).toContain("Scan diffing (New/Resolved)");
   });
 
+  it("the Free tile lists the owner-approved bullets, identical to the doc's App listing features", async () => {
+    const freeTile = bullets(renderSettings("free", true)).slice(0, 5);
+    expect(freeTile).toEqual([
+      "First scan always free",
+      "1 scan per month after first",
+      "Findings grouped by impact, with counts",
+      "Up to 5 findings shown in full",
+      "Single theme scanning",
+    ]);
+    expect(freeTile).not.toContain("Preview of top finding in full");
+    for (const b of freeTile) {
+      expect(b.length).toBeLessThanOrEqual(40); // Managed Pricing card limit
+      expect(b).not.toMatch(/[\u2013\u2014]/);
+    }
+
+    // Kept in sync with docs/pricing-and-plans.md, which the owner pastes into
+    // the Managed Pricing Free plan card.
+    const { readFileSync } = await import("node:fs");
+    const doc = readFileSync(new URL("../../docs/pricing-and-plans.md", import.meta.url), "utf8");
+    const listing = doc.slice(doc.indexOf("**App listing features (max 40 chars each):**"));
+    const docBullets = [...listing.matchAll(/^\d\. (.+)$/gm)].slice(0, 5).map((m) => m[1]);
+    expect(docBullets).toEqual(freeTile);
+  });
+
   it("every plan button links top-level to the Managed Pricing page", () => {
     const html = renderSettings("free", true);
     const pricingAnchors = (html.match(/<a [^>]*>/g) ?? []).filter((a) =>
