@@ -47,14 +47,18 @@
  *   A RAW-refresh 200 means the app is STILL INSTALLED; Shopify ROTATES the
  *   offline refresh token on that success, so rawRefreshProbe stores the rotated
  *   session and the shop is treated as installed (never marked).
- *   TOKEN EXPIRED (gc-gre): a shop whose offline Session's `refreshTokenExpires`
- *   is already in the past is classified `token_expired` BEFORE any probe and is
- *   never probed and never marked. Its offline token can no longer be refreshed,
- *   so every probe of it fails in a way that proves nothing about the install
- *   (the raw refresh returns a 401 with no recognized error body, which is
- *   "ambiguous"). It is dormant, not uninstalled; it is counted separately so it
- *   stops inflating skipped-transient every day. A null `refreshTokenExpires`
- *   (non-expiring legacy offline token) is unaffected and probes as before.
+ *   TOKEN EXPIRED (gc-gre, audit fix): a shop whose offline Session's
+ *   `refreshTokenExpires` is already in the past can no longer refresh its
+ *   token, so an Admin API probe is pointless and a refresh rejection proves
+ *   nothing about the install (a 401 there is expected either way). It is
+ *   still probed with the RAW refresh alone (no Admin API call), because one
+ *   answer IS definitive for any shop: a 404 means the store is gone, and the
+ *   shop is marked uninstalled like any other. ANY other outcome (401 with any
+ *   body, 400, 5xx, network error, no session, and even a 200, whose rotated
+ *   session is still stored) is `token_expired`: dormant, never marked, and
+ *   counted separately so it stops inflating skipped-transient every day (see
+ *   classifyExpiredTokenRefresh). A null `refreshTokenExpires` (non-expiring
+ *   legacy offline token) is unaffected and probes as before.
  *   EVERYTHING else — throttling (429 / THROTTLED), network errors, timeouts, 5xx
  *   (including the library's `new Response(500)` refresh wrapper AND a raw-refresh
  *   5xx), a missing session (SessionNotFoundError), or any ambiguous/unexpected
@@ -164,10 +168,26 @@ export type InstallStatus = "installed" | "uninstalled" | "ambiguous";
 
 /**
  * A shop's classification this run: a probe result, or `token_expired` for a
- * shop that was deliberately NOT probed because its offline refresh token has
- * already expired (gc-gre). `token_expired` is never marked.
+ * shop whose offline refresh token has already expired and whose raw refresh
+ * returned anything but a 404 (gc-gre). `token_expired` is never marked.
  */
 export type ReconcileOutcome = InstallStatus | "token_expired";
+
+/**
+ * Classify an EXPIRED-refresh-token shop's raw refresh (gc-gre audit fix).
+ * `status` is the HTTP status of POST /admin/oauth/access_token, or null when
+ * no request completed (invalid domain, no session / refresh token, network
+ * error).
+ *   - 404 → "uninstalled": the store is gone. Shop-specific (a bad shared
+ *     client secret never turns every store into a 404), so it is as
+ *     definitive here as for any shop.
+ *   - anything else → "token_expired": the refresh was expected to fail, so a
+ *     401 / 400 (whatever its body), a 5xx, no request, or even a 200 proves
+ *     nothing about the install. Never marked.
+ */
+export function classifyExpiredTokenRefresh(status: number | null): ReconcileOutcome {
+  return status === 404 ? "uninstalled" : "token_expired";
+}
 
 /**
  * True when an offline session's refresh token has already expired, so the
@@ -373,44 +393,21 @@ async function markUninstalled(domain: string): Promise<void> {
   });
 }
 
+/** What one raw offline-token refresh request produced (rawRefresh). */
+type RawRefreshResult =
+  /** No request completed: invalid domain, no session / refresh token, or a network error. */
+  | { outcome: "not_sent" }
+  /** HTTP 200: still installed; the rotated session was stored (or its store failed, logged). */
+  | { outcome: "installed" }
+  /** Any non-200, with its parsed JSON body (null when absent or not JSON). */
+  | { outcome: "rejected"; status: number; body: unknown };
+
 /**
- * RAW offline-token refresh probe — the disambiguator for a MASKED
- * unauthenticated.admin failure, and the ONLY code path that reaches it.
- *
- * WHY THIS EXISTS: the library's `refreshToken` helper wraps ANY refresh failure
- * that is not `invalid_subject_token` as a generic `new Response(500)`. So the
- * common expired-token uninstall — Shopify replying HTTP 401
- * `{error:"invalid_request", "requires an active refresh_token"}` (or 404 for a
- * closed store) — is masked as a 500 and never matches isRefreshTokenRejected.
- * This probe re-issues the refresh directly against Shopify and reads the REAL
- * status, so a genuine uninstall isn't misclassified "ambiguous" and skipped.
- *
- * ROTATION-STORE INVARIANT (do not remove): Shopify ROTATES the offline refresh
- * token on a SUCCESSFUL (HTTP 200) refresh — the response body carries a fresh
- * `refresh_token`, and the library's create-session.js persists it. Because this
- * probe issues that refresh itself, on a 200 it MUST write the rotated tokens
- * back to session storage. If it doesn't, the stored refresh_token is now stale
- * and a LATER reconciler run would get a definitive rejection and FALSE-CHURN a
- * live, still-installed merchant. A store failure must NOT churn: on a 200 we
- * always return "installed" even if storeSession throws.
- *
- * Status mapping (via classifyRefreshRejection for non-200): 200 → installed
- * (rotated session stored); 404 → uninstalled (store gone); 401/400 → uninstalled
- * ONLY if the body positively names a refresh-token/subject rejection
- * (invalid_grant / invalid_subject_token / invalid_request+"refresh_token"),
- * else ambiguous (invalid_client and unrecognized/absent bodies = OUR credential
- * problem, NEVER mark); no session or no refreshToken → ambiguous (can't probe);
- * network throw or any other status (5xx, ...) → ambiguous. Never marks; the
- * caller marks on "uninstalled".
- *
- * DOMAIN GUARD: `domain` comes off the Shop row, and this probe POSTs the
- * shared `client_secret` to `https://${domain}/...`. Before any fetch,
- * `domain` must match MYSHOPIFY_DOMAIN_PATTERN — a mismatch (a non-Shopify
- * host, or a lookalike such as `shop.myshopify.com.evil.com`) means the row is
- * corrupt or hostile, so the probe skips the request entirely (ambiguous)
- * rather than ever sending our credential to an arbitrary host.
+ * Issue one RAW offline-token refresh (see rawRefreshProbe for WHY) and report
+ * what happened, without classifying a rejection. Owns the domain guard and the
+ * rotation-store invariant, so both probes below share them. Never throws.
  */
-async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
+async function rawRefresh(domain: string): Promise<RawRefreshResult> {
   if (!isValidMyshopifyDomain(domain)) {
     // Log `domain` as a STRUCTURED field (JSON-encoded by the logger, so it is
     // safe from log injection) — otherwise a corrupt row is untraceable while
@@ -420,7 +417,7 @@ async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
       function: "reconcile-installs",
       domain,
     });
-    return "ambiguous";
+    return { outcome: "not_sent" };
   }
 
   const { sessionStorage } = await import("../../app/shopify.server");
@@ -434,7 +431,7 @@ async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
         domain,
       },
     );
-    return "ambiguous";
+    return { outcome: "not_sent" };
   }
 
   let res: Response;
@@ -456,7 +453,7 @@ async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
       domain,
       reason: err instanceof Error ? err.message : String(err),
     });
-    return "ambiguous";
+    return { outcome: "not_sent" };
   }
 
   const status = res.status;
@@ -516,30 +513,95 @@ async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
         },
       );
     }
-    return "installed";
+    return { outcome: "installed" };
   }
 
-  // Non-200: read the body and classify. Marking "uninstalled" requires a
-  // shop-specific signal (404, or a refresh-token/subject rejection in the body).
-  // A credential-wide error (invalid_client, or an unparseable/absent body) is
-  // AMBIGUOUS and never marks — this is the guard against a bad shared
-  // client_secret 400/401-ing the whole active base into a mass churn.
+  // Non-200: read the body for the caller to classify.
   let body: unknown = null;
   try {
     body = await res.json();
   } catch {
-    // Non-JSON error page (proxy/edge) → body stays null → classified ambiguous
-    // on 401/400. (404 is uninstalled regardless of body.)
+    // Non-JSON error page (proxy/edge) → body stays null.
     body = null;
   }
+  return { outcome: "rejected", status, body };
+}
 
-  const classification = classifyRefreshRejection(status, body);
+/**
+ * RAW offline-token refresh probe — the disambiguator for a MASKED
+ * unauthenticated.admin failure. (The expired-token probe, probeExpiredTokenShop,
+ * issues the same request through rawRefresh but classifies it differently.)
+ *
+ * WHY THIS EXISTS: the library's `refreshToken` helper wraps ANY refresh failure
+ * that is not `invalid_subject_token` as a generic `new Response(500)`. So the
+ * common expired-token uninstall — Shopify replying HTTP 401
+ * `{error:"invalid_request", "requires an active refresh_token"}` (or 404 for a
+ * closed store) — is masked as a 500 and never matches isRefreshTokenRejected.
+ * This probe re-issues the refresh directly against Shopify and reads the REAL
+ * status, so a genuine uninstall isn't misclassified "ambiguous" and skipped.
+ *
+ * ROTATION-STORE INVARIANT (do not remove): Shopify ROTATES the offline refresh
+ * token on a SUCCESSFUL (HTTP 200) refresh — the response body carries a fresh
+ * `refresh_token`, and the library's create-session.js persists it. Because this
+ * probe issues that refresh itself, on a 200 it MUST write the rotated tokens
+ * back to session storage. If it doesn't, the stored refresh_token is now stale
+ * and a LATER reconciler run would get a definitive rejection and FALSE-CHURN a
+ * live, still-installed merchant. A store failure must NOT churn: on a 200 we
+ * always return "installed" even if storeSession throws.
+ *
+ * Status mapping (via classifyRefreshRejection for non-200): 200 → installed
+ * (rotated session stored); 404 → uninstalled (store gone); 401/400 → uninstalled
+ * ONLY if the body positively names a refresh-token/subject rejection
+ * (invalid_grant / invalid_subject_token / invalid_request+"refresh_token"),
+ * else ambiguous (invalid_client and unrecognized/absent bodies = OUR credential
+ * problem, NEVER mark); no session or no refreshToken → ambiguous (can't probe);
+ * network throw or any other status (5xx, ...) → ambiguous. Never marks; the
+ * caller marks on "uninstalled".
+ *
+ * DOMAIN GUARD: `domain` comes off the Shop row, and this probe POSTs the
+ * shared `client_secret` to `https://${domain}/...`. Before any fetch,
+ * `domain` must match MYSHOPIFY_DOMAIN_PATTERN — a mismatch (a non-Shopify
+ * host, or a lookalike such as `shop.myshopify.com.evil.com`) means the row is
+ * corrupt or hostile, so the probe skips the request entirely (ambiguous)
+ * rather than ever sending our credential to an arbitrary host.
+ */
+async function rawRefreshProbe(domain: string): Promise<InstallStatus> {
+  const result = await rawRefresh(domain);
+  if (result.outcome === "not_sent") return "ambiguous";
+  if (result.outcome === "installed") return "installed";
+
+  // Non-200: marking "uninstalled" requires a shop-specific signal (404, or a
+  // refresh-token/subject rejection in the body). A credential-wide error
+  // (invalid_client, or an unparseable/absent body) is AMBIGUOUS and never
+  // marks: this is the guard against a bad shared client_secret 400/401-ing
+  // the whole active base into a mass churn.
+  const classification = classifyRefreshRejection(result.status, result.body);
   logger.info("reconcile-installs: raw refresh probe classified", {
+    function: "reconcile-installs",
+    domain,
+    status: result.status,
+    classification,
+    error: bodyStringField(result.body, "error"),
+  });
+  return classification;
+}
+
+/**
+ * Probe an EXPIRED-refresh-token shop (gc-gre audit fix): the raw refresh
+ * alone, no Admin API call (its token cannot be refreshed, so an Admin probe
+ * would only fail). Only a 404 marks; see classifyExpiredTokenRefresh. A 200
+ * still stores the rotated session (inside rawRefresh).
+ */
+async function probeExpiredTokenShop(domain: string): Promise<ReconcileOutcome> {
+  const result = await rawRefresh(domain);
+  const status =
+    result.outcome === "rejected" ? result.status : result.outcome === "installed" ? 200 : null;
+  const classification = classifyExpiredTokenRefresh(status);
+  logger.info("reconcile-installs: expired refresh token probed (raw refresh only)", {
     function: "reconcile-installs",
     domain,
     status,
     classification,
-    error: bodyStringField(body, "error"),
   });
   return classification;
 }
@@ -662,26 +724,20 @@ export const reconcileInstalls = inngest.createFunction(
 
     // --- Pass 1: PROBE (classify only, mark NOTHING) -----------------------
     // One step per shop so a mid-run failure/retry resumes without re-probing
-    // completed shops. probeInstall never marks; it may store a rotated session
+    // completed shops. Neither probe marks; each may store a rotated session
     // on a 200 (safe, and itself prevents a future false-churn). A shop whose
-    // refresh token has expired is classified token_expired WITHOUT a probe
-    // (no API call, no step, no pause): it can never be marked (gc-gre).
-    // `refreshTokenExpired` is optional only so a get-active-shops result
-    // memoized by pre-gc-gre code replays as "not expired" (probe as before).
+    // refresh token has expired gets the raw refresh ONLY (no Admin API call):
+    // a 404 is "uninstalled", anything else "token_expired" (gc-gre, see
+    // classifyExpiredTokenRefresh). `refreshTokenExpired` is optional only so a
+    // get-active-shops result memoized by pre-gc-gre code replays as "not
+    // expired" (probe as before).
     const probes: Array<{ domain: string; classification: ReconcileOutcome }> = [];
     for (let i = 0; i < shops.length; i++) {
-      if (shops[i].refreshTokenExpired === true) {
-        logger.info("reconcile-installs: offline refresh token expired — not probed (dormant)", {
-          function: "reconcile-installs",
-          domain: shops[i].domain,
-        });
-        probes.push({ domain: shops[i].domain, classification: "token_expired" });
-        continue;
-      }
+      const { domain, refreshTokenExpired } = shops[i];
       const classification = (await step.run(`probe-shop-${i}`, () =>
-        probeInstall(shops[i].domain),
-      )) as InstallStatus;
-      probes.push({ domain: shops[i].domain, classification });
+        refreshTokenExpired === true ? probeExpiredTokenShop(domain) : probeInstall(domain),
+      )) as ReconcileOutcome;
+      probes.push({ domain, classification });
 
       // Brief pause between shops (skipped after the last) — rate-limit headroom.
       if (i < shops.length - 1) {
@@ -701,15 +757,17 @@ export const reconcileInstalls = inngest.createFunction(
     // upstream and counted in `skipped`), so a network blip or throttle never
     // adds to it. The abort OpsEvent metadata carries `probed` and `skipped` so
     // the operator digest can show the denominator the breaker used.
-    // Token-expired shops were never probed, so like skipped (ambiguous) shops
-    // they carry no signal: both are excluded from the probed denominator. That
-    // only shrinks `probed`, which can only make the breaker trip MORE readily.
-    const unclassified = skipped + tokenExpired;
-    const probed = checked - unclassified;
+    // Token-expired shops ARE probed (raw refresh) and definitively classified
+    // (404 = uninstalled, else token_expired), so they count in the probed
+    // denominator like any other classified shop; only ambiguous (skipped)
+    // shops are excluded. With dormant shops in the base this makes `probed`
+    // (and so the fraction threshold) larger than excluding them would: the
+    // honest denominator, not a stricter one.
+    const probed = checked - skipped;
     const churnThreshold = circuitBreakerThreshold(probed);
     const tripped = shouldTripCircuitBreaker({
       checked,
-      skipped: unclassified,
+      skipped,
       wouldMark: wouldMark.length,
     });
     if (tripped) {

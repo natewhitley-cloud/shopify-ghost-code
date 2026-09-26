@@ -82,6 +82,7 @@ import {
   isDefinitiveAuthFailure,
   isRefreshTokenRejected,
   isValidMyshopifyDomain,
+  classifyExpiredTokenRefresh,
   formatReconcileSummary,
   isRefreshTokenExpired,
   reconcileInstalls,
@@ -1497,17 +1498,44 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
     });
   });
 
-  it("classifies an expired refresh token as token_expired: never probed, never marked, counted separately", async () => {
+  // Replaces the vacuous "never probed, never marked" test (audit 2 #1): an
+  // expired-token shop IS probed with the raw refresh, and a 404 vs anything
+  // else is the whole decision.
+  it("expired + raw refresh 404 (store gone): MARKED uninstalled, no Admin API call", async () => {
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: EXPIRED },
+      { id: "s2", domain: "live1.myshopify.com" },
+      { id: "s3", domain: "live2.myshopify.com" },
+    ]);
+    sessionsFor([[EXPIRED, PAST]]);
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({}), { status: 404 }));
+    mockAdmin.mockResolvedValue(adminGraphql(async () => ({ status: 200 })));
+
+    const result = await runReconcile();
+
+    expect(mockAdmin).not.toHaveBeenCalledWith(EXPIRED); // no Admin API call for it
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockFetch.mock.calls[0][0]).toBe(`https://${EXPIRED}/admin/oauth/access_token`);
+    expect(mockMark).toHaveBeenCalledTimes(1);
+    expect(mockMark).toHaveBeenCalledWith(
+      EXPIRED,
+      expect.objectContaining({ source: "reconciler" }),
+    );
+    expect(result).toMatchObject({ status: "completed", checked: 3, marked: 1, tokenExpired: 0 });
+  });
+
+  it("expired + raw refresh 401 with an unknown body: token_expired, NOT marked, counted", async () => {
     mockFindMany.mockResolvedValue([{ id: "s1", domain: EXPIRED }]);
     sessionsFor([[EXPIRED, PAST]]);
-    maskedWithUnrecognized401(); // what a probe WOULD hit (the daily "transient" skip)
+    maskedWithUnrecognized401();
 
     const result = await runReconcile();
 
     expect(mockAdmin).not.toHaveBeenCalled(); // no Admin API call
-    expect(mockFetch).not.toHaveBeenCalled(); // no raw refresh probe
+    expect(mockFetch).toHaveBeenCalledTimes(1); // the raw refresh IS issued
     expect(mockMark).not.toHaveBeenCalled();
-    expect(mockSendOpsAlert).not.toHaveBeenCalled(); // a dormant shop never trips the breaker
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
     expect(result).toMatchObject({
       status: "completed",
       checked: 1,
@@ -1521,6 +1549,72 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
       message: "reconcile: checked 1, marked 0, skipped-transient 0, token-expired (dormant) 1",
       metadata: { checked: 1, marked: 0, skipped: 0, tokenExpired: 1 },
     });
+  });
+
+  it.each([
+    [
+      "401 with the refresh-token body that marks an UNEXPIRED shop",
+      401,
+      {
+        error: "invalid_request",
+        error_description: "This request requires an active refresh_token",
+      },
+    ],
+    ["400 invalid_grant", 400, { error: "invalid_grant" }],
+    ["500", 500, {}],
+  ])("expired + raw refresh %s: token_expired, never marked", async (_label, status, body) => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: EXPIRED }]);
+    sessionsFor([[EXPIRED, PAST]]);
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue(new Response(JSON.stringify(body), { status }));
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ marked: 0, skipped: 0, tokenExpired: 1 });
+  });
+
+  it("expired + no session / network error: token_expired, never marked", async () => {
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: EXPIRED },
+      { id: "s2", domain: "net-expired.myshopify.com" },
+    ]);
+    sessionsFor([
+      [EXPIRED, PAST],
+      ["net-expired.myshopify.com", PAST],
+    ]);
+    mockLoadSession.mockImplementation(async (id: string) =>
+      id === `offline_${EXPIRED}` ? undefined : fakeOfflineSession(),
+    );
+    mockFetch.mockRejectedValue(new Error("ECONNRESET"));
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 2, marked: 0, skipped: 0, tokenExpired: 2 });
+  });
+
+  it("expired + raw refresh 200: stores the rotated session and stays token_expired", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: EXPIRED }]);
+    sessionsFor([[EXPIRED, PAST]]);
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue(
+      new Response(
+        JSON.stringify({
+          access_token: "new-access",
+          expires_in: 3600,
+          refresh_token: "new-refresh",
+          refresh_token_expires_in: 7776000,
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const result = await runReconcile();
+
+    expect(mockStoreSession).toHaveBeenCalledTimes(1); // rotation-store invariant kept
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ marked: 0, tokenExpired: 1 });
   });
 
   it("still probes an UNEXPIRED token, and an unrecognized raw-refresh 401 stays ambiguous (skipped)", async () => {
@@ -1597,10 +1691,12 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
     expect(result).toMatchObject({ checked: 3, marked: 1, skipped: 0, tokenExpired: 1 });
   });
 
-  it("excludes token-expired shops from the breaker's probed base (trips on 100% of the PROBED shops)", async () => {
-    // 3 active: 1 dormant + 2 classified uninstalled. probed = 3 - 0 - 1 = 2
-    // and 2 of 2 would mark: the systemic signature, so abort and mark NOTHING.
-    // (Counting the dormant shop as probed would hide it: 2 of 3, no trip.)
+  // Changed on purpose (audit 2 #3): token-expired shops are now PROBED and
+  // definitively classified, so they count in the breaker's denominator like
+  // any shop. Here 1 dormant + 2 uninstalled of 3: probed = 3, 2 < threshold 3,
+  // so both real uninstalls ARE marked (the old rule excluded the dormant shop,
+  // saw 2 of 2 and paged instead).
+  it("counts token-expired shops as PROBED in the breaker's base (3 active, 1 dormant, 2 uninstalled)", async () => {
     mockFindMany.mockResolvedValue([
       { id: "s1", domain: EXPIRED },
       { id: "s2", domain: "dead1.myshopify.com" },
@@ -1615,22 +1711,87 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
 
     const result = await runReconcile();
 
-    expect(mockMark).not.toHaveBeenCalled();
-    expect(result).toMatchObject({ status: "aborted-circuit-breaker", checked: 3, wouldMark: 2 });
-    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        eventType: "reconcile_aborted",
-        message: expect.stringContaining("(3 active, 0 skipped, 1 token-expired)"),
-        metadata: {
-          checked: 3,
-          probed: 2,
-          skipped: 0,
-          tokenExpired: 1,
-          wouldMark: 2,
-          threshold: 3,
-        },
-      }),
-    );
+    expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    expect(mockMark).toHaveBeenCalledTimes(2);
+    expect(result).toMatchObject({ status: "completed", checked: 3, marked: 2, tokenExpired: 1 });
+  });
+
+  describe("the breaker with the real numbers (12 active, 1 dormant)", () => {
+    const LIVE = Array.from({ length: 11 }, (_, i) => `live${i}.myshopify.com`);
+
+    function base(deadCount: number) {
+      mockFindMany.mockResolvedValue([
+        { id: "s0", domain: EXPIRED },
+        ...LIVE.map((domain, i) => ({ id: `s${i + 1}`, domain })),
+      ]);
+      sessionsFor([[EXPIRED, PAST]]);
+      maskedWithUnrecognized401(); // what the dormant shop's raw refresh returns
+      const dead = new Set(LIVE.slice(0, deadCount));
+      mockAdmin.mockImplementation(async (domain: string) =>
+        dead.has(domain)
+          ? adminGraphql(async () => {
+              throw { response: { code: 401 } };
+            })
+          : adminGraphql(async () => ({ status: 200 })),
+      );
+    }
+
+    it("an ordinary day: nothing marked, the dormant shop counted, no page", async () => {
+      base(0);
+
+      const result = await runReconcile();
+
+      expect(result).toMatchObject({
+        status: "completed",
+        checked: 12,
+        marked: 0,
+        skipped: 0,
+        tokenExpired: 1,
+      });
+      expect(mockSendOpsAlert).not.toHaveBeenCalled();
+    });
+
+    it("5 real uninstalls: below half of 12 probed, all 5 marked", async () => {
+      base(5);
+
+      const result = await runReconcile();
+
+      expect(result).toMatchObject({
+        status: "completed",
+        checked: 12,
+        marked: 5,
+        tokenExpired: 1,
+      });
+    });
+
+    it("6 classified uninstalled: trips at half of 12 PROBED (the dormant shop is in the denominator)", async () => {
+      base(6);
+
+      const result = await runReconcile();
+
+      expect(mockMark).not.toHaveBeenCalled();
+      expect(result).toMatchObject({
+        status: "aborted-circuit-breaker",
+        checked: 12,
+        wouldMark: 6,
+      });
+      expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+        expect.objectContaining({
+          eventType: "reconcile_aborted",
+          message: expect.stringContaining(
+            "6 of 12 probed (12 active, 0 skipped, 1 token-expired)",
+          ),
+          metadata: {
+            checked: 12,
+            probed: 12,
+            skipped: 0,
+            tokenExpired: 1,
+            wouldMark: 6,
+            threshold: 6,
+          },
+        }),
+      );
+    });
   });
 
   it("replays a get-active-shops result memoized by pre-gc-gre code (no flag) as not expired", async () => {
@@ -1653,4 +1814,17 @@ describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
 
     expect(mockSessionFindMany).not.toHaveBeenCalled();
   });
+});
+
+describe("classifyExpiredTokenRefresh (gc-gre audit fix)", () => {
+  it("404 (store gone) is uninstalled", () => {
+    expect(classifyExpiredTokenRefresh(404)).toBe("uninstalled");
+  });
+
+  it.each([200, 400, 401, 403, 429, 500, 503, null])(
+    "%s is token_expired (never marked)",
+    (status) => {
+      expect(classifyExpiredTokenRefresh(status)).toBe("token_expired");
+    },
+  );
 });

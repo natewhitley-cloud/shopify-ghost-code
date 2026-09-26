@@ -1142,8 +1142,9 @@ export type ReconcilerStatus =
       checked: number;
       marked: number;
       skipped: number;
-      /** Dormant shops not probed (expired refresh token, gc-gre). Absent on
-       * rows written before gc-gre, which then render without that segment. */
+      /** Dormant shops (expired refresh token, gc-gre): raw-refresh probed, not
+       * a 404, so never marked. Absent on rows written before gc-gre, which
+       * then render without that segment. */
       tokenExpired?: number;
     }
   | {
@@ -1509,8 +1510,9 @@ export function buildDigestBody(data: OperatorDigestData): string {
         `  ${r.at}: ABORTED by circuit breaker (would have marked ${r.wouldMark} of ${basis}); nothing marked`,
       );
     } else {
-      // token-expired (dormant) shops are never probed or marked (gc-gre); the
-      // segment is omitted for summary rows written before it was recorded.
+      // token-expired (dormant) shops are raw-refresh probed and never marked
+      // unless the store is gone (a 404 counts as marked, not here) (gc-gre);
+      // the segment is omitted for summary rows written before it was recorded.
       const expired =
         r.tokenExpired !== undefined ? `, token-expired (dormant) ${r.tokenExpired}` : "";
       lines.push(
