@@ -10,7 +10,7 @@ import {
   OPTIONAL_SCOPES,
 } from "../lib/optional-scopes";
 import { PLANS } from "../lib/plans";
-import { upgradeCtaLabel } from "../lib/trial-cta";
+import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "../lib/trial-cta";
 import { getShopMetadata } from "../models/shop.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { authenticate } from "../shopify.server";
@@ -245,6 +245,12 @@ export default function Settings() {
   const isStandard = shop.plan === PLANS.STANDARD;
   const isProfessional = shop.plan === PLANS.PROFESSIONAL;
 
+  // The trial bullet follows the same eligibility as the buttons (gc-97k.8
+  // follow-up): never promise a trial the "Upgrade to ..." button won't give.
+  const trialBullet = trialEligible ? (
+    <s-list-item>{`${FREE_TRIAL_DAYS}-day free trial`}</s-list-item>
+  ) : null;
+
   function planButton(label: string, variant: "primary" | "secondary" = "primary") {
     return (
       <div style={{ marginTop: "16px" }}>
@@ -353,7 +359,7 @@ export default function Settings() {
                 <s-list-item>Full finding details with code</s-list-item>
                 <s-list-item>1 manual scan per week</s-list-item>
                 <s-list-item>Findings trend over time</s-list-item>
-                <s-list-item>7-day free trial</s-list-item>
+                {trialBullet}
               </s-unordered-list>
             </div>
             {!isStandard &&
@@ -382,7 +388,7 @@ export default function Settings() {
                 <s-list-item>Unlimited theme scanning</s-list-item>
                 <s-list-item>Auto-rescan on theme publish</s-list-item>
                 <s-list-item>Scan diffing (New/Resolved)</s-list-item>
-                <s-list-item>7-day free trial</s-list-item>
+                {trialBullet}
               </s-unordered-list>
             </div>
             {!isProfessional && planButton(upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligible))}

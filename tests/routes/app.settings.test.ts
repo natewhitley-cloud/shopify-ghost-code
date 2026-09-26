@@ -274,6 +274,30 @@ describe("Settings plan tile buttons", () => {
     ]);
   });
 
+  /** Every plan-tile feature bullet, in page order. */
+  function bullets(html: string): string[] {
+    return [...html.matchAll(/<s-list-item[^>]*>([^<]*)<\/s-list-item>/g)].map((m) => m[1]);
+  }
+  const TRIAL_BULLET = "7-day free trial";
+
+  it("never-paid Free shop: both paid tiles list the 7-day free trial bullet", () => {
+    expect(bullets(renderSettings("free", true)).filter((b) => b === TRIAL_BULLET)).toHaveLength(2);
+  });
+
+  it.each([
+    ["free", "previously-paid Free shop"],
+    ["Standard", "Standard shop"],
+    ["Professional", "Professional shop"],
+  ])("%s (%s): no trial bullet anywhere, matching the buttons", (plan) => {
+    const html = renderSettings(plan, false);
+
+    expect(bullets(html)).not.toContain(TRIAL_BULLET);
+    expect(html).not.toMatch(/free trial/i);
+    // The other feature bullets are untouched.
+    expect(bullets(html)).toContain("Full finding details with code");
+    expect(bullets(html)).toContain("Scan diffing (New/Resolved)");
+  });
+
   it("every plan button links top-level to the Managed Pricing page", () => {
     const html = renderSettings("free", true);
     const pricingAnchors = (html.match(/<a [^>]*>/g) ?? []).filter((a) =>
