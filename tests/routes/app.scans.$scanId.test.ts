@@ -52,10 +52,10 @@ vi.mock("../../app/models/scan.server", () => ({
   getScanById: vi.fn(),
 }));
 
-vi.mock("../../app/models/finding.server", () => ({
+vi.mock("../../app/models/finding.server", async (importOriginal) => ({
   getFindingSummary: vi.fn(),
   getFindingsForScan: vi.fn(),
-  getHighestSeverityFinding: vi.fn(),
+  getTopFindingsOfTypes: vi.fn(),
   getFindingsPageForScan: vi.fn(),
   getAppAttributionForScan: vi.fn(),
   getFindingFilterOptionsForScan: vi.fn(),
@@ -63,8 +63,13 @@ vi.mock("../../app/models/finding.server", () => ({
   // Zero-map helpers used by the REAL getFilteredFindingSummary (finding-aggregation
   // is left unmocked). Needed once a test supplies non-empty ignores, which routes
   // aggregation through the materialize-and-filter path instead of the groupBy.
-  createZeroSeverityCounts: () => ({ HIGH: 0, MEDIUM: 0, LOW: 0 }),
-  createZeroTypeCounts: () => ({}),
+  // The REAL zero maps (pure), so an ignore-path byType has numeric counts the
+  // Free preview formula (gc-97k.10) can sum.
+  createZeroSeverityCounts: (
+    await importOriginal<typeof import("../../app/models/finding.server")>()
+  ).createZeroSeverityCounts,
+  createZeroTypeCounts: (await importOriginal<typeof import("../../app/models/finding.server")>())
+    .createZeroTypeCounts,
 }));
 
 // E2.2: the loader now aggregates via getFilteredFindingSummary, which fast-paths
@@ -116,6 +121,7 @@ vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/finding-consequence";
+import { comparePreviewCandidates } from "../../app/lib/free-preview";
 import { computeHealthScore } from "../../app/lib/health-score";
 import { logger } from "../../app/lib/logger.server";
 import { canUseScanDiffing, canViewFindingDetails } from "../../app/lib/plan-gating.server";
@@ -127,7 +133,7 @@ import {
   getFindingsForScan,
   getFindingsPageForScan,
   getFindingSummary,
-  getHighestSeverityFinding,
+  getTopFindingsOfTypes,
 } from "../../app/models/finding.server";
 import {
   getIgnoredFindingsForShop,
@@ -146,6 +152,7 @@ import {
   cappedCategoriesNotice,
   CopyButton,
   FindingRow,
+  freePreviewHeading,
   loader,
   nextFindingsFilterParams,
   ScanCoverageNotices,
@@ -173,7 +180,7 @@ const mockGetAppAttributionForScan = getAppAttributionForScan as ReturnType<type
 const mockGetFindingFilterOptionsForScan = getFindingFilterOptionsForScan as ReturnType<
   typeof vi.fn
 >;
-const mockGetHighestSeverityFinding = getHighestSeverityFinding as ReturnType<typeof vi.fn>;
+const mockGetTopFindingsOfTypes = getTopFindingsOfTypes as ReturnType<typeof vi.fn>;
 const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
 const mockGetIgnoredFindings = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
 const mockGetFindingByIdForShop = getFindingByIdForShop as ReturnType<typeof vi.fn>;
@@ -222,7 +229,7 @@ const FINDING_ONE = {
   findingType: "GHOST_SCRIPT",
   filename: "layout/theme.liquid",
   lineNumber: 42,
-  appName: "SomeApp",
+  appName: "SomeApp" as string | null,
   codeSnippet: '<script src="https://cdn.someapp.com/tracker.js"></script>',
   description: "Orphaned script tag",
   createdAt: new Date("2026-03-20T10:05:00Z"),
@@ -246,6 +253,21 @@ const SINGLE_FINDING_PAGE = {
   hasNextPage: false,
   nextCursor: null,
 };
+
+/**
+ * A faithful fake of getTopFindingsOfTypes over `rows`: the requested types
+ * only, never MALICIOUS_SCRIPT, in (severity, createdAt, id) order, capped at
+ * `take`. Lets the REAL free-preview service and picker run in loader tests.
+ */
+function serveTopFindings(rows: Array<typeof FINDING_ONE>) {
+  mockGetTopFindingsOfTypes.mockImplementation(
+    async (_scanId: string, types: string[], take: number) =>
+      rows
+        .filter((r) => types.includes(r.findingType) && r.findingType !== "MALICIOUS_SCRIPT")
+        .sort((a, b) => comparePreviewCandidates(a as never, b as never))
+        .slice(0, take),
+  );
+}
 
 function makeLoaderArgs(
   scanId: string,
@@ -300,7 +322,7 @@ beforeEach(() => {
   mockCanViewFindingDetails.mockReturnValue(true);
   mockCanUseScanDiffing.mockReturnValue(false);
   mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
-  mockGetHighestSeverityFinding.mockResolvedValue(null);
+  mockGetTopFindingsOfTypes.mockResolvedValue([]);
   mockGetFindingsForScan.mockResolvedValue([]);
   mockGetIgnoredFindings.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
   (getUnknownScriptsForScan as ReturnType<typeof vi.fn>).mockResolvedValue([]);
@@ -322,7 +344,7 @@ describe("app.scans.$scanId loader", () => {
       findingsPagination: { hasNextPage: boolean; nextCursor: string | null };
       canViewDetails: boolean;
       canUseDiffing: boolean;
-      previewFinding: null;
+      previewFindings: unknown[];
       healthScore: typeof HEALTH_SCORE;
       findingSummary: typeof FINDING_SUMMARY;
       appAttributionData: unknown[];
@@ -333,7 +355,7 @@ describe("app.scans.$scanId loader", () => {
     expect(result.findingsPagination).toEqual({ hasNextPage: false, nextCursor: null });
     expect(result.canViewDetails).toBe(true);
     expect(result.canUseDiffing).toBe(false);
-    expect(result.previewFinding).toBeNull();
+    expect(result.previewFindings).toEqual([]);
     expect(result.healthScore).toEqual(HEALTH_SCORE);
     expect(result.findingSummary).toEqual(FINDING_SUMMARY);
     expect(result.appAttributionData).toEqual([]);
@@ -450,26 +472,61 @@ describe("app.scans.$scanId loader", () => {
     });
   });
 
-  describe("free plan — limited/preview finding", () => {
+  describe("free plan — preview findings (gc-97k.10)", () => {
+    type PreviewRows = { previewFindings: Array<{ id: string; isTracker: boolean }> };
+
+    /** A finding fixture with a distinct id and createdAt (minute offset). */
+    function row(
+      id: string,
+      findingType: string,
+      severity: "HIGH" | "MEDIUM" | "LOW",
+      minute = 0,
+      extra: Partial<typeof FINDING_ONE> = {},
+    ) {
+      return {
+        ...FINDING_ONE,
+        id,
+        findingType,
+        severity,
+        createdAt: new Date(Date.UTC(2026, 2, 20, 10, minute)),
+        ...extra,
+      };
+    }
+
+    /** Summary + candidate rows consistent with each other. */
+    function scanWith(rows: Array<typeof FINDING_ONE>) {
+      const byType: Record<string, number> = {};
+      const bySeverity = { HIGH: 0, MEDIUM: 0, LOW: 0 } as Record<string, number>;
+      for (const r of rows) {
+        byType[r.findingType] = (byType[r.findingType] ?? 0) + 1;
+        bySeverity[r.severity] += 1;
+      }
+      mockGetFindingSummary.mockResolvedValue({ total: rows.length, bySeverity, byType });
+      serveTopFindings(rows);
+    }
+
     beforeEach(() => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Free" });
       mockCanViewFindingDetails.mockReturnValue(false);
     });
 
-    it("returns empty findings page and previewFinding for free plan", async () => {
-      mockGetHighestSeverityFinding.mockResolvedValue(FINDING_ONE);
+    it("returns an empty findings page and the preview rows, tracker-enriched", async () => {
+      scanWith([row("f-1", "GHOST_SCRIPT", "HIGH", 0), row("f-2", "GHOST_SCRIPT", "LOW", 1)]);
+      mockIsTrackerApp.mockReturnValue(true);
 
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows & {
         findings: unknown[];
         findingsPagination: { hasNextPage: boolean; nextCursor: string | null };
-        previewFinding: { id: string; isTracker: boolean };
         canViewDetails: boolean;
       };
 
       expect(result.findings).toHaveLength(0);
       expect(result.findingsPagination).toEqual({ hasNextPage: false, nextCursor: null });
       expect(result.canViewDetails).toBe(false);
-      expect(result.previewFinding).toMatchObject({ id: "f-1", isTracker: false });
+      // total 2 -> shown 1: the HIGH row.
+      expect(result.previewFindings).toEqual([
+        expect.objectContaining({ id: "f-1", isTracker: true }),
+      ]);
     });
 
     it("does not call getFindingsPageForScan for free-plan shops", async () => {
@@ -478,61 +535,117 @@ describe("app.scans.$scanId loader", () => {
       expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
     });
 
-    // FIX 3 (E2.2): the free-tier preview finding must respect suppressions. If
-    // the highest-severity finding is itself ignored, surfacing it as "your top
-    // issue" while the health score excludes it is dishonest.
-    it("falls back to the highest NON-ignored finding when the top finding is ignored", async () => {
-      // Top finding is attributed to an app the merchant has APP-ignored.
-      const ignoredTop = { ...FINDING_ONE, id: "f-ignored", appName: "BadApp", severity: "HIGH" };
-      const keptNext = {
-        ...FINDING_ONE,
-        id: "f-kept",
-        appName: "GoodApp",
-        severity: "MEDIUM",
-      };
-      mockGetHighestSeverityFinding.mockResolvedValue(ignoredTop);
-      // getFindingsForScan returns HIGH→MEDIUM ordered; the ignored one is first.
-      mockGetFindingsForScan.mockResolvedValue([ignoredTop, keptNext]);
-      mockGetIgnoredFindings.mockResolvedValue({
-        fingerprints: new Set<string>(),
-        appNames: new Set(["BadApp"]),
-      });
+    // Formula: shown = max(1, min(5, floor(total / 2))), 0 when total is 0.
+    it.each([
+      [0, 0],
+      [1, 1],
+      [2, 1],
+      [3, 1],
+      [4, 2],
+      [7, 3],
+      [10, 5],
+      [11, 5],
+      [100, 5],
+    ])("a scan with %i findings shows %i full rows", async (total, shown) => {
+      // All in one lane (Speed) so the lane round-robin cannot cap the count.
+      scanWith(Array.from({ length: total }, (_, i) => row(`f-${i}`, "GHOST_SCRIPT", "HIGH", i)));
 
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        previewFinding: { id: string } | null;
-      };
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows;
 
-      expect(mockGetFindingsForScan).toHaveBeenCalledWith("scan-1");
-      expect(result.previewFinding?.id).toBe("f-kept");
+      expect(result.previewFindings).toHaveLength(shown);
     });
 
-    it("returns previewFinding null when every finding is ignored", async () => {
-      const ignoredTop = { ...FINDING_ONE, id: "f-ignored", appName: "BadApp", severity: "HIGH" };
-      mockGetHighestSeverityFinding.mockResolvedValue(ignoredTop);
-      mockGetFindingsForScan.mockResolvedValue([ignoredTop]);
-      mockGetIgnoredFindings.mockResolvedValue({
-        fingerprints: new Set<string>(),
-        appNames: new Set(["BadApp"]),
-      });
+    it("takes one row per lane before repeating a lane, highest severity first", async () => {
+      scanWith([
+        row("speed-high-1", "GHOST_SCRIPT", "HIGH", 0),
+        row("speed-high-2", "GHOST_SCRIPT", "HIGH", 1),
+        row("speed-high-3", "GHOST_STYLE", "HIGH", 2),
+        row("speed-high-4", "GHOST_STYLE", "HIGH", 3),
+        row("disc-low", "GHOST_HREFLANG", "LOW", 4),
+        row("house-med", "ORPHAN_ASSET", "MEDIUM", 5),
+        row("track-low", "GHOST_PIXEL", "LOW", 6),
+        row("speed-med", "GHOST_SCRIPT", "MEDIUM", 7),
+        row("speed-low-1", "GHOST_SCRIPT", "LOW", 8),
+        row("speed-low-2", "GHOST_SCRIPT", "LOW", 9),
+      ]);
 
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        previewFinding: { id: string } | null;
-      };
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows;
 
-      expect(result.previewFinding).toBeNull();
+      // total 10 -> 5 rows. Round 1 = every lane's best (4 lanes), severity
+      // ordered; round 2 = Speed's next best.
+      expect(result.previewFindings.map((f) => f.id)).toEqual([
+        "speed-high-1",
+        "house-med",
+        "disc-low",
+        "track-low",
+        "speed-high-2",
+      ]);
     });
 
-    it("does not load full findings for the preview when the shop has no ignores", async () => {
-      mockGetHighestSeverityFinding.mockResolvedValue(FINDING_ONE);
-      // Default ignores are empty (set in beforeEach).
+    it("reads a bounded top-N per non-empty lane (never the full scan) when there are no ignores", async () => {
+      scanWith([
+        row("a", "GHOST_SCRIPT", "HIGH", 0),
+        row("b", "GHOST_HREFLANG", "LOW", 1),
+        row("c", "GHOST_SCRIPT", "LOW", 2),
+        row("d", "GHOST_SCRIPT", "LOW", 3),
+      ]);
 
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        previewFinding: { id: string } | null;
-      };
+      await loader(makeLoaderArgs("scan-1"));
 
+      // Two lanes have findings (Speed, Found by Google & AI); shown = 2.
+      expect(mockGetTopFindingsOfTypes).toHaveBeenCalledTimes(2);
+      expect(mockGetTopFindingsOfTypes).toHaveBeenCalledWith("scan-1", typesForLane("speed"), 2);
+      expect(mockGetTopFindingsOfTypes).toHaveBeenCalledWith(
+        "scan-1",
+        typesForLane("discoverability"),
+        2,
+      );
       // Only the always-on malicious-script query may run; no unfiltered load.
       expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1");
-      expect(result.previewFinding?.id).toBe("f-1");
+    });
+
+    it("excludes ignored findings from the rows and from the formula's total", async () => {
+      const kept = [
+        row("k-1", "GHOST_SCRIPT", "MEDIUM", 1),
+        row("k-2", "GHOST_HREFLANG", "LOW", 2),
+      ];
+      const ignored = [
+        row("i-1", "GHOST_SCRIPT", "HIGH", 0, { appName: "BadApp" }),
+        row("i-2", "GHOST_STYLE", "HIGH", 3, { appName: "BadApp" }),
+      ];
+      mockGetFindingsForScan.mockImplementation(
+        async (_id: string, filters?: { findingType?: string }) =>
+          filters?.findingType === "MALICIOUS_SCRIPT" ? [] : [...ignored, ...kept],
+      );
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["BadApp"]),
+      });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows & {
+        findingSummary: { total: number };
+      };
+
+      // 2 kept -> shown 1 (4 unfiltered would have shown 2): the top KEPT row.
+      expect(result.findingSummary.total).toBe(2);
+      expect(result.previewFindings.map((f) => f.id)).toEqual(["k-1"]);
+      expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
+    });
+
+    it("returns no preview rows when every finding is ignored", async () => {
+      const ignoredTop = row("f-ignored", "GHOST_SCRIPT", "HIGH", 0, { appName: "BadApp" });
+      mockGetFindingsForScan.mockImplementation(
+        async (_id: string, filters?: { findingType?: string }) =>
+          filters?.findingType === "MALICIOUS_SCRIPT" ? [] : [ignoredTop],
+      );
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["BadApp"]),
+      });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows;
+
+      expect(result.previewFindings).toEqual([]);
     });
 
     // Known-malicious scripts are NEVER paywalled: a free merchant sees every one,
@@ -595,11 +708,30 @@ describe("app.scans.$scanId loader", () => {
       ]);
     });
 
-    it("never uses a malicious finding as the ignore-fallback preview (it is shown in the alert)", async () => {
-      const ignoredTop = { ...FINDING_ONE, id: "ignored-top", appName: "BadApp" };
-      const mal = { ...FINDING_ONE, id: "mal-1", findingType: "MALICIOUS_SCRIPT", appName: null };
-      const keptNext = { ...FINDING_ONE, id: "kept-next", appName: "GoodApp" };
-      mockGetHighestSeverityFinding.mockResolvedValue(ignoredTop);
+    it("never previews a malicious finding and never counts it toward the formula", async () => {
+      const mal = Array.from({ length: 6 }, (_, i) =>
+        row(`mal-${i}`, "MALICIOUS_SCRIPT", "HIGH", i),
+      );
+      const rest = [row("g-1", "GHOST_PIXEL", "LOW", 10), row("g-2", "GHOST_PIXEL", "LOW", 11)];
+      scanWith([...mal, ...rest]);
+      mockGetFindingsForScan.mockImplementation(
+        async (_id: string, filters?: { findingType?: string }) =>
+          filters?.findingType === "MALICIOUS_SCRIPT" ? mal : [],
+      );
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows & {
+        maliciousFindings: unknown[];
+      };
+
+      // 2 non-malicious -> 1 row (8 counted would have given 4).
+      expect(result.previewFindings.map((f) => f.id)).toEqual(["g-1"]);
+      expect(result.maliciousFindings).toHaveLength(6);
+    });
+
+    it("never previews a malicious finding on the ignore path either", async () => {
+      const ignoredTop = row("ignored-top", "GHOST_SCRIPT", "HIGH", 0, { appName: "BadApp" });
+      const mal = row("mal-1", "MALICIOUS_SCRIPT", "HIGH", 1, { appName: null });
+      const keptNext = row("kept-next", "GHOST_SCRIPT", "LOW", 2, { appName: "GoodApp" });
       mockGetIgnoredFindings.mockResolvedValue({
         fingerprints: new Set<string>(),
         appNames: new Set(["BadApp"]),
@@ -609,11 +741,19 @@ describe("app.scans.$scanId loader", () => {
           filters?.findingType === "MALICIOUS_SCRIPT" ? [mal] : [ignoredTop, mal, keptNext],
       );
 
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        previewFinding: { id: string } | null;
-      };
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows;
 
-      expect(result.previewFinding?.id).toBe("kept-next");
+      expect(result.previewFindings.map((f) => f.id)).toEqual(["kept-next"]);
+    });
+
+    it.each(["FAILED", "IN_PROGRESS"])("returns no preview rows for a %s scan", async (status) => {
+      scanWith([row("a", "GHOST_SCRIPT", "HIGH", 0)]);
+      mockGetScanById.mockResolvedValue({ ...SCAN, status });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows;
+
+      expect(result.previewFindings).toEqual([]);
+      expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
     });
 
     it("does not query malicious findings for a non-successful (FAILED) scan", async () => {
@@ -632,6 +772,23 @@ describe("app.scans.$scanId loader", () => {
 
       expect(mockGetAppAttributionForScan).not.toHaveBeenCalled();
     });
+
+    it.each(["Standard", "Professional"])(
+      "a paid %s shop gets its paginated table and no preview rows",
+      async (plan) => {
+        scanWith([row("a", "GHOST_SCRIPT", "HIGH", 0), row("b", "GHOST_SCRIPT", "HIGH", 1)]);
+        mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
+        mockCanViewFindingDetails.mockReturnValue(true);
+
+        const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows & {
+          findings: unknown[];
+        };
+
+        expect(result.previewFindings).toEqual([]);
+        expect(result.findings).toHaveLength(1);
+        expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
+      },
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -653,6 +810,10 @@ describe("app.scans.$scanId loader", () => {
       mockCanViewFindingDetails.mockReturnValue(false);
     }
 
+    /**
+     * A summary of `byType` plus matching candidate rows: all HIGH, created in
+     * key order (`<TYPE>-<i>`), so the preview pick is deterministic.
+     */
     function summary(byType: Record<string, number>) {
       const total = Object.values(byType).reduce((a, b) => a + b, 0);
       mockGetFindingSummary.mockResolvedValue({
@@ -660,11 +821,21 @@ describe("app.scans.$scanId loader", () => {
         bySeverity: { HIGH: total, MEDIUM: 0, LOW: 0 },
         byType,
       });
+      let minute = 0;
+      serveTopFindings(
+        Object.entries(byType).flatMap(([findingType, n]) =>
+          Array.from({ length: n }, (_, i) => ({
+            ...FINDING_ONE,
+            id: `${findingType}-${i}`,
+            findingType,
+            createdAt: new Date(Date.UTC(2026, 2, 20, 10, minute++)),
+          })),
+        ),
+      );
     }
 
     beforeEach(() => {
       freeShop();
-      mockGetHighestSeverityFinding.mockResolvedValue(FINDING_ONE); // a GHOST_SCRIPT
       mockRecordUpgradePreviewStage.mockResolvedValue(true);
       mockHasBillingHistory.mockResolvedValue(false);
     });
@@ -696,18 +867,31 @@ describe("app.scans.$scanId loader", () => {
       expect(mockHasBillingHistory).not.toHaveBeenCalled();
     });
 
-    it("returns the per-lane breakdown of hidden findings (excluding the preview row)", async () => {
+    it("subtracts EVERY shown preview row from the hidden count and its lane (gc-97k.10)", async () => {
       summary({ GHOST_SCRIPT: 3, GHOST_STYLE: 2, GHOST_HREFLANG: 4, DUPLICATE_META: 1 });
 
-      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewResult;
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewResult & {
+        previewFindings: Array<{ id: string }>;
+      };
 
+      // total 10 -> 5 shown, alternating lanes: 3 Speed, 2 Found by Google & AI.
+      expect(result.previewFindings.map((f) => f.id)).toEqual([
+        "GHOST_SCRIPT-0",
+        "GHOST_HREFLANG-0",
+        "GHOST_SCRIPT-1",
+        "GHOST_HREFLANG-1",
+        "GHOST_SCRIPT-2",
+      ]);
+      // hidden = total - shown, and the breakdown sums to it.
       expect(result.upgradePreview).toEqual({
-        hiddenCount: 9,
+        hiddenCount: 5,
         groups: [
-          { label: "Found by Google & AI", count: 5 },
-          { label: "Speed", count: 4 },
+          { label: "Found by Google & AI", count: 3 },
+          { label: "Speed", count: 2 },
         ],
       });
+      const sum = result.upgradePreview.groups.reduce((a, g) => a + g.count, 0);
+      expect(sum).toBe(result.upgradePreview.hiddenCount);
     });
 
     it("excludes malicious findings from the hidden count and breakdown", async () => {
@@ -781,9 +965,9 @@ describe("app.scans.$scanId loader", () => {
       expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
     });
 
-    it("returns no teaser and emits nothing when there is no preview finding", async () => {
+    it("returns no teaser and emits nothing when there are no preview rows", async () => {
       summary({ GHOST_SCRIPT: 3 });
-      mockGetHighestSeverityFinding.mockResolvedValue(null);
+      mockGetTopFindingsOfTypes.mockResolvedValue([]);
 
       const result = (await loader(makeLoaderArgs("scan-1"))) as { upgradePreview: unknown };
 
@@ -1571,6 +1755,16 @@ describe("CopyButton", () => {
 //   - N=1 vs N>1: singular "finding" vs plural "findings".
 //   - Always in-progress: "so far…", never a final-sounding count.
 // ---------------------------------------------------------------------------
+
+describe("freePreviewHeading (gc-97k.10)", () => {
+  it("keeps the single-row heading for one preview row", () => {
+    expect(freePreviewHeading(1)).toBe("Preview: Highest Severity Finding");
+  });
+
+  it.each([2, 5])("reads as a top-%i list for several rows", (n) => {
+    expect(freePreviewHeading(n)).toBe(`Preview: Top ${n} Findings`);
+  });
+});
 
 describe("scanProgressLabel", () => {
   it("does not say 'Found 0' when no findings yet (N=0)", () => {

@@ -61,7 +61,7 @@ import {
   getFindingSummary,
   getSeverityCountsForScans,
   getTypeCountsForScan,
-  getHighestSeverityFinding,
+  getTopFindingsOfTypes,
   saveThemeFindings,
   type CreateFindingInput,
 } from "../../app/models/finding.server";
@@ -517,55 +517,61 @@ describe("getTypeCountsForScan", () => {
 });
 
 // ---------------------------------------------------------------------------
-// getHighestSeverityFinding
+// getTopFindingsOfTypes (gc-97k.10)
 // ---------------------------------------------------------------------------
 
-describe("getHighestSeverityFinding", () => {
+describe("getTopFindingsOfTypes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns the finding when one exists for the scan", async () => {
-    const finding = {
-      id: "finding-1",
-      scanId: SCAN_ID,
-      ...baseFinding,
-      createdAt: new Date("2026-01-15T10:00:00Z"),
-    };
-    mockDb.finding.findFirst.mockResolvedValue(finding);
+  it("reads a bounded, deterministically ordered page of the given types", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
 
-    const result = await getHighestSeverityFinding(SCAN_ID);
+    await getTopFindingsOfTypes(SCAN_ID, [FindingType.GHOST_SCRIPT, FindingType.GHOST_STYLE], 5);
 
-    expect(result).toEqual(finding);
-  });
-
-  it("returns null when the scan has no findings", async () => {
-    mockDb.finding.findFirst.mockResolvedValue(null);
-
-    const result = await getHighestSeverityFinding(SCAN_ID);
-
-    expect(result).toBeNull();
-  });
-
-  // MALICIOUS_SCRIPT is excluded because the scan page shows every such finding
-  // in full on all plans (security alert); it must not also take the preview slot.
-  it("passes orderBy [{ severity: 'asc' }, { createdAt: 'asc' }] to ensure HIGH comes first, excluding MALICIOUS_SCRIPT", async () => {
-    // Prisma sorts enums by declaration order; the schema declares HIGH, MEDIUM, LOW,
-    // so ascending sort places HIGH first. The secondary createdAt sort is a tiebreaker.
-    mockDb.finding.findFirst.mockResolvedValue(null);
-
-    await getHighestSeverityFinding(SCAN_ID);
-
-    expect(mockDb.finding.findFirst).toHaveBeenCalledWith({
-      where: { scanId: SCAN_ID, findingType: { not: "MALICIOUS_SCRIPT" } },
-      orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
+    // Prisma sorts enums by declaration order (HIGH, MEDIUM, LOW), so ascending
+    // severity puts HIGH first; createdAt then id make the order total.
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: { in: ["GHOST_SCRIPT", "GHOST_STYLE"] } },
+      orderBy: [{ severity: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+      take: 5,
     });
   });
 
-  it("propagates a database error", async () => {
-    mockDb.finding.findFirst.mockRejectedValueOnce(new Error("Connection lost"));
+  // Malicious findings are shown in full by the security alert on every plan;
+  // they must never take a preview slot, even if a caller passes the type.
+  it("never queries MALICIOUS_SCRIPT, even when the caller includes it", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
 
-    await expect(getHighestSeverityFinding(SCAN_ID)).rejects.toThrow("Connection lost");
+    await getTopFindingsOfTypes(
+      SCAN_ID,
+      [FindingType.MALICIOUS_SCRIPT, FindingType.GHOST_PIXEL],
+      3,
+    );
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scanId: SCAN_ID, findingType: { in: ["GHOST_PIXEL"] } },
+      }),
+    );
+  });
+
+  it("returns the rows the query yields", async () => {
+    const row = { id: "finding-1", scanId: SCAN_ID, ...baseFinding, createdAt: new Date() };
+    mockDb.finding.findMany.mockResolvedValue([row]);
+
+    await expect(getTopFindingsOfTypes(SCAN_ID, [FindingType.GHOST_SCRIPT], 5)).resolves.toEqual([
+      row,
+    ]);
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.findMany.mockRejectedValueOnce(new Error("Connection lost"));
+
+    await expect(getTopFindingsOfTypes(SCAN_ID, [FindingType.GHOST_SCRIPT], 5)).rejects.toThrow(
+      "Connection lost",
+    );
   });
 });
 

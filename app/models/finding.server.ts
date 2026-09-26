@@ -215,18 +215,27 @@ export async function getTypeCountsForScan(scanId: string): Promise<Record<Findi
 }
 
 /**
- * Return the single highest-severity finding for a scan.
- * Uses Prisma enum sort order (HIGH → MEDIUM → LOW declared in schema) so
- * ascending sort gives the highest-severity row first.
- * Returns null when the scan has no findings.
+ * The top `take` findings of a scan among `findingTypes`, best first: severity
+ * (HIGH first, via the schema enum's declaration order), then createdAt, then
+ * id as a unique tiebreaker so the order is total and deterministic.
+ *
+ * Feeds the Free preview picker (gc-97k.10), one call per consequence lane, so
+ * the read is bounded by `take` however large the scan is. MALICIOUS_SCRIPT is
+ * always excluded here: every such finding is shown in full on all plans via
+ * the scan page's security alert, so it must never occupy a preview slot.
  */
-export async function getHighestSeverityFinding(scanId: string) {
-  // MALICIOUS_SCRIPT is excluded: every such finding is shown in full on all
-  // plans via the scan page's security alert, so it must not also occupy the
-  // single free-tier preview slot.
-  return db.finding.findFirst({
-    where: { scanId, findingType: { not: FindingType.MALICIOUS_SCRIPT } },
-    orderBy: [{ severity: "asc" }, { createdAt: "asc" }],
+export async function getTopFindingsOfTypes(
+  scanId: string,
+  findingTypes: readonly FindingType[],
+  take: number,
+) {
+  return db.finding.findMany({
+    where: {
+      scanId,
+      findingType: { in: findingTypes.filter((t) => t !== FindingType.MALICIOUS_SCRIPT) },
+    },
+    orderBy: [{ severity: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    take,
   });
 }
 

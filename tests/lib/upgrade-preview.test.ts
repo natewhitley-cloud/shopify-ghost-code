@@ -24,7 +24,7 @@ describe("buildUpgradePreview", () => {
     // 13 findings; the preview (a GHOST_SCRIPT) is shown, so 12 are hidden.
     const preview = buildUpgradePreview(
       { GHOST_SCRIPT: 3, GHOST_STYLE: 2, GHOST_HREFLANG: 4, DUPLICATE_META: 1, ORPHAN_ASSET: 3 },
-      "GHOST_SCRIPT",
+      ["GHOST_SCRIPT"],
     );
     expect(preview).toEqual({
       hiddenCount: 12,
@@ -37,7 +37,7 @@ describe("buildUpgradePreview", () => {
   });
 
   it("returns a single group when every hidden finding is in one lane", () => {
-    expect(buildUpgradePreview({ GHOST_SCRIPT: 4, GHOST_STYLE: 3 }, "GHOST_STYLE")).toEqual({
+    expect(buildUpgradePreview({ GHOST_SCRIPT: 4, GHOST_STYLE: 3 }, ["GHOST_STYLE"])).toEqual({
       hiddenCount: 6,
       groups: [{ label: "Speed", count: 6 }],
     });
@@ -46,7 +46,7 @@ describe("buildUpgradePreview", () => {
   it("lists exactly four lanes by name when four lanes have hidden findings", () => {
     const preview = buildUpgradePreview(
       { GHOST_SCRIPT: 5, GHOST_HREFLANG: 4, GHOST_SNIPPET: 3, ORPHAN_ASSET: 2 },
-      "GHOST_SCRIPT",
+      ["GHOST_SCRIPT"],
     );
     expect(preview?.groups.map((g) => g.label)).toEqual([
       "Found by Google & AI",
@@ -60,7 +60,7 @@ describe("buildUpgradePreview", () => {
   it("folds the smallest lanes into 'Other' when more than four lanes have hidden findings", () => {
     const preview = buildUpgradePreview(
       { GHOST_SCRIPT: 6, GHOST_HREFLANG: 5, GHOST_SNIPPET: 4, GHOST_PIXEL: 2, ORPHAN_ASSET: 1 },
-      "GHOST_SCRIPT",
+      ["GHOST_SCRIPT"],
     );
     expect(preview).toEqual({
       hiddenCount: 17,
@@ -78,7 +78,7 @@ describe("buildUpgradePreview", () => {
   });
 
   it("breaks count ties by the canonical lane order (Customers see it before Speed)", () => {
-    const preview = buildUpgradePreview({ GHOST_SCRIPT: 2, GHOST_SNIPPET: 3 }, "GHOST_SNIPPET");
+    const preview = buildUpgradePreview({ GHOST_SCRIPT: 2, GHOST_SNIPPET: 3 }, ["GHOST_SNIPPET"]);
     expect(preview?.groups).toEqual([
       { label: "Customers see it", count: 2 },
       { label: "Speed", count: 2 },
@@ -89,7 +89,7 @@ describe("buildUpgradePreview", () => {
     it("excludes malicious findings from the hidden count and the breakdown", () => {
       const preview = buildUpgradePreview(
         { MALICIOUS_SCRIPT: 7, GHOST_PIXEL: 2, GHOST_SCRIPT: 2 },
-        "GHOST_SCRIPT",
+        ["GHOST_SCRIPT"],
       );
       // Without the exclusion, privacy ("Still tracking you") would read 9.
       expect(preview).toEqual({
@@ -102,28 +102,62 @@ describe("buildUpgradePreview", () => {
     });
 
     it("hides nothing when the only other findings are malicious (3 malicious + 1 preview)", () => {
-      expect(buildUpgradePreview({ MALICIOUS_SCRIPT: 3, GHOST_SCRIPT: 1 }, "GHOST_SCRIPT")).toBe(
+      expect(buildUpgradePreview({ MALICIOUS_SCRIPT: 3, GHOST_SCRIPT: 1 }, ["GHOST_SCRIPT"])).toBe(
         null,
       );
     });
 
     it("hides nothing when every finding is malicious", () => {
-      expect(buildUpgradePreview({ MALICIOUS_SCRIPT: 5 }, "MALICIOUS_SCRIPT")).toBeNull();
+      expect(buildUpgradePreview({ MALICIOUS_SCRIPT: 5 }, ["MALICIOUS_SCRIPT"])).toBeNull();
     });
   });
 
   it("returns null when the preview is the only finding (zero hidden, so no teaser)", () => {
-    expect(buildUpgradePreview({ GHOST_SCRIPT: 1 }, "GHOST_SCRIPT")).toBeNull();
+    expect(buildUpgradePreview({ GHOST_SCRIPT: 1 }, ["GHOST_SCRIPT"])).toBeNull();
   });
 
   it("returns null for an empty or all-zero summary and never goes negative", () => {
-    expect(buildUpgradePreview({}, "GHOST_SCRIPT")).toBeNull();
-    expect(buildUpgradePreview({ GHOST_SCRIPT: 0, GHOST_STYLE: 0 }, "GHOST_SCRIPT")).toBeNull();
+    expect(buildUpgradePreview({}, ["GHOST_SCRIPT"])).toBeNull();
+    expect(buildUpgradePreview({ GHOST_SCRIPT: 0, GHOST_STYLE: 0 }, ["GHOST_SCRIPT"])).toBeNull();
+  });
+
+  describe("several preview rows (gc-97k.10)", () => {
+    it("subtracts every shown row from its own lane, so hidden = total - shown", () => {
+      // 10 findings, 5 shown: 3 Speed (2 script + 1 style), 2 Found by Google & AI.
+      const preview = buildUpgradePreview(
+        { GHOST_SCRIPT: 3, GHOST_STYLE: 2, GHOST_HREFLANG: 4, DUPLICATE_META: 1 },
+        ["GHOST_SCRIPT", "GHOST_HREFLANG", "GHOST_SCRIPT", "DUPLICATE_META", "GHOST_STYLE"],
+      );
+      expect(preview).toEqual({
+        hiddenCount: 5,
+        groups: [
+          { label: "Found by Google & AI", count: 3 },
+          { label: "Speed", count: 2 },
+        ],
+      });
+      expect(preview!.groups.reduce((a, g) => a + g.count, 0)).toBe(preview!.hiddenCount);
+    });
+
+    it("drops a lane from the breakdown once all of its findings are shown", () => {
+      expect(
+        buildUpgradePreview({ GHOST_SCRIPT: 3, GHOST_PIXEL: 1 }, ["GHOST_SCRIPT", "GHOST_PIXEL"]),
+      ).toEqual({ hiddenCount: 2, groups: [{ label: "Speed", count: 2 }] });
+    });
+
+    it("returns null (no teaser) when every finding is shown", () => {
+      expect(buildUpgradePreview({ GHOST_SCRIPT: 2 }, ["GHOST_SCRIPT", "GHOST_SCRIPT"])).toBeNull();
+    });
+
+    it("never goes negative when more rows of a type are passed than it counts", () => {
+      expect(
+        buildUpgradePreview({ GHOST_SCRIPT: 1, GHOST_PIXEL: 2 }, ["GHOST_SCRIPT", "GHOST_SCRIPT"]),
+      ).toEqual({ hiddenCount: 2, groups: [{ label: "Still tracking you", count: 2 }] });
+    });
   });
 
   it("does not mutate the caller's counts", () => {
     const byType = { GHOST_SCRIPT: 3, MALICIOUS_SCRIPT: 2 };
-    buildUpgradePreview(byType, "GHOST_SCRIPT");
+    buildUpgradePreview(byType, ["GHOST_SCRIPT"]);
     expect(byType).toEqual({ GHOST_SCRIPT: 3, MALICIOUS_SCRIPT: 2 });
   });
 });
@@ -164,7 +198,7 @@ describe("upgradePreviewHeadline", () => {
     const text = upgradePreviewHeadline(
       buildUpgradePreview(
         { MALICIOUS_SCRIPT: 2, GHOST_PIXEL: 3, GHOST_SCRIPT: 2, GHOST_HREFLANG: 1 },
-        "GHOST_SCRIPT",
+        ["GHOST_SCRIPT"],
       )!,
     );
     expect(text).not.toContain("—");

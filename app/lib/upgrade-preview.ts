@@ -23,7 +23,7 @@ export const UPGRADE_PREVIEW_OTHER_LABEL = "Other";
 export type UpgradePreviewGroup = { label: string; count: number };
 
 export type UpgradePreview = {
-  /** Findings hidden from this Free shop (excludes the preview row and all malicious). */
+  /** Findings hidden from this Free shop (excludes the preview rows and all malicious). */
   hiddenCount: number;
   /** Per-lane counts, largest first; sums to hiddenCount. */
   groups: UpgradePreviewGroup[];
@@ -31,19 +31,23 @@ export type UpgradePreview = {
 
 /**
  * Build the teaser data from the scan's per-type counts (the loader's existing
- * groupBy aggregate, which already excludes ignored findings) and the type of
- * the one preview finding the Free view does show.
+ * groupBy aggregate, which already excludes ignored findings) and the types of
+ * the preview findings the Free view does show (gc-97k.10: up to five). Each
+ * preview row is subtracted from its own type, so hiddenCount = total - shown
+ * and every lane in the breakdown excludes exactly the rows shown from it.
  *
  * Returns null when nothing is hidden, so the caller renders no teaser and
  * emits no `shown` event.
  */
 export function buildUpgradePreview(
   byType: Partial<Record<FindingType, number>>,
-  previewFindingType: FindingType,
+  previewFindingTypes: readonly FindingType[],
 ): UpgradePreview | null {
   const hidden: Partial<Record<FindingType, number>> = { ...byType, MALICIOUS_SCRIPT: 0 };
-  const previewTypeCount = hidden[previewFindingType] ?? 0;
-  if (previewTypeCount > 0) hidden[previewFindingType] = previewTypeCount - 1;
+  for (const type of previewFindingTypes) {
+    const count = hidden[type] ?? 0;
+    if (count > 0) hidden[type] = count - 1;
+  }
 
   // Largest lane first; equal counts keep the canonical LANES display order.
   const lanes = computeLaneSummary(hidden).sort((a, b) => b.count - a.count || a.order - b.order);

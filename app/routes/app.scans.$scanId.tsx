@@ -49,7 +49,6 @@ import {
   getFindingFilterOptionsForScan,
   getFindingsForScan,
   getFindingsPageForScan,
-  getHighestSeverityFinding,
 } from "../models/finding.server";
 import {
   getIgnoredFindingsForShop,
@@ -65,10 +64,10 @@ import {
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import {
-  filterIgnoredFindings,
   getFilteredFindingSummary,
   isFindingIgnored,
 } from "../services/finding-aggregation.server";
+import { getFreePreviewFindings } from "../services/free-preview.server";
 import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
@@ -181,6 +180,14 @@ export function recordUpgradeClick(): void {
   } catch {
     // Telemetry must never break the upgrade click.
   }
+}
+
+/**
+ * Heading over the Free preview rows (gc-97k.10): the single-row wording is
+ * unchanged from the one-row preview; several rows read as a top-N list.
+ */
+export function freePreviewHeading(shown: number): string {
+  return shown === 1 ? "Preview: Highest Severity Finding" : `Preview: Top ${shown} Findings`;
 }
 
 /**
@@ -694,7 +701,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const canViewDetails = canViewFindingDetails(shop.plan);
 
   // The scan is always fetched without inline findings. Findings are either
-  // paginated (paid plan) or fetched as a single preview (free plan) via
+  // paginated (paid plan) or fetched as up to 5 preview rows (free plan) via
   // separate queries below, keeping this query lightweight.
   const scan = await getScanById(scanId, { includeFindings: false });
 
@@ -745,7 +752,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Parallel queries — all independent of each other once `scan` is resolved.
   const [
     findingSummary,
-    rawPreviewFinding,
     findingsPage,
     appAttributionData,
     unknownScripts,
@@ -753,8 +759,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     maliciousFindings,
   ] = await Promise.all([
     getFilteredFindingSummary(scanId, ignores),
-    // Free-tier only: fetch a single preview finding (paid users get a page).
-    canViewDetails ? Promise.resolve(null) : getHighestSeverityFinding(scanId),
     // Paid plan: paginated findings for the current page, with active filters
     // threaded into the DB query.
     // Free plan or non-completed scans: empty page (findings not shown).
@@ -816,46 +820,33 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isIgnored: hasIgnores ? isFindingIgnored(f, ignores) : false,
   }));
 
-  // Free-tier preview finding (E2.2/E2.3): getHighestSeverityFinding returns the
-  // single top finding regardless of suppression. If this shop has ignored that
-  // exact finding, surfacing it as "your top issue" while the health score (which
-  // excludes ignores) disagrees would be dishonest — so when the resolved preview
-  // is itself ignored we fall back to the highest-severity NON-ignored finding
-  // (or none, if every finding is ignored). getFindingsForScan is already ordered
-  // HIGH→MEDIUM→LOW, so the first kept row is the top surviving finding. This only
-  // loads findings when the shop has ignores AND its top finding is suppressed, so
-  // the common no-ignores free-tier path is unchanged.
-  let resolvedPreviewFinding = rawPreviewFinding;
-  if (
-    !canViewDetails &&
-    hasIgnores &&
-    rawPreviewFinding &&
-    isFindingIgnored(rawPreviewFinding, ignores)
-  ) {
-    const { kept } = filterIgnoredFindings(await getFindingsForScan(scanId), ignores);
-    // Skip MALICIOUS_SCRIPT here too, mirroring getHighestSeverityFinding: those
-    // are already shown in full by the security alert.
-    resolvedPreviewFinding = kept.find((f) => f.findingType !== "MALICIOUS_SCRIPT") ?? null;
-  }
-
-  // Enrich the preview finding with tracker flag (free-tier only).
-  const previewFinding = resolvedPreviewFinding
-    ? {
-        ...resolvedPreviewFinding,
-        isTracker: resolvedPreviewFinding.appName
-          ? isTrackerApp(resolvedPreviewFinding.appName)
-          : false,
-      }
-    : null;
+  // Free-tier preview rows (gc-97k.10): up to five full findings, never more
+  // than half of the scan's non-malicious, non-ignored total, spread across
+  // consequence lanes (see getFreePreviewFindings for the bounded read and
+  // lib/free-preview for the formula and the pick). Suppressed findings are
+  // never previewed (E2.2), and malicious ones never take a slot: they are all
+  // shown in full by the security alert above.
+  const rawPreviewFindings =
+    isSuccessfulScan(scan.status) && !canViewDetails
+      ? await getFreePreviewFindings(scanId, findingSummary.byType, ignores)
+      : [];
+  const previewFindings = rawPreviewFindings.map((f) => ({
+    ...f,
+    isTracker: f.appName ? isTrackerApp(f.appName) : false,
+  }));
 
   // Free-tier upgrade teaser (gc-97k.4): per-lane counts of the findings hidden
   // behind the paywall, from the summary's existing groupBy (ignores already
-  // excluded). Mirrors the render gate exactly: successful scan, Free view, a
-  // preview row, and at least one hidden finding. Malicious findings are never
-  // counted as hidden (they are shown in full above on every plan).
+  // excluded), minus EVERY preview row shown (gc-97k.10). Mirrors the render
+  // gate exactly: successful scan, Free view, at least one preview row, and at
+  // least one hidden finding. Malicious findings are never counted as hidden
+  // (they are shown in full above on every plan).
   const upgradePreview =
-    isSuccessfulScan(scan.status) && !canViewDetails && previewFinding
-      ? buildUpgradePreview(findingSummary.byType, previewFinding.findingType)
+    previewFindings.length > 0
+      ? buildUpgradePreview(
+          findingSummary.byType,
+          previewFindings.map((f) => f.findingType),
+        )
       : null;
   // `shown` fires once per merchant, on the first render of the teaser. The
   // stored stamp skips the claim query on every later load; the atomic claim
@@ -907,7 +898,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       hasNextPage: findingsPage.hasNextPage,
       nextCursor: findingsPage.nextCursor,
     },
-    previewFinding,
+    previewFindings,
     upgradePreview,
     // Managed Pricing plan page for the upgrade teaser's top-level CTA (same
     // helper as the Settings upgrade buttons).
@@ -1148,7 +1139,7 @@ export default function ScanDetail() {
     scan,
     findings,
     findingsPagination,
-    previewFinding,
+    previewFindings,
     upgradePreview,
     pricingPlansUrl,
     trialEligible,
@@ -2093,7 +2084,7 @@ export default function ScanDetail() {
                 </s-stack>
               </s-card>
             </div>
-          ) : previewFinding === null ? (
+          ) : previewFindings.length === 0 ? (
             /* Free tier, no findings beyond any malicious ones (shown above) */
             maliciousFindings.length === 0 && (
               <s-card>
@@ -2101,7 +2092,7 @@ export default function ScanDetail() {
               </s-card>
             )
           ) : (
-            /* Free tier with findings — show summary + one preview row + upgrade prompt */
+            /* Free tier with findings: summary + up to 5 preview rows + upgrade prompt */
             <>
               {/* Summary header: total count + category breakdown */}
               <s-card>
@@ -2119,16 +2110,19 @@ export default function ScanDetail() {
                 </s-stack>
               </s-card>
 
-              {/* Preview finding — one row shown as a mini data table */}
+              {/* Preview rows (gc-97k.10), shown as a mini data table */}
               <s-card>
                 <s-stack direction="block" gap="base">
-                  <s-heading>Preview: Highest Severity Finding</s-heading>
+                  <s-heading>{freePreviewHeading(previewFindings.length)}</s-heading>
                   <FindingsTable>
-                    <FindingRow
-                      finding={previewFinding}
-                      shopDomain={shopDomain}
-                      themeId={scan.themeId}
-                    />
+                    {previewFindings.map((finding) => (
+                      <FindingRow
+                        key={finding.id}
+                        finding={finding}
+                        shopDomain={shopDomain}
+                        themeId={scan.themeId}
+                      />
+                    ))}
                   </FindingsTable>
 
                   {/* Upgrade teaser: findings actually hidden (excludes preview + malicious) */}
