@@ -60,6 +60,8 @@ import {
   operatorDigest,
   parseSnapshotMetadata,
   partitionShops,
+  rankPageCounts,
+  SHOP_PAGES_LIMIT,
   sortFindingTypeCounts,
   summarizeReconciler,
   type DigestSnapshot,
@@ -810,6 +812,198 @@ describe("aggregateActivity", () => {
       perShop: [],
       topPages: [],
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-shop page views (gc-dpm.2)
+// ---------------------------------------------------------------------------
+
+describe("rankPageCounts", () => {
+  it("orders by count descending, ties broken by path ascending", () => {
+    const counts = new Map([
+      ["/app/settings", 2],
+      ["/app", 6],
+      ["/app/scans", 2],
+      ["/app/scans/:id", 12],
+    ]);
+    expect(rankPageCounts(counts)).toEqual([
+      { path: "/app/scans/:id", count: 12 },
+      { path: "/app", count: 6 },
+      { path: "/app/scans", count: 2 },
+      { path: "/app/settings", count: 2 },
+    ]);
+  });
+
+  it("returns [] for no pages", () => {
+    expect(rankPageCounts(new Map())).toEqual([]);
+  });
+});
+
+describe("aggregateActivity — per-shop pages 7d (gc-dpm.2)", () => {
+  const now = new Date("2026-09-26T12:00:00Z");
+  const hoursAgo = (h: number) => new Date(now.getTime() - h * 3_600_000);
+  const excludeSet = new Set(["dev-store.myshopify.com"]);
+  const excludePrefixes = new Set(["app-review-"]);
+  const visit = (key: string, path: string, h = 1) => ({
+    key,
+    metadata: { path },
+    createdAt: hoursAgo(h),
+  });
+  const shop = (domain: string, isInternal = false) => ({
+    domain,
+    lastSeenAt: hoursAgo(1),
+    isInternal,
+  });
+  const pagesOf = (result: ReturnType<typeof aggregateActivity>, domain: string) =>
+    result.perShop.find((r) => r.domain === domain)?.pages7d;
+
+  it("groups each shop's visits by NORMALIZED path (scan ids collapse to :id)", () => {
+    const events = [
+      visit("a.myshopify.com", "/app/scans/id-1"),
+      visit("a.myshopify.com", "/app/scans/id-2"),
+      visit("a.myshopify.com", "/app/scans/id-2/diff"),
+      visit("a.myshopify.com", "/app"),
+      visit("b.myshopify.com", "/app/settings"),
+    ];
+    const result = aggregateActivity(
+      events,
+      [shop("a.myshopify.com"), shop("b.myshopify.com")],
+      now,
+      excludeSet,
+      excludePrefixes,
+    );
+
+    expect(pagesOf(result, "a.myshopify.com")).toEqual([
+      { path: "/app/scans/:id", count: 2 },
+      { path: "/app", count: 1 },
+      { path: "/app/scans/:id/diff", count: 1 },
+    ]);
+    // Per shop, not fleet-wide: b sees only its own page.
+    expect(pagesOf(result, "b.myshopify.com")).toEqual([{ path: "/app/settings", count: 1 }]);
+  });
+
+  it("orders by count then path, and caps each shop at the top SHOP_PAGES_LIMIT", () => {
+    expect(SHOP_PAGES_LIMIT).toBe(5);
+    const events = [
+      ...Array.from({ length: 3 }, () => visit("a.myshopify.com", "/app/p-three")),
+      ...Array.from({ length: 2 }, () => visit("a.myshopify.com", "/app/p-two-b")),
+      ...Array.from({ length: 2 }, () => visit("a.myshopify.com", "/app/p-two-a")),
+      visit("a.myshopify.com", "/app/p-one-c"),
+      visit("a.myshopify.com", "/app/p-one-b"),
+      visit("a.myshopify.com", "/app/p-one-a"),
+    ];
+    const result = aggregateActivity(
+      events,
+      [shop("a.myshopify.com")],
+      now,
+      excludeSet,
+      excludePrefixes,
+    );
+
+    expect(pagesOf(result, "a.myshopify.com")).toEqual([
+      { path: "/app/p-three", count: 3 },
+      { path: "/app/p-two-a", count: 2 },
+      { path: "/app/p-two-b", count: 2 },
+      { path: "/app/p-one-a", count: 1 },
+      { path: "/app/p-one-b", count: 1 },
+    ]);
+    // The fleet-wide list is NOT capped by the per-shop limit.
+    expect(result.topPages).toHaveLength(6);
+  });
+
+  it("gives a zero-visit shop an empty page list", () => {
+    const result = aggregateActivity(
+      [],
+      [shop("quiet.myshopify.com")],
+      now,
+      excludeSet,
+      excludePrefixes,
+    );
+    expect(pagesOf(result, "quiet.myshopify.com")).toEqual([]);
+  });
+
+  it("counts a visit with malformed metadata toward visits but not pages", () => {
+    const events = [
+      { key: "a.myshopify.com", metadata: null, createdAt: hoursAgo(1) },
+      visit("a.myshopify.com", "/app"),
+    ];
+    const result = aggregateActivity(
+      events,
+      [shop("a.myshopify.com")],
+      now,
+      excludeSet,
+      excludePrefixes,
+    );
+    expect(result.perShop[0]).toMatchObject({ visits7d: 2 });
+    expect(pagesOf(result, "a.myshopify.com")).toEqual([{ path: "/app", count: 1 }]);
+  });
+
+  it("matches event keys to shops case-insensitively", () => {
+    const result = aggregateActivity(
+      [visit("A.MyShopify.com", "/app")],
+      [shop("a.myshopify.com")],
+      now,
+      excludeSet,
+      excludePrefixes,
+    );
+    expect(pagesOf(result, "a.myshopify.com")).toEqual([{ path: "/app", count: 1 }]);
+  });
+
+  it("never lists pages for internal / env-excluded / app-review shops", () => {
+    const events = [
+      visit("real.myshopify.com", "/app"),
+      visit("internal.myshopify.com", "/app/internal-only"),
+      visit("dev-store.myshopify.com", "/app/dev-only"),
+      visit("app-review-1.myshopify.com", "/app/review-only"),
+    ];
+    const result = aggregateActivity(
+      events,
+      [
+        shop("real.myshopify.com"),
+        shop("internal.myshopify.com", true),
+        shop("dev-store.myshopify.com"),
+        shop("app-review-1.myshopify.com"),
+      ],
+      now,
+      excludeSet,
+      excludePrefixes,
+    );
+    expect(result.perShop.map((r) => r.domain)).toEqual(["real.myshopify.com"]);
+    const allListed = result.perShop.flatMap((r) => (r.pages7d ?? []).map((p) => p.path));
+    expect(allListed).toEqual(["/app"]);
+  });
+});
+
+describe("buildDigestBody — ACTIVITY per-shop pages line (gc-dpm.2)", () => {
+  const row = (domain: string, pages7d?: Array<{ path: string; count: number }>) => ({
+    domain,
+    lastSeenAt: "2026-09-26T08:52:00.000Z",
+    visits24h: 1,
+    visits7d: 1,
+    ...(pages7d !== undefined && { pages7d }),
+  });
+  const render = (perShop: ReturnType<typeof row>[]) =>
+    buildDigestBody(
+      makeData({ activity: { totalActive: 2, seen24h: 1, seen7d: 1, perShop, topPages: [] } }),
+    );
+
+  it("renders one pages line directly under its shop row", () => {
+    const body = render([
+      row("ortho-india.myshopify.com", [
+        { path: "/app/scans/:id", count: 12 },
+        { path: "/app", count: 6 },
+        { path: "/app/settings", count: 2 },
+      ]),
+    ]);
+    const lines = body.split("\n");
+    const i = lines.findIndex((l) => l.includes("ortho-india.myshopify.com -- last seen"));
+    expect(lines[i + 1]).toBe("      pages 7d: /app/scans/:id 12, /app 6, /app/settings 2");
+  });
+
+  it("omits the line for a zero-visit shop and for rows that predate the field", () => {
+    const body = render([row("quiet.myshopify.com", []), row("legacy.myshopify.com")]);
+    expect(body).not.toContain("pages 7d:");
   });
 });
 

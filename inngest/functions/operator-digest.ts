@@ -62,6 +62,8 @@ export const DIGEST_SNAPSHOT_KEY = "operator-digest";
 const SCANS_PER_STORE_LIMIT = 10;
 const FINDING_TYPES_LIMIT = 8;
 const TOP_PAGES_LIMIT = 8;
+// Per-shop page views under each ACTIVITY by-shop row (gc-dpm.2).
+export const SHOP_PAGES_LIMIT = 5;
 
 // ---------------------------------------------------------------------------
 // Pure helpers (exported for unit testing; no Prisma/Shopify/IO)
@@ -307,12 +309,21 @@ export function computeResolutionRollup(
 // viewed in the trailing 24h / 7d, plus a normalized top-pages breakdown.
 // ---------------------------------------------------------------------------
 
+/** A normalized page path and its visit count. */
+export interface PageCount {
+  path: string;
+  count: number;
+}
+
 /** Per-shop activity row (lastSeenAt serialized to an ISO string / null). */
 export interface ActivityShopRow {
   domain: string;
   lastSeenAt: string | null;
   visits24h: number;
   visits7d: number;
+  /** This shop's top SHOP_PAGES_LIMIT normalized pages over 7d (gc-dpm.2).
+   * Optional so rows memoized by pre-gc-dpm.2 code still render (as no line). */
+  pages7d?: PageCount[];
 }
 
 /** Serialization-safe activity rollup crossing the Inngest step boundary. */
@@ -323,7 +334,7 @@ export interface ActivitySummary {
   seen24h: number;
   seen7d: number;
   perShop: ActivityShopRow[];
-  topPages: Array<{ path: string; count: number }>;
+  topPages: PageCount[];
 }
 
 /**
@@ -335,6 +346,22 @@ export interface ActivitySummary {
  */
 export function normalizeActivityPath(path: string): string {
   return path.replace(/^(\/app\/scans\/)[^/]+/, "$1:id");
+}
+
+/** Increment a normalized path's count in `counts`. */
+function bumpPage(counts: Map<string, number>, path: string): void {
+  counts.set(path, (counts.get(path) ?? 0) + 1);
+}
+
+/**
+ * Rank page counts most-visited first, ties broken by path (ascending) so the
+ * order is deterministic. Shared by the fleet-wide "Top pages (7d)" list and the
+ * per-shop "pages 7d" line (gc-dpm.2).
+ */
+export function rankPageCounts(counts: Map<string, number>): PageCount[] {
+  return [...counts.entries()]
+    .map(([path, count]) => ({ path, count }))
+    .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
 }
 
 /** Read a page_visit event's `metadata.path`, or null if missing/malformed. */
@@ -374,9 +401,11 @@ export function aggregateActivity(
   // excluded solely by its durable isInternal flag (gc-zeh e2e caught this leak).
   const activeDomains = new Set(activeShops.map((s) => s.domain.toLowerCase()));
 
-  // Per-domain visit counts + normalized top-pages from real-merchant events only.
+  // Per-domain visit counts + normalized pages (fleet-wide and per shop) from
+  // real-merchant events only.
   const visitsByDomain = new Map<string, { v24: number; v7: number }>();
   const pageCounts = new Map<string, number>();
+  const pagesByDomain = new Map<string, Map<string, number>>();
   for (const e of events) {
     if (e.key == null) continue;
     const domain = e.key.toLowerCase();
@@ -390,17 +419,22 @@ export function aggregateActivity(
     const rawPath = extractVisitPath(e.metadata);
     if (rawPath !== null) {
       const norm = normalizeActivityPath(rawPath);
-      pageCounts.set(norm, (pageCounts.get(norm) ?? 0) + 1);
+      bumpPage(pageCounts, norm);
+      const shopPages = pagesByDomain.get(domain) ?? new Map<string, number>();
+      bumpPage(shopPages, norm);
+      pagesByDomain.set(domain, shopPages);
     }
   }
 
   const perShop: ActivityShopRow[] = activeShops.map((s) => {
-    const c = visitsByDomain.get(s.domain.toLowerCase()) ?? { v24: 0, v7: 0 };
+    const domain = s.domain.toLowerCase();
+    const c = visitsByDomain.get(domain) ?? { v24: 0, v7: 0 };
     return {
       domain: s.domain,
       lastSeenAt: s.lastSeenAt ? s.lastSeenAt.toISOString() : null,
       visits24h: c.v24,
       visits7d: c.v7,
+      pages7d: rankPageCounts(pagesByDomain.get(domain) ?? new Map()).slice(0, SHOP_PAGES_LIMIT),
     };
   });
 
@@ -423,9 +457,7 @@ export function aggregateActivity(
     if (t >= dayAgo) seen24h += 1;
   }
 
-  const topPages = [...pageCounts.entries()]
-    .map(([path, count]) => ({ path, count }))
-    .sort((a, b) => b.count - a.count || a.path.localeCompare(b.path));
+  const topPages = rankPageCounts(pageCounts);
 
   return { totalActive: activeShops.length, seen24h, seen7d, perShop, topPages };
 }
@@ -964,6 +996,10 @@ export function buildDigestBody(data: OperatorDigestData): string {
         lines.push(
           `    ${s.domain} -- last seen ${seen} -- visits 24h/7d: ${s.visits24h} / ${s.visits7d}`,
         );
+        // Per-shop page mix (gc-dpm.2); omitted for a shop with no 7d visits.
+        if (s.pages7d && s.pages7d.length > 0) {
+          lines.push(`      pages 7d: ${s.pages7d.map((p) => `${p.path} ${p.count}`).join(", ")}`);
+        }
       }
     }
     lines.push("  Top pages (7d):");
