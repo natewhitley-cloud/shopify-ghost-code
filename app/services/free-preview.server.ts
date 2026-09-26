@@ -15,29 +15,32 @@
  * Suppressions (E2.2): an INSTANCE ignore is a computed fingerprint, not a
  * column, so ignored rows cannot be excluded in SQL, and any number of a lane's
  * top rows may be ignored. For a shop WITH ignores the candidates are therefore
- * the scan's full findings filtered in JS. That is the same full read
- * getFilteredFindingSummary already makes for such shops on this page, so it
- * does not change the page's cost class; shops without ignores (the common
- * case) stay on the bounded path.
+ * the scan's full non-ignored findings, which the page's summary read already
+ * loaded (getFilteredFindingSummaryAndKept): the caller passes them in, so the
+ * scan's findings are never read twice (audit 1 #7). Shops without ignores
+ * (the common case) stay on the bounded path.
  */
 import type { FindingType } from "@prisma/client";
 
-import { filterIgnoredFindings } from "./finding-aggregation.server";
+import type { FindingRow } from "./finding-aggregation.server";
 import { LANES, typesForLane } from "../lib/finding-consequence";
 import { freePreviewCount, pickFreePreviewFindings } from "../lib/free-preview";
-import { getFindingsForScan, getTopFindingsOfTypes } from "../models/finding.server";
-import type { ShopIgnores } from "../models/ignored-finding.server";
+import { getTopFindingsOfTypes } from "../models/finding.server";
 
 /**
  * The Free view's preview rows for a successful scan, best first.
  *
  * `byType` is the page's (ignore-filtered) summary aggregate; the formula's
  * total is its non-malicious sum, so malicious findings never raise the count.
+ *
+ * `keptFindings` is the `keptFindings` of getFilteredFindingSummaryAndKept:
+ * the scan's non-ignored findings when the shop HAS ignores (picked from
+ * directly, no query), or null when it has none (the bounded per-lane read).
  */
 export async function getFreePreviewFindings(
   scanId: string,
   byType: Partial<Record<FindingType, number>>,
-  ignores: ShopIgnores,
+  keptFindings: readonly FindingRow[] | null,
 ) {
   const total = (Object.entries(byType) as [FindingType, number][])
     .filter(([type]) => type !== "MALICIOUS_SCRIPT")
@@ -45,10 +48,7 @@ export async function getFreePreviewFindings(
   const count = freePreviewCount(total);
   if (count === 0) return [];
 
-  if (ignores.fingerprints.size > 0 || ignores.appNames.size > 0) {
-    const { kept } = filterIgnoredFindings(await getFindingsForScan(scanId), ignores);
-    return pickFreePreviewFindings(kept, count);
-  }
+  if (keptFindings !== null) return pickFreePreviewFindings(keptFindings, count);
 
   const lanesWithFindings = LANES.map((l) => typesForLane(l.key)).filter((types) =>
     types.some((t) => t !== "MALICIOUS_SCRIPT" && (byType[t] ?? 0) > 0),

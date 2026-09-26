@@ -115,13 +115,34 @@ export function filterIgnoredFindings<T extends IgnorableFinding>(
 export async function getFilteredFindingSummary(
   scanId: string,
   ignores: ShopIgnores,
-): Promise<{
+): Promise<FilteredFindingSummary> {
+  return (await getFilteredFindingSummaryAndKept(scanId, ignores)).summary;
+}
+
+/** The ignore-filtered `{ total, bySeverity, byType }` aggregate. */
+export type FilteredFindingSummary = {
   total: number;
   bySeverity: Record<Severity, number>;
   byType: Record<FindingType, number>;
-}> {
+};
+
+/** One full Finding row, as getFindingsForScan returns it. */
+export type FindingRow = Awaited<ReturnType<typeof getFindingsForScan>>[number];
+
+/**
+ * getFilteredFindingSummary, plus the KEPT (non-ignored) findings it had to
+ * read, so a caller that needs them too (the Free preview, audit 1 #7) never
+ * reads a scan's full findings twice.
+ *
+ * `keptFindings` is null on the no-ignores fast path (nothing was read beyond
+ * the lean groupBy), and the scan's full non-ignored findings otherwise.
+ */
+export async function getFilteredFindingSummaryAndKept(
+  scanId: string,
+  ignores: ShopIgnores,
+): Promise<{ summary: FilteredFindingSummary; keptFindings: FindingRow[] | null }> {
   if (ignores.fingerprints.size === 0 && ignores.appNames.size === 0) {
-    return getFindingSummary(scanId);
+    return { summary: await getFindingSummary(scanId), keptFindings: null };
   }
 
   const findings = await getFindingsForScan(scanId);
@@ -135,5 +156,5 @@ export async function getFilteredFindingSummary(
   }
   const total = bySeverity.HIGH + bySeverity.MEDIUM + bySeverity.LOW;
 
-  return { total, bySeverity, byType };
+  return { summary: { total, bySeverity, byType }, keptFindings: kept };
 }

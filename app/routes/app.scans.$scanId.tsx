@@ -67,7 +67,7 @@ import {
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import {
-  getFilteredFindingSummary,
+  getFilteredFindingSummaryAndKept,
   isFindingIgnored,
 } from "../services/finding-aggregation.server";
 import { getFreePreviewFindings } from "../services/free-preview.server";
@@ -762,7 +762,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // The scan is always fetched without inline findings. Findings are either
   // paginated (paid plan) or fetched as up to 5 preview rows (free plan) via
   // separate queries below, keeping this query lightweight.
-  const scan = await getScanById(scanId, { includeFindings: false });
+  //
+  // Suppressed findings (E2.2, gc-57t): the summary aggregate below excludes
+  // them so the total, per-severity counts, and health score all stay honest.
+  // The ignore read depends only on the shop, so it runs alongside the scan
+  // read (nothing from it is returned if the scan check below 404s).
+  const [scan, ignores] = await Promise.all([
+    getScanById(scanId, { includeFindings: false }),
+    getIgnoredFindingsForShop(shop.id),
+  ]);
 
   // Verify the scan exists and belongs to the authenticated shop.
   if (!scan || scan.shopId !== shop.id) {
@@ -802,22 +810,33 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // successful findings view — the same gate as the paginated findings query.
   const canViewFindings = canViewDetails && isSuccessfulScan(scan.status);
 
-  // Suppressed findings (E2.2, gc-57t): the summary aggregate below excludes
-  // them so the total, per-severity counts, and health score all stay honest.
-  // getFilteredFindingSummary fast-paths to the lean groupBy when this shop has
-  // no ignores, so the common case is unchanged.
-  const ignores = await getIgnoredFindingsForShop(shop.id);
-
   // Parallel queries — all independent of each other once `scan` is resolved.
+  //
+  // Query budget per load (audit 1 #7):
+  //   - Always: shop, then scan + ignores (parallel), then this batch.
+  //   - The ~3s in-progress poll (unsuccessful scan) adds NOTHING below: no
+  //     prompt state, no trial read, no preview, no claims.
+  //   - A successful scan adds, in THIS batch: the prompt state (at most the
+  //     first-successful-scan read) and trial eligibility (at most one
+  //     BillingEvent read, Free only, skipped once everPaidAt is set); then the
+  //     Free preview read, which reuses the summary's full findings read for a
+  //     shop with ignores (never a second full read), and at most the prompt /
+  //     telemetry claims.
+  //   getFilteredFindingSummaryAndKept fast-paths to the lean groupBy when this
+  //   shop has no ignores, so the common case is unchanged.
+  const now = new Date();
+  const scanSuccessful = isSuccessfulScan(scan.status);
   const [
-    findingSummary,
+    { summary: findingSummary, keptFindings },
     findingsPage,
     appAttributionData,
     unknownScripts,
     filterOptions,
     maliciousFindings,
+    promptState,
+    trialEligibleForShop,
   ] = await Promise.all([
-    getFilteredFindingSummary(scanId, ignores),
+    getFilteredFindingSummaryAndKept(scanId, ignores),
     // Paid plan: paginated findings for the current page, with active filters
     // threaded into the DB query.
     // Free plan or non-completed scans: empty page (findings not shown).
@@ -850,6 +869,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isSuccessfulScan(scan.status)
       ? getFindingsForScan(scanId, { findingType: "MALICIOUS_SCRIPT" })
       : Promise.resolve([]),
+    // The shop's prompt state (gc-97k.6). Only a successful scan's page can
+    // render a prompt, so an unsuccessful scan (the poll) never loads it.
+    scanSuccessful ? loadShopPromptState(shop, now) : Promise.resolve(null),
+    // Trial vs upgrade framing for the Free upgrade asks (gc-97k.8). Paid
+    // shops return false without a query.
+    scanSuccessful ? getTrialEligibility(shop) : Promise.resolve(false),
   ]);
 
   // Compute health score for successful scans (COMPLETED or PARTIAL).
@@ -885,18 +910,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // lib/free-preview for the formula and the pick). Suppressed findings are
   // never previewed (E2.2), and malicious ones never take a slot: they are all
   // shown in full by the security alert above.
-  //
-  // The shop's prompt state (gc-97k.6) loads in parallel: it is independent of
-  // the preview. Only a successful scan's page can render a prompt, so an
-  // unsuccessful scan (including the ~3s in-progress poll) loads neither.
-  const now = new Date();
-  const scanSuccessful = isSuccessfulScan(scan.status);
-  const [rawPreviewFindings, promptState] = await Promise.all([
+  // A shop with ignores passes the summary's already-read kept findings, so
+  // the preview never reads the full findings a second time.
+  const rawPreviewFindings =
     scanSuccessful && !canViewDetails
-      ? getFreePreviewFindings(scanId, findingSummary.byType, ignores)
-      : Promise.resolve([]),
-    scanSuccessful ? loadShopPromptState(shop, now) : Promise.resolve(null),
-  ]);
+      ? await getFreePreviewFindings(scanId, findingSummary.byType, keptFindings)
+      : [];
   const previewFindings = rawPreviewFindings.map((f) => ({
     ...f,
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
@@ -953,7 +972,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     await recordUpgradePreviewStageOnce("shown", session.shop);
   }
   // Trial vs upgrade framing for whichever ask renders (gc-97k.8).
-  const trialEligible = hiddenBreakdown ? await getTrialEligibility(shop) : false;
+  const trialEligible = hiddenBreakdown !== null && trialEligibleForShop;
 
   // Durable "first viewed results" milestone (gc-dpm.1): the first load of a
   // SUCCESSFUL scan's detail page. Gated on the stored value, so an

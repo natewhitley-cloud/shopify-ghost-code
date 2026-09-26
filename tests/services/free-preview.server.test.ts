@@ -1,7 +1,11 @@
 /**
  * Tests for app/services/free-preview.server.ts (gc-97k.10): the bounded read
- * behind the Free preview rows. The finding model is mocked; the pure formula,
- * picker and ignore filter run for real.
+ * behind the Free preview rows. The finding model is mocked; the pure formula
+ * and picker run for real.
+ *
+ * Changed on purpose (audit 1 #7): for a shop with ignores the service used to
+ * re-read the scan's full findings itself; it now picks from the kept findings
+ * the page's summary read already loaded, and issues no query at all.
  */
 import type { FindingType } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -18,7 +22,8 @@ import { getFreePreviewFindings } from "../../app/services/free-preview.server";
 const mockTop = getTopFindingsOfTypes as ReturnType<typeof vi.fn>;
 const mockAll = getFindingsForScan as ReturnType<typeof vi.fn>;
 
-const NO_IGNORES = { fingerprints: new Set<string>(), appNames: new Set<string>() };
+/** A shop with no ignores: no kept findings were read, so the bounded path runs. */
+const NO_IGNORES = null;
 
 function f(id: string, findingType: FindingType, appName: string | null = null, minute = 0) {
   return {
@@ -92,24 +97,29 @@ describe("getFreePreviewFindings", () => {
     expect(rows.map((r) => r.id)).toEqual(["s1", "d1"]);
   });
 
-  it("with ignores, picks from the full kept set instead (ignored rows never shown)", async () => {
-    mockAll.mockResolvedValue([
-      f("ign-1", "GHOST_SCRIPT", "BadApp", 0),
-      f("ign-2", "GHOST_SCRIPT", "BadApp", 1),
+  it("with ignores, picks from the summary's kept findings with NO query (never a second full read)", async () => {
+    // The kept set the summary read (ignored BadApp rows already removed).
+    const kept = [
       f("keep-1", "GHOST_SCRIPT", "GoodApp", 2),
       f("keep-2", "GHOST_HREFLANG", null, 3),
       f("mal", "MALICIOUS_SCRIPT", null, 4),
-    ]);
+    ];
 
     // The page's summary already excludes ignored rows: 2 kept non-malicious.
     const rows = await getFreePreviewFindings(
       "scan-1",
       { GHOST_SCRIPT: 1, GHOST_HREFLANG: 1, MALICIOUS_SCRIPT: 1 },
-      { fingerprints: new Set<string>(), appNames: new Set(["BadApp"]) },
+      kept as never,
     );
 
-    expect(mockAll).toHaveBeenCalledWith("scan-1");
+    expect(mockAll).not.toHaveBeenCalled();
     expect(mockTop).not.toHaveBeenCalled();
     expect(rows.map((r) => r.id)).toEqual(["keep-1"]);
+  });
+
+  it("with ignores and every finding ignored: shows nothing, no query", async () => {
+    await expect(getFreePreviewFindings("scan-1", {}, [])).resolves.toEqual([]);
+    expect(mockAll).not.toHaveBeenCalled();
+    expect(mockTop).not.toHaveBeenCalled();
   });
 });

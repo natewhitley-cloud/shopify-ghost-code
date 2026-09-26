@@ -915,14 +915,29 @@ describe("app.scans.$scanId loader", () => {
       expect(mockHasBillingHistory).not.toHaveBeenCalled();
     });
 
-    it("skips the billing-history read when no teaser renders", async () => {
+    // Changed on purpose (audit 1 #7): the trial read now runs IN PARALLEL with
+    // the page's other reads on any successful Free load, instead of serially
+    // after the preview and only when an ask renders. It is still never
+    // offered without an ask.
+    it("offers no trial framing when no teaser renders (the read ran in parallel)", async () => {
       summary({ GHOST_SCRIPT: 1 }); // only the preview row: nothing hidden
 
       const result = (await loader(makeLoaderArgs("scan-1"))) as { trialEligible: boolean };
 
       expect(result.trialEligible).toBe(false);
-      expect(mockHasBillingHistory).not.toHaveBeenCalled();
     });
+
+    it.each(["FAILED", "IN_PROGRESS", "PENDING"])(
+      "never reads billing history on a %s scan",
+      async (status) => {
+        mockGetScanById.mockResolvedValue({ ...SCAN, status });
+        summary({ GHOST_SCRIPT: 3 });
+
+        await loader(makeLoaderArgs("scan-1"));
+
+        expect(mockHasBillingHistory).not.toHaveBeenCalled();
+      },
+    );
 
     it("subtracts EVERY shown preview row from the hidden count and its lane (gc-97k.10)", async () => {
       summary({ GHOST_SCRIPT: 3, GHOST_STYLE: 2, GHOST_HREFLANG: 4, DUPLICATE_META: 1 });
@@ -1514,6 +1529,126 @@ describe("app.scans.$scanId loader", () => {
   // -------------------------------------------------------------------------
   // Durable firstResultsViewedAt milestone (gc-dpm.1)
   // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // Query budget per load (audit 1 #7)
+  // -------------------------------------------------------------------------
+
+  describe("query budget per load (audit 1 #7)", () => {
+    /** Every model read / write the loader can issue, by name, with its call count. */
+    function queryCounts() {
+      const counts: Record<string, number> = {
+        getShopMetadata: mockGetShopMetadata.mock.calls.length,
+        getScanById: mockGetScanById.mock.calls.length,
+        getIgnoredFindingsForShop: mockGetIgnoredFindings.mock.calls.length,
+        getFindingSummary: mockGetFindingSummary.mock.calls.length,
+        getFindingsPageForScan: mockGetFindingsPageForScan.mock.calls.length,
+        getAppAttributionForScan: mockGetAppAttributionForScan.mock.calls.length,
+        getUnknownScriptsForScan: (getUnknownScriptsForScan as ReturnType<typeof vi.fn>).mock.calls
+          .length,
+        getFindingFilterOptionsForScan: mockGetFindingFilterOptionsForScan.mock.calls.length,
+        getFindingsForScan: mockGetFindingsForScan.mock.calls.length,
+        getTopFindingsOfTypes: mockGetTopFindingsOfTypes.mock.calls.length,
+        getFirstSuccessfulScanCompletedAt: mockGetFirstSuccessfulScan.mock.calls.length,
+        hasBillingHistory: mockHasBillingHistory.mock.calls.length,
+        claimPromptSlot: mockClaimPromptSlot.mock.calls.length,
+        claimReviewPopupAttempt: mockClaimPopupAttempt.mock.calls.length,
+        claimShopStamp: mockClaimShopStamp.mock.calls.length,
+        startUpgradeReturnEpisode: mockStartEpisode.mock.calls.length,
+      };
+      return Object.fromEntries(Object.entries(counts).filter(([, n]) => n > 0));
+    }
+
+    beforeEach(() => {
+      mockHasBillingHistory.mockResolvedValue(false);
+      mockClaimShopStamp.mockResolvedValue(true);
+    });
+
+    it.each(["IN_PROGRESS", "PENDING"])(
+      "the ~3s poll revalidation (%s) issues exactly the base reads and nothing prompt-, trial- or preview-related",
+      async (status) => {
+        mockGetScanById.mockResolvedValue({ ...SCAN, status });
+        // Even a Free shop with every prompt otherwise eligible.
+        mockGetShopMetadata.mockResolvedValue({
+          ...SHOP,
+          plan: "free",
+          firstResultsViewedAt: null,
+        });
+        mockCanViewFindingDetails.mockReturnValue(false);
+
+        await loader(makeLoaderArgs("scan-1"));
+
+        expect(queryCounts()).toEqual({
+          getShopMetadata: 1,
+          getScanById: 1,
+          getIgnoredFindingsForShop: 1,
+          getFindingSummary: 1,
+        });
+      },
+    );
+
+    it("a Free successful load WITH ignores reads the scan's full findings exactly once", async () => {
+      mockGetShopMetadata.mockResolvedValue({
+        ...SHOP,
+        plan: "free",
+        reviewPopupRequestedAt: new Date("2026-03-02T00:00:00Z"),
+      });
+      mockCanViewFindingDetails.mockReturnValue(false);
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["NobodyApp"]),
+      });
+      mockGetFindingsForScan.mockImplementation(async (_scanId: string, filters?: unknown) =>
+        filters === undefined
+          ? Array.from({ length: 6 }, (_, i) => ({ ...FINDING_ONE, id: `f-${i}` }))
+          : [],
+      );
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { previewFindings: unknown[] };
+
+      const fullReads = mockGetFindingsForScan.mock.calls.filter(([, f]) => f === undefined);
+      expect(fullReads).toHaveLength(1); // the summary's read, reused by the preview
+      expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
+      expect(result.previewFindings).toHaveLength(3);
+    });
+
+    it("starts the prompt-state and trial reads in parallel with the summary (not after it)", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+      mockGetFirstSuccessfulScan.mockResolvedValue(new Date("2026-03-01T00:00:00Z"));
+      let releaseSummary!: () => void;
+      mockGetFindingSummary.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseSummary = () => resolve(FINDING_SUMMARY);
+          }),
+      );
+
+      const pending = loader(makeLoaderArgs("scan-1"));
+      await vi.waitFor(() => expect(mockGetFindingSummary).toHaveBeenCalled());
+      // Both started while the summary is still unresolved.
+      expect(mockGetFirstSuccessfulScan).toHaveBeenCalledTimes(1);
+      expect(mockHasBillingHistory).toHaveBeenCalledTimes(1);
+      releaseSummary();
+      await pending;
+    });
+
+    it("the scan and ignore reads start together", async () => {
+      let releaseScan!: () => void;
+      mockGetScanById.mockImplementation(
+        () =>
+          new Promise((resolve) => {
+            releaseScan = () => resolve(SCAN);
+          }),
+      );
+
+      const pending = loader(makeLoaderArgs("scan-1"));
+      await vi.waitFor(() => expect(mockGetScanById).toHaveBeenCalled());
+      expect(mockGetIgnoredFindings).toHaveBeenCalledTimes(1);
+      releaseScan();
+      await pending;
+    });
+  });
 
   describe("firstResultsViewedAt milestone (gc-dpm.1)", () => {
     beforeEach(() => {
