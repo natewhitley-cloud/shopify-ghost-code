@@ -1100,15 +1100,26 @@ export interface OperatorDigestData {
 // ---------------------------------------------------------------------------
 
 export type ReconcilerStatus =
-  | { at: string; outcome: "completed"; checked: number; marked: number; skipped: number }
+  | {
+      at: string;
+      outcome: "completed";
+      checked: number;
+      marked: number;
+      skipped: number;
+      /** Dormant shops not probed (expired refresh token, gc-gre). Absent on
+       * rows written before gc-gre, which then render without that segment. */
+      tokenExpired?: number;
+    }
   | {
       at: string;
       outcome: "aborted";
       checked: number;
       wouldMark: number;
-      /** The breaker's denominator (checked - skipped). Absent on legacy rows. */
+      /** The breaker's denominator (checked - skipped - tokenExpired). Absent on legacy rows. */
       probed?: number;
       skipped?: number;
+      /** Absent on rows written before gc-gre. */
+      tokenExpired?: number;
     };
 
 interface ReconcilerEvent {
@@ -1139,6 +1150,7 @@ export function summarizeReconciler(
   if (aborted && (!summary || aborted.createdAt > summary.createdAt)) {
     const probed = metaOptionalNumber(aborted.metadata, "probed");
     const skipped = metaOptionalNumber(aborted.metadata, "skipped");
+    const tokenExpired = metaOptionalNumber(aborted.metadata, "tokenExpired");
     return {
       at: aborted.createdAt.toISOString(),
       outcome: "aborted",
@@ -1147,15 +1159,21 @@ export function summarizeReconciler(
       // Legacy rows (before the probed denominator) have neither field.
       ...(probed !== undefined && { probed }),
       ...(skipped !== undefined && { skipped }),
+      // Rows before gc-gre have no tokenExpired.
+      ...(tokenExpired !== undefined && { tokenExpired }),
     };
   }
   if (!summary) return null;
+  // Counts come from the structured metadata, never the message text, so a
+  // summary row written before gc-gre (no tokenExpired) still parses.
+  const tokenExpired = metaOptionalNumber(summary.metadata, "tokenExpired");
   return {
     at: summary.createdAt.toISOString(),
     outcome: "completed",
     checked: metaNumber(summary.metadata, "checked"),
     marked: metaNumber(summary.metadata, "marked"),
     skipped: metaNumber(summary.metadata, "skipped"),
+    ...(tokenExpired !== undefined && { tokenExpired }),
   };
 }
 
@@ -1436,16 +1454,21 @@ export function buildDigestBody(data: OperatorDigestData): string {
     } else if (r.outcome === "aborted") {
       // The breaker decides on probed (checked - skipped); show it when recorded
       // so the operator sees why it tripped. Legacy rows keep the old line.
+      const expired = r.tokenExpired !== undefined ? `, ${r.tokenExpired} token-expired` : "";
       const basis =
         r.probed !== undefined && r.skipped !== undefined
-          ? `${r.probed} probed; ${r.checked} active, ${r.skipped} skipped`
+          ? `${r.probed} probed; ${r.checked} active, ${r.skipped} skipped${expired}`
           : `${r.checked}`;
       lines.push(
         `  ${r.at}: ABORTED by circuit breaker (would have marked ${r.wouldMark} of ${basis}); nothing marked`,
       );
     } else {
+      // token-expired (dormant) shops are never probed or marked (gc-gre); the
+      // segment is omitted for summary rows written before it was recorded.
+      const expired =
+        r.tokenExpired !== undefined ? `, token-expired (dormant) ${r.tokenExpired}` : "";
       lines.push(
-        `  ${r.at}: checked ${r.checked}, marked uninstalled ${r.marked}, skipped-transient ${r.skipped}`,
+        `  ${r.at}: checked ${r.checked}, marked uninstalled ${r.marked}, skipped-transient ${r.skipped}${expired}`,
       );
       // A high skip share is the early warning for rate limiting / auth trouble:
       // skipped shops are neither confirmed installed nor marked.

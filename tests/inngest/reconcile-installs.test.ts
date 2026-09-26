@@ -53,7 +53,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 }));
 
 vi.mock("../../app/db.server", () => ({
-  default: { shop: { findMany: vi.fn() } },
+  default: { shop: { findMany: vi.fn() }, session: { findMany: vi.fn() } },
 }));
 
 vi.mock("../../app/shopify.server", () => ({
@@ -82,6 +82,8 @@ import {
   isDefinitiveAuthFailure,
   isRefreshTokenRejected,
   isValidMyshopifyDomain,
+  formatReconcileSummary,
+  isRefreshTokenExpired,
   reconcileInstalls,
   CB_FRACTION,
   CB_MIN_MARKS,
@@ -95,6 +97,8 @@ import { createMockInngestStep, getInngestHandler } from "../mocks/inngest";
 
 const mockFindMany = (db as unknown as { shop: { findMany: ReturnType<typeof vi.fn> } }).shop
   .findMany;
+const mockSessionFindMany = (db as unknown as { session: { findMany: ReturnType<typeof vi.fn> } })
+  .session.findMany;
 const mockAdmin = (unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> }).admin;
 const mockMark = markShopUninstalledWithEvent as ReturnType<typeof vi.fn>;
 const mockRecordOpsEvent = recordOpsEvent as ReturnType<typeof vi.fn>;
@@ -142,6 +146,8 @@ beforeEach(() => {
   mockSendOpsAlert.mockResolvedValue({ sent: false, reason: "disabled" });
   mockLoadSession.mockResolvedValue(undefined);
   mockStoreSession.mockResolvedValue(true);
+  // No offline session rows by default: nothing is token-expired (gc-gre).
+  mockSessionFindMany.mockResolvedValue([]);
   mockFetch.mockReset();
   vi.stubGlobal("fetch", mockFetch);
   process.env.SHOPIFY_API_KEY = "test-key";
@@ -842,7 +848,7 @@ describe("reconcileInstalls handler", () => {
       eventType: "reconcile_summary",
       key: "reconcile-installs",
       message: expect.stringContaining("checked 2, marked 1"),
-      metadata: { checked: 2, marked: 1, skipped: 0 },
+      metadata: { checked: 2, marked: 1, skipped: 0, tokenExpired: 0 },
     });
   });
 
@@ -855,7 +861,7 @@ describe("reconcileInstalls handler", () => {
     expect(mockMark).not.toHaveBeenCalled();
     expect(result).toMatchObject({ checked: 0, marked: 0, skipped: 0 });
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
-      expect.objectContaining({ metadata: { checked: 0, marked: 0, skipped: 0 } }),
+      expect.objectContaining({ metadata: { checked: 0, marked: 0, skipped: 0, tokenExpired: 0 } }),
     );
   });
 });
@@ -930,7 +936,14 @@ describe("reconcileInstalls circuit breaker", () => {
         eventType: "reconcile_aborted",
         key: "reconcile-installs",
         message: expect.stringContaining("ABORTED by circuit breaker"),
-        metadata: { checked: 12, probed: 12, skipped: 0, wouldMark: 12, threshold: 6 },
+        metadata: {
+          checked: 12,
+          probed: 12,
+          skipped: 0,
+          tokenExpired: 0,
+          wouldMark: 12,
+          threshold: 6,
+        },
       }),
     );
     // The summary row is NOT written on abort (only the abort event).
@@ -977,7 +990,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_summary",
-        metadata: { checked: 8, marked: 3, skipped: 0 },
+        metadata: { checked: 8, marked: 3, skipped: 0, tokenExpired: 0 },
       }),
     );
     expect(result).toMatchObject({ status: "completed", checked: 8, marked: 3, skipped: 0 });
@@ -1022,7 +1035,14 @@ describe("reconcileInstalls circuit breaker", () => {
         eventType: "reconcile_aborted",
         key: "reconcile-installs",
         message: expect.stringContaining("ABORTED by circuit breaker"),
-        metadata: { checked: 5, probed: 5, skipped: 0, wouldMark: 5, threshold: 3 },
+        metadata: {
+          checked: 5,
+          probed: 5,
+          skipped: 0,
+          tokenExpired: 0,
+          wouldMark: 5,
+          threshold: 3,
+        },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1046,7 +1066,14 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 3, probed: 3, skipped: 0, wouldMark: 3, threshold: 3 },
+        metadata: {
+          checked: 3,
+          probed: 3,
+          skipped: 0,
+          tokenExpired: 0,
+          wouldMark: 3,
+          threshold: 3,
+        },
       }),
     );
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
@@ -1068,7 +1095,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_summary",
-        metadata: { checked: 10, marked: 4, skipped: 0 },
+        metadata: { checked: 10, marked: 4, skipped: 0, tokenExpired: 0 },
       }),
     );
     expect(result).toMatchObject({ status: "completed", checked: 10, marked: 4, skipped: 0 });
@@ -1084,7 +1111,14 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 10, probed: 10, skipped: 0, wouldMark: 5, threshold: 5 },
+        metadata: {
+          checked: 10,
+          probed: 10,
+          skipped: 0,
+          tokenExpired: 0,
+          wouldMark: 5,
+          threshold: 5,
+        },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1114,7 +1148,14 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 1, probed: 1, skipped: 0, wouldMark: 1, threshold: 3 },
+        metadata: {
+          checked: 1,
+          probed: 1,
+          skipped: 0,
+          tokenExpired: 0,
+          wouldMark: 1,
+          threshold: 3,
+        },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1141,7 +1182,14 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_aborted",
-        metadata: { checked: 2, probed: 2, skipped: 0, wouldMark: 2, threshold: 3 },
+        metadata: {
+          checked: 2,
+          probed: 2,
+          skipped: 0,
+          tokenExpired: 0,
+          wouldMark: 2,
+          threshold: 3,
+        },
       }),
     );
     expect(mockSendOpsAlert).toHaveBeenCalledTimes(1);
@@ -1185,7 +1233,14 @@ describe("reconcileInstalls circuit breaker", () => {
       expect.objectContaining({
         eventType: "reconcile_aborted",
         message: expect.stringContaining("2 of 2 probed"),
-        metadata: { checked: 3, probed: 2, skipped: 1, wouldMark: 2, threshold: 3 },
+        metadata: {
+          checked: 3,
+          probed: 2,
+          skipped: 1,
+          tokenExpired: 0,
+          wouldMark: 2,
+          threshold: 3,
+        },
       }),
     );
     expect(mockRecordOpsEvent).not.toHaveBeenCalledWith(
@@ -1204,7 +1259,7 @@ describe("reconcileInstalls circuit breaker", () => {
     expect(mockRecordOpsEvent).toHaveBeenCalledWith(
       expect.objectContaining({
         eventType: "reconcile_summary",
-        metadata: { checked: 3, marked: 0, skipped: 3 },
+        metadata: { checked: 3, marked: 0, skipped: 3, tokenExpired: 0 },
       }),
     );
     expect(result).toMatchObject({ status: "completed", checked: 3, marked: 0, skipped: 3 });
@@ -1372,5 +1427,230 @@ describe("shouldTripCircuitBreaker", () => {
 describe("reconcileInstalls registration", () => {
   it("exports a defined Inngest function", () => {
     expect(reconcileInstalls).toBeDefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Expired refresh token -> token_expired, never probed or marked (gc-gre)
+// ---------------------------------------------------------------------------
+
+describe("isRefreshTokenExpired", () => {
+  const NOW = new Date("2026-09-26T12:00:00Z");
+
+  it.each([
+    ["in the past (de66e6: 2026-08-12)", new Date("2026-08-12T00:00:00Z"), true],
+    ["1 ms in the past", new Date(NOW.getTime() - 1), true],
+    ["exactly now (not yet expired)", new Date(NOW.getTime()), false],
+    ["in the future", new Date("2027-01-01T00:00:00Z"), false],
+    ["null (non-expiring legacy offline token)", null, false],
+  ])("%s -> %s", (_name, expires, expected) => {
+    expect(isRefreshTokenExpired(expires, NOW)).toBe(expected);
+  });
+});
+
+describe("formatReconcileSummary", () => {
+  it("renders every count, including a zero token-expired count", () => {
+    expect(formatReconcileSummary({ checked: 10, marked: 1, skipped: 2, tokenExpired: 0 })).toBe(
+      "reconcile: checked 10, marked 1, skipped-transient 2, token-expired (dormant) 0",
+    );
+    expect(formatReconcileSummary({ checked: 11, marked: 0, skipped: 0, tokenExpired: 1 })).toBe(
+      "reconcile: checked 11, marked 0, skipped-transient 0, token-expired (dormant) 1",
+    );
+  });
+});
+
+describe("reconcileInstalls token-expired bucket (gc-gre)", () => {
+  const EXPIRED = "de66e6-c4.myshopify.com";
+  const PAST = new Date("2026-08-12T00:00:00Z");
+  const FUTURE = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+  /** Offline session rows as db.session.findMany returns them (id + expiry). */
+  function sessionsFor(rows: Array<[domain: string, expires: Date | null]>) {
+    mockSessionFindMany.mockResolvedValue(
+      rows.map(([domain, refreshTokenExpires]) => ({
+        id: `offline_${domain}`,
+        refreshTokenExpires,
+      })),
+    );
+  }
+
+  /** The masked admin failure + a raw refresh 401 with NO recognized error body. */
+  function maskedWithUnrecognized401() {
+    mockAdmin.mockRejectedValue(maskedAdminFailure());
+    mockLoadSession.mockResolvedValue(fakeOfflineSession());
+    mockFetch.mockResolvedValue(new Response(JSON.stringify({}), { status: 401 }));
+  }
+
+  it("reads refresh-token expiry for the active shops' OFFLINE session ids in one query", async () => {
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: "a.myshopify.com" },
+      { id: "s2", domain: EXPIRED },
+    ]);
+    mockAdmin.mockResolvedValue(adminGraphql(async () => ({ status: 200 })));
+
+    await runReconcile();
+
+    expect(mockSessionFindMany).toHaveBeenCalledTimes(1);
+    expect(mockSessionFindMany).toHaveBeenCalledWith({
+      where: { id: { in: ["offline_a.myshopify.com", `offline_${EXPIRED}`] } },
+      select: { id: true, refreshTokenExpires: true },
+    });
+  });
+
+  it("classifies an expired refresh token as token_expired: never probed, never marked, counted separately", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: EXPIRED }]);
+    sessionsFor([[EXPIRED, PAST]]);
+    maskedWithUnrecognized401(); // what a probe WOULD hit (the daily "transient" skip)
+
+    const result = await runReconcile();
+
+    expect(mockAdmin).not.toHaveBeenCalled(); // no Admin API call
+    expect(mockFetch).not.toHaveBeenCalled(); // no raw refresh probe
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(mockSendOpsAlert).not.toHaveBeenCalled(); // a dormant shop never trips the breaker
+    expect(result).toMatchObject({
+      status: "completed",
+      checked: 1,
+      marked: 0,
+      skipped: 0,
+      tokenExpired: 1,
+    });
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith({
+      eventType: "reconcile_summary",
+      key: "reconcile-installs",
+      message: "reconcile: checked 1, marked 0, skipped-transient 0, token-expired (dormant) 1",
+      metadata: { checked: 1, marked: 0, skipped: 0, tokenExpired: 1 },
+    });
+  });
+
+  it("still probes an UNEXPIRED token, and an unrecognized raw-refresh 401 stays ambiguous (skipped)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "fresh.myshopify.com" }]);
+    sessionsFor([["fresh.myshopify.com", FUTURE]]);
+    maskedWithUnrecognized401();
+
+    const result = await runReconcile();
+
+    expect(mockAdmin).toHaveBeenCalledWith("fresh.myshopify.com");
+    expect(mockFetch).toHaveBeenCalledTimes(1);
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 1, tokenExpired: 0 });
+  });
+
+  it("probes a null refreshTokenExpires (non-expiring legacy token) exactly as before", async () => {
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: "legacy.myshopify.com" },
+      { id: "s2", domain: "dead.myshopify.com" },
+      { id: "s3", domain: "live.myshopify.com" },
+    ]);
+    sessionsFor([["legacy.myshopify.com", null]]);
+    mockAdmin.mockImplementation(async (domain: string) =>
+      domain === "dead.myshopify.com"
+        ? adminGraphql(async () => {
+            throw { response: { code: 401 } };
+          })
+        : adminGraphql(async () => ({ status: 200 })),
+    );
+
+    const result = await runReconcile();
+
+    expect(mockAdmin).toHaveBeenCalledWith("legacy.myshopify.com");
+    expect(mockMark).toHaveBeenCalledTimes(1);
+    expect(mockMark).toHaveBeenCalledWith("dead.myshopify.com", expect.anything());
+    expect(result).toMatchObject({ checked: 3, marked: 1, skipped: 0, tokenExpired: 0 });
+  });
+
+  it("probes a shop with no offline session row (not expired; probes and classifies as before)", async () => {
+    mockFindMany.mockResolvedValue([{ id: "s1", domain: "nosession.myshopify.com" }]);
+    sessionsFor([]);
+    mockAdmin.mockResolvedValue(adminGraphql(async () => ({ status: 200 })));
+
+    const result = await runReconcile();
+
+    expect(mockAdmin).toHaveBeenCalledWith("nosession.myshopify.com");
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 0, tokenExpired: 0 });
+  });
+
+  it("marks a real uninstall alongside a dormant shop (the dormant one is untouched)", async () => {
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: EXPIRED },
+      { id: "s2", domain: "dead.myshopify.com" },
+      { id: "s3", domain: "live.myshopify.com" },
+    ]);
+    sessionsFor([
+      [EXPIRED, PAST],
+      ["dead.myshopify.com", FUTURE],
+      ["live.myshopify.com", FUTURE],
+    ]);
+    mockAdmin.mockImplementation(async (domain: string) =>
+      domain === "dead.myshopify.com"
+        ? adminGraphql(async () => {
+            throw { response: { code: 401 } };
+          })
+        : adminGraphql(async () => ({ status: 200 })),
+    );
+
+    const result = await runReconcile();
+
+    expect(mockAdmin).not.toHaveBeenCalledWith(EXPIRED);
+    expect(mockMark).toHaveBeenCalledTimes(1);
+    expect(mockMark).toHaveBeenCalledWith("dead.myshopify.com", expect.anything());
+    expect(result).toMatchObject({ checked: 3, marked: 1, skipped: 0, tokenExpired: 1 });
+  });
+
+  it("excludes token-expired shops from the breaker's probed base (trips on 100% of the PROBED shops)", async () => {
+    // 3 active: 1 dormant + 2 classified uninstalled. probed = 3 - 0 - 1 = 2
+    // and 2 of 2 would mark: the systemic signature, so abort and mark NOTHING.
+    // (Counting the dormant shop as probed would hide it: 2 of 3, no trip.)
+    mockFindMany.mockResolvedValue([
+      { id: "s1", domain: EXPIRED },
+      { id: "s2", domain: "dead1.myshopify.com" },
+      { id: "s3", domain: "dead2.myshopify.com" },
+    ]);
+    sessionsFor([[EXPIRED, PAST]]);
+    mockAdmin.mockResolvedValue(
+      adminGraphql(async () => {
+        throw { response: { code: 401 } };
+      }),
+    );
+
+    const result = await runReconcile();
+
+    expect(mockMark).not.toHaveBeenCalled();
+    expect(result).toMatchObject({ status: "aborted-circuit-breaker", checked: 3, wouldMark: 2 });
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventType: "reconcile_aborted",
+        message: expect.stringContaining("(3 active, 0 skipped, 1 token-expired)"),
+        metadata: {
+          checked: 3,
+          probed: 2,
+          skipped: 0,
+          tokenExpired: 1,
+          wouldMark: 2,
+          threshold: 3,
+        },
+      }),
+    );
+  });
+
+  it("replays a get-active-shops result memoized by pre-gc-gre code (no flag) as not expired", async () => {
+    const step = createMockInngestStep();
+    step.run.mockImplementation((name: string, fn: () => unknown) =>
+      name === "get-active-shops" ? [{ id: "s1", domain: EXPIRED }] : fn(),
+    );
+    mockAdmin.mockResolvedValue(adminGraphql(async () => ({ status: 200 })));
+
+    const result = await getInngestHandler(reconcileInstalls)({ step });
+
+    expect(mockAdmin).toHaveBeenCalledWith(EXPIRED);
+    expect(result).toMatchObject({ checked: 1, marked: 0, skipped: 0, tokenExpired: 0 });
+  });
+
+  it("skips the session query entirely when there are no active shops", async () => {
+    mockFindMany.mockResolvedValue([]);
+
+    await runReconcile();
+
+    expect(mockSessionFindMany).not.toHaveBeenCalled();
   });
 });

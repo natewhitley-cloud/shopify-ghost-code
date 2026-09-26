@@ -1525,6 +1525,77 @@ describe("buildDigestBody — reconciler section (gc-dwp)", () => {
   });
 });
 
+describe("reconciler token-expired bucket (gc-gre)", () => {
+  const AT = new Date("2026-09-26T12:00:00.000Z");
+  const lineOf = (body: string) =>
+    body.split("\n").find((l) => l.startsWith(`  ${AT.toISOString()}: `));
+  const renderSummary = (metadata: unknown) =>
+    buildDigestBody(
+      makeData({ reconciler: summarizeReconciler({ createdAt: AT, metadata }, null) }),
+    );
+
+  it("reads tokenExpired from the summary row's metadata (not its message text)", () => {
+    expect(
+      summarizeReconciler(
+        { createdAt: AT, metadata: { checked: 11, marked: 0, skipped: 0, tokenExpired: 1 } },
+        null,
+      ),
+    ).toEqual({
+      at: AT.toISOString(),
+      outcome: "completed",
+      checked: 11,
+      marked: 0,
+      skipped: 0,
+      tokenExpired: 1,
+    });
+  });
+
+  it("renders the token-expired (dormant) count, including zero", () => {
+    expect(lineOf(renderSummary({ checked: 11, marked: 0, skipped: 0, tokenExpired: 1 }))).toBe(
+      `  ${AT.toISOString()}: checked 11, marked uninstalled 0, skipped-transient 0, token-expired (dormant) 1`,
+    );
+    expect(lineOf(renderSummary({ checked: 11, marked: 1, skipped: 2, tokenExpired: 0 }))).toBe(
+      `  ${AT.toISOString()}: checked 11, marked uninstalled 1, skipped-transient 2, token-expired (dormant) 0`,
+    );
+  });
+
+  it("still renders an OLD summary row without the field (segment omitted, not a false 0)", () => {
+    const status = summarizeReconciler(
+      { createdAt: AT, metadata: { checked: 11, marked: 0, skipped: 1 } },
+      null,
+    );
+    expect(status).not.toHaveProperty("tokenExpired");
+    expect(lineOf(renderSummary({ checked: 11, marked: 0, skipped: 1 }))).toBe(
+      `  ${AT.toISOString()}: checked 11, marked uninstalled 0, skipped-transient 1`,
+    );
+  });
+
+  it("ignores a malformed tokenExpired value", () => {
+    expect(
+      summarizeReconciler(
+        { createdAt: AT, metadata: { checked: 1, marked: 0, skipped: 0, tokenExpired: "1" } },
+        null,
+      ),
+    ).not.toHaveProperty("tokenExpired");
+  });
+
+  it("does not count dormant shops toward the skipped-share WARN", () => {
+    const body = renderSummary({ checked: 10, marked: 0, skipped: 1, tokenExpired: 8 });
+    expect(body).not.toContain("WARN");
+  });
+
+  it("shows the token-expired count on an aborted run when recorded", () => {
+    const status = summarizeReconciler(null, {
+      createdAt: AT,
+      metadata: { checked: 3, probed: 2, skipped: 0, tokenExpired: 1, wouldMark: 2, threshold: 3 },
+    });
+    expect(status).toMatchObject({ outcome: "aborted", tokenExpired: 1 });
+    expect(buildDigestBody(makeData({ reconciler: status }))).toContain(
+      "ABORTED by circuit breaker (would have marked 2 of 2 probed; 3 active, 0 skipped, 1 token-expired); nothing marked",
+    );
+  });
+});
+
 describe("buildDigestBody — metric anomalies", () => {
   it("reports none when no anomalies are present (default)", () => {
     const body = buildDigestBody(makeData());

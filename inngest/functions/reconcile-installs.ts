@@ -47,6 +47,14 @@
  *   A RAW-refresh 200 means the app is STILL INSTALLED; Shopify ROTATES the
  *   offline refresh token on that success, so rawRefreshProbe stores the rotated
  *   session and the shop is treated as installed (never marked).
+ *   TOKEN EXPIRED (gc-gre): a shop whose offline Session's `refreshTokenExpires`
+ *   is already in the past is classified `token_expired` BEFORE any probe and is
+ *   never probed and never marked. Its offline token can no longer be refreshed,
+ *   so every probe of it fails in a way that proves nothing about the install
+ *   (the raw refresh returns a 401 with no recognized error body, which is
+ *   "ambiguous"). It is dormant, not uninstalled; it is counted separately so it
+ *   stops inflating skipped-transient every day. A null `refreshTokenExpires`
+ *   (non-expiring legacy offline token) is unaffected and probes as before.
  *   EVERYTHING else — throttling (429 / THROTTLED), network errors, timeouts, 5xx
  *   (including the library's `new Response(500)` refresh wrapper AND a raw-refresh
  *   5xx), a missing session (SessionNotFoundError), or any ambiguous/unexpected
@@ -153,6 +161,35 @@ export function shouldTripCircuitBreaker({
 
 /** Result of probing one shop's install status. */
 export type InstallStatus = "installed" | "uninstalled" | "ambiguous";
+
+/**
+ * A shop's classification this run: a probe result, or `token_expired` for a
+ * shop that was deliberately NOT probed because its offline refresh token has
+ * already expired (gc-gre). `token_expired` is never marked.
+ */
+export type ReconcileOutcome = InstallStatus | "token_expired";
+
+/**
+ * True when an offline session's refresh token has already expired, so the
+ * offline token can never be refreshed again (gc-gre). `null` means a
+ * non-expiring (legacy) offline token: never expired. Strictly before `now`.
+ */
+export function isRefreshTokenExpired(refreshTokenExpires: Date | null, now: Date): boolean {
+  return refreshTokenExpires !== null && refreshTokenExpires.getTime() < now.getTime();
+}
+
+/** The per-run summary message (the RECONCILE_SUMMARY OpsEvent's `message`). */
+export function formatReconcileSummary(counts: {
+  checked: number;
+  marked: number;
+  skipped: number;
+  tokenExpired: number;
+}): string {
+  return (
+    `reconcile: checked ${counts.checked}, marked ${counts.marked}, ` +
+    `skipped-transient ${counts.skipped}, token-expired (dormant) ${counts.tokenExpired}`
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Pure classification (exported for unit testing; no Prisma/Shopify/IO)
@@ -590,26 +627,57 @@ export const reconcileInstalls = inngest.createFunction(
   { id: "reconcile-installs", name: "Periodic Install-Status Reconciler" },
   { cron: "TZ=America/Denver 0 6 * * *" },
   withCronHeartbeat(RECONCILE_INSTALLS_KEY, async ({ step }) => {
-    // Load every ACTIVE shop (uninstalledAt IS NULL). Only id/domain are needed.
+    // Load every ACTIVE shop (uninstalledAt IS NULL) plus whether its offline
+    // session's refresh token has already expired (gc-gre), read in ONE query
+    // over the offline session ids (`offline_<domain>`, the id
+    // unauthenticated.admin and rawRefreshProbe load). The Date is consumed
+    // here so only a boolean crosses the step boundary. A shop with no offline
+    // session row is NOT expired (it probes, and classifies, as before).
     // FUTURE (as N grows): re-check only shops not verified recently (e.g. track
     // a lastReconciledAt) to cut API calls — implement the simple "check all
     // active" version now.
     const shops = (await step.run("get-active-shops", async () => {
       const db = (await import("../../app/db.server")).default;
-      return db.shop.findMany({
+      const active = await db.shop.findMany({
         where: { uninstalledAt: null },
         select: { id: true, domain: true },
       });
-    })) as Array<{ id: string; domain: string }>;
+      if (active.length === 0) return [];
+      const sessions = await db.session.findMany({
+        where: { id: { in: active.map((s) => `offline_${s.domain}`) } },
+        select: { id: true, refreshTokenExpires: true },
+      });
+      const expiresById = new Map(sessions.map((s) => [s.id, s.refreshTokenExpires]));
+      const now = new Date();
+      return active.map((s) => ({
+        ...s,
+        refreshTokenExpired: isRefreshTokenExpired(
+          expiresById.get(`offline_${s.domain}`) ?? null,
+          now,
+        ),
+      }));
+    })) as Array<{ id: string; domain: string; refreshTokenExpired?: boolean }>;
 
     const checked = shops.length;
 
     // --- Pass 1: PROBE (classify only, mark NOTHING) -----------------------
     // One step per shop so a mid-run failure/retry resumes without re-probing
     // completed shops. probeInstall never marks; it may store a rotated session
-    // on a 200 (safe, and itself prevents a future false-churn).
-    const probes: Array<{ domain: string; classification: InstallStatus }> = [];
+    // on a 200 (safe, and itself prevents a future false-churn). A shop whose
+    // refresh token has expired is classified token_expired WITHOUT a probe
+    // (no API call, no step, no pause): it can never be marked (gc-gre).
+    // `refreshTokenExpired` is optional only so a get-active-shops result
+    // memoized by pre-gc-gre code replays as "not expired" (probe as before).
+    const probes: Array<{ domain: string; classification: ReconcileOutcome }> = [];
     for (let i = 0; i < shops.length; i++) {
+      if (shops[i].refreshTokenExpired === true) {
+        logger.info("reconcile-installs: offline refresh token expired — not probed (dormant)", {
+          function: "reconcile-installs",
+          domain: shops[i].domain,
+        });
+        probes.push({ domain: shops[i].domain, classification: "token_expired" });
+        continue;
+      }
       const classification = (await step.run(`probe-shop-${i}`, () =>
         probeInstall(shops[i].domain),
       )) as InstallStatus;
@@ -623,6 +691,7 @@ export const reconcileInstalls = inngest.createFunction(
 
     const wouldMark = probes.filter((p) => p.classification === "uninstalled").map((p) => p.domain);
     const skipped = probes.filter((p) => p.classification === "ambiguous").length;
+    const tokenExpired = probes.filter((p) => p.classification === "token_expired").length;
 
     // --- Circuit-breaker gate ---------------------------------------------
     // A run that looks like mass churn is the signature of a systemic fault, not
@@ -632,16 +701,24 @@ export const reconcileInstalls = inngest.createFunction(
     // upstream and counted in `skipped`), so a network blip or throttle never
     // adds to it. The abort OpsEvent metadata carries `probed` and `skipped` so
     // the operator digest can show the denominator the breaker used.
-    const probed = checked - skipped;
+    // Token-expired shops were never probed, so like skipped (ambiguous) shops
+    // they carry no signal: both are excluded from the probed denominator. That
+    // only shrinks `probed`, which can only make the breaker trip MORE readily.
+    const unclassified = skipped + tokenExpired;
+    const probed = checked - unclassified;
     const churnThreshold = circuitBreakerThreshold(probed);
-    const tripped = shouldTripCircuitBreaker({ checked, skipped, wouldMark: wouldMark.length });
+    const tripped = shouldTripCircuitBreaker({
+      checked,
+      skipped: unclassified,
+      wouldMark: wouldMark.length,
+    });
     if (tripped) {
       await step.run("circuit-breaker-abort", async () => {
         const { recordOpsEvent, OPS_EVENT_TYPES } =
           await import("../../app/models/ops-event.server");
         const summary =
           `reconcile ABORTED by circuit breaker: ${wouldMark.length} of ${probed} probed ` +
-          `(${checked} active, ${skipped} skipped) shops classified uninstalled ` +
+          `(${checked} active, ${skipped} skipped, ${tokenExpired} token-expired) shops classified uninstalled ` +
           `(threshold ${churnThreshold}) — likely a systemic misconfig ` +
           `(e.g. wrong/rotated shared client_secret), NOT a real mass uninstall. Marked NOTHING.`;
         // The durable OpsEvent row is counts-only: NO per-shop domains in the
@@ -658,6 +735,7 @@ export const reconcileInstalls = inngest.createFunction(
             checked,
             probed,
             skipped,
+            tokenExpired,
             wouldMark: wouldMark.length,
             threshold: churnThreshold,
           },
@@ -704,8 +782,8 @@ export const reconcileInstalls = inngest.createFunction(
       await recordOpsEvent({
         eventType: OPS_EVENT_TYPES.RECONCILE_SUMMARY,
         key: RECONCILE_INSTALLS_KEY,
-        message: `reconcile: checked ${checked}, marked ${marked}, skipped-transient ${skipped}`,
-        metadata: { checked, marked, skipped },
+        message: formatReconcileSummary({ checked, marked, skipped, tokenExpired }),
+        metadata: { checked, marked, skipped, tokenExpired },
       });
     });
 
@@ -714,8 +792,9 @@ export const reconcileInstalls = inngest.createFunction(
       checked,
       marked,
       skipped,
+      tokenExpired,
     });
 
-    return { status: "completed", checked, marked, skipped };
+    return { status: "completed", checked, marked, skipped, tokenExpired };
   }),
 );
