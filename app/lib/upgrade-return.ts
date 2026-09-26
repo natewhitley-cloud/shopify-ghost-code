@@ -53,21 +53,19 @@ export function isUpgradeReturnEpisodeOpen(state: UpgradeReturnEpisode, now: Dat
 }
 
 /**
- * May this results view show the banner (before the cross-prompt cap)?
+ * Is the SHOP eligible for the banner (before the cross-prompt cap)?
  *   - Free plan only;
- *   - the page has hidden findings to talk about (`hasHiddenFindings`);
  *   - the first successful scan completed 24h+ ago (exactly 24h qualifies);
  *   - fewer than 3 "Not now" clicks ever;
  *   - and either the current episode is still open (reload persistence), or a
  *     new one may start: never shown, or the last episode started 7d+ ago
  *     (exactly 7d qualifies).
+ *
+ * Shop-level: whether a given page can RENDER it (a successful scan's results
+ * with hidden findings) is decided by scanResultsPrompts in ./prompt-cap.
  */
-export function isUpgradeReturnEligible(
-  state: UpgradeReturnState,
-  hasHiddenFindings: boolean,
-  now: Date,
-): boolean {
-  if (state.plan !== PLANS.FREE || !hasHiddenFindings) return false;
+export function isUpgradeReturnEligible(state: UpgradeReturnState, now: Date): boolean {
+  if (state.plan !== PLANS.FREE) return false;
   if (state.firstSuccessfulScanAt === null) return false;
   if (now.getTime() - state.firstSuccessfulScanAt.getTime() < UPGRADE_RETURN_MIN_AGE_MS) {
     return false;

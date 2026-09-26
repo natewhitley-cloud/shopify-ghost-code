@@ -5,11 +5,12 @@
  * once per merchant) but also directly reachable.
  *
  * On submit the action validates server-side, persists the row, records the
- * once-per-merchant `converted` stage (stamps feedbackSubmittedAt), emails the
- * operator (fire-and-forget) and marks hasSeenReviewPrompt. The success state
- * shows the SAME neutral App Store review ask to every submitter, whatever
- * their rating: Shopify's review policy forbids asking only satisfied
- * merchants, so the ask never depends on CSAT.
+ * once-per-merchant `converted` stage (stamps feedbackSubmittedAt) and emails
+ * the operator (fire-and-forget). The success state shows the SAME neutral App
+ * Store review link to every submitter, whatever their rating: Shopify's review
+ * policy forbids asking only satisfied merchants, so the ask never depends on
+ * CSAT. That link is in-flow (the merchant is already on this page), not an
+ * interruptive prompt, so the cross-prompt cap does not count it.
  *
  * Every field is a native input so it serializes into FormData without the
  * hidden-input bridge Polaris web components would need.
@@ -23,8 +24,7 @@ import {
   FEEDBACK_MAX_TEXT_LEN,
   FEEDBACK_THANKS_COPY,
 } from "../lib/feedback-nudge";
-import { logger } from "../lib/logger.server";
-import { dismissReviewPrompt, getShopMetadata } from "../models/shop.server";
+import { getShopMetadata } from "../models/shop.server";
 import { createFeedback, validateFeedbackInput } from "../services/feedback.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
@@ -66,20 +66,6 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<ActionRes
   }
 
   await createFeedback({ id: shop.id, domain: session.shop }, validation.value);
-
-  // The success state carries the neutral review ask, so the separate home
-  // review banner must never show after it. Best-effort: the feedback is
-  // already saved, so a failure here must not turn the submit into an error.
-  if (!shop.hasSeenReviewPrompt) {
-    try {
-      await dismissReviewPrompt(shop.id);
-    } catch (err) {
-      logger.error("feedback-mark-review-seen-failed", {
-        shop: session.shop,
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
 
   return { ok: true };
 };

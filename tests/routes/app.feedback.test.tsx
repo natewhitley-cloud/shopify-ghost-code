@@ -19,15 +19,10 @@ vi.mock("../../app/shopify.server", () => ({
 
 vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
-  dismissReviewPrompt: vi.fn(),
 }));
 
 vi.mock("../../app/services/nudge-stage.server", () => ({
   recordNudgeStageOnce: vi.fn(),
-}));
-
-vi.mock("../../app/lib/logger.server", () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
 vi.mock("../../app/services/feedback.server", async (importOriginal) => {
@@ -36,8 +31,7 @@ vi.mock("../../app/services/feedback.server", async (importOriginal) => {
 });
 
 import { APP_STORE_REVIEW_URL, FEEDBACK_THANKS_COPY } from "../../app/lib/feedback-nudge";
-import { logger } from "../../app/lib/logger.server";
-import { dismissReviewPrompt, getShopMetadata } from "../../app/models/shop.server";
+import { getShopMetadata } from "../../app/models/shop.server";
 import { action, FeedbackThanks, loader } from "../../app/routes/app.feedback";
 import { createFeedback } from "../../app/services/feedback.server";
 import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
@@ -45,12 +39,11 @@ import { authenticate } from "../../app/shopify.server";
 
 const mockAuthenticateAdmin = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
-const mockDismissReviewPrompt = dismissReviewPrompt as ReturnType<typeof vi.fn>;
 const mockRecordStage = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
 const mockCreateFeedback = createFeedback as ReturnType<typeof vi.fn>;
 
 const DOMAIN = "merchant.myshopify.com";
-const SHOP = { id: "shop-1", domain: DOMAIN, plan: "free", hasSeenReviewPrompt: false };
+const SHOP = { id: "shop-1", domain: DOMAIN, plan: "free" };
 
 function loaderArgs(search: string): LoaderFunctionArgs {
   return {
@@ -77,7 +70,6 @@ beforeEach(() => {
   mockGetShopMetadata.mockResolvedValue(SHOP);
   mockRecordStage.mockResolvedValue(true);
   mockCreateFeedback.mockResolvedValue({ id: "fb-1" });
-  mockDismissReviewPrompt.mockResolvedValue({ id: "shop-1" });
 });
 
 // ---------------------------------------------------------------------------
@@ -151,30 +143,13 @@ describe("app.feedback action", () => {
   });
 
   // Proves there is no sentiment gating: the lowest and highest ratings get the
-  // same outcome, and both retire the separate review banner.
-  it.each(["1", "5"])("CSAT %s: succeeds and sets hasSeenReviewPrompt", async (csat) => {
+  // same outcome. (They no longer write hasSeenReviewPrompt: the home review
+  // banner it retired is itself retired, owner decision 2A.)
+  it.each(["1", "5"])("CSAT %s: succeeds with the same outcome", async (csat) => {
     const result = await action(actionArgs({ csat }));
 
     expect(result).toEqual({ ok: true });
-    expect(mockDismissReviewPrompt).toHaveBeenCalledTimes(1);
-    expect(mockDismissReviewPrompt).toHaveBeenCalledWith("shop-1");
-  });
-
-  it("skips the hasSeenReviewPrompt write when it is already set", async () => {
-    mockGetShopMetadata.mockResolvedValue({ ...SHOP, hasSeenReviewPrompt: true });
-
-    await expect(action(actionArgs({ csat: "2" }))).resolves.toEqual({ ok: true });
-    expect(mockDismissReviewPrompt).not.toHaveBeenCalled();
-  });
-
-  it("still succeeds when marking the review prompt seen fails (feedback already saved)", async () => {
-    mockDismissReviewPrompt.mockRejectedValue(new Error("db blip"));
-
-    await expect(action(actionArgs({ csat: "5" }))).resolves.toEqual({ ok: true });
-    expect(logger.error).toHaveBeenCalledWith(
-      "feedback-mark-review-seen-failed",
-      expect.objectContaining({ shop: DOMAIN, error: "db blip" }),
-    );
+    expect(mockCreateFeedback).toHaveBeenCalledTimes(1);
   });
 
   it.each([
@@ -184,12 +159,11 @@ describe("app.feedback action", () => {
     ["non-integer CSAT", { csat: "2.5" }],
     ["invalid email", { csat: "4", contactEmail: "nope" }],
     ["over-length email", { csat: "4", contactEmail: `${"a".repeat(320)}@x.co` }],
-  ])("rejects %s without persisting or touching the review prompt", async (_label, fields) => {
+  ])("rejects %s without persisting", async (_label, fields) => {
     const result = await action(actionArgs(fields as Record<string, string>));
 
     expect(result.ok).toBe(false);
     expect(mockCreateFeedback).not.toHaveBeenCalled();
-    expect(mockDismissReviewPrompt).not.toHaveBeenCalled();
   });
 
   it("returns an error and persists nothing when the shop row is missing", async () => {

@@ -61,7 +61,6 @@ import {
   updateShopPlanByDomain,
   stampPlanReconciledAt,
   updateThemePublishTimestamp,
-  dismissReviewPrompt,
   deleteShopData,
   markShopUninstalled,
   markShopUninstalledWithEvent,
@@ -116,7 +115,6 @@ describe("getShopMetadata", () => {
         uninstalledAt: true,
         lastSeenAt: true,
         lastThemePublishAt: true,
-        hasSeenReviewPrompt: true,
         // gc-97k.4: lets the scan page skip the `shown` claim once it is stamped.
         upgradePreviewShownAt: true,
         // gc-97k.3: the home loader's feedback-nudge gate and shown pre-check.
@@ -605,82 +603,6 @@ describe("updateThemePublishTimestamp", () => {
     await expect(updateThemePublishTimestamp("error-shop.myshopify.com")).rejects.toThrow(
       "DB write failed",
     );
-  });
-});
-
-// ---------------------------------------------------------------------------
-// dismissReviewPrompt
-// ---------------------------------------------------------------------------
-
-describe("dismissReviewPrompt", () => {
-  beforeEach(() => {
-    vi.clearAllMocks();
-  });
-
-  it("returns null when the shop id is not found in DB", async () => {
-    mockDb.shop.findUnique.mockResolvedValue(null);
-
-    const result = await dismissReviewPrompt("nonexistent-id");
-
-    expect(result).toBeNull();
-    expect(mockDb.shop.update).not.toHaveBeenCalled();
-  });
-
-  it("calls db.shop.update with hasSeenReviewPrompt: true when shop exists", async () => {
-    const existingShop = {
-      id: "shop-review-1",
-      domain: "review-shop.myshopify.com",
-      plan: "free",
-      hasSeenReviewPrompt: false,
-    };
-    mockDb.shop.findUnique.mockResolvedValue(existingShop);
-    mockDb.shop.update.mockResolvedValue({ id: "shop-review-1" });
-
-    await dismissReviewPrompt("shop-review-1");
-
-    expect(mockDb.shop.update).toHaveBeenCalledWith({
-      where: { id: "shop-review-1" },
-      data: { hasSeenReviewPrompt: true },
-      select: { id: true },
-    });
-  });
-
-  it("returns the updated shop object with id on success", async () => {
-    const existingShop = {
-      id: "shop-review-2",
-      domain: "review-shop-2.myshopify.com",
-      plan: "Standard",
-      hasSeenReviewPrompt: false,
-    };
-    mockDb.shop.findUnique.mockResolvedValue(existingShop);
-    mockDb.shop.update.mockResolvedValue({ id: "shop-review-2" });
-
-    const result = await dismissReviewPrompt("shop-review-2");
-
-    expect(result).toEqual({ id: "shop-review-2" });
-  });
-
-  it("looks up shop by id (not domain)", async () => {
-    mockDb.shop.findUnique.mockResolvedValue(null);
-
-    await dismissReviewPrompt("shop-id-123");
-
-    expect(mockDb.shop.findUnique).toHaveBeenCalledWith({
-      where: { id: "shop-id-123" },
-    });
-  });
-
-  it("propagates a database error from update", async () => {
-    const existingShop = {
-      id: "shop-review-err",
-      domain: "error-shop.myshopify.com",
-      plan: "free",
-      hasSeenReviewPrompt: false,
-    };
-    mockDb.shop.findUnique.mockResolvedValue(existingShop);
-    mockDb.shop.update.mockRejectedValueOnce(new Error("DB write failed"));
-
-    await expect(dismissReviewPrompt("shop-review-err")).rejects.toThrow("DB write failed");
   });
 });
 

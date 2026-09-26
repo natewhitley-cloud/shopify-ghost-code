@@ -226,6 +226,8 @@ Not currently set. A demo store showing Ghost Code results on a real theme would
 
 ### In-app review prompt (build post-approval)
 
+> **Superseded (2026-09-26, owner decision 2A):** the home-page review banner described below was built and has been RETIRED. The in-app review asks are now Shopify's native review popup on a later results visit (gc-97k.7) and the neutral review link on the feedback success page. `hasSeenReviewPrompt` stays in the schema but nothing reads or writes it. The original plan is kept below for history.
+
 **Trigger:** After the merchant's first completed scan that finds 3+ findings.
 
 **UI:** Non-blocking banner at the top of the dashboard, dismissable. Shows once per shop.

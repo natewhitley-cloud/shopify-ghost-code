@@ -34,7 +34,7 @@ function state(overrides: Partial<UpgradeReturnState> = {}): UpgradeReturnState 
   };
 }
 
-const eligible = (s: UpgradeReturnState, hidden = true) => isUpgradeReturnEligible(s, hidden, NOW);
+const eligible = (s: UpgradeReturnState) => isUpgradeReturnEligible(s, NOW);
 
 describe("constants", () => {
   it("are 24h, 7d and 3 dismissals, with neutral copy and no em dash", () => {
@@ -74,9 +74,9 @@ describe("isUpgradeReturnEligible", () => {
     expect(eligible(state({ plan }))).toBe(false);
   });
 
-  it("is not eligible without hidden findings to talk about", () => {
-    expect(eligible(state(), false)).toBe(false);
-  });
+  // Hidden findings are no longer part of the SHOP-level rule (owner decision
+  // 1A): whether a page has something to show is page renderability, pinned in
+  // tests/lib/prompt-cap.test.ts (scanResultsPrompts).
 
   describe("dismissals", () => {
     it.each([0, 1, 2])("is eligible after %i dismissals", (count) => {

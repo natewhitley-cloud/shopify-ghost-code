@@ -15,7 +15,6 @@ export type ShopMetadata = {
   uninstalledAt: Date | null;
   lastSeenAt: Date | null;
   lastThemePublishAt: Date | null;
-  hasSeenReviewPrompt: boolean;
   upgradePreviewShownAt: Date | null;
   feedbackNudgeShownAt: Date | null;
   feedbackNudgeDismissedAt: Date | null;
@@ -64,7 +63,7 @@ export async function touchShopLastSeen(shopId: string): Promise<void> {
 
 /**
  * Lightweight shop lookup that returns all shop metadata fields.
- * Use this for plan checks, feature gating, review prompts, and any
+ * Use this for plan checks, feature gating, interruptive prompts, and any
  * caller that only needs shop identity or settings.
  *
  * Returns null if no shop exists — callers must handle the null case.
@@ -81,7 +80,6 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       uninstalledAt: true,
       lastSeenAt: true,
       lastThemePublishAt: true,
-      hasSeenReviewPrompt: true,
       upgradePreviewShownAt: true,
       feedbackNudgeShownAt: true,
       feedbackNudgeDismissedAt: true,
@@ -454,23 +452,6 @@ export async function updateThemePublishTimestamp(
     where: { domain },
     data: { lastThemePublishAt: new Date() },
     select: { id: true, domain: true },
-  });
-}
-
-/**
- * Permanently mark that a shop has seen (and dismissed) the App Store review prompt.
- * Once set to true, the banner will never be shown again for this shop.
- *
- * Returns null if the shop is not found — callers must handle the null case.
- */
-export async function dismissReviewPrompt(shopId: string): Promise<{ id: string } | null> {
-  const shop = await db.shop.findUnique({ where: { id: shopId } });
-  if (!shop) return null;
-
-  return db.shop.update({
-    where: { id: shopId },
-    data: { hasSeenReviewPrompt: true },
-    select: { id: true },
   });
 }
 

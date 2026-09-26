@@ -1,30 +1,64 @@
 /**
  * Server side of the cross-prompt frequency cap (gc-97k.6).
  *
- * resolvePrompt is the ONE call a loader makes to decide which interruptive
- * prompt (if any) renders on this page view: it runs the pure pickPrompt, then
- * claims the shop's durable prompt slot when the pick opens a new 24h window.
+ * Every page that can render an interruptive prompt makes the same two calls:
+ *   1. loadShopPromptState: the shop's prompt state (Shop fields plus the first
+ *      successful scan's completedAt, read only when a rule can use it). Start
+ *      it alongside the page's other reads; it is independent of them.
+ *   2. resolvePrompt: computes the shop's GLOBAL eligibility
+ *      (shopPromptEligibility), runs the pure pickPrompt against what THIS page
+ *      can render, and claims the shop's durable prompt slot when the pick
+ *      opens a new 24h window.
+ * Home and the scan results page therefore always agree on which prompt is
+ * pending (owner decision 1A).
  *
- * NEVER THROWS: on any failure it logs and returns null (no prompt). Failing
- * closed keeps the cap honest, and a missing prompt never breaks a page.
+ * resolvePrompt NEVER THROWS: on any failure it logs and returns null (no
+ * prompt). Failing closed keeps the cap honest, and a missing prompt never
+ * breaks a page.
  */
 import { logger } from "../lib/logger.server";
 import { pickPrompt, promptClaimNeeded } from "../lib/prompt-cap";
 import type { PromptCapState, PromptKey } from "../lib/prompt-cap";
+import { firstSuccessfulScanNeeded, shopPromptEligibility } from "../lib/prompt-eligibility";
+import type { ShopPromptState } from "../lib/prompt-eligibility";
+import { getFirstSuccessfulScanCompletedAt } from "../models/scan.server";
 import { claimPromptSlot, getShopMetadata } from "../models/shop.server";
+import type { ShopMetadata } from "../models/shop.server";
 
-export type ResolvePromptInput = PromptCapState & {
+/** The shop's prompt eligibility inputs plus its cap state. */
+export type ShopPromptContext = ShopPromptState & PromptCapState;
+
+/**
+ * Load the shop's prompt state. `shop` is the metadata the loader already
+ * read; the only query is the first successful scan, and only when a prompt
+ * rule can use it (firstSuccessfulScanNeeded). Throws only if that read does,
+ * like any other loader read.
+ */
+export async function loadShopPromptState(
+  shop: ShopMetadata,
+  now: Date,
+): Promise<ShopPromptContext> {
+  const firstSuccessfulScanAt = firstSuccessfulScanNeeded(shop, now)
+    ? await getFirstSuccessfulScanCompletedAt(shop.id)
+    : null;
+  return { ...shop, firstSuccessfulScanAt };
+}
+
+export type ResolvePromptInput = {
   /** session.shop, unchanged. */
   shopDomain: string;
-  /** The prompts whose own eligibility rules pass on this page view. */
-  eligible: readonly PromptKey[];
+  /** From loadShopPromptState, read on this load. */
+  state: ShopPromptContext;
+  /** The prompts THIS page can render (HOME_PROMPTS / scanResultsPrompts). */
+  renderable: readonly PromptKey[];
   now: Date;
 };
 
 /**
- * The single interruptive prompt to render, or null.
+ * The single interruptive prompt to render on this page view, or null.
  *
- * - Nothing eligible, or the cap blocks everything: null, no write.
+ * - Nothing pending, the cap blocks the pending prompt, or this page cannot
+ *   render it: null, no write.
  * - The same prompt re-rendering inside its window: that prompt, no write.
  * - Otherwise the pick claims the slot (claimPromptSlot, keyed on the state this
  *   load read). If a concurrent load changed the slot first, the claim loses:
@@ -33,17 +67,33 @@ export type ResolvePromptInput = PromptCapState & {
  *   one, this load renders nothing.
  */
 export async function resolvePrompt(input: ResolvePromptInput): Promise<PromptKey | null> {
-  const { shopDomain, eligible, now } = input;
-  const picked = pickPrompt(input);
-  if (picked === null || !promptClaimNeeded(picked, input, now)) return picked;
+  const { shopDomain, state, renderable, now } = input;
+  const picked = pickPrompt({
+    ...state,
+    eligible: shopPromptEligibility(state, now),
+    renderable,
+    now,
+  });
+  if (picked === null || !promptClaimNeeded(picked, state, now)) return picked;
 
   try {
-    if (await claimPromptSlot(shopDomain, picked, input, now)) return picked;
+    if (await claimPromptSlot(shopDomain, picked, state, now)) return picked;
 
     const fresh = await getShopMetadata(shopDomain);
     if (fresh === null) return null;
-    const repicked = pickPrompt({ ...fresh, eligible, now });
-    return repicked !== null && !promptClaimNeeded(repicked, fresh, now) ? repicked : null;
+    // The first successful scan cannot change between the two reads that
+    // matter here, so the value this load already read is reused.
+    const freshState: ShopPromptContext = {
+      ...fresh,
+      firstSuccessfulScanAt: state.firstSuccessfulScanAt,
+    };
+    const repicked = pickPrompt({
+      ...freshState,
+      eligible: shopPromptEligibility(freshState, now),
+      renderable,
+      now,
+    });
+    return repicked !== null && !promptClaimNeeded(repicked, freshState, now) ? repicked : null;
   } catch (err) {
     logger.error("prompt-cap-claim-failed", {
       shop: shopDomain,

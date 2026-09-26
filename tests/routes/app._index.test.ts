@@ -29,7 +29,6 @@ vi.mock("../../app/db.server", () => ({
 vi.mock("../../app/models/shop.server", () => ({
   getShopMetadata: vi.fn(),
   getOrCreateShopMetadata: vi.fn(),
-  dismissReviewPrompt: vi.fn(),
   claimPromptSlot: vi.fn(),
 }));
 
@@ -137,7 +136,6 @@ import {
 import {
   getOrCreateShopMetadata,
   getShopMetadata,
-  dismissReviewPrompt,
   claimPromptSlot,
 } from "../../app/models/shop.server";
 import { loader, action } from "../../app/routes/app._index";
@@ -172,7 +170,6 @@ const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockFetchAllThemes = fetchAllThemes as ReturnType<typeof vi.fn>;
 const mockGetWeekStartUTC = getWeekStartUTC as ReturnType<typeof vi.fn>;
 const mockGetCompletedScansForShop = getCompletedScansForShop as ReturnType<typeof vi.fn>;
-const mockDismissReviewPrompt = dismissReviewPrompt as ReturnType<typeof vi.fn>;
 const mockGetFirstSuccessfulScanAt = getFirstSuccessfulScanCompletedAt as ReturnType<typeof vi.fn>;
 const mockRecordNudgeStage = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
 const mockClaimPromptSlot = claimPromptSlot as ReturnType<typeof vi.fn>;
@@ -454,7 +451,7 @@ describe("app._index loader", () => {
       expect(result.healthScore).toBeNull();
       expect(result.showRescanNudge).toBe(false);
       expect(result.showThemeChangeNudge).toBe(false);
-      expect(result.showReviewPrompt).toBe(false);
+      expect(result.showFeedbackNudge).toBe(false);
     });
 
     it("does not call downstream services when shop is null", async () => {
@@ -646,65 +643,17 @@ describe("app._index loader — finding trend", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Loader: review prompt
+// Retired home review banner (owner decision 2A)
 // ---------------------------------------------------------------------------
 
-describe("app._index loader — review prompt", () => {
-  it("returns showReviewPrompt: true when scan completed with 4+ findings and not dismissed", async () => {
-    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
+describe("app._index loader: retired review banner", () => {
+  it("never returns a review-banner flag, even for the old trigger (4+ findings, never seen)", async () => {
+    // Default SHOP has hasSeenReviewPrompt: false; COMPLETED_SCAN has 5 findings.
+    const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
 
-    // Default SHOP has hasSeenReviewPrompt: false
-    // Default COMPLETED_SCAN has findingCount: 5 and status: "COMPLETED"
-    expect(result.showReviewPrompt).toBe(true);
-  });
-
-  it("returns showReviewPrompt: false when hasSeenReviewPrompt is true", async () => {
-    mockGetShopMetadata.mockResolvedValue({ ...SHOP, hasSeenReviewPrompt: true });
-
-    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
-
-    expect(result.showReviewPrompt).toBe(false);
-  });
-
-  it("returns showReviewPrompt: false when findingCount is below threshold (< 4)", async () => {
-    mockGetScansForShop.mockResolvedValue({
-      items: [{ ...COMPLETED_SCAN, findingCount: 3 }],
-      hasNextPage: false,
-    });
-
-    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
-
-    expect(result.showReviewPrompt).toBe(false);
-  });
-
-  it("returns showReviewPrompt: true when findingCount is exactly 4 (boundary)", async () => {
-    mockGetScansForShop.mockResolvedValue({
-      items: [{ ...COMPLETED_SCAN, findingCount: 4 }],
-      hasNextPage: false,
-    });
-
-    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
-
-    expect(result.showReviewPrompt).toBe(true);
-  });
-
-  it("returns showReviewPrompt: false when scan is not completed", async () => {
-    mockGetScansForShop.mockResolvedValue({
-      items: [{ ...COMPLETED_SCAN, status: "IN_PROGRESS", findingCount: 10 }],
-      hasNextPage: false,
-    });
-
-    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
-
-    expect(result.showReviewPrompt).toBe(false);
-  });
-
-  it("returns showReviewPrompt: false when no scans exist", async () => {
-    mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
-
-    const result = (await loader(makeLoaderArgs())) as { showReviewPrompt: boolean };
-
-    expect(result.showReviewPrompt).toBe(false);
+    expect(result).not.toHaveProperty("showReviewPrompt");
+    expect(result.showFeedbackNudge).toBe(false);
+    expect(mockClaimPromptSlot).not.toHaveBeenCalled();
   });
 });
 
@@ -870,43 +819,27 @@ describe("app._index action", () => {
     });
   });
 
-  describe("dismiss-review-prompt intent", () => {
-    beforeEach(() => {
-      mockDismissReviewPrompt.mockResolvedValue({ id: "shop-1" });
-    });
-
-    it("calls dismissReviewPrompt and returns { dismissed: true }", async () => {
+  describe("retired dismiss-review-prompt intent (stale tab)", () => {
+    it("is a no-op: no write, no plan gate, and never a scan", async () => {
       const request = new Request("https://test-shop.myshopify.com/app", {
         method: "POST",
         body: new URLSearchParams({ intent: "dismiss-review-prompt" }),
       });
 
-      const result = (await action(makeActionArgs({ request }))) as { dismissed: boolean };
+      const result = (await action(makeActionArgs({ request }))) as { ignored: boolean };
 
-      expect(result.dismissed).toBe(true);
-      expect(mockDismissReviewPrompt).toHaveBeenCalledWith("shop-1");
-    });
-
-    it("does not check plan gating for dismiss intent", async () => {
-      const request = new Request("https://test-shop.myshopify.com/app", {
-        method: "POST",
-        body: new URLSearchParams({ intent: "dismiss-review-prompt" }),
-      });
-
-      await action(makeActionArgs({ request }));
-
+      expect(result).toEqual({ ignored: true });
       expect(mockCanStartScan).not.toHaveBeenCalled();
       expect(mockDispatchScan).not.toHaveBeenCalled();
     });
 
-    it("does not call dispatchScan for dismiss intent", async () => {
+    it("any other unknown intent is a no-op too (starting a scan sends none)", async () => {
       const request = new Request("https://test-shop.myshopify.com/app", {
         method: "POST",
-        body: new URLSearchParams({ intent: "dismiss-review-prompt" }),
+        body: new URLSearchParams({ intent: "something-else", themeId: "gid://x" }),
       });
 
-      await action(makeActionArgs({ request }));
-
+      await expect(action(makeActionArgs({ request }))).resolves.toEqual({ ignored: true });
       expect(mockDispatchScan).not.toHaveBeenCalled();
     });
   });
@@ -1827,9 +1760,18 @@ describe("app._index loader: feedback nudge", () => {
     feedbackNudgeShownAt: null,
     feedbackNudgeDismissedAt: null,
     feedbackSubmittedAt: null,
+    // gc-97k.6/7/9: no higher-priority prompt pending by default. The review
+    // popup was already requested, and the Free return banner (PLANS.FREE is
+    // "Free" in this file's plans mock) had an episode 2 days ago, so its
+    // weekly re-show is not due. Tests opt back in to either one.
+    firstResultsViewedAt: new Date("2026-09-20T10:10:00Z"),
+    reviewPopupRequestedAt: new Date("2026-09-21T00:00:00Z"),
+    upgradeReturnLastShownAt: new Date("2026-09-22T12:00:00Z"),
+    upgradeReturnLastDismissedAt: new Date("2026-09-22T12:05:00Z"),
+    upgradeReturnDismissCount: 1,
   };
 
-  type FeedbackLoaderResult = { showFeedbackNudge: boolean; showReviewPrompt: boolean };
+  type FeedbackLoaderResult = { showFeedbackNudge: boolean };
   const run = async () => (await loader(makeLoaderArgs())) as FeedbackLoaderResult;
 
   beforeEach(() => {
@@ -1868,6 +1810,8 @@ describe("app._index loader: feedback nudge", () => {
   it("hides the nudge and skips the first-scan query once dismissed", async () => {
     mockGetShopMetadata.mockResolvedValue({
       ...FEEDBACK_SHOP,
+      // A paid shop: the Free return banner never needs the first-scan read.
+      plan: "Standard",
       feedbackNudgeDismissedAt: new Date("2026-09-22T00:00:00Z"),
     });
 
@@ -1881,6 +1825,8 @@ describe("app._index loader: feedback nudge", () => {
   it("hides the nudge and skips the first-scan query once submitted", async () => {
     mockGetShopMetadata.mockResolvedValue({
       ...FEEDBACK_SHOP,
+      // A paid shop: the Free return banner never needs the first-scan read.
+      plan: "Standard",
       feedbackSubmittedAt: new Date("2026-09-22T00:00:00Z"),
     });
 
@@ -1916,6 +1862,8 @@ describe("app._index loader: feedback nudge", () => {
   it("skips the first-scan query for a young shop (3 days installed) and hides the nudge", async () => {
     mockGetShopMetadata.mockResolvedValue({
       ...FEEDBACK_SHOP,
+      // A paid shop: the Free return banner never needs the first-scan read.
+      plan: "Standard",
       installedAt: new Date(NOW.getTime() - 3 * 24 * 60 * 60 * 1000),
     });
 
@@ -1961,81 +1909,97 @@ describe("app._index loader: feedback nudge", () => {
     expect((await run()).showFeedbackNudge).toBe(true);
   });
 
-  describe("one prompt per page", () => {
-    it("both eligible: feedback renders and the review prompt does not", async () => {
-      // Default COMPLETED_SCAN has 5 findings and hasSeenReviewPrompt is false.
-      const result = await run();
+  describe("strict global priority (owner decision 1A)", () => {
+    const HOUR_MS = 60 * 60 * 1000;
+    const DAY_MS = 24 * HOUR_MS;
 
-      expect(result.showFeedbackNudge).toBe(true);
-      expect(result.showReviewPrompt).toBe(false);
-    });
-
-    it("only review eligible: the review prompt renders", async () => {
+    it("the review popup pending (scan page only): Home shows nothing and claims nothing", async () => {
       mockGetShopMetadata.mockResolvedValue({
         ...FEEDBACK_SHOP,
-        feedbackNudgeDismissedAt: new Date("2026-09-22T00:00:00Z"),
+        firstResultsViewedAt: new Date(NOW.getTime() - 3 * HOUR_MS),
+        reviewPopupRequestedAt: null,
       });
 
       const result = await run();
 
       expect(result.showFeedbackNudge).toBe(false);
-      expect(result.showReviewPrompt).toBe(true);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+      expect(mockRecordNudgeStage).not.toHaveBeenCalled();
     });
 
-    it("neither eligible: nothing renders and nothing is recorded", async () => {
+    it("the Free return banner pending (scan page only): Home shows nothing", async () => {
       mockGetShopMetadata.mockResolvedValue({
         ...FEEDBACK_SHOP,
-        hasSeenReviewPrompt: true,
+        plan: "Free",
+        upgradeReturnLastShownAt: new Date(NOW.getTime() - 7 * DAY_MS),
+      });
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(false);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it("feedback shows once nothing higher is pending (banner shown 2 days ago, not due)", async () => {
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        plan: "Free",
+        upgradeReturnLastShownAt: new Date(NOW.getTime() - 2 * DAY_MS),
+      });
+
+      const result = await run();
+
+      expect(result.showFeedbackNudge).toBe(true);
+      expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+        SHOP.domain,
+        "feedback",
+        expect.anything(),
+        NOW,
+      );
+    });
+
+    it("feedback shows once the return banner is retired (3 dismissals)", async () => {
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        plan: "Free",
+        upgradeReturnLastShownAt: null,
+        upgradeReturnDismissCount: 3,
+      });
+
+      expect((await run()).showFeedbackNudge).toBe(true);
+    });
+
+    it("nothing eligible: nothing renders and nothing is recorded", async () => {
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
         feedbackSubmittedAt: new Date("2026-09-22T00:00:00Z"),
       });
 
       const result = await run();
 
       expect(result.showFeedbackNudge).toBe(false);
-      expect(result.showReviewPrompt).toBe(false);
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
       expect(mockRecordNudgeStage).not.toHaveBeenCalled();
     });
   });
 
   describe("24h cross-prompt cap (gc-97k.6)", () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
-    // Feedback was shown yesterday and has since been dismissed; only the review
-    // banner is eligible today.
-    const feedbackShownAt = (msAgo: number) => ({
-      ...FEEDBACK_SHOP,
-      feedbackNudgeShownAt: new Date(NOW.getTime() - msAgo),
-      feedbackNudgeDismissedAt: new Date(NOW.getTime() - msAgo),
-      lastPromptKey: "feedback",
-      lastPromptShownAt: new Date(NOW.getTime() - msAgo),
-    });
 
-    it("feedback shown yesterday (under 24h ago) blocks the review banner today", async () => {
-      mockGetShopMetadata.mockResolvedValue(feedbackShownAt(20 * 60 * 60 * 1000));
+    it("feedback shown and dismissed under 24h ago: nothing renders, no claim", async () => {
+      const shownAt = new Date(NOW.getTime() - 20 * 60 * 60 * 1000);
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        feedbackNudgeShownAt: shownAt,
+        feedbackNudgeDismissedAt: shownAt,
+        lastPromptKey: "feedback",
+        lastPromptShownAt: shownAt,
+      });
 
       const result = await run();
 
       expect(result.showFeedbackNudge).toBe(false);
-      expect(result.showReviewPrompt).toBe(false);
       expect(mockClaimPromptSlot).not.toHaveBeenCalled();
-    });
-
-    it("the review banner is allowed once 24h have passed, and claims the slot", async () => {
-      const shop = feedbackShownAt(DAY_MS);
-      mockGetShopMetadata.mockResolvedValue(shop);
-
-      const result = await run();
-
-      expect(result.showFeedbackNudge).toBe(false);
-      expect(result.showReviewPrompt).toBe(true);
-      expect(mockClaimPromptSlot).toHaveBeenCalledWith(
-        SHOP.domain,
-        "review_banner",
-        expect.objectContaining({
-          lastPromptKey: "feedback",
-          lastPromptShownAt: shop.lastPromptShownAt,
-        }),
-        NOW,
-      );
     });
 
     it("the same feedback nudge re-renders within 24h without a new claim", async () => {
@@ -2049,8 +2013,20 @@ describe("app._index loader: feedback nudge", () => {
       const result = await run();
 
       expect(result.showFeedbackNudge).toBe(true);
-      expect(result.showReviewPrompt).toBe(false);
       expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+    });
+
+    it("feedback re-claims at exactly 24h (window expired)", async () => {
+      const shownAt = new Date(NOW.getTime() - DAY_MS);
+      mockGetShopMetadata.mockResolvedValue({
+        ...FEEDBACK_SHOP,
+        feedbackNudgeShownAt: shownAt,
+        lastPromptKey: "feedback",
+        lastPromptShownAt: shownAt,
+      });
+
+      expect((await run()).showFeedbackNudge).toBe(true);
+      expect(mockClaimPromptSlot).toHaveBeenCalledTimes(1);
     });
 
     it("a first-time feedback nudge claims the slot from the empty state", async () => {
@@ -2066,35 +2042,35 @@ describe("app._index loader: feedback nudge", () => {
       );
     });
 
-    it("a lost claim to a prompt not eligible here hides everything and records no `shown`", async () => {
-      mockClaimPromptSlot.mockResolvedValue(false);
-      // The re-read sees a concurrent load's claim (e.g. the scan page's popup).
-      mockGetShopMetadata.mockResolvedValueOnce(FEEDBACK_SHOP).mockResolvedValueOnce({
+    it("the return banner holding the window (open episode) keeps Home empty", async () => {
+      const shownAt = new Date(NOW.getTime() - 20 * 60 * 60 * 1000);
+      mockGetShopMetadata.mockResolvedValue({
         ...FEEDBACK_SHOP,
-        lastPromptKey: "review_popup",
-        lastPromptShownAt: NOW,
+        plan: "Free",
+        upgradeReturnLastShownAt: shownAt,
+        upgradeReturnLastDismissedAt: null,
+        lastPromptKey: "upgrade_return",
+        lastPromptShownAt: shownAt,
       });
 
       const result = await run();
 
       expect(result.showFeedbackNudge).toBe(false);
-      expect(result.showReviewPrompt).toBe(false);
-      expect(mockRecordNudgeStage).not.toHaveBeenCalled();
+      expect(mockClaimPromptSlot).not.toHaveBeenCalled();
     });
 
-    it("a lost claim to the review banner (also eligible here) renders the banner, not feedback", async () => {
+    it("a lost claim to another prompt hides everything and records no `shown`", async () => {
       mockClaimPromptSlot.mockResolvedValue(false);
+      // The re-read sees a concurrent load's claim (e.g. the scan page's banner).
       mockGetShopMetadata.mockResolvedValueOnce(FEEDBACK_SHOP).mockResolvedValueOnce({
         ...FEEDBACK_SHOP,
-        lastPromptKey: "review_banner",
+        lastPromptKey: "upgrade_return",
         lastPromptShownAt: NOW,
       });
 
       const result = await run();
 
       expect(result.showFeedbackNudge).toBe(false);
-      expect(result.showReviewPrompt).toBe(true);
-      expect(mockClaimPromptSlot).toHaveBeenCalledTimes(1);
       expect(mockRecordNudgeStage).not.toHaveBeenCalled();
     });
 
@@ -2104,7 +2080,6 @@ describe("app._index loader: feedback nudge", () => {
       const result = await run();
 
       expect(result.showFeedbackNudge).toBe(false);
-      expect(result.showReviewPrompt).toBe(false);
     });
   });
 });
@@ -2138,25 +2113,25 @@ describe("app._index action: dismiss-feedback-nudge intent", () => {
     expect(result.dismissed).toBe(true);
   });
 
-  it("does not touch the review prompt, plan gating or scan dispatch", async () => {
+  it("does not touch plan gating or scan dispatch", async () => {
     await action(makeActionArgs({ request: dismissRequest() }));
 
-    expect(mockDismissReviewPrompt).not.toHaveBeenCalled();
     expect(mockCanStartScan).not.toHaveBeenCalled();
     expect(mockDispatchScan).not.toHaveBeenCalled();
   });
 });
 
-describe("app._index review banner copy (neutral review ask)", () => {
-  it("contains no sentiment-targeted wording and uses the shared neutral copy", async () => {
+describe("app._index retired review banner (owner decision 2A)", () => {
+  it("the dashboard source no longer renders a review banner or its dismiss intent", async () => {
     const { readFileSync } = await import("node:fs");
     const source = readFileSync(
       new URL("../../app/routes/app._index.tsx", import.meta.url),
       "utf8",
     );
 
-    expect(source.toLowerCase()).not.toContain("if this was helpful");
-    expect(source).toContain("{REVIEW_BANNER_TEXT}");
-    expect(source).toContain("APP_STORE_REVIEW_URL");
+    expect(source).not.toContain("REVIEW_BANNER_TEXT");
+    expect(source).not.toContain("APP_STORE_REVIEW_URL");
+    expect(source).not.toContain("Leave a Review");
+    expect(source).not.toContain('intent: "dismiss-review-prompt"');
   });
 });

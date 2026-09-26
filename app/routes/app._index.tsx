@@ -17,14 +17,7 @@ import {
 } from "../components/HealthScoreTrendChart";
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { getPlanFeatures } from "../lib/billing.server";
-import {
-  APP_STORE_REVIEW_URL,
-  feedbackNudgeInstallAgeReached,
-  FEEDBACK_NUDGE_COPY,
-  FEEDBACK_NUDGE_HREF,
-  REVIEW_BANNER_TEXT,
-  shouldShowFeedbackNudge,
-} from "../lib/feedback-nudge";
+import { FEEDBACK_NUDGE_COPY, FEEDBACK_NUDGE_HREF } from "../lib/feedback-nudge";
 import {
   computeLaneSummary,
   dominantLane,
@@ -46,25 +39,20 @@ import {
   getWeekStartUTC,
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
-import type { PromptKey } from "../lib/prompt-cap";
+import { HOME_PROMPTS } from "../lib/prompt-cap";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import {
   getScansForShop,
   hasCompletedScans,
   getCompletedScansForShop,
-  getFirstSuccessfulScanCompletedAt,
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
-import {
-  dismissReviewPrompt,
-  getOrCreateShopMetadata,
-  getShopMetadata,
-} from "../models/shop.server";
+import { getOrCreateShopMetadata, getShopMetadata } from "../models/shop.server";
 import { getFilteredFindingSummary } from "../services/finding-aggregation.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
-import { resolvePrompt } from "../services/prompt-cap.server";
+import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
@@ -151,7 +139,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       showRescanNudge: false,
       showThemeChangeNudge: false,
       showMultiThemeNudge: false,
-      showReviewPrompt: false,
       showFeedbackNudge: false,
       healthScoreTrend: null,
       showTrendEmptyState: false,
@@ -214,15 +201,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // so it powers the consequence lanes without an extra serial round-trip. It
   // uses getTypeCountsForScan rather than getFindingSummary so we don't re-run
   // the severity groupBy the batch severity query above already covers.
-  // The feedback nudge's first-successful-scan lookup only runs while the nudge
-  // is still open (never dismissed, never submitted) AND the shop is old enough
-  // to qualify, so a retired nudge or a young shop costs no query (ineligible).
+  // The shop's prompt state (gc-97k.6) loads in the same batch: the shared
+  // loader reads the first successful scan only when a prompt rule can use it,
+  // so a retired or not-yet-eligible shop costs no query.
   const now = new Date();
-  const feedbackNudgeOpen =
-    shop.feedbackNudgeDismissedAt === null &&
-    shop.feedbackSubmittedAt === null &&
-    feedbackNudgeInstallAgeReached(shop.installedAt, now);
-  const [severityCounts, usage, completedScanCheck, typeCounts, ignores, firstSuccessfulScanAt] =
+  const [severityCounts, usage, completedScanCheck, typeCounts, ignores, promptState] =
     await Promise.all([
       getSeverityCountsForScans(severityScanIds),
       getScanUsage(shop.id, shop.plan),
@@ -231,7 +214,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
         ? getTypeCountsForScan(latestScan.id)
         : Promise.resolve(null),
       getIgnoredFindingsForShop(shop.id),
-      feedbackNudgeOpen ? getFirstSuccessfulScanCompletedAt(shop.id) : Promise.resolve(null),
+      loadShopPromptState(shop, now),
     ]);
 
   const zeroSeverityRecord: Record<Severity, number> = {
@@ -404,42 +387,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // canUseMultipleThemes, so this naturally targets Standard shops with 2+ themes.
   const showMultiThemeNudge = !canUseMultipleThemes(shop.plan) && allThemes.length > 1;
 
-  // Review prompt: show once after the first completed scan with 4+ findings.
-  // Permanently dismissed when the merchant clicks "Dismiss" (sets hasSeenReviewPrompt).
-  const REVIEW_PROMPT_MIN_FINDINGS = 4;
-  const reviewPromptEligible =
-    latestScan !== null &&
-    isSuccessfulScan(latestScan.status) &&
-    latestScan.findingCount >= REVIEW_PROMPT_MIN_FINDINGS &&
-    !shop.hasSeenReviewPrompt;
-
-  // Feedback nudge (gc-97k.3): installed 7+ days, a successful scan, and this
-  // visit is on a later UTC day than the first successful scan. All plans.
-  const feedbackNudgeEligible = shouldShowFeedbackNudge(
-    {
-      installedAt: shop.installedAt,
-      firstSuccessfulScanAt: firstSuccessfulScanAt ?? null,
-      feedbackNudgeDismissedAt: shop.feedbackNudgeDismissedAt,
-      feedbackSubmittedAt: shop.feedbackSubmittedAt,
-    },
-    now,
-  );
-
-  // One interruptive prompt per page, and one distinct prompt per shop per 24h
-  // (gc-97k.6): feedback outranks the review banner; resolvePrompt applies the
-  // cap and claims the shop's prompt slot.
-  const eligiblePrompts: PromptKey[] = [];
-  if (feedbackNudgeEligible) eligiblePrompts.push("feedback");
-  if (reviewPromptEligible) eligiblePrompts.push("review_banner");
+  // Interruptive prompts (gc-97k.6, strict global priority): Home can render
+  // only the feedback nudge (gc-97k.3). resolvePrompt computes the shop's
+  // GLOBAL eligibility, so while a higher-priority prompt (the review popup or
+  // the Free return banner, both scan-page only) is pending, Home renders
+  // nothing and claims nothing.
   const homePrompt = await resolvePrompt({
     shopDomain: session.shop,
-    eligible: eligiblePrompts,
-    lastPromptKey: shop.lastPromptKey,
-    lastPromptShownAt: shop.lastPromptShownAt,
+    state: promptState,
+    renderable: HOME_PROMPTS,
     now,
   });
   const showFeedbackNudge = homePrompt === "feedback";
-  const showReviewPrompt = homePrompt === "review_banner";
 
   // `shown` counts only a nudge that actually renders, once per merchant. The
   // stamp pre-check skips the claim write on every later load.
@@ -470,7 +429,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     showRescanNudge,
     showThemeChangeNudge,
     showMultiThemeNudge,
-    showReviewPrompt,
     showFeedbackNudge,
     healthScoreTrend,
     showTrendEmptyState,
@@ -499,17 +457,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   const formData = await request.formData();
   const intent = formData.get("intent") as string | null;
 
-  // Handle review prompt dismissal — no plan gating needed.
-  if (intent === "dismiss-review-prompt") {
-    await dismissReviewPrompt(shop.id);
-    return { dismissed: true };
-  }
-
   // Feedback nudge "Not now" (gc-97k.3): the once-per-merchant claim stamps
   // feedbackNudgeDismissedAt (which retires the nudge) and emits `dismissed`.
   if (intent === "dismiss-feedback-nudge") {
     await recordNudgeStageOnce(NUDGE_KEYS.FEEDBACK, "dismissed", session.shop);
     return { dismissed: true };
+  }
+
+  // Starting a scan sends NO intent. Any other intent is a no-op, never a scan:
+  // e.g. the retired review banner's "dismiss-review-prompt" posted by a tab
+  // loaded before that banner was removed (owner decision 2A).
+  if (intent !== null) {
+    return { ignored: true };
   }
 
   // Plan-gate: check if this shop is allowed to start a new scan.
@@ -671,7 +630,6 @@ export default function Dashboard() {
     showRescanNudge,
     showThemeChangeNudge,
     showMultiThemeNudge,
-    showReviewPrompt,
     showFeedbackNudge,
     healthScoreTrend,
     showTrendEmptyState,
@@ -717,20 +675,10 @@ export default function Dashboard() {
   const scanDiff = diffFetcher.data?.scanDiff ?? null;
   const newHigh = scanDiff ? scanDiff.newFindings.filter((f) => f.severity === "HIGH").length : 0;
 
-  // Optimistically hide the review prompt once the merchant clicks Dismiss,
+  // Optimistically hide the feedback nudge once the merchant clicks "Not now",
   // so it disappears immediately without waiting for the server round-trip.
-  const [reviewPromptDismissed, setReviewPromptDismissed] = useState(false);
-  // Same optimistic hide for the feedback nudge. Once it is dismissed, the
-  // revalidated loader may now pick the review prompt; hold that back for the
-  // rest of this page view so "Not now" never swaps in a second prompt.
   const [feedbackNudgeDismissed, setFeedbackNudgeDismissed] = useState(false);
   const showFeedbackBanner = showFeedbackNudge && !feedbackNudgeDismissed;
-  const showReviewBanner = showReviewPrompt && !reviewPromptDismissed && !feedbackNudgeDismissed;
-
-  const handleDismissReviewPrompt = () => {
-    setReviewPromptDismissed(true);
-    dismissFetcher.submit({ intent: "dismiss-review-prompt" }, { method: "POST" });
-  };
 
   const handleDismissFeedbackNudge = () => {
     setFeedbackNudgeDismissed(true);
@@ -883,8 +831,8 @@ export default function Dashboard() {
           </s-banner>
         )}
 
-        {/* Merchant feedback nudge (gc-97k.3). At most one of this and the review
-          prompt renders (resolvePrompt in the loader). */}
+        {/* Merchant feedback nudge (gc-97k.3), the only interruptive prompt Home
+          can render (resolvePrompt in the loader). */}
         {showFeedbackBanner && (
           <s-banner tone="info" heading={FEEDBACK_NUDGE_COPY.heading}>
             <s-stack direction="block" gap="base">
@@ -895,28 +843,6 @@ export default function Dashboard() {
                 </s-button>
                 <s-button variant="secondary" onClick={handleDismissFeedbackNudge}>
                   {FEEDBACK_NUDGE_COPY.dismiss}
-                </s-button>
-              </s-stack>
-            </s-stack>
-          </s-banner>
-        )}
-
-        {/* App Store review prompt: shown once after first scan with 4+ findings.
-          Neutral wording for everyone (App Store policy): it must not target
-          merchants who were happy with the result. */}
-        {showReviewBanner && (
-          <s-banner tone="info">
-            <s-stack direction="block" gap="base">
-              <s-paragraph>{REVIEW_BANNER_TEXT}</s-paragraph>
-              <s-stack direction="inline" gap="base">
-                <s-button
-                  variant="primary"
-                  onClick={() => window.open(APP_STORE_REVIEW_URL, "_blank")}
-                >
-                  Leave a Review
-                </s-button>
-                <s-button variant="secondary" onClick={handleDismissReviewPrompt}>
-                  Dismiss
                 </s-button>
               </s-stack>
             </s-stack>

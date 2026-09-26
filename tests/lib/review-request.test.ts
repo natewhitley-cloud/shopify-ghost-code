@@ -21,7 +21,6 @@ const ago = (ms: number) => new Date(NOW.getTime() - ms);
 
 describe("isReviewPopupEligible", () => {
   const base = {
-    scanSuccessful: true,
     firstResultsViewedAt: ago(REVIEW_POPUP_MIN_DELAY_MS),
     reviewPopupRequestedAt: null,
   };
@@ -53,9 +52,9 @@ describe("isReviewPopupEligible", () => {
     expect(isReviewPopupEligible({ ...base, firstResultsViewedAt: null }, NOW)).toBe(false);
   });
 
-  it("is not eligible on an unsuccessful scan", () => {
-    expect(isReviewPopupEligible({ ...base, scanSuccessful: false }, NOW)).toBe(false);
-  });
+  // A successful scan is no longer part of the SHOP-level rule (owner decision
+  // 1A): only a successful scan's page can RENDER the popup, which is pinned in
+  // tests/lib/prompt-cap.test.ts (scanResultsPrompts).
 
   it("is not eligible once requested, however long ago", () => {
     expect(

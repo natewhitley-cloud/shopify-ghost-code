@@ -3,13 +3,15 @@
  *
  * Pure and client-safe: the eligibility gate and the merchant-facing copy
  * shared by the home page and /app/feedback. Which prompt renders (one per page,
- * one distinct prompt per 24h) is decided by pickPrompt in ./prompt-cap.
+ * one distinct prompt per 24h, strict global priority) is decided by pickPrompt
+ * in ./prompt-cap.
  *
  * Review asks are NEUTRAL (Shopify App Store policy: review requests must not
  * target or bias toward satisfied merchants). The FEEDBACK nudge and the
- * post-feedback review ask never depend on a CSAT score or on how many findings
- * a scan produced. The standalone home-page review banner keeps its existing
- * >= REVIEW_PROMPT_MIN_FINDINGS (4) trigger by owner decision (2026-09-24).
+ * post-feedback review link never depend on a CSAT score or on how many
+ * findings a scan produced. The former standalone home-page review banner is
+ * retired (owner decision 2A, 2026-09-26): the native review popup (gc-97k.7)
+ * and the feedback success page's neutral link are the only review asks.
  */
 import { APP_HANDLE } from "./plans";
 
@@ -76,10 +78,6 @@ export const FEEDBACK_NUDGE_COPY = {
   cta: "Share feedback",
   dismiss: "Not now",
 } as const;
-
-/** The existing home-page review banner, rewritten to neutral wording. */
-export const REVIEW_BANNER_TEXT =
-  "We value feedback. Reviews on the Shopify App Store help us improve and help other merchants decide. Let us know how we're doing.";
 
 /** Shown on the feedback success state to EVERY submitter, whatever their rating. */
 export const FEEDBACK_THANKS_COPY = {

@@ -39,16 +39,12 @@ import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
-import type { PromptKey } from "../lib/prompt-cap";
-import { isReviewPopupEligible, runReviewRequestOnce } from "../lib/review-request";
+import { scanResultsPrompts } from "../lib/prompt-cap";
+import { runReviewRequestOnce } from "../lib/review-request";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
 import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
-import {
-  isUpgradeReturnEligible,
-  UPGRADE_RETURN_DISMISS_LABEL,
-  UPGRADE_RETURN_HEADING,
-} from "../lib/upgrade-return";
+import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upgrade-return";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import {
   getAppAttributionForScan,
@@ -62,7 +58,7 @@ import {
   ignoreFindingApp,
   ignoreFindingInstance,
 } from "../models/ignored-finding.server";
-import { getFirstSuccessfulScanCompletedAt, getScanById } from "../models/scan.server";
+import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
   findUnknownScriptForShop,
@@ -76,7 +72,7 @@ import {
 } from "../services/finding-aggregation.server";
 import { getFreePreviewFindings } from "../services/free-preview.server";
 import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
-import { resolvePrompt } from "../services/prompt-cap.server";
+import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
@@ -889,10 +885,18 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // lib/free-preview for the formula and the pick). Suppressed findings are
   // never previewed (E2.2), and malicious ones never take a slot: they are all
   // shown in full by the security alert above.
-  const rawPreviewFindings =
-    isSuccessfulScan(scan.status) && !canViewDetails
-      ? await getFreePreviewFindings(scanId, findingSummary.byType, ignores)
-      : [];
+  //
+  // The shop's prompt state (gc-97k.6) loads in parallel: it is independent of
+  // the preview. Only a successful scan's page can render a prompt, so an
+  // unsuccessful scan (including the ~3s in-progress poll) loads neither.
+  const now = new Date();
+  const scanSuccessful = isSuccessfulScan(scan.status);
+  const [rawPreviewFindings, promptState] = await Promise.all([
+    scanSuccessful && !canViewDetails
+      ? getFreePreviewFindings(scanId, findingSummary.byType, ignores)
+      : Promise.resolve([]),
+    scanSuccessful ? loadShopPromptState(shop, now) : Promise.resolve(null),
+  ]);
   const previewFindings = rawPreviewFindings.map((f) => ({
     ...f,
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
@@ -914,46 +918,26 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         )
       : null;
 
-  // Interruptive prompts on this page (gc-97k.6 cap): at most one per view, and
-  // one distinct prompt per shop per 24h, so resolvePrompt runs ONCE per load
-  // with every prompt whose own rule passes.
-  //   review_popup (gc-97k.7): Shopify's native review modal, all plans, once
-  //     ever, on a LATER visit to a successful scan's results (2h+ after the
-  //     first results view, which is read before this load stamps it).
-  //   upgrade_return (gc-97k.9): the Free return-visit banner (see
-  //     isUpgradeReturnEligible). Only a page with hidden findings can show it,
-  //     so the first-scan read runs only then.
-  const now = new Date();
-  const eligiblePrompts: PromptKey[] = [];
-  if (
-    isReviewPopupEligible(
-      {
-        scanSuccessful: isSuccessfulScan(scan.status),
-        firstResultsViewedAt: shop.firstResultsViewedAt,
-        reviewPopupRequestedAt: shop.reviewPopupRequestedAt,
-      },
-      now,
-    )
-  ) {
-    eligiblePrompts.push("review_popup");
-  }
-  if (
-    hiddenBreakdown !== null &&
-    isUpgradeReturnEligible(
-      { ...shop, firstSuccessfulScanAt: await getFirstSuccessfulScanCompletedAt(shop.id) },
-      true,
-      now,
-    )
-  ) {
-    eligiblePrompts.push("upgrade_return");
-  }
-  const pagePrompt = await resolvePrompt({
-    shopDomain: session.shop,
-    eligible: eligiblePrompts,
-    lastPromptKey: shop.lastPromptKey,
-    lastPromptShownAt: shop.lastPromptShownAt,
-    now,
-  });
+  // Interruptive prompts on this page (gc-97k.6, strict global priority): at
+  // most one per view, one distinct prompt per shop per 24h, and only the
+  // shop's highest-priority pending prompt, so resolvePrompt runs ONCE per load
+  // against what this page can render (scanResultsPrompts):
+  //   review_popup (gc-97k.7): Shopify's native review modal, all plans.
+  //   upgrade_return (gc-97k.9): the Free return-visit banner, only when this
+  //     page has hidden findings to talk about.
+  const pagePrompt =
+    promptState === null
+      ? null
+      : await resolvePrompt({
+          shopDomain: session.shop,
+          state: promptState,
+          renderable: scanResultsPrompts({
+            scanSuccessful,
+            plan: shop.plan,
+            hasHiddenFindings: hiddenBreakdown !== null,
+          }),
+          now,
+        });
 
   // Return-visit banner (gc-97k.9): starts a weekly episode when none is open
   // and emits `shown` once per merchant. Never throws.

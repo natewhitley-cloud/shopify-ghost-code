@@ -65,6 +65,9 @@ model Shop {
   // reconciles; removed on shop delete (GDPR cascade).
   lastSeenAt          DateTime?
   lastThemePublishAt  DateTime?
+  // RETIRED (owner decision 2A, 2026-09-26): backed the former home-page App
+  // Store review banner, which no longer exists. Nothing reads or writes it;
+  // kept (not dropped) so the change stays additive.
   hasSeenReviewPrompt Boolean          @default(false)
   // Durable "internal/dev/test store — excluded from all business metrics" flag;
   // the PRIMARY exclusion signal (the env exclude list + `app-review-` prefix

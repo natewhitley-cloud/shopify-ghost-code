@@ -26,22 +26,21 @@
 export const REVIEW_POPUP_MIN_DELAY_MS = 2 * 60 * 60 * 1000;
 
 export type ReviewPopupEligibilityInput = {
-  /** The page shows a successful (COMPLETED or PARTIAL) scan's results. */
-  scanSuccessful: boolean;
   /** Shop.firstResultsViewedAt as read BEFORE this load stamps it. */
   firstResultsViewedAt: Date | null;
   reviewPopupRequestedAt: Date | null;
 };
 
 /**
- * True when this results page view may request the review popup (before the
- * cross-prompt cap): a successful scan, never requested before, and a LATER
- * visit, meaning the first results view happened at least 2h ago (exactly 2h
- * qualifies). The very first results view never qualifies, which keeps the
- * popup out of onboarding.
+ * True when the SHOP is eligible for the review popup (before the cross-prompt
+ * cap): never requested before, and a LATER visit, meaning the first results
+ * view happened at least 2h ago (exactly 2h qualifies). The very first results
+ * view never qualifies, which keeps the popup out of onboarding. Which pages
+ * can render it (a successful scan's results) is decided by scanResultsPrompts
+ * in ./prompt-cap, not here.
  */
 export function isReviewPopupEligible(input: ReviewPopupEligibilityInput, now: Date): boolean {
-  if (!input.scanSuccessful || input.reviewPopupRequestedAt !== null) return false;
+  if (input.reviewPopupRequestedAt !== null) return false;
   if (input.firstResultsViewedAt === null) return false;
   return now.getTime() - input.firstResultsViewedAt.getTime() >= REVIEW_POPUP_MIN_DELAY_MS;
 }

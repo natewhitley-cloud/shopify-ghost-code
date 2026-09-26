@@ -10,7 +10,6 @@ import {
   FEEDBACK_NUDGE_COPY,
   FEEDBACK_NUDGE_HREF,
   FEEDBACK_THANKS_COPY,
-  REVIEW_BANNER_TEXT,
   shouldShowFeedbackNudge,
 } from "../../app/lib/feedback-nudge";
 import type { FeedbackNudgeGateInput } from "../../app/lib/feedback-nudge";
@@ -121,14 +120,10 @@ describe("shouldShowFeedbackNudge", () => {
 });
 
 describe("merchant-facing copy", () => {
-  const allCopy = [
-    ...Object.values(FEEDBACK_NUDGE_COPY),
-    ...Object.values(FEEDBACK_THANKS_COPY),
-    REVIEW_BANNER_TEXT,
-  ];
+  const allCopy = [...Object.values(FEEDBACK_NUDGE_COPY), ...Object.values(FEEDBACK_THANKS_COPY)];
 
   it("review asks are neutral: no satisfaction-targeting phrasing", () => {
-    for (const text of [REVIEW_BANNER_TEXT, FEEDBACK_THANKS_COPY.body]) {
+    for (const text of [FEEDBACK_THANKS_COPY.body]) {
       expect(text.toLowerCase()).not.toContain("if this was helpful");
       expect(text.toLowerCase()).not.toMatch(/if you (like|love|enjoy)/);
       expect(text).toContain("Shopify App Store");

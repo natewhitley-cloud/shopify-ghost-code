@@ -232,6 +232,11 @@ const SHOP = {
   upgradeReturnLastDismissedAt: null as Date | null,
   upgradeReturnDismissCount: 0,
   upgradeReturnShownAt: null as Date | null,
+  // gc-97k.3: long installed, feedback nudge still open. The scan page cannot
+  // render it, but the shop-level eligibility (owner decision 1A) reads it.
+  installedAt: new Date("2026-02-01T00:00:00Z"),
+  feedbackNudgeDismissedAt: null as Date | null,
+  feedbackSubmittedAt: null as Date | null,
 };
 
 /** Scan fixture — no findings included; loader always uses includeFindings: false. */
@@ -1323,11 +1328,23 @@ describe("app.scans.$scanId loader", () => {
 
         expect(result.upgradeReturn).toBeNull();
         expect(result.upgradePreview).toBeNull();
-        expect(mockGetFirstSuccessfulScan).not.toHaveBeenCalled();
         expect(mockClaimPromptSlot).not.toHaveBeenCalled();
       });
 
-      it("never without hidden findings (skips the first-scan read)", async () => {
+      it("a paid shop past the feedback window skips the first-scan read entirely", async () => {
+        freeShop({ plan: "Standard", feedbackSubmittedAt: ago(DAY) });
+        mockCanViewFindingDetails.mockReturnValue(true);
+
+        await load();
+
+        expect(mockGetFirstSuccessfulScan).not.toHaveBeenCalled();
+      });
+
+      // Changed on purpose (owner decision 1A): eligibility is now SHOP-level, so
+      // the first-scan read runs (in parallel) even when this page has nothing
+      // hidden. The banner is still not RENDERED here, and because it is the
+      // shop's pending prompt, nothing else is claimed either.
+      it("never without hidden findings: not rendered, nothing claimed", async () => {
         mockGetFindingSummary.mockResolvedValue({
           total: 1,
           bySeverity: { HIGH: 1, MEDIUM: 0, LOW: 0 },
@@ -1338,7 +1355,9 @@ describe("app.scans.$scanId loader", () => {
         const result = await load();
 
         expect(result.upgradeReturn).toBeNull();
-        expect(mockGetFirstSuccessfulScan).not.toHaveBeenCalled();
+        expect(result.requestReview).toBe(false);
+        expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+        expect(mockStartEpisode).not.toHaveBeenCalled();
       });
 
       it.each(["FAILED", "IN_PROGRESS"])("never on a %s scan", async (status) => {
@@ -1394,6 +1413,20 @@ describe("app.scans.$scanId loader", () => {
         });
 
         expect((await load()).upgradeReturn).not.toBeNull();
+      });
+    });
+
+    describe("strict global priority (owner decision 1A)", () => {
+      it("feedback is the shop's pending prompt: the scan page renders nothing (teaser only)", async () => {
+        // Banner not due (shown 2 days ago); popup already requested; feedback open.
+        freeShop({ upgradeReturnLastShownAt: ago(2 * DAY), upgradeReturnShownAt: ago(2 * DAY) });
+
+        const result = await load();
+
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.requestReview).toBe(false);
+        expect(result.upgradePreview).not.toBeNull();
+        expect(mockClaimPromptSlot).not.toHaveBeenCalled();
       });
     });
 
