@@ -96,6 +96,8 @@ function makeShop(overrides: Record<string, unknown> = {}) {
     hasSeenReviewPrompt: false,
     // Already stamped by default: the normal (non-first) load (gc-dpm.1).
     firstOpenedAt: new Date("2026-01-01T00:00:00Z"),
+    // gc-97k.8: never seen on a paid plan by default.
+    everPaidAt: null,
     ...overrides,
   };
 }
@@ -135,10 +137,24 @@ describe("app.tsx loader — plan reconciliation hook", () => {
 
     expect(mockReconcile).toHaveBeenCalledWith(
       fakeAdmin,
-      { domain: "test-shop.myshopify.com", plan: "Standard" },
+      { domain: "test-shop.myshopify.com", plan: "Standard", everPaidAt: null },
       { recordEvent: false },
     );
     expect(result).toEqual({ apiKey: "test-api-key" });
+  });
+
+  it("passes the stored everPaidAt to every reconcile (gc-97k.8: a stamped shop skips the write)", async () => {
+    const everPaidAt = new Date("2026-05-01T00:00:00Z");
+    mockGetShop.mockResolvedValue(makeShop({ plan: "free", everPaidAt }));
+    mockIsStale.mockReturnValue(true);
+
+    await runLoader();
+
+    expect(mockReconcile).toHaveBeenCalledWith(
+      fakeAdmin,
+      { domain: "test-shop.myshopify.com", plan: "free", everPaidAt },
+      { recordEvent: false },
+    );
   });
 
   it("skips reconciliation when the stored plan is fresh and there is no plan_handle", async () => {
@@ -164,7 +180,7 @@ describe("app.tsx loader — plan reconciliation hook", () => {
     expect(mockIsStale).not.toHaveBeenCalled();
     expect(mockReconcile).toHaveBeenCalledWith(
       fakeAdmin,
-      { domain: "test-shop.myshopify.com", plan: "free" },
+      { domain: "test-shop.myshopify.com", plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
   });

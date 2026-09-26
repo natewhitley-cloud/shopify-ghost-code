@@ -55,7 +55,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // reconciles must not pollute conversion/churn analytics.
       await reconcileShopPlan(
         admin,
-        { domain: shop.domain, plan: shop.plan },
+        { domain: shop.domain, plan: shop.plan, everPaidAt: shop.everPaidAt },
         { recordEvent: redirectTriggered },
       );
     } catch (err) {

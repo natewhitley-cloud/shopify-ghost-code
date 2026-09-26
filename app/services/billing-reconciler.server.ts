@@ -36,7 +36,11 @@ import { logger } from "../lib/logger.server";
 import { isAccessDeniedError, type GraphQLResponseError } from "../lib/scope-check.server";
 import { UPGRADE_ASK_KEYS } from "../lib/upgrade-preview";
 import { recordBillingEvent } from "../models/billing-event.server";
-import { stampPlanReconciledAt, updateShopPlanByDomain } from "../models/shop.server";
+import {
+  claimShopStamp,
+  stampPlanReconciledAt,
+  updateShopPlanByDomain,
+} from "../models/shop.server";
 import type { AdminApiContext } from "../types/shopify";
 
 /**
@@ -179,10 +183,15 @@ async function fetchActiveSubscriptions(
  *   On Admin API failure with recordEvent: true, exactly one retry is attempted.
  *   A permanent loss is otherwise possible — backstop reconciles run with
  *   recordEvent: false and will not re-record the missed event.
+ *
+ * Durable ever-paid (gc-97k.8 audit fix): whenever this observes a PAID plan,
+ * on ANY path (redirect, stale on-load backstop; matched or corrected), it
+ * stamps Shop.everPaidAt once (stampEverPaid). This is the trial promise's
+ * durable signal, since backstop reconciles record no BillingEvent.
  */
 export async function reconcileShopPlan(
   admin: AdminApiContext,
-  shop: { domain: string; plan: string },
+  shop: { domain: string; plan: string; everPaidAt: Date | null },
   options: { recordEvent?: boolean } = {},
 ): Promise<ReconcileResult> {
   let subscriptions = await fetchActiveSubscriptions(admin, shop.domain);
@@ -210,6 +219,7 @@ export async function reconcileShopPlan(
     // No drift — still stamp so the freshness clock resets.
     const stamped = await stampPlanReconciledAt(shop.domain);
     if (!stamped) return { status: "shop-not-found" };
+    await stampEverPaid(shop, effectivePlan);
     return { status: "matched", plan: effectivePlan };
   }
 
@@ -217,6 +227,7 @@ export async function reconcileShopPlan(
   // planReconciledAt.
   const updated = await updateShopPlanByDomain(shop.domain, effectivePlan);
   if (!updated) return { status: "shop-not-found" };
+  await stampEverPaid(shop, effectivePlan);
 
   logger.warn("billing-reconcile-corrected-drift", {
     shop: shop.domain,
@@ -242,6 +253,28 @@ export async function reconcileShopPlan(
   }
 
   return { status: "corrected", fromPlan: shop.plan, toPlan: effectivePlan };
+}
+
+/**
+ * Stamp Shop.everPaidAt the first time a PAID plan is observed (gc-97k.8).
+ * Skips the write when the shop is free or already stamped (the value the
+ * loader read); the claim itself is `where everPaidAt IS NULL`, so concurrent
+ * reconciles stamp once. NEVER THROWS: a failed write is logged, and the next
+ * reconcile that sees the paid plan tries again.
+ */
+async function stampEverPaid(
+  shop: { domain: string; everPaidAt: Date | null },
+  effectivePlan: string,
+): Promise<void> {
+  if (effectivePlan === PLANS.FREE || shop.everPaidAt !== null) return;
+  try {
+    await claimShopStamp(shop.domain, "everPaidAt");
+  } catch (err) {
+    logger.error("billing-reconcile-ever-paid-stamp-failed", {
+      shop: shop.domain,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 /**

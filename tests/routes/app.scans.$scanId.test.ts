@@ -245,6 +245,8 @@ const SHOP = {
   installedAt: new Date("2026-02-01T00:00:00Z"),
   feedbackNudgeDismissedAt: null as Date | null,
   feedbackSubmittedAt: null as Date | null,
+  // gc-97k.8: never seen on a paid plan.
+  everPaidAt: null as Date | null,
 };
 
 /** Scan fixture — no findings included; loader always uses includeFindings: false. */
@@ -901,6 +903,16 @@ describe("app.scans.$scanId loader", () => {
       const result = (await loader(makeLoaderArgs("scan-1"))) as { trialEligible: boolean };
 
       expect(result.trialEligible).toBe(false);
+    });
+
+    it("not trial-eligible once everPaidAt is set, without reading BillingEvent (gc-97k.8)", async () => {
+      freeShop({ everPaidAt: new Date("2026-05-01T00:00:00Z") });
+      summary({ GHOST_SCRIPT: 3 });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { trialEligible: boolean };
+
+      expect(result.trialEligible).toBe(false);
+      expect(mockHasBillingHistory).not.toHaveBeenCalled();
     });
 
     it("skips the billing-history read when no teaser renders", async () => {

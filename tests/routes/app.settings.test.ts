@@ -83,6 +83,8 @@ const SHOP = {
   id: "shop-1",
   domain: SHOP_DOMAIN,
   plan: "free",
+  // gc-97k.8: never seen on a paid plan.
+  everPaidAt: null as Date | null,
 };
 
 const FREE_FEATURES = {
@@ -145,6 +147,18 @@ describe("app.settings loader", () => {
 
     expect(result.trialEligible).toBe(true);
     expect(mockHasBillingHistory).toHaveBeenCalledWith("shop-1");
+  });
+
+  it("Free shop with everPaidAt set (backstop-only paid, no BillingEvent): not trialEligible, no history read", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...SHOP,
+      everPaidAt: new Date("2026-05-01T00:00:00Z"),
+    });
+
+    const result = (await loader(makeLoaderArgs())) as { trialEligible: boolean };
+
+    expect(result.trialEligible).toBe(false);
+    expect(mockHasBillingHistory).not.toHaveBeenCalled();
   });
 
   it("previously-paid Free shop (has a BillingEvent): not trialEligible", async () => {

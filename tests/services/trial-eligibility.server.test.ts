@@ -29,7 +29,9 @@ describe("getTrialEligibility", () => {
   it("never-paid Free shop (no BillingEvent): eligible", async () => {
     mockDb.billingEvent.findFirst.mockResolvedValue(null);
 
-    await expect(getTrialEligibility({ id: "shop-1", plan: "free" })).resolves.toBe(true);
+    await expect(
+      getTrialEligibility({ id: "shop-1", plan: "free", everPaidAt: null }),
+    ).resolves.toBe(true);
     expect(mockDb.billingEvent.findFirst).toHaveBeenCalledWith({
       where: { shopId: "shop-1" },
       select: { id: true },
@@ -39,21 +41,47 @@ describe("getTrialEligibility", () => {
   it("previously-paid Free shop (any BillingEvent): not eligible", async () => {
     mockDb.billingEvent.findFirst.mockResolvedValue({ id: "be-1" });
 
-    await expect(getTrialEligibility({ id: "shop-1", plan: "free" })).resolves.toBe(false);
+    await expect(
+      getTrialEligibility({ id: "shop-1", plan: "free", everPaidAt: null }),
+    ).resolves.toBe(false);
   });
 
   it.each(["Standard", "Professional"])(
     "a %s shop is not eligible and costs no query",
     async (plan) => {
-      await expect(getTrialEligibility({ id: "shop-1", plan })).resolves.toBe(false);
+      await expect(getTrialEligibility({ id: "shop-1", plan, everPaidAt: null })).resolves.toBe(
+        false,
+      );
       expect(mockDb.billingEvent.findFirst).not.toHaveBeenCalled();
     },
   );
 
+  it("a Free shop with everPaidAt set is not eligible and costs no query", async () => {
+    await expect(
+      getTrialEligibility({
+        id: "shop-1",
+        plan: "free",
+        everPaidAt: new Date("2026-05-01T00:00:00Z"),
+      }),
+    ).resolves.toBe(false);
+    expect(mockDb.billingEvent.findFirst).not.toHaveBeenCalled();
+  });
+
+  it("a Free shop with no everPaidAt still checks BillingEvent (both signals kept)", async () => {
+    mockDb.billingEvent.findFirst.mockResolvedValue({ id: "be-1" });
+
+    await expect(
+      getTrialEligibility({ id: "shop-1", plan: "free", everPaidAt: null }),
+    ).resolves.toBe(false);
+    expect(mockDb.billingEvent.findFirst).toHaveBeenCalledTimes(1);
+  });
+
   it("never throws: a failed read logs and falls back to the non-trial copy", async () => {
     mockDb.billingEvent.findFirst.mockRejectedValue(new Error("db down"));
 
-    await expect(getTrialEligibility({ id: "shop-1", plan: "free" })).resolves.toBe(false);
+    await expect(
+      getTrialEligibility({ id: "shop-1", plan: "free", everPaidAt: null }),
+    ).resolves.toBe(false);
     expect(mockLoggerError).toHaveBeenCalledWith("trial-eligibility-read-failed", {
       shopId: "shop-1",
       error: "db down",

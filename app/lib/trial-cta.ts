@@ -6,10 +6,14 @@
  * Pure and client-safe.
  *
  * Shopify grants the trial only to a shop that has not used it, so the app
- * never promises it to a shop that has ever been on a paid plan. The explicit
- * plan-history signal the app keeps is BillingEvent: any row (upgrade,
- * downgrade, cancellation, reactivation) means the shop has had a paid plan.
- * A shop currently on a paid plan has plan history by definition.
+ * never promises it to a shop that has ever been on a paid plan. Two
+ * plan-history signals, both kept (either one means "has had a paid plan"):
+ *   - Shop.everPaidAt: stamped by EVERY reconcile that observes a paid plan
+ *     (redirect and backstop alike), and backfilled; the durable signal.
+ *   - BillingEvent: any row (upgrade, downgrade, cancellation, reactivation).
+ * A shop currently on a paid plan has plan history by definition. Known,
+ * accepted gap: shop/redact deletes the Shop row and its BillingEvents, so a
+ * reinstall after redact looks never-paid.
  */
 import { PLANS } from "./plans";
 
@@ -21,13 +25,15 @@ export type PaidPlan = typeof PLANS.STANDARD | typeof PLANS.PROFESSIONAL;
 export type TrialEligibilityInput = {
   /** The shop's stored plan (Shop.plan). */
   plan: string;
+  /** Shop.everPaidAt: first time a reconcile saw a paid plan (null = never). */
+  everPaidAt: Date | null;
   /** The shop has at least one BillingEvent row. */
   hasBillingHistory: boolean;
 };
 
-/** True only for a Free shop with no paid-plan history. */
+/** True only for a Free shop with no paid-plan history on EITHER signal. */
 export function isTrialEligible(input: TrialEligibilityInput): boolean {
-  return input.plan === PLANS.FREE && !input.hasBillingHistory;
+  return input.plan === PLANS.FREE && input.everPaidAt === null && !input.hasBillingHistory;
 }
 
 /**

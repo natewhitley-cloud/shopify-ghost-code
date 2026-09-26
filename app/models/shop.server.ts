@@ -32,6 +32,7 @@ export type ShopMetadata = {
   upgradeReturnLastDismissedAt: Date | null;
   upgradeReturnDismissCount: number;
   upgradeReturnShownAt: Date | null;
+  everPaidAt: Date | null;
 };
 
 /**
@@ -101,6 +102,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       upgradeReturnLastDismissedAt: true,
       upgradeReturnDismissCount: true,
       upgradeReturnShownAt: true,
+      everPaidAt: true,
     },
   });
 }
@@ -358,11 +360,14 @@ export type NudgeStageColumn =
 /** The durable journey milestone stamps (gc-dpm.1). */
 export type JourneyMilestoneColumn = "firstOpenedAt" | "firstResultsViewedAt";
 
+/** First time the reconciler saw the shop on a paid plan (gc-97k.8). */
+export type EverPaidColumn = "everPaidAt";
+
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target
  * one of these nullable DateTime columns.
  */
-export type ShopStampColumn = NudgeStageColumn | JourneyMilestoneColumn;
+export type ShopStampColumn = NudgeStageColumn | JourneyMilestoneColumn | EverPaidColumn;
 
 /**
  * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey

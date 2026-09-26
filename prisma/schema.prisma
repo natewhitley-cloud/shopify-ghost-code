@@ -135,6 +135,14 @@ model Shop {
   upgradeReturnClickedAt       DateTime?
   upgradeReturnDismissedAt     DateTime?
   upgradeReturnConvertedAt     DateTime?
+  // Durable "has ever been on a paid plan" (audit fix, gc-97k.8). Stamped ONCE,
+  // via claimShopStamp, the first time reconcileShopPlan observes a paid plan
+  // (every reconcile path: redirect and stale/backstop). Backfilled from
+  // BillingEvent history and the current plan. The free-trial CTA is promised
+  // only while this is null AND the shop has no BillingEvent. Deleted with the
+  // Shop row on shop/redact, so a reinstall after redact looks never-paid
+  // (accepted).
+  everPaidAt                   DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

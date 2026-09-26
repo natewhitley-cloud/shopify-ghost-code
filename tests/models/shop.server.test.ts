@@ -143,6 +143,8 @@ describe("getShopMetadata", () => {
         upgradeReturnLastDismissedAt: true,
         upgradeReturnDismissCount: true,
         upgradeReturnShownAt: true,
+        // gc-97k.8: the durable ever-paid signal behind the trial promise.
+        everPaidAt: true,
       },
     });
   });

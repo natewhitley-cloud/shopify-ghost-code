@@ -7,24 +7,47 @@ import { describe, it, expect } from "vitest";
 import { FREE_TRIAL_DAYS, isTrialEligible, upgradeCtaLabel } from "../../app/lib/trial-cta";
 
 describe("isTrialEligible", () => {
-  it("a never-paid Free shop is eligible", () => {
-    expect(isTrialEligible({ plan: "free", hasBillingHistory: false })).toBe(true);
+  const PAID_AT = new Date("2026-05-01T00:00:00Z");
+
+  it("a never-paid Free shop (no everPaidAt, no BillingEvent) is eligible", () => {
+    expect(isTrialEligible({ plan: "free", everPaidAt: null, hasBillingHistory: false })).toBe(
+      true,
+    );
   });
 
   it("a Free shop with any BillingEvent (previously paid) is not eligible", () => {
-    expect(isTrialEligible({ plan: "free", hasBillingHistory: true })).toBe(false);
+    expect(isTrialEligible({ plan: "free", everPaidAt: null, hasBillingHistory: true })).toBe(
+      false,
+    );
+  });
+
+  it("a Free shop with everPaidAt set is not eligible even with NO BillingEvent (backstop-only paid)", () => {
+    expect(isTrialEligible({ plan: "free", everPaidAt: PAID_AT, hasBillingHistory: false })).toBe(
+      false,
+    );
+  });
+
+  it("both signals set: not eligible", () => {
+    expect(isTrialEligible({ plan: "free", everPaidAt: PAID_AT, hasBillingHistory: true })).toBe(
+      false,
+    );
   });
 
   it.each(["Standard", "Professional"])(
     "a shop currently on %s is never eligible (history or not)",
     (plan) => {
-      expect(isTrialEligible({ plan, hasBillingHistory: false })).toBe(false);
-      expect(isTrialEligible({ plan, hasBillingHistory: true })).toBe(false);
+      for (const everPaidAt of [null, PAID_AT]) {
+        for (const hasBillingHistory of [false, true]) {
+          expect(isTrialEligible({ plan, everPaidAt, hasBillingHistory })).toBe(false);
+        }
+      }
     },
   );
 
   it("an unrecognized stored plan is not eligible (never promise what we cannot confirm)", () => {
-    expect(isTrialEligible({ plan: "Legacy", hasBillingHistory: false })).toBe(false);
+    expect(isTrialEligible({ plan: "Legacy", everPaidAt: null, hasBillingHistory: false })).toBe(
+      false,
+    );
   });
 });
 

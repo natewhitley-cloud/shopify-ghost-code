@@ -105,7 +105,11 @@ describe("Billing flow — live plan path (reconcileShopPlan → Shop.plan)", ()
 
       const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-      const result = await reconcileShopPlan(admin, { domain: SHOP_DOMAIN, plan: "free" });
+      const result = await reconcileShopPlan(admin, {
+        domain: SHOP_DOMAIN,
+        plan: "free",
+        everPaidAt: null,
+      });
 
       // The real model persists the corrected plan and stamps planReconciledAt.
       expect(mockShop.update).toHaveBeenCalledWith(
@@ -127,7 +131,11 @@ describe("Billing flow — live plan path (reconcileShopPlan → Shop.plan)", ()
 
       const admin = makeAdmin([]);
 
-      const result = await reconcileShopPlan(admin, { domain: SHOP_DOMAIN, plan: "Standard" });
+      const result = await reconcileShopPlan(admin, {
+        domain: SHOP_DOMAIN,
+        plan: "Standard",
+        everPaidAt: null,
+      });
 
       expect(mockShop.update).toHaveBeenCalledWith(
         expect.objectContaining({

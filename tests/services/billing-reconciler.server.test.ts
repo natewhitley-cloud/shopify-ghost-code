@@ -102,6 +102,10 @@ const mockUpdate = updateShopPlanByDomain as ReturnType<typeof vi.fn>;
 const mockStamp = stampPlanReconciledAt as ReturnType<typeof vi.fn>;
 const mockRecordEvent = recordBillingEvent as ReturnType<typeof vi.fn>;
 const mockClaimStage = claimShopStamp as ReturnType<typeof vi.fn>;
+
+/** The conversion-stage claims only (the everPaidAt stamp has its own tests). */
+const conversionClaims = () =>
+  mockClaimStage.mock.calls.filter(([, column]) => column !== "everPaidAt");
 const mockRecordConverted = recordNudgeConverted as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
@@ -186,7 +190,11 @@ describe("reconcileShopPlan", () => {
   it("upgrades when stored plan is free but Shopify has an ACTIVE Standard subscription", async () => {
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "free" });
+    const result = await reconcileShopPlan(admin, {
+      domain: "s.myshopify.com",
+      plan: "free",
+      everPaidAt: null,
+    });
 
     expect(mockUpdate).toHaveBeenCalledWith("s.myshopify.com", "Standard");
     expect(mockStamp).not.toHaveBeenCalled();
@@ -199,6 +207,7 @@ describe("reconcileShopPlan", () => {
     const result = await reconcileShopPlan(admin, {
       domain: "s.myshopify.com",
       plan: "Professional",
+      everPaidAt: null,
     });
 
     expect(mockUpdate).toHaveBeenCalledWith("s.myshopify.com", "free");
@@ -208,7 +217,11 @@ describe("reconcileShopPlan", () => {
   it("is a no-op that still stamps the timestamp when the stored plan already matches", async () => {
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "Standard" });
+    const result = await reconcileShopPlan(admin, {
+      domain: "s.myshopify.com",
+      plan: "Standard",
+      everPaidAt: null,
+    });
 
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockStamp).toHaveBeenCalledWith("s.myshopify.com");
@@ -221,7 +234,11 @@ describe("reconcileShopPlan", () => {
       { name: "Professional", status: "ACTIVE" },
     ]);
 
-    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "Standard" });
+    const result = await reconcileShopPlan(admin, {
+      domain: "s.myshopify.com",
+      plan: "Standard",
+      everPaidAt: null,
+    });
 
     expect(mockUpdate).toHaveBeenCalledWith("s.myshopify.com", "Professional");
     expect(result).toEqual({ status: "corrected", fromPlan: "Standard", toPlan: "Professional" });
@@ -232,7 +249,11 @@ describe("reconcileShopPlan", () => {
       { message: "Throttled", extensions: { code: "THROTTLED" } },
     ]);
 
-    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "Standard" });
+    const result = await reconcileShopPlan(admin, {
+      domain: "s.myshopify.com",
+      plan: "Standard",
+      everPaidAt: null,
+    });
 
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockStamp).not.toHaveBeenCalled();
@@ -248,7 +269,7 @@ describe("reconcileShopPlan", () => {
       { message: "Access denied", extensions: { code: "ACCESS_DENIED" } },
     ]);
 
-    await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "free" });
+    await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "free", everPaidAt: null });
 
     expect(logger.error).toHaveBeenCalledWith(
       "billing-reconcile-graphql-error",
@@ -259,7 +280,11 @@ describe("reconcileShopPlan", () => {
   it("does not change the plan, logs, and does not throw on a transport failure", async () => {
     const admin = makeAdminThatThrows(new Error("network down"));
 
-    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "Standard" });
+    const result = await reconcileShopPlan(admin, {
+      domain: "s.myshopify.com",
+      plan: "Standard",
+      everPaidAt: null,
+    });
 
     expect(mockUpdate).not.toHaveBeenCalled();
     expect(mockStamp).not.toHaveBeenCalled();
@@ -274,7 +299,11 @@ describe("reconcileShopPlan", () => {
     mockUpdate.mockResolvedValue(null);
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-    const result = await reconcileShopPlan(admin, { domain: "gone.myshopify.com", plan: "free" });
+    const result = await reconcileShopPlan(admin, {
+      domain: "gone.myshopify.com",
+      plan: "free",
+      everPaidAt: null,
+    });
 
     expect(result).toEqual({ status: "shop-not-found" });
   });
@@ -288,7 +317,7 @@ describe("reconcileShopPlan", () => {
 
     await reconcileShopPlan(
       admin,
-      { domain: "s.myshopify.com", plan: "free" },
+      { domain: "s.myshopify.com", plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -306,7 +335,7 @@ describe("reconcileShopPlan", () => {
 
     await reconcileShopPlan(
       admin,
-      { domain: "s.myshopify.com", plan: "Professional" },
+      { domain: "s.myshopify.com", plan: "Professional", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -322,7 +351,7 @@ describe("reconcileShopPlan", () => {
   it("does NOT record a BillingEvent on a corrected drift for the routine path (recordEvent omitted)", async () => {
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-    await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "free" });
+    await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "free", everPaidAt: null });
 
     expect(mockRecordEvent).not.toHaveBeenCalled();
   });
@@ -332,7 +361,7 @@ describe("reconcileShopPlan", () => {
 
     await reconcileShopPlan(
       admin,
-      { domain: "s.myshopify.com", plan: "Standard" },
+      { domain: "s.myshopify.com", plan: "Standard", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -362,7 +391,7 @@ describe("reconcileShopPlan", () => {
 
     const result = await reconcileShopPlan(
       admin,
-      { domain: "s.myshopify.com", plan: "free" },
+      { domain: "s.myshopify.com", plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -386,7 +415,7 @@ describe("reconcileShopPlan", () => {
 
     const result = await reconcileShopPlan(
       admin,
-      { domain: "s.myshopify.com", plan: "free" },
+      { domain: "s.myshopify.com", plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -398,7 +427,11 @@ describe("reconcileShopPlan", () => {
   it("does NOT retry on Admin API failure when not on the redirect path (recordEvent false)", async () => {
     const admin = makeAdminThatThrows(new Error("down"));
 
-    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "Standard" });
+    const result = await reconcileShopPlan(admin, {
+      domain: "s.myshopify.com",
+      plan: "Standard",
+      everPaidAt: null,
+    });
 
     expect(admin.graphql).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ status: "skipped-error" });
@@ -433,7 +466,7 @@ describe("reconcileShopPlan", () => {
 
     const result = await reconcileShopPlan(
       admin,
-      { domain: "s.myshopify.com", plan: "free" },
+      { domain: "s.myshopify.com", plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -473,7 +506,7 @@ describe("reconcileShopPlan", () => {
 
     const result = await reconcileShopPlan(
       admin,
-      { domain: "gone.myshopify.com", plan: "free" },
+      { domain: "gone.myshopify.com", plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -489,7 +522,7 @@ describe("reconcileShopPlan", () => {
 
     await reconcileShopPlan(
       admin,
-      { domain: "s.myshopify.com", plan: "free" },
+      { domain: "s.myshopify.com", plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -504,7 +537,11 @@ describe("reconcileShopPlan", () => {
       { message: "Throttled", extensions: { code: "THROTTLED" } },
     ]);
 
-    const result = await reconcileShopPlan(admin, { domain: "s.myshopify.com", plan: "Standard" });
+    const result = await reconcileShopPlan(admin, {
+      domain: "s.myshopify.com",
+      plan: "Standard",
+      everPaidAt: null,
+    });
 
     expect(admin.graphql).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ status: "skipped-error" });
@@ -527,7 +564,7 @@ describe("reconcileShopPlan", () => {
 
     const result = await reconcileShopPlan(
       admin,
-      { domain: "s.myshopify.com", plan: "free" },
+      { domain: "s.myshopify.com", plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -562,11 +599,15 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
     async (plan) => {
       const admin = makeAdmin([{ name: plan, status: "ACTIVE" }]);
 
-      await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+      await reconcileShopPlan(
+        admin,
+        { domain: DOMAIN, plan: "free", everPaidAt: null },
+        { recordEvent: true },
+      );
 
       // One claim per Free upgrade ask (gc-97k.4 teaser, gc-97k.9 return banner),
       // each requiring that ask's own `shown` stamp.
-      expect(mockClaimStage).toHaveBeenCalledTimes(2);
+      expect(conversionClaims()).toHaveLength(2);
       expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "upgradePreviewConvertedAt", {
         upgradePreviewShownAt: { not: null },
       });
@@ -583,7 +624,11 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
     mockClaimStage.mockResolvedValue(false);
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+    await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
+      { recordEvent: true },
+    );
 
     expect(mockRecordConverted).not.toHaveBeenCalled();
     // The billing event itself is unaffected.
@@ -591,14 +636,25 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
   });
 
   it("does not re-emit on a repeat upgrade (cancel, then upgrade again)", async () => {
-    // First upgrade: both claims win; second: both lose.
-    mockClaimStage.mockResolvedValueOnce(true).mockResolvedValueOnce(true).mockResolvedValue(false);
+    // First upgrade: both conversion claims win; second: both lose.
+    let wins = 2;
+    mockClaimStage.mockImplementation(async (_domain: string, column: string) =>
+      column === "everPaidAt" ? false : wins-- > 0,
+    );
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
-    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+    await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
+      { recordEvent: true },
+    );
+    await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
+      { recordEvent: true },
+    );
 
-    expect(mockClaimStage).toHaveBeenCalledTimes(4);
+    expect(conversionClaims()).toHaveLength(4);
     expect(mockRecordConverted).toHaveBeenCalledTimes(2);
   });
 
@@ -610,28 +666,36 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
   ])("does not emit for %s -> %j (%s)", async (fromPlan, subs) => {
     const admin = makeAdmin(subs as Sub[]);
 
-    await reconcileShopPlan(admin, { domain: DOMAIN, plan: fromPlan }, { recordEvent: true });
+    await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: fromPlan, everPaidAt: null },
+      { recordEvent: true },
+    );
 
-    expect(mockClaimStage).not.toHaveBeenCalled();
+    expect(conversionClaims()).toEqual([]);
     expect(mockRecordConverted).not.toHaveBeenCalled();
   });
 
   it("does not emit on a routine (backstop) reconcile, which records no billing event", async () => {
     const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
 
-    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" });
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free", everPaidAt: null });
 
     expect(mockRecordEvent).not.toHaveBeenCalled();
-    expect(mockClaimStage).not.toHaveBeenCalled();
+    expect(conversionClaims()).toEqual([]);
     expect(mockRecordConverted).not.toHaveBeenCalled();
   });
 
   it("does not emit when the plan already matches (no plan change)", async () => {
     const admin = makeAdmin([]);
 
-    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free" }, { recordEvent: true });
+    await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
+      { recordEvent: true },
+    );
 
-    expect(mockClaimStage).not.toHaveBeenCalled();
+    expect(conversionClaims()).toEqual([]);
   });
 
   it("does not emit when the shop row vanished mid-correction", async () => {
@@ -640,12 +704,12 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
 
     const result = await reconcileShopPlan(
       admin,
-      { domain: DOMAIN, plan: "free" },
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
     expect(result).toEqual({ status: "shop-not-found" });
-    expect(mockClaimStage).not.toHaveBeenCalled();
+    expect(conversionClaims()).toEqual([]);
   });
 
   it("never breaks the reconcile when the conversion claim fails", async () => {
@@ -654,7 +718,7 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
 
     const result = await reconcileShopPlan(
       admin,
-      { domain: DOMAIN, plan: "free" },
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -705,13 +769,14 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
       upgradeReturnShownAt: null,
       upgradeReturnClickedAt: null,
       upgradeReturnConvertedAt: null,
+      everPaidAt: null,
     };
   });
 
   const upgrade = () =>
     reconcileShopPlan(
       makeAdmin([{ name: "Standard", status: "ACTIVE" }]),
-      { domain: DOMAIN, plan: "free" },
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
       { recordEvent: true },
     );
 
@@ -738,7 +803,7 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
     await upgrade();
     await upgrade();
 
-    expect(mockClaimStage).toHaveBeenCalledTimes(4); // 2 asks x 2 upgrades
+    expect(conversionClaims()).toHaveLength(4); // 2 asks x 2 upgrades
     expect(mockRecordConverted).toHaveBeenCalledTimes(1);
   });
 
@@ -771,11 +836,126 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
 
     await reconcileShopPlan(
       makeAdmin([{ name: "Standard", status: "ACTIVE" }]),
-      { domain: DOMAIN, plan: "Professional" },
+      { domain: DOMAIN, plan: "Professional", everPaidAt: null },
       { recordEvent: true },
     );
 
-    expect(mockClaimStage).not.toHaveBeenCalled();
+    expect(conversionClaims()).toEqual([]);
     expect(mockRecordConverted).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Durable ever-paid stamp (gc-97k.8 audit fix)
+// ---------------------------------------------------------------------------
+
+describe("reconcileShopPlan: everPaidAt on every path that observes a paid plan", () => {
+  const DOMAIN = "s.myshopify.com";
+  const PAID_BEFORE = new Date("2026-05-01T00:00:00Z");
+  const everPaidClaims = () =>
+    mockClaimStage.mock.calls.filter(([, column]) => column === "everPaidAt");
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdate.mockResolvedValue({ id: "shop-1", domain: DOMAIN, plan: "x" });
+    mockStamp.mockResolvedValue({ id: "shop-1" });
+    mockRecordEvent.mockResolvedValue({});
+    mockClaimStage.mockResolvedValue(true);
+  });
+
+  it.each([
+    ["redirect fast-path", { recordEvent: true }],
+    ["stale on-load backstop", { recordEvent: false }],
+    ["backstop with no options", undefined],
+  ])("%s: a free -> paid correction stamps everPaidAt once", async (_path, options) => {
+    await reconcileShopPlan(
+      makeAdmin([{ name: "Standard", status: "ACTIVE" }]),
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
+      options,
+    );
+
+    expect(everPaidClaims()).toEqual([[DOMAIN, "everPaidAt"]]);
+  });
+
+  it.each(["Standard", "Professional"])(
+    "a MATCHED %s shop never stamped before (legacy / backstop-only paid) is stamped",
+    async (plan) => {
+      await reconcileShopPlan(makeAdmin([{ name: plan, status: "ACTIVE" }]), {
+        domain: DOMAIN,
+        plan,
+        everPaidAt: null,
+      });
+
+      expect(everPaidClaims()).toEqual([[DOMAIN, "everPaidAt"]]);
+    },
+  );
+
+  it("a paid -> paid correction stamps a never-stamped shop", async () => {
+    await reconcileShopPlan(
+      makeAdmin([{ name: "Professional", status: "ACTIVE" }]),
+      { domain: DOMAIN, plan: "Standard", everPaidAt: null },
+      { recordEvent: true },
+    );
+
+    expect(everPaidClaims()).toHaveLength(1);
+  });
+
+  it("an already-stamped shop costs no write (the loader's value is trusted)", async () => {
+    await reconcileShopPlan(makeAdmin([{ name: "Standard", status: "ACTIVE" }]), {
+      domain: DOMAIN,
+      plan: "Standard",
+      everPaidAt: PAID_BEFORE,
+    });
+
+    expect(everPaidClaims()).toEqual([]);
+  });
+
+  it.each([
+    ["a matched Free shop", "free", []],
+    ["a cancellation to Free", "Standard", []],
+  ])("%s is never stamped (no paid plan observed)", async (_label, plan, subs) => {
+    await reconcileShopPlan(makeAdmin(subs as Sub[]), { domain: DOMAIN, plan, everPaidAt: null });
+
+    expect(everPaidClaims()).toEqual([]);
+  });
+
+  it("a Shopify error (skipped-error) stamps nothing", async () => {
+    const result = await reconcileShopPlan(makeAdminThatThrows(new Error("network")), {
+      domain: DOMAIN,
+      plan: "Standard",
+      everPaidAt: null,
+    });
+
+    expect(result).toEqual({ status: "skipped-error" });
+    expect(everPaidClaims()).toEqual([]);
+  });
+
+  it("a vanished shop row (shop-not-found) stamps nothing", async () => {
+    mockStamp.mockResolvedValue(null);
+
+    const result = await reconcileShopPlan(makeAdmin([{ name: "Standard", status: "ACTIVE" }]), {
+      domain: DOMAIN,
+      plan: "Standard",
+      everPaidAt: null,
+    });
+
+    expect(result).toEqual({ status: "shop-not-found" });
+    expect(everPaidClaims()).toEqual([]);
+  });
+
+  it("never breaks the reconcile when the stamp fails: logs and still returns the result", async () => {
+    mockClaimStage.mockRejectedValue(new Error("db down"));
+
+    const result = await reconcileShopPlan(makeAdmin([{ name: "Standard", status: "ACTIVE" }]), {
+      domain: DOMAIN,
+      plan: "Standard",
+      everPaidAt: null,
+    });
+
+    expect(result).toEqual({ status: "matched", plan: "Standard" });
+    expect(logger.error).toHaveBeenCalledWith("billing-reconcile-ever-paid-stamp-failed", {
+      shop: DOMAIN,
+      error: "db down",
+    });
   });
 });
