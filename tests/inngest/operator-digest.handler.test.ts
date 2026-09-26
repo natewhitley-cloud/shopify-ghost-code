@@ -175,6 +175,19 @@ const EXCLUDED = [
   { id: "shop-review", domain: "app-review-zz9.myshopify.com", isInternal: false }, // prefix
 ];
 
+/** Nullable Shop stamp columns, null as the real DB returns them (gc-dpm.3). */
+const NULL_STAMPS = {
+  firstOpenedAt: null,
+  firstResultsViewedAt: null,
+  upgradePreviewShownAt: null,
+  upgradePreviewClickedAt: null,
+  upgradePreviewConvertedAt: null,
+  feedbackNudgeShownAt: null,
+  feedbackNudgeClickedAt: null,
+  feedbackNudgeDismissedAt: null,
+  feedbackSubmittedAt: null,
+};
+
 function seed() {
   const now = Date.now();
   const ago = (ms: number) => new Date(now - ms);
@@ -182,6 +195,7 @@ function seed() {
 
   tables.shop.push(
     {
+      ...NULL_STAMPS,
       id: "shop-a",
       domain: "real-a.myshopify.com",
       plan: "free",
@@ -191,6 +205,7 @@ function seed() {
       lastSeenAt: ago(1 * HOUR),
     },
     {
+      ...NULL_STAMPS,
       id: "shop-b",
       domain: "real-b.myshopify.com",
       plan: "Professional",
@@ -200,6 +215,7 @@ function seed() {
       lastSeenAt: null,
     },
     {
+      ...NULL_STAMPS,
       id: "shop-internal-2",
       domain: "renamed-internal-2.myshopify.com",
       plan: "free",
@@ -209,6 +225,7 @@ function seed() {
       lastSeenAt: null,
     },
     {
+      ...NULL_STAMPS,
       id: "shop-churned",
       domain: "churned-real.myshopify.com",
       plan: "free",
@@ -218,6 +235,7 @@ function seed() {
       lastSeenAt: null,
     },
     ...EXCLUDED.map((s) => ({
+      ...NULL_STAMPS,
       ...s,
       plan: "Professional", // would inflate MRR if leaked
       installedAt: ago(2 * HOUR), // would inflate "New in 24h" if leaked
@@ -562,5 +580,78 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
     const body = await runDigest();
 
     expect(body).toContain("checked 2, marked uninstalled 0, skipped-transient 0");
+  });
+});
+
+describe("operator-digest handler: JOURNEY section wiring (gc-dpm.3)", () => {
+  const section = (body: string) => {
+    const start = body.indexOf("JOURNEY (active installs, counted ever)");
+    return body.slice(start, body.indexOf("\n\n", start));
+  };
+
+  it("counts the funnel over the same real active installs as BUSINESS, never excluded stores", async () => {
+    const body = await runDigest();
+
+    // real-a: opened (lastSeenAt) + a COMPLETED scan; real-b: Professional,
+    // never seen and no scans. The 3 excluded active stores (all Professional,
+    // seen 1h ago) would inflate every stage if they leaked.
+    expect(section(body)).toContain(
+      "  Funnel: Installed 2 > Opened 1 > Scanned 1 > Viewed results 0 > Saw upgrade 0 > Clicked 0 > Paid 1",
+    );
+    expect(body).toContain("Total active: 2");
+  });
+
+  it("lists only real shops seen or installed in the last 7d in the timeline", async () => {
+    const body = await runDigest();
+    const lines = section(body).split("\n");
+
+    const i = lines.findIndex((l) => l.startsWith("    real-a.myshopify.com ["));
+    expect(lines[i]).toBe("    real-a.myshopify.com [opened, scanned -> stage: scanned]");
+    expect(lines[i + 1]).toMatch(
+      /^ {6}\d\d-\d\d \d\d:\d\d installed > (\d\d-\d\d )?\d\d:\d\d scan COMPLETED \(7\) > last seen (\d\d-\d\d )?\d\d:\d\d$/,
+    );
+    // real-b (installed 10d ago, never seen) and churned-real (installed 21d
+    // ago) are outside the 7d window; excluded stores never appear at all.
+    expect(section(body)).not.toContain("real-b.myshopify.com");
+    expect(section(body)).not.toContain("churned-real.myshopify.com");
+    for (const s of EXCLUDED) expect(section(body)).not.toContain(s.domain);
+  });
+
+  it("renders the uninstall and inferred reinstall for a real shop that came back", async () => {
+    const now = Date.now();
+    tables.shop.push({
+      ...NULL_STAMPS,
+      id: "shop-back",
+      domain: "came-back.myshopify.com",
+      plan: "free",
+      installedAt: new Date(now - 6 * HOUR),
+      uninstalledAt: null,
+      isInternal: false,
+      lastSeenAt: new Date(now - 2 * HOUR),
+      firstOpenedAt: new Date(now - 6 * HOUR),
+    });
+    tables.opsEvent.push(
+      {
+        id: "u-back",
+        eventType: "shop_uninstalled",
+        key: "came-back.myshopify.com",
+        createdAt: new Date(now - 5 * HOUR),
+      },
+      {
+        id: "v-back",
+        eventType: "page_visit",
+        key: "came-back.myshopify.com",
+        metadata: { path: "/app" },
+        createdAt: new Date(now - 4 * HOUR),
+      },
+    );
+
+    const body = await runDigest();
+    const lines = section(body).split("\n");
+    const i = lines.findIndex((l) => l.startsWith("    came-back.myshopify.com ["));
+
+    expect(lines[i]).toBe("    came-back.myshopify.com [opened -> stage: opened, no scan]");
+    expect(lines[i + 1]).toMatch(/installed > .*uninstalled > .*reinstalled > last seen/);
+    expect(section(body)).toContain("  Funnel: Installed 3 > Opened 2 >");
   });
 });

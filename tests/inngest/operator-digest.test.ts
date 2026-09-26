@@ -43,6 +43,7 @@ import { parseExcludeShops } from "../../app/lib/store-exclusion";
 import {
   aggregateActivity,
   aggregateFeedback,
+  aggregateJourney,
   aggregateNudgeFunnel,
   buildDigestBody,
   computeMrr,
@@ -54,6 +55,8 @@ import {
   DAY_MS,
   diffSnapshot,
   evaluateSnapshotMetrics,
+  formatTimelineLine,
+  isTimelineShop,
   METRIC_THRESHOLDS,
   normalizeActivityPath,
   NUDGE_OTHER_KEY,
@@ -64,8 +67,13 @@ import {
   SHOP_PAGES_LIMIT,
   sortFindingTypeCounts,
   summarizeReconciler,
+  TIMELINE_EVENTS_LIMIT,
+  TIMELINE_SHOPS_LIMIT,
   type DigestSnapshot,
   type FeedbackDigest,
+  type JourneyShopInput,
+  type JourneySummary,
+  type JourneyTimelineRows,
   type NudgeFunnelRow,
   type OperatorDigestData,
 } from "../../inngest/functions/operator-digest";
@@ -2005,5 +2013,459 @@ describe("buildDigestBody: FEEDBACK section (gc-97k.3)", () => {
     expect(feedback).toBeGreaterThan(nudges);
     expect(ops).toBeGreaterThan(feedback);
     expect(section(body)).not.toContain("\u2014");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// JOURNEY (gc-dpm.3)
+// ---------------------------------------------------------------------------
+
+describe("journey (gc-dpm.3)", () => {
+  const NOW = new Date("2026-09-26T12:00:00Z");
+  const at = (hhmm: string, day = "09-26") => new Date(`2026-${day}T${hhmm}:00Z`);
+  const daysAgo = (d: number) => new Date(NOW.getTime() - d * DAY_MS);
+
+  function shop(overrides: Partial<JourneyShopInput> & { id: string }): JourneyShopInput {
+    return {
+      domain: `${overrides.id}.myshopify.com`,
+      plan: "free",
+      installedAt: daysAgo(30),
+      uninstalledAt: null,
+      lastSeenAt: null,
+      firstOpenedAt: null,
+      firstResultsViewedAt: null,
+      upgradePreviewShownAt: null,
+      upgradePreviewClickedAt: null,
+      upgradePreviewConvertedAt: null,
+      feedbackNudgeShownAt: null,
+      feedbackNudgeClickedAt: null,
+      feedbackNudgeDismissedAt: null,
+      feedbackSubmittedAt: null,
+      ...overrides,
+    };
+  }
+
+  const NO_ROWS: JourneyTimelineRows = {
+    scans: [],
+    billingEvents: [],
+    uninstallEvents: [],
+    pageVisits: [],
+  };
+
+  const run = (
+    shops: JourneyShopInput[],
+    opts: {
+      allowed?: string[];
+      scanStatuses?: Array<{ shopId: string; status: string }>;
+      rows?: Partial<JourneyTimelineRows>;
+    } = {},
+  ) =>
+    aggregateJourney(
+      shops,
+      opts.allowed ?? shops.map((s) => s.id),
+      opts.scanStatuses ?? [],
+      { ...NO_ROWS, ...opts.rows },
+      NOW,
+    );
+
+  const funnelLine = (j: JourneySummary) =>
+    j.funnel.map((f) => `${f.label} ${f.count}`).join(" > ");
+
+  // ortho-india on 09-26: installed, uninstalled 4 min later, reinstalled
+  // (first page_visit after the uninstall), a COMPLETED scan with 36 findings,
+  // results viewed, upgrade preview seen, last seen 08:52.
+  const ORTHO = shop({
+    id: "ortho",
+    domain: "ortho-india.myshopify.com",
+    installedAt: at("05:00"),
+    lastSeenAt: at("08:52"),
+    firstOpenedAt: at("05:00"),
+    firstResultsViewedAt: at("05:31"),
+    upgradePreviewShownAt: new Date("2026-09-26T05:31:20Z"),
+  });
+  const ORTHO_ROWS: Partial<JourneyTimelineRows> = {
+    scans: [
+      {
+        shopId: "ortho",
+        createdAt: new Date("2026-09-26T05:30:30Z"),
+        status: "COMPLETED",
+        findingCount: 36,
+      },
+    ],
+    uninstallEvents: [{ key: "ortho-india.myshopify.com", createdAt: at("05:04") }],
+    pageVisits: [
+      { key: "ortho-india.myshopify.com", createdAt: at("05:01") }, // before the uninstall
+      { key: "ortho-india.myshopify.com", createdAt: at("05:30") }, // first after: reinstall
+      { key: "ortho-india.myshopify.com", createdAt: at("05:45") },
+    ],
+  };
+
+  describe("isTimelineShop", () => {
+    it.each([
+      ["installed within 7d", { installedAt: daysAgo(6.9), lastSeenAt: null }, true],
+      ["installed exactly 7d ago (inclusive)", { installedAt: daysAgo(7), lastSeenAt: null }, true],
+      ["seen within 7d", { installedAt: daysAgo(90), lastSeenAt: daysAgo(1) }, true],
+      ["neither", { installedAt: daysAgo(90), lastSeenAt: daysAgo(8) }, false],
+      ["never seen, old install", { installedAt: daysAgo(8), lastSeenAt: null }, false],
+    ])("%s -> %s", (_name, s, expected) => {
+      expect(isTimelineShop(s, NOW)).toBe(expected);
+    });
+  });
+
+  describe("funnel", () => {
+    it("counts each milestone over active installs, with the opened implication", () => {
+      const shops = [
+        shop({ id: "none" }), // installed only
+        shop({ id: "opened-stamp", firstOpenedAt: daysAgo(20) }),
+        shop({ id: "opened-seen", lastSeenAt: daysAgo(20) }),
+        shop({ id: "opened-by-failed-scan" }), // FAILED scan only: opened, not scanned
+        shop({ id: "scanned" }), // successful scan, no stamps
+        shop({
+          id: "far",
+          plan: "Standard",
+          lastSeenAt: daysAgo(10),
+          firstResultsViewedAt: daysAgo(10),
+          upgradePreviewShownAt: daysAgo(10),
+          upgradePreviewClickedAt: daysAgo(10),
+        }),
+      ];
+      const j = run(shops, {
+        scanStatuses: [
+          { shopId: "opened-by-failed-scan", status: "FAILED" },
+          { shopId: "scanned", status: "PARTIAL" },
+          { shopId: "far", status: "COMPLETED" },
+          { shopId: "far", status: "FAILED" },
+        ],
+      });
+
+      expect(funnelLine(j)).toBe(
+        "Installed 6 > Opened 5 > Scanned 2 > Viewed results 1 > Saw upgrade 1 > Clicked 1 > Paid 1",
+      );
+    });
+
+    it("excludes uninstalled shops and shops outside the allowed (non-excluded) set", () => {
+      const shops = [
+        shop({ id: "real", lastSeenAt: daysAgo(1) }),
+        shop({ id: "churned", lastSeenAt: daysAgo(1), uninstalledAt: daysAgo(1) }),
+        shop({ id: "internal", lastSeenAt: daysAgo(1), plan: "Professional" }),
+      ];
+      const j = run(shops, {
+        allowed: ["real", "churned"],
+        scanStatuses: [{ shopId: "internal", status: "COMPLETED" }],
+      });
+
+      expect(funnelLine(j)).toBe(
+        "Installed 1 > Opened 1 > Scanned 0 > Viewed results 0 > Saw upgrade 0 > Clicked 0 > Paid 0",
+      );
+      // The churned real shop still appears in the timeline; the internal one never.
+      expect(j.timeline.map((t) => t.domain)).toEqual([
+        "churned.myshopify.com",
+        "real.myshopify.com",
+      ]);
+      expect(j.timeline[0].uninstalled).toBe(true);
+    });
+
+    it("is all zeros for no shops", () => {
+      const j = run([]);
+      expect(j.funnel.every((f) => f.count === 0)).toBe(true);
+      expect(j.funnel.map((f) => f.label)).toEqual([
+        "Installed",
+        "Opened",
+        "Scanned",
+        "Viewed results",
+        "Saw upgrade",
+        "Clicked",
+        "Paid",
+      ]);
+      expect(j.timeline).toEqual([]);
+      expect(j.timelineMore).toBe(0);
+    });
+  });
+
+  describe("timeline", () => {
+    it("renders ortho-india's uninstall / reinstall day in order", () => {
+      const j = run([ORTHO], {
+        scanStatuses: [{ shopId: "ortho", status: "COMPLETED" }],
+        rows: ORTHO_ROWS,
+      });
+
+      expect(j.timeline).toHaveLength(1);
+      const row = j.timeline[0];
+      expect(row.milestones).toEqual(["opened", "scanned", "viewed results", "saw upgrade"]);
+      expect(row.stage).toBe("saw upgrade");
+      expect(row.uninstalled).toBe(false);
+      expect(formatTimelineLine(row.events, row.earlierOmitted)).toBe(
+        "09-26 05:00 installed > 05:04 uninstalled > 05:30 reinstalled > 05:30 scan COMPLETED (36) > 05:31 viewed results > 05:31 saw upgrade > last seen 08:52",
+      );
+    });
+
+    it("leaves the reinstall out when no page_visit after the uninstall is retained", () => {
+      const j = run([ORTHO], {
+        rows: {
+          ...ORTHO_ROWS,
+          pageVisits: [{ key: "ortho-india.myshopify.com", createdAt: at("05:01") }],
+        },
+      });
+      const labels = j.timeline[0].events.map((e) => e.label);
+      expect(labels).toContain("uninstalled");
+      expect(labels).not.toContain("reinstalled");
+    });
+
+    it("infers one reinstall per uninstall across repeated cycles", () => {
+      const s = shop({ id: "cycler", installedAt: at("01:00"), lastSeenAt: at("09:00") });
+      const j = run([s], {
+        rows: {
+          uninstallEvents: [
+            { key: "cycler.myshopify.com", createdAt: at("06:00") },
+            { key: "cycler.myshopify.com", createdAt: at("02:00") },
+          ],
+          pageVisits: [
+            { key: "cycler.myshopify.com", createdAt: at("03:00") },
+            { key: "cycler.myshopify.com", createdAt: at("04:00") },
+            { key: "cycler.myshopify.com", createdAt: at("07:00") },
+          ],
+        },
+      });
+      expect(formatTimelineLine(j.timeline[0].events, 0)).toBe(
+        "09-26 01:00 installed > 02:00 uninstalled > 03:00 reinstalled > 06:00 uninstalled > 07:00 reinstalled > last seen 09:00",
+      );
+    });
+
+    it("adds the CURRENT uninstall when no matching event is retained, and marks the shop", () => {
+      const s = shop({ id: "gone", installedAt: at("01:00"), uninstalledAt: at("03:00") });
+      const j = run([s]);
+      expect(j.timeline[0].uninstalled).toBe(true);
+      expect(formatTimelineLine(j.timeline[0].events, 0)).toBe(
+        "09-26 01:00 installed > 03:00 uninstalled",
+      );
+    });
+
+    it("does not duplicate the current uninstall when its event is retained", () => {
+      const s = shop({ id: "gone", installedAt: at("01:00"), uninstalledAt: at("03:00") });
+      const j = run([s], {
+        rows: {
+          // Recorded just after the stamp (markShopUninstalledWithEvent order).
+          uninstallEvents: [
+            { key: "gone.myshopify.com", createdAt: new Date("2026-09-26T03:00:00.050Z") },
+          ],
+        },
+      });
+      expect(j.timeline[0].events.filter((e) => e.label === "uninstalled")).toHaveLength(1);
+    });
+
+    it("labels scans with their status, and a finding count only for successful ones", () => {
+      const s = shop({ id: "scanner", installedAt: at("01:00") });
+      const j = run([s], {
+        rows: {
+          scans: [
+            { shopId: "scanner", createdAt: at("01:10"), status: "FAILED", findingCount: 0 },
+            { shopId: "scanner", createdAt: at("01:20"), status: "PARTIAL", findingCount: 4 },
+            { shopId: "scanner", createdAt: at("01:30"), status: "COMPLETED", findingCount: 0 },
+            { shopId: "scanner", createdAt: at("01:40"), status: "PENDING", findingCount: 0 },
+          ],
+        },
+      });
+      expect(j.timeline[0].events.map((e) => e.label)).toEqual([
+        "installed",
+        "scan FAILED",
+        "scan PARTIAL (4)",
+        "scan COMPLETED (0)",
+        "scan PENDING",
+      ]);
+    });
+
+    it("labels nudge stamps and billing events, keeping the latest when capped", () => {
+      const s = shop({
+        id: "busy",
+        installedAt: at("01:00"),
+        feedbackNudgeShownAt: at("02:00"),
+        feedbackNudgeDismissedAt: at("02:01"),
+        upgradePreviewClickedAt: at("02:02"),
+        upgradePreviewConvertedAt: at("02:03"),
+        feedbackNudgeClickedAt: at("02:04"),
+        feedbackSubmittedAt: at("02:05"),
+      });
+      const j = run([s], {
+        rows: {
+          scans: [
+            { shopId: "busy", createdAt: at("01:10"), status: "FAILED", findingCount: 0 },
+            { shopId: "busy", createdAt: at("01:20"), status: "PARTIAL", findingCount: 4 },
+            { shopId: "busy", createdAt: at("01:30"), status: "IN_PROGRESS", findingCount: 0 },
+          ],
+          billingEvents: [
+            { shopId: "busy", eventType: "upgrade", toPlan: "Standard", createdAt: at("02:06") },
+            { shopId: "busy", eventType: "cancellation", toPlan: null, createdAt: at("02:07") },
+          ],
+        },
+      });
+      const all = [
+        "installed",
+        "scan FAILED",
+        "scan PARTIAL (4)",
+        "scan IN_PROGRESS",
+        "feedback nudge shown",
+        "feedback nudge dismissed",
+        "clicked upgrade",
+        "upgrade converted",
+        "feedback nudge clicked",
+        "feedback submitted",
+        "billing upgrade to Standard",
+        "billing cancellation",
+      ];
+      // 12 events: only the latest TIMELINE_EVENTS_LIMIT are kept.
+      expect(j.timeline[0].events.map((e) => e.label)).toEqual(all.slice(-TIMELINE_EVENTS_LIMIT));
+      expect(j.timeline[0].earlierOmitted).toBe(all.length - TIMELINE_EVENTS_LIMIT);
+    });
+
+    it("caps each shop at the latest TIMELINE_EVENTS_LIMIT events and counts the rest", () => {
+      expect(TIMELINE_EVENTS_LIMIT).toBe(8);
+      const s = shop({ id: "many", installedAt: at("00:00"), lastSeenAt: at("11:00") });
+      const scans = Array.from({ length: 10 }, (_, i) => ({
+        shopId: "many",
+        createdAt: at(`0${i}:30`),
+        status: "COMPLETED",
+        findingCount: i,
+      }));
+      const j = run([s], { rows: { scans } });
+      const row = j.timeline[0];
+      expect(row.events).toHaveLength(8);
+      expect(row.earlierOmitted).toBe(4); // 12 events total
+      expect(row.events[0].label).toBe("scan COMPLETED (3)");
+      expect(row.events.at(-1)?.label).toBe("last seen");
+      expect(formatTimelineLine(row.events, row.earlierOmitted)).toMatch(
+        /^\(4 earlier\) > 09-26 03:30 scan COMPLETED \(3\) > 04:30 /,
+      );
+    });
+
+    it("pins event rows to the shop by id / domain (case-insensitive domain keys)", () => {
+      const a = shop({ id: "a", installedAt: at("01:00") });
+      const j = run([a], {
+        rows: {
+          scans: [
+            { shopId: "other", createdAt: at("02:00"), status: "COMPLETED", findingCount: 99 },
+          ],
+          billingEvents: [
+            { shopId: "other", eventType: "upgrade", toPlan: "Standard", createdAt: at("02:00") },
+          ],
+          uninstallEvents: [
+            { key: "A.MYSHOPIFY.COM", createdAt: at("03:00") },
+            { key: "other.myshopify.com", createdAt: at("03:30") },
+            { key: null, createdAt: at("03:40") },
+          ],
+        },
+      });
+      expect(j.timeline[0].events.map((e) => e.label)).toEqual(["installed", "uninstalled"]);
+    });
+
+    it("orders shops by most recent activity, then domain", () => {
+      const shops = [
+        shop({ id: "b-old-install", installedAt: daysAgo(3) }),
+        shop({ id: "c-seen-now", installedAt: daysAgo(60), lastSeenAt: daysAgo(0.1) }),
+        shop({ id: "a-old-install", installedAt: daysAgo(3) }),
+        shop({ id: "outside", installedAt: daysAgo(60), lastSeenAt: daysAgo(9) }),
+      ];
+      expect(run(shops).timeline.map((t) => t.domain)).toEqual([
+        "c-seen-now.myshopify.com",
+        "a-old-install.myshopify.com",
+        "b-old-install.myshopify.com",
+      ]);
+    });
+
+    it("caps the timeline at TIMELINE_SHOPS_LIMIT shops and counts the rest", () => {
+      expect(TIMELINE_SHOPS_LIMIT).toBe(20);
+      const shops = Array.from({ length: 23 }, (_, i) =>
+        shop({ id: `s${String(i).padStart(2, "0")}`, installedAt: daysAgo(1) }),
+      );
+      const j = run(shops);
+      expect(j.timeline).toHaveLength(20);
+      expect(j.timelineMore).toBe(3);
+    });
+  });
+
+  describe("formatTimelineLine", () => {
+    it("prints the date on the first event and whenever the UTC day changes", () => {
+      expect(
+        formatTimelineLine(
+          [
+            { at: "2026-09-25T23:58:00.000Z", label: "installed" },
+            { at: "2026-09-25T23:59:30.000Z", label: "viewed results" },
+            { at: "2026-09-26T00:01:00.000Z", label: "last seen" },
+          ],
+          0,
+        ),
+      ).toBe("09-25 23:58 installed > 23:59 viewed results > last seen 09-26 00:01");
+    });
+
+    it("is empty for no events", () => {
+      expect(formatTimelineLine([], 0)).toBe("");
+    });
+  });
+
+  describe("buildDigestBody JOURNEY section", () => {
+    const sectionOf = (body: string) => {
+      const start = body.indexOf("JOURNEY (active installs, counted ever)");
+      return body.slice(start, body.indexOf("\n\n", start));
+    };
+
+    it("renders the funnel, stage headers and timelines after FEEDBACK", () => {
+      const journey = run(
+        [ORTHO, shop({ id: "quiet", installedAt: daysAgo(2), uninstalledAt: daysAgo(1) })],
+        { scanStatuses: [{ shopId: "ortho", status: "COMPLETED" }], rows: ORTHO_ROWS },
+      );
+      const body = buildDigestBody(makeData({ journey }));
+
+      expect(body.indexOf("JOURNEY (")).toBeGreaterThan(body.indexOf("FEEDBACK ("));
+      expect(body.indexOf("JOURNEY (")).toBeLessThan(body.indexOf("=== OPERATIONAL HEALTH"));
+      expect(sectionOf(body)).toBe(
+        [
+          "JOURNEY (active installs, counted ever)",
+          "  Funnel: Installed 1 > Opened 1 > Scanned 1 > Viewed results 1 > Saw upgrade 1 > Clicked 0 > Paid 0",
+          "  Timeline (shops seen or installed in the last 7d; UTC; latest events):",
+          "    ortho-india.myshopify.com [opened, scanned, viewed results, saw upgrade -> stage: saw upgrade]",
+          "      09-26 05:00 installed > 05:04 uninstalled > 05:30 reinstalled > 05:30 scan COMPLETED (36) > 05:31 viewed results > 05:31 saw upgrade > last seen 08:52",
+          "    quiet.myshopify.com [stage: never opened; currently uninstalled]",
+          "      09-24 12:00 installed > 09-25 12:00 uninstalled",
+        ].join("\n"),
+      );
+    });
+
+    it("renders the overflow line when more shops than the cap qualify", () => {
+      const journey: JourneySummary = { funnel: run([]).funnel, timeline: [], timelineMore: 0 };
+      const withMore = { ...run([shop({ id: "x", installedAt: daysAgo(1) })]), timelineMore: 4 };
+      expect(buildDigestBody(makeData({ journey: withMore }))).toContain(
+        "    ...and 4 more shop(s)",
+      );
+      expect(buildDigestBody(makeData({ journey }))).not.toContain("more shop(s)");
+    });
+
+    it("renders empty states: no active installs, no timeline shops, no data", () => {
+      const empty = buildDigestBody(makeData({ journey: run([]) }));
+      expect(sectionOf(empty)).toBe(
+        [
+          "JOURNEY (active installs, counted ever)",
+          "  Funnel: no active installs",
+          "  Timeline (shops seen or installed in the last 7d; UTC; latest events):",
+          "    No shops seen or installed in the last 7 days",
+        ].join("\n"),
+      );
+      const absent = makeData();
+      delete absent.journey;
+      expect(sectionOf(buildDigestBody(absent))).toBe(
+        "JOURNEY (active installs, counted ever)\n  No journey data",
+      );
+    });
+
+    it("uses only ASCII (plain-text email)", () => {
+      const body = buildDigestBody(
+        makeData({
+          journey: run([ORTHO], {
+            scanStatuses: [{ shopId: "ortho", status: "COMPLETED" }],
+            rows: ORTHO_ROWS,
+          }),
+        }),
+      );
+      // eslint-disable-next-line no-control-regex
+      expect(sectionOf(body)).toMatch(/^[\x00-\x7F]*$/);
+    });
   });
 });

@@ -18,7 +18,8 @@
  * Sections (each "in 24h" = trailing 24h unless noted):
  *   A. Business  — installs, plan mix + net change, MRR + net change, scans by
  *      status + per store, findings, signature flywheel, activation, activity,
- *      nudge funnel (24h / 7d), merchant feedback (24h / 7d).
+ *      nudge funnel (24h / 7d), merchant feedback (24h / 7d), journey funnel +
+ *      per-shop stage + 7d timeline (gc-dpm.3).
  *   B. Ops health — scan runs (derived from A's status map), function/worker/
  *      webhook failures, API errors/warns, cron dead-man's-switch, an alerting
  *      self-check (loud banner at top if the paging channel is misconfigured).
@@ -29,6 +30,14 @@
 
 import { RECONCILE_INSTALLS_KEY } from "./reconcile-installs";
 import { PLAN_AMOUNTS, PLANS } from "../../app/lib/billing.server";
+import { isSuccessfulScan } from "../../app/lib/format";
+import {
+  deriveJourneyMilestones,
+  JOURNEY_MILESTONES,
+  journeyStage,
+  reachedMilestoneNames,
+  type JourneyStage,
+} from "../../app/lib/journey-stage";
 import {
   isExcluded,
   isExcludedShop,
@@ -635,6 +644,304 @@ export function aggregateFeedback(
 }
 
 // ---------------------------------------------------------------------------
+// Journey (gc-dpm.3)
+//
+// Three parts, all over the handler's already-filtered non-excluded shop set
+// (durable isInternal flag, OPERATOR_EXCLUDE_SHOPS, `app-review-` prefix):
+//   1. FUNNEL over ACTIVE installs, counted EVER, from durable data only (Shop
+//      stamps + Scan rows; see app/lib/journey-stage for each milestone).
+//   2. A per-shop STAGE label: the furthest milestone reached.
+//   3. A TIMELINE for shops seen (lastSeenAt) or installed in the last 7 days,
+//      including a real shop that has since uninstalled.
+// ---------------------------------------------------------------------------
+
+/** Max shops in the TIMELINE; the rest are summarized as "...and N more". */
+export const TIMELINE_SHOPS_LIMIT = 20;
+/** Max events per shop's TIMELINE line; only the LATEST are kept. */
+export const TIMELINE_EVENTS_LIMIT = 8;
+/**
+ * A SHOP_UNINSTALLED event is recorded right after Shop.uninstalledAt is
+ * stamped (markShopUninstalledWithEvent), so an event at or after
+ * `uninstalledAt - UNINSTALL_EVENT_MATCH_MS` is that same uninstall. Without one
+ * (e.g. an uninstall stamped before the event existed) the current state adds
+ * its own "uninstalled" entry.
+ */
+export const UNINSTALL_EVENT_MATCH_MS = 60_000;
+/** The label rendered as "last seen HH:MM" (label first) in a timeline. */
+export const LAST_SEEN_LABEL = "last seen";
+
+/** Durable per-shop facts the JOURNEY section reads. */
+export interface JourneyShopInput {
+  id: string;
+  domain: string;
+  plan: string;
+  installedAt: Date;
+  uninstalledAt: Date | null;
+  lastSeenAt: Date | null;
+  firstOpenedAt: Date | null;
+  firstResultsViewedAt: Date | null;
+  upgradePreviewShownAt: Date | null;
+  upgradePreviewClickedAt: Date | null;
+  upgradePreviewConvertedAt: Date | null;
+  feedbackNudgeShownAt: Date | null;
+  feedbackNudgeClickedAt: Date | null;
+  feedbackNudgeDismissedAt: Date | null;
+  feedbackSubmittedAt: Date | null;
+}
+
+/** Rows fetched only for TIMELINE shops (see isTimelineShop). */
+export interface JourneyTimelineRows {
+  scans: Array<{ shopId: string; createdAt: Date; status: string; findingCount: number }>;
+  billingEvents: Array<{
+    shopId: string;
+    eventType: string;
+    toPlan: string | null;
+    createdAt: Date;
+  }>;
+  /** SHOP_UNINSTALLED events (key = domain). */
+  uninstallEvents: Array<{ key: string | null; createdAt: Date }>;
+  /** page_visit events (key = domain), used only to infer reinstall times. */
+  pageVisits: Array<{ key: string | null; createdAt: Date }>;
+}
+
+/** One timeline entry (serialization-safe: ISO timestamp). */
+export interface TimelineEvent {
+  at: string;
+  label: string;
+}
+
+export interface JourneyTimelineRow {
+  domain: string;
+  /** Milestone names reached, in funnel order (e.g. "opened", "scanned"). */
+  milestones: string[];
+  stage: JourneyStage;
+  /** The shop is currently uninstalled (pending redact). */
+  uninstalled: boolean;
+  /** Chronological, capped to the latest TIMELINE_EVENTS_LIMIT. */
+  events: TimelineEvent[];
+  /** How many older events the cap dropped. */
+  earlierOmitted: number;
+}
+
+/** Serialization-safe JOURNEY rollup crossing the Inngest step boundary. */
+export interface JourneySummary {
+  /** "Installed" then each milestone, in funnel order, over active installs. */
+  funnel: Array<{ label: string; count: number }>;
+  /** Timeline shops, most recently active first, capped at TIMELINE_SHOPS_LIMIT. */
+  timeline: JourneyTimelineRow[];
+  /** Timeline shops beyond the cap. */
+  timelineMore: number;
+}
+
+/** A shop belongs in the TIMELINE when seen or installed in the last 7 days. */
+export function isTimelineShop(
+  shop: { installedAt: Date; lastSeenAt: Date | null },
+  now: Date,
+): boolean {
+  const weekAgo = now.getTime() - 7 * DAY_MS;
+  return (
+    shop.installedAt.getTime() >= weekAgo ||
+    (shop.lastSeenAt !== null && shop.lastSeenAt.getTime() >= weekAgo)
+  );
+}
+
+/**
+ * Per-shop scan presence from (shopId, status) rows: whether the shop has any
+ * scan at all, and whether any of them succeeded (COMPLETED / PARTIAL).
+ */
+function scanPresenceByShop(
+  scanStatuses: Array<{ shopId: string; status: string }>,
+): Map<string, { any: boolean; successful: boolean }> {
+  const out = new Map<string, { any: boolean; successful: boolean }>();
+  for (const r of scanStatuses) {
+    const p = out.get(r.shopId) ?? { any: false, successful: false };
+    p.any = true;
+    if (isSuccessfulScan(r.status)) p.successful = true;
+    out.set(r.shopId, p);
+  }
+  return out;
+}
+
+/** Group rows by `keyOf(row)`, skipping rows whose key is null. */
+function groupRows<T>(rows: T[], keyOf: (r: T) => string | null): Map<string, T[]> {
+  const out = new Map<string, T[]>();
+  for (const r of rows) {
+    const k = keyOf(r);
+    if (k === null) continue;
+    const group = out.get(k);
+    if (group) group.push(r);
+    else out.set(k, [r]);
+  }
+  return out;
+}
+
+function scanLabel(scan: { status: string; findingCount: number }): string {
+  return isSuccessfulScan(scan.status)
+    ? `scan ${scan.status} (${scan.findingCount})`
+    : `scan ${scan.status}`;
+}
+
+/**
+ * Build one shop's full chronological event list (uncapped).
+ *
+ * Uninstall / reinstall: each retained SHOP_UNINSTALLED event is an
+ * "uninstalled" entry. The REINSTALL time is INFERRED as the first retained
+ * page_visit after that uninstall (and before the next one): an uninstalled app
+ * cannot be loaded, so the first load after an uninstall is at or after the
+ * reinstall. When no such visit is retained (page_visit rows are pruned after
+ * 14 days) the reinstall is left out rather than guessed. A current
+ * uninstalledAt with no matching event adds its own "uninstalled" entry.
+ *
+ * Equal timestamps keep this insertion order (stable sort).
+ */
+function buildShopEvents(
+  shop: JourneyShopInput,
+  scans: JourneyTimelineRows["scans"],
+  billingEvents: JourneyTimelineRows["billingEvents"],
+  uninstallTimes: Date[],
+  visitTimes: Date[],
+): Array<{ t: Date; label: string }> {
+  const events: Array<{ t: Date; label: string }> = [{ t: shop.installedAt, label: "installed" }];
+
+  const uninstalls = [...uninstallTimes].sort((a, b) => a.getTime() - b.getTime());
+  uninstalls.forEach((u, i) => {
+    events.push({ t: u, label: "uninstalled" });
+    const next = uninstalls[i + 1];
+    const reinstall = visitTimes
+      .filter((v) => v > u && (next === undefined || v < next))
+      .sort((a, b) => a.getTime() - b.getTime())[0];
+    if (reinstall) events.push({ t: reinstall, label: "reinstalled" });
+  });
+  if (
+    shop.uninstalledAt !== null &&
+    !uninstalls.some((u) => u.getTime() >= shop.uninstalledAt!.getTime() - UNINSTALL_EVENT_MATCH_MS)
+  ) {
+    events.push({ t: shop.uninstalledAt, label: "uninstalled" });
+  }
+
+  for (const scan of scans) events.push({ t: scan.createdAt, label: scanLabel(scan) });
+
+  const stamps: Array<[Date | null, string]> = [
+    [shop.firstResultsViewedAt, "viewed results"],
+    [shop.upgradePreviewShownAt, "saw upgrade"],
+    [shop.upgradePreviewClickedAt, "clicked upgrade"],
+    [shop.upgradePreviewConvertedAt, "upgrade converted"],
+    [shop.feedbackNudgeShownAt, "feedback nudge shown"],
+    [shop.feedbackNudgeClickedAt, "feedback nudge clicked"],
+    [shop.feedbackNudgeDismissedAt, "feedback nudge dismissed"],
+    [shop.feedbackSubmittedAt, "feedback submitted"],
+  ];
+  for (const [t, label] of stamps) if (t !== null) events.push({ t, label });
+
+  for (const b of billingEvents) {
+    events.push({
+      t: b.createdAt,
+      label: `billing ${b.eventType}${b.toPlan ? ` to ${b.toPlan}` : ""}`,
+    });
+  }
+
+  if (shop.lastSeenAt !== null) events.push({ t: shop.lastSeenAt, label: LAST_SEEN_LABEL });
+
+  return events.sort((a, b) => a.t.getTime() - b.t.getTime());
+}
+
+/**
+ * Roll the non-excluded shops up into the JOURNEY section. Pure (consumes
+ * Dates, emits serialization-safe output).
+ *
+ * Exclusion: a shop counts only if its id is in `allowedShopIds` (the handler's
+ * already-filtered non-excluded set, as FEEDBACK uses), and every event row is
+ * pinned to those shops by shopId or by domain (event keys carry no shop
+ * object, so a domain-only rule would miss isInternal; gc-zeh).
+ *
+ * The FUNNEL counts only active installs (uninstalledAt null). The TIMELINE
+ * covers every allowed shop that isTimelineShop, active or not, ordered by
+ * most recent activity (latest of lastSeenAt / installedAt) then domain.
+ */
+export function aggregateJourney(
+  shops: JourneyShopInput[],
+  allowedShopIds: Iterable<string>,
+  scanStatuses: Array<{ shopId: string; status: string }>,
+  rows: JourneyTimelineRows,
+  now: Date,
+): JourneySummary {
+  const allowed = new Set(allowedShopIds);
+  const kept = shops.filter((s) => allowed.has(s.id));
+  const presence = scanPresenceByShop(scanStatuses);
+  const milestonesOf = (s: JourneyShopInput) => {
+    const p = presence.get(s.id) ?? { any: false, successful: false };
+    return deriveJourneyMilestones({ ...s, hasAnyScan: p.any, hasSuccessfulScan: p.successful });
+  };
+
+  const active = kept.filter((s) => s.uninstalledAt === null);
+  const activeMilestones = active.map(milestonesOf);
+  const funnel = [
+    { label: "Installed", count: active.length },
+    ...JOURNEY_MILESTONES.map(({ key, funnelLabel }) => ({
+      label: funnelLabel,
+      count: activeMilestones.filter((m) => m[key]).length,
+    })),
+  ];
+
+  const lastActivity = (s: JourneyShopInput) =>
+    Math.max(s.installedAt.getTime(), s.lastSeenAt?.getTime() ?? 0);
+  const timelineShops = kept
+    .filter((s) => isTimelineShop(s, now))
+    .sort((a, b) => lastActivity(b) - lastActivity(a) || a.domain.localeCompare(b.domain));
+
+  const scansByShop = groupRows(rows.scans, (r) => r.shopId);
+  const billingByShop = groupRows(rows.billingEvents, (r) => r.shopId);
+  const uninstallsByDomain = groupRows(rows.uninstallEvents, (r) => r.key?.toLowerCase() ?? null);
+  const visitsByDomain = groupRows(rows.pageVisits, (r) => r.key?.toLowerCase() ?? null);
+
+  const timeline = timelineShops.slice(0, TIMELINE_SHOPS_LIMIT).map((s): JourneyTimelineRow => {
+    const domain = s.domain.toLowerCase();
+    const all = buildShopEvents(
+      s,
+      scansByShop.get(s.id) ?? [],
+      billingByShop.get(s.id) ?? [],
+      (uninstallsByDomain.get(domain) ?? []).map((r) => r.createdAt),
+      (visitsByDomain.get(domain) ?? []).map((r) => r.createdAt),
+    );
+    const m = milestonesOf(s);
+    const shown = all.slice(-TIMELINE_EVENTS_LIMIT);
+    return {
+      domain: s.domain,
+      milestones: reachedMilestoneNames(m),
+      stage: journeyStage(m),
+      uninstalled: s.uninstalledAt !== null,
+      events: shown.map((e) => ({ at: e.t.toISOString(), label: e.label })),
+      earlierOmitted: all.length - shown.length,
+    };
+  });
+
+  return {
+    funnel,
+    timeline,
+    timelineMore: Math.max(0, timelineShops.length - TIMELINE_SHOPS_LIMIT),
+  };
+}
+
+/**
+ * Render a timeline as one ASCII line: `MM-DD HH:MM label > HH:MM label > ...`
+ * in UTC. The date is printed on the first event and whenever the day changes.
+ * The last-seen entry reads label-first (`last seen 08:52`). Dropped older
+ * events are noted up front (`(3 earlier) > ...`).
+ */
+export function formatTimelineLine(events: TimelineEvent[], earlierOmitted: number): string {
+  const parts: string[] = earlierOmitted > 0 ? [`(${earlierOmitted} earlier)`] : [];
+  let prevDay: string | null = null;
+  for (const e of events) {
+    const day = e.at.slice(5, 10); // MM-DD
+    const hhmm = e.at.slice(11, 16); // HH:MM
+    const time = day === prevDay ? hhmm : `${day} ${hhmm}`;
+    prevDay = day;
+    parts.push(e.label === LAST_SEEN_LABEL ? `${LAST_SEEN_LABEL} ${time}` : `${time} ${e.label}`);
+  }
+  return parts.join(" > ");
+}
+
+// ---------------------------------------------------------------------------
 // Snapshot-metric threshold evaluation (gc-06e.13, sub-item 3)
 //
 // MetricSnapshot rows were collected but never evaluated. This adds conservative
@@ -769,6 +1076,9 @@ export interface OperatorDigestData {
   /** Merchant feedback submissions (gc-97k.3). Optional so callers/tests that
    * predate it still type-check; absent => rendered as "No feedback data". */
   feedback?: FeedbackDigest;
+  /** Journey funnel + timeline (gc-dpm.3). Optional so callers/tests that
+   * predate it still type-check; absent => rendered as "No journey data". */
+  journey?: JourneySummary;
   ops: {
     functionFailures: number;
     workerFallbacks: number;
@@ -1052,6 +1362,34 @@ export function buildDigestBody(data: OperatorDigestData): string {
     lines.push(
       `  With follow-up email (7d): ${feedback.withEmail7d} | With WTP answer (7d): ${feedback.withWtp7d}`,
     );
+  }
+  lines.push("");
+
+  const { journey } = data;
+  lines.push("JOURNEY (active installs, counted ever)");
+  if (!journey) {
+    lines.push("  No journey data");
+  } else {
+    const installed = journey.funnel[0]?.count ?? 0;
+    lines.push(
+      installed === 0
+        ? "  Funnel: no active installs"
+        : `  Funnel: ${journey.funnel.map((f) => `${f.label} ${f.count}`).join(" > ")}`,
+    );
+    lines.push("  Timeline (shops seen or installed in the last 7d; UTC; latest events):");
+    if (journey.timeline.length === 0) {
+      lines.push("    No shops seen or installed in the last 7 days");
+    } else {
+      for (const t of journey.timeline) {
+        const reached = t.milestones.length > 0 ? `${t.milestones.join(", ")} -> ` : "";
+        const state = t.uninstalled ? "; currently uninstalled" : "";
+        lines.push(`    ${t.domain} [${reached}stage: ${t.stage}${state}]`);
+        lines.push(`      ${formatTimelineLine(t.events, t.earlierOmitted)}`);
+      }
+      if (journey.timelineMore > 0) {
+        lines.push(`    ...and ${journey.timelineMore} more shop(s)`);
+      }
+    }
   }
   lines.push("");
 
@@ -1355,6 +1693,100 @@ export const operatorDigest = inngest.createFunction(
       return aggregateFeedback(rows, Object.keys(domainById), now);
     })) as FeedbackDigest;
 
+    // Journey (gc-dpm.3): funnel + per-shop stage + 7d timeline. Pinned to the
+    // same non-excluded shop set as FEEDBACK (domainById's ids: honours
+    // isInternal, the env exclude list and prefixes, and keeps
+    // uninstalled-pending-redact real shops for the timeline; the funnel itself
+    // counts only the active ones). Timeline detail rows are fetched only for
+    // the shops seen or installed in the last 7 days.
+    const journey = (await step.run("get-journey", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const { OPS_EVENT_TYPES } = await import("../../app/models/ops-event.server");
+      const now = new Date();
+      const shopIds = Object.keys(domainById);
+      const noRows: JourneyTimelineRows = {
+        scans: [],
+        billingEvents: [],
+        uninstallEvents: [],
+        pageVisits: [],
+      };
+      if (shopIds.length === 0) return aggregateJourney([], [], [], noRows, now);
+
+      const [shops, scanStatuses] = await Promise.all([
+        db.shop.findMany({
+          where: { id: { in: shopIds } },
+          select: {
+            id: true,
+            domain: true,
+            plan: true,
+            installedAt: true,
+            uninstalledAt: true,
+            lastSeenAt: true,
+            firstOpenedAt: true,
+            firstResultsViewedAt: true,
+            upgradePreviewShownAt: true,
+            upgradePreviewClickedAt: true,
+            upgradePreviewConvertedAt: true,
+            feedbackNudgeShownAt: true,
+            feedbackNudgeClickedAt: true,
+            feedbackNudgeDismissedAt: true,
+            feedbackSubmittedAt: true,
+          },
+        }),
+        // One row per (shop, status): enough for "any scan" / "any successful".
+        db.scan.findMany({
+          where: { shopId: { in: shopIds } },
+          select: { shopId: true, status: true },
+          distinct: ["shopId", "status"],
+        }),
+      ]);
+
+      const timelineShops = shops.filter((s) => isTimelineShop(s, now));
+      if (timelineShops.length === 0) {
+        return aggregateJourney(shops, shopIds, scanStatuses, noRows, now);
+      }
+      const timelineIds = timelineShops.map((s) => s.id);
+      const timelineDomains = timelineShops.map((s) => s.domain);
+      const [scans, billingEvents, uninstallEvents] = await Promise.all([
+        db.scan.findMany({
+          where: { shopId: { in: timelineIds } },
+          select: { shopId: true, createdAt: true, status: true, findingCount: true },
+        }),
+        db.billingEvent.findMany({
+          where: { shopId: { in: timelineIds } },
+          select: { shopId: true, eventType: true, toPlan: true, createdAt: true },
+        }),
+        db.opsEvent.findMany({
+          where: { eventType: OPS_EVENT_TYPES.SHOP_UNINSTALLED, key: { in: timelineDomains } },
+          select: { key: true, createdAt: true },
+        }),
+      ]);
+      // page_visit rows serve ONLY to infer reinstall times, so they are read
+      // only for shops with a retained uninstall, from the earliest one on.
+      const uninstalledDomains = [...new Set(uninstallEvents.map((e) => e.key as string))];
+      const pageVisits =
+        uninstalledDomains.length === 0
+          ? []
+          : await db.opsEvent.findMany({
+              where: {
+                eventType: OPS_EVENT_TYPES.PAGE_VISIT,
+                key: { in: uninstalledDomains },
+                createdAt: {
+                  gte: new Date(Math.min(...uninstallEvents.map((e) => e.createdAt.getTime()))),
+                },
+              },
+              select: { key: true, createdAt: true },
+            });
+
+      return aggregateJourney(
+        shops,
+        shopIds,
+        scanStatuses,
+        { scans, billingEvents, uninstallEvents, pageVisits },
+        now,
+      );
+    })) as JourneySummary;
+
     // BillingEvent breakdown for the window. Excludes dev/test/internal/app-review
     // stores (via the SAME isExcluded predicate as every other metric) so a dev
     // store's test upgrade/downgrade can't leak into the "Billing events" line.
@@ -1498,6 +1930,7 @@ export const operatorDigest = inngest.createFunction(
       activity,
       nudges,
       feedback,
+      journey,
       ops,
       anomalies: metricAnomalies.anomalies,
       reconciler,
