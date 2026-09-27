@@ -64,7 +64,11 @@ import { hasProductScope } from "./product-fetcher.server";
 import { logger } from "../lib/logger.server";
 import { checkRateLimit, isThrottledError } from "../lib/rate-limit-monitor.server";
 import { DANGLING_LOOKUP_CAP } from "../lib/scan-limits";
-import { type GraphQLResponseError, isAccessDeniedError } from "../lib/scope-check.server";
+import {
+  type GrantedOptionalScopes,
+  type GraphQLResponseError,
+  isAccessDeniedError,
+} from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
 // ---------------------------------------------------------------------------
@@ -293,10 +297,11 @@ async function resolveProductsAndCollections(
   admin: AdminApiContext,
   candidates: DistinctDanglingHandle[],
   counter: { n: number; capHit: boolean },
+  granted: GrantedOptionalScopes,
 ): Promise<{ missing: ResolvedMissingRef[]; scope: ScopeResolutionState }> {
   if (candidates.length === 0) return { missing: [], scope: "checked" };
 
-  if (!(await hasProductScope(admin))) return { missing: [], scope: "absent" };
+  if (!(await hasProductScope(admin, granted))) return { missing: [], scope: "absent" };
 
   const missing: ResolvedMissingRef[] = [];
   try {
@@ -337,10 +342,11 @@ async function resolvePages(
   admin: AdminApiContext,
   candidates: DistinctDanglingHandle[],
   counter: { n: number; capHit: boolean },
+  granted: GrantedOptionalScopes,
 ): Promise<{ missing: ResolvedMissingRef[]; scope: ScopeResolutionState }> {
   if (candidates.length === 0) return { missing: [], scope: "checked" };
 
-  if (!(await hasContentScope(admin))) return { missing: [], scope: "absent" };
+  if (!(await hasContentScope(admin, granted))) return { missing: [], scope: "absent" };
 
   const missing: ResolvedMissingRef[] = [];
   try {
@@ -377,11 +383,15 @@ async function resolvePages(
  * Transient failures (THROTTLED exhaustion, unexpected GraphQL errors,
  * `TransientScopeCheckError` from a probe) propagate so the surrounding Inngest
  * step retries rather than recording a false-clean result.
+ *
+ * `granted` is the scan's one accessScopes lookup (gc-5l9): a scope it proves
+ * ungranted is reported `absent` with no probe query; `null` always probes.
  */
 export async function resolveDanglingReferences(
   admin: AdminApiContext,
   distinctHandles: DistinctDanglingHandle[],
   shopId: string,
+  granted: GrantedOptionalScopes,
 ): Promise<DanglingResolutionResult> {
   const productCollectionCandidates = distinctHandles.filter(
     (c) => c.entityType === "product" || c.entityType === "collection",
@@ -390,8 +400,13 @@ export async function resolveDanglingReferences(
 
   const counter = { n: 0, capHit: false };
 
-  const products = await resolveProductsAndCollections(admin, productCollectionCandidates, counter);
-  const content = await resolvePages(admin, pageCandidates, counter);
+  const products = await resolveProductsAndCollections(
+    admin,
+    productCollectionCandidates,
+    counter,
+    granted,
+  );
+  const content = await resolvePages(admin, pageCandidates, counter, granted);
 
   if (counter.capHit) {
     logger.warn(

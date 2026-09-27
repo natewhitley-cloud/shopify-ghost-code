@@ -28,13 +28,13 @@ function mockAdmin(responses: unknown[]) {
 describe("hasNavigationScope", () => {
   it("returns true when query succeeds", async () => {
     const admin = mockAdmin([{ data: { urlRedirects: { nodes: [] } } }]);
-    const result = await hasNavigationScope(admin);
+    const result = await hasNavigationScope(admin, null);
     expect(result).toBe(true);
   });
 
   it("returns false when query returns an access-denied error", async () => {
     const admin = mockAdmin([{ errors: [{ message: "Access denied" }] }]);
-    const result = await hasNavigationScope(admin);
+    const result = await hasNavigationScope(admin, null);
     expect(result).toBe(false);
   });
 
@@ -46,7 +46,7 @@ describe("hasNavigationScope", () => {
         throw new Error("Network error");
       }),
     };
-    await expect(hasNavigationScope(admin)).rejects.toThrow(/transient/i);
+    await expect(hasNavigationScope(admin, null)).rejects.toThrow(/transient/i);
   });
 
   // LOG-9: a THROTTLED GraphQL error must throw, not be treated as scope-missing.
@@ -54,7 +54,7 @@ describe("hasNavigationScope", () => {
     const admin = mockAdmin([
       { errors: [{ message: "Throttled", extensions: { code: "THROTTLED" } }] },
     ]);
-    await expect(hasNavigationScope(admin)).rejects.toThrow(/transient/i);
+    await expect(hasNavigationScope(admin, null)).rejects.toThrow(/transient/i);
   });
 });
 

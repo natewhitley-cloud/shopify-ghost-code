@@ -25,6 +25,8 @@
  *                              false-clean audit.
  */
 
+import { logger } from "./logger.server";
+import { OPTIONAL_SCOPES, type OptionalScope } from "./optional-scopes";
 import type { AdminApiContext } from "../types/shopify";
 
 /** Minimal shape of a Shopify GraphQL error entry we care about. */
@@ -137,4 +139,97 @@ export async function probeScope(
     scopeLabel,
     new Error(errors[0]?.message ?? "unknown GraphQL error"),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Granted-scope pre-check (gc-5l9)
+// ---------------------------------------------------------------------------
+//
+// Probing a scope the shop never granted is an ACCESS_DENIED by construction,
+// and every one of those lands in the Partner Dashboard's API error log (4 per
+// scan on a shop without optional scopes). So the scan fetches the granted
+// scopes ONCE and only probes the ones that are granted. A granted scope is
+// still probed: the grant alone is not proof of access (e.g. the translations
+// probe is gated by read_locales/read_markets under the hood).
+
+/**
+ * The optional scopes this installation has granted, or `null` when unknown
+ * (the accessScopes lookup failed). `null` means "probe every scope", which is
+ * exactly the pre-gc-5l9 behavior, so a failed lookup can never skip an audit
+ * that would otherwise have run.
+ */
+export type GrantedOptionalScopes = readonly OptionalScope[] | null;
+
+const ACCESS_SCOPES_QUERY = `{ currentAppInstallation { accessScopes { handle } } }`;
+
+type AccessScopesResponse = {
+  data?: { currentAppInstallation?: { accessScopes?: Array<{ handle?: unknown }> } | null };
+  errors?: GraphQLResponseError[];
+};
+
+/**
+ * Reduce a list of granted scope handles (required + optional, as returned by
+ * `accessScopes`) to the optional scopes it covers, in declared order. A
+ * `write_X` grant implies `read_X` in Shopify's scope model, so it counts.
+ */
+export function grantedOptionalScopesFrom(handles: readonly string[]): OptionalScope[] {
+  const set = new Set(handles);
+  return OPTIONAL_SCOPES.filter(
+    (scope) => set.has(scope) || set.has(scope.replace(/^read_/, "write_")),
+  );
+}
+
+/**
+ * Fetch the installation's granted optional scopes with ONE
+ * `currentAppInstallation.accessScopes` query.
+ *
+ * Never throws: any failure (thrown client error, GraphQL errors, malformed
+ * response) is logged and returns `null`, which makes every scope check fall
+ * back to its probe.
+ */
+export async function fetchGrantedOptionalScopes(
+  admin: AdminApiContext,
+  shopId: string,
+): Promise<GrantedOptionalScopes> {
+  try {
+    const response = await admin.graphql(ACCESS_SCOPES_QUERY);
+    const json = (await response.json()) as AccessScopesResponse;
+    if (json.errors && json.errors.length > 0) {
+      throw new Error(json.errors[0]?.message ?? "unknown GraphQL error");
+    }
+    const accessScopes = json.data?.currentAppInstallation?.accessScopes;
+    if (!Array.isArray(accessScopes)) {
+      throw new Error("response has no currentAppInstallation.accessScopes list");
+    }
+    const handles = accessScopes
+      .map((scope) => scope.handle)
+      .filter((handle): handle is string => typeof handle === "string");
+    return grantedOptionalScopesFrom(handles);
+  } catch (err) {
+    logger.warn("accessScopes lookup failed; falling back to per-scope probes", {
+      function: "scope-check",
+      event: "access_scopes_lookup_failed",
+      shopId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return null;
+  }
+}
+
+/**
+ * Check one optional scope: skip the probe entirely when the granted list
+ * proves the scope is not granted, otherwise run {@link probeScope} to verify
+ * real access. Same return/throw contract as `probeScope`.
+ *
+ * @param granted  From {@link fetchGrantedOptionalScopes}; `null` = unknown,
+ *                 so the probe always runs (pre-gc-5l9 behavior).
+ */
+export async function checkOptionalScope(
+  admin: AdminApiContext,
+  scope: OptionalScope,
+  probeQuery: string,
+  granted: GrantedOptionalScopes,
+): Promise<boolean> {
+  if (granted !== null && !granted.includes(scope)) return false;
+  return probeScope(admin, probeQuery, scope);
 }

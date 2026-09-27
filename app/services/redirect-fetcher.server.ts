@@ -11,7 +11,7 @@ import {
   paginateConnection,
 } from "../lib/graphql-pagination.server";
 import { REDIRECT_CAP } from "../lib/scan-limits";
-import { probeScope } from "../lib/scope-check.server";
+import { checkOptionalScope, type GrantedOptionalScopes } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
 export type RedirectData = {
@@ -32,12 +32,19 @@ export type RedirectData = {
  * failures (THROTTLED, network, 5xx, timeout) throw a TransientScopeCheckError
  * so the caller retries instead of silently treating the scope as missing.
  * See app/lib/scope-check.server.ts (LOG-9).
+ *
+ * Runs NO query when `granted` (the scan's one accessScopes lookup) proves the
+ * scope is not granted; `null` (lookup failed) always probes (gc-5l9).
  */
-export async function hasNavigationScope(admin: AdminApiContext): Promise<boolean> {
-  return probeScope(
+export async function hasNavigationScope(
+  admin: AdminApiContext,
+  granted: GrantedOptionalScopes,
+): Promise<boolean> {
+  return checkOptionalScope(
     admin,
-    `{ urlRedirects(first: 1) { nodes { id } } }`,
     "read_online_store_navigation",
+    `{ urlRedirects(first: 1) { nodes { id } } }`,
+    granted,
   );
 }
 

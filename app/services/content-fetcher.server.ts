@@ -6,7 +6,7 @@
  */
 
 import { type GraphQLConnection, paginateConnection } from "../lib/graphql-pagination.server";
-import { probeScope } from "../lib/scope-check.server";
+import { checkOptionalScope, type GrantedOptionalScopes } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
 
 // ---------------------------------------------------------------------------
@@ -56,9 +56,15 @@ const PAGES_QUERY = `
  * failures (THROTTLED, network, 5xx, timeout) throw a TransientScopeCheckError
  * so the caller retries instead of silently treating the scope as missing.
  * See app/lib/scope-check.server.ts (LOG-9).
+ *
+ * Runs NO query when `granted` (the scan's one accessScopes lookup) proves the
+ * scope is not granted; `null` (lookup failed) always probes (gc-5l9).
  */
-export async function hasContentScope(admin: AdminApiContext): Promise<boolean> {
-  return probeScope(admin, `{ pages(first: 1) { nodes { id } } }`, "read_content");
+export async function hasContentScope(
+  admin: AdminApiContext,
+  granted: GrantedOptionalScopes,
+): Promise<boolean> {
+  return checkOptionalScope(admin, "read_content", `{ pages(first: 1) { nodes { id } } }`, granted);
 }
 
 // ---------------------------------------------------------------------------

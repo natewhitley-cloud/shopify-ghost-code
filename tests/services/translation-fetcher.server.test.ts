@@ -84,7 +84,7 @@ describe("hasTranslationScope", () => {
     });
     const admin = makeAdmin(graphql);
 
-    expect(await hasTranslationScope(admin)).toBe(true);
+    expect(await hasTranslationScope(admin, null)).toBe(true);
   });
 
   it("returns false when ACCESS_DENIED error", async () => {
@@ -96,7 +96,7 @@ describe("hasTranslationScope", () => {
     });
     const admin = makeAdmin(graphql);
 
-    expect(await hasTranslationScope(admin)).toBe(false);
+    expect(await hasTranslationScope(admin, null)).toBe(false);
   });
 
   // LOG-9: a transient transport failure must NOT be swallowed as "scope
@@ -105,7 +105,7 @@ describe("hasTranslationScope", () => {
     const graphql = vi.fn().mockRejectedValue(new Error("Network error"));
     const admin = makeAdmin(graphql);
 
-    await expect(hasTranslationScope(admin)).rejects.toThrow(/transient/i);
+    await expect(hasTranslationScope(admin, null)).rejects.toThrow(/transient/i);
   });
 
   // LOG-9: a THROTTLED GraphQL error must throw, not be treated as scope-missing.
@@ -118,7 +118,7 @@ describe("hasTranslationScope", () => {
     });
     const admin = makeAdmin(graphql);
 
-    await expect(hasTranslationScope(admin)).rejects.toThrow(/transient/i);
+    await expect(hasTranslationScope(admin, null)).rejects.toThrow(/transient/i);
   });
 });
 

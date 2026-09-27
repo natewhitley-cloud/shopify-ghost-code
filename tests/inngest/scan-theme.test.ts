@@ -164,12 +164,21 @@ vi.mock("../../app/services/dangling-reference-resolver.server", () => ({
   resolveDanglingReferences: vi.fn(),
 }));
 
+// Granted-scope lookup (gc-5l9): mocked so each test controls what the scan's
+// ONE accessScopes lookup reports. Everything else in scope-check.server
+// (TransientScopeCheckError, probeScope, checkOptionalScope) stays real.
+vi.mock("../../app/lib/scope-check.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../app/lib/scope-check.server")>()),
+  fetchGrantedOptionalScopes: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
 import db from "../../app/db.server";
 import { logger } from "../../app/lib/logger.server";
+import { OPTIONAL_SCOPES } from "../../app/lib/optional-scopes";
 import {
   CORE_STEP_OUTPUT_BUDGET_BYTES,
   DANGLING_LOOKUP_CAP,
@@ -177,7 +186,10 @@ import {
   JSONLD_PRICE_CANDIDATE_CAP,
   MAX_FINDINGS_PER_FILE_PER_TYPE,
 } from "../../app/lib/scan-limits";
-import { TransientScopeCheckError } from "../../app/lib/scope-check.server";
+import {
+  fetchGrantedOptionalScopes,
+  TransientScopeCheckError,
+} from "../../app/lib/scope-check.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
@@ -258,6 +270,7 @@ const mockDetectOrphanedRedirects = detectOrphanedRedirects as ReturnType<typeof
 const mockAuditStaticJsonLdPrices = auditStaticJsonLdPrices as ReturnType<typeof vi.fn>;
 const mockExtractDanglingReferences = extractDanglingReferences as ReturnType<typeof vi.fn>;
 const mockResolveDanglingReferences = resolveDanglingReferences as ReturnType<typeof vi.fn>;
+const mockFetchGrantedOptionalScopes = fetchGrantedOptionalScopes as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Test data constants
@@ -376,6 +389,9 @@ beforeEach(() => {
   mockHasProductScope.mockResolvedValue(true);
   mockHasContentScope.mockResolvedValue(true);
   mockHasNavigationScope.mockResolvedValue(true);
+  // gc-5l9: the scan's one accessScopes lookup reports every optional scope
+  // granted by default, so the (mocked) scope checks above decide.
+  mockFetchGrantedOptionalScopes.mockResolvedValue([...OPTIONAL_SCOPES]);
 
   // Translation audit returns no translations by default (early-returns 0).
   mockAuditTranslations.mockResolvedValue({
@@ -793,10 +809,11 @@ describe("scanTheme — optional audit steps", () => {
     // false, these assertions would still pass — but they document that the
     // probe is part of the happy path, and the dedicated transient/access-
     // denied tests below lock in the distinct behaviors.
-    expect(mockHasTranslationScope).toHaveBeenCalledWith(MOCK_ADMIN);
-    expect(mockHasProductScope).toHaveBeenCalledWith(MOCK_ADMIN);
-    expect(mockHasContentScope).toHaveBeenCalledWith(MOCK_ADMIN);
-    expect(mockHasNavigationScope).toHaveBeenCalledWith(MOCK_ADMIN);
+    // Each receives the scan's one granted-scope lookup (gc-5l9).
+    expect(mockHasTranslationScope).toHaveBeenCalledWith(MOCK_ADMIN, [...OPTIONAL_SCOPES]);
+    expect(mockHasProductScope).toHaveBeenCalledWith(MOCK_ADMIN, [...OPTIONAL_SCOPES]);
+    expect(mockHasContentScope).toHaveBeenCalledWith(MOCK_ADMIN, [...OPTIONAL_SCOPES]);
+    expect(mockHasNavigationScope).toHaveBeenCalledWith(MOCK_ADMIN, [...OPTIONAL_SCOPES]);
   });
 
   describe("persistence — finds and stores findings", () => {
@@ -1492,11 +1509,13 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
 
     const result = await runScanTheme();
 
-    // Resolver is called with the distinct handles + shopId.
+    // Resolver is called with the distinct handles + shopId + the scan's
+    // granted-scope list (gc-5l9).
     expect(mockResolveDanglingReferences).toHaveBeenCalledWith(
       MOCK_ADMIN,
       [DANGLING_DISTINCT],
       SHOP_ID,
+      [...OPTIONAL_SCOPES],
     );
 
     // Idempotency delete scopes by the exclusive DANGLING_REFERENCE type.
@@ -2631,5 +2650,286 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
     // Non-vacuous: the walk genuinely truncated (telemetry proves it).
     const [signal] = mockRecordOpsEvent.mock.calls[0];
     expect(signal.metadata.truncatedWalks).toEqual(["products"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Granted-scope pre-check (gc-5l9)
+// ---------------------------------------------------------------------------
+// The scan fetches the installation's granted scopes ONCE (step
+// "fetch-granted-scopes") and only probes the optional scopes it reports
+// granted, so a shop without optional scopes no longer logs 4 ACCESS_DENIED
+// errors per scan. The end-to-end tests swap the mocked scope checks for the
+// REAL ones and route MOCK_ADMIN.graphql by query, so the assertions count the
+// actual Admin API queries a scan makes for scope checking (theme fetch and
+// audit data fetches are mocked and never touch MOCK_ADMIN.graphql).
+
+describe("scanTheme — granted-scope pre-check (gc-5l9)", () => {
+  const ACCESS_SCOPES_MARKER = "accessScopes";
+  // Each optional scope's probe query, keyed by a substring unique to it.
+  const PROBE_MARKERS: Record<string, string> = {
+    read_translations: "shopLocales",
+    read_products: "products(first: 1)",
+    read_content: "pages(first: 1)",
+    read_online_store_navigation: "urlRedirects(first: 1)",
+  };
+  const ALL_SCOPE_SKIPPED = [
+    FindingType.GHOST_TRANSLATION,
+    FindingType.GHOST_TAG,
+    FindingType.GHOST_PRICE,
+    FindingType.GHOST_PAGE,
+    FindingType.GHOST_METAFIELD,
+    FindingType.GHOST_REDIRECT,
+  ];
+
+  /** Replace the mocked scope checks + lookup with their real implementations. */
+  async function useRealScopeChecks() {
+    const scopeCheck = await vi.importActual<typeof import("../../app/lib/scope-check.server")>(
+      "../../app/lib/scope-check.server",
+    );
+    const translation = await vi.importActual<
+      typeof import("../../app/services/translation-fetcher.server")
+    >("../../app/services/translation-fetcher.server");
+    const product = await vi.importActual<
+      typeof import("../../app/services/product-fetcher.server")
+    >("../../app/services/product-fetcher.server");
+    const content = await vi.importActual<
+      typeof import("../../app/services/content-fetcher.server")
+    >("../../app/services/content-fetcher.server");
+    const redirect = await vi.importActual<
+      typeof import("../../app/services/redirect-fetcher.server")
+    >("../../app/services/redirect-fetcher.server");
+    mockFetchGrantedOptionalScopes.mockImplementation(scopeCheck.fetchGrantedOptionalScopes);
+    mockHasTranslationScope.mockImplementation(translation.hasTranslationScope);
+    mockHasProductScope.mockImplementation(product.hasProductScope);
+    mockHasContentScope.mockImplementation(content.hasContentScope);
+    mockHasNavigationScope.mockImplementation(redirect.hasNavigationScope);
+  }
+
+  /**
+   * Route MOCK_ADMIN.graphql: the accessScopes query returns `granted` (or
+   * throws when "fail"); a probe for a scope in `deniedProbes` returns
+   * ACCESS_DENIED, any other probe succeeds.
+   */
+  function routeAdmin(granted: string[] | "fail", deniedProbes: string[] = []) {
+    MOCK_ADMIN.graphql.mockImplementation(async (query: string) => {
+      if (query.includes(ACCESS_SCOPES_MARKER)) {
+        if (granted === "fail") throw new Error("network down");
+        const accessScopes = ["read_themes", ...granted].map((handle) => ({ handle }));
+        return { json: async () => ({ data: { currentAppInstallation: { accessScopes } } }) };
+      }
+      const denied = deniedProbes.some((scope) => query.includes(PROBE_MARKERS[scope]));
+      if (denied) {
+        return {
+          json: async () => ({
+            errors: [{ message: "Access denied", extensions: { code: "ACCESS_DENIED" } }],
+          }),
+        };
+      }
+      return { json: async () => ({ data: {} }) };
+    });
+  }
+
+  function graphqlQueries(): string[] {
+    return MOCK_ADMIN.graphql.mock.calls.map(([query]) => query as string);
+  }
+
+  function probedScopes(): string[] {
+    return Object.entries(PROBE_MARKERS)
+      .filter(([, marker]) => graphqlQueries().some((q) => q.includes(marker)))
+      .map(([scope]) => scope);
+  }
+
+  function finalizeArg(): { skippedCategories: string[]; cappedCategories: string[] } {
+    return mockFinalizeScan.mock.calls[0][1];
+  }
+
+  beforeEach(() => {
+    MOCK_ADMIN.graphql.mockReset();
+  });
+
+  it("none granted: ZERO probe queries (only the one accessScopes lookup) and all four scopes skipped", async () => {
+    await useRealScopeChecks();
+    routeAdmin([]);
+
+    await runScanTheme();
+
+    expect(graphqlQueries()).toHaveLength(1);
+    expect(graphqlQueries()[0]).toContain(ACCESS_SCOPES_MARKER);
+    expect(probedScopes()).toEqual([]);
+    // Same skip semantics as a denied probe: no data fetched, every category
+    // recorded as skipped.
+    expect(mockAuditTranslations).not.toHaveBeenCalled();
+    expect(mockFetchProductAuditData).not.toHaveBeenCalled();
+    expect(mockFetchPages).not.toHaveBeenCalled();
+    expect(mockFetchRedirects).not.toHaveBeenCalled();
+    expect(finalizeArg().skippedCategories).toEqual(ALL_SCOPE_SKIPPED);
+    expect(finalizeArg().cappedCategories).toEqual([]);
+  });
+
+  it("one granted: only that scope's probe runs and only its category is audited", async () => {
+    await useRealScopeChecks();
+    routeAdmin(["read_content"]);
+
+    await runScanTheme();
+
+    expect(probedScopes()).toEqual(["read_content"]);
+    expect(graphqlQueries()).toHaveLength(2);
+    expect(mockFetchPages).toHaveBeenCalledTimes(1);
+    expect(finalizeArg().skippedCategories).toEqual(
+      ALL_SCOPE_SKIPPED.filter((c) => c !== FindingType.GHOST_PAGE),
+    );
+  });
+
+  it("a write_ grant counts as its read_ scope (write implies read)", async () => {
+    await useRealScopeChecks();
+    routeAdmin(["write_products"]);
+
+    await runScanTheme();
+
+    expect(probedScopes()).toEqual(["read_products"]);
+    expect(mockFetchProductAuditData).toHaveBeenCalledTimes(1);
+  });
+
+  it("granted but the probe is ACCESS_DENIED: still skipped (the real-access probe is kept)", async () => {
+    await useRealScopeChecks();
+    // The grant alone is not proof of access (translations are gated by
+    // read_locales/read_markets under the hood), so a denied probe must skip.
+    routeAdmin(["read_translations"], ["read_translations"]);
+
+    await runScanTheme();
+
+    expect(probedScopes()).toEqual(["read_translations"]);
+    expect(mockAuditTranslations).not.toHaveBeenCalled();
+    expect(finalizeArg().skippedCategories).toEqual(ALL_SCOPE_SKIPPED);
+  });
+
+  it("all granted: every probe runs once and nothing is skipped", async () => {
+    await useRealScopeChecks();
+    routeAdmin([...OPTIONAL_SCOPES]);
+
+    await runScanTheme();
+
+    expect(probedScopes()).toEqual([...OPTIONAL_SCOPES]);
+    expect(graphqlQueries()).toHaveLength(1 + OPTIONAL_SCOPES.length);
+    expect(finalizeArg().skippedCategories).toEqual([]);
+  });
+
+  it("accessScopes lookup fails: falls back to probing every scope (logged), same skip semantics", async () => {
+    await useRealScopeChecks();
+    const warnSpy = vi.spyOn(logger, "warn");
+    routeAdmin("fail", [...OPTIONAL_SCOPES]);
+
+    await runScanTheme();
+
+    expect(probedScopes()).toEqual([...OPTIONAL_SCOPES]);
+    expect(finalizeArg().skippedCategories).toEqual(ALL_SCOPE_SKIPPED);
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining("accessScopes lookup failed"),
+      expect.objectContaining({ event: "access_scopes_lookup_failed", shopId: SHOP_ID }),
+    );
+    warnSpy.mockRestore();
+  });
+
+  it("makes exactly ONE accessScopes call per scan, even with every scope-checking step active", async () => {
+    // Both flag-gated audits on with candidates, so read_products is checked by
+    // product-audit AND product-price-audit, plus the dangling resolver.
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      staticProductCandidates: [
+        {
+          filename: "sections/product.liquid",
+          lineNumber: 3,
+          codeSnippet: "<script>",
+          handle: "widget",
+          staticPrice: "19.99",
+          staticPriceCurrency: "USD",
+        },
+      ],
+    });
+    mockAuditStaticJsonLdPrices.mockResolvedValue({ findings: [], skipped: false, capped: false });
+    mockExtractDanglingReferences.mockReturnValue({
+      occurrences: [],
+      distinctHandles: [{ entityType: "page", handle: "about" }],
+    });
+    const step = createMockInngestStep();
+
+    await runScanTheme(undefined, { run: step.run });
+
+    expect(mockFetchGrantedOptionalScopes).toHaveBeenCalledTimes(1);
+    expect(step.run.mock.calls.filter(([name]) => name === "fetch-granted-scopes")).toHaveLength(1);
+    // The memoized step output is tiny: just the granted handles.
+    const idx = step.run.mock.calls.findIndex(([name]) => name === "fetch-granted-scopes");
+    expect(await step.run.mock.results[idx].value).toEqual({
+      grantedOptionalScopes: [...OPTIONAL_SCOPES],
+    });
+    // Every scope check got that same shared list.
+    const granted = [...OPTIONAL_SCOPES];
+    expect(mockHasTranslationScope).toHaveBeenCalledWith(MOCK_ADMIN, granted);
+    expect(mockHasProductScope).toHaveBeenCalledTimes(2);
+    expect(mockHasProductScope).toHaveBeenNthCalledWith(1, MOCK_ADMIN, granted);
+    expect(mockHasProductScope).toHaveBeenNthCalledWith(2, MOCK_ADMIN, granted);
+    expect(mockHasContentScope).toHaveBeenCalledWith(MOCK_ADMIN, granted);
+    expect(mockHasNavigationScope).toHaveBeenCalledWith(MOCK_ADMIN, granted);
+    expect(mockResolveDanglingReferences).toHaveBeenCalledWith(
+      MOCK_ADMIN,
+      [{ entityType: "page", handle: "about" }],
+      SHOP_ID,
+      granted,
+    );
+  });
+
+  it("threads a null (failed) lookup to every scope check so each falls back to its probe", async () => {
+    mockFetchGrantedOptionalScopes.mockResolvedValue(null);
+
+    await runScanTheme();
+
+    expect(mockHasTranslationScope).toHaveBeenCalledWith(MOCK_ADMIN, null);
+    expect(mockHasProductScope).toHaveBeenCalledWith(MOCK_ADMIN, null);
+    expect(mockHasContentScope).toHaveBeenCalledWith(MOCK_ADMIN, null);
+    expect(mockHasNavigationScope).toHaveBeenCalledWith(MOCK_ADMIN, null);
+  });
+
+  it("returns null without any Admin query when the shop record is gone by the lookup step", async () => {
+    // fetch-and-scan still sees the shop; it disappears (e.g. uninstall
+    // mid-scan) before fetch-granted-scopes, whose no-shop branch must no-op.
+    mockDb.shop.findUnique.mockResolvedValueOnce(MOCK_SHOP).mockResolvedValue(null);
+    const step = createMockInngestStep();
+
+    await runScanTheme(undefined, { run: step.run });
+
+    const idx = step.run.mock.calls.findIndex(([name]) => name === "fetch-granted-scopes");
+    expect(await step.run.mock.results[idx].value).toEqual({ grantedOptionalScopes: null });
+    expect(mockFetchGrantedOptionalScopes).not.toHaveBeenCalled();
+  });
+
+  it("keeps gc-11f semantics: an ungranted read_products marks the live-price audit skipped, not capped", async () => {
+    await useRealScopeChecks();
+    routeAdmin([]);
+    process.env.JSONLD_LIVE_PRICE_ENABLED = "true";
+    mockScanThemeFiles.mockReturnValue({
+      findings: MOCK_FINDINGS,
+      unknownScripts: [],
+      staticProductCandidates: [
+        {
+          filename: "sections/product.liquid",
+          lineNumber: 3,
+          codeSnippet: "<script>",
+          handle: "widget",
+          staticPrice: "19.99",
+          staticPriceCurrency: "USD",
+        },
+      ],
+    });
+
+    await runScanTheme();
+
+    expect(graphqlQueries()).toHaveLength(1);
+    expect(mockAuditStaticJsonLdPrices).not.toHaveBeenCalled();
+    expect(finalizeArg().skippedCategories).toContain(FindingType.JSON_LD_PRICE_CONFLICT);
+    expect(finalizeArg().cappedCategories).toEqual([]);
   });
 });

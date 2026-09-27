@@ -13,6 +13,13 @@
  *                                  (theme file contents are large and don't need
  *                                  to be serialized between steps). This step
  *                                  leaves the scan IN_PROGRESS on purpose.
+ *   2b. fetch-granted-scopes     — ONE currentAppInstallation.accessScopes
+ *                                  lookup per scan (gc-5l9). The optional audits
+ *                                  below only probe scopes it reports granted,
+ *                                  so an ungranted scope costs no query (and no
+ *                                  ACCESS_DENIED in the Partner Dashboard). A
+ *                                  failed lookup returns null → every audit
+ *                                  probes as before.
  *   3–8. optional audit steps    — each checks for an optional scope, fetches
  *                                  data, runs a detector, and persists findings.
  *                                  Uses runAuditStep() to avoid boilerplate. Each
@@ -628,6 +635,23 @@ export const scanTheme = inngest.createFunction(
         };
       });
 
+      // Step 2b: ONE granted-scope lookup per scan (gc-5l9), shared by every
+      // optional audit below. Its own step so Inngest memoizes it: retries of a
+      // later step reuse this result instead of re-querying. The output is tiny
+      // (at most the four optional scope handles, or null when the lookup
+      // failed, in which case every scope check falls back to its probe).
+      const { grantedOptionalScopes } = await step.run("fetch-granted-scopes", async () => {
+        const db = (await import("../../app/db.server")).default;
+        const shop = await db.shop.findUnique({ where: { id: shopId } });
+        // No shop record: the audit steps no-op anyway; null = "unknown".
+        if (!shop) return { grantedOptionalScopes: null };
+
+        const { unauthenticated } = await import("../../app/shopify.server");
+        const { admin } = await unauthenticated.admin(shop.domain);
+        const { fetchGrantedOptionalScopes } = await import("../../app/lib/scope-check.server");
+        return { grantedOptionalScopes: await fetchGrantedOptionalScopes(admin, shopId) };
+      });
+
       // Step 3: Translation audit (optional — requires read_translations scope)
       // Slightly different from generic audit steps because it has extra logic
       // (empty-translations check). When scope is genuinely missing it reports
@@ -645,7 +669,7 @@ export const scanTheme = inngest.createFunction(
 
         const { logger } = await import("../../app/lib/logger.server");
 
-        const hasScope = await hasTranslationScope(admin);
+        const hasScope = await hasTranslationScope(admin, grantedOptionalScopes);
         if (!hasScope) {
           logger.info("read_translations scope not available — skipping translation audit", {
             function: "scan-theme",
@@ -729,7 +753,7 @@ export const scanTheme = inngest.createFunction(
           await import("../../app/services/product-fetcher.server");
         const { logger } = await import("../../app/lib/logger.server");
 
-        const hasScope = await hasProductScope(admin);
+        const hasScope = await hasProductScope(admin, grantedOptionalScopes);
         if (!hasScope) {
           logger.info("read_products scope not available — skipping product audits", {
             function: "scan-theme",
@@ -868,7 +892,7 @@ export const scanTheme = inngest.createFunction(
           findingType: FindingType.GHOST_PAGE,
           checkScope: async (admin) => {
             const { hasContentScope } = await import("../../app/services/content-fetcher.server");
-            return hasContentScope(admin);
+            return hasContentScope(admin, grantedOptionalScopes);
           },
           fetchAndDetect: async (admin) => {
             const { fetchPages } = await import("../../app/services/content-fetcher.server");
@@ -890,7 +914,7 @@ export const scanTheme = inngest.createFunction(
           checkScope: async (admin) => {
             const { hasNavigationScope } =
               await import("../../app/services/redirect-fetcher.server");
-            return hasNavigationScope(admin);
+            return hasNavigationScope(admin, grantedOptionalScopes);
           },
           fetchAndDetect: async (admin) => {
             const { REDIRECT_CAP } = await import("../../app/lib/scan-limits");
@@ -951,7 +975,7 @@ export const scanTheme = inngest.createFunction(
           const { admin } = await unauthenticated.admin(shop.domain);
 
           const { hasProductScope } = await import("../../app/services/product-fetcher.server");
-          const hasScope = await hasProductScope(admin);
+          const hasScope = await hasProductScope(admin, grantedOptionalScopes);
           if (!hasScope) {
             logger.info("read_products scope not available — skipping live-price audit", {
               function: "scan-theme",
@@ -1057,6 +1081,7 @@ export const scanTheme = inngest.createFunction(
             admin,
             danglingDistinctHandles,
             shopId,
+            grantedOptionalScopes,
           );
 
           // Map the resolver's distinct `missing` set back to ONE finding per

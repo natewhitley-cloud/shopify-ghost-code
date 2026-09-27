@@ -85,14 +85,14 @@ describe("hasProductScope", () => {
         data: { products: { nodes: [{ id: "gid://shopify/Product/1" }] } },
       }),
     });
-    expect(await hasProductScope(makeAdmin(graphql))).toBe(true);
+    expect(await hasProductScope(makeAdmin(graphql), null)).toBe(true);
   });
 
   it("returns false when ACCESS_DENIED error", async () => {
     const graphql = vi.fn().mockResolvedValue({
       json: vi.fn().mockResolvedValue({ errors: [{ message: "Access denied" }], data: null }),
     });
-    expect(await hasProductScope(makeAdmin(graphql))).toBe(false);
+    expect(await hasProductScope(makeAdmin(graphql), null)).toBe(false);
   });
 
   it("returns false when ACCESS_DENIED is carried in extensions.code", async () => {
@@ -102,13 +102,13 @@ describe("hasProductScope", () => {
         data: null,
       }),
     });
-    expect(await hasProductScope(makeAdmin(graphql))).toBe(false);
+    expect(await hasProductScope(makeAdmin(graphql), null)).toBe(false);
   });
 
   // LOG-9: transient transport failure must throw (not be treated scope-missing).
   it("throws on network error (transient, not scope-missing)", async () => {
     const graphql = vi.fn().mockRejectedValue(new Error("Network error"));
-    await expect(hasProductScope(makeAdmin(graphql))).rejects.toThrow(/transient/i);
+    await expect(hasProductScope(makeAdmin(graphql), null)).rejects.toThrow(/transient/i);
   });
 
   it("throws on THROTTLED (transient, not scope-missing)", async () => {
@@ -118,7 +118,7 @@ describe("hasProductScope", () => {
         data: null,
       }),
     });
-    await expect(hasProductScope(makeAdmin(graphql))).rejects.toThrow(/transient/i);
+    await expect(hasProductScope(makeAdmin(graphql), null)).rejects.toThrow(/transient/i);
   });
 });
 

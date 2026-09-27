@@ -87,7 +87,7 @@ describe("hasContentScope", () => {
     });
     const admin = makeAdmin(graphql);
 
-    expect(await hasContentScope(admin)).toBe(true);
+    expect(await hasContentScope(admin, null)).toBe(true);
   });
 
   it("returns false when ACCESS_DENIED error", async () => {
@@ -99,7 +99,7 @@ describe("hasContentScope", () => {
     });
     const admin = makeAdmin(graphql);
 
-    expect(await hasContentScope(admin)).toBe(false);
+    expect(await hasContentScope(admin, null)).toBe(false);
   });
 
   // LOG-9: a transient transport failure must NOT be swallowed as "scope
@@ -108,7 +108,7 @@ describe("hasContentScope", () => {
     const graphql = vi.fn().mockRejectedValue(new Error("Network error"));
     const admin = makeAdmin(graphql);
 
-    await expect(hasContentScope(admin)).rejects.toThrow(/transient/i);
+    await expect(hasContentScope(admin, null)).rejects.toThrow(/transient/i);
   });
 
   // LOG-9: a THROTTLED GraphQL error must throw, not be treated as scope-missing.
@@ -121,7 +121,7 @@ describe("hasContentScope", () => {
     });
     const admin = makeAdmin(graphql);
 
-    await expect(hasContentScope(admin)).rejects.toThrow(/transient/i);
+    await expect(hasContentScope(admin, null)).rejects.toThrow(/transient/i);
   });
 });
 

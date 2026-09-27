@@ -116,7 +116,7 @@ function distinct(
 describe("resolveDanglingReferences — empty input", () => {
   it("returns nothing missing, both scopes checked, and never queries", async () => {
     const { admin, graphql } = makeAdmin();
-    const result = await resolveDanglingReferences(admin, [], SHOP_ID);
+    const result = await resolveDanglingReferences(admin, [], SHOP_ID, null);
     expect(result).toEqual({
       missing: [],
       scopeStatus: { products: "checked", content: "checked" },
@@ -133,7 +133,12 @@ describe("resolveDanglingReferences — empty input", () => {
 describe("resolveDanglingReferences — product & collection existence", () => {
   it("does not report a product whose exact handle exists", async () => {
     const { admin } = makeAdmin({ product: existingProducts("widget") });
-    const result = await resolveDanglingReferences(admin, [distinct("product", "widget")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("product", "widget")],
+      SHOP_ID,
+      null,
+    );
     expect(result.missing).toEqual([]);
     expect(result.scopeStatus.products).toBe("checked");
     expect(result.truncated).toBe(false);
@@ -145,6 +150,7 @@ describe("resolveDanglingReferences — product & collection existence", () => {
       admin,
       [distinct("product", "old-widget")],
       SHOP_ID,
+      null,
     );
     expect(result.missing).toEqual([{ entityType: "product", handle: "old-widget" }]);
   });
@@ -157,6 +163,7 @@ describe("resolveDanglingReferences — product & collection existence", () => {
       admin,
       [distinct("collection", "summer-sale")],
       SHOP_ID,
+      null,
     );
     expect(result.missing).toEqual([]);
   });
@@ -167,6 +174,7 @@ describe("resolveDanglingReferences — product & collection existence", () => {
       admin,
       [distinct("collection", "winter-sale")],
       SHOP_ID,
+      null,
     );
     expect(result.missing).toEqual([{ entityType: "collection", handle: "winter-sale" }]);
   });
@@ -175,7 +183,12 @@ describe("resolveDanglingReferences — product & collection existence", () => {
   // not equal the queried handle must be treated as MISSING.
   it("treats a fuzzy near-match (different handle) as missing", async () => {
     const { admin } = makeAdmin({ product: () => [{ handle: "widget-deluxe" }] });
-    const result = await resolveDanglingReferences(admin, [distinct("product", "widget")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("product", "widget")],
+      SHOP_ID,
+      null,
+    );
     expect(result.missing).toEqual([{ entityType: "product", handle: "widget" }]);
   });
 
@@ -188,6 +201,7 @@ describe("resolveDanglingReferences — product & collection existence", () => {
       admin,
       [distinct("product", "live-product"), distinct("collection", "dead-collection")],
       SHOP_ID,
+      null,
     );
     expect(result.missing).toEqual([{ entityType: "collection", handle: "dead-collection" }]);
     expect(result.scopeStatus.products).toBe("checked");
@@ -206,7 +220,12 @@ describe("resolveDanglingReferences — product & collection existence", () => {
 describe("resolveDanglingReferences — page existence", () => {
   it("does not report a page whose exact handle exists", async () => {
     const { admin } = makeAdmin({ pages: ["about-us"] });
-    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("page", "about-us")],
+      SHOP_ID,
+      null,
+    );
     expect(result.missing).toEqual([]);
     expect(result.scopeStatus.content).toBe("checked");
     expect(result.truncated).toBe(false);
@@ -218,6 +237,7 @@ describe("resolveDanglingReferences — page existence", () => {
       admin,
       [distinct("page", "about-us"), distinct("page", "old-landing")],
       SHOP_ID,
+      null,
     );
     expect(result.missing).toEqual([{ entityType: "page", handle: "old-landing" }]);
     expect(result.scopeStatus.content).toBe("checked");
@@ -232,7 +252,12 @@ describe("resolveDanglingReferences — page existence", () => {
   // handle must be treated as MISSING (mirrors the product/collection guard).
   it("treats a fuzzy near-match page (different handle) as missing", async () => {
     const { admin } = makeAdmin({ page: () => [{ handle: "about-us-2" }] });
-    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("page", "about-us")],
+      SHOP_ID,
+      null,
+    );
     expect(result.missing).toEqual([{ entityType: "page", handle: "about-us" }]);
   });
 
@@ -241,7 +266,12 @@ describe("resolveDanglingReferences — page existence", () => {
   // is NOT reported missing (this is the old Set-membership case bug's regression).
   it("does not report a page when the returned handle differs only in case", async () => {
     const { admin } = makeAdmin({ page: () => [{ handle: "About-Us" }] });
-    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("page", "about-us")],
+      SHOP_ID,
+      null,
+    );
     expect(result.missing).toEqual([]);
     expect(result.scopeStatus.content).toBe("checked");
   });
@@ -263,7 +293,12 @@ describe("resolveDanglingReferences — page existence", () => {
         { handle: h }, // exact match, ranked 5th — excluded by first: 2, kept by first: 5
       ],
     });
-    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("page", "about-us")],
+      SHOP_ID,
+      null,
+    );
     expect(result.missing).toEqual([]);
     expect(result.scopeStatus.content).toBe("checked");
   });
@@ -282,7 +317,12 @@ describe("resolveDanglingReferences — page existence", () => {
         { handle: `${h}-archive` },
       ],
     });
-    const result = await resolveDanglingReferences(admin, [distinct("page", "about-us")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("page", "about-us")],
+      SHOP_ID,
+      null,
+    );
     expect(result.missing).toEqual([{ entityType: "page", handle: "about-us" }]);
     expect(result.scopeStatus.content).toBe("checked");
   });
@@ -296,7 +336,7 @@ describe("resolveDanglingReferences — page existence", () => {
     const { admin } = makeAdmin({ page: (h) => [{ handle: h }] });
     const many = Array.from({ length: 60 }, (_, i) => distinct("page", `pg-${i}`));
 
-    const result = await resolveDanglingReferences(admin, many, SHOP_ID);
+    const result = await resolveDanglingReferences(admin, many, SHOP_ID, null);
 
     expect(result.missing).toEqual([]);
     expect(result.truncated).toBe(true);
@@ -318,7 +358,7 @@ describe("resolveDanglingReferences — page existence", () => {
       ...Array.from({ length: 40 }, (_, i) => distinct("page", `pg-${i}`)),
     ];
 
-    const result = await resolveDanglingReferences(admin, candidates, SHOP_ID);
+    const result = await resolveDanglingReferences(admin, candidates, SHOP_ID, null);
 
     expect(result.missing).toEqual([]);
     expect(result.truncated).toBe(true);
@@ -337,6 +377,7 @@ describe("resolveDanglingReferences — scope gating", () => {
       admin,
       [distinct("product", "old-widget"), distinct("collection", "dead")],
       SHOP_ID,
+      null,
     );
     expect(result.missing).toEqual([]);
     expect(result.scopeStatus.products).toBe("absent");
@@ -357,7 +398,7 @@ describe("resolveDanglingReferences — scope gating", () => {
     ]);
 
     const { admin } = makeAdmin({ productScope: false, pages: [] });
-    const result = await resolveDanglingReferences(admin, distinctHandles, SHOP_ID);
+    const result = await resolveDanglingReferences(admin, distinctHandles, SHOP_ID, null);
 
     expect(result.missing).toEqual([{ entityType: "page", handle: "gone" }]);
     expect(result.scopeStatus).toEqual({ products: "absent", content: "checked" });
@@ -366,7 +407,12 @@ describe("resolveDanglingReferences — scope gating", () => {
 
   it("skips page candidates when read_content is absent", async () => {
     const { admin, graphql } = makeAdmin({ contentScope: false });
-    const result = await resolveDanglingReferences(admin, [distinct("page", "old-page")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("page", "old-page")],
+      SHOP_ID,
+      null,
+    );
     expect(result.missing).toEqual([]);
     expect(result.scopeStatus.content).toBe("absent");
     const pageQueries = graphql.mock.calls.filter((c) =>
@@ -381,6 +427,7 @@ describe("resolveDanglingReferences — scope gating", () => {
       admin,
       [distinct("product", "dead-widget"), distinct("page", "dead-page")],
       SHOP_ID,
+      null,
     );
     // Product resolved (missing reported); page skipped (never reported missing).
     expect(result.missing).toEqual([{ entityType: "product", handle: "dead-widget" }]);
@@ -393,7 +440,7 @@ describe("resolveDanglingReferences — scope gating", () => {
 
   it("does not probe a scope when there are no candidates of its types", async () => {
     const { admin, graphql } = makeAdmin({ product: existingProducts("widget") });
-    await resolveDanglingReferences(admin, [distinct("product", "widget")], SHOP_ID);
+    await resolveDanglingReferences(admin, [distinct("product", "widget")], SHOP_ID, null);
     // Only the products probe should fire; no pages probe with zero page candidates.
     const pageProbes = graphql.mock.calls.filter((c) =>
       (c[0] as string).includes("pages(first: 1)"),
@@ -414,7 +461,7 @@ describe("resolveDanglingReferences — lookup budget", () => {
     const { admin } = makeAdmin({ product: (h) => [{ handle: h }] });
     const many = Array.from({ length: 60 }, (_, i) => distinct("product", `p-${i}`));
 
-    const result = await resolveDanglingReferences(admin, many, SHOP_ID);
+    const result = await resolveDanglingReferences(admin, many, SHOP_ID, null);
 
     expect(result.truncated).toBe(true);
     expect(result.missing).toEqual([]);
@@ -446,7 +493,12 @@ describe("resolveDanglingReferences — error resilience", () => {
     });
     const admin = { graphql } as unknown as AdminApiContext;
 
-    const result = await resolveDanglingReferences(admin, [distinct("product", "widget")], SHOP_ID);
+    const result = await resolveDanglingReferences(
+      admin,
+      [distinct("product", "widget")],
+      SHOP_ID,
+      null,
+    );
 
     expect(calls).toBe(2); // throttled once, retried once
     expect(result.missing).toEqual([]);
@@ -463,7 +515,7 @@ describe("resolveDanglingReferences — error resilience", () => {
     const admin = { graphql } as unknown as AdminApiContext;
 
     await expect(
-      resolveDanglingReferences(admin, [distinct("product", "widget")], SHOP_ID),
+      resolveDanglingReferences(admin, [distinct("product", "widget")], SHOP_ID, null),
     ).rejects.toThrow(/Internal error/);
   });
 
@@ -481,8 +533,39 @@ describe("resolveDanglingReferences — error resilience", () => {
       admin,
       [distinct("product", "widget"), distinct("collection", "sale")],
       SHOP_ID,
+      null,
     );
     expect(result.missing).toEqual([]);
     expect(result.scopeStatus.products).toBe("absent");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Granted-scope pre-check (gc-5l9)
+// ---------------------------------------------------------------------------
+
+describe("resolveDanglingReferences — granted-scope pre-check (gc-5l9)", () => {
+  const CANDIDATES = [distinct("product", "widget"), distinct("page", "about-us")];
+
+  it("reports both scopes absent with ZERO Admin queries when neither is granted", async () => {
+    const { admin, graphql } = makeAdmin();
+    const result = await resolveDanglingReferences(admin, CANDIDATES, SHOP_ID, []);
+    expect(graphql).not.toHaveBeenCalled();
+    expect(result).toEqual({
+      missing: [],
+      scopeStatus: { products: "absent", content: "absent" },
+      truncated: false,
+    });
+  });
+
+  it("probes + resolves only the granted scope's candidates", async () => {
+    const { admin, graphql } = makeAdmin({ pages: [] });
+    const result = await resolveDanglingReferences(admin, CANDIDATES, SHOP_ID, ["read_content"]);
+    const queries = graphql.mock.calls.map(([q]) => q as string);
+    expect(queries.some((q) => q.includes("products(first: 1)"))).toBe(false);
+    expect(queries.some((q) => q.includes("ProductExistsByHandle"))).toBe(false);
+    expect(queries.some((q) => q.includes("PageExistsByHandle"))).toBe(true);
+    expect(result.scopeStatus).toEqual({ products: "absent", content: "checked" });
+    expect(result.missing).toEqual([{ entityType: "page", handle: "about-us" }]);
   });
 });
