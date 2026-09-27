@@ -180,17 +180,25 @@ export async function recordPageVisit(domain: string, path: string): Promise<voi
  * convenience over recordOpsEvent — same never-throws guarantee, so wrapping a
  * webhook body with this and re-throwing preserves Shopify's retry behavior
  * while making the failure durably countable for the daily digest.
+ *
+ * `degradedReason` marks a webhook that was still HANDLED (200) but in a
+ * degraded way, e.g. its offline session could not be loaded/refreshed
+ * (gc-4hk). Stored as metadata `{ degraded: true, reason }` beside `shop`, so
+ * the same type, redact clause (metadata.shop) and digest count cover it.
  */
 export async function recordWebhookFailure(input: {
   topic: string;
   shop: string;
   error: unknown;
+  degradedReason?: string;
 }): Promise<void> {
   await recordOpsEvent({
     eventType: OPS_EVENT_TYPES.WEBHOOK_FAILURE,
     key: input.topic,
     message: input.error instanceof Error ? input.error.message : String(input.error),
-    metadata: { shop: input.shop },
+    metadata: input.degradedReason
+      ? { shop: input.shop, degraded: true, reason: input.degradedReason }
+      : { shop: input.shop },
   });
 }
 

@@ -8,13 +8,14 @@
  */
 
 import type { ActionFunctionArgs } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
 // ---------------------------------------------------------------------------
 
 vi.mock("../../app/shopify.server", () => ({
+  apiVersion: "2026-07",
   authenticate: {
     webhook: vi.fn(),
   },
@@ -44,6 +45,7 @@ import { recordWebhookFailure } from "../../app/models/ops-event.server";
 import { deleteShopData } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks";
 import { authenticate } from "../../app/shopify.server";
+import { signedWebhookRequest, stubWebhookEnv } from "../test-utils/signed-webhook";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -164,6 +166,73 @@ describe("webhooks (GDPR catch-all) action", () => {
 
     expect(result).toBeInstanceOf(Response);
     expect((result as Response).status).toBe(200);
+    expect(mockDeleteShopData).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-4hk: offline-session refresh failure after a valid HMAC
+// ---------------------------------------------------------------------------
+
+describe("webhooks (GDPR catch-all) action — dead refresh token (gc-4hk)", () => {
+  const SHOP = "dead-token.myshopify.com";
+
+  beforeEach(() => {
+    stubWebhookEnv();
+    mockAuthenticateWebhook.mockImplementation(async (request: Request) => {
+      await request.text();
+      throw new Error("refresh token expired");
+    });
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("shop/redact returns 200 and the redact actually runs", async () => {
+    mockDeleteShopData.mockResolvedValue({ id: "shop-1" });
+
+    const result = await action({
+      request: signedWebhookRequest({
+        topic: "shop/redact",
+        shop: SHOP,
+        payload: { shop_id: 1, shop_domain: SHOP },
+      }),
+      params: {},
+      context: {},
+    } as ActionFunctionArgs);
+
+    expect((result as Response).status).toBe(200);
+    expect(mockDeleteShopData).toHaveBeenCalledWith(SHOP);
+  });
+
+  it.each(["customers/redact", "customers/data_request"])(
+    "%s returns 200 without touching shop data",
+    async (topic) => {
+      const result = await action({
+        request: signedWebhookRequest({ topic, shop: SHOP, payload: { shop_domain: SHOP } }),
+        params: {},
+        context: {},
+      } as ActionFunctionArgs);
+
+      expect((result as Response).status).toBe(200);
+      expect(mockDeleteShopData).not.toHaveBeenCalled();
+      expect(mockRecordWebhookFailure).toHaveBeenCalledWith(
+        expect.objectContaining({ shop: SHOP, degradedReason: "offline_session_failed" }),
+      );
+    },
+  );
+
+  it("a forged shop/redact is rejected 401 and deletes nothing", async () => {
+    await expect(
+      action({
+        request: signedWebhookRequest({
+          topic: "shop/redact",
+          shop: SHOP,
+          secret: "attacker-secret",
+        }),
+        params: {},
+        context: {},
+      } as ActionFunctionArgs),
+    ).rejects.toMatchObject({ status: 401 });
+
     expect(mockDeleteShopData).not.toHaveBeenCalled();
   });
 });

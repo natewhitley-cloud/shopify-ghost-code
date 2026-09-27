@@ -9,13 +9,14 @@
  */
 
 import type { ActionFunctionArgs } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)
 // ---------------------------------------------------------------------------
 
 vi.mock("../../app/shopify.server", () => ({
+  apiVersion: "2026-07",
   authenticate: {
     webhook: vi.fn(),
   },
@@ -41,6 +42,7 @@ vi.mock("../../app/models/ops-event.server", () => ({
 import db from "../../app/db.server";
 import { action } from "../../app/routes/webhooks.app.scopes_update";
 import { authenticate } from "../../app/shopify.server";
+import { signedWebhookRequest, stubWebhookEnv } from "../test-utils/signed-webhook";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -382,5 +384,43 @@ describe("webhooks.app.scopes_update — always returns 200 (no retry loops)", (
       context: {},
     } as unknown as ActionFunctionArgs);
     expect(response.status).toBe(200);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-4hk: offline-session refresh failure after a valid HMAC
+// ---------------------------------------------------------------------------
+
+describe("webhooks.app.scopes_update — dead refresh token (gc-4hk)", () => {
+  beforeEach(() => {
+    stubWebhookEnv();
+    mockAuthenticateWebhook.mockReset();
+    mockAuthenticateWebhook.mockImplementationOnce(async (request: Request) => {
+      await request.text();
+      throw new Error("refresh token expired");
+    });
+  });
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("returns 200 and skips the session update (no session in the degraded context)", async () => {
+    const result = await action({
+      request: signedWebhookRequest({
+        topic: "app/scopes_update",
+        shop: SHOP_DOMAIN,
+        payload: { current: SCOPES_ARRAY },
+      }),
+      params: {},
+      context: {},
+    } as ActionFunctionArgs);
+
+    expect((result as Response).status).toBe(200);
+    expect(mockSessionUpdate).not.toHaveBeenCalled();
+    expect(mockRecordWebhookFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topic: "APP_SCOPES_UPDATE",
+        shop: SHOP_DOMAIN,
+        degradedReason: "offline_session_failed",
+      }),
+    );
   });
 });

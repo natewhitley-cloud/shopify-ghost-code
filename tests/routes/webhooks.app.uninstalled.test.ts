@@ -11,13 +11,14 @@
  */
 
 import type { ActionFunctionArgs } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
 // ---------------------------------------------------------------------------
 
 vi.mock("../../app/shopify.server", () => ({
+  apiVersion: "2026-07",
   authenticate: {
     webhook: vi.fn(),
   },
@@ -51,6 +52,7 @@ import { recordWebhookFailure } from "../../app/models/ops-event.server";
 import { deleteShopData, markShopUninstalledWithEvent } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.app.uninstalled";
 import { authenticate } from "../../app/shopify.server";
+import { signedWebhookRequest, stubWebhookEnv } from "../test-utils/signed-webhook";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -184,5 +186,73 @@ describe("webhooks.app.uninstalled action", () => {
 
     expect(mockMarkShopUninstalledWithEvent).not.toHaveBeenCalled();
     expect(mockRecordWebhookFailure).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-4hk: offline-session refresh failure after a valid HMAC
+// ---------------------------------------------------------------------------
+
+describe("webhooks.app.uninstalled action — dead refresh token (gc-4hk)", () => {
+  beforeEach(() => stubWebhookEnv());
+  afterEach(() => vi.unstubAllEnvs());
+
+  function refreshFailure(err: unknown) {
+    mockAuthenticateWebhook.mockReset();
+    mockAuthenticateWebhook.mockImplementationOnce(async (request: Request) => {
+      await request.text();
+      throw err;
+    });
+  }
+
+  it.each([
+    ["an Error", new Error("refresh token expired")],
+    ["the library's Response(500) refresh wrapper", new Response(undefined, { status: 500 })],
+  ])(
+    "returns 200 and still marks the shop uninstalled when auth throws %s",
+    async (_label, err) => {
+      refreshFailure(err);
+
+      const result = await action({
+        request: signedWebhookRequest({
+          topic: "app/uninstalled",
+          shop: "dead-token.myshopify.com",
+        }),
+        params: {},
+        context: {},
+      } as ActionFunctionArgs);
+
+      expect((result as Response).status).toBe(200);
+      // Same shared path: deletes sessions + stamps uninstalledAt, no live token needed.
+      expect(mockMarkShopUninstalledWithEvent).toHaveBeenCalledWith("dead-token.myshopify.com", {
+        source: "webhook",
+        message: "app/uninstalled",
+      });
+      expect(mockRecordWebhookFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          topic: "APP_UNINSTALLED",
+          shop: "dead-token.myshopify.com",
+          degradedReason: "offline_session_failed",
+        }),
+      );
+    },
+  );
+
+  it("rejects 401 (and marks nothing) when the refresh fails but the HMAC is forged", async () => {
+    refreshFailure(new Error("refresh token expired"));
+
+    await expect(
+      action({
+        request: signedWebhookRequest({
+          topic: "app/uninstalled",
+          shop: "victim.myshopify.com",
+          secret: "attacker-secret",
+        }),
+        params: {},
+        context: {},
+      } as ActionFunctionArgs),
+    ).rejects.toMatchObject({ status: 401 });
+
+    expect(mockMarkShopUninstalledWithEvent).not.toHaveBeenCalled();
   });
 });

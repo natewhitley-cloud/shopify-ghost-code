@@ -1,16 +1,52 @@
 import { ScanOrigin } from "@prisma/client";
+import { HttpResponseError, InvalidJwtError } from "@shopify/shopify-api";
+import { SessionNotFoundError } from "@shopify/shopify-app-react-router/server";
 import type { ActionFunctionArgs } from "react-router";
 
 import { logger } from "../lib/logger.server";
 import { canUseAutoRescan } from "../lib/plan-gating.server";
+import { authenticateWebhookTolerant } from "../lib/webhook-auth.server";
 import { recordWebhookFailure } from "../models/ops-event.server";
 import { getShopMetadata, updateThemePublishTimestamp } from "../models/shop.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { fetchMainTheme } from "../services/theme-fetcher.server";
-import { authenticate, unauthenticated } from "../shopify.server";
+import { unauthenticated } from "../shopify.server";
+
+/** `metadata.reason` when the Pro auto-rescan is skipped for lack of Admin API auth. */
+const AUTO_RESCAN_AUTH_UNAVAILABLE = "admin_auth_unavailable";
+
+/**
+ * Is this an Admin API AUTH failure (gc-4hk) rather than a genuine bug/outage?
+ * Retrying cannot fix these, so the webhook must not 500 into a retry storm:
+ *   - SessionNotFoundError: no stored offline session for the shop.
+ *   - InvalidJwtError / HttpResponseError: the offline-token refresh was
+ *     rejected (400 invalid_subject_token), or the Admin API answered 401
+ *     (revoked/expired token). Any other status (429, 5xx, ...) stays a
+ *     genuine error.
+ *   - a thrown Response: the library's refresh helper wraps every other
+ *     refresh failure (incl. a dead refresh token) as `new Response(500)`.
+ * Anything else (DB errors, TypeErrors, GraphQL query errors) is NOT an auth
+ * failure and keeps the record-and-rethrow behavior.
+ */
+function isAdminAuthFailure(err: unknown): boolean {
+  if (err instanceof SessionNotFoundError || err instanceof InvalidJwtError) return true;
+  if (err instanceof Response) return true;
+  if (err instanceof HttpResponseError) {
+    const { code, body } = err.response;
+    if (code === 401) return true;
+    // The one refresh rejection the library re-throws as-is.
+    return (
+      code === 400 &&
+      typeof body === "object" &&
+      body !== null &&
+      (body as Record<string, unknown>).error === "invalid_subject_token"
+    );
+  }
+  return false;
+}
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { topic, shop, payload } = await authenticate.webhook(request);
+  const { topic, shop, payload } = await authenticateWebhookTolerant(request);
 
   logger.info("Webhook received", { topic, shop });
 
@@ -46,8 +82,30 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // ID may not be immediately queryable via the theme files API (e.g. theme store
     // themes with delayed asset availability). Querying MAIN guarantees we get the
     // theme Shopify considers active and whose files are accessible.
-    const { admin } = await unauthenticated.admin(shop);
-    const mainTheme = await fetchMainTheme(admin);
+    //
+    // A shop whose offline token is dead (gc-4hk) cannot be auto-rescanned, and
+    // a Shopify retry cannot fix that. The timestamp is already written above,
+    // so on an Admin API AUTH failure we record it (degraded) and return 200
+    // instead of 500-ing into a retry storm. Other errors still rethrow below.
+    let mainTheme: Awaited<ReturnType<typeof fetchMainTheme>>;
+    try {
+      const { admin } = await unauthenticated.admin(shop);
+      mainTheme = await fetchMainTheme(admin);
+    } catch (err) {
+      if (!isAdminAuthFailure(err)) throw err;
+      logger.warn("themes/publish — Admin API auth unavailable, auto-rescan skipped", {
+        shop,
+        webhook: "themes/publish",
+        error: err instanceof Error ? err.message : `Response ${(err as Response).status}`,
+      });
+      await recordWebhookFailure({
+        topic,
+        shop,
+        error: err instanceof Response ? new Error(`Response ${err.status}`) : err,
+        degradedReason: AUTO_RESCAN_AUTH_UNAVAILABLE,
+      });
+      return new Response(null, { status: 200 });
+    }
 
     if (!mainTheme) {
       logger.warn("themes/publish webhook — no MAIN theme found via API, skipping auto-rescan", {

@@ -13,14 +13,17 @@
  */
 
 import { ScanOrigin } from "@prisma/client";
+import { HttpResponseError, InvalidJwtError } from "@shopify/shopify-api";
+import { SessionNotFoundError } from "@shopify/shopify-app-react-router/server";
 import type { ActionFunctionArgs } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest before imports)
 // ---------------------------------------------------------------------------
 
 vi.mock("../../app/shopify.server", () => ({
+  apiVersion: "2026-07",
   authenticate: {
     webhook: vi.fn(),
   },
@@ -48,6 +51,10 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
   canUseAutoRescan: vi.fn(),
 }));
 
+vi.mock("../../app/models/ops-event.server", () => ({
+  recordWebhookFailure: vi.fn(),
+}));
+
 vi.mock("../../app/lib/logger.server", () => ({
   logger: {
     info: vi.fn(),
@@ -61,11 +68,13 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { canUseAutoRescan } from "../../app/lib/plan-gating.server";
-import { getShopMetadata } from "../../app/models/shop.server";
+import { recordWebhookFailure } from "../../app/models/ops-event.server";
+import { getShopMetadata, updateThemePublishTimestamp } from "../../app/models/shop.server";
 import { action } from "../../app/routes/webhooks.themes.publish";
 import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { authenticate, unauthenticated } from "../../app/shopify.server";
+import { signedWebhookRequest, stubWebhookEnv } from "../test-utils/signed-webhook";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -401,4 +410,108 @@ describe("webhooks.themes.publish — scan already in progress", () => {
     expect(response.status).toBe(200);
     expect(mockDispatchScan).toHaveBeenCalledOnce();
   });
+});
+
+// ---------------------------------------------------------------------------
+// gc-4hk: dead offline token (webhook auth + Pro auto-rescan Admin API auth)
+// ---------------------------------------------------------------------------
+
+describe("webhooks.themes.publish — dead refresh token (gc-4hk)", () => {
+  const mockRecordWebhookFailure = recordWebhookFailure as ReturnType<typeof vi.fn>;
+  const mockUpdateTimestamp = updateThemePublishTimestamp as ReturnType<typeof vi.fn>;
+
+  function httpError(code: number, body: Record<string, unknown> = {}) {
+    return new HttpResponseError({ message: `HTTP ${code}`, code, statusText: "", body });
+  }
+
+  function run(request: Request = makeRequest()) {
+    return action({ request, params: {}, context: {} } as unknown as ActionFunctionArgs);
+  }
+
+  beforeEach(() => stubWebhookEnv());
+  afterEach(() => vi.unstubAllEnvs());
+
+  it("webhook auth refresh failure: returns 200 and writes the publish timestamp", async () => {
+    mockAuthenticateWebhook.mockReset();
+    mockAuthenticateWebhook.mockImplementationOnce(async (request: Request) => {
+      await request.text();
+      throw new Response(undefined, { status: 500 });
+    });
+    mockCanUseAutoRescan.mockReturnValue(false);
+
+    const response = await run(
+      signedWebhookRequest({ topic: "themes/publish", shop: SHOP_DOMAIN, payload: { id: 1 } }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockUpdateTimestamp).toHaveBeenCalledWith(SHOP_DOMAIN);
+  });
+
+  it.each([
+    ["SessionNotFoundError (no offline session)", () => new SessionNotFoundError("no session")],
+    ["InvalidJwtError (refresh rejected)", () => new InvalidJwtError("bad jwt")],
+    [
+      "the refresh wrapper Response(500) (dead refresh token)",
+      () => new Response(undefined, { status: 500 }),
+    ],
+    [
+      "HttpResponseError 400 invalid_subject_token",
+      () => httpError(400, { error: "invalid_subject_token" }),
+    ],
+  ])(
+    "Pro: unauthenticated.admin throws %s -> 200, timestamp kept, no scan, degraded event",
+    async (_label, makeErr) => {
+      mockUnauthenticatedAdmin.mockRejectedValueOnce(makeErr());
+
+      const response = await run();
+
+      expect(response.status).toBe(200);
+      expect(mockUpdateTimestamp).toHaveBeenCalledWith(SHOP_DOMAIN);
+      expect(mockFetchMainTheme).not.toHaveBeenCalled();
+      expect(mockDispatchScan).not.toHaveBeenCalled();
+      expect(mockRecordWebhookFailure).toHaveBeenCalledWith(
+        expect.objectContaining({
+          topic: "THEMES_PUBLISH",
+          shop: SHOP_DOMAIN,
+          degradedReason: "admin_auth_unavailable",
+        }),
+      );
+    },
+  );
+
+  it("Pro: fetchMainTheme 401 (revoked token) -> 200, no scan, degraded event", async () => {
+    mockFetchMainTheme.mockRejectedValueOnce(httpError(401));
+
+    const response = await run();
+
+    expect(response.status).toBe(200);
+    expect(mockDispatchScan).not.toHaveBeenCalled();
+    expect(mockRecordWebhookFailure).toHaveBeenCalledWith(
+      expect.objectContaining({ degradedReason: "admin_auth_unavailable" }),
+    );
+  });
+
+  it.each([
+    ["fetchMainTheme 429 (throttled)", "fetch", () => httpError(429)],
+    ["fetchMainTheme 500", "fetch", () => httpError(500)],
+    ["fetchMainTheme GraphQL error", "fetch", () => new Error("[theme-fetcher] Failed")],
+    ["unauthenticated.admin 400 without invalid_subject_token", "admin", () => httpError(400)],
+    ["unauthenticated.admin DB error", "admin", () => new Error("connection refused")],
+  ])(
+    "Pro: genuine error (%s) keeps record-and-rethrow (Shopify retries)",
+    async (_label, where, makeErr) => {
+      const err = makeErr();
+      if (where === "fetch") mockFetchMainTheme.mockRejectedValueOnce(err);
+      else mockUnauthenticatedAdmin.mockRejectedValueOnce(err);
+
+      await expect(run()).rejects.toBe(err);
+
+      expect(mockRecordWebhookFailure).toHaveBeenCalledWith({
+        topic: "THEMES_PUBLISH",
+        shop: SHOP_DOMAIN,
+        error: err,
+      });
+      expect(mockDispatchScan).not.toHaveBeenCalled();
+    },
+  );
 });

@@ -359,6 +359,26 @@ describe("recordWebhookFailure", () => {
     });
   });
 
+  it("marks a degraded (still-handled) webhook with degraded:true + reason, keeping metadata.shop for redact (gc-4hk)", async () => {
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+
+    await recordWebhookFailure({
+      topic: "APP_UNINSTALLED",
+      shop: "acme.myshopify.com",
+      error: new Error("Response 500"),
+      degradedReason: "offline_session_failed",
+    });
+
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: {
+        eventType: OPS_EVENT_TYPES.WEBHOOK_FAILURE,
+        key: "APP_UNINSTALLED",
+        message: "Response 500",
+        metadata: { shop: "acme.myshopify.com", degraded: true, reason: "offline_session_failed" },
+      },
+    });
+  });
+
   it("coerces a non-Error thrown value to a string message", async () => {
     mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
 

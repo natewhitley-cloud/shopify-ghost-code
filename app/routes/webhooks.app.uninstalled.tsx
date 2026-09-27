@@ -1,12 +1,12 @@
 import type { ActionFunctionArgs } from "react-router";
 
 import { logger } from "../lib/logger.server";
+import { authenticateWebhookTolerant } from "../lib/webhook-auth.server";
 import { recordWebhookFailure } from "../models/ops-event.server";
 import { markShopUninstalledWithEvent } from "../models/shop.server";
-import { authenticate } from "../shopify.server";
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { shop, topic } = await authenticate.webhook(request);
+  const { shop, topic } = await authenticateWebhookTolerant(request);
 
   logger.info("Webhook received", { topic, shop });
 
