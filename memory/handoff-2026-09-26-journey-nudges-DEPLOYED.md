@@ -27,3 +27,10 @@ Supersedes 2026-09-23e. Deploys this session (all CI + Deploy + smoke green, mig
 
 ## Open
 gc-zji (P3 differ re-counts capped as new), gc-dpm.4 (P4 Partner API uninstall reasons), gc-97k.5 (P4 deferred), gc-cg8 (owner items). ClearSignal local checkout diverged (4 unpushed incl. Guard, 23 behind, 65 dirty): untouched, needs owner reconciliation.
+
+## Addendum 2026-09-27 03:41Z: `64b3715` DEPLOYED (gc-4hk P1 + gc-5l9)
+- gc-4hk: webhooks 500'd for shops with a dead refresh token (library refreshes on every webhook; refresh failure = Response(500)); incl app/uninstalled + GDPR. `authenticateWebhookTolerant` re-validates HMAC and runs handlers without admin; one degraded webhook_failure row; digest shows "(degraded but handled: M)". Audit SHIP, no HMAC bypass.
+- gc-5l9: one accessScopes query per scan; probe only granted optional scopes (no more 4x ACCESS_DENIED per scan).
+- Live verify pending: next de66e6-c4 webhook -> 200 + 1 degraded row; next scan on a no-scope shop -> 0 ACCESS_DENIED in Partner logs.
+- Churn: sex-eshop uninstalled 9/26 16:18Z "Not working properly" (stale 9/22 results with the pre-gc-j93 GHOST_TITLE FP as its only visible finding; Free quota blocked rescan; no server errors). Next batch: gc-mgi (stale-results banner), gc-nn6 (client error telemetry).
+- Same webhook exposure in FraudPilot + ClearSignal (expiringOfflineAccessTokens): not fixed.
