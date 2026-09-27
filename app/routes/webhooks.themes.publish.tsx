@@ -46,7 +46,7 @@ function isAdminAuthFailure(err: unknown): boolean {
 }
 
 export const action = async ({ request }: ActionFunctionArgs) => {
-  const { topic, shop, payload } = await authenticateWebhookTolerant(request);
+  const { topic, shop, payload, degraded } = await authenticateWebhookTolerant(request);
 
   logger.info("Webhook received", { topic, shop });
 
@@ -87,6 +87,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // a Shopify retry cannot fix that. The timestamp is already written above,
     // so on an Admin API AUTH failure we record it (degraded) and return 200
     // instead of 500-ing into a retry storm. Other errors still rethrow below.
+    // If webhook auth ALREADY fell back (`degraded`), the tolerant helper has
+    // recorded this delivery's degraded row, and the admin failure is the same
+    // dead token again: log only, so the digest counts one row per delivery.
     let mainTheme: Awaited<ReturnType<typeof fetchMainTheme>>;
     try {
       const { admin } = await unauthenticated.admin(shop);
@@ -97,7 +100,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
         shop,
         webhook: "themes/publish",
         error: err instanceof Error ? err.message : `Response ${(err as Response).status}`,
+        webhookAuthDegraded: degraded,
       });
+      if (degraded) return new Response(null, { status: 200 });
       await recordWebhookFailure({
         topic,
         shop,

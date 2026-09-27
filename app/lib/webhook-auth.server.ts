@@ -41,6 +41,26 @@ export type WebhookAuthContext = Awaited<ReturnType<typeof authenticate.webhook>
 /** The no-session member of the union: what the degraded path returns. */
 export type DegradedWebhookContext = Extract<WebhookAuthContext, { admin: undefined }>;
 
+/**
+ * What `authenticateWebhookTolerant` returns: the library's context plus an
+ * EXPLICIT `degraded` flag.
+ *
+ *   - `degraded: true`  -> the library threw after HMAC (offline session could
+ *     not be loaded/refreshed), we re-validated and fell back. `session`/`admin`
+ *     are undefined BECAUSE of the fallback, and this delivery has ALREADY been
+ *     recorded as a degraded `webhook_failure` (reason `offline_session_failed`).
+ *   - `degraded: false` -> the library succeeded; its context is unchanged.
+ *     `admin` may STILL be undefined here: a shop with no stored session at all
+ *     gets `admin: undefined` from the library itself. That is NOT degraded (no
+ *     row was recorded), which is why callers must read this flag rather than
+ *     infer degradation from `admin === undefined`.
+ *
+ * Handlers use the flag to record at most ONE degraded row per delivery.
+ */
+export type TolerantWebhookContext =
+  | (WebhookAuthContext & { degraded: false })
+  | (DegradedWebhookContext & { degraded: true });
+
 /** `metadata.reason` on the degraded-path `webhook_failure` ops event. */
 export const DEGRADED_REASON_OFFLINE_SESSION = "offline_session_failed";
 
@@ -133,18 +153,22 @@ async function validateAndBuildContext(
  * post-HMAC offline-session failure (dead refresh token) by returning the
  * no-session context (`session`/`admin` undefined) instead of throwing.
  *
- *   - library succeeds                  -> its result, unchanged
+ *   - library succeeds                  -> its result + `degraded: false`
  *   - library throws a 4xx Response     -> re-thrown unchanged (405/401/400)
  *   - library throws anything else      -> log, re-validate the HMAC ourselves,
- *       valid   -> record a degraded `webhook_failure` ops event, return context
+ *       valid   -> record a degraded `webhook_failure` ops event, return the
+ *                  context + `degraded: true` (see TolerantWebhookContext)
  *       invalid -> throw 401/400 like the library
  */
-export async function authenticateWebhookTolerant(request: Request): Promise<WebhookAuthContext> {
+export async function authenticateWebhookTolerant(
+  request: Request,
+): Promise<TolerantWebhookContext> {
   // The library consumes the body, so read it once from a clone up front.
   const rawBody = await request.clone().text();
 
   try {
-    return await authenticate.webhook(request);
+    const context = await authenticate.webhook(request);
+    return { ...context, degraded: false };
   } catch (err) {
     if (isDeliberateRejection(err)) throw err;
 
@@ -176,6 +200,6 @@ export async function authenticateWebhookTolerant(request: Request): Promise<Web
       degradedReason: DEGRADED_REASON_OFFLINE_SESSION,
     });
 
-    return context;
+    return { ...context, degraded: true };
   }
 }

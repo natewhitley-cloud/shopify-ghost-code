@@ -71,7 +71,7 @@ afterEach(() => {
 });
 
 describe("authenticateWebhookTolerant: library succeeds", () => {
-  it("returns the library's context unchanged and records nothing", async () => {
+  it("returns the library's context unchanged plus degraded: false, and records nothing", async () => {
     const libraryContext = { shop: SHOP, topic: "THEMES_PUBLISH", admin: {}, session: {} };
     mockAuthenticateWebhook.mockResolvedValueOnce(libraryContext);
 
@@ -79,9 +79,29 @@ describe("authenticateWebhookTolerant: library succeeds", () => {
       signedWebhookRequest({ topic: "themes/publish", shop: SHOP, payload: PAYLOAD }),
     );
 
-    expect(result).toBe(libraryContext);
+    expect(result).toEqual({ ...libraryContext, degraded: false });
     expect(mockRecordWebhookFailure).not.toHaveBeenCalled();
     expect(mockLoggerError).not.toHaveBeenCalled();
+  });
+
+  it("a shop with NO stored session (library returns admin: undefined) is NOT degraded", async () => {
+    // admin === undefined alone must never be read as "degraded": no degraded
+    // row was recorded for this delivery, so handlers must still record theirs.
+    const noSessionContext = {
+      shop: SHOP,
+      topic: "THEMES_PUBLISH",
+      admin: undefined,
+      session: undefined,
+    };
+    mockAuthenticateWebhook.mockResolvedValueOnce(noSessionContext);
+
+    const result = await authenticateWebhookTolerant(
+      signedWebhookRequest({ topic: "themes/publish", shop: SHOP, payload: PAYLOAD }),
+    );
+
+    expect(result.admin).toBeUndefined();
+    expect(result.degraded).toBe(false);
+    expect(mockRecordWebhookFailure).not.toHaveBeenCalled();
   });
 
   it("leaves the original request body readable for the library", async () => {
@@ -146,6 +166,7 @@ describe("authenticateWebhookTolerant: failure after HMAC (dead refresh token)",
       name: undefined,
       triggeredAt: undefined,
       eventId: undefined,
+      degraded: true,
     });
   });
 

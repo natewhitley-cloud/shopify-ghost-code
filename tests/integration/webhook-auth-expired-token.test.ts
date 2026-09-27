@@ -76,6 +76,15 @@ vi.mock("../../app/models/ops-event.server", () => ({
   recordWebhookFailure: vi.fn(),
 }));
 
+// In-memory OpsEvent table so the digest-count test can run the REAL
+// recordWebhookFailure + countWebhookFailuresByKind end to end (never the DB).
+const { opsEventRows, mockDb } = vi.hoisted(() => {
+  const opsEventRows: { eventType: string; metadata: unknown }[] = [];
+  const mockDb = { opsEvent: { create: vi.fn(), findMany: vi.fn() } };
+  return { opsEventRows, mockDb };
+});
+vi.mock("../../app/db.server", () => ({ default: mockDb }));
+
 vi.mock("../../app/services/scan-dispatch.server", () => ({
   dispatchScan: vi.fn(),
 }));
@@ -224,13 +233,46 @@ describe("gc-4hk: expired offline session + dead refresh token (real library)", 
     // The REAL unauthenticated.admin hit the same dead refresh token.
     expect(fetchMainTheme).not.toHaveBeenCalled();
     expect(dispatchScan).not.toHaveBeenCalled();
+    // ONE degraded row for the delivery: webhook auth already fell back, so the
+    // route's admin failure (same dead token) is logged, not recorded again.
+    expect(recordWebhookFailure).toHaveBeenCalledTimes(1);
     expect(recordWebhookFailure).toHaveBeenCalledWith(
       expect.objectContaining({
         topic: "THEMES_PUBLISH",
         shop: SHOP,
-        degradedReason: "admin_auth_unavailable",
+        degradedReason: "offline_session_failed",
       }),
     );
+  });
+
+  it("themes/publish (Pro) dead-token delivery counts as ONE degraded webhook in the digest", async () => {
+    const actual = await vi.importActual<typeof import("../../app/models/ops-event.server")>(
+      "../../app/models/ops-event.server",
+    );
+    opsEventRows.length = 0;
+    mockDb.opsEvent.create.mockImplementation(
+      async ({ data }: { data: { eventType: string; metadata: unknown } }) => {
+        opsEventRows.push(data);
+        return data;
+      },
+    );
+    mockDb.opsEvent.findMany.mockImplementation(
+      async ({ where }: { where: { eventType: string } }) =>
+        opsEventRows.filter((row) => row.eventType === where.eventType),
+    );
+    vi.mocked(recordWebhookFailure).mockImplementation(actual.recordWebhookFailure);
+    vi.mocked(getShopMetadata).mockResolvedValue({ id: "shop-1", plan: "Professional" } as never);
+    vi.mocked(canUseAutoRescan).mockReturnValue(true);
+
+    const res = await publishAction(
+      args(signedWebhookRequest({ topic: "themes/publish", shop: SHOP, payload: { id: 1 } })),
+    );
+
+    expect((res as Response).status).toBe(200);
+    expect(await actual.countWebhookFailuresByKind(24 * 60 * 60 * 1000)).toEqual({
+      failed: 0,
+      degraded: 1,
+    });
   });
 
   it("a forged webhook for the same dead-token shop is still rejected 401 by the real library", async () => {

@@ -67,6 +67,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
 
+import { logger } from "../../app/lib/logger.server";
 import { canUseAutoRescan } from "../../app/lib/plan-gating.server";
 import { recordWebhookFailure } from "../../app/models/ops-event.server";
 import { getShopMetadata, updateThemePublishTimestamp } from "../../app/models/shop.server";
@@ -478,6 +479,57 @@ describe("webhooks.themes.publish — dead refresh token (gc-4hk)", () => {
       );
     },
   );
+
+  it("Pro, NON-degraded auth + admin auth failure -> exactly ONE admin_auth_unavailable row", async () => {
+    // Webhook auth succeeded (degraded: false), but the later Admin API call
+    // hit a dead token: the route's own degraded row is the only record.
+    mockUnauthenticatedAdmin.mockRejectedValueOnce(new Response(undefined, { status: 500 }));
+
+    const response = await run();
+
+    expect(response.status).toBe(200);
+    expect(mockRecordWebhookFailure).toHaveBeenCalledTimes(1);
+    expect(mockRecordWebhookFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topic: "THEMES_PUBLISH",
+        shop: SHOP_DOMAIN,
+        degradedReason: "admin_auth_unavailable",
+      }),
+    );
+  });
+
+  it("Pro, DEGRADED auth + admin auth failure -> exactly ONE row (the helper's offline_session_failed)", async () => {
+    // The tolerant helper already recorded this delivery's degraded row; the
+    // admin failure is the same dead token, so the route logs but must not
+    // record a second degraded row (gc-4hk double count).
+    mockAuthenticateWebhook.mockReset();
+    mockAuthenticateWebhook.mockImplementationOnce(async (request: Request) => {
+      await request.text();
+      throw new Response(undefined, { status: 500 });
+    });
+    mockUnauthenticatedAdmin.mockRejectedValueOnce(new Response(undefined, { status: 500 }));
+
+    const response = await run(
+      signedWebhookRequest({ topic: "themes/publish", shop: SHOP_DOMAIN, payload: { id: 1 } }),
+    );
+
+    expect(response.status).toBe(200);
+    expect(mockUpdateTimestamp).toHaveBeenCalledWith(SHOP_DOMAIN);
+    expect(mockDispatchScan).not.toHaveBeenCalled();
+    expect(mockRecordWebhookFailure).toHaveBeenCalledTimes(1);
+    expect(mockRecordWebhookFailure).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topic: "THEMES_PUBLISH",
+        shop: SHOP_DOMAIN,
+        degradedReason: "offline_session_failed",
+      }),
+    );
+    // Still logged, flagged as already-degraded.
+    expect(logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining("Admin API auth unavailable"),
+      expect.objectContaining({ shop: SHOP_DOMAIN, webhookAuthDegraded: true }),
+    );
+  });
 
   it("Pro: fetchMainTheme 401 (revoked token) -> 200, no scan, degraded event", async () => {
     mockFetchMainTheme.mockRejectedValueOnce(httpError(401));
