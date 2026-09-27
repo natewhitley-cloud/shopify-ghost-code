@@ -44,6 +44,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 import {
   countApiErrorsByLevel,
   countOpsEvents,
+  countWebhookFailuresByKind,
   getLatestHeartbeat,
   getStaleCrons,
   getNeverSeenCrons,
@@ -502,6 +503,54 @@ describe("countApiErrorsByLevel", () => {
     ]);
 
     expect(await countApiErrorsByLevel(1000)).toEqual({ error: 3, warn: 1 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// countWebhookFailuresByKind (gc-4hk follow-up)
+// ---------------------------------------------------------------------------
+
+describe("countWebhookFailuresByKind", () => {
+  it("queries WEBHOOK_FAILURE rows in the trailing window selecting only metadata", async () => {
+    mockDb.opsEvent.findMany.mockResolvedValue([]);
+    const before = Date.now();
+
+    await countWebhookFailuresByKind(24 * 60 * 60 * 1000);
+
+    const arg = mockDb.opsEvent.findMany.mock.calls[0][0];
+    expect(arg.where.eventType).toBe(OPS_EVENT_TYPES.WEBHOOK_FAILURE);
+    expect(arg.select).toEqual({ metadata: true });
+    const gte = arg.where.createdAt.gte as Date;
+    expect(before - gte.getTime()).toBeGreaterThanOrEqual(24 * 60 * 60 * 1000 - 1000);
+  });
+
+  it("splits real failures from degraded-but-handled rows", async () => {
+    mockDb.opsEvent.findMany.mockResolvedValue([
+      { metadata: { shop: "a.myshopify.com" } },
+      { metadata: { shop: "b.myshopify.com", degraded: true, reason: "offline_session" } },
+      { metadata: { shop: "c.myshopify.com" } },
+      { metadata: { shop: "d.myshopify.com", degraded: true, reason: "auto_rescan" } },
+      { metadata: { shop: "e.myshopify.com", degraded: true, reason: "offline_session" } },
+    ]);
+
+    expect(await countWebhookFailuresByKind(1000)).toEqual({ failed: 2, degraded: 3 });
+  });
+
+  it("counts anything but a literal degraded:true (missing/null/truthy-string) as a real failure", async () => {
+    mockDb.opsEvent.findMany.mockResolvedValue([
+      { metadata: null },
+      { metadata: {} },
+      { metadata: { degraded: "true" } },
+      { metadata: { degraded: false } },
+      { metadata: { degraded: true } },
+    ]);
+
+    expect(await countWebhookFailuresByKind(1000)).toEqual({ failed: 4, degraded: 1 });
+  });
+
+  it("returns zeros when there are no rows", async () => {
+    mockDb.opsEvent.findMany.mockResolvedValue([]);
+    expect(await countWebhookFailuresByKind(1000)).toEqual({ failed: 0, degraded: 0 });
   });
 });
 

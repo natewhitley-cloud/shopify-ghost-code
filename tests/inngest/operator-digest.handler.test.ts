@@ -737,3 +737,44 @@ describe("operator-digest handler: JOURNEY section wiring (gc-dpm.3)", () => {
     );
   });
 });
+
+describe("operator-digest handler: webhook failures split (gc-4hk follow-up)", () => {
+  it("counts only real webhook failures, reporting degraded-but-handled rows separately", async () => {
+    const now = Date.now();
+    tables.opsEvent.push(
+      {
+        id: "wf-real-1",
+        eventType: "webhook_failure",
+        key: "orders/create",
+        metadata: { shop: "a.myshopify.com" },
+        createdAt: new Date(now - 2 * HOUR),
+      },
+      {
+        id: "wf-real-2",
+        eventType: "webhook_failure",
+        key: "app/uninstalled",
+        metadata: { shop: "b.myshopify.com" },
+        createdAt: new Date(now - 3 * HOUR),
+      },
+      {
+        id: "wf-degraded",
+        eventType: "webhook_failure",
+        key: "themes/publish",
+        metadata: { shop: "a.myshopify.com", degraded: true, reason: "offline_session" },
+        createdAt: new Date(now - 1 * HOUR),
+      },
+      // Outside the 24h window: must not be counted either way.
+      {
+        id: "wf-old",
+        eventType: "webhook_failure",
+        key: "themes/publish",
+        metadata: { shop: "a.myshopify.com", degraded: true, reason: "offline_session" },
+        createdAt: new Date(now - 30 * HOUR),
+      },
+    );
+
+    const body = await runDigest();
+
+    expect(body).toContain("  Webhook failures: 2 (degraded but handled: 1)");
+  });
+});

@@ -1091,7 +1091,7 @@ function makeData(overrides: Partial<OperatorDigestData> = {}): OperatorDigestDa
     ops: {
       functionFailures: 0,
       workerFallbacks: 0,
-      webhookFailures: 0,
+      webhookFailures: { failed: 0, degraded: 0 },
       apiErrors: { error: 0, warn: 2 },
       staleCrons: [],
     },
@@ -1324,7 +1324,7 @@ describe("buildDigestBody — cron health", () => {
         ops: {
           functionFailures: 1,
           workerFallbacks: 2,
-          webhookFailures: 0,
+          webhookFailures: { failed: 0, degraded: 0 },
           apiErrors: { error: 3, warn: 4 },
           staleCrons: [
             {
@@ -1345,11 +1345,37 @@ describe("buildDigestBody — cron health", () => {
   });
 });
 
+describe("buildDigestBody — webhook failures split (gc-4hk follow-up)", () => {
+  function opsWith(webhookFailures: { failed: number; degraded: number }) {
+    return {
+      functionFailures: 0,
+      workerFallbacks: 0,
+      webhookFailures,
+      apiErrors: { error: 0, warn: 0 },
+      staleCrons: [],
+    };
+  }
+
+  it("reports real failures and degraded-but-handled rows separately", () => {
+    const body = buildDigestBody(makeData({ ops: opsWith({ failed: 2, degraded: 5 }) }));
+    expect(body).toContain("  Webhook failures: 2 (degraded but handled: 5)");
+  });
+
+  it("shows the degraded count even when zero, and zero failures when only degraded rows exist", () => {
+    expect(buildDigestBody(makeData({ ops: opsWith({ failed: 3, degraded: 0 }) }))).toContain(
+      "  Webhook failures: 3 (degraded but handled: 0)",
+    );
+    expect(buildDigestBody(makeData({ ops: opsWith({ failed: 0, degraded: 4 }) }))).toContain(
+      "  Webhook failures: 0 (degraded but handled: 4)",
+    );
+  });
+});
+
 describe("buildDigestBody — crons with no heartbeat on record (gc-288)", () => {
   const baseOps = {
     functionFailures: 0,
     workerFallbacks: 0,
-    webhookFailures: 0,
+    webhookFailures: { failed: 0, degraded: 0 },
     apiErrors: { error: 0, warn: 0 },
     staleCrons: [],
   };

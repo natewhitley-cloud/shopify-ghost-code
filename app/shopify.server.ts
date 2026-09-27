@@ -73,14 +73,18 @@ export const sessionStorage = shopify.sessionStorage;
 // routes/app._index.tsx                   | loader: authenticate.admin(), action: authenticate.admin() | OK
 // routes/app.scans.tsx                    | loader: authenticate.admin() | OK
 // routes/app.scans.$scanId.tsx            | loader: authenticate.admin() | OK
-// routes/webhooks.tsx                     | action: authenticate.webhook() | OK (catch-all for GDPR compliance_topics)
-// routes/webhooks.app.scopes_update.tsx   | action: authenticate.webhook() | OK
-// routes/webhooks.app.uninstalled.tsx     | action: authenticate.webhook() | OK
-// routes/webhooks.themes.publish.tsx      | action: authenticate.webhook() | OK
+// routes/webhooks.tsx                     | action: authenticateWebhookTolerant() | OK (catch-all for GDPR compliance_topics)
+// routes/webhooks.app.scopes_update.tsx   | action: authenticateWebhookTolerant() | OK
+// routes/webhooks.app.uninstalled.tsx     | action: authenticateWebhookTolerant() | OK
+// routes/webhooks.themes.publish.tsx      | action: authenticateWebhookTolerant() | OK
 // routes/api.inngest.ts                   | loader+action: Inngest SDK handler (no Shopify admin auth) | OK (Inngest uses its own signing key verification internally)
 //
 // RESULT: All admin routes call authenticate.admin(request). All webhook routes
-// call authenticate.webhook(request). No violations found.
+// call authenticateWebhookTolerant(request) (app/lib/webhook-auth.server.ts,
+// gc-4hk): it wraps authenticate.webhook(request), re-throws the library's 4xx
+// rejections unchanged, and on any other failure (e.g. a dead offline-session
+// refresh token) re-validates the HMAC itself: valid -> no-session context,
+// invalid -> 401/400. No violations found.
 //
 // NOTE: app.tsx's loader calls authenticate.admin() which covers all nested
 // /app/* routes at the layout level, but each child route ALSO independently

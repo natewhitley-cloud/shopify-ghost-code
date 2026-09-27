@@ -273,6 +273,19 @@ export async function countOpsEvents(eventType: string, sinceMs: number): Promis
 }
 
 /**
+ * The `metadata` of every event of a type in a trailing window. Shared by the
+ * digest's in-memory metadata tallies (API errors by level, webhook failures by
+ * degraded flag); volume is low for both, so fetching only `metadata` is fine.
+ */
+async function findOpsEventMetadataSince(eventType: string, sinceMs: number): Promise<unknown[]> {
+  const rows = await db.opsEvent.findMany({
+    where: { eventType, createdAt: { gte: new Date(Date.now() - sinceMs) } },
+    select: { metadata: true },
+  });
+  return rows.map((row) => row.metadata);
+}
+
+/**
  * Tally API_ERROR events in the trailing window by their metadata.level. Used by
  * the daily digest to split GraphQL/rate-limit signals into errors vs warnings.
  *
@@ -285,18 +298,12 @@ export async function countOpsEvents(eventType: string, sinceMs: number): Promis
 export async function countApiErrorsByLevel(
   sinceMs: number,
 ): Promise<{ error: number; warn: number }> {
-  const rows = await db.opsEvent.findMany({
-    where: {
-      eventType: OPS_EVENT_TYPES.API_ERROR,
-      createdAt: { gte: new Date(Date.now() - sinceMs) },
-    },
-    select: { metadata: true },
-  });
+  const metadatas = await findOpsEventMetadataSince(OPS_EVENT_TYPES.API_ERROR, sinceMs);
 
   let error = 0;
   let warn = 0;
-  for (const row of rows) {
-    const level = (row.metadata as { level?: unknown } | null)?.level;
+  for (const metadata of metadatas) {
+    const level = (metadata as { level?: unknown } | null)?.level;
     if (level === "warn") {
       warn += 1;
     } else {
@@ -304,6 +311,33 @@ export async function countApiErrorsByLevel(
     }
   }
   return { error, warn };
+}
+
+/**
+ * Tally WEBHOOK_FAILURE events in the trailing window into real failures vs
+ * degraded-but-handled rows (`metadata.degraded === true`, written by
+ * recordWebhookFailure's `degradedReason`, gc-4hk). Used by the daily digest so
+ * a handled-but-degraded webhook (200 returned) is not reported as a failure.
+ *
+ * Fallback: only a literal `degraded: true` counts as degraded; anything else
+ * (missing, null, malformed metadata) is a real failure, since an
+ * unclassifiable row is more useful surfaced than hidden.
+ */
+export async function countWebhookFailuresByKind(
+  sinceMs: number,
+): Promise<{ failed: number; degraded: number }> {
+  const metadatas = await findOpsEventMetadataSince(OPS_EVENT_TYPES.WEBHOOK_FAILURE, sinceMs);
+
+  let failed = 0;
+  let degraded = 0;
+  for (const metadata of metadatas) {
+    if ((metadata as { degraded?: unknown } | null)?.degraded === true) {
+      degraded += 1;
+    } else {
+      failed += 1;
+    }
+  }
+  return { failed, degraded };
 }
 
 // ---------------------------------------------------------------------------

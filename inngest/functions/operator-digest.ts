@@ -1256,7 +1256,8 @@ export interface OperatorDigestData {
   ops: {
     functionFailures: number;
     workerFallbacks: number;
-    webhookFailures: number;
+    /** Real failures vs degraded-but-handled rows (gc-4hk). */
+    webhookFailures: { failed: number; degraded: number };
     apiErrors: { error: number; warn: number };
     staleCrons: StaleCronSummary[];
     /** Crons with no heartbeat on record (gc-288). Optional: absent = none. */
@@ -1613,7 +1614,9 @@ export function buildDigestBody(data: OperatorDigestData): string {
   lines.push("FUNCTIONS & WORKERS");
   lines.push(`  Function failures: ${ops.functionFailures}`);
   lines.push(`  Worker-pool fallbacks: ${ops.workerFallbacks}`);
-  lines.push(`  Webhook failures: ${ops.webhookFailures}`);
+  lines.push(
+    `  Webhook failures: ${ops.webhookFailures.failed} (degraded but handled: ${ops.webhookFailures.degraded})`,
+  );
   lines.push("");
 
   lines.push("API");
@@ -2108,6 +2111,7 @@ export const operatorDigest = inngest.createFunction(
       const {
         countOpsEvents,
         countApiErrorsByLevel,
+        countWebhookFailuresByKind,
         getStaleCrons,
         getNeverSeenCrons,
         CRON_HEARTBEAT_EXPECTATIONS,
@@ -2117,7 +2121,7 @@ export const operatorDigest = inngest.createFunction(
         await Promise.all([
           countOpsEvents(OPS_EVENT_TYPES.FUNCTION_FAILURE, DAY_MS),
           countOpsEvents(OPS_EVENT_TYPES.WORKER_FALLBACK, DAY_MS),
-          countOpsEvents(OPS_EVENT_TYPES.WEBHOOK_FAILURE, DAY_MS),
+          countWebhookFailuresByKind(DAY_MS),
           countApiErrorsByLevel(DAY_MS),
           getStaleCrons(CRON_HEARTBEAT_EXPECTATIONS),
           getNeverSeenCrons(CRON_HEARTBEAT_EXPECTATIONS),
