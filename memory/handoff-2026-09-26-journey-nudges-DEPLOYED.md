@@ -34,3 +34,22 @@ gc-zji (P3 differ re-counts capped as new), gc-dpm.4 (P4 Partner API uninstall r
 - Live verify pending: next de66e6-c4 webhook -> 200 + 1 degraded row; next scan on a no-scope shop -> 0 ACCESS_DENIED in Partner logs.
 - Churn: sex-eshop uninstalled 9/26 16:18Z "Not working properly" (stale 9/22 results with the pre-gc-j93 GHOST_TITLE FP as its only visible finding; Free quota blocked rescan; no server errors). Next batch: gc-mgi (stale-results banner), gc-nn6 (client error telemetry).
 - Same webhook exposure in FraudPilot + ClearSignal (expiringOfflineAccessTokens): not fixed.
+
+## Addendum 2026-09-29: competitive scan + new finding bead (gc-fed)
+Installs are not public on the Shopify App Store; review count is the only proxy. Every direct competitor below has **0 reviews** (checked on each listing 2026-09-29). Ghost Code itself: launched 2026-04-30, 0 reviews.
+
+| App | Launched | Price | Pitch / notable |
+|---|---|---|---|
+| [App Telemetry](https://apps.shopify.com/app-telemetry) (Red Van) | 2026-02-26 | Free 3 scans/mo; $19; $49 | Per-app speed impact, conflicts, leftover code |
+| [Script Scan](https://apps.shopify.com/script-scan) (Matt Gibbins) | 2026-04-28 | Free 1 scan/quarter; $4.99; $14.99 (daily/weekly auto-scans) | Duplicate/orphaned scripts, read-only, health score |
+| [GhostSweep](https://apps.shopify.com/ghost-sweep) (Timi Studio) | 2026-06-09 | $20/mo | Uses the phrase "ghost code"; 3 detection methods, Safe/Caution/Danger, PDF/JSON export, metafield cleanup, 8 languages |
+| [Upright](https://apps.shopify.com/upright-cleaner) (Boostifyyy) | 2026-06-12 | Free; $7.99 | Dead code from uninstalled apps |
+| [ScriptSweep](https://apps.shopify.com/scriptsweep) | 2026-07-01 | Free scan; paid full review | Review-first, never edits theme |
+| [Residue](https://apps.shopify.com/theme-residue-cleaner) (Speedy Bloom) | 2026-07-03 | $49/yr | Removes code as a draft theme with backup; re-scans + alerts |
+| [ThemeSweep](https://apps.shopify.com/themesweep) (JMS Dev Lab) | 2026-09-07 | Free; $9.99; $19.99; $39.99 agency | Backup + one-click rollback |
+| [ThemeMedic](https://apps.shopify.com/theme-medic-1) | 2026-09-08 | Free; $7.99 ($59/yr) | File+line per issue, health score, wasted bytes |
+| [BloatBuster](https://apps.shopify.com/bloatbuster-clean-theme-code) (RelayWorks) | 2026-09-16 | $6.99 | Removes leftover code/scripts |
+
+- Read: category went from ~0 to 9 entrants in 7 months (3 in Sept 2026). Price anchors $5-20/mo; several AUTO-REMOVE with backup (Residue, ThemeSweep, BloatBuster), which Ghost Code does not. Ghost Code's differentiators to keep leaning on: 26 checks beyond scripts (translations, settings, store data), 100+ app signatures, MALICIOUS_SCRIPT always free. First real reviews decide ranking: review asks (gc-97k.7) matter more than new detectors.
+- Deprecation hooks: `scriptTagCreate`/`Update` error from 2026-10-01; storefront script tags stop injecting 2027-03-01 ([changelog](https://shopify.dev/changelog/posts/online-store-script-tags-deprecation)). New bead **gc-fed** (P2): "script-tag sunset risk + app embed turned off" (settings_data.json app-embed `disabled:true` needs no new scope; ScriptTag API likely only returns the caller's own tags: verify).
+- Source: next-bet research doc tab "Shopify deprecations as openings" (https://claude.ai/code/artifact/a6d971c7-e01d-4f7d-a3d8-ed39eec8f642).
