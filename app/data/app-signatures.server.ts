@@ -449,10 +449,15 @@ export const APP_SIGNATURES: AppSignature[] = [
   },
   {
     appName: "Instagram Feed",
-    cdnDomains: ["cdn.lightwidget.com", "instagram.com"],
-    scriptPatterns: [/lightwidget\.com/, /instagramFeed/, /window\.instgrm/],
-    snippetNames: ["instagram-feed", "instafeed"],
-    cssPatterns: [/instagram-feed/, /instafeed/],
+    // App-specific fingerprints only: LightWidget and Instafeed by Mintt
+    // (instafeed.nfcube.com is its API host, per
+    // docs.minttstudio.com/developer-api/docs/instafeed-api/developer-api).
+    // Never instagram.com, window.instgrm (Instagram's own embed.js global) or
+    // a generic "instagram-feed" name: themes ship those natively.
+    cdnDomains: ["cdn.lightwidget.com", "instafeed.nfcube.com"],
+    scriptPatterns: [/lightwidget\.com/],
+    snippetNames: ["instafeed"],
+    cssPatterns: [/instafeed/],
   },
 
   // -------------------------------------------------------------------------
