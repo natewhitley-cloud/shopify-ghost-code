@@ -52,6 +52,7 @@ import {
   canUseAutoRescan,
   canUseMultipleThemes,
   canUseScanDiffing,
+  getNextScanPeriodStart,
 } from "../../app/lib/plan-gating.server";
 
 // Restore real timers after every test so fake-timer usage in one test cannot
@@ -515,5 +516,120 @@ describe("canStartScan — first scan free on free plan", () => {
     mockHasCompletedScans.mockRejectedValue(new Error("DB timeout"));
 
     await expect(canStartScan(SHOP_ID, "free")).rejects.toThrow("DB timeout");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Next available scan (gc-mgi): the start of the NEXT quota period, derived
+// from getScanUsage's period/periodStart (single source of period logic).
+// ---------------------------------------------------------------------------
+
+describe("getNextScanPeriodStart", () => {
+  it("month: the 1st of the following month, 00:00 UTC", () => {
+    expect(getNextScanPeriodStart("month", new Date("2026-09-01T00:00:00Z"))).toEqual(
+      new Date("2026-10-01T00:00:00Z"),
+    );
+  });
+
+  it("month: December rolls over to January 1 of the next year", () => {
+    expect(getNextScanPeriodStart("month", new Date("2026-12-01T00:00:00Z"))).toEqual(
+      new Date("2027-01-01T00:00:00Z"),
+    );
+  });
+
+  it("month: January to February (short month next)", () => {
+    expect(getNextScanPeriodStart("month", new Date("2027-01-01T00:00:00Z"))).toEqual(
+      new Date("2027-02-01T00:00:00Z"),
+    );
+  });
+
+  it("week: the following Monday 00:00 UTC", () => {
+    expect(getNextScanPeriodStart("week", new Date("2026-09-28T00:00:00Z"))).toEqual(
+      new Date("2026-10-05T00:00:00Z"),
+    );
+  });
+
+  it("week: a week crossing a year boundary", () => {
+    expect(getNextScanPeriodStart("week", new Date("2026-12-28T00:00:00Z"))).toEqual(
+      new Date("2027-01-04T00:00:00Z"),
+    );
+  });
+});
+
+describe("canStartScan — nextScanAt when the quota blocks (gc-mgi)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.scan.findFirst.mockResolvedValue(null);
+    mockHasCompletedScans.mockResolvedValue(true);
+  });
+
+  it("Free, Sep 30 23:59:59Z, quota used: next scan Oct 1 00:00Z", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-09-30T23:59:59.999Z"));
+    mockCountScansForShopSince.mockResolvedValue(1);
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(result.allowed).toBe(false);
+    expect(result.nextScanAt).toEqual(new Date("2026-10-01T00:00:00Z"));
+  });
+
+  it("Free, exactly Oct 1 00:00Z: a new month (counted from Oct 1), next would be Nov 1", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-01T00:00:00.000Z"));
+    mockCountScansForShopSince.mockResolvedValue(1);
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(mockCountScansForShopSince.mock.calls[0][1]).toEqual(new Date("2026-10-01T00:00:00Z"));
+    expect(result.nextScanAt).toEqual(new Date("2026-11-01T00:00:00Z"));
+  });
+
+  it("Free, December: next scan January 1 of the next year", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-12-31T23:00:00Z"));
+    mockCountScansForShopSince.mockResolvedValue(1);
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(result.nextScanAt).toEqual(new Date("2027-01-01T00:00:00Z"));
+  });
+
+  it("Standard, Sunday 23:59Z, weekly quota used: next scan Monday 00:00Z", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-04T23:59:59.999Z")); // Sunday
+    mockCountScansForShopSince.mockResolvedValue(1);
+
+    const result = await canStartScan(SHOP_ID, "Standard");
+
+    expect(result.allowed).toBe(false);
+    expect(result.nextScanAt).toEqual(new Date("2026-10-05T00:00:00Z"));
+  });
+
+  it("Standard, Monday 00:00Z: the new week counts from today, next is the Monday after", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-05T00:00:00.000Z"));
+    mockCountScansForShopSince.mockResolvedValue(1);
+
+    const result = await canStartScan(SHOP_ID, "Standard");
+
+    expect(result.nextScanAt).toEqual(new Date("2026-10-12T00:00:00Z"));
+  });
+
+  it("no nextScanAt when allowed", async () => {
+    mockCountScansForShopSince.mockResolvedValue(0);
+
+    expect((await canStartScan(SHOP_ID, "free")).nextScanAt).toBeUndefined();
+    expect((await canStartScan(SHOP_ID, "Standard")).nextScanAt).toBeUndefined();
+    expect((await canStartScan(SHOP_ID, "Professional")).nextScanAt).toBeUndefined();
+  });
+
+  it("no nextScanAt when blocked by a scan in progress (not a quota block)", async () => {
+    mockDb.scan.findFirst.mockResolvedValue({ id: "active", status: "PENDING" });
+
+    const result = await canStartScan(SHOP_ID, "free");
+
+    expect(result.allowed).toBe(false);
+    expect(result.nextScanAt).toBeUndefined();
   });
 });

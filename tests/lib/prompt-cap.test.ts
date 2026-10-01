@@ -110,6 +110,32 @@ describe("page renderability", () => {
     },
   );
 
+  it("one upgrade ask per page (gc-mgi): the return banner is NOT renderable while the stale-results banner carries the page's upgrade ask", () => {
+    expect(
+      scanResultsPrompts({
+        scanCompletedAt: ago(DAY_MS),
+        now: NOW,
+        scanSuccessful: true,
+        plan: "free",
+        hasHiddenFindings: true,
+        contentUpgradeAsk: true,
+      }),
+    ).toEqual(["review_popup"]);
+  });
+
+  it("contentUpgradeAsk false leaves the return banner renderable", () => {
+    expect(
+      scanResultsPrompts({
+        scanCompletedAt: ago(DAY_MS),
+        now: NOW,
+        scanSuccessful: true,
+        plan: "free",
+        hasHiddenFindings: true,
+        contentUpgradeAsk: false,
+      }),
+    ).toEqual(["review_popup", "upgrade_return"]);
+  });
+
   it.each([
     ["free", true],
     ["free", false],

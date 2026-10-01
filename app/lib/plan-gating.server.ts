@@ -15,6 +15,22 @@ export function getWeekStartUTC(now: Date = new Date()): Date {
 }
 
 /**
+ * The start of the quota period AFTER the one starting at `periodStart`: when
+ * a quota-blocked shop can next scan (gc-mgi). `period` and `periodStart` come
+ * from getScanUsage, the single source of the period logic.
+ *   - month (Free): the 1st of the following month, 00:00 UTC.
+ *   - week (Standard): the following Monday, 00:00 UTC.
+ */
+export function getNextScanPeriodStart(period: "week" | "month", periodStart: Date): Date {
+  if (period === "month") {
+    return new Date(Date.UTC(periodStart.getUTCFullYear(), periodStart.getUTCMonth() + 1, 1));
+  }
+  const next = new Date(periodStart);
+  next.setUTCDate(next.getUTCDate() + 7);
+  return next;
+}
+
+/**
  * Check whether a shop is allowed to start a new scan under their current plan.
  *
  * - Free plan: first scan ever is always allowed (onboarding); after that, 1 scan per calendar month.
@@ -22,11 +38,13 @@ export function getWeekStartUTC(now: Date = new Date()): Date {
  * - Professional: unlimited scans.
  *
  * Returns { allowed: true } or { allowed: false, reason: "<human-readable message>" }.
+ * A QUOTA block also returns `nextScanAt`, the start of the next quota period
+ * (getNextScanPeriodStart); a scan already in progress does not.
  */
 export async function canStartScan(
   shopId: string,
   planName: string,
-): Promise<{ allowed: boolean; reason?: string }> {
+): Promise<{ allowed: boolean; reason?: string; nextScanAt?: Date }> {
   // Guard against duplicate concurrent scans regardless of plan tier.
   const activeScans = await db.scan.findFirst({
     where: { shopId, status: { in: ["PENDING", "IN_PROGRESS"] } },
@@ -48,6 +66,7 @@ export async function canStartScan(
       return {
         allowed: false,
         reason: `Weekly scan limit reached (${usage.used} of ${usage.limit} used). Upgrade to Professional for unlimited scans.`,
+        nextScanAt: getNextScanPeriodStart(usage.period, usage.periodStart),
       };
     }
 
@@ -67,6 +86,7 @@ export async function canStartScan(
     return {
       allowed: false,
       reason: `Free plan limit: ${usage.limit} scan per month. Upgrade to Standard or Professional for more scans.`,
+      nextScanAt: getNextScanPeriodStart(usage.period, usage.periodStart),
     };
   }
 

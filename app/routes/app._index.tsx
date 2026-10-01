@@ -40,6 +40,7 @@ import {
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS } from "../lib/prompt-cap";
+import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import {
@@ -372,13 +373,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Theme change nudge: show when a theme was published since the last completed
   // scan, indicating orphaned-code risk may have changed.
   // Suppressed for Professional plan shops — they get auto-rescan instead.
-  const showThemeChangeNudge =
-    !features.autoRescan &&
-    shop.lastThemePublishAt !== null &&
-    latestScan !== null &&
-    isSuccessfulScan(latestScan.status) &&
-    latestScan.completedAt !== null &&
-    new Date(shop.lastThemePublishAt) > new Date(latestScan.completedAt);
+  // Same condition as the scan page's stale-results banner (gc-mgi).
+  const showThemeChangeNudge = isScanStaleAfterThemeChange({
+    autoRescan: features.autoRescan,
+    lastThemePublishAt: shop.lastThemePublishAt,
+    scan: latestScan,
+  });
 
   // Multi-theme upgrade nudge: a shop whose plan can't scan multiple themes but
   // whose store HAS more than one theme is missing Professional's flagship

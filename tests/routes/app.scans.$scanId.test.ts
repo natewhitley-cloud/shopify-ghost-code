@@ -60,6 +60,8 @@ vi.mock("../../app/models/scan.server", () => ({
   getFirstSuccessfulScanCompletedAt: vi.fn(),
   // The return banner's "latest results hide findings" read (starvation fix).
   getLatestSuccessfulScanNonMaliciousCount: vi.fn(),
+  // gc-mgi: the stale banner's "is this the latest successful scan" read.
+  getCompletedScansForShop: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => ({
@@ -93,6 +95,9 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
 }));
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
+  // gc-mgi: the stale banner's quota check (its period logic is covered in
+  // tests/lib/plan-gating.server.test.ts).
+  canStartScan: vi.fn(),
   canViewFindingDetails: vi.fn(),
   canUseScanDiffing: vi.fn(),
   canExportPdf: vi.fn(),
@@ -134,7 +139,11 @@ import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/fin
 import { comparePreviewCandidates } from "../../app/lib/free-preview";
 import { computeHealthScore } from "../../app/lib/health-score";
 import { logger } from "../../app/lib/logger.server";
-import { canUseScanDiffing, canViewFindingDetails } from "../../app/lib/plan-gating.server";
+import {
+  canStartScan,
+  canUseScanDiffing,
+  canViewFindingDetails,
+} from "../../app/lib/plan-gating.server";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
 import {
   getAppAttributionForScan,
@@ -151,6 +160,7 @@ import {
   ignoreFindingInstance,
 } from "../../app/models/ignored-finding.server";
 import {
+  getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
   getLatestSuccessfulScanNonMaliciousCount,
   getScanById,
@@ -179,6 +189,7 @@ import {
   scanProgressLabel,
   skippedFilesNotice,
   recordUpgradeClick,
+  StaleResultsBanner,
   UpgradePreviewBanner,
   UpgradeReturnBanner,
 } from "../../app/routes/app.scans.$scanId";
@@ -220,6 +231,8 @@ const mockIsTrackerApp = isTrackerApp as ReturnType<typeof vi.fn>;
 const mockSubmitSignatureSuggestion = submitSignatureSuggestion as ReturnType<typeof vi.fn>;
 const mockRecordUpgradePreviewStage = recordUpgradePreviewStageOnce as ReturnType<typeof vi.fn>;
 const mockHasBillingHistory = hasBillingHistory as ReturnType<typeof vi.fn>;
+const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
+const mockGetCompletedScans = getCompletedScansForShop as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -1553,6 +1566,330 @@ describe("app.scans.$scanId loader", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Stale-results banner (gc-mgi)
+  // -------------------------------------------------------------------------
+
+  describe("stale-results banner (gc-mgi)", () => {
+    // The sex-eshop timeline: scanned 9/22, published a new theme 9/22 20:09,
+    // came back 9/26 to stale results with the Free quota used.
+    const NOW = new Date("2026-09-26T16:18:00Z");
+    const DAY = 24 * 60 * 60 * 1000;
+    const ago = (ms: number) => new Date(NOW.getTime() - ms);
+    const COMPLETED = new Date("2026-09-22T15:00:00Z");
+    const PUBLISHED = new Date("2026-09-22T20:09:00Z");
+    const OCT_1 = new Date("2026-10-01T00:00:00Z");
+    const MONDAY = new Date("2026-09-28T00:00:00Z");
+
+    type StaleAction =
+      | { kind: "rescan" }
+      | { kind: "free_blocked"; nextScanAt: Date; trialEligible: boolean }
+      | { kind: "paid_blocked"; nextScanAt: Date }
+      | { kind: "scan_running" }
+      | { kind: "newer_results"; latestScanId: string };
+    type Result = {
+      staleResults: {
+        scanCompletedAt: Date;
+        themePublishedAt: Date;
+        action: StaleAction;
+      } | null;
+      upgradeReturn: unknown;
+      upgradePreview: { hiddenCount: number } | null;
+      teaserCta: boolean;
+      reviewRequestNonce: string | null;
+    };
+
+    const load = async () => (await loader(makeLoaderArgs("scan-1"))) as unknown as Result;
+    const claimedColumns = () => mockClaimShopStamp.mock.calls.map((c) => c[1]);
+
+    function shopOn(plan: string, overrides: Record<string, unknown> = {}) {
+      mockGetShopMetadata.mockResolvedValue({
+        ...SHOP,
+        plan,
+        lastThemePublishAt: PUBLISHED,
+        upgradePreviewShownAt: null,
+        staleResultsShownAt: null,
+        // Popup already requested, so the return banner is the top prompt.
+        reviewPopupRequestedAt: ago(30 * DAY),
+        ...overrides,
+      });
+      mockCanViewFindingDetails.mockReturnValue(plan !== "free");
+    }
+
+    /** 10 findings, so a Free view hides 5 (return banner + teaser material). */
+    function tenFindings() {
+      const rows = Array.from({ length: 10 }, (_, i) => ({
+        ...FINDING_ONE,
+        id: `f-${i}`,
+        findingType: i < 6 ? "GHOST_SCRIPT" : "GHOST_HREFLANG",
+        createdAt: new Date(Date.UTC(2026, 8, 22, 10, i)),
+      }));
+      mockGetFindingSummary.mockResolvedValue({
+        total: 10,
+        bySeverity: { HIGH: 10, MEDIUM: 0, LOW: 0 },
+        byType: { GHOST_SCRIPT: 6, GHOST_HREFLANG: 4 },
+      });
+      serveTopFindings(rows);
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(NOW);
+      mockGetScanById.mockResolvedValue({ ...SCAN, completedAt: COMPLETED });
+      mockGetCompletedScans.mockResolvedValue([
+        { id: "scan-1", completedAt: COMPLETED, themeName: "Dawn" },
+      ]);
+      // Return banner eligible: first successful scan 4 days ago.
+      mockGetFirstSuccessfulScan.mockResolvedValue(COMPLETED);
+      mockClaimShopStamp.mockResolvedValue(true);
+      mockRecordUpgradePreviewStage.mockResolvedValue(true);
+      mockHasBillingHistory.mockResolvedValue(false);
+      mockStartEpisode.mockResolvedValue(undefined);
+      tenFindings();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    describe("when the results are not stale", () => {
+      it("theme published BEFORE the scan completed: no banner, no extra reads", async () => {
+        shopOn("free", { lastThemePublishAt: new Date("2026-09-22T14:00:00Z") });
+
+        const result = await load();
+
+        expect(result.staleResults).toBeNull();
+        expect(mockCanStartScan).not.toHaveBeenCalled();
+        expect(mockGetCompletedScans).not.toHaveBeenCalled();
+      });
+
+      it("no theme publish ever recorded: no banner", async () => {
+        shopOn("free", { lastThemePublishAt: null });
+
+        const result = await load();
+
+        expect(result.staleResults).toBeNull();
+        expect(mockCanStartScan).not.toHaveBeenCalled();
+      });
+
+      it("an unsuccessful scan's page (the in-progress poll): no banner, no reads", async () => {
+        shopOn("free");
+        mockGetScanById.mockResolvedValue({ ...SCAN, status: "IN_PROGRESS", completedAt: null });
+
+        const result = await load();
+
+        expect(result.staleResults).toBeNull();
+        expect(mockCanStartScan).not.toHaveBeenCalled();
+        expect(mockGetCompletedScans).not.toHaveBeenCalled();
+      });
+    });
+
+    describe("Free, quota used (the sex-eshop case)", () => {
+      beforeEach(() => {
+        shopOn("free");
+        mockCanStartScan.mockResolvedValue({
+          allowed: false,
+          reason: "Free plan limit",
+          nextScanAt: OCT_1,
+        });
+      });
+
+      it("shows the dates, the next free scan date and the trial CTA", async () => {
+        const result = await load();
+
+        expect(result.staleResults).toEqual({
+          scanCompletedAt: COMPLETED,
+          themePublishedAt: PUBLISHED,
+          action: { kind: "free_blocked", nextScanAt: OCT_1, trialEligible: true },
+        });
+        expect(mockCanStartScan).toHaveBeenCalledWith(SHOP.id, "free");
+      });
+
+      it("previously-paid Free shop: fallback (no trial) framing", async () => {
+        shopOn("free", { everPaidAt: new Date("2026-05-01T00:00:00Z") });
+
+        const result = await load();
+
+        expect(result.staleResults?.action).toEqual({
+          kind: "free_blocked",
+          nextScanAt: OCT_1,
+          trialEligible: false,
+        });
+      });
+
+      it("one upgrade ask: suppresses the return banner AND the teaser CTA (teaser text stays)", async () => {
+        const result = await load();
+
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.upgradePreview?.hiddenCount).toBe(5);
+        expect(result.teaserCta).toBe(false);
+        // The CTA-less teaser is not an ask: its `shown` is not recorded.
+        expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
+      });
+
+      it("suppressing the return banner does NOT claim or burn its prompt slot", async () => {
+        await load();
+
+        expect(mockClaimPromptSlot).not.toHaveBeenCalled();
+        expect(mockStartEpisode).not.toHaveBeenCalled();
+        expect(claimedColumns()).not.toContain("upgradeReturnShownAt");
+
+        // The slot is still free: the next non-stale results view claims it
+        // for the return banner as if the stale view never happened.
+        shopOn("free", { lastThemePublishAt: null });
+        const next = await load();
+
+        expect(next.upgradeReturn).not.toBeNull();
+        expect(mockClaimPromptSlot).toHaveBeenCalledTimes(1);
+        expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+          SHOP.domain,
+          "upgrade_return",
+          expect.anything(),
+          NOW,
+        );
+      });
+
+      it("records stale_results `shown` once per merchant (claim on first view)", async () => {
+        await load();
+
+        expect(claimedColumns()).toEqual(["staleResultsShownAt"]);
+      });
+
+      it("does not re-claim `shown` once stamped (pre-check skips the write)", async () => {
+        shopOn("free", { staleResultsShownAt: ago(DAY) });
+
+        await load();
+
+        expect(claimedColumns()).not.toContain("staleResultsShownAt");
+      });
+
+      it("the review popup still outranks everything when it is the shop's pending prompt", async () => {
+        shopOn("free", { reviewPopupRequestedAt: null });
+
+        const result = await load();
+
+        expect(result.reviewRequestNonce).toBe("none");
+        expect(result.staleResults?.action.kind).toBe("free_blocked");
+        expect(result.upgradeReturn).toBeNull();
+      });
+    });
+
+    describe("Free, quota available", () => {
+      beforeEach(() => {
+        shopOn("free");
+        mockCanStartScan.mockResolvedValue({ allowed: true });
+      });
+
+      it("offers Rescan now, with no upgrade CTA and no stale_results `shown`", async () => {
+        const result = await load();
+
+        expect(result.staleResults?.action).toEqual({ kind: "rescan" });
+        expect(claimedColumns()).not.toContain("staleResultsShownAt");
+      });
+
+      it("leaves the other asks alone (the banner carries no upgrade ask)", async () => {
+        const result = await load();
+
+        expect(result.upgradeReturn).not.toBeNull();
+        expect(mockClaimPromptSlot).toHaveBeenCalledWith(
+          SHOP.domain,
+          "upgrade_return",
+          expect.anything(),
+          NOW,
+        );
+      });
+    });
+
+    describe("Standard", () => {
+      it("weekly quota used: next scan date (Monday), no trial ask, no stale_results `shown`", async () => {
+        shopOn("Standard");
+        mockCanStartScan.mockResolvedValue({
+          allowed: false,
+          reason: "Weekly scan limit reached",
+          nextScanAt: MONDAY,
+        });
+
+        const result = await load();
+
+        expect(result.staleResults?.action).toEqual({ kind: "paid_blocked", nextScanAt: MONDAY });
+        expect(mockCanStartScan).toHaveBeenCalledWith(SHOP.id, "Standard");
+        expect(claimedColumns()).not.toContain("staleResultsShownAt");
+      });
+
+      it("weekly quota available: Rescan now", async () => {
+        shopOn("Standard");
+        mockCanStartScan.mockResolvedValue({ allowed: true });
+
+        const result = await load();
+
+        expect(result.staleResults?.action).toEqual({ kind: "rescan" });
+      });
+    });
+
+    it("Professional (auto-rescan on publish): no banner at all, matching Home", async () => {
+      shopOn("Professional");
+
+      const result = await load();
+
+      expect(result.staleResults).toBeNull();
+      expect(mockCanStartScan).not.toHaveBeenCalled();
+      expect(mockGetCompletedScans).not.toHaveBeenCalled();
+    });
+
+    it("a scan is already running: says so instead of offering a rescan or an ask", async () => {
+      shopOn("free");
+      mockCanStartScan.mockResolvedValue({
+        allowed: false,
+        reason: "A scan is already in progress.",
+      });
+
+      const result = await load();
+
+      expect(result.staleResults?.action).toEqual({ kind: "scan_running" });
+      expect(result.teaserCta).toBe(true);
+      expect(claimedColumns()).not.toContain("staleResultsShownAt");
+    });
+
+    it("a failing banner read never breaks the page: no banner, logged, results still load", async () => {
+      shopOn("free");
+      mockCanStartScan.mockRejectedValue(new Error("db down"));
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+
+      const result = await load();
+
+      expect(result.staleResults).toBeNull();
+      expect(result.teaserCta).toBe(true);
+      expect(errorSpy).toHaveBeenCalledWith(
+        "stale-results-load-failed",
+        expect.objectContaining({ shop: SHOP.domain, error: "db down" }),
+      );
+      errorSpy.mockRestore();
+    });
+
+    describe("an OLDER scan's page (a newer successful scan exists)", () => {
+      beforeEach(() => {
+        shopOn("free");
+        mockGetCompletedScans.mockResolvedValue([
+          { id: "scan-2", completedAt: new Date("2026-09-25T10:00:00Z"), themeName: "Dawn" },
+        ]);
+      });
+
+      it("shows the date line and links to the latest results; no rescan, no ask, no quota read", async () => {
+        const result = await load();
+
+        expect(result.staleResults).toEqual({
+          scanCompletedAt: COMPLETED,
+          themePublishedAt: PUBLISHED,
+          action: { kind: "newer_results", latestScanId: "scan-2" },
+        });
+        expect(mockCanStartScan).not.toHaveBeenCalled();
+        expect(mockGetCompletedScans).toHaveBeenCalledWith(SHOP.id, { limit: 1 });
+        expect(result.teaserCta).toBe(true);
+        expect(claimedColumns()).not.toContain("staleResultsShownAt");
+      });
+    });
+  });
+
+  // -------------------------------------------------------------------------
   // Durable firstResultsViewedAt milestone (gc-dpm.1)
   // -------------------------------------------------------------------------
 
@@ -2626,6 +2963,131 @@ describe("UpgradePreviewBanner", () => {
 // ---------------------------------------------------------------------------
 // Oversized-file skip banner copy
 // ---------------------------------------------------------------------------
+
+describe("StaleResultsBanner (gc-mgi)", () => {
+  const PRICING_URL = "https://admin.shopify.com/store/test-shop/charges/ghost-code/pricing_plans";
+  const COMPLETED = new Date("2026-09-22T15:00:00Z");
+  const PUBLISHED = new Date("2026-09-22T20:09:00Z");
+  const OCT_1 = new Date("2026-10-01T00:00:00Z");
+
+  function render(
+    action: Parameters<typeof StaleResultsBanner>[0]["staleResults"]["action"],
+    extra: { rescanning?: boolean; rescanError?: string | null } = {},
+  ) {
+    return renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(StaleResultsBanner, {
+          staleResults: { scanCompletedAt: COMPLETED, themePublishedAt: PUBLISHED, action },
+          pricingPlansUrl: PRICING_URL,
+          onRescan: () => {},
+          rescanning: extra.rescanning ?? false,
+          rescanError: extra.rescanError ?? null,
+        }),
+      ),
+    );
+  }
+
+  // formatDate is mocked to "2026-03-22" in this file; the copy around it is what matters.
+  const DATE_LINE = "These results are from <time";
+
+  it("always states when the results are from and that the theme changed since", () => {
+    const html = render({ kind: "rescan" });
+
+    expect(html).toContain('tone="info"');
+    expect(html).toContain(DATE_LINE);
+    expect(html).toMatch(
+      /Your theme changed on <time[^>]*>[^<]*<\/time>, so some findings may already be fixed\./,
+    );
+    expect(html).not.toContain("—");
+  });
+
+  it("rescan: a 'Rescan now' button and no upgrade link", () => {
+    const html = render({ kind: "rescan" });
+
+    expect(html).toContain(">Rescan now</s-button>");
+    expect(html).not.toContain(PRICING_URL);
+  });
+
+  it("rescan in flight: the button shows loading", () => {
+    const html = render({ kind: "rescan" }, { rescanning: true });
+
+    expect(html).toMatch(/<s-button[^>]*loading[^>]*>Rescan now<\/s-button>/);
+  });
+
+  it("rescan error: shows the action's error message", () => {
+    const html = render({ kind: "rescan" }, { rescanError: "Free plan limit reached." });
+
+    expect(html).toContain("Free plan limit reached.");
+  });
+
+  it("free_blocked, trial-eligible: next free scan date and the trial CTA as a top-level pricing link", () => {
+    const html = render({ kind: "free_blocked", nextScanAt: OCT_1, trialEligible: true });
+
+    expect(html).toMatch(/Your next free scan is available <time[^>]*>[^<]*<\/time>\./);
+    expect(html).toContain("Try Standard free for 7 days to scan every week.");
+    expect(html).toContain(`href="${PRICING_URL}"`);
+    expect(html).toContain('target="_top"');
+    expect(html).toContain(">Start 7-day free trial</s-button>");
+    expect(html).not.toContain(">Rescan now<");
+  });
+
+  it("free_blocked, previously paid: fallback CTA, no trial promise", () => {
+    const html = render({ kind: "free_blocked", nextScanAt: OCT_1, trialEligible: false });
+
+    expect(html).toContain("Upgrade to Standard to scan every week.");
+    expect(html).toContain(">Upgrade to Standard</s-button>");
+    expect(html).not.toMatch(/trial|free for/i);
+  });
+
+  it("paid_blocked (Standard): next scan date and Home's 'Upgrade for more scans' Settings link, no pricing CTA", () => {
+    const html = render({ kind: "paid_blocked", nextScanAt: OCT_1 });
+
+    expect(html).toMatch(/Your next scan is available <time[^>]*>[^<]*<\/time>\./);
+    expect(html).toContain('href="/app/settings"');
+    expect(html).toContain("Upgrade for more scans");
+    expect(html).not.toContain(PRICING_URL);
+    expect(html).not.toMatch(/free scan|trial/i);
+  });
+
+  it("scan_running: says a new scan is running, no button", () => {
+    const html = render({ kind: "scan_running" });
+
+    expect(html).toContain("A new scan is already running.");
+    expect(html).not.toContain("<s-button");
+  });
+
+  it("newer_results: links to the latest results, no rescan and no ask", () => {
+    const html = render({ kind: "newer_results", latestScanId: "scan-2" });
+
+    expect(html).toContain('href="/app/scans/scan-2"');
+    expect(html).toContain("View latest results");
+    expect(html).not.toContain(">Rescan now<");
+    expect(html).not.toContain(PRICING_URL);
+  });
+});
+
+describe("UpgradePreviewBanner without its CTA (gc-mgi one-ask rule)", () => {
+  it("keeps the teaser text but renders no upgrade link or button", () => {
+    const html = renderToStaticMarkup(
+      createElement(
+        MemoryRouter,
+        null,
+        createElement(UpgradePreviewBanner, {
+          preview: { hiddenCount: 3, groups: [{ label: "Speed", count: 3 }] },
+          pricingPlansUrl: "https://example.test/pricing",
+          trialEligible: true,
+          showCta: false,
+        }),
+      ),
+    );
+
+    expect(html).toContain("3 more findings on Standard: Speed (3).");
+    expect(html).not.toContain("https://example.test/pricing");
+    expect(html).not.toContain("<s-button");
+  });
+});
 
 describe("UpgradeReturnBanner (gc-97k.9)", () => {
   const PRICING_URL = "https://admin.shopify.com/store/test-shop/charges/ghost-code/pricing_plans";

@@ -39,6 +39,7 @@ export const NUDGE_KEYS = {
   FEEDBACK: "feedback", // gc-97k.3
   REVIEW_REQUEST: "review_request", // gc-97k.7
   UPGRADE_RETURN: "upgrade_return", // gc-97k.9
+  STALE_RESULTS: "stale_results", // gc-mgi
 } as const;
 
 export type NudgeKey = (typeof NUDGE_KEYS)[keyof typeof NUDGE_KEYS];

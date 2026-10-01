@@ -34,6 +34,7 @@ export type ShopMetadata = {
   upgradeReturnLastDismissedAt: Date | null;
   upgradeReturnDismissCount: number;
   upgradeReturnShownAt: Date | null;
+  staleResultsShownAt: Date | null;
   everPaidAt: Date | null;
 };
 
@@ -106,6 +107,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       upgradeReturnLastDismissedAt: true,
       upgradeReturnDismissCount: true,
       upgradeReturnShownAt: true,
+      staleResultsShownAt: true,
       everPaidAt: true,
     },
   });
@@ -346,7 +348,8 @@ export async function stampPlanReconciledAt(domain: string): Promise<{ id: strin
 
 /**
  * The Shop stamp columns that in-app nudges claim once per merchant (gc-97k.4
- * upgrade preview, gc-97k.3 feedback, gc-97k.9 upgrade return).
+ * upgrade preview, gc-97k.3 feedback, gc-97k.9 upgrade return, gc-mgi stale
+ * results).
  */
 export type NudgeStageColumn =
   | "upgradePreviewShownAt"
@@ -356,6 +359,9 @@ export type NudgeStageColumn =
   | "upgradeReturnClickedAt"
   | "upgradeReturnDismissedAt"
   | "upgradeReturnConvertedAt"
+  | "staleResultsShownAt"
+  | "staleResultsClickedAt"
+  | "staleResultsConvertedAt"
   | "feedbackNudgeShownAt"
   | "feedbackNudgeClickedAt"
   | "feedbackNudgeDismissedAt"

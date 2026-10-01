@@ -146,6 +146,8 @@ describe("getShopMetadata", () => {
         upgradeReturnLastDismissedAt: true,
         upgradeReturnDismissCount: true,
         upgradeReturnShownAt: true,
+        // gc-mgi: the stale-results banner's `shown` pre-check.
+        staleResultsShownAt: true,
         // gc-97k.8: the durable ever-paid signal behind the trial promise.
         everPaidAt: true,
       },

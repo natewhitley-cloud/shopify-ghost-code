@@ -67,6 +67,18 @@ const NUDGE_STAGE_CLAIMS = {
       extraWhere: { upgradeReturnShownAt: { not: null } },
     },
   },
+  // Stale-results banner's upgrade ask (gc-mgi). Content, not a prompt, with
+  // no dismiss control (so no `dismissed`). `shown` is recorded only when the
+  // banner renders its trial/upgrade CTA; converted counts only a merchant who
+  // SAW that ask (the click ping can be lost).
+  [NUDGE_KEYS.STALE_RESULTS]: {
+    shown: { column: "staleResultsShownAt" },
+    clicked: { column: "staleResultsClickedAt" },
+    converted: {
+      column: "staleResultsConvertedAt",
+      extraWhere: { staleResultsShownAt: { not: null } },
+    },
+  },
 } as const satisfies Record<NudgeKey, Partial<Record<NudgeStage, StageClaim>>>;
 
 /** The stages a given nudge supports (e.g. no `dismissed` for the upgrade preview). */

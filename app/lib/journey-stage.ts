@@ -13,11 +13,12 @@
  *                   which are chosen inside the app.
  *   scanned         at least one SUCCESSFUL (COMPLETED or PARTIAL) scan.
  *   viewedResults   firstResultsViewedAt.
- *   sawUpgrade      EITHER Free upgrade ask was shown: upgradePreviewShownAt
- *                   (inline teaser, gc-97k.4) or upgradeReturnShownAt (return
- *                   banner, gc-97k.9).
- *   clickedUpgrade  EITHER ask was clicked: upgradePreviewClickedAt or
- *                   upgradeReturnClickedAt.
+ *   sawUpgrade      ANY Free upgrade ask was shown: upgradePreviewShownAt
+ *                   (inline teaser, gc-97k.4), upgradeReturnShownAt (return
+ *                   banner, gc-97k.9) or staleResultsShownAt (stale-results
+ *                   banner, gc-mgi).
+ *   clickedUpgrade  ANY ask was clicked: upgradePreviewClickedAt,
+ *                   upgradeReturnClickedAt or staleResultsClickedAt.
  *   paid            plan is a paid tier (Standard / Professional). Any other
  *                   value counts as free, matching the digest's plan mix.
  *
@@ -37,6 +38,8 @@ export interface JourneyFacts {
   upgradePreviewClickedAt: Date | null;
   upgradeReturnShownAt: Date | null;
   upgradeReturnClickedAt: Date | null;
+  staleResultsShownAt: Date | null;
+  staleResultsClickedAt: Date | null;
   /** Any Scan row at all, whatever its status. */
   hasAnyScan: boolean;
   /** At least one COMPLETED or PARTIAL scan. */
@@ -97,8 +100,14 @@ export function deriveJourneyMilestones(facts: JourneyFacts): JourneyMilestones 
     opened: facts.firstOpenedAt !== null || facts.lastSeenAt !== null || facts.hasAnyScan,
     scanned: facts.hasSuccessfulScan,
     viewedResults: facts.firstResultsViewedAt !== null,
-    sawUpgrade: facts.upgradePreviewShownAt !== null || facts.upgradeReturnShownAt !== null,
-    clickedUpgrade: facts.upgradePreviewClickedAt !== null || facts.upgradeReturnClickedAt !== null,
+    sawUpgrade:
+      facts.upgradePreviewShownAt !== null ||
+      facts.upgradeReturnShownAt !== null ||
+      facts.staleResultsShownAt !== null,
+    clickedUpgrade:
+      facts.upgradePreviewClickedAt !== null ||
+      facts.upgradeReturnClickedAt !== null ||
+      facts.staleResultsClickedAt !== null,
     paid: isPaidPlan(facts.plan),
   };
 }

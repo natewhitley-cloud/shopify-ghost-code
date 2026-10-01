@@ -82,7 +82,10 @@ export const HOME_DEFERRED_PROMPTS: readonly PromptKey[] = [];
  *     REVIEW_POPUP_MIN_SCAN_AGE_MS ago (then it is DEFERRED on this page, see
  *     scanResultsDeferredPrompts);
  *   - upgrade_return on the Free plan, when the page has hidden findings for
- *     the banner to talk about.
+ *     the banner to talk about, and the page does not already carry an upgrade
+ *     ask as CONTENT (gc-mgi: the stale-results banner's trial CTA). That ask
+ *     is not a prompt and is never capped; excluding upgrade_return HERE, before
+ *     resolvePrompt runs, means the page claims no slot for it (nothing burns).
  * An unsuccessful scan's page (including the ~3s in-progress poll) renders no
  * prompt at all.
  */
@@ -90,7 +93,9 @@ export function scanResultsPrompts(page: ScanResultsPage): PromptKey[] {
   if (!page.scanSuccessful) return [];
   const prompts: PromptKey[] = [];
   if (!isScanJustFinished(page)) prompts.push("review_popup");
-  if (page.plan === PLANS.FREE && page.hasHiddenFindings) prompts.push("upgrade_return");
+  if (page.plan === PLANS.FREE && page.hasHiddenFindings && !page.contentUpgradeAsk) {
+    prompts.push("upgrade_return");
+  }
   return prompts;
 }
 
@@ -99,6 +104,11 @@ export type ScanResultsPage = {
   scanSuccessful: boolean;
   plan: string;
   hasHiddenFindings: boolean;
+  /**
+   * The page already renders an upgrade ask as content (gc-mgi stale-results
+   * banner), so it renders no second one. Omitted = false.
+   */
+  contentUpgradeAsk?: boolean;
   /** The scan's completedAt (null: not completed). */
   scanCompletedAt: Date | null;
   now: Date;

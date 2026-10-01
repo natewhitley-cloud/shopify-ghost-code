@@ -39,9 +39,12 @@ import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
 import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
+import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
+import { staleResultsUpgradeAsk } from "../lib/stale-results";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
+import { upgradeCtaLabel } from "../lib/trial-cta";
 import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
 import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
 import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upgrade-return";
@@ -72,9 +75,13 @@ import {
 } from "../services/finding-aggregation.server";
 import { getFreePreviewFindings } from "../services/free-preview.server";
 import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
+import { recordNudgeStageOnce } from "../services/nudge-stage.server";
+import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
+import { loadStaleResults } from "../services/stale-results.server";
+import type { StaleResults } from "../services/stale-results.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
 import { dismissUpgradeReturn, markUpgradeReturnShown } from "../services/upgrade-return.server";
@@ -172,18 +179,108 @@ export function UpgradePreviewBanner({
   preview,
   pricingPlansUrl,
   trialEligible,
+  showCta = true,
 }: {
   preview: UpgradePreview;
   pricingPlansUrl: string;
   /** gc-97k.8: trial framing only for a shop that can still get the trial. */
   trialEligible: boolean;
+  /**
+   * gc-mgi: false while the stale-results banner carries the page's upgrade
+   * ask, so the page has ONE upgrade CTA; the teaser text stays.
+   */
+  showCta?: boolean;
 }) {
   const copy = upgradePreviewCopy(preview, trialEligible);
   return (
     <s-banner tone="info">
       <s-stack direction="block" gap="base">
         <s-text>{copy.body}</s-text>
-        <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} src="upgrade_preview" label={copy.cta} />
+        {showCta && (
+          <UpgradeCtaLink
+            pricingPlansUrl={pricingPlansUrl}
+            src="upgrade_preview"
+            label={copy.cta}
+          />
+        )}
+      </s-stack>
+    </s-banner>
+  );
+}
+
+/**
+ * Stale-results banner (gc-mgi), at the top of the results: the theme changed
+ * after this scan completed. Always states both dates; the line below depends
+ * on the loader's action (see app/services/stale-results.server). It is
+ * CONTENT, not a capped prompt. Its upgrade CTA (Free, quota used) is the
+ * page's only upgrade ask: the loader suppresses the return banner and the
+ * teaser's CTA while it shows.
+ */
+export function StaleResultsBanner({
+  staleResults,
+  pricingPlansUrl,
+  onRescan,
+  rescanning,
+  rescanError,
+}: {
+  staleResults: StaleResults;
+  pricingPlansUrl: string;
+  onRescan: () => void;
+  rescanning: boolean;
+  rescanError: string | null;
+}) {
+  const { scanCompletedAt, themePublishedAt, action } = staleResults;
+  return (
+    <s-banner tone="info">
+      <s-stack direction="block" gap="base">
+        <s-paragraph>
+          These results are from <FormattedDate value={scanCompletedAt} />. Your theme changed on{" "}
+          <FormattedDate value={themePublishedAt} />, so some findings may already be fixed.
+        </s-paragraph>
+        {action.kind === "rescan" && (
+          <>
+            {rescanError && <s-text tone="critical">{rescanError}</s-text>}
+            <s-stack direction="inline" gap="base">
+              <s-button
+                variant="primary"
+                onClick={onRescan}
+                {...(rescanning ? { loading: true } : {})}
+              >
+                Rescan now
+              </s-button>
+            </s-stack>
+          </>
+        )}
+        {action.kind === "free_blocked" && (
+          <>
+            <s-paragraph>
+              Your next free scan is available{" "}
+              <FormattedDate value={action.nextScanAt} includeTime />.{" "}
+              {staleResultsUpgradeAsk(action.trialEligible)}
+            </s-paragraph>
+            <s-stack direction="inline" gap="base">
+              <UpgradeCtaLink
+                pricingPlansUrl={pricingPlansUrl}
+                src="stale_results"
+                label={upgradeCtaLabel(PLANS.STANDARD, action.trialEligible)}
+              />
+            </s-stack>
+          </>
+        )}
+        {action.kind === "paid_blocked" && (
+          <s-paragraph>
+            Your next scan is available <FormattedDate value={action.nextScanAt} includeTime />.{" "}
+            <Link to="/app/settings">Upgrade for more scans</Link>
+          </s-paragraph>
+        )}
+        {action.kind === "scan_running" && (
+          <s-paragraph>A new scan is already running.</s-paragraph>
+        )}
+        {action.kind === "newer_results" && (
+          <s-paragraph>
+            <Link to={`/app/scans/${action.latestScanId}`}>View latest results</Link>
+          </s-paragraph>
+        )}
       </s-stack>
     </s-banner>
   );
@@ -937,6 +1034,25 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         )
       : null;
 
+  // Stale-results banner (gc-mgi): the theme changed after this scan. Read
+  // only on a successful scan whose results are stale (two cheap reads then;
+  // none on a fresh scan or the in-progress poll). Never throws. While it
+  // carries a Free upgrade ask, that is the page's ONE ask: the return banner
+  // is made non-renderable BEFORE resolvePrompt (so no slot is claimed for
+  // it) and the teaser renders without its CTA.
+  const staleResults = scanSuccessful
+    ? await loadStaleResults({
+        shopDomain: session.shop,
+        shop,
+        scan,
+        trialEligible: trialEligibleForShop,
+      })
+    : null;
+  const staleUpgradeAsk = staleResults?.action.kind === "free_blocked";
+  if (staleUpgradeAsk && shop.staleResultsShownAt === null) {
+    await recordNudgeStageOnce(NUDGE_KEYS.STALE_RESULTS, "shown", session.shop);
+  }
+
   // Interruptive prompts on this page (gc-97k.6, strict global priority): at
   // most one per view, one distinct prompt per shop per 24h, and only the
   // shop's highest-priority pending prompt, so resolvePrompt runs ONCE per load
@@ -945,11 +1061,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   //     deferred on a scan that completed under 10 minutes ago (the merchant
   //     watching it finish gets it by poll revalidation, which never fires).
   //   upgrade_return (gc-97k.9): the Free return-visit banner, only when this
-  //     page has hidden findings to talk about.
+  //     page has hidden findings to talk about and no stale-results ask.
   const page = {
     scanSuccessful,
     plan: shop.plan,
     hasHiddenFindings: hiddenBreakdown !== null,
+    contentUpgradeAsk: staleUpgradeAsk,
     scanCompletedAt: scan.completedAt,
     now,
   };
@@ -969,12 +1086,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const showUpgradeReturn = pagePrompt === "upgrade_return";
   if (showUpgradeReturn) await markUpgradeReturnShown(session.shop, shop, now);
 
-  // Inline teaser (gc-97k.4): hidden while the return banner renders, so the
-  // page carries one upgrade ask. Its `shown` means the teaser rendered, so it
-  // fires only then, once per merchant: the stored stamp skips the claim query
-  // on every later load; the atomic claim dedupes concurrent first loads.
+  // Inline teaser (gc-97k.4): hidden while the return banner renders, and
+  // without its CTA while the stale-results banner asks (gc-mgi), so the page
+  // carries one upgrade ask. Its `shown` means the teaser rendered WITH its
+  // CTA, so it fires only then, once per merchant: the stored stamp skips the
+  // claim query on every later load; the atomic claim dedupes concurrent first
+  // loads.
   const upgradePreview = showUpgradeReturn ? null : hiddenBreakdown;
-  if (upgradePreview && shop.upgradePreviewShownAt === null) {
+  const teaserCta = !staleUpgradeAsk;
+  if (upgradePreview && teaserCta && shop.upgradePreviewShownAt === null) {
     await recordUpgradePreviewStageOnce("shown", session.shop);
   }
   // Trial vs upgrade framing for whichever ask renders (gc-97k.8).
@@ -1026,6 +1146,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // return-visit banner (gc-97k.9) or the inline teaser (gc-97k.4).
     upgradeReturn: showUpgradeReturn ? hiddenBreakdown : null,
     upgradePreview,
+    // gc-mgi: false while the stale-results banner carries the upgrade ask.
+    teaserCta,
+    // gc-mgi: non-null when the theme changed after this scan completed.
+    staleResults,
     // Managed Pricing plan page for the upgrade teaser's top-level CTA (same
     // helper as the Settings upgrade buttons).
     pricingPlansUrl: buildPricingPlansUrl(session.shop),
@@ -1282,6 +1406,8 @@ export default function ScanDetail() {
     previewFindings,
     upgradeReturn,
     upgradePreview,
+    teaserCta,
+    staleResults,
     pricingPlansUrl,
     trialEligible,
     reviewRequestNonce,
@@ -1345,6 +1471,19 @@ export default function ScanDetail() {
     setUpgradeReturnDismissed(true);
     dismissFetcher.submit({ intent: "dismiss-upgrade-return" }, { method: "POST" });
   };
+
+  // Stale-results "Rescan now" (gc-mgi): Home's scan-start action (POST /app
+  // with no intent: main theme, plan-gated, redirects to the new scan's page),
+  // reused rather than duplicated. An error string (e.g. the quota was used in
+  // another tab) is shown in the banner.
+  const rescanFetcher = useFetcher<{ error?: string }>();
+  const handleRescan = () => {
+    rescanFetcher.submit({}, { method: "POST", action: "/app?index" });
+  };
+  const rescanError =
+    rescanFetcher.data && typeof rescanFetcher.data.error === "string"
+      ? rescanFetcher.data.error
+      : null;
 
   // Native review popup (gc-97k.7): only for the loader value captured when
   // THIS scan's page mounted (keyed by scan id), at most once; a later
@@ -1767,6 +1906,18 @@ export default function ScanDetail() {
               </FindingsTable>
             </s-stack>
           </s-banner>
+        )}
+
+        {/* Stale-results banner (gc-mgi): the theme changed after this scan.
+            Below only the security alert (safety outranks everything). */}
+        {staleResults && (
+          <StaleResultsBanner
+            staleResults={staleResults}
+            pricingPlansUrl={pricingPlansUrl}
+            onRescan={handleRescan}
+            rescanning={rescanFetcher.state !== "idle"}
+            rescanError={rescanError}
+          />
         )}
 
         {/* Return-visit upgrade banner (gc-97k.9), Free only: at the top of the
@@ -2299,6 +2450,7 @@ export default function ScanDetail() {
                       preview={upgradePreview}
                       pricingPlansUrl={pricingPlansUrl}
                       trialEligible={trialEligible}
+                      showCta={teaserCta}
                     />
                   )}
                 </s-stack>

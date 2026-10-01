@@ -49,7 +49,7 @@ beforeEach(() => {
 });
 
 describe("app.upgrade action", () => {
-  it.each(["upgrade_preview", "upgrade_return"])(
+  it.each(["upgrade_preview", "upgrade_return", "stale_results"])(
     "records the %s click once with the unmodified session shop, returns 204",
     async (src) => {
       const res = await action(args({ src }));
@@ -68,15 +68,19 @@ describe("app.upgrade action", () => {
     expect(res.status).toBe(204);
   });
 
-  it.each(["settings", "feedback", "review_request", "UPGRADE_RETURN", "upgrade_return "])(
-    "does not record for an unknown src value %j",
-    async (src) => {
-      const res = await action(args({ src }));
+  it.each([
+    "settings",
+    "feedback",
+    "review_request",
+    "UPGRADE_RETURN",
+    "upgrade_return ",
+    "STALE_RESULTS",
+  ])("does not record for an unknown src value %j", async (src) => {
+    const res = await action(args({ src }));
 
-      expect(mockRecordStage).not.toHaveBeenCalled();
-      expect(res.status).toBe(204);
-    },
-  );
+    expect(mockRecordStage).not.toHaveBeenCalled();
+    expect(res.status).toBe(204);
+  });
 
   it("returns 204 when the click was already recorded (claim lost)", async () => {
     mockRecordStage.mockResolvedValue(false);

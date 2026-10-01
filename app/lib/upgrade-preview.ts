@@ -16,12 +16,12 @@ import { PLANS } from "./plans";
 import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "./trial-cta";
 
 /**
- * Every Free upgrade ask, by its NUDGE_KEYS value: the inline teaser (gc-97k.4)
- * and the return-visit banner (gc-97k.9). The /app/upgrade click ping accepts
+ * Every Free upgrade ask, by its NUDGE_KEYS value: the inline teaser (gc-97k.4),
+ * the return-visit banner (gc-97k.9) and the stale-results banner (gc-mgi). The /app/upgrade click ping accepts
  * exactly these as `src`, and a Free -> paid upgrade converts each one the
  * merchant was shown.
  */
-export const UPGRADE_ASK_KEYS = ["upgrade_preview", "upgrade_return"] as const;
+export const UPGRADE_ASK_KEYS = ["upgrade_preview", "upgrade_return", "stale_results"] as const;
 
 export type UpgradeAskKey = (typeof UPGRADE_ASK_KEYS)[number];
 

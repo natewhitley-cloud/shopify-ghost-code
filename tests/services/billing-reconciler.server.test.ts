@@ -605,18 +605,22 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
         { recordEvent: true },
       );
 
-      // One claim per Free upgrade ask (gc-97k.4 teaser, gc-97k.9 return banner),
-      // each requiring that ask's own `shown` stamp.
-      expect(conversionClaims()).toHaveLength(2);
+      // One claim per Free upgrade ask (gc-97k.4 teaser, gc-97k.9 return banner,
+      // gc-mgi stale-results banner), each requiring that ask's own `shown` stamp.
+      expect(conversionClaims()).toHaveLength(3);
       expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "upgradePreviewConvertedAt", {
         upgradePreviewShownAt: { not: null },
       });
       expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "upgradeReturnConvertedAt", {
         upgradeReturnShownAt: { not: null },
       });
-      expect(mockRecordConverted).toHaveBeenCalledTimes(2);
+      expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "staleResultsConvertedAt", {
+        staleResultsShownAt: { not: null },
+      });
+      expect(mockRecordConverted).toHaveBeenCalledTimes(3);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_preview", DOMAIN);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_return", DOMAIN);
+      expect(mockRecordConverted).toHaveBeenCalledWith("stale_results", DOMAIN);
     },
   );
 
@@ -636,8 +640,8 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
   });
 
   it("does not re-emit on a repeat upgrade (cancel, then upgrade again)", async () => {
-    // First upgrade: both conversion claims win; second: both lose.
-    let wins = 2;
+    // First upgrade: every conversion claim wins; second: all lose.
+    let wins = 3;
     mockClaimStage.mockImplementation(async (_domain: string, column: string) =>
       column === "everPaidAt" ? false : wins-- > 0,
     );
@@ -654,8 +658,8 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
       { recordEvent: true },
     );
 
-    expect(conversionClaims()).toHaveLength(4);
-    expect(mockRecordConverted).toHaveBeenCalledTimes(2);
+    expect(conversionClaims()).toHaveLength(6);
+    expect(mockRecordConverted).toHaveBeenCalledTimes(3);
   });
 
   it.each([
@@ -733,6 +737,10 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
       "upgrade-return-nudge-claim-failed",
       expect.objectContaining({ shop: DOMAIN, stage: "converted" }),
     );
+    expect(logger.error).toHaveBeenCalledWith(
+      "stale-results-nudge-claim-failed",
+      expect.objectContaining({ shop: DOMAIN, stage: "converted" }),
+    );
   });
 });
 
@@ -769,6 +777,9 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
       upgradeReturnShownAt: null,
       upgradeReturnClickedAt: null,
       upgradeReturnConvertedAt: null,
+      staleResultsShownAt: null,
+      staleResultsClickedAt: null,
+      staleResultsConvertedAt: null,
       everPaidAt: null,
     };
   });
@@ -803,7 +814,7 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
     await upgrade();
     await upgrade();
 
-    expect(conversionClaims()).toHaveLength(4); // 2 asks x 2 upgrades
+    expect(conversionClaims()).toHaveLength(6); // 3 asks x 2 upgrades
     expect(mockRecordConverted).toHaveBeenCalledTimes(1);
   });
 
@@ -816,6 +827,18 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
     expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_return", DOMAIN);
     expect(row.upgradeReturnConvertedAt).toBeInstanceOf(Date);
     expect(row.upgradePreviewConvertedAt).toBeNull();
+  });
+
+  it("converts the stale-results banner (gc-mgi) only for a merchant who saw its ask", async () => {
+    row.staleResultsShownAt = new Date();
+
+    await upgrade();
+    await upgrade();
+
+    expect(mockRecordConverted.mock.calls).toEqual([["stale_results", DOMAIN]]);
+    expect(row.staleResultsConvertedAt).toBeInstanceOf(Date);
+    expect(row.upgradePreviewConvertedAt).toBeNull();
+    expect(row.upgradeReturnConvertedAt).toBeNull();
   });
 
   it("converts BOTH asks once each when the merchant saw both", async () => {

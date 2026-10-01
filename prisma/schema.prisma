@@ -139,6 +139,13 @@ model Shop {
   upgradeReturnClickedAt       DateTime?
   upgradeReturnDismissedAt     DateTime?
   upgradeReturnConvertedAt     DateTime?
+  // Stale-results banner (gc-mgi): funnel stamps for its upgrade ask, shown
+  // only to a Free shop whose quota blocks a rescan of results the theme has
+  // changed since. Once per merchant via claimShopStamp. No dismiss control,
+  // so no dismissed stamp. Deleted with the Shop row on shop/redact.
+  staleResultsShownAt          DateTime?
+  staleResultsClickedAt        DateTime?
+  staleResultsConvertedAt      DateTime?
   // Durable "has ever been on a paid plan" (audit fix, gc-97k.8). Stamped ONCE,
   // via claimShopStamp, the first time reconcileShopPlan observes a paid plan
   // (every reconcile path: redirect and stale/backstop). Backfilled from

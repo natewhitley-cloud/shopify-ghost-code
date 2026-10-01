@@ -1777,6 +1777,29 @@ describe("aggregateNudgeFunnel", () => {
     expect(row.last7d.shown).toBe(3);
   });
 
+  it("counts stale_results (gc-mgi) under its own key, after the other known nudges", () => {
+    const events = [
+      ev("nudge_shown", "stale_results", HOUR_MS),
+      ev("nudge_clicked", "stale_results", HOUR_MS),
+      ev("nudge_shown", "upgrade_return", HOUR_MS),
+    ];
+
+    const rows = aggregateNudgeFunnel(events, allowed, now);
+
+    expect(rows).toEqual<NudgeFunnelRow[]>([
+      {
+        nudgeKey: "upgrade_return",
+        last24h: { ...zero, shown: 1 },
+        last7d: { ...zero, shown: 1 },
+      },
+      {
+        nudgeKey: "stale_results",
+        last24h: { ...zero, shown: 1, clicked: 1 },
+        last7d: { ...zero, shown: 1, clicked: 1 },
+      },
+    ]);
+  });
+
   it("orders rows by NUDGE_KEYS declaration, then other, and omits nudges with no events", () => {
     const events = [ev("nudge_shown", "mystery", HOUR_MS), ev("nudge_shown", "feedback", HOUR_MS)];
 
@@ -1880,7 +1903,7 @@ describe("buildDigestBody — NUDGES section (gc-97k.1)", () => {
       [
         "NUDGES (funnel per nudge, 24h / 7d)",
         "  counts per stage; each merchant counted once per stage, on the day it happened",
-        "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return); do not add them together",
+        "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return, stale_results); do not add them together",
         "  upgrade_preview",
         "    shown 3 / 10 | clicked 1 / 4 | dismissed 0 / 2 | converted 0 / 1",
       ].join("\n"),
@@ -2143,6 +2166,9 @@ describe("journey (gc-dpm.3)", () => {
       upgradeReturnClickedAt: null,
       upgradeReturnDismissedAt: null,
       upgradeReturnConvertedAt: null,
+      staleResultsShownAt: null,
+      staleResultsClickedAt: null,
+      staleResultsConvertedAt: null,
       reviewPopupRequestedAt: null,
       reviewPopupLastResult: null,
       reviewPopupLastAttemptAt: null,
@@ -2380,6 +2406,33 @@ describe("journey (gc-dpm.3)", () => {
         "return banner clicked",
         "return banner converted",
       ]);
+    });
+
+    it("labels the stale-results banner's shown / clicked / converted stamps (gc-mgi)", () => {
+      const s = shop({
+        id: "stale",
+        installedAt: at("01:00"),
+        staleResultsShownAt: at("02:00"),
+        staleResultsClickedAt: at("02:01"),
+        staleResultsConvertedAt: at("02:02"),
+      });
+      expect(run([s]).timeline[0].events.map((e) => e.label)).toEqual([
+        "installed",
+        "stale banner shown",
+        "stale banner clicked",
+        "stale banner converted",
+      ]);
+    });
+
+    it("the stale-results banner counts as saw / clicked upgrade in the journey (gc-mgi)", () => {
+      const s = shop({
+        id: "stale-j",
+        staleResultsShownAt: daysAgo(2),
+        staleResultsClickedAt: daysAgo(2),
+      });
+      const byLabel = Object.fromEntries(run([s]).funnel.map((f) => [f.label, f.count]));
+      expect(byLabel["Saw upgrade"]).toBe(1);
+      expect(byLabel.Clicked).toBe(1);
     });
 
     it("shows the review popup outcome in the timeline", () => {
