@@ -466,6 +466,22 @@ describe("gc-t7x — tag attribute matching is linear on one huge tag", () => {
   }
 });
 
+describe("gc-01n — theme-setting gate scan is linear on adversarial conditionals", () => {
+  // The gate lines are only built once an attributed script is seen, so every
+  // input carries a real 17TRACK script; the flood sits on one line or many.
+  const SCRIPT = '<script src="//www.17track.net/externalcall.js"></script>';
+  it.each([
+    ["one unterminated opener + 1 MB of text", atCap("a", `${SCRIPT}{% if `)],
+    ["a {% if flood with no %} on one line", atCap("{% if x ", SCRIPT)],
+    ["a {%- flood with whitespace runs", atCap("{%-      ", SCRIPT)],
+    ["near-miss settings tokens on one line", atCap("{% if mysettings_x shop.settings ", SCRIPT)],
+    ["matched settings openers on one line", atCap("{% if section.settings.a %}", SCRIPT)],
+    ["deeply nested openers, one per line", atCap("{% if a %}\n", SCRIPT)],
+  ])("detectGhostScripts: %s", (_label, content) => {
+    expect(timed(() => detectGhostScripts(layout(content)))).toBeLessThan(CAP_BUDGET_MS);
+  });
+});
+
 describe("font <link> href matching is linear on one huge unterminated href", () => {
   // FONT_LINK_TAG's catch-all alternative was `href="(https?://[^"']*font[^"']*)"`:
   // with no closing quote, every `font` made the regex rescan to the end of the

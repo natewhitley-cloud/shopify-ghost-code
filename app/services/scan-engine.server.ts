@@ -672,24 +672,42 @@ const CONDITIONAL_OPEN_RE = /\{%-?\s*(?:if|unless|case)\b/g;
 const CONDITIONAL_CLOSE_RE = /\{%-?\s*(?:endif|endunless|endcase)\b/g;
 const CONDITIONAL_ELSE_RE = /\{%-?\s*(?:else|elsif)\b/;
 
+// Matches a conditional opener whose condition reads a theme-editor setting:
+// `section.settings.x`, `block.settings.x`, or global `settings.x` (dot or
+// bracket access), e.g. {%- if section.settings.tracking_method == 'embed' -%}.
+// `[^%]*` keeps the search inside the opener tag; the lookbehind rejects
+// identifiers that merely end in "settings" (mysettings.x), hang off another
+// object (shop.settings.x) or open a string literal ('settings.x'), and
+// `settings[.[]` rejects section.settings_x.
+// Linear: a `[^%]*` run from one `{%` start stops at the next `%`, so runs from
+// different starts never overlap.
+const THEME_SETTING_CONDITIONAL_RE =
+  /\{%-?\s*(?:if|unless|case)\b[^%]*?(?<![\w.'"])(?:(?:section|block)\.)?settings[.[]/;
+
 /**
- * Returns a Set of 1-based line numbers that fall inside an always-false Liquid
- * conditional block ({% if false %}…{% endif %} or {% unless true %}…{% endunless %}).
- * Mirrors buildCommentSkipLines so callers can uniformly skip unreachable lines.
+ * Returns a Set of 1-based line numbers that fall inside a Liquid conditional
+ * block whose opener matches `openerRe` (from the opener line through its
+ * matching endif/endunless/endcase line). Mirrors buildCommentSkipLines so
+ * callers can uniformly skip lines.
  *
- * Code guarded by such a conditional never renders, so a section/snippet tag
- * nested inside it is dead code, not an active ghost reference, and must not be
- * flagged. Handles nested conditionals (depth tracking), whitespace-control tags
- * ({%- -%}), and stops suppression at an {% else %}/{% elsif %} on the always-false
- * block's own level — the alternate branch IS reachable. Conditionals that are
- * not always-false (e.g. {% if foo %}) are left untouched so their contents are
- * still scanned.
+ * Handles nested conditionals (depth tracking) and whitespace-control tags
+ * ({%- -%}). With `elseEndsSkip`, an {% else %}/{% elsif %} on the matched
+ * block's own level ends the skip (the alternate branch is a different case).
+ *
+ * Line-granular like buildCommentSkipLines: the opener and end lines are
+ * skipped whole, so code sharing a line with them (before the opener or after
+ * the end tag) is skipped too. The opener is found per line, so an opener tag
+ * split across lines is not recognized.
  */
-function buildAlwaysFalseConditionalSkipLines(content: string): Set<number> {
+function buildConditionalSkipLines(
+  content: string,
+  openerRe: RegExp,
+  elseEndsSkip: boolean,
+): Set<number> {
   const skipLines = new Set<number>();
 
-  // Running nesting depth across all conditionals. When we enter an always-false
-  // block we remember the depth at which it opened; every line stays suppressed
+  // Running nesting depth across all conditionals. When we enter a matched
+  // block we remember the depth at which it opened; every line stays skipped
   // until the depth falls back below that level (the matching end* tag).
   let depth = 0;
   let suppressFromDepth: number | null = null;
@@ -701,19 +719,23 @@ function buildAlwaysFalseConditionalSkipLines(content: string): Set<number> {
 
     depth += opens;
 
-    // Begin suppression when an always-false opener appears and we are not
-    // already inside an unreachable block (an inner always-false inside an
-    // already-suppressed block adds nothing).
-    const opensAlwaysFalse = ALWAYS_FALSE_CONDITIONAL_RE.test(text);
-    if (opensAlwaysFalse && suppressFromDepth === null) {
+    // Begin skipping when a matched opener appears and we are not already
+    // inside a matched block (an inner match adds nothing).
+    const opensMatched = openerRe.test(text);
+    if (opensMatched && suppressFromDepth === null) {
       suppressFromDepth = depth;
     }
 
-    let lineSuppressed = wasSuppressed || (opensAlwaysFalse && suppressFromDepth !== null);
+    let lineSuppressed = wasSuppressed || (opensMatched && suppressFromDepth !== null);
 
-    // An {% else %}/{% elsif %} belonging to the always-false block itself (same
-    // nesting level) switches to a reachable branch: stop suppressing from here.
-    if (wasSuppressed && depth === suppressFromDepth && CONDITIONAL_ELSE_RE.test(text)) {
+    // An {% else %}/{% elsif %} belonging to the matched block itself (same
+    // nesting level) switches to the other branch: stop skipping from here.
+    if (
+      elseEndsSkip &&
+      wasSuppressed &&
+      depth === suppressFromDepth &&
+      CONDITIONAL_ELSE_RE.test(text)
+    ) {
       suppressFromDepth = null;
       lineSuppressed = false;
     }
@@ -728,6 +750,35 @@ function buildAlwaysFalseConditionalSkipLines(content: string): Set<number> {
   }
 
   return skipLines;
+}
+
+/**
+ * Lines inside an always-false Liquid conditional block ({% if false %}…{% endif %}
+ * or {% unless true %}…{% endunless %}).
+ *
+ * Code guarded by such a conditional never renders, so a section/snippet tag
+ * nested inside it is dead code, not an active ghost reference, and must not be
+ * flagged. Stops at an {% else %}/{% elsif %} on the always-false block's own
+ * level — the alternate branch IS reachable. Conditionals that are not
+ * always-false (e.g. {% if foo %}) are left untouched so their contents are
+ * still scanned.
+ */
+function buildAlwaysFalseConditionalSkipLines(content: string): Set<number> {
+  return buildConditionalSkipLines(content, ALWAYS_FALSE_CONDITIONAL_RE, true);
+}
+
+/**
+ * Lines inside a Liquid conditional gated on a theme-editor setting (gc-01n),
+ * e.g. Sugar's order-tracking section:
+ *   {%- if section.settings.tracking_method == 'embed' -%}
+ *     <script src="//www.17track.net/externalcall.js" defer></script>
+ *   {%- endif -%}
+ * A resource the merchant toggles from the theme editor is a theme feature, not
+ * code left behind by an uninstalled app. Every branch counts (else/elsif and
+ * case/when are still chosen by the setting), as does any nested conditional.
+ */
+function buildThemeSettingGatedLines(content: string): Set<number> {
+  return buildConditionalSkipLines(content, THEME_SETTING_CONDITIONAL_RE, false);
 }
 
 // ---------------------------------------------------------------------------
@@ -750,6 +801,8 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
   //     src="https://static.klaviyo.com/...">
   // are still matched because a tag spans to its closing `>`. lineNumberAtOffset
   // maps the match position back to a line.
+  // Built on the first attributed script only: most files have none.
+  let settingGatedLines: Set<number> | null = null;
   for (const { tag, offset } of extractTags(file.content, "<script")) {
     const match = execTagPattern(tag, SCRIPT_SRC_TAG);
     if (!match) continue;
@@ -765,6 +818,9 @@ export function detectGhostScripts(file: ThemeFile): CreateFindingInput[] {
     if (!resolved.appName) continue;
 
     const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
+    // A script behind a theme-editor setting is a theme feature (gc-01n).
+    settingGatedLines ??= buildThemeSettingGatedLines(file.content);
+    if (settingGatedLines.has(lineNumber)) continue;
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_SCRIPT, codeSnippet);
 

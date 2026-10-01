@@ -191,6 +191,167 @@ describe("detectGhostScripts", () => {
   });
 });
 
+describe("detectGhostScripts — theme-setting-gated scripts (gc-01n)", () => {
+  // Verbatim from Sugar Theme 1.3.0 sections/order-tracking.liquid (prod false
+  // positive on bad-hats-com, 2026-10-01): the theme's own section offers the
+  // 17TRACK embed as a theme-editor option, so it is not orphaned app code.
+  const TRACK_SCRIPT = '<script src="//www.17track.net/externalcall.js" defer></script>';
+  const BAD_HATS_LINE = `{%- if section.settings.tracking_method == 'embed' -%} ${TRACK_SCRIPT} {%- endif -%}`;
+
+  const scan = (filename: string, ...contentLines: string[]) =>
+    detectGhostScripts({ filename, content: contentLines.join("\n") });
+
+  it("skips the verbatim bad-hats section.settings-gated 17TRACK embed", () => {
+    expect(scan("sections/order-tracking.liquid", "<div>", BAD_HATS_LINE, "</div>")).toHaveLength(
+      0,
+    );
+  });
+
+  it("skips a gated script that sits lines below the if, with endif after", () => {
+    const findings = scan(
+      "sections/order-tracking.liquid",
+      "{%- if section.settings.tracking_method == 'embed' -%}",
+      '  <div class="tracking">',
+      "    <p>Track your order</p>",
+      `    ${TRACK_SCRIPT}`,
+      "  </div>",
+      "{%- endif -%}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips a block.settings gate in a theme block", () => {
+    const findings = scan(
+      "blocks/tracking.liquid",
+      "{% if block.settings.show_tracking %}",
+      TRACK_SCRIPT,
+      "{% endif %}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips a global settings gate in layout/theme.liquid", () => {
+    const findings = scan(
+      "layout/theme.liquid",
+      "{% if settings.enable_17track %}",
+      TRACK_SCRIPT,
+      "{% endif %}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it("still flags the same 17TRACK script with no conditional", () => {
+    const findings = scan("sections/order-tracking.liquid", "<div>", TRACK_SCRIPT, "</div>");
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("17TRACK");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("still flags a script inside a non-settings conditional ({% if customer %})", () => {
+    const findings = scan("layout/theme.liquid", "{% if customer %}", TRACK_SCRIPT, "{% endif %}");
+    expect(findings).toHaveLength(1);
+  });
+
+  it.each([
+    ["template check", "{% if template contains 'product' %}"],
+    ["an app's own metafield flag", "{% if shop.metafields.someapp.enabled %}"],
+    ["a settings-like word after other text", "{% if customer.tags contains 'settings.x' %}"],
+  ])("still flags a script gated by %s", (_label, opener) => {
+    expect(scan("layout/theme.liquid", opener, TRACK_SCRIPT, "{% endif %}")).toHaveLength(1);
+  });
+
+  it("still flags a script AFTER the endif of a settings conditional", () => {
+    const findings = scan(
+      "layout/theme.liquid",
+      "{% if section.settings.show_banner %}",
+      "  <div>banner</div>",
+      "{% endif %}",
+      TRACK_SCRIPT,
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(4);
+  });
+
+  it("skips a script in a non-settings if nested inside a settings if", () => {
+    const findings = scan(
+      "sections/order-tracking.liquid",
+      "{%- if section.settings.tracking_method == 'embed' -%}",
+      "  {% if customer %}",
+      `    ${TRACK_SCRIPT}`,
+      "  {% endif %}",
+      "  <p>still inside the settings gate</p>",
+      "{%- endif -%}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it("keeps the gate open after a nested inner endif, closes it at the outer endif", () => {
+    const findings = scan(
+      "layout/theme.liquid",
+      "{% if settings.tracking %}",
+      "  {% if customer %}<p>hi</p>{% endif %}",
+      `  ${TRACK_SCRIPT}`,
+      "{% endif %}",
+      TRACK_SCRIPT,
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(5);
+  });
+
+  it("skips a script in the else branch of a settings conditional (still merchant-toggled)", () => {
+    const findings = scan(
+      "layout/theme.liquid",
+      "{% if section.settings.tracking_method == 'link' %}",
+      "  <a href='/track'>Track</a>",
+      "{% else %}",
+      `  ${TRACK_SCRIPT}`,
+      "{% endif %}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips an unless section.settings gate", () => {
+    const findings = scan(
+      "sections/order-tracking.liquid",
+      "{%- unless section.settings.disable_tracking -%}",
+      TRACK_SCRIPT,
+      "{%- endunless -%}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips a case section.settings / when gate", () => {
+    const findings = scan(
+      "sections/order-tracking.liquid",
+      "{% case section.settings.provider %}",
+      "  {% when '17track' %}",
+      `    ${TRACK_SCRIPT}`,
+      "  {% when 'none' %}",
+      "{% endcase %}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it("skips bracket access to settings (section.settings['provider'])", () => {
+    const findings = scan(
+      "sections/order-tracking.liquid",
+      "{% if section.settings['provider'] == '17track' %}",
+      TRACK_SCRIPT,
+      "{% endif %}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it.each([
+    ["mysettings.foo (settings is a suffix of another identifier)", "{% if mysettings.foo %}"],
+    ["section.settings_x (no property access on settings)", "{% if section.settings_x %}"],
+    ["shop.settings.x (settings is not the theme-editor object)", "{% if shop.settings.x %}"],
+    ["settings with no property", "{% if settings %}"],
+  ])("does not treat %s as a theme-setting gate", (_label, opener) => {
+    expect(scan("layout/theme.liquid", opener, TRACK_SCRIPT, "{% endif %}")).toHaveLength(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // detectGhostStyles
 // ---------------------------------------------------------------------------
