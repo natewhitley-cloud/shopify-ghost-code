@@ -60,16 +60,25 @@ const URL_QUERY = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#'"()]+)[?#][^\s'"():]*/gi;
 const PATH_QUERY = /(^|\s)(\/[^\s?#'"()]*)[?#][^\s'"():]*/g;
 const JWT = /\beyJ[\w-]+\.[\w-]+\.[\w-]+/g;
 const BEARER = /\bBearer\s+[\w.~+/=-]+/gi;
-const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+const EMAIL = /[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}/g;
+// Shopify Admin API tokens (shpat_, shpca_, shppa_, shpss_).
+const SHOPIFY_TOKEN = /\bshp(?:at|ca|pa|ss)_[A-Za-z0-9]{16,}/g;
+// Scrub at most this much raw input: the regexes above are linear per start
+// position but not overall, so unbounded input could stall the event loop or
+// a browser tab (audit M1). Generous vs the 300-char stored message.
+const SCRUB_INPUT_CHARS = 2000;
 
 /**
  * Remove the parts of free text that could carry secrets or personal data:
  * URL query strings and hashes (path kept), JWTs (App Bridge session tokens),
- * bearer tokens, and email addresses.
+ * Shopify access tokens, bearer tokens, and email addresses. Only the first
+ * SCRUB_INPUT_CHARS are kept.
  */
 export function scrubText(text: string): string {
   return text
+    .slice(0, SCRUB_INPUT_CHARS)
     .replace(JWT, "[redacted]")
+    .replace(SHOPIFY_TOKEN, "[redacted]")
     .replace(BEARER, "Bearer [redacted]")
     .replace(EMAIL, "[email]")
     .replace(URL_QUERY, "$1")

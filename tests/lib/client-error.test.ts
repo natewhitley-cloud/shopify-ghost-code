@@ -57,6 +57,33 @@ describe("scrubText", () => {
   });
 });
 
+describe("scrubText — audit M1 hardening", () => {
+  // Pre-fix: the EMAIL regex took ~8s on 100 KB with no '@' (quadratic).
+  it("is fast on a long unbroken word with no '@'", () => {
+    const start = performance.now();
+    scrubText("a".repeat(100_000));
+    expect(performance.now() - start).toBeLessThan(100);
+  });
+
+  it("is fast on a long scheme-like run", () => {
+    const start = performance.now();
+    scrubText("a".repeat(100_000) + "://x?y=1");
+    expect(performance.now() - start).toBeLessThan(100);
+  });
+
+  it("redacts Shopify access tokens", () => {
+    // Built at runtime so the literal never looks like a real token to secret scanners.
+    const token = ["shpat", "_", "ab".repeat(16)].join("");
+    const out = scrubText(`token ${token} leaked`);
+    expect(out).not.toContain(token);
+    expect(out).toContain("[redacted]");
+  });
+
+  it("still redacts an email inside long text", () => {
+    expect(scrubText(`${"x ".repeat(100)}owner@shop.com`)).toContain("[email]");
+  });
+});
+
 describe("sanitizeMessage", () => {
   it("caps at 300 characters", () => {
     const out = sanitizeMessage("a".repeat(1000));
