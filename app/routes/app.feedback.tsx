@@ -16,8 +16,9 @@
  * hidden-input bridge Polaris web components would need.
  */
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Link, useFetcher } from "react-router";
+import { Link, useFetcher, useRouteError } from "react-router";
 
+import { reportRouteError } from "../lib/client-error-reporter";
 import {
   APP_STORE_REVIEW_URL,
   FEEDBACK_MAX_EMAIL_LEN,
@@ -209,6 +210,8 @@ export default function FeedbackPage() {
 }
 
 export function ErrorBoundary() {
+  // Browser-side telemetry (gc-nn6); the UI below is unchanged.
+  reportRouteError(useRouteError());
   return (
     <s-page heading="Share your feedback">
       <s-section>

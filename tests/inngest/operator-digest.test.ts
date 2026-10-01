@@ -42,10 +42,12 @@ vi.mock("../../app/models/ops-event.server", async (importOriginal) => ({
 import { parseExcludeShops } from "../../app/lib/store-exclusion";
 import {
   aggregateActivity,
+  aggregateClientErrors,
   aggregateFeedback,
   aggregateJourney,
   aggregateNudgeFunnel,
   buildDigestBody,
+  CLIENT_ERROR_TOP_MESSAGE_CHARS,
   computeMrr,
   computePlanMix,
   computeResolutionRollup,
@@ -1368,6 +1370,111 @@ describe("buildDigestBody — webhook failures split (gc-4hk follow-up)", () => 
     expect(buildDigestBody(makeData({ ops: opsWith({ failed: 0, degraded: 4 }) }))).toContain(
       "  Webhook failures: 0 (degraded but handled: 4)",
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-nn6: client (browser) errors
+// ---------------------------------------------------------------------------
+
+describe("aggregateClientErrors", () => {
+  const NOW = new Date("2026-10-01T12:00:00.000Z");
+  const ago = (hours: number) => new Date(NOW.getTime() - hours * 60 * 60 * 1000);
+  const ALLOWED = ["real-a.myshopify.com", "Real-B.myshopify.com", "churned.myshopify.com"];
+
+  it("returns zeros and no top message for no events", () => {
+    expect(aggregateClientErrors([], ALLOWED, NOW)).toEqual({ total: 0, shops: 0, top: null });
+  });
+
+  it("counts 24h events from allowed shops only, distinct shops, and the most frequent message", () => {
+    const events = [
+      { key: "real-a.myshopify.com", message: "GET /app.data -> 502", createdAt: ago(1) },
+      { key: "real-a.myshopify.com", message: "GET /app.data -> 502", createdAt: ago(2) },
+      { key: "REAL-B.myshopify.com", message: "GET /app.data -> 502", createdAt: ago(3) },
+      { key: "real-b.myshopify.com", message: "x is undefined", createdAt: ago(4) },
+      // A real shop that has since uninstalled still counts (the point of gc-nn6).
+      { key: "churned.myshopify.com", message: "x is undefined", createdAt: ago(5) },
+      // Excluded (internal / dev / app-review) shops never count.
+      { key: "internal.myshopify.com", message: "LEAK", createdAt: ago(1) },
+      { key: "internal.myshopify.com", message: "LEAK", createdAt: ago(1) },
+      { key: "internal.myshopify.com", message: "LEAK", createdAt: ago(1) },
+      { key: "internal.myshopify.com", message: "LEAK", createdAt: ago(1) },
+      { key: null, message: "LEAK", createdAt: ago(1) },
+      // Older than 24h is out of the window.
+      { key: "real-a.myshopify.com", message: "old", createdAt: ago(25) },
+    ];
+
+    expect(aggregateClientErrors(events, ALLOWED, NOW)).toEqual({
+      total: 5,
+      shops: 3,
+      top: { message: "GET /app.data -> 502", count: 3 },
+    });
+  });
+
+  it("breaks a top-message tie alphabetically (deterministic)", () => {
+    const events = [
+      { key: "real-a.myshopify.com", message: "zeta", createdAt: ago(1) },
+      { key: "real-a.myshopify.com", message: "alpha", createdAt: ago(1) },
+    ];
+    expect(aggregateClientErrors(events, ALLOWED, NOW).top).toEqual({
+      message: "alpha",
+      count: 1,
+    });
+  });
+
+  it("counts a row with a null message under a placeholder rather than dropping it", () => {
+    const events = [{ key: "real-a.myshopify.com", message: null, createdAt: ago(1) }];
+    expect(aggregateClientErrors(events, ALLOWED, NOW)).toEqual({
+      total: 1,
+      shops: 1,
+      top: { message: "(no message)", count: 1 },
+    });
+  });
+});
+
+describe("buildDigestBody — client errors line (gc-nn6)", () => {
+  const baseOps = {
+    functionFailures: 0,
+    workerFallbacks: 0,
+    webhookFailures: { failed: 0, degraded: 0 },
+    apiErrors: { error: 0, warn: 0 },
+    staleCrons: [],
+  };
+
+  it("renders count, shops and the top message with its count inside OPERATIONAL HEALTH", () => {
+    const body = buildDigestBody(
+      makeData({
+        ops: {
+          ...baseOps,
+          clientErrors: { total: 7, shops: 2, top: { message: "GET /app.data -> 502", count: 4 } },
+        },
+      }),
+    );
+    expect(body).toContain('  Client errors: 7 (shops: 2; top: "GET /app.data -> 502" x4)');
+    expect(body.indexOf("Client errors:")).toBeGreaterThan(
+      body.indexOf("=== OPERATIONAL HEALTH (last 24h) ==="),
+    );
+  });
+
+  it("renders a bare zero when there were none, and zero when the field is absent", () => {
+    expect(
+      buildDigestBody(
+        makeData({ ops: { ...baseOps, clientErrors: { total: 0, shops: 0, top: null } } }),
+      ),
+    ).toContain("  Client errors: 0\n");
+    expect(buildDigestBody(makeData({ ops: baseOps }))).toContain("  Client errors: 0\n");
+  });
+
+  it("truncates a long top message in the email line", () => {
+    const long = "m".repeat(300);
+    const body = buildDigestBody(
+      makeData({
+        ops: { ...baseOps, clientErrors: { total: 1, shops: 1, top: { message: long, count: 1 } } },
+      }),
+    );
+    const line = body.split("\n").find((l) => l.startsWith("  Client errors:"))!;
+    expect(line).toContain(`"${"m".repeat(CLIENT_ERROR_TOP_MESSAGE_CHARS)}..." x1`);
+    expect(line).not.toContain("m".repeat(CLIENT_ERROR_TOP_MESSAGE_CHARS + 1));
   });
 });
 

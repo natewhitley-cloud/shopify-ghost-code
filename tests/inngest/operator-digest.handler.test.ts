@@ -554,6 +554,60 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
     expect(section).not.toContain("other");
   });
 
+  it("counts client_error rows from real (incl. churned) shops only, never excluded stores (gc-nn6)", async () => {
+    const ago = (ms: number) => new Date(Date.now() - ms);
+    tables.opsEvent.push(
+      {
+        id: "ce1",
+        eventType: "client_error",
+        key: "real-a.myshopify.com",
+        message: "GET /app.data -> 502",
+        createdAt: ago(HOUR),
+      },
+      {
+        id: "ce2",
+        eventType: "client_error",
+        key: "real-a.myshopify.com",
+        message: "GET /app.data -> 502",
+        createdAt: ago(2 * HOUR),
+      },
+      {
+        // The churned-but-real shop is exactly who this signal is for.
+        id: "ce3",
+        eventType: "client_error",
+        key: "churned-real.myshopify.com",
+        message: "x is undefined",
+        createdAt: ago(5 * HOUR),
+      },
+      {
+        // Outside the 24h window.
+        id: "ce4",
+        eventType: "client_error",
+        key: "real-a.myshopify.com",
+        message: "too old",
+        createdAt: ago(30 * HOUR),
+      },
+      // Three rows per excluded store (incl. the isInternal-only uninstalled
+      // one): enough to take the "top" slot and inflate both counts if leaked.
+      ...[...EXCLUDED.map((s) => s.domain), "renamed-internal-2.myshopify.com"].flatMap(
+        (domain, i) =>
+          [0, 1, 2].map((j) => ({
+            id: `cex-${i}-${j}`,
+            eventType: "client_error",
+            key: domain,
+            message: "excluded-client-leak",
+            createdAt: ago(HOUR),
+          })),
+      ),
+    );
+
+    const body = await runDigest();
+
+    expect(body).toContain('  Client errors: 3 (shops: 2; top: "GET /app.data -> 502" x2)');
+    expect(body).not.toContain("excluded-client-leak");
+    expect(body).not.toContain("too old");
+  });
+
   it("renders the nudge empty state when there are no nudge events", async () => {
     tables.opsEvent = tables.opsEvent.filter((e) => !String(e.eventType).startsWith("nudge_"));
 

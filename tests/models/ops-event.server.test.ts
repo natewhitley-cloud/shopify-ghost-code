@@ -42,6 +42,8 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  CLIENT_ERROR_HOURLY_LIMIT,
+  CLIENT_ERROR_RETENTION_DAYS,
   countApiErrorsByLevel,
   countOpsEvents,
   countWebhookFailuresByKind,
@@ -54,6 +56,7 @@ import {
   PAGE_VISIT_DEDUPE_WINDOW_MS,
   pruneOpsEvents,
   recordApiError,
+  recordClientError,
   recordCronHeartbeat,
   recordOpsEvent,
   recordPageVisit,
@@ -466,6 +469,107 @@ describe("recordApiError", () => {
 });
 
 // ---------------------------------------------------------------------------
+// recordClientError (gc-nn6)
+// ---------------------------------------------------------------------------
+
+describe("recordClientError", () => {
+  const DOMAIN = "acme.myshopify.com";
+  const report = {
+    kind: "fetch" as const,
+    message: "GET /app/scans.data -> 502",
+    path: "/app/scans/abc",
+    status: 502,
+    stack: "at a (https://h/a.js:1:1)",
+    browser: "chrome" as const,
+  };
+
+  beforeEach(() => {
+    mockDb.opsEvent.count.mockResolvedValue(0);
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+  });
+
+  it("writes a client_error row keyed on the shop DOMAIN (so shop/redact's key clause reaches it)", async () => {
+    await expect(recordClientError(DOMAIN, report)).resolves.toBe(true);
+
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: {
+        eventType: OPS_EVENT_TYPES.CLIENT_ERROR,
+        key: DOMAIN,
+        message: "GET /app/scans.data -> 502",
+        metadata: {
+          kind: "fetch",
+          path: "/app/scans/abc",
+          browser: "chrome",
+          status: 502,
+          stack: "at a (https://h/a.js:1:1)",
+        },
+      },
+    });
+    expect(OPS_EVENT_TYPES.CLIENT_ERROR).toBe("client_error");
+  });
+
+  it("omits status and stack from metadata when absent", async () => {
+    await recordClientError(DOMAIN, {
+      kind: "error",
+      message: "x",
+      path: "/app",
+      browser: "other",
+    });
+    expect(mockDb.opsEvent.create.mock.calls[0][0].data.metadata).toEqual({
+      kind: "error",
+      path: "/app",
+      browser: "other",
+    });
+  });
+
+  it("counts this shop's client_error rows in the trailing hour (served by the key+createdAt index)", async () => {
+    const before = Date.now();
+    await recordClientError(DOMAIN, report);
+
+    const where = mockDb.opsEvent.count.mock.calls[0][0].where;
+    expect(where.key).toBe(DOMAIN);
+    expect(where.eventType).toBe(OPS_EVENT_TYPES.CLIENT_ERROR);
+    const ago = before - where.createdAt.gte.getTime();
+    expect(ago).toBeGreaterThanOrEqual(60 * 60 * 1000 - 1000);
+    expect(ago).toBeLessThanOrEqual(60 * 60 * 1000 + 1000);
+    // The rate-limit check runs BEFORE the insert.
+    expect(mockDb.opsEvent.count.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDb.opsEvent.create.mock.invocationCallOrder[0],
+    );
+  });
+
+  it("drops the write once the shop hits the hourly limit", async () => {
+    expect(CLIENT_ERROR_HOURLY_LIMIT).toBe(30);
+    mockDb.opsEvent.count.mockResolvedValue(CLIENT_ERROR_HOURLY_LIMIT);
+
+    await expect(recordClientError(DOMAIN, report)).resolves.toBe(false);
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("still writes just under the limit", async () => {
+    mockDb.opsEvent.count.mockResolvedValue(CLIENT_ERROR_HOURLY_LIMIT - 1);
+    await expect(recordClientError(DOMAIN, report)).resolves.toBe(true);
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("never throws: a failed limit check drops the event (fail-closed) and logs", async () => {
+    mockDb.opsEvent.count.mockRejectedValue(new Error("db down"));
+
+    await expect(recordClientError(DOMAIN, report)).resolves.toBe(false);
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).toHaveBeenCalledWith(
+      "client-error-rate-check-failed",
+      expect.objectContaining({ key: DOMAIN }),
+    );
+  });
+
+  it("never throws when the insert fails", async () => {
+    mockDb.opsEvent.create.mockRejectedValue(new Error("db down"));
+    await expect(recordClientError(DOMAIN, report)).resolves.toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // countApiErrorsByLevel
 // ---------------------------------------------------------------------------
 
@@ -741,7 +845,7 @@ describe("pruneOpsEvents", () => {
     expect(before - pvCutoff.getTime()).toBeLessThanOrEqual(14 * DAY_MS + 1000);
   });
 
-  it("targets ONLY cron_heartbeat, page_visit and the nudge types — no other type can match (preserved at any age)", async () => {
+  it("targets ONLY cron_heartbeat, page_visit, client_error and the nudge types — no other type can match (preserved at any age)", async () => {
     mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 0 });
 
     await pruneOpsEvents();
@@ -751,6 +855,7 @@ describe("pruneOpsEvents", () => {
     // other type) is excluded and can never match regardless of age.
     const types = where.OR.map((clause: { eventType: string }) => clause.eventType).sort();
     expect(types).toEqual([
+      "client_error",
       "cron_heartbeat",
       "nudge_clicked",
       "nudge_converted",
@@ -896,6 +1001,7 @@ describe("pruneOpsEvents", () => {
       const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where;
       const types = where.OR.map((clause: { eventType: string }) => clause.eventType).sort();
       expect(types).toEqual([
+        "client_error",
         "cron_heartbeat",
         "nudge_clicked",
         "nudge_converted",
@@ -1033,5 +1139,66 @@ describe("pruneOpsEvents: nudge-funnel retention (90d)", () => {
 
   it("defaults to NUDGE_RETENTION_DAYS", () => {
     expect(NUDGE_RETENTION_DAYS).toBe(90);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pruneOpsEvents: client_error retention (gc-nn6)
+// ---------------------------------------------------------------------------
+
+describe("pruneOpsEvents: client_error retention (30d)", () => {
+  type Branch = { eventType: string; createdAt: { lt: Date } };
+
+  beforeEach(() => {
+    mockDb.opsEvent.groupBy.mockResolvedValue([]);
+  });
+
+  it("defaults to CLIENT_ERROR_RETENTION_DAYS = 30", () => {
+    expect(CLIENT_ERROR_RETENTION_DAYS).toBe(30);
+  });
+
+  it("deletes client_error rows older than 30d and keeps newer ones", async () => {
+    const now = Date.now();
+    const ago = (days: number) => new Date(now - days * DAY_MS);
+    const rows = [
+      { id: "ce-31d", eventType: "client_error", createdAt: ago(31) },
+      { id: "ce-30d+1m", eventType: "client_error", createdAt: ago(30.001) },
+      { id: "ce-29d", eventType: "client_error", createdAt: ago(29) },
+      { id: "ce-1h", eventType: "client_error", createdAt: ago(1 / 24) },
+      // A neighbouring never-pruned type at the same age is untouched.
+      { id: "api-31d", eventType: "api_error", createdAt: ago(31) },
+    ];
+    let deletedIds: string[] = [];
+    mockDb.opsEvent.deleteMany.mockImplementation(
+      async ({ where }: { where: { OR: Branch[] } }) => {
+        const gone = rows.filter((r) =>
+          where.OR.some((b) => r.eventType === b.eventType && r.createdAt < b.createdAt.lt),
+        );
+        deletedIds = gone.map((r) => r.id).sort();
+        return { count: gone.length };
+      },
+    );
+
+    await pruneOpsEvents();
+
+    expect(deletedIds).toEqual(["ce-30d+1m", "ce-31d"]);
+  });
+
+  it("has a single client_error branch bounded only by eventType + createdAt, and honours a custom window", async () => {
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 0 });
+    const before = Date.now();
+
+    await pruneOpsEvents({ clientErrorOlderThanDays: 7 });
+
+    const where = mockDb.opsEvent.deleteMany.mock.calls[0][0].where as { OR: Branch[] };
+    const branches = where.OR.filter((b) => b.eventType === OPS_EVENT_TYPES.CLIENT_ERROR);
+    expect(branches).toHaveLength(1);
+    expect(Object.keys(branches[0]).sort()).toEqual(["createdAt", "eventType"]);
+    const ago = before - branches[0].createdAt.lt.getTime();
+    expect(ago).toBeGreaterThanOrEqual(7 * DAY_MS - 1000);
+    expect(ago).toBeLessThanOrEqual(7 * DAY_MS + 1000);
+    // Other windows unaffected.
+    const pv = where.OR.find((b) => b.eventType === OPS_EVENT_TYPES.PAGE_VISIT)!;
+    expect(Math.round((before - pv.createdAt.lt.getTime()) / DAY_MS)).toBe(14);
   });
 });

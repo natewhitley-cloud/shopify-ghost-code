@@ -16,6 +16,7 @@
 import type { OpsEvent, Prisma } from "@prisma/client";
 
 import db from "../db.server";
+import type { BrowserFamily, ClientErrorReport } from "../lib/client-error";
 import { logger } from "../lib/logger.server";
 
 // eventType discriminators. Kept as constants so callers and reads can never
@@ -65,6 +66,16 @@ export const OPS_EVENT_TYPES = {
   // NUDGE_FUNNEL_EVENT_TYPES, so it shares the funnel rows' redact (`key:
   // domain`) and 90-day prune coverage.
   NUDGE_NOT_SHOWN: "nudge_not_shown",
+  // Browser-side error in the embedded app (gc-nn6): an uncaught error, an
+  // unhandled rejection, a route ErrorBoundary render, or a failed / 4xx-5xx
+  // same-origin fetch, beaconed by app/lib/client-error-reporter.ts and written
+  // only via recordClientError. Keyed on the shop DOMAIN, so deleteShopData's
+  // existing `key: domain` clause covers redact. message = sanitized error text;
+  // metadata = { kind, path, browser, status?, stack? }, all sanitized
+  // server-side (no query strings, tokens or emails). Pruned at 30 days
+  // (CLIENT_ERROR_RETENTION_DAYS) and capped per shop per hour
+  // (CLIENT_ERROR_HOURLY_LIMIT).
+  CLIENT_ERROR: "client_error",
 } as const;
 
 /** All nudge-funnel event types, for the prune and the digest's grouped read. */
@@ -78,6 +89,17 @@ export const NUDGE_FUNNEL_EVENT_TYPES = [
 
 /** Default retention for nudge-funnel rows (see pruneOpsEvents). */
 export const NUDGE_RETENTION_DAYS = 90;
+
+/** Default retention for client_error rows (see pruneOpsEvents). */
+export const CLIENT_ERROR_RETENTION_DAYS = 30;
+
+/**
+ * Max client_error rows stored per shop per trailing hour (gc-nn6). The client
+ * already caps itself at 5 beacons per page load; this bounds a reload loop,
+ * many open tabs, or a hand-rolled flood from an authenticated session.
+ */
+export const CLIENT_ERROR_HOURLY_LIMIT = 30;
+const CLIENT_ERROR_RATE_WINDOW_MS = 60 * 60 * 1000;
 
 export interface RecordOpsEventInput {
   eventType: string;
@@ -200,6 +222,56 @@ export async function recordWebhookFailure(input: {
       ? { shop: input.shop, degraded: true, reason: input.degradedReason }
       : { shop: input.shop },
   });
+}
+
+/**
+ * Record a browser-side error report for `domain` (gc-nn6), unless the shop
+ * already has CLIENT_ERROR_HOURLY_LIMIT rows in the trailing hour. `report`
+ * must already be sanitized (routes/app.client-error.tsx runs
+ * sanitizeClientErrorReport on the untrusted body). Returns whether the row
+ * was written (or attempted); NEVER throws.
+ *
+ * The limit check is one count on (key, createdAt), served by the existing
+ * @@index([key, createdAt]); eventType filters that one shop's last-hour rows.
+ * Check-then-insert is not atomic, so concurrent beacons can overshoot by a
+ * few rows; fine for a volume bound. Unlike recordPageVisit this FAILS CLOSED:
+ * the input is browser-supplied, so when the limit cannot be checked the
+ * report is dropped rather than risk an unbounded write.
+ */
+export async function recordClientError(
+  domain: string,
+  report: ClientErrorReport & { browser: BrowserFamily },
+): Promise<boolean> {
+  try {
+    const recent = await db.opsEvent.count({
+      where: {
+        key: domain,
+        eventType: OPS_EVENT_TYPES.CLIENT_ERROR,
+        createdAt: { gte: new Date(Date.now() - CLIENT_ERROR_RATE_WINDOW_MS) },
+      },
+    });
+    if (recent >= CLIENT_ERROR_HOURLY_LIMIT) return false;
+  } catch (error) {
+    logger.warn("client-error-rate-check-failed", {
+      key: domain,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return false;
+  }
+
+  await recordOpsEvent({
+    eventType: OPS_EVENT_TYPES.CLIENT_ERROR,
+    key: domain,
+    message: report.message,
+    metadata: {
+      kind: report.kind,
+      path: report.path,
+      browser: report.browser,
+      ...(report.status !== undefined ? { status: report.status } : {}),
+      ...(report.stack !== undefined ? { stack: report.stack } : {}),
+    },
+  });
+  return true;
 }
 
 /**
@@ -511,9 +583,14 @@ async function getLatestHeartbeatByKey(
  *     trailing 7d, but at our install volume a funnel needs months of rows to be
  *     readable by hand, so they are kept far longer than page visits. `shown`
  *     can fire on page loads, so without a cutoff these grow unbounded.
+ *   - `client_error` older than `clientErrorOlderThanDays` (default
+ *     CLIENT_ERROR_RETENTION_DAYS = 30d) (gc-nn6). Browser error reports back
+ *     the digest's trailing-24h line and ad-hoc investigation of a recent
+ *     uninstall; a month covers both, and the rows (stack frames included) are
+ *     the most verbose per-shop telemetry we keep, so they go first.
  *
- * DELIBERATELY NARROW: this prunes ONLY `cron_heartbeat`, `page_visit` and the
- * nudge-funnel types.
+ * DELIBERATELY NARROW: this prunes ONLY `cron_heartbeat`, `page_visit`,
+ * `client_error` and the nudge-funnel types.
  * `function_failure` rows back the operator digest's failure history and are left
  * untouched at any age. The remaining low-volume types (api_error,
  * webhook_failure, digest_snapshot, worker_fallback, scan_signal) are also left
@@ -527,14 +604,17 @@ export async function pruneOpsEvents(options?: {
   heartbeatOlderThanDays?: number;
   pageVisitOlderThanDays?: number;
   nudgeOlderThanDays?: number;
+  clientErrorOlderThanDays?: number;
 }): Promise<number> {
   const heartbeatDays = options?.heartbeatOlderThanDays ?? 30;
   const pageVisitDays = options?.pageVisitOlderThanDays ?? 14;
   const nudgeDays = options?.nudgeOlderThanDays ?? NUDGE_RETENTION_DAYS;
+  const clientErrorDays = options?.clientErrorOlderThanDays ?? CLIENT_ERROR_RETENTION_DAYS;
   const now = Date.now();
   const heartbeatCutoff = new Date(now - heartbeatDays * DAY_MS);
   const pageVisitCutoff = new Date(now - pageVisitDays * DAY_MS);
   const nudgeCutoff = new Date(now - nudgeDays * DAY_MS);
+  const clientErrorCutoff = new Date(now - clientErrorDays * DAY_MS);
 
   // Newest heartbeat per key. Only keys whose newest row is itself past the
   // cutoff need protecting; a recent newest row is never matched by `lt`.
@@ -560,6 +640,7 @@ export async function pruneOpsEvents(options?: {
           ...(keepNewest.length > 0 ? { NOT: { OR: keepNewest } } : {}),
         },
         { eventType: OPS_EVENT_TYPES.PAGE_VISIT, createdAt: { lt: pageVisitCutoff } },
+        { eventType: OPS_EVENT_TYPES.CLIENT_ERROR, createdAt: { lt: clientErrorCutoff } },
         // One branch per nudge type, so every branch still pins a single eventType.
         ...NUDGE_FUNNEL_EVENT_TYPES.map((eventType) => ({
           eventType,

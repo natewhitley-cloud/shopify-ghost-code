@@ -1,5 +1,7 @@
 import { isRouteErrorResponse, useRouteError } from "react-router";
 
+import { reportRouteError } from "../lib/client-error-reporter";
+
 /**
  * Shared route-level error boundary used across all app routes.
  *
@@ -11,6 +13,9 @@ import { isRouteErrorResponse, useRouteError } from "react-router";
  */
 export function AppErrorBoundary() {
   const error = useRouteError();
+  // Browser-side telemetry (gc-nn6): best-effort, deduped per page load, a
+  // no-op during SSR. Called in render, not an effect (see reportRouteError).
+  reportRouteError(error);
 
   if (isRouteErrorResponse(error)) {
     return (

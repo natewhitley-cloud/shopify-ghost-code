@@ -36,6 +36,7 @@ const mockDb = vi.hoisted(() => ({
   },
   opsEvent: {
     create: vi.fn(),
+    count: vi.fn(),
     deleteMany: vi.fn(),
   },
   merchantFeedback: {
@@ -53,7 +54,11 @@ vi.mock("../../app/db.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { NUDGE_FUNNEL_EVENT_TYPES, OPS_EVENT_TYPES } from "../../app/models/ops-event.server";
+import {
+  NUDGE_FUNNEL_EVENT_TYPES,
+  OPS_EVENT_TYPES,
+  recordClientError,
+} from "../../app/models/ops-event.server";
 import {
   getOrCreateShopMetadata,
   getShopMetadata,
@@ -834,6 +839,57 @@ describe("deleteShopData", () => {
     expect(purged).toHaveLength(perShop);
     expect(purged.every((r) => r.key === target)).toBe(true);
     expect(new Set(purged.map((r) => r.eventType))).toEqual(new Set(NUDGE_FUNNEL_EVENT_TYPES));
+    expect(written.filter((r) => r.key === other).some(matchesRedact)).toBe(false);
+  });
+
+  it("purges client_error rows for the redacted domain and leaves other shops' rows (gc-nn6)", async () => {
+    // Bind the REAL recordClientError write shape to the redact predicate, the
+    // same way as the nudge-funnel case above.
+    mockDb.opsEvent.count.mockResolvedValue(0);
+    const target = "delete-me.myshopify.com";
+    const other = "keep-me.myshopify.com";
+    for (const domain of [target, other]) {
+      await recordClientError(domain, {
+        kind: "fetch",
+        message: "GET /app/scans.data -> 502",
+        path: "/app/scans/abc",
+        status: 502,
+        browser: "chrome",
+      });
+      await recordClientError(domain, {
+        kind: "error",
+        message: "x is undefined",
+        path: "/app",
+        stack: "at a (https://h/a.js:1:1)",
+        browser: "safari",
+      });
+    }
+    const written = mockDb.opsEvent.create.mock.calls.map(
+      (c) => c[0].data as { eventType: string; key: string; metadata: Record<string, unknown> },
+    );
+    expect(written).toHaveLength(4);
+    expect(written.every((r) => r.eventType === OPS_EVENT_TYPES.CLIENT_ERROR)).toBe(true);
+
+    const existingShop = { id: "shop-gdpr-client-error", domain: target, plan: "free" };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.opsEvent.deleteMany.mockResolvedValue({ count: 2 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData(target);
+
+    type Clause = { key?: string; metadata?: { path: string[]; equals: string } };
+    const opsWhere = mockDb.opsEvent.deleteMany.mock.calls[0][0].where as { OR: Clause[] };
+    const matchesRedact = (row: (typeof written)[number]) =>
+      opsWhere.OR.some((c) =>
+        c.key !== undefined
+          ? row.key === c.key
+          : c.metadata !== undefined && row.metadata?.[c.metadata.path[0]] === c.metadata.equals,
+      );
+
+    const purged = written.filter(matchesRedact);
+    expect(purged).toHaveLength(2);
+    expect(purged.every((r) => r.key === target)).toBe(true);
     expect(written.filter((r) => r.key === other).some(matchesRedact)).toBe(false);
   });
 

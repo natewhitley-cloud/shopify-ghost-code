@@ -21,7 +21,8 @@
  *      nudge funnel (24h / 7d), merchant feedback (24h / 7d), journey funnel +
  *      per-shop stage + 7d timeline (gc-dpm.3).
  *   B. Ops health — scan runs (derived from A's status map), function/worker/
- *      webhook failures, API errors/warns, cron dead-man's-switch, an alerting
+ *      webhook failures, API errors/warns, browser-side client errors (gc-nn6),
+ *      cron dead-man's-switch, an alerting
  *      self-check (loud banner at top if the paging channel is misconfigured).
  *
  * Dev/operator store(s) are excluded from every shop/scan count via
@@ -603,6 +604,74 @@ export function aggregateNudgeFunnel(
     const row = byKey.get(k);
     return row ? [row] : [];
   });
+}
+
+// ---------------------------------------------------------------------------
+// Client (browser) errors (gc-nn6)
+// ---------------------------------------------------------------------------
+
+/** 24h client_error rollup for the OPERATIONAL HEALTH line. */
+export interface ClientErrorDigest {
+  total: number;
+  /** Distinct shops with at least one client error. */
+  shops: number;
+  /** Most frequent message (ties: alphabetical), or null when total is 0. */
+  top: { message: string; count: number } | null;
+}
+
+/** Email-line cap for the top client-error message (stored rows keep up to 300). */
+export const CLIENT_ERROR_TOP_MESSAGE_CHARS = 120;
+
+const CLIENT_ERROR_NO_MESSAGE = "(no message)";
+
+/**
+ * Roll trailing-24h client_error rows up into total / distinct shops / top
+ * message. Pure.
+ *
+ * Exclusion: a row counts only if its `key` (the shop domain, case-insensitive)
+ * is in `allowedDomains`, the handler's already-filtered non-excluded shop set
+ * (durable isInternal flag, OPERATOR_EXCLUDE_SHOPS and prefix rules), the same
+ * set NUDGES pins to. That set keeps uninstalled-pending-redact real shops: a
+ * merchant who hit errors and then uninstalled is exactly who this is for.
+ */
+export function aggregateClientErrors(
+  events: Array<{ key: string | null; message: string | null; createdAt: Date }>,
+  allowedDomains: Iterable<string>,
+  now: Date,
+): ClientErrorDigest {
+  const dayAgo = now.getTime() - DAY_MS;
+  const allowed = new Set([...allowedDomains].map((d) => d.toLowerCase()));
+
+  let total = 0;
+  const shops = new Set<string>();
+  const byMessage = new Map<string, number>();
+  for (const e of events) {
+    const domain = e.key?.toLowerCase();
+    if (domain === undefined || !allowed.has(domain)) continue;
+    if (e.createdAt.getTime() < dayAgo) continue; // defensive; the query bounds to 24h
+    total += 1;
+    shops.add(domain);
+    const message = e.message || CLIENT_ERROR_NO_MESSAGE;
+    byMessage.set(message, (byMessage.get(message) ?? 0) + 1);
+  }
+
+  let top: ClientErrorDigest["top"] = null;
+  for (const [message, count] of byMessage) {
+    if (!top || count > top.count || (count === top.count && message < top.message)) {
+      top = { message, count };
+    }
+  }
+  return { total, shops: shops.size, top };
+}
+
+/** The OPERATIONAL HEALTH client-errors line. */
+function formatClientErrorsLine(c: ClientErrorDigest | undefined): string {
+  if (!c || c.total === 0 || !c.top) return "  Client errors: 0";
+  const msg =
+    c.top.message.length > CLIENT_ERROR_TOP_MESSAGE_CHARS
+      ? `${c.top.message.slice(0, CLIENT_ERROR_TOP_MESSAGE_CHARS)}...`
+      : c.top.message;
+  return `  Client errors: ${c.total} (shops: ${c.shops}; top: "${msg}" x${c.top.count})`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1266,6 +1335,9 @@ export interface OperatorDigestData {
     /** Real failures vs degraded-but-handled rows (gc-4hk). */
     webhookFailures: { failed: number; degraded: number };
     apiErrors: { error: number; warn: number };
+    /** Browser-side errors in the embedded app (gc-nn6). Optional so callers/
+     * tests that predate it still type-check; absent => rendered as zero. */
+    clientErrors?: ClientErrorDigest;
     staleCrons: StaleCronSummary[];
     /** Crons with no heartbeat on record (gc-288). Optional: absent = none. */
     neverSeenCrons?: string[];
@@ -1628,6 +1700,10 @@ export function buildDigestBody(data: OperatorDigestData): string {
 
   lines.push("API");
   lines.push(`  Errors: ${ops.apiErrors.error}, Warnings: ${ops.apiErrors.warn}`);
+  lines.push("");
+
+  lines.push("BROWSER (embedded app)");
+  lines.push(formatClientErrorsLine(ops.clientErrors));
   lines.push("");
 
   lines.push("CRON HEALTH (dead-man's-switch)");
@@ -2150,6 +2226,24 @@ export const operatorDigest = inngest.createFunction(
       };
     })) as OperatorDigestData["ops"];
 
+    // Client (browser) errors (gc-nn6): trailing-24h client_error rows, pinned
+    // to the same non-excluded domain set as NUDGES (domainById: honours
+    // isInternal, the env exclude list and prefixes, and keeps
+    // uninstalled-pending-redact real shops, who are the point of this signal).
+    const clientErrors = (await step.run("get-client-errors", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const { OPS_EVENT_TYPES } = await import("../../app/models/ops-event.server");
+      const now = new Date();
+      const events = await db.opsEvent.findMany({
+        where: {
+          eventType: OPS_EVENT_TYPES.CLIENT_ERROR,
+          createdAt: { gte: new Date(now.getTime() - DAY_MS) },
+        },
+        select: { key: true, message: true, createdAt: true },
+      });
+      return aggregateClientErrors(events, Object.values(domainById), now);
+    })) as ClientErrorDigest;
+
     // Latest reconcile-installs outcome (gc-dwp): both rows are counts-only and
     // keyed on a constant, so nothing per-shop crosses into the digest.
     const reconciler = (await step.run("get-reconciler-status", async () => {
@@ -2218,7 +2312,7 @@ export const operatorDigest = inngest.createFunction(
       nudges,
       feedback,
       journey,
-      ops,
+      ops: { ...ops, clientErrors },
       anomalies: metricAnomalies.anomalies,
       reconciler,
     };

@@ -1,8 +1,10 @@
 import { AppProvider } from "@shopify/shopify-app-react-router/react";
 import { boundary } from "@shopify/shopify-app-react-router/server";
+import { useEffect } from "react";
 import type { HeadersFunction, LoaderFunctionArgs } from "react-router";
 import { Outlet, useLoaderData, useRouteError } from "react-router";
 
+import { installClientErrorCapture, reportRouteError } from "../lib/client-error-reporter";
 import { logger } from "../lib/logger.server";
 import { recordPageVisit } from "../models/ops-event.server";
 import {
@@ -116,6 +118,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 export default function App() {
   const { apiKey } = useLoaderData<typeof loader>();
 
+  // Browser-side error telemetry for every /app page (gc-nn6): window errors,
+  // unhandled rejections and failed same-origin fetches, beaconed to
+  // /app/client-error. Installed once per page load and deliberately never
+  // uninstalled here, so capture survives this layout's own ErrorBoundary.
+  useEffect(() => {
+    installClientErrorCapture();
+  }, []);
+
   return (
     <AppProvider embedded apiKey={apiKey}>
       <s-app-nav>
@@ -131,7 +141,11 @@ export default function App() {
 
 // Shopify needs React Router to catch some thrown responses, so that their headers are included in the response.
 export function ErrorBoundary() {
-  return boundary.error(useRouteError());
+  const error = useRouteError();
+  // Report before delegating: boundary.error rethrows non-response errors, so
+  // an effect here would never commit (gc-nn6).
+  reportRouteError(error);
+  return boundary.error(error);
 }
 
 export const headers: HeadersFunction = (headersArgs) => {
