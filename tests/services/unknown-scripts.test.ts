@@ -217,6 +217,72 @@ describe("collectUnknownStylesheets", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Theme-setting gate (gc-vb7): a resource the theme loads behind a theme-editor
+// setting is a theme feature, so it must not reach the "name this app" flywheel.
+// ---------------------------------------------------------------------------
+
+describe.each([
+  {
+    name: "collectUnknownScripts",
+    collect: collectUnknownScripts,
+    tag: '<script src="https://upload-widget.cloudinary.com/global/all.js" defer></script>',
+  },
+  {
+    name: "collectUnknownStylesheets",
+    collect: collectUnknownStylesheets,
+    tag: '<link rel="stylesheet" href="https://cdn.unknownapp.com/styles.css">',
+  },
+])("$name — theme-setting-gated resources (gc-vb7)", ({ collect, tag }) => {
+  const scan = (...contentLines: string[]) =>
+    collect({
+      filename: "blocks/contact-form-file-upload.liquid",
+      content: contentLines.join("\n"),
+    });
+
+  it.each([
+    ["block.settings", "{%- if block.settings.upload_provider == 'uploadcare' -%}"],
+    ["section.settings", "{% if section.settings.enable_upload %}"],
+    ["global settings", "{% unless settings.disable_upload %}"],
+  ])("skips a resource gated by %s", (_label, opener) => {
+    const closer = opener.includes("unless") ? "{% endunless %}" : "{%- endif -%}";
+    expect(scan(opener, `  ${tag}`, closer)).toHaveLength(0);
+  });
+
+  it("skips a resource in the else branch of a settings conditional (bad-hats shape)", () => {
+    // bad-hats' Sugar file has `{%- else -%} <tag> {%- endif -%}` on one line;
+    // the opener sits on an earlier line. When that opener reads a setting
+    // (e.g. a provider choice) the else branch is merchant-toggled too.
+    const unknowns = scan(
+      "{%- if block.settings.upload_provider == 'uploadcare' -%}",
+      '  <script src="https://ucarecdn.com/libs/widget/3.x/uploadcare.full.min.js"></script>',
+      `{%- else -%} ${tag} {%- endif -%}`,
+    );
+    expect(unknowns).toHaveLength(0);
+  });
+
+  it("still collects the same resource with no conditional", () => {
+    const unknowns = scan("<div>", tag, "</div>");
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].lineNumber).toBe(2);
+  });
+
+  it.each([
+    ["a non-settings if", "{% if form.posted_successfully? %}"],
+    ["a design-mode check", "{% if request.design_mode %}"],
+  ])("still collects a resource inside %s (incl. its else branch)", (_label, opener) => {
+    const unknowns = scan(opener, "<p>editor</p>", `{%- else -%} ${tag} {%- endif -%}`);
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].lineNumber).toBe(3);
+  });
+
+  it("still collects a resource AFTER the endif of a settings conditional", () => {
+    const unknowns = scan("{% if block.settings.show %}", "<div></div>", "{% endif %}", tag);
+    expect(unknowns).toHaveLength(1);
+    expect(unknowns[0].lineNumber).toBe(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Benign library / web-font recognition (drop-at-collection)
 // ---------------------------------------------------------------------------
 

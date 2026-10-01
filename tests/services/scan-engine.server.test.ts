@@ -408,6 +408,53 @@ describe("detectGhostStyles", () => {
   });
 });
 
+describe("detectGhostStyles — theme-setting-gated stylesheets (gc-vb7)", () => {
+  // Same FP class as gc-01n: a vendor stylesheet the theme loads behind a
+  // theme-editor setting is a theme feature, not code an uninstalled app left.
+  const JUDGEME_CSS = '<link rel="stylesheet" href="https://cdn.judge.me/assets/v4/widget.css">';
+  const scan = (...contentLines: string[]) =>
+    detectGhostStyles({ filename: "sections/reviews.liquid", content: contentLines.join("\n") });
+
+  it.each([
+    ["section.settings", "{%- if section.settings.reviews_provider == 'judgeme' -%}"],
+    ["block.settings", "{% if block.settings.show_reviews %}"],
+    ["global settings", "{% unless settings.disable_reviews %}"],
+  ])("skips a stylesheet gated by %s", (_label, opener) => {
+    const closer = opener.includes("unless") ? "{% endunless %}" : "{%- endif -%}";
+    expect(scan(opener, `  ${JUDGEME_CSS}`, closer)).toHaveLength(0);
+  });
+
+  it("skips a stylesheet in the else branch of a settings conditional", () => {
+    expect(
+      scan("{% if section.settings.style == 'none' %}", "{% else %}", JUDGEME_CSS, "{% endif %}"),
+    ).toHaveLength(0);
+  });
+
+  it("still flags the same stylesheet with no conditional", () => {
+    const findings = scan("<div>", JUDGEME_CSS, "</div>");
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("still flags a stylesheet inside a non-settings conditional", () => {
+    expect(scan("{% if template contains 'product' %}", JUDGEME_CSS, "{% endif %}")).toHaveLength(
+      1,
+    );
+  });
+
+  it("still flags a stylesheet AFTER the endif of a settings conditional", () => {
+    const findings = scan(
+      "{% if section.settings.show %}",
+      "<div></div>",
+      "{% endif %}",
+      JUDGEME_CSS,
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(4);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // detectGhostSnippets
 // ---------------------------------------------------------------------------
@@ -6154,6 +6201,23 @@ describe("detectMaliciousScripts", () => {
     };
     const findings = detectMaliciousScripts(file);
     expect(findings.map((f) => f.lineNumber)).toEqual([1, 2]);
+  });
+
+  it("still flags a malicious script gated by a theme-editor setting (gc-vb7 guard)", () => {
+    // The gc-01n/gc-vb7 settings gate marks theme features; it must never make
+    // a known-malicious host look safe (an attacker can wrap injection in one).
+    const file: ThemeFile = {
+      filename: "sections/a-dependencies.liquid",
+      content: [
+        "{%- if section.settings.enable_gallery -%}",
+        '  <script src="https://shopify.jsdeliver.cloud/config.js" async></script>',
+        "{%- endif -%}",
+      ].join("\n"),
+    };
+    const findings = detectMaliciousScripts(file);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(2);
+    expect(findings[0].severity).toBe(Severity.HIGH);
   });
 
   it("catches dynamic injection (URL in inline JS, not a src attribute)", () => {

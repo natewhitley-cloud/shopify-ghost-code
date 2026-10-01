@@ -873,6 +873,8 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
   //     rel="stylesheet"
   //     href="https://cdn.judge.me/...">
   // are still matched. lineNumberAtOffset maps the match position back to a line.
+  // Built on the first attributed stylesheet only: most files have none.
+  let settingGatedLines: Set<number> | null = null;
   for (const { tag, offset } of extractTags(file.content, "<link")) {
     const match = execTagPattern(tag, LINK_STYLESHEET_TAG);
     if (!match) continue;
@@ -891,6 +893,9 @@ export function detectGhostStyles(file: ThemeFile): CreateFindingInput[] {
     if (!resolved.appName) continue;
 
     const lineNumber = lineNumberAtOffset(file.content, offset + match.index);
+    // A stylesheet behind a theme-editor setting is a theme feature (gc-vb7).
+    settingGatedLines ??= buildThemeSettingGatedLines(file.content);
+    if (settingGatedLines.has(lineNumber)) continue;
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_STYLE, codeSnippet);
 
@@ -2378,6 +2383,7 @@ export function collectUnknownScripts(
   benignSkips?: BenignSkipCounter,
 ): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
+  let settingGatedLines: Set<number> | null = null;
 
   for (const { lineNumber, text } of lines(file.content)) {
     for (const { tag } of extractTags(text, "<script")) {
@@ -2402,6 +2408,11 @@ export function collectUnknownScripts(
         continue;
       }
 
+      // A resource behind a theme-editor setting is a theme feature, not an
+      // app to name (gc-vb7). Built on the first candidate only.
+      settingGatedLines ??= buildThemeSettingGatedLines(file.content);
+      if (settingGatedLines.has(lineNumber)) continue;
+
       unknowns.push({
         filename: file.filename,
         lineNumber,
@@ -2424,6 +2435,7 @@ export function collectUnknownStylesheets(
   benignSkips?: BenignSkipCounter,
 ): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
+  let settingGatedLines: Set<number> | null = null;
 
   for (const { lineNumber, text } of lines(file.content)) {
     for (const { tag } of extractTags(text, "<link")) {
@@ -2449,6 +2461,11 @@ export function collectUnknownStylesheets(
         if (benignSkips) benignSkips.count++;
         continue;
       }
+
+      // A resource behind a theme-editor setting is a theme feature, not an
+      // app to name (gc-vb7). Built on the first candidate only.
+      settingGatedLines ??= buildThemeSettingGatedLines(file.content);
+      if (settingGatedLines.has(lineNumber)) continue;
 
       unknowns.push({
         filename: file.filename,
