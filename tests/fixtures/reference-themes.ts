@@ -185,3 +185,83 @@ export const REFERENCE_THEMES: ReferenceThemeFixture[] = [
   { name: "Craft", ...DAWN_FOUNDATION },
   { name: "Spotlight", ...DAWN_FOUNDATION },
 ];
+
+/*
+ * Debut (vintage Shopify free theme, v17.14.1), gc-cpg
+ * ---------------------------------------------------
+ * Debut is not on Shopify's public GitHub. These constants are copied VERBATIM
+ * from a stock Debut 17.14.1 export (github.com/mmarienko/debut,
+ * `config/settings_schema.json` theme_info: Debut / Shopify / 17.14.1; fetched
+ * 2026-10-01). Debut is NOT added to REFERENCE_THEMES (its canonical/font/ajax
+ * surface was not captured); it is exercised by its own golden test.
+ */
+
+/** Debut `layout/theme.liquid`: the `seo_title` capture plus `<title>`, verbatim. */
+export const DEBUT_TITLE = `  {%- capture seo_title -%}
+    {%- if request.page_type == 'search' and search.performed == true -%}
+      {{ 'general.search.heading' | t: count: search.results_count }}: {{ 'general.search.results_with_count' | t: terms: search.terms, count: search.results_count }}
+    {%- else -%}
+      {{ page_title }}
+    {%- endif -%}
+    {%- if current_tags -%}
+      {%- assign meta_tags = current_tags | join: ', ' -%} &ndash; {{ 'general.meta.tags' | t: tags: meta_tags -}}
+    {%- endif -%}
+    {%- if current_page != 1 -%}
+      &ndash; {{ 'general.meta.page' | t: page: current_page }}
+    {%- endif -%}
+    {%- assign escaped_page_title = page_title | escape -%}
+    {%- unless escaped_page_title contains shop.name -%}
+      &ndash; {{ shop.name }}
+    {%- endunless -%}
+  {%- endcapture -%}
+  <title>{{ seo_title | strip }}</title>`;
+
+/** Debut `snippets/social-meta-tags.liquid`, verbatim. */
+export const DEBUT_SOCIAL_META_TAGS = `<!-- /snippets/social-meta-tags.liquid -->
+{%- liquid
+  assign og_title = page_title | default: shop.name
+  assign og_url = canonical_url | default: shop.url
+  assign og_type = 'website'
+  assign og_description = page_description | default: shop.description | default: shop.name
+-%}
+
+{% comment %} Template specific overides {% endcomment %}
+{% liquid
+  if request.page_type == 'product'
+    assign og_type = 'product'
+
+  elsif request.page_type == 'article'
+    assign og_type = 'article'
+
+  elsif request.page_type == 'collection'
+    assign og_type = 'product.group'
+
+  elsif request.page_type == 'password'
+    assign og_url = shop.url
+  endif
+%}
+
+<meta property="og:site_name" content="{{ shop.name }}">
+<meta property="og:url" content="{{ og_url }}">
+<meta property="og:title" content="{{ og_title }}">
+<meta property="og:type" content="{{ og_type }}">
+<meta property="og:description" content="{{ og_description | escape }}">
+
+{%- if page_image -%}
+  <meta property="og:image" content="http:{{ page_image | img_url: 'master' }}">
+  <meta property="og:image:secure_url" content="https:{{ page_image | img_url: 'master' }}">
+  <meta property="og:image:width" content="{{ page_image.width }}">
+  <meta property="og:image:height" content="{{ page_image.height }}">
+{%- endif -%}
+
+{% if request.page_type == 'product' %}
+  <meta property="og:price:amount" content="{{ product.price | money_without_currency | strip_html }}">
+  <meta property="og:price:currency" content="{{ cart.currency.iso_code }}">
+{% endif %}
+
+{% unless settings.social_twitter_link == blank %}
+  <meta name="twitter:site" content="{{ settings.social_twitter_link | split: 'twitter.com/' | last | prepend: '@' }}">
+{% endunless %}
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{ og_title }}">
+<meta name="twitter:description" content="{{ og_description | escape }}">`;

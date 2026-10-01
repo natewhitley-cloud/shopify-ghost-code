@@ -41,7 +41,13 @@ import {
   MAX_SCANNABLE_FILE_BYTES,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
-import { REFERENCE_THEMES, DAWN_TITLE, DAWN_META_TAGS } from "../fixtures/reference-themes";
+import {
+  REFERENCE_THEMES,
+  DAWN_TITLE,
+  DAWN_META_TAGS,
+  DEBUT_SOCIAL_META_TAGS,
+  DEBUT_TITLE,
+} from "../fixtures/reference-themes";
 import { timedMinMs, timedMinMsWithResult } from "../test-utils/timing";
 
 // ---------------------------------------------------------------------------
@@ -4186,6 +4192,110 @@ describe("reference-theme golden files — no GHOST_TITLE/GHOST_OG false positiv
       content: DAWN_TITLE,
     };
     expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Shopify global Liquid objects (gc-cpg)
+//
+// Every object the Liquid reference marks `global` and that can render a value
+// into <title> / og:* content is native theme data, never an orphaned app
+// variable. Source: Shopify/theme-liquid-docs data/objects.json (`access.global`),
+// the data behind shopify.dev/docs/api/liquid/objects (fetched 2026-10-01).
+// ---------------------------------------------------------------------------
+
+describe("Shopify global Liquid objects are not unresolved variables (gc-cpg)", () => {
+  it("does NOT flag Debut social-meta-tags.liquid (verbatim) OG/Twitter markup", () => {
+    const file: ThemeFile = {
+      filename: "snippets/social-meta-tags.liquid",
+      content: DEBUT_SOCIAL_META_TAGS,
+    };
+    expect(detectGhostOg(file)).toHaveLength(0);
+    expect(detectGhostTitle(file)).toHaveLength(0);
+  });
+
+  it("does NOT flag Debut <title> (verbatim seo_title capture)", () => {
+    expect(
+      detectGhostTitle({ filename: "layout/theme.liquid", content: DEBUT_TITLE }),
+    ).toHaveLength(0);
+  });
+
+  it("does NOT flag Debut or Dawn heads via scanThemeFiles", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.liquid", content: `<head>\n${DEBUT_TITLE}\n</head>` },
+      { filename: "snippets/social-meta-tags.liquid", content: DEBUT_SOCIAL_META_TAGS },
+      { filename: "snippets/meta-tags.liquid", content: DAWN_META_TAGS },
+    ];
+    const { findings } = scanThemeFiles(files);
+    expect(findingsOfType(findings, FindingType.GHOST_TITLE)).toHaveLength(0);
+    expect(findingsOfType(findings, FindingType.GHOST_OG)).toHaveLength(0);
+  });
+
+  // No filter on any of these: SAFE_OG_FILTER_RE must not be what rescues them.
+  const GLOBAL_TOKENS = [
+    "{{ page_image }}",
+    "{{ page_image.width }}",
+    "{{ page_image.alt | escape }}",
+    "{{ canonical_url }}",
+    "{{ canonical_url | escape }}",
+    "{{ handle }}",
+    "{{ localization.language.iso_code }}",
+    "{{ localization.country.name }}",
+    "{{ routes.root_url }}",
+    "{{ customer.first_name }}",
+    "{{ linklists.footer.title }}",
+    "{{ pages.about.title }}",
+    "{{ blogs.news.title }}",
+    "{{ articles.size }}",
+    "{{ collections.all.title }}",
+    "{{ all_products.gift_card.title }}",
+    "{{ images.size }}",
+    "{{ metaobjects.brand.acme.name }}",
+  ];
+
+  for (const token of GLOBAL_TOKENS) {
+    it(`does NOT flag ${token} in <title>`, () => {
+      const content = `<title>${token}</title>`;
+      expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(0);
+    });
+
+    it(`does NOT flag ${token} in og:image and og:url`, () => {
+      const content = [
+        `<meta property="og:image" content="https:${token}">`,
+        `<meta property="og:url" content="${token}">`,
+      ].join("\n");
+      expect(detectGhostOg({ filename: "snippets/meta-tags.liquid", content })).toHaveLength(0);
+    });
+  }
+
+  const UNKNOWN_TOKENS = [
+    "{{ seoapp_og_image }}",
+    "{{ page_images_app }}",
+    "{{ canonical_url_x }}",
+    "{{ routes_app.url }}",
+    "{{ customers_seo.title }}",
+    "{{ handle_seo }}",
+  ];
+
+  for (const token of UNKNOWN_TOKENS) {
+    it(`STILL flags ${token} in og:image`, () => {
+      const content = `<meta property="og:image" content="https:${token}">`;
+      const findings = detectGhostOg({ filename: "snippets/meta-tags.liquid", content });
+      expect(findings).toHaveLength(1);
+      expect(findings[0].description).toBe("Unresolved Liquid variable in og:image content");
+    });
+
+    it(`STILL flags ${token} in <title>`, () => {
+      const content = `<title>${token}</title>`;
+      const findings = detectGhostTitle({ filename: "layout/theme.liquid", content });
+      expect(findings).toHaveLength(1);
+      expect(findings[0].description).toBe("Unresolved Liquid variable in title tag");
+    });
+  }
+
+  it("STILL flags an unknown variable next to a global one", () => {
+    const content = `<meta property="og:url" content="{{ canonical_url }}{{ seoapp_suffix }}">`;
+    expect(detectGhostOg({ filename: "snippets/meta-tags.liquid", content })).toHaveLength(1);
   });
 });
 

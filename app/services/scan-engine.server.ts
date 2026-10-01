@@ -3606,6 +3606,17 @@ function isThemeDefinedVar(token: string, defs: Map<string, number>, offset: num
  *
  * Shared by the GHOST_TITLE and GHOST_OG safe-variable allowlists so the two
  * detectors stay in sync as Shopify's free reference themes evolve.
+ *
+ * The second group (gc-cpg) is every object Shopify marks `global` (available
+ * in every storefront Liquid file) that can render a value into title/og:*
+ * content. Source: Shopify/theme-liquid-docs `data/objects.json` (`access.global`),
+ * the data behind shopify.dev/docs/api/liquid/objects, fetched 2026-10-01.
+ * Globals deliberately left out: `content_for_*` and `template` (already in both
+ * allowlists), `page_title` / `page_description` / `current_page` (listed per
+ * detector), `theme` (deprecated), `scripts` (Shopify Scripts only),
+ * `powered_by_link` / `country_option_tags` / `all_country_option_tags` (render
+ * HTML elements, never attribute or title text), `additional_checkout_buttons`
+ * (boolean), and `closest` / `self` (block/snippet-scope drops, not head data).
  */
 const SHOPIFY_GLOBAL_OBJECTS = [
   "shop",
@@ -3618,6 +3629,21 @@ const SHOPIFY_GLOBAL_OBJECTS = [
   "request",
   "settings",
   "media",
+  // Shopify `global` objects (gc-cpg)
+  "page_image",
+  "canonical_url",
+  "handle",
+  "localization",
+  "routes",
+  "customer",
+  "linklists",
+  "pages",
+  "blogs",
+  "articles",
+  "collections",
+  "all_products",
+  "images",
+  "metaobjects",
 ].map((object) => `${object}(?:\\.\\w+)*`);
 
 /**
@@ -3906,8 +3932,6 @@ const SAFE_OG_VARS_RE = buildSafeVarRe([
   // Per-page SEO globals Shopify injects on every request
   "page_title",
   "page_description",
-  "page_image(?:\\.\\w+)*", // page_image, page_image.width, page_image.height
-  "canonical_url",
   "current_tags",
   "current_page",
   "template",
