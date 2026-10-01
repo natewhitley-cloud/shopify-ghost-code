@@ -30,6 +30,8 @@ Shopify requires these three webhooks before app review approval. They MUST retu
 
 All webhooks MUST verify the HMAC signature from Shopify before processing. The Shopify app template provides middleware for this — use it, do not roll your own.
 
+Exception (gc-4hk): webhook routes call `authenticateWebhookTolerant` (`app/lib/webhook-auth.server.ts`), which wraps the template's `authenticate.webhook` and falls back to the library's own HMAC validation only when the library throws a non-Response error (an expired offline-token refresh). Response throws (401/400/405) still propagate. Use it for every new webhook route.
+
 ## Billing (Shopify App Pricing)
 
 This app uses **Shopify App Pricing** (formerly Managed Pricing), NOT the classic
