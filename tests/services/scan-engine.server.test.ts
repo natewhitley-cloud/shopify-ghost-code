@@ -3512,6 +3512,96 @@ describe("detectGhostTitle — stock gift_card template (gc-j93)", () => {
   });
 });
 
+describe("detectGhostTitle — theme-defined title variables (gc-6lm)", () => {
+  // bad-hats-com (Sugar Theme 1.3.0) 2026-09-30: the theme captures its own
+  // seo_title right before <title>; it was flagged HIGH as unresolved.
+  it("does NOT flag a variable captured earlier in the file", () => {
+    const content = [
+      "{%- capture seo_title -%}",
+      "  {{ page_title }}{% unless page_title contains shop.name %} - {{ shop.name }}{% endunless %}",
+      "{%- endcapture -%}",
+      "<title>{{ seo_title }}</title>",
+    ].join("\n");
+    expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(0);
+  });
+
+  it("does NOT flag a variable assigned earlier, with filters on output", () => {
+    const content = [
+      "{%- assign seo_title = page_title | append: ' | ' | append: shop.name -%}",
+      "<title>{{ seo_title | escape }}</title>",
+    ].join("\n");
+    expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(0);
+  });
+
+  it("does NOT flag a variable assigned inside a {% liquid %} block", () => {
+    const content = [
+      "{%- liquid",
+      "  assign seo_title = page_title",
+      "  if current_page != 1",
+      "    assign seo_title = seo_title | append: ' - Page ' | append: current_page",
+      "  endif",
+      "-%}",
+      "<title>{{ seo_title }}</title>",
+    ].join("\n");
+    expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(0);
+  });
+
+  it("does NOT flag a property of an assigned variable", () => {
+    const content = [
+      "{%- assign meta = product.metafields.custom -%}",
+      "<title>{{ meta.seo_title.value }}</title>",
+    ].join("\n");
+    expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(0);
+  });
+
+  it("STILL flags a variable that is only assigned AFTER the title", () => {
+    const content = [
+      "<title>{{ seo_title }}</title>",
+      "{%- assign seo_title = page_title -%}",
+    ].join("\n");
+    const findings = detectGhostTitle({ filename: "layout/theme.liquid", content });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("STILL flags an undefined variable next to a defined one", () => {
+    const content = [
+      "{%- assign seo_title = page_title -%}",
+      "<title>{{ seo_title }} {{ seoapp_suffix }}</title>",
+    ].join("\n");
+    const findings = detectGhostTitle({ filename: "layout/theme.liquid", content });
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("does NOT treat a name that merely starts with an assigned one as defined", () => {
+    const content = ["{%- assign seo = page_title -%}", "<title>{{ seo_title }}</title>"].join(
+      "\n",
+    );
+    expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(1);
+  });
+
+  it("detectGhostOg: does NOT flag og:title using a variable captured earlier", () => {
+    const content = [
+      "{%- capture seo_title -%}{{ page_title }}{%- endcapture -%}",
+      '<meta property="og:title" content="{{ seo_title }}">',
+    ].join("\n");
+    expect(detectGhostOg({ filename: "snippets/meta-tags.liquid", content })).toHaveLength(0);
+  });
+
+  it("detectGhostOg: STILL flags og:title using an undefined variable", () => {
+    const content = '<meta property="og:title" content="{{ seoapp_og_title }}">';
+    expect(detectGhostOg({ filename: "snippets/meta-tags.liquid", content })).toHaveLength(1);
+  });
+
+  it("ignores 'assign' in plain text that is not a Liquid tag", () => {
+    const content = ["<p>We assign seo_title for you</p>", "<title>{{ seo_title }}</title>"].join(
+      "\n",
+    );
+    expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(1);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // detectGhostOg
 // ---------------------------------------------------------------------------

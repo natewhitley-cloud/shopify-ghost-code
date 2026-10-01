@@ -3488,6 +3488,43 @@ function buildSafeVarRe(tokens: string[]): RegExp {
   return new RegExp(`\\{\\{\\s*(?:${tokens.join("|")})(?:\\s*\\|[^}]*)?\\s*\\}\\}`);
 }
 
+/** `assign x` / `capture x` at the start of a Liquid tag body or of a `{% liquid %}` line. */
+const LIQUID_DEFINITION_RE = /^[ \t]*(?:assign|capture)[ \t]+([A-Za-z_][\w-]*)/gm;
+
+/**
+ * Offset of the first `{% assign %}` / `{% capture %}` (including lines inside a
+ * `{% liquid %}` tag) defining each theme-local variable in `content` (gc-6lm).
+ * Tag bodies are found with indexOf, so an unterminated `{%` flood stays linear.
+ */
+function liquidDefinitionOffsets(content: string): Map<string, number> {
+  const defs = new Map<string, number>();
+  let from = 0;
+  for (;;) {
+    const open = content.indexOf("{%", from);
+    if (open === -1) break;
+    const close = content.indexOf("%}", open + 2);
+    if (close === -1) break;
+    const body = content.slice(open + 2, close).replace(/^-/, "");
+    for (const m of body.matchAll(LIQUID_DEFINITION_RE)) {
+      if (!defs.has(m[1])) defs.set(m[1], open);
+    }
+    from = close + 2;
+  }
+  return defs;
+}
+
+/**
+ * True when a `{{ ... }}` token's leading variable was assigned or captured in
+ * the same file before `offset`: theme-local data, not an orphaned app variable
+ * (bad-hats Sugar theme `{{ seo_title }}`, gc-6lm).
+ */
+function isThemeDefinedVar(token: string, defs: Map<string, number>, offset: number): boolean {
+  const name = /^\{\{-?\s*([A-Za-z_][\w-]*)/.exec(token)?.[1];
+  if (!name) return false;
+  const definedAt = defs.get(name);
+  return definedAt !== undefined && definedAt < offset;
+}
+
 /**
  * Native Shopify global Liquid objects. Any sub-property of these is real,
  * theme-rendered data (e.g. `shop.name`, `product.featured_image`,
@@ -3619,6 +3656,10 @@ export function detectGhostTitle(
 
   const appNameAt = lineAppNamer();
 
+  // Theme-local assign/capture offsets, computed on first need (gc-6lm).
+  let defs: Map<string, number> | undefined;
+  const liquidDefs = () => (defs ??= liquidDefinitionOffsets(file.content));
+
   // Early exit (gc-ypk). Every title after the first yields exactly one finding
   // (a check 1-3 hit, or else check 4 flags it as a duplicate). So once more
   // than `limit` titles have been examined, `limit` findings are guaranteed on
@@ -3633,7 +3674,7 @@ export function detectGhostTitle(
       examined = i;
       break;
     }
-    const { lineNumber, innerContent } = allTitles[i];
+    const { lineNumber, innerContent, offset } = allTitles[i];
     const codeSnippet = buildSnippet(file.content, lineNumber);
 
     // Check 1: Empty or whitespace-only title content (layout files only)
@@ -3659,8 +3700,10 @@ export function detectGhostTitle(
     // Extract all {{ ... }} expressions and check if any are NOT safe
     const allVarsInTitle = liquidOutputTokens(innerContent);
     if (allVarsInTitle.length > 0) {
-      // If ALL Liquid vars in the title are safe, skip
-      const hasUnsafeVar = allVarsInTitle.some((v) => !SAFE_TITLE_VARS_RE.test(v));
+      // If ALL Liquid vars in the title are safe or theme-defined, skip
+      const hasUnsafeVar = allVarsInTitle.some(
+        (v) => !SAFE_TITLE_VARS_RE.test(v) && !isThemeDefinedVar(v, liquidDefs(), offset),
+      );
 
       if (hasUnsafeVar) {
         const appName = appNameAt(lineNumber, codeSnippet);
@@ -3846,6 +3889,10 @@ export function detectGhostOg(
   const commentedLines = buildCommentSkipLines(file.content);
   const conditionalLine = new Map<number, boolean>();
 
+  // Theme-local assign/capture offsets, computed on first need (gc-6lm).
+  let defs: Map<string, number> | undefined;
+  const liquidDefs = () => (defs ??= liquidDefinitionOffsets(file.content));
+
   // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
   // OG_META_TAG to the bounded tag text. lineNumberAtOffset maps the match offset
   // back to a line.
@@ -3901,7 +3948,10 @@ export function detectGhostOg(
     const allVars = liquidOutputTokens(contentValue);
     if (allVars.length > 0) {
       const hasUnsafeVar = allVars.some(
-        (v) => !SAFE_OG_VARS_RE.test(v) && !SAFE_OG_FILTER_RE.test(v),
+        (v) =>
+          !SAFE_OG_VARS_RE.test(v) &&
+          !SAFE_OG_FILTER_RE.test(v) &&
+          !isThemeDefinedVar(v, liquidDefs(), offset + match.index),
       );
 
       if (hasUnsafeVar) {

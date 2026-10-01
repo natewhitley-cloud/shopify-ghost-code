@@ -78,6 +78,15 @@ describe("scan-engine ReDoS hardening — pathological input completes fast", ()
     content: pathological('<script src="//evil.example/a '),
   };
 
+  // gc-6lm: the title check scans every {% %} tag for assign/capture.
+  it("detectGhostTitle is fast on a Liquid tag flood with an unresolved title", () => {
+    const tagBomb: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: "<title>{{ seoapp_title }}</title>" + pathological("{%- \t \t assign%}{% "),
+    };
+    expect(timed(() => detectGhostTitle(tagBomb))).toBeLessThan(REDOS_BUDGET_MS);
+  });
+
   it("detectGhostStyles is fast on an unterminated <link> flood", () => {
     expect(timed(() => detectGhostStyles(linkBomb))).toBeLessThan(REDOS_BUDGET_MS);
   });
