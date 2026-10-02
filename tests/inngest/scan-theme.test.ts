@@ -86,6 +86,11 @@ vi.mock("../../app/models/scan.server", () => ({
   updateScanStatus: vi.fn(),
   finalizeScan: vi.fn(),
   getPreviousScanForTheme: vi.fn(),
+  getScanById: vi.fn(),
+}));
+
+vi.mock("../../app/models/merchant-alert.server", () => ({
+  getLatestMerchantAlert: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", () => ({
@@ -172,6 +177,17 @@ vi.mock("../../app/lib/scope-check.server", async (importOriginal) => ({
   fetchGrantedOptionalScopes: vi.fn(),
 }));
 
+// Merchant alert service (gc-syz.5): dark by default so every other test in this
+// file never touches the alert path; the notify-new-findings block opts in.
+vi.mock("../../app/services/merchant-alert.server", () => ({
+  getMerchantAlertConfigStatus: vi.fn(() => ({ configured: false, reason: "disabled" })),
+  notifyNewFindings: vi.fn(),
+}));
+
+vi.mock("../../app/models/ignored-finding.server", () => ({
+  getIgnoredFindingsForShop: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
@@ -179,6 +195,7 @@ vi.mock("../../app/lib/scope-check.server", async (importOriginal) => ({
 import db from "../../app/db.server";
 import { logger } from "../../app/lib/logger.server";
 import { OPTIONAL_SCOPES } from "../../app/lib/optional-scopes";
+import { canUseScanDiffing } from "../../app/lib/plan-gating.server";
 import {
   CORE_STEP_OUTPUT_BUDGET_BYTES,
   DANGLING_LOOKUP_CAP,
@@ -191,18 +208,25 @@ import {
   TransientScopeCheckError,
 } from "../../app/lib/scope-check.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
+import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
+import { getLatestMerchantAlert } from "../../app/models/merchant-alert.server";
 import { recordOpsEvent } from "../../app/models/ops-event.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
 import {
   finalizeScan,
   updateScanStatus,
   getPreviousScanForTheme,
+  getScanById,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.server";
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { resolveDanglingReferences } from "../../app/services/dangling-reference-resolver.server";
 import { auditStaticJsonLdPrices } from "../../app/services/jsonld-price-audit.server";
+import {
+  getMerchantAlertConfigStatus,
+  notifyNewFindings,
+} from "../../app/services/merchant-alert.server";
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
 import { detectOrphanedPages } from "../../app/services/page-detector.server";
 import { detectPersistentDiscounts } from "../../app/services/price-detector.server";
@@ -3070,5 +3094,228 @@ describe("scanTheme — APP_EMBED_LIVE_ENABLED soft-launch (gc-fed)", () => {
 
     const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
     expect(saved.some(isEmbed)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-syz.5 — notify-new-findings terminal step
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
+  const mockConfig = getMerchantAlertConfigStatus as ReturnType<typeof vi.fn>;
+  const mockNotify = notifyNewFindings as ReturnType<typeof vi.fn>;
+  const mockIgnores = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
+  const mockLatestAlert = getLatestMerchantAlert as ReturnType<typeof vi.fn>;
+  const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
+
+  const OLD = { ...MOCK_FINDINGS[0] };
+  const NEW = { ...MOCK_FINDINGS[1] };
+
+  /** Run the scan and capture each step's return value by name. */
+  async function run(onStep?: (name: string) => void) {
+    const results: Record<string, unknown> = {};
+    const base = createMockInngestStep();
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        onStep?.(name);
+        results[name] = await fn();
+        return results[name];
+      }),
+    };
+    const result = await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+    return { results, result, step };
+  }
+
+  function arrange(origin: string = "SCHEDULED", shop: Record<string, unknown> = {}) {
+    mockConfig.mockReturnValue({ configured: true });
+    mockNotify.mockResolvedValue({ sent: true, reason: "sent" });
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, ...shop });
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      origin,
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+      startedAt: new Date("2026-06-15T00:00:00Z"),
+      completedAt: new Date("2026-06-15T00:00:05Z"),
+    });
+    // Current persisted findings = OLD + NEW; previous scan only had OLD.
+    mockDb.finding.findMany.mockResolvedValue([OLD, NEW]);
+    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prev", findings: [OLD] });
+    // No prior alert by default: the baseline is the previous scan.
+    mockLatestAlert.mockResolvedValue(null);
+    mockGetScanById.mockResolvedValue(null);
+  }
+
+  const alertedScan = (over: Record<string, unknown> = {}) => ({
+    id: "alerted",
+    shopId: SHOP_ID,
+    themeId: THEME_ID,
+    createdAt: new Date("2026-06-01T00:00:00Z"),
+    findings: [OLD],
+    ...over,
+  });
+
+  beforeEach(() => {
+    mockConfig.mockReturnValue({ configured: false, reason: "disabled" });
+  });
+
+  it("runs as the last step, after finalize-scan", async () => {
+    arrange();
+    const { step } = await run();
+    const names = step.run.mock.calls.map((c) => c[0]);
+    expect(names.indexOf("notify-new-findings")).toBeGreaterThan(names.indexOf("finalize-scan"));
+    expect(names.at(-1)).toBe("notify-new-findings");
+  });
+
+  it("Standard plan still alerts: diff is computed although scanDiffing is false", async () => {
+    expect(canUseScanDiffing("Standard")).toBe(false);
+    arrange("SCHEDULED", { plan: "Standard" });
+
+    const { results } = await run();
+
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    const arg = mockNotify.mock.calls[0][0];
+    expect(arg.newFindings).toHaveLength(1);
+    expect(arg.newFindings[0]).toMatchObject({
+      filename: NEW.filename,
+      findingType: NEW.findingType,
+    });
+    expect(arg.scan).toEqual({ id: SCAN_ID });
+    expect(arg.shop.plan).toBe("Standard");
+    expect(arg.admin).toBe(MOCK_ADMIN);
+    expect(results["notify-new-findings"]).toEqual({ sent: true, reason: "sent" });
+  });
+
+  it("alerts for AUTO_PUBLISH too", async () => {
+    arrange("AUTO_PUBLISH");
+    await run();
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+  });
+
+  it("MANUAL scans never alert", async () => {
+    arrange("MANUAL");
+    const { results } = await run();
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "origin_not_eligible" });
+  });
+
+  it("does no alert work while the env gates are off (dark by default)", async () => {
+    arrange();
+    mockConfig.mockReturnValue({ configured: false, reason: "disabled" });
+    const { results } = await run();
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockGetPreviousScanForTheme).toHaveBeenCalledTimes(1); // finalize-scan only
+    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "disabled" });
+  });
+
+  it("skips with no_baseline when there is no previous scan", async () => {
+    arrange();
+    mockGetPreviousScanForTheme.mockResolvedValue(null);
+    const { results } = await run();
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_baseline" });
+  });
+
+  it("skips (without building an admin client) when the diff has no new findings", async () => {
+    arrange();
+    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prev", findings: [OLD, NEW] });
+    const { results } = await run();
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+  });
+
+  it("an ignored finding is never reported as new (agrees with the diff route)", async () => {
+    arrange();
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set([NEW.appName]) });
+    const { results } = await run();
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+  });
+
+  it("falls back to the cached email path (admin null) when unauthenticated.admin fails", async () => {
+    arrange();
+    // Earlier scan steps authenticate fine; only the alert step's call fails.
+    const { result } = await run((name) => {
+      if (name === "notify-new-findings") {
+        mockUnauthenticated.admin.mockRejectedValue(new Error("dead offline token"));
+      }
+    });
+    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockNotify.mock.calls[0][0].admin).toBeNull();
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("never throws when the service throws: scan still completes", async () => {
+    arrange();
+    mockNotify.mockRejectedValue(new Error("boom"));
+    const { results, result } = await run();
+    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "exception" });
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("never throws when the db read fails", async () => {
+    arrange();
+    mockDb.finding.findMany.mockResolvedValueOnce([]); // finalize-scan read
+    mockDb.finding.findMany.mockRejectedValueOnce(new Error("db down"));
+    const { results, result } = await run();
+    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "exception" });
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  describe("baseline = last alerted scan", () => {
+    // Previous scan (throttled, never alerted) already contains NEW; the last
+    // ALERTED scan does not. NEW must still count as new since the last alert.
+    function arrangeThrottled(alerted: unknown) {
+      arrange();
+      mockGetPreviousScanForTheme.mockResolvedValue({ id: "throttled", findings: [OLD, NEW] });
+      mockLatestAlert.mockResolvedValue({ scanId: "alerted" });
+      mockGetScanById.mockResolvedValue(alerted);
+    }
+
+    it("throttled scan's findings are carried into the next eligible alert", async () => {
+      arrangeThrottled(alertedScan());
+      await run();
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockNotify.mock.calls[0][0].newFindings).toEqual([
+        expect.objectContaining({ filename: NEW.filename, findingType: NEW.findingType }),
+      ]);
+    });
+
+    it("theme change falls back to the previous-scan baseline", async () => {
+      arrangeThrottled(alertedScan({ themeId: "gid://shopify/Theme/OTHER" }));
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+    });
+
+    it("a last-alerted scan from another shop is never used", async () => {
+      arrangeThrottled(alertedScan({ shopId: "someone-else" }));
+      await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+    });
+
+    it("last-alerted scan deleted falls back to the previous scan", async () => {
+      arrangeThrottled(null);
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+    });
+
+    it("deleted alerted scan and no previous scan => no_baseline", async () => {
+      arrangeThrottled(null);
+      mockGetPreviousScanForTheme.mockResolvedValue(null);
+      const { results } = await run();
+      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_baseline" });
+    });
+  });
+
+  it("logs the outcome reason without the recipient address", async () => {
+    arrange("SCHEDULED", { alertEmail: "owner@example.com" });
+    const infoSpy = vi.spyOn(logger, "info");
+    await run();
+    const call = infoSpy.mock.calls.find((c) => c[0] === "merchant alert outcome");
+    expect(call?.[1]).toMatchObject({ sent: true, reason: "sent", scanId: SCAN_ID });
+    expect(JSON.stringify(call)).not.toContain("owner@example.com");
   });
 });

@@ -114,6 +114,20 @@ export function normalizeForFingerprint(codeSnippet: string, lineNumber: number)
 }
 
 /**
+ * djb2 string hash as an unsigned 32-bit, 8-char hex string. Equality-only use
+ * (no crypto). Shared by fingerprintFinding and the merchant-alert finding-set
+ * hash so the two never drift.
+ */
+export function djb2Hex(raw: string): string {
+  let hash = 5381;
+  for (let i = 0; i < raw.length; i++) {
+    // djb2: hash = ((hash << 5) + hash) + charCode
+    hash = ((hash << 5) + hash + raw.charCodeAt(i)) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
+/**
  * Produce a stable numeric fingerprint for a finding.
  *
  * Uses a djb2 hash over the concatenation of the three fields that together
@@ -131,13 +145,7 @@ export function fingerprintFinding(
   lineNumber: number,
 ): string {
   const matched = normalizeForFingerprint(codeSnippet, lineNumber);
-  const raw = `${filename}\0${findingType}\0${matched}`;
-  let hash = 5381;
-  for (let i = 0; i < raw.length; i++) {
-    // djb2: hash = ((hash << 5) + hash) + charCode
-    hash = ((hash << 5) + hash + raw.charCodeAt(i)) >>> 0;
-  }
-  return hash.toString(16).padStart(8, "0");
+  return djb2Hex(`${filename}\0${findingType}\0${matched}`);
 }
 
 // ---------------------------------------------------------------------------

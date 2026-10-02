@@ -39,7 +39,7 @@ export function themeIdToNumeric(themeId: string | null | undefined): string | n
  * in `buildPricingPlansUrl` (billing.server.ts); duplicated here rather than
  * imported because that helper is server-only and this module is client-bundled.
  */
-function storeHandleFromDomain(shopDomain: string): string {
+export function storeHandleFromDomain(shopDomain: string): string {
   return shopDomain.replace(/\.myshopify\.com$/i, "");
 }
 
