@@ -42,11 +42,20 @@ describe("Instagram Feed signature: first-party Instagram code is not attributed
     expect(detectGhostScripts(section(OFFICIAL_EMBED))).toEqual([]);
   });
 
-  it("leaves the official embed.js unattributed (reported as an unknown script, not an app)", () => {
-    // Without an app match the URL falls through to the unknown-script
-    // collector, the same path as any other unrecognised third-party script.
-    const unknowns = collectUnknownScripts(section(OFFICIAL_EMBED));
-    expect(unknowns.map((u) => u.url)).toEqual(["//www.instagram.com/embed.js"]);
+  it.each([
+    ['<script async src="//www.instagram.com/embed.js"></script>', "official snippet"],
+    ['<script src="https://www.instagram.com/embed.js"></script>', "https"],
+    ['<script src="https://www.instagram.com/embed.js?v=1"></script>', "query string"],
+  ])("drops Instagram's official embed.js from unknown scripts and findings (%s)", (html) => {
+    expect(collectUnknownScripts(section(html))).toEqual([]);
+    expect(scanThemeFiles([section(html)]).findings).toEqual([]);
+  });
+
+  it("still collects other instagram.com scripts as unknown", () => {
+    const unknowns = collectUnknownScripts(
+      section('<script src="https://www.instagram.com/static/bundles/x.js"></script>'),
+    );
+    expect(unknowns.map((u) => u.url)).toEqual(["https://www.instagram.com/static/bundles/x.js"]);
   });
 
   it("does not attribute instagram.com hosts to the app", () => {
@@ -141,5 +150,26 @@ describe("Instagram Feed signature: app-specific fingerprints still match", () =
 
   it("attributes Instafeed's documented instafeed-shopify container class", () => {
     expect(identifyAppFromCode('<div id="feed-43017" class="instafeed-shopify"></div>')).toBe(APP);
+  });
+});
+
+describe("Instagram Feed signature: open-source Instafeed.js is not attributed to Mintt", () => {
+  it("does not attribute instafeed.min.js on jsdelivr or a div#instafeed element", () => {
+    expect(
+      identifyAppFromUrl("https://cdn.jsdelivr.net/npm/instafeed.js@2.0.0/dist/instafeed.min.js"),
+    ).toBeNull();
+    expect(identifyAppFromCode('<div id="instafeed"></div>')).toBeNull();
+    expect(
+      identifyAppFromCode("var feed = new Instafeed({ target: 'instafeed' }); feed.run();"),
+    ).toBeNull();
+  });
+
+  it("produces no Instagram Feed finding for an Instafeed.js theme section", () => {
+    const content = [
+      '<div id="instafeed"></div>',
+      '<script src="https://cdn.jsdelivr.net/npm/instafeed.js@2.0.0/dist/instafeed.min.js"></script>',
+    ].join("\n");
+    const result = scanThemeFiles([section(content)]);
+    expect(result.findings.filter((f) => f.appName === APP)).toEqual([]);
   });
 });

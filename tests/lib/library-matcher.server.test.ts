@@ -200,3 +200,22 @@ describe("isBenignLibrary: exact benign script paths", () => {
     ).toBe(false);
   });
 });
+
+describe("isBenignLibrary: Instagram official embed.js (gc-7am)", () => {
+  it.each([
+    "//www.instagram.com/embed.js",
+    "https://www.instagram.com/embed.js",
+    "http://instagram.com/embed.js",
+    "https://www.instagram.com/embed.js?v=1",
+  ])("treats %s as benign", (url) => {
+    expect(isBenignLibrary(url)).toBe(true);
+  });
+
+  it("does not bless other instagram.com paths or lookalike hosts", () => {
+    expect(isBenignLibrary("https://www.instagram.com/static/bundles/x.js")).toBe(false);
+    expect(isBenignLibrary("https://www.instagram.com/embed.js.evil.js")).toBe(false);
+    expect(isBenignLibrary("https://www.instagram.com/p/abc/embed.js")).toBe(false);
+    expect(isBenignLibrary("https://evil.com/embed.js")).toBe(false);
+    expect(isBenignLibrary("https://www.instagram.com.evil.com/embed.js")).toBe(false);
+  });
+});

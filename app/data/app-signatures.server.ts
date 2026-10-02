@@ -457,7 +457,9 @@ export const APP_SIGNATURES: AppSignature[] = [
     cdnDomains: ["cdn.lightwidget.com", "instafeed.nfcube.com"],
     scriptPatterns: [/lightwidget\.com/],
     snippetNames: ["instafeed"],
-    cssPatterns: [/instafeed/],
+    // Mintt-specific only: a bare /instafeed/ also matched the open-source
+    // Instafeed.js library (`div#instafeed`, instafeed.min.js).
+    cssPatterns: [/instafeed-shopify/, /instafeed\.nfcube/],
   },
 
   // -------------------------------------------------------------------------

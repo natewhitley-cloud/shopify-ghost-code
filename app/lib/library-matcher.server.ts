@@ -34,6 +34,12 @@ const FONT_HOSTS = new Set(["fonts.googleapis.com", "fonts.gstatic.com"]);
 const BENIGN_SCRIPT_PATHS = new Set([
   // Google Merchant Center store widget (seen in prod 2026-09-22).
   "www.gstatic.com/shopping/merchant/merchantwidget.js",
+  // Instagram's official post-embed script (gc-7am). Instagram.com is not
+  // attributed to any app signature, so without this it would prompt the
+  // merchant to identify first-party code. Exact path only: other instagram.com
+  // scripts stay unknown.
+  "www.instagram.com/embed.js",
+  "instagram.com/embed.js",
 ]);
 
 /**
