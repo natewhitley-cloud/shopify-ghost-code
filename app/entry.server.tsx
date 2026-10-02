@@ -3,7 +3,7 @@ import { PassThrough } from "stream";
 import { createReadableStreamFromReadable } from "@react-router/node";
 import { isbot } from "isbot";
 import { renderToPipeableStream } from "react-dom/server";
-import { ServerRouter, type EntryContext } from "react-router";
+import { isRouteErrorResponse, ServerRouter, type EntryContext } from "react-router";
 
 import { recordApiError } from "./models/ops-event.server";
 import { addDocumentResponseHeaders } from "./shopify.server";
@@ -125,6 +125,32 @@ export default async function handleRequest(
  */
 export function handleError(error: unknown, { request }: { request: Request }): void {
   if (request.signal.aborted) return;
+  // Unmatched-route 404s and no-action 405s are internet-scanner noise. Railway's
+  // HTTP log already records the request line; a full stack per probe flooded the
+  // log rate limit and dropped thousands of messages during one sweep. (gc-6lw)
+  if (isRouteErrorResponse(error) && QUIET_ROUTE_ERROR_STATUSES.has(error.status)) return;
+  // React Router's action-origin CSRF check rejected the request (and answers
+  // 400). Expected security behavior, typically a scanner sending a foreign
+  // Origin: one line, no stack, and not counted in the digest. (gc-kly)
+  if (isCsrfRejection(error)) {
+    console.warn(`csrf rejection: ${request.method} ${requestPath(request) ?? ""}`);
+    return;
+  }
   console.error(error);
   recordServerError(error, requestPath(request));
+}
+
+const QUIET_ROUTE_ERROR_STATUSES = new Set([404, 405]);
+
+/**
+ * Matches the two Errors react-router's throwIfPotentialCSRFAttack throws (origin
+ * mismatch, unparseable origin header). Both end with this exact sentence; there
+ * is no exported error class to check against.
+ */
+function isCsrfRejection(error: unknown): boolean {
+  return (
+    error instanceof Error &&
+    error.message.endsWith("Aborting the action.") &&
+    error.message.includes("`origin` header")
+  );
 }

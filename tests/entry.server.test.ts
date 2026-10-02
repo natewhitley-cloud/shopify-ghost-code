@@ -15,7 +15,7 @@
  *     fires the shell-success callback THEN onError).
  */
 
-import { type EntryContext } from "react-router";
+import { type EntryContext, UNSAFE_ErrorResponseImpl as ErrorResponseImpl } from "react-router";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../app/shopify.server", () => ({
@@ -115,6 +115,89 @@ describe("handleError", () => {
     handleError(new Error("client cancelled"), { request: makeRequest(true) });
 
     expect(mockRecordApiError).not.toHaveBeenCalled();
+  });
+});
+
+// Exact messages thrown by react-router's throwIfPotentialCSRFAttack
+// (node_modules/react-router/dist/development/chunk-*.mjs). If an RR upgrade
+// rewords them, these tests go red rather than the digest silently filling up.
+const CSRF_ORIGIN_MISMATCH =
+  "The `request.url` origin does not match `origin` header from a forwarded action request. Aborting the action.";
+const CSRF_INVALID_ORIGIN = "`origin` header is not a valid URL. Aborting the action.";
+
+describe("handleError — scanner noise (gc-kly, gc-6lw)", () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
+  });
+
+  function scannerRequest(path: string): Request {
+    return new Request(`https://example.com${path}`, { method: "POST" });
+  }
+
+  it.each([CSRF_ORIGIN_MISMATCH, CSRF_INVALID_ORIGIN])(
+    "CSRF rejection is NOT recorded and logs one line without a stack: %s",
+    async (message) => {
+      const handleError = await importHandleError();
+
+      handleError(new Error(message), { request: scannerRequest("/api/app/config") });
+
+      expect(mockRecordApiError).not.toHaveBeenCalled();
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+      expect(consoleWarnSpy).toHaveBeenCalledOnce();
+      expect(consoleWarnSpy).toHaveBeenCalledWith("csrf rejection: POST /api/app/config");
+    },
+  );
+
+  it("an unrelated Error mentioning 'Aborting the action.' is still recorded", async () => {
+    const handleError = await importHandleError();
+
+    handleError(new Error("payment failed. Aborting the action."), {
+      request: scannerRequest("/app/billing"),
+    });
+
+    expect(mockRecordApiError).toHaveBeenCalledOnce();
+    expect(consoleErrorSpy).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    [404, "Not Found", 'Error: No route matches URL "/api/siteConfig"'],
+    [
+      405,
+      "Method Not Allowed",
+      'Error: You made a POST request to "/health" but did not provide an `action`',
+    ],
+  ])(
+    "internal %i route error response is not logged or recorded",
+    async (status, statusText, data) => {
+      const handleError = await importHandleError();
+
+      handleError(new ErrorResponseImpl(status, statusText, data, true), {
+        request: scannerRequest("/api/siteConfig"),
+      });
+
+      expect(consoleErrorSpy).not.toHaveBeenCalled();
+      expect(consoleWarnSpy).not.toHaveBeenCalled();
+      expect(mockRecordApiError).not.toHaveBeenCalled();
+    },
+  );
+
+  it("other route error responses (e.g. 500) still log", async () => {
+    const handleError = await importHandleError();
+    const error = new ErrorResponseImpl(500, "Internal Server Error", "boom", true);
+
+    handleError(error, { request: scannerRequest("/app/scans") });
+
+    expect(consoleErrorSpy).toHaveBeenCalledWith(error);
   });
 });
 
