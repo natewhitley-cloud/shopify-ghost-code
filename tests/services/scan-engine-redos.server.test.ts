@@ -88,6 +88,35 @@ describe("scan-engine ReDoS hardening — pathological input completes fast", ()
     expect(timed(() => detectGhostTitle(tagBomb))).toBeLessThan(REDOS_BUDGET_MS);
   });
 
+  // gc-dza: many `{{ x }}` tokens inside ONE in-scope loop, after many closed
+  // loops of the same name, must not scan every scope per token (was ~4 s).
+  // ~875 KB, under the file cap.
+  const inScopeBomb = (open: string, close: string): string =>
+    "{% for x in y %}{% endfor %}".repeat(25_000) +
+    `{% for x in y %}${open}` +
+    "{{ x }}".repeat(25_000) +
+    `${close}{% endfor %}`;
+
+  it("detectGhostTitle is fast on many in-scope tokens after many same-name loops", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: inScopeBomb("<title>", "</title>"),
+    };
+    expect(file.content.length).toBeLessThan(MAX_SCANNABLE_FILE_BYTES);
+    expect(timed(() => detectGhostTitle(file))).toBeLessThan(REDOS_BUDGET_MS);
+    expect(detectGhostTitle(file)).toEqual([]);
+  });
+
+  it("detectGhostOg is fast on many in-scope tokens after many same-name loops", () => {
+    const file: ThemeFile = {
+      filename: "snippets/social-meta-tags.liquid",
+      content: inScopeBomb('<meta property="og:title" content="', '">'),
+    };
+    expect(file.content.length).toBeLessThan(MAX_SCANNABLE_FILE_BYTES);
+    expect(timed(() => detectGhostOg(file))).toBeLessThan(REDOS_BUDGET_MS);
+    expect(detectGhostOg(file)).toEqual([]);
+  });
+
   // gc-nbz: loop open/close tracking must stay linear on a flood of unclosed loops.
   it("detectGhostOg is fast on a flood of unclosed {% for %} tags", () => {
     const loopBomb: ThemeFile = {

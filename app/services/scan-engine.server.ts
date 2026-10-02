@@ -3596,8 +3596,18 @@ function buildSafeVarRe(tokens: string[]): RegExp {
 const LIQUID_STATEMENT_RE =
   /^[ \t]*(assign|capture|for|tablerow|endfor|endtablerow)\b(?:[ \t]+([A-Za-z_][\w-]*))?/gm;
 
-/** Offsets at which a theme-local variable is in scope: `from` < offset < `to`. */
-type LiquidScope = { from: number; to: number };
+/**
+ * Where one theme-local variable is in scope (gc-dza). Offsets are strictly
+ * inside: `assignedFrom < offset`, or `from < offset < to` for a loop interval.
+ * `loops` is sorted and pairwise disjoint, so membership is a binary search
+ * instead of a scan over every scope of the name.
+ */
+type LiquidVarScope = {
+  /** Earliest `{% assign %}` / `{% capture %}` of the name (in scope to EOF); Infinity if none. */
+  assignedFrom: number;
+  /** Union of the name's `{% for %}` / `{% tablerow %}` bodies, sorted by `from`, disjoint. */
+  loops: Array<{ from: number; to: number }>;
+};
 
 /**
  * Scopes of each theme-local variable in `content` (gc-6lm, gc-nbz). An
@@ -3607,15 +3617,18 @@ type LiquidScope = { from: number; to: number };
  * `{% endfor %}` / `{% endtablerow %}` (nesting honored; unclosed = end of
  * file), so a use after the loop still flags.
  * Tag bodies are found with indexOf, so an unterminated `{%` flood stays linear.
+ *
+ * Per name, the raw scopes are collapsed (gc-dza): every assign/capture scope
+ * runs to EOF, so only the earliest start matters; loop scopes are merged into
+ * disjoint intervals. Both bounds stay exclusive, so intervals that merely
+ * touch are NOT merged (the shared offset is in neither). That keeps
+ * `isThemeDefinedVar` O(log n) per token on a file with many loops of one name.
+ *
+ * @internal exported for tests
  */
-function liquidDefinitionScopes(content: string): Map<string, LiquidScope[]> {
-  const scopes = new Map<string, LiquidScope[]>();
-  const add = (name: string, scope: LiquidScope) => {
-    const list = scopes.get(name);
-    if (list) list.push(scope);
-    else scopes.set(name, [scope]);
-  };
-  const openLoops: LiquidScope[] = [];
+export function liquidDefinitionScopes(content: string): Map<string, LiquidVarScope> {
+  const raw = new Map<string, Array<{ from: number; to: number; loop: boolean }>>();
+  const openLoops: Array<{ from: number; to: number; loop: boolean }> = [];
   let from = 0;
   for (;;) {
     const open = content.indexOf("{%", from);
@@ -3629,12 +3642,36 @@ function liquidDefinitionScopes(content: string): Map<string, LiquidScope[]> {
         const loop = openLoops.pop();
         if (loop) loop.to = open;
       } else if (name) {
-        const scope = { from: open, to: Infinity };
-        add(name, scope);
-        if (keyword === "for" || keyword === "tablerow") openLoops.push(scope);
+        const isLoop = keyword === "for" || keyword === "tablerow";
+        const scope = { from: open, to: Infinity, loop: isLoop };
+        const list = raw.get(name);
+        if (list) list.push(scope);
+        else raw.set(name, [scope]);
+        if (isLoop) openLoops.push(scope);
       }
     }
     from = close + 2;
+  }
+
+  const scopes = new Map<string, LiquidVarScope>();
+  for (const [name, list] of raw) {
+    let assignedFrom = Infinity;
+    const loops: Array<{ from: number; to: number }> = [];
+    for (const s of list) {
+      if (s.loop) loops.push({ from: s.from, to: s.to });
+      else assignedFrom = Math.min(assignedFrom, s.from);
+    }
+    // A `for` scope that never closed runs to EOF just like an assign; it is
+    // still an interval here, so the union below handles it uniformly.
+    loops.sort((x, y) => x.from - y.from);
+    const merged: Array<{ from: number; to: number }> = [];
+    for (const l of loops) {
+      const last = merged[merged.length - 1];
+      // Open intervals: only strict overlap merges; touching ones stay apart.
+      if (last && l.from < last.to) last.to = Math.max(last.to, l.to);
+      else merged.push({ ...l });
+    }
+    scopes.set(name, { assignedFrom, loops: merged });
   }
   return scopes;
 }
@@ -3644,16 +3681,30 @@ function liquidDefinitionScopes(content: string): Map<string, LiquidScope[]> {
  * assigned or captured earlier in the same file, or a loop variable inside its
  * loop body. Theme-local data, not an orphaned app variable (bad-hats Sugar
  * theme `{{ seo_title }}`, gc-6lm; Debut `{% for image in product.images %}`
- * og:image tags, gc-nbz).
+ * og:image tags, gc-nbz). O(log n) in the name's loop count (gc-dza).
+ *
+ * @internal exported for tests
  */
-function isThemeDefinedVar(
+export function isThemeDefinedVar(
   token: string,
-  scopes: Map<string, LiquidScope[]>,
+  scopes: Map<string, LiquidVarScope>,
   offset: number,
 ): boolean {
   const name = /^\{\{-?\s*([A-Za-z_][\w-]*)/.exec(token)?.[1];
   if (!name) return false;
-  return scopes.get(name)?.some((s) => s.from < offset && offset < s.to) ?? false;
+  const scope = scopes.get(name);
+  if (!scope) return false;
+  if (scope.assignedFrom < offset) return true;
+  // Last interval starting before `offset`; disjointness makes it the only candidate.
+  const { loops } = scope;
+  let lo = 0;
+  let hi = loops.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (loops[mid].from < offset) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo > 0 && offset < loops[lo - 1].to;
 }
 
 /**
@@ -3814,7 +3865,7 @@ export function detectGhostTitle(
   const appNameAt = lineAppNamer();
 
   // Theme-local variable scopes, computed on first need (gc-6lm).
-  let defs: Map<string, LiquidScope[]> | undefined;
+  let defs: Map<string, LiquidVarScope> | undefined;
   const liquidDefs = () => (defs ??= liquidDefinitionScopes(file.content));
 
   // Early exit (gc-ypk). Every title after the first yields exactly one finding
@@ -4045,7 +4096,7 @@ export function detectGhostOg(
   const conditionalLine = new Map<number, boolean>();
 
   // Theme-local variable scopes, computed on first need (gc-6lm).
-  let defs: Map<string, LiquidScope[]> | undefined;
+  let defs: Map<string, LiquidVarScope> | undefined;
   const liquidDefs = () => (defs ??= liquidDefinitionScopes(file.content));
 
   // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
