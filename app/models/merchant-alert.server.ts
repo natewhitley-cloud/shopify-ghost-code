@@ -78,8 +78,9 @@ export async function ensureUnsubscribeToken(shopId: string): Promise<string | n
 }
 
 /**
- * Public one-click unsubscribe: turn alerts off for the shop holding `token`.
- * Returns true only if a shop matched. An empty, non-string or oversized token
+ * Public one-click unsubscribe: turn alerts off for the shop holding `token`
+ * and ROTATE (null out) the token, so a second use reports invalid. Returns
+ * true only if a shop matched. An empty, non-string or oversized token
  * never touches the database (a NULL column must never match "no token").
  */
 export async function disableAlertsByToken(token: string): Promise<boolean> {
@@ -88,7 +89,10 @@ export async function disableAlertsByToken(token: string): Promise<boolean> {
   }
   const result = await db.shop.updateMany({
     where: { alertUnsubscribeToken: token },
-    data: { alertsEnabled: false },
+    // Rotate: the token may already sit in an access log (the RFC 8058 header
+    // URL carries it in the path), so a used token must be dead. The next send's
+    // ensureUnsubscribeToken mints a fresh one; re-enabling in Settings needs none.
+    data: { alertsEnabled: false, alertUnsubscribeToken: null },
   });
   return result.count > 0;
 }

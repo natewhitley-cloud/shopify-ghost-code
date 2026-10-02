@@ -5,7 +5,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 const m = vi.hoisted(() => ({
-  getLatest: vi.fn(),
   record: vi.fn(),
   ensureToken: vi.fn(),
   refresh: vi.fn(),
@@ -14,7 +13,6 @@ vi.mock("../../app/lib/logger.server", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 vi.mock("../../app/models/merchant-alert.server", () => ({
-  getLatestMerchantAlert: m.getLatest,
   recordMerchantAlert: m.record,
   ensureUnsubscribeToken: m.ensureToken,
 }));
@@ -22,6 +20,7 @@ vi.mock("../../app/services/shop-alert-email.server", () => ({
   refreshShopAlertEmail: m.refresh,
 }));
 
+import { logger } from "../../app/lib/logger.server";
 import {
   buildAlertSubject,
   buildAlertText,
@@ -55,6 +54,7 @@ const shop = (over: Partial<NotifyShop> = {}): NotifyShop => ({
   plan: "Professional",
   alertsEnabled: true,
   alertEmail: "cached@example.com",
+  uninstalledAt: null,
   ...over,
 });
 
@@ -67,12 +67,21 @@ function enableEnv() {
   process.env.SHOPIFY_APP_URL = "https://app.example.com/";
 }
 
+// The caller (scan-theme step) loads the latest alert and passes it in.
+let latest: NotifyArgs["latestAlert"] = null;
+const setLatest = (v: NotifyArgs["latestAlert"]) => {
+  latest = v;
+};
+type NotifyArgs = Parameters<typeof notifyNewFindings>[0];
+
 const notify = (over: Partial<Parameters<typeof notifyNewFindings>[0]> = {}) =>
   notifyNewFindings({
     shop: shop(),
     scan: { id: "scan-1" },
     newFindings: [finding("layout/theme.liquid")],
     admin: ADMIN,
+    latestAlert: latest,
+    baseline: "previous_scan",
     ...over,
   });
 
@@ -86,7 +95,7 @@ beforeEach(() => {
   enableEnv();
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockResolvedValue({ ok: true, status: 200 });
-  m.getLatest.mockResolvedValue(null);
+  latest = null;
   m.record.mockResolvedValue({});
   m.ensureToken.mockResolvedValue("tok123");
   m.refresh.mockResolvedValue("fresh@example.com");
@@ -200,7 +209,8 @@ describe("email copy", () => {
     shopDomain: "my-store.myshopify.com",
     newFindings: [finding("layout/theme.liquid"), finding("snippets/x.liquid", "GHOST_STYLE")],
     scanUrl: "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
-    unsubscribeUrl: "https://app.example.com/unsubscribe/tok",
+    unsubscribeUrl: "https://app.example.com/unsubscribe#t=tok",
+    baseline: "last_alert",
   });
 
   it("uses monitoring framing and never 'instant'", () => {
@@ -220,7 +230,21 @@ describe("email copy", () => {
   });
   it("includes the scan link and the unsubscribe link", () => {
     expect(text).toContain("/apps/ghost-code/app/scans/scan-1");
-    expect(text).toContain("Turn off these emails: https://app.example.com/unsubscribe/tok");
+    expect(text).toContain("Turn off these emails: https://app.example.com/unsubscribe#t=tok");
+  });
+  it("names the baseline: last email vs previous scan (gc-mb9k)", () => {
+    expect(text).toContain("New since we last emailed you:");
+    expect(text).not.toContain("since your last scan");
+    const first = buildAlertText({
+      shopDomain: "s.myshopify.com",
+      newFindings: [finding("a.liquid")],
+      scanUrl: "u",
+      unsubscribeUrl: "v",
+      baseline: "previous_scan",
+    });
+    expect(first).toContain("New since your previous scan:");
+    expect(first).not.toContain("last scan");
+    expect(first).not.toMatch(/[–—]/);
   });
   it("caps the list and summarizes the rest", () => {
     const many = Array.from({ length: MAX_FINDINGS_IN_EMAIL + 3 }, (_, i) =>
@@ -231,6 +255,7 @@ describe("email copy", () => {
       newFindings: many,
       scanUrl: "u",
       unsubscribeUrl: "v",
+      baseline: "last_alert",
     });
     expect(t.match(/^- Scripts:/gm)).toHaveLength(MAX_FINDINGS_IN_EMAIL);
     expect(t).toContain("- and 3 more");
@@ -257,8 +282,16 @@ describe("notifyNewFindings gating chain", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const init = fetchMock.mock.calls[0][1];
     expect(init.headers["Idempotency-Key"]).toBe("merchant-alert:scan-1");
+    // Header keeps the path form (identifies the shop for RFC 8058 POSTs).
     expect(init.headers["List-Unsubscribe"]).toBe("<https://app.example.com/unsubscribe/tok123>");
     const body = JSON.parse(init.body);
+    // Body link uses the fragment: no token in path or query, so never logged.
+    expect(body.text).toContain(
+      "Turn off these emails: https://app.example.com/unsubscribe#t=tok123",
+    );
+    expect(body.text).not.toContain("/unsubscribe/tok123");
+    expect(body.text).not.toMatch(/unsubscribe\?/);
+    expect(body.text).toContain("New since your previous scan:");
     expect(body.to).toBe("fresh@example.com");
     expect(body.subject).toBe(
       "Ghost Code found 1 new leftover code issue in my-store.myshopify.com",
@@ -283,6 +316,34 @@ describe("notifyNewFindings gating chain", () => {
     expect(fetchMock).not.toHaveBeenCalled();
     expect(m.refresh).not.toHaveBeenCalled();
     expect(m.record).not.toHaveBeenCalled();
+  });
+
+  it("uninstalled shop: never emails, even with a cached alertEmail (gc-1qt0)", async () => {
+    const outcome = await notify({ shop: shop({ uninstalledAt: new Date("2026-10-01") }) });
+    expect(outcome).toEqual({ sent: false, reason: "shop_uninstalled" });
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(m.refresh).not.toHaveBeenCalled();
+    expect(m.ensureToken).not.toHaveBeenCalled();
+    expect(m.record).not.toHaveBeenCalled();
+  });
+
+  it("uninstalled shop is skipped before the plan and opt-out gates (early)", async () => {
+    const uninstalledAt = new Date();
+    expect(await notify({ shop: shop({ uninstalledAt, plan: "Free" }) })).toEqual({
+      sent: false,
+      reason: "shop_uninstalled",
+    });
+    expect(await notify({ shop: shop({ uninstalledAt, alertsEnabled: false }) })).toEqual({
+      sent: false,
+      reason: "shop_uninstalled",
+    });
+  });
+
+  it("baseline last_alert is reflected in the sent body", async () => {
+    await notify({ baseline: "last_alert" });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body).text).toContain(
+      "New since we last emailed you:",
+    );
   });
 
   it("plan gate: Free is not eligible", async () => {
@@ -328,7 +389,7 @@ describe("notifyNewFindings gating chain", () => {
   });
 
   it("dedup: same finding set as the latest alert => skip", async () => {
-    m.getLatest.mockResolvedValue({
+    setLatest({
       findingSetHash: buildFindingSetHash([finding("layout/theme.liquid")]),
       sentAt: new Date(0),
     });
@@ -337,7 +398,7 @@ describe("notifyNewFindings gating chain", () => {
   });
 
   it("rate window: a different set inside the plan window => throttled", async () => {
-    m.getLatest.mockResolvedValue({
+    setLatest({
       findingSetHash: "other",
       sentAt: new Date(Date.now() - 3600_000),
     });
@@ -346,7 +407,7 @@ describe("notifyNewFindings gating chain", () => {
   });
 
   it("rate window follows the plan: 2 days ago passes Professional (daily) but not Standard (weekly)", async () => {
-    m.getLatest.mockResolvedValue({
+    setLatest({
       findingSetHash: "other",
       sentAt: new Date(Date.now() - 2 * 86_400_000),
     });
@@ -361,7 +422,7 @@ describe("notifyNewFindings gating chain", () => {
     const sentAgo = (fraction: number) => {
       const now = new Date("2026-06-15T12:00:00Z");
       vi.setSystemTime(now);
-      m.getLatest.mockResolvedValue({
+      setLatest({
         findingSetHash: "other",
         sentAt: new Date(now.getTime() - fraction * 86_400_000),
       });
@@ -427,8 +488,52 @@ describe("notifyNewFindings gating chain", () => {
   });
 
   it("never throws when a dependency throws", async () => {
-    m.getLatest.mockRejectedValue(new Error("db down"));
+    m.ensureToken.mockRejectedValue(new Error("db down"));
     expect(await notify()).toEqual({ sent: false, reason: "exception" });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("recipient PII never reaches logs (gc-otn2 item 5)", () => {
+  const EMAIL = "fresh@example.com";
+  // Prisma validation errors embed the offending data in the message.
+  const prismaStyleError = () =>
+    Object.assign(
+      new Error(
+        `Invalid \`prisma.merchantAlert.create()\` invocation: data: { recipient: "${EMAIL}" }`,
+      ),
+      { name: "PrismaClientValidationError", code: "P2000" },
+    );
+
+  it("a ledger write failure logs name/code only, not the address", async () => {
+    m.record.mockRejectedValue(prismaStyleError());
+    expect(await notify()).toEqual({ sent: true, reason: "sent_not_recorded" });
+    const calls = vi.mocked(logger.error).mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    expect(JSON.stringify(calls)).not.toContain(EMAIL);
+    expect(JSON.stringify(calls)).toContain("PrismaClientValidationError");
+    expect(JSON.stringify(calls)).toContain("P2000");
+  });
+
+  it("an exception in the notify chain logs name/code only, not the address", async () => {
+    m.ensureToken.mockRejectedValue(prismaStyleError());
+    expect(await notify()).toEqual({ sent: false, reason: "exception" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(EMAIL);
+  });
+
+  it("a thrown fetch error logs name/code only, not the address", async () => {
+    fetchMock.mockRejectedValue(prismaStyleError());
+    expect(await notify()).toEqual({ sent: false, reason: "send_failed" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(EMAIL);
+  });
+});
+
+describe("latest alert is passed in, never re-queried (gc-otn2 item 4)", () => {
+  it("dedups on the supplied latestAlert (the model mock has no getLatestMerchantAlert)", async () => {
+    setLatest({
+      findingSetHash: buildFindingSetHash([finding("layout/theme.liquid")]),
+      sentAt: new Date(0),
+    });
+    expect(await notify()).toEqual({ sent: false, reason: "duplicate_set" });
   });
 });

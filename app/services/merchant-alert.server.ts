@@ -16,6 +16,8 @@
  * retry a scan. Every path returns a typed outcome.
  */
 
+import type { MerchantAlert } from "@prisma/client";
+
 import { djb2Hex } from "./scan-differ.server";
 import { refreshShopAlertEmail } from "./shop-alert-email.server";
 import { sortDiffFindingsBySeverity } from "../lib/finding-sort";
@@ -23,12 +25,9 @@ import { findingTypeLabel } from "../lib/finding-type-labels";
 import { logger } from "../lib/logger.server";
 import { canReceiveAlerts, getAlertWindowMs } from "../lib/plan-gating.server";
 import { APP_HANDLE } from "../lib/plans";
+import { safeErrorFields } from "../lib/safe-error";
 import { storeHandleFromDomain } from "../lib/theme-editor-url";
-import {
-  ensureUnsubscribeToken,
-  getLatestMerchantAlert,
-  recordMerchantAlert,
-} from "../models/merchant-alert.server";
+import { ensureUnsubscribeToken, recordMerchantAlert } from "../models/merchant-alert.server";
 import type { AdminApiContext } from "../types/shopify";
 
 const RESEND_ENDPOINT = "https://api.resend.com/emails";
@@ -91,7 +90,7 @@ export interface SendMerchantAlertResult {
  *
  * Headers:
  *   - List-Unsubscribe + List-Unsubscribe-Post: RFC 8058 one-click unsubscribe
- *     (the POST target is the slice C /unsubscribe/:token route).
+ *     (the POST target is the /unsubscribe/:token route; the human link in the body is /unsubscribe#t=token, see buildBodyUnsubscribeUrl).
  *   - Idempotency-Key (verified in the Resend docs): keys are kept 24 hours, max
  *     256 chars. The same key with the same payload returns the original
  *     response (no second email), which makes an Inngest step retry after a
@@ -144,7 +143,10 @@ export async function sendMerchantAlert(
     }
     return { sent: true, reason: "sent" };
   } catch (error) {
-    logger.error("Merchant alert send failed", { context: "merchant-alert", error });
+    logger.error("Merchant alert send failed", {
+      context: "merchant-alert",
+      ...safeErrorFields(error),
+    });
     return { sent: false, reason: "exception" };
   }
 }
@@ -176,12 +178,40 @@ export function buildAlertSubject(count: number, shopDomain: string): string {
   return `Ghost Code found ${count} new leftover code ${noun} in ${shopDomain}`;
 }
 
+/**
+ * What the email's "new" findings are measured against. The scan job diffs vs
+ * the LAST ALERTED scan when it still exists (a throttled scan only delays the
+ * email), else vs the previous scan of the theme. The copy must say which.
+ */
+export type AlertBaseline = "last_alert" | "previous_scan";
+
+const BASELINE_PHRASE: Record<AlertBaseline, string> = {
+  last_alert: "since we last emailed you",
+  previous_scan: "since your previous scan",
+};
+
+/**
+ * Human unsubscribe link for the email body. The token rides in the URL
+ * FRAGMENT, which browsers never send to the server, so it cannot reach access
+ * logs. The /unsubscribe page reads it client-side and POSTs it in a body.
+ */
+export function buildBodyUnsubscribeUrl(appUrl: string, token: string): string {
+  return `${appUrl}/unsubscribe#t=${token}`;
+}
+
+/** RFC 8058 List-Unsubscribe header target: must identify the shop by itself. */
+export function buildHeaderUnsubscribeUrl(appUrl: string, token: string): string {
+  return `${appUrl}/unsubscribe/${token}`;
+}
+
 /** Plain-text body: type label + filename only, never a code snippet. */
 export function buildAlertText(opts: {
   shopDomain: string;
   newFindings: NewFinding[];
   scanUrl: string;
   unsubscribeUrl: string;
+  /** What "new" is measured against; see AlertBaseline. */
+  baseline: AlertBaseline;
 }): string {
   const sorted = [...opts.newFindings];
   sortDiffFindingsBySeverity(sorted);
@@ -192,7 +222,7 @@ export function buildAlertText(opts: {
   const lines = [
     `Ghost Code's continuous monitoring found ${sorted.length} new leftover code ${noun} in ${opts.shopDomain}.`,
     "",
-    "New since your last scan:",
+    `New ${BASELINE_PHRASE[opts.baseline]}:`,
     ...shown.map((f) => `- ${findingTypeLabel(f.findingType)}: ${f.filename}`),
   ];
   if (extra > 0) lines.push(`- and ${extra} more`);
@@ -218,6 +248,8 @@ export type NotifyShop = {
   plan: string;
   alertsEnabled: boolean;
   alertEmail: string | null;
+  /** Set once the merchant uninstalled; such a shop must never be emailed. */
+  uninstalledAt: Date | null;
 };
 
 export type NotifyOutcomeReason =
@@ -228,6 +260,7 @@ export type NotifyOutcomeReason =
   | "no_sender"
   | "plan_not_eligible"
   | "shop_opted_out"
+  | "shop_uninstalled"
   | "no_new_findings"
   | "no_recipient"
   | "duplicate_set"
@@ -246,7 +279,7 @@ const skip = (reason: NotifyOutcomeReason): NotifyOutcome => ({ sent: false, rea
 
 /**
  * Run the full gating chain and, if everything passes, email the shop owner.
- * Order: env gates, plan, shop opt-out, has new findings, recipient, dedup, rate
+ * Order: env gates, uninstalled, plan, shop opt-out, has new findings, recipient, dedup, rate
  * window, unsubscribe token, send, then record the ledger row ONLY on a
  * successful send. `admin` may be null (offline token unusable): the cached
  * Shop.alertEmail is then the recipient. Never throws.
@@ -256,11 +289,16 @@ export async function notifyNewFindings(args: {
   scan: { id: string };
   newFindings: NewFinding[];
   admin: AdminApiContext | null;
+  /** Latest ledger row, already loaded by the caller (dedup + throttle source). */
+  latestAlert: Pick<MerchantAlert, "findingSetHash" | "sentAt"> | null;
+  baseline: AlertBaseline;
 }): Promise<NotifyOutcome> {
-  const { shop, scan, newFindings, admin } = args;
+  const { shop, scan, newFindings, admin, latestAlert: latest, baseline } = args;
   try {
     const config = getMerchantAlertConfigStatus();
     if (!config.configured) return skip(config.reason);
+    // A scan in flight at uninstall has no sessions left but a cached alertEmail.
+    if (shop.uninstalledAt) return skip("shop_uninstalled");
     if (!canReceiveAlerts(shop.plan)) return skip("plan_not_eligible");
     if (!shop.alertsEnabled) return skip("shop_opted_out");
     if (newFindings.length === 0) return skip("no_new_findings");
@@ -271,7 +309,6 @@ export async function notifyNewFindings(args: {
     if (!recipient) return skip("no_recipient");
 
     const findingSetHash = buildFindingSetHash(newFindings);
-    const latest = await getLatestMerchantAlert(shop.id);
     if (latest?.findingSetHash === findingSetHash) return skip("duplicate_set");
 
     const windowMs = getAlertWindowMs(shop.plan);
@@ -283,7 +320,6 @@ export async function notifyNewFindings(args: {
     if (!appUrl) return skip("no_app_url");
     const token = await ensureUnsubscribeToken(shop.id);
     if (!token) return skip("no_unsubscribe_token");
-    const unsubscribeUrl = `${appUrl}/unsubscribe/${token}`;
 
     const result = await sendMerchantAlert({
       to: recipient,
@@ -292,9 +328,10 @@ export async function notifyNewFindings(args: {
         shopDomain: shop.domain,
         newFindings,
         scanUrl: buildScanAdminUrl(shop.domain, scan.id),
-        unsubscribeUrl,
+        unsubscribeUrl: buildBodyUnsubscribeUrl(appUrl, token),
+        baseline,
       }),
-      unsubscribeUrl,
+      unsubscribeUrl: buildHeaderUnsubscribeUrl(appUrl, token),
       idempotencyKey: `merchant-alert:${scan.id}`,
     });
     if (!result.sent) return skip("send_failed");
@@ -313,13 +350,16 @@ export async function notifyNewFindings(args: {
       logger.error("Merchant alert sent but ledger write failed", {
         context: "merchant-alert",
         scanId: scan.id,
-        error,
+        ...safeErrorFields(error),
       });
       return { sent: true, reason: "sent_not_recorded" };
     }
     return { sent: true, reason: "sent" };
   } catch (error) {
-    logger.error("Merchant alert notify failed", { context: "merchant-alert", error });
+    logger.error("Merchant alert notify failed", {
+      context: "merchant-alert",
+      ...safeErrorFields(error),
+    });
     return skip("exception");
   }
 }

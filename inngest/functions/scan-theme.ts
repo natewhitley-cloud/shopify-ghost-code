@@ -1458,6 +1458,9 @@ export const scanTheme = inngest.createFunction(
 
             const shop = await db.shop.findUnique({ where: { id: shopId } });
             if (!shop) return { sent: false, reason: "shop_not_found" };
+            // Uninstalled mid-scan: sessions are gone but alertEmail is cached.
+            // Bail before any query or Admin call (notifyNewFindings re-checks).
+            if (shop.uninstalledAt) return { sent: false, reason: "shop_uninstalled" };
 
             // Baseline = the LAST ALERTED scan when it still exists, is for this
             // shop + theme and predates this scan: a throttled scan only delays the
@@ -1474,11 +1477,13 @@ export const scanTheme = inngest.createFunction(
                   ReturnType<typeof getPreviousScanForTheme>
                 >)
               : null;
-            const baselineScan: Awaited<ReturnType<typeof getPreviousScanForTheme>> =
-              alertedScan &&
+            const alertedIsBaseline =
+              !!alertedScan &&
               alertedScan.shopId === shopId &&
               alertedScan.themeId === themeId &&
-              alertedScan.createdAt < scan.createdAt
+              alertedScan.createdAt < scan.createdAt;
+            const baselineScan: Awaited<ReturnType<typeof getPreviousScanForTheme>> =
+              alertedIsBaseline
                 ? alertedScan
                 : await getPreviousScanForTheme(shopId, themeId, scan.createdAt);
             // No baseline: a first-ever scan has nothing to diff against, so it
@@ -1524,6 +1529,10 @@ export const scanTheme = inngest.createFunction(
               scan: { id: scanId },
               newFindings: diff.newFindings,
               admin,
+              // Already loaded above: the service must not re-query it.
+              latestAlert: lastAlert,
+              // The email copy states which baseline "new" was measured against.
+              baseline: alertedIsBaseline ? "last_alert" : "previous_scan",
             });
             // Reason only: never log the recipient address.
             logger.info("merchant alert outcome", {

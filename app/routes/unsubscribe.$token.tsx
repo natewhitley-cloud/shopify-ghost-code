@@ -1,20 +1,17 @@
 import type { ActionFunctionArgs } from "react-router";
 
-import {
-  renderConfirmPage,
-  renderDonePage,
-  renderErrorPage,
-  renderInvalidPage,
-  UNSUBSCRIBE_HEADERS,
-} from "../lib/unsubscribe-page";
-import { disableAlertsByToken } from "../models/merchant-alert.server";
+import { handleUnsubscribePost, htmlResponse } from "../lib/unsubscribe-action.server";
+import { renderConfirmPage } from "../lib/unsubscribe-page";
 
 /**
  * Public tokenized unsubscribe for merchant monitoring emails (gc-syz.7).
+ * This path form is the RFC 8058 List-Unsubscribe header target, so it must
+ * identify the shop on its own. The human link in the email body is the
+ * fragment form handled by unsubscribe._index.tsx.
  *
  * Deliberately a RESOURCE route (no default export) outside the authenticated
  * app.* tree: no authenticate.admin, no App Bridge, and it returns plain HTML.
- * The 256-bit token in the URL is the only credential.
+ * The 256-bit token is the only credential.
  *
  * Why a resource route and not a document route with an action: react-router
  * runs its Origin-based CSRF check (throwIfPotentialCSRFAttack) on every
@@ -33,25 +30,18 @@ import { disableAlertsByToken } from "../models/merchant-alert.server";
  * people who never clicked. GET renders the confirm page WITHOUT a token
  * lookup, so it is not an oracle for which tokens exist. POST is the oracle by
  * necessity (it must report failure), but guessing a valid 256-bit token is
- * infeasible. Tokens are never logged.
+ * infeasible.
+ *
+ * What is and is not logged: react-router-serve logs every request URL
+ * (morgan "tiny"), so a request to THIS path puts the token in the access log:
+ * a mail provider's one-click POST, or a GET of a legacy link. Our own code
+ * never logs it (handleError is bypassed, no handler logs). Mitigation: a
+ * successful unsubscribe ROTATES the token (disableAlertsByToken), so a token
+ * that reached a log is already dead. The confirm form POSTs the token to
+ * /unsubscribe in the body, so a human click does not log it again.
  */
 
-function html(body: string, status = 200, extraHeaders: Record<string, string> = {}): Response {
-  return new Response(body, { status, headers: { ...UNSUBSCRIBE_HEADERS, ...extraHeaders } });
-}
+export const loader = async () => htmlResponse(renderConfirmPage());
 
-export const loader = async () => html(renderConfirmPage());
-
-export const action = async ({ request, params }: ActionFunctionArgs) => {
-  if (request.method !== "POST") {
-    return html(renderInvalidPage(), 405, { Allow: "GET, HEAD, POST" });
-  }
-  try {
-    const disabled = await disableAlertsByToken(params.token ?? "");
-    return disabled ? html(renderDonePage()) : html(renderInvalidPage(), 404);
-  } catch {
-    // No token or error detail is logged or rendered; handleError is bypassed on
-    // purpose because it would record the request URL (which contains the token).
-    return html(renderErrorPage(), 500);
-  }
-};
+export const action = async ({ request, params }: ActionFunctionArgs) =>
+  handleUnsubscribePost(request, params.token ?? "");

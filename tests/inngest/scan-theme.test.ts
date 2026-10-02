@@ -3193,6 +3193,52 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     expect(mockNotify).toHaveBeenCalledTimes(1);
   });
 
+  it("an uninstalled shop never alerts and builds no Admin client (gc-1qt0)", async () => {
+    arrange("SCHEDULED", { uninstalledAt: new Date("2026-06-14T00:00:00Z") });
+    const adminCalls: string[] = [];
+    const { results, result } = await run((name) => {
+      if (name === "notify-new-findings") {
+        mockUnauthenticated.admin.mockClear();
+        mockLatestAlert.mockClear();
+      }
+    });
+    adminCalls.push(...mockUnauthenticated.admin.mock.calls.map(() => "admin"));
+    expect(mockNotify).not.toHaveBeenCalled();
+    expect(adminCalls).toEqual([]);
+    expect(mockLatestAlert).not.toHaveBeenCalled();
+    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "shop_uninstalled" });
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("passes the already-loaded latest alert and the baseline kind to the service (gc-otn2, gc-mb9k)", async () => {
+    arrange();
+    const lastAlert = { scanId: "alerted", findingSetHash: "h", sentAt: new Date("2026-06-01") };
+    mockLatestAlert.mockResolvedValue(lastAlert);
+    mockGetScanById.mockResolvedValue(alertedScan());
+    await run();
+    expect(mockLatestAlert).toHaveBeenCalledTimes(1);
+    expect(mockNotify.mock.calls[0][0].latestAlert).toBe(lastAlert);
+    expect(mockNotify.mock.calls[0][0].baseline).toBe("last_alert");
+  });
+
+  it("baseline is previous_scan with no prior alert, or when the alerted scan is unusable", async () => {
+    arrange();
+    await run();
+    expect(mockNotify.mock.calls[0][0].latestAlert).toBeNull();
+    expect(mockNotify.mock.calls[0][0].baseline).toBe("previous_scan");
+
+    mockNotify.mockClear();
+    arrange();
+    mockLatestAlert.mockResolvedValue({
+      scanId: "alerted",
+      findingSetHash: "h",
+      sentAt: new Date(),
+    });
+    mockGetScanById.mockResolvedValue(alertedScan({ themeId: "other-theme" }));
+    await run();
+    expect(mockNotify.mock.calls[0][0].baseline).toBe("previous_scan");
+  });
+
   it("MANUAL scans never alert", async () => {
     arrange("MANUAL");
     const { results } = await run();

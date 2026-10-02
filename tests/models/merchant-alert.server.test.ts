@@ -147,8 +147,19 @@ describe("disableAlertsByToken", () => {
     await expect(disableAlertsByToken("tok")).resolves.toBe(true);
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
       where: { alertUnsubscribeToken: "tok" },
-      data: { alertsEnabled: false },
+      // Rotates: the used token is nulled so a logged token is already dead.
+      data: { alertsEnabled: false, alertUnsubscribeToken: null },
     });
+  });
+
+  it("a rotated (nulled) token is re-minted by the next ensureUnsubscribeToken", async () => {
+    mockDb.shop.findUnique
+      .mockResolvedValueOnce({ alertUnsubscribeToken: null })
+      .mockImplementationOnce(async () => ({
+        alertUnsubscribeToken: mockDb.shop.updateMany.mock.calls[0][0].data.alertUnsubscribeToken,
+      }));
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await expect(ensureUnsubscribeToken("s1")).resolves.toMatch(/^[A-Za-z0-9_-]{43}$/);
   });
 
   it("returns false when no shop matches", async () => {

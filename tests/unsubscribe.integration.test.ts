@@ -29,6 +29,7 @@ const URL_ = `${ORIGIN}/unsubscribe/${TOKEN}`;
 async function makeHandler(asDocumentRoute: boolean) {
   const { handleError } = await import("../app/entry.server");
   const routeModule = await import("../app/routes/unsubscribe.$token");
+  const indexModule = await import("../app/routes/unsubscribe._index");
   const build = {
     mode: "production",
     basename: "/",
@@ -53,6 +54,7 @@ async function makeHandler(asDocumentRoute: boolean) {
         path: "unsubscribe/:token",
         module: asDocumentRoute ? { ...routeModule, default: () => null } : routeModule,
       },
+      unsubIndex: { id: "unsubIndex", path: "unsubscribe", module: indexModule },
     },
   } as unknown as ServerBuild;
   return createRequestHandler(build);
@@ -130,13 +132,49 @@ describe("unsubscribe route through the real request handler", () => {
     expect(mockDisable).not.toHaveBeenCalled();
   });
 
-  it("POST twice stays 'off' (idempotent)", async () => {
+  it("POST /unsubscribe with the token in the BODY and no Origin disables (gc-252x)", async () => {
     const handler = await makeHandler(false);
-    await handler(post({}));
-    const res = await handler(post({}));
+    const res = await handler(
+      new Request(`${ORIGIN}/unsubscribe`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: `token=${TOKEN}`,
+      }),
+    );
 
     expect(res.status).toBe(200);
     expect(await res.text()).toContain("Monitoring emails are off");
+    expect(mockDisable).toHaveBeenCalledExactlyOnceWith(TOKEN);
+  });
+
+  it("POST /unsubscribe also accepts `Origin: null` (resource route, body token)", async () => {
+    const handler = await makeHandler(false);
+    const res = await handler(
+      new Request(`${ORIGIN}/unsubscribe`, {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", origin: "null" },
+        body: `token=${TOKEN}`,
+      }),
+    );
+    expect(res.status).toBe(200);
+    expect(mockDisable).toHaveBeenCalledExactlyOnceWith(TOKEN);
+  });
+
+  it("GET /unsubscribe (fragment link target) renders the confirm page and changes nothing", async () => {
+    const handler = await makeHandler(false);
+    const res = await handler(new Request(`${ORIGIN}/unsubscribe`));
+    expect(res.status).toBe(200);
+    expect(await res.text()).toContain('action="/unsubscribe"');
+    expect(mockDisable).not.toHaveBeenCalled();
+  });
+
+  it("a rotated token is dead: second POST of the same token gets the invalid page", async () => {
+    mockDisable.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const handler = await makeHandler(false);
+    expect((await handler(post({}))).status).toBe(200);
+    const res = await handler(post({}));
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain("This link is invalid or has expired");
   });
 
   it("unknown token: 404 invalid-link page", async () => {

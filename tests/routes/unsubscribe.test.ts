@@ -13,6 +13,7 @@ vi.mock("../../app/models/merchant-alert.server", () => ({
 
 import { disableAlertsByToken } from "../../app/models/merchant-alert.server";
 import { action, loader } from "../../app/routes/unsubscribe.$token";
+import { action as indexAction, loader as indexLoader } from "../../app/routes/unsubscribe._index";
 
 const mockDisable = disableAlertsByToken as ReturnType<typeof vi.fn>;
 const TOKEN = "tok_" + "a".repeat(39);
@@ -55,7 +56,11 @@ describe("GET /unsubscribe/:token", () => {
 
     expect(res.status).toBe(200);
     expect(html).toContain("Turn off Ghost Code monitoring emails for this store?");
-    expect(html).toContain('<form method="post" action="">');
+    // The form POSTs to /unsubscribe with the token in the BODY (hidden input).
+    expect(html).toContain('<form method="post" action="/unsubscribe">');
+    expect(html).toContain('name="token"');
+    expect(html).toContain("<noscript>");
+    expect(html).toContain("Ghost Code > Settings");
     expect(mockDisable).not.toHaveBeenCalled();
     expectPrivateHeaders(res);
   });
@@ -89,11 +94,18 @@ describe("POST /unsubscribe/:token", () => {
     expect((await post(TOKEN, "")).status).toBe(200);
   });
 
-  it("is idempotent: a second POST still reports off", async () => {
-    await post();
+  it("a rotated token is dead: the second use shows the invalid page", async () => {
+    // disableAlertsByToken nulls the token on success, so the second call matches nothing.
+    mockDisable.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    expect((await post()).status).toBe(200);
     const res = await post();
-    expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Monitoring emails are off");
+    expect(res.status).toBe(404);
+    expect(await res.text()).toContain("This link is invalid or has expired");
+  });
+
+  it("a body token wins over the path token", async () => {
+    await post("path-token", "token=body-token");
+    expect(mockDisable).toHaveBeenCalledExactlyOnceWith("body-token");
   });
 
   it.each([
@@ -130,5 +142,105 @@ describe("POST /unsubscribe/:token", () => {
     const res = await action(args("PUT", TOKEN, "x=1") as ActionFunctionArgs);
     expect(res.status).toBe(405);
     expect(mockDisable).not.toHaveBeenCalled();
+  });
+});
+
+describe("/unsubscribe (token in the body, gc-252x)", () => {
+  const postIndex = (body: string, headers: Record<string, string> = {}) =>
+    indexAction({
+      request: new Request("https://app.test/unsubscribe", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded", ...headers },
+        body,
+      }),
+      params: {},
+      context: {},
+    } as ActionFunctionArgs);
+
+  it("GET renders the same static confirm page and changes nothing", async () => {
+    const res = await indexLoader();
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe(await (await loader()).text());
+    expect(mockDisable).not.toHaveBeenCalled();
+    expectPrivateHeaders(res);
+  });
+
+  it("POST with a body token disables", async () => {
+    const res = await postIndex(`token=${TOKEN}`);
+    expect(res.status).toBe(200);
+    expect(mockDisable).toHaveBeenCalledExactlyOnceWith(TOKEN);
+    expect(await res.text()).toContain("Monitoring emails are off");
+  });
+
+  it("POST with no token reports invalid and never matches a NULL column", async () => {
+    mockDisable.mockResolvedValue(false);
+    const res = await postIndex("");
+    expect(res.status).toBe(404);
+    expect(mockDisable).toHaveBeenCalledExactlyOnceWith("");
+  });
+
+  it("an oversized body is ignored rather than read", async () => {
+    mockDisable.mockResolvedValue(false);
+    const res = await postIndex(`token=${"x".repeat(5000)}`, { "content-length": "5006" });
+    expect(res.status).toBe(404);
+    expect(mockDisable).toHaveBeenCalledExactlyOnceWith("");
+  });
+
+  it("a database error renders a generic page without the token", async () => {
+    mockDisable.mockRejectedValue(new Error(`boom ${TOKEN}`));
+    const res = await postIndex(`token=${TOKEN}`);
+    const html = await res.text();
+    expect(res.status).toBe(500);
+    expect(html).not.toContain(TOKEN);
+  });
+
+  it("rejects non-POST mutations with 405", async () => {
+    const res = await indexAction({
+      request: new Request("https://app.test/unsubscribe", { method: "PUT", body: "x=1" }),
+      params: {},
+      context: {},
+    } as ActionFunctionArgs);
+    expect(res.status).toBe(405);
+    expect(mockDisable).not.toHaveBeenCalled();
+  });
+});
+
+describe("confirm page inline script", () => {
+  // Run the page's real script against a fake location/document and capture the result.
+  async function runScript(location: { hash: string; pathname: string }) {
+    const html = await (await indexLoader()).text();
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
+    const input = { value: "" };
+    const replaceState = vi.fn();
+    new Function("location", "document", "history", script)(
+      location,
+      { getElementById: (id: string) => (id === "token" ? input : null) },
+      { replaceState },
+    );
+    return { value: input.value, replaceState };
+  }
+
+  it("reads the token from the fragment and clears it from the address bar", async () => {
+    const r = await runScript({ hash: `#t=${TOKEN}`, pathname: "/unsubscribe" });
+    expect(r.value).toBe(TOKEN);
+    expect(r.replaceState).toHaveBeenCalledWith(null, "", "/unsubscribe");
+  });
+
+  it("reads a legacy /unsubscribe/<token> path and clears it", async () => {
+    const r = await runScript({ hash: "", pathname: `/unsubscribe/${TOKEN}` });
+    expect(r.value).toBe(TOKEN);
+    expect(r.replaceState).toHaveBeenCalledWith(null, "", "/unsubscribe");
+  });
+
+  it("leaves the field empty when there is no token", async () => {
+    const r = await runScript({ hash: "", pathname: "/unsubscribe" });
+    expect(r.value).toBe("");
+    expect(r.replaceState).not.toHaveBeenCalled();
+  });
+
+  it("is self-contained: no external resources", async () => {
+    const html = await (await indexLoader()).text();
+    expect(html).not.toMatch(/<script[^>]+src=/);
+    expect(html).not.toMatch(/https?:\/\//);
   });
 });

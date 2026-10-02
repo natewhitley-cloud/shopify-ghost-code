@@ -10,6 +10,7 @@
  */
 
 import { logger } from "../lib/logger.server";
+import { safeErrorFields } from "../lib/safe-error";
 import { setShopAlertEmailByDomain } from "../models/merchant-alert.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -77,7 +78,7 @@ export async function refreshShopAlertEmail(
   } catch (err) {
     logger.warn("shop-alert-email-cache-failed", {
       shop: shopDomain,
-      error: err instanceof Error ? err.message : String(err),
+      ...safeErrorFields(err),
     });
   }
   return email;
