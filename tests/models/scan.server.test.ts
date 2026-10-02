@@ -69,6 +69,7 @@ import {
   getScansForShop,
   getDistinctThemesForShop,
   updateScanStatus,
+  markScanStarted,
   getPreviousScanForTheme,
   getLatestSuccessfulScanForTheme,
   countScansForShopSince,
@@ -532,6 +533,51 @@ describe("getDistinctThemesForShop", () => {
     const result = await getDistinctThemesForShop(SHOP_ID);
 
     expect(result).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// markScanStarted (gc-i3vk)
+// ---------------------------------------------------------------------------
+
+describe("markScanStarted", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("transitions PENDING -> IN_PROGRESS atomically and stamps startedAt", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await markScanStarted("scan-1");
+
+    expect(result).toEqual({ started: true });
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    expect(callArg.where).toEqual({ id: "scan-1", status: ScanStatus.PENDING });
+    expect(callArg.data.status).toBe(ScanStatus.IN_PROGRESS);
+    expect(callArg.data.startedAt).toBeInstanceOf(Date);
+    expect(mockDb.scan.findUnique).not.toHaveBeenCalled();
+  });
+
+  it.each([ScanStatus.FAILED, ScanStatus.COMPLETED, ScanStatus.IN_PROGRESS])(
+    "refuses (count 0) and reports status when the scan is %s",
+    async (status) => {
+      mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+      mockDb.scan.findUnique.mockResolvedValue({ status });
+
+      const result = await markScanStarted("scan-1");
+
+      expect(result).toEqual({ started: false, status });
+      // The write is conditional on PENDING, so it can never revive these rows.
+      expect(mockDb.scan.updateMany.mock.calls[0][0].where.status).toBe(ScanStatus.PENDING);
+      expect(mockDb.scan.update).not.toHaveBeenCalled();
+    },
+  );
+
+  it("reports status null when the scan row is missing", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.scan.findUnique.mockResolvedValue(null);
+
+    expect(await markScanStarted("scan-1")).toEqual({ started: false, status: null });
   });
 });
 

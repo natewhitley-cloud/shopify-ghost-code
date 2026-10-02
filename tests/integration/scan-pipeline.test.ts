@@ -49,6 +49,7 @@ vi.mock("../../app/models/scan.server", () => ({
   countScansForShopSince: vi.fn(),
   hasCompletedScans: vi.fn(),
   updateScanStatus: vi.fn(),
+  markScanStarted: vi.fn(),
   finalizeScan: vi.fn(),
   getPreviousScanForTheme: vi.fn(),
 }));
@@ -168,6 +169,7 @@ import {
   createScan,
   finalizeScan,
   hasCompletedScans,
+  markScanStarted,
   updateScanStatus,
 } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
@@ -194,6 +196,7 @@ const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
 const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
+const mockMarkScanStarted = markScanStarted as ReturnType<typeof vi.fn>;
 const mockFinalizeScan = finalizeScan as ReturnType<typeof vi.fn>;
 const mockSaveThemeFindings = saveThemeFindings as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
@@ -538,6 +541,7 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     // unauthenticated.admin is used to create an admin client inside the Inngest step.
     mockUnauthenticatedAdmin.mockResolvedValue({ admin: MOCK_ADMIN });
     mockUpdateScanStatus.mockResolvedValue(undefined);
+    mockMarkScanStarted.mockResolvedValue({ started: true });
     mockFinalizeScan.mockResolvedValue(undefined);
     mockFetchThemeFiles.mockResolvedValue(MOCK_FILES);
     mockScanThemeFiles.mockReturnValue({ findings: MOCK_FINDINGS, unknownScripts: [] });
@@ -602,16 +606,13 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     });
 
     it("marks IN_PROGRESS first, then finalizes the terminal status separately (LOG-4)", async () => {
-      const statusCalls: string[] = [];
-      mockUpdateScanStatus.mockImplementation(async (_id: string, status: string) => {
-        statusCalls.push(status);
-      });
-
       await runScanThemeFn();
 
-      // Only IN_PROGRESS goes through updateScanStatus; the terminal status is
+      // IN_PROGRESS goes through the conditional markScanStarted (gc-i3vk) and no
+      // updateScanStatus write happens on the happy path; the terminal status is
       // set via finalizeScan after every audit step runs.
-      expect(statusCalls).toEqual(["IN_PROGRESS"]);
+      expect(mockMarkScanStarted).toHaveBeenCalledWith(SCAN_ID);
+      expect(mockUpdateScanStatus).not.toHaveBeenCalled();
       expect(mockFinalizeScan).toHaveBeenCalledWith(
         SCAN_ID,
         expect.objectContaining({ status: "COMPLETED", findingCount: MOCK_FINDINGS.length }),

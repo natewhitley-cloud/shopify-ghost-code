@@ -84,6 +84,7 @@ vi.mock("../../app/models/ops-event.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   updateScanStatus: vi.fn(),
+  markScanStarted: vi.fn(),
   finalizeScan: vi.fn(),
   getPreviousScanForTheme: vi.fn(),
   getScanById: vi.fn(),
@@ -214,6 +215,7 @@ import { recordOpsEvent } from "../../app/models/ops-event.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
 import {
   finalizeScan,
+  markScanStarted,
   updateScanStatus,
   getPreviousScanForTheme,
   getScanById,
@@ -264,6 +266,7 @@ const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<ty
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFilesInPool as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
+const mockMarkScanStarted = markScanStarted as ReturnType<typeof vi.fn>;
 const mockFinalizeScan = finalizeScan as ReturnType<typeof vi.fn>;
 const mockGetPreviousScanForTheme = getPreviousScanForTheme as ReturnType<typeof vi.fn>;
 const mockSaveThemeFindings = saveThemeFindings as ReturnType<typeof vi.fn>;
@@ -395,6 +398,7 @@ beforeEach(() => {
 
   // Default happy-path wiring for models
   mockUpdateScanStatus.mockResolvedValue(undefined);
+  mockMarkScanStarted.mockResolvedValue({ started: true });
   mockFinalizeScan.mockResolvedValue(undefined);
   // No prior scan by default — the zero-file sanity guard is a no-op unless a
   // test wires up a prior successful scan that had findings.
@@ -516,13 +520,12 @@ describe("scanTheme — happy path", () => {
     });
   });
 
-  it("marks the scan IN_PROGRESS as the first step", async () => {
+  it("marks the scan IN_PROGRESS as the first step via the conditional transition (gc-i3vk)", async () => {
     await runScanTheme();
 
-    // updateScanStatus should have been called with IN_PROGRESS first
-    expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
-    const firstCall = mockUpdateScanStatus.mock.calls[0];
-    expect(firstCall).toEqual([SCAN_ID, "IN_PROGRESS"]);
+    expect(mockMarkScanStarted).toHaveBeenCalledWith(SCAN_ID);
+    // The unconditional updateScanStatus must never write IN_PROGRESS.
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
   });
 
   it("fetches theme files using the shop domain and themeId", async () => {
@@ -635,8 +638,9 @@ describe("scanTheme — happy path", () => {
   it("executes the core steps in order: IN_PROGRESS, fetch, scan, save, then finalize last", async () => {
     const callOrder: string[] = [];
 
-    mockUpdateScanStatus.mockImplementation(async (_id: string, status: string) => {
-      callOrder.push(`updateScanStatus:${status}`);
+    mockMarkScanStarted.mockImplementation(async () => {
+      callOrder.push("markScanStarted");
+      return { started: true };
     });
     mockFetchThemeFiles.mockImplementation(async () => {
       callOrder.push("fetchThemeFiles");
@@ -658,7 +662,7 @@ describe("scanTheme — happy path", () => {
     // finalizeScan must come AFTER saveThemeFindings (and after the audit steps,
     // which are not instrumented here) — the core LOG-4 guarantee.
     expect(callOrder).toEqual([
-      "updateScanStatus:IN_PROGRESS",
+      "markScanStarted",
       "fetchThemeFiles",
       "scanThemeFiles",
       "saveThemeFindings",
@@ -792,12 +796,10 @@ describe("scanTheme — error paths", () => {
     const fetchError = new Error("Shopify API unavailable");
     mockFetchThemeFiles.mockRejectedValue(fetchError);
 
-    // Allow IN_PROGRESS update to succeed (step 1), but make the FAILED
-    // status update (in the catch block) also reject — original error must
-    // still propagate thanks to the .catch(() => {}) in the source.
-    mockUpdateScanStatus
-      .mockResolvedValueOnce(undefined) // step 1: IN_PROGRESS succeeds
-      .mockRejectedValue(new Error("DB connection lost")); // catch: FAILED update fails
+    // Step 1 (markScanStarted) succeeds by default; make the FAILED status
+    // update (in the catch block) reject — original error must still
+    // propagate thanks to the .catch(() => {}) in the source.
+    mockUpdateScanStatus.mockRejectedValue(new Error("DB connection lost"));
 
     await expect(runScanTheme()).rejects.toThrow("Shopify API unavailable");
   });
@@ -815,8 +817,79 @@ describe("scanTheme — error paths", () => {
 
     await expect(runScanTheme()).rejects.toThrow();
 
-    // Step 1 (IN_PROGRESS) should still have been called
-    expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
+    // Step 1 (IN_PROGRESS transition) should still have been called
+    expect(mockMarkScanStarted).toHaveBeenCalledWith(SCAN_ID);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Stale-failed scan must not be revived (gc-i3vk)
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — scan no longer PENDING at pickup (gc-i3vk)", () => {
+  for (const status of ["FAILED", "COMPLETED", "IN_PROGRESS", null] as const) {
+    it(`exits cleanly without scanning when the scan is ${status ?? "missing"}`, async () => {
+      mockMarkScanStarted.mockResolvedValue({ started: false, status });
+
+      const result = await runScanTheme();
+
+      expect(result).toEqual({ scanId: SCAN_ID, skipped: "not_pending", status });
+      // Before any expensive work: no shop lookup, no theme fetch, no scan.
+      expect(mockDb.shop.findUnique).not.toHaveBeenCalled();
+      expect(mockFetchThemeFiles).not.toHaveBeenCalled();
+      expect(mockScanThemeFiles).not.toHaveBeenCalled();
+      expect(mockSaveThemeFindings).not.toHaveBeenCalled();
+      expect(mockFinalizeScan).not.toHaveBeenCalled();
+      // No status write of any kind: not IN_PROGRESS (the revival bug), and
+      // not FAILED either (the catch block must not be entered).
+      expect(mockUpdateScanStatus).not.toHaveBeenCalled();
+    });
+  }
+
+  it("logs the skip with scanId only (no shop identifiers)", async () => {
+    mockMarkScanStarted.mockResolvedValue({ started: false, status: "FAILED" });
+    const warnSpy = vi.spyOn(logger, "warn").mockImplementation(() => undefined);
+
+    await runScanTheme();
+
+    const call = warnSpy.mock.calls.find(([msg]) => String(msg).includes("no longer PENDING"));
+    expect(call).toBeDefined();
+    expect(call?.[1]).toMatchObject({ scanId: SCAN_ID, status: "FAILED" });
+    expect(call?.[1]).not.toHaveProperty("shopId");
+    warnSpy.mockRestore();
+  });
+
+  it("a normal PENDING scan proceeds unchanged", async () => {
+    mockMarkScanStarted.mockResolvedValue({ started: true });
+
+    const result = await runScanTheme();
+
+    expect(result).toMatchObject({ scanId: SCAN_ID, status: "COMPLETED" });
+    expect(mockFetchThemeFiles).toHaveBeenCalled();
+  });
+
+  it("a replay of the memoized start step does not transition the scan twice", async () => {
+    // Inngest memoizes a completed step: on a retry of a later step the SDK
+    // returns the stored `{ started: true }` instead of re-running the callback.
+    // Model that with a step whose "update-status-in-progress" result is replayed.
+    const memo = new Map<string, unknown>();
+    const memoRun = async (id: string, fn: () => Promise<unknown>) => {
+      if (memo.has(id)) return memo.get(id);
+      const out = await fn();
+      memo.set(id, out);
+      return out;
+    };
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const overrides = { run: memoRun } as any;
+
+    await runScanTheme(undefined, overrides);
+    // Replay: if the start callback ran again it would see an IN_PROGRESS scan
+    // and report a false skip.
+    mockMarkScanStarted.mockResolvedValue({ started: false, status: "IN_PROGRESS" });
+    const replay = await runScanTheme(undefined, overrides);
+
+    expect(mockMarkScanStarted).toHaveBeenCalledTimes(1);
+    expect(replay).not.toHaveProperty("skipped");
   });
 });
 
@@ -1063,7 +1136,7 @@ describe("scanTheme — optional audit steps", () => {
       // The guard must prevent a FAILED overwrite of a COMPLETED scan...
       expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
       // ...while step 1 still ran.
-      expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
+      expect(mockMarkScanStarted).toHaveBeenCalledWith(SCAN_ID);
     });
 
     it("does not overwrite a PARTIAL scan when a late audit error fires", async () => {
@@ -1077,7 +1150,7 @@ describe("scanTheme — optional audit steps", () => {
       await expect(runScanTheme()).rejects.toThrow(TransientScopeCheckError);
 
       expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
-      expect(mockUpdateScanStatus).toHaveBeenCalledWith(SCAN_ID, "IN_PROGRESS");
+      expect(mockMarkScanStarted).toHaveBeenCalledWith(SCAN_ID);
     });
   });
 });

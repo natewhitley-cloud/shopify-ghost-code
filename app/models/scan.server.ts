@@ -215,6 +215,39 @@ export async function updateScanStatus(scanId: string, status: ScanStatus, findi
 }
 
 /**
+ * Outcome of a markScanStarted call.
+ *
+ * `started` is true when this call moved the scan PENDING -> IN_PROGRESS. When
+ * false, `status` is the scan's current status (null if the row is missing).
+ */
+export type MarkScanStartedResult =
+  | { started: true }
+  | { started: false; status: ScanStatus | null };
+
+/**
+ * Move a scan PENDING -> IN_PROGRESS (stamping startedAt), and ONLY from PENDING
+ * (gc-i3vk). scan-theme may pick a scan up long after dispatch (concurrency
+ * backlog); in the meantime check-scan-stale may already have failed it. An
+ * unconditional updateScanStatus(IN_PROGRESS) would revive that FAILED scan and,
+ * if it then hung, nothing would re-check it until the daily sweep.
+ *
+ * Atomic conditional `updateMany` (where status = PENDING), the same race-safe
+ * pattern as finalizeScan's resurrection guard: no read-then-write window. When
+ * zero rows match we do NOT throw (a throw would trigger Inngest retries that can
+ * never succeed); the current status is read purely so the caller can log it.
+ */
+export async function markScanStarted(scanId: string): Promise<MarkScanStartedResult> {
+  const result = await db.scan.updateMany({
+    where: { id: scanId, status: ScanStatus.PENDING },
+    data: { status: ScanStatus.IN_PROGRESS, startedAt: new Date() },
+  });
+  if (result.count === 1) return { started: true };
+
+  const current = await db.scan.findUnique({ where: { id: scanId }, select: { status: true } });
+  return { started: false, status: current?.status ?? null };
+}
+
+/**
  * Outcome of a finalizeScan call.
  *
  * `finalized` is true when this call actually transitioned the scan to its

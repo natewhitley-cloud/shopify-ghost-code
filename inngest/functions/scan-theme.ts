@@ -66,6 +66,7 @@ import {
   finalizeScan,
   getPreviousScanForTheme,
   getScanById,
+  markScanStarted,
   updateScanStatus,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
@@ -341,9 +342,29 @@ export const scanTheme = inngest.createFunction(
 
     try {
       // Step 1: Mark scan as in-progress
-      await step.run("update-status-in-progress", async () => {
-        await updateScanStatus(scanId, "IN_PROGRESS");
-      });
+      //
+      // gc-i3vk: the transition is conditional (PENDING -> IN_PROGRESS only). If
+      // the scan sat in the concurrency backlog past the stale threshold,
+      // check-scan-stale already marked it FAILED; reviving it here would leave a
+      // possibly-hung IN_PROGRESS scan that only the daily sweep re-checks. So a
+      // scan that is no longer PENDING exits cleanly, BEFORE any theme fetch. We
+      // return (never throw) so Inngest does not retry, and the outer catch (which
+      // would write FAILED) is not entered. The merchant simply rescans.
+      //
+      // Replay: Inngest memoizes completed steps, so once this step has
+      // transitioned the scan, every later retry of the function replays the
+      // stored `{ started: true }` result without re-running the DB write (which
+      // would now see IN_PROGRESS and report a false skip).
+      const start = await step.run("update-status-in-progress", () => markScanStarted(scanId));
+      if (!start.started) {
+        logger.warn("scan-theme skipped: scan is no longer PENDING", {
+          function: "scan-theme",
+          event: "scan_not_pending",
+          scanId,
+          status: start.status,
+        });
+        return { scanId, skipped: "not_pending" as const, status: start.status };
+      }
 
       // Step 2: Fetch theme files, scan them, and save findings.
       // Combined into one step because theme file contents can exceed
