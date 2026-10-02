@@ -133,6 +133,8 @@ describe("getFindingConfidence", () => {
     // Deterministic parse failure — heuristic-tier on the documented
     // app-attribution split (names no app), despite high certainty.
     "JSON_LD_INVALID",
+    "APP_EMBED_OFF",
+    "GHOST_APP_EMBED",
   ];
 
   it.each(HEURISTIC_TYPES)('returns "heuristic" for %s', (type) => {
@@ -163,7 +165,7 @@ describe("getFindingConfidence", () => {
   // ---------------------------------------------------------------------------
   it("classifies every FindingType enum member in exactly one tier (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(34);
+    expect(allTypes).toHaveLength(36);
 
     for (const type of allTypes) {
       const inSignature = CONFIDENCE_TYPE_SETS.signature.has(type);
@@ -180,7 +182,7 @@ describe("getFindingConfidence", () => {
     const heuristic = [...CONFIDENCE_TYPE_SETS.heuristic];
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
-    expect(signature.length + heuristic.length).toBe(34);
+    expect(signature.length + heuristic.length).toBe(36);
   });
 });
 
@@ -218,6 +220,8 @@ describe("isThemeFileFinding", () => {
     "SETTINGS_DRIFT",
     "DANGLING_REFERENCE",
     "CHECKOUT_SUNSET",
+    "APP_EMBED_OFF",
+    "GHOST_APP_EMBED",
   ];
 
   it.each(THEME_FILE_TYPES)("returns true for theme-file type %s", (type) => {
@@ -253,7 +257,7 @@ describe("isThemeFileFinding", () => {
   // fails here, forcing a deliberate theme-file-vs-Admin-resource call.
   it("classifies every FindingType enum member in exactly one set (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(34);
+    expect(allTypes).toHaveLength(36);
 
     for (const type of allTypes) {
       const inThemeFile = THEME_FILE_TYPE_SETS.themeFile.has(type);
@@ -270,7 +274,7 @@ describe("isThemeFileFinding", () => {
     const adminResource = [...THEME_FILE_TYPE_SETS.adminResource];
     const overlap = themeFile.filter((t) => THEME_FILE_TYPE_SETS.adminResource.has(t));
     expect(overlap).toEqual([]);
-    expect(themeFile.length + adminResource.length).toBe(34);
+    expect(themeFile.length + adminResource.length).toBe(36);
   });
 });
 

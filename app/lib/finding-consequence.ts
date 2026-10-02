@@ -358,6 +358,25 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "whenever",
     agentic: false,
   },
+  // APP_EMBED_OFF (gc-fed): a theme app embed that was switched on then turned
+  // off. Primary "customers-see-it": an app that moved off script tags (stopped
+  // 2027-03-01) silently does nothing on the storefront while its embed is off.
+  // compounding: the cutoff is dated but the harm only lands if the app is still
+  // in use. Not agentic.
+  APP_EMBED_OFF: {
+    primary: "customers-see-it",
+    secondary: [],
+    urgency: "compounding",
+    agentic: false,
+  },
+  // GHOST_APP_EMBED (gc-fed): an enabled embed entry for an app that left other
+  // code in the theme. Pure leftover clutter: housekeeping / whenever.
+  GHOST_APP_EMBED: {
+    primary: "housekeeping",
+    secondary: [],
+    urgency: "whenever",
+    agentic: false,
+  },
 };
 
 // ---------------------------------------------------------------------------

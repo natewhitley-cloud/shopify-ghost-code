@@ -430,6 +430,7 @@ beforeEach(() => {
   });
   delete process.env.DANGLING_REFERENCE_LIVE_ENABLED;
   delete process.env.SETTINGS_DRIFT_LIVE_ENABLED;
+  delete process.env.APP_EMBED_LIVE_ENABLED;
 });
 
 // ---------------------------------------------------------------------------
@@ -2998,5 +2999,76 @@ describe("scanTheme — SETTINGS_DRIFT_LIVE_ENABLED soft-launch (gc-ecr)", () =>
     expect(result.findingCount).toBe(MOCK_FINDINGS.length + 1);
     const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
     expect(signal.metadata.detectorHits.SETTINGS_DRIFT).toBe(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// APP_EMBED_LIVE_ENABLED soft-launch flag (gc-fed, spec 5.6)
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — APP_EMBED_LIVE_ENABLED soft-launch (gc-fed)", () => {
+  const EMBED_FINDINGS = [FindingType.APP_EMBED_OFF, FindingType.GHOST_APP_EMBED].map(
+    (findingType) => ({
+      filename: "config/settings_data.json",
+      lineNumber: 1,
+      codeSnippet: "{}",
+      findingType,
+      severity: Severity.LOW,
+      appName: "PageFly",
+      description: "app embed finding",
+    }),
+  );
+
+  function arrange() {
+    mockScanThemeFiles.mockReturnValue({
+      findings: [...MOCK_FINDINGS, ...EMBED_FINDINGS],
+      unknownScripts: [],
+    });
+    mockDb.finding.groupBy.mockImplementation(async () => {
+      const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+      const counts: Record<string, number> = {};
+      for (const f of saved) counts[f.findingType] = (counts[f.findingType] ?? 0) + 1;
+      return Object.entries(counts).map(([findingType, _count]) => ({ findingType, _count }));
+    });
+  }
+
+  const isEmbed = (f: { findingType: string }) =>
+    f.findingType === FindingType.APP_EMBED_OFF || f.findingType === FindingType.GHOST_APP_EMBED;
+
+  it("flag unset: neither type is persisted but detectorHits counts both", async () => {
+    arrange();
+
+    const result = await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some(isEmbed)).toBe(false);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata.detectorHits.APP_EMBED_OFF).toBe(1);
+    expect(signal.metadata.detectorHits.GHOST_APP_EMBED).toBe(1);
+  });
+
+  it('flag "true": both types persisted and counted once (no double count)', async () => {
+    process.env.APP_EMBED_LIVE_ENABLED = "true";
+    arrange();
+
+    const result = await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.filter(isEmbed)).toHaveLength(2);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata.detectorHits.APP_EMBED_OFF).toBe(1);
+    expect(signal.metadata.detectorHits.GHOST_APP_EMBED).toBe(1);
+  });
+
+  it("the two flags are independent: SETTINGS_DRIFT live does not enable embeds", async () => {
+    process.env.SETTINGS_DRIFT_LIVE_ENABLED = "true";
+    arrange();
+
+    await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some(isEmbed)).toBe(false);
   });
 });

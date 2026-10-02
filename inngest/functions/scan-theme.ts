@@ -280,6 +280,17 @@ async function runAuditStep(opts: {
  * render the matched literal + verdict in a DANGLING_REFERENCE finding's
  * description, and the subtype tag carried in `appName` (spike §E).
  */
+/**
+ * Soft-launched finding types (spec 5.6): detected on every scan but persisted
+ * only when the mapped env var === "true". Never-in-prod detectors go here until
+ * their first output has had a precision review.
+ */
+const SOFT_LAUNCH_FLAGS: Partial<Record<FindingType, string>> = {
+  [FindingType.SETTINGS_DRIFT]: "SETTINGS_DRIFT_LIVE_ENABLED",
+  [FindingType.APP_EMBED_OFF]: "APP_EMBED_LIVE_ENABLED",
+  [FindingType.GHOST_APP_EMBED]: "APP_EMBED_LIVE_ENABLED",
+};
+
 const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> = {
   product: { segment: "products", label: "product" },
   collection: { segment: "collections", label: "collection" },
@@ -431,22 +442,20 @@ export const scanTheme = inngest.createFunction(
         const checkoutSunsetFindings = runCheckoutSunset ? detectCheckoutSunset(files) : [];
         const allThemeFindings = [...findings, ...checkoutSunsetFindings];
 
-        // SETTINGS_DRIFT soft-launch (gc-ecr, spec 5.6): the detector has never
-        // fired in prod (the settings_data.json header broke JSON.parse), so its
-        // first real output is unreviewed. It still RUNS, but its findings are
-        // persisted only when SETTINGS_DRIFT_LIVE_ENABLED === "true". The
-        // suppressed count is threaded to the scan_signal detectorHits (which
-        // otherwise histograms persisted rows only) so precision review can
-        // read it before the flag is turned on.
-        const settingsDriftLive = process.env.SETTINGS_DRIFT_LIVE_ENABLED === "true";
+        // Soft-launched detectors (SOFT_LAUNCH_FLAGS: SETTINGS_DRIFT gc-ecr,
+        // APP_EMBED_OFF / GHOST_APP_EMBED gc-fed; spec 5.6): their first real
+        // output is unreviewed. They still RUN, but their findings are persisted
+        // only when the type's env flag === "true". The suppressed counts are
+        // threaded to the scan_signal detectorHits (which otherwise histograms
+        // persisted rows only) so precision review can read them before the
+        // flag is turned on.
         const suppressedDetectorHits: Record<string, number> = {};
-        const themeFindings = settingsDriftLive
-          ? allThemeFindings
-          : allThemeFindings.filter((f) => f.findingType !== FindingType.SETTINGS_DRIFT);
-        const suppressedSettingsDrift = allThemeFindings.length - themeFindings.length;
-        if (suppressedSettingsDrift > 0) {
-          suppressedDetectorHits[FindingType.SETTINGS_DRIFT] = suppressedSettingsDrift;
-        }
+        const themeFindings = allThemeFindings.filter((f) => {
+          const flag = SOFT_LAUNCH_FLAGS[f.findingType];
+          if (!flag || process.env[flag] === "true") return true;
+          suppressedDetectorHits[f.findingType] = (suppressedDetectorHits[f.findingType] ?? 0) + 1;
+          return false;
+        });
 
         // The detector runs here on the main thread, not in the scan worker, so
         // it does not analyze a checkout.liquid over the per-file cap (gc-4yg);
@@ -1344,7 +1353,7 @@ export const scanTheme = inngest.createFunction(
             detectorHits[row.findingType] = row._count;
           }
           // Detected-but-not-persisted hits from soft-launched detectors
-          // (SETTINGS_DRIFT, gc-ecr): counted here so the histogram stays
+          // (SOFT_LAUNCH_FLAGS types): counted here so the histogram stays
           // truthful while the flag is off. Empty once the flag is on.
           for (const [type, count] of Object.entries(suppressedDetectorHits ?? {})) {
             detectorHits[type] = (detectorHits[type] ?? 0) + count;

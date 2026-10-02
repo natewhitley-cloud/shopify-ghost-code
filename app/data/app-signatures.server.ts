@@ -32,6 +32,12 @@ export type AppSignature = {
   jsonLdPatterns?: RegExp[];
   textPatterns?: RegExp[];
   filePatterns?: RegExp[];
+  /**
+   * Theme app embed handles (the `<handle>` in `shopify://apps/<handle>/blocks/...`
+   * block types in config/settings_data.json). These are extension handles, NOT
+   * App Store handles. Only seed handles verified on a real theme (gc-fed).
+   */
+  embedHandles?: string[];
   isTracker?: boolean;
 };
 
@@ -678,6 +684,7 @@ export const APP_SIGNATURES: AppSignature[] = [
     ],
     cssPatterns: [/pagefly/i],
     filePatterns: [/(^|\/)pagefly[-.]/i],
+    embedHandles: ["pagefly-page-builder"],
   },
   {
     appName: "Shogun",

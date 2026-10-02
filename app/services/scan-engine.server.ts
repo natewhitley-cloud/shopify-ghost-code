@@ -23,6 +23,9 @@
  *   GHOST_TEXT     — persistent UI text fragments (widget placeholders, trust
  *                    badges, data attributes) left in Liquid markup by
  *                    uninstalled apps
+ *   APP_EMBED_OFF / GHOST_APP_EMBED — theme app embed entries in
+ *                    config/settings_data.json: turned off, or still on with
+ *                    same-app corroboration (gc-fed)
  *   SETTINGS_DRIFT — stale section references in config/settings_data.json
  *                    that point to section types whose .liquid files no
  *                    longer exist in the theme
@@ -63,6 +66,7 @@ import {
   identifyAppFromUrl,
   identifyAppFromCode,
   identifyAppFromSnippetName,
+  identifyAppFromEmbedHandle,
   identifyAppFromHrefLang,
   identifyAppFromJsonLd,
   identifyAppFromTextFragment,
@@ -3188,6 +3192,143 @@ export function detectSettingsDrift(
 }
 
 // ---------------------------------------------------------------------------
+// Detectors: APP_EMBED_OFF / GHOST_APP_EMBED (gc-fed)
+// ---------------------------------------------------------------------------
+
+const SETTINGS_DATA_PATH = "config/settings_data.json";
+const APP_EMBED_TYPE_PREFIX = "shopify://apps/";
+
+/**
+ * From this instant Shopify no longer loads script-tag installs, so a turned-off
+ * app embed is no longer a "maybe" breakage: APP_EMBED_OFF escalates MEDIUM ->
+ * HIGH (spec D4, computed at scan time, not baked into the classifier).
+ */
+const APP_EMBED_HIGH_SEVERITY_FROM_MS = Date.parse("2027-03-01T00:00:00Z");
+
+interface AppEmbedEntry {
+  /** The block key in settings_data.json (a numeric-looking id). */
+  key: string;
+  /** The extension handle: the segment after `shopify://apps/`. */
+  handle: string;
+  disabled: boolean;
+  /** The entry JSON, truncated to 300 chars. */
+  codeSnippet: string;
+}
+
+/**
+ * Parse the theme app embed entries out of `config/settings_data.json`
+ * (`current.blocks` entries whose `type` starts with `shopify://apps/`).
+ * Non-app blocks, malformed types (no handle), and a missing/invalid `blocks`
+ * map yield no entries.
+ */
+function parseAppEmbedEntries(files: ThemeFile[]): AppEmbedEntry[] {
+  const settingsFile = files.find((f) => f.filename === SETTINGS_DATA_PATH);
+  if (!settingsFile) return [];
+  const settingsData = parseSettingsData(settingsFile.content);
+  const current = settingsData?.current;
+  if (!current || typeof current !== "object") return [];
+  const blocks = (current as Record<string, unknown>).blocks;
+  if (!blocks || typeof blocks !== "object" || Array.isArray(blocks)) return [];
+
+  const entries: AppEmbedEntry[] = [];
+  for (const [key, value] of Object.entries(blocks as Record<string, unknown>)) {
+    if (!value || typeof value !== "object") continue;
+    const type = (value as Record<string, unknown>).type;
+    if (typeof type !== "string" || !type.startsWith(APP_EMBED_TYPE_PREFIX)) continue;
+    const handle = type.slice(APP_EMBED_TYPE_PREFIX.length).split("/")[0];
+    if (!handle) continue;
+    entries.push({
+      key,
+      handle,
+      disabled: (value as Record<string, unknown>).disabled === true,
+      codeSnippet: JSON.stringify({ [key]: value }, null, 2).slice(0, 300),
+    });
+  }
+  return entries;
+}
+
+/** "pagefly-page-builder" -> "Pagefly Page Builder". */
+function humanizeEmbedHandle(handle: string): string {
+  return handle
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/**
+ * APP_EMBED_OFF: one finding per app embed entry with `disabled: true` (an
+ * embed that was switched on, then turned off). Install state is unknowable, so
+ * the description names the app without claiming it is installed or removed.
+ * The app name is the signature match when known, else the humanized handle.
+ * Severity is MEDIUM until 2027-03-01, HIGH from then (computed from `now`).
+ */
+export function detectAppEmbedOff(
+  files: ThemeFile[],
+  now: Date = new Date(),
+): CreateFindingInput[] {
+  const escalate = now.getTime() >= APP_EMBED_HIGH_SEVERITY_FROM_MS;
+  return parseAppEmbedEntries(files)
+    .filter((e) => e.disabled)
+    .map((e) => {
+      const appName = identifyAppFromEmbedHandle(e.handle) ?? humanizeEmbedHandle(e.handle);
+      return {
+        filename: SETTINGS_DATA_PATH,
+        lineNumber: 1,
+        codeSnippet: e.codeSnippet,
+        findingType: FindingType.APP_EMBED_OFF,
+        severity: escalate
+          ? Severity.HIGH
+          : classifySeverity(FindingType.APP_EMBED_OFF, e.codeSnippet),
+        appName,
+        description: `${appName}'s theme app embed is turned off.`,
+      };
+    });
+}
+
+/**
+ * GHOST_APP_EMBED: an ENABLED app embed whose app (matched by signature
+ * `embedHandles`) also has at least one OTHER finding in the same scan, i.e.
+ * corroborating evidence the app left code behind. An enabled embed alone is
+ * never flagged (every active app looks exactly like that). Disabled entries
+ * never produce this (they get APP_EMBED_OFF). Must run after all other passes:
+ * `priorFindings` is the scan's in-memory findings list.
+ */
+export function detectGhostAppEmbeds(
+  files: ThemeFile[],
+  priorFindings: CreateFindingInput[],
+): CreateFindingInput[] {
+  const evidenceApps = new Set<string>();
+  for (const f of priorFindings) {
+    if (
+      f.appName &&
+      f.findingType !== FindingType.APP_EMBED_OFF &&
+      f.findingType !== FindingType.GHOST_APP_EMBED
+    ) {
+      evidenceApps.add(f.appName);
+    }
+  }
+  if (evidenceApps.size === 0) return [];
+
+  const findings: CreateFindingInput[] = [];
+  for (const e of parseAppEmbedEntries(files)) {
+    if (e.disabled) continue;
+    const appName = identifyAppFromEmbedHandle(e.handle);
+    if (!appName || !evidenceApps.has(appName)) continue;
+    findings.push({
+      filename: SETTINGS_DATA_PATH,
+      lineNumber: 1,
+      codeSnippet: e.codeSnippet,
+      findingType: FindingType.GHOST_APP_EMBED,
+      severity: classifySeverity(FindingType.GHOST_APP_EMBED, e.codeSnippet),
+      appName,
+      description: `${appName}'s app embed is still switched on, and ${appName} left other code in this theme.`,
+    });
+  }
+  return findings;
+}
+
+// ---------------------------------------------------------------------------
 // Detector: GHOST_LAYOUT
 // ---------------------------------------------------------------------------
 
@@ -4857,6 +4998,10 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // or per catalog entry (duplicate library / tracker / chat widget).
   findings.push(...capped(detectSettingsDrift(files, EARLY_EXIT_LIMIT)));
 
+  // Pass 3 (cont.): app embeds turned off in settings_data.json (gc-fed). Same
+  // single file as SETTINGS_DRIFT, so the same per-file cap applies.
+  findings.push(...capped(detectAppEmbedOff(files)));
+
   // Pass 4: page builder layout detection
   findings.push(...detectGhostLayouts(files));
 
@@ -4869,6 +5014,10 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // file (see CROSS_FILE_FINDING_TYPES in finding-classification).
   findings.push(...detectDuplicateTrackers(files));
   findings.push(...detectOverlappingChatWidgets(files));
+
+  // Pass 6: GHOST_APP_EMBED post-pass (gc-fed). Needs every other finding's app
+  // attribution as corroboration, so it runs last over the in-memory list.
+  findings.push(...capped(detectGhostAppEmbeds(files, findings)));
 
   // Aggregate the third-party domain refs per host across all files: union the
   // source surfaces, sum refCount. A matched host wins over benign (matched

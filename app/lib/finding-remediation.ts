@@ -209,6 +209,18 @@ const REMEDIATION: Record<string, Remediation> = {
       "Your theme still includes checkout.liquid, which Shopify no longer renders for any store. It was retired for the Information, Shipping, and Payment steps on August 13, 2024, and for the Thank you and Order status pages on August 28, 2025, so any custom code, tracking, or content it holds has already stopped running and the file is now leftover code. Rebuild anything you still need with Checkout Extensibility: move custom scripts and pixels to customer events (web pixels), rebuild injected content as checkout UI extensions in the checkout editor, and use Shopify Functions for custom checkout logic. Keep the file as a reference until you have rebuilt what you need, and duplicate your live theme as a backup before editing it.",
   },
 
+  // ---- Theme app embeds (settings_data.json) ----
+  // Install state is unknowable from theme files, so both stay conditional and
+  // never assert the app is installed or uninstalled.
+  APP_EMBED_OFF: {
+    howTo:
+      "If you still use this app, it isn't running on your storefront: turn it on in Online Store > Themes > Customize > App embeds. Shopify stops loading older script-tag installs on March 1, 2027, so apps that moved to app embeds only work when the embed is on. If you removed this app, this entry is leftover and safe to leave.",
+  },
+  GHOST_APP_EMBED: {
+    howTo:
+      "This app's embed is still switched on, and the app left other code in your theme, so it may have been removed. If you no longer use it, remove the embed in Online Store > Themes > Customize > App embeds. Avoid editing settings_data.json by hand, and duplicate the theme first.",
+  },
+
   // ---- Theme settings ----
   SETTINGS_DRIFT: {
     howTo:

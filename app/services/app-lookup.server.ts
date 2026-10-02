@@ -152,6 +152,24 @@ export function identifyAppFromSnippetName(snippetName: string): string | null {
 }
 
 /**
+ * Identify an app from a theme app embed handle (the `<handle>` in a
+ * `shopify://apps/<handle>/blocks/...` settings_data.json block type), case-
+ * insensitive. Checks each signature's embedHandles list for an exact match.
+ */
+export function identifyAppFromEmbedHandle(handle: string): string | null {
+  const lower = handle.toLowerCase();
+  for (const sig of APP_SIGNATURES) {
+    if (!sig.embedHandles) continue;
+    for (const h of sig.embedHandles) {
+      if (h.toLowerCase() === lower) {
+        return sig.appName;
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Identify an app from a theme file path (e.g. `snippets/spreadr-custom.liquid`).
  *
  * Checks each signature's filePatterns array against the full file path. The

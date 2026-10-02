@@ -483,6 +483,19 @@ enum FindingType {
   // gate, all plans. Like DUPLICATE_LIBRARY it is cross-file with no single-app
   // attribution.
   OVERLAPPING_CHAT_WIDGET
+  // Emitted by the app-embed audit (detectAppEmbedOff in scan-engine.server.ts,
+  // gc-fed): a theme app embed entry in config/settings_data.json has
+  // `disabled: true` (it was switched on once, then turned off), so an app that
+  // moved off script tags (stopped 2027-03-01) may silently not run on the
+  // storefront. Install state is unknowable, so wording is conditional.
+  // Theme-file only, all plans; soft-launched behind APP_EMBED_LIVE_ENABLED.
+  APP_EMBED_OFF
+  // Emitted by the app-embed post-pass (detectGhostAppEmbeds, gc-fed): an ENABLED
+  // app embed whose app (matched via a signature embedHandles entry) also left
+  // other findings in the same scan, i.e. corroborating evidence the app is gone.
+  // An enabled embed alone is never flagged. Theme-file only, all plans;
+  // soft-launched behind APP_EMBED_LIVE_ENABLED.
+  GHOST_APP_EMBED
   // Emitted by the malicious-script detector (detectMaliciousScripts in
   // scan-engine.server.ts): a live theme line references a domain on the curated
   // KNOWN_MALICIOUS_DOMAINS list (app/data/malicious-domains.server.ts), e.g. a

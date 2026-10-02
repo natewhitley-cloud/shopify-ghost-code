@@ -71,6 +71,8 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   // settings_data.json references a missing section — safe to leave; never
   // hand-edit the JSON.
   SETTINGS_DRIFT: "leave-alone",
+  // Leftover app embed entry — remove via the theme editor, never hand-edit the JSON.
+  GHOST_APP_EMBED: "leave-alone",
 
   // ---- verify-first (the conservative default) ----
   // Tracking pixel — could still be an active Google/Meta tag you rely on.
@@ -105,6 +107,9 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   DUPLICATE_LIBRARY: "verify-first",
   // Same analytics platform with two IDs — decide which ID is correct first.
   DUPLICATE_TRACKER: "verify-first",
+  // Embed turned off — if the app is still in use, the right move is to turn it
+  // back on, so check before touching it.
+  APP_EMBED_OFF: "verify-first",
   // Two chat widgets — pick the one to keep before removing the other.
   OVERLAPPING_CHAT_WIDGET: "verify-first",
   // Admin resources: reviewed and edited in Admin, not deleted as theme code, and

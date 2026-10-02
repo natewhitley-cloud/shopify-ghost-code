@@ -5,6 +5,7 @@ import {
   identifyAppFromUrl,
   identifyAppFromCode,
   identifyAppFromSnippetName,
+  identifyAppFromEmbedHandle,
   identifyAppFromHrefLang,
   identifyAppFromJsonLd,
   identifyAppFromTextFragment,
@@ -968,5 +969,25 @@ describe("cdnDomains validation (gc-5v9)", () => {
         '<img src="https://s3.amazonaws.com/downloads.mailchimp.com/assets/logo.png">',
       ),
     ).toBe("Mailchimp");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// identifyAppFromEmbedHandle (gc-fed)
+// ---------------------------------------------------------------------------
+
+describe("identifyAppFromEmbedHandle", () => {
+  it("identifies PageFly from its verified embed handle", () => {
+    expect(identifyAppFromEmbedHandle("pagefly-page-builder")).toBe("PageFly");
+  });
+
+  it("is case-insensitive", () => {
+    expect(identifyAppFromEmbedHandle("PageFly-Page-Builder")).toBe("PageFly");
+  });
+
+  it("returns null for the App Store handle (embed handle differs) and unknowns", () => {
+    expect(identifyAppFromEmbedHandle("pagefly")).toBeNull();
+    expect(identifyAppFromEmbedHandle("totally-unknown-app")).toBeNull();
+    expect(identifyAppFromEmbedHandle("")).toBeNull();
   });
 });

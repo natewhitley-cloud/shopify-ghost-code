@@ -41,8 +41,8 @@ const AGENTIC_IMPACT_TYPES = [
 describe("getFindingRemediation — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 34 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(34);
+  it("has 36 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(36);
   });
 
   it.each(ALL_TYPES)("returns a non-empty blurb for %s", (type) => {
@@ -150,6 +150,20 @@ describe("getFindingRemediation — accuracy", () => {
     expect(blurb).toContain("custom liquid");
     expect(blurb).toContain("app block");
     expect(blurb).not.toContain("this script line");
+  });
+
+  it("APP_EMBED_OFF keeps conditional wording and never asserts install state (gc-fed)", () => {
+    const blurb = getFindingRemediation("APP_EMBED_OFF");
+    expect(blurb).toContain("If you still use this app");
+    expect(blurb).toContain("March 1, 2027");
+    expect(blurb).toContain("If you removed this app");
+    expect(blurb).not.toMatch(/is (not )?(un)?installed/i);
+  });
+
+  it("GHOST_APP_EMBED is conditional and warns against hand-editing settings_data.json (gc-fed)", () => {
+    const blurb = getFindingRemediation("GHOST_APP_EMBED");
+    expect(blurb).toContain("If you no longer use it");
+    expect(blurb).toContain("settings_data.json by hand");
   });
 
   it("describes the checkout.liquid sunset as past, for every store, for CHECKOUT_SUNSET (gc-oam)", () => {

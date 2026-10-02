@@ -4,7 +4,7 @@
  * Strategy:
  *   - Pure module, no dependencies — test directly.
  *   - Exhaustiveness / drift guard: every FindingType has a CONSEQUENCE_MAP entry.
- *   - Partition: PRIMARY lanes cleanly partition all 34 types (each in exactly one).
+ *   - Partition: PRIMARY lanes cleanly partition all 36 types (each in exactly one).
  *   - computeLaneSummary: sums, most-urgent urgency, hasAgentic, zero-lane omission.
  *   - startHereLane / dominantLane: urgency-first vs count-first tie-breaking, null.
  *   - Spot-check specific mappings against the grounded table.
@@ -43,7 +43,7 @@ const ALL_LANES: LaneKey[] = [
 describe("CONSEQUENCE_MAP exhaustiveness", () => {
   it("maps every FindingType enum member (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(34);
+    expect(allTypes).toHaveLength(36);
 
     for (const type of allTypes) {
       const entry = CONSEQUENCE_MAP[type];
@@ -120,6 +120,26 @@ describe("CHECKOUT_SUNSET consequence (gc-oam)", () => {
   });
 });
 
+describe("app embed consequences (gc-fed)", () => {
+  it("APP_EMBED_OFF is customers-see-it / compounding, not agentic", () => {
+    expect(CONSEQUENCE_MAP.APP_EMBED_OFF).toEqual({
+      primary: "customers-see-it",
+      secondary: [],
+      urgency: "compounding",
+      agentic: false,
+    });
+  });
+
+  it("GHOST_APP_EMBED is housekeeping / whenever, not agentic", () => {
+    expect(CONSEQUENCE_MAP.GHOST_APP_EMBED).toEqual({
+      primary: "housekeeping",
+      secondary: [],
+      urgency: "whenever",
+      agentic: false,
+    });
+  });
+});
+
 describe("URGENCY_RANK", () => {
   it("orders act-now < compounding < whenever", () => {
     expect(URGENCY_RANK["act-now"]).toBe(0);
@@ -169,11 +189,11 @@ describe("laneLabelForLane", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Partition: primary lanes cleanly cover all 34 types
+// Partition: primary lanes cleanly cover all 36 types
 // ---------------------------------------------------------------------------
 
 describe("typesForLane partition", () => {
-  it("primary lanes partition all 34 types with no type in two lanes", () => {
+  it("primary lanes partition all 36 types with no type in two lanes", () => {
     const seen = new Set<FindingType>();
     let total = 0;
 
@@ -187,8 +207,8 @@ describe("typesForLane partition", () => {
       total += types.length;
     }
 
-    expect(total).toBe(34);
-    expect(seen.size).toBe(34);
+    expect(total).toBe(36);
+    expect(seen.size).toBe(36);
     // Union equals the full enum set.
     expect([...seen].sort()).toEqual(Object.values(FindingType).sort());
   });

@@ -483,6 +483,8 @@ const FINDING_TYPE_LABELS: Record<string, string> = {
   CHECKOUT_SUNSET: "Checkout Sunset",
   DUPLICATE_TRACKER: "Duplicate Tracking Tags",
   OVERLAPPING_CHAT_WIDGET: "Overlapping Chat Widgets",
+  APP_EMBED_OFF: "App Embeds Turned Off",
+  GHOST_APP_EMBED: "Leftover App Embeds",
 };
 
 // ---------------------------------------------------------------------------

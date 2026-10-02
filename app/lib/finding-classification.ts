@@ -141,6 +141,13 @@ const HEURISTIC_FINDING_TYPES = new Set([
   // DUPLICATE_LIBRARY.
   "DUPLICATE_TRACKER",
   "OVERLAPPING_CHAT_WIDGET",
+  // APP_EMBED_OFF / GHOST_APP_EMBED (gc-fed) — structural reads of the theme app
+  // embed entries in settings_data.json. APP_EMBED_OFF fires for any disabled
+  // entry (the app name may be a humanized handle, not a signature match) and
+  // GHOST_APP_EMBED is inferred from corroborating findings, so neither is a
+  // positive known-app detection.
+  "APP_EMBED_OFF",
+  "GHOST_APP_EMBED",
 ]);
 
 /**
@@ -319,6 +326,10 @@ const THEME_FILE_FINDING_TYPES = new Set([
   // editor" deep-link, mirroring DUPLICATE_LIBRARY.
   "DUPLICATE_TRACKER",
   "OVERLAPPING_CHAT_WIDGET",
+  // APP_EMBED_OFF / GHOST_APP_EMBED (gc-fed) — attributed to
+  // config/settings_data.json, a real, editable theme file, like SETTINGS_DRIFT.
+  "APP_EMBED_OFF",
+  "GHOST_APP_EMBED",
 ]);
 
 /**

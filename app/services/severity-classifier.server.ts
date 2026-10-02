@@ -84,6 +84,13 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   // conflict (duplicate bubbles, split sessions), but it degrades experience
   // rather than breaking the store or leaking data.
   [FindingType.OVERLAPPING_CHAT_WIDGET]: Severity.LOW,
+  // APP_EMBED_OFF default is MEDIUM (before the 2027-03-01 script-tag cutoff). The
+  // detector escalates to HIGH from that date, computed at scan time (gc-fed D4),
+  // because a classifier keyed on type alone has no clock.
+  [FindingType.APP_EMBED_OFF]: Severity.MEDIUM,
+  // GHOST_APP_EMBED is LOW: a leftover, still-enabled embed entry of an app that
+  // left other code behind. Housekeeping, not breakage.
+  [FindingType.GHOST_APP_EMBED]: Severity.LOW,
 };
 
 // ---------------------------------------------------------------------------

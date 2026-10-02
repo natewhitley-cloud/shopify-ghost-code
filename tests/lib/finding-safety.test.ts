@@ -26,8 +26,8 @@ import {
 describe("REMOVAL_SAFETY — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 34 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(34);
+  it("has 36 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(36);
   });
 
   it("maps every FindingType enum member explicitly (exhaustiveness)", () => {
@@ -78,6 +78,7 @@ describe("getRemovalSafety — representative mappings", () => {
     "DANGLING_REFERENCE",
     "CHECKOUT_SUNSET",
     "SETTINGS_DRIFT",
+    "GHOST_APP_EMBED",
   ];
 
   it.each(LEAVE_ALONE)('classifies %s as "leave-alone"', (type) => {
@@ -93,6 +94,10 @@ describe("getRemovalSafety — representative mappings", () => {
 
   // Spot-check the conservative default: a pixel could still be a live Google/
   // Meta tag, so it must never be auto-labeled safe-to-remove.
+  it('keeps APP_EMBED_OFF at "verify-first" (turning it back on may be the right fix)', () => {
+    expect(getRemovalSafety("APP_EMBED_OFF")).toBe("verify-first");
+  });
+
   it('keeps GHOST_PIXEL at "verify-first" (may still be a live tag)', () => {
     expect(getRemovalSafety("GHOST_PIXEL")).toBe("verify-first");
   });
