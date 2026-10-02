@@ -562,6 +562,7 @@ describe("scanTheme — happy path", () => {
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
+      liveFindingTypes: expect.any(Array),
     });
   });
 
@@ -589,6 +590,7 @@ describe("scanTheme — happy path", () => {
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
+      liveFindingTypes: expect.any(Array),
     });
   });
 
@@ -1020,6 +1022,7 @@ describe("scanTheme — optional audit steps", () => {
         newFindingCount: MOCK_FINDINGS.length,
         resolvedFindingCount: 0,
         persistedFindingCount: 0,
+        liveFindingTypes: expect.any(Array),
       });
 
       expect(result).toEqual({
@@ -1299,6 +1302,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
+      liveFindingTypes: expect.any(Array),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1446,6 +1450,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
+      liveFindingTypes: expect.any(Array),
     });
     expect(result.status).toBe("COMPLETED");
   });
@@ -1493,6 +1498,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
+      liveFindingTypes: expect.any(Array),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1519,6 +1525,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       newFindingCount: MOCK_FINDINGS.length,
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
+      liveFindingTypes: expect.any(Array),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -2222,6 +2229,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       newFindingCount: 0,
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
+      liveFindingTypes: expect.any(Array),
     });
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
@@ -3097,6 +3105,114 @@ describe("scanTheme — APP_EMBED_LIVE_ENABLED soft-launch (gc-fed)", () => {
   });
 });
 
+// gc-rvo0 - liveFindingTypes recorded at finalize
+// ---------------------------------------------------------------------------
+
+describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
+  const SOFT: FindingType[] = [
+    FindingType.SETTINGS_DRIFT,
+    FindingType.APP_EMBED_OFF,
+    FindingType.GHOST_APP_EMBED,
+  ];
+  const live = async () => {
+    await runScanTheme();
+    return mockFinalizeScan.mock.calls[0][1].liveFindingTypes as string[];
+  };
+
+  it("flags off: every FindingType except the soft-launched ones", async () => {
+    const types = await live();
+    expect(types).toEqual(Object.values(FindingType).filter((t) => !SOFT.includes(t)));
+    for (const t of SOFT) expect(types).not.toContain(t);
+  });
+
+  it("SETTINGS_DRIFT_LIVE_ENABLED=true adds only SETTINGS_DRIFT", async () => {
+    process.env.SETTINGS_DRIFT_LIVE_ENABLED = "true";
+    const types = await live();
+    expect(types).toContain(FindingType.SETTINGS_DRIFT);
+    expect(types).not.toContain(FindingType.APP_EMBED_OFF);
+    expect(types).not.toContain(FindingType.GHOST_APP_EMBED);
+  });
+
+  it("APP_EMBED_LIVE_ENABLED=true adds both embed types, not SETTINGS_DRIFT", async () => {
+    process.env.APP_EMBED_LIVE_ENABLED = "true";
+    const types = await live();
+    expect(types).toContain(FindingType.APP_EMBED_OFF);
+    expect(types).toContain(FindingType.GHOST_APP_EMBED);
+    expect(types).not.toContain(FindingType.SETTINGS_DRIFT);
+  });
+
+  it("both flags on: the full enum", async () => {
+    process.env.SETTINGS_DRIFT_LIVE_ENABLED = "true";
+    process.env.APP_EMBED_LIVE_ENABLED = "true";
+    expect(await live()).toEqual(Object.values(FindingType));
+  });
+
+  // A step.run wrapper that lets a test mutate env or the memoized output of a
+  // named step, exactly where Inngest would have persisted/replayed it.
+  const runWith = (after: (name: string, out: Record<string, unknown>) => unknown) => {
+    const base = createMockInngestStep();
+    return runScanTheme(undefined, {
+      run: vi.fn(async (name: string, fn: () => unknown) =>
+        after(name, (await fn()) as Record<string, unknown>),
+      ),
+    } as unknown as Partial<typeof base>);
+  };
+  const embedFinding = {
+    filename: "config/settings_data.json",
+    lineNumber: 1,
+    codeSnippet: "{}",
+    findingType: FindingType.APP_EMBED_OFF,
+    severity: Severity.LOW,
+    appName: "Embed App",
+    description: "embed",
+  };
+
+  it("a flag flip AFTER fetch-and-scan cannot make the recorded set disagree with what was persisted", async () => {
+    mockScanThemeFiles.mockReturnValue({
+      findings: [...MOCK_FINDINGS, embedFinding],
+      unknownScripts: [],
+    });
+    await runWith((name, out) => {
+      if (name === "fetch-and-scan") process.env.APP_EMBED_LIVE_ENABLED = "true";
+      return out;
+    });
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    const recorded = mockFinalizeScan.mock.calls[0][1].liveFindingTypes as string[];
+    expect(saved.some((f) => f.findingType === FindingType.APP_EMBED_OFF)).toBe(false);
+    expect(recorded).not.toContain(FindingType.APP_EMBED_OFF);
+    expect(recorded).not.toContain(FindingType.GHOST_APP_EMBED);
+  });
+
+  it("the reverse flip (flag on at persist, off before finalize) still records the type as live", async () => {
+    process.env.APP_EMBED_LIVE_ENABLED = "true";
+    mockScanThemeFiles.mockReturnValue({
+      findings: [...MOCK_FINDINGS, embedFinding],
+      unknownScripts: [],
+    });
+    await runWith((name, out) => {
+      if (name === "fetch-and-scan") delete process.env.APP_EMBED_LIVE_ENABLED;
+      return out;
+    });
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some((f) => f.findingType === FindingType.APP_EMBED_OFF)).toBe(true);
+    expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).toContain(FindingType.APP_EMBED_OFF);
+  });
+
+  it("missing live set in a memoized (pre-deploy) fetch-and-scan output -> not written (scan stays NULL)", async () => {
+    await runWith((name, out) => {
+      if (name === "fetch-and-scan") delete out.liveFindingTypes;
+      return out;
+    });
+    const arg = mockFinalizeScan.mock.calls[0][1];
+    expect(arg.liveFindingTypes).toBeUndefined();
+  });
+
+  it('only the exact string "true" counts as live', async () => {
+    process.env.APP_EMBED_LIVE_ENABLED = "1";
+    expect(await live()).not.toContain(FindingType.APP_EMBED_OFF);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // gc-syz.5 — notify-new-findings terminal step
 // ---------------------------------------------------------------------------
@@ -3108,6 +3224,8 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
   const mockLatestAlert = getLatestMerchantAlert as ReturnType<typeof vi.fn>;
   const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
 
+  // Every detector live for both scans unless a test narrows it (gc-rvo0).
+  const ALL_TYPES = Object.values(FindingType);
   const OLD = { ...MOCK_FINDINGS[0] };
   const NEW = { ...MOCK_FINDINGS[1] };
 
@@ -3136,12 +3254,17 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
       status: "IN_PROGRESS",
       origin,
       createdAt: new Date("2026-06-15T00:00:00Z"),
+      liveFindingTypes: ALL_TYPES,
       startedAt: new Date("2026-06-15T00:00:00Z"),
       completedAt: new Date("2026-06-15T00:00:05Z"),
     });
     // Current persisted findings = OLD + NEW; previous scan only had OLD.
     mockDb.finding.findMany.mockResolvedValue([OLD, NEW]);
-    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prev", findings: [OLD] });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prev",
+      findings: [OLD],
+      liveFindingTypes: ALL_TYPES,
+    });
     // No prior alert by default: the baseline is the previous scan.
     mockLatestAlert.mockResolvedValue(null);
     mockGetScanById.mockResolvedValue(null);
@@ -3153,6 +3276,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     themeId: THEME_ID,
     createdAt: new Date("2026-06-01T00:00:00Z"),
     findings: [OLD],
+    liveFindingTypes: ALL_TYPES,
     ...over,
   });
 
@@ -3265,7 +3389,11 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
 
   it("skips (without building an admin client) when the diff has no new findings", async () => {
     arrange();
-    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prev", findings: [OLD, NEW] });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prev",
+      findings: [OLD, NEW],
+      liveFindingTypes: ALL_TYPES,
+    });
     const { results } = await run();
     expect(mockNotify).not.toHaveBeenCalled();
     expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
@@ -3314,7 +3442,11 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     // ALERTED scan does not. NEW must still count as new since the last alert.
     function arrangeThrottled(alerted: unknown) {
       arrange();
-      mockGetPreviousScanForTheme.mockResolvedValue({ id: "throttled", findings: [OLD, NEW] });
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        id: "throttled",
+        findings: [OLD, NEW],
+        liveFindingTypes: ALL_TYPES,
+      });
       mockLatestAlert.mockResolvedValue({ scanId: "alerted" });
       mockGetScanById.mockResolvedValue(alerted);
     }
@@ -3353,6 +3485,123 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
       mockGetPreviousScanForTheme.mockResolvedValue(null);
       const { results } = await run();
       expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_baseline" });
+    });
+  });
+
+  describe("live detector types (gc-rvo0)", () => {
+    // OLD/NEW are GHOST_SCRIPT / GHOST_STYLE; APP_EMBED_OFF is the soft-launched type.
+    const EMBED = {
+      ...NEW,
+      findingType: FindingType.APP_EMBED_OFF,
+      filename: "config/settings_data.json",
+      appName: "Embed App",
+    };
+    const without = (...types: string[]) => ALL_TYPES.filter((t) => !types.includes(t));
+
+    it("baseline from before liveFindingTypes existed (null) -> baseline_unversioned, no send", async () => {
+      arrange();
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        id: "prev",
+        findings: [OLD],
+        liveFindingTypes: null,
+      });
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({
+        sent: false,
+        reason: "baseline_unversioned",
+      });
+    });
+
+    it("a malformed baseline value is treated as unversioned (never widens an alert)", async () => {
+      arrange();
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        id: "prev",
+        findings: [OLD],
+        liveFindingTypes: { 0: "GHOST_STYLE" },
+      });
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({
+        sent: false,
+        reason: "baseline_unversioned",
+      });
+    });
+
+    it("flag flip: APP_EMBED_OFF live now but not in the baseline -> excluded, no send when it was the only new finding", async () => {
+      arrange();
+      mockDb.finding.findMany.mockResolvedValue([OLD, EMBED]);
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        id: "prev",
+        findings: [OLD],
+        liveFindingTypes: without(FindingType.APP_EMBED_OFF),
+      });
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+    });
+
+    it("flag flip with a genuinely new finding of a type live in both: alerts for that one only", async () => {
+      arrange();
+      mockDb.finding.findMany.mockResolvedValue([OLD, NEW, EMBED]);
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        id: "prev",
+        findings: [OLD],
+        liveFindingTypes: without(FindingType.APP_EMBED_OFF),
+      });
+      await run();
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+      expect(mockNotify.mock.calls[0][0].newFindings).toEqual([
+        expect.objectContaining({ findingType: NEW.findingType }),
+      ]);
+    });
+
+    it("a type live in both scans still alerts (no regression)", async () => {
+      arrange();
+      await run();
+      expect(mockNotify).toHaveBeenCalledTimes(1);
+    });
+
+    it("a detector present only in the current enum (absent from the baseline set) is excluded", async () => {
+      arrange();
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        id: "prev",
+        findings: [OLD],
+        liveFindingTypes: without(NEW.findingType),
+      });
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+    });
+
+    it("the last-alerted baseline's live set is the one used", async () => {
+      arrange();
+      mockLatestAlert.mockResolvedValue({ scanId: "alerted" });
+      mockGetScanById.mockResolvedValue(alertedScan({ liveFindingTypes: null }));
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({
+        sent: false,
+        reason: "baseline_unversioned",
+      });
+    });
+
+    it("current scan without a recorded live set -> current_unversioned, no send", async () => {
+      arrange();
+      mockDb.scan.findUnique.mockResolvedValue({
+        status: "IN_PROGRESS",
+        origin: "SCHEDULED",
+        createdAt: new Date("2026-06-15T00:00:00Z"),
+        liveFindingTypes: null,
+        startedAt: new Date("2026-06-15T00:00:00Z"),
+        completedAt: new Date("2026-06-15T00:00:05Z"),
+      });
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({
+        sent: false,
+        reason: "current_unversioned",
+      });
     });
   });
 

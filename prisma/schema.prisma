@@ -251,6 +251,15 @@ model Scan {
   // "resolved" — an unscanned file is unknown, not fixed. Also surfaced in the
   // scan-detail UI. Empty for fully-scanned scans and all legacy scans.
   skippedFiles      String[]        @default([])
+  // FindingType values whose detectors were LIVE (existed in code AND were not
+  // suppressed by a soft-launch flag) when this scan persisted its findings,
+  // stored as a JSON string array (gc-rvo0). Json? rather than String[] because
+  // Prisma scalar lists are non-null: NULL must mean "legacy scan, never
+  // recorded" (distinct from an empty set). Alert-only: the merchant-alert diff
+  // restricts "new" to types live in BOTH the baseline and current scan, so a
+  // flag flip or newly shipped detector cannot blast every shop. The in-app diff
+  // ignores it.
+  liveFindingTypes  Json?
   // Which surface initiated this scan. Only MANUAL (merchant-initiated) scans
   // count toward a plan's manual weekly/monthly quota; SCHEDULED (cron) and
   // AUTO_PUBLISH (theme-publish auto-rescan) scans are exempt so a scheduled or

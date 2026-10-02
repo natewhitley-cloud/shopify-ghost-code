@@ -292,6 +292,34 @@ const SOFT_LAUNCH_FLAGS: Partial<Record<FindingType, string>> = {
   [FindingType.GHOST_APP_EMBED]: "APP_EMBED_LIVE_ENABLED",
 };
 
+/**
+ * Applies SOFT_LAUNCH_FLAGS in ONE place (gc-rvo0): each flag is read exactly
+ * once, and the SAME reads decide both which findings persist and which types
+ * are recorded as LIVE for the scan. Returns the kept findings, the suppressed
+ * counts per type, and `liveFindingTypes` = every FindingType except those a
+ * flag suppressed. The live set is stored on the scan at finalize so the
+ * merchant-alert diff can ignore types the baseline scan could not have
+ * contained (flag flipped on, or detector shipped, since). Plan/scope gating is
+ * NOT part of it (skippedCategories/cappedCategories cover that).
+ */
+function applySoftLaunchFlags<T extends { findingType: FindingType }>(
+  findings: readonly T[],
+): { kept: T[]; suppressedDetectorHits: Record<string, number>; liveFindingTypes: string[] } {
+  const isLive = new Map<FindingType, boolean>();
+  for (const type of Object.values(FindingType)) {
+    const flag = SOFT_LAUNCH_FLAGS[type];
+    isLive.set(type, !flag || process.env[flag] === "true");
+  }
+  const suppressedDetectorHits: Record<string, number> = {};
+  const kept = findings.filter((f) => {
+    if (isLive.get(f.findingType)) return true;
+    suppressedDetectorHits[f.findingType] = (suppressedDetectorHits[f.findingType] ?? 0) + 1;
+    return false;
+  });
+  const liveFindingTypes = Object.values(FindingType).filter((t) => isLive.get(t));
+  return { kept, suppressedDetectorHits, liveFindingTypes };
+}
+
 const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> = {
   product: { segment: "products", label: "product" },
   collection: { segment: "collections", label: "collection" },
@@ -339,6 +367,7 @@ export const scanTheme = inngest.createFunction(
         benignLibrarySkips,
         findingCapHits,
         suppressedDetectorHits,
+        liveFindingTypes: persistedLiveFindingTypes,
         unknownScriptCount,
         thirdPartyDomainCount,
         staticProductCandidates,
@@ -450,13 +479,11 @@ export const scanTheme = inngest.createFunction(
         // threaded to the scan_signal detectorHits (which otherwise histograms
         // persisted rows only) so precision review can read them before the
         // flag is turned on.
-        const suppressedDetectorHits: Record<string, number> = {};
-        const themeFindings = allThemeFindings.filter((f) => {
-          const flag = SOFT_LAUNCH_FLAGS[f.findingType];
-          if (!flag || process.env[flag] === "true") return true;
-          suppressedDetectorHits[f.findingType] = (suppressedDetectorHits[f.findingType] ?? 0) + 1;
-          return false;
-        });
+        const {
+          kept: themeFindings,
+          suppressedDetectorHits,
+          liveFindingTypes: scanLiveFindingTypes,
+        } = applySoftLaunchFlags(allThemeFindings);
 
         // The detector runs here on the main thread, not in the scan worker, so
         // it does not analyze a checkout.liquid over the per-file cap (gc-4yg);
@@ -600,6 +627,9 @@ export const scanTheme = inngest.createFunction(
           // most one key per finding type — safe across the step boundary.
           findingCapHits: findingCapHits ?? {},
           suppressedDetectorHits,
+          // Recorded on the scan by finalize-scan (gc-rvo0); computed from the
+          // same flag reads as the persistence filter above. Small string[].
+          liveFindingTypes: scanLiveFindingTypes,
           unknownScriptCount: unknownScripts.length,
           // Scalar count only — the full domain array is NOT returned across the
           // step boundary (already persisted above via createScanDomains).
@@ -1314,6 +1344,12 @@ export const scanTheme = inngest.createFunction(
           newFindingCount,
           resolvedFindingCount,
           persistedFindingCount,
+          // From the fetch-and-scan output (same flag reads as persistence). An
+          // in-flight run memoized before this field existed lacks it: record
+          // NULL so the scan stays unversioned and the alert step skips it.
+          liveFindingTypes: Array.isArray(persistedLiveFindingTypes)
+            ? persistedLiveFindingTypes
+            : undefined,
         });
       });
 
@@ -1449,7 +1485,7 @@ export const scanTheme = inngest.createFunction(
             const db = (await import("../../app/db.server")).default;
             const scan = await db.scan.findUnique({
               where: { id: scanId },
-              select: { origin: true, createdAt: true },
+              select: { origin: true, createdAt: true, liveFindingTypes: true },
             });
             if (!scan) return { sent: false, reason: "scan_not_found" };
             if (scan.origin !== ScanOrigin.SCHEDULED && scan.origin !== ScanOrigin.AUTO_PUBLISH) {
@@ -1490,12 +1526,15 @@ export const scanTheme = inngest.createFunction(
             // can never alert (also the natural first-send baseline suppression).
             if (!baselineScan) return { sent: false, reason: "no_baseline" };
 
-            const [{ diffScans, unauditedCategories }, { getIgnoredFindingsForShop }, agg] =
-              await Promise.all([
-                import("../../app/services/scan-differ.server"),
-                import("../../app/models/ignored-finding.server"),
-                import("../../app/services/finding-aggregation.server"),
-              ]);
+            const [
+              { diffScans, unauditedCategories, parseLiveFindingTypes, restrictToLiveInBoth },
+              { getIgnoredFindingsForShop },
+              agg,
+            ] = await Promise.all([
+              import("../../app/services/scan-differ.server"),
+              import("../../app/models/ignored-finding.server"),
+              import("../../app/services/finding-aggregation.server"),
+            ]);
             const currentFindings = await db.finding.findMany({ where: { scanId } });
             // Same as the diff route: suppressed findings are never "new".
             const ignores = await getIgnoredFindingsForShop(shopId);
@@ -1507,7 +1546,18 @@ export const scanTheme = inngest.createFunction(
                 skippedFiles: skippedFilePaths,
               },
             );
-            if (diff.newFindings.length === 0) return { sent: false, reason: "no_new_findings" };
+            // Alert-only guard (gc-rvo0; the in-app diff stays unfiltered): a type
+            // absent from the baseline's live set (soft-launched flag was off, or
+            // the detector shipped later) was never compared, so its hits are not
+            // "new". A legacy baseline that never recorded its set can't be
+            // judged: skip this cycle (the next scan records one).
+            const baselineLive = parseLiveFindingTypes(baselineScan.liveFindingTypes);
+            if (!baselineLive) return { sent: false, reason: "baseline_unversioned" };
+            const currentLive = parseLiveFindingTypes(scan.liveFindingTypes);
+            // finalize-scan wrote it; null here means that write was skipped.
+            if (!currentLive) return { sent: false, reason: "current_unversioned" };
+            const newFindings = restrictToLiveInBoth(diff.newFindings, baselineLive, currentLive);
+            if (newFindings.length === 0) return { sent: false, reason: "no_new_findings" };
 
             // Admin client only to refresh the owner email. A dead offline token
             // (gc-4hk) must not fail the step: fall back to the cached email.
@@ -1527,7 +1577,7 @@ export const scanTheme = inngest.createFunction(
             const outcome = await notifyNewFindings({
               shop,
               scan: { id: scanId },
-              newFindings: diff.newFindings,
+              newFindings,
               admin,
               // Already loaded above: the service must not re-query it.
               latestAlert: lastAlert,

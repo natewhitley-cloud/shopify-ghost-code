@@ -1069,6 +1069,16 @@ describe("finalizeScan", () => {
     expect(result).toEqual({ finalized: true });
   });
 
+  it("writes liveFindingTypes only when supplied (gc-rvo0)", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", FINALIZE_ARGS);
+    expect(mockDb.scan.updateMany.mock.calls[0][0].data).not.toHaveProperty("liveFindingTypes");
+
+    await finalizeScan("scan-1", { ...FINALIZE_ARGS, liveFindingTypes: ["GHOST_SCRIPT"] });
+    expect(mockDb.scan.updateMany.mock.calls[1][0].data.liveFindingTypes).toEqual(["GHOST_SCRIPT"]);
+  });
+
   it("persists PARTIAL status, skippedCategories, and skippedFiles on the happy path", async () => {
     mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
 

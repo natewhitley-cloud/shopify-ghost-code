@@ -273,6 +273,8 @@ export async function finalizeScan(
     newFindingCount?: number;
     resolvedFindingCount?: number;
     persistedFindingCount?: number;
+    // FindingTypes live for this scan (gc-rvo0); written only when supplied.
+    liveFindingTypes?: string[];
   },
 ): Promise<FinalizeScanResult> {
   const result = await db.scan.updateMany({
@@ -294,6 +296,7 @@ export async function finalizeScan(
       ...(args.persistedFindingCount !== undefined
         ? { persistedFindingCount: args.persistedFindingCount }
         : {}),
+      ...(args.liveFindingTypes !== undefined ? { liveFindingTypes: args.liveFindingTypes } : {}),
     },
   });
 

@@ -167,6 +167,31 @@ export function unauditedCategories(scan: {
 }
 
 /**
+ * Parse `Scan.liveFindingTypes` (Json?) into a Set, or null when the scan is a
+ * legacy row that never recorded it (NULL, or any non-string-array value, is
+ * treated as "unversioned" so a malformed value can never widen an alert).
+ */
+export function parseLiveFindingTypes(raw: unknown): Set<string> | null {
+  if (!Array.isArray(raw) || !raw.every((v) => typeof v === "string")) return null;
+  return new Set(raw as string[]);
+}
+
+/**
+ * Restrict findings to types that were live in BOTH scans (gc-rvo0). A type
+ * absent from the baseline's live set (soft-launched flag then off, or a
+ * detector shipped later) has never been compared, so its hits are not "new".
+ * ALERT-ONLY: the in-app diff deliberately does not apply this, it shows
+ * everything the current scan found.
+ */
+export function restrictToLiveInBoth<T extends { findingType: string }>(
+  findings: readonly T[],
+  baselineLive: ReadonlySet<string>,
+  currentLive: ReadonlySet<string>,
+): T[] {
+  return findings.filter((f) => baselineLive.has(f.findingType) && currentLive.has(f.findingType));
+}
+
+/**
  * Diff two sets of scan findings.
  *
  * A finding is considered:
