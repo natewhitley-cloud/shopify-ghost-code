@@ -237,7 +237,7 @@ export type FinalizeScanResult = { finalized: boolean };
  * diff engine never treats an un-audited (or partly audited) category's — or
  * an unscanned oversized file's — prior findings as "resolved".
  *
- * Resurrection guard (LOG-6, #2-A): the watchdog (watch-stale-scans) can mark a
+ * Resurrection guard (LOG-6, #2-A): the stale check (check-scan-stale) can mark a
  * still-running scan FAILED if it overruns the in-progress threshold. Without a
  * guard, this worker would later blindly UPDATE that row back to COMPLETED/
  * PARTIAL — silently resurrecting a terminal scan and producing out-of-order
@@ -397,7 +397,7 @@ export async function countScansForShopSince(shopId: string, since: Date): Promi
 }
 
 /**
- * Per-status staleness thresholds for the stale-scan watchdog (LOG-6, #2-A).
+ * Per-status staleness thresholds for the stale-scan checks (LOG-6, #2-A).
  *
  * PENDING and IN_PROGRESS are aged off DIFFERENT clocks:
  *   - A PENDING scan has never started, so it is aged from `createdAt`. If it
@@ -415,7 +415,7 @@ export type StaleScanThresholds = {
 
 /**
  * Default staleness thresholds shared by every caller that expires stale scans
- * (the 10-minute watchdog and the daily poll-theme-changes coordinator) so the
+ * (the per-scan check-scan-stale function and the daily poll-theme-changes coordinator) so the
  * cutoffs stay defined in exactly one place.
  *
  * - pendingMaxAgeMinutes (15): a scan that never started within 15 minutes is
@@ -432,9 +432,8 @@ export const DEFAULT_STALE_SCAN_THRESHOLDS: StaleScanThresholds = {
 
 /**
  * Build the Prisma `where` predicate identifying stale scans, shared by both the
- * watchdog's pre-update count query and `expireStaleScans`'s UPDATE so the two
- * can never drift (DRY — a counted-but-not-expired or expired-but-not-counted
- * scan would make the watchdog's early-exit and its logs disagree).
+ * UPDATE in `expireStaleScans` and `expireStaleScan` (single scan) so every
+ * caller agrees on what stale means (DRY).
  *
  * The predicate is an OR of two status-specific branches:
  *   - PENDING:     createdAt older than the pending cutoff.
@@ -472,7 +471,7 @@ export function buildStaleScanWhere(thresholds: StaleScanThresholds): Prisma.Sca
  * A scan is "stale" when it matches `buildStaleScanWhere`: a PENDING scan older
  * than `pendingMaxAgeMinutes` (aged from createdAt) or an IN_PROGRESS scan older
  * than `inProgressMaxAgeMinutes` (aged from startedAt, with a createdAt
- * fallback). This is called by the watchdog cron so that shops whose scan jobs
+ * fallback). This is called by the daily poll-theme-changes sweep so that shops whose scan jobs
  * crashed or timed out are unblocked, without falsely failing legitimately
  * long-running scans.
  *
@@ -487,6 +486,43 @@ export async function expireStaleScans(thresholds: StaleScanThresholds): Promise
     },
   });
   return result.count;
+}
+
+/**
+ * Single-scan variant of expireStaleScans (gc-ngx6): the same shared predicate
+ * (buildStaleScanWhere), AND-ed with the scan id. Used by the per-scan delayed
+ * check-scan-stale function. Never touches any other scan.
+ *
+ * Returns whether the scan was expired plus its current state, so the caller can
+ * decide whether a still-running (IN_PROGRESS, not yet stale) scan needs another
+ * check later. `status` is null if the scan no longer exists.
+ */
+export async function expireStaleScan(
+  scanId: string,
+  thresholds: StaleScanThresholds,
+): Promise<{
+  expired: boolean;
+  status: ScanStatus | null;
+  startedAt: Date | null;
+  createdAt: Date | null;
+}> {
+  const result = await db.scan.updateMany({
+    where: { AND: [{ id: scanId }, buildStaleScanWhere(thresholds)] },
+    data: { status: ScanStatus.FAILED, completedAt: new Date() },
+  });
+  if (result.count > 0) {
+    return { expired: true, status: ScanStatus.FAILED, startedAt: null, createdAt: null };
+  }
+  const scan = await db.scan.findUnique({
+    where: { id: scanId },
+    select: { status: true, startedAt: true, createdAt: true },
+  });
+  return {
+    expired: false,
+    status: scan?.status ?? null,
+    startedAt: scan?.startedAt ?? null,
+    createdAt: scan?.createdAt ?? null,
+  };
 }
 
 /**

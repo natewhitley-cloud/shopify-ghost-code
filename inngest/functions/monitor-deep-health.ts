@@ -3,7 +3,7 @@
  *
  * Continuous INTERNAL deep-health probe. /health/deep is otherwise only
  * exercised at deploy by the smoke gate; this cron runs the SAME checks
- * (performDeepHealthChecks, shared with the route) every 15 minutes and, on a
+ * (performDeepHealthChecks, shared with the route) hourly and, on a
  * degraded/error result, records a function_failure OpsEvent + fires an
  * ops-alert via notifyFunctionFailure. That surfaces a silent post-deploy
  * regression (a cron that stops, sessions that pile up expired, scans stuck
@@ -21,15 +21,20 @@
  * handler alerts and returns normally and a heartbeat is still recorded. Only a
  * genuine throw in the monitor skips the heartbeat.
  *
- * Schedule: every 15 minutes (`* /15 * * * *`).
+ * Schedule: hourly at :37 (MONITOR_DEEP_HEALTH_CRON).
  */
 
 import { inngest } from "../client";
 import { withCronHeartbeat } from "../lib/heartbeat";
 
+// Hourly at :37 (gc-ngx6): off :00 and clear of ClearSignal's :02/:07 hourly crons
+// on the shared Inngest account. This is now the fastest cron, so it is the
+// canary for a total Inngest outage (~2h detection via the 2x grace factor).
+export const MONITOR_DEEP_HEALTH_CRON = "37 * * * *";
+
 export const monitorDeepHealth = inngest.createFunction(
   { id: "monitor-deep-health", name: "Continuous Deep Health Monitor" },
-  { cron: "*/15 * * * *" },
+  { cron: MONITOR_DEEP_HEALTH_CRON },
   withCronHeartbeat("monitor-deep-health", async ({ step, runId }) => {
     const result = await step.run("run-deep-health-checks", async () => {
       const { performDeepHealthChecks } = await import("../../app/services/deep-health.server");

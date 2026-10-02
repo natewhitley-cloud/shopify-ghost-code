@@ -2,7 +2,7 @@
  * External dead-man's-switch runner for the Inngest cron fleet (gc-1we).
  *
  * The in-app dead-man's-switch (getStaleCrons) is evaluated INSIDE the
- * monitor-deep-health Inngest cron. That is fine for a single stuck cron, but
+ * monitor-deep-health Inngest cron (hourly, ~2h outage detection). That is fine for a single stuck cron, but
  * it has a blind spot: if Inngest itself is fully down (e.g. signing-key drift
  * silently stops every scheduled function), the evaluator never runs and the
  * outage is invisible. This entrypoint closes that gap — it is a standalone

@@ -19,8 +19,9 @@
  *
  * inngest.send fails (transient network error, unconfigured EVENT_KEY):
  *   Logged and swallowed. The scan record stays in PENDING state; the
- *   stale-scan watchdog (watch-stale-scans) expires it to FAILED after the
- *   pending threshold (15 min default). Callers can still redirect to or
+ *   per-scan stale check (check-scan-stale, triggered by the same
+ *   scan/requested event) never runs either, so the daily poll-theme-changes
+ *   sweep expires it to FAILED once it passes the pending threshold. Callers can still redirect to or
  *   acknowledge the scan record — the PENDING scan is immediately visible in
  *   the merchant's scan history.
  */
@@ -67,7 +68,7 @@ export async function dispatchScan(
   );
 
   // Best-effort dispatch. A transient inngest.send failure leaves the scan
-  // PENDING; the watchdog expires it. We do NOT throw here so callers (routes,
+  // PENDING; the daily sweep expires it. We do NOT throw here so callers (routes,
   // webhooks) can still redirect to the newly-created scan page.
   try {
     await inngest.send({
@@ -75,7 +76,7 @@ export async function dispatchScan(
       data: { shopId, themeId, scanId: scan.id },
     });
   } catch (err) {
-    logger.error("scan/requested dispatch failed — scan stays PENDING, watchdog will expire", {
+    logger.error("scan/requested dispatch failed — scan stays PENDING, daily sweep will expire", {
       scanId: scan.id,
       shopId,
       themeId,

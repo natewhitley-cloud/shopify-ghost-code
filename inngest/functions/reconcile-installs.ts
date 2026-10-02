@@ -686,9 +686,13 @@ async function probeInstall(domain: string): Promise<InstallStatus> {
 // Inngest function
 // ---------------------------------------------------------------------------
 
+// Daily 06:00 America/Denver (DST-correct), one hour before operator-digest.
+// Unchanged by gc-ngx6.
+export const RECONCILE_INSTALLS_CRON = "TZ=America/Denver 0 6 * * *";
+
 export const reconcileInstalls = inngest.createFunction(
   { id: "reconcile-installs", name: "Periodic Install-Status Reconciler" },
-  { cron: "TZ=America/Denver 0 6 * * *" },
+  { cron: RECONCILE_INSTALLS_CRON },
   withCronHeartbeat(RECONCILE_INSTALLS_KEY, async ({ step }) => {
     // Load every ACTIVE shop (uninstalledAt IS NULL) plus whether its offline
     // session's refresh token has already expired (gc-gre), read in ONE query

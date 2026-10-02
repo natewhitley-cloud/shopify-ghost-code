@@ -11,6 +11,7 @@
 import { serve } from "inngest/remix";
 
 import { inngest } from "../../inngest/client";
+import { checkScanStale } from "../../inngest/functions/check-scan-stale";
 import { monitorDeepHealth } from "../../inngest/functions/monitor-deep-health";
 import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failures";
 import { operatorDigest } from "../../inngest/functions/operator-digest";
@@ -19,7 +20,6 @@ import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
 import { reconcileInstalls } from "../../inngest/functions/reconcile-installs";
 import { scanTheme } from "../../inngest/functions/scan-theme";
 import { snapshotMetrics } from "../../inngest/functions/snapshot-metrics";
-import { watchStaleScans } from "../../inngest/functions/watch-stale-scans";
 import { weeklyScan } from "../../inngest/functions/weekly-scan";
 
 const handler = serve({
@@ -36,7 +36,7 @@ const handler = serve({
     weeklyScan,
     monitorScanFailures,
     monitorDeepHealth,
-    watchStaleScans,
+    checkScanStale,
     snapshotMetrics,
     operatorDigest,
     reconcileInstalls,

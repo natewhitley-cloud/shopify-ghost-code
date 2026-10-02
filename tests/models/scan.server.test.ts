@@ -62,6 +62,7 @@ import {
   createScan,
   DEFAULT_STALE_SCAN_THRESHOLDS,
   expireStaleScans,
+  expireStaleScan,
   finalizeScan,
   getFailureRateStats,
   getScanById,
@@ -1494,5 +1495,60 @@ describe("getLatestSuccessfulScanNonMaliciousCount", () => {
     mockDb.scan.findFirst.mockResolvedValue(null);
 
     await expect(getLatestSuccessfulScanNonMaliciousCount(SHOP_ID)).resolves.toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// expireStaleScan (gc-ngx6) — single-scan variant sharing the stale predicate
+// ---------------------------------------------------------------------------
+
+describe("expireStaleScan", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("scopes the shared buildStaleScanWhere predicate to the scan id", async () => {
+    vi.setSystemTime(1_700_000_000_000);
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    const result = await expireStaleScan("scan-1", DEFAULT_STALE_SCAN_THRESHOLDS);
+
+    const callArg = mockDb.scan.updateMany.mock.calls[0][0];
+    expect(callArg.where).toEqual({
+      AND: [{ id: "scan-1" }, buildStaleScanWhere(DEFAULT_STALE_SCAN_THRESHOLDS)],
+    });
+    expect(callArg.data.status).toBe(ScanStatus.FAILED);
+    expect(callArg.data).toHaveProperty("completedAt");
+    expect(result.expired).toBe(true);
+    expect(mockDb.scan.findUnique).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it("reports current state when the scan is not stale", async () => {
+    const startedAt = new Date();
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: ScanStatus.IN_PROGRESS,
+      startedAt,
+      createdAt: startedAt,
+    });
+
+    const result = await expireStaleScan("scan-1", DEFAULT_STALE_SCAN_THRESHOLDS);
+
+    expect(result).toEqual({
+      expired: false,
+      status: ScanStatus.IN_PROGRESS,
+      startedAt,
+      createdAt: startedAt,
+    });
+  });
+
+  it("returns a null status when the scan no longer exists", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 0 });
+    mockDb.scan.findUnique.mockResolvedValue(null);
+
+    const result = await expireStaleScan("gone", DEFAULT_STALE_SCAN_THRESHOLDS);
+
+    expect(result).toMatchObject({ expired: false, status: null });
   });
 });

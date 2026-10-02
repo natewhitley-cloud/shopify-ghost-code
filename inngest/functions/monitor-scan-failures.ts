@@ -32,9 +32,12 @@ const FUNCTION_ID = "monitor-scan-failures";
 // versa, via notifyFunctionFailure's own 1h email dedupe).
 const ESCALATION_KEY = `${FUNCTION_ID}:critical`;
 
+// Every 6h at :15 (gc-ngx6): off the :00 pile-up of the other 6-hourly crons.
+export const MONITOR_SCAN_FAILURES_CRON = "15 */6 * * *";
+
 export const monitorScanFailures = inngest.createFunction(
   { id: FUNCTION_ID, name: "Scan Failure Rate Monitor" },
-  { cron: "0 */6 * * *" }, // every 6 hours
+  { cron: MONITOR_SCAN_FAILURES_CRON },
   withCronHeartbeat(FUNCTION_ID, async ({ step }) => {
     const stats = await step.run("compute-failure-rate", async () => {
       const { getFailureRateStats } = await import("../../app/models/scan.server");

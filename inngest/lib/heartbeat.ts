@@ -3,8 +3,8 @@
  *
  * withCronHeartbeat wraps an Inngest cron handler so that a `cron_heartbeat`
  * OpsEvent is written after every SUCCESSFUL run — including handlers that
- * early-return (e.g. watch-stale-scans returning immediately when nothing is
- * stale). Wrapping at the handler boundary is why this is a wrapper and not a
+ * early-return (e.g. a sweep returning immediately when there is nothing to
+ * do). Wrapping at the handler boundary is why this is a wrapper and not a
  * copy-pasted line: it records on every return path without each cron having to
  * remember to do so, and it never records on the failure path (a throwing
  * handler rejects before the heartbeat, so a failed run is never counted live).

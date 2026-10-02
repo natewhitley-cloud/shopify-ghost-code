@@ -4,7 +4,7 @@
  * The read-only checks that back the /health/deep probe, extracted here so BOTH
  * the route (app/routes/health.deep.tsx, hit at deploy by the smoke gate) and the
  * internal continuous-monitor cron (inngest/functions/monitor-deep-health.ts, hit
- * every 15 min) run ONE implementation. The route owns transport concerns (token
+ * hourly) run ONE implementation. The route owns transport concerns (token
  * gate, deployedSha, HTTP status); this module owns the checks and the derived
  * status only.
  *
@@ -12,7 +12,7 @@
  *   - DB liveness (timed probe)
  *   - Inngest env presence AND cron dead-man's-switch (getStaleCrons)
  *   - offline sessions stuck expired past grace with no refreshToken (GC-07t)
- *   - PENDING scans older than the watchdog's cutoff
+ *   - PENDING scans older than the stale-scan pending cutoff
  *
  * Aggregate counts only — no shop domains, no PII cross the boundary.
  */
@@ -101,8 +101,8 @@ export async function performDeepHealthChecks(): Promise<DeepHealthResult> {
       },
     });
 
-    // "Scans couldn't run": PENDING scans older than the watchdog's pending
-    // cutoff (reused from the watchdog so the two can never drift).
+    // "Scans couldn't run": PENDING scans older than the stale-scan pending
+    // cutoff (shared with the stale-scan expiry so the two can never drift).
     const pendingCutoff = new Date(
       Date.now() - DEFAULT_STALE_SCAN_THRESHOLDS.pendingMaxAgeMinutes * 60 * 1000,
     );

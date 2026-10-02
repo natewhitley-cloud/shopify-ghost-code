@@ -1783,9 +1783,12 @@ export function buildDigestBody(data: OperatorDigestData): string {
 // Inngest function
 // ---------------------------------------------------------------------------
 
+// Daily 07:00 America/Denver, after reconcile-installs (06:00). Unchanged by gc-ngx6.
+export const OPERATOR_DIGEST_CRON = "TZ=America/Denver 0 7 * * *";
+
 export const operatorDigest = inngest.createFunction(
   { id: "operator-digest", name: "Operator Daily Digest" },
-  { cron: "TZ=America/Denver 0 7 * * *" },
+  { cron: OPERATOR_DIGEST_CRON },
   withCronHeartbeat("operator-digest", async ({ step }) => {
     const windowStart = new Date(Date.now() - DAY_MS);
     const excludeSet = parseExcludeShops(process.env.OPERATOR_EXCLUDE_SHOPS);

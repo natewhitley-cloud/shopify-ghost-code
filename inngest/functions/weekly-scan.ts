@@ -27,9 +27,13 @@ import { inngest } from "../client";
 import { fanOutShopChecks } from "../lib/fan-out";
 import { withCronHeartbeat } from "../lib/heartbeat";
 
+// Sunday 06:40 UTC (gc-ngx6): 40 min after Sunday's poll-theme-changes (06:00) so
+// the two scan-dispatch waves do not overlap.
+export const WEEKLY_SCAN_CRON = "40 6 * * 0";
+
 export const weeklyScan = inngest.createFunction(
   { id: "weekly-scan", name: "Weekly Scheduled Scan (Coordinator)" },
-  { cron: "0 6 * * 0" }, // Sunday 6 AM UTC
+  { cron: WEEKLY_SCAN_CRON },
   withCronHeartbeat("weekly-scan", async ({ step, logger }) => {
     // -------------------------------------------------------------------------
     // Step 1: Fetch all Standard-plan shops

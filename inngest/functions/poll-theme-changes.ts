@@ -27,9 +27,12 @@ import { inngest } from "../client";
 import { fanOutShopChecks } from "../lib/fan-out";
 import { withCronHeartbeat } from "../lib/heartbeat";
 
+// Daily 06:00 UTC. Unchanged by gc-ngx6; other daily crons stagger around it.
+export const POLL_THEME_CHANGES_CRON = "0 6 * * *";
+
 export const pollThemeChanges = inngest.createFunction(
   { id: "poll-theme-changes", name: "Daily Theme Change Poll (Coordinator)" },
-  { cron: "0 6 * * *" },
+  { cron: POLL_THEME_CHANGES_CRON },
   withCronHeartbeat("poll-theme-changes", async ({ step, logger }) => {
     // -------------------------------------------------------------------------
     // Step 0: Expire stale scans stuck in PENDING/IN_PROGRESS past their

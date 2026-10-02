@@ -14,7 +14,7 @@ import { performDeepHealthChecks } from "../services/deep-health.server";
  * ops endpoint runs READ-ONLY checks for the two silent-failure modes that
  * shipped to production before we had verification for them:
  *   - expired offline Shopify sessions -> merchant auth redirect loop (GC-07t)
- *   - Inngest unconfigured/unreachable -> scans stuck PENDING then watchdog-expired
+ *   - Inngest unconfigured/unreachable -> scans stuck PENDING then expired by the stale check or daily sweep
  *
  * The actual checks live in app/services/deep-health.server.ts so the internal
  * continuous-monitor cron (monitor-deep-health) runs the SAME implementation

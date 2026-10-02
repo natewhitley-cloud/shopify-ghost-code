@@ -537,7 +537,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // fires scan/requested. createScan errors (active scan, quota exceeded) are
   // propagated and surface as user-facing error strings below. inngest.send
   // failures are logged inside dispatchScan (best-effort) — the scan stays
-  // PENDING for the watchdog to expire, but we still redirect so the merchant
+  // PENDING for the daily sweep to expire, but we still redirect so the merchant
   // can see the queued scan in their history.
   let scan: { id: string };
   try {

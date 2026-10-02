@@ -11,8 +11,8 @@ import { failureLoggingMiddleware, loggingMiddleware } from "./middleware";
  * serve endpoint) from the environment. If either is missing in production,
  * the SDK does NOT error at boot — it silently degrades: event sends and
  * signature validation fail at runtime, so scans sit in PENDING forever and
- * even the watch-stale-scans safety-net cron (served via the same endpoint)
- * stops firing. We convert that silent outage into a deploy-time failure.
+ * even the per-scan stale checks and crons (served via the same endpoint)
+ * stop firing. We convert that silent outage into a deploy-time failure.
  *
  * In development the Inngest Dev Server does not require these keys, so the
  * guard only fires in production. This mirrors the fail-fast style in

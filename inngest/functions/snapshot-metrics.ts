@@ -17,9 +17,13 @@ import { logger } from "../../app/lib/logger.server";
 import { inngest } from "../client";
 import { withCronHeartbeat } from "../lib/heartbeat";
 
+// Daily 06:20 UTC (gc-ngx6): staggered after the 06:00 cluster (poll-theme-changes,
+// ClearSignal) so the daily crons do not all start in the same minute.
+export const SNAPSHOT_METRICS_CRON = "20 6 * * *";
+
 export const snapshotMetrics = inngest.createFunction(
   { id: "snapshot-metrics", name: "Daily Metrics Snapshot" },
-  { cron: "0 6 * * *" },
+  { cron: SNAPSHOT_METRICS_CRON },
   withCronHeartbeat("snapshot-metrics", async ({ step }) => {
     const snapshot = await step.run("compute-and-store-metrics", async () => {
       const { computeCurrentMetrics, createMetricSnapshot } =

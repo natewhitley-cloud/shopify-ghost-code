@@ -165,6 +165,13 @@ describe("dispatchScan — happy path", () => {
     });
   });
 
+  it("emits only scan/requested: check-scan-stale hangs off that one event (gc-ngx6)", async () => {
+    await dispatchScan(SHOP_ID, THEME_ID, THEME_NAME);
+
+    const names = mockInngestSend.mock.calls.map((c) => c[0].name);
+    expect(names).toEqual(["scan/requested"]);
+  });
+
   it("sends inngest AFTER createScan (scan id available in payload)", async () => {
     const callOrder: string[] = [];
     mockCreateScan.mockImplementation(async () => {
