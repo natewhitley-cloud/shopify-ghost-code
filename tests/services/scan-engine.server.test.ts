@@ -1,3 +1,6 @@
+import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
+
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
@@ -26,6 +29,7 @@ import {
   detectGhostTextFragments,
   detectGhostPixels,
   detectSettingsDrift,
+  parseSettingsData,
   detectGhostLayouts,
   detectGhostRobots,
   detectGhostCanonical,
@@ -1715,6 +1719,87 @@ describe("scanThemeFiles — ORPHAN_ASSET detection", () => {
 // ---------------------------------------------------------------------------
 // detectSettingsDrift
 // ---------------------------------------------------------------------------
+
+describe("parseSettingsData (gc-ecr)", () => {
+  const HEADER = "/*\n * IMPORTANT: auto-generated.\n */\n";
+
+  it("parses content with the Shopify auto-generated header", () => {
+    expect(parseSettingsData(HEADER + '{ "current": { "sections": {} } }')).toEqual({
+      current: { sections: {} },
+    });
+  });
+
+  it("parses content without a header", () => {
+    expect(parseSettingsData('{ "current": {} }')).toEqual({ current: {} });
+  });
+
+  it("tolerates leading whitespace before the header", () => {
+    expect(parseSettingsData("\n  " + HEADER + '{ "a": 1 }')).toEqual({ a: 1 });
+  });
+
+  it("returns null for header-only content", () => {
+    expect(parseSettingsData(HEADER)).toBeNull();
+  });
+
+  it("preserves a /* inside a JSON string value", () => {
+    const parsed = parseSettingsData(HEADER + '{ "css": "a /* keep */ b" }');
+    expect(parsed).toEqual({ css: "a /* keep */ b" });
+  });
+
+  it("strips only ONE leading comment (a second one makes it malformed)", () => {
+    expect(parseSettingsData(HEADER + HEADER + "{}")).toBeNull();
+  });
+
+  it("returns null for malformed JSON", () => {
+    expect(parseSettingsData(HEADER + '{ "current": ')).toBeNull();
+    expect(parseSettingsData("")).toBeNull();
+  });
+
+  it("returns null for non-object JSON (array, scalar, null)", () => {
+    expect(parseSettingsData("[1, 2]")).toBeNull();
+    expect(parseSettingsData(HEADER + "[]")).toBeNull();
+    expect(parseSettingsData("42")).toBeNull();
+    expect(parseSettingsData("null")).toBeNull();
+  });
+});
+
+describe("detectSettingsDrift on a real settings_data.json (gc-ecr)", () => {
+  // Provenance: Shopify Debut theme config/settings_data.json pulled via the
+  // Admin API from internal dev store nw-dev-store-2 on 2026-10-02, verbatim,
+  // including Shopify's auto-generated leading block comment (which broke the
+  // bare JSON.parse and kept SETTINGS_DRIFT silent in prod).
+  const fixture = readFileSync(resolve(__dirname, "../fixtures/settings-data-debut.json"), "utf8");
+  const settingsFile: ThemeFile = { filename: "config/settings_data.json", content: fixture };
+  const sectionTypes = [
+    "header",
+    "hero",
+    "feature-row",
+    "feature-columns",
+    "collection",
+    "quotes",
+    "image-bar",
+    "footer",
+  ];
+  const sectionFiles = (types: string[]): ThemeFile[] =>
+    types.map((t) => ({ filename: `sections/${t}.liquid`, content: "" }));
+
+  it("fixture starts with the auto-generated header", () => {
+    expect(fixture.trimStart().startsWith("/*")).toBe(true);
+    expect(() => JSON.parse(fixture)).toThrow();
+  });
+
+  it("emits 0 findings when every referenced section file exists", () => {
+    expect(detectSettingsDrift([settingsFile, ...sectionFiles(sectionTypes)])).toEqual([]);
+  });
+
+  it("emits exactly 1 SETTINGS_DRIFT finding when one section file is missing", () => {
+    const files = [settingsFile, ...sectionFiles(sectionTypes.filter((t) => t !== "quotes"))];
+    const findings = detectSettingsDrift(files);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].findingType).toBe(FindingType.SETTINGS_DRIFT);
+    expect(findings[0].description).toContain('"quotes"');
+  });
+});
 
 describe("detectSettingsDrift", () => {
   /** Helper to build a settings_data.json ThemeFile from a sections object. */

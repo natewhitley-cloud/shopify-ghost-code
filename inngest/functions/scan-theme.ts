@@ -326,6 +326,7 @@ export const scanTheme = inngest.createFunction(
         skippedFileCount,
         benignLibrarySkips,
         findingCapHits,
+        suppressedDetectorHits,
         unknownScriptCount,
         thirdPartyDomainCount,
         staticProductCandidates,
@@ -428,7 +429,24 @@ export const scanTheme = inngest.createFunction(
         const { canDetectCheckoutSunset } = await import("../../app/lib/plan-gating.server");
         const runCheckoutSunset = canDetectCheckoutSunset(shop.plan);
         const checkoutSunsetFindings = runCheckoutSunset ? detectCheckoutSunset(files) : [];
-        const themeFindings = [...findings, ...checkoutSunsetFindings];
+        const allThemeFindings = [...findings, ...checkoutSunsetFindings];
+
+        // SETTINGS_DRIFT soft-launch (gc-ecr, spec 5.6): the detector has never
+        // fired in prod (the settings_data.json header broke JSON.parse), so its
+        // first real output is unreviewed. It still RUNS, but its findings are
+        // persisted only when SETTINGS_DRIFT_LIVE_ENABLED === "true". The
+        // suppressed count is threaded to the scan_signal detectorHits (which
+        // otherwise histograms persisted rows only) so precision review can
+        // read it before the flag is turned on.
+        const settingsDriftLive = process.env.SETTINGS_DRIFT_LIVE_ENABLED === "true";
+        const suppressedDetectorHits: Record<string, number> = {};
+        const themeFindings = settingsDriftLive
+          ? allThemeFindings
+          : allThemeFindings.filter((f) => f.findingType !== FindingType.SETTINGS_DRIFT);
+        const suppressedSettingsDrift = allThemeFindings.length - themeFindings.length;
+        if (suppressedSettingsDrift > 0) {
+          suppressedDetectorHits[FindingType.SETTINGS_DRIFT] = suppressedSettingsDrift;
+        }
 
         // The detector runs here on the main thread, not in the scan worker, so
         // it does not analyze a checkout.liquid over the per-file cap (gc-4yg);
@@ -571,6 +589,7 @@ export const scanTheme = inngest.createFunction(
           // Per type: files that hit MAX_FINDINGS_PER_FILE_PER_TYPE (gc-ypk). At
           // most one key per finding type — safe across the step boundary.
           findingCapHits: findingCapHits ?? {},
+          suppressedDetectorHits,
           unknownScriptCount: unknownScripts.length,
           // Scalar count only — the full domain array is NOT returned across the
           // step boundary (already persisted above via createScanDomains).
@@ -1323,6 +1342,12 @@ export const scanTheme = inngest.createFunction(
           const detectorHits: Record<string, number> = {};
           for (const row of detectorRows) {
             detectorHits[row.findingType] = row._count;
+          }
+          // Detected-but-not-persisted hits from soft-launched detectors
+          // (SETTINGS_DRIFT, gc-ecr): counted here so the histogram stays
+          // truthful while the flag is off. Empty once the flag is on.
+          for (const [type, count] of Object.entries(suppressedDetectorHits ?? {})) {
+            detectorHits[type] = (detectorHits[type] ?? 0) + count;
           }
 
           const durationMs =

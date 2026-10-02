@@ -43,6 +43,7 @@ import {
   detectJsonLdConflicts,
   detectOverlappingChatWidgets,
   extractStaticProductCandidates,
+  parseSettingsData,
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
@@ -703,5 +704,19 @@ describe("gc-tus.11 — duplicate-library pass over size-guard-skipped files", (
     let result: Scan | undefined;
     expect(timed(() => (result = scanThemeFiles(files)))).toBeLessThan(budget);
     expect(skippedNames(result)).toEqual(["layout/theme.liquid"]);
+  });
+});
+
+// gc-ecr: parseSettingsData strips one anchored leading block comment. An
+// unterminated `/*` must cost one linear scan, not backtrack.
+describe("parseSettingsData is linear on adversarial input (gc-ecr)", () => {
+  it.each([
+    ["an unterminated /* flood", "/*".repeat(500_000)],
+    ["a leading whitespace flood then /*", " ".repeat(1_000_000) + "/*"],
+    ["an unterminated comment full of asterisks", "/*" + "*".repeat(1_000_000)],
+  ])("returns null quickly for %s", (_label, content) => {
+    let result: unknown = "unset";
+    expect(timed(() => (result = parseSettingsData(content)))).toBeLessThan(REDOS_BUDGET_MS);
+    expect(result).toBeNull();
   });
 });

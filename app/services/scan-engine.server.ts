@@ -3077,6 +3077,38 @@ const BUILTIN_SECTION_TYPES = new Set([
 ]);
 
 /**
+ * Matches exactly one LEADING block comment. Anchored at the start of input
+ * (no `m`/`g` flag) and lazy up to the first `*\/`, so it is a single linear
+ * scan: an unterminated `/*` flood simply fails to match after one pass.
+ */
+const LEADING_BLOCK_COMMENT_RE = /^\s*\/\*[\s\S]*?\*\//;
+
+/**
+ * Parse `config/settings_data.json` content (gc-ecr, spec 5.1).
+ *
+ * The Admin GraphQL theme-files API returns this file prefixed with Shopify's
+ * auto-generated block comment ("IMPORTANT: The contents of this file are
+ * auto-generated..."), which is not valid JSON. A bare `JSON.parse` therefore
+ * threw on every real theme, so SETTINGS_DRIFT never fired in prod. We strip
+ * exactly ONE leading block comment and nothing else (a `/*` inside a JSON
+ * string value must survive), then parse.
+ *
+ * Returns null on malformed JSON or when the root is not a plain object
+ * (arrays, scalars, null), so callers keep the graceful-skip behavior.
+ */
+export function parseSettingsData(content: string): Record<string, unknown> | null {
+  const json = content.replace(LEADING_BLOCK_COMMENT_RE, "");
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
+  return parsed as Record<string, unknown>;
+}
+
+/**
  * Cross-file detector: finds stale section references in settings_data.json
  * that point to section types whose .liquid files no longer exist in the theme.
  *
@@ -3091,12 +3123,8 @@ export function detectSettingsDrift(
   const settingsFile = files.find((f) => f.filename === "config/settings_data.json");
   if (!settingsFile) return [];
 
-  let settingsData: Record<string, unknown>;
-  try {
-    settingsData = JSON.parse(settingsFile.content);
-  } catch {
-    return []; // Malformed JSON — skip gracefully
-  }
+  const settingsData = parseSettingsData(settingsFile.content);
+  if (!settingsData) return []; // Malformed JSON — skip gracefully
 
   // Only process the "current" key (active theme configuration)
   const current = settingsData.current;

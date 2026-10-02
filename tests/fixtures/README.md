@@ -1,0 +1,1 @@
+Provenance for settings-data-debut.json: verbatim Shopify Debut config/settings_data.json via Admin API from internal dev store nw-dev-store-2, 2026-10-02; includes Shopify's auto-generated leading block comment. Do not reformat.

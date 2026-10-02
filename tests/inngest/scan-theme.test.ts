@@ -429,6 +429,7 @@ beforeEach(() => {
     truncated: false,
   });
   delete process.env.DANGLING_REFERENCE_LIVE_ENABLED;
+  delete process.env.SETTINGS_DRIFT_LIVE_ENABLED;
 });
 
 // ---------------------------------------------------------------------------
@@ -2931,5 +2932,71 @@ describe("scanTheme — granted-scope pre-check (gc-5l9)", () => {
     expect(mockAuditStaticJsonLdPrices).not.toHaveBeenCalled();
     expect(finalizeArg().skippedCategories).toContain(FindingType.JSON_LD_PRICE_CONFLICT);
     expect(finalizeArg().cappedCategories).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// SETTINGS_DRIFT soft-launch flag (gc-ecr, spec 5.6)
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — SETTINGS_DRIFT_LIVE_ENABLED soft-launch (gc-ecr)", () => {
+  const DRIFT_FINDING = {
+    filename: "config/settings_data.json",
+    lineNumber: 1,
+    codeSnippet: "{}",
+    findingType: FindingType.SETTINGS_DRIFT,
+    severity: Severity.LOW,
+    description: "Stale settings_data.json reference",
+  };
+
+  function arrange() {
+    mockScanThemeFiles.mockReturnValue({
+      findings: [...MOCK_FINDINGS, DRIFT_FINDING],
+      unknownScripts: [],
+    });
+    // The DB histogram reflects only what was persisted.
+    mockDb.finding.groupBy.mockImplementation(async () => {
+      const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+      const counts: Record<string, number> = {};
+      for (const f of saved) counts[f.findingType] = (counts[f.findingType] ?? 0) + 1;
+      return Object.entries(counts).map(([findingType, _count]) => ({ findingType, _count }));
+    });
+  }
+
+  it("flag unset: SETTINGS_DRIFT is not persisted but detectorHits still counts it", async () => {
+    arrange();
+
+    const result = await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some((f) => f.findingType === FindingType.SETTINGS_DRIFT)).toBe(false);
+    expect(saved).toHaveLength(MOCK_FINDINGS.length);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata.detectorHits.SETTINGS_DRIFT).toBe(1);
+    expect(signal.metadata.findingCount).toBe(MOCK_FINDINGS.length);
+  });
+
+  it('flag "false": still not persisted', async () => {
+    process.env.SETTINGS_DRIFT_LIVE_ENABLED = "false";
+    arrange();
+
+    await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some((f) => f.findingType === FindingType.SETTINGS_DRIFT)).toBe(false);
+  });
+
+  it('flag "true": SETTINGS_DRIFT is persisted and counted once (no double count)', async () => {
+    process.env.SETTINGS_DRIFT_LIVE_ENABLED = "true";
+    arrange();
+
+    const result = await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.filter((f) => f.findingType === FindingType.SETTINGS_DRIFT)).toHaveLength(1);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length + 1);
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata.detectorHits.SETTINGS_DRIFT).toBe(1);
   });
 });
