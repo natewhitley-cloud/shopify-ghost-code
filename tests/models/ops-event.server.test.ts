@@ -42,6 +42,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  API_ERROR_HOURLY_CEILING_PER_CODE,
   API_ERROR_HOURLY_LIMIT_PER_CODE,
   CLIENT_ERROR_HOURLY_LIMIT,
   CLIENT_ERROR_RETENTION_DAYS,
@@ -529,6 +530,134 @@ describe("recordApiError: per-code hourly cap (gc-2sw)", () => {
   it("never throws when the insert rejects", async () => {
     mockDb.opsEvent.create.mockRejectedValue(new Error("db down"));
     await expect(recordApiError(input)).resolves.toBeUndefined();
+  });
+});
+
+describe("recordApiError: per-path tier + per-code ceiling (gc-ibb)", () => {
+  const input = {
+    level: "error" as const,
+    code: "server_error",
+    message: "boom",
+    metadata: { path: "/a" },
+  };
+  const pathWhere = {
+    key: "server_error",
+    eventType: OPS_EVENT_TYPES.API_ERROR,
+    createdAt: { gte: new Date("2026-10-02T11:00:00.000Z") },
+    metadata: { path: ["path"], equals: "/a" },
+  };
+  const codeWhere = {
+    key: "server_error",
+    eventType: OPS_EVENT_TYPES.API_ERROR,
+    createdAt: { gte: new Date("2026-10-02T11:00:00.000Z") },
+  };
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-02T12:00:00.000Z"));
+    // mockReset (not just clearAllMocks) so unconsumed Once-queues cannot leak between tests.
+    mockDb.opsEvent.count.mockReset();
+    mockDb.opsEvent.create.mockReset();
+    mockDb.opsEvent.count.mockResolvedValue(0);
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("has a 300 ceiling above the 30 per-path cap", () => {
+    expect(API_ERROR_HOURLY_CEILING_PER_CODE).toBe(300);
+  });
+
+  it("writes when under both caps, with exact where-clauses (path first, then code)", async () => {
+    mockDb.opsEvent.count
+      .mockResolvedValueOnce(API_ERROR_HOURLY_LIMIT_PER_CODE - 1)
+      .mockResolvedValueOnce(API_ERROR_HOURLY_CEILING_PER_CODE - 1);
+    await recordApiError(input);
+    expect(mockDb.opsEvent.count).toHaveBeenCalledTimes(2);
+    expect(mockDb.opsEvent.count).toHaveBeenNthCalledWith(1, { where: pathWhere });
+    expect(mockDb.opsEvent.count).toHaveBeenNthCalledWith(2, { where: codeWhere });
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: {
+        eventType: OPS_EVENT_TYPES.API_ERROR,
+        key: "server_error",
+        message: "boom",
+        metadata: { level: "error", path: "/a" },
+      },
+    });
+  });
+
+  it("skips at the per-path cap without querying the ceiling", async () => {
+    mockDb.opsEvent.count.mockResolvedValueOnce(API_ERROR_HOURLY_LIMIT_PER_CODE);
+    await expect(recordApiError(input)).resolves.toBeUndefined();
+    expect(mockDb.opsEvent.count).toHaveBeenCalledTimes(1);
+    expect(mockDb.opsEvent.count).toHaveBeenCalledWith({ where: pathWhere });
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("skips when under the per-path cap but the code is at the ceiling", async () => {
+    mockDb.opsEvent.count
+      .mockResolvedValueOnce(1)
+      .mockResolvedValueOnce(API_ERROR_HOURLY_CEILING_PER_CODE);
+    await recordApiError(input);
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it("path absent: a single per-code count at 30 (no JSON filter, no ceiling query)", async () => {
+    mockDb.opsEvent.count.mockResolvedValueOnce(API_ERROR_HOURLY_LIMIT_PER_CODE);
+    await recordApiError({ level: "error", code: "server_error", message: "boom" });
+    expect(mockDb.opsEvent.count).toHaveBeenCalledTimes(1);
+    expect(mockDb.opsEvent.count).toHaveBeenCalledWith({ where: codeWhere });
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("path absent: a non-string path is treated as absent", async () => {
+    await recordApiError({
+      level: "error",
+      code: "server_error",
+      message: "boom",
+      metadata: { path: 5 },
+    });
+    expect(mockDb.opsEvent.count).toHaveBeenCalledTimes(1);
+    expect(mockDb.opsEvent.count).toHaveBeenCalledWith({ where: codeWhere });
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails open when the per-path count rejects", async () => {
+    mockDb.opsEvent.count.mockRejectedValueOnce(new Error("db down"));
+    await expect(recordApiError(input)).resolves.toBeUndefined();
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("fails open when the ceiling count rejects", async () => {
+    mockDb.opsEvent.count.mockResolvedValueOnce(0).mockRejectedValueOnce(new Error("db down"));
+    await expect(recordApiError(input)).resolves.toBeUndefined();
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("never throws when the insert rejects", async () => {
+    mockDb.opsEvent.create.mockRejectedValue(new Error("db down"));
+    await expect(recordApiError(input)).resolves.toBeUndefined();
+  });
+
+  it("route-level: 30 rows on /a do not suppress a real error on /b", async () => {
+    // Per-path count is keyed on the where-clause's JSON path value.
+    mockDb.opsEvent.count.mockImplementation(
+      async ({ where }: { where: { metadata?: { equals: string } } }) => {
+        if (!where.metadata) return API_ERROR_HOURLY_LIMIT_PER_CODE; // code total
+        return where.metadata.equals === "/a" ? API_ERROR_HOURLY_LIMIT_PER_CODE : 0;
+      },
+    );
+    await recordApiError(input); // /a: saturated
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+    await recordApiError({ ...input, metadata: { path: "/b" } });
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ metadata: { level: "error", path: "/b" } }),
+    });
   });
 });
 

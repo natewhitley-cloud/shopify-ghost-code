@@ -104,9 +104,17 @@ const CLIENT_ERROR_RATE_WINDOW_MS = 60 * 60 * 1000;
 /**
  * Max api_error rows stored per code (the row key) per trailing hour (gc-2sw).
  * api_error is exempt from pruning, so without this a bot storm hitting a route
- * that throws a bare Error would write unbounded, permanent rows.
+ * that throws a bare Error would write unbounded, permanent rows. This is the
+ * only cap for callers that pass no `metadata.path`; callers that do pass one
+ * get the per-(code, path) tier plus API_ERROR_HOURLY_CEILING_PER_CODE (gc-ibb).
  */
 export const API_ERROR_HOURLY_LIMIT_PER_CODE = 30;
+/**
+ * Per-code backstop for callers that pass `metadata.path` (gc-ibb): each
+ * (code, path) is capped at API_ERROR_HOURLY_LIMIT_PER_CODE, and the code as a
+ * whole at this ceiling, so an error storm sprayed across many paths stays bounded.
+ */
+export const API_ERROR_HOURLY_CEILING_PER_CODE = 300;
 const API_ERROR_RATE_WINDOW_MS = 60 * 60 * 1000;
 
 export interface RecordOpsEventInput {
@@ -288,10 +296,15 @@ export async function recordClientError(
  * error from a proximity warning; it is stored in metadata so the digest can
  * tally the two independently (see countApiErrorsByLevel).
  *
- * Capped at API_ERROR_HOURLY_LIMIT_PER_CODE rows per code per trailing hour
- * (gc-2sw); at the cap the write is skipped silently (logging each drop would
- * itself flood logs). The digest's per-code count therefore saturates at the
- * cap. Check-then-insert is not atomic, so concurrent errors can overshoot by
+ * Capped per trailing hour (gc-2sw, gc-ibb); at a cap the write is skipped
+ * silently (logging each drop would itself flood logs):
+ *   - no `metadata.path`: at most API_ERROR_HOURLY_LIMIT_PER_CODE rows per code.
+ *   - `metadata.path` (a string): at most API_ERROR_HOURLY_LIMIT_PER_CODE rows
+ *     per (code, path), so one noisy route cannot suppress another route's
+ *     errors under a shared code (server_error), AND at most
+ *     API_ERROR_HOURLY_CEILING_PER_CODE rows per code across all paths.
+ * The digest's per-code count therefore saturates at the applicable ceiling
+ * (30 path-less, 300 with paths). Check-then-insert is not atomic, so concurrent errors can overshoot by
  * a few rows; fine for a volume bound. Unlike recordClientError this FAILS
  * OPEN: an error recorder must not drop real errors because the count failed.
  */
@@ -303,14 +316,23 @@ export async function recordApiError(input: {
   metadata?: Record<string, string | number>;
 }): Promise<void> {
   try {
-    const recent = await db.opsEvent.count({
-      where: {
-        key: input.code,
-        eventType: OPS_EVENT_TYPES.API_ERROR,
-        createdAt: { gte: new Date(Date.now() - API_ERROR_RATE_WINDOW_MS) },
-      },
-    });
-    if (recent >= API_ERROR_HOURLY_LIMIT_PER_CODE) return;
+    const base = {
+      key: input.code,
+      eventType: OPS_EVENT_TYPES.API_ERROR,
+      createdAt: { gte: new Date(Date.now() - API_ERROR_RATE_WINDOW_MS) },
+    };
+    const path = input.metadata?.path;
+    if (typeof path === "string") {
+      const recentForPath = await db.opsEvent.count({
+        where: { ...base, metadata: { path: ["path"], equals: path } },
+      });
+      if (recentForPath >= API_ERROR_HOURLY_LIMIT_PER_CODE) return;
+      const recentForCode = await db.opsEvent.count({ where: base });
+      if (recentForCode >= API_ERROR_HOURLY_CEILING_PER_CODE) return;
+    } else {
+      const recent = await db.opsEvent.count({ where: base });
+      if (recent >= API_ERROR_HOURLY_LIMIT_PER_CODE) return;
+    }
   } catch {
     // Fail open: fall through and attempt the write.
   }
@@ -393,7 +415,7 @@ async function findOpsEventMetadataSince(eventType: string, sinceMs: number): Pr
  * "warn" (missing, null, malformed, or literally "error") is counted as an
  * error. This is deliberate — an unclassifiable API_ERROR row is more useful
  * surfaced as an error than silently dropped. Volume is bounded (recordApiError caps
- * rows at API_ERROR_HOURLY_LIMIT_PER_CODE per code per hour), so an in-memory tally
+ * rows per code per hour, see recordApiError), so an in-memory tally
  * is fine.
  */
 export async function countApiErrorsByLevel(
@@ -622,7 +644,7 @@ async function getLatestHeartbeatByKey(
  * `client_error` and the nudge-funnel types.
  * `function_failure` rows back the operator digest's failure history and are left
  * untouched at any age. The remaining types (api_error, which recordApiError
- * caps per code per hour; webhook_failure, digest_snapshot, worker_fallback,
+ * caps per code (and per path) per hour; webhook_failure, digest_snapshot, worker_fallback,
  * scan_signal) are also left alone — they don't accumulate the way heartbeats and page visits do. Widen this
  * predicate only alongside a matching per-type retention rationale.
  *
