@@ -3555,22 +3555,39 @@ function closedSvgRanges(content: string): Array<[number, number]> {
  * call `.test()` on the result, so the groups are non-capturing.
  *
  *   buildSafeVarRe(["page_title", "shop(?:\\.\\w+)*"])
- *     matches:  {{ page_title }}   {{ shop.name | escape }}
+ *     matches:  {{ page_title }}   {{ shop.name | escape }}   {{- page_title -}}
  */
 function buildSafeVarRe(tokens: string[]): RegExp {
-  return new RegExp(`\\{\\{\\s*(?:${tokens.join("|")})(?:\\s*\\|[^}]*)?\\s*\\}\\}`);
+  return new RegExp(`\\{\\{-?\\s*(?:${tokens.join("|")})(?:\\s*\\|[^}]*)?\\s*-?\\}\\}`);
 }
 
-/** `assign x` / `capture x` at the start of a Liquid tag body or of a `{% liquid %}` line. */
-const LIQUID_DEFINITION_RE = /^[ \t]*(?:assign|capture)[ \t]+([A-Za-z_][\w-]*)/gm;
+/**
+ * A Liquid statement at the start of a tag body or of a `{% liquid %}` line:
+ * `assign x` / `capture x` / `for x in` / `tablerow x in`, or the loop closers.
+ */
+const LIQUID_STATEMENT_RE =
+  /^[ \t]*(assign|capture|for|tablerow|endfor|endtablerow)\b(?:[ \t]+([A-Za-z_][\w-]*))?/gm;
+
+/** Offsets at which a theme-local variable is in scope: `from` < offset < `to`. */
+type LiquidScope = { from: number; to: number };
 
 /**
- * Offset of the first `{% assign %}` / `{% capture %}` (including lines inside a
- * `{% liquid %}` tag) defining each theme-local variable in `content` (gc-6lm).
+ * Scopes of each theme-local variable in `content` (gc-6lm, gc-nbz). An
+ * `{% assign %}` / `{% capture %}` (including lines inside a `{% liquid %}`
+ * tag) is in scope from its tag to end of file. A `{% for x in %}` /
+ * `{% tablerow x in %}` variable is in scope only until the matching
+ * `{% endfor %}` / `{% endtablerow %}` (nesting honored; unclosed = end of
+ * file), so a use after the loop still flags.
  * Tag bodies are found with indexOf, so an unterminated `{%` flood stays linear.
  */
-function liquidDefinitionOffsets(content: string): Map<string, number> {
-  const defs = new Map<string, number>();
+function liquidDefinitionScopes(content: string): Map<string, LiquidScope[]> {
+  const scopes = new Map<string, LiquidScope[]>();
+  const add = (name: string, scope: LiquidScope) => {
+    const list = scopes.get(name);
+    if (list) list.push(scope);
+    else scopes.set(name, [scope]);
+  };
+  const openLoops: LiquidScope[] = [];
   let from = 0;
   for (;;) {
     const open = content.indexOf("{%", from);
@@ -3578,24 +3595,37 @@ function liquidDefinitionOffsets(content: string): Map<string, number> {
     const close = content.indexOf("%}", open + 2);
     if (close === -1) break;
     const body = content.slice(open + 2, close).replace(/^-/, "");
-    for (const m of body.matchAll(LIQUID_DEFINITION_RE)) {
-      if (!defs.has(m[1])) defs.set(m[1], open);
+    for (const m of body.matchAll(LIQUID_STATEMENT_RE)) {
+      const [, keyword, name] = m;
+      if (keyword === "endfor" || keyword === "endtablerow") {
+        const loop = openLoops.pop();
+        if (loop) loop.to = open;
+      } else if (name) {
+        const scope = { from: open, to: Infinity };
+        add(name, scope);
+        if (keyword === "for" || keyword === "tablerow") openLoops.push(scope);
+      }
     }
     from = close + 2;
   }
-  return defs;
+  return scopes;
 }
 
 /**
- * True when a `{{ ... }}` token's leading variable was assigned or captured in
- * the same file before `offset`: theme-local data, not an orphaned app variable
- * (bad-hats Sugar theme `{{ seo_title }}`, gc-6lm).
+ * True when a `{{ ... }}` token's leading variable is in scope at `offset`:
+ * assigned or captured earlier in the same file, or a loop variable inside its
+ * loop body. Theme-local data, not an orphaned app variable (bad-hats Sugar
+ * theme `{{ seo_title }}`, gc-6lm; Debut `{% for image in product.images %}`
+ * og:image tags, gc-nbz).
  */
-function isThemeDefinedVar(token: string, defs: Map<string, number>, offset: number): boolean {
+function isThemeDefinedVar(
+  token: string,
+  scopes: Map<string, LiquidScope[]>,
+  offset: number,
+): boolean {
   const name = /^\{\{-?\s*([A-Za-z_][\w-]*)/.exec(token)?.[1];
   if (!name) return false;
-  const definedAt = defs.get(name);
-  return definedAt !== undefined && definedAt < offset;
+  return scopes.get(name)?.some((s) => s.from < offset && offset < s.to) ?? false;
 }
 
 /**
@@ -3755,9 +3785,9 @@ export function detectGhostTitle(
 
   const appNameAt = lineAppNamer();
 
-  // Theme-local assign/capture offsets, computed on first need (gc-6lm).
-  let defs: Map<string, number> | undefined;
-  const liquidDefs = () => (defs ??= liquidDefinitionOffsets(file.content));
+  // Theme-local variable scopes, computed on first need (gc-6lm).
+  let defs: Map<string, LiquidScope[]> | undefined;
+  const liquidDefs = () => (defs ??= liquidDefinitionScopes(file.content));
 
   // Early exit (gc-ypk). Every title after the first yields exactly one finding
   // (a check 1-3 hit, or else check 4 flags it as a duplicate). So once more
@@ -3893,7 +3923,7 @@ const OG_META_TAG = tagPattern([
 /**
  * Extracts the content attribute value from a meta tag.
  */
-const META_CONTENT_RE = /content\s*=\s*["']([^"']*)["']/i;
+const META_CONTENT_RE = /content\s*=\s*(?:"([^"]*)"|'([^']*)')/i;
 
 /**
  * High-value OG/Twitter properties worth flagging when empty.
@@ -3986,9 +4016,9 @@ export function detectGhostOg(
   const commentedLines = buildCommentSkipLines(file.content);
   const conditionalLine = new Map<number, boolean>();
 
-  // Theme-local assign/capture offsets, computed on first need (gc-6lm).
-  let defs: Map<string, number> | undefined;
-  const liquidDefs = () => (defs ??= liquidDefinitionOffsets(file.content));
+  // Theme-local variable scopes, computed on first need (gc-6lm).
+  let defs: Map<string, LiquidScope[]> | undefined;
+  const liquidDefs = () => (defs ??= liquidDefinitionScopes(file.content));
 
   // Isolate each <meta ...> tag first (linear, non-backtracking), then apply
   // OG_META_TAG to the bounded tag text. lineNumberAtOffset maps the match offset
@@ -4020,7 +4050,7 @@ export function detectGhostOg(
 
     const fullTag = match[0];
     const contentMatch = META_CONTENT_RE.exec(fullTag);
-    const contentValue = contentMatch ? contentMatch[1] : "";
+    const contentValue = contentMatch ? (contentMatch[1] ?? contentMatch[2] ?? "") : "";
 
     const codeSnippet = buildSnippet(file.content, matchLineNumber);
 

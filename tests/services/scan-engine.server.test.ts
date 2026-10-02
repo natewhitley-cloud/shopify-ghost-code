@@ -3808,11 +3808,173 @@ describe("detectGhostTitle — theme-defined title variables (gc-6lm)", () => {
     expect(detectGhostOg({ filename: "snippets/meta-tags.liquid", content })).toHaveLength(1);
   });
 
+  // gc-nbz: loop variables are theme-defined, but only inside the loop body.
+  describe("loop variables (gc-nbz)", () => {
+    const og = (lines: string[]) =>
+      detectGhostOg({ filename: "snippets/social-meta-tags.liquid", content: lines.join("\n") });
+
+    it("does NOT flag Debut og:image tags using the for-loop variable", () => {
+      const content = [
+        "{%- if template contains 'product' -%}",
+        "  {%- for image in product.images limit: 3 -%}",
+        `    <meta property="og:image" content="http:{{ image.src | product_img_url: '1024x1024' }}">`,
+        `    <meta property="og:image:secure_url" content="https:{{ image.src | product_img_url: '1024x1024' }}">`,
+        `    <meta property="og:image:width" content="{{ image.width }}">`,
+        "  {%- endfor -%}",
+        "{%- endif -%}",
+      ];
+      expect(og(content)).toHaveLength(0);
+    });
+
+    it("STILL flags the loop variable used after {% endfor %}", () => {
+      const findings = og([
+        "{% for image in product.images %}{% endfor %}",
+        '<meta property="og:image" content="{{ image.src }}">',
+      ]);
+      expect(findings).toHaveLength(1);
+    });
+
+    it("handles nested loops: inner var ok inside, flagged after inner endfor", () => {
+      const ok = og([
+        "{% for a in x %}{% for b in a.y %}",
+        '<meta property="og:image" content="{{ b.src }}">',
+        "{% endfor %}{% endfor %}",
+      ]);
+      expect(ok).toHaveLength(0);
+      const after = og([
+        "{% for a in x %}{% for b in a.y %}{% endfor %}",
+        '<meta property="og:image" content="{{ b.src }}">',
+        '<meta property="og:title" content="{{ a.title }}">',
+        "{% endfor %}",
+      ]);
+      expect(after).toHaveLength(1);
+      expect(after[0].lineNumber).toBe(2);
+    });
+
+    it("handles the {% liquid %} line form", () => {
+      const inside = og([
+        "{%- liquid",
+        "  for image in product.images",
+        "    echo image.src",
+        "  endfor",
+        "-%}",
+        "{% for image in product.images %}",
+        '<meta property="og:image" content="{{ image.src }}">',
+        "{% endfor %}",
+      ]);
+      expect(inside).toHaveLength(0);
+      const after = og([
+        "{%- liquid",
+        "  for image in product.images",
+        "    echo image.src",
+        "  endfor",
+        "-%}",
+        '<meta property="og:image" content="{{ image.src }}">',
+      ]);
+      expect(after).toHaveLength(1);
+    });
+
+    it("handles tablerow", () => {
+      const content = [
+        "{% tablerow image in product.images cols: 2 %}",
+        '<meta property="og:image" content="{{ image.src }}">',
+        "{% endtablerow %}",
+      ];
+      expect(og(content)).toHaveLength(0);
+      expect(og([...content, '<meta property="og:image" content="{{ image.src }}">'])).toHaveLength(
+        1,
+      );
+    });
+
+    it("STILL flags a genuinely undefined variable in the same file", () => {
+      const findings = og([
+        "{% for image in product.images %}",
+        '<meta property="og:image" content="{{ image.src }}">',
+        '<meta property="og:image:alt" content="{{ seoapp_alt }}">',
+        "{% endfor %}",
+      ]);
+      expect(findings).toHaveLength(1);
+      expect(findings[0].lineNumber).toBe(3);
+    });
+
+    it("treats an unclosed loop as defining the variable to end of file", () => {
+      const content = [
+        "{% for image in product.images %}",
+        '<meta property="og:image" content="{{ image.src }}">',
+      ];
+      expect(og(content)).toHaveLength(0);
+    });
+
+    it("detectGhostTitle: loop variable inside a title loop is not flagged", () => {
+      const content = "{% for t in titles %}<title>{{ t }}</title>{% endfor %}";
+      expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(0);
+    });
+  });
+
   it("ignores 'assign' in plain text that is not a Liquid tag", () => {
     const content = ["<p>We assign seo_title for you</p>", "<title>{{ seo_title }}</title>"].join(
       "\n",
     );
     expect(detectGhostTitle({ filename: "layout/theme.liquid", content })).toHaveLength(1);
+  });
+});
+
+describe("whitespace-trim markers and mixed-quote content (gc-kes)", () => {
+  const title = (inner: string) =>
+    detectGhostTitle({ filename: "layout/theme.liquid", content: `<title>${inner}</title>` });
+  const og = (line: string) => detectGhostOg({ filename: "layout/theme.liquid", content: line });
+
+  it.each([
+    "{{- page_title -}}",
+    "{{- page_title }}",
+    "{{ page_title -}}",
+    "{{- shop.name | escape -}}",
+    "{{ page_title }}",
+    "{{ shop.name | escape }}",
+  ])("detectGhostTitle does NOT flag safe var %s", (expr) => {
+    expect(title(expr)).toHaveLength(0);
+  });
+
+  it.each(["{{- app_seo_title -}}", "{{ app_seo_title }}", "{{- app_seo_title | escape -}}"])(
+    "detectGhostTitle STILL flags unknown var %s",
+    (expr) => {
+      expect(title(expr)).toHaveLength(1);
+    },
+  );
+
+  it("detectGhostOg does NOT flag trimmed safe vars in og:title", () => {
+    expect(og('<meta property="og:title" content="{{- page_title -}}">')).toHaveLength(0);
+    expect(og('<meta property="og:title" content="{{- shop.name | escape -}}">')).toHaveLength(0);
+  });
+
+  it("detectGhostOg STILL flags a trimmed unknown var in og:title", () => {
+    expect(og('<meta property="og:title" content="{{- app_seo_title -}}">')).toHaveLength(1);
+  });
+
+  it("checks Liquid vars after an inner single-quoted string in a double-quoted value", () => {
+    const safe = `<meta property="og:image" content="https:{{ page_image | img_url: 'master' }}">`;
+    expect(og(safe)).toHaveLength(0);
+    const orphan = `<meta property="og:image" content="https:{{ page_image | img_url: 'master' }}{{ seoapp_suffix }}">`;
+    const findings = og(orphan);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].description).toContain("Unresolved Liquid variable");
+  });
+
+  it("flags an orphaned var that follows a single-quoted string inside the value", () => {
+    const tag = `<meta property="og:image" content="{{ 'x' | append: seoapp_img }}{{ seoapp_img }}">`;
+    expect(og(tag)).toHaveLength(1);
+  });
+
+  it("handles a single-quoted attribute containing double quotes symmetrically", () => {
+    const safe = `<meta property="og:image" content='https:{{ page_image | img_url: "master" }}'>`;
+    expect(og(safe)).toHaveLength(0);
+    const orphan = `<meta property="og:image" content='https:{{ page_image | img_url: "master" }}{{ seoapp_suffix }}'>`;
+    expect(og(orphan)).toHaveLength(1);
+  });
+
+  it("still detects empty content in both quote styles", () => {
+    expect(og('<meta property="og:title" content="">')).toHaveLength(1);
+    expect(og("<meta property=\"og:title\" content=''>")).toHaveLength(1);
   });
 });
 

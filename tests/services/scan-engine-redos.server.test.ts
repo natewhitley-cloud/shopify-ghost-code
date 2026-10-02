@@ -87,6 +87,36 @@ describe("scan-engine ReDoS hardening — pathological input completes fast", ()
     expect(timed(() => detectGhostTitle(tagBomb))).toBeLessThan(REDOS_BUDGET_MS);
   });
 
+  // gc-nbz: loop open/close tracking must stay linear on a flood of unclosed loops.
+  it("detectGhostOg is fast on a flood of unclosed {% for %} tags", () => {
+    const loopBomb: ThemeFile = {
+      filename: "snippets/social-meta-tags.liquid",
+      content:
+        '<meta property="og:image" content="{{ seoapp_img }}">' +
+        pathological("{%- for i in x -%}{% endfor %}{% for j in y %}{% "),
+    };
+    expect(timed(() => detectGhostOg(loopBomb))).toBeLessThan(REDOS_BUDGET_MS);
+  });
+
+  // gc-kes: META_CONTENT_RE must stay linear on unclosed / mixed-quote content values.
+  it.each([
+    [
+      "unclosed double-quoted content run",
+      '<meta property="og:title" content="' + "a".repeat(1000),
+    ],
+    [
+      "unclosed single-quoted content run",
+      '<meta property="og:title" content=\'' + "a".repeat(1000),
+    ],
+    ["mixed-quote content flood", `content="'` + `'"`.repeat(1000)],
+  ])("detectGhostOg is fast on %s", (_label, fragment) => {
+    const bomb: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: pathological(fragment + ">"),
+    };
+    expect(timed(() => detectGhostOg(bomb))).toBeLessThan(REDOS_BUDGET_MS);
+  });
+
   it("detectGhostStyles is fast on an unterminated <link> flood", () => {
     expect(timed(() => detectGhostStyles(linkBomb))).toBeLessThan(REDOS_BUDGET_MS);
   });
