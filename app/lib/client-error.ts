@@ -53,11 +53,23 @@ export const BROWSER_FAMILIES = [
 ] as const;
 export type BrowserFamily = (typeof BROWSER_FAMILIES)[number];
 
-// A URL's query string or fragment: from `?`/`#` up to whitespace, a quote, a
-// closing paren or a `:` (so a stack frame's `:line:col` survives).
-const URL_QUERY = /(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#'"()]+)[?#][^\s'"():]*/gi;
-// A query string on a bare path (e.g. "GET /app/x.data?shop=..."), same stop set.
-const PATH_QUERY = /(^|\s)(\/[^\s?#'"()]*)[?#][^\s'"():]*/g;
+// The body of a query string or fragment: runs until whitespace, a quote or a
+// paren. A `:` is part of the query (and removed with it) EXCEPT where it
+// begins a trailing `:line` / `:line:col` (digits) followed by whitespace, a
+// closing paren, a quote or end of string, so a stack frame's position
+// survives while `?token=abc:secret-tail` or a nested `?r=https://y/z?k=v`
+// is removed whole. Every alternative consumes exactly one char, so this is
+// linear per start position.
+const QUERY_BODY = String.raw`(?:[^\s'"():]|:(?!\d+(?::\d+)?(?=[\s)'"]|$)))*`;
+// A URL's query string or fragment: from `?`/`#` per QUERY_BODY.
+const URL_QUERY = new RegExp(
+  String.raw`(\b[a-z][a-z0-9+.-]*:\/\/[^\s?#'"()]+)[?#]` + QUERY_BODY,
+  "gi",
+);
+// A query string on a bare path (e.g. "GET /app/x.data?shop=..."). The path
+// must start the text or follow whitespace, `(`, a quote, `[`, `=` or `,`
+// (kept in the output).
+const PATH_QUERY = new RegExp(String.raw`(^|[\s('"\[=,])(\/[^\s?#'"()]*)[?#]` + QUERY_BODY, "g");
 const JWT = /\beyJ[\w-]+\.[\w-]+\.[\w-]+/g;
 const BEARER = /\bBearer\s+[\w.~+/=-]+/gi;
 const EMAIL = /[\w.+-]{1,64}@[\w-]{1,63}(?:\.[\w-]{1,63}){1,8}/g;

@@ -50,6 +50,49 @@ describe("scrubText", () => {
     expect(scrubText("GET /app/x.data?shop=s -> 500")).toBe("GET /app/x.data -> 500");
   });
 
+  it.each([
+    ["failed (/app/scans?shop=evil.myshopify.com&id=1)", "failed (/app/scans)"],
+    ["quoted '/app?shop=x'", "quoted '/app'"],
+    ['quoted "/app?shop=x"', 'quoted "/app"'],
+    ["list [/app?shop=x]", "list [/app"],
+    ["path=/app?shop=x", "path=/app"],
+    ["a,/app?shop=x", "a,/app"],
+  ])("strips a query from a bare path after ( ' \" [ = or ,: %s", (input, expected) => {
+    expect(scrubText(input)).toBe(expected);
+  });
+
+  it("strips a path query that runs to the end of the string", () => {
+    expect(scrubText("GET /app?shop=x")).toBe("GET /app");
+  });
+
+  it("removes query text after a colon that is not a :line:col", () => {
+    expect(scrubText("GET /app?token=abc:secret-tail")).toBe("GET /app");
+    expect(scrubText("fetch https://x.com/p?redirect=https://y.com/z?k=v failed")).toBe(
+      "fetch https://x.com/p failed",
+    );
+    expect(scrubText("go https://x.com/p?a=1:abc rest")).toBe("go https://x.com/p rest");
+  });
+
+  it("keeps a V8 frame's :line:col after the query is stripped", () => {
+    expect(scrubText("at fn (https://x.com/a.js?v=1:10:5)")).toBe(
+      "at fn (https://x.com/a.js:10:5)",
+    );
+  });
+
+  it("keeps a Firefox/Safari frame's :line:col after the query is stripped", () => {
+    expect(scrubText("fn@https://x.com/a.js?v=1:10:5")).toBe("fn@https://x.com/a.js:10:5");
+  });
+
+  it("leaves a URL with no query untouched", () => {
+    expect(scrubText("failed https://x.com/a/b.js:10:5 here")).toBe(
+      "failed https://x.com/a/b.js:10:5 here",
+    );
+  });
+
+  it("leaves an ordinary colon with no URL untouched", () => {
+    expect(scrubText("TypeError: x is undefined")).toBe("TypeError: x is undefined");
+  });
+
   it("leaves plain text alone", () => {
     expect(scrubText("Cannot read properties of undefined (reading 'x')")).toBe(
       "Cannot read properties of undefined (reading 'x')",
@@ -69,6 +112,14 @@ describe("scrubText — audit M1 hardening", () => {
     const start = performance.now();
     scrubText("a".repeat(100_000) + "://x?y=1");
     expect(performance.now() - start).toBeLessThan(100);
+  });
+
+  it("is fast on repeated path-prefix and colon runs at the input cap", () => {
+    for (const unit of ["=/", ",/a", "/a?:", "x?:1", "(/a?b:"]) {
+      const start = performance.now();
+      scrubText(unit.repeat(2000));
+      expect(performance.now() - start).toBeLessThan(100);
+    }
   });
 
   it("redacts Shopify access tokens", () => {

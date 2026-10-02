@@ -7,8 +7,10 @@
  * so authenticate.admin works as for the other in-app pings (app.upgrade,
  * app.review-request).
  *
- * Never trusts the client: the body is size-capped, then every field is
- * re-validated and re-sanitized with the same sanitizer the client used
+ * Never trusts the client: the body is size-capped (a declared Content-Length
+ * is checked first, then the body is read as a stream that is cancelled the
+ * moment it exceeds the cap, so a chunked body is never fully buffered), then
+ * every field is re-validated and re-sanitized with the same sanitizer the client used
  * (sanitizeClientErrorReport: known fields only, message <= 300 chars, top 5
  * frames, query strings / hashes / tokens / emails stripped). The shop is
  * always the SESSION shop, and the browser family comes from this request's
@@ -28,16 +30,40 @@ import { authenticate } from "../shopify.server";
 /** Well above a maximal legitimate report (~2.5 KB encoded). */
 export const CLIENT_ERROR_MAX_BODY_BYTES = 8 * 1024;
 
+/**
+ * Read the request body as text, counting BYTES and cancelling the stream as
+ * soon as it exceeds `maxBytes`. Returns null when over the cap; "" for a
+ * missing body.
+ */
+async function readBoundedText(request: Request, maxBytes: number): Promise<string | null> {
+  if (!request.body) return "";
+  const reader = request.body.getReader();
+  const decoder = new TextDecoder();
+  let total = 0;
+  let text = "";
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    total += value.byteLength;
+    if (total > maxBytes) {
+      await reader.cancel();
+      return null;
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+}
+
 export const action = async ({ request }: ActionFunctionArgs) => {
   const { session } = await authenticate.admin(request);
 
-  // Refuse a declared-oversized body before reading it; re-check after reading
-  // since Content-Length can be absent (chunked) or wrong.
+  // Refuse a declared-oversized body before reading it; the bounded read below
+  // covers a Content-Length that is absent (chunked) or wrong.
   if (Number(request.headers.get("content-length")) > CLIENT_ERROR_MAX_BODY_BYTES) {
     return new Response(null, { status: 413 });
   }
-  const text = await request.text();
-  if (text.length > CLIENT_ERROR_MAX_BODY_BYTES) {
+  const text = await readBoundedText(request, CLIENT_ERROR_MAX_BODY_BYTES);
+  if (text === null) {
     return new Response(null, { status: 413 });
   }
 

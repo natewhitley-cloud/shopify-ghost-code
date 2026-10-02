@@ -147,6 +147,55 @@ describe("app.client-error action", () => {
     expect(mockRecord).not.toHaveBeenCalled();
   });
 
+  it("returns 413 for a multi-byte body under the cap in characters but over it in bytes", async () => {
+    const message = "é".repeat(CLIENT_ERROR_MAX_BODY_BYTES / 2); // 2 bytes/char
+    const body = `kind=error&path=%2Fapp&message=${message}`;
+    expect(body.length).toBeLessThan(CLIENT_ERROR_MAX_BODY_BYTES);
+    expect(new TextEncoder().encode(body).byteLength).toBeGreaterThan(CLIENT_ERROR_MAX_BODY_BYTES);
+
+    const res = await action(args(body));
+    expect(res.status).toBe(413);
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 for a chunked body over the cap and stops reading the stream early", async () => {
+    const chunk = new TextEncoder().encode("a".repeat(1024));
+    let pulls = 0;
+    let cancelled = false;
+    const stream = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls++;
+          if (pulls > 100_000) controller.close();
+          else controller.enqueue(chunk);
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const request = new Request("https://app.example.com/app/client-error", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: stream,
+      duplex: "half",
+    } as RequestInit);
+
+    const res = await action({ request, params: {}, context: {} } as ActionFunctionArgs);
+
+    expect(res.status).toBe(413);
+    expect(cancelled).toBe(true);
+    expect(pulls).toBeLessThan(20);
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 for an empty body", async () => {
+    const res = await action(args(""));
+    expect(res.status).toBe(400);
+    expect(mockRecord).not.toHaveBeenCalled();
+  });
+
   it("still answers 204 when the per-shop rate limit drops the write", async () => {
     mockRecord.mockResolvedValue(false);
     const res = await action(args({ kind: "error", message: "x", path: "/app" }));
