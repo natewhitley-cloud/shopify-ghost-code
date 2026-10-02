@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
-import type { LoaderFunctionArgs } from "react-router";
-import { Link, useLoaderData } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
+import { Link, useFetcher, useLoaderData } from "react-router";
 
+import { readChecked } from "../components/polaris-events";
 import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import {
   allOptionalScopesGranted,
@@ -9,9 +10,12 @@ import {
   OPTIONAL_SCOPE_INFO,
   OPTIONAL_SCOPES,
 } from "../lib/optional-scopes";
+import { canReceiveAlerts } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "../lib/trial-cta";
+import { setShopAlertsEnabled } from "../models/merchant-alert.server";
 import { getShopMetadata } from "../models/shop.server";
+import { getMerchantAlertConfigStatus } from "../services/merchant-alert.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -50,8 +54,119 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     features,
     pricingPlansUrl,
     trialEligible,
+    // gc-syz.6: the card renders only when merchant mail can actually be sent
+    // (dark while MERCHANT_ALERTS_ENABLED is off).
+    alerts: {
+      configured: getMerchantAlertConfigStatus().configured,
+      canReceive: canReceiveAlerts(shop.plan),
+      cadence: features.alertCadence,
+      enabled: shop.alertsEnabled,
+      email: shop.alertEmail,
+    },
   };
 };
+
+// ---------------------------------------------------------------------------
+// Action (gc-syz.6): monitoring-emails toggle
+// ---------------------------------------------------------------------------
+
+export const action = async ({ request }: ActionFunctionArgs) => {
+  const { session } = await authenticate.admin(request);
+
+  const formData = await request.formData();
+  const intent = formData.get("intent");
+  if (intent !== "set-alerts-enabled") {
+    return { error: "Unknown request." };
+  }
+
+  const value = formData.get("enabled");
+  if (value !== "true" && value !== "false") {
+    return { error: "Invalid value." };
+  }
+
+  // Session shop only: the form never carries a shop id.
+  const shop = await getShopMetadata(session.shop);
+  if (!shop) {
+    return { error: "Shop not found. Please reinstall the app." };
+  }
+  if (!canReceiveAlerts(shop.plan)) {
+    return { error: "Monitoring emails are not included in your plan." };
+  }
+
+  await setShopAlertsEnabled(shop.id, value === "true");
+  return { alertsEnabled: value === "true" };
+};
+
+// ---------------------------------------------------------------------------
+// Monitoring emails card (gc-syz.6)
+// ---------------------------------------------------------------------------
+
+function MonitoringEmailsCard({
+  alerts,
+  pricingPlansUrl,
+  trialEligible,
+}: {
+  alerts: { canReceive: boolean; cadence: string; enabled: boolean; email: string | null };
+  pricingPlansUrl: string;
+  trialEligible: boolean;
+}) {
+  const fetcher = useFetcher<typeof action>();
+  const saving = fetcher.state !== "idle";
+  // Optimistic: show what was just submitted until the loader revalidates.
+  const checked = fetcher.formData ? fetcher.formData.get("enabled") === "true" : alerts.enabled;
+
+  return (
+    <div style={{ marginTop: "16px" }}>
+      <s-card>
+        <s-stack direction="block" gap="base">
+          <s-heading>Monitoring emails</s-heading>
+          {alerts.canReceive ? (
+            <>
+              <s-checkbox
+                label="Email me when a rescan finds new leftover code"
+                checked={checked ? true : undefined}
+                disabled={saving ? true : undefined}
+                onChange={(e: unknown) =>
+                  fetcher.submit(
+                    { intent: "set-alerts-enabled", enabled: String(readChecked(e)) },
+                    { method: "POST" },
+                  )
+                }
+              />
+              <s-paragraph>
+                {`We email ${alerts.email ?? "the store owner"} when a ${alerts.cadence} rescan finds new leftover code.`}
+              </s-paragraph>
+              {fetcher.data && "error" in fetcher.data && (
+                <s-banner tone="critical">{fetcher.data.error}</s-banner>
+              )}
+              {fetcher.data && "alertsEnabled" in fetcher.data && fetcher.state === "idle" && (
+                <s-banner tone="success">
+                  {fetcher.data.alertsEnabled
+                    ? "Monitoring emails are on."
+                    : "Monitoring emails are off."}
+                </s-banner>
+              )}
+            </>
+          ) : (
+            <>
+              <s-paragraph>
+                Monitoring emails are included with Standard (weekly rescans) and Professional
+                (daily rescans).
+              </s-paragraph>
+              <div>
+                <a href={pricingPlansUrl} target="_top" rel="noreferrer">
+                  <s-button variant="primary">
+                    {upgradeCtaLabel(PLANS.STANDARD, trialEligible)}
+                  </s-button>
+                </a>
+              </div>
+            </>
+          )}
+        </s-stack>
+      </s-card>
+    </div>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Permissions card (client-side, Standard+ only)
@@ -239,7 +354,7 @@ function PermissionsCard() {
 // ---------------------------------------------------------------------------
 
 export default function Settings() {
-  const { shop, pricingPlansUrl, trialEligible } = useLoaderData<typeof loader>();
+  const { shop, pricingPlansUrl, trialEligible, alerts } = useLoaderData<typeof loader>();
 
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
@@ -412,6 +527,14 @@ export default function Settings() {
             </s-stack>
           </s-card>
         </div>
+
+        {alerts.configured && (
+          <MonitoringEmailsCard
+            alerts={alerts}
+            pricingPlansUrl={pricingPlansUrl}
+            trialEligible={trialEligible}
+          />
+        )}
 
         {/* Permissions — Standard+ only (the checks these scopes unlock are paid). */}
         {!isFree && <PermissionsCard />}

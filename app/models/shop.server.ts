@@ -36,6 +36,8 @@ export type ShopMetadata = {
   upgradeReturnShownAt: Date | null;
   staleResultsShownAt: Date | null;
   everPaidAt: Date | null;
+  alertsEnabled: boolean;
+  alertEmail: string | null;
 };
 
 /**
@@ -109,6 +111,8 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       upgradeReturnShownAt: true,
       staleResultsShownAt: true,
       everPaidAt: true,
+      alertsEnabled: true,
+      alertEmail: true,
     },
   });
 }

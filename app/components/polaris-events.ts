@@ -37,3 +37,9 @@ export function readValue(e: unknown): string {
   const el = eventElement(e);
   return typeof el?.value === "string" ? el.value : "";
 }
+
+/** Boolean `checked` state of an `s-checkbox` change event. */
+export function readChecked(e: unknown): boolean {
+  const el = eventElement(e);
+  return el?.checked === true;
+}

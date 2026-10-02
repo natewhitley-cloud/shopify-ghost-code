@@ -12,7 +12,7 @@
 
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import type { LoaderFunctionArgs } from "react-router";
+import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { createRoutesStub } from "react-router";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
@@ -42,6 +42,19 @@ vi.mock("../../app/models/billing-event.server", () => ({
   hasBillingHistory: vi.fn(),
 }));
 
+// gc-syz.6: monitoring-emails card collaborators, mocked at their boundaries.
+vi.mock("../../app/models/merchant-alert.server", () => ({
+  setShopAlertsEnabled: vi.fn(),
+}));
+
+vi.mock("../../app/services/merchant-alert.server", () => ({
+  getMerchantAlertConfigStatus: vi.fn(),
+}));
+
+vi.mock("../../app/lib/plan-gating.server", () => ({
+  canReceiveAlerts: vi.fn(),
+}));
+
 vi.mock("../../app/lib/billing.server", () => ({
   getPlanFeatures: vi.fn(),
   buildPricingPlansUrl: vi.fn(),
@@ -56,9 +69,12 @@ vi.mock("../../app/lib/plans", () => ({
 // ---------------------------------------------------------------------------
 
 import { buildPricingPlansUrl, getPlanFeatures } from "../../app/lib/billing.server";
+import { canReceiveAlerts } from "../../app/lib/plan-gating.server";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
+import { setShopAlertsEnabled } from "../../app/models/merchant-alert.server";
 import { getShopMetadata } from "../../app/models/shop.server";
-import Settings, { loader, scopeBadge } from "../../app/routes/app.settings";
+import Settings, { action, loader, scopeBadge } from "../../app/routes/app.settings";
+import { getMerchantAlertConfigStatus } from "../../app/services/merchant-alert.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -70,6 +86,9 @@ const mockGetShopMetadata = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockBuildPricingPlansUrl = buildPricingPlansUrl as ReturnType<typeof vi.fn>;
 const mockHasBillingHistory = hasBillingHistory as ReturnType<typeof vi.fn>;
+const mockCanReceiveAlerts = canReceiveAlerts as ReturnType<typeof vi.fn>;
+const mockSetAlertsEnabled = setShopAlertsEnabled as ReturnType<typeof vi.fn>;
+const mockAlertConfig = getMerchantAlertConfigStatus as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -85,6 +104,8 @@ const SHOP = {
   plan: "free",
   // gc-97k.8: never seen on a paid plan.
   everPaidAt: null as Date | null,
+  alertsEnabled: true,
+  alertEmail: "owner@example.com" as string | null,
 };
 
 const FREE_FEATURES = {
@@ -106,6 +127,21 @@ function makeLoaderArgs(overrides?: Partial<LoaderFunctionArgs>): LoaderFunction
   } as LoaderFunctionArgs;
 }
 
+type AlertsData = {
+  configured: boolean;
+  canReceive: boolean;
+  cadence: string;
+  enabled: boolean;
+  email: string | null;
+};
+const DARK_ALERTS: AlertsData = {
+  configured: false,
+  canReceive: false,
+  cadence: "none",
+  enabled: true,
+  email: null,
+};
+
 // ---------------------------------------------------------------------------
 // Setup
 // ---------------------------------------------------------------------------
@@ -121,6 +157,8 @@ beforeEach(() => {
   mockGetPlanFeatures.mockReturnValue(FREE_FEATURES);
   mockBuildPricingPlansUrl.mockReturnValue(PRICING_PLANS_URL);
   mockHasBillingHistory.mockResolvedValue(false);
+  mockCanReceiveAlerts.mockReturnValue(false);
+  mockAlertConfig.mockReturnValue({ configured: false, reason: "disabled" });
 });
 
 // ---------------------------------------------------------------------------
@@ -230,12 +268,17 @@ describe("scopeBadge (PermissionsCard)", () => {
 
 describe("Settings plan tile buttons", () => {
   /** Render the real Settings page with the given loader data. */
-  function renderSettings(plan: string, trialEligible: boolean): string {
+  function renderSettings(
+    plan: string,
+    trialEligible: boolean,
+    alerts: Partial<AlertsData> = {},
+  ): string {
     const loaderData = {
       shop: { plan, domain: SHOP_DOMAIN },
       features: FREE_FEATURES,
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible,
+      alerts: { ...DARK_ALERTS, ...alerts },
     };
     const Stub = createRoutesStub([
       {
@@ -347,5 +390,195 @@ describe("Settings plan tile buttons", () => {
       expect(a).toContain(`href="${PRICING_PLANS_URL}"`);
       expect(a).toContain('target="_top"');
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Monitoring emails (gc-syz.6)
+// ---------------------------------------------------------------------------
+
+describe("app.settings loader: alerts", () => {
+  it("returns alerts state for a paid, configured shop", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+    mockGetPlanFeatures.mockReturnValue({ ...FREE_FEATURES, alertCadence: "weekly" });
+    mockCanReceiveAlerts.mockReturnValue(true);
+    mockAlertConfig.mockReturnValue({ configured: true });
+
+    const result = (await loader(makeLoaderArgs())) as { alerts: AlertsData };
+
+    expect(mockCanReceiveAlerts).toHaveBeenCalledWith("Standard");
+    expect(result.alerts).toEqual({
+      configured: true,
+      canReceive: true,
+      cadence: "weekly",
+      enabled: true,
+      email: "owner@example.com",
+    });
+  });
+
+  it("passes a null cached email through and reports an unconfigured env", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, alertEmail: null, alertsEnabled: false });
+
+    const result = (await loader(makeLoaderArgs())) as { alerts: AlertsData };
+
+    expect(result.alerts.configured).toBe(false);
+    expect(result.alerts.email).toBeNull();
+    expect(result.alerts.enabled).toBe(false);
+  });
+});
+
+describe("app.settings action: set-alerts-enabled", () => {
+  function makeActionArgs(fields: Record<string, string>): ActionFunctionArgs {
+    return {
+      request: new Request(`https://${SHOP_DOMAIN}/app/settings`, {
+        method: "POST",
+        body: new URLSearchParams(fields),
+      }),
+      params: {},
+      context: {},
+    } as ActionFunctionArgs;
+  }
+
+  beforeEach(() => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+    mockCanReceiveAlerts.mockReturnValue(true);
+  });
+
+  it.each([
+    ["true", true],
+    ["false", false],
+  ])("enabled=%s writes %s for the SESSION shop only", async (value, expected) => {
+    const result = await action(
+      makeActionArgs({ intent: "set-alerts-enabled", enabled: value, shopId: "other-shop" }),
+    );
+
+    expect(mockGetShopMetadata).toHaveBeenCalledWith(SHOP_DOMAIN);
+    expect(mockSetAlertsEnabled).toHaveBeenCalledExactlyOnceWith("shop-1", expected);
+    expect(result).toEqual({ alertsEnabled: expected });
+  });
+
+  it.each([
+    ["missing enabled", { intent: "set-alerts-enabled" }],
+    ["non-boolean enabled", { intent: "set-alerts-enabled", enabled: "yes" }],
+    ["empty enabled", { intent: "set-alerts-enabled", enabled: "" }],
+    ["unknown intent", { intent: "other", enabled: "true" }],
+    ["no intent", { enabled: "true" }],
+  ])("rejects %s without writing", async (_l, fields) => {
+    const result = (await action(makeActionArgs(fields))) as { error?: string };
+
+    expect(result.error).toBeTruthy();
+    expect(mockSetAlertsEnabled).not.toHaveBeenCalled();
+  });
+
+  it("rejects a Free shop (no alerts on that plan) without writing", async () => {
+    mockCanReceiveAlerts.mockReturnValue(false);
+
+    const result = (await action(
+      makeActionArgs({ intent: "set-alerts-enabled", enabled: "true" }),
+    )) as { error?: string };
+
+    expect(result.error).toMatch(/not included/);
+    expect(mockSetAlertsEnabled).not.toHaveBeenCalled();
+  });
+
+  it("returns an error when the shop row is missing", async () => {
+    mockGetShopMetadata.mockResolvedValue(null);
+
+    const result = (await action(
+      makeActionArgs({ intent: "set-alerts-enabled", enabled: "true" }),
+    )) as { error?: string };
+
+    expect(result.error).toBeTruthy();
+    expect(mockSetAlertsEnabled).not.toHaveBeenCalled();
+  });
+});
+
+describe("Settings Monitoring emails card", () => {
+  function renderSettings(plan: string, trialEligible: boolean, alerts: Partial<AlertsData>) {
+    const loaderData = {
+      shop: { plan, domain: SHOP_DOMAIN },
+      features: FREE_FEATURES,
+      pricingPlansUrl: PRICING_PLANS_URL,
+      trialEligible,
+      alerts: { ...DARK_ALERTS, ...alerts },
+    };
+    const Stub = createRoutesStub([
+      {
+        id: "settings",
+        path: "/app/settings",
+        Component: Settings as never,
+        loader: () => loaderData,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/settings"],
+        hydrationData: { loaderData: { settings: loaderData } },
+      }),
+    );
+  }
+
+  const PAID: Partial<AlertsData> = {
+    configured: true,
+    canReceive: true,
+    cadence: "weekly",
+    email: "owner@example.com",
+  };
+
+  it("is hidden while merchant alerts are not configured (dark by default)", () => {
+    const html = renderSettings("Standard", false, { ...PAID, configured: false });
+
+    expect(html).not.toContain("Monitoring emails");
+    expect(html).not.toContain("s-checkbox");
+  });
+
+  it("hidden for Free too when not configured", () => {
+    expect(renderSettings("free", true, { configured: false })).not.toContain("Monitoring emails");
+  });
+
+  it("paid: shows a checkbox bound to alertsEnabled and the weekly copy with the cached email", () => {
+    const html = renderSettings("Standard", false, PAID);
+
+    expect(html).toContain("Monitoring emails");
+    expect(html).toMatch(/<s-checkbox[^>]*checked/);
+    expect(html).toContain(
+      "We email owner@example.com when a weekly rescan finds new leftover code.",
+    );
+  });
+
+  it("paid: unchecked when alertsEnabled is false", () => {
+    const html = renderSettings("Standard", false, { ...PAID, enabled: false });
+
+    expect(html).toMatch(/<s-checkbox/);
+    expect(html).not.toMatch(/<s-checkbox[^>]*checked/);
+  });
+
+  it("paid: daily cadence and the store-owner fallback when no email is cached", () => {
+    const html = renderSettings("Professional", false, {
+      ...PAID,
+      cadence: "daily",
+      email: null,
+    });
+
+    expect(html).toContain("We email the store owner when a daily rescan finds new leftover code.");
+  });
+
+  it("Free: no checkbox; plan copy plus the trial CTA to the pricing page", () => {
+    const html = renderSettings("free", true, { configured: true });
+
+    expect(html).toContain("Monitoring emails");
+    expect(html).not.toContain("<s-checkbox");
+    expect(html).toContain(
+      "Monitoring emails are included with Standard (weekly rescans) and Professional (daily rescans).",
+    );
+    // Standard tile + Professional tile + card CTA + Manage subscription.
+    expect(html.match(/Start 7-day free trial/g)).toHaveLength(3);
+  });
+
+  it("Free, trial used: the card CTA reads Upgrade to Standard", () => {
+    const html = renderSettings("free", false, { configured: true });
+
+    expect(html.match(/Upgrade to Standard/g)).toHaveLength(2);
+    expect(html).not.toContain("Start 7-day");
   });
 });

@@ -158,6 +158,9 @@ describe("getShopMetadata", () => {
         staleResultsShownAt: true,
         // gc-97k.8: the durable ever-paid signal behind the trial promise.
         everPaidAt: true,
+        // gc-syz.6: Settings monitoring-emails card state.
+        alertsEnabled: true,
+        alertEmail: true,
       },
     });
   });
