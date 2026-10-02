@@ -2837,6 +2837,13 @@ describe("extractStaticProductCandidates", () => {
 // ---------------------------------------------------------------------------
 
 describe("detectGhostLayouts", () => {
+  // Layout detection needs a template set to check usage against (gc-vi7b).
+  const INDEX_TEMPLATE: ThemeFile = {
+    filename: "templates/index.json",
+    content: '{"sections":{},"order":[]}',
+  };
+  const detect = (files: ThemeFile[]) => detectGhostLayouts([...files, INDEX_TEMPLATE]);
+
   it("detects PageFly layout", () => {
     const files: ThemeFile[] = [
       {
@@ -2844,7 +2851,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>PageFly layout content</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(1);
     expect(findings[0].findingType).toBe(FindingType.GHOST_LAYOUT);
     expect(findings[0].appName).toBe("PageFly");
@@ -2859,7 +2866,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>GemPages layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("GemPages");
   });
@@ -2871,7 +2878,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>Shogun layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("Shogun");
   });
@@ -2883,7 +2890,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>GemPages landing layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("GemPages");
   });
@@ -2895,7 +2902,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>Main theme layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(0);
   });
 
@@ -2906,7 +2913,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>Password layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(0);
   });
 
@@ -2917,7 +2924,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>Checkout layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(0);
   });
 
@@ -2928,7 +2935,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>Unknown app layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBeUndefined();
     expect(findings[0].description).toContain("likely left by an uninstalled page builder");
@@ -2941,7 +2948,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>Custom landing layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(0);
   });
 
@@ -2960,7 +2967,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>GemPages layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(2);
     const appNames = findings.map((f) => f.appName);
     expect(appNames).toContain("PageFly");
@@ -2974,7 +2981,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>PageFly layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings[0].severity).toBe(Severity.MEDIUM);
   });
 
@@ -2985,7 +2992,7 @@ describe("detectGhostLayouts", () => {
         content: "{% comment %}\n<html>PageFly layout</html>\n{% endcomment %}",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings[0].severity).toBe(Severity.LOW);
   });
 
@@ -2997,7 +3004,7 @@ describe("detectGhostLayouts", () => {
         content: longContent,
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings[0].codeSnippet).toHaveLength(300);
   });
 
@@ -3008,7 +3015,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>PageFly layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings[0].lineNumber).toBe(1);
   });
 
@@ -3022,6 +3029,7 @@ describe("detectGhostLayouts", () => {
         filename: "layout/theme.pagefly.liquid",
         content: "<html>PageFly layout content</html>",
       },
+      INDEX_TEMPLATE,
     ];
     const { findings } = scanThemeFiles(files);
     const layoutFindings = findingsOfType(findings, FindingType.GHOST_LAYOUT);
@@ -3029,17 +3037,16 @@ describe("detectGhostLayouts", () => {
     expect(layoutFindings[0].appName).toBe("PageFly");
   });
 
-  it("attributes via file content when filename does not match known patterns", () => {
+  it("never attributes a layout by content (unknown stem stays unattributed)", () => {
     const files: ThemeFile[] = [
       {
         filename: "layout/theme.custombuilder.liquid",
         content: '<html><script src="https://cdn.pagefly.io/pagefly.js"></script></html>',
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(1);
-    // Should be attributed via identifyAppFromCode matching pagefly pattern in content
-    expect(findings[0].appName).toBe("PageFly");
+    expect(findings[0].appName).toBeUndefined();
   });
 
   it("detects Zipify layout", () => {
@@ -3049,7 +3056,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>Zipify layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("Zipify Pages");
   });
@@ -3061,7 +3068,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>EComSolid layout</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("EComSolid");
   });
@@ -3073,7 +3080,7 @@ describe("detectGhostLayouts", () => {
         content: "<html>Not a layout file</html>",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(0);
   });
 
@@ -3084,8 +3091,123 @@ describe("detectGhostLayouts", () => {
         content: "{}",
       },
     ];
-    const findings = detectGhostLayouts(files);
+    const findings = detect(files);
     expect(findings).toHaveLength(0);
+  });
+
+  // --- gc-vi7b: usage check, filename-only attribution, completeness ---
+  const ALL_APPS_CONTENT =
+    "{{ 'x' }} cdn.zipify.com klaviyo.com <script src=\"https://cdn.avada.io/a.js\"></script> cdn.pagefly.io";
+
+  it("does not flag an active PageFly layout used by a Liquid template tag", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.pagefly.liquid", content: "<html></html>" },
+      { filename: "templates/page.pagefly.liquid", content: "{% layout 'theme.pagefly' %}\n" },
+    ];
+    expect(detect(files)).toHaveLength(0);
+  });
+
+  it("handles whitespace-control and double-quoted layout tags", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.pagefly.liquid", content: "<html></html>" },
+      { filename: "templates/page.liquid", content: '{%- layout "theme.pagefly" -%}' },
+    ];
+    expect(detect(files)).toHaveLength(0);
+  });
+
+  it("does not flag an active GemPages layout used by a JSON template with a header comment", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.gempages.blank.liquid", content: ALL_APPS_CONTENT },
+      {
+        filename: "templates/page.gp-template-1.json",
+        content:
+          '/*\n * IMPORTANT: auto-generated\n */\n{"layout":"theme.gempages.blank","sections":{},"order":[]}',
+      },
+    ];
+    expect(detect(files)).toHaveLength(0);
+  });
+
+  it("honors layout references in nested template dirs (customers/, metaobject/)", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.shogun.landing.liquid", content: "<html></html>" },
+      { filename: "templates/customers/login.json", content: '{"layout":"theme.shogun.landing"}' },
+    ];
+    expect(detect(files)).toHaveLength(0);
+  });
+
+  it("flags an orphaned GemPages layout as GemPages even when content carries other apps' code", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.gempages.header.liquid", content: ALL_APPS_CONTENT },
+      { filename: "layout/theme.gem-layout-none.liquid", content: ALL_APPS_CONTENT },
+      { filename: "layout/theme.shogun.landing.liquid", content: ALL_APPS_CONTENT },
+      { filename: "layout/theme.zipifypages.liquid", content: ALL_APPS_CONTENT },
+    ];
+    const byFile = Object.fromEntries(detect(files).map((f) => [f.filename, f.appName]));
+    expect(byFile).toEqual({
+      "layout/theme.gempages.header.liquid": "GemPages",
+      "layout/theme.gem-layout-none.liquid": "GemPages",
+      "layout/theme.shogun.landing.liquid": "Shogun",
+      "layout/theme.zipifypages.liquid": "Zipify Pages",
+    });
+  });
+
+  it("attributes ecom.liquid / layouthub.liquid by name", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/ecom.liquid", content: ALL_APPS_CONTENT },
+      { filename: "layout/layouthub.liquid", content: ALL_APPS_CONTENT },
+    ];
+    const byFile = Object.fromEntries(detect(files).map((f) => [f.filename, f.appName]));
+    expect(byFile).toEqual({
+      "layout/ecom.liquid": "EComposer",
+      "layout/layouthub.liquid": "LayoutHub",
+    });
+  });
+
+  it("never flags non-pattern layouts even when their content contains app code", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme-backup-booster-seo.liquid", content: ALL_APPS_CONTENT },
+      { filename: "layout/gift_card.liquid", content: ALL_APPS_CONTENT },
+      { filename: "layout/landing.liquid", content: ALL_APPS_CONTENT },
+    ];
+    expect(detect(files)).toHaveLength(0);
+  });
+
+  it("flags an unknown orphaned theme.foo.liquid with no appName", () => {
+    const findings = detect([{ filename: "layout/theme.foo.liquid", content: ALL_APPS_CONTENT }]);
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBeUndefined();
+  });
+
+  it('does not treat {% layout none %} or "layout": false as a reference', () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.pagefly.liquid", content: "<html></html>" },
+      { filename: "templates/gift_card.liquid", content: "{% layout none %}" },
+      { filename: "templates/page.json", content: '{"layout": false}' },
+    ];
+    expect(detect(files)).toHaveLength(1);
+  });
+
+  it("flags only the unreferenced layout when another is in use", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.pagefly.liquid", content: "<html></html>" },
+      { filename: "layout/theme.gempages.blank.liquid", content: "<html></html>" },
+      { filename: "templates/page.json", content: '{"layout":"theme.pagefly"}' },
+    ];
+    const findings = detect(files);
+    expect(findings.map((f) => f.filename)).toEqual(["layout/theme.gempages.blank.liquid"]);
+  });
+
+  it("flags nothing when no templates are present (incomplete file set)", () => {
+    const files: ThemeFile[] = [{ filename: "layout/theme.pagefly.liquid", content: "x" }];
+    expect(detectGhostLayouts(files)).toHaveLength(0);
+  });
+
+  it("flags nothing when a JSON template cannot be parsed (reference set untrustworthy)", () => {
+    const files: ThemeFile[] = [
+      { filename: "layout/theme.pagefly.liquid", content: "x" },
+      { filename: "templates/page.json", content: "{not json" },
+    ];
+    expect(detect(files)).toHaveLength(0);
   });
 });
 

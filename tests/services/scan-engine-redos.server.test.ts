@@ -33,6 +33,7 @@ import {
   detectGhostFont,
   detectGhostHrefLang,
   detectGhostJsonLd,
+  detectGhostLayouts,
   detectGhostOg,
   detectGhostPreconnect,
   detectGhostRobots,
@@ -747,5 +748,20 @@ describe("parseSettingsData is linear on adversarial input (gc-ecr)", () => {
     let result: unknown = "unset";
     expect(timed(() => (result = parseSettingsData(content)))).toBeLessThan(REDOS_BUDGET_MS);
     expect(result).toBeNull();
+  });
+});
+
+// gc-vi7b: the layout-tag regex and the builder stem rules stay linear.
+describe("detectGhostLayouts is linear on adversarial input (gc-vi7b)", () => {
+  it("handles a flood of unterminated layout tags and a huge layout name", () => {
+    const flood = "{% layout ".repeat(60_000) + "'" + "a".repeat(200_000);
+    const files: ThemeFile[] = [
+      { filename: "layout/theme." + "gem-".repeat(5_000) + ".liquid", content: "x" },
+      { filename: "templates/page.liquid", content: flood },
+      { filename: "templates/index.json", content: "{}" },
+    ];
+    let result: unknown[] = [];
+    expect(timed(() => (result = detectGhostLayouts(files)))).toBeLessThan(REDOS_BUDGET_MS);
+    expect(result).toHaveLength(1);
   });
 });

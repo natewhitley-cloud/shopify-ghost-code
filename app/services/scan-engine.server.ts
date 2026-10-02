@@ -3088,19 +3088,19 @@ const BUILTIN_SECTION_TYPES = new Set([
 const LEADING_BLOCK_COMMENT_RE = /^\s*\/\*[\s\S]*?\*\//;
 
 /**
- * Parse `config/settings_data.json` content (gc-ecr, spec 5.1).
+ * Parse a Shopify theme JSON file (config/settings_data.json, templates/*.json).
  *
- * The Admin GraphQL theme-files API returns this file prefixed with Shopify's
+ * The Admin GraphQL theme-files API returns these files prefixed with Shopify's
  * auto-generated block comment ("IMPORTANT: The contents of this file are
  * auto-generated..."), which is not valid JSON. A bare `JSON.parse` therefore
- * threw on every real theme, so SETTINGS_DRIFT never fired in prod. We strip
- * exactly ONE leading block comment and nothing else (a `/*` inside a JSON
- * string value must survive), then parse.
+ * threw on every real theme (gc-ecr). We strip exactly ONE leading block
+ * comment and nothing else (a `/*` inside a JSON string value must survive),
+ * then parse.
  *
  * Returns null on malformed JSON or when the root is not a plain object
  * (arrays, scalars, null), so callers keep the graceful-skip behavior.
  */
-export function parseSettingsData(content: string): Record<string, unknown> | null {
+export function parseThemeJson(content: string): Record<string, unknown> | null {
   const json = content.replace(LEADING_BLOCK_COMMENT_RE, "");
   let parsed: unknown;
   try {
@@ -3110,6 +3110,11 @@ export function parseSettingsData(content: string): Record<string, unknown> | nu
   }
   if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) return null;
   return parsed as Record<string, unknown>;
+}
+
+/** Parse `config/settings_data.json` content (gc-ecr, spec 5.1). See parseThemeJson. */
+export function parseSettingsData(content: string): Record<string, unknown> | null {
+  return parseThemeJson(content);
 }
 
 /**
@@ -3350,23 +3355,69 @@ export function detectGhostAppEmbeds(
 // ---------------------------------------------------------------------------
 
 /**
- * Legitimate layout filenames that Shopify themes use natively.
- * Any layout file not in this set is a candidate for ghost layout detection.
+ * Legitimate layout filenames that Shopify themes use natively. Redundant with
+ * the pattern gate below (none of these match `theme.<x>.liquid`), kept as an
+ * explicit allow-list.
  */
 const LEGITIMATE_LAYOUTS = new Set(["theme.liquid", "password.liquid", "checkout.liquid"]);
 
 /**
- * Local lookup map for page builder apps that create layout files with the
- * `theme.{appname}.liquid` naming convention. Used when identifyAppFromSnippetName
- * and identifyAppFromCode don't catch the attribution from the filename alone.
+ * Page-builder layout files, attributed by FILENAME ONLY (gc-vi7b). Matched
+ * against the layout basename minus `.liquid` and minus a leading `theme.`
+ * (so `theme.gempages.blank.liquid` -> `gempages.blank`). First match wins.
+ *
+ * Never attribute a layout by its content: a layout is a copy of theme.liquid
+ * and contains EVERY installed app's code, so content matching picks an
+ * arbitrary app (prod: theme.gempages.* -> "Zipify OneClickUpsell").
+ *
+ * Sources: PageFly/GemPages/Shogun/Zipify/EComSolid prefixes carried over from
+ * the original map plus prod layout names; `ecom` (EComposer) and `layouthub`
+ * (LayoutHub) are builder-named files seen in prod scans. No vendor docs
+ * confirm them; they are self-evident from the builder name.
  */
-const LAYOUT_FILENAME_APP_MAP: Record<string, string> = {
-  pagefly: "PageFly",
-  gempages: "GemPages",
-  shogun: "Shogun",
-  zipify: "Zipify Pages",
-  ecomsolid: "EComSolid",
-};
+const LAYOUT_BUILDER_RULES: ReadonlyArray<{ stem: RegExp; appName: string }> = [
+  { stem: /^pagefly/, appName: "PageFly" },
+  { stem: /^(?:gempages|gem-)/, appName: "GemPages" },
+  { stem: /^shogun/, appName: "Shogun" },
+  { stem: /^zipify/, appName: "Zipify Pages" },
+  { stem: /^ecomsolid/, appName: "EComSolid" },
+  { stem: /^ecom(?:poser)?(?:[-_.]|$)/, appName: "EComposer" },
+  { stem: /^layouthub/, appName: "LayoutHub" },
+];
+
+/** `{% layout 'name' %}` / `{%- layout "name" -%}`; `{% layout none %}` has no quotes so never matches. */
+const LIQUID_LAYOUT_TAG_RE = /\{%-?\s*layout\s+(?:'([^']*)'|"([^"]*)")/g;
+
+/**
+ * Collect the layout names referenced by templates (templates/**, incl.
+ * customers/ and metaobject/): Liquid `{% layout %}` tags and the top-level
+ * `"layout"` key of JSON templates. Returns null when the reference set cannot
+ * be trusted (no template at all, or a JSON template that does not parse): a
+ * missing referencing template would turn an ACTIVE layout into a false
+ * "orphan", so the caller must not flag anything then.
+ *
+ * fetchThemeFiles returns every text file (no filename filter, paginated); it
+ * only drops non-text bodies, which templates never are in practice.
+ */
+function collectReferencedLayouts(files: ThemeFile[]): Set<string> | null {
+  const referenced = new Set<string>();
+  let sawTemplate = false;
+  for (const file of files) {
+    if (!file.filename.startsWith("templates/")) continue;
+    if (file.filename.endsWith(".liquid")) {
+      sawTemplate = true;
+      for (const m of file.content.matchAll(LIQUID_LAYOUT_TAG_RE)) {
+        referenced.add(m[1] ?? m[2]);
+      }
+    } else if (file.filename.endsWith(".json")) {
+      sawTemplate = true;
+      const parsed = parseThemeJson(file.content);
+      if (parsed === null) return null;
+      if (typeof parsed.layout === "string") referenced.add(parsed.layout);
+    }
+  }
+  return sawTemplate ? referenced : null;
+}
 
 /**
  * Cross-file detector: finds orphaned layout files left by page builder apps.
@@ -3375,17 +3426,16 @@ const LAYOUT_FILENAME_APP_MAP: Record<string, string> = {
  * and optionally `layout/checkout.liquid` (Shopify Plus). Page builder apps create
  * alternate layouts like `layout/theme.pagefly.liquid` which persist after uninstall.
  *
- * Attribution strategy (tried in order):
- *   1. Extract the stem from `theme.{stem}.liquid` and check LAYOUT_FILENAME_APP_MAP
- *   2. Try identifyAppFromSnippetName on the full filename stem (without path/extension)
- *   3. Try identifyAppFromCode on the file content
- *
- * A finding is emitted if the file is attributed to an app OR if the filename
- * matches the `theme.*.liquid` pattern (strong signal of app origin). Files that
- * match neither are skipped — they could be custom merchant layouts.
+ * A layout is flagged only when ALL hold (gc-vi7b):
+ *   - it is a builder layout by NAME: `theme.<stem>.liquid`, or a stem listed in
+ *     LAYOUT_BUILDER_RULES (gem-*, ecom, layouthub). Content never qualifies a file.
+ *   - no template references it (an active page-builder store is not orphaned).
+ *   - the template set is complete enough to trust (collectReferencedLayouts).
+ * Attribution is by filename only; an unlisted `theme.<x>.liquid` has no appName.
  */
 export function detectGhostLayouts(files: ThemeFile[]): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
+  let referenced: Set<string> | null | undefined;
 
   for (const file of files) {
     // Only process layout/*.liquid files
@@ -3397,39 +3447,18 @@ export function detectGhostLayouts(files: ThemeFile[]): CreateFindingInput[] {
     // Skip legitimate Shopify layout files
     if (LEGITIMATE_LAYOUTS.has(basename)) continue;
 
-    // Determine if this matches the theme.*.liquid app layout pattern
-    const themeLayoutMatch = basename.match(/^theme\.(.+)\.liquid$/);
-    const isAppLayoutPattern = themeLayoutMatch !== null;
+    const layoutName = basename.replace(/\.liquid$/, "");
+    const isThemeDotPattern = /^theme\..+\.liquid$/.test(basename);
+    const stem = layoutName.replace(/^theme\./, "").toLowerCase();
+    const appName = LAYOUT_BUILDER_RULES.find((r) => r.stem.test(stem))?.appName;
 
-    // Also check for gem-*.liquid pattern (GemPages alternate naming)
-    const isGemPattern = /^gem-.+\.liquid$/.test(basename);
+    // Name gate: neither a theme.*.liquid layout nor a known builder name.
+    if (!isThemeDotPattern && !appName) continue;
 
-    // Try attribution: filename-based lookup first
-    let appName: string | undefined;
-
-    if (themeLayoutMatch) {
-      const stem = themeLayoutMatch[1].toLowerCase();
-      appName = LAYOUT_FILENAME_APP_MAP[stem];
-    }
-
-    // Try identifyAppFromSnippetName on the filename stem (without extension)
-    if (!appName) {
-      const filenameStem = basename.replace(/\.liquid$/, "");
-      appName = identifyAppFromSnippetName(filenameStem) ?? undefined;
-    }
-
-    // Try identifyAppFromCode on file content for broader matching
-    if (!appName) {
-      appName = identifyAppFromCode(file.content) ?? undefined;
-    }
-
-    // For gem-*.liquid pattern, default to GemPages if not otherwise attributed
-    if (!appName && isGemPattern) {
-      appName = "GemPages";
-    }
-
-    // Only emit a finding if attributed OR if it matches the theme.*.liquid pattern
-    if (!appName && !isAppLayoutPattern && !isGemPattern) continue;
+    // Usage gate (computed lazily, once).
+    if (referenced === undefined) referenced = collectReferencedLayouts(files);
+    if (referenced === null) return []; // incomplete template set: flag nothing
+    if (referenced.has(layoutName)) continue;
 
     const codeSnippet = file.content.slice(0, 300);
     const severity = classifySeverity(FindingType.GHOST_LAYOUT, codeSnippet);

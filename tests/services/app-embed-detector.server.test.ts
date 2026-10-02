@@ -163,7 +163,14 @@ describe("GHOST_APP_EMBED via scanThemeFiles", () => {
     scanThemeFiles(files).findings.filter((f) => f.findingType === t);
 
   it("does NOT flag an actively used app: enabled embed + theme.pagefly.liquid only (gc-n02p)", () => {
-    const files = [settingsWith({ "1": { type: PAGEFLY_TYPE, disabled: false } }), pageflyLayout];
+    // A template is needed for layout detection to trust its usage check (gc-vi7b);
+    // this one does not reference the layout, so the layout is still an orphan.
+    const indexTemplate = { filename: "templates/index.json", content: "{}" };
+    const files = [
+      settingsWith({ "1": { type: PAGEFLY_TYPE, disabled: false } }),
+      pageflyLayout,
+      indexTemplate,
+    ];
     const result = scanThemeFiles(files).findings;
     // The layout file IS detected as PageFly code...
     expect(
