@@ -119,8 +119,9 @@ describe("handleError", () => {
 });
 
 // Exact messages thrown by react-router's throwIfPotentialCSRFAttack
-// (node_modules/react-router/dist/development/chunk-*.mjs). If an RR upgrade
-// rewords them, these tests go red rather than the digest silently filling up.
+// (node_modules/react-router/dist/development/chunk-*.mjs). These are hardcoded
+// copies, so they do NOT detect an RR reword; tests/entry.server.csrf.integration
+// .test.ts drives RR's real handler and is what goes red if RR changes behavior.
 const CSRF_ORIGIN_MISMATCH =
   "The `request.url` origin does not match `origin` header from a forwarded action request. Aborting the action.";
 const CSRF_INVALID_ORIGIN = "`origin` header is not a valid URL. Aborting the action.";
@@ -198,6 +199,55 @@ describe("handleError — scanner noise (gc-kly, gc-6lw)", () => {
     handleError(error, { request: scannerRequest("/app/scans") });
 
     expect(consoleErrorSpy).toHaveBeenCalledWith(error);
+  });
+});
+
+describe("handleError — single-fetch CSRF 'Bad Request' (gc-1cm)", () => {
+  let consoleErrorSpy: ReturnType<typeof vi.spyOn>;
+  let consoleWarnSpy: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    consoleErrorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    consoleWarnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+
+  afterEach(() => {
+    consoleErrorSpy.mockRestore();
+    consoleWarnSpy.mockRestore();
+  });
+
+  function dataRequest(method: string, origin?: string, url = "http://internal/_root.data") {
+    return new Request(url, { method, ...(origin ? { headers: { origin } } : {}) });
+  }
+
+  it.each([
+    ["foreign origin", "https://evil.com"],
+    ["unparseable origin", "not a url"],
+    ['literal "null" origin', "null"],
+  ])("Bad Request + %s on a POST is a CSRF rejection: warn only", async (_label, origin) => {
+    const handleError = await importHandleError();
+
+    handleError(new Error("Bad Request"), { request: dataRequest("POST", origin) });
+
+    expect(mockRecordApiError).not.toHaveBeenCalled();
+    expect(consoleErrorSpy).not.toHaveBeenCalled();
+    expect(consoleWarnSpy).toHaveBeenCalledWith("csrf rejection: POST /_root.data");
+  });
+
+  it.each([
+    ["same-origin Origin", "POST", "http://internal"],
+    ["allowed-host Origin", "POST", "https://app.alpenglowsoftware.com"],
+    ["no Origin", "POST", undefined],
+    ["GET with foreign Origin", "GET", "https://evil.com"],
+  ])("Bad Request + %s is still logged and recorded", async (_label, method, origin) => {
+    const handleError = await importHandleError();
+
+    handleError(new Error("Bad Request"), { request: dataRequest(method, origin) });
+
+    expect(mockRecordApiError).toHaveBeenCalledOnce();
+    expect(consoleErrorSpy).toHaveBeenCalledOnce();
+    expect(consoleWarnSpy).not.toHaveBeenCalled();
   });
 });
 

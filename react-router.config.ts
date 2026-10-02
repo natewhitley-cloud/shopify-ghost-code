@@ -1,5 +1,7 @@
 import type { Config } from "@react-router/dev/config";
 
+import { ALLOWED_ACTION_ORIGINS } from "./app/lib/action-origins";
+
 export default {
   // React Router 7.18 tightened the action-origin CSRF check: it now compares the
   // browser's `Origin` header against the origin of `request.url` instead of the
@@ -14,5 +16,5 @@ export default {
   // DEPLOY-VERIFY REQUIRED: this cannot be exercised locally (dev origins match, so the
   // fallback allowlist is never consulted). On the first real deploy, confirm a browser
   // mutation succeeds (trigger a scan or save settings) before considering this closed.
-  allowedActionOrigins: ["app.alpenglowsoftware.com"],
+  allowedActionOrigins: ALLOWED_ACTION_ORIGINS,
 } satisfies Config;

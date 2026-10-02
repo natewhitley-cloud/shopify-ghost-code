@@ -5,6 +5,7 @@ import { isbot } from "isbot";
 import { renderToPipeableStream } from "react-dom/server";
 import { isRouteErrorResponse, ServerRouter, type EntryContext } from "react-router";
 
+import { isCsrfOriginRejected } from "./lib/action-origins";
 import { recordApiError } from "./models/ops-event.server";
 import { addDocumentResponseHeaders } from "./shopify.server";
 
@@ -132,7 +133,7 @@ export function handleError(error: unknown, { request }: { request: Request }): 
   // React Router's action-origin CSRF check rejected the request (and answers
   // 400). Expected security behavior, typically a scanner sending a foreign
   // Origin: one line, no stack, and not counted in the digest. (gc-kly)
-  if (isCsrfRejection(error)) {
+  if (isCsrfRejection(error, request)) {
     console.warn(`csrf rejection: ${request.method} ${requestPath(request) ?? ""}`);
     return;
   }
@@ -143,14 +144,17 @@ export function handleError(error: unknown, { request }: { request: Request }): 
 const QUIET_ROUTE_ERROR_STATUSES = new Set([404, 405]);
 
 /**
- * Matches the two Errors react-router's throwIfPotentialCSRFAttack throws (origin
- * mismatch, unparseable origin header). Both end with this exact sentence; there
- * is no exported error class to check against.
+ * Document POSTs hand handleError the two Errors react-router's
+ * throwIfPotentialCSRFAttack throws (origin mismatch, unparseable origin header);
+ * both end with this exact sentence and there is no exported error class.
+ * Single-fetch (`.data`) POSTs swallow that error and pass a generic
+ * `Error("Bad Request")` instead, so there we re-check the actual CSRF condition
+ * on the request rather than trusting the message alone.
  */
-function isCsrfRejection(error: unknown): boolean {
-  return (
-    error instanceof Error &&
-    error.message.endsWith("Aborting the action.") &&
-    error.message.includes("`origin` header")
-  );
+function isCsrfRejection(error: unknown, request: Request): boolean {
+  if (!(error instanceof Error)) return false;
+  if (error.message.endsWith("Aborting the action.") && error.message.includes("`origin` header")) {
+    return true;
+  }
+  return error.message === "Bad Request" && isCsrfOriginRejected(request);
 }
