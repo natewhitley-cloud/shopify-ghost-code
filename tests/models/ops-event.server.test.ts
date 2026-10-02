@@ -42,6 +42,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 // ---------------------------------------------------------------------------
 
 import {
+  API_ERROR_HOURLY_LIMIT_PER_CODE,
   CLIENT_ERROR_HOURLY_LIMIT,
   CLIENT_ERROR_RETENTION_DAYS,
   countApiErrorsByLevel,
@@ -410,6 +411,10 @@ describe("recordWebhookFailure", () => {
 // ---------------------------------------------------------------------------
 
 describe("recordApiError", () => {
+  beforeEach(() => {
+    mockDb.opsEvent.count.mockResolvedValue(0);
+  });
+
   it("writes an api_error event with level in metadata and code as the key", async () => {
     mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
 
@@ -465,6 +470,65 @@ describe("recordApiError", () => {
     await expect(
       recordApiError({ level: "error", code: "graphql_error", message: "boom" }),
     ).resolves.toBeUndefined();
+  });
+});
+
+describe("recordApiError: per-code hourly cap (gc-2sw)", () => {
+  const input = { level: "error" as const, code: "server_error", message: "boom" };
+
+  beforeEach(() => {
+    mockDb.opsEvent.count.mockResolvedValue(0);
+    mockDb.opsEvent.create.mockResolvedValue({ id: "e1" });
+  });
+
+  it("writes once when under the cap", async () => {
+    mockDb.opsEvent.count.mockResolvedValue(API_ERROR_HOURLY_LIMIT_PER_CODE - 1);
+    await recordApiError(input);
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+    expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+      data: {
+        eventType: OPS_EVENT_TYPES.API_ERROR,
+        key: "server_error",
+        message: "boom",
+        metadata: { level: "error" },
+      },
+    });
+  });
+
+  it("skips the write silently at the cap", async () => {
+    expect(API_ERROR_HOURLY_LIMIT_PER_CODE).toBe(30);
+    mockDb.opsEvent.count.mockResolvedValue(API_ERROR_HOURLY_LIMIT_PER_CODE);
+    await expect(recordApiError(input)).resolves.toBeUndefined();
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+    expect(mockLoggerWarn).not.toHaveBeenCalled();
+  });
+
+  it("fails open: still writes when the count query rejects", async () => {
+    mockDb.opsEvent.count.mockRejectedValue(new Error("db down"));
+    await expect(recordApiError(input)).resolves.toBeUndefined();
+    expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+  });
+
+  it("scopes the count to api_error + this code + the trailing hour", async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(new Date("2026-10-02T12:00:00.000Z"));
+      await recordApiError(input);
+      expect(mockDb.opsEvent.count).toHaveBeenCalledWith({
+        where: {
+          key: "server_error",
+          eventType: OPS_EVENT_TYPES.API_ERROR,
+          createdAt: { gte: new Date("2026-10-02T11:00:00.000Z") },
+        },
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("never throws when the insert rejects", async () => {
+    mockDb.opsEvent.create.mockRejectedValue(new Error("db down"));
+    await expect(recordApiError(input)).resolves.toBeUndefined();
   });
 });
 

@@ -101,6 +101,14 @@ export const CLIENT_ERROR_RETENTION_DAYS = 30;
 export const CLIENT_ERROR_HOURLY_LIMIT = 30;
 const CLIENT_ERROR_RATE_WINDOW_MS = 60 * 60 * 1000;
 
+/**
+ * Max api_error rows stored per code (the row key) per trailing hour (gc-2sw).
+ * api_error is exempt from pruning, so without this a bot storm hitting a route
+ * that throws a bare Error would write unbounded, permanent rows.
+ */
+export const API_ERROR_HOURLY_LIMIT_PER_CODE = 30;
+const API_ERROR_RATE_WINDOW_MS = 60 * 60 * 1000;
+
 export interface RecordOpsEventInput {
   eventType: string;
   /** For heartbeat/failure events: the inngest function id. */
@@ -279,6 +287,13 @@ export async function recordClientError(
  * recordOpsEvent — same never-throws guarantee. `level` distinguishes a genuine
  * error from a proximity warning; it is stored in metadata so the digest can
  * tally the two independently (see countApiErrorsByLevel).
+ *
+ * Capped at API_ERROR_HOURLY_LIMIT_PER_CODE rows per code per trailing hour
+ * (gc-2sw); at the cap the write is skipped silently (logging each drop would
+ * itself flood logs). The digest's per-code count therefore saturates at the
+ * cap. Check-then-insert is not atomic, so concurrent errors can overshoot by
+ * a few rows; fine for a volume bound. Unlike recordClientError this FAILS
+ * OPEN: an error recorder must not drop real errors because the count failed.
  */
 export async function recordApiError(input: {
   level: "error" | "warn";
@@ -287,6 +302,19 @@ export async function recordApiError(input: {
   message: string;
   metadata?: Record<string, string | number>;
 }): Promise<void> {
+  try {
+    const recent = await db.opsEvent.count({
+      where: {
+        key: input.code,
+        eventType: OPS_EVENT_TYPES.API_ERROR,
+        createdAt: { gte: new Date(Date.now() - API_ERROR_RATE_WINDOW_MS) },
+      },
+    });
+    if (recent >= API_ERROR_HOURLY_LIMIT_PER_CODE) return;
+  } catch {
+    // Fail open: fall through and attempt the write.
+  }
+
   await recordOpsEvent({
     eventType: OPS_EVENT_TYPES.API_ERROR,
     key: input.code,
@@ -364,8 +392,9 @@ async function findOpsEventMetadataSince(eventType: string, sinceMs: number): Pr
  * Level fallback: a row whose `metadata.level` is anything other than the string
  * "warn" (missing, null, malformed, or literally "error") is counted as an
  * error. This is deliberate — an unclassifiable API_ERROR row is more useful
- * surfaced as an error than silently dropped. Volume is low (these rows only
- * exist when a genuine API error/warning fired), so an in-memory tally is fine.
+ * surfaced as an error than silently dropped. Volume is bounded (recordApiError caps
+ * rows at API_ERROR_HOURLY_LIMIT_PER_CODE per code per hour), so an in-memory tally
+ * is fine.
  */
 export async function countApiErrorsByLevel(
   sinceMs: number,
@@ -592,9 +621,9 @@ async function getLatestHeartbeatByKey(
  * DELIBERATELY NARROW: this prunes ONLY `cron_heartbeat`, `page_visit`,
  * `client_error` and the nudge-funnel types.
  * `function_failure` rows back the operator digest's failure history and are left
- * untouched at any age. The remaining low-volume types (api_error,
- * webhook_failure, digest_snapshot, worker_fallback, scan_signal) are also left
- * alone — they don't accumulate the way heartbeats and page visits do. Widen this
+ * untouched at any age. The remaining types (api_error, which recordApiError
+ * caps per code per hour; webhook_failure, digest_snapshot, worker_fallback,
+ * scan_signal) are also left alone — they don't accumulate the way heartbeats and page visits do. Widen this
  * predicate only alongside a matching per-type retention rationale.
  *
  * Each cutoff is computed from `new Date()` at call time, so each run trims
