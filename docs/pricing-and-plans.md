@@ -1,6 +1,6 @@
 # Ghost Code — Pricing & Plans
 
-> **Last updated:** 2026-09-18
+> **Last updated:** 2026-10-02
 > **Source of truth for:** plan tiers, feature gating, upgrade triggers, pricing decisions.
 > Update this file when billing logic, plan features, or pricing changes.
 
@@ -17,6 +17,7 @@
 | Themes                 | 1                                                                                                                                                                               |
 | Auto-rescan on publish | No                                                                                                                                                                              |
 | Scan diffing           | No                                                                                                                                                                              |
+| New-findings alerts    | None (`alertCadence: "none"`; Free has no scheduled rescans)                                                                                                                    |
 | Broken-link detection  | No (dangling-reference / Broken Links audit is Standard+)                                                                                                                       |
 
 **Purpose:** Let merchants discover they have a problem. The first scan is the marketing moment — generous on surface, tight on actionability. Showing the worst finding with full detail (file, line, snippet) creates maximum urgency while keeping the rest locked behind upgrade.
@@ -50,6 +51,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 | Themes                 | 1                                                |
 | Auto-rescan on publish | No                                               |
 | Scan diffing           | No                                               |
+| New-findings alerts    | Weekly (`alertCadence: "weekly"`, gc-syz)        |
 | Broken-link detection  | Yes (dangling references verified via Admin API) |
 
 **Purpose:** The mid-tier workhorse. Merchants get full finding details and weekly cadence — enough to stay on top of orphaned code without unlimited manual scans. The weekly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap creates clear daylight between Standard and Professional (unlimited).
@@ -81,6 +83,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 | Themes                 | Unlimited                                        |
 | Auto-rescan on publish | Yes                                              |
 | Scan diffing           | Yes (new / resolved / unchanged between scans)   |
+| New-findings alerts    | Daily (`alertCadence: "daily"`, gc-syz)          |
 | Broken-link detection  | Yes (dangling references verified via Admin API) |
 
 **Purpose:** "Set it and forget it" for multi-theme stores. Continuous monitoring with change tracking.
@@ -94,6 +97,10 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 5. Scan diffing (New/Resolved)
 6. Daily automatic scans
 7. 7-day free trial
+
+### Merchant new-findings alerts (gc-syz, in progress, not yet sending)
+
+Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatures.alertCadence` (`app/lib/billing.server.ts`) is `none` (Free), `weekly` (Standard) or `daily` (Professional), matching each plan's scheduled-scan cadence (Free has no rescans, so nothing to alert on). `canReceiveAlerts(plan)` and `getAlertWindowMs(plan)` (`app/lib/plan-gating.server.ts`) are the single source for the gate and the throttle window (weekly 7 days, daily 1 day, none null). Any plan name that is not Standard or Professional resolves to Free (`none`). The owner email comes from Admin `shop { email }` (no extra scope) cached on `Shop.alertEmail`; opt-out is `Shop.alertsEnabled`; sends are recorded in the `MerchantAlert` ledger. All of it is deleted on shop/redact. The email sender and scan-job step are not built yet, so no merchant receives alerts today.
 
 ---
 

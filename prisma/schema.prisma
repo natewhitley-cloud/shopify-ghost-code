@@ -154,10 +154,37 @@ model Shop {
   // Shop row on shop/redact, so a reinstall after redact looks never-paid
   // (accepted).
   everPaidAt                   DateTime?
+  // Merchant monitoring alerts (gc-syz.1). alertsEnabled is the per-shop opt-out
+  // (default on: transactional monitoring mail). alertEmail caches the shop-owner
+  // email from Admin `shop { email }` (personal data: cleared with the Shop row on
+  // shop/redact). alertUnsubscribeToken is the opaque, lazily minted token behind
+  // the public one-click unsubscribe link.
+  alertsEnabled                Boolean   @default(true)
+  alertEmail                   String?
+  alertUnsubscribeToken        String?   @unique
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]
   merchantFeedback    MerchantFeedback[]
+  merchantAlerts      MerchantAlert[]
+}
+
+// Ledger of merchant-facing "new findings" alert emails (gc-syz.1): the dedup
+// (findingSetHash) and rate-limit (sentAt) source for gc-syz.4. A dedicated table,
+// NOT OpsEvent, so it cascades with the Shop. `recipient` is the merchant's email
+// (personal data), so deleteShopData also deletes these rows explicitly. scanId is
+// a plain string (no FK): the ledger must outlive a pruned/rescanned Scan row.
+model MerchantAlert {
+  id             String   @id @default(cuid())
+  shopId         String
+  shop           Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  scanId         String
+  findingSetHash String
+  newCount       Int
+  recipient      String
+  sentAt         DateTime @default(now())
+
+  @@index([shopId, sentAt])
 }
 
 // Merchant feedback survey submissions (gc-97k.3, ported from ClearSignal

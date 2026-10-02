@@ -644,6 +644,7 @@ export async function updateThemePublishTimestamp(
  *   Shop → BillingEvents
  *   Shop → IgnoredFinding
  *   Shop → MerchantFeedback (also deleted explicitly below: personal data)
+ *   Shop → MerchantAlert (also deleted explicitly below: holds the recipient email)
  *
  * OpsEvent has NO Shop FK, so cascade never touches it — yet observability rows
  * carry the shop's myshopify domain (webhook-failure `metadata.shop`, api-error
@@ -692,6 +693,10 @@ export async function deleteShopData(domain: string) {
     // merchant's optional contact email and free text, so the redact path names
     // it explicitly rather than relying on the FK alone (same as ClearSignal).
     db.merchantFeedback.deleteMany({ where: { shopId: shop.id } }),
+    // MerchantAlert (gc-syz.1) cascades from Shop too, but its `recipient` is the
+    // merchant's email, so it is named explicitly like MerchantFeedback. The Shop
+    // row delete below also removes alertEmail / alertUnsubscribeToken.
+    db.merchantAlert.deleteMany({ where: { shopId: shop.id } }),
     // Shop delete cascades to: Scans → Findings, UnknownScripts → SignatureSubmissions,
     // and BillingEvents (all have onDelete: Cascade on their Shop/Scan FK).
     db.shop.delete({ where: { domain } }),

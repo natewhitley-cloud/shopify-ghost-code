@@ -42,6 +42,9 @@ const mockDb = vi.hoisted(() => ({
   merchantFeedback: {
     deleteMany: vi.fn(),
   },
+  merchantAlert: {
+    deleteMany: vi.fn(),
+  },
   // Array-form $transaction: resolve each staged operation in parallel.
   $transaction: vi.fn(async (ops: Promise<unknown>[]) => Promise.all(ops)),
 }));
@@ -720,6 +723,29 @@ describe("deleteShopData", () => {
     });
   });
 
+  it("deletes the shop's MerchantAlert ledger rows (recipient email) before the Shop row (gc-syz.1)", async () => {
+    const existingShop = {
+      id: "shop-gdpr-alert",
+      domain: "delete-me.myshopify.com",
+      plan: "free",
+    };
+    mockDb.shop.findUnique.mockResolvedValue(existingShop);
+    mockDb.session.deleteMany.mockResolvedValue({ count: 0 });
+    mockDb.merchantAlert.deleteMany.mockResolvedValue({ count: 2 });
+    mockDb.shop.delete.mockResolvedValue(existingShop);
+
+    await deleteShopData("delete-me.myshopify.com");
+
+    expect(mockDb.merchantAlert.deleteMany).toHaveBeenCalledWith({
+      where: { shopId: "shop-gdpr-alert" },
+    });
+    // Same transaction, ordered before the Shop delete that removes alertEmail
+    // and alertUnsubscribeToken with the row.
+    expect(mockDb.merchantAlert.deleteMany.mock.invocationCallOrder[0]).toBeLessThan(
+      mockDb.shop.delete.mock.invocationCallOrder[0],
+    );
+  });
+
   it("purges OpsEvent rows carrying the domain (key + metadata.shop + metadata.shopDomain) and the internal shopId", async () => {
     const existingShop = {
       id: "shop-gdpr-ops",
@@ -909,7 +935,7 @@ describe("deleteShopData", () => {
     });
     // Staged in the one atomic transaction, before the shop delete.
     const staged = mockDb.$transaction.mock.calls[0][0] as unknown[];
-    expect(staged).toHaveLength(4);
+    expect(staged).toHaveLength(5);
     const feedbackDeleteOrder = mockDb.merchantFeedback.deleteMany.mock.invocationCallOrder[0];
     const shopDeleteOrder = mockDb.shop.delete.mock.invocationCallOrder[0];
     expect(feedbackDeleteOrder).toBeLessThan(shopDeleteOrder);

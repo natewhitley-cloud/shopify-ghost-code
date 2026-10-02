@@ -48,6 +48,8 @@ import {
   canDetectCheckoutSunset,
   canDetectDanglingReferences,
   canExportPdf,
+  canReceiveAlerts,
+  getAlertWindowMs,
   canViewFindingDetails,
   canUseAutoRescan,
   canUseMultipleThemes,
@@ -631,5 +633,35 @@ describe("canStartScan — nextScanAt when the quota blocks (gc-mgi)", () => {
 
     expect(result.allowed).toBe(false);
     expect(result.nextScanAt).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// canReceiveAlerts / getAlertWindowMs — alertCadence tiers (gc-syz.3)
+// ---------------------------------------------------------------------------
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+describe("alert gating (alertCadence)", () => {
+  // Every plan name the app can store, plus unknown/legacy/blank values that
+  // getPlanFeatures resolves to the free tier.
+  const CASES: Array<[string, boolean, number | null]> = [
+    ["free", false, null],
+    ["Standard", true, 7 * DAY_MS],
+    ["Professional", true, DAY_MS],
+    ["unknown-plan", false, null],
+    ["standard", false, null], // names are case-sensitive Shopify plan names
+    ["", false, null],
+  ];
+
+  it.each(CASES)("%s -> canReceiveAlerts=%s, window=%s", (plan, can, windowMs) => {
+    expect(canReceiveAlerts(plan)).toBe(can);
+    expect(getAlertWindowMs(plan)).toBe(windowMs);
+  });
+
+  it("canReceiveAlerts is true exactly when a window exists (one source of truth)", () => {
+    for (const [plan] of CASES) {
+      expect(canReceiveAlerts(plan)).toBe(getAlertWindowMs(plan) !== null);
+    }
   });
 });

@@ -187,6 +187,13 @@ export type PlanFeatures = {
   canDetectCheckoutSunset: boolean;
   /** Whether the plan can export findings as a branded PDF report. Professional-only (gc-rrh.1). */
   exportPdf: boolean;
+  /**
+   * How often the merchant can be emailed about NEW findings (gc-syz.3). Mirrors
+   * the plan's scheduled-scan cadence (alerts ride the rescans): Free none,
+   * Standard weekly, Professional daily. Single source for the alert gate and
+   * the throttle window.
+   */
+  alertCadence: "none" | "weekly" | "daily";
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -203,6 +210,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
         exportPdf: false, // PDF export is Professional-only (gc-rrh.1)
+        alertCadence: "weekly", // matches the weekly scheduled scan (gc-syz.3)
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -216,6 +224,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
         exportPdf: true, // Professional-only branded PDF export (gc-rrh.1)
+        alertCadence: "daily", // matches the daily scheduled scan (gc-syz.3)
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -231,6 +240,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectDanglingReferences: false, // Free does NOT get dangling-reference detection (gc-m4h.7)
         canDetectCheckoutSunset: false, // Free does NOT get checkout-sunset detection (gc-b3c)
         exportPdf: false, // Free does NOT get PDF export (gc-rrh.1)
+        alertCadence: "none", // Free has no scheduled rescans, so nothing to alert on (gc-syz.3)
       };
   }
 }

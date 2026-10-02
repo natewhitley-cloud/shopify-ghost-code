@@ -244,3 +244,21 @@ describe("determineBillingEventType", () => {
     }
   });
 });
+
+describe("getPlanFeatures alertCadence (gc-syz.3)", () => {
+  it.each([
+    ["free", "none"],
+    ["Standard", "weekly"],
+    ["Professional", "daily"],
+    ["unknown", "none"],
+  ])("%s -> %s", (plan, cadence) => {
+    expect(getPlanFeatures(plan).alertCadence).toBe(cadence);
+  });
+
+  it("alerts ride the scheduled-scan cadence: scheduledScan false <=> no alerts", () => {
+    for (const plan of ["free", "Standard", "Professional"]) {
+      const f = getPlanFeatures(plan);
+      expect(f.alertCadence !== "none").toBe(f.scheduledScan);
+    }
+  });
+});
