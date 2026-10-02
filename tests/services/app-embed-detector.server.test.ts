@@ -13,9 +13,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   detectAppEmbedOff,
   detectGhostAppEmbeds,
+  ORPHAN_GRADE_CORROBORATION_TYPES,
   scanThemeFiles,
   type ThemeFile,
 } from "../../app/services/scan-engine.server";
+import { SOFT_LAUNCH_FLAGS } from "../../app/services/soft-launch-flags.server";
 
 const fixture = readFileSync(resolve(__dirname, "../fixtures/settings-data-debut.json"), "utf8");
 const HEADER = fixture.slice(0, fixture.indexOf("*/") + 2);
@@ -160,15 +162,34 @@ describe("GHOST_APP_EMBED via scanThemeFiles", () => {
   const ofType = (files: ThemeFile[], t: FindingType) =>
     scanThemeFiles(files).findings.filter((f) => f.findingType === t);
 
-  it("flags an enabled embed when the same app has another finding (GHOST_LAYOUT)", () => {
+  it("does NOT flag an actively used app: enabled embed + theme.pagefly.liquid only (gc-n02p)", () => {
     const files = [settingsWith({ "1": { type: PAGEFLY_TYPE, disabled: false } }), pageflyLayout];
     const result = scanThemeFiles(files).findings;
+    // The layout file IS detected as PageFly code...
     expect(
       result.some((f) => f.findingType === FindingType.GHOST_LAYOUT && f.appName === "PageFly"),
     ).toBe(true);
-    const ghost = result.filter((f) => f.findingType === FindingType.GHOST_APP_EMBED);
-    expect(ghost).toHaveLength(1);
-    expect(ghost[0]).toMatchObject({
+    // ...but "this code belongs to PageFly" is not evidence PageFly is gone.
+    expect(result.filter((f) => f.findingType === FindingType.GHOST_APP_EMBED)).toEqual([]);
+  });
+
+  it("does not flag when corroboration is a soft-launched type (SETTINGS_DRIFT)", () => {
+    const direct = detectGhostAppEmbeds(
+      [settingsWith({ "1": { type: PAGEFLY_TYPE, disabled: false } })],
+      [{ ...klaviyoLayoutFinding, findingType: FindingType.SETTINGS_DRIFT, appName: "PageFly" }],
+    );
+    expect(direct).toEqual([]);
+  });
+
+  it("flags when corroborated by a type in the (injected) allowlist", () => {
+    const direct = detectGhostAppEmbeds(
+      [settingsWith({ "1": { type: PAGEFLY_TYPE, disabled: false } })],
+      [{ ...klaviyoLayoutFinding, findingType: FindingType.ORPHAN_ASSET, appName: "PageFly" }],
+      new Set([FindingType.ORPHAN_ASSET]),
+    );
+    expect(direct).toHaveLength(1);
+    expect(direct[0]).toMatchObject({
+      findingType: FindingType.GHOST_APP_EMBED,
       appName: "PageFly",
       severity: Severity.LOW,
       filename: "config/settings_data.json",
@@ -176,6 +197,16 @@ describe("GHOST_APP_EMBED via scanThemeFiles", () => {
       description:
         "PageFly's app embed is still switched on, and PageFly left other code in this theme.",
     });
+  });
+
+  it("the production allowlist is empty and excludes every soft-launched type", () => {
+    expect(ORPHAN_GRADE_CORROBORATION_TYPES.size).toBe(0);
+    for (const type of Object.keys(SOFT_LAUNCH_FLAGS)) {
+      expect(ORPHAN_GRADE_CORROBORATION_TYPES.has(type as FindingType)).toBe(false);
+    }
+    for (const type of [FindingType.APP_EMBED_OFF, FindingType.GHOST_APP_EMBED]) {
+      expect(ORPHAN_GRADE_CORROBORATION_TYPES.has(type)).toBe(false);
+    }
   });
 
   it("does not flag an enabled embed alone", () => {

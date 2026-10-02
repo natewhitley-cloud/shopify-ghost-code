@@ -3287,24 +3287,41 @@ export function detectAppEmbedOff(
 }
 
 /**
+ * Finding types that may corroborate GHOST_APP_EMBED (gc-n02p): only evidence
+ * that an app is GONE, not merely that its code is present. An enabled embed is
+ * itself a sign the app may still be installed, so "this code belongs to app X"
+ * findings (GHOST_SCRIPT/SNIPPET/SECTION/LAYOUT/TEXT/...) cannot corroborate: an
+ * active app produces all of them (e.g. `layout/theme.pagefly.liquid` with no
+ * usage check). Audit 2026-10-02 (spec 5.2): NO type currently qualifies.
+ *   - SETTINGS_DRIFT (section file gone, settings entry remains) is the only
+ *     absence-grade type, but it is soft-launched (SOFT_LAUNCH_FLAGS), so the
+ *     merchant may never see it.
+ *   - ORPHAN_ASSET (snippet never rendered) is partial: an app that migrated to
+ *     an app embed and is still active leaves exactly this.
+ * Empty on purpose, so GHOST_APP_EMBED never fires. Do not add a type without
+ * a precision review; never add a SOFT_LAUNCH_FLAGS type (test enforces).
+ */
+export const ORPHAN_GRADE_CORROBORATION_TYPES: ReadonlySet<FindingType> = new Set<FindingType>();
+
+/**
  * GHOST_APP_EMBED: an ENABLED app embed whose app (matched by signature
- * `embedHandles`) also has at least one OTHER finding in the same scan, i.e.
- * corroborating evidence the app left code behind. An enabled embed alone is
- * never flagged (every active app looks exactly like that). Disabled entries
- * never produce this (they get APP_EMBED_OFF). Must run after all other passes:
- * `priorFindings` is the scan's in-memory findings list.
+ * `embedHandles`) also has at least one OTHER finding in the same scan whose
+ * type is in ORPHAN_GRADE_CORROBORATION_TYPES, i.e. corroborating evidence the
+ * app is gone. An enabled embed alone is never flagged (every active app looks
+ * exactly like that). Disabled entries never produce this (they get
+ * APP_EMBED_OFF). Must run after all other passes: `priorFindings` is the scan's
+ * in-memory findings list (`corroboratingTypes` is a test seam; production
+ * callers use the default allowlist). Ignore state is not available here (the engine runs
+ * before persistence); see the spec 5.2 follow-up.
  */
 export function detectGhostAppEmbeds(
   files: ThemeFile[],
   priorFindings: CreateFindingInput[],
+  corroboratingTypes: ReadonlySet<FindingType> = ORPHAN_GRADE_CORROBORATION_TYPES,
 ): CreateFindingInput[] {
   const evidenceApps = new Set<string>();
   for (const f of priorFindings) {
-    if (
-      f.appName &&
-      f.findingType !== FindingType.APP_EMBED_OFF &&
-      f.findingType !== FindingType.GHOST_APP_EMBED
-    ) {
+    if (f.appName && corroboratingTypes.has(f.findingType)) {
       evidenceApps.add(f.appName);
     }
   }

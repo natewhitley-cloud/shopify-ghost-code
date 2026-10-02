@@ -121,11 +121,23 @@ Two types (see D2), both theme-file only, no new scope, no API calls:
 
 **GHOST_APP_EMBED**: an entry with `disabled: false` **and** corroborating
 evidence that the app is gone: the same scan has at least one other finding
-attributed to the same app (e.g. GHOST_LAYOUT `theme.pagefly.liquid`,
-GHOST_SNIPPET `pagefly-main-js`). Mirrors GHOST_PRICE's
-corroborating-evidence rule; an enabled embed alone is never flagged (every
-active app's embed looks exactly like this, so flagging it would be a false
-positive on every store).
+attributed to the same app whose type is in the allowlist
+`ORPHAN_GRADE_CORROBORATION_TYPES` (`scan-engine.server.ts`). An enabled embed
+alone is never flagged (every active app's embed looks exactly like this, so
+flagging it would be a false positive on every store).
+
+Allowlist (gc-n02p, audit 2026-10-02): only ABSENCE-grade evidence qualifies,
+because an enabled embed is itself a sign the app may still be installed.
+"This code belongs to app X" findings (GHOST_SCRIPT/SNIPPET/SECTION/LAYOUT/...)
+are produced by active apps too (`layout/theme.pagefly.liquid` is flagged with
+no usage check) and never corroborate. Every `SOFT_LAUNCH_FLAGS` type is
+excluded (the merchant may never see the evidence), as are APP_EMBED_OFF and
+GHOST_APP_EMBED. Currently NO type qualifies (SETTINGS_DRIFT is absence-grade
+but soft-launched; ORPHAN_ASSET is partial), so the allowlist is empty and
+GHOST_APP_EMBED does not fire. Follow-up: corroborating findings the merchant
+has ignored are not visible to the scan engine (it runs before persistence);
+if the allowlist is ever populated, hide a GHOST_APP_EMBED in the app UI when
+all its corroborating findings are ignored.
 
 - Severity LOW. Lane: primary `housekeeping`, urgency `whenever`.
 - Safety label: `leave-alone` (remove via theme editor, never hand-edit JSON).
@@ -191,8 +203,8 @@ deploy handoff.
 - APP_EMBED_OFF: one per `disabled: true` entry; none for `disabled: false`;
   missing `blocks`; non-app block types (`shopify://...` theme blocks without
   `/apps/`) ignored; malformed `type`; known vs humanized app name.
-- GHOST_APP_EMBED: enabled + same-app GHOST_LAYOUT -> flagged; enabled alone ->
-  not flagged; enabled + finding for a _different_ app -> not flagged; disabled
+- GHOST*APP_EMBED: enabled + same-app GHOST_LAYOUT -> flagged; enabled alone ->
+  not flagged; enabled + finding for a \_different* app -> not flagged; disabled
   - corroboration -> APP_EMBED_OFF only (no double finding).
 - Severity date switch at 2027-03-01 (fake timers).
 - Every exhaustive map covers both types (existing count tests).

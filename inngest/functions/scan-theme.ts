@@ -79,6 +79,7 @@ import {
 } from "../../app/services/dangling-reference-extractor.server";
 import { isScannableFile, MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
+import { SOFT_LAUNCH_FLAGS } from "../../app/services/soft-launch-flags.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 import { inngest } from "../client";
@@ -281,17 +282,6 @@ async function runAuditStep(opts: {
  * render the matched literal + verdict in a DANGLING_REFERENCE finding's
  * description, and the subtype tag carried in `appName` (spike §E).
  */
-/**
- * Soft-launched finding types (spec 5.6): detected on every scan but persisted
- * only when the mapped env var === "true". Never-in-prod detectors go here until
- * their first output has had a precision review.
- */
-const SOFT_LAUNCH_FLAGS: Partial<Record<FindingType, string>> = {
-  [FindingType.SETTINGS_DRIFT]: "SETTINGS_DRIFT_LIVE_ENABLED",
-  [FindingType.APP_EMBED_OFF]: "APP_EMBED_LIVE_ENABLED",
-  [FindingType.GHOST_APP_EMBED]: "APP_EMBED_LIVE_ENABLED",
-};
-
 /**
  * Applies SOFT_LAUNCH_FLAGS in ONE place (gc-rvo0): each flag is read exactly
  * once, and the SAME reads decide both which findings persist and which types
