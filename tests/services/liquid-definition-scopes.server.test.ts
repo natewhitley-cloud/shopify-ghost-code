@@ -93,26 +93,29 @@ describe("liquidDefinitionScopes / isThemeDefinedVar equivalence (gc-dza)", () =
     let cases = 0;
     let trueAnswers = 0;
     let falseAnswers = 0;
-    for (let i = 0; i < 1500; i++) {
+    let firstMismatch: string | null = null;
+    for (let i = 0; i < 1500 && firstMismatch === null; i++) {
       const content = generate(rand);
       const old = oldScopes(content);
       const next = liquidDefinitionScopes(content);
 
       // Probe every offset (covers each boundary exactly), plus out-of-range.
+      // Plain comparison per probe; expect() with a stringified message on each
+      // of ~100k probes made this test flake against the suite timeout.
       for (let offset = -1; offset <= content.length + 1; offset++) {
         for (const name of [...NAMES, "unknown"]) {
           const token = `{{ ${name} }}`;
           const expected = oldIsDefined(token, old, offset);
-          expect(
-            isThemeDefinedVar(token, next, offset),
-            `${name}@${offset} in ${JSON.stringify(content)}`,
-          ).toBe(expected);
+          if (isThemeDefinedVar(token, next, offset) !== expected && firstMismatch === null) {
+            firstMismatch = `${name}@${offset} expected ${expected} in ${JSON.stringify(content)}`;
+          }
           cases++;
           if (expected) trueAnswers++;
           else falseAnswers++;
         }
       }
     }
+    expect(firstMismatch).toBeNull();
     // Guard against a vacuous generator: both outcomes must be well exercised.
     expect(cases).toBeGreaterThan(100_000);
     expect(trueAnswers).toBeGreaterThan(5_000);
