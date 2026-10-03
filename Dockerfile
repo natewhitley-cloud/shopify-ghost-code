@@ -34,8 +34,11 @@ COPY --from=build /app/shopify.app.toml ./shopify.app.toml
 COPY --from=build /app/shopify.web.toml ./shopify.web.toml
 # SHA written by CI before `railway up`; empty file on local builds (no SHA known).
 COPY --from=build /app/.deploy-sha ./.deploy-sha
+# server.mjs replaces react-router-serve (gc-t7o2: query-free request log).
+COPY --from=build /app/server.mjs ./server.mjs
+COPY --from=build /app/server ./server
 EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD wget -qO- http://localhost:3000/health || exit 1
 USER node
-CMD ["node", "node_modules/.bin/react-router-serve", "./build/server/index.js"]
+CMD ["node", "server.mjs"]

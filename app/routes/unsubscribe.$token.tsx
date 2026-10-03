@@ -32,12 +32,12 @@ import { renderConfirmPage } from "../lib/unsubscribe-page";
  * necessity (it must report failure), but guessing a valid 256-bit token is
  * infeasible.
  *
- * What is and is not logged: react-router-serve logs every request URL
- * (morgan "tiny"), so a request to THIS path puts the token in the access log:
- * a mail provider's one-click POST, or a GET of a legacy link. Our own code
- * never logs it (handleError is bypassed, no handler logs). Mitigation: a
- * successful unsubscribe ROTATES the token (disableAlertsByToken), so a token
- * that reached a log is already dead. The confirm form POSTs the token to
+ * What is and is not logged: the access log (server.mjs) masks this path's
+ * token segment, /unsubscribe/[REDACTED] (gc-t7o2); before that,
+ * react-router-serve logged the full URL. Our own code never logs it
+ * (handleError is bypassed, no handler logs). Defense in depth: a successful
+ * unsubscribe ROTATES the token (disableAlertsByToken), so a token that
+ * reached an older log is already dead. The confirm form POSTs the token to
  * /unsubscribe in the body, so a human click does not log it again.
  */
 
