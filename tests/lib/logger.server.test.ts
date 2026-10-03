@@ -187,6 +187,24 @@ it("drops to a marker line when serializing the error throws (FraudPilot ft-edm 
   expect(entry(error).message).toBe("[log entry dropped: scrub failed]");
 });
 
+describe("logger never throws on unserializable preserved keys (gc-t7o2 audit L4)", () => {
+  it("drops to a marker line when a preserved key holds a BigInt", () => {
+    expect(() => logger.info("x", { shopId: 1n })).not.toThrow();
+    expect(entry(log).message).toBe("[log entry dropped: serialize failed]");
+  });
+
+  it("drops to a marker line when the context has a throwing getter", () => {
+    const ctx = Object.defineProperty({}, "boom", {
+      enumerable: true,
+      get() {
+        throw new Error("nope");
+      },
+    });
+    expect(() => logger.warn("x", ctx)).not.toThrow();
+    expect(warn).toHaveBeenCalledTimes(1);
+  });
+});
+
 describe("log meta size cap (FraudPilot ft-edm audit M3)", () => {
   const ids = (prefix: string, n: number) =>
     Array.from({ length: n }, (_, i) => `${prefix}${String(i).padStart(22, "0")}`);

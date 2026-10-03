@@ -17,6 +17,10 @@ describe("request log (gc-t7o2)", () => {
     ["/unsubscribe", "/unsubscribe"],
     ["/unsubscribe/", "/unsubscribe/"],
     ["/app/unsubscribe/x", "/app/unsubscribe/x"],
+    // React Router matches case-insensitively and on the decoded path.
+    ["/UNSUBSCRIBE/3f9a0c7e1b", "/UNSUBSCRIBE/[REDACTED]"],
+    ["/%75nsubscribe/3f9a0c7e1b", "/%75nsubscribe/[REDACTED]"],
+    ["/%zz/3f9a0c7e1b", "/%zz/3f9a0c7e1b"],
     [undefined, "-"],
   ])("pathOnly(%s) -> %s", (input, out) => {
     expect(pathOnly(input as string)).toBe(out);

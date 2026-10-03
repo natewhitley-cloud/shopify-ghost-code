@@ -36,9 +36,9 @@ function buildEntry(
   // Most callers pass `error: err.message` (a string): that stays a string via
   // scrubContext. Only a real Error gets name/message/stack (it would
   // otherwise serialize as {}).
-  const { error, ...rest } = context ?? {};
   // If the scrub fails, emit a marker line instead of the (unscrubbed) entry.
   try {
+    const { error, ...rest } = context ?? {};
     return {
       level,
       message: scrubString(message),
@@ -52,7 +52,17 @@ function buildEntry(
 }
 
 function log(level: LogLevel, message: string, context?: Record<string, unknown>): void {
-  const line = JSON.stringify(buildEntry(level, message, context));
+  let line: string;
+  try {
+    line = JSON.stringify(buildEntry(level, message, context));
+  } catch {
+    // e.g. a BigInt or cycle under a preserved key (shopId/code pass through raw).
+    line = JSON.stringify({
+      level,
+      message: "[log entry dropped: serialize failed]",
+      timestamp: new Date().toISOString(),
+    });
+  }
   // Route warn/error to stderr so Railway surfaces them at the correct severity.
   if (level === "error") {
     console.error(line);

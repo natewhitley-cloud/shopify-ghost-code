@@ -71,7 +71,7 @@ const PRESERVED_KEYS = new Set(["shopId", "code"]);
 /**
  * Top-level operational keys exempt from the KEY rule only (as in ClearSignal
  * ba-cvz7): counters and states whose names collide with a fragment ("ip" in
- * sk-IP-ped/scr-IP-t/subscr-IP-tion, "token" in the token-health flags). Their
+ * sk-IP-ped/scr-IP-t/subscr-IP-tion, "token" in the token-health flags, "session" in the session id). Their
  * VALUES are still scrubbed. A key not listed here is redacted, which is the
  * safe failure mode: add it here when an operational field shows up as
  * [REDACTED].
@@ -85,6 +85,8 @@ const OPERATIONAL_KEYS = new Set([
   "activeSubscriptionCount",
   "hasRefreshToken",
   "tokenExpired",
+  // Shopify's `offline_<shop>` session id, not a secret (scopes_update log).
+  "sessionId",
 ]);
 
 function keyIsSensitive(key: string): boolean {

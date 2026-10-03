@@ -89,6 +89,7 @@ describe("operational keys skip only the key rule (gc-t7o2)", () => {
     ["activeSubscriptionCount", 1],
     ["hasRefreshToken", true],
     ["tokenExpired", false],
+    ["sessionId", "offline_example.myshopify.com"],
   ])("keeps %s intact", (key, value) => {
     expect(scrubContext({ [key]: value })[key]).toEqual(value);
   });

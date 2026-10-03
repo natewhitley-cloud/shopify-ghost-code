@@ -8,14 +8,34 @@
  * too.
  */
 
-const UNSUBSCRIBE_TOKEN_PATH = /^\/unsubscribe\/[^/]+/;
+// Matched case-insensitively against the DECODED first segment, as React
+// Router routes it: /UNSUBSCRIBE/<t> and /%75nsubscribe/<t> reach the same route.
+const UNSUBSCRIBE_SEGMENT = /^unsubscribe$/i;
+
+/** URL-decode for matching; a malformed escape matches raw. */
+function safeDecode(text) {
+  try {
+    return decodeURIComponent(text);
+  } catch {
+    return text;
+  }
+}
 
 /** The request path with any query string removed and the unsubscribe token masked. */
 export function pathOnly(url) {
   if (typeof url !== "string") return "-";
   const q = url.indexOf("?");
   const path = q === -1 ? url : url.slice(0, q);
-  return path.replace(UNSUBSCRIBE_TOKEN_PATH, "/unsubscribe/[REDACTED]");
+  const segments = path.split("/");
+  if (
+    segments.length > 2 &&
+    segments[2] !== "" &&
+    UNSUBSCRIBE_SEGMENT.test(safeDecode(segments[1]))
+  ) {
+    segments[2] = "[REDACTED]";
+    return segments.join("/");
+  }
+  return path;
 }
 
 /** morgan format: "tiny" with :path in place of :url. */
