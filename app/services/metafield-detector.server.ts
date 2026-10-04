@@ -29,7 +29,6 @@ const APP_NAMESPACE_PATTERNS: Array<{ pattern: RegExp; appName: string }> = [
   { pattern: /^klaviyo$/i, appName: "Klaviyo" },
   { pattern: /^privy$/i, appName: "Privy" },
   { pattern: /^spr$/i, appName: "Shopify Product Reviews" },
-  { pattern: /^reviews$/i, appName: "Reviews App" },
   { pattern: /^smartseo$/i, appName: "Smart SEO" },
   { pattern: /^seo[-_]/i, appName: "SEO App" },
   { pattern: /^loyalty[-_]/i, appName: "Loyalty App" },
@@ -42,6 +41,11 @@ const APP_NAMESPACE_PATTERNS: Array<{ pattern: RegExp; appName: string }> = [
   { pattern: /^returnly$/i, appName: "Returnly" },
 ];
 
+// Shopify system/standard namespaces: never app leftovers. `reviews` holds
+// Shopify's standard reviews.rating / reviews.rating_count definitions, written
+// by Shopify and by active review apps (gc-ztq2).
+const SHOPIFY_STANDARD_NAMESPACES = new Set(["global", "custom", "reviews"]);
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
@@ -50,8 +54,8 @@ const APP_NAMESPACE_PATTERNS: Array<{ pattern: RegExp; appName: string }> = [
  * Detect metafields left on products by uninstalled apps.
  *
  * Groups metafields by matched app per product — one finding per app per
- * product. System namespaces ("global", "custom") are excluded since those
- * are merchant-managed.
+ * product. Shopify system/standard namespaces ("global", "custom", "reviews")
+ * are excluded since those are merchant- or Shopify-managed.
  */
 export function detectOrphanedMetafields(products: ProductMetafieldData[]): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
@@ -64,8 +68,8 @@ export function detectOrphanedMetafields(products: ProductMetafieldData[]): Crea
     >();
 
     for (const mf of product.metafields) {
-      // Skip Shopify system namespaces
-      if (mf.namespace === "global" || mf.namespace === "custom") continue;
+      // Skip Shopify system/standard namespaces
+      if (SHOPIFY_STANDARD_NAMESPACES.has(mf.namespace.toLowerCase())) continue;
 
       const match = APP_NAMESPACE_PATTERNS.find((p) => p.pattern.test(mf.namespace));
       if (!match) continue;

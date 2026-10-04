@@ -105,6 +105,66 @@ describe("detectOrphanedMetafields", () => {
     expect(findings).toEqual([]);
   });
 
+  // gc-ztq2: `reviews` is Shopify's standard product-review namespace
+  // (reviews.rating, reviews.rating_count), written by Shopify and by active
+  // review apps. It is never leftover data from an uninstalled app.
+  it("skips Shopify standard reviews namespace (reviews.rating, reviews.rating_count)", () => {
+    const products = [
+      makeProduct({
+        metafields: [
+          makeMetafield({ namespace: "reviews", key: "rating", value: '{"value":"4.5"}' }),
+          makeMetafield({ namespace: "reviews", key: "rating_count", value: "0" }),
+        ],
+      }),
+    ];
+    const findings = detectOrphanedMetafields(products);
+
+    expect(findings).toEqual([]);
+  });
+
+  it("skips reviews namespace case-insensitively", () => {
+    const products = [
+      makeProduct({
+        metafields: [
+          makeMetafield({ namespace: "Reviews", key: "rating_count", value: "0" }),
+          makeMetafield({ namespace: "REVIEWS", key: "rating", value: "4" }),
+        ],
+      }),
+    ];
+    const findings = detectOrphanedMetafields(products);
+
+    expect(findings).toEqual([]);
+  });
+
+  it("reviews namespace alongside judgeme yields only the Judge.me finding", () => {
+    const products = [
+      makeProduct({
+        metafields: [
+          makeMetafield({ namespace: "reviews", key: "rating_count", value: "0" }),
+          makeMetafield({ namespace: "judgeme", key: "badge", value: "<div>badge</div>" }),
+        ],
+      }),
+    ];
+    const findings = detectOrphanedMetafields(products);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[0].codeSnippet).not.toContain("reviews.");
+    expect(findings[0].description).toContain("1 metafield(s)");
+  });
+
+  it("still flags legacy spr namespace (retired Shopify Product Reviews app)", () => {
+    const products = [
+      makeProduct({
+        metafields: [makeMetafield({ namespace: "spr", key: "reviews", value: "<div></div>" })],
+      }),
+    ];
+    const findings = detectOrphanedMetafields(products);
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Shopify Product Reviews");
+  });
+
   it("skips unrecognized namespace", () => {
     const products = [
       makeProduct({
@@ -273,7 +333,6 @@ describe("detectOrphanedMetafields", () => {
       { namespace: "klaviyo", expectedApp: "Klaviyo" },
       { namespace: "privy", expectedApp: "Privy" },
       { namespace: "spr", expectedApp: "Shopify Product Reviews" },
-      { namespace: "reviews", expectedApp: "Reviews App" },
       { namespace: "smartseo", expectedApp: "Smart SEO" },
       { namespace: "seo_data", expectedApp: "SEO App" },
       { namespace: "seo-tags", expectedApp: "SEO App" },
