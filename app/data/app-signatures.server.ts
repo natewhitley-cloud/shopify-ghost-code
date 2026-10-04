@@ -707,6 +707,9 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["ecomposer", "ecomposer-head", "ecomposer-body"],
     cssPatterns: [/ecomposer/],
     filePatterns: [/(^|\/)ecom[-_.]/i],
+    // Verified on a live EComposer storefront (paw-naturals, 2026-10-04,
+    // gc-clt4): `shopify://apps/ecomposer-builder/blocks/app-embed/...`.
+    embedHandles: ["ecomposer-builder"],
   },
 
   // -------------------------------------------------------------------------

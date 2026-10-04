@@ -256,3 +256,98 @@ describe("GHOST_APP_EMBED via scanThemeFiles", () => {
     expect(ofType(files, FindingType.APP_EMBED_OFF)).toHaveLength(1);
   });
 });
+
+// gc-clt4: an ENABLED app embed means the app is live, so findings for that
+// app inside the theme files it OWNS (its filePatterns) are its working code,
+// not leftovers. Real case: paw-naturals ran EComposer (embed handle
+// `ecomposer-builder`, read off the live storefront) and got 212 findings in
+// its sections/ecom-*.liquid files.
+describe("active app embed suppresses the app's own-file findings (gc-clt4)", () => {
+  const ECOMPOSER_TYPE = "shopify://apps/ecomposer-builder/blocks/app-embed/1a2b3c4d";
+  const ecomSection: ThemeFile = {
+    filename: "sections/ecom-welcome-page.liquid",
+    content: [
+      '<link rel="stylesheet" href="https://cdn.ecomposer.app/vendors/css/ecom-base.css">',
+      '<script src="https://cdn.ecomposer.app/vendors/js/ec-splide.min.js" defer></script>',
+    ].join("\n"),
+  };
+  const ecomFindings = (files: ThemeFile[]) =>
+    scanThemeFiles(files).findings.filter((f) => f.appName === "EComposer");
+
+  it("maps the real EComposer embed handle to the signature", () => {
+    const off = detectAppEmbedOff([
+      settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: true } }),
+    ]);
+    expect(off[0].appName).toBe("EComposer");
+  });
+
+  it("baseline: without an embed entry the section is flagged", () => {
+    expect(ecomFindings([ecomSection, settingsWith(undefined)]).length).toBeGreaterThan(0);
+  });
+
+  it("drops EComposer findings in its own section files when its embed is enabled", () => {
+    const settings = settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: false } });
+    expect(ecomFindings([ecomSection, settings])).toEqual([]);
+  });
+
+  it("treats a missing disabled field as enabled", () => {
+    expect(ecomFindings([ecomSection, settingsWith({ "1": { type: ECOMPOSER_TYPE } })])).toEqual(
+      [],
+    );
+  });
+
+  it("keeps the findings when the embed is disabled", () => {
+    const settings = settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: true } });
+    const findings = scanThemeFiles([ecomSection, settings]).findings;
+    expect(
+      findings.some((f) => f.appName === "EComposer" && f.filename === ecomSection.filename),
+    ).toBe(true);
+  });
+
+  it("keeps the active app's code in files it does not own", () => {
+    const themeLayout: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: '<script src="https://cdn.ecomposer.app/vendors/js/ec-splide.min.js"></script>',
+    };
+    const settings = settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: false } });
+    const kept = ecomFindings([themeLayout, settings]);
+    expect(kept.length).toBeGreaterThan(0);
+    expect(kept.every((f) => f.filename === "layout/theme.liquid")).toBe(true);
+  });
+
+  it("keeps another app's code inside the active builder's files", () => {
+    const withJudgeMe: ThemeFile = {
+      filename: "sections/ecom-reviews.liquid",
+      content: '<script src="https://cdn.judge.me/widget_preloader.js"></script>',
+    };
+    const settings = settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: false } });
+    const findings = scanThemeFiles([withJudgeMe, settings]).findings;
+    expect(findings.some((f) => f.appName === "Judge.me")).toBe(true);
+  });
+
+  it("never drops a malicious-script alert, even in an active app's file", () => {
+    const injected: ThemeFile = {
+      filename: "sections/ecom-hijacked.liquid",
+      content: '<script src="https://jsdeliver.cloud/shopify.js"></script>',
+    };
+    const settings = settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: false } });
+    const findings = scanThemeFiles([injected, settings]).findings;
+    expect(findings.some((f) => f.findingType === FindingType.MALICIOUS_SCRIPT)).toBe(true);
+  });
+
+  it("only the app whose embed is enabled is affected", () => {
+    const settings = settingsWith({ "1": { type: PAGEFLY_TYPE, disabled: false } });
+    expect(ecomFindings([ecomSection, settings]).length).toBeGreaterThan(0);
+  });
+
+  it("works for any signature with embedHandles + filePatterns (PageFly)", () => {
+    const pfSection: ThemeFile = {
+      filename: "sections/pagefly-landing.liquid",
+      content: '<script src="https://cdn.pagefly.io/runtime.js"></script>',
+    };
+    const pfFindings = (s: ThemeFile) =>
+      scanThemeFiles([pfSection, s]).findings.filter((f) => f.appName === "PageFly");
+    expect(pfFindings(settingsWith(undefined)).length).toBeGreaterThan(0);
+    expect(pfFindings(settingsWith({ "1": { type: PAGEFLY_TYPE, disabled: false } }))).toEqual([]);
+  });
+});

@@ -67,6 +67,7 @@ import {
   identifyAppFromCode,
   identifyAppFromSnippetName,
   identifyAppFromEmbedHandle,
+  identifyAppFromFilename,
   identifyAppFromHrefLang,
   identifyAppFromJsonLd,
   identifyAppFromTextFragment,
@@ -3350,6 +3351,63 @@ export function detectGhostAppEmbeds(
   return findings;
 }
 
+/**
+ * "This code belongs to app X" finding types (gc-clt4): the types an active
+ * app produces in its own theme files just by working. Only these may be
+ * dropped by dropActiveAppOwnFileFindings. Never add MALICIOUS_SCRIPT, the
+ * app-embed types, GHOST_LAYOUT (layouts already have a template-usage gate),
+ * DUPLICATE_*, OVERLAPPING_CHAT_WIDGET, SETTINGS_DRIFT, JSON_LD_*, or the
+ * robots/canonical/title/og/meta types: those are not "app X's code" claims.
+ */
+export const ACTIVE_APP_OWN_FILE_TYPES: ReadonlySet<FindingType> = new Set<FindingType>([
+  FindingType.GHOST_SCRIPT,
+  FindingType.GHOST_STYLE,
+  FindingType.GHOST_SNIPPET,
+  FindingType.GHOST_SECTION,
+  FindingType.GHOST_TEXT,
+  FindingType.GHOST_PIXEL,
+  FindingType.GHOST_PRECONNECT,
+  FindingType.GHOST_FONT,
+  FindingType.GHOST_AJAX,
+  FindingType.GHOST_JSON_LD,
+  FindingType.GHOST_HREFLANG,
+  FindingType.ORPHAN_ASSET,
+]);
+
+/**
+ * Drop an active app's findings in its own theme files (gc-clt4). Shopify has
+ * no API for installed apps, but an ENABLED theme app embed in
+ * settings_data.json is a strong signal the app is live, so the files that app
+ * owns are its working code, not leftovers (real case: an active EComposer
+ * store got 212 findings in its sections/ecom-*.liquid files). A finding is
+ * dropped only when ALL hold:
+ *   (a) its appName has an enabled embed (handle matched by signature
+ *       `embedHandles`; unmatched handles are skipped, never guessed);
+ *   (b) its file is owned by that same app (signature `filePatterns`), so the
+ *       app's code in theme.liquid or another app's code in its files stays;
+ *   (c) its type is in ACTIVE_APP_OWN_FILE_TYPES.
+ * Accepted trade-off: an unused builder section left by a deleted builder page
+ * goes unflagged while the builder's embed is enabled.
+ */
+export function dropActiveAppOwnFileFindings(
+  files: ThemeFile[],
+  findings: CreateFindingInput[],
+): CreateFindingInput[] {
+  const activeApps = new Set<string>();
+  for (const e of parseAppEmbedEntries(files)) {
+    if (e.disabled) continue;
+    const appName = identifyAppFromEmbedHandle(e.handle);
+    if (appName) activeApps.add(appName);
+  }
+  if (activeApps.size === 0) return findings;
+
+  return findings.filter((f) => {
+    if (!f.appName || !activeApps.has(f.appName)) return true;
+    if (identifyAppFromFilename(f.filename)?.appName !== f.appName) return true;
+    return !ACTIVE_APP_OWN_FILE_TYPES.has(f.findingType);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Detector: GHOST_LAYOUT
 // ---------------------------------------------------------------------------
@@ -4905,7 +4963,7 @@ function firstFindingsByLine(findings: CreateFindingInput[], n: number): CreateF
 const EARLY_EXIT_LIMIT = MAX_FINDINGS_PER_FILE_PER_TYPE + 1;
 
 export function scanThemeFiles(files: ThemeFile[]): ScanResult {
-  const findings: CreateFindingInput[] = [];
+  let findings: CreateFindingInput[] = [];
   const unknownScripts: UnknownExternalResource[] = [];
   const skippedFiles: SkippedFile[] = [];
   const staticProductCandidates: StaticProductCandidate[] = [];
@@ -5060,6 +5118,10 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // file (see CROSS_FILE_FINDING_TYPES in finding-classification).
   findings.push(...detectDuplicateTrackers(files));
   findings.push(...detectOverlappingChatWidgets(files));
+
+  // Pass 5b: drop an active app's findings in its own files (gc-clt4). Runs
+  // before Pass 6 so dropped findings cannot corroborate GHOST_APP_EMBED.
+  findings = dropActiveAppOwnFileFindings(files, findings);
 
   // Pass 6: GHOST_APP_EMBED post-pass (gc-fed). Needs every other finding's app
   // attribution as corroboration, so it runs last over the in-memory list.
