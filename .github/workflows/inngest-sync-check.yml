@@ -1,0 +1,73 @@
+name: Inngest Sync Check
+
+# Daily liveness check for Inngest function registration (bead gc-i2v; ported from ClearSignal ba-jca.1).
+#
+# WHY: a stale/rotated INNGEST_SIGNING_KEY silently kills EVERY cron with zero
+# signal — the app can't register its function list with Inngest Cloud, and
+# Inngest can't invoke anything. On 2026-08-19 this went undetected for days
+# in ClearSignal; on 2026-08-28 a portfolio-wide rotation hung Ghost Code scans
+# (Shopify flagged a delist risk). See ClearSignal bead ba-jca.
+#
+# WHAT: PUT the public Inngest serve endpoint. That triggers the SDK to
+# (re)register all functions with Inngest Cloud, signing the request with the
+# app's own INNGEST_SIGNING_KEY, so this needs no secret and is safe to call
+# unauthenticated (Inngest's own scheduler calls the same endpoint).
+#   - valid key   -> HTTP 200 {"message":"Successfully registered","modified":true|false}
+#   - invalid key -> HTTP 401 {"message":"Your signing key is invalid","modified":false}
+# NOTE: BOTH bodies contain `"modified"`, so we gate on the 200 status + the
+# "Successfully registered" message, never on the word "modified".
+#
+# Doubles as the missing deploy-sync automation: it keeps newly-added functions
+# registered within 24h even though there is no post-deploy sync hook.
+#
+# ALERTING: a red run emails the repo owner (GitHub's default for a failed
+# scheduled workflow on the default branch) — an Inngest-independent channel,
+# which is the whole point.
+
+on:
+  schedule:
+    # 08:40 UTC daily. Offset from :00 because GitHub heavily delays crons
+    # scheduled at the top of the hour. A red run means every Inngest cron
+    # (scheduled scans, monitors, digest) is down.
+    - cron: "40 8 * * *"
+  workflow_dispatch:
+
+jobs:
+  inngest-sync:
+    runs-on: ubuntu-latest
+    env:
+      INNGEST_ENDPOINT: "https://app.alpenglowsoftware.com/api/inngest"
+    steps:
+      - name: Register + verify Inngest functions
+        shell: bash
+        run: |
+          # Retry a few times so a brief mid-deploy blip (Railway swapping
+          # containers) doesn't red the run. A PERSISTENT non-200 is a real
+          # failure — a 401 means the signing key drifted (the ba-jca incident).
+          last_code=""
+          last_body=""
+          for i in $(seq 1 5); do
+            # One PUT per attempt: body, then a newline, then the HTTP code on
+            # the final line. `tail -n1` = code, `sed '$d'` = body.
+            # `|| true`: this step runs with `-eo pipefail` (shell: bash), so a
+            # curl network failure would otherwise abort the step outright
+            # instead of falling through to the retry below (empty resp ->
+            # empty code -> retry). Same idiom as post-deploy-check.yml.
+            resp=$(curl -s -w "\n%{http_code}" -X PUT "$INNGEST_ENDPOINT" || true)
+            code=$(printf '%s' "$resp" | tail -n1)
+            payload=$(printf '%s' "$resp" | sed '$d')
+            last_code="$code"
+            last_body="$payload"
+            echo "Attempt ${i}: HTTP ${code} — ${payload}"
+            if [ "$code" = "200" ] && printf '%s' "$payload" | grep -q "Successfully registered"; then
+              echo "Inngest functions registered OK."
+              exit 0
+            fi
+            if [ "$code" = "401" ]; then
+              echo "::error::Inngest rejected the signing key (HTTP 401). INNGEST_SIGNING_KEY in Railway is stale/rotated — crons are NOT firing. See bead gc-i2v. Fix: copy the current prod signing key from the Inngest dashboard into Railway, redeploy, then re-run this workflow."
+              exit 1
+            fi
+            sleep 15
+          done
+          echo "::error::Inngest sync did not succeed after 5 attempts — last HTTP ${last_code}, body: ${last_body}. See bead gc-i2v."
+          exit 1
