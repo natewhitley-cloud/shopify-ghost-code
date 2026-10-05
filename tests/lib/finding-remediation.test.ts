@@ -42,7 +42,7 @@ describe("getFindingRemediation — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
   it("has 36 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(36);
+    expect(ALL_TYPES).toHaveLength(37);
   });
 
   it.each(ALL_TYPES)("returns a non-empty blurb for %s", (type) => {
@@ -282,5 +282,34 @@ describe("buildRemovalInstructions", () => {
     expect(out).not.toContain("(line");
     // Empty snippet → no "Remove this code" block.
     expect(out).not.toContain("Remove this code:");
+  });
+});
+
+describe("SCRIPT_TAG_SUNSET guidance (storefront, merchant cannot delete)", () => {
+  const finding = {
+    findingType: "SCRIPT_TAG_SUNSET",
+    filename: "storefront/script-tags",
+    lineNumber: 1,
+    codeSnippet: "https://cdn.example.com/a.js\nhttps://cdn.example.com/b.js",
+  };
+
+  it("points at the vendor and the App embeds settings, never at deleting anything", () => {
+    const howTo = getFindingRemediation("SCRIPT_TAG_SUNSET");
+    expect(howTo).toContain("support");
+    expect(howTo).toContain("App embeds");
+    expect(howTo).toContain("March 1, 2027");
+    expect(howTo).toMatch(/nothing for you to delete/);
+    expect(howTo).not.toMatch(/[—–]/);
+  });
+
+  it("removal instructions list the URLs without a 'Remove this code' or file/line block", () => {
+    const text = buildRemovalInstructions(finding, "Script Tag Sunset");
+    expect(text).toContain("Location: your storefront's script tags (not in your theme code)");
+    expect(text).toContain(
+      "Script tag URLs:\nhttps://cdn.example.com/a.js\nhttps://cdn.example.com/b.js",
+    );
+    expect(text).not.toContain("Remove this code");
+    expect(text).not.toContain("File:");
+    expect(text).toContain(`How: ${getFindingRemediation("SCRIPT_TAG_SUNSET")}`);
   });
 });

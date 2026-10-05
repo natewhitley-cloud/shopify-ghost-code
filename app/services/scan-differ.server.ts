@@ -154,16 +154,25 @@ export function fingerprintFinding(
 
 /**
  * The categories a scan did NOT fully audit (gc-11f): the union of
- * `skippedCategories` (scope not granted) and `cappedCategories` (a size cap
- * left part of the category unchecked), de-duplicated. This is what every
- * `diffScans` caller passes as `opts.skippedCategories`, so a prior finding in
- * either kind of category is never reported "resolved".
+ * `skippedCategories` (scope not granted), `cappedCategories` (a size cap left
+ * part of the category unchecked), and `unreachableCategories` (the public
+ * storefront could not be read, so a storefront check could not run),
+ * de-duplicated. This is what every `diffScans` caller passes as
+ * `opts.skippedCategories`, so a prior finding in any such category is never
+ * reported "resolved".
  */
 export function unauditedCategories(scan: {
   skippedCategories: readonly string[];
   cappedCategories: readonly string[];
+  unreachableCategories: readonly string[];
 }): string[] {
-  return [...new Set([...scan.skippedCategories, ...scan.cappedCategories])];
+  return [
+    ...new Set([
+      ...scan.skippedCategories,
+      ...scan.cappedCategories,
+      ...scan.unreachableCategories,
+    ]),
+  ];
 }
 
 /**

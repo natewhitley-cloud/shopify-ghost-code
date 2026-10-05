@@ -3358,6 +3358,22 @@ export function detectGhostAppEmbeds(
 }
 
 /**
+ * Signature app names whose theme app embed is ENABLED in settings_data.json.
+ * Unmatched handles are skipped, never guessed; disabled entries never count.
+ * Shared by dropActiveAppOwnFileFindings and the storefront script-tag sunset
+ * detector (an enabled embed means the app has probably left script tags).
+ */
+export function enabledAppEmbedApps(files: ThemeFile[]): Set<string> {
+  const apps = new Set<string>();
+  for (const e of parseAppEmbedEntries(files)) {
+    if (e.disabled) continue;
+    const appName = identifyAppFromEmbedHandle(e.handle);
+    if (appName) apps.add(appName);
+  }
+  return apps;
+}
+
+/**
  * "This code belongs to app X" finding types (gc-clt4, gc-ps3t): the types a
  * live app produces in the theme just by working. Only these may be
  * dropped by dropActiveAppOwnFileFindings. GHOST_OG is included (2026-10-05,
@@ -3409,12 +3425,7 @@ export function dropActiveAppOwnFileFindings(
   files: ThemeFile[],
   findings: CreateFindingInput[],
 ): CreateFindingInput[] {
-  const activeApps = new Set<string>();
-  for (const e of parseAppEmbedEntries(files)) {
-    if (e.disabled) continue;
-    const appName = identifyAppFromEmbedHandle(e.handle);
-    if (appName) activeApps.add(appName);
-  }
+  const activeApps = enabledAppEmbedApps(files);
   if (activeApps.size === 0) return findings;
 
   return findings.filter((f) => {

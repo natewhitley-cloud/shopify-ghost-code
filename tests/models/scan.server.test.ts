@@ -1126,6 +1126,23 @@ describe("finalizeScan", () => {
     expect(mockDb.scan.updateMany.mock.calls[1][0].data.liveFindingTypes).toEqual(["GHOST_SCRIPT"]);
   });
 
+  it("writes unreachableCategories only when supplied (column defaults to [])", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", FINALIZE_ARGS);
+    expect(mockDb.scan.updateMany.mock.calls[0][0].data).not.toHaveProperty(
+      "unreachableCategories",
+    );
+
+    await finalizeScan("scan-1", {
+      ...FINALIZE_ARGS,
+      unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+    });
+    expect(mockDb.scan.updateMany.mock.calls[1][0].data.unreachableCategories).toEqual([
+      "SCRIPT_TAG_SUNSET",
+    ]);
+  });
+
   it("persists PARTIAL status, skippedCategories, and skippedFiles on the happy path", async () => {
     mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
 

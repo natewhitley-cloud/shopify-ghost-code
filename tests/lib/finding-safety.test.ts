@@ -27,7 +27,7 @@ describe("REMOVAL_SAFETY — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
   it("has 36 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(36);
+    expect(ALL_TYPES).toHaveLength(37);
   });
 
   it("maps every FindingType enum member explicitly (exhaustiveness)", () => {
@@ -79,6 +79,8 @@ describe("getRemovalSafety — representative mappings", () => {
     "CHECKOUT_SUNSET",
     "SETTINGS_DRIFT",
     "GHOST_APP_EMBED",
+    // Merchants can't see or delete a storefront ScriptTag; the vendor migrates.
+    "SCRIPT_TAG_SUNSET",
   ];
 
   it.each(LEAVE_ALONE)('classifies %s as "leave-alone"', (type) => {

@@ -276,6 +276,7 @@ function seed() {
       themeId: "theme-a",
       skippedCategories: [],
       cappedCategories: [],
+      unreachableCategories: [],
       status: "COMPLETED",
       findingCount: 7,
       newFindingCount: 7,
@@ -850,6 +851,7 @@ describe("operator-digest handler: unique findings, resolution breakdown, distin
     resolvedFindingCount: 0,
     skippedCategories: [],
     cappedCategories: [],
+    unreachableCategories: [],
     ...over,
   });
   const section = (body: string, header: string) => {
@@ -959,6 +961,34 @@ describe("operator-digest handler: unique findings, resolution breakdown, distin
     const resolution = section(await runDigest(), "RESOLUTION (last 24h)");
     // shop-a: new 1, first 1, checked 2. shop-b: m2 newly checked; m1 + b-script stay new.
     expect(resolution).toContain("  New: 2");
+    expect(resolution).toContain(
+      "Not counted as new: 1 on a store's or theme's first scan, 3 in newly checked categories",
+    );
+  });
+
+  it("counts findings an unreachable-storefront prior scan missed as newly checked", async () => {
+    // A second store: its prior scan could not read the storefront, so
+    // SCRIPT_TAG_SUNSET was un-audited; the window scan read it and found one.
+    tables.scan.push(
+      scan({
+        id: "c-old",
+        shopId: "shop-b",
+        themeId: "theme-b",
+        createdAt: ago(30 * HOUR),
+        unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+      }),
+      scan({
+        id: "c1",
+        shopId: "shop-b",
+        themeId: "theme-b",
+        createdAt: ago(3 * HOUR),
+        newFindingCount: 1,
+      }),
+    );
+    tables.finding.push(finding("c1-st", "c1", "SCRIPT_TAG_SUNSET", "https://x.example/a.js"));
+    const resolution = section(await runDigest(), "RESOLUTION (last 24h)");
+    // shop-a unchanged (new 1, first 1, checked 2); shop-b's finding is newly checked.
+    expect(resolution).toContain("  New: 1");
     expect(resolution).toContain(
       "Not counted as new: 1 on a store's or theme's first scan, 3 in newly checked categories",
     );

@@ -15,6 +15,7 @@ import {
   detectAppEmbedOff,
   detectGhostAppEmbeds,
   dropActiveAppOwnFileFindings,
+  enabledAppEmbedApps,
   ORPHAN_GRADE_CORROBORATION_TYPES,
   scanThemeFiles,
   type ThemeFile,
@@ -525,5 +526,35 @@ describe("live apps' findings are suppressed theme-wide and inside live builders
       const input = [finding(FindingType.GHOST_SCRIPT, "sections/main-product.liquid", "Judge.me")];
       expect(dropActiveAppOwnFileFindings([settings], input)).toEqual(input);
     });
+  });
+});
+
+describe("enabledAppEmbedApps", () => {
+  const KLAVIYO_TYPE = "shopify://apps/klaviyo-email-marketing-sms/blocks/klaviyo-onsite-embed/abc";
+
+  it("returns signature names of ENABLED embeds only", () => {
+    const settings = settingsWith({
+      "1": { type: PAGEFLY_TYPE, disabled: false },
+      "2": { type: KLAVIYO_TYPE, disabled: true },
+    });
+    expect([...enabledAppEmbedApps([settings])]).toEqual(["PageFly"]);
+  });
+
+  it("treats an entry with no disabled flag as enabled", () => {
+    const settings = settingsWith({ "1": { type: KLAVIYO_TYPE } });
+    expect([...enabledAppEmbedApps([settings])]).toEqual(["Klaviyo"]);
+  });
+
+  it("skips unmatched handles and non-app blocks, never guessing a name", () => {
+    const settings = settingsWith({
+      "1": { type: "shopify://apps/unknown-app/blocks/x/uuid", disabled: false },
+      "2": { type: "header", disabled: false },
+    });
+    expect(enabledAppEmbedApps([settings]).size).toBe(0);
+  });
+
+  it("is empty without a settings_data.json or blocks", () => {
+    expect(enabledAppEmbedApps([]).size).toBe(0);
+    expect(enabledAppEmbedApps([settingsWith(undefined)]).size).toBe(0);
   });
 });

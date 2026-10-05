@@ -118,6 +118,7 @@ const SCAN = {
   createdAt: new Date("2026-03-20T10:00:00Z"),
   skippedCategories: [] as string[],
   cappedCategories: [] as string[],
+  unreachableCategories: [] as string[],
   skippedFiles: [] as string[],
 };
 
@@ -272,6 +273,20 @@ describe("app.scans.$scanId.diff loader", () => {
 
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
       skippedCategories: ["JSON_LD_PRICE_CONFLICT"],
+      skippedFiles: [],
+    });
+  });
+
+  it("excludes an unreachable-storefront category from resolved", async () => {
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+    });
+
+    await loader(makeLoaderArgs("scan-1"));
+
+    expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
+      skippedCategories: ["SCRIPT_TAG_SUNSET"],
       skippedFiles: [],
     });
   });

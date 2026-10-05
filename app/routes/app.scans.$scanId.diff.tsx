@@ -77,8 +77,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
   const scanDiff: ScanDiff = diffScans(keptCurrent, keptPrevious, {
     // Exclude prior findings in categories the current scan skipped (missing
-    // scope) or capped (size cap, gc-11f) so they are never reported as falsely
-    // "resolved" (LOG-4).
+    // scope), capped (size cap, gc-11f), or could not run (storefront
+    // unreadable) so they are never reported as falsely "resolved" (LOG-4).
     skippedCategories: unauditedCategories(scan),
     // Likewise exclude prior findings in files the current scan skipped for
     // exceeding the size cap — an unscanned file is unknown, not fixed

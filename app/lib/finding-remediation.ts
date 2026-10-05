@@ -26,7 +26,7 @@
  */
 
 import { adminResourceLocatorLabel } from "./admin-resource-url";
-import { isAdminResourceFinding } from "./finding-classification";
+import { isAdminResourceFinding, isStorefrontFinding } from "./finding-classification";
 
 interface Remediation {
   /**
@@ -221,6 +221,12 @@ const REMEDIATION: Record<string, Remediation> = {
       "This app's embed is still switched on, and the app left other code in your theme, so it may have been removed. If you no longer use it, remove the embed in Online Store > Themes > Customize > App embeds. Avoid editing settings_data.json by hand, and duplicate the theme first.",
   },
 
+  // ---- Storefront script tags (not theme code; merchants cannot see or remove them) ----
+  SCRIPT_TAG_SUNSET: {
+    howTo:
+      "Contact the app's support and ask whether it has moved off script tags to an app embed before Shopify stops running script tags on March 1, 2027. You can check for its embed in Online Store > Themes > Customize > Theme settings > App embeds, and turn it on there if the app tells you to. Script tags don't appear in your admin or theme code, so there is nothing for you to delete: the app's developer has to make the move.",
+  },
+
   // ---- Theme settings ----
   SETTINGS_DRIFT: {
     howTo:
@@ -279,6 +285,8 @@ export interface RemovalInstructionFinding {
  *   How: <howTo>
  *
  * Graceful degradation:
+ *   - Storefront findings (SCRIPT_TAG_SUNSET): no file and nothing the merchant
+ *     can delete, so a "Location:" line and the URLs replace "Remove this code".
  *   - Admin-resource findings (product / page / redirect / metafield /
  *     translation): the `filename` is a synthetic locator and there is no theme
  *     snippet to delete, so the line reference and the "Remove this code" block
@@ -301,6 +309,12 @@ export function buildRemovalInstructions(
     // Admin resources are edited in the Shopify Admin, not deleted as theme code:
     // show a human location label and lean on howTo (no line/snippet block).
     lines.push(`Location: ${adminResourceLocatorLabel(finding.findingType, finding.filename)}`);
+  } else if (isStorefrontFinding(finding.findingType)) {
+    // Read from the public storefront (script tags): there is no file to edit
+    // and nothing the merchant can remove, so list the URLs for the vendor.
+    lines.push("Location: your storefront's script tags (not in your theme code)");
+    const snippet = finding.codeSnippet.trim();
+    if (snippet.length > 0) lines.push("Script tag URLs:", snippet);
   } else {
     lines.push(
       finding.lineNumber > 0

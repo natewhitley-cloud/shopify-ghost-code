@@ -67,11 +67,15 @@ export const OPTIONAL_SCOPE_INFO: Record<OptionalScope, { label: string; unlocks
  *   - GHOST_PAGE                                     → read_content                 (hasContentScope)
  *   - GHOST_REDIRECT                                 → read_online_store_navigation (hasNavigationScope)
  *   - DANGLING_REFERENCE                             → read_products + read_content (either unlocks part)
+ *   - SCRIPT_TAG_SUNSET                              → none: never scope-skipped, only
+ *                                                      `unreachableCategories` (storefront
+ *                                                      unreadable); listed for its label
  *
  * The `optional-scopes.test.ts` drift guard reads the scan engine and asserts
- * every category it can emit into `skippedCategories` or `cappedCategories`
- * (gc-11f) is covered here, so a new skipped or capped category can never
- * render as an unlabeled banner.
+ * every category it can emit into `skippedCategories`, `cappedCategories`
+ * (gc-11f), or `unreachableCategories` is covered here, so a new category can
+ * never render as an unlabeled notice. Only a scope-skippable category (one
+ * the engine can put in `skippedCategories`) must name at least one scope.
  */
 export const SKIPPABLE_CATEGORY_INFO: Record<string, { label: string; scopes: OptionalScope[] }> = {
   GHOST_TRANSLATION: { label: "Translations", scopes: ["read_translations", "read_locales"] },
@@ -82,6 +86,7 @@ export const SKIPPABLE_CATEGORY_INFO: Record<string, { label: string; scopes: Op
   GHOST_PAGE: { label: "Content pages", scopes: ["read_content"] },
   GHOST_REDIRECT: { label: "URL redirects", scopes: ["read_online_store_navigation"] },
   DANGLING_REFERENCE: { label: "Broken links", scopes: ["read_products", "read_content"] },
+  SCRIPT_TAG_SUNSET: { label: "Script tag sunset", scopes: [] },
 };
 
 /**

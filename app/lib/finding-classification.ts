@@ -148,6 +148,10 @@ const HEURISTIC_FINDING_TYPES = new Set([
   // positive known-app detection.
   "APP_EMBED_OFF",
   "GHOST_APP_EMBED",
+  // SCRIPT_TAG_SUNSET — grouped by signature when a ScriptTag URL matches a
+  // known app, otherwise by bare hostname with no app named, so it is not a
+  // guaranteed positive known-app detection.
+  "SCRIPT_TAG_SUNSET",
 ]);
 
 /**
@@ -361,14 +365,29 @@ const ADMIN_RESOURCE_FINDING_TYPES = new Set([
 ]);
 
 /**
+ * FindingTypes read from the shop's PUBLIC storefront rather than from theme
+ * files or Admin resources. Their `filename` is a synthetic locator
+ * (`storefront/script-tags`) with no editor or admin page behind it, so they
+ * get NEITHER a theme-editor nor an Admin-resource link, and their removal
+ * instructions never say "remove this code" (the merchant cannot).
+ *   - SCRIPT_TAG_SUNSET → `storefront/script-tags` (script-tag-sunset-detector)
+ */
+const STOREFRONT_FINDING_TYPES = new Set(["SCRIPT_TAG_SUNSET"]);
+
+/** True for findings read from the public storefront (no link of either kind). */
+export function isStorefrontFinding(findingType: string): boolean {
+  return STOREFRONT_FINDING_TYPES.has(findingType);
+}
+
+/**
  * Returns true if the finding's `filename` is a theme file editable in the
  * Shopify theme code editor, so the row can offer an "Open in theme editor"
  * deep-link.
  *
  * Unknown/unclassified types default to FALSE: it is safer to omit a link for an
  * untriaged new type than to emit one that deep-links to a non-theme locator and
- * 404s. The paired THEME_FILE/ADMIN_RESOURCE sets partition every FindingType
- * enum member; a drift test guards that partition as the enum grows.
+ * 404s. The THEME_FILE/ADMIN_RESOURCE/STOREFRONT sets partition every
+ * FindingType enum member; a drift test guards that partition as the enum grows.
  *
  * Pure function of findingType — no database lookup required.
  */
@@ -380,9 +399,9 @@ export function isThemeFileFinding(findingType: string): boolean {
  * Returns true if the finding's `filename` is a SYNTHETIC Admin-resource locator
  * (product / page / redirect / metafield / translation), so the row can offer a
  * deep-link to that resource's best-available admin/storefront surface instead of
- * a theme-editor link (gc-7h9). Exact inverse of isThemeFileFinding over the
- * enum: the two sets partition every FindingType, so a finding gets at most one
- * link. Unknown/unclassified types default to FALSE — safer to omit a link for an
+ * a theme-editor link (gc-7h9). Inverse of isThemeFileFinding over every
+ * non-storefront type: the three sets partition every FindingType, so a finding
+ * gets at most one link (storefront types get none). Unknown/unclassified types default to FALSE — safer to omit a link for an
  * untriaged new type than to deep-link a locator we cannot map.
  *
  * Pure function of findingType — no database lookup required.
@@ -392,11 +411,12 @@ export function isAdminResourceFinding(findingType: string): boolean {
 }
 
 /**
- * Exposed for the drift-guard test: the two curated sets that partition the
- * FindingType enum by whether the finding's filename is a theme file. Not for
+ * Exposed for the drift-guard test: the three curated sets that partition the
+ * FindingType enum by what the finding's filename points at. Not for
  * rendering — use isThemeFileFinding() there.
  */
 export const THEME_FILE_TYPE_SETS = {
   themeFile: THEME_FILE_FINDING_TYPES,
   adminResource: ADMIN_RESOURCE_FINDING_TYPES,
+  storefront: STOREFRONT_FINDING_TYPES,
 } as const;

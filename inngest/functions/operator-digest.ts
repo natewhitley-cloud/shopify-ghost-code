@@ -295,10 +295,14 @@ export interface RollupScanRow {
   resolvedFindingCount: number;
   skippedCategories: string[];
   cappedCategories: string[];
+  unreachableCategories: string[];
 }
 
 /** The fields of a prior scan the resolution breakdown reads. */
-export type PriorScan = Pick<RollupScanRow, "id" | "skippedCategories" | "cappedCategories">;
+export type PriorScan = Pick<
+  RollupScanRow,
+  "id" | "skippedCategories" | "cappedCategories" | "unreachableCategories"
+>;
 
 /** An in-window scan paired with the scan its diff ran against, or null on a
  * first scan of that store + theme. */
@@ -336,7 +340,8 @@ export function pairScansWithPriors(
 
 /**
  * Categories the prior scan did not fully audit (skipped for a missing scope,
- * or capped by size: the differ's unauditedCategories) that this scan did.
+ * capped by size, or unreachable storefront: the differ's unauditedCategories)
+ * that this scan did.
  * Findings of these types that the prior scan lacked are "new" only because the
  * check ran fully for the first time. A first scan returns [] (all of its
  * findings already count as first-scan findings).
@@ -2051,6 +2056,7 @@ export const operatorDigest = inngest.createFunction(
           resolvedFindingCount: true,
           skippedCategories: true,
           cappedCategories: true,
+          unreachableCategories: true,
         },
       });
       if (windowScans.length === 0) return empty;
@@ -2069,7 +2075,12 @@ export const operatorDigest = inngest.createFunction(
             createdAt: { lt: windowStart },
           },
           orderBy: { createdAt: "desc" },
-          select: { id: true, skippedCategories: true, cappedCategories: true },
+          select: {
+            id: true,
+            skippedCategories: true,
+            cappedCategories: true,
+            unreachableCategories: true,
+          },
         });
         if (prior) priorBeforeWindow.set(key, prior);
       }

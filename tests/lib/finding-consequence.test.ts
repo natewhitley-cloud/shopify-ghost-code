@@ -4,7 +4,7 @@
  * Strategy:
  *   - Pure module, no dependencies — test directly.
  *   - Exhaustiveness / drift guard: every FindingType has a CONSEQUENCE_MAP entry.
- *   - Partition: PRIMARY lanes cleanly partition all 36 types (each in exactly one).
+ *   - Partition: PRIMARY lanes cleanly partition all 37 types (each in exactly one).
  *   - computeLaneSummary: sums, most-urgent urgency, hasAgentic, zero-lane omission.
  *   - startHereLane / dominantLane: urgency-first vs count-first tie-breaking, null.
  *   - Spot-check specific mappings against the grounded table.
@@ -43,7 +43,7 @@ const ALL_LANES: LaneKey[] = [
 describe("CONSEQUENCE_MAP exhaustiveness", () => {
   it("maps every FindingType enum member (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(36);
+    expect(allTypes).toHaveLength(37);
 
     for (const type of allTypes) {
       const entry = CONSEQUENCE_MAP[type];
@@ -189,11 +189,11 @@ describe("laneLabelForLane", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Partition: primary lanes cleanly cover all 36 types
+// Partition: primary lanes cleanly cover all 37 types
 // ---------------------------------------------------------------------------
 
 describe("typesForLane partition", () => {
-  it("primary lanes partition all 36 types with no type in two lanes", () => {
+  it("primary lanes partition all 37 types with no type in two lanes", () => {
     const seen = new Set<FindingType>();
     let total = 0;
 
@@ -207,8 +207,8 @@ describe("typesForLane partition", () => {
       total += types.length;
     }
 
-    expect(total).toBe(36);
-    expect(seen.size).toBe(36);
+    expect(total).toBe(37);
+    expect(seen.size).toBe(37);
     // Union equals the full enum set.
     expect([...seen].sort()).toEqual(Object.values(FindingType).sort());
   });

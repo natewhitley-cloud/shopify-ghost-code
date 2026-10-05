@@ -57,6 +57,8 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   MAX_SCANNABLE_FILE_BYTES: 1_000_000,
   // Used by the real (unmocked) checkout-sunset detector.
   buildSnippet: (content: string) => content.slice(0, 300),
+  // Enabled-embed app names for the (dark) storefront script-tag audit.
+  enabledAppEmbedApps: vi.fn(() => new Set<string>()),
   // Real-behaviour stub so the core step's scannableFileCount is meaningful.
   isScannableFile: (filename: string) =>
     filename.endsWith(".liquid") &&
@@ -237,6 +239,7 @@ import { detectOrphanedProductTags } from "../../app/services/product-tag-detect
 import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
 import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
 import { diffScans, unauditedCategories } from "../../app/services/scan-differ.server";
+import { enabledAppEmbedApps } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import { detectTranslationContent } from "../../app/services/translation-detector.server";
@@ -319,6 +322,9 @@ const MOCK_SHOP = {
 const MOCK_ADMIN = {
   graphql: vi.fn(),
 };
+
+// Global fetch spy: only the storefront script-tag audit may ever call fetch.
+const fetchSpy = vi.spyOn(globalThis, "fetch");
 
 const MOCK_FILES = [
   { filename: "layout/theme.liquid", content: "<html></html>" },
@@ -459,6 +465,13 @@ beforeEach(() => {
   delete process.env.DANGLING_REFERENCE_LIVE_ENABLED;
   delete process.env.SETTINGS_DRIFT_LIVE_ENABLED;
   delete process.env.APP_EMBED_LIVE_ENABLED;
+  // Storefront script-tag audit: dark unless a test enables it. The real
+  // fetcher runs; the global fetch is stubbed so no test can reach the network.
+  delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
+  fetchSpy.mockReset();
+  fetchSpy.mockRejectedValue(new Error("network disabled in tests"));
+  MOCK_ADMIN.graphql.mockReset();
+  (enabledAppEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(new Set<string>());
 });
 
 // ---------------------------------------------------------------------------
@@ -2067,16 +2080,25 @@ describe("scanTheme — fetch-and-scan step-output budget (gc-4ce)", () => {
     mockFetchThemeFiles.mockResolvedValue([{ filename: "sections/header.liquid", content }]);
     await runAndCaptureCoreStep();
     const findings = (danglingPersistCall()?.[1] ?? []) as Array<Record<string, unknown>>;
-    const { skippedCategories, cappedCategories } = mockFinalizeScan.mock.calls.at(-1)?.[1] as {
+    const {
+      skippedCategories,
+      cappedCategories,
+      unreachableCategories = [],
+    } = mockFinalizeScan.mock.calls.at(-1)?.[1] as {
       skippedCategories: string[];
       cappedCategories: string[];
+      unreachableCategories?: string[];
     };
     return {
       findings: findings.map((f) => ({ ...f, id: "", scanId: "", shopId: "" })),
       skippedCategories,
       cappedCategories,
       // What the differ is actually handed (gc-11f).
-      unaudited: unauditedCategories({ skippedCategories, cappedCategories }),
+      unaudited: unauditedCategories({
+        skippedCategories,
+        cappedCategories,
+        unreachableCategories,
+      }),
     };
   }
 
@@ -3215,6 +3237,7 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     FindingType.SETTINGS_DRIFT,
     FindingType.APP_EMBED_OFF,
     FindingType.GHOST_APP_EMBED,
+    FindingType.SCRIPT_TAG_SUNSET,
   ];
   const live = async () => {
     await runScanTheme();
@@ -3243,9 +3266,18 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     expect(types).not.toContain(FindingType.SETTINGS_DRIFT);
   });
 
-  it("both flags on: the full enum", async () => {
+  it("SCRIPT_TAG_SUNSET_LIVE_ENABLED=true adds only SCRIPT_TAG_SUNSET", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    const types = await live();
+    expect(types).toContain(FindingType.SCRIPT_TAG_SUNSET);
+    expect(types).not.toContain(FindingType.APP_EMBED_OFF);
+    expect(types).not.toContain(FindingType.SETTINGS_DRIFT);
+  });
+
+  it("all flags on: the full enum", async () => {
     process.env.SETTINGS_DRIFT_LIVE_ENABLED = "true";
     process.env.APP_EMBED_LIVE_ENABLED = "true";
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
     expect(await live()).toEqual(Object.values(FindingType));
   });
 
@@ -3714,5 +3746,248 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     const call = infoSpy.mock.calls.find((c) => c[0] === "merchant alert outcome");
     expect(call?.[1]).toMatchObject({ sent: true, reason: "sent", scanId: SCAN_ID });
     expect(JSON.stringify(call)).not.toContain("owner@example.com");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Storefront script-tag audit (SCRIPT_TAG_SUNSET, dark behind its flag)
+// ---------------------------------------------------------------------------
+
+describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
+  const PRIMARY = "pawnaturals.com";
+  const MYSHOPIFY = "paw-naturals-llc.myshopify.com";
+
+  function shopDomainsResponse() {
+    return {
+      json: async () => ({
+        data: {
+          shop: {
+            primaryDomain: { host: PRIMARY, url: `https://${PRIMARY}` },
+            myshopifyDomain: MYSHOPIFY,
+          },
+        },
+      }),
+    };
+  }
+
+  function storefrontHtml(urls: string[] | null): string {
+    const block =
+      urls === null
+        ? ""
+        : `<script>(function() {\n  var isLoaded = false;\n  function asyncLoad() {\n    if (isLoaded) return;\n    isLoaded = true;\n    var urls = ${JSON.stringify(urls).replace(/\//g, "\\/")};\n    for (var i = 0; i < urls.length; i++) {}\n  };\n})();</script>`;
+    return `<html><head><script>var Shopify = Shopify || {};\nShopify.shop = "${MYSHOPIFY}";</script>${block}</head><body></body></html>`;
+  }
+
+  /** Run the scan, capturing each step's return value by name. */
+  async function run() {
+    const results: Record<string, unknown> = {};
+    const base = createMockInngestStep();
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        results[name] = await fn();
+        return results[name];
+      }),
+    };
+    const result = await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+    const names = step.run.mock.calls.map((c) => c[0] as string);
+    return { results, result, names };
+  }
+
+  const scriptTagPersistCall = () =>
+    mockCreateFindings.mock.calls.find((c) =>
+      (c[1] as Array<{ findingType: string }>).some(
+        (f) => f.findingType === FindingType.SCRIPT_TAG_SUNSET,
+      ),
+    );
+
+  it("flag off: no storefront request, no Admin call, no step, no category, no finding", async () => {
+    const { results, names } = await run();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(MOCK_ADMIN.graphql).not.toHaveBeenCalled();
+    expect(names).not.toContain("storefront-script-tags");
+    // fetch-and-scan's output carries no new key while dark.
+    expect(results["fetch-and-scan"]).not.toHaveProperty("enabledEmbedApps");
+    expect(enabledAppEmbedApps).not.toHaveBeenCalled();
+    // finalize write is unchanged: no unreachableCategories key at all.
+    const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+    expect(finalizeArgs).not.toHaveProperty("unreachableCategories");
+    expect(finalizeArgs.skippedCategories).toEqual([]);
+    expect(finalizeArgs.cappedCategories).toEqual([]);
+    expect(scriptTagPersistCall()).toBeUndefined();
+  });
+
+  it('flag set to anything but "true" stays dark', async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "1";
+    const { names } = await run();
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(names).not.toContain("storefront-script-tags");
+  });
+
+  it("flag on + unreachable storefront: category recorded, no findings, COMPLETED (not PARTIAL)", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    fetchSpy.mockResolvedValueOnce(
+      new Response(null, { status: 302, headers: { location: `https://${PRIMARY}/password` } }),
+    );
+    fetchSpy.mockResolvedValueOnce(
+      new Response("<body class='template-password'></body>", { status: 200 }),
+    );
+
+    const { results, result } = await run();
+
+    expect(results["storefront-script-tags"]).toEqual({ findingCount: 0, unreachable: true });
+    const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+    expect(finalizeArgs.status).toBe("COMPLETED");
+    expect(finalizeArgs.unreachableCategories).toEqual([FindingType.SCRIPT_TAG_SUNSET]);
+    // Not a scope problem: never in skippedCategories (permissions banner).
+    expect(finalizeArgs.skippedCategories).toEqual([]);
+    expect(finalizeArgs.cappedCategories).toEqual([]);
+    expect(result.status).toBe("COMPLETED");
+    expect(scriptTagPersistCall()).toBeUndefined();
+  });
+
+  it("flag on + ScriptTags: findings persisted (query strings stripped), counted, category clear", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    fetchSpy.mockResolvedValue(
+      new Response(
+        storefrontHtml([
+          `https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=MEqSVx&shop=${MYSHOPIFY}`,
+          `https://str.rise-ai.com/?shop=${MYSHOPIFY}`,
+        ]),
+        { status: 200, headers: { "content-type": "text/html" } },
+      ),
+    );
+    (enabledAppEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(new Set(["Klaviyo"]));
+
+    const { results, result } = await run();
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+    expect(String(fetchSpy.mock.calls[0][0])).toBe(`https://${PRIMARY}/`);
+    expect(results["fetch-and-scan"]).toHaveProperty("enabledEmbedApps", ["Klaviyo"]);
+    const call = scriptTagPersistCall();
+    expect(call?.[0]).toBe(SCAN_ID);
+    const persisted = call?.[1] as Array<{
+      codeSnippet: string;
+      severity: string;
+      appName?: string;
+    }>;
+    expect(persisted).toHaveLength(2);
+    for (const f of persisted) {
+      expect(f.codeSnippet).not.toContain("?");
+      expect(f.codeSnippet).not.toContain(MYSHOPIFY);
+    }
+    const klaviyo = persisted.find((f) => f.appName === "Klaviyo");
+    expect(klaviyo?.severity).toBe(Severity.LOW);
+    expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: FindingType.SCRIPT_TAG_SUNSET },
+    });
+    expect(results["storefront-script-tags"]).toEqual({ findingCount: 2, unreachable: false });
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
+    expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
+  });
+
+  it("flag on + a storefront with no asyncLoad block: audited, zero findings, not unreachable", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    fetchSpy.mockResolvedValue(new Response(storefrontHtml(null), { status: 200 }));
+
+    const { results } = await run();
+
+    expect(results["storefront-script-tags"]).toEqual({ findingCount: 0, unreachable: false });
+    expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
+  });
+
+  it("flag on + the step throws (dead token): unreachable, the scan still completes", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    // Every other step succeeds; only the storefront step's admin lookup fails.
+    const calls: string[] = [];
+    const base = createMockInngestStep();
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        calls.push(name);
+        if (name === "storefront-script-tags") {
+          mockUnauthenticated.admin.mockRejectedValueOnce(new Error("offline token expired"));
+        }
+        return fn();
+      }),
+    };
+    const result = await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+
+    expect(calls).toContain("storefront-script-tags");
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockFinalizeScan.mock.calls[0][1].unreachableCategories).toEqual([
+      FindingType.SCRIPT_TAG_SUNSET,
+    ]);
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("flag flipped off after fetch-and-scan: the step runs but requests nothing and records nothing", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    const base = createMockInngestStep();
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        const out = await fn();
+        if (name === "fetch-and-scan") delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
+        return out;
+      }),
+    };
+    await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(MOCK_ADMIN.graphql).not.toHaveBeenCalled();
+    expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
+  });
+
+  it("flag flipped on after fetch-and-scan: no step (the decision was memoized dark)", async () => {
+    const base = createMockInngestStep();
+    const names: string[] = [];
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        names.push(name);
+        const out = await fn();
+        if (name === "fetch-and-scan") process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+        return out;
+      }),
+    };
+    await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+
+    expect(names).not.toContain("storefront-script-tags");
+    expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("the previous unreachable SCRIPT_TAG_SUNSET findings are kept out of resolved at finalize", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    fetchSpy.mockResolvedValue(new Response("upstream error", { status: 503 }));
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-10-05T00:00:00Z"),
+    });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      id: "prev",
+      findingCount: 1,
+      findings: [
+        {
+          filename: "storefront/script-tags",
+          findingType: FindingType.SCRIPT_TAG_SUNSET,
+          codeSnippet: "https://cdn.example.com/a.js",
+          lineNumber: 1,
+          severity: Severity.HIGH,
+          appName: null,
+          description: "x",
+        },
+      ],
+    });
+
+    await run();
+
+    expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(0);
   });
 });

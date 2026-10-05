@@ -7,9 +7,10 @@
  * code editor, this module deep-links ADMIN-RESOURCE findings (product / page /
  * redirect / metafield / translation) to their best-available Shopify surface.
  *
- * The two finding sets partition the FindingType enum (see
- * finding-classification.ts: THEME_FILE_TYPE_SETS), so a given finding gets at
- * most one deep-link and the caller renders whichever one is non-null.
+ * The theme-file, admin-resource, and storefront finding sets partition the
+ * FindingType enum (see finding-classification.ts: THEME_FILE_TYPE_SETS), so a
+ * given finding gets at most one deep-link (storefront findings get none) and
+ * the caller renders whichever one is non-null.
  *
  * "Best available surface" contract (owner decision): build a precise link when
  * the finding's locator carries enough data (a product / redirect numeric id, a

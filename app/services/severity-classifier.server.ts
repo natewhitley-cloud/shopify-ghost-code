@@ -91,6 +91,11 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   // GHOST_APP_EMBED is LOW: a leftover, still-enabled embed entry of an app that
   // left other code behind. Housekeeping, not breakage.
   [FindingType.GHOST_APP_EMBED]: Severity.LOW,
+  // SCRIPT_TAG_SUNSET default is HIGH: an app still on a storefront ScriptTag
+  // stops working when Shopify stops running them (2027-03-01). The detector
+  // lowers it to LOW per finding when the app also has an enabled app embed
+  // (probably migrated), computed from theme data the classifier cannot see.
+  [FindingType.SCRIPT_TAG_SUNSET]: Severity.HIGH,
 };
 
 // ---------------------------------------------------------------------------

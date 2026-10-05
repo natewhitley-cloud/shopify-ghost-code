@@ -27,6 +27,13 @@
  *                                  scope; the JSON-LD live-price and dangling-
  *                                  reference audits also report whether a size
  *                                  cap truncated them (gc-11f).
+ *   8b. storefront-script-tags   — DARK (SCRIPT_TAG_SUNSET_LIVE_ENABLED): reads
+ *                                  the public storefront homepage for other
+ *                                  apps' ScriptTags. Flag off = the step does not
+ *                                  exist (no request, no category, no finding).
+ *                                  An unreadable storefront records the category
+ *                                  in `unreachableCategories`; it never fails
+ *                                  the scan.
  *   9. finalize-scan             — sets the terminal status to COMPLETED. The
  *                                  core theme audit ran, so success is COMPLETED
  *                                  even when optional categories were skipped for
@@ -78,9 +85,16 @@ import {
   compareByFileThenLine,
   extractDanglingReferences,
 } from "../../app/services/dangling-reference-extractor.server";
-import { isScannableFile, MAX_SCANNABLE_FILE_BYTES } from "../../app/services/scan-engine.server";
+import {
+  enabledAppEmbedApps,
+  isScannableFile,
+  MAX_SCANNABLE_FILE_BYTES,
+} from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
-import { SOFT_LAUNCH_FLAGS } from "../../app/services/soft-launch-flags.server";
+import {
+  isScriptTagSunsetLive,
+  isSoftLaunchLive,
+} from "../../app/services/soft-launch-flags.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 import { inngest } from "../client";
@@ -298,8 +312,7 @@ function applySoftLaunchFlags<T extends { findingType: FindingType }>(
 ): { kept: T[]; suppressedDetectorHits: Record<string, number>; liveFindingTypes: string[] } {
   const isLive = new Map<FindingType, boolean>();
   for (const type of Object.values(FindingType)) {
-    const flag = SOFT_LAUNCH_FLAGS[type];
-    isLive.set(type, !flag || process.env[flag] === "true");
+    isLive.set(type, isSoftLaunchLive(type));
   }
   const suppressedDetectorHits: Record<string, number> = {};
   const kept = findings.filter((f) => {
@@ -392,6 +405,7 @@ export const scanTheme = inngest.createFunction(
         totalTextBytes,
         largestFileBytes,
         scannableTextBytes,
+        enabledEmbedApps,
       } = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -659,6 +673,15 @@ export const scanTheme = inngest.createFunction(
           // Per-phase timing (gc-1bd) — tiny scalars, safe across the boundary.
           themeFetchMs,
           themeScanMs,
+          // Signature names of apps with an ENABLED theme app embed, for the
+          // storefront script-tag audit below (theme files cannot cross the
+          // step boundary). Present ONLY while SCRIPT_TAG_SUNSET is live, so a
+          // dark scan's step output is unchanged; its presence is also what
+          // schedules that audit step, so the decision is made once, here,
+          // inside this memoized step.
+          ...(isScriptTagSunsetLive()
+            ? { enabledEmbedApps: [...enabledAppEmbedApps(files)].sort() }
+            : {}),
         };
 
         // Defensive step-output budget (gc-4ce). The caps keep the worst case
@@ -1217,6 +1240,67 @@ export const scanTheme = inngest.createFunction(
         },
       );
 
+      // Step 11: Storefront script-tag audit (SCRIPT_TAG_SUNSET). DARK: it runs
+      // only when fetch-and-scan recorded `enabledEmbedApps`, which it does only
+      // while SCRIPT_TAG_SUNSET_LIVE_ENABLED === "true". Flag off = no step, no
+      // Admin query, no storefront request, no category, no finding (the
+      // fetcher re-checks the flag before any request, belt and braces).
+      //
+      // Not scope-gated (it uses only `shop { primaryDomain myshopifyDomain }`).
+      // When the public storefront cannot be read (password page, timeout,
+      // non-2xx, not a Shopify page, unparseable block) the category is
+      // recorded in `unreachableCategories` so the differ keeps its prior
+      // findings; that is not a scope problem (no banner, no PARTIAL). It must
+      // never fail the scan: every error is caught and reported unreachable.
+      const scriptTagResult: { findingCount: number; unreachable: boolean } = Array.isArray(
+        enabledEmbedApps,
+      )
+        ? await step.run("storefront-script-tags", async () => {
+            const { logger } = await import("../../app/lib/logger.server");
+            try {
+              const db = (await import("../../app/db.server")).default;
+              const shop = await db.shop.findUnique({ where: { id: shopId } });
+              if (!shop) return { findingCount: 0, unreachable: false };
+
+              const { unauthenticated } = await import("../../app/shopify.server");
+              const { admin } = await unauthenticated.admin(shop.domain);
+              const { fetchStorefrontScriptTags } =
+                await import("../../app/services/storefront-fetcher.server");
+              const storefront = await fetchStorefrontScriptTags(admin, { shopId });
+              // Flag flipped off mid-scan: nothing was requested, nothing to record.
+              if (storefront.status === "disabled") return { findingCount: 0, unreachable: false };
+              if (storefront.status === "unreachable")
+                return { findingCount: 0, unreachable: true };
+
+              const { detectScriptTagSunset } =
+                await import("../../app/services/script-tag-sunset-detector.server");
+              // Same soft-launch filter as every other detector (gc-rvo0).
+              const findings = detectScriptTagSunset(
+                storefront.urls,
+                new Set(enabledEmbedApps),
+              ).filter((f) => isSoftLaunchLive(f.findingType));
+
+              await persistAuditFindings({
+                scanId,
+                shopId,
+                findingType: FindingType.SCRIPT_TAG_SUNSET,
+                findings,
+                event: "script_tag_sunset_findings",
+                logMessage: "script tag sunset findings persisted",
+              });
+              return { findingCount: findings.length, unreachable: false };
+            } catch (err) {
+              logger.warn("storefront script-tag audit failed, recorded as unreachable", {
+                function: "scan-theme",
+                stepName: "storefront-script-tags",
+                shopId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+              return { findingCount: 0, unreachable: true };
+            }
+          })
+        : { findingCount: 0, unreachable: false };
+
       const totalFindings =
         findingCount +
         translationResult.findingCount +
@@ -1226,7 +1310,8 @@ export const scanTheme = inngest.createFunction(
         productResult.metafieldCount +
         redirectResult.findingCount +
         jsonLdPriceResult.findingCount +
-        danglingRefResult.findingCount;
+        danglingRefResult.findingCount +
+        scriptTagResult.findingCount;
 
       // Collect the optional categories that were skipped because their scope
       // was not granted. Each entry maps 1:1 to a FindingType so the differ can
@@ -1259,6 +1344,13 @@ export const scanTheme = inngest.createFunction(
       const cappedCategories: string[] = flaggedCategories([
         [jsonLdPriceResult.capped, FindingType.JSON_LD_PRICE_CONFLICT],
         [danglingRefResult.capped, FindingType.DANGLING_REFERENCE],
+      ]);
+
+      // Categories whose check could not run because the public storefront could
+      // not be read. Un-audited for the differ (unauditedCategories), but never
+      // the permissions banner and never PARTIAL. Always empty while dark.
+      const unreachableCategories: string[] = flaggedCategories([
+        [scriptTagResult.unreachable, FindingType.SCRIPT_TAG_SUNSET],
       ]);
 
       // Walks that hit their cap this scan (gc-1bd). Surfaced in scan_signal for
@@ -1332,7 +1424,11 @@ export const scanTheme = inngest.createFunction(
           const { diffScans, unauditedCategories } =
             await import("../../app/services/scan-differ.server");
           const diff = diffScans(currentFindings, previousScan.findings, {
-            skippedCategories: unauditedCategories({ skippedCategories, cappedCategories }),
+            skippedCategories: unauditedCategories({
+              skippedCategories,
+              cappedCategories,
+              unreachableCategories,
+            }),
             skippedFiles: skippedFilePaths,
           });
           newFindingCount = diff.newFindings.length;
@@ -1352,6 +1448,9 @@ export const scanTheme = inngest.createFunction(
           skippedCategories,
           cappedCategories,
           skippedFiles: skippedFilePaths,
+          // Only sent when non-empty (the column defaults to []), so a dark
+          // scan's finalize write is unchanged.
+          ...(unreachableCategories.length > 0 ? { unreachableCategories } : {}),
           newFindingCount,
           resolvedFindingCount,
           persistedFindingCount,
@@ -1553,7 +1652,11 @@ export const scanTheme = inngest.createFunction(
               agg.filterIgnoredFindings(currentFindings, ignores).kept,
               agg.filterIgnoredFindings(baselineScan.findings, ignores).kept,
               {
-                skippedCategories: unauditedCategories({ skippedCategories, cappedCategories }),
+                skippedCategories: unauditedCategories({
+                  skippedCategories,
+                  cappedCategories,
+                  unreachableCategories,
+                }),
                 skippedFiles: skippedFilePaths,
               },
             );
@@ -1627,6 +1730,7 @@ export const scanTheme = inngest.createFunction(
         findingCount: totalFindings,
         skippedCategories,
         cappedCategories,
+        ...(unreachableCategories.length > 0 ? { unreachableCategories } : {}),
         skippedFiles: skippedFilePaths,
         translationFindings: translationResult.findingCount,
         tagFindings: productResult.tagCount,

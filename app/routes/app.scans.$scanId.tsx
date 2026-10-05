@@ -385,6 +385,18 @@ export function cappedCategoriesNotice(categories: readonly string[]): string {
 }
 
 /**
+ * Unreachable-storefront info notice copy: checks that could not run because
+ * the public storefront homepage could not be read. Not a permissions problem,
+ * so no CTA and no Settings link.
+ */
+export function unreachableCategoriesNotice(categories: readonly string[]): string {
+  const labels = skippedCategoryLabels(categories);
+  const lead =
+    labels.length === 1 ? "One check couldn't run this scan" : "Some checks couldn't run this scan";
+  return `${lead}: ${labels.join(", ")}. Ghost Code couldn't read your storefront's public homepage (for example, because it's password-protected). Anything we didn't check keeps its status from your previous scan.`;
+}
+
+/**
  * Scan-coverage notices shown under a completed scan (Standard+ only: Free
  * merchants can't grant these scopes or view the resulting findings).
  *
@@ -395,8 +407,10 @@ export function cappedCategoriesNotice(categories: readonly string[]): string {
  *   - Size-cap notice (gc-11f): optional audits ran (access granted) but hit a
  *     size cap, so only part of the category was checked. Info only: no CTA and
  *     no Settings link, since there is nothing to grant.
+ *   - Unreachable notice: a storefront check could not run because the public
+ *     homepage could not be read (e.g. password page). Info only, like the cap.
  *
- * Both can render at once when both happened this scan.
+ * Any combination can render at once when several happened this scan.
  */
 export function ScanCoverageNotices({
   isCompleted,
@@ -404,12 +418,14 @@ export function ScanCoverageNotices({
   status,
   skippedCategories,
   cappedCategories,
+  unreachableCategories = [],
 }: {
   isCompleted: boolean;
   canViewDetails: boolean;
   status: string;
   skippedCategories: string[];
   cappedCategories: string[];
+  unreachableCategories?: string[];
 }) {
   if (!isCompleted || !canViewDetails) return null;
   return (
@@ -429,6 +445,11 @@ export function ScanCoverageNotices({
       {cappedCategories.length > 0 && (
         <div>
           <s-banner tone="info">{cappedCategoriesNotice(cappedCategories)}</s-banner>
+        </div>
+      )}
+      {unreachableCategories.length > 0 && (
+        <div>
+          <s-banner tone="info">{unreachableCategoriesNotice(unreachableCategories)}</s-banner>
         </div>
       )}
     </>
@@ -642,7 +663,8 @@ export function FindingRow({
   // Admin-resource deep-link — the parallel of themeEditorUrl for finding types
   // whose filename is a synthetic resource locator (product/page/redirect/
   // metafield/translation) rather than a theme file. The theme-file and
-  // Admin-resource sets partition the enum, so at most one of these is non-null.
+  // Admin-resource sets are disjoint, so at most one of these is non-null
+  // (storefront findings, e.g. SCRIPT_TAG_SUNSET, get neither).
   const adminResourceUrl =
     shopDomain && isAdminResourceFinding(finding.findingType)
       ? buildAdminResourceUrl(shopDomain, finding.findingType, finding.filename)
@@ -1099,6 +1121,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       // Optional-audit categories that ran but hit a size cap (gc-11f). Drives
       // the separate "checks were limited" info notice (no Settings CTA).
       cappedCategories: scan.cappedCategories,
+      // Categories whose check could not run because the public storefront was
+      // unreadable (SCRIPT_TAG_SUNSET). Drives a separate info notice.
+      unreachableCategories: scan.unreachableCategories,
     },
     findings: enrichedFindingsPage,
     findingsPagination: {
@@ -2110,6 +2135,7 @@ export default function ScanDetail() {
           status={scan.status}
           skippedCategories={scan.skippedCategories}
           cappedCategories={scan.cappedCategories}
+          unreachableCategories={scan.unreachableCategories}
         />
 
         {/* Lane-context banner — shown when the merchant arrived via a dashboard

@@ -245,6 +245,15 @@ model Scan {
   // an info notice (not the permissions warning). Does NOT change status.
   // Empty for uncapped scans and all legacy scans.
   cappedCategories  String[]        @default([])
+  // FindingType categories whose check could not run this scan because the
+  // shop's PUBLIC storefront homepage could not be read (password page, timeout,
+  // non-2xx, not a Shopify storefront, unparseable script-tag block). Only the
+  // SCRIPT_TAG_SUNSET check reads the storefront today. Treated as un-audited
+  // exactly like skipped/capped (the differ never resolves its prior findings),
+  // but it is NOT a scope problem: no permissions banner, no PARTIAL status; the
+  // scan-detail UI shows an info notice. Empty for every scan while the check is
+  // dark, and for all legacy scans.
+  unreachableCategories String[]    @default([])
   // Theme file paths whose per-file detectors were SKIPPED this run because the
   // file exceeded MAX_SCANNABLE_FILE_BYTES (gc-06e.19). Those files were not
   // scanned, so the diff engine must exclude their prior findings from
@@ -538,6 +547,15 @@ enum FindingType {
   // fake-CDN loader injected by a rogue app. Always HIGH. Theme-file only, no
   // scope gate, all plans; preferred as the free-plan preview finding.
   MALICIOUS_SCRIPT
+  // Emitted by the storefront script-tag audit (script-tag-sunset-detector.server.ts):
+  // an app still loads on the storefront through a ScriptTag, which Shopify stops
+  // running on 2027-03-01 (create/update blocked since 2026-10-01). ScriptTags are
+  // invisible in the admin and the Admin API only returns the calling app's own,
+  // so they are read from the PUBLIC storefront homepage (content_for_header's
+  // asyncLoad block). One finding per app (or host when unmatched). All plans;
+  // soft-launched behind SCRIPT_TAG_SUNSET_LIVE_ENABLED, which also gates the
+  // storefront request itself (flag off = no request at all).
+  SCRIPT_TAG_SUNSET
 }
 
 enum SubmissionStatus {

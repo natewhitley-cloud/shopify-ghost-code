@@ -40,6 +40,7 @@ export const FINDING_TYPE_LABELS: Record<string, string> = {
   OVERLAPPING_CHAT_WIDGET: "Overlapping Chat Widgets",
   APP_EMBED_OFF: "App Embeds Turned Off",
   GHOST_APP_EMBED: "Leftover App Embeds",
+  SCRIPT_TAG_SUNSET: "Script Tag Sunset",
 };
 
 /** Label for a finding type, falling back to the enum name with spaces. */

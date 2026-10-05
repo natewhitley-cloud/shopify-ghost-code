@@ -355,6 +355,7 @@ describe("unauditedCategories (gc-11f)", () => {
       unauditedCategories({
         skippedCategories: ["GHOST_PAGE"],
         cappedCategories: ["DANGLING_REFERENCE"],
+        unreachableCategories: [],
       }),
     ).toEqual(["GHOST_PAGE", "DANGLING_REFERENCE"]);
   });
@@ -364,17 +365,28 @@ describe("unauditedCategories (gc-11f)", () => {
       unauditedCategories({
         skippedCategories: ["JSON_LD_PRICE_CONFLICT"],
         cappedCategories: ["JSON_LD_PRICE_CONFLICT"],
+        unreachableCategories: [],
       }),
     ).toEqual(["JSON_LD_PRICE_CONFLICT"]);
   });
 
   it("returns an empty list for a fully-audited (or legacy, cappedCategories = []) scan", () => {
-    expect(unauditedCategories({ skippedCategories: [], cappedCategories: [] })).toEqual([]);
+    expect(
+      unauditedCategories({
+        skippedCategories: [],
+        cappedCategories: [],
+        unreachableCategories: [],
+      }),
+    ).toEqual([]);
   });
 
   it("returns capped-only categories when nothing was scope-skipped", () => {
     expect(
-      unauditedCategories({ skippedCategories: [], cappedCategories: ["DANGLING_REFERENCE"] }),
+      unauditedCategories({
+        skippedCategories: [],
+        cappedCategories: ["DANGLING_REFERENCE"],
+        unreachableCategories: [],
+      }),
     ).toEqual(["DANGLING_REFERENCE"]);
   });
 
@@ -389,11 +401,60 @@ describe("unauditedCategories (gc-11f)", () => {
       skippedCategories: unauditedCategories({
         skippedCategories: [],
         cappedCategories: ["DANGLING_REFERENCE"],
+        unreachableCategories: [],
       }),
     });
 
     expect(diff.resolvedFindings).toHaveLength(1);
     expect(diff.resolvedFindings[0].findingType).toBe("GHOST_SCRIPT");
+  });
+
+  it("includes categories the scan could not reach (storefront unreadable)", () => {
+    expect(
+      unauditedCategories({
+        skippedCategories: ["GHOST_PAGE"],
+        cappedCategories: ["DANGLING_REFERENCE"],
+        unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+      }),
+    ).toEqual(["GHOST_PAGE", "DANGLING_REFERENCE", "SCRIPT_TAG_SUNSET"]);
+  });
+
+  it("does not resolve a prior SCRIPT_TAG_SUNSET finding when the storefront was unreachable", () => {
+    const priorScriptTag = makeFinding(
+      "storefront/script-tags",
+      "SCRIPT_TAG_SUNSET",
+      "https://cdn.example.com/widget.js",
+    );
+    const priorScript = makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "old-script");
+
+    const diff = diffScans([], [priorScriptTag, priorScript], {
+      skippedCategories: unauditedCategories({
+        skippedCategories: [],
+        cappedCategories: [],
+        unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+      }),
+    });
+
+    expect(diff.resolvedFindings.map((f) => f.findingType)).toEqual(["GHOST_SCRIPT"]);
+    expect(diff.unchangedCount).toBe(0);
+  });
+
+  it("resolves a prior SCRIPT_TAG_SUNSET finding when the storefront was read and it is gone", () => {
+    const priorScriptTag = makeFinding(
+      "storefront/script-tags",
+      "SCRIPT_TAG_SUNSET",
+      "https://cdn.example.com/widget.js",
+    );
+
+    const diff = diffScans([], [priorScriptTag], {
+      skippedCategories: unauditedCategories({
+        skippedCategories: [],
+        cappedCategories: [],
+        unreachableCategories: [],
+      }),
+    });
+
+    expect(diff.resolvedFindings.map((f) => f.findingType)).toEqual(["SCRIPT_TAG_SUNSET"]);
   });
 });
 

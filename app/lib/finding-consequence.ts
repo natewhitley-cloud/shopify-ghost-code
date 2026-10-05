@@ -377,6 +377,17 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "whenever",
     agentic: false,
   },
+  // SCRIPT_TAG_SUNSET: an app still loads through a storefront ScriptTag, which
+  // Shopify stops running on 2027-03-01. customers-see-it: when it stops, the
+  // app's storefront features (widgets, popups, reviews) vanish for shoppers.
+  // compounding, not act-now: nothing is broken yet, but the risk grows toward
+  // a fixed date. Not agentic.
+  SCRIPT_TAG_SUNSET: {
+    primary: "customers-see-it",
+    secondary: [],
+    urgency: "compounding",
+    agentic: false,
+  },
 };
 
 // ---------------------------------------------------------------------------

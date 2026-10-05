@@ -308,6 +308,9 @@ export async function finalizeScan(
     persistedFindingCount?: number;
     // FindingTypes live for this scan (gc-rvo0); written only when supplied.
     liveFindingTypes?: string[];
+    // Categories whose check could not run because the public storefront was
+    // unreadable (SCRIPT_TAG_SUNSET); written only when supplied (default []).
+    unreachableCategories?: string[];
   },
 ): Promise<FinalizeScanResult> {
   const result = await db.scan.updateMany({
@@ -330,6 +333,9 @@ export async function finalizeScan(
         ? { persistedFindingCount: args.persistedFindingCount }
         : {}),
       ...(args.liveFindingTypes !== undefined ? { liveFindingTypes: args.liveFindingTypes } : {}),
+      ...(args.unreachableCategories !== undefined
+        ? { unreachableCategories: args.unreachableCategories }
+        : {}),
     },
   });
 

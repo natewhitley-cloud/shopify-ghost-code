@@ -141,20 +141,46 @@ describe("skippedCategoryLabels", () => {
 });
 
 describe("SKIPPABLE_CATEGORY_INFO mapping", () => {
-  it("references only declared optional scopes", () => {
+  it("references only declared optional scopes, with a label for every category", () => {
     const optional = new Set<string>(OPTIONAL_SCOPES);
     for (const [category, info] of Object.entries(SKIPPABLE_CATEGORY_INFO)) {
       expect(info.label.length, `${category} needs a label`).toBeGreaterThan(0);
-      expect(info.scopes.length, `${category} needs at least one scope`).toBeGreaterThan(0);
       for (const scope of info.scopes) {
         expect(optional.has(scope), `${category} → unknown scope ${scope}`).toBe(true);
       }
     }
   });
 
+  // Every category the engine can SCOPE-skip must name the scope(s) that unlock
+  // it (the permissions banner and Settings card depend on it). Only categories
+  // that are never scope-skipped (e.g. SCRIPT_TAG_SUNSET, recorded only as
+  // unreachable) may have an empty scope list.
+  it("gives every scope-skippable category at least one scope", () => {
+    for (const category of emittedCategories("skippedCategories")) {
+      expect(
+        SKIPPABLE_CATEGORY_INFO[category]?.scopes.length ?? 0,
+        `${category} can be scope-skipped but names no scope`,
+      ).toBeGreaterThan(0);
+    }
+  });
+
+  it("allows an empty scope list only for categories that are never scope-skipped", () => {
+    const scopeSkippable = new Set(emittedCategories("skippedCategories"));
+    const scopeless = Object.entries(SKIPPABLE_CATEGORY_INFO)
+      .filter(([, info]) => info.scopes.length === 0)
+      .map(([category]) => category);
+    expect(scopeless).toEqual(["SCRIPT_TAG_SUNSET"]);
+    for (const category of scopeless) expect(scopeSkippable.has(category)).toBe(false);
+  });
+
+  it('labels SCRIPT_TAG_SUNSET "Script tag sunset"', () => {
+    expect(skippedCategoryLabels(["SCRIPT_TAG_SUNSET"])).toEqual(["Script tag sunset"]);
+  });
+
   // Drift guard: every FindingType the scan engine can push into
-  // `skippedCategories` or `cappedCategories` (gc-11f) MUST be labeled here, or
-  // a banner would render a raw enum name for a real, merchant-facing skip/cap.
+  // `skippedCategories`, `cappedCategories` (gc-11f), or `unreachableCategories`
+  // MUST be labeled here, or a notice would render a raw enum name for a real,
+  // merchant-facing skip/cap/unreachable check.
   const scanThemeSrc = () =>
     readFileSync(
       fileURLToPath(new URL("../../inngest/functions/scan-theme.ts", import.meta.url)),
@@ -175,6 +201,7 @@ describe("SKIPPABLE_CATEGORY_INFO mapping", () => {
     // Sanity minimums guard the regex itself from silently matching nothing.
     ["skippedCategories", 8],
     ["cappedCategories", 2],
+    ["unreachableCategories", 1],
   ])("covers every category the scan engine can emit into %s", (listName, minCount) => {
     const emitted = emittedCategories(listName);
     expect(emitted.length).toBeGreaterThanOrEqual(minCount);

@@ -73,6 +73,9 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   SETTINGS_DRIFT: "leave-alone",
   // Leftover app embed entry — remove via the theme editor, never hand-edit the JSON.
   GHOST_APP_EMBED: "leave-alone",
+  // Storefront ScriptTag — merchants can neither see nor delete it; the vendor
+  // must migrate to an app embed, so removal is never the merchant's action.
+  SCRIPT_TAG_SUNSET: "leave-alone",
 
   // ---- verify-first (the conservative default) ----
   // Tracking pixel — could still be an active Google/Meta tag you rely on.

@@ -180,6 +180,7 @@ import {
 import {
   action,
   cappedCategoriesNotice,
+  unreachableCategoriesNotice,
   CopyButton,
   FindingRow,
   freePreviewHeading,
@@ -279,6 +280,7 @@ const SCAN = {
   createdAt: new Date("2026-03-20T10:00:00Z"),
   skippedCategories: [] as string[],
   cappedCategories: [] as string[],
+  unreachableCategories: [] as string[],
   skippedFiles: [] as string[],
 };
 
@@ -452,6 +454,21 @@ describe("app.scans.$scanId loader", () => {
 
     expect(result.scan.skippedCategories).toEqual(["GHOST_PAGE"]);
     expect(result.scan.cappedCategories).toEqual(["DANGLING_REFERENCE"]);
+  });
+
+  it("exposes scan.unreachableCategories for the storefront notice", async () => {
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+    });
+
+    const result = (await loader(makeLoaderArgs("scan-1"))) as {
+      scan: { skippedCategories: string[]; unreachableCategories: string[] };
+    };
+
+    expect(result.scan.unreachableCategories).toEqual(["SCRIPT_TAG_SUNSET"]);
+    // Not a scope skip: the permissions banner input stays empty.
+    expect(result.scan.skippedCategories).toEqual([]);
   });
 
   // gc-rzq: the in-progress "Found N so far…" line reads scan.findingCount on
@@ -3373,6 +3390,38 @@ describe("ScanCoverageNotices", () => {
     expect(html).toBe("");
   });
 
+  it("unreachable-only: renders the storefront info notice, no warning, no Settings link", () => {
+    const html = renderNotices({ unreachableCategories: ["SCRIPT_TAG_SUNSET"] });
+    expect(html).toContain('tone="info"');
+    expect(html).toContain(
+      "One check couldn&#x27;t run this scan: Script tag sunset. Ghost Code couldn&#x27;t read your storefront&#x27;s public homepage (for example, because it&#x27;s password-protected). Anything we didn&#x27;t check keeps its status from your previous scan.",
+    );
+    expect(html).not.toContain('tone="warning"');
+    expect(html.toLowerCase()).not.toContain("permission");
+    expect(html).not.toContain("/app/settings");
+    expect(html).not.toContain(CAP_TEXT);
+  });
+
+  it("renders no storefront notice when unreachableCategories is empty or omitted", () => {
+    expect(renderNotices({ unreachableCategories: [] })).toBe("");
+    expect(renderNotices()).not.toContain("couldn&#x27;t run");
+  });
+
+  it("capped + unreachable: two separate info notices, cap first", () => {
+    const html = renderNotices({
+      cappedCategories: ["DANGLING_REFERENCE"],
+      unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+    });
+    expect(html.split('tone="info"')).toHaveLength(3);
+    expect(html.indexOf(CAP_TEXT)).toBeLessThan(html.indexOf("couldn&#x27;t run"));
+  });
+
+  it("Free plan (!canViewDetails): no storefront notice either", () => {
+    expect(
+      renderNotices({ canViewDetails: false, unreachableCategories: ["SCRIPT_TAG_SUNSET"] }),
+    ).toBe("");
+  });
+
   it("still renders the permissions warning for a legacy PARTIAL scan with no categories", () => {
     const html = renderNotices({ status: "PARTIAL" });
     expect(html).toContain(PERMISSIONS_TEXT);
@@ -3405,6 +3454,32 @@ describe("cappedCategoriesNotice", () => {
     expect(text.toLowerCase()).not.toContain("permission");
     expect(text.toLowerCase()).not.toContain("grant");
     expect(text).not.toContain("Settings");
+  });
+});
+
+describe("unreachableCategoriesNotice", () => {
+  it("uses the exact singular copy for the script-tag check", () => {
+    expect(unreachableCategoriesNotice(["SCRIPT_TAG_SUNSET"])).toBe(
+      "One check couldn't run this scan: Script tag sunset. Ghost Code couldn't read your storefront's public homepage (for example, because it's password-protected). Anything we didn't check keeps its status from your previous scan.",
+    );
+  });
+
+  it("pluralizes for more than one category", () => {
+    expect(unreachableCategoriesNotice(["SCRIPT_TAG_SUNSET", "GHOST_PAGE"])).toMatch(
+      /^Some checks couldn't run this scan: Script tag sunset, Content pages\. /,
+    );
+  });
+
+  it("dedupes repeated categories before choosing singular/plural", () => {
+    expect(unreachableCategoriesNotice(["SCRIPT_TAG_SUNSET", "SCRIPT_TAG_SUNSET"])).toMatch(
+      /^One check couldn't run this scan: Script tag sunset\. /,
+    );
+  });
+
+  it("has no em/en dashes and no permissions wording", () => {
+    const text = unreachableCategoriesNotice(["SCRIPT_TAG_SUNSET"]);
+    expect(text).not.toMatch(/[\u2014\u2013]/);
+    expect(text.toLowerCase()).not.toContain("permission");
   });
 });
 

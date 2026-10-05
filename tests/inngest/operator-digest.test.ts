@@ -703,12 +703,25 @@ function rollupScan(over: Partial<RollupScanRow> & { id: string }): RollupScanRo
     resolvedFindingCount: 0,
     skippedCategories: [],
     cappedCategories: [],
+    unreachableCategories: [],
     ...over,
   };
 }
 
-function priorScan(over: { skippedCategories?: string[]; cappedCategories?: string[] } = {}) {
-  return { id: "prior", skippedCategories: [], cappedCategories: [], ...over };
+function priorScan(
+  over: {
+    skippedCategories?: string[];
+    cappedCategories?: string[];
+    unreachableCategories?: string[];
+  } = {},
+) {
+  return {
+    id: "prior",
+    skippedCategories: [],
+    cappedCategories: [],
+    unreachableCategories: [],
+    ...over,
+  };
 }
 
 describe("pairScansWithPriors", () => {
@@ -763,6 +776,23 @@ describe("newlyCheckedCategories", () => {
     const scan = rollupScan({ id: "b" });
     const prior = priorScan({ cappedCategories: ["GHOST_METAFIELD"] });
     expect(newlyCheckedCategories({ scan, prior })).toEqual(["GHOST_METAFIELD"]);
+  });
+
+  it("returns a category the prior could not reach and this scan checked", () => {
+    const scan = rollupScan({ id: "b" });
+    const prior = priorScan({ unreachableCategories: ["SCRIPT_TAG_SUNSET"] });
+    expect(newlyCheckedCategories({ scan, prior })).toEqual(["SCRIPT_TAG_SUNSET"]);
+  });
+
+  it("excludes a category still unreachable now", () => {
+    const scan = rollupScan({ id: "b", unreachableCategories: ["SCRIPT_TAG_SUNSET"] });
+    const prior = priorScan({ unreachableCategories: ["SCRIPT_TAG_SUNSET"] });
+    expect(newlyCheckedCategories({ scan, prior })).toEqual([]);
+  });
+
+  it("does not count a category this scan newly could not reach", () => {
+    const scan = rollupScan({ id: "b", unreachableCategories: ["SCRIPT_TAG_SUNSET"] });
+    expect(newlyCheckedCategories({ scan, prior: priorScan() })).toEqual([]);
   });
 
   it("excludes a category still unaudited now, by skip or cap", () => {

@@ -15,6 +15,7 @@ import {
   getFindingConfidence,
   hasVisualImpact,
   isAdminResourceFinding,
+  isStorefrontFinding,
   isThemeFileFinding,
   THEME_FILE_TYPE_SETS,
 } from "../../app/lib/finding-classification";
@@ -165,7 +166,7 @@ describe("getFindingConfidence", () => {
   // ---------------------------------------------------------------------------
   it("classifies every FindingType enum member in exactly one tier (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(36);
+    expect(allTypes).toHaveLength(37);
 
     for (const type of allTypes) {
       const inSignature = CONFIDENCE_TYPE_SETS.signature.has(type);
@@ -182,7 +183,7 @@ describe("getFindingConfidence", () => {
     const heuristic = [...CONFIDENCE_TYPE_SETS.heuristic];
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
-    expect(signature.length + heuristic.length).toBe(36);
+    expect(signature.length + heuristic.length).toBe(37);
   });
 });
 
@@ -253,28 +254,41 @@ describe("isThemeFileFinding", () => {
   });
 
   // Drift guard: every FindingType enum member must be classified in exactly one
-  // of the two curated sets — a new enum value added without a classification
-  // fails here, forcing a deliberate theme-file-vs-Admin-resource call.
+  // of the three curated sets — a new enum value added without a classification
+  // fails here, forcing a deliberate theme-file / Admin-resource / storefront call.
   it("classifies every FindingType enum member in exactly one set (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(36);
+    expect(allTypes).toHaveLength(37);
 
     for (const type of allTypes) {
-      const inThemeFile = THEME_FILE_TYPE_SETS.themeFile.has(type);
-      const inAdminResource = THEME_FILE_TYPE_SETS.adminResource.has(type);
+      const memberships = [
+        THEME_FILE_TYPE_SETS.themeFile.has(type),
+        THEME_FILE_TYPE_SETS.adminResource.has(type),
+        THEME_FILE_TYPE_SETS.storefront.has(type),
+      ].filter(Boolean).length;
       expect(
-        inThemeFile !== inAdminResource,
-        `${type} must be in exactly one theme-file/Admin-resource set`,
-      ).toBe(true);
+        memberships,
+        `${type} must be in exactly one theme-file/Admin-resource/storefront set`,
+      ).toBe(1);
     }
   });
 
-  it("has no overlap and full coverage between the two sets", () => {
-    const themeFile = [...THEME_FILE_TYPE_SETS.themeFile];
-    const adminResource = [...THEME_FILE_TYPE_SETS.adminResource];
-    const overlap = themeFile.filter((t) => THEME_FILE_TYPE_SETS.adminResource.has(t));
-    expect(overlap).toEqual([]);
-    expect(themeFile.length + adminResource.length).toBe(36);
+  it("has no overlap and full coverage across the three sets", () => {
+    const all = [
+      ...THEME_FILE_TYPE_SETS.themeFile,
+      ...THEME_FILE_TYPE_SETS.adminResource,
+      ...THEME_FILE_TYPE_SETS.storefront,
+    ];
+    expect(new Set(all).size).toBe(all.length);
+    expect(all.length).toBe(37);
+  });
+
+  it("classifies SCRIPT_TAG_SUNSET as storefront only (no editor or admin link)", () => {
+    expect(isStorefrontFinding("SCRIPT_TAG_SUNSET")).toBe(true);
+    expect(isThemeFileFinding("SCRIPT_TAG_SUNSET")).toBe(false);
+    expect(isAdminResourceFinding("SCRIPT_TAG_SUNSET")).toBe(false);
+    expect(isStorefrontFinding("GHOST_SCRIPT")).toBe(false);
+    expect(isStorefrontFinding("")).toBe(false);
   });
 });
 
@@ -306,8 +320,8 @@ describe("isAdminResourceFinding", () => {
     expect(isAdminResourceFinding("")).toBe(false);
   });
 
-  it("is the exact inverse of isThemeFileFinding over the enum", () => {
-    const allTypes = Object.values(FindingType);
+  it("is the exact inverse of isThemeFileFinding over every non-storefront type", () => {
+    const allTypes = Object.values(FindingType).filter((t) => !isStorefrontFinding(t));
     for (const type of allTypes) {
       expect(
         isAdminResourceFinding(type),
