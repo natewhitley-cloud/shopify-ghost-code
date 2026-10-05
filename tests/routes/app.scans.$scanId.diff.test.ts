@@ -216,6 +216,7 @@ describe("app.scans.$scanId.diff loader", () => {
     expect(mockDiffScans).toHaveBeenCalledWith([CURRENT_FINDING], PREVIOUS_SCAN.findings, {
       skippedCategories: [],
       skippedFiles: [],
+      notNewCategories: [],
     });
   });
 
@@ -243,6 +244,7 @@ describe("app.scans.$scanId.diff loader", () => {
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
       skippedCategories: ["GHOST_TAG"],
       skippedFiles: [],
+      notNewCategories: [],
     });
   });
 
@@ -260,6 +262,7 @@ describe("app.scans.$scanId.diff loader", () => {
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
       skippedCategories: ["GHOST_TAG", "DANGLING_REFERENCE"],
       skippedFiles: [],
+      notNewCategories: [],
     });
   });
 
@@ -274,6 +277,7 @@ describe("app.scans.$scanId.diff loader", () => {
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
       skippedCategories: ["JSON_LD_PRICE_CONFLICT"],
       skippedFiles: [],
+      notNewCategories: [],
     });
   });
 
@@ -288,7 +292,36 @@ describe("app.scans.$scanId.diff loader", () => {
     expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
       skippedCategories: ["SCRIPT_TAG_SUNSET"],
       skippedFiles: [],
+      notNewCategories: [],
     });
+  });
+
+  it("never reports as new a finding whose category the PREVIOUS scan did not audit (H3)", async () => {
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...PREVIOUS_SCAN,
+      unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+      skippedCategories: ["GHOST_PAGE"],
+    });
+
+    await loader(makeLoaderArgs("scan-1"));
+
+    expect(mockDiffScans).toHaveBeenCalledWith(expect.any(Array), expect.any(Array), {
+      skippedCategories: [],
+      skippedFiles: [],
+      notNewCategories: ["GHOST_PAGE", "SCRIPT_TAG_SUNSET"],
+    });
+  });
+
+  it("treats types missing from the current scan's live set as un-audited (M4)", async () => {
+    const { FindingType } = await import("@prisma/client");
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      liveFindingTypes: Object.values(FindingType).filter((t) => t !== "SCRIPT_TAG_SUNSET"),
+    });
+
+    await loader(makeLoaderArgs("scan-1"));
+
+    expect(mockDiffScans.mock.calls[0][2].skippedCategories).toEqual(["SCRIPT_TAG_SUNSET"]);
   });
 
   // -------------------------------------------------------------------------

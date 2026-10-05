@@ -409,3 +409,27 @@ describe("ignore moves nothing across all six aggregation outputs", () => {
     expect(restored.delta).toBe(base.delta);
   });
 });
+
+describe("SCRIPT_TAG_SUNSET is exempt from APP-level ignores (M5)", () => {
+  const tag = {
+    filename: "storefront/script-tags",
+    findingType: "SCRIPT_TAG_SUNSET",
+    codeSnippet: "script-tags: Klaviyo\nhttps://static.klaviyo.com/onsite/js/klaviyo.js",
+    lineNumber: 1,
+    appName: "Klaviyo",
+  };
+  const script = { ...tag, filename: "layout/theme.liquid", findingType: "GHOST_SCRIPT" };
+
+  it("an app ignore hides the app's leftover code but not its script-tag sunset finding", () => {
+    const ignores = { fingerprints: new Set<string>(), appNames: new Set(["Klaviyo"]) };
+    expect(isFindingIgnored(tag, ignores)).toBe(false);
+    expect(isFindingIgnored(script, ignores)).toBe(true);
+    expect(filterIgnoredFindings([tag, script], ignores).kept).toEqual([tag]);
+  });
+
+  it("an instance ignore still hides it", () => {
+    const fp = fingerprintFinding(tag.filename, tag.findingType, tag.codeSnippet, tag.lineNumber);
+    const ignores = { fingerprints: new Set([fp]), appNames: new Set<string>() };
+    expect(isFindingIgnored(tag, ignores)).toBe(true);
+  });
+});

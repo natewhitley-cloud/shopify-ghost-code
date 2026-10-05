@@ -1419,6 +1419,26 @@ export const scanTheme = inngest.createFunction(
       // permissions warning / cap notice. Caps never change status (gc-11f).
       const finalStatus = ScanStatus.COMPLETED;
 
+      // The scan's live set (gc-rvo0), from the fetch-and-scan flag reads, minus
+      // SCRIPT_TAG_SUNSET when its step did not actually check anything (flag
+      // flipped off mid-run, unpublished theme, no shop): the differ then treats
+      // the type as un-audited, so its prior findings are neither resolved nor
+      // new. A no-op while dark (the type is not live then). NULL (undefined)
+      // for an in-flight run memoized before the field existed.
+      const finalLiveFindingTypes = Array.isArray(persistedLiveFindingTypes)
+        ? persistedLiveFindingTypes.filter(
+            (t) => t !== FindingType.SCRIPT_TAG_SUNSET || scriptTagResult.audited,
+          )
+        : undefined;
+      // What THIS scan audited, for every diff below (finalize + alert).
+      const currentCoverage = {
+        skippedCategories,
+        cappedCategories,
+        unreachableCategories,
+        skippedFiles: skippedFilePaths,
+        liveFindingTypes: finalLiveFindingTypes,
+      };
+
       // FINAL step: compute resolution counts vs the previous scan, then set the
       // terminal status. This is the ONLY place the scan leaves IN_PROGRESS on the
       // success path (LOG-4). Idempotent on retry.
@@ -1442,16 +1462,15 @@ export const scanTheme = inngest.createFunction(
         let resolvedFindingCount: number;
         let persistedFindingCount: number;
         if (previousScan) {
-          const { diffScans, unauditedCategories } =
+          const { diffScans, scanDiffOptions } =
             await import("../../app/services/scan-differ.server");
-          const diff = diffScans(currentFindings, previousScan.findings, {
-            skippedCategories: unauditedCategories({
-              skippedCategories,
-              cappedCategories,
-              unreachableCategories,
-            }),
-            skippedFiles: skippedFilePaths,
-          });
+          // Coverage gaps on either side (scanDiffOptions): un-audited now =
+          // never resolved; un-audited in the baseline = never new.
+          const diff = diffScans(
+            currentFindings,
+            previousScan.findings,
+            scanDiffOptions(currentCoverage, previousScan),
+          );
           newFindingCount = diff.newFindings.length;
           resolvedFindingCount = diff.resolvedFindings.length;
           persistedFindingCount = diff.unchangedCount;
@@ -1475,12 +1494,11 @@ export const scanTheme = inngest.createFunction(
           newFindingCount,
           resolvedFindingCount,
           persistedFindingCount,
-          // From the fetch-and-scan output (same flag reads as persistence). An
-          // in-flight run memoized before this field existed lacks it: record
-          // NULL so the scan stays unversioned and the alert step skips it.
-          liveFindingTypes: Array.isArray(persistedLiveFindingTypes)
-            ? persistedLiveFindingTypes
-            : undefined,
+          // From the fetch-and-scan output (same flag reads as persistence), see
+          // finalLiveFindingTypes. An in-flight run memoized before this field
+          // existed lacks it: record NULL so the scan stays unversioned and the
+          // alert step skips it.
+          liveFindingTypes: finalLiveFindingTypes,
         });
       });
 
@@ -1658,7 +1676,7 @@ export const scanTheme = inngest.createFunction(
             if (!baselineScan) return { sent: false, reason: "no_baseline" };
 
             const [
-              { diffScans, unauditedCategories, parseLiveFindingTypes, restrictToLiveInBoth },
+              { diffScans, scanDiffOptions, parseLiveFindingTypes, restrictToLiveInBoth },
               { getIgnoredFindingsForShop },
               agg,
             ] = await Promise.all([
@@ -1672,20 +1690,17 @@ export const scanTheme = inngest.createFunction(
             const diff = diffScans(
               agg.filterIgnoredFindings(currentFindings, ignores).kept,
               agg.filterIgnoredFindings(baselineScan.findings, ignores).kept,
-              {
-                skippedCategories: unauditedCategories({
-                  skippedCategories,
-                  cappedCategories,
-                  unreachableCategories,
-                }),
-                skippedFiles: skippedFilePaths,
-              },
+              // Same coverage rule as finalize and the diff route: a finding in
+              // a category the BASELINE did not audit (unreachable storefront,
+              // scope granted since, cap, flag off) is never "new", so a flaky
+              // read or a newly granted scope cannot trigger an alert email.
+              scanDiffOptions(currentCoverage, baselineScan),
             );
-            // Alert-only guard (gc-rvo0; the in-app diff stays unfiltered): a type
-            // absent from the baseline's live set (soft-launched flag was off, or
-            // the detector shipped later) was never compared, so its hits are not
-            // "new". A legacy baseline that never recorded its set can't be
-            // judged: skip this cycle (the next scan records one).
+            // Alert-only guard (gc-rvo0): a type absent from the baseline's live
+            // set was never compared, so its hits are not "new" (scanDiffOptions
+            // already drops them; this stays as the explicit both-sides check).
+            // A legacy baseline that never recorded its set can't be judged:
+            // skip this cycle (the next scan records one).
             const baselineLive = parseLiveFindingTypes(baselineScan.liveFindingTypes);
             if (!baselineLive) return { sent: false, reason: "baseline_unversioned" };
             const currentLive = parseLiveFindingTypes(scan.liveFindingTypes);

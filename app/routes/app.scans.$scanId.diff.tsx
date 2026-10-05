@@ -24,7 +24,7 @@ import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanById, getPreviousScanForTheme } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import { filterIgnoredFindings } from "../services/finding-aggregation.server";
-import { diffScans, unauditedCategories } from "../services/scan-differ.server";
+import { diffScans, scanDiffOptions } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { authenticate } from "../shopify.server";
 
@@ -75,16 +75,16 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const keptCurrent = filterIgnoredFindings(currentFindings, ignores).kept;
   const keptPrevious = filterIgnoredFindings(previousScan.findings, ignores).kept;
 
-  const scanDiff: ScanDiff = diffScans(keptCurrent, keptPrevious, {
-    // Exclude prior findings in categories the current scan skipped (missing
-    // scope), capped (size cap, gc-11f), or could not run (storefront
-    // unreadable) so they are never reported as falsely "resolved" (LOG-4).
-    skippedCategories: unauditedCategories(scan),
-    // Likewise exclude prior findings in files the current scan skipped for
-    // exceeding the size cap — an unscanned file is unknown, not fixed
-    // (gc-06e.19).
-    skippedFiles: scan.skippedFiles,
-  });
+  // Coverage gaps on both sides (scanDiffOptions): prior findings in a
+  // category the current scan skipped, capped, could not reach, or did not run
+  // (not live) are never "resolved" (LOG-4, gc-11f), nor are prior findings in
+  // files it skipped for size (gc-06e.19); current findings in a category the
+  // PREVIOUS scan did not audit are never "new" (they were not looked for).
+  const scanDiff: ScanDiff = diffScans(
+    keptCurrent,
+    keptPrevious,
+    scanDiffOptions(scan, previousScan),
+  );
 
   // Sort diff arrays for consistent display order in the UI.
   sortDiffFindingsBySeverity(scanDiff.newFindings);

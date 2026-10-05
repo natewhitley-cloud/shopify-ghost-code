@@ -9,6 +9,8 @@
  * because this is only ever used for equality comparison within the same shop.
  */
 
+import { FindingType } from "@prisma/client";
+
 import {
   CROSS_FILE_FINDING_TYPES,
   SIZE_SKIP_STILL_SCANNED_FINDING_TYPES,
@@ -153,26 +155,68 @@ export function fingerprintFinding(
 // ---------------------------------------------------------------------------
 
 /**
- * The categories a scan did NOT fully audit (gc-11f): the union of
- * `skippedCategories` (scope not granted), `cappedCategories` (a size cap left
- * part of the category unchecked), and `unreachableCategories` (the public
- * storefront could not be read, so a storefront check could not run),
- * de-duplicated. This is what every `diffScans` caller passes as
- * `opts.skippedCategories`, so a prior finding in any such category is never
- * reported "resolved".
+ * What a scan audited, as the differ needs it. `liveFindingTypes` is the raw
+ * `Scan.liveFindingTypes` (Json?): omitted/NULL means a legacy scan that never
+ * recorded its live set, so nothing is inferred from it.
  */
-export function unauditedCategories(scan: {
+export interface ScanCoverage {
   skippedCategories: readonly string[];
   cappedCategories: readonly string[];
   unreachableCategories: readonly string[];
-}): string[] {
+  liveFindingTypes?: unknown;
+}
+
+/**
+ * The categories a scan did NOT fully audit (gc-11f), de-duplicated:
+ *   - `skippedCategories` (scope not granted),
+ *   - `cappedCategories` (a size cap left part of the category unchecked),
+ *   - `unreachableCategories` (the public storefront could not be read),
+ *   - every FindingType missing from the scan's recorded live set (a
+ *     soft-launched type whose flag was off, or one the step did not run):
+ *     nothing of that type was checked, so it is as unknown as a skip.
+ * A prior finding in any of these is never reported "resolved" against this
+ * scan; as the BASELINE, a current finding in any of them is never "new"
+ * (see scanDiffOptions).
+ */
+export function unauditedCategories(scan: ScanCoverage): string[] {
+  const live = parseLiveFindingTypes(scan.liveFindingTypes);
+  const notLive = live ? Object.values(FindingType).filter((t) => !live.has(t)) : [];
   return [
     ...new Set([
       ...scan.skippedCategories,
       ...scan.cappedCategories,
       ...scan.unreachableCategories,
+      ...notLive,
     ]),
   ];
+}
+
+/** The coverage options every diffScans caller passes. */
+export interface DiffOptions {
+  skippedCategories?: Iterable<string>;
+  skippedFiles?: Iterable<string>;
+  notNewCategories?: Iterable<string>;
+}
+
+/**
+ * Diff options for `current` against `baseline`, shared by every caller
+ * (finalize, the diff route, merchant alerts) so they agree:
+ *   - prior findings in a category the CURRENT scan did not audit are never
+ *     "resolved" (LOG-4, gc-11f, unreachable, not-live);
+ *   - current findings in a category the BASELINE did not audit are never
+ *     "new": they were not looked for last time (a scope granted since, a
+ *     storefront that was unreadable, a cap, a flag turned on). The operator
+ *     digest's "newly checked" breakdown is the same idea.
+ */
+export function scanDiffOptions(
+  current: ScanCoverage & { skippedFiles: readonly string[] },
+  baseline: ScanCoverage,
+): DiffOptions {
+  return {
+    skippedCategories: unauditedCategories(current),
+    skippedFiles: current.skippedFiles,
+    notNewCategories: unauditedCategories(baseline),
+  };
 }
 
 /**
@@ -189,8 +233,8 @@ export function parseLiveFindingTypes(raw: unknown): Set<string> | null {
  * Restrict findings to types that were live in BOTH scans (gc-rvo0). A type
  * absent from the baseline's live set (soft-launched flag then off, or a
  * detector shipped later) has never been compared, so its hits are not "new".
- * ALERT-ONLY: the in-app diff deliberately does not apply this, it shows
- * everything the current scan found.
+ * The merchant alert applies it explicitly; scanDiffOptions already gives every
+ * caller the same effect through the baseline's un-audited categories.
  */
 export function restrictToLiveInBoth<T extends { findingType: string }>(
   findings: readonly T[],
@@ -224,6 +268,11 @@ export function restrictToLiveInBoth<T extends { findingType: string }>(
  *   categories via {@link unauditedCategories} (gc-11f): a capped category was
  *   only partly re-checked, so its prior findings are equally unknown.
  *
+ * Baseline gaps (`opts.notNewCategories`):
+ *   The categories the PREVIOUS scan did not audit. A current finding there
+ *   with no match is left out of "new" (it was never looked for); a matching
+ *   one still counts as unchanged. Built by {@link scanDiffOptions}.
+ *
  * Unscanned oversized files (gc-06e.19):
  *   `opts.skippedFiles` is the set of theme file paths the CURRENT scan did NOT
  *   scan because they exceeded the per-file size cap. Only the PER-FILE
@@ -242,7 +291,7 @@ export function restrictToLiveInBoth<T extends { findingType: string }>(
 export function diffScans(
   currentFindings: DiffableFinding[],
   previousFindings: DiffableFinding[],
-  opts?: { skippedCategories?: Iterable<string>; skippedFiles?: Iterable<string> },
+  opts?: DiffOptions,
 ): ScanDiff {
   // Drop prior findings whose category was not audited, or whose file was not
   // scanned (oversized), this run so they can never be miscounted as resolved.
@@ -256,6 +305,9 @@ export function diffScans(
   // `currentFindings`.
   const skippedCats = opts?.skippedCategories ? new Set(opts.skippedCategories) : null;
   const skippedFiles = opts?.skippedFiles ? new Set(opts.skippedFiles) : null;
+  // Categories the BASELINE did not audit: an unmatched current finding there
+  // is not "new" (nobody looked for it last time); a matched one is unchanged.
+  const notNewCats = new Set(opts?.notNewCategories ?? []);
   const hasCatFilter = skippedCats !== null && skippedCats.size > 0;
   const hasFileFilter = skippedFiles !== null && skippedFiles.size > 0;
   const effectivePrevious =
@@ -296,7 +348,7 @@ export function diffScans(
       // Decrement so that duplicate current findings beyond the previous count
       // are treated as new.
       remainingPrevious.set(fp, prevCount - 1);
-    } else {
+    } else if (!notNewCats.has(f.findingType)) {
       // No matching previous finding — this is new.
       newFindings.push({
         filename: f.filename,

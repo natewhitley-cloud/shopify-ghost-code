@@ -296,12 +296,14 @@ export interface RollupScanRow {
   skippedCategories: string[];
   cappedCategories: string[];
   unreachableCategories: string[];
+  /** Scan.liveFindingTypes (Json?): types not live are un-audited too. */
+  liveFindingTypes: unknown;
 }
 
 /** The fields of a prior scan the resolution breakdown reads. */
 export type PriorScan = Pick<
   RollupScanRow,
-  "id" | "skippedCategories" | "cappedCategories" | "unreachableCategories"
+  "id" | "skippedCategories" | "cappedCategories" | "unreachableCategories" | "liveFindingTypes"
 >;
 
 /** An in-window scan paired with the scan its diff ran against, or null on a
@@ -2057,6 +2059,7 @@ export const operatorDigest = inngest.createFunction(
           skippedCategories: true,
           cappedCategories: true,
           unreachableCategories: true,
+          liveFindingTypes: true,
         },
       });
       if (windowScans.length === 0) return empty;
@@ -2080,6 +2083,7 @@ export const operatorDigest = inngest.createFunction(
             skippedCategories: true,
             cappedCategories: true,
             unreachableCategories: true,
+            liveFindingTypes: true,
           },
         });
         if (prior) priorBeforeWindow.set(key, prior);

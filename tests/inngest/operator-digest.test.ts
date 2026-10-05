@@ -12,6 +12,7 @@
  *     and it needs no live DB.
  */
 
+import { FindingType } from "@prisma/client";
 import { describe, it, expect, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -704,6 +705,7 @@ function rollupScan(over: Partial<RollupScanRow> & { id: string }): RollupScanRo
     skippedCategories: [],
     cappedCategories: [],
     unreachableCategories: [],
+    liveFindingTypes: null,
     ...over,
   };
 }
@@ -713,13 +715,15 @@ function priorScan(
     skippedCategories?: string[];
     cappedCategories?: string[];
     unreachableCategories?: string[];
+    liveFindingTypes?: unknown;
   } = {},
 ) {
   return {
     id: "prior",
-    skippedCategories: [],
-    cappedCategories: [],
-    unreachableCategories: [],
+    skippedCategories: [] as string[],
+    cappedCategories: [] as string[],
+    unreachableCategories: [] as string[],
+    liveFindingTypes: null as unknown,
     ...over,
   };
 }
@@ -781,6 +785,13 @@ describe("newlyCheckedCategories", () => {
   it("returns a category the prior could not reach and this scan checked", () => {
     const scan = rollupScan({ id: "b" });
     const prior = priorScan({ unreachableCategories: ["SCRIPT_TAG_SUNSET"] });
+    expect(newlyCheckedCategories({ scan, prior })).toEqual(["SCRIPT_TAG_SUNSET"]);
+  });
+
+  it("returns a type that was not live in the prior scan (flag turned on since)", () => {
+    const all = Object.values(FindingType);
+    const scan = rollupScan({ id: "b", liveFindingTypes: all });
+    const prior = priorScan({ liveFindingTypes: all.filter((t) => t !== "SCRIPT_TAG_SUNSET") });
     expect(newlyCheckedCategories({ scan, prior })).toEqual(["SCRIPT_TAG_SUNSET"]);
   });
 

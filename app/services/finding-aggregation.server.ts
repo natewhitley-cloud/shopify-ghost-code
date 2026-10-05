@@ -61,12 +61,27 @@ export interface IgnorableFinding {
 }
 
 /**
- * True iff `finding` is suppressed for a shop: its `appName` is APP-ignored, OR
- * its computed fingerprint is INSTANCE-ignored. The cheap appName check runs
- * first so an APP-ignored finding never has to be fingerprinted.
+ * Types an APP-level ignore never hides (INSTANCE ignores still apply). An app
+ * ignore means "this app's leftover code is fine"; SCRIPT_TAG_SUNSET is about a
+ * LIVE app that will stop working on the storefront, a different risk the
+ * merchant has not dismissed by ignoring the app's code.
+ */
+const APP_IGNORE_EXEMPT_TYPES: ReadonlySet<string> = new Set(["SCRIPT_TAG_SUNSET"]);
+
+/**
+ * True iff `finding` is suppressed for a shop: its `appName` is APP-ignored
+ * (except APP_IGNORE_EXEMPT_TYPES), OR its computed fingerprint is
+ * INSTANCE-ignored. The cheap appName check runs first so an APP-ignored
+ * finding never has to be fingerprinted.
  */
 export function isFindingIgnored(finding: IgnorableFinding, ignores: ShopIgnores): boolean {
-  if (finding.appName !== null && ignores.appNames.has(finding.appName)) return true;
+  if (
+    finding.appName !== null &&
+    ignores.appNames.has(finding.appName) &&
+    !APP_IGNORE_EXEMPT_TYPES.has(finding.findingType)
+  ) {
+    return true;
+  }
   const fingerprint = fingerprintFinding(
     finding.filename,
     finding.findingType,

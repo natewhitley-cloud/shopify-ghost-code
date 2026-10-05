@@ -363,6 +363,15 @@ const MOCK_FINDINGS = [
   },
 ];
 
+// A persisted Scan row always carries these (NOT NULL, default []); baseline
+// fixtures spread them so the differ's coverage helpers see a real row shape.
+const BASELINE_COVERAGE = {
+  skippedCategories: [] as string[],
+  cappedCategories: [] as string[],
+  unreachableCategories: [] as string[],
+  skippedFiles: [] as string[],
+};
+
 // ---------------------------------------------------------------------------
 // Helper: build the event payload
 // ---------------------------------------------------------------------------
@@ -2302,6 +2311,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       createdAt: new Date("2026-06-15T00:00:00Z"),
     });
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prior-scan-1",
       findingCount: 5,
     });
@@ -2343,6 +2353,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
   it("completes normally when 0 files are fetched and the prior scan had zero findings", async () => {
     // findings:[] so the finalize-step resolution diff (Feature 3) can run.
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prior-scan-clean",
       findingCount: 0,
       findings: [],
@@ -2361,7 +2372,12 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
     // zero-file guard never fires and the scan completes. findings:[] lets the
     // finalize-step resolution diff run (the guard's own prior-scan lookup no
     // longer being the only caller — finalize also looks it up now).
-    mockGetPreviousScanForTheme.mockResolvedValue({ id: "prior", findingCount: 5, findings: [] });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
+      id: "prior",
+      findingCount: 5,
+      findings: [],
+    });
 
     const result = await runScanTheme();
 
@@ -2629,6 +2645,7 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
       createdAt: new Date("2026-06-15T00:00:00Z"),
     });
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prior",
       findingCount: 2,
       findings: [findingA, findingB],
@@ -2666,6 +2683,7 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
       createdAt: new Date("2026-06-15T00:00:00Z"),
     });
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prior",
       findingCount: 1,
       findings: [priorTagFinding],
@@ -2718,6 +2736,7 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
       createdAt: new Date("2026-06-15T00:00:00Z"),
     });
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prior",
       findingCount: 1,
       findings: [priorDangling],
@@ -2773,6 +2792,7 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
       createdAt: new Date("2026-06-15T00:00:00Z"),
     });
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prior",
       findingCount: 1,
       findings: [tagFinding],
@@ -3406,6 +3426,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     // Current persisted findings = OLD + NEW; previous scan only had OLD.
     mockDb.finding.findMany.mockResolvedValue([OLD, NEW]);
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prev",
       findings: [OLD],
       liveFindingTypes: ALL_TYPES,
@@ -3416,6 +3437,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
   }
 
   const alertedScan = (over: Record<string, unknown> = {}) => ({
+    ...BASELINE_COVERAGE,
     id: "alerted",
     shopId: SHOP_ID,
     themeId: THEME_ID,
@@ -3535,6 +3557,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
   it("skips (without building an admin client) when the diff has no new findings", async () => {
     arrange();
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prev",
       findings: [OLD, NEW],
       liveFindingTypes: ALL_TYPES,
@@ -3542,6 +3565,54 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     const { results } = await run();
     expect(mockNotify).not.toHaveBeenCalled();
     expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+  });
+
+  it.each([
+    ["unreachable (flaky storefront read)", { unreachableCategories: ["SCRIPT_TAG_SUNSET"] }],
+    ["scope-skipped (scope granted since)", { skippedCategories: ["SCRIPT_TAG_SUNSET"] }],
+    ["capped", { cappedCategories: ["SCRIPT_TAG_SUNSET"] }],
+    [
+      "not live (flag turned on since)",
+      { liveFindingTypes: Object.values(FindingType).filter((t) => t !== "SCRIPT_TAG_SUNSET") },
+    ],
+  ])(
+    "never alerts for findings in a category the baseline did not audit: %s (H3)",
+    async (_label, gap) => {
+      arrange();
+      const tag = {
+        ...NEW,
+        filename: "storefront/script-tags",
+        findingType: FindingType.SCRIPT_TAG_SUNSET,
+        codeSnippet: "script-tags: Klaviyo\nhttps://static.klaviyo.com/onsite/js/klaviyo.js",
+        lineNumber: 1,
+      };
+      mockDb.finding.findMany.mockResolvedValue([OLD, tag]);
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
+        id: "prev",
+        findings: [OLD],
+        liveFindingTypes: ALL_TYPES,
+        ...gap,
+      });
+      const { results } = await run();
+      expect(mockNotify).not.toHaveBeenCalled();
+      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+      // finalize agrees: nothing new against that baseline.
+      expect(mockFinalizeScan.mock.calls[0][1].newFindingCount).toBe(0);
+    },
+  );
+
+  it("still alerts for a genuinely new finding when the baseline audited its category", async () => {
+    arrange();
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
+      id: "prev",
+      findings: [OLD],
+      liveFindingTypes: ALL_TYPES,
+      unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+    });
+    await run();
+    expect(mockNotify).toHaveBeenCalledTimes(1);
   });
 
   it("an ignored finding is never reported as new (agrees with the diff route)", async () => {
@@ -3588,6 +3659,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     function arrangeThrottled(alerted: unknown) {
       arrange();
       mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
         id: "throttled",
         findings: [OLD, NEW],
         liveFindingTypes: ALL_TYPES,
@@ -3646,6 +3718,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     it("baseline from before liveFindingTypes existed (null) -> baseline_unversioned, no send", async () => {
       arrange();
       mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
         id: "prev",
         findings: [OLD],
         liveFindingTypes: null,
@@ -3661,6 +3734,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     it("a malformed baseline value is treated as unversioned (never widens an alert)", async () => {
       arrange();
       mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
         id: "prev",
         findings: [OLD],
         liveFindingTypes: { 0: "GHOST_STYLE" },
@@ -3677,6 +3751,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
       arrange();
       mockDb.finding.findMany.mockResolvedValue([OLD, EMBED]);
       mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
         id: "prev",
         findings: [OLD],
         liveFindingTypes: without(FindingType.APP_EMBED_OFF),
@@ -3690,6 +3765,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
       arrange();
       mockDb.finding.findMany.mockResolvedValue([OLD, NEW, EMBED]);
       mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
         id: "prev",
         findings: [OLD],
         liveFindingTypes: without(FindingType.APP_EMBED_OFF),
@@ -3710,6 +3786,7 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     it("a detector present only in the current enum (absent from the baseline set) is excluded", async () => {
       arrange();
       mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
         id: "prev",
         findings: [OLD],
         liveFindingTypes: without(NEW.findingType),
@@ -3966,6 +4043,55 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     expect(fetchSpy).not.toHaveBeenCalled();
     expect(MOCK_ADMIN.graphql).not.toHaveBeenCalled();
     expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
+    // Nothing was checked, so the type is not recorded as live (M4).
+    expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
+      FindingType.SCRIPT_TAG_SUNSET,
+    );
+  });
+
+  it("records SCRIPT_TAG_SUNSET as live only when the storefront step checked it (M4)", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    fetchSpy.mockImplementation(async () => new Response(storefrontHtml(null), { status: 200 }));
+    await run();
+    expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).toContain(
+      FindingType.SCRIPT_TAG_SUNSET,
+    );
+
+    vi.clearAllMocks();
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse("UNPUBLISHED"));
+    await run();
+    expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
+      FindingType.SCRIPT_TAG_SUNSET,
+    );
+  });
+
+  it("flag off: prior SCRIPT_TAG_SUNSET findings are not resolved (type not live) (M4)", async () => {
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-10-05T00:00:00Z"),
+    });
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
+      id: "prev",
+      findingCount: 1,
+      findings: [
+        {
+          filename: "storefront/script-tags",
+          findingType: FindingType.SCRIPT_TAG_SUNSET,
+          codeSnippet: "script-tags: host cdn.example.com\nhttps://cdn.example.com/a.js",
+          lineNumber: 1,
+          severity: Severity.HIGH,
+          appName: null,
+          description: "x",
+        },
+      ],
+    });
+
+    await run();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(0);
   });
 
   it("flag flipped on after fetch-and-scan: no step (the decision was memoized dark)", async () => {
@@ -4105,6 +4231,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       createdAt: new Date("2026-10-05T00:00:00Z"),
     });
     mockGetPreviousScanForTheme.mockResolvedValue({
+      ...BASELINE_COVERAGE,
       id: "prev",
       findingCount: 1,
       findings: [

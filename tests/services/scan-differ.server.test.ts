@@ -8,12 +8,14 @@
  *     fully resolved scans, mixed diffs, and duplicate-finding edge cases.
  */
 
+import { FindingType } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
 import {
   fingerprintFinding,
   normalizeForFingerprint,
   diffScans,
+  scanDiffOptions,
   unauditedCategories,
   type DiffableFinding,
 } from "../../app/services/scan-differ.server";
@@ -918,5 +920,130 @@ describe("diffScans is stable across appName re-attribution", () => {
     expect(diff.unchangedCount).toBe(2);
     expect(diff.newFindings).toHaveLength(0);
     expect(diff.resolvedFindings).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Coverage across BOTH scans: types not live in the current scan are
+// un-audited (M4); categories un-audited in the BASELINE are never "new" (H3).
+// ---------------------------------------------------------------------------
+
+describe("unauditedCategories with liveFindingTypes (M4)", () => {
+  const base = { skippedCategories: [], cappedCategories: [], unreachableCategories: [] };
+
+  it("adds every FindingType missing from the scan's live set", () => {
+    const live = Object.values(FindingType).filter(
+      (t) => t !== FindingType.SCRIPT_TAG_SUNSET && t !== FindingType.APP_EMBED_OFF,
+    );
+    expect(unauditedCategories({ ...base, liveFindingTypes: live }).sort()).toEqual(
+      [FindingType.APP_EMBED_OFF, FindingType.SCRIPT_TAG_SUNSET].sort(),
+    );
+  });
+
+  it("adds nothing for a legacy scan (null / malformed live set)", () => {
+    expect(unauditedCategories({ ...base, liveFindingTypes: null })).toEqual([]);
+    expect(unauditedCategories({ ...base, liveFindingTypes: "x" })).toEqual([]);
+    expect(unauditedCategories(base)).toEqual([]);
+  });
+
+  it("dedupes a type that is both un-live and listed", () => {
+    const live = Object.values(FindingType).filter((t) => t !== FindingType.SCRIPT_TAG_SUNSET);
+    expect(
+      unauditedCategories({
+        ...base,
+        unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+        liveFindingTypes: live,
+      }),
+    ).toEqual(["SCRIPT_TAG_SUNSET"]);
+  });
+});
+
+describe("scanDiffOptions + diffScans notNewCategories (H3, M4)", () => {
+  const ALL = Object.values(FindingType);
+  const coverage = (over: Record<string, unknown> = {}) => ({
+    skippedCategories: [] as string[],
+    cappedCategories: [] as string[],
+    unreachableCategories: [] as string[],
+    skippedFiles: [] as string[],
+    liveFindingTypes: ALL as unknown,
+    ...over,
+  });
+  const tag = (url: string) =>
+    makeFinding("storefront/script-tags", "SCRIPT_TAG_SUNSET", `script-tags: host ${url}`);
+
+  it("A reachable -> B unreachable -> C reachable: C reports nothing new vs B", () => {
+    const findingsA = [tag("a.io"), tag("b.io")];
+    const scanB = coverage({ unreachableCategories: ["SCRIPT_TAG_SUNSET"] });
+    const scanC = coverage();
+    // B vs A: unreachable, so A's findings are neither resolved nor new.
+    const bVsA = diffScans([], findingsA, scanDiffOptions(scanB, coverage()));
+    expect(bVsA.resolvedFindings).toEqual([]);
+    expect(bVsA.newFindings).toEqual([]);
+    // C vs B: same findings as A are back; B never checked them, so not "new".
+    const cVsB = diffScans(findingsA, [], scanDiffOptions(scanC, scanB));
+    expect(cVsB.newFindings).toEqual([]);
+    expect(cVsB.resolvedFindings).toEqual([]);
+  });
+
+  it("findings of a scope granted since the baseline are not new (generic H3)", () => {
+    const page = makeFinding("pages/old", "GHOST_PAGE", "old-page");
+    const script = makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "new-script");
+    const diff = diffScans(
+      [page, script],
+      [],
+      scanDiffOptions(coverage(), coverage({ skippedCategories: ["GHOST_PAGE"] })),
+    );
+    expect(diff.newFindings.map((f) => f.findingType)).toEqual(["GHOST_SCRIPT"]);
+  });
+
+  it("a capped baseline category: a finding it did see is unchanged, an unseen one not new", () => {
+    const seen = makeFinding("a.liquid", "DANGLING_REFERENCE", "seen");
+    const unseen = makeFinding("b.liquid", "DANGLING_REFERENCE", "unseen");
+    const diff = diffScans(
+      [seen, unseen],
+      [seen],
+      scanDiffOptions(coverage(), coverage({ cappedCategories: ["DANGLING_REFERENCE"] })),
+    );
+    expect(diff.unchangedCount).toBe(1);
+    expect(diff.newFindings).toEqual([]);
+  });
+
+  it("flag turned OFF (type not live now): prior findings are not resolved", () => {
+    const current = coverage({ liveFindingTypes: ALL.filter((t) => t !== "SCRIPT_TAG_SUNSET") });
+    const diff = diffScans([], [tag("a.io")], scanDiffOptions(current, coverage()));
+    expect(diff.resolvedFindings).toEqual([]);
+  });
+
+  it("flag turned ON (type not live in the baseline): current findings are not new", () => {
+    const baseline = coverage({ liveFindingTypes: ALL.filter((t) => t !== "SCRIPT_TAG_SUNSET") });
+    const diff = diffScans([tag("a.io")], [], scanDiffOptions(coverage(), baseline));
+    expect(diff.newFindings).toEqual([]);
+  });
+
+  it("existing soft-launch types get the same treatment (APP_EMBED_OFF)", () => {
+    const embed = makeFinding("config/settings_data.json", "APP_EMBED_OFF", "embed");
+    const notLive = ALL.filter((t) => t !== "APP_EMBED_OFF");
+    expect(
+      diffScans([], [embed], scanDiffOptions(coverage({ liveFindingTypes: notLive }), coverage()))
+        .resolvedFindings,
+    ).toEqual([]);
+    expect(
+      diffScans([embed], [], scanDiffOptions(coverage(), coverage({ liveFindingTypes: notLive })))
+        .newFindings,
+    ).toEqual([]);
+  });
+
+  it("with no baseline coverage gaps, new and resolved behave as before", () => {
+    const old = makeFinding("a.liquid", "GHOST_SCRIPT", "old");
+    const fresh = makeFinding("a.liquid", "GHOST_SCRIPT", "fresh");
+    const diff = diffScans([fresh], [old], scanDiffOptions(coverage(), coverage()));
+    expect(diff.newFindings).toHaveLength(1);
+    expect(diff.resolvedFindings).toHaveLength(1);
+  });
+
+  it("passes the current scan's skippedFiles through", () => {
+    expect(
+      scanDiffOptions(coverage({ skippedFiles: ["assets/big.js"] }), coverage()).skippedFiles,
+    ).toEqual(["assets/big.js"]);
   });
 });
