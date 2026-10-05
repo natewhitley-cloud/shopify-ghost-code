@@ -3360,10 +3360,13 @@ export function detectGhostAppEmbeds(
 /**
  * "This code belongs to app X" finding types (gc-clt4, gc-ps3t): the types a
  * live app produces in the theme just by working. Only these may be
- * dropped by dropActiveAppOwnFileFindings. Never add MALICIOUS_SCRIPT, the
- * app-embed types, GHOST_LAYOUT (layouts already have a template-usage gate),
- * DUPLICATE_*, OVERLAPPING_CHAT_WIDGET, SETTINGS_DRIFT, JSON_LD_*, or the
- * robots/canonical/title/og/meta types: those are not "app X's code" claims.
+ * dropped by dropActiveAppOwnFileFindings. GHOST_OG is included (2026-10-05,
+ * Nathan): a live app's og tags (real case: EComposer's helper snippet, which
+ * only renders on its own pages) are the app working, not leftover code.
+ * Never add MALICIOUS_SCRIPT, the app-embed types, GHOST_LAYOUT (layouts
+ * already have a template-usage gate), DUPLICATE_*, OVERLAPPING_CHAT_WIDGET,
+ * SETTINGS_DRIFT, JSON_LD_*, or the robots/canonical/title/meta types: those
+ * are not "app X's code" claims.
  */
 export const ACTIVE_APP_OWN_FILE_TYPES: ReadonlySet<FindingType> = new Set<FindingType>([
   FindingType.GHOST_SCRIPT,
@@ -3377,6 +3380,7 @@ export const ACTIVE_APP_OWN_FILE_TYPES: ReadonlySet<FindingType> = new Set<Findi
   FindingType.GHOST_AJAX,
   FindingType.GHOST_JSON_LD,
   FindingType.GHOST_HREFLANG,
+  FindingType.GHOST_OG,
   FindingType.ORPHAN_ASSET,
 ]);
 
@@ -3397,7 +3401,9 @@ export const ACTIVE_APP_OWN_FILE_TYPES: ReadonlySet<FindingType> = new Set<Findi
  * Accepted trade-offs: an unused builder section left by a deleted builder page
  * goes unflagged while the builder's embed is enabled; a hand-pasted duplicate
  * copy of a live app's code goes unflagged; a hand-pasted orphan of an
- * uninstalled app inside a live builder's file goes unflagged.
+ * uninstalled app inside a live builder's file goes unflagged; an empty or
+ * broken og tag that a live app itself outputs goes unflagged (that is the
+ * app's bug, not leftover code).
  */
 export function dropActiveAppOwnFileFindings(
   files: ThemeFile[],

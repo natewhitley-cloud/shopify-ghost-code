@@ -460,7 +460,7 @@ describe("live apps' findings are suppressed theme-wide and inside live builders
       description: "x",
     });
     const settings = live(KLAVIYO_TYPE, ECOMPOSER_TYPE);
-    const EXCLUDED = [FindingType.GHOST_OG, FindingType.GHOST_LAYOUT, FindingType.MALICIOUS_SCRIPT];
+    const EXCLUDED = [FindingType.GHOST_LAYOUT, FindingType.MALICIOUS_SCRIPT];
 
     it("the excluded types are not in ACTIVE_APP_OWN_FILE_TYPES", () => {
       for (const t of EXCLUDED) expect(ACTIVE_APP_OWN_FILE_TYPES.has(t)).toBe(false);
@@ -475,6 +475,40 @@ describe("live apps' findings are suppressed theme-wide and inside live builders
         finding(t, "sections/ecom-landing.liquid", undefined),
       ];
       expect(dropActiveAppOwnFileFindings([settings], input)).toEqual(input);
+    });
+
+    it("drops GHOST_OG for a live app, in its own file and elsewhere (2026-10-05)", () => {
+      const input = [
+        finding(FindingType.GHOST_OG, "snippets/ecom_theme_helper.liquid", "EComposer"),
+        finding(FindingType.GHOST_OG, "layout/theme.liquid", "EComposer"),
+        finding(FindingType.GHOST_OG, "layout/theme.liquid", "Klaviyo"),
+        finding(FindingType.GHOST_OG, "sections/ecom-landing.liquid", undefined),
+      ];
+      expect(dropActiveAppOwnFileFindings([settings], input)).toEqual([]);
+    });
+
+    it("keeps GHOST_OG when neither its app nor its file's owner is live", () => {
+      const input = [
+        finding(FindingType.GHOST_OG, "layout/theme.liquid", undefined),
+        finding(FindingType.GHOST_OG, "layout/theme.liquid", "Yotpo"),
+      ];
+      expect(dropActiveAppOwnFileFindings([settings], input)).toEqual(input);
+    });
+
+    it("filters GHOST_OG per finding: drops the live app's, keeps the dead app's", () => {
+      const dead = finding(FindingType.GHOST_OG, "layout/theme.liquid", "Yotpo");
+      const input = [
+        finding(FindingType.GHOST_OG, "snippets/ecom_theme_helper.liquid", "EComposer"),
+        dead,
+      ];
+      expect(dropActiveAppOwnFileFindings([settings], input)).toEqual([dead]);
+    });
+
+    it("keeps GHOST_OG when no app embed is enabled", () => {
+      const input = [
+        finding(FindingType.GHOST_OG, "snippets/ecom_theme_helper.liquid", "EComposer"),
+      ];
+      expect(dropActiveAppOwnFileFindings([], input)).toEqual(input);
     });
 
     it("drops an appName-less in-set finding inside a live builder's file", () => {
