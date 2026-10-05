@@ -1,17 +1,37 @@
+import type { LookupAddress } from "node:dns";
+
+import { Agent, fetch as undiciFetch } from "undici";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+
+import { logger } from "../../app/lib/logger.server";
+import {
+  createGuardedLookup,
+  fetchStorefrontScriptTags,
+  isBareHostname,
+  isBlockedAddress,
+  isShopifyStorefrontHtml,
+  parseScriptTagUrls,
+  STOREFRONT_MAX_BODY_BYTES,
+  type StorefrontFetch,
+  STOREFRONT_USER_AGENT,
+} from "../../app/services/storefront-fetcher.server";
 
 vi.mock("../../app/lib/logger.server", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
 }));
 
-import { logger } from "../../app/lib/logger.server";
-import {
-  fetchStorefrontScriptTags,
-  isShopifyStorefrontHtml,
-  parseScriptTagUrls,
-  STOREFRONT_MAX_BODY_BYTES,
-  STOREFRONT_USER_AGENT,
-} from "../../app/services/storefront-fetcher.server";
+// Real undici, with fetch + Agent wrapped in spies so the dark path can prove
+// the default network stack is never touched.
+vi.mock("undici", async (importOriginal) => {
+  const real = await importOriginal<typeof import("undici")>();
+  return {
+    ...real,
+    fetch: vi.fn((...args: Parameters<typeof real.fetch>) => real.fetch(...args)),
+    Agent: vi.fn(function (this: unknown, opts: ConstructorParameters<typeof real.Agent>[0]) {
+      return new real.Agent(opts);
+    }),
+  };
+});
 
 const SHOP_ID = "shop-1";
 const PRIMARY = "pawnaturals.com";
@@ -149,11 +169,16 @@ function makeAdmin(
     primaryDomain: { host: PRIMARY, url: `https://${PRIMARY}` },
     myshopifyDomain: MYSHOPIFY,
   },
+  role: string | null = "MAIN",
 ) {
   return {
-    graphql: vi.fn(async () => ({ json: async () => ({ data: { shop } }) })),
+    graphql: vi.fn(async () => ({
+      json: async () => ({ data: { shop, theme: role === null ? null : { role } } }),
+    })),
   };
 }
+
+const THEME_ID = "gid://shopify/OnlineStoreTheme/1";
 
 function html(body: string, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(body, { status, headers: { "content-type": "text/html", ...headers } });
@@ -168,7 +193,8 @@ describe("fetchStorefrontScriptTags", () => {
   const run = (admin = makeAdmin(), timeoutMs?: number) =>
     fetchStorefrontScriptTags(admin, {
       shopId: SHOP_ID,
-      fetchImpl: fetchImpl as unknown as typeof fetch,
+      themeId: THEME_ID,
+      fetchImpl: fetchImpl as unknown as StorefrontFetch,
       timeoutMs,
     });
 
@@ -191,10 +217,15 @@ describe("fetchStorefrontScriptTags", () => {
         const globalFetch = vi.spyOn(globalThis, "fetch");
         const admin = makeAdmin();
         try {
-          // No fetchImpl: the default (global fetch) path must also stay untouched.
-          const result = await fetchStorefrontScriptTags(admin, { shopId: SHOP_ID });
+          // No fetchImpl: the default (undici) path must also stay untouched.
+          const result = await fetchStorefrontScriptTags(admin, {
+            shopId: SHOP_ID,
+            themeId: THEME_ID,
+          });
           expect(result).toEqual({ status: "disabled" });
           expect(globalFetch).not.toHaveBeenCalled();
+          expect(undiciFetch).not.toHaveBeenCalled();
+          expect(Agent).not.toHaveBeenCalled();
           expect(admin.graphql).not.toHaveBeenCalled();
           expect(logger.info).not.toHaveBeenCalled();
         } finally {
@@ -221,6 +252,62 @@ describe("fetchStorefrontScriptTags", () => {
     expect(init.redirect).toBe("manual");
     expect(init.headers["User-Agent"]).toBe(STOREFRONT_USER_AGENT);
     expect(init.signal).toBeInstanceOf(AbortSignal);
+    // Every request goes through the guarded undici Agent.
+    expect(init.dispatcher).toBeDefined();
+    expect(Agent).toHaveBeenCalledTimes(1);
+    // The Admin query asks for the scanned theme's role.
+    expect(admin.graphql.mock.calls[0]).toEqual([
+      expect.stringContaining("theme(id: $themeId)"),
+      { variables: { themeId: THEME_ID } },
+    ]);
+  });
+
+  describe("published theme only", () => {
+    it.each([["UNPUBLISHED"], ["DEVELOPMENT"], ["DEMO"], [null]])(
+      "role %j: not_published, no request, no log",
+      async (role) => {
+        const result = await run(makeAdmin(undefined, role));
+        expect(result).toEqual({ status: "not_published" });
+        expect(fetchImpl).not.toHaveBeenCalled();
+        expect(Agent).not.toHaveBeenCalled();
+        expect(logger.info).not.toHaveBeenCalled();
+      },
+    );
+  });
+
+  describe("address guard (M1)", () => {
+    it.each([["127.0.0.1"], ["10.1.2.3"], ["169.254.169.254"], ["0.0.0.0"], ["1.2.3.4"]])(
+      "rejects an IP-literal primary host %s before any request",
+      async (ip) => {
+        const result = await run(
+          makeAdmin({
+            primaryDomain: { host: ip, url: `https://${ip}` },
+            myshopifyDomain: MYSHOPIFY,
+          }),
+        );
+        expect(result).toEqual({ status: "unreachable", reason: "no_domain" });
+        expect(fetchImpl).not.toHaveBeenCalled();
+      },
+    );
+
+    it("refuses at connect time when the name resolves to a private address (real undici fetch)", async () => {
+      const dnsLookup = vi.fn(
+        (_host: string, _opts: unknown, cb: (e: null, a: LookupAddress[]) => void) =>
+          cb(null, [{ address: "127.0.0.1", family: 4 }]),
+      );
+      const result = await fetchStorefrontScriptTags(makeAdmin(), {
+        shopId: SHOP_ID,
+        themeId: THEME_ID,
+        dnsLookup,
+      });
+      expect(result).toEqual({ status: "unreachable", reason: "blocked_address" });
+      expect(dnsLookup).toHaveBeenCalledWith(
+        PRIMARY,
+        expect.objectContaining({ all: true }),
+        expect.any(Function),
+      );
+      expect(undiciFetch).toHaveBeenCalledTimes(1);
+    });
   });
 
   it("falls back to primaryDomain.host when url is missing", async () => {
@@ -406,5 +493,113 @@ describe("fetchStorefrontScriptTags", () => {
       expect(logged).not.toContain("SECRET");
       expect(logged).not.toContain("?");
     });
+  });
+});
+
+describe("isBareHostname", () => {
+  it.each([
+    ["pawnaturals.com"],
+    ["shop.example.co.uk"],
+    ["paw-naturals-llc.myshopify.com"],
+    ["123shop.com"],
+  ])("accepts %s", (host) => expect(isBareHostname(host)).toBe(true));
+
+  it.each([
+    ["127.0.0.1"],
+    ["10.0.0.1"],
+    ["0x7f.1"],
+    ["1.2.3.4"],
+    ["[::1]"],
+    ["::1"],
+    ["::ffff:127.0.0.1"],
+    ["localhost"],
+    ["evil.com/path"],
+    ["user@evil.com"],
+    ["evil.com:8080"],
+  ])("rejects %s", (host) => expect(isBareHostname(host)).toBe(false));
+});
+
+describe("isBlockedAddress", () => {
+  it.each([
+    ["0.1.2.3"],
+    ["10.0.0.1"],
+    ["100.64.0.1"],
+    ["100.127.255.254"],
+    ["127.0.0.1"],
+    ["169.254.169.254"],
+    ["172.16.0.1"],
+    ["172.31.255.255"],
+    ["192.168.1.1"],
+    ["224.0.0.1"],
+    ["239.255.255.250"],
+    ["255.255.255.255"],
+    ["::"],
+    ["::1"],
+    ["fc00::1"],
+    ["fd12:3456::1"],
+    ["fe80::1"],
+    ["ff02::1"],
+    ["::ffff:127.0.0.1"],
+    ["::ffff:10.0.0.1"],
+    ["::ffff:a9fe:a9fe"],
+    ["0:0:0:0:0:ffff:192.168.0.1"],
+    ["not-an-ip"],
+  ])("blocks %s", (ip) => expect(isBlockedAddress(ip)).toBe(true));
+
+  it.each([
+    ["23.227.38.65"],
+    ["100.63.255.255"],
+    ["100.128.0.1"],
+    ["172.32.0.1"],
+    ["8.8.8.8"],
+    ["2620:127:f00f:e::1"],
+    ["::ffff:23.227.38.65"],
+  ])("allows public %s", (ip) => expect(isBlockedAddress(ip)).toBe(false));
+});
+
+describe("createGuardedLookup", () => {
+  type Cb = (err: NodeJS.ErrnoException | null, addresses: LookupAddress[]) => void;
+  const resolver = (addresses: LookupAddress[] | Error) =>
+    vi.fn((_h: string, _o: unknown, cb: Cb) =>
+      addresses instanceof Error ? cb(addresses as NodeJS.ErrnoException, []) : cb(null, addresses),
+    );
+  const call = (lookup: ReturnType<typeof createGuardedLookup>, all: boolean) =>
+    new Promise<{ err: unknown; address: unknown; family: unknown }>((resolve) =>
+      lookup("shop.example.com", { all }, (err, address, family) =>
+        resolve({ err, address, family }),
+      ),
+    );
+
+  it("returns the first address in single-address shape", async () => {
+    const lookup = createGuardedLookup(resolver([{ address: "23.227.38.65", family: 4 }]));
+    expect(await call(lookup, false)).toEqual({ err: null, address: "23.227.38.65", family: 4 });
+  });
+
+  it("returns every address in all:true shape", async () => {
+    const list = [
+      { address: "23.227.38.65", family: 4 },
+      { address: "2620:127:f00f:e::1", family: 6 },
+    ];
+    const lookup = createGuardedLookup(resolver(list));
+    expect((await call(lookup, true)).address).toEqual(list);
+  });
+
+  it("refuses when ANY resolved address is blocked (mixed answer)", async () => {
+    const lookup = createGuardedLookup(
+      resolver([
+        { address: "23.227.38.65", family: 4 },
+        { address: "10.0.0.5", family: 4 },
+      ]),
+    );
+    const { err } = await call(lookup, true);
+    expect((err as { code?: string }).code).toBe("ERR_BLOCKED_ADDRESS");
+  });
+
+  it("refuses an empty answer and passes DNS errors through", async () => {
+    expect(
+      ((await call(createGuardedLookup(resolver([])), false)).err as { code?: string }).code,
+    ).toBe("ERR_BLOCKED_ADDRESS");
+    const dnsErr = Object.assign(new Error("ENOTFOUND"), { code: "ENOTFOUND" });
+    expect((await call(createGuardedLookup(resolver(dnsErr)), false)).err).toBe(dnsErr);
   });
 });

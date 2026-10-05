@@ -95,6 +95,7 @@ import {
   isScriptTagSunsetLive,
   isSoftLaunchLive,
 } from "../../app/services/soft-launch-flags.server";
+import type { StorefrontScriptTagResult } from "../../app/services/storefront-fetcher.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 import { inngest } from "../client";
@@ -1246,31 +1247,60 @@ export const scanTheme = inngest.createFunction(
       // Admin query, no storefront request, no category, no finding (the
       // fetcher re-checks the flag before any request, belt and braces).
       //
-      // Not scope-gated (it uses only `shop { primaryDomain myshopifyDomain }`).
+      // Not scope-gated. Only the PUBLISHED (MAIN) theme is checked, since the
+      // storefront renders only that one; any other theme is skipped silently.
       // When the public storefront cannot be read (password page, timeout,
-      // non-2xx, not a Shopify page, unparseable block) the category is
-      // recorded in `unreachableCategories` so the differ keeps its prior
-      // findings; that is not a scope problem (no banner, no PARTIAL). It must
-      // never fail the scan: every error is caught and reported unreachable.
-      const scriptTagResult: { findingCount: number; unreachable: boolean } = Array.isArray(
-        enabledEmbedApps,
-      )
-        ? await step.run("storefront-script-tags", async () => {
-            const { logger } = await import("../../app/lib/logger.server");
-            try {
+      // non-2xx, blocked address, not a Shopify page, unparseable block) the
+      // category is recorded in `unreachableCategories` so the differ keeps
+      // its prior findings; that is not a scope problem (no banner, no PARTIAL).
+      //
+      // `audited` is false when nothing was checked (flag flipped off mid-run,
+      // unpublished theme, no shop): finalize then drops SCRIPT_TAG_SUNSET from
+      // the scan's live set so the differ treats the type as un-audited.
+      //
+      // Failure split: a failure while READING (Admin lookup, fetch) is caught
+      // and reported unreachable, never failing the scan. Persistence runs
+      // outside that guard: a DB failure throws so Inngest retries the step,
+      // and the retry starts by clearing this scan's SCRIPT_TAG_SUNSET rows, so
+      // it never duplicates or leaves stale rows.
+      const scriptTagResult: { findingCount: number; unreachable: boolean; audited: boolean } =
+        Array.isArray(enabledEmbedApps)
+          ? await step.run("storefront-script-tags", async () => {
+              const { logger } = await import("../../app/lib/logger.server");
               const db = (await import("../../app/db.server")).default;
               const shop = await db.shop.findUnique({ where: { id: shopId } });
-              if (!shop) return { findingCount: 0, unreachable: false };
+              if (!shop) return { findingCount: 0, unreachable: false, audited: false };
+              let storefront: StorefrontScriptTagResult;
+              try {
+                const { unauthenticated } = await import("../../app/shopify.server");
+                const { admin } = await unauthenticated.admin(shop.domain);
+                const { fetchStorefrontScriptTags } =
+                  await import("../../app/services/storefront-fetcher.server");
+                storefront = await fetchStorefrontScriptTags(admin, { shopId, themeId });
+              } catch (err) {
+                // Name + a short message only: a library error can echo values.
+                logger.warn("storefront script-tag read failed, recorded as unreachable", {
+                  function: "scan-theme",
+                  stepName: "storefront-script-tags",
+                  shopId,
+                  errorName: err instanceof Error ? err.name : typeof err,
+                  error: (err instanceof Error ? err.message : String(err)).slice(0, 200),
+                });
+                storefront = { status: "unreachable", reason: "network" };
+              }
+              // Flag flipped off mid-scan, or not the published theme: nothing
+              // was requested and nothing is recorded.
+              if (storefront.status === "disabled" || storefront.status === "not_published") {
+                return { findingCount: 0, unreachable: false, audited: false };
+              }
 
-              const { unauthenticated } = await import("../../app/shopify.server");
-              const { admin } = await unauthenticated.admin(shop.domain);
-              const { fetchStorefrontScriptTags } =
-                await import("../../app/services/storefront-fetcher.server");
-              const storefront = await fetchStorefrontScriptTags(admin, { shopId });
-              // Flag flipped off mid-scan: nothing was requested, nothing to record.
-              if (storefront.status === "disabled") return { findingCount: 0, unreachable: false };
-              if (storefront.status === "unreachable")
-                return { findingCount: 0, unreachable: true };
+              // Idempotent on retry: clear any rows an earlier attempt wrote.
+              await db.finding.deleteMany({
+                where: { scanId, findingType: FindingType.SCRIPT_TAG_SUNSET },
+              });
+              if (storefront.status === "unreachable") {
+                return { findingCount: 0, unreachable: true, audited: true };
+              }
 
               const { detectScriptTagSunset } =
                 await import("../../app/services/script-tag-sunset-detector.server");
@@ -1288,18 +1318,9 @@ export const scanTheme = inngest.createFunction(
                 event: "script_tag_sunset_findings",
                 logMessage: "script tag sunset findings persisted",
               });
-              return { findingCount: findings.length, unreachable: false };
-            } catch (err) {
-              logger.warn("storefront script-tag audit failed, recorded as unreachable", {
-                function: "scan-theme",
-                stepName: "storefront-script-tags",
-                shopId,
-                error: err instanceof Error ? err.message : String(err),
-              });
-              return { findingCount: 0, unreachable: true };
-            }
-          })
-        : { findingCount: 0, unreachable: false };
+              return { findingCount: findings.length, unreachable: false, audited: true };
+            })
+          : { findingCount: 0, unreachable: false, audited: false };
 
       const totalFindings =
         findingCount +

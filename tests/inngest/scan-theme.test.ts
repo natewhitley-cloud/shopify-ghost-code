@@ -187,6 +187,17 @@ vi.mock("../../app/services/merchant-alert.server", () => ({
   notifyNewFindings: vi.fn(),
 }));
 
+// The storefront fetcher's network stack: routed to the global fetch spy below
+// (never the real network), with an inert Agent.
+vi.mock("undici", () => ({
+  fetch: vi.fn((url: unknown, init: unknown) =>
+    (globalThis.fetch as (u: unknown, i: unknown) => Promise<Response>)(url, init),
+  ),
+  Agent: vi.fn(function () {
+    return { close: vi.fn(async () => {}) };
+  }),
+}));
+
 vi.mock("../../app/models/ignored-finding.server", () => ({
   getIgnoredFindingsForShop: vi.fn(),
 }));
@@ -3757,7 +3768,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
   const PRIMARY = "pawnaturals.com";
   const MYSHOPIFY = "paw-naturals-llc.myshopify.com";
 
-  function shopDomainsResponse() {
+  function shopDomainsResponse(role = "MAIN") {
     return {
       json: async () => ({
         data: {
@@ -3765,6 +3776,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
             primaryDomain: { host: PRIMARY, url: `https://${PRIMARY}` },
             myshopifyDomain: MYSHOPIFY,
           },
+          theme: { role },
         },
       }),
     };
@@ -3837,7 +3849,11 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
 
     const { results, result } = await run();
 
-    expect(results["storefront-script-tags"]).toEqual({ findingCount: 0, unreachable: true });
+    expect(results["storefront-script-tags"]).toEqual({
+      findingCount: 0,
+      unreachable: true,
+      audited: true,
+    });
     const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
     expect(finalizeArgs.status).toBe("COMPLETED");
     expect(finalizeArgs.unreachableCategories).toEqual([FindingType.SCRIPT_TAG_SUNSET]);
@@ -3884,7 +3900,11 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     expect(mockDb.finding.deleteMany).toHaveBeenCalledWith({
       where: { scanId: SCAN_ID, findingType: FindingType.SCRIPT_TAG_SUNSET },
     });
-    expect(results["storefront-script-tags"]).toEqual({ findingCount: 2, unreachable: false });
+    expect(results["storefront-script-tags"]).toEqual({
+      findingCount: 2,
+      unreachable: false,
+      audited: true,
+    });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
     expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
   });
@@ -3896,7 +3916,11 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
 
     const { results } = await run();
 
-    expect(results["storefront-script-tags"]).toEqual({ findingCount: 0, unreachable: false });
+    expect(results["storefront-script-tags"]).toEqual({
+      findingCount: 0,
+      unreachable: false,
+      audited: true,
+    });
     expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
   });
 
@@ -3960,6 +3984,116 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
 
     expect(names).not.toContain("storefront-script-tags");
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("an unpublished theme is skipped silently: no fetch, no category, no findings", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse("UNPUBLISHED"));
+
+    const { results } = await run();
+
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(results["storefront-script-tags"]).toEqual({
+      findingCount: 0,
+      unreachable: false,
+      audited: false,
+    });
+    expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
+    expect(scriptTagPersistCall()).toBeUndefined();
+    expect(mockDb.finding.deleteMany).not.toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: FindingType.SCRIPT_TAG_SUNSET },
+    });
+  });
+
+  it("a persistence failure after reading rethrows (Inngest retries), never 'unreachable'", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    fetchSpy.mockImplementation(
+      async () =>
+        new Response(storefrontHtml(["https://cdn.example-vendor.io/a.js"]), { status: 200 }),
+    );
+    mockCreateFindings.mockImplementation(
+      async (_scanId: string, rows: Array<{ findingType: string }>) => {
+        if (rows.some((r) => r.findingType === FindingType.SCRIPT_TAG_SUNSET)) {
+          throw new Error("db connection reset");
+        }
+        return { count: rows.length };
+      },
+    );
+
+    const base = createMockInngestStep();
+    let stepError: unknown = null;
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        try {
+          return await fn();
+        } catch (err) {
+          if (name === "storefront-script-tags") stepError = err;
+          throw err;
+        }
+      }),
+    };
+    await expect(getInngestHandler(scanTheme)({ event: makeScanEvent(), step })).rejects.toThrow(
+      "db connection reset",
+    );
+    expect(stepError).toBeInstanceOf(Error);
+    expect(mockFinalizeScan).not.toHaveBeenCalled();
+  });
+
+  it("a retried step clears the earlier attempt's rows before re-persisting (idempotent)", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    fetchSpy.mockImplementation(
+      async () =>
+        new Response(storefrontHtml(["https://cdn.example-vendor.io/a.js"]), { status: 200 }),
+    );
+    // Run the step body twice, as an Inngest retry would.
+    const base = createMockInngestStep();
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        if (name === "storefront-script-tags") await fn();
+        return fn();
+      }),
+    };
+    await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+
+    const clears = mockDb.finding.deleteMany.mock.calls.filter(
+      (c) =>
+        (c[0] as { where: { findingType?: string } }).where.findingType ===
+        FindingType.SCRIPT_TAG_SUNSET,
+    );
+    // Each attempt: one up-front clear + persistAuditFindings' own guard.
+    expect(clears).toHaveLength(4);
+    const order = mockDb.finding.deleteMany.mock.invocationCallOrder;
+    const creates = mockCreateFindings.mock.invocationCallOrder;
+    expect(Math.min(...order)).toBeLessThan(Math.min(...creates));
+  });
+
+  it("a read failure is logged by name with a truncated message (no long value echoes)", async () => {
+    process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    const warn = vi.spyOn(logger, "warn");
+    const base = createMockInngestStep();
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        if (name === "storefront-script-tags") {
+          mockUnauthenticated.admin.mockRejectedValueOnce(
+            new TypeError(`bad value https://x.io/?token=${"s".repeat(400)}`),
+          );
+        }
+        return fn();
+      }),
+    };
+    await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+
+    const call = warn.mock.calls.find((c) =>
+      String(c[0]).startsWith("storefront script-tag read failed"),
+    );
+    expect(call?.[1]).toMatchObject({ errorName: "TypeError" });
+    expect(String((call?.[1] as { error: string }).error).length).toBeLessThanOrEqual(200);
+    warn.mockRestore();
   });
 
   it("the previous unreachable SCRIPT_TAG_SUNSET findings are kept out of resolved at finalize", async () => {

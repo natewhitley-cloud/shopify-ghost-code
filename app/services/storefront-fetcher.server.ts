@@ -18,8 +18,23 @@
  * shop's myshopify host; anything else is unreachable. One request chain per
  * scan, homepage only, 10 s total budget, 5 MB body cap.
  *
+ * Network safety (DNS rebinding): requests go through an undici Agent whose
+ * `connect.lookup` resolves the hostname and refuses to connect when ANY
+ * resolved address is private, loopback, link-local, CGNAT, multicast,
+ * reserved, or a v4-mapped form of those. The check runs at connect time, on
+ * every hop, so a name that re-resolves to an internal address is refused
+ * (`blocked_address`). IP-literal hosts are rejected before any request.
+ *
+ * Published theme only: the storefront renders only the MAIN theme, so a scan
+ * of any other theme returns `not_published` without a request.
+ *
  * Logging: host + outcome only. Never the query string, a ScriptTag URL, or HTML.
  */
+
+import dns from "node:dns";
+import { BlockList, isIP } from "node:net";
+
+import { Agent, fetch as undiciFetch } from "undici";
 
 import { isScriptTagSunsetLive } from "./soft-launch-flags.server";
 import { logger } from "../lib/logger.server";
@@ -41,11 +56,14 @@ export type StorefrontUnreachableReason =
   | "too_large"
   | "network"
   | "not_shopify"
-  | "parse_failed";
+  | "parse_failed"
+  | "blocked_address";
 
 export type StorefrontScriptTagResult =
   /** Flag off: nothing was requested (no Admin call, no HTTP). */
   | { status: "disabled" }
+  /** The scanned theme is not the published (MAIN) one: no request was made. */
+  | { status: "not_published" }
   /** The storefront was read; `urls` are the raw ScriptTag URLs (may be empty). */
   | { status: "ok"; host: string; urls: string[] }
   | { status: "unreachable"; reason: StorefrontUnreachableReason };
@@ -137,22 +155,45 @@ function isPasswordPageHtml(html: string): boolean {
 // Admin lookup
 // ---------------------------------------------------------------------------
 
-const SHOP_DOMAINS_QUERY = `{ shop { primaryDomain { host url } myshopifyDomain } }`;
+const STOREFRONT_CONTEXT_QUERY = `
+  query StorefrontContext($themeId: ID!) {
+    shop {
+      primaryDomain {
+        host
+        url
+      }
+      myshopifyDomain
+    }
+    theme(id: $themeId) {
+      role
+    }
+  }
+`;
 
 type ShopDomains = { primaryHost: string; myshopifyHost: string | null };
 
-/** The shop's primary storefront host + myshopify host, or null if unknown. */
-async function fetchShopDomains(admin: AdminApiContext): Promise<ShopDomains | null> {
-  const response = await admin.graphql(SHOP_DOMAINS_QUERY);
+type StorefrontContext = { domains: ShopDomains | null; published: boolean };
+
+/**
+ * ONE Admin query: the shop's primary storefront host + myshopify host (null
+ * when unusable) and whether the scanned theme is the published (MAIN) one.
+ */
+async function fetchStorefrontContext(
+  admin: AdminApiContext,
+  themeId: string,
+): Promise<StorefrontContext> {
+  const response = await admin.graphql(STOREFRONT_CONTEXT_QUERY, { variables: { themeId } });
   const body = (await response.json()) as {
     data?: {
       shop?: {
         primaryDomain?: { host?: unknown; url?: unknown } | null;
         myshopifyDomain?: unknown;
       } | null;
+      theme?: { role?: unknown } | null;
     } | null;
     errors?: unknown;
   };
+  const published = body?.data?.theme?.role === "MAIN";
   const shop = body?.data?.shop;
   const primary = shop?.primaryDomain;
   // Prefer the URL's hostname (the canonical storefront address); fall back to
@@ -166,18 +207,139 @@ async function fetchShopDomains(admin: AdminApiContext): Promise<ShopDomains | n
     }
   }
   if (!primaryHost && typeof primary?.host === "string") primaryHost = primary.host;
-  if (!primaryHost || !isBareHostname(primaryHost)) return null;
+  if (!primaryHost || !isBareHostname(primaryHost)) return { domains: null, published };
   const myshopify =
     typeof shop?.myshopifyDomain === "string" && isBareHostname(shop.myshopifyDomain)
       ? shop.myshopifyDomain.toLowerCase()
       : null;
-  return { primaryHost: primaryHost.toLowerCase(), myshopifyHost: myshopify };
+  return {
+    domains: { primaryHost: primaryHost.toLowerCase(), myshopifyHost: myshopify },
+    published,
+  };
 }
 
-/** A dotted DNS hostname with no scheme, port, path, or credentials. */
-function isBareHostname(host: string): boolean {
-  return /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(host);
+/**
+ * A dotted DNS hostname with no scheme, port, path, or credentials, and not an
+ * IP literal: an all-numeric last label (127.0.0.1, 10.1) is never a real TLD,
+ * and IPv6 literals (colons, brackets) fail the character class.
+ */
+export function isBareHostname(host: string): boolean {
+  if (!/^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)+$/i.test(host)) {
+    return false;
+  }
+  const lastLabel = host.slice(host.lastIndexOf(".") + 1);
+  return !/^\d+$/.test(lastLabel) && isIP(host) === 0;
 }
+
+// ---------------------------------------------------------------------------
+// Connect-time address guard (DNS rebinding / SSRF)
+// ---------------------------------------------------------------------------
+
+const BLOCKED_RANGES = new BlockList();
+for (const [network, prefix] of [
+  ["0.0.0.0", 8], // "this network"
+  ["10.0.0.0", 8], // private
+  ["100.64.0.0", 10], // CGNAT
+  ["127.0.0.0", 8], // loopback
+  ["169.254.0.0", 16], // link-local (incl. cloud metadata)
+  ["172.16.0.0", 12], // private
+  ["192.0.0.0", 24], // IETF protocol assignments
+  ["192.168.0.0", 16], // private
+  ["198.18.0.0", 15], // benchmarking
+  ["224.0.0.0", 4], // multicast
+  ["240.0.0.0", 4], // reserved + broadcast
+] as const) {
+  BLOCKED_RANGES.addSubnet(network, prefix, "ipv4");
+}
+for (const [network, prefix] of [
+  ["::", 128], // unspecified
+  ["::1", 128], // loopback
+  ["fc00::", 7], // unique local
+  ["fe80::", 10], // link-local
+  ["ff00::", 8], // multicast
+] as const) {
+  BLOCKED_RANGES.addSubnet(network, prefix, "ipv6");
+}
+
+/** The IPv4 address inside a v4-mapped IPv6 address (::ffff:a.b.c.d / ::ffff:hhhh:hhhh). */
+function v4FromMapped(ip: string): string | null {
+  const match = /^(?:0{0,4}:){0,4}:?(?:0{0,4}:)?ffff:(.+)$/i.exec(ip);
+  if (!match) return null;
+  const tail = match[1];
+  if (isIP(tail) === 4) return tail;
+  const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(tail);
+  if (!hex) return null;
+  const hi = parseInt(hex[1], 16);
+  const lo = parseInt(hex[2], 16);
+  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+}
+
+/** True when the storefront fetch must never connect to `ip` (or it is not an IP). */
+export function isBlockedAddress(ip: string): boolean {
+  const family = isIP(ip);
+  if (family === 4) return BLOCKED_RANGES.check(ip, "ipv4");
+  if (family === 6) {
+    const mapped = v4FromMapped(ip);
+    if (mapped) return BLOCKED_RANGES.check(mapped, "ipv4");
+    return BLOCKED_RANGES.check(ip, "ipv6");
+  }
+  return true;
+}
+
+/** Raised by the guarded lookup; detected through fetch's `cause` chain. */
+export class BlockedAddressError extends Error {
+  readonly code = "ERR_BLOCKED_ADDRESS";
+  constructor(hostname: string) {
+    super(`refused to connect: ${hostname} resolves to a blocked address`);
+    this.name = "BlockedAddressError";
+  }
+}
+
+type LookupCallback = (
+  err: NodeJS.ErrnoException | null,
+  address: string | dns.LookupAddress[],
+  family?: number,
+) => void;
+type DnsLookupAll = (
+  hostname: string,
+  options: dns.LookupAllOptions,
+  callback: (err: NodeJS.ErrnoException | null, addresses: dns.LookupAddress[]) => void,
+) => void;
+
+/**
+ * A `connect.lookup` for undici: resolves every address for the name and
+ * refuses the connection if ANY is blocked (so a mixed public/private answer
+ * cannot be raced). Honors both the single-address and `all: true` shapes
+ * Node's net/tls may request. `resolve` is the test seam (default dns.lookup).
+ */
+export function createGuardedLookup(resolve: DnsLookupAll = dns.lookup as DnsLookupAll) {
+  return (hostname: string, options: dns.LookupOptions, callback: LookupCallback): void => {
+    resolve(hostname, { ...options, all: true }, (err, addresses) => {
+      if (err) return callback(err, "");
+      if (
+        !Array.isArray(addresses) ||
+        addresses.length === 0 ||
+        addresses.some((a) => isBlockedAddress(a.address))
+      ) {
+        return callback(new BlockedAddressError(hostname), "");
+      }
+      if (options?.all) return callback(null, addresses);
+      return callback(null, addresses[0].address, addresses[0].family);
+    });
+  };
+}
+
+function isBlockedAddressFailure(err: unknown): boolean {
+  for (let e: unknown = err, depth = 0; e && depth < 5; depth++) {
+    if (e instanceof BlockedAddressError) return true;
+    if ((e as { code?: unknown }).code === "ERR_BLOCKED_ADDRESS") return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
+/** Minimal fetch shape used here (the injected test seam or undici's fetch). */
+export type StorefrontFetch = (url: URL, init: Record<string, unknown>) => Promise<Response>;
 
 // ---------------------------------------------------------------------------
 // HTTP
@@ -236,25 +398,41 @@ function unreachable(
  * Never throws: every failure (Admin error, network, timeout, unexpected HTML)
  * is `unreachable`, so the caller can record the category as un-audited.
  *
- * @param opts.fetchImpl Test seam; defaults to the global fetch.
+ * @param opts.themeId   The scanned theme; only the published (MAIN) one is checked.
+ * @param opts.fetchImpl Test seam; defaults to undici's fetch.
+ * @param opts.dnsLookup Test seam for the connect-time address guard.
  */
 export async function fetchStorefrontScriptTags(
   admin: AdminApiContext,
-  opts: { shopId: string; fetchImpl?: typeof fetch; timeoutMs?: number },
+  opts: {
+    shopId: string;
+    themeId: string;
+    fetchImpl?: StorefrontFetch;
+    dnsLookup?: DnsLookupAll;
+    timeoutMs?: number;
+  },
 ): Promise<StorefrontScriptTagResult> {
   // Dark gate FIRST: no Admin call and no HTTP while the flag is off.
   if (!isScriptTagSunsetLive()) return { status: "disabled" };
 
   const { shopId } = opts;
-  const fetchImpl = opts.fetchImpl ?? fetch;
 
-  let domains: ShopDomains | null;
+  let context: StorefrontContext;
   try {
-    domains = await fetchShopDomains(admin);
+    context = await fetchStorefrontContext(admin, opts.themeId);
   } catch {
-    domains = null;
+    return unreachable("no_domain", shopId, null);
   }
+  // The storefront renders only the published theme: other themes are not
+  // checked at all (no request, no category, no finding).
+  if (!context.published) return { status: "not_published" };
+  const { domains } = context;
   if (!domains) return unreachable("no_domain", shopId, null);
+
+  const fetchImpl = opts.fetchImpl ?? (undiciFetch as unknown as StorefrontFetch);
+  const dispatcher = new Agent({
+    connect: { lookup: createGuardedLookup(opts.dnsLookup) },
+  });
 
   const allowedHosts = new Set([domains.primaryHost]);
   if (domains.myshopifyHost) allowedHosts.add(domains.myshopifyHost);
@@ -269,6 +447,7 @@ export async function fetchStorefrontScriptTags(
         method: "GET",
         redirect: "manual",
         signal: controller.signal,
+        dispatcher,
         headers: { "User-Agent": STOREFRONT_USER_AGENT, Accept: "text/html" },
       });
       if (response.status < 300 || response.status >= 400) break;
@@ -327,6 +506,9 @@ export async function fetchStorefrontScriptTags(
     if (err instanceof BodyTooLargeError) {
       return unreachable("too_large", shopId, domains.primaryHost);
     }
+    if (isBlockedAddressFailure(err)) {
+      return unreachable("blocked_address", shopId, domains.primaryHost);
+    }
     return unreachable(
       controller.signal.aborted ? "timeout" : "network",
       shopId,
@@ -334,5 +516,6 @@ export async function fetchStorefrontScriptTags(
     );
   } finally {
     clearTimeout(timer);
+    void dispatcher.close().catch(() => {});
   }
 }
