@@ -3381,19 +3381,23 @@ export const ACTIVE_APP_OWN_FILE_TYPES: ReadonlySet<FindingType> = new Set<Findi
 ]);
 
 /**
- * Drop an active app's findings in its own theme files (gc-clt4). Shopify has
- * no API for installed apps, but an ENABLED theme app embed in
- * settings_data.json is a strong signal the app is live, so the files that app
- * owns are its working code, not leftovers (real case: an active EComposer
- * store got 212 findings in its sections/ecom-*.liquid files). A finding is
- * dropped only when ALL hold:
- *   (a) its appName has an enabled embed (handle matched by signature
- *       `embedHandles`; unmatched handles are skipped, never guessed);
- *   (b) its file is owned by that same app (signature `filePatterns`), so the
- *       app's code in theme.liquid or another app's code in its files stays;
- *   (c) its type is in ACTIVE_APP_OWN_FILE_TYPES.
- * Accepted trade-off: an unused builder section left by a deleted builder page
- * goes unflagged while the builder's embed is enabled.
+ * Drop live apps' findings (gc-clt4, widened by gc-ps3t). Shopify has no API
+ * for installed apps, but an ENABLED theme app embed in settings_data.json is a
+ * strong signal the app is live (handle matched by signature `embedHandles`;
+ * unmatched handles are skipped, never guessed). GhostCode's promise is code
+ * from UNINSTALLED apps, so a finding is dropped when its type is in
+ * ACTIVE_APP_OWN_FILE_TYPES AND either:
+ *   (1A) its appName is live, in ANY file (real case: live Klaviyo's script
+ *        inside an EComposer section was flagged); or
+ *   (2A) its file is owned by a live app (signature `filePatterns`), whatever
+ *        the finding's appName, including null (real case: a live EComposer
+ *        section's built-in review-provider switch flagged as Judge.me).
+ * Everything else is kept; MALICIOUS_SCRIPT and the other excluded types are
+ * never dropped.
+ * Accepted trade-offs: an unused builder section left by a deleted builder page
+ * goes unflagged while the builder's embed is enabled; a hand-pasted duplicate
+ * copy of a live app's code goes unflagged; a hand-pasted orphan of an
+ * uninstalled app inside a live builder's file goes unflagged.
  */
 export function dropActiveAppOwnFileFindings(
   files: ThemeFile[],
@@ -3408,9 +3412,10 @@ export function dropActiveAppOwnFileFindings(
   if (activeApps.size === 0) return findings;
 
   return findings.filter((f) => {
-    if (!f.appName || !activeApps.has(f.appName)) return true;
-    if (identifyAppFromFilename(f.filename)?.appName !== f.appName) return true;
-    return !ACTIVE_APP_OWN_FILE_TYPES.has(f.findingType);
+    if (!ACTIVE_APP_OWN_FILE_TYPES.has(f.findingType)) return true;
+    if (f.appName && activeApps.has(f.appName)) return false;
+    const fileOwner = identifyAppFromFilename(f.filename)?.appName;
+    return !(fileOwner && activeApps.has(fileOwner));
   });
 }
 

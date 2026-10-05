@@ -11,8 +11,10 @@ import { FindingType, Severity } from "@prisma/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import {
+  ACTIVE_APP_OWN_FILE_TYPES,
   detectAppEmbedOff,
   detectGhostAppEmbeds,
+  dropActiveAppOwnFileFindings,
   ORPHAN_GRADE_CORROBORATION_TYPES,
   scanThemeFiles,
   type ThemeFile,
@@ -304,25 +306,29 @@ describe("active app embed suppresses the app's own-file findings (gc-clt4)", ()
     ).toBe(true);
   });
 
-  it("keeps the active app's code in files it does not own", () => {
+  // gc-ps3t (1A) replaced the gc-clt4 "own files only" rule: a live app's
+  // code is live wherever it sits in the theme.
+  it("drops the active app's code in files it does not own (gc-ps3t 1A)", () => {
     const themeLayout: ThemeFile = {
       filename: "layout/theme.liquid",
       content: '<script src="https://cdn.ecomposer.app/vendors/js/ec-splide.min.js"></script>',
     };
+    expect(ecomFindings([themeLayout, settingsWith(undefined)]).length).toBeGreaterThan(0);
     const settings = settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: false } });
-    const kept = ecomFindings([themeLayout, settings]);
-    expect(kept.length).toBeGreaterThan(0);
-    expect(kept.every((f) => f.filename === "layout/theme.liquid")).toBe(true);
+    expect(ecomFindings([themeLayout, settings])).toEqual([]);
   });
 
-  it("keeps another app's code inside the active builder's files", () => {
+  // gc-ps3t (2A) replaced the gc-clt4 rule: another app's code inside a live
+  // builder's file is the builder's built-in option, not a leftover.
+  it("drops another app's code inside the active builder's files (gc-ps3t 2A)", () => {
     const withJudgeMe: ThemeFile = {
       filename: "sections/ecom-reviews.liquid",
       content: '<script src="https://cdn.judge.me/widget_preloader.js"></script>',
     };
-    const settings = settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: false } });
-    const findings = scanThemeFiles([withJudgeMe, settings]).findings;
-    expect(findings.some((f) => f.appName === "Judge.me")).toBe(true);
+    const judgeMe = (s: ThemeFile) =>
+      scanThemeFiles([withJudgeMe, s]).findings.filter((f) => f.appName === "Judge.me");
+    expect(judgeMe(settingsWith(undefined)).length).toBeGreaterThan(0);
+    expect(judgeMe(settingsWith({ "1": { type: ECOMPOSER_TYPE, disabled: false } }))).toEqual([]);
   });
 
   it("never drops a malicious-script alert, even in an active app's file", () => {
@@ -349,5 +355,141 @@ describe("active app embed suppresses the app's own-file findings (gc-clt4)", ()
       scanThemeFiles([pfSection, s]).findings.filter((f) => f.appName === "PageFly");
     expect(pfFindings(settingsWith(undefined)).length).toBeGreaterThan(0);
     expect(pfFindings(settingsWith({ "1": { type: PAGEFLY_TYPE, disabled: false } }))).toEqual([]);
+  });
+});
+
+// gc-ps3t: paw-naturals (paying store) still got two false-positive classes
+// after gc-clt4. (1) Klaviyo is live, but its script inside an EComposer-owned
+// section was flagged because the file was not Klaviyo's. (2) EComposer is
+// live and its generated sections carry a review-provider switch
+// (`{%- when 'judgeme' -%} <div class='jdgm-widget ...'>`), flagged as a
+// Judge.me leftover though Judge.me was never installed. Decisions (Nathan,
+// 2026-10-04): 1A drop a live app's findings anywhere in the theme; 2A drop
+// every in-set finding inside a file a live app owns.
+describe("live apps' findings are suppressed theme-wide and inside live builders' files (gc-ps3t)", () => {
+  const ECOMPOSER_TYPE = "shopify://apps/ecomposer-builder/blocks/app-embed/1a2b3c4d";
+  const KLAVIYO_TYPE =
+    "shopify://apps/klaviyo-email-marketing-sms/blocks/klaviyo-onsite-embed/0b1c2d3e";
+  const live = (...types: string[]) =>
+    settingsWith(Object.fromEntries(types.map((type, i) => [String(i + 1), { type }])));
+
+  const klaviyoInEcom: ThemeFile = {
+    filename: "sections/ecom-sign-up-page.liquid",
+    content:
+      '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=AbC123"></script>',
+  };
+  // The switch keys on a local variable, so the gc-0bow theme-setting gate
+  // (which needs `settings.` in the opener) does not catch it, as in prod.
+  const judgeMeSwitch = [
+    "{%- case ecom_review_app -%}",
+    "  {%- when 'judgeme' -%}",
+    "    <div class='jdgm-widget jdgm-preview-badge' data-id='{{ product.id }}'></div>",
+    "{%- endcase -%}",
+  ].join("\n");
+  const judgeMeInEcom: ThemeFile = {
+    filename: "sections/ecom-blog-post-page-article.liquid",
+    content: judgeMeSwitch,
+  };
+  const judgeMeInMainProduct: ThemeFile = {
+    filename: "sections/main-product.liquid",
+    content: judgeMeSwitch,
+  };
+  const scan = (files: ThemeFile[]) => scanThemeFiles(files).findings;
+  const forApp = (files: ThemeFile[], app: string) => scan(files).filter((f) => f.appName === app);
+
+  it("maps the real Klaviyo embed handle to the signature", () => {
+    const off = detectAppEmbedOff([settingsWith({ "1": { type: KLAVIYO_TYPE, disabled: true } })]);
+    expect(off[0].appName).toBe("Klaviyo");
+  });
+
+  it("baseline: Klaviyo's script in an EComposer file is flagged with no embeds", () => {
+    const found = forApp([klaviyoInEcom, settingsWith(undefined)], "Klaviyo");
+    expect(found.some((f) => f.findingType === FindingType.GHOST_SCRIPT)).toBe(true);
+  });
+
+  it("1A: live Klaviyo's GHOST_SCRIPT in an EComposer-owned file is dropped (Klaviyo live only)", () => {
+    expect(forApp([klaviyoInEcom, live(KLAVIYO_TYPE)], "Klaviyo")).toEqual([]);
+  });
+
+  it("1A: live Klaviyo's GHOST_SCRIPT in layout/theme.liquid is dropped", () => {
+    const themeLayout: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: klaviyoInEcom.content,
+    };
+    expect(forApp([themeLayout, settingsWith(undefined)], "Klaviyo").length).toBeGreaterThan(0);
+    expect(forApp([themeLayout, live(KLAVIYO_TYPE)], "Klaviyo")).toEqual([]);
+  });
+
+  it("baseline: Judge.me GHOST_TEXT in an EComposer file is flagged with no embeds", () => {
+    const found = forApp([judgeMeInEcom, settingsWith(undefined)], "Judge.me");
+    expect(found.some((f) => f.findingType === FindingType.GHOST_TEXT)).toBe(true);
+  });
+
+  it("2A: Judge.me GHOST_TEXT inside a live EComposer section is dropped (Judge.me not live)", () => {
+    expect(forApp([judgeMeInEcom, live(ECOMPOSER_TYPE)], "Judge.me")).toEqual([]);
+  });
+
+  it("2A: the same Judge.me finding in a non-builder file is kept", () => {
+    const found = forApp([judgeMeInMainProduct, live(ECOMPOSER_TYPE)], "Judge.me");
+    expect(found.some((f) => f.findingType === FindingType.GHOST_TEXT)).toBe(true);
+  });
+
+  it("a disabled embed suppresses nothing", () => {
+    const settings = settingsWith({
+      "1": { type: KLAVIYO_TYPE, disabled: true },
+      "2": { type: ECOMPOSER_TYPE, disabled: true },
+    });
+    expect(forApp([klaviyoInEcom, settings], "Klaviyo").length).toBeGreaterThan(0);
+    expect(forApp([judgeMeInEcom, settings], "Judge.me").length).toBeGreaterThan(0);
+  });
+
+  it("an unknown embed handle suppresses nothing", () => {
+    const settings = live("shopify://apps/some-unknown-app/blocks/app-embed/ffff");
+    expect(forApp([klaviyoInEcom, settings], "Klaviyo").length).toBeGreaterThan(0);
+    expect(forApp([judgeMeInEcom, settings], "Judge.me").length).toBeGreaterThan(0);
+  });
+
+  describe("type gate (direct)", () => {
+    const finding = (findingType: FindingType, filename: string, appName: string | undefined) => ({
+      filename,
+      lineNumber: 1,
+      codeSnippet: "",
+      findingType,
+      severity: Severity.HIGH,
+      appName,
+      description: "x",
+    });
+    const settings = live(KLAVIYO_TYPE, ECOMPOSER_TYPE);
+    const EXCLUDED = [FindingType.GHOST_OG, FindingType.GHOST_LAYOUT, FindingType.MALICIOUS_SCRIPT];
+
+    it("the excluded types are not in ACTIVE_APP_OWN_FILE_TYPES", () => {
+      for (const t of EXCLUDED) expect(ACTIVE_APP_OWN_FILE_TYPES.has(t)).toBe(false);
+    });
+
+    it.each(EXCLUDED)("keeps %s for a live app, in its own file and elsewhere", (t) => {
+      const input = [
+        finding(t, "sections/ecom-landing.liquid", "EComposer"),
+        finding(t, "layout/theme.liquid", "EComposer"),
+        finding(t, "layout/theme.liquid", "Klaviyo"),
+        finding(t, "sections/ecom-sign-up-page.liquid", "Klaviyo"),
+        finding(t, "sections/ecom-landing.liquid", undefined),
+      ];
+      expect(dropActiveAppOwnFileFindings([settings], input)).toEqual(input);
+    });
+
+    it("drops an appName-less in-set finding inside a live builder's file", () => {
+      const input = [finding(FindingType.ORPHAN_ASSET, "sections/ecom-landing.liquid", undefined)];
+      expect(dropActiveAppOwnFileFindings([settings], input)).toEqual([]);
+    });
+
+    it("keeps an appName-less in-set finding in a file no live app owns", () => {
+      const input = [finding(FindingType.ORPHAN_ASSET, "sections/main-product.liquid", undefined)];
+      expect(dropActiveAppOwnFileFindings([settings], input)).toEqual(input);
+    });
+
+    it("keeps an in-set finding when neither its app nor its file's owner is live", () => {
+      const input = [finding(FindingType.GHOST_SCRIPT, "sections/main-product.liquid", "Judge.me")];
+      expect(dropActiveAppOwnFileFindings([settings], input)).toEqual(input);
+    });
   });
 });

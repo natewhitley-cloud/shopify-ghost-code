@@ -51,6 +51,9 @@ export const APP_SIGNATURES: AppSignature[] = [
     scriptPatterns: [/klaviyo\.js/, /klaviyo-onsite/, /KlaviyoSubscribe/, /_klOnsite/],
     snippetNames: ["klaviyo-onsite", "klaviyo-form", "klaviyo-tracking", "klaviyo-bis-form"],
     cssPatterns: [/klaviyo/],
+    // Verified on a live storefront (2026-10-04, gc-ps3t):
+    // `shopify://apps/klaviyo-email-marketing-sms/blocks/klaviyo-onsite-embed/...`.
+    embedHandles: ["klaviyo-email-marketing-sms"],
   },
   {
     appName: "Omnisend",
