@@ -207,6 +207,10 @@ const NULL_STAMPS = {
   feedbackSubmittedAt: null,
 };
 
+function finding(id: string, scanId: string, findingType: string, codeSnippet = `<x id="${id}">`) {
+  return { id, scanId, findingType, filename: "snippets/x.liquid", codeSnippet, lineNumber: 1 };
+}
+
 function seed() {
   const now = Date.now();
   const ago = (ms: number) => new Date(now - ms);
@@ -269,6 +273,9 @@ function seed() {
     {
       id: "scan-a",
       shopId: "shop-a",
+      themeId: "theme-a",
+      skippedCategories: [],
+      cappedCategories: [],
       status: "COMPLETED",
       findingCount: 7,
       newFindingCount: 7,
@@ -295,13 +302,9 @@ function seed() {
     })),
   );
   tables.finding.push(
-    { id: "f-a", scanId: "scan-a", findingType: "GHOST_OG" },
-    { id: "f-churned", scanId: "scan-churned", findingType: "GHOST_PIXEL" },
-    ...EXCLUDED.map((s) => ({
-      id: `f-${s.id}`,
-      scanId: `scan-${s.id}`,
-      findingType: "GHOST_PIXEL",
-    })),
+    finding("f-a", "scan-a", "GHOST_OG"),
+    finding("f-churned", "scan-churned", "GHOST_PIXEL"),
+    ...EXCLUDED.map((s) => finding(`f-${s.id}`, `scan-${s.id}`, "GHOST_PIXEL")),
   );
 
   tables.opsEvent.push(
@@ -833,5 +836,138 @@ describe("operator-digest handler: webhook failures split (gc-4hk follow-up)", (
     const body = await runDigest();
 
     expect(body).toContain("  Webhook failures: 2 (degraded but handled: 1)");
+  });
+});
+
+describe("operator-digest handler: unique findings, resolution breakdown, distinct unknown scripts", () => {
+  const ago = (ms: number) => new Date(Date.now() - ms);
+  const scan = (over: Record<string, unknown>) => ({
+    shopId: "shop-a",
+    themeId: "theme-a",
+    status: "COMPLETED",
+    findingCount: 0,
+    newFindingCount: 0,
+    resolvedFindingCount: 0,
+    skippedCategories: [],
+    cappedCategories: [],
+    ...over,
+  });
+  const section = (body: string, header: string) => {
+    const start = body.indexOf(header);
+    return body.slice(start, body.indexOf("\n\n", start));
+  };
+
+  beforeEach(() => {
+    // Replace the seed's single real scan with a paw-naturals-shaped history.
+    tables.scan = tables.scan.filter((s) => s.shopId !== "shop-a");
+    tables.finding = tables.finding.filter((f) => f.scanId !== "scan-a");
+    tables.scan.push(
+      // Before the window: metafields not yet checked (scope missing).
+      scan({
+        id: "s-old",
+        createdAt: ago(30 * HOUR),
+        skippedCategories: ["GHOST_METAFIELD", "GHOST_TRANSLATION"],
+      }),
+      // Metafields checked for the first time: 2 of its 3 new findings are metafields.
+      scan({
+        id: "s1",
+        createdAt: ago(10 * HOUR),
+        skippedCategories: ["GHOST_TRANSLATION"],
+        newFindingCount: 3,
+        resolvedFindingCount: 1,
+      }),
+      // First scan of a duplicated theme: its 1 finding is the same as theme-a's.
+      scan({ id: "s2", themeId: "theme-copy", createdAt: ago(5 * HOUR), newFindingCount: 1 }),
+      // Latest theme-a scan: the merchant fixed 2.
+      scan({
+        id: "s3",
+        createdAt: ago(2 * HOUR),
+        skippedCategories: ["GHOST_TRANSLATION"],
+        resolvedFindingCount: 2,
+      }),
+      // A failed scan never counts.
+      scan({ id: "s-failed", status: "FAILED", createdAt: ago(1 * HOUR), newFindingCount: 50 }),
+    );
+    tables.finding.push(
+      finding("s1-m1", "s1", "GHOST_METAFIELD", "m1"),
+      finding("s1-m2", "s1", "GHOST_METAFIELD", "m2"),
+      finding("s1-dup", "s1", "GHOST_SCRIPT", "dup"),
+      finding("s2-dup", "s2", "GHOST_SCRIPT", "dup"),
+      finding("s3-dup", "s3", "GHOST_SCRIPT", "dup"),
+      finding("s3-m1", "s3", "GHOST_METAFIELD", "m1"),
+      finding("sf-x", "s-failed", "GHOST_STYLE", "failed-only"),
+    );
+    tables.unknownScript.push(
+      ...[1, 2, 3].map((i) => ({
+        id: `u1-${i}`,
+        url: "https://cdn.widgetco.com/a.js",
+        createdAt: ago(i * HOUR),
+      })),
+      { id: "u2-old", url: "https://cdn.otherco.com/b.js", createdAt: ago(40 * HOUR) },
+      { id: "u2-new", url: "https://cdn.otherco.com/b.js", createdAt: ago(2 * HOUR) },
+      { id: "u-elf", url: "https://elfsightcdn.com/platform.js", createdAt: ago(2 * HOUR) },
+    );
+  });
+
+  it("counts each finding once across the latest scan of each store + theme", async () => {
+    const findings = section(await runDigest(), "FINDINGS (last 24h)");
+    expect(findings).toContain("Unique (latest scan per store and theme): 2");
+    expect(findings).toContain("GHOST_SCRIPT -- 1");
+    expect(findings).toContain("GHOST_METAFIELD -- 1");
+    expect(findings).not.toContain("GHOST_STYLE");
+  });
+
+  it("separates first-scan and newly-checked findings from new", async () => {
+    const resolution = section(await runDigest(), "RESOLUTION (last 24h)");
+    expect(resolution).toBe(
+      [
+        "RESOLUTION (last 24h)",
+        "  Resolved: 3",
+        "  New: 1",
+        "  Not counted as new: 1 on a store's or theme's first scan, 2 in newly checked categories",
+        "  Net (resolved - new): +2",
+        "  Note: resolved also counts findings a scanner update stopped flagging",
+      ].join("\n"),
+    );
+  });
+
+  it("counts only findings a capped prior scan missed as newly checked", async () => {
+    // A second store: its prior scan capped GHOST_METAFIELD after reaching m1;
+    // the window scan checked it fully and found m1 (already known) + m2 (new).
+    tables.scan.push(
+      scan({
+        id: "b-old",
+        shopId: "shop-b",
+        themeId: "theme-b",
+        createdAt: ago(30 * HOUR),
+        cappedCategories: ["GHOST_METAFIELD"],
+      }),
+      scan({
+        id: "b1",
+        shopId: "shop-b",
+        themeId: "theme-b",
+        createdAt: ago(3 * HOUR),
+        newFindingCount: 2,
+      }),
+    );
+    tables.finding.push(
+      finding("bo-m1", "b-old", "GHOST_METAFIELD", "m1"),
+      finding("b1-m1", "b1", "GHOST_METAFIELD", "m1"),
+      finding("b1-m2", "b1", "GHOST_METAFIELD", "m2"),
+      finding("b1-s", "b1", "GHOST_SCRIPT", "b-script"),
+    );
+    const resolution = section(await runDigest(), "RESOLUTION (last 24h)");
+    // shop-a: new 1, first 1, checked 2. shop-b: m2 newly checked; m1 + b-script stay new.
+    expect(resolution).toContain("  New: 2");
+    expect(resolution).toContain(
+      "Not counted as new: 1 on a store's or theme's first scan, 3 in newly checked categories",
+    );
+  });
+
+  it("counts distinct unknown script URLs, skipping benign loaders", async () => {
+    const body = await runDigest();
+    expect(body).toContain(
+      "  Unknown scripts: 2 distinct (1 first seen; 4 sightings across scans)",
+    );
   });
 });

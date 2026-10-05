@@ -29,6 +29,8 @@
  * OPERATOR_EXCLUDE_SHOPS (defaults to Nathan's dev store).
  */
 
+import type { FindingType } from "@prisma/client";
+
 import { RECONCILE_INSTALLS_KEY } from "./reconcile-installs";
 import { PLAN_AMOUNTS, PLANS } from "../../app/lib/billing.server";
 import { isSuccessfulScan } from "../../app/lib/format";
@@ -47,8 +49,11 @@ import {
 } from "../../app/lib/store-exclusion";
 import type { BillingEventType } from "../../app/models/billing-event.server";
 import { OPS_EVENT_TYPES, type StaleCron } from "../../app/models/ops-event.server";
+import { SUCCESSFUL_SCAN_STATUSES } from "../../app/models/scan.server";
+import type { UnknownScriptWindowSummary } from "../../app/models/unknown-script.server";
 import { NUDGE_KEYS } from "../../app/services/nudge-telemetry.server";
 import type { OpsAlertConfigStatus } from "../../app/services/ops-alert.server";
+import { fingerprintFinding, unauditedCategories } from "../../app/services/scan-differ.server";
 import { inngest } from "../client";
 import { withCronHeartbeat } from "../lib/heartbeat";
 
@@ -280,33 +285,162 @@ export function sortFindingTypeCounts(
   return [...rows].sort((a, b) => b.count - a.count);
 }
 
-/** Resolution rollup over the window: total resolved, total new, and the net. */
+/** A successful in-window scan, as the findings and resolution rollups read it. */
+export interface RollupScanRow {
+  id: string;
+  shopId: string;
+  themeId: string;
+  createdAt: Date;
+  newFindingCount: number;
+  resolvedFindingCount: number;
+  skippedCategories: string[];
+  cappedCategories: string[];
+}
+
+/** The fields of a prior scan the resolution breakdown reads. */
+export type PriorScan = Pick<RollupScanRow, "id" | "skippedCategories" | "cappedCategories">;
+
+/** An in-window scan paired with the scan its diff ran against, or null on a
+ * first scan of that store + theme. */
+export interface ScanWithPrior {
+  scan: RollupScanRow;
+  prior: PriorScan | null;
+}
+
+/** Diff identity of a scan's theme: the differ compares per store + theme. */
+export function scanThemeKey(s: { shopId: string; themeId: string }): string {
+  return `${s.shopId}\0${s.themeId}`;
+}
+
+/**
+ * Pair each in-window scan with its prior, using the differ's own rule
+ * (getPreviousScanForTheme): the previous successful scan of the same store +
+ * theme. Within the window that is the previous window scan of the group; for
+ * the group's first window scan it is `priorBeforeWindow` (keyed by
+ * scanThemeKey), or null when the store + theme was never scanned before.
+ */
+export function pairScansWithPriors(
+  windowScans: RollupScanRow[],
+  priorBeforeWindow: Map<string, PriorScan>,
+): ScanWithPrior[] {
+  const lastByTheme = new Map<string, RollupScanRow>();
+  return [...windowScans]
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime())
+    .map((scan) => {
+      const key = scanThemeKey(scan);
+      const prior = lastByTheme.get(key) ?? priorBeforeWindow.get(key) ?? null;
+      lastByTheme.set(key, scan);
+      return { scan, prior };
+    });
+}
+
+/**
+ * Categories the prior scan did not fully audit (skipped for a missing scope,
+ * or capped by size: the differ's unauditedCategories) that this scan did.
+ * Findings of these types that the prior scan lacked are "new" only because the
+ * check ran fully for the first time. A first scan returns [] (all of its
+ * findings already count as first-scan findings).
+ */
+export function newlyCheckedCategories({ scan, prior }: ScanWithPrior): string[] {
+  if (!prior) return [];
+  const stillUnaudited = new Set(unauditedCategories(scan));
+  return unauditedCategories(prior).filter((c) => !stillUnaudited.has(c));
+}
+
+type FingerprintRow = {
+  filename: string;
+  findingType: string;
+  codeSnippet: string;
+  lineNumber: number;
+};
+
+/** How many `current` findings have no fingerprint match in `prior`. For a
+ * category the prior scan skipped, `prior` is empty and every finding counts;
+ * for one it capped, findings it did reach are excluded. */
+export function countFindingsNotIn(current: FingerprintRow[], prior: FingerprintRow[]): number {
+  const fp = (f: FingerprintRow) =>
+    fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
+  const priorSet = new Set(prior.map(fp));
+  return current.filter((f) => !priorSet.has(fp(f))).length;
+}
+
+/** The newest in-window scan of each store + theme. */
+export function latestScanPerTheme(windowScans: RollupScanRow[]): RollupScanRow[] {
+  const latest = new Map<string, RollupScanRow>();
+  for (const s of windowScans) {
+    const current = latest.get(scanThemeKey(s));
+    if (!current || s.createdAt > current.createdAt) latest.set(scanThemeKey(s), s);
+  }
+  return [...latest.values()];
+}
+
+/**
+ * Unique findings across the latest scan of each store + theme: one finding per
+ * store and diff fingerprint (fingerprintFinding, the differ's identity), so a
+ * re-scan, or a scan of a duplicated theme, does not count the same finding
+ * twice.
+ */
+export function computeUniqueFindings(rows: Array<FingerprintRow & { shopId: string }>): {
+  total: number;
+  topTypes: Array<{ type: string; count: number }>;
+} {
+  const seen = new Set<string>();
+  const byType = new Map<string, number>();
+  for (const f of rows) {
+    const key = `${f.shopId}\0${fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    byType.set(f.findingType, (byType.get(f.findingType) ?? 0) + 1);
+  }
+  return {
+    total: seen.size,
+    topTypes: sortFindingTypeCounts([...byType].map(([type, count]) => ({ type, count }))),
+  };
+}
+
+/** Resolution rollup over the window. `new` excludes findings that are new only
+ * because of a first scan or a newly checked category; those are counted
+ * separately. */
 export interface ResolutionRollup {
   resolved: number;
   new: number;
   net: number;
+  /** New findings on a store's or theme's first scan. */
+  firstScan: number;
+  /** New findings in categories the prior scan did not fully audit. */
+  newlyChecked: number;
 }
 
 /**
- * Sum the per-scan resolution counts (Feature 3) across the window's SUCCESSFUL
- * scans (COMPLETED / PARTIAL) — the only scans that ran a diff. `net` is
- * resolved − new: a positive net means merchants fixed more than we newly
- * surfaced. FAILED / in-flight scans carry the default-0 columns and are skipped
- * for clarity (summing them would be equivalent, but the status filter states
- * intent). Purpose: a daily read on whether merchants act on what we surface.
+ * Sum the per-scan resolution counts (Feature 3) across the window's successful
+ * scans (the only scans that ran a diff). A first scan's new findings go to
+ * `firstScan`; on other scans, new findings in newly checked categories go to
+ * `newlyChecked` (capped at the scan's new count). `net` is resolved − new.
+ * Purpose: a daily read on whether merchants act on what we surface.
  */
 export function computeResolutionRollup(
-  scans: Array<{ status: string; newFindingCount: number; resolvedFindingCount: number }>,
+  scans: Array<{
+    newFindingCount: number;
+    resolvedFindingCount: number;
+    isFirstScan: boolean;
+    newlyCheckedFindings: number;
+  }>,
 ): ResolutionRollup {
   let resolved = 0;
   let newCount = 0;
+  let firstScan = 0;
+  let newlyChecked = 0;
   for (const s of scans) {
-    if (s.status === "COMPLETED" || s.status === "PARTIAL") {
-      resolved += s.resolvedFindingCount;
-      newCount += s.newFindingCount;
+    resolved += s.resolvedFindingCount;
+    if (s.isFirstScan) {
+      firstScan += s.newFindingCount;
+      continue;
     }
+    const checked = Math.min(s.newlyCheckedFindings, s.newFindingCount);
+    newlyChecked += checked;
+    newCount += s.newFindingCount - checked;
   }
-  return { resolved, new: newCount, net: resolved - newCount };
+  return { resolved, new: newCount, net: resolved - newCount, firstScan, newlyChecked };
 }
 
 // ---------------------------------------------------------------------------
@@ -1312,7 +1446,7 @@ export interface OperatorDigestData {
    * still type-check; absent => rendered as zeros. */
   resolution?: ResolutionRollup;
   flywheel: {
-    newUnknownScripts: number;
+    unknownScripts: UnknownScriptWindowSummary;
     newSubmissions: number;
     submissionsByStatus: { PENDING: number; ACCEPTED: number; REJECTED: number };
   };
@@ -1523,7 +1657,7 @@ export function buildDigestBody(data: OperatorDigestData): string {
 
   const { findings } = data;
   lines.push("FINDINGS (last 24h)");
-  lines.push(`  Total (sum of scan findingCount): ${findings.total}`);
+  lines.push(`  Unique (latest scan per store and theme): ${findings.total}`);
   lines.push("  Top types:");
   if (findings.topTypes.length === 0) {
     lines.push("    None in the window");
@@ -1537,18 +1671,35 @@ export function buildDigestBody(data: OperatorDigestData): string {
   }
   lines.push("");
 
-  const resolution = data.resolution ?? { resolved: 0, new: 0, net: 0 };
+  const resolution = data.resolution ?? {
+    resolved: 0,
+    new: 0,
+    net: 0,
+    firstScan: 0,
+    newlyChecked: 0,
+  };
   const netSign = resolution.net > 0 ? "+" : "";
   lines.push("RESOLUTION (last 24h)");
   lines.push(`  Resolved: ${resolution.resolved}`);
   lines.push(`  New: ${resolution.new}`);
+  if (resolution.firstScan > 0 || resolution.newlyChecked > 0) {
+    lines.push(
+      `  Not counted as new: ${resolution.firstScan} on a store's or theme's first scan, ${resolution.newlyChecked} in newly checked categories`,
+    );
+  }
   lines.push(`  Net (resolved - new): ${netSign}${resolution.net}`);
+  if (resolution.resolved > 0) {
+    lines.push("  Note: resolved also counts findings a scanner update stopped flagging");
+  }
   lines.push("");
 
   const { flywheel } = data;
   const fs = flywheel.submissionsByStatus;
   lines.push("SIGNATURE FLYWHEEL (last 24h)");
-  lines.push(`  New unknown scripts: ${flywheel.newUnknownScripts}`);
+  const us = flywheel.unknownScripts;
+  lines.push(
+    `  Unknown scripts: ${us.distinct} distinct (${us.firstSeen} first seen; ${us.sightings} sightings across scans)`,
+  );
   lines.push(
     `  New signature submissions: ${flywheel.newSubmissions} (${fs.PENDING} pending, ${fs.ACCEPTED} accepted, ${fs.REJECTED} rejected)`,
   );
@@ -1854,7 +2005,7 @@ export const operatorDigest = inngest.createFunction(
     // In-window scans scoped to ACTIVE installs (excludes the dev store AND
     // uninstalled-pending-redact shops) so churned-shop activity doesn't inflate
     // current-base metrics; churn is separately visible in the uninstalls line.
-    // shopId/status/findingCount is all downstream aggregation needs.
+    // shopId/status is all downstream aggregation needs.
     const scanRows = (await step.run("get-scans", async () => {
       const db = (await import("../../app/db.server")).default;
       if (activeShopIds.length === 0) return [];
@@ -1863,52 +2014,119 @@ export const operatorDigest = inngest.createFunction(
           createdAt: { gte: windowStart },
           shopId: { in: activeShopIds },
         },
-        // newFindingCount/resolvedFindingCount feed the RESOLUTION rollup
-        // (Feature 3) — no new query, just extra columns on the existing fetch.
         select: {
           shopId: true,
           status: true,
-          findingCount: true,
-          newFindingCount: true,
-          resolvedFindingCount: true,
         },
       });
     })) as Array<{
       shopId: string;
       status: string;
-      findingCount: number;
-      newFindingCount: number;
-      resolvedFindingCount: number;
     }>;
 
-    // Top finding types across findings whose scan is in-window and belongs to
-    // an ACTIVE install (excludes the dev store AND uninstalled-pending-redact
-    // shops) so churned-shop findings don't inflate current-base metrics.
-    const findingTypeRows = (await step.run("get-finding-types", async () => {
+    // FINDINGS + RESOLUTION, over in-window successful scans of ACTIVE installs
+    // (excludes the dev store AND uninstalled-pending-redact shops). Findings are
+    // unique across the latest scan of each store + theme; resolution separates
+    // first-scan and newly-checked-category findings from "new". Everything is
+    // computed inside the step, so only plain numbers cross the step boundary.
+    const findingRollups = (await step.run("get-finding-rollups", async () => {
       const db = (await import("../../app/db.server")).default;
-      if (activeShopIds.length === 0) return [];
-      const rows = await db.finding.groupBy({
-        by: ["findingType"],
+      const empty = {
+        findings: { total: 0, topTypes: [] },
+        resolution: computeResolutionRollup([]),
+      };
+      if (activeShopIds.length === 0) return empty;
+      const windowScans: RollupScanRow[] = await db.scan.findMany({
         where: {
-          scan: {
-            createdAt: { gte: windowStart },
-            shopId: { in: activeShopIds },
-          },
+          createdAt: { gte: windowStart },
+          shopId: { in: activeShopIds },
+          status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
         },
-        _count: { _all: true },
+        select: {
+          id: true,
+          shopId: true,
+          themeId: true,
+          createdAt: true,
+          newFindingCount: true,
+          resolvedFindingCount: true,
+          skippedCategories: true,
+          cappedCategories: true,
+        },
       });
-      return rows.map((r) => ({ type: r.findingType, count: r._count._all }));
-    })) as Array<{ type: string; count: number }>;
+      if (windowScans.length === 0) return empty;
 
-    // Signature flywheel: new UnknownScript + new SignatureSubmission (by
+      // The previous successful scan before the window, per store + theme scanned
+      // in it. Queries run one at a time (here and below) so a busy day never
+      // exhausts the connection pool; the per-scan finding reads only run when a
+      // category was newly checked, which is rare.
+      const priorBeforeWindow = new Map<string, PriorScan>();
+      for (const [key, s] of new Map(windowScans.map((s) => [scanThemeKey(s), s]))) {
+        const prior = await db.scan.findFirst({
+          where: {
+            shopId: s.shopId,
+            themeId: s.themeId,
+            status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+            createdAt: { lt: windowStart },
+          },
+          orderBy: { createdAt: "desc" },
+          select: { id: true, skippedCategories: true, cappedCategories: true },
+        });
+        if (prior) priorBeforeWindow.set(key, prior);
+      }
+
+      const fingerprintSelect = {
+        filename: true,
+        findingType: true,
+        codeSnippet: true,
+        lineNumber: true,
+      } as const;
+      const resolutionRows = [];
+      for (const pair of pairScansWithPriors(windowScans, priorBeforeWindow)) {
+        const categories = newlyCheckedCategories(pair);
+        let newlyCheckedFindings = 0;
+        if (pair.prior && categories.length > 0 && pair.scan.newFindingCount > 0) {
+          const findingType = { in: categories as FindingType[] };
+          const current = await db.finding.findMany({
+            where: { scanId: pair.scan.id, findingType },
+            select: fingerprintSelect,
+          });
+          const prior = await db.finding.findMany({
+            where: { scanId: pair.prior.id, findingType },
+            select: fingerprintSelect,
+          });
+          newlyCheckedFindings = countFindingsNotIn(current, prior);
+        }
+        resolutionRows.push({
+          newFindingCount: pair.scan.newFindingCount,
+          resolvedFindingCount: pair.scan.resolvedFindingCount,
+          isFirstScan: pair.prior === null,
+          newlyCheckedFindings,
+        });
+      }
+
+      const shopByScan = new Map(windowScans.map((s) => [s.id, s.shopId]));
+      const findingRows = await db.finding.findMany({
+        where: { scanId: { in: latestScanPerTheme(windowScans).map((s) => s.id) } },
+        select: { scanId: true, ...fingerprintSelect },
+      });
+      return {
+        findings: computeUniqueFindings(
+          findingRows.map((f) => ({ ...f, shopId: shopByScan.get(f.scanId) ?? f.scanId })),
+        ),
+        resolution: computeResolutionRollup(resolutionRows),
+      };
+    })) as { findings: OperatorDigestData["findings"]; resolution: ResolutionRollup };
+
+    // Signature flywheel: distinct unknown scripts + new SignatureSubmission (by
     // status) in the window. Portfolio-wide (not dev-excluded): these are
     // internal signal-quality metrics, and the dev store's contribution is
     // negligible; keeping them unfiltered avoids a wrong-field join risk.
-    const flywheel = (await step.run("get-flywheel", async () => {
+    // Step id renamed with the result shape, so a run memoized before the change
+    // never replays the old shape into the new renderer.
+    const flywheel = (await step.run("get-flywheel-distinct", async () => {
       const db = (await import("../../app/db.server")).default;
-      const newUnknownScripts = await db.unknownScript.count({
-        where: { createdAt: { gte: windowStart } },
-      });
+      const { summarizeUnknownScripts } = await import("../../app/models/unknown-script.server");
+      const unknownScripts = await summarizeUnknownScripts(windowStart);
       const submissionRows = await db.signatureSubmission.groupBy({
         by: ["status"],
         where: { createdAt: { gte: windowStart } },
@@ -1922,7 +2140,7 @@ export const operatorDigest = inngest.createFunction(
           submissionsByStatus[r.status as keyof typeof submissionsByStatus] = r._count._all;
         }
       }
-      return { newUnknownScripts, newSubmissions, submissionsByStatus };
+      return { unknownScripts, newSubmissions, submissionsByStatus };
     })) as OperatorDigestData["flywheel"];
 
     // Activation: active installs that have EVER run a scan (distinct shopIds).
@@ -2300,11 +2518,8 @@ export const operatorDigest = inngest.createFunction(
         statusCounts,
         perStore: computeScansPerStore(scanRows, domainById),
       },
-      findings: {
-        total: scanRows.reduce((sum, s) => sum + s.findingCount, 0),
-        topTypes: sortFindingTypeCounts(findingTypeRows),
-      },
-      resolution: computeResolutionRollup(scanRows),
+      findings: findingRollups.findings,
+      resolution: findingRollups.resolution,
       flywheel,
       activation: {
         activated: activatedCount,

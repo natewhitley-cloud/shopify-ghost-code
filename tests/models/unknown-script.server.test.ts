@@ -54,6 +54,7 @@ vi.mock("../../app/db.server", () => ({
 import {
   getSubmissionsByDomain,
   getUnknownScriptsForScan,
+  summarizeUnknownScripts,
   updateSubmissionStatus,
   acceptSubmissionsForDomain,
   rejectBenignLibrarySubmissions,
@@ -305,6 +306,75 @@ describe("getUnknownScriptsForScan", () => {
     const result = await getUnknownScriptsForScan("scan-2");
 
     expect(result.map((s) => s.id)).toEqual(["us-1", "us-2"]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// summarizeUnknownScripts — operator-digest distinct-URL counts
+// ---------------------------------------------------------------------------
+
+describe("summarizeUnknownScripts", () => {
+  const windowStart = new Date("2026-10-04T13:00:00Z");
+
+  beforeEach(() => {
+    vi.resetAllMocks();
+  });
+
+  it("counts distinct URLs, not per-scan rows, and splits out URLs seen before the window", async () => {
+    mockDb.unknownScript.findMany
+      .mockResolvedValueOnce([
+        { url: "https://cdn.widgetco.com/a.js" },
+        { url: "https://cdn.widgetco.com/a.js" },
+        { url: "https://cdn.widgetco.com/a.js" },
+        { url: "https://cdn.otherco.com/b.js" },
+        { url: "https://cdn.otherco.com/b.js" },
+      ])
+      .mockResolvedValueOnce([{ url: "https://cdn.otherco.com/b.js" }]);
+
+    const result = await summarizeUnknownScripts(windowStart);
+
+    expect(result).toEqual({ distinct: 2, firstSeen: 1, sightings: 5 });
+    expect(mockDb.unknownScript.findMany).toHaveBeenNthCalledWith(1, {
+      where: { createdAt: { gte: windowStart } },
+      select: { url: true },
+    });
+    expect(mockDb.unknownScript.findMany).toHaveBeenNthCalledWith(2, {
+      where: {
+        url: { in: ["https://cdn.widgetco.com/a.js", "https://cdn.otherco.com/b.js"] },
+        createdAt: { lt: windowStart },
+      },
+      distinct: ["url"],
+      select: { url: true },
+    });
+  });
+
+  it("drops benign libraries before counting (same matcher as the merchant view)", async () => {
+    mockDb.unknownScript.findMany
+      .mockResolvedValueOnce([
+        { url: "https://cdn.jsdelivr.net/npm/swiper@11/swiper-bundle.min.js" },
+        { url: "https://elfsightcdn.com/platform.js" },
+        { url: "https://cdn.widgetco.com/a.js" },
+      ])
+      .mockResolvedValueOnce([]);
+
+    expect(await summarizeUnknownScripts(windowStart)).toEqual({
+      distinct: 1,
+      firstSeen: 1,
+      sightings: 1,
+    });
+  });
+
+  it("returns zeros without a second query when the window has no unknown scripts", async () => {
+    mockDb.unknownScript.findMany.mockResolvedValueOnce([
+      { url: "https://www.instagram.com/embed.js" },
+    ]);
+
+    expect(await summarizeUnknownScripts(windowStart)).toEqual({
+      distinct: 0,
+      firstSeen: 0,
+      sightings: 0,
+    });
+    expect(mockDb.unknownScript.findMany).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -102,6 +102,46 @@ export async function getUnknownScriptsForScan(scanId: string) {
   return scripts.filter((s) => !isBenignLibrary(s.url));
 }
 
+/** Operator-digest view of the unknown scripts recorded in a window. */
+export type UnknownScriptWindowSummary = {
+  /** Distinct script URLs recorded in the window. */
+  distinct: number;
+  /** Of those, URLs never recorded before the window. */
+  firstSeen: number;
+  /** Rows in the window: one per URL, per place it appears, per scan. */
+  sightings: number;
+};
+
+/**
+ * Summarize unknown scripts recorded since `windowStart` for the operator
+ * digest. Rows are per scan and per occurrence, so a raw row count repeats the
+ * same script on every re-scan; this counts distinct URLs instead. Benign
+ * libraries are filtered with the same matcher as getUnknownScriptsForScan, so
+ * the digest agrees with what merchants see.
+ */
+export async function summarizeUnknownScripts(
+  windowStart: Date,
+): Promise<UnknownScriptWindowSummary> {
+  const rows = await db.unknownScript.findMany({
+    where: { createdAt: { gte: windowStart } },
+    select: { url: true },
+  });
+  const urls = rows.map((r) => r.url).filter((url) => !isBenignLibrary(url));
+  const distinctUrls = [...new Set(urls)];
+  if (distinctUrls.length === 0) return { distinct: 0, firstSeen: 0, sightings: 0 };
+
+  const seenBefore = await db.unknownScript.findMany({
+    where: { url: { in: distinctUrls }, createdAt: { lt: windowStart } },
+    distinct: ["url"],
+    select: { url: true },
+  });
+  return {
+    distinct: distinctUrls.length,
+    firstSeen: distinctUrls.length - seenBefore.length,
+    sightings: urls.length,
+  };
+}
+
 /**
  * Submit a merchant's identification of which app left an unknown script.
  */

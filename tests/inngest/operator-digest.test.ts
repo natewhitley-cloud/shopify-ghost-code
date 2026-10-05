@@ -51,6 +51,12 @@ import {
   computeMrr,
   computePlanMix,
   computeResolutionRollup,
+  countFindingsNotIn,
+  computeUniqueFindings,
+  latestScanPerTheme,
+  newlyCheckedCategories,
+  pairScansWithPriors,
+  type RollupScanRow,
   computeScanStatusCounts,
   computeScansPerStore,
   countUninstallEventsExcluding,
@@ -620,25 +626,261 @@ describe("sortFindingTypeCounts", () => {
 // ---------------------------------------------------------------------------
 
 describe("computeResolutionRollup", () => {
-  it("sums resolved and new across successful scans and computes net", () => {
-    const rollup = computeResolutionRollup([
-      { status: "COMPLETED", newFindingCount: 2, resolvedFindingCount: 5 },
-      { status: "PARTIAL", newFindingCount: 1, resolvedFindingCount: 3 },
-    ]);
-    expect(rollup).toEqual({ resolved: 8, new: 3, net: 5 });
+  const row = (over: Partial<Parameters<typeof computeResolutionRollup>[0][0]> = {}) => ({
+    newFindingCount: 0,
+    resolvedFindingCount: 0,
+    isFirstScan: false,
+    newlyCheckedFindings: 0,
+    ...over,
   });
 
-  it("ignores FAILED and in-flight scans (their counts are default-0 anyway)", () => {
+  it("sums resolved and new across scans and computes net", () => {
     const rollup = computeResolutionRollup([
-      { status: "COMPLETED", newFindingCount: 4, resolvedFindingCount: 1 },
-      { status: "FAILED", newFindingCount: 9, resolvedFindingCount: 9 },
-      { status: "IN_PROGRESS", newFindingCount: 9, resolvedFindingCount: 9 },
+      row({ newFindingCount: 2, resolvedFindingCount: 5 }),
+      row({ newFindingCount: 1, resolvedFindingCount: 3 }),
     ]);
-    expect(rollup).toEqual({ resolved: 1, new: 4, net: -3 });
+    expect(rollup).toEqual({ resolved: 8, new: 3, net: 5, firstScan: 0, newlyChecked: 0 });
+  });
+
+  it("counts a first scan's new findings as firstScan, not new", () => {
+    const rollup = computeResolutionRollup([
+      row({ newFindingCount: 232, isFirstScan: true }),
+      row({ newFindingCount: 4, resolvedFindingCount: 1 }),
+    ]);
+    expect(rollup).toEqual({ resolved: 1, new: 4, net: -3, firstScan: 232, newlyChecked: 0 });
+  });
+
+  it("moves newly-checked findings out of new, capped at the scan's new count", () => {
+    const rollup = computeResolutionRollup([
+      row({ newFindingCount: 173, newlyCheckedFindings: 170 }),
+      row({ newFindingCount: 2, newlyCheckedFindings: 9 }),
+    ]);
+    expect(rollup).toEqual({ resolved: 0, new: 3, net: -3, firstScan: 0, newlyChecked: 172 });
+  });
+
+  it("ignores newlyCheckedFindings on a first scan (all already firstScan)", () => {
+    expect(
+      computeResolutionRollup([
+        row({ newFindingCount: 5, isFirstScan: true, newlyCheckedFindings: 5 }),
+      ]),
+    ).toEqual({ resolved: 0, new: 0, net: 0, firstScan: 5, newlyChecked: 0 });
+  });
+
+  it("reproduces the 2026-10-05 paw-naturals window: 410 raw new becomes 0", () => {
+    const rollup = computeResolutionRollup([
+      row({ newFindingCount: 232, isFirstScan: true }),
+      row({ newFindingCount: 173, newlyCheckedFindings: 173 }),
+      row({ resolvedFindingCount: 166 }),
+      row({ resolvedFindingCount: 234 }),
+      row({ newFindingCount: 5, isFirstScan: true }),
+      row(),
+      row(),
+    ]);
+    expect(rollup).toEqual({ resolved: 400, new: 0, net: 400, firstScan: 237, newlyChecked: 173 });
   });
 
   it("returns all zeros for an empty window", () => {
-    expect(computeResolutionRollup([])).toEqual({ resolved: 0, new: 0, net: 0 });
+    expect(computeResolutionRollup([])).toEqual({
+      resolved: 0,
+      new: 0,
+      net: 0,
+      firstScan: 0,
+      newlyChecked: 0,
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scan pairing, newly-checked categories, latest scan per theme
+// ---------------------------------------------------------------------------
+
+function rollupScan(over: Partial<RollupScanRow> & { id: string }): RollupScanRow {
+  return {
+    shopId: "shop-1",
+    themeId: "theme-1",
+    createdAt: new Date("2026-10-05T00:00:00Z"),
+    newFindingCount: 0,
+    resolvedFindingCount: 0,
+    skippedCategories: [],
+    cappedCategories: [],
+    ...over,
+  };
+}
+
+function priorScan(over: { skippedCategories?: string[]; cappedCategories?: string[] } = {}) {
+  return { id: "prior", skippedCategories: [], cappedCategories: [], ...over };
+}
+
+describe("pairScansWithPriors", () => {
+  it("pairs each scan with the previous scan of the same store + theme, in time order", () => {
+    const early = rollupScan({ id: "a", createdAt: new Date("2026-10-04T15:00:00Z") });
+    const late = rollupScan({ id: "b", createdAt: new Date("2026-10-04T16:00:00Z") });
+    const otherTheme = rollupScan({
+      id: "c",
+      themeId: "theme-2",
+      createdAt: new Date("2026-10-04T17:00:00Z"),
+    });
+    const pairs = pairScansWithPriors([late, otherTheme, early], new Map());
+    expect(
+      pairs.map((p) => [p.scan.id, p.prior === null ? null : (p.prior as RollupScanRow).id]),
+    ).toEqual([
+      ["a", null],
+      ["b", "a"],
+      ["c", null],
+    ]);
+  });
+
+  it("uses the pre-window prior for a group's first window scan only", () => {
+    const before = priorScan({ skippedCategories: ["GHOST_METAFIELD"] });
+    const first = rollupScan({ id: "a", createdAt: new Date("2026-10-04T15:00:00Z") });
+    const second = rollupScan({ id: "b", createdAt: new Date("2026-10-04T16:00:00Z") });
+    const pairs = pairScansWithPriors([first, second], new Map([["shop-1\0theme-1", before]]));
+    expect(pairs[0].prior).toBe(before);
+    expect(pairs[1].prior).toBe(first);
+  });
+
+  it("keeps stores apart even when theme ids collide", () => {
+    const a = rollupScan({ id: "a", shopId: "shop-1" });
+    const b = rollupScan({
+      id: "b",
+      shopId: "shop-2",
+      createdAt: new Date("2026-10-05T01:00:00Z"),
+    });
+    expect(pairScansWithPriors([a, b], new Map()).map((p) => p.prior)).toEqual([null, null]);
+  });
+});
+
+describe("newlyCheckedCategories", () => {
+  it("returns categories the prior skipped and this scan ran", () => {
+    const scan = rollupScan({ id: "b", skippedCategories: ["GHOST_TRANSLATION"] });
+    const prior = priorScan({
+      skippedCategories: ["GHOST_TRANSLATION", "GHOST_METAFIELD", "GHOST_TAG"],
+    });
+    expect(newlyCheckedCategories({ scan, prior })).toEqual(["GHOST_METAFIELD", "GHOST_TAG"]);
+  });
+
+  it("returns categories the prior capped and this scan fully checked", () => {
+    const scan = rollupScan({ id: "b" });
+    const prior = priorScan({ cappedCategories: ["GHOST_METAFIELD"] });
+    expect(newlyCheckedCategories({ scan, prior })).toEqual(["GHOST_METAFIELD"]);
+  });
+
+  it("excludes a category still unaudited now, by skip or cap", () => {
+    const scan = rollupScan({
+      id: "b",
+      skippedCategories: ["GHOST_TAG"],
+      cappedCategories: ["GHOST_METAFIELD"],
+    });
+    const prior = priorScan({
+      skippedCategories: ["GHOST_METAFIELD"],
+      cappedCategories: ["GHOST_TAG"],
+    });
+    expect(newlyCheckedCategories({ scan, prior })).toEqual([]);
+  });
+
+  it("returns [] on a first scan and when nothing changed", () => {
+    const scan = rollupScan({ id: "a", skippedCategories: ["GHOST_TAG"] });
+    expect(newlyCheckedCategories({ scan, prior: null })).toEqual([]);
+    expect(
+      newlyCheckedCategories({ scan, prior: priorScan({ skippedCategories: ["GHOST_TAG"] }) }),
+    ).toEqual([]);
+  });
+
+  it("does not count a category this scan newly skipped", () => {
+    const scan = rollupScan({ id: "b", skippedCategories: ["GHOST_TAG"] });
+    expect(newlyCheckedCategories({ scan, prior: priorScan() })).toEqual([]);
+  });
+});
+
+describe("countFindingsNotIn", () => {
+  const f = (codeSnippet: string, filename = "snippets/x.liquid") => ({
+    filename,
+    findingType: "GHOST_METAFIELD",
+    codeSnippet,
+    lineNumber: 1,
+  });
+
+  it("counts every current finding when the prior had none (a skipped category)", () => {
+    expect(countFindingsNotIn([f("a"), f("b")], [])).toBe(2);
+  });
+
+  it("excludes findings the prior already had (a capped category)", () => {
+    expect(countFindingsNotIn([f("a"), f("b"), f("c")], [f("a"), f("z")])).toBe(2);
+  });
+
+  it("matches on the full fingerprint, not the snippet alone", () => {
+    expect(countFindingsNotIn([f("a", "snippets/y.liquid")], [f("a")])).toBe(1);
+  });
+
+  it("returns 0 for no current findings", () => {
+    expect(countFindingsNotIn([], [f("a")])).toBe(0);
+  });
+});
+
+describe("latestScanPerTheme", () => {
+  it("keeps the newest scan of each store + theme", () => {
+    const old = rollupScan({ id: "old", createdAt: new Date("2026-10-04T15:00:00Z") });
+    const newest = rollupScan({ id: "new", createdAt: new Date("2026-10-05T06:00:00Z") });
+    const copy = rollupScan({ id: "copy", themeId: "theme-2" });
+    const otherShop = rollupScan({ id: "other", shopId: "shop-2" });
+    expect(
+      latestScanPerTheme([newest, old, copy, otherShop])
+        .map((s) => s.id)
+        .sort(),
+    ).toEqual(["copy", "new", "other"]);
+  });
+
+  it("returns [] for no scans", () => {
+    expect(latestScanPerTheme([])).toEqual([]);
+  });
+});
+
+describe("computeUniqueFindings", () => {
+  const f = (over: Partial<Parameters<typeof computeUniqueFindings>[0][0]> = {}) => ({
+    shopId: "shop-1",
+    filename: "snippets/x.liquid",
+    findingType: "GHOST_SCRIPT",
+    codeSnippet: "<script src='https://cdn.x.com/a.js'></script>",
+    lineNumber: 3,
+    ...over,
+  });
+
+  it("counts the same finding on two themes of one store once", () => {
+    const result = computeUniqueFindings([f(), f(), f({ findingType: "GHOST_OG" })]);
+    expect(result).toEqual({
+      total: 2,
+      topTypes: [
+        { type: "GHOST_SCRIPT", count: 1 },
+        { type: "GHOST_OG", count: 1 },
+      ],
+    });
+  });
+
+  it("counts the same finding in two stores twice", () => {
+    expect(computeUniqueFindings([f(), f({ shopId: "shop-2" })]).total).toBe(2);
+  });
+
+  it("treats a different file or snippet as a different finding", () => {
+    const result = computeUniqueFindings([
+      f(),
+      f({ filename: "snippets/y.liquid" }),
+      f({ codeSnippet: "<script src='https://cdn.x.com/b.js'></script>" }),
+    ]);
+    expect(result.total).toBe(3);
+    expect(result.topTypes).toEqual([{ type: "GHOST_SCRIPT", count: 3 }]);
+  });
+
+  it("sorts top types most-frequent first", () => {
+    const result = computeUniqueFindings([
+      f({ findingType: "GHOST_OG" }),
+      f({ findingType: "GHOST_STYLE", filename: "a" }),
+      f({ findingType: "GHOST_STYLE", filename: "b" }),
+    ]);
+    expect(result.topTypes[0]).toEqual({ type: "GHOST_STYLE", count: 2 });
+  });
+
+  it("returns zero and no types for no findings", () => {
+    expect(computeUniqueFindings([])).toEqual({ total: 0, topTypes: [] });
   });
 });
 
@@ -1067,7 +1309,7 @@ function makeData(overrides: Partial<OperatorDigestData> = {}): OperatorDigestDa
       ],
     },
     flywheel: {
-      newUnknownScripts: 4,
+      unknownScripts: { distinct: 2, firstSeen: 1, sightings: 38 },
       newSubmissions: 2,
       submissionsByStatus: { PENDING: 1, ACCEPTED: 1, REJECTED: 0 },
     },
@@ -1140,6 +1382,7 @@ describe("buildDigestBody — section structure (populated)", () => {
       "Billing events (24h): 3 upgrade, 1 downgrade, 0 cancellation, 1 reactivation",
     );
     expect(body).toContain("New signature submissions: 2 (1 pending, 1 accepted, 0 rejected)");
+    expect(body).toContain("Unknown scripts: 2 distinct (1 first seen; 38 sightings across scans)");
     expect(body).toContain("Activated (>= 1 scan ever): 8 of 12 active installs");
     expect(body).toContain("Dormant (0 scans ever): 4");
   });
@@ -1152,21 +1395,45 @@ describe("buildDigestBody — section structure (populated)", () => {
   it("renders per-store scans and top finding types", () => {
     expect(body).toContain("a.myshopify.com -- 3");
     expect(body).toContain("b.myshopify.com -- 2");
+    expect(body).toContain("Unique (latest scan per store and theme): 14");
+    expect(body).not.toContain("sum of scan findingCount");
     expect(body).toContain("GHOST_SCRIPT -- 8");
     expect(body).toContain("GHOST_STYLE -- 6");
   });
 
   it("renders the RESOLUTION rollup with a signed positive net", () => {
     const withResolution = buildDigestBody(
-      makeData({ resolution: { resolved: 12, new: 4, net: 8 } }),
+      makeData({ resolution: { resolved: 12, new: 4, net: 8, firstScan: 0, newlyChecked: 0 } }),
     );
     expect(withResolution).toContain("Resolved: 12");
     expect(withResolution).toContain("New: 4");
     expect(withResolution).toContain("Net (resolved - new): +8");
+    expect(withResolution).toContain(
+      "Note: resolved also counts findings a scanner update stopped flagging",
+    );
+    expect(withResolution).not.toContain("Not counted as new");
+  });
+
+  it("renders the not-counted-as-new line when first-scan or newly-checked findings exist", () => {
+    const withExcluded = buildDigestBody(
+      makeData({
+        resolution: { resolved: 400, new: 0, net: 400, firstScan: 237, newlyChecked: 173 },
+      }),
+    );
+    expect(withExcluded).toContain(
+      "  Not counted as new: 237 on a store's or theme's first scan, 173 in newly checked categories",
+    );
+    const onlyFirst = buildDigestBody(
+      makeData({ resolution: { resolved: 0, new: 0, net: 0, firstScan: 5, newlyChecked: 0 } }),
+    );
+    expect(onlyFirst).toContain("Not counted as new: 5 on a store's or theme's first scan, 0 in");
+    expect(onlyFirst).not.toContain("scanner update");
   });
 
   it("renders a negative net without a plus sign and zeros when resolution is absent", () => {
-    const negative = buildDigestBody(makeData({ resolution: { resolved: 1, new: 5, net: -4 } }));
+    const negative = buildDigestBody(
+      makeData({ resolution: { resolved: 1, new: 5, net: -4, firstScan: 0, newlyChecked: 0 } }),
+    );
     expect(negative).toContain("Net (resolved - new): -4");
     // makeData omits `resolution` → the section falls back to zeros.
     expect(body).toContain("Resolved: 0");
