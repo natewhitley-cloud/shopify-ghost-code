@@ -3358,8 +3358,8 @@ export function detectGhostAppEmbeds(
 }
 
 /**
- * "This code belongs to app X" finding types (gc-clt4): the types an active
- * app produces in its own theme files just by working. Only these may be
+ * "This code belongs to app X" finding types (gc-clt4, gc-ps3t): the types a
+ * live app produces in the theme just by working. Only these may be
  * dropped by dropActiveAppOwnFileFindings. Never add MALICIOUS_SCRIPT, the
  * app-embed types, GHOST_LAYOUT (layouts already have a template-usage gate),
  * DUPLICATE_*, OVERLAPPING_CHAT_WIDGET, SETTINGS_DRIFT, JSON_LD_*, or the
