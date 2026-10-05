@@ -2141,6 +2141,7 @@ export function extractStaticProductCandidates(file: ThemeFile): StaticProductCa
 
 export function detectGhostTextFragments(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
+  let settingGatedLines: Set<number> | null = null;
 
   for (const { lineNumber, text } of lines(file.content)) {
     // Skip lines that other detectors already handle
@@ -2148,6 +2149,11 @@ export function detectGhostTextFragments(file: ThemeFile): CreateFindingInput[] 
 
     const appName = identifyAppFromTextFragment(text);
     if (!appName) continue;
+
+    // A widget behind a theme-editor setting is a theme feature, e.g. a theme's
+    // review-provider selector (gc-0bow). Built on the first match only.
+    settingGatedLines ??= buildThemeSettingGatedLines(file.content);
+    if (settingGatedLines.has(lineNumber)) continue;
 
     const codeSnippet = buildSnippet(file.content, lineNumber);
     const severity = classifySeverity(FindingType.GHOST_TEXT, codeSnippet);

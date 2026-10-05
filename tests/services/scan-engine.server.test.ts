@@ -1410,6 +1410,62 @@ describe("detectGhostTextFragments", () => {
   });
 });
 
+describe("detectGhostTextFragments — theme-setting-gated widgets (gc-0bow)", () => {
+  // Same FP class as gc-01n/gc-vb7. Prod: the Avone theme's review-provider
+  // selector in snippets/reviews.liquid was flagged as Loox, Judge.me and
+  // Stamped.io leftovers on a store that ran none of them.
+  const scan = (...contentLines: string[]) =>
+    detectGhostTextFragments({
+      filename: "snippets/reviews.liquid",
+      content: contentLines.join("\n"),
+    });
+
+  it("skips every branch of a theme's review-provider setting switch", () => {
+    const findings = scan(
+      `{% if settings.reviews == 'loox' %} <div id="looxReviews" data-product-id="{{ product.id }}" class="loox-reviews-default">{{ product.metafields.loox.reviews }}</div>`,
+      "{%- elsif settings.reviews == 'judgeme' -%}",
+      "<div id='judgeme_product_reviews' class='jdgm-widget jdgm-review-widget' data-id='{{ product.id }}'>{{ product.metafields.judgeme.widget }}</div>",
+      "{%- elsif settings.reviews == 'stamped' -%}",
+      '<div id="stamped-main-widget" data-product-id="{{ product.id }}"></div>',
+      "{%- endif -%}",
+    );
+    expect(findings).toHaveLength(0);
+  });
+
+  it.each([
+    ["section.settings", "{%- if section.settings.reviews_provider == 'judgeme' -%}"],
+    ["block.settings", "{% if block.settings.show_reviews %}"],
+    ["global settings", "{% unless settings.disable_reviews %}"],
+  ])("skips a widget gated by %s", (_label, opener) => {
+    const closer = opener.includes("unless") ? "{% endunless %}" : "{%- endif -%}";
+    expect(scan(opener, '  <div id="jdgm-widget"></div>', closer)).toHaveLength(0);
+  });
+
+  it("still flags the same widget with no conditional", () => {
+    const findings = scan("<div>", '<div id="jdgm-widget"></div>', "</div>");
+    expect(findings).toHaveLength(1);
+    expect(findings[0].appName).toBe("Judge.me");
+    expect(findings[0].lineNumber).toBe(2);
+  });
+
+  it("still flags a widget inside a non-settings conditional", () => {
+    expect(
+      scan("{% if template contains 'product' %}", '<div id="jdgm-widget"></div>', "{% endif %}"),
+    ).toHaveLength(1);
+  });
+
+  it("still flags a widget AFTER the endif of a settings conditional", () => {
+    const findings = scan(
+      "{% if section.settings.show %}",
+      "<div></div>",
+      "{% endif %}",
+      '<div id="jdgm-widget"></div>',
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0].lineNumber).toBe(4);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // scanThemeFiles (integration)
 // ---------------------------------------------------------------------------
