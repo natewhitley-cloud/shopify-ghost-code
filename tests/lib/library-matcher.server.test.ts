@@ -219,3 +219,21 @@ describe("isBenignLibrary: Instagram official embed.js (gc-7am)", () => {
     expect(isBenignLibrary("https://www.instagram.com.evil.com/embed.js")).toBe(false);
   });
 });
+
+describe("isBenignLibrary: Elfsight widget loader (2026-10-05)", () => {
+  it.each([
+    "https://elfsightcdn.com/platform.js",
+    "//elfsightcdn.com/platform.js",
+    "https://apps.elfsight.com/p/platform.js",
+    "https://apps.elfsight.com/p/platform.js?v=2",
+  ])("treats %s as benign", (url) => {
+    expect(isBenignLibrary(url)).toBe(true);
+  });
+
+  it("does not bless other elfsight paths or lookalike hosts", () => {
+    expect(isBenignLibrary("https://elfsightcdn.com/other.js")).toBe(false);
+    expect(isBenignLibrary("https://apps.elfsight.com/p/platform.js.evil.js")).toBe(false);
+    expect(isBenignLibrary("https://elfsightcdn.com.evil.com/platform.js")).toBe(false);
+    expect(isBenignLibrary("https://evil.com/p/platform.js")).toBe(false);
+  });
+});

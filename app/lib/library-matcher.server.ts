@@ -40,6 +40,11 @@ const BENIGN_SCRIPT_PATHS = new Set([
   // scripts stay unknown.
   "www.instagram.com/embed.js",
   "instagram.com/embed.js",
+  // Elfsight widget platform loader (seen in prod 2026-10-05, inside page-builder
+  // sections). Elfsight widgets run from an Elfsight account with or without a
+  // Shopify app, so the loader is no evidence of an uninstalled app.
+  "elfsightcdn.com/platform.js",
+  "apps.elfsight.com/p/platform.js",
 ]);
 
 /**
