@@ -2773,13 +2773,16 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
 
 describe("scanTheme — granted-scope pre-check (gc-5l9)", () => {
   const ACCESS_SCOPES_MARKER = "accessScopes";
-  // Each optional scope's probe query, keyed by a substring unique to it.
+  // Each probe query, keyed by the optional scope it is labeled with and a
+  // substring unique to it. read_locales has no probe of its own: it is the
+  // second grant the translations probe needs (gc-l1cm).
   const PROBE_MARKERS: Record<string, string> = {
     read_translations: "shopLocales",
     read_products: "products(first: 1)",
     read_content: "pages(first: 1)",
     read_online_store_navigation: "urlRedirects(first: 1)",
   };
+  const ALL_PROBES = Object.keys(PROBE_MARKERS);
   const ALL_SCOPE_SKIPPED = [
     FindingType.GHOST_TRANSLATION,
     FindingType.GHOST_TAG,
@@ -2898,11 +2901,37 @@ describe("scanTheme — granted-scope pre-check (gc-5l9)", () => {
     expect(mockFetchProductAuditData).toHaveBeenCalledTimes(1);
   });
 
+  // gc-l1cm: shopLocales is gated on read_locales, so read_translations alone
+  // used to probe and hit ACCESS_DENIED on every scan. Now it is a known skip.
+  it("read_translations granted without read_locales: no translations probe, category skipped", async () => {
+    await useRealScopeChecks();
+    routeAdmin(["read_translations"]);
+
+    await runScanTheme();
+
+    expect(graphqlQueries()).toHaveLength(1);
+    expect(probedScopes()).toEqual([]);
+    expect(mockAuditTranslations).not.toHaveBeenCalled();
+    expect(finalizeArg().skippedCategories).toEqual(ALL_SCOPE_SKIPPED);
+  });
+
+  it("read_translations + read_locales granted: the translations probe runs and the audit runs", async () => {
+    await useRealScopeChecks();
+    routeAdmin(["read_translations", "read_locales"]);
+
+    await runScanTheme();
+
+    expect(probedScopes()).toEqual(["read_translations"]);
+    expect(mockAuditTranslations).toHaveBeenCalledTimes(1);
+    expect(finalizeArg().skippedCategories).toEqual(
+      ALL_SCOPE_SKIPPED.filter((c) => c !== FindingType.GHOST_TRANSLATION),
+    );
+  });
+
   it("granted but the probe is ACCESS_DENIED: still skipped (the real-access probe is kept)", async () => {
     await useRealScopeChecks();
-    // The grant alone is not proof of access (translations are gated by
-    // read_locales/read_markets under the hood), so a denied probe must skip.
-    routeAdmin(["read_translations"], ["read_translations"]);
+    // The grants alone are not proof of access, so a denied probe must skip.
+    routeAdmin(["read_translations", "read_locales"], ["read_translations"]);
 
     await runScanTheme();
 
@@ -2917,19 +2946,19 @@ describe("scanTheme — granted-scope pre-check (gc-5l9)", () => {
 
     await runScanTheme();
 
-    expect(probedScopes()).toEqual([...OPTIONAL_SCOPES]);
-    expect(graphqlQueries()).toHaveLength(1 + OPTIONAL_SCOPES.length);
+    expect(probedScopes()).toEqual(ALL_PROBES);
+    expect(graphqlQueries()).toHaveLength(1 + ALL_PROBES.length);
     expect(finalizeArg().skippedCategories).toEqual([]);
   });
 
   it("accessScopes lookup fails: falls back to probing every scope (logged), same skip semantics", async () => {
     await useRealScopeChecks();
     const warnSpy = vi.spyOn(logger, "warn");
-    routeAdmin("fail", [...OPTIONAL_SCOPES]);
+    routeAdmin("fail", ALL_PROBES);
 
     await runScanTheme();
 
-    expect(probedScopes()).toEqual([...OPTIONAL_SCOPES]);
+    expect(probedScopes()).toEqual(ALL_PROBES);
     expect(finalizeArg().skippedCategories).toEqual(ALL_SCOPE_SKIPPED);
     expect(warnSpy).toHaveBeenCalledWith(
       expect.stringContaining("accessScopes lookup failed"),

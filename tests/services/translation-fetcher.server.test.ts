@@ -120,6 +120,71 @@ describe("hasTranslationScope", () => {
 
     await expect(hasTranslationScope(admin, null)).rejects.toThrow(/transient/i);
   });
+
+  // gc-l1cm: the probe queries shopLocales, which Shopify gates on read_locales,
+  // so the check needs BOTH read_translations and read_locales granted. Missing
+  // either is a known skip: no probe, no ACCESS_DENIED in the Partner Dashboard.
+  describe("granted-scope pre-check (gc-l1cm)", () => {
+    function okGraphql() {
+      return vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({ data: { shopLocales: [{ locale: "en" }] } }),
+      });
+    }
+
+    it("both read_translations and read_locales granted -> probe runs and its result is returned", async () => {
+      const graphql = okGraphql();
+      expect(
+        await hasTranslationScope(makeAdmin(graphql), ["read_translations", "read_locales"]),
+      ).toBe(true);
+      expect(graphql).toHaveBeenCalledTimes(1);
+      expect(graphql.mock.calls[0][0]).toContain("shopLocales");
+    });
+
+    it("both granted but the probe is ACCESS_DENIED -> false (the real-access probe is kept)", async () => {
+      const graphql = vi.fn().mockResolvedValue({
+        json: vi.fn().mockResolvedValue({
+          errors: [{ message: "Access denied", extensions: { code: "ACCESS_DENIED" } }],
+          data: null,
+        }),
+      });
+      expect(
+        await hasTranslationScope(makeAdmin(graphql), ["read_translations", "read_locales"]),
+      ).toBe(false);
+      expect(graphql).toHaveBeenCalledTimes(1);
+    });
+
+    it("only read_translations granted -> false with NO API call", async () => {
+      const graphql = okGraphql();
+      expect(await hasTranslationScope(makeAdmin(graphql), ["read_translations"])).toBe(false);
+      expect(graphql).not.toHaveBeenCalled();
+    });
+
+    it("only read_locales granted -> false with NO API call", async () => {
+      const graphql = okGraphql();
+      expect(await hasTranslationScope(makeAdmin(graphql), ["read_locales"])).toBe(false);
+      expect(graphql).not.toHaveBeenCalled();
+    });
+
+    it("neither granted (other optional scopes only) -> false with NO API call", async () => {
+      const graphql = okGraphql();
+      expect(await hasTranslationScope(makeAdmin(graphql), ["read_products", "read_content"])).toBe(
+        false,
+      );
+      expect(graphql).not.toHaveBeenCalled();
+    });
+
+    it("nothing granted -> false with NO API call", async () => {
+      const graphql = okGraphql();
+      expect(await hasTranslationScope(makeAdmin(graphql), [])).toBe(false);
+      expect(graphql).not.toHaveBeenCalled();
+    });
+
+    it("granted unknown (null) -> probe runs (unchanged pre-gc-5l9 fallback)", async () => {
+      const graphql = okGraphql();
+      expect(await hasTranslationScope(makeAdmin(graphql), null)).toBe(true);
+      expect(graphql).toHaveBeenCalledTimes(1);
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

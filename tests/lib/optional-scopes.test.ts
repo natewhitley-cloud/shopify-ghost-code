@@ -52,7 +52,21 @@ describe("missingOptionalScopes", () => {
       "read_translations",
       "read_content",
       "read_online_store_navigation",
+      "read_locales",
     ]);
+  });
+
+  // gc-l1cm: the translations check needs read_locales too, so a shop that
+  // granted only the original four is still missing (and gets asked for) it.
+  it("still requests read_locales from a shop that granted the original four", () => {
+    const granted = [
+      "read_themes",
+      "read_translations",
+      "read_products",
+      "read_content",
+      "read_online_store_navigation",
+    ];
+    expect(missingOptionalScopes(granted)).toEqual(["read_locales"]);
   });
 
   it("ignores unrelated granted scopes", () => {
@@ -69,6 +83,17 @@ describe("allOptionalScopesGranted", () => {
 
   it("is true when every optional scope is present", () => {
     expect(allOptionalScopesGranted([...OPTIONAL_SCOPES, "read_themes"])).toBe(true);
+  });
+
+  it("is false when only read_locales is missing (gc-l1cm)", () => {
+    expect(
+      allOptionalScopesGranted([
+        "read_translations",
+        "read_products",
+        "read_content",
+        "read_online_store_navigation",
+      ]),
+    ).toBe(false);
   });
 });
 

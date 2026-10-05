@@ -149,8 +149,10 @@ export async function probeScope(
 // and every one of those lands in the Partner Dashboard's API error log (4 per
 // scan on a shop without optional scopes). So the scan fetches the granted
 // scopes ONCE and only probes the ones that are granted. A granted scope is
-// still probed: the grant alone is not proof of access (e.g. the translations
-// probe is gated by read_locales/read_markets under the hood).
+// still probed: the grant alone is not proof of access. A check whose probe
+// needs more than one grant (translations: read_translations + read_locales,
+// since shopLocales is gated on read_locales, gc-l1cm) skips without a query
+// when any of them is missing.
 
 /**
  * The optional scopes this installation has granted, or `null` when unknown

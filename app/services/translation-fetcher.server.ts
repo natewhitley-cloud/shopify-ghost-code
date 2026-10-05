@@ -90,21 +90,27 @@ const RESOURCE_TYPES = ["PRODUCT", "COLLECTION", "PAGE", "ARTICLE", "ONLINE_STOR
 // ---------------------------------------------------------------------------
 
 /**
- * Detect if the read_translations scope is available by attempting a
- * lightweight query.
+ * Detect if the translations check can run by attempting a lightweight query.
+ *
+ * Needs BOTH read_translations and read_locales (gc-l1cm): the probe (and
+ * fetchShopLocales) queries `shopLocales`, which Shopify gates on read_locales.
+ * With read_translations alone the probe is an ACCESS_DENIED on every scan.
  *
  * Returns false ONLY on a genuine ACCESS_DENIED (scope not granted). Transient
  * failures (THROTTLED, network, 5xx, timeout) throw a TransientScopeCheckError
  * so the caller retries instead of silently treating the scope as missing.
  * See app/lib/scope-check.server.ts (LOG-9).
  *
- * Runs NO query when `granted` (the scan's one accessScopes lookup) proves the
- * scope is not granted; `null` (lookup failed) always probes (gc-5l9).
+ * Runs NO query when `granted` (the scan's one accessScopes lookup) proves
+ * either scope is not granted; `null` (lookup failed) always probes (gc-5l9).
  */
 export async function hasTranslationScope(
   admin: AdminApiContext,
   granted: GrantedOptionalScopes,
 ): Promise<boolean> {
+  const hasBothGrants =
+    granted !== null && granted.includes("read_translations") && granted.includes("read_locales");
+  if (granted !== null && !hasBothGrants) return false;
   return checkOptionalScope(admin, "read_translations", `{ shopLocales { locale } }`, granted);
 }
 

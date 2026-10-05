@@ -6,11 +6,13 @@
  * `shopify.app.toml` — that TOML list is the authoritative set the App Bridge
  * `shopify.scopes.request()` modal is allowed to ask for. The server-side probes
  * in `app/services/*-fetcher.server.ts` use these SAME handles as their
- * `scopeLabel` (e.g. `hasTranslationScope` probes `read_translations`), so a scan
- * that skips a category maps back to exactly one of these handles — even though
- * the underlying Admin API field for translations is gated by
- * `read_locales`/`read_markets`, the scope the merchant grants (and the one to
- * request) is `read_translations`.
+ * `scopeLabel` (e.g. `hasTranslationScope` probes under `read_translations`).
+ *
+ * The translations check needs BOTH `read_translations` and `read_locales`
+ * (gc-l1cm): its probe and locale fetch query `shopLocales`, which Shopify gates
+ * on `read_locales` ("Required access: read_locales or read_markets_home"), so
+ * `read_translations` alone gets ACCESS_DENIED on every scan. A skipped
+ * GHOST_TRANSLATION therefore maps back to both handles.
  *
  * Client-safe (no `.server` suffix, no server-only imports): the settings card
  * runs in the browser (App Bridge `shopify.scopes.*`), and the banner runs in
@@ -23,6 +25,7 @@ export const OPTIONAL_SCOPES = [
   "read_products",
   "read_content",
   "read_online_store_navigation",
+  "read_locales",
 ] as const;
 
 export type OptionalScope = (typeof OPTIONAL_SCOPES)[number];
@@ -46,6 +49,11 @@ export const OPTIONAL_SCOPE_INFO: Record<OptionalScope, { label: string; unlocks
     label: "URL redirects",
     unlocks: "Finds orphaned URL redirects left behind by uninstalled apps.",
   },
+  read_locales: {
+    label: "Store languages",
+    unlocks:
+      "Lets the translations check see which languages your store uses. Needed together with Translations.",
+  },
 };
 
 /**
@@ -53,7 +61,7 @@ export const OPTIONAL_SCOPE_INFO: Record<OptionalScope, { label: string; unlocks
  * unlock it, plus a human label. Sourced from the scan engine's
  * `skippedCategories` builder (`inngest/functions/scan-theme.ts`) and each
  * detector's scope gate:
- *   - GHOST_TRANSLATION                              → read_translations            (hasTranslationScope)
+ *   - GHOST_TRANSLATION                              → read_translations + read_locales (both needed; hasTranslationScope, gc-l1cm)
  *   - GHOST_TAG / GHOST_PRICE / GHOST_METAFIELD,
  *     JSON_LD_PRICE_CONFLICT                         → read_products                (hasProductScope)
  *   - GHOST_PAGE                                     → read_content                 (hasContentScope)
@@ -66,7 +74,7 @@ export const OPTIONAL_SCOPE_INFO: Record<OptionalScope, { label: string; unlocks
  * render as an unlabeled banner.
  */
 export const SKIPPABLE_CATEGORY_INFO: Record<string, { label: string; scopes: OptionalScope[] }> = {
-  GHOST_TRANSLATION: { label: "Translations", scopes: ["read_translations"] },
+  GHOST_TRANSLATION: { label: "Translations", scopes: ["read_translations", "read_locales"] },
   GHOST_TAG: { label: "Product tags", scopes: ["read_products"] },
   GHOST_PRICE: { label: "Compare-at prices", scopes: ["read_products"] },
   GHOST_METAFIELD: { label: "Metafields", scopes: ["read_products"] },

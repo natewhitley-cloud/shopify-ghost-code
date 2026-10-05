@@ -198,6 +198,18 @@ describe("grantedOptionalScopesFrom", () => {
     ]);
   });
 
+  // gc-l1cm: read_locales is the 5th optional scope (the translations probe's
+  // shopLocales field is gated on it).
+  it("includes read_locales when granted, in declared order", () => {
+    expect(grantedOptionalScopesFrom(["read_locales", "read_translations", "read_themes"])).toEqual(
+      ["read_translations", "read_locales"],
+    );
+  });
+
+  it("counts write_locales as read_locales (write implies read)", () => {
+    expect(grantedOptionalScopesFrom(["write_locales"])).toEqual(["read_locales"]);
+  });
+
   it("does not treat a read_ grant as unlocking anything beyond itself", () => {
     expect(grantedOptionalScopesFrom(["read_product_listings"])).toEqual([]);
   });
@@ -298,41 +310,64 @@ describe("checkOptionalScope", () => {
 });
 
 // The four per-audit scope checks all route through checkOptionalScope; this
-// table locks each one to ITS scope handle so a mis-wired handle (e.g. the
-// redirect check keyed on read_content) cannot slip through.
+// table locks each one to ITS scope handle(s) so a mis-wired handle (e.g. the
+// redirect check keyed on read_content) cannot slip through. The translations
+// check needs TWO grants (gc-l1cm): its shopLocales probe is gated on
+// read_locales, so read_translations alone can never pass it.
 describe("has*Scope wrappers (gc-5l9)", () => {
   const CHECKS: Array<
-    [OptionalScope, (admin: AdminApiContext, granted: GrantedOptionalScopes) => Promise<boolean>]
+    [
+      string,
+      OptionalScope[],
+      (admin: AdminApiContext, granted: GrantedOptionalScopes) => Promise<boolean>,
+    ]
   > = [
-    ["read_translations", hasTranslationScope],
-    ["read_products", hasProductScope],
-    ["read_content", hasContentScope],
-    ["read_online_store_navigation", hasNavigationScope],
+    ["hasTranslationScope", ["read_translations", "read_locales"], hasTranslationScope],
+    ["hasProductScope", ["read_products"], hasProductScope],
+    ["hasContentScope", ["read_content"], hasContentScope],
+    ["hasNavigationScope", ["read_online_store_navigation"], hasNavigationScope],
   ];
 
   it("covers every optional scope", () => {
-    expect(CHECKS.map(([scope]) => scope).sort()).toEqual([...OPTIONAL_SCOPES].sort());
+    expect(CHECKS.flatMap(([, scopes]) => scopes).sort()).toEqual([...OPTIONAL_SCOPES].sort());
   });
 
-  it.each(CHECKS)("%s: none granted -> false with zero queries", async (_scope, check) => {
+  it.each(CHECKS)("%s: none granted -> false with zero queries", async (_name, _scopes, check) => {
     const graphql = vi.fn().mockResolvedValue({ json: vi.fn().mockResolvedValue({ data: {} }) });
     expect(await check(makeAdmin(graphql), [])).toBe(false);
     expect(graphql).not.toHaveBeenCalled();
   });
 
-  it.each(CHECKS)("%s: only its own grant triggers its probe", async (scope, check) => {
+  it.each(CHECKS)("%s: only its own grant(s) trigger its probe", async (_name, scopes, check) => {
     const graphql = vi.fn().mockResolvedValue({ json: vi.fn().mockResolvedValue({ data: {} }) });
-    const others = OPTIONAL_SCOPES.filter((s) => s !== scope);
+    const others = OPTIONAL_SCOPES.filter((s) => !scopes.includes(s));
     expect(await check(makeAdmin(graphql), others)).toBe(false);
     expect(graphql).not.toHaveBeenCalled();
 
-    expect(await check(makeAdmin(graphql), [scope])).toBe(true);
+    expect(await check(makeAdmin(graphql), scopes)).toBe(true);
     expect(graphql).toHaveBeenCalledTimes(1);
   });
 
-  it.each(CHECKS)("%s: null granted -> probes (pre-gc-5l9 behavior)", async (_scope, check) => {
-    const graphql = vi.fn().mockResolvedValue({ json: vi.fn().mockResolvedValue({ data: {} }) });
-    expect(await check(makeAdmin(graphql), null)).toBe(true);
-    expect(graphql).toHaveBeenCalledTimes(1);
-  });
+  it.each(CHECKS)(
+    "%s: every grant but one of its own -> false with zero queries",
+    async (_name, scopes, check) => {
+      for (const missing of scopes) {
+        const graphql = vi.fn().mockResolvedValue({
+          json: vi.fn().mockResolvedValue({ data: {} }),
+        });
+        const granted = OPTIONAL_SCOPES.filter((s) => s !== missing);
+        expect(await check(makeAdmin(graphql), granted)).toBe(false);
+        expect(graphql).not.toHaveBeenCalled();
+      }
+    },
+  );
+
+  it.each(CHECKS)(
+    "%s: null granted -> probes (pre-gc-5l9 behavior)",
+    async (_name, _scopes, check) => {
+      const graphql = vi.fn().mockResolvedValue({ json: vi.fn().mockResolvedValue({ data: {} }) });
+      expect(await check(makeAdmin(graphql), null)).toBe(true);
+      expect(graphql).toHaveBeenCalledTimes(1);
+    },
+  );
 });
