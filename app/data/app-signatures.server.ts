@@ -171,6 +171,9 @@ export const APP_SIGNATURES: AppSignature[] = [
     cssPatterns: [/jdgm/, /judge\.me/],
     jsonLdPatterns: [/judge\.me/i, /jdgm/i],
     textPatterns: [/\bjdgm-widget\b/, /\bjdgm-review-widget\b/, /\bdata-jdgm-widget\b/],
+    // Verified in public storefront HTML on 3 stores (2026-10-05):
+    // `shopify://apps/judge-me-reviews/blocks/...`.
+    embedHandles: ["judge-me-reviews"],
   },
   {
     appName: "Loox",
@@ -232,6 +235,17 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: ["fera-reviews", "fera-widget"],
     cssPatterns: [/fera/],
     jsonLdPatterns: [/fera\.ai/i],
+  },
+  {
+    // Exact domain + handle only (no generic patterns): cdn2.ryviu.com is from a
+    // live ScriptTag, and `shopify://apps/ryviu-product-reviews/blocks/...` was
+    // verified in public storefront HTML (2026-10-05).
+    appName: "Ryviu",
+    cdnDomains: ["cdn2.ryviu.com"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+    embedHandles: ["ryviu-product-reviews"],
   },
   {
     appName: "Shopify Product Reviews",
@@ -315,7 +329,9 @@ export const APP_SIGNATURES: AppSignature[] = [
   },
   {
     appName: "Rise.ai",
-    cdnDomains: ["cdn.rise.ai", "api.rise.ai"],
+    // str/strn.rise-ai.com: both live ScriptTags on a store with Rise.ai's
+    // giftwizard embed (2026-10-05).
+    cdnDomains: ["cdn.rise.ai", "api.rise.ai", "str.rise-ai.com", "strn.rise-ai.com"],
     scriptPatterns: [/rise\.ai/, /Rise\.init/],
     snippetNames: ["rise-gift-card", "rise-ai-wallet"],
     cssPatterns: [/rise-ai/],

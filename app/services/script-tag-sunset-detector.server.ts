@@ -36,6 +36,35 @@ export const SCRIPT_TAG_FINDING_FILENAME = "storefront/script-tags";
 /** Shopify's own CDN: app files can be hosted there, but it names no app. */
 const SHOPIFY_CDN_HOST = "cdn.shopify.com";
 
+/** At most this many entries are read from the storefront's ScriptTag list. */
+export const MAX_SCRIPT_TAG_URLS = 200;
+/** Raw URLs longer than this are dropped (no real ScriptTag is this long). */
+export const MAX_SCRIPT_TAG_URL_LENGTH = 500;
+/** At most this many findings (groups) per scan, chosen by sorted group key. */
+export const MAX_SCRIPT_TAG_GROUPS = 25;
+/** Same display cap as the theme detectors' buildSnippet. */
+const MAX_SNIPPET_CHARS = 300;
+/** Hostnames are shown (description + key line) at most this long. */
+const MAX_HOST_DISPLAY_CHARS = 100;
+
+function displayHost(host: string): string {
+  return host.length > MAX_HOST_DISPLAY_CHARS
+    ? `${host.slice(0, MAX_HOST_DISPLAY_CHARS - 3)}...`
+    : host;
+}
+
+/**
+ * The finding's stable identity, stored as line 1 of `codeSnippet`. The
+ * differ fingerprints only the first snippet line for `lineNumber: 1`, so the
+ * identity is the GROUP (app or host), never a URL: a vendor's version bump or
+ * an extra URL changes the listed URLs but not the fingerprint.
+ */
+function groupKeyLine(group: ScriptTagGroup): string {
+  return group.appName
+    ? `script-tags: ${group.appName}`
+    : `script-tags: host ${displayHost(group.host)}`;
+}
+
 /**
  * Reduce a ScriptTag URL to `protocol//host/path`: query string and fragment
  * dropped. Returns null for anything that is not a parseable http(s) URL
@@ -79,8 +108,8 @@ export function detectScriptTagSunset(
   now: Date = new Date(),
 ): CreateFindingInput[] {
   const groups = new Map<string, ScriptTagGroup>();
-  for (const raw of scriptTagUrls) {
-    if (typeof raw !== "string") continue;
+  for (const raw of scriptTagUrls.slice(0, MAX_SCRIPT_TAG_URLS)) {
+    if (typeof raw !== "string" || raw.length > MAX_SCRIPT_TAG_URL_LENGTH) continue;
     const url = stripQueryAndFragment(raw);
     if (!url) continue;
     const host = new URL(url).hostname.toLowerCase();
@@ -96,14 +125,19 @@ export function detectScriptTagSunset(
   const afterSunset = now.getTime() >= SCRIPT_TAG_SUNSET_AT_MS;
   return [...groups.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, MAX_SCRIPT_TAG_GROUPS)
     .map(([, group]) => {
       const embedOn = group.appName !== null && enabledEmbedApps.has(group.appName);
       return {
         filename: SCRIPT_TAG_FINDING_FILENAME,
         lineNumber: 1,
-        // Sorted so the same set of URLs always yields the same snippet (and
-        // fingerprint), whatever order the storefront rendered them in.
-        codeSnippet: [...group.urls].sort().join("\n"),
+        // Line 1 = the stable group key (the fingerprinted line); the
+        // query-stripped URLs follow, sorted so the display is deterministic.
+        // Truncated like every other detector's snippet; the key line is far
+        // shorter than the cap, so it always survives.
+        codeSnippet: [groupKeyLine(group), ...[...group.urls].sort()]
+          .join("\n")
+          .slice(0, MAX_SNIPPET_CHARS),
         findingType: FindingType.SCRIPT_TAG_SUNSET,
         severity: embedOn ? Severity.LOW : Severity.HIGH,
         appName: group.appName ?? undefined,
@@ -124,7 +158,7 @@ function describe(group: ScriptTagGroup, embedOn: boolean, afterSunset: boolean)
     subject = "An app script hosted on Shopify's CDN";
     ref = "that app";
   } else {
-    subject = `An app loading from ${group.host}`;
+    subject = `An app loading from ${displayHost(group.host)}`;
     ref = "that app";
   }
 

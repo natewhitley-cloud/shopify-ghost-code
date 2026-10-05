@@ -1,8 +1,12 @@
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
+import { fingerprintFinding } from "../../app/services/scan-differ.server";
 import {
   detectScriptTagSunset,
+  MAX_SCRIPT_TAG_GROUPS,
+  MAX_SCRIPT_TAG_URL_LENGTH,
+  MAX_SCRIPT_TAG_URLS,
   SCRIPT_TAG_FINDING_FILENAME,
   SCRIPT_TAG_SUNSET_AT_MS,
   stripQueryAndFragment,
@@ -77,7 +81,7 @@ describe("detectScriptTagSunset", () => {
     expect(findings.map((f) => f.appName ?? null).sort()).toEqual([
       "Klaviyo",
       "PushOwl",
-      null,
+      "Rise.ai",
       null,
       null,
     ]);
@@ -107,7 +111,7 @@ describe("detectScriptTagSunset", () => {
     expect(findings).toHaveLength(1);
     expect(findings[0].appName).toBe("Klaviyo");
     expect(findings[0].codeSnippet).toBe(
-      "https://a.klaviyo.com/media/js/onsite.js\nhttps://static.klaviyo.com/onsite/js/klaviyo.js",
+      "script-tags: Klaviyo\nhttps://a.klaviyo.com/media/js/onsite.js\nhttps://static.klaviyo.com/onsite/js/klaviyo.js",
     );
   });
 
@@ -124,7 +128,11 @@ describe("detectScriptTagSunset", () => {
     expect(findings).toHaveLength(2);
     const cloudfront = findings.find((f) => f.codeSnippet.includes("cloudfront"));
     expect(cloudfront?.appName).toBeUndefined();
-    expect(cloudfront?.codeSnippet.split("\n")).toHaveLength(2);
+    expect(cloudfront?.codeSnippet.split("\n")).toEqual([
+      "script-tags: host d5zu2f4xvqanl.cloudfront.net",
+      "https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js",
+      "https://d5zu2f4xvqanl.cloudfront.net/42/fe/other.js",
+    ]);
     expect(cloudfront?.description).toMatch(
       /^An app loading from d5zu2f4xvqanl\.cloudfront\.net loads on your storefront through a script tag\./,
     );
@@ -145,7 +153,9 @@ describe("detectScriptTagSunset", () => {
     );
     expect(f.appName).toBeUndefined();
     expect(f.severity).toBe(Severity.HIGH);
-    expect(f.codeSnippet).toBe("https://cdn.shopify.com/s/files/1/0001/t/1/assets/app.js");
+    expect(f.codeSnippet).toBe(
+      "script-tags: host cdn.shopify.com\nhttps://cdn.shopify.com/s/files/1/0001/t/1/assets/app.js",
+    );
     expect(f.description).toMatch(
       /^An app script hosted on Shopify's CDN loads on your storefront/,
     );
@@ -236,6 +246,153 @@ describe("detectScriptTagSunset", () => {
       const [f] = detectScriptTagSunset(["https://x.vendor.io/a.js"], NO_EMBEDS, AFTER);
       expect(f.description).toContain("so the parts of that app that rely on it have stopped");
       expect(f.description).toContain("unless that app has moved to an app embed");
+    });
+  });
+
+  describe("stable identity (fingerprint)", () => {
+    const fp = (f: {
+      filename: string;
+      findingType: string;
+      codeSnippet: string;
+      lineNumber: number;
+    }) => fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
+
+    it("keeps the same fingerprint when a vendor bumps a script version", () => {
+      const [v1] = detectScriptTagSunset(
+        ["https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js"],
+        NO_EMBEDS,
+        BEFORE,
+      );
+      const [v2] = detectScriptTagSunset(
+        ["https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_3.js"],
+        NO_EMBEDS,
+        BEFORE,
+      );
+      expect(v2.codeSnippet).not.toBe(v1.codeSnippet);
+      expect(fp(v2)).toBe(fp(v1));
+    });
+
+    it("keeps the same fingerprint when a URL that sorts first is added to the group", () => {
+      const [before] = detectScriptTagSunset(
+        ["https://static.klaviyo.com/onsite/js/klaviyo.js"],
+        NO_EMBEDS,
+        BEFORE,
+      );
+      const [after] = detectScriptTagSunset(
+        ["https://static.klaviyo.com/onsite/js/klaviyo.js", "https://a.klaviyo.com/a.js"],
+        NO_EMBEDS,
+        BEFORE,
+      );
+      expect(after.codeSnippet.split("\n")[1]).toBe("https://a.klaviyo.com/a.js");
+      expect(fp(after)).toBe(fp(before));
+    });
+
+    it("gives different groups different fingerprints", () => {
+      const prints = detectScriptTagSunset(PAW_URLS, NO_EMBEDS, BEFORE).map(fp);
+      expect(new Set(prints).size).toBe(prints.length);
+    });
+  });
+
+  describe("caps", () => {
+    const hostUrl = (i: number) => `https://h${i}.vendor-${i}.io/a.js`;
+
+    it(`reads at most ${MAX_SCRIPT_TAG_URLS} URLs from the list`, () => {
+      expect(MAX_SCRIPT_TAG_URLS).toBe(200);
+      // Entries 0-199 on one host, 200-249 on another: the second host is past
+      // the cap, so it never becomes a finding.
+      const urls = Array.from({ length: 250 }, (_, i) =>
+        i < 200 ? `https://cdn.first.io/${i}.js` : `https://cdn.second.io/${i}.js`,
+      );
+      const findings = detectScriptTagSunset(urls, NO_EMBEDS, BEFORE);
+      expect(findings.map((f) => f.codeSnippet.split("\n")[0])).toEqual([
+        "script-tags: host cdn.first.io",
+      ]);
+    });
+
+    it(`drops URLs longer than ${MAX_SCRIPT_TAG_URL_LENGTH} characters`, () => {
+      expect(MAX_SCRIPT_TAG_URL_LENGTH).toBe(500);
+      const long = `https://cdn.long.io/${"a".repeat(500)}.js`;
+      expect(detectScriptTagSunset([long], NO_EMBEDS, BEFORE)).toEqual([]);
+      const okLen = `https://cdn.ok.io/${"a".repeat(400)}.js`;
+      expect(detectScriptTagSunset([okLen], NO_EMBEDS, BEFORE)).toHaveLength(1);
+    });
+
+    it(`emits at most ${MAX_SCRIPT_TAG_GROUPS} findings, the same ones whatever the order`, () => {
+      expect(MAX_SCRIPT_TAG_GROUPS).toBe(25);
+      const urls = Array.from({ length: 40 }, (_, i) => hostUrl(i));
+      const a = detectScriptTagSunset(urls, NO_EMBEDS, BEFORE);
+      const b = detectScriptTagSunset([...urls].reverse(), NO_EMBEDS, BEFORE);
+      expect(a).toHaveLength(25);
+      expect(b).toEqual(a);
+    });
+
+    it("truncates codeSnippet to 300 characters, keeping the group key line", () => {
+      const urls = Array.from(
+        { length: 20 },
+        (_, i) => `https://cdn.unknown.io/path/${i}/script.js`,
+      );
+      const [f] = detectScriptTagSunset(urls, NO_EMBEDS, BEFORE);
+      expect(f.codeSnippet.length).toBeLessThanOrEqual(300);
+      expect(f.codeSnippet.split("\n")[0]).toBe("script-tags: host cdn.unknown.io");
+    });
+
+    it("truncates a very long host in the description and the key line", () => {
+      const label = "a".repeat(60);
+      const host = `${label}.${label}.${label}.example.com`;
+      const [f] = detectScriptTagSunset([`https://${host}/a.js`], NO_EMBEDS, BEFORE);
+      expect(f.description).not.toContain(host);
+      const named = f.description.match(/^An app loading from (\S+) loads/)?.[1] ?? "";
+      expect(named.length).toBeLessThanOrEqual(100);
+      expect(f.codeSnippet.split("\n")[0].length).toBeLessThanOrEqual(120);
+    });
+  });
+
+  it("HIGH copy never claims the app has no app embed", () => {
+    for (const now of [BEFORE, AFTER]) {
+      for (const f of detectScriptTagSunset(PAW_URLS, NO_EMBEDS, now)) {
+        expect(f.severity).toBe(Severity.HIGH);
+        expect(f.description.toLowerCase()).not.toMatch(
+          /(no|without an?|doesn't have an?) (app )?embed/,
+        );
+        expect(f.description).not.toContain("embed turned on");
+      }
+    }
+  });
+
+  describe("embed evidence for review apps (verified handles)", () => {
+    it("Judge.me ScriptTag is LOW with the judge-me-reviews embed enabled", () => {
+      const [f] = detectScriptTagSunset(
+        ["https://cdn.judge.me/loader.js"],
+        new Set(["Judge.me"]),
+        BEFORE,
+      );
+      expect(f.appName).toBe("Judge.me");
+      expect(f.severity).toBe(Severity.LOW);
+    });
+
+    it("attributes a cdn2.ryviu.com ScriptTag to Ryviu", () => {
+      const [f] = detectScriptTagSunset(
+        ["https://cdn2.ryviu.com/v/static/js/app.js?shop=x"],
+        new Set(["Ryviu"]),
+        BEFORE,
+      );
+      expect(f.appName).toBe("Ryviu");
+      expect(f.severity).toBe(Severity.LOW);
+    });
+
+    it("groups Rise.ai's two ScriptTag hosts into one Rise.ai finding", () => {
+      const findings = detectScriptTagSunset(
+        [`https://str.rise-ai.com/?shop=${SHOP}`, `https://strn.rise-ai.com/?shop=${SHOP}`],
+        NO_EMBEDS,
+        BEFORE,
+      );
+      expect(findings).toHaveLength(1);
+      expect(findings[0].appName).toBe("Rise.ai");
+      expect(findings[0].codeSnippet.split("\n")).toEqual([
+        "script-tags: Rise.ai",
+        "https://str.rise-ai.com/",
+        "https://strn.rise-ai.com/",
+      ]);
     });
   });
 

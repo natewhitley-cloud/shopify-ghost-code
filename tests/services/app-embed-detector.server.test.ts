@@ -540,6 +540,14 @@ describe("enabledAppEmbedApps", () => {
     expect([...enabledAppEmbedApps([settings])]).toEqual(["PageFly"]);
   });
 
+  it("recognizes the verified Judge.me and Ryviu embed handles", () => {
+    const settings = settingsWith({
+      "1": { type: "shopify://apps/judge-me-reviews/blocks/preview_badge/abc", disabled: false },
+      "2": { type: "shopify://apps/ryviu-product-reviews/blocks/ryviu-embed/def" },
+    });
+    expect([...enabledAppEmbedApps([settings])].sort()).toEqual(["Judge.me", "Ryviu"]);
+  });
+
   it("treats an entry with no disabled flag as enabled", () => {
     const settings = settingsWith({ "1": { type: KLAVIYO_TYPE } });
     expect([...enabledAppEmbedApps([settings])]).toEqual(["Klaviyo"]);
