@@ -18,7 +18,7 @@
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { MemoryRouter } from "react-router";
+import { createRoutesStub, MemoryRouter } from "react-router";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -103,8 +103,11 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
   canExportPdf: vi.fn(),
 }));
 
-vi.mock("../../app/lib/health-score", () => ({
+vi.mock("../../app/lib/health-score", async (importOriginal) => ({
   computeHealthScore: vi.fn(),
+  // Real (pure): only the full-page render tests reach it.
+  computeHealthDelta: (await importOriginal<typeof import("../../app/lib/health-score")>())
+    .computeHealthDelta,
 }));
 
 vi.mock("../../app/models/unknown-script.server", () => ({
@@ -144,6 +147,7 @@ import {
   canUseScanDiffing,
   canViewFindingDetails,
 } from "../../app/lib/plan-gating.server";
+import { SCAN_DURATION_EXPECTATION, SCAN_PHRASES } from "../../app/lib/scan-progress";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
 import {
   getAppAttributionForScan,
@@ -177,7 +181,7 @@ import {
   getUnknownScriptsForScan,
   submitSignatureSuggestion,
 } from "../../app/models/unknown-script.server";
-import {
+import ScanDetail, {
   action,
   cappedCategoriesNotice,
   unreachableCategoriesNotice,
@@ -187,7 +191,6 @@ import {
   loader,
   nextFindingsFilterParams,
   ScanCoverageNotices,
-  scanProgressLabel,
   skippedFilesNotice,
   recordUpgradeClick,
   StaleResultsBanner,
@@ -2773,15 +2776,6 @@ describe("CopyButton", () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// scanProgressLabel — live "Scan In Progress" count copy (gc-rzq)
-//
-// Rules the wording must honor:
-//   - N=0: never "Found 0" (reads like a completed empty scan) — reassure instead.
-//   - N=1 vs N>1: singular "finding" vs plural "findings".
-//   - Always in-progress: "so far…", never a final-sounding count.
-// ---------------------------------------------------------------------------
-
 describe("freePreviewHeading (gc-97k.10)", () => {
   it("keeps the single-row heading for one preview row", () => {
     expect(freePreviewHeading(1)).toBe("Preview: Highest Severity Finding");
@@ -2789,37 +2783,6 @@ describe("freePreviewHeading (gc-97k.10)", () => {
 
   it.each([2, 5])("reads as a top-%i list for several rows", (n) => {
     expect(freePreviewHeading(n)).toBe(`Preview: Top ${n} Findings`);
-  });
-});
-
-describe("scanProgressLabel", () => {
-  it("does not say 'Found 0' when no findings yet (N=0)", () => {
-    const label = scanProgressLabel(0);
-    expect(label).toBe("Scanning… no findings yet.");
-    expect(label).not.toContain("Found 0");
-  });
-
-  it("treats a negative/absent count as the no-findings-yet state", () => {
-    // Defensive: findingCount should never be negative, but the copy must not
-    // regress to "Found -1 so far…" if it ever is.
-    expect(scanProgressLabel(-1)).toBe("Scanning… no findings yet.");
-  });
-
-  it("uses the singular 'finding' for exactly one (N=1)", () => {
-    const label = scanProgressLabel(1);
-    expect(label).toBe("Found 1 finding so far…");
-    expect(label).not.toContain("findings");
-  });
-
-  it("uses the plural 'findings' for more than one (N>1)", () => {
-    expect(scanProgressLabel(2)).toBe("Found 2 findings so far…");
-    expect(scanProgressLabel(45)).toBe("Found 45 findings so far…");
-  });
-
-  it("always reads as in-progress, never final (ends with 'so far…')", () => {
-    for (const n of [1, 2, 45, 200]) {
-      expect(scanProgressLabel(n)).toMatch(/so far…$/);
-    }
   });
 });
 
@@ -3533,5 +3496,58 @@ describe("recordUpgradeClick", () => {
     );
 
     expect(() => recordUpgradeClick("upgrade_preview")).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scan wait experience: the REAL page, rendered from the REAL loader's data
+// ---------------------------------------------------------------------------
+
+describe("ScanDetail in-progress state (ScanProgress)", () => {
+  /** Run the loader for `scan`, then render the page as the merchant sees it. */
+  async function renderPage(
+    scan: Omit<typeof SCAN, "completedAt"> & { completedAt: Date | null },
+  ): Promise<string> {
+    mockGetScanById.mockResolvedValue(scan);
+    const data = await loader(makeLoaderArgs("scan-1"));
+    const Stub = createRoutesStub([
+      {
+        id: "scan",
+        path: "/app/scans/:scanId",
+        Component: ScanDetail as never,
+        loader: () => data,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/scans/scan-1"],
+        hydrationData: { loaderData: { scan: data } },
+      }),
+    );
+  }
+
+  it.each(["PENDING", "IN_PROGRESS"])(
+    "renders the shared progress block for a %s scan, with the live count",
+    async (status) => {
+      const html = await renderPage({ ...SCAN, status, completedAt: null, findingCount: 4 });
+
+      expect(html).toContain("Scan In Progress");
+      expect(html).toMatch(/<span role="status"[^>]*>Scan in progress<\/span>/);
+      expect(html).toContain(SCAN_PHRASES[0]);
+      expect(html).toContain(SCAN_DURATION_EXPECTATION);
+      expect(html).toContain("Found 4 findings so far…");
+      // Never tells the merchant to leave or come back.
+      expect(html).not.toMatch(/come back|leave this page|we.ll email/i);
+    },
+  );
+
+  it("does not render the progress block once the scan has completed", async () => {
+    const html = await renderPage({ ...SCAN, status: "COMPLETED" });
+
+    expect(html).toContain("Theme Health"); // the completed results rendered
+    expect(html).not.toContain("Scan In Progress");
+    expect(html).not.toContain("Scan in progress");
+    expect(html).not.toContain(SCAN_DURATION_EXPECTATION);
+    for (const phrase of SCAN_PHRASES) expect(html).not.toContain(phrase);
   });
 });

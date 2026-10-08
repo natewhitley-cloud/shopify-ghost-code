@@ -530,3 +530,20 @@ export function tileStatusTintCss(classNames: {
   .${classNames.warning} { border-color: ${WARN_BD}; background: ${WARN_BG}; }
   .${classNames.critical} { border-color: ${CRIT_BD}; background: ${CRIT_BG}; }`.trim();
 }
+
+// ---------------------------------------------------------------------------
+// Accessibility
+// ---------------------------------------------------------------------------
+
+/** Hidden on screen but still read by screen readers (e.g. a status line). */
+export const visuallyHidden: React.CSSProperties = {
+  position: "absolute",
+  width: "1px",
+  height: "1px",
+  padding: 0,
+  margin: "-1px",
+  overflow: "hidden",
+  clip: "rect(0, 0, 0, 0)",
+  whiteSpace: "nowrap",
+  border: 0,
+};

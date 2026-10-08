@@ -84,6 +84,7 @@ import {
   canUseScanDiffing,
   getScanUsage,
 } from "../../app/lib/plan-gating.server";
+import { SCAN_DURATION_EXPECTATION, SCAN_PHRASES } from "../../app/lib/scan-progress";
 import { getSeverityCountsForScans } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import {
@@ -230,5 +231,59 @@ describe("gc-bj4: brand-new install always sees onboarding", () => {
     expect(logger.warn).toHaveBeenCalledWith("dashboard-shop-missing-after-create", {
       shop: DOMAIN,
     });
+  });
+});
+
+// The shared scan wait experience (ScanProgress) on Home: the REAL loader with
+// the latest scan still running, then the REAL Dashboard render.
+describe("Home scan wait experience (ScanProgress)", () => {
+  const SCAN = {
+    id: "scan-1",
+    shopId: NEW_SHOP.id,
+    themeId: "gid://shopify/Theme/1",
+    themeName: "Dawn",
+    status: "IN_PROGRESS",
+    findingCount: 0,
+    startedAt: new Date("2026-10-08T10:00:05Z"),
+    completedAt: null as Date | null,
+    createdAt: new Date("2026-10-08T10:00:00Z"),
+  };
+
+  async function renderHome(scan: typeof SCAN): Promise<string> {
+    mockGetOrCreate.mockResolvedValue(NEW_SHOP);
+    (getScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [scan],
+      hasNextPage: false,
+    });
+    return renderDashboard(await runLoader());
+  }
+
+  it.each(["PENDING", "IN_PROGRESS"])(
+    "renders the shared progress block while the latest scan is %s",
+    async (status) => {
+      const html = await renderHome({ ...SCAN, status });
+
+      expect(html).toContain("Scanning your theme...");
+      expect(html).toMatch(/<span role="status"[^>]*>Scan in progress<\/span>/);
+      expect(html).toContain(SCAN_PHRASES[0]);
+      expect(html).toContain(SCAN_DURATION_EXPECTATION);
+      // The old fixed-range line is gone (one expectation, shared with the scan page).
+      expect(html).not.toContain("1–3 minutes");
+      expect(html).not.toMatch(/come back|leave this page|we.ll email/i);
+    },
+  );
+
+  it("does not render the progress block once the latest scan has completed", async () => {
+    const html = await renderHome({
+      ...SCAN,
+      status: "COMPLETED",
+      completedAt: new Date("2026-10-08T10:01:00Z"),
+    });
+
+    expect(html).toContain("Scan Actions"); // the real dashboard rendered
+    expect(html).not.toContain("Scanning your theme...");
+    expect(html).not.toContain("Scan in progress");
+    expect(html).not.toContain(SCAN_DURATION_EXPECTATION);
+    for (const phrase of SCAN_PHRASES) expect(html).not.toContain(phrase);
   });
 });

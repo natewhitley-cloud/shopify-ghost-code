@@ -16,6 +16,7 @@ import {
   HealthScoreTrendEmptyState,
 } from "../components/HealthScoreTrendChart";
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
+import { ScanProgress } from "../components/ScanProgress";
 import { getPlanFeatures } from "../lib/billing.server";
 import { FEEDBACK_NUDGE_COPY, FEEDBACK_NUDGE_HREF } from "../lib/feedback-nudge";
 import {
@@ -560,21 +561,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Format elapsed seconds into a human-readable string.
- * Examples: "a few seconds", "30 seconds", "1 minute", "2 minutes", "3 minutes 15 seconds"
- */
-function formatElapsedTime(elapsedSeconds: number): string {
-  if (elapsedSeconds < 10) return "a few seconds";
-  if (elapsedSeconds < 60) return `${Math.floor(elapsedSeconds)} seconds`;
-  const minutes = Math.floor(elapsedSeconds / 60);
-  const remainingSeconds = Math.floor(elapsedSeconds % 60);
-  if (minutes === 1 && remainingSeconds === 0) return "1 minute";
-  if (minutes === 1) return `1 minute ${remainingSeconds} seconds`;
-  if (remainingSeconds === 0) return `${minutes} minutes`;
-  return `${minutes} minutes ${remainingSeconds} seconds`;
-}
-
-/**
  * Per-urgency chip presentation for a consequence lane. Colors come from the
  * shared design tokens — see the CONSEQUENCE_MAP urgency tiers.
  */
@@ -707,29 +693,6 @@ export default function Dashboard() {
 
   // Whether the latest scan is still running (findings not yet available).
   const scanInProgress = latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
-
-  // Elapsed time timer — updates every 5 seconds while a scan is in progress.
-  const [elapsedText, setElapsedText] = useState<string>("");
-
-  useEffect(() => {
-    if (!scanInProgress || !latestScan?.createdAt) {
-      setElapsedText("");
-      return;
-    }
-
-    const startTime = new Date(latestScan.createdAt).getTime();
-
-    const update = () => {
-      const seconds = (Date.now() - startTime) / 1000;
-      setElapsedText(formatElapsedTime(seconds));
-    };
-
-    // Set initial value immediately.
-    update();
-
-    const interval = setInterval(update, 5_000);
-    return () => clearInterval(interval);
-  }, [scanInProgress, latestScan?.createdAt]);
 
   // Total findings in the latest completed scan — drives the consequence-lane
   // "so what" copy (the leftover-item sentence).
@@ -1103,11 +1066,6 @@ export default function Dashboard() {
               margin-top: 8px;
               max-width: 360px;
             }
-            .scan-progress-elapsed {
-              font-size: 13px;
-              color: ${TEXT_DISABLED};
-              margin-top: 12px;
-            }
             .theme-picker-label {
               font-size: 13px;
               font-weight: 500;
@@ -1160,11 +1118,10 @@ export default function Dashboard() {
                         Ghost Code is analyzing your theme files for orphaned code. Results will
                         appear here when the scan is complete.
                       </div>
-                      {elapsedText && (
-                        <div className="scan-progress-elapsed">Started {elapsedText} ago</div>
-                      )}
-                      <div className="scan-progress-elapsed">
-                        This typically takes 1–3 minutes depending on theme size.
+                      {/* Same wait experience as the scan page. No findingCount:
+                          Home does not poll, so a count here would go stale. */}
+                      <div style={{ marginTop: "12px" }}>
+                        <ScanProgress createdAt={latestScan.createdAt} />
                       </div>
                     </div>
                   ) : healthScore && latestScan ? (

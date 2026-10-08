@@ -5,6 +5,7 @@ import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
 
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
+import { ScanProgress } from "../components/ScanProgress";
 import {
   adminResourceLinkLabel,
   adminResourceLocatorLabel,
@@ -345,20 +346,6 @@ export function recordUpgradeClick(src: UpgradeAskKey): void {
  */
 export function freePreviewHeading(shown: number): string {
   return shown === 1 ? "Preview: Highest Severity Finding" : `Preview: Top ${shown} Findings`;
-}
-
-/**
- * Live progress label for the "Scan In Progress" state (gc-rzq). Surfaces the
- * partial `findingCount` the loader re-reads on each 3s poll, so the merchant
- * watches the number climb while the scan runs. Wording stays explicitly
- * in-progress ("so far…") and never reads as a final count. N=0 avoids
- * "Found 0" (which looks like a completed empty scan) in favour of a reassuring
- * "still scanning" line.
- */
-export function scanProgressLabel(findingCount: number): string {
-  if (findingCount <= 0) return "Scanning… no findings yet.";
-  if (findingCount === 1) return "Found 1 finding so far…";
-  return `Found ${findingCount} findings so far…`;
 }
 
 /**
@@ -1958,12 +1945,13 @@ export default function ScanDetail() {
               <s-heading>Scan In Progress</s-heading>
               <s-paragraph>
                 Your theme is being scanned. Findings will appear here automatically when the scan
-                completes, no need to refresh. This usually takes under a minute, but can take
-                several minutes if you&apos;ve enabled Product, Page, or Redirect checks or have a
-                large catalog.
+                completes, no need to refresh.
               </s-paragraph>
+              {/* Rotating phrase, findings so far, duration and elapsed time
+                  (shared with Home). Hidden once polling times out: the count
+                  is no longer live and the timeout banner takes over. */}
               {!pollingTimedOut && (
-                <s-paragraph>{scanProgressLabel(scan.findingCount)}</s-paragraph>
+                <ScanProgress createdAt={scan.createdAt} findingCount={scan.findingCount} />
               )}
             </s-stack>
           </s-card>
