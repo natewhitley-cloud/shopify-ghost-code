@@ -7,10 +7,12 @@ import { describe, it, expect } from "vitest";
 import {
   deriveJourneyMilestones,
   isPaidPlan,
+  isResultsViewMeasurable,
   JOURNEY_MILESTONES,
   JOURNEY_STAGES,
   journeyStage,
   reachedMilestoneNames,
+  RESULTS_VIEW_TRACKED_SINCE,
   type JourneyFacts,
   type JourneyMilestones,
 } from "../../app/lib/journey-stage";
@@ -163,5 +165,21 @@ describe("reachedMilestoneNames", () => {
 
   it("is empty when nothing is reached", () => {
     expect(reachedMilestoneNames(NONE)).toEqual([]);
+  });
+});
+
+describe("isResultsViewMeasurable (RESULTS_VIEW_TRACKED_SINCE)", () => {
+  it("starts tracking at 2026-09-23T00:00:00Z, the UTC midnight after page_visit shipped", () => {
+    expect(RESULTS_VIEW_TRACKED_SINCE.toISOString()).toBe("2026-09-23T00:00:00.000Z");
+  });
+
+  it("is measurable for a first success at or after the cutoff", () => {
+    expect(isResultsViewMeasurable(RESULTS_VIEW_TRACKED_SINCE)).toBe(true);
+    expect(isResultsViewMeasurable(new Date("2026-10-01T00:00:00Z"))).toBe(true);
+  });
+
+  it("is not measurable for a first success before the cutoff, or none", () => {
+    expect(isResultsViewMeasurable(new Date(RESULTS_VIEW_TRACKED_SINCE.getTime() - 1))).toBe(false);
+    expect(isResultsViewMeasurable(null)).toBe(false);
   });
 });

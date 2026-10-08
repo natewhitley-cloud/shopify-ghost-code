@@ -40,6 +40,7 @@ vi.mock("../../app/models/ops-event.server", async (importOriginal) => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { RESULTS_VIEW_TRACKED_SINCE } from "../../app/lib/journey-stage";
 import { parseExcludeShops } from "../../app/lib/store-exclusion";
 import {
   aggregateActivity,
@@ -48,6 +49,7 @@ import {
   aggregateJourney,
   aggregateNudgeFunnel,
   buildDigestBody,
+  formatFunnelStage,
   CLIENT_ERROR_TOP_MESSAGE_CHARS,
   computeMrr,
   computePlanMix,
@@ -2610,6 +2612,8 @@ describe("journey (gc-dpm.3)", () => {
     opts: {
       allowed?: string[];
       scanStatuses?: Array<{ shopId: string; status: string }>;
+      /** Defaults to: every shop with a successful status first succeeded 1 day ago (measurable). */
+      firstSuccessfulScans?: Array<{ shopId: string; completedAt: Date | null }>;
       rows?: Partial<JourneyTimelineRows>;
     } = {},
   ) =>
@@ -2617,12 +2621,19 @@ describe("journey (gc-dpm.3)", () => {
       shops,
       opts.allowed ?? shops.map((s) => s.id),
       opts.scanStatuses ?? [],
+      opts.firstSuccessfulScans ??
+        [
+          ...new Set(
+            (opts.scanStatuses ?? [])
+              .filter((r) => r.status === "COMPLETED" || r.status === "PARTIAL")
+              .map((r) => r.shopId),
+          ),
+        ].map((shopId) => ({ shopId, completedAt: daysAgo(1) })),
       { ...NO_ROWS, ...opts.rows },
       NOW,
     );
 
-  const funnelLine = (j: JourneySummary) =>
-    j.funnel.map((f) => `${f.label} ${f.count}`).join(" > ");
+  const funnelLine = (j: JourneySummary) => j.funnel.map(formatFunnelStage).join(" > ");
 
   // ortho-india on 09-26: installed, uninstalled 4 min later, reinstalled
   // (first page_visit after the uninstall), a COMPLETED scan with 36 findings,
@@ -2721,7 +2732,7 @@ describe("journey (gc-dpm.3)", () => {
       });
 
       expect(funnelLine(j)).toBe(
-        "Installed 6 > Opened 5 > Scanned 2 > Viewed results 1 > Saw upgrade 1 > Clicked 1 > Paid 1",
+        "Installed 6 > Opened 5 > Scanned 2 > Viewed results 1 of 2 measurable > Saw upgrade 1 > Clicked 1 > Paid 1",
       );
     });
 
@@ -2737,7 +2748,7 @@ describe("journey (gc-dpm.3)", () => {
       });
 
       expect(funnelLine(j)).toBe(
-        "Installed 1 > Opened 1 > Scanned 0 > Viewed results 0 > Saw upgrade 0 > Clicked 0 > Paid 0",
+        "Installed 1 > Opened 1 > Scanned 0 > Viewed results 0 of 0 measurable > Saw upgrade 0 > Clicked 0 > Paid 0",
       );
       // The churned real shop still appears in the timeline; the internal one never.
       expect(j.timeline.map((t) => t.domain)).toEqual([
@@ -2785,6 +2796,122 @@ describe("journey (gc-dpm.3)", () => {
       ]);
       expect(j.timeline).toEqual([]);
       expect(j.timelineMore).toBe(0);
+    });
+  });
+
+  describe("Viewed results: measurable shops only (RESULTS_VIEW_TRACKED_SINCE)", () => {
+    const CUTOFF = RESULTS_VIEW_TRACKED_SINCE;
+    const before = new Date(CUTOFF.getTime() - DAY_MS);
+    const after = new Date(CUTOFF.getTime() + DAY_MS);
+    const viewed = (id: string) => shop({ id, firstResultsViewedAt: after });
+    const notViewed = (id: string) => shop({ id });
+    const ok = (ids: string[]) => ids.map((shopId) => ({ shopId, status: "COMPLETED" }));
+    const firsts = (entries: Array<[string, Date | null]>) =>
+      entries.map(([shopId, completedAt]) => ({ shopId, completedAt }));
+    const viewedStage = (j: JourneySummary) => j.funnel.find((f) => f.label === "Viewed results")!;
+
+    it("all measurable: counts every scanned shop, no before-tracking note", () => {
+      const j = run([viewed("a"), viewed("b"), notViewed("c")], {
+        scanStatuses: ok(["a", "b", "c"]),
+        firstSuccessfulScans: firsts([
+          ["a", after],
+          ["b", after],
+          ["c", after],
+        ]),
+      });
+      expect(viewedStage(j)).toEqual({
+        label: "Viewed results",
+        count: 2,
+        measurable: { of: 3, beforeTracking: 0 },
+      });
+      expect(formatFunnelStage(viewedStage(j))).toBe("Viewed results 2 of 3 measurable");
+    });
+
+    it("none measurable: 0 of 0, and a pre-tracking view stamp is NOT counted", () => {
+      // "a" was stamped (it came back after tracking began) but first scanned
+      // before it: counting it would inflate the rate, since its peers' misses
+      // are unknowable.
+      const j = run([viewed("a"), notViewed("b")], {
+        scanStatuses: ok(["a", "b"]),
+        firstSuccessfulScans: firsts([
+          ["a", before],
+          ["b", before],
+        ]),
+      });
+      expect(formatFunnelStage(viewedStage(j))).toBe(
+        "Viewed results 0 of 0 measurable (2 first scanned before tracking began)",
+      );
+      // Scanned still counts every scanned shop: the other stages are unchanged.
+      expect(funnelLine(j)).toContain("Scanned 2 > Viewed results 0 of 0 measurable");
+    });
+
+    it("mixed: the reported example, 2 of 2 measurable with 5 before tracking", () => {
+      const pre = ["p1", "p2", "p3", "p4", "p5"];
+      const j = run([viewed("m1"), viewed("m2"), ...pre.map(notViewed)], {
+        scanStatuses: ok(["m1", "m2", ...pre]),
+        firstSuccessfulScans: firsts([
+          ["m1", after],
+          ["m2", after],
+          ...pre.map((id): [string, Date] => [id, before]),
+        ]),
+      });
+      expect(funnelLine(j)).toBe(
+        "Installed 7 > Opened 7 > Scanned 7 > Viewed results 2 of 2 measurable (5 first scanned before tracking began) > Saw upgrade 0 > Clicked 0 > Paid 0",
+      );
+    });
+
+    it("a first success exactly at the cutoff is measurable; 1 ms before is not", () => {
+      const j = run([viewed("at"), viewed("just-before")], {
+        scanStatuses: ok(["at", "just-before"]),
+        firstSuccessfulScans: firsts([
+          ["at", CUTOFF],
+          ["just-before", new Date(CUTOFF.getTime() - 1)],
+        ]),
+      });
+      expect(viewedStage(j).count).toBe(1);
+      expect(viewedStage(j).measurable).toEqual({ of: 1, beforeTracking: 1 });
+    });
+
+    it("ignores shops that are not scanned, uninstalled, or excluded", () => {
+      const j = run(
+        [
+          viewed("scanned"),
+          // Backfill counted a failed scan's page visit: not scanned, so not counted.
+          shop({ id: "failed-only", firstResultsViewedAt: after }),
+          shop({ id: "churned", firstResultsViewedAt: after, uninstalledAt: daysAgo(1) }),
+          viewed("internal"),
+        ],
+        {
+          allowed: ["scanned", "failed-only", "churned"],
+          scanStatuses: [
+            ...ok(["scanned", "churned", "internal"]),
+            { shopId: "failed-only", status: "FAILED" },
+          ],
+          firstSuccessfulScans: firsts([
+            ["scanned", after],
+            ["churned", after],
+            ["internal", after],
+          ]),
+        },
+      );
+      expect(viewedStage(j).count).toBe(1);
+      expect(viewedStage(j).measurable).toEqual({ of: 1, beforeTracking: 0 });
+    });
+
+    it("a scanned shop with no first-success completion time is not measurable", () => {
+      const j = run([viewed("a")], {
+        scanStatuses: ok(["a"]),
+        firstSuccessfulScans: firsts([["a", null]]),
+      });
+      expect(viewedStage(j).measurable).toEqual({ of: 0, beforeTracking: 1 });
+    });
+
+    it("leaves the per-shop stage label and milestones as observed", () => {
+      const j = run([shop({ id: "a", installedAt: daysAgo(1), firstResultsViewedAt: after })], {
+        scanStatuses: ok(["a"]),
+        firstSuccessfulScans: firsts([["a", before]]),
+      });
+      expect(j.timeline[0].stage).toBe("viewed results");
     });
   });
 
@@ -3236,7 +3363,7 @@ describe("journey (gc-dpm.3)", () => {
       expect(sectionOf(body)).toBe(
         [
           "JOURNEY (active installs, counted ever)",
-          "  Funnel: Installed 1 > Opened 1 > Scanned 1 > Viewed results 1 > Saw upgrade 1 > Clicked 0 > Paid 0",
+          "  Funnel: Installed 1 > Opened 1 > Scanned 1 > Viewed results 1 of 1 measurable > Saw upgrade 1 > Clicked 0 > Paid 0",
           "  Timeline (shops seen, installed or uninstalled in the last 7d; UTC; latest events):",
           "    ortho-india.myshopify.com [opened, scanned, viewed results, saw upgrade -> stage: saw upgrade]",
           "      09-26 05:00 installed > 05:04 uninstalled > 05:30 reinstalled > 05:30 scan COMPLETED (36) > 05:31 viewed results > 05:31 saw upgrade > last seen 08:52",

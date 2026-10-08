@@ -117,6 +117,16 @@ const fakeDb = vi.hoisted(() => {
           _max: {
             createdAt: members.map((m) => m.createdAt as Date).reduce((a, b) => (a > b ? a : b)),
           },
+          // Earliest non-null value per requested field, like SQL MIN (nulls ignored).
+          _min: Object.fromEntries(
+            Object.keys((args._min as R | undefined) ?? {}).map((field) => [
+              field,
+              members
+                .map((m) => m[field])
+                .filter((v): v is Date => v instanceof Date)
+                .reduce<Date | null>((a, b) => (a === null || b < a ? b : a), null),
+            ]),
+          ),
         }));
       }),
       create: vi.fn(async (args: R) => {
@@ -282,6 +292,7 @@ function seed() {
       newFindingCount: 7,
       resolvedFindingCount: 0,
       createdAt: ago(HOUR),
+      completedAt: ago(HOUR),
     },
     {
       id: "scan-churned",
@@ -674,9 +685,63 @@ describe("operator-digest handler: JOURNEY section wiring (gc-dpm.3)", () => {
     // never seen and no scans. The 3 excluded active stores (all Professional,
     // seen 1h ago) would inflate every stage if they leaked.
     expect(section(body)).toContain(
-      "  Funnel: Installed 2 > Opened 1 > Scanned 1 > Viewed results 0 > Saw upgrade 0 > Clicked 0 > Paid 1",
+      "  Funnel: Installed 2 > Opened 1 > Scanned 1 > Viewed results 0 of 1 measurable > Saw upgrade 0 > Clicked 0 > Paid 1",
     );
     expect(body).toContain("Total active: 2");
+  });
+
+  it("measures Viewed results from each shop's FIRST SUCCESSFUL scan, in one bounded query", async () => {
+    const now = Date.now();
+    const realShop = (id: string, viewedAt: Date | null) => ({
+      ...NULL_STAMPS,
+      id,
+      domain: `${id}.myshopify.com`,
+      plan: "free",
+      installedAt: new Date("2026-09-01T00:00:00Z"),
+      uninstalledAt: null,
+      isInternal: false,
+      lastSeenAt: null,
+      firstResultsViewedAt: viewedAt,
+    });
+    const scanRow = (id: string, shopId: string, status: string, at: Date) => ({
+      id,
+      shopId,
+      status,
+      findingCount: 1,
+      newFindingCount: 1,
+      resolvedFindingCount: 0,
+      createdAt: at,
+      // FAILED is terminal too, so it carries completedAt like the real model.
+      completedAt: at,
+    });
+    // fail-then-ok: its FIRST scan failed before tracking began, its first
+    // SUCCESS came after, so it IS measurable (and viewed). pre-tracking: its
+    // first success predates tracking, so its view stamp is left out.
+    tables.shop.push(
+      realShop("fail-then-ok", new Date(now - HOUR)),
+      realShop("pre-tracking", new Date(now - HOUR)),
+    );
+    tables.scan.push(
+      scanRow("s1", "fail-then-ok", "FAILED", new Date("2026-09-10T00:00:00Z")),
+      scanRow("s2", "fail-then-ok", "COMPLETED", new Date("2026-09-25T00:00:00Z")),
+      scanRow("s3", "pre-tracking", "COMPLETED", new Date("2026-09-15T00:00:00Z")),
+      scanRow("s4", "pre-tracking", "COMPLETED", new Date("2026-09-30T00:00:00Z")),
+    );
+
+    const body = await runDigest();
+
+    // real-a (first success 1h ago, not viewed) + fail-then-ok are measurable.
+    expect(section(body)).toContain(
+      "Scanned 3 > Viewed results 1 of 2 measurable (1 first scanned before tracking began) >",
+    );
+    const firstSuccessReads = (
+      fakeDb.scan.groupBy.mock.calls as Array<[Record<string, unknown>]>
+    ).filter(([args]) => (args._min as Record<string, unknown> | undefined)?.completedAt);
+    expect(firstSuccessReads).toHaveLength(1);
+    expect(firstSuccessReads[0][0]).toMatchObject({
+      by: ["shopId"],
+      where: { status: { in: ["COMPLETED", "PARTIAL"] } },
+    });
   });
 
   it("lists only real shops seen, installed or uninstalled in the last 7d in the timeline", async () => {

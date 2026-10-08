@@ -12,7 +12,9 @@
  *                   and SCHEDULED / AUTO_PUBLISH scans only run for paid plans,
  *                   which are chosen inside the app.
  *   scanned         at least one SUCCESSFUL (COMPLETED or PARTIAL) scan.
- *   viewedResults   firstResultsViewedAt.
+ *   viewedResults   firstResultsViewedAt. Only measurable for shops whose
+ *                   first successful scan completed on or after
+ *                   RESULTS_VIEW_TRACKED_SINCE (see below).
  *   sawUpgrade      ANY Free upgrade ask was shown: upgradePreviewShownAt
  *                   (inline teaser, gc-97k.4), upgradeReturnShownAt (return
  *                   banner, gc-97k.9) or staleResultsShownAt (stale-results
@@ -27,6 +29,34 @@
  * observed. The stage label is simply the furthest milestone reached.
  */
 import { PLANS } from "./plans";
+
+/**
+ * The instant from which a shop's viewedResults milestone is measurable.
+ *
+ * firstResultsViewedAt was backfilled (migration 20260926120000) from
+ * page_visit OpsEvents, which were first recorded by commit 8ec5b23, deployed
+ * 2026-09-22 (this is the next UTC midnight, so the whole deploy day is
+ * excluded), and are pruned after 14 days. A shop whose FIRST successful scan
+ * completed before this may have viewed its results with nothing recorded, so
+ * its "not viewed" is unknown, not "never". Rates over viewedResults must count
+ * only measurable shops (isResultsViewMeasurable). The stamp itself is
+ * unaffected: it is still set on every first view.
+ */
+export const RESULTS_VIEW_TRACKED_SINCE = new Date("2026-09-23T00:00:00Z");
+
+/**
+ * Whether a shop's viewedResults milestone can be trusted either way: its
+ * first successful scan completed at or after RESULTS_VIEW_TRACKED_SINCE.
+ * Decided by the scan date only, never by whether a view was stamped, so a
+ * shop that viewed before tracking cannot inflate a rate. Null (no successful
+ * scan with a completion time) is not measurable.
+ */
+export function isResultsViewMeasurable(firstSuccessfulScanCompletedAt: Date | null): boolean {
+  return (
+    firstSuccessfulScanCompletedAt !== null &&
+    firstSuccessfulScanCompletedAt.getTime() >= RESULTS_VIEW_TRACKED_SINCE.getTime()
+  );
+}
 
 /** The durable facts the milestones are derived from. */
 export interface JourneyFacts {

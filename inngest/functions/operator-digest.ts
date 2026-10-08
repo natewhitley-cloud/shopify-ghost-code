@@ -36,6 +36,7 @@ import { PLAN_AMOUNTS, PLANS } from "../../app/lib/billing.server";
 import { isSuccessfulScan } from "../../app/lib/format";
 import {
   deriveJourneyMilestones,
+  isResultsViewMeasurable,
   JOURNEY_MILESTONES,
   journeyStage,
   reachedMilestoneNames,
@@ -1003,10 +1004,22 @@ export interface JourneyTimelineRow {
   earlierOmitted: number;
 }
 
+/** One funnel stage. */
+export interface JourneyFunnelStage {
+  label: string;
+  count: number;
+  /**
+   * Set only on "Viewed results": `count` is over measurable shops only (see
+   * RESULTS_VIEW_TRACKED_SINCE), `of` is how many scanned shops are measurable
+   * and `beforeTracking` how many scanned shops are not.
+   */
+  measurable?: { of: number; beforeTracking: number };
+}
+
 /** Serialization-safe JOURNEY rollup crossing the Inngest step boundary. */
 export interface JourneySummary {
   /** "Installed" then each milestone, in funnel order, over active installs. */
-  funnel: Array<{ label: string; count: number }>;
+  funnel: JourneyFunnelStage[];
   /** Timeline shops, most recently active first, capped at TIMELINE_SHOPS_LIMIT. */
   timeline: JourneyTimelineRow[];
   /** Timeline shops beyond the cap. */
@@ -1233,7 +1246,12 @@ export function reviewPopupStamps(shop: {
  * pinned to those shops by shopId or by domain (event keys carry no shop
  * object, so a domain-only rule would miss isInternal; gc-zeh).
  *
- * The FUNNEL counts only active installs (uninstalledAt null). The TIMELINE
+ * The FUNNEL counts only active installs (uninstalledAt null). "Viewed
+ * results" counts only MEASURABLE scanned shops, whose first successful scan
+ * (`firstSuccessfulScans`: per shop, the earliest completedAt among its
+ * COMPLETED / PARTIAL scans; a shop missing there has none) completed at or
+ * after RESULTS_VIEW_TRACKED_SINCE, and carries the measurable / before-tracking
+ * split; a view stamp on any other shop is left out. The TIMELINE
  * covers every allowed shop that isTimelineShop, active or not, in
  * selectTimelineShops order (most recent activity, then domain). Its
  * "(N earlier)" count adds the scans / billing events not read (rows.scanCounts
@@ -1244,6 +1262,7 @@ export function aggregateJourney(
   shops: JourneyShopInput[],
   allowedShopIds: Iterable<string>,
   scanStatuses: Array<{ shopId: string; status: string }>,
+  firstSuccessfulScans: Array<{ shopId: string; completedAt: Date | null }>,
   rows: JourneyTimelineRows,
   now: Date,
 ): JourneySummary {
@@ -1255,14 +1274,27 @@ export function aggregateJourney(
     return deriveJourneyMilestones({ ...s, hasAnyScan: p.any, hasSuccessfulScan: p.successful });
   };
 
+  const firstSuccessAt = new Map(firstSuccessfulScans.map((r) => [r.shopId, r.completedAt]));
+
   const active = kept.filter((s) => s.uninstalledAt === null);
-  const activeMilestones = active.map(milestonesOf);
-  const funnel = [
+  const activeRows = active.map((s) => ({
+    m: milestonesOf(s),
+    measurable: isResultsViewMeasurable(firstSuccessAt.get(s.id) ?? null),
+  }));
+  const scanned = activeRows.filter((r) => r.m.scanned);
+  const measurable = scanned.filter((r) => r.measurable);
+  const funnel: JourneyFunnelStage[] = [
     { label: "Installed", count: active.length },
-    ...JOURNEY_MILESTONES.map(({ key, funnelLabel }) => ({
-      label: funnelLabel,
-      count: activeMilestones.filter((m) => m[key]).length,
-    })),
+    ...JOURNEY_MILESTONES.map(({ key, funnelLabel }): JourneyFunnelStage => {
+      if (key !== "viewedResults") {
+        return { label: funnelLabel, count: activeRows.filter((r) => r.m[key]).length };
+      }
+      return {
+        label: funnelLabel,
+        count: measurable.filter((r) => r.m.viewedResults).length,
+        measurable: { of: measurable.length, beforeTracking: scanned.length - measurable.length },
+      };
+    }),
   ];
 
   const timelineShops = selectTimelineShops(
@@ -1311,6 +1343,18 @@ export function aggregateJourney(
     timeline,
     timelineMore: Math.max(0, timelineShops.length - TIMELINE_SHOPS_LIMIT),
   };
+}
+
+/**
+ * One funnel stage as text: `Scanned 7`, or for "Viewed results"
+ * `Viewed results 2 of 2 measurable (5 first scanned before tracking began)`
+ * (the parenthetical only when that count is above 0).
+ */
+export function formatFunnelStage(f: JourneyFunnelStage): string {
+  if (!f.measurable) return `${f.label} ${f.count}`;
+  const { of, beforeTracking } = f.measurable;
+  const note = beforeTracking > 0 ? ` (${beforeTracking} first scanned before tracking began)` : "";
+  return `${f.label} ${f.count} of ${of} measurable${note}`;
 }
 
 /**
@@ -1818,7 +1862,7 @@ export function buildDigestBody(data: OperatorDigestData): string {
     lines.push(
       installed === 0
         ? "  Funnel: no active installs"
-        : `  Funnel: ${journey.funnel.map((f) => `${f.label} ${f.count}`).join(" > ")}`,
+        : `  Funnel: ${journey.funnel.map(formatFunnelStage).join(" > ")}`,
     );
     lines.push(
       "  Timeline (shops seen, installed or uninstalled in the last 7d; UTC; latest events):",
@@ -2248,9 +2292,9 @@ export const operatorDigest = inngest.createFunction(
         uninstallEvents: [],
         pageVisits: [],
       };
-      if (shopIds.length === 0) return aggregateJourney([], [], [], noRows, now);
+      if (shopIds.length === 0) return aggregateJourney([], [], [], [], noRows, now);
 
-      const [shops, scanStatuses, uninstallEvents] = await Promise.all([
+      const [shops, scanStatuses, firstSuccessRows, uninstallEvents] = await Promise.all([
         db.shop.findMany({
           where: { id: { in: shopIds } },
           select: {
@@ -2288,6 +2332,14 @@ export const operatorDigest = inngest.createFunction(
           select: { shopId: true, status: true },
           distinct: ["shopId", "status"],
         }),
+        // One row per shop with a successful scan: its FIRST successful
+        // completion, which decides whether "Viewed results" is measurable
+        // (RESULTS_VIEW_TRACKED_SINCE). A failed scan before it never counts.
+        db.scan.groupBy({
+          by: ["shopId"],
+          where: { shopId: { in: shopIds }, status: { in: [...SUCCESSFUL_SCAN_STATUSES] } },
+          _min: { completedAt: true },
+        }),
         // Every retained uninstall of an allowed shop (a handful of rows): it
         // decides timeline membership (uninstalled in the last 7d) and draws
         // the uninstall / reinstall entries.
@@ -2306,8 +2358,19 @@ export const operatorDigest = inngest.createFunction(
         now,
         recentUninstallTimes(uninstallEvents, now),
       ).slice(0, TIMELINE_SHOPS_LIMIT);
+      const firstSuccessfulScans = firstSuccessRows.map((r) => ({
+        shopId: r.shopId,
+        completedAt: r._min.completedAt,
+      }));
       if (shown.length === 0) {
-        return aggregateJourney(shops, shopIds, scanStatuses, { ...noRows, uninstallEvents }, now);
+        return aggregateJourney(
+          shops,
+          shopIds,
+          scanStatuses,
+          firstSuccessfulScans,
+          { ...noRows, uninstallEvents },
+          now,
+        );
       }
       const shownIds = shown.map((s) => s.id);
       // BOUNDED: the latest TIMELINE_EVENTS_LIMIT scans and billing events per
@@ -2370,6 +2433,7 @@ export const operatorDigest = inngest.createFunction(
         shops,
         shopIds,
         scanStatuses,
+        firstSuccessfulScans,
         {
           scans: scanLists.flat(),
           billingEvents: billingLists.flat(),
