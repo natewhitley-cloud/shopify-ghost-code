@@ -1,3 +1,4 @@
+import type { FindingType } from "@prisma/client";
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
@@ -12,6 +13,11 @@ import {
   adminResourceLocatorLabel,
   buildAdminResourceUrl,
 } from "../lib/admin-resource-url";
+import {
+  removalContextBody,
+  removalContextTitle,
+  scopedFindingsHeading,
+} from "../lib/app-removal-notice";
 import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import { copyToClipboard } from "../lib/clipboard";
 import {
@@ -62,6 +68,10 @@ import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upg
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import { useScanPolling } from "../lib/use-scan-polling";
 import {
+  getAppRemovalForScanApp,
+  getAppRemovalsDetectedOnScan,
+} from "../models/app-removal.server";
+import {
   getAppAttributionForScan,
   getFindingByIdForShop,
   getFindingFilterOptionsForScan,
@@ -73,6 +83,7 @@ import {
   ignoreFindingApp,
   ignoreFindingInstance,
 } from "../models/ignored-finding.server";
+import type { ShopIgnores } from "../models/ignored-finding.server";
 import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
 import {
@@ -82,9 +93,11 @@ import {
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import {
+  filterIgnoredFindings,
   getFilteredFindingSummaryAndKept,
   isFindingIgnored,
 } from "../services/finding-aggregation.server";
+import type { FindingRow as FindingRecord } from "../services/finding-aggregation.server";
 import { getFreePreviewFindings } from "../services/free-preview.server";
 import {
   recordJourneyMilestoneOnce,
@@ -352,6 +365,31 @@ export function recordUpgradeClick(src: UpgradeAskKey): void {
   } catch {
     // Telemetry must never break the upgrade click.
   }
+}
+
+/**
+ * The scan page's removal context body (gc-frda): "{X} was active at your
+ * previous scan ({date}) and isn't now. It left these N items behind. ..."
+ * The date is the previous scan's completion, rendered like every other date
+ * on the page; it is left out when that scan is gone.
+ */
+export function RemovalContextBody({
+  appName,
+  count,
+  previousScanAt,
+}: {
+  appName: string;
+  count: number;
+  previousScanAt: Date | string | null;
+}) {
+  const { before, after } = removalContextBody(appName, count, previousScanAt !== null);
+  return (
+    <>
+      {before}
+      {previousScanAt !== null && <FormattedDate value={previousScanAt} />}
+      {after}
+    </>
+  );
 }
 
 /**
@@ -842,6 +880,40 @@ function FindingsTable({ children }: { children: React.ReactNode }) {
 /** Number of findings per page. */
 const PAGE_SIZE = 50;
 
+/**
+ * The `?app=X` removal context (gc-frda) for an AppRemoval detected on this
+ * scan: X's non-ignored findings on the scan, their per-type counts, and the
+ * previous scan's completion date (null when that scan was pruned or is not
+ * this shop's). Null when X has no findings left after ignores.
+ */
+async function loadRemovalContext(
+  record: { appName: string; previousScanId: string },
+  scanId: string,
+  shopId: string,
+  keptFindings: FindingRecord[] | null,
+  ignores: ShopIgnores,
+) {
+  const [findings, previousScan] = await Promise.all([
+    keptFindings !== null
+      ? keptFindings.filter((f) => f.appName === record.appName)
+      : getFindingsForScan(scanId, { appName: record.appName }).then(
+          (rows) => filterIgnoredFindings(rows, ignores).kept,
+        ),
+    getScanById(record.previousScanId, { includeFindings: false }),
+  ]);
+  if (findings.length === 0) return null;
+  const byType: Partial<Record<FindingType, number>> = {};
+  for (const f of findings) byType[f.findingType] = (byType[f.findingType] ?? 0) + 1;
+  return {
+    appName: record.appName,
+    count: findings.length,
+    findings,
+    byType,
+    previousScanAt:
+      previousScan && previousScan.shopId === shopId ? previousScan.completedAt : null,
+  };
+}
+
 export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   const { session } = await authenticate.admin(request);
   const { scanId } = params;
@@ -927,6 +999,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   //     else one groupBy plus a few `take <= 3` reads.
   //   getFilteredFindingSummaryAndKept fast-paths to the lean groupBy when this
   //   shop has no ignores, so the common case is unchanged.
+  //   gc-frda: an `?app=X` view (no lane) of a successful scan adds ONE
+  //   unique-key AppRemoval read here; only when X was found no longer active
+  //   on this scan, the previous scan's date (one read by id) and X's findings
+  //   (none for a shop with ignores: the summary's kept rows). The unfiltered
+  //   view adds one AppRemoval read only when a "Start here" row has an app.
   const now = new Date();
   const scanSuccessful = isSuccessfulScan(scan.status);
   const [
@@ -938,6 +1015,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     maliciousFindings,
     promptState,
     trialEligibleForShop,
+    appRemovalRecord,
   ] = await Promise.all([
     getFilteredFindingSummaryAndKept(scanId, ignores),
     // Paid plan: paginated findings for the current page, with active filters
@@ -978,6 +1056,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // Trial vs upgrade framing for the Free upgrade asks (gc-97k.8). Paid
     // shops return false without a query.
     scanSuccessful ? getTrialEligibility(shop) : Promise.resolve(false),
+    // gc-frda: was `?app=X` found no longer active on THIS scan?
+    scanSuccessful && appName && !lane
+      ? getAppRemovalForScanApp(shop.id, scan.themeId, appName, scanId)
+      : Promise.resolve(null),
   ]);
 
   // Compute health score for successful scans (COMPLETED or PARTIAL).
@@ -1007,6 +1089,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isIgnored: hasIgnores ? isFindingIgnored(f, ignores) : false,
   }));
 
+  // App-removal context (gc-frda): `?app=X` where X was found no longer active
+  // on this scan. The page then explains it (context banner) and, on Free,
+  // scopes the summary, preview and teaser to X. Its count is X's non-ignored
+  // findings on THIS scan (the record's count can be refreshed by later
+  // scans). No findings left after ignores: no removal context, the page
+  // behaves exactly as today.
+  const removalContext = appRemovalRecord
+    ? await loadRemovalContext(appRemovalRecord, scanId, shop.id, keptFindings, ignores)
+    : null;
+  // Free's view of X (decision 4A): the summary card, preview rows and teaser
+  // count only X's findings. Malicious findings stay in the security alert
+  // above on every plan and are never previewed or counted as hidden.
+  const freeScope = removalContext && !canViewDetails ? removalContext : null;
+
   // Free-tier preview rows (gc-97k.10): up to five full findings, never more
   // than half of the scan's non-malicious, non-ignored total, spread across
   // consequence lanes (see getFreePreviewFindings for the bounded read and
@@ -1019,9 +1115,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // or checkout-sunset findings) are never previewed, so never in the top 3;
   // they stay counted as locked in the teaser.
   const withheldTypes = findingTypesWithheldByPlan(getPlanFeatures(shop.plan));
+  // On an app-scoped Free view the same formula and pick run over X's
+  // findings only (already loaded, so no query).
   const rawPreviewFindings =
     scanSuccessful && !canViewDetails
-      ? await getFreePreviewFindings(scanId, findingSummary.byType, keptFindings, withheldTypes)
+      ? freeScope
+        ? await getFreePreviewFindings(scanId, freeScope.byType, freeScope.findings, withheldTypes)
+        : await getFreePreviewFindings(scanId, findingSummary.byType, keptFindings, withheldTypes)
       : [];
   const previewFindings = rawPreviewFindings.map((f) => ({
     ...f,
@@ -1047,6 +1147,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           })
       : [];
   const topFindings = toTopFindingViews(scanId, topFindingRows, canViewDetails);
+  // gc-frda: apps found no longer active on THIS scan, for the block's
+  // "New · {App}" badge. Read only when a top row has an app at all.
+  const newlyInactiveApps = topFindingRows.some((f) => f.appName !== null)
+    ? (await getAppRemovalsDetectedOnScan(shop.id, scan.themeId, scanId)).map((r) => r.appName)
+    : [];
 
   // Free-tier hidden-findings breakdown (gc-97k.4): per-lane counts of the
   // findings hidden behind the paywall, from the summary's existing groupBy
@@ -1057,10 +1162,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // counted as hidden (they are shown in full above on every plan). It is
   // CONTENT for exactly one upgrade ask: the return-visit banner when that
   // renders, otherwise the inline teaser.
+  // On an app-scoped Free view (gc-frda) the breakdown counts X's hidden
+  // findings only, so the teaser talks about the app the merchant came for.
   const hiddenBreakdown =
     scanSuccessful && !canViewDetails
       ? buildUpgradePreview(
-          findingSummary.byType,
+          freeScope?.byType ?? findingSummary.byType,
           previewFindings.map((f) => f.findingType),
         )
       : null;
@@ -1189,6 +1296,20 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     previewFindings,
     // gc-bn0x: the "Start here" rows (empty on a filtered view or no findings).
     topFindings,
+    // gc-frda: apps found no longer active on this scan (Start here badge).
+    newlyInactiveApps,
+    // gc-frda: `?app=X` with X found no longer active on this scan, else null.
+    removalContext: removalContext
+      ? {
+          appName: removalContext.appName,
+          count: removalContext.count,
+          previousScanAt: removalContext.previousScanAt,
+        }
+      : null,
+    // gc-frda: the Free summary card scoped to X (null = scan-wide, as today).
+    freeScope: freeScope
+      ? { appName: freeScope.appName, total: freeScope.count, byType: freeScope.byType }
+      : null,
     // Exactly one of these is non-null when the page has hidden findings: the
     // return-visit banner (gc-97k.9) or the inline teaser (gc-97k.4).
     upgradeReturn: showUpgradeReturn ? hiddenBreakdown : null,
@@ -1452,6 +1573,9 @@ export default function ScanDetail() {
     findingsPagination,
     previewFindings,
     topFindings,
+    newlyInactiveApps,
+    removalContext,
+    freeScope,
     upgradeReturn,
     upgradePreview,
     teaserCta,
@@ -2165,7 +2289,9 @@ export default function ScanDetail() {
 
         {/* "Start here" (gc-bn0x): the top 3 findings and what each costs, above
           the lists. Empty (renders nothing) on a filtered view or a clean scan. */}
-        {isCompleted && <TopFindings findings={topFindings} />}
+        {isCompleted && (
+          <TopFindings findings={topFindings} newlyInactiveApps={newlyInactiveApps} />
+        )}
 
         {/* Lane-context banner — shown when the merchant arrived via a dashboard
           consequence-lane deep link (`?lane=`). Rendered ABOVE the paid/free
@@ -2206,10 +2332,9 @@ export default function ScanDetail() {
           the unfiltered view. Suppressed when a lane filter is also active so
           the two context banners don't stack awkwardly. */}
         {isCompleted &&
-          canViewDetails &&
           filters.app &&
           !filters.lane &&
-          findingSummary.total > 0 && (
+          (removalContext || (canViewDetails && findingSummary.total > 0)) && (
             <div
               style={{
                 display: "flex",
@@ -2223,18 +2348,31 @@ export default function ScanDetail() {
                 background: INFO_BG,
               }}
             >
-              <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
-                <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
-                  Removing {filters.app}
-                </span>
-                <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
-                  The findings below are the theme code attributed to {filters.app}. This code stays
-                  in your theme until it&apos;s cleaned up, whether or not the app is still
-                  installed.
-                </span>
-              </div>
+              {removalContext ? (
+                // gc-frda: X was found no longer active on THIS scan. Above the
+                // paid/free split, so Free gets the same context.
+                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
+                    {removalContextTitle(removalContext.appName)}
+                  </span>
+                  <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+                    <RemovalContextBody {...removalContext} />
+                  </span>
+                </div>
+              ) : (
+                <div style={{ display: "flex", flexDirection: "column", gap: "2px" }}>
+                  <span style={{ fontSize: "14px", fontWeight: 600, color: TEXT_PRIMARY }}>
+                    Removing {filters.app}
+                  </span>
+                  <span style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+                    The findings below are the theme code attributed to {filters.app}. This code
+                    stays in your theme until it&apos;s cleaned up, whether or not the app is still
+                    installed.
+                  </span>
+                </div>
+              )}
               <Link to={`/app/scans/${scan.id}`} preventScrollReset>
-                Show all findings
+                {removalContext && !canViewDetails ? "View full scan results" : "Show all findings"}
               </Link>
             </div>
           )}
@@ -2436,9 +2574,18 @@ export default function ScanDetail() {
               {/* Summary header: total count + category breakdown */}
               <s-card>
                 <s-stack direction="block" gap="base">
-                  <s-heading>{findingSummary.total} findings detected</s-heading>
+                  <s-heading>
+                    {freeScope
+                      ? scopedFindingsHeading(freeScope.appName, freeScope.total)
+                      : `${findingSummary.total} findings detected`}
+                  </s-heading>
                   <s-stack direction="inline" gap="base">
-                    {(Object.entries(findingSummary.byType) as [string, number][])
+                    {(
+                      Object.entries(freeScope?.byType ?? findingSummary.byType) as [
+                        string,
+                        number,
+                      ][]
+                    )
                       .filter(([, count]) => count > 0)
                       .map(([type, count]) => (
                         <s-badge key={type} tone="neutral">

@@ -164,6 +164,17 @@ describe("getFindingsForScan", () => {
     expect(result).toEqual(findings);
   });
 
+  it("filters by appName when provided (gc-frda: one app's findings)", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getFindingsForScan(SCAN_ID, { appName: "Yotpo" });
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, appName: "Yotpo" },
+      orderBy: [{ severity: "asc" }, { filename: "asc" }],
+    });
+  });
+
   it("filters by severity when provided", async () => {
     mockDb.finding.findMany.mockResolvedValue([]);
 

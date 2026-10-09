@@ -100,13 +100,14 @@ export async function createFindings(scanId: string, findings: CreateFindingInpu
  */
 export async function getFindingsForScan(
   scanId: string,
-  filters?: { severity?: Severity; findingType?: FindingType },
+  filters?: { severity?: Severity; findingType?: FindingType; appName?: string },
 ) {
   return db.finding.findMany({
     where: {
       scanId,
       ...(filters?.severity !== undefined ? { severity: filters.severity } : {}),
       ...(filters?.findingType !== undefined ? { findingType: filters.findingType } : {}),
+      ...(filters?.appName !== undefined ? { appName: filters.appName } : {}),
     },
     // Prisma sorts enums by declaration order in the schema, not alphabetically.
     // The Severity enum is declared as HIGH, MEDIUM, LOW — so "asc" produces

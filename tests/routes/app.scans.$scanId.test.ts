@@ -67,6 +67,13 @@ vi.mock("../../app/models/scan.server", () => ({
   claimScanViewStamp: vi.fn(),
 }));
 
+// gc-frda: app-removal reads (queries covered in tests/models/app-removal.server.test.ts).
+// No removal by default; the original implementations survive vi.resetAllMocks.
+vi.mock("../../app/models/app-removal.server", () => ({
+  getAppRemovalForScanApp: vi.fn(async () => null),
+  getAppRemovalsDetectedOnScan: vi.fn(async () => []),
+}));
+
 vi.mock("../../app/models/finding.server", async (importOriginal) => ({
   getFindingSummary: vi.fn(),
   getFindingsForScan: vi.fn(),
@@ -147,7 +154,7 @@ vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
 // ---------------------------------------------------------------------------
 
 import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/finding-consequence";
-import { comparePreviewCandidates } from "../../app/lib/free-preview";
+import { comparePreviewCandidates, pickFreePreviewFindings } from "../../app/lib/free-preview";
 import { computeHealthScore } from "../../app/lib/health-score";
 import { logger } from "../../app/lib/logger.server";
 import {
@@ -157,6 +164,10 @@ import {
   canViewFindingDetails,
 } from "../../app/lib/plan-gating.server";
 import { SCAN_DURATION_EXPECTATION, SCAN_PHRASES } from "../../app/lib/scan-progress";
+import {
+  getAppRemovalForScanApp,
+  getAppRemovalsDetectedOnScan,
+} from "../../app/models/app-removal.server";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
 import {
   getAppAttributionForScan,
@@ -1970,6 +1981,11 @@ describe("app.scans.$scanId loader", () => {
         claimShopStamp: mockClaimShopStamp.mock.calls.length,
         claimScanViewStamp: mockClaimScanViewStamp.mock.calls.length,
         startUpgradeReturnEpisode: mockStartEpisode.mock.calls.length,
+        // gc-frda: the `?app=` removal lookup and the Start here badge read.
+        getAppRemovalForScanApp: (getAppRemovalForScanApp as ReturnType<typeof vi.fn>).mock.calls
+          .length,
+        getAppRemovalsDetectedOnScan: (getAppRemovalsDetectedOnScan as ReturnType<typeof vi.fn>)
+          .mock.calls.length,
       };
       return Object.fromEntries(Object.entries(counts).filter(([, n]) => n > 0));
     }
@@ -4075,4 +4091,311 @@ describe("Free preview + teaser math with scope-gated findings (gc-4n0y)", () =>
       }
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// gc-frda: `?app=X` where X was found no longer active on THIS scan
+// ---------------------------------------------------------------------------
+
+describe("app-removal context on the scan page (gc-frda)", () => {
+  const mockRemovalLookup = getAppRemovalForScanApp as ReturnType<typeof vi.fn>;
+  const mockDetectedOnScan = getAppRemovalsDetectedOnScan as ReturnType<typeof vi.fn>;
+  const PREVIOUS_AT = new Date("2026-03-13T09:00:00Z");
+
+  const yotpo = (
+    id: string,
+    findingType: string,
+    severity: "HIGH" | "MEDIUM" | "LOW",
+    minute: number,
+  ) => ({
+    ...FINDING_ONE,
+    id,
+    findingType,
+    severity,
+    appName: "Yotpo" as string | null,
+    createdAt: new Date(Date.UTC(2026, 2, 20, 10, minute)),
+  });
+  // 4 non-malicious Yotpo findings + 1 malicious one attributed to Yotpo.
+  const YOTPO_ROWS = [
+    yotpo("y-1", "GHOST_SCRIPT", "HIGH", 0),
+    yotpo("y-2", "GHOST_STYLE", "MEDIUM", 1),
+    yotpo("y-3", "GHOST_SNIPPET", "LOW", 2),
+    yotpo("y-4", "GHOST_SCRIPT", "LOW", 3),
+  ];
+  const YOTPO_MALICIOUS = yotpo("y-mal", "MALICIOUS_SCRIPT", "HIGH", 4);
+  // Scan-wide: Yotpo's rows plus 6 GHOST_PIXEL rows from another app.
+  const OTHER_ROWS = Array.from({ length: 6 }, (_, i) => ({
+    ...FINDING_ONE,
+    id: `o-${i}`,
+    findingType: "GHOST_PIXEL",
+    severity: "HIGH",
+    appName: "Privy" as string | null,
+    createdAt: new Date(Date.UTC(2026, 2, 20, 11, i)),
+  }));
+
+  type Data = {
+    removalContext: { appName: string; count: number; previousScanAt: Date | null } | null;
+    freeScope: { appName: string; total: number; byType: Record<string, number> } | null;
+    previewFindings: Array<{ id: string; findingType: string }>;
+    upgradePreview: { hiddenCount: number; groups: unknown[] } | null;
+    maliciousFindings: Array<{ id: string }>;
+    findingSummary: { total: number };
+    newlyInactiveApps: string[];
+    topFindings: unknown[];
+  };
+
+  function arrange(opts: { malicious?: boolean; removal?: boolean } = {}) {
+    const yotpoRows = opts.malicious ? [...YOTPO_ROWS, YOTPO_MALICIOUS] : YOTPO_ROWS;
+    const all = [...yotpoRows, ...OTHER_ROWS];
+    const byType: Record<string, number> = {};
+    const bySeverity = { HIGH: 0, MEDIUM: 0, LOW: 0 } as Record<string, number>;
+    for (const r of all) {
+      byType[r.findingType] = (byType[r.findingType] ?? 0) + 1;
+      bySeverity[r.severity] += 1;
+    }
+    mockGetFindingSummary.mockResolvedValue({ total: all.length, bySeverity, byType });
+    serveTopFindings(all);
+    mockGetFindingsForScan.mockImplementation(
+      async (_scanId: string, filters?: { appName?: string; findingType?: string }) => {
+        if (filters?.appName) return all.filter((r) => r.appName === filters.appName);
+        if (filters?.findingType) return all.filter((r) => r.findingType === filters.findingType);
+        return all;
+      },
+    );
+    mockGetScanById.mockImplementation(async (id: string) =>
+      id === "scan-1"
+        ? SCAN
+        : id === "scan-0"
+          ? { ...SCAN, id: "scan-0", completedAt: PREVIOUS_AT }
+          : null,
+    );
+    if (opts.removal !== false) {
+      mockRemovalLookup.mockResolvedValue({ appName: "Yotpo", previousScanId: "scan-0" });
+    }
+  }
+
+  const free = () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+    mockCanViewFindingDetails.mockReturnValue(false);
+  };
+
+  const url = (query: string) => `https://test-shop.myshopify.com/app/scans/scan-1${query}`;
+
+  async function load(query = "?app=Yotpo"): Promise<Data> {
+    return (await loader(makeLoaderArgs("scan-1", url(query)))) as unknown as Data;
+  }
+
+  async function renderPage(query = "?app=Yotpo"): Promise<string> {
+    const data = await loader(makeLoaderArgs("scan-1", url(query)));
+    const Stub = createRoutesStub([
+      {
+        id: "scan",
+        path: "/app/scans/:scanId",
+        Component: ScanDetail as never,
+        loader: () => data,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: [`/app/scans/scan-1${query}`],
+        hydrationData: { loaderData: { scan: data } },
+      }),
+    );
+  }
+
+  describe("paid", () => {
+    it("looks the app up on THIS scan's shop + theme, and builds the context", async () => {
+      arrange();
+      const data = await load();
+      expect(mockRemovalLookup).toHaveBeenCalledWith("shop-1", SCAN.themeId, "Yotpo", "scan-1");
+      expect(data.removalContext).toEqual({
+        appName: "Yotpo",
+        count: 4,
+        previousScanAt: PREVIOUS_AT,
+      });
+      // Paid view is otherwise unchanged: no Free scope, the filtered table.
+      expect(data.freeScope).toBeNull();
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
+        "scan-1",
+        expect.objectContaining({ appName: "Yotpo" }),
+      );
+    });
+
+    it("the context banner switches to the removal wording, with the previous scan's date", async () => {
+      arrange();
+      const html = await renderPage();
+      expect(html).toContain("Yotpo is no longer active in your store");
+      expect(html).toMatch(
+        /Yotpo was active at your previous scan \(<time dateTime="2026-03-13T09:00:00.000Z"[^>]*>[^<]*<\/time>\) and isn&#x27;t now\. It left these 4 items behind\. This code stays in your theme until it&#x27;s cleaned up\./,
+      );
+      expect(html).toContain(">Show all findings</a>");
+      expect(html).not.toContain("Removing Yotpo");
+    });
+
+    it("no removal record: today's banner exactly, and no extra reads", async () => {
+      arrange({ removal: false });
+      const data = await load();
+      expect(data.removalContext).toBeNull();
+      expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1", { appName: "Yotpo" });
+      expect(mockGetScanById).toHaveBeenCalledTimes(1);
+      const html = await renderPage();
+      expect(html).toContain("Removing Yotpo");
+      expect(html).toContain(
+        "The findings below are the theme code attributed to Yotpo. This code stays in your theme until it&#x27;s cleaned up, whether or not the app is still installed.",
+      );
+      expect(html).not.toContain("no longer active");
+    });
+
+    it("previous scan pruned: the body leaves the date out", async () => {
+      arrange();
+      mockRemovalLookup.mockResolvedValue({ appName: "Yotpo", previousScanId: "gone" });
+      const html = await renderPage();
+      expect(html).toContain(
+        "Yotpo was active at your previous scan and isn&#x27;t now. It left these 4 items behind.",
+      );
+    });
+
+    it("a lane view never looks the app up", async () => {
+      arrange();
+      const data = await load("?app=Yotpo&lane=speed");
+      expect(mockRemovalLookup).not.toHaveBeenCalled();
+      expect(data.removalContext).toBeNull();
+    });
+
+    it("with ignores: counts X's kept findings from the summary's rows (no extra findings read)", async () => {
+      arrange();
+      const { fingerprintFinding } = await import("../../app/services/scan-differ.server");
+      // Fixture rows share filename/snippet/line, so give y-1 its own snippet
+      // and ignore exactly that one by fingerprint.
+      const ignored = { ...YOTPO_ROWS[0], codeSnippet: "<script src=y1></script>" };
+      const rows = [ignored, ...YOTPO_ROWS.slice(1), ...OTHER_ROWS];
+      mockGetFindingsForScan.mockImplementation(async (_s: string, f?: { findingType?: string }) =>
+        f?.findingType ? rows.filter((r) => r.findingType === f.findingType) : rows,
+      );
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set([
+          fingerprintFinding(
+            ignored.filename,
+            ignored.findingType,
+            ignored.codeSnippet,
+            ignored.lineNumber,
+          ),
+        ]),
+        appNames: new Set(),
+      });
+      const data = await load();
+      expect(data.removalContext?.count).toBe(3);
+      expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1", { appName: "Yotpo" });
+    });
+
+    it("every X finding ignored: no removal context, today's page", async () => {
+      arrange();
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set(),
+        appNames: new Set(["Yotpo"]),
+      });
+      const data = await load();
+      expect(data.removalContext).toBeNull();
+    });
+  });
+
+  describe("Free", () => {
+    beforeEach(free);
+
+    it("scopes the summary, preview and teaser to X", async () => {
+      arrange();
+      const data = await load();
+      expect(data.freeScope).toEqual({
+        appName: "Yotpo",
+        total: 4,
+        byType: { GHOST_SCRIPT: 2, GHOST_STYLE: 1, GHOST_SNIPPET: 1 },
+      });
+      // freePreviewCount(4) = 2, the existing pick over Yotpo's rows only.
+      expect(data.previewFindings.map((f) => f.id)).toEqual(
+        pickFreePreviewFindings(YOTPO_ROWS as never, 2).map((f: { id: string }) => f.id),
+      );
+      expect(data.previewFindings).toHaveLength(2);
+      // X's 4 - 2 shown, not the scan-wide 10 - 5.
+      expect(data.upgradePreview?.hiddenCount).toBe(2);
+      // The scan-wide preview read never ran.
+      expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
+      // The scan-wide summary is untouched (tiles, health score).
+      expect(data.findingSummary.total).toBe(10);
+    });
+
+    it("renders the context banner above the scoped summary, Free link wording", async () => {
+      arrange();
+      const html = await renderPage();
+      expect(html).toContain("Yotpo is no longer active in your store");
+      expect(html).toContain(">View full scan results</a>");
+      expect(html).not.toContain(">Show all findings</a>");
+      expect(html).toContain("<s-heading>4 findings from Yotpo</s-heading>");
+      expect(html.indexOf("no longer active")).toBeLessThan(html.indexOf("4 findings from Yotpo"));
+      // Neutral type badges for X's findings only (no Privy pixels).
+      expect(html).toMatch(/<s-badge tone="neutral">Scripts: 2<\/s-badge>/);
+      expect(html).not.toMatch(/<s-badge tone="neutral">[^<]*: 6<\/s-badge>/);
+      expect(html).not.toContain("10 findings detected");
+      expect(html).toContain("2 more findings on Standard");
+      // One upgrade ask on the page.
+      expect(html.match(/href="https:\/\/admin\.shopify\.com[^"]*pricing_plans"/g)).toHaveLength(1);
+      // Start here stays hidden on the filtered view.
+      expect(html).not.toContain("top-findings-heading");
+    });
+
+    it("malicious findings are never paywalled under the app scope", async () => {
+      arrange({ malicious: true });
+      const data = await load();
+      // Shown in full by the security alert, on Free.
+      expect(data.maliciousFindings.map((f) => f.id)).toEqual(["y-mal"]);
+      // Counted in X's total, never previewed, never counted as hidden.
+      expect(data.freeScope?.total).toBe(5);
+      expect(data.previewFindings.map((f) => f.findingType)).not.toContain("MALICIOUS_SCRIPT");
+      expect(data.upgradePreview?.hiddenCount).toBe(2);
+      const html = await renderPage();
+      expect(html).toContain("Malicious code found in your theme");
+      expect(html).toContain('id="finding-y-mal"');
+    });
+
+    it("no removal record for X: Free behaves exactly as today (scan-wide)", async () => {
+      arrange({ removal: false });
+      const data = await load();
+      expect(data.freeScope).toBeNull();
+      expect(data.upgradePreview?.hiddenCount).toBe(5);
+      const html = await renderPage();
+      expect(html).toContain("<s-heading>10 findings detected</s-heading>");
+      expect(html).not.toContain("no longer active");
+      expect(html).not.toContain("Removing Yotpo");
+    });
+
+    it("no ?app at all: unchanged, no removal lookup", async () => {
+      arrange();
+      const data = await load("");
+      expect(mockRemovalLookup).not.toHaveBeenCalled();
+      expect(data.freeScope).toBeNull();
+    });
+  });
+
+  describe("Start here badge (unfiltered view)", () => {
+    it("passes this scan's own removals and badges the matching top finding", async () => {
+      arrange({ removal: false });
+      mockDetectedOnScan.mockResolvedValue([{ appName: "Yotpo" }]);
+      mockGetTypeSeverityCounts.mockResolvedValue([
+        { findingType: "GHOST_SCRIPT", severity: "HIGH", count: 1 },
+      ]);
+      mockGetTopFindingsInGroup.mockResolvedValue([YOTPO_ROWS[0]]);
+      const data = await load("");
+      expect(mockDetectedOnScan).toHaveBeenCalledWith("shop-1", SCAN.themeId, "scan-1");
+      expect(data.newlyInactiveApps).toEqual(["Yotpo"]);
+      const html = await renderPage("");
+      expect(html).toContain("New · Yotpo");
+    });
+
+    it("no top finding has an app: no removal read at all", async () => {
+      arrange({ removal: false });
+      const data = await load("");
+      expect(data.topFindings).toEqual([]);
+      expect(mockDetectedOnScan).not.toHaveBeenCalled();
+      expect(data.newlyInactiveApps).toEqual([]);
+    });
+  });
 });
