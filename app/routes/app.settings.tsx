@@ -12,6 +12,18 @@ import {
 } from "../lib/optional-scopes";
 import { canReceiveAlerts } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
+import {
+  SUMMARY_CARD_HEADING,
+  SUMMARY_COMING_SOON,
+  SUMMARY_FREE_PARAGRAPH,
+  SUMMARY_NOT_IN_PLAN,
+  SUMMARY_SAVED_OFF,
+  SUMMARY_SAVED_ON,
+  SUMMARY_SAVED_ON_DARK,
+  summaryEffectivelyOn,
+  summaryLiveParagraph,
+  summaryToggleLabel,
+} from "../lib/summary-email-copy";
 import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "../lib/trial-cta";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
 import { setSummaryEmailsEnabled } from "../models/merchant-alert.server";
@@ -55,20 +67,21 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     features,
     pricingPlansUrl,
     trialEligible,
-    // gc-syz.6: the card renders only when merchant mail can actually be sent
-    // (dark while MERCHANT_ALERTS_ENABLED is off).
+    // gc-ol95: the Summary emails card always renders; its copy says honestly
+    // whether sending is configured yet. `enabled` is what consent allows
+    // (toggle on AND the merchant knows), so a shop never told reads "off".
     alerts: {
       configured: getMerchantAlertConfigStatus().configured,
       canReceive: canReceiveAlerts(shop.plan),
       cadence: features.alertCadence,
-      enabled: shop.alertsEnabled,
+      enabled: summaryEffectivelyOn(shop),
       email: shop.alertEmail,
     },
   };
 };
 
 // ---------------------------------------------------------------------------
-// Action (gc-syz.6): monitoring-emails toggle
+// Action (gc-syz.6, gc-ol95): summary-emails toggle
 // ---------------------------------------------------------------------------
 
 export const action = async ({ request }: ActionFunctionArgs) => {
@@ -91,7 +104,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "Shop not found. Please reinstall the app." };
   }
   if (!canReceiveAlerts(shop.plan)) {
-    return { error: "Monitoring emails are not included in your plan." };
+    return { error: SUMMARY_NOT_IN_PLAN };
   }
 
   // Turning it on is the merchant's own opt-in (gc-ol95). While sending is not
@@ -103,15 +116,21 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 };
 
 // ---------------------------------------------------------------------------
-// Monitoring emails card (gc-syz.6)
+// Summary emails card (gc-syz.6, copy per gc-ol95)
 // ---------------------------------------------------------------------------
 
-function MonitoringEmailsCard({
+function SummaryEmailsCard({
   alerts,
   pricingPlansUrl,
   trialEligible,
 }: {
-  alerts: { canReceive: boolean; cadence: string; enabled: boolean; email: string | null };
+  alerts: {
+    configured: boolean;
+    canReceive: boolean;
+    cadence: string;
+    enabled: boolean;
+    email: string | null;
+  };
   pricingPlansUrl: string;
   trialEligible: boolean;
 }) {
@@ -119,16 +138,17 @@ function MonitoringEmailsCard({
   const saving = fetcher.state !== "idle";
   // Optimistic: show what was just submitted until the loader revalidates.
   const checked = fetcher.formData ? fetcher.formData.get("enabled") === "true" : alerts.enabled;
+  const cadence = alerts.cadence === "weekly" ? "weekly" : "monthly";
 
   return (
     <div style={{ marginTop: "16px" }}>
       <s-card>
         <s-stack direction="block" gap="base">
-          <s-heading>Monitoring emails</s-heading>
+          <s-heading>{SUMMARY_CARD_HEADING}</s-heading>
           {alerts.canReceive ? (
             <>
               <s-checkbox
-                label="Email me when a rescan finds new leftover code"
+                label={summaryToggleLabel(cadence)}
                 checked={checked ? true : undefined}
                 disabled={saving ? true : undefined}
                 onChange={(e: unknown) =>
@@ -139,25 +159,24 @@ function MonitoringEmailsCard({
                 }
               />
               <s-paragraph>
-                {`We email ${alerts.email ?? "the store owner"} when a ${alerts.cadence} rescan finds new leftover code.`}
+                {alerts.configured ? summaryLiveParagraph(alerts.email) : SUMMARY_COMING_SOON}
               </s-paragraph>
               {fetcher.data && "error" in fetcher.data && (
                 <s-banner tone="critical">{fetcher.data.error}</s-banner>
               )}
               {fetcher.data && "alertsEnabled" in fetcher.data && fetcher.state === "idle" && (
                 <s-banner tone="success">
-                  {fetcher.data.alertsEnabled
-                    ? "Monitoring emails are on."
-                    : "Monitoring emails are off."}
+                  {!fetcher.data.alertsEnabled
+                    ? SUMMARY_SAVED_OFF
+                    : alerts.configured
+                      ? SUMMARY_SAVED_ON
+                      : SUMMARY_SAVED_ON_DARK}
                 </s-banner>
               )}
             </>
           ) : (
             <>
-              <s-paragraph>
-                Monitoring emails are included with Standard (monthly rescans) and Professional
-                (weekly rescans).
-              </s-paragraph>
+              <s-paragraph>{SUMMARY_FREE_PARAGRAPH}</s-paragraph>
               <div>
                 <a href={pricingPlansUrl} target="_top" rel="noreferrer">
                   <s-button variant="primary">
@@ -476,13 +495,11 @@ export default function Settings() {
           </s-card>
         </div>
 
-        {alerts.configured && (
-          <MonitoringEmailsCard
-            alerts={alerts}
-            pricingPlansUrl={pricingPlansUrl}
-            trialEligible={trialEligible}
-          />
-        )}
+        <SummaryEmailsCard
+          alerts={alerts}
+          pricingPlansUrl={pricingPlansUrl}
+          trialEligible={trialEligible}
+        />
 
         {/* Permissions, every plan (gc-4n0y): the checks these scopes unlock run on
           Free scans too; Broken links stays a Standard feature by plan. */}

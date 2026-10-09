@@ -55,7 +55,13 @@ describe("GET /unsubscribe/:token", () => {
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    expect(html).toContain("Turn off Ghost Code monitoring emails for this store?");
+    expect(html).toContain("Turn off Ghost Code summary emails for this store?");
+    // gc-ol95: summary wording, never the retired per-change alert promise.
+    expect(html).toContain(
+      "You will stop receiving the summary email Ghost Code sends after scheduled scans.",
+    );
+    expect(html).toContain("Turn off summary emails</button>");
+    expect(html).not.toMatch(/monitoring|rescan finds/i);
     // The form POSTs to /unsubscribe with the token in the BODY (hidden input).
     expect(html).toContain('<form method="post" action="/unsubscribe">');
     expect(html).toContain('name="token"');
@@ -84,7 +90,7 @@ describe("POST /unsubscribe/:token", () => {
 
     expect(res.status).toBe(200);
     expect(mockDisable).toHaveBeenCalledExactlyOnceWith(TOKEN);
-    expect(html).toContain("Monitoring emails are off");
+    expect(html).toContain("Summary emails are off");
     expect(html).toContain("You can turn them back on in Ghost Code > Settings.");
     expectPrivateHeaders(res);
   });
@@ -121,7 +127,7 @@ describe("POST /unsubscribe/:token", () => {
 
     expect(res.status).toBe(404);
     expect(html).toContain("This link is invalid or has expired");
-    expect(html).not.toContain("Monitoring emails are off");
+    expect(html).not.toContain("Summary emails are off");
     expectPrivateHeaders(res);
   });
 
@@ -169,7 +175,7 @@ describe("/unsubscribe (token in the body, gc-252x)", () => {
     const res = await postIndex(`token=${TOKEN}`);
     expect(res.status).toBe(200);
     expect(mockDisable).toHaveBeenCalledExactlyOnceWith(TOKEN);
-    expect(await res.text()).toContain("Monitoring emails are off");
+    expect(await res.text()).toContain("Summary emails are off");
   });
 
   it("POST with no token reports invalid and never matches a NULL column", async () => {

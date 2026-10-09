@@ -14,12 +14,12 @@
  * and these responses set none, so an inline script is allowed.
  */
 
-export const UNSUBSCRIBE_CONFIRM_HEADING = "Turn off Ghost Code monitoring emails for this store?";
-export const UNSUBSCRIBE_DONE_HEADING = "Monitoring emails are off";
+export const UNSUBSCRIBE_CONFIRM_HEADING = "Turn off Ghost Code summary emails for this store?";
+export const UNSUBSCRIBE_DONE_HEADING = "Summary emails are off";
 export const UNSUBSCRIBE_DONE_BODY = "You can turn them back on in Ghost Code > Settings.";
 export const UNSUBSCRIBE_INVALID_HEADING = "This link is invalid or has expired";
 export const UNSUBSCRIBE_INVALID_BODY =
-  "To manage monitoring emails, open Ghost Code in your Shopify admin and go to Settings.";
+  "To manage summary emails, open Ghost Code in your Shopify admin and go to Settings.";
 export const UNSUBSCRIBE_NOSCRIPT_BODY =
   "This page needs JavaScript to turn emails off. Otherwise, open Ghost Code in your Shopify admin and turn them off in Ghost Code > Settings.";
 export const UNSUBSCRIBE_ERROR_HEADING = "Something went wrong";
@@ -63,10 +63,10 @@ const CONFIRM_SCRIPT = `(function () {
 export function renderConfirmPage(): string {
   return page(
     UNSUBSCRIBE_CONFIRM_HEADING,
-    "You will stop receiving emails when a rescan finds new leftover code.",
+    "You will stop receiving the summary email Ghost Code sends after scheduled scans.",
     `<form method="post" action="/unsubscribe">
 <input type="hidden" id="token" name="token" value="">
-<button type="submit" style="font-size: 1rem; padding: 0.5rem 1rem;">Turn off monitoring emails</button>
+<button type="submit" style="font-size: 1rem; padding: 0.5rem 1rem;">Turn off summary emails</button>
 </form>
 <noscript><p>${UNSUBSCRIBE_NOSCRIPT_BODY}</p></noscript>
 <script>${CONFIRM_SCRIPT}</script>

@@ -4,7 +4,7 @@ import { handleUnsubscribePost, htmlResponse } from "../lib/unsubscribe-action.s
 import { renderConfirmPage } from "../lib/unsubscribe-page";
 
 /**
- * Public tokenized unsubscribe for merchant monitoring emails (gc-syz.7).
+ * Public tokenized unsubscribe for merchant summary emails (gc-syz.7).
  * This path form is the RFC 8058 List-Unsubscribe header target, so it must
  * identify the shop on its own. The human link in the email body is the
  * fragment form handled by unsubscribe._index.tsx.

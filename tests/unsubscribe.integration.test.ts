@@ -88,7 +88,7 @@ describe("unsubscribe route through the real request handler", () => {
     const res = await handler(new Request(URL_));
 
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Turn off Ghost Code monitoring emails");
+    expect(await res.text()).toContain("Turn off Ghost Code summary emails");
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     expect(res.headers.get("X-Robots-Tag")).toBe("noindex");
     expect(mockDisable).not.toHaveBeenCalled();
@@ -99,7 +99,7 @@ describe("unsubscribe route through the real request handler", () => {
     const res = await handler(post({}));
 
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Monitoring emails are off");
+    expect(await res.text()).toContain("Summary emails are off");
     expect(mockDisable).toHaveBeenCalledExactlyOnceWith(TOKEN);
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     expect(res.headers.get("X-Robots-Tag")).toBe("noindex");
@@ -143,7 +143,7 @@ describe("unsubscribe route through the real request handler", () => {
     );
 
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Monitoring emails are off");
+    expect(await res.text()).toContain("Summary emails are off");
     expect(mockDisable).toHaveBeenCalledExactlyOnceWith(TOKEN);
   });
 

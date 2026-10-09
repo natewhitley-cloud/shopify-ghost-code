@@ -4,7 +4,7 @@ import { handleUnsubscribePost, htmlResponse } from "../lib/unsubscribe-action.s
 import { renderConfirmPage } from "../lib/unsubscribe-page";
 
 /**
- * Public unsubscribe for the human link in merchant monitoring emails
+ * Public unsubscribe for the human link in merchant summary emails
  * (gc-252x): /unsubscribe#t=<token>. The token is in the URL FRAGMENT, which a
  * browser never sends, so it is not in access logs. The confirm page reads it
  * client-side and POSTs it back here in the request BODY. Same resource-route

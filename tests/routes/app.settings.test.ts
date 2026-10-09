@@ -306,10 +306,12 @@ describe("Settings plan tile buttons", () => {
   }
 
   it("never-paid Free shop: both paid tiles offer the 7-day trial", () => {
+    // The Summary emails card (always rendered, gc-ol95) adds its Free CTA last.
     expect(buttonLabels(renderSettings("free", true))).toEqual([
       "Start 7-day free trial",
       "Start 7-day free trial",
       "Manage subscription in Shopify",
+      "Start 7-day free trial",
     ]);
   });
 
@@ -318,18 +320,19 @@ describe("Settings plan tile buttons", () => {
       "Upgrade to Standard",
       "Upgrade to Professional",
       "Manage subscription in Shopify",
+      "Upgrade to Standard",
     ]);
   });
 
   it("Standard shop: unchanged (Upgrade to Professional)", () => {
-    expect(buttonLabels(renderSettings("Standard", false))).toEqual([
+    expect(buttonLabels(renderSettings("Standard", false, { canReceive: true }))).toEqual([
       "Upgrade to Professional",
       "Manage subscription in Shopify",
     ]);
   });
 
   it("Professional shop: unchanged (Downgrade to Standard)", () => {
-    expect(buttonLabels(renderSettings("Professional", false))).toEqual([
+    expect(buttonLabels(renderSettings("Professional", false, { canReceive: true }))).toEqual([
       "Downgrade to Standard",
       "Manage subscription in Shopify",
     ]);
@@ -398,8 +401,8 @@ describe("Settings plan tile buttons", () => {
     const pricingAnchors = (html.match(/<a [^>]*>/g) ?? []).filter((a) =>
       a.includes("pricing_plans"),
     );
-    // Standard tile, Professional tile, Manage subscription.
-    expect(pricingAnchors).toHaveLength(3);
+    // Standard tile, Professional tile, Manage subscription, Summary emails card.
+    expect(pricingAnchors).toHaveLength(4);
     for (const a of pricingAnchors) {
       expect(a).toContain(`href="${PRICING_PLANS_URL}"`);
       expect(a).toContain('target="_top"');
@@ -408,15 +411,22 @@ describe("Settings plan tile buttons", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Monitoring emails (gc-syz.6)
+// Summary emails (gc-syz.6, gc-ol95)
 // ---------------------------------------------------------------------------
 
 describe("app.settings loader: alerts", () => {
-  it("returns alerts state for a paid, configured shop", async () => {
-    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+  beforeEach(() => {
     mockGetPlanFeatures.mockReturnValue({ ...FREE_FEATURES, alertCadence: "weekly" });
     mockCanReceiveAlerts.mockReturnValue(true);
     mockAlertConfig.mockReturnValue({ configured: true });
+  });
+
+  it("returns alerts state for a paid, configured shop that was told", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...SHOP,
+      plan: "Standard",
+      summaryNoticeShownAt: new Date(),
+    });
 
     const result = (await loader(makeLoaderArgs())) as { alerts: AlertsData };
 
@@ -430,7 +440,30 @@ describe("app.settings loader: alerts", () => {
     });
   });
 
+  it("a legacy paid shop (toggle default on, never told, never opted in) reads OFF", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional", alertsEnabled: true });
+    const result = (await loader(makeLoaderArgs())) as { alerts: AlertsData };
+    expect(result.alerts.enabled).toBe(false);
+  });
+
+  it("an opted-in shop reads ON; toggled off reads OFF", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...SHOP,
+      plan: "Standard",
+      summaryOptedInAt: new Date(),
+    });
+    expect(((await loader(makeLoaderArgs())) as { alerts: AlertsData }).alerts.enabled).toBe(true);
+    mockGetShopMetadata.mockResolvedValue({
+      ...SHOP,
+      plan: "Standard",
+      alertsEnabled: false,
+      summaryOptedInAt: new Date(),
+    });
+    expect(((await loader(makeLoaderArgs())) as { alerts: AlertsData }).alerts.enabled).toBe(false);
+  });
+
   it("passes a null cached email through and reports an unconfigured env", async () => {
+    mockAlertConfig.mockReturnValue({ configured: false, reason: "disabled" });
     mockGetShopMetadata.mockResolvedValue({ ...SHOP, alertEmail: null, alertsEnabled: false });
 
     const result = (await loader(makeLoaderArgs())) as { alerts: AlertsData };
@@ -514,7 +547,7 @@ describe("app.settings action: set-alerts-enabled", () => {
       makeActionArgs({ intent: "set-alerts-enabled", enabled: "true" }),
     )) as { error?: string };
 
-    expect(result.error).toMatch(/not included/);
+    expect(result.error).toBe("Summary emails are not included in your plan.");
     expect(mockSetAlertsEnabled).not.toHaveBeenCalled();
   });
 
@@ -530,7 +563,7 @@ describe("app.settings action: set-alerts-enabled", () => {
   });
 });
 
-describe("Settings Monitoring emails card", () => {
+describe("Settings Summary emails card (gc-ol95 copy)", () => {
   function renderSettings(plan: string, trialEligible: boolean, alerts: Partial<AlertsData>) {
     const loaderData = {
       shop: { plan, domain: SHOP_DOMAIN },
@@ -560,56 +593,75 @@ describe("Settings Monitoring emails card", () => {
     canReceive: true,
     cadence: "weekly",
     email: "owner@example.com",
+    enabled: true,
   };
 
-  it("is hidden while merchant alerts are not configured (dark by default)", () => {
-    const html = renderSettings("Standard", false, { ...PAID, configured: false });
-
-    expect(html).not.toContain("Monitoring emails");
-    expect(html).not.toContain("s-checkbox");
+  it("never says 'Monitoring emails' anywhere (renamed)", () => {
+    for (const html of [
+      renderSettings("Standard", false, PAID),
+      renderSettings("Standard", false, { ...PAID, configured: false }),
+      renderSettings("free", true, {}),
+    ]) {
+      expect(html).not.toContain("Monitoring emails");
+      expect(html).toContain("Summary emails");
+    }
   });
 
-  it("hidden for Free too when not configured", () => {
-    expect(renderSettings("free", true, { configured: false })).not.toContain("Monitoring emails");
+  it("dark (not configured): a usable toggle and the coming-soon copy, never 'we email'", () => {
+    const html = renderSettings("Standard", false, { ...PAID, configured: false, enabled: false });
+
+    expect(html).toContain("Summary emails");
+    expect(html).toMatch(/<s-checkbox[^>]*label="Email me a summary after each weekly scan"/);
+    expect(html).not.toMatch(/<s-checkbox[^>]*disabled/);
+    expect(html).toContain(
+      "Summary emails are coming soon. We&#x27;ll let you know before any are sent.",
+    );
+    expect(html).not.toContain("We email");
   });
 
-  it("paid: shows a checkbox bound to alertsEnabled and the weekly copy with the cached email", () => {
-    const html = renderSettings("Standard", false, PAID);
+  it("live, Professional: weekly label and the honest paragraph with the cached email", () => {
+    const html = renderSettings("Professional", false, PAID);
 
-    expect(html).toContain("Monitoring emails");
+    expect(html).toMatch(/<s-checkbox[^>]*label="Email me a summary after each weekly scan"/);
     expect(html).toMatch(/<s-checkbox[^>]*checked/);
     expect(html).toContain(
-      "We email owner@example.com when a weekly rescan finds new leftover code.",
+      "We email owner@example.com only when something changed: new or fixed findings, or an app that is no longer active.",
+    );
+    expect(html).not.toContain("coming soon");
+  });
+
+  it("live, Standard: monthly label and the owner-email fallback when none is cached", () => {
+    const html = renderSettings("Standard", false, {
+      ...PAID,
+      cadence: "monthly",
+      email: null,
+    });
+
+    expect(html).toContain('label="Email me a summary after each monthly scan"');
+    expect(html).toContain(
+      "We email your store owner email only when something changed: new or fixed findings, or an app that is no longer active.",
     );
   });
 
-  it("paid: unchecked when alertsEnabled is false", () => {
+  it("unchecked when not effectively on", () => {
     const html = renderSettings("Standard", false, { ...PAID, enabled: false });
 
     expect(html).toMatch(/<s-checkbox/);
     expect(html).not.toMatch(/<s-checkbox[^>]*checked/);
   });
 
-  it("paid: daily cadence and the store-owner fallback when no email is cached", () => {
-    const html = renderSettings("Professional", false, {
-      ...PAID,
-      cadence: "daily",
-      email: null,
-    });
+  it("Free (dark or live): no checkbox; the plan sentence plus the trial CTA", () => {
+    for (const configured of [false, true]) {
+      const html = renderSettings("free", true, { configured });
 
-    expect(html).toContain("We email the store owner when a daily rescan finds new leftover code.");
-  });
-
-  it("Free: no checkbox; plan copy plus the trial CTA to the pricing page", () => {
-    const html = renderSettings("free", true, { configured: true });
-
-    expect(html).toContain("Monitoring emails");
-    expect(html).not.toContain("<s-checkbox");
-    expect(html).toContain(
-      "Monitoring emails are included with Standard (monthly rescans) and Professional (weekly rescans).",
-    );
-    // Standard tile + Professional tile + card CTA + Manage subscription.
-    expect(html.match(/Start 7-day free trial/g)).toHaveLength(3);
+      expect(html).not.toContain("<s-checkbox");
+      expect(html).toContain(
+        "Summary emails are included with Standard (monthly) and Professional (weekly).",
+      );
+      expect(html).not.toContain("coming soon");
+      // Standard tile + Professional tile + card CTA.
+      expect(html.match(/Start 7-day free trial/g)).toHaveLength(3);
+    }
   });
 
   it("Free, trial used: the card CTA reads Upgrade to Standard", () => {
@@ -617,6 +669,14 @@ describe("Settings Monitoring emails card", () => {
 
     expect(html.match(/Upgrade to Standard/g)).toHaveLength(2);
     expect(html).not.toContain("Start 7-day");
+  });
+
+  it("card copy has no em or en dash", () => {
+    const html =
+      renderSettings("Standard", false, PAID) +
+      renderSettings("Standard", false, { ...PAID, configured: false }) +
+      renderSettings("free", true, {});
+    expect(html).not.toMatch(/[\u2014\u2013]/);
   });
 });
 

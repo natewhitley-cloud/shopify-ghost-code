@@ -46,6 +46,11 @@ import { PLANS } from "../lib/plans";
 import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS } from "../lib/prompt-cap";
 import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
+import {
+  SUMMARY_NOTICE_DISMISS,
+  SUMMARY_NOTICE_HEADING,
+  summaryNoticeLead,
+} from "../lib/summary-email-copy";
 import { toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
@@ -54,6 +59,7 @@ import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polli
 import { getRemovalNoticeRows } from "../models/app-removal.server";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
+import { dismissSummaryNotice } from "../models/merchant-alert.server";
 import {
   getScanById,
   getScansForShop,
@@ -77,6 +83,8 @@ import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
+import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
+import type { SummaryNotice } from "../services/summary-notice.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
@@ -174,6 +182,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       topFindings: [] as TopFindingView[],
       removalBanner: null as RemovalBanner | null,
       newlyInactiveApps: [] as string[],
+      summaryNotice: null as SummaryNotice | null,
     };
   }
 
@@ -516,6 +525,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       : null;
   const newlyInactiveApps = removalRows.filter((r) => r.state === "REMOVED").map((r) => r.appName);
 
+  // "Summary emails are on" (gc-ol95): shown ONCE to a shop that owes it (moved
+  // Free -> paid, or opted in while sending was dark); the load that wins the
+  // claim renders it, and that claim is the merchant's notice. Pre-checked on
+  // the loaded row, so every other load (and every 3s poll) issues no query.
+  const summaryNotice = await claimSummaryNoticeForHome(shop, admin);
+
   return {
     shop,
     latestScan,
@@ -543,6 +558,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     topFindings,
     removalBanner,
     newlyInactiveApps,
+    summaryNotice,
   };
 };
 
@@ -581,6 +597,13 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     const scan = await getScanById(scanId, { includeFindings: false });
     if (!scan || scan.shopId !== shop.id) return { ignored: true };
     await dismissRemovalNotice(shop.id, scanId);
+    return { dismissed: true };
+  }
+
+  // Summary-email notice "Dismiss" (gc-ol95): the notice is no longer owed.
+  // Session shop only; idempotent.
+  if (intent === "dismiss-summary-notice") {
+    await dismissSummaryNotice(shop.id);
     return { dismissed: true };
   }
 
@@ -919,6 +942,7 @@ export default function Dashboard() {
     topFindings,
     removalBanner,
     newlyInactiveApps,
+    summaryNotice,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
@@ -982,6 +1006,23 @@ export default function Dashboard() {
     removalDismissFetcher.submit({ intent: "dismiss-removal-notice", scanId }, { method: "POST" });
   };
 
+  // Summary-email notice (gc-ol95): the loader returns it only on the load that
+  // claimed it, so latch it for this page view (the 3s scan poll revalidates
+  // the loader) until the merchant dismisses it.
+  const summaryNoticeFetcher = useFetcher<typeof action>();
+  const [latchedSummaryNotice, setLatchedSummaryNotice] = useState<SummaryNotice | null>(
+    summaryNotice,
+  );
+  const [summaryNoticeDismissed, setSummaryNoticeDismissed] = useState(false);
+  useEffect(() => {
+    if (summaryNotice) setLatchedSummaryNotice(summaryNotice);
+  }, [summaryNotice]);
+  const visibleSummaryNotice = summaryNoticeDismissed ? null : latchedSummaryNotice;
+  const handleDismissSummaryNotice = () => {
+    setSummaryNoticeDismissed(true);
+    summaryNoticeFetcher.submit({ intent: "dismiss-summary-notice" }, { method: "POST" });
+  };
+
   // Default the picker to the MAIN theme id. Falls back to empty string when
   // mainTheme is null (no published theme) — the scan button will be disabled.
   const mainThemeId = mainTheme?.id ?? "";
@@ -1042,6 +1083,23 @@ export default function Dashboard() {
         {actionError && (
           <s-banner tone="critical">
             <s-paragraph>{actionError}</s-paragraph>
+          </s-banner>
+        )}
+
+        {/* Summary emails are on (gc-ol95): the one-time consent notice. */}
+        {visibleSummaryNotice && (
+          <s-banner tone="info" heading={SUMMARY_NOTICE_HEADING}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                {summaryNoticeLead(visibleSummaryNotice.email, visibleSummaryNotice.cadence)}{" "}
+                <Link to="/app/settings">Settings</Link>.
+              </s-paragraph>
+              <div>
+                <s-button variant="secondary" onClick={handleDismissSummaryNotice}>
+                  {SUMMARY_NOTICE_DISMISS}
+                </s-button>
+              </div>
+            </s-stack>
           </s-banner>
         )}
 

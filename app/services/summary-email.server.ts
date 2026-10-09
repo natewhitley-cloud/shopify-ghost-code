@@ -49,6 +49,7 @@ import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { canReceiveAlerts, getAlertWindowMs } from "../lib/plan-gating.server";
 import { safeErrorFields } from "../lib/safe-error";
+import type { SummaryCadence } from "../lib/summary-email-copy";
 import type { SummaryRemovalRow } from "../models/app-removal.server";
 import type { ShopIgnores } from "../models/ignored-finding.server";
 import { ensureUnsubscribeToken, recordMerchantAlert } from "../models/merchant-alert.server";
@@ -181,8 +182,6 @@ export function buildSummaryHash(c: SummaryChanges): string {
 // ---------------------------------------------------------------------------
 // Copy
 // ---------------------------------------------------------------------------
-
-export type SummaryCadence = "weekly" | "monthly";
 
 const SINCE_PHRASE: Record<SummaryBaseline, string> = {
   last_summary: "since your last summary",
