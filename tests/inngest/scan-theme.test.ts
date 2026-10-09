@@ -59,6 +59,10 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   buildSnippet: (content: string) => content.slice(0, 300),
   // Enabled-embed app names for the (dark) storefront script-tag audit.
   enabledAppEmbedApps: vi.fn(() => new Set<string>()),
+  // gc-frda: the embed live-hook observation (null = settings_data.json not
+  // observed). Defaults to the enabledAppEmbedApps mock's set, sorted (see the
+  // global beforeEach); its parsing is covered in app-embed-detector tests.
+  observedEmbedApps: vi.fn(),
   // Real-behaviour stub so the core step's scannableFileCount is meaningful.
   isScannableFile: (filename: string) =>
     filename.endsWith(".liquid") &&
@@ -81,7 +85,7 @@ vi.mock("../../app/models/scan-domain.server", () => ({
 // asserted. OPS_EVENT_TYPES is re-declared minimally — only SCAN_SIGNAL is read.
 vi.mock("../../app/models/ops-event.server", () => ({
   recordOpsEvent: vi.fn(),
-  OPS_EVENT_TYPES: { SCAN_SIGNAL: "scan_signal" },
+  OPS_EVENT_TYPES: { SCAN_SIGNAL: "scan_signal", FUNCTION_FAILURE: "function_failure" },
 }));
 
 vi.mock("../../app/models/scan.server", () => ({
@@ -258,7 +262,7 @@ import { detectOrphanedProductTags } from "../../app/services/product-tag-detect
 import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
 import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
 import { diffScans, unauditedCategories } from "../../app/services/scan-differ.server";
-import { enabledAppEmbedApps } from "../../app/services/scan-engine.server";
+import { enabledAppEmbedApps, observedEmbedApps } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import { detectTranslationContent } from "../../app/services/translation-detector.server";
@@ -267,7 +271,7 @@ import {
   auditTranslations,
 } from "../../app/services/translation-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
-import { scanTheme } from "../../inngest/functions/scan-theme";
+import { APP_REMOVALS_FAILURE_KEY, scanTheme } from "../../inngest/functions/scan-theme";
 import { createMockInngestStep, createMockInngestEvent, getInngestHandler } from "../mocks/inngest";
 
 // ---------------------------------------------------------------------------
@@ -500,6 +504,9 @@ beforeEach(() => {
   fetchSpy.mockRejectedValue(new Error("network disabled in tests"));
   MOCK_ADMIN.graphql.mockReset();
   (enabledAppEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(new Set<string>());
+  (observedEmbedApps as ReturnType<typeof vi.fn>).mockImplementation((files: unknown) =>
+    [...(enabledAppEmbedApps as unknown as (f: unknown) => Set<string>)(files)].sort(),
+  );
 });
 
 // ---------------------------------------------------------------------------
@@ -4532,18 +4539,63 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     expect(outputs["fetch-and-scan"]).not.toHaveProperty("enabledEmbedApps");
   });
 
-  it("a detection failure never fails the scan: logged, scan COMPLETED, no retry", async () => {
+  it("a detection failure never fails the scan: logged as an error, scan COMPLETED, no retry", async () => {
     arrange();
     mockApply.mockRejectedValue(new Error("db down"));
-    const warnSpy = vi.spyOn(logger, "warn");
+    const errorSpy = vi.spyOn(logger, "error");
     const result = await runScanTheme();
     expect(result).toMatchObject({ status: "COMPLETED" });
     expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
-    expect(warnSpy).toHaveBeenCalledWith(
+    expect(errorSpy).toHaveBeenCalledWith(
       "app-removal detection failed, scan unaffected",
       expect.objectContaining({ event: "app_removals_failed", scanId: SCAN_ID, error: "db down" }),
     );
+  });
+
+  it("a detection failure records a function_failure OpsEvent the operator digest counts", async () => {
+    arrange();
+    mockApply.mockRejectedValue(new Error("db down"));
+    await runScanTheme();
+    expect(recordOpsEvent).toHaveBeenCalledWith({
+      eventType: "function_failure",
+      key: APP_REMOVALS_FAILURE_KEY,
+      message: "db down",
+      metadata: { scanId: SCAN_ID, shopId: SHOP_ID },
+    });
+    // Its own key: never the "scan-theme" key a real failure alert dedups on.
+    expect(APP_REMOVALS_FAILURE_KEY).not.toBe("scan-theme");
+  });
+
+  it("even if recording that OpsEvent throws, the scan still completes", async () => {
+    arrange();
+    mockApply.mockRejectedValue(new Error("db down"));
+    (recordOpsEvent as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("ops down"));
+    const result = await runScanTheme();
+    expect(result).toMatchObject({ status: "COMPLETED" });
+  });
+
+  it("settings_data.json unreadable this scan: embed source NOT observed, so no removal", async () => {
+    // P had Klaviyo's embed on; S cannot read settings_data.json (missing,
+    // unparseable, or `current` not an object), so the embed set is null.
+    arrange();
+    (observedEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    await runScanTheme();
+    expect(mockFinalizeScan.mock.calls[0][1].liveAppHooks).toEqual({
+      embedApps: null,
+      scriptTagApps: null,
+    });
+    expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
+  });
+
+  it("an open record is left unchanged when settings_data.json is unreadable", async () => {
+    arrange({ current: [], previous: { findings: [KLAVIYO] } });
+    (observedEmbedApps as ReturnType<typeof vi.fn>).mockReturnValue(null);
+    mockOpen.mockResolvedValue([
+      { id: "r1", appName: "Klaviyo", leftoverCount: 1, detectedScanId: "prior" },
+    ]);
+    await runScanTheme();
+    expect(mockApply.mock.calls[0][0].plan.updates).toEqual([]);
   });
 
   it("skipped when this attempt did not finalize the scan (watchdog FAILED it)", async () => {

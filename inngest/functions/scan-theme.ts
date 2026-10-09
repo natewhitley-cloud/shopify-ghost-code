@@ -87,6 +87,7 @@ import {
 } from "../../app/services/dangling-reference-extractor.server";
 import {
   enabledAppEmbedApps,
+  observedEmbedApps,
   isScannableFile,
   MAX_SCANNABLE_FILE_BYTES,
 } from "../../app/services/scan-engine.server";
@@ -334,6 +335,13 @@ const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> 
 // ---------------------------------------------------------------------------
 // Main function
 // ---------------------------------------------------------------------------
+
+/**
+ * OpsEvent key for a failed app-removal detection (gc-frda): a function_failure
+ * the operator digest counts, kept apart from "scan-theme" so it never
+ * dedup-suppresses a real scan failure alert.
+ */
+export const APP_REMOVALS_FAILURE_KEY = "scan-theme/app-removals";
 
 export const scanTheme = inngest.createFunction(
   {
@@ -684,9 +692,10 @@ export const scanTheme = inngest.createFunction(
           // schedules that audit step, so the decision is made once, here,
           // inside this memoized step.
           ...(isScriptTagSunsetLive() ? { enabledEmbedApps: embedApps } : {}),
-          // The same set, always present: app-removal detection (gc-frda)
-          // records it as this scan's embed live hooks.
-          appsWithEnabledEmbed: embedApps,
+          // App-removal detection (gc-frda) records this as the scan's embed
+          // live hooks. null = settings_data.json not observed (missing,
+          // unparseable, or no `current` object), never [] (observedEmbedApps).
+          appsWithEnabledEmbed: observedEmbedApps(files),
         };
 
         // Defensive step-output budget (gc-4ce). The caps keep the worst case
@@ -1504,7 +1513,8 @@ export const scanTheme = inngest.createFunction(
           await import("../../app/services/app-removal.server");
         const appSignatureFingerprints = computeAppSignatureFingerprints();
         // Live hooks observed this scan (gc-frda). null = source not observed:
-        // the embed set is absent only for a run memoized before the field;
+        // the embed set is null when settings_data.json could not be read
+        // (observedEmbedApps) or absent for a run memoized before the field;
         // the ScriptTag set needs a storefront read that was not capped.
         const liveAppHooks = {
           embedApps: Array.isArray(appsWithEnabledEmbed) ? appsWithEnabledEmbed : null,
@@ -1586,13 +1596,29 @@ export const scanTheme = inngest.createFunction(
               });
             }
           } catch (err) {
-            logger.warn("app-removal detection failed, scan unaffected", {
+            logger.error("app-removal detection failed, scan unaffected", {
               function: "scan-theme",
               event: "app_removals_failed",
               scanId,
               shopId,
               error: err instanceof Error ? err.message : String(err),
             });
+            // Detection cannot be recomputed later (the hooks are per scan), so
+            // the operator digest must see it: a function_failure OpsEvent under
+            // its own constant key (never dedups a real scan-theme failure
+            // alert), internal ids only. recordOpsEvent never throws.
+            try {
+              const { recordOpsEvent, OPS_EVENT_TYPES } =
+                await import("../../app/models/ops-event.server");
+              await recordOpsEvent({
+                eventType: OPS_EVENT_TYPES.FUNCTION_FAILURE,
+                key: APP_REMOVALS_FAILURE_KEY,
+                message: err instanceof Error ? err.message : String(err),
+                metadata: { scanId, shopId },
+              });
+            } catch {
+              // Never let the alert path fail the finalized scan.
+            }
           }
         }
       });

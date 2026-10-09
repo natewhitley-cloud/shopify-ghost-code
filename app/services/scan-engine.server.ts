@@ -3374,6 +3374,24 @@ export function enabledAppEmbedApps(files: ThemeFile[]): Set<string> {
 }
 
 /**
+ * The enabled-embed app set as an OBSERVATION for app-removal detection
+ * (gc-frda), or null when the embed source was not observed this scan:
+ * `config/settings_data.json` missing (the fetcher can drop a non-text body),
+ * unparseable, or its `current` not an object (e.g. a preset-name string).
+ * Recording [] there would read every previously embedded app as "no longer
+ * active". A readable file whose `current` has no `blocks` map is observed
+ * with no embeds ([]). Sorted. enabledAppEmbedApps (its other callers) is
+ * unchanged.
+ */
+export function observedEmbedApps(files: ThemeFile[]): string[] | null {
+  const settingsFile = files.find((f) => f.filename === SETTINGS_DATA_PATH);
+  if (!settingsFile) return null;
+  const current = parseSettingsData(settingsFile.content)?.current;
+  if (current === null || typeof current !== "object" || Array.isArray(current)) return null;
+  return [...enabledAppEmbedApps(files)].sort();
+}
+
+/**
  * "This code belongs to app X" finding types (gc-clt4, gc-ps3t): the types a
  * live app produces in the theme just by working. Only these may be
  * dropped by dropActiveAppOwnFileFindings. GHOST_OG is included (2026-10-05,

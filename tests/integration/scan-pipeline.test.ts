@@ -81,6 +81,8 @@ vi.mock("../../app/services/scan-engine.server", () => ({
   MAX_SCANNABLE_FILE_BYTES: 1_000_000,
   // Read on every scan for app-removal detection (gc-frda).
   enabledAppEmbedApps: () => new Set<string>(),
+  // gc-frda: the embed live-hook observation (settings_data.json read, none on).
+  observedEmbedApps: () => [] as string[],
   isScannableFile: (filename: string) =>
     filename.endsWith(".liquid") &&
     ["templates/", "sections/", "snippets/", "layout/"].some((p) => filename.startsWith(p)),

@@ -16,6 +16,7 @@ import {
   detectGhostAppEmbeds,
   dropActiveAppOwnFileFindings,
   enabledAppEmbedApps,
+  observedEmbedApps,
   ORPHAN_GRADE_CORROBORATION_TYPES,
   scanThemeFiles,
   type ThemeFile,
@@ -564,5 +565,52 @@ describe("enabledAppEmbedApps", () => {
   it("is empty without a settings_data.json or blocks", () => {
     expect(enabledAppEmbedApps([]).size).toBe(0);
     expect(enabledAppEmbedApps([settingsWith(undefined)]).size).toBe(0);
+  });
+});
+
+// gc-frda M2: the embed source is OBSERVED only when settings_data.json is
+// present, parses, and has a `current` object. Otherwise null (not observed),
+// never [], so an unreadable file can't turn every embedded app "no longer
+// active".
+describe("observedEmbedApps (gc-frda)", () => {
+  const KLAVIYO_TYPE = "shopify://apps/klaviyo-email-marketing-sms/blocks/klaviyo-onsite-embed/abc";
+  const raw = (content: string): ThemeFile => ({ filename: "config/settings_data.json", content });
+
+  it("file missing: not observed (null)", () => {
+    expect(observedEmbedApps([pageflyLayout])).toBeNull();
+    expect(observedEmbedApps([])).toBeNull();
+  });
+
+  it("invalid JSON: not observed (null)", () => {
+    expect(observedEmbedApps([raw("{ not json")])).toBeNull();
+    expect(observedEmbedApps([raw("")])).toBeNull();
+  });
+
+  it("`current` is a preset-name string (or missing, null, an array): not observed", () => {
+    expect(
+      observedEmbedApps([raw(JSON.stringify({ current: "Default", presets: {} }))]),
+    ).toBeNull();
+    expect(observedEmbedApps([raw(JSON.stringify({ presets: {} }))])).toBeNull();
+    expect(observedEmbedApps([raw(JSON.stringify({ current: null }))])).toBeNull();
+    expect(observedEmbedApps([raw(JSON.stringify({ current: [] }))])).toBeNull();
+  });
+
+  it("valid `current` object with no blocks map: observed, no embeds ([])", () => {
+    expect(observedEmbedApps([settingsWith(undefined)])).toEqual([]);
+    expect(observedEmbedApps([raw(JSON.stringify({ current: {} }))])).toEqual([]);
+  });
+
+  it("valid with embeds: the enabled signature apps, sorted (disabled ones excluded)", () => {
+    const settings = settingsWith({
+      "1": { type: PAGEFLY_TYPE, disabled: false },
+      "2": { type: KLAVIYO_TYPE },
+      "3": { type: "shopify://apps/judge-me-reviews/blocks/x/abc", disabled: true },
+    });
+    expect(observedEmbedApps([settings])).toEqual(["Klaviyo", "PageFly"]);
+  });
+
+  it("enabledAppEmbedApps keeps its behavior for its other callers (empty set, never null)", () => {
+    expect([...enabledAppEmbedApps([raw("{ not json")])]).toEqual([]);
+    expect([...enabledAppEmbedApps([])]).toEqual([]);
   });
 });
