@@ -50,8 +50,7 @@ export const LONG_SCAN_PHRASES: readonly string[] = [
 ];
 
 /** Static expectation line shown under the rotating phrase. */
-export const SCAN_DURATION_EXPECTATION =
-  "This usually takes up to a minute or two. Product, page, and redirect checks can take several minutes on a large catalog.";
+export const SCAN_DURATION_EXPECTATION = "This usually takes up to a minute or two.";
 
 /** The first slot whose start time is at or after LONG_SCAN_AFTER_SECONDS. */
 const FIRST_LONG_SLOT = Math.ceil(LONG_SCAN_AFTER_SECONDS / SCAN_PHRASE_INTERVAL_SECONDS);

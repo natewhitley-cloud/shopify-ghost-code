@@ -42,6 +42,7 @@ import {
 import { PLANS } from "../lib/plans";
 import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS } from "../lib/prompt-cap";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
+import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polling";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import {
@@ -694,6 +695,13 @@ export default function Dashboard() {
   // Whether the latest scan is still running (findings not yet available).
   const scanInProgress = latestScan?.status === "IN_PROGRESS" || latestScan?.status === "PENDING";
 
+  // Same poll as the scan page: revalidate every 3s while the latest scan runs,
+  // so this card turns into the results on its own; stops on a terminal status
+  // or at the ~10 minute cap. Each poll re-runs this loader, whose writes are
+  // all once- or freshness-gated (feedback nudge "shown" stamp, prompt claim),
+  // so polling records nothing twice.
+  const { pollingTimedOut } = useScanPolling(latestScan?.status);
+
   // Total findings in the latest completed scan — drives the consequence-lane
   // "so what" copy (the leftover-item sentence).
   const currentTotal =
@@ -1118,10 +1126,17 @@ export default function Dashboard() {
                         Ghost Code is analyzing your theme files for orphaned code. Results will
                         appear here when the scan is complete.
                       </div>
-                      {/* Same wait experience as the scan page. No findingCount:
-                          Home does not poll, so a count here would go stale. */}
+                      {/* Same wait experience as the scan page, including the
+                          live count. Hidden once polling stops at the cap. */}
                       <div style={{ marginTop: "12px" }}>
-                        <ScanProgress createdAt={latestScan.createdAt} />
+                        {pollingTimedOut ? (
+                          <s-banner tone="warning">{HOME_POLL_TIMEOUT_MESSAGE}</s-banner>
+                        ) : (
+                          <ScanProgress
+                            createdAt={latestScan.createdAt}
+                            findingCount={latestScan.findingCount}
+                          />
+                        )}
                       </div>
                     </div>
                   ) : healthScore && latestScan ? (

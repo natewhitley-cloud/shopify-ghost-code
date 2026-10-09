@@ -103,8 +103,8 @@ describe("scan wait copy guards", () => {
     expect(p).not.toMatch(/\b(found|finding|findings|issues?|problems?)\b/i);
   });
 
-  it("sets the up-to-a-minute-or-two expectation", () => {
-    expect(SCAN_DURATION_EXPECTATION).toMatch(/^This usually takes up to a minute or two\./);
+  it("sets only the up-to-a-minute-or-two expectation", () => {
+    expect(SCAN_DURATION_EXPECTATION).toBe("This usually takes up to a minute or two.");
   });
 });
 

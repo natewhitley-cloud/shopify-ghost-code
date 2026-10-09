@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type React from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
-import { Link, useFetcher, useLoaderData, useRevalidator } from "react-router";
+import { Link, useFetcher, useLoaderData } from "react-router";
 
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
@@ -51,6 +51,7 @@ import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview"
 import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
 import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upgrade-return";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
+import { useScanPolling } from "../lib/use-scan-polling";
 import {
   getAppAttributionForScan,
   getFindingByIdForShop,
@@ -1260,9 +1261,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // Component
 // ---------------------------------------------------------------------------
 
-// Maximum number of 3-second polls before we give up (~10 minutes).
-const MAX_POLL_COUNT = 200;
-
 // The `shopify` global is injected by Shopify App Bridge in embedded app context.
 declare const shopify: {
   toast: { show: (msg: string, opts?: { isError?: boolean; duration?: number }) => void };
@@ -1437,8 +1435,6 @@ export default function ScanDetail() {
   // (e.g. after a poll revalidate while scan was still running).
   const diffLoadTriggered = useRef(false);
 
-  const revalidator = useRevalidator();
-
   // Return-visit banner "Not now" (gc-97k.9): hide optimistically, then post
   // the dismissal to this route's action (same idiom as the home-page nudges).
   const dismissFetcher = useFetcher();
@@ -1466,11 +1462,9 @@ export default function ScanDetail() {
   // revalidation on the same scan (poll, ignore, dismiss) never pops the modal.
   useReviewRequestOnMount(reviewRequestNonce, scan.id);
 
-  // Track how many polls have been fired so we can enforce a timeout ceiling.
-  const pollCount = useRef(0);
-
-  // Whether polling timed out (only true when we hit MAX_POLL_COUNT).
-  const [pollingTimedOut, setPollingTimedOut] = useState(false);
+  // Poll the loader every 3 seconds while the scan is still running, stopping
+  // after MAX_POLL_COUNT polls (~10 minutes). Shared with Home.
+  const { pollingTimedOut } = useScanPolling(scan.status);
 
   // Remember the status at mount time so we can detect transitions.
   // We deliberately want this to stay at the initial value — the ref does not
@@ -1497,38 +1491,6 @@ export default function ScanDetail() {
     // We only want this to fire when the status changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scan.status]);
-
-  // Poll the loader every 3 seconds while the scan is still running,
-  // stopping after MAX_POLL_COUNT polls (~10 minutes).
-  useEffect(() => {
-    const isRunning = scan.status === "PENDING" || scan.status === "IN_PROGRESS";
-
-    if (!isRunning) {
-      // Terminal state — reset poll counter so a future navigation back resets cleanly.
-      pollCount.current = 0;
-      return undefined;
-    }
-
-    // Already timed out from a previous render cycle — don't restart polling.
-    if (pollingTimedOut) return undefined;
-
-    const interval = setInterval(() => {
-      pollCount.current += 1;
-
-      if (pollCount.current >= MAX_POLL_COUNT) {
-        clearInterval(interval);
-        setPollingTimedOut(true);
-        return;
-      }
-
-      revalidator.revalidate();
-    }, 3000);
-
-    return () => clearInterval(interval);
-    // revalidator reference is stable across renders; scan.status and
-    // pollingTimedOut are the real dependencies.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [scan.status, pollingTimedOut]);
 
   // Load the diff once for completed scans on eligible plans.
   // Uses a resource route to avoid blocking the main page render on the

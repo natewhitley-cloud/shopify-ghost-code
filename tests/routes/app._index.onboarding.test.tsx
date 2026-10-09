@@ -85,6 +85,7 @@ import {
   getScanUsage,
 } from "../../app/lib/plan-gating.server";
 import { SCAN_DURATION_EXPECTATION, SCAN_PHRASES } from "../../app/lib/scan-progress";
+import { HOME_POLL_TIMEOUT_MESSAGE } from "../../app/lib/use-scan-polling";
 import { getSeverityCountsForScans } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import {
@@ -270,8 +271,15 @@ describe("Home scan wait experience (ScanProgress)", () => {
       // The old fixed-range line is gone (one expectation, shared with the scan page).
       expect(html).not.toContain("1–3 minutes");
       expect(html).not.toMatch(/come back|leave this page|we.ll email/i);
+      // Polling has not timed out on the first render.
+      expect(html).not.toContain(HOME_POLL_TIMEOUT_MESSAGE);
     },
   );
+
+  it("shows the live findings-so-far count now that Home polls", async () => {
+    const html = await renderHome({ ...SCAN, findingCount: 3 });
+    expect(html).toContain("Found 3 findings so far…");
+  });
 
   it("does not render the progress block once the latest scan has completed", async () => {
     const html = await renderHome({
