@@ -1032,8 +1032,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // shop's highest-priority pending prompt, so resolvePrompt runs ONCE per load
   // against what this page can render (scanResultsPrompts):
   //   review_popup (gc-97k.7): Shopify's native review modal, all plans, but
-  //     deferred on a scan that completed under 10 minutes ago (the merchant
-  //     watching it finish gets it by poll revalidation, which never fires).
+  //     deferred on a scan that completed under 10 minutes ago. The merchant
+  //     watching it finish never gets it from a poll: this page's poll stops
+  //     once the scan is terminal, and Home (which now also revalidates while a
+  //     scan runs) renders no review popup. The 10-minute deferral still
+  //     applies to any later load of this page.
   //   upgrade_return (gc-97k.9): the Free return-visit banner, only when this
   //     page has hidden findings to talk about and no stale-results ask.
   const page = {

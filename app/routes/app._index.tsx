@@ -562,6 +562,48 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 /**
+ * Home's in-progress card. While polling, the spinner, heading and the shared
+ * ScanProgress block (same wait experience as the scan page, live count
+ * included). Once polling stops at the cap, no spinner and a heading that
+ * matches the timeout notice, so the card never says both "scanning" and
+ * "taking longer than usual". The "results will appear" line is hidden too:
+ * it stops being true when polling stops.
+ */
+export function HomeScanInProgress({
+  createdAt,
+  findingCount,
+  pollingTimedOut,
+}: {
+  createdAt: Date | string;
+  findingCount: number;
+  pollingTimedOut: boolean;
+}) {
+  if (pollingTimedOut) {
+    return (
+      <div className="scan-progress-container">
+        <s-heading>Scan still running</s-heading>
+        <div style={{ marginTop: "12px" }}>
+          <s-banner tone="warning">{HOME_POLL_TIMEOUT_MESSAGE}</s-banner>
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="scan-progress-container">
+      <s-spinner accessibilityLabel="Scanning theme" size="large" />
+      <s-heading>Scanning your theme...</s-heading>
+      <div className="scan-progress-text">
+        Ghost Code is analyzing your theme files for orphaned code. Results will appear here when
+        the scan is complete.
+      </div>
+      <div style={{ marginTop: "12px" }}>
+        <ScanProgress createdAt={createdAt} findingCount={findingCount} />
+      </div>
+    </div>
+  );
+}
+
+/**
  * Per-urgency chip presentation for a consequence lane. Colors come from the
  * shared design tokens — see the CONSEQUENCE_MAP urgency tiers.
  */
@@ -1119,26 +1161,11 @@ export default function Dashboard() {
               <div aria-live="polite">
                 <s-stack direction="block" gap="base">
                   {scanInProgress ? (
-                    <div className="scan-progress-container">
-                      <s-spinner accessibilityLabel="Scanning theme" size="large" />
-                      <s-heading>Scanning your theme...</s-heading>
-                      <div className="scan-progress-text">
-                        Ghost Code is analyzing your theme files for orphaned code. Results will
-                        appear here when the scan is complete.
-                      </div>
-                      {/* Same wait experience as the scan page, including the
-                          live count. Hidden once polling stops at the cap. */}
-                      <div style={{ marginTop: "12px" }}>
-                        {pollingTimedOut ? (
-                          <s-banner tone="warning">{HOME_POLL_TIMEOUT_MESSAGE}</s-banner>
-                        ) : (
-                          <ScanProgress
-                            createdAt={latestScan.createdAt}
-                            findingCount={latestScan.findingCount}
-                          />
-                        )}
-                      </div>
-                    </div>
+                    <HomeScanInProgress
+                      createdAt={latestScan.createdAt}
+                      findingCount={latestScan.findingCount}
+                      pollingTimedOut={pollingTimedOut}
+                    />
                   ) : healthScore && latestScan ? (
                     <>
                       <div className="dashboard-top-row">

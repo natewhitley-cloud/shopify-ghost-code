@@ -94,7 +94,7 @@ import {
   hasCompletedScans,
 } from "../../app/models/scan.server";
 import { getOrCreateShopMetadata } from "../../app/models/shop.server";
-import Dashboard, { loader } from "../../app/routes/app._index";
+import Dashboard, { HomeScanInProgress, loader } from "../../app/routes/app._index";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { authenticate } from "../../app/shopify.server";
@@ -293,5 +293,27 @@ describe("Home scan wait experience (ScanProgress)", () => {
     expect(html).not.toContain("Scan in progress");
     expect(html).not.toContain(SCAN_DURATION_EXPECTATION);
     for (const phrase of SCAN_PHRASES) expect(html).not.toContain(phrase);
+  });
+});
+
+describe("HomeScanInProgress: polling timed out", () => {
+  const props = { createdAt: "2026-10-08T10:00:00.000Z", findingCount: 2 };
+
+  it("while polling: spinner, scanning heading and progress, no timeout notice", () => {
+    const html = renderToStaticMarkup(<HomeScanInProgress {...props} pollingTimedOut={false} />);
+    expect(html).toContain("<s-spinner");
+    expect(html).toContain("Scanning your theme...");
+    expect(html).toContain(SCAN_PHRASES[0]);
+    expect(html).not.toContain(HOME_POLL_TIMEOUT_MESSAGE);
+  });
+
+  it("after the cap: no spinner, no scanning heading, only the timeout notice", () => {
+    const html = renderToStaticMarkup(<HomeScanInProgress {...props} pollingTimedOut />);
+    expect(html).not.toContain("<s-spinner");
+    expect(html).not.toContain("Scanning your theme...");
+    expect(html).not.toContain("Results will appear here");
+    expect(html).not.toContain(SCAN_PHRASES[0]);
+    expect(html).toContain("Scan still running");
+    expect(html).toContain(HOME_POLL_TIMEOUT_MESSAGE);
   });
 });
