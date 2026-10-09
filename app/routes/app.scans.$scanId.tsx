@@ -12,7 +12,7 @@ import {
   adminResourceLocatorLabel,
   buildAdminResourceUrl,
 } from "../lib/admin-resource-url";
-import { buildPricingPlansUrl } from "../lib/billing.server";
+import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import { copyToClipboard } from "../lib/clipboard";
 import {
   getFindingConfidence,
@@ -40,7 +40,8 @@ import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
-import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
+import { skippedCategoryLabels } from "../lib/optional-scopes";
+import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import {
   canDetectDanglingReferences,
   canExportPdf,
@@ -421,14 +422,12 @@ export function unreachableCategoriesNotice(categories: readonly string[]): stri
 export function ScanCoverageNotices({
   isCompleted,
   brokenLinksIncluded,
-  status,
   skippedCategories: allSkipped,
   cappedCategories: allCapped,
   unreachableCategories = [],
 }: {
   isCompleted: boolean;
   brokenLinksIncluded: boolean;
-  status: string;
   skippedCategories: string[];
   cappedCategories: string[];
   unreachableCategories?: string[];
@@ -437,11 +436,12 @@ export function ScanCoverageNotices({
   const planCovers = (category: string) => brokenLinksIncluded || category !== "DANGLING_REFERENCE";
   const skippedCategories = allSkipped.filter(planCovers);
   const cappedCategories = allCapped.filter(planCovers);
-  // Every skipped category was one this plan does not include: nothing to grant.
-  const onlyPlanGated = allSkipped.length > 0 && skippedCategories.length === 0;
+  // Only when there is a category to name: a legacy PARTIAL scan with no
+  // recorded categories, or one whose only skip is plan-gated, has nothing to
+  // grant (audit fix: never "skipped 0 checks").
   return (
     <>
-      {scanSkippedForScopes({ status, skippedCategories }) && !onlyPlanGated && (
+      {skippedCategories.length > 0 && (
         <div>
           <s-banner tone="warning">
             This scan skipped {skippedCategories.length}{" "}
@@ -1015,9 +1015,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // shown in full by the security alert above.
   // A shop with ignores passes the summary's already-read kept findings, so
   // the preview never reads the full findings a second time.
+  // Types this plan may not see in full (a downgraded shop's old Broken links
+  // or checkout-sunset findings) are never previewed, so never in the top 3;
+  // they stay counted as locked in the teaser.
+  const withheldTypes = findingTypesWithheldByPlan(getPlanFeatures(shop.plan));
   const rawPreviewFindings =
     scanSuccessful && !canViewDetails
-      ? await getFreePreviewFindings(scanId, findingSummary.byType, keptFindings)
+      ? await getFreePreviewFindings(scanId, findingSummary.byType, keptFindings, withheldTypes)
       : [];
   const previewFindings = rawPreviewFindings.map((f) => ({
     ...f,
@@ -1037,7 +1041,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     scanSuccessful && unfiltered
       ? canViewDetails
         ? await getFullListTopFindings(scanId, keptFindings)
-        : await getFreeTopFindings(scanId, findingSummary.byType, keptFindings, {
+        : await getFreeTopFindings(scanId, findingSummary.byType, keptFindings, withheldTypes, {
             preview: rawPreviewFindings,
             malicious: enrichedMaliciousFindings.filter((f) => !f.isIgnored),
           })
@@ -1047,13 +1051,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Free-tier hidden-findings breakdown (gc-97k.4): per-lane counts of the
   // findings hidden behind the paywall, from the summary's existing groupBy
   // (ignores already excluded), minus EVERY preview row shown (gc-97k.10).
-  // Non-null only for a successful scan's Free view with at least one preview
-  // row and at least one hidden finding. Malicious findings are never counted
-  // as hidden (they are shown in full above on every plan). It is CONTENT for
-  // exactly one upgrade ask: the return-visit banner when that renders,
-  // otherwise the inline teaser.
+  // Non-null only for a successful scan's Free view with at least one hidden
+  // finding (usually alongside preview rows; a downgraded shop whose only
+  // findings are plan-withheld types has none). Malicious findings are never
+  // counted as hidden (they are shown in full above on every plan). It is
+  // CONTENT for exactly one upgrade ask: the return-visit banner when that
+  // renders, otherwise the inline teaser.
   const hiddenBreakdown =
-    previewFindings.length > 0
+    scanSuccessful && !canViewDetails
       ? buildUpgradePreview(
           findingSummary.byType,
           previewFindings.map((f) => f.findingType),
@@ -2153,7 +2158,6 @@ export default function ScanDetail() {
         <ScanCoverageNotices
           isCompleted={isCompleted}
           brokenLinksIncluded={brokenLinksIncluded}
-          status={scan.status}
           skippedCategories={scan.skippedCategories}
           cappedCategories={scan.cappedCategories}
           unreachableCategories={scan.unreachableCategories}
@@ -2419,7 +2423,7 @@ export default function ScanDetail() {
                 </s-stack>
               </s-card>
             </div>
-          ) : previewFindings.length === 0 ? (
+          ) : previewFindings.length === 0 && !upgradePreview && !upgradeReturn ? (
             /* Free tier, no findings beyond any malicious ones (shown above) */
             maliciousFindings.length === 0 && (
               <s-card>
@@ -2445,33 +2449,41 @@ export default function ScanDetail() {
                 </s-stack>
               </s-card>
 
-              {/* Preview rows (gc-97k.10), shown as a mini data table */}
-              <s-card>
-                <s-stack direction="block" gap="base">
-                  <s-heading>{freePreviewHeading(previewFindings.length)}</s-heading>
-                  <FindingsTable>
-                    {previewFindings.map((finding) => (
-                      <FindingRow
-                        key={finding.id}
-                        finding={finding}
-                        shopDomain={shopDomain}
-                        themeId={scan.themeId}
-                        anchor
-                      />
-                    ))}
-                  </FindingsTable>
+              {/* Preview rows (gc-97k.10), shown as a mini data table. None when
+                every finding is a plan-withheld type (a downgraded shop's Broken
+                links), and then the card holds only the teaser. */}
+              {(previewFindings.length > 0 || upgradePreview) && (
+                <s-card>
+                  <s-stack direction="block" gap="base">
+                    {previewFindings.length > 0 && (
+                      <>
+                        <s-heading>{freePreviewHeading(previewFindings.length)}</s-heading>
+                        <FindingsTable>
+                          {previewFindings.map((finding) => (
+                            <FindingRow
+                              key={finding.id}
+                              finding={finding}
+                              shopDomain={shopDomain}
+                              themeId={scan.themeId}
+                              anchor
+                            />
+                          ))}
+                        </FindingsTable>
+                      </>
+                    )}
 
-                  {/* Upgrade teaser: findings actually hidden (excludes preview + malicious) */}
-                  {upgradePreview && (
-                    <UpgradePreviewBanner
-                      preview={upgradePreview}
-                      pricingPlansUrl={pricingPlansUrl}
-                      trialEligible={trialEligible}
-                      showCta={teaserCta}
-                    />
-                  )}
-                </s-stack>
-              </s-card>
+                    {/* Upgrade teaser: findings actually hidden (excludes preview + malicious) */}
+                    {upgradePreview && (
+                      <UpgradePreviewBanner
+                        preview={upgradePreview}
+                        pricingPlansUrl={pricingPlansUrl}
+                        trialEligible={trialEligible}
+                        showCta={teaserCta}
+                      />
+                    )}
+                  </s-stack>
+                </s-card>
+              )}
             </>
           ))}
 

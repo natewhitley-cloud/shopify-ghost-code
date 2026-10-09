@@ -15,6 +15,7 @@ function view(n: number): TopFindingView {
   return {
     id: `f${n}`,
     severity: n === 1 ? "HIGH" : "LOW",
+    lane: "speed",
     typeLabel: `Type ${n}`,
     location: `snippets/file-${n}.liquid, line ${n}`,
     cost: `Cost line ${n}.`,

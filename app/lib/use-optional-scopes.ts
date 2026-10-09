@@ -32,6 +32,18 @@ declare const shopify:
     }
   | undefined;
 
+/**
+ * How a scopes request ended. The App Bridge modal is all-or-nothing, and a
+ * closed modal resolves like a decline, so the outcome is read from the
+ * re-queried grant state rather than the request's own result.
+ */
+export type ScopeRequestOutcome = "granted" | "declined" | "failed";
+
+/** Pure: the outcome from the scopes granted AFTER the request. */
+export function scopeRequestOutcome(grantedAfter: readonly string[]): ScopeRequestOutcome {
+  return missingOptionalScopes(grantedAfter).length === 0 ? "granted" : "declined";
+}
+
 export type OptionalScopesState = {
   /** null until the first query resolves (and forever if it failed). */
   granted: string[] | null;
@@ -42,8 +54,11 @@ export type OptionalScopesState = {
   requesting: boolean;
   /** Optional scopes not granted (all of them while granted is unknown). */
   missing: OptionalScope[];
-  /** Open the App Bridge permission modal for `missing`, then re-query. */
-  requestMissing: () => Promise<void>;
+  /**
+   * Open the App Bridge permission modal for `missing`, then re-query. Resolves
+   * with the outcome (null when the scopes API is unavailable); never rejects.
+   */
+  requestMissing: () => Promise<ScopeRequestOutcome | null>;
 };
 
 export function useOptionalScopes(): OptionalScopesState {
@@ -74,8 +89,8 @@ export function useOptionalScopes(): OptionalScopesState {
 
   const missing = missingOptionalScopes(granted ?? []);
 
-  async function requestMissing() {
-    if (typeof shopify === "undefined" || !shopify.scopes) return;
+  async function requestMissing(): Promise<ScopeRequestOutcome | null> {
+    if (typeof shopify === "undefined" || !shopify.scopes) return null;
     setRequesting(true);
     setFailed(false);
     try {
@@ -84,8 +99,10 @@ export function useOptionalScopes(): OptionalScopesState {
       // modal is all-or-nothing, but re-querying is the authoritative source).
       const res = await shopify.scopes.query();
       setGranted(res.granted);
+      return scopeRequestOutcome(res.granted);
     } catch {
       setFailed(true);
+      return "failed";
     } finally {
       setRequesting(false);
     }

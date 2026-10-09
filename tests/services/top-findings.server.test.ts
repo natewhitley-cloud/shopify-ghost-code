@@ -198,7 +198,7 @@ describe("getFullListTopFindings", () => {
 
 describe("getFreeTopFindings", () => {
   it("with loaded rows, ranks malicious + preview and reads nothing", async () => {
-    const top = await getFreeTopFindings("scan-1", {}, null, {
+    const top = await getFreeTopFindings("scan-1", {}, null, [], {
       preview: [f("p1", "GHOST_SCRIPT", "HIGH"), f("p2", "ORPHAN_ASSET", "LOW")] as never,
       malicious: [f("m", "MALICIOUS_SCRIPT", "MEDIUM")] as never,
     });
@@ -221,12 +221,12 @@ describe("getFreeTopFindings", () => {
       );
       serveScan(rows);
       const byType = byTypeOf(rows);
-      const preview = await getFreePreviewFindings("scan-1", byType, null);
+      const preview = await getFreePreviewFindings("scan-1", byType, null, []);
       const visible = new Set([
         ...ids(preview),
         ...ids(rows.filter((r) => r.findingType === "MALICIOUS_SCRIPT")),
       ]);
-      const top = await getFreeTopFindings("scan-1", byType, null);
+      const top = await getFreeTopFindings("scan-1", byType, null, []);
       for (const id of ids(top)) expect(visible.has(id)).toBe(true);
       const nonMalicious = rows.filter((r) => r.findingType !== "MALICIOUS_SCRIPT").length;
       const malicious = rows.length - nonMalicious;
@@ -246,8 +246,8 @@ describe("getFreeTopFindings", () => {
     ];
     serveScan(rows);
     const byType = byTypeOf(rows);
-    const preview = ids(await getFreePreviewFindings("scan-1", byType, null));
-    const top = ids(await getFreeTopFindings("scan-1", byType, null));
+    const preview = ids(await getFreePreviewFindings("scan-1", byType, null, []));
+    const top = ids(await getFreeTopFindings("scan-1", byType, null, []));
     expect(top.every((id) => preview.includes(id))).toBe(true);
     expect(top).toEqual(["script0", "snippet", "pixel"]);
     // A full-list plan ranks the whole scan: three HIGH scripts (no other HIGH
@@ -258,11 +258,16 @@ describe("getFreeTopFindings", () => {
 
   it("reads malicious rows only when the scan has some", async () => {
     serveScan([f("a", "GHOST_SCRIPT", "HIGH"), f("b", "GHOST_PIXEL", "LOW")]);
-    await getFreeTopFindings("scan-1", { GHOST_SCRIPT: 1, GHOST_PIXEL: 1 }, null);
+    await getFreeTopFindings("scan-1", { GHOST_SCRIPT: 1, GHOST_PIXEL: 1 }, null, []);
     expect(mockGroup).not.toHaveBeenCalled();
 
     serveScan([f("a", "GHOST_SCRIPT", "HIGH"), f("m", "MALICIOUS_SCRIPT", "HIGH")]);
-    const top = await getFreeTopFindings("scan-1", { GHOST_SCRIPT: 1, MALICIOUS_SCRIPT: 1 }, null);
+    const top = await getFreeTopFindings(
+      "scan-1",
+      { GHOST_SCRIPT: 1, MALICIOUS_SCRIPT: 1 },
+      null,
+      [],
+    );
     expect(mockGroup).toHaveBeenCalledWith("scan-1", "MALICIOUS_SCRIPT", null, 3);
     expect(ids(top)).toEqual(["m", "a"]);
   });
@@ -273,6 +278,7 @@ describe("getFreeTopFindings", () => {
       "scan-1",
       { GHOST_SCRIPT: 1, GHOST_PIXEL: 1 },
       kept as never,
+      [],
     );
     // 2 non-malicious -> 1 preview row.
     expect(ids(top)).toEqual(["a"]);
@@ -282,6 +288,6 @@ describe("getFreeTopFindings", () => {
 
   it("no findings: nothing", async () => {
     serveScan([]);
-    await expect(getFreeTopFindings("scan-1", {}, null)).resolves.toEqual([]);
+    await expect(getFreeTopFindings("scan-1", {}, null, [])).resolves.toEqual([]);
   });
 });

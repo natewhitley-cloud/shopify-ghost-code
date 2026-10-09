@@ -244,6 +244,7 @@ describe("presentation helpers", () => {
     expect(view).toEqual({
       id: "f1",
       severity: "HIGH",
+      lane: "speed",
       typeLabel: "Scripts",
       location: "layout/theme.liquid, line 42",
       cost: "This is loading extra code that slows your storefront down.",

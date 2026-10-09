@@ -8,7 +8,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect, vi, afterEach } from "vitest";
 
 import { OPTIONAL_SCOPES } from "../../app/lib/optional-scopes";
-import { useOptionalScopes } from "../../app/lib/use-optional-scopes";
+import { scopeRequestOutcome, useOptionalScopes } from "../../app/lib/use-optional-scopes";
 import type { OptionalScopesState } from "../../app/lib/use-optional-scopes";
 
 function captureState(): OptionalScopesState {
@@ -47,14 +47,41 @@ describe("useOptionalScopes", () => {
     expect(query).toHaveBeenCalledTimes(1);
   });
 
-  it("requestMissing is a no-op without the App Bridge scopes API", async () => {
+  it("requestMissing is a no-op without the App Bridge scopes API (null outcome)", async () => {
     vi.stubGlobal("shopify", {});
-    await expect(captureState().requestMissing()).resolves.toBeUndefined();
+    await expect(captureState().requestMissing()).resolves.toBeNull();
   });
 
-  it("a rejected request never throws to the caller", async () => {
+  it("granted: the re-query shows every optional scope", async () => {
+    const request = vi.fn().mockResolvedValue({ result: "granted-all", detail: { granted: [] } });
+    const query = vi
+      .fn()
+      .mockResolvedValue({ granted: [...OPTIONAL_SCOPES], required: [], optional: [] });
+    vi.stubGlobal("shopify", { scopes: { request, query } });
+    await expect(captureState().requestMissing()).resolves.toBe("granted");
+  });
+
+  it("declined or closed modal: the re-query still lacks scopes", async () => {
+    // A closed modal resolves like a decline; the grant state is the truth.
+    const request = vi.fn().mockResolvedValue({ result: "declined-all", detail: { granted: [] } });
+    const query = vi
+      .fn()
+      .mockResolvedValue({ granted: ["read_themes"], required: [], optional: [] });
+    vi.stubGlobal("shopify", { scopes: { request, query } });
+    await expect(captureState().requestMissing()).resolves.toBe("declined");
+  });
+
+  it("failed: a rejected request resolves 'failed' and never throws", async () => {
     const request = vi.fn().mockRejectedValue(new Error("modal failed"));
     vi.stubGlobal("shopify", { scopes: { request, query: vi.fn() } });
-    await expect(captureState().requestMissing()).resolves.toBeUndefined();
+    await expect(captureState().requestMissing()).resolves.toBe("failed");
+  });
+});
+
+describe("scopeRequestOutcome", () => {
+  it("granted only when no optional scope is missing", () => {
+    expect(scopeRequestOutcome([...OPTIONAL_SCOPES, "read_themes"])).toBe("granted");
+    expect(scopeRequestOutcome(OPTIONAL_SCOPES.slice(1))).toBe("declined");
+    expect(scopeRequestOutcome([])).toBe("declined");
   });
 });

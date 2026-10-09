@@ -8,6 +8,7 @@ import {
   BROKEN_LINKS_STANDARD_NOTE,
   OPTIONAL_SCOPE_INFO,
   OPTIONAL_SCOPES,
+  optionalScopeUnlocks,
 } from "../lib/optional-scopes";
 import { canReceiveAlerts } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
@@ -255,7 +256,9 @@ export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: 
                     >
                       <div>
                         <div style={{ fontWeight: 600, color: TEXT_PRIMARY }}>{info.label}</div>
-                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>{info.unlocks}</div>
+                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+                          {optionalScopeUnlocks(scope, brokenLinksIncluded)}
+                        </div>
                       </div>
                       <s-badge tone={badge.tone}>{badge.text}</s-badge>
                     </div>

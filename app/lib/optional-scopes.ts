@@ -65,6 +65,18 @@ export const BROKEN_LINKS_STANDARD_NOTE =
   "Broken-link checks come with the Standard plan. Granting these permissions doesn't add them on Free.";
 
 /**
+ * The Permissions card's "unlocks" line for a scope on the viewer's plan. The
+ * read_content line names broken links, which are Standard+ by plan, so a plan
+ * without them gets the line without that claim (audit fix, gc-4n0y).
+ */
+export function optionalScopeUnlocks(scope: OptionalScope, brokenLinksIncluded: boolean): string {
+  if (scope === "read_content" && !brokenLinksIncluded) {
+    return "Finds orphaned content pages left behind by uninstalled apps.";
+  }
+  return OPTIONAL_SCOPE_INFO[scope].unlocks;
+}
+
+/**
  * Reverse map: each skippable finding-type category → the optional scope(s) that
  * unlock it, plus a human label. Sourced from the scan engine's
  * `skippedCategories` builder (`inngest/functions/scan-theme.ts`) and each
@@ -110,29 +122,6 @@ export function missingOptionalScopes(granted: readonly string[]): OptionalScope
 /** True when every optional scope has been granted. */
 export function allOptionalScopesGranted(granted: readonly string[]): boolean {
   return missingOptionalScopes(granted).length === 0;
-}
-
-/**
- * Whether a scan skipped any optional audit for a missing scope. Drives the
- * scan-detail Permissions banner.
- *
- * Scope-only (gc-11f): a check that ran but hit a size cap is recorded in
- * `cappedCategories`, never `skippedCategories`, so a capped scan does not
- * trigger this banner (the merchant already granted access). Caps get their
- * own info notice instead.
- *
- * `PARTIAL` is the terminal status reserved for a scope-skip, and
- * `skippedCategories` is the precise per-category signal. Either is sufficient:
- * the engine currently finalizes `COMPLETED` even when categories were skipped,
- * so `skippedCategories.length > 0` is the real-world trigger today; the
- * `PARTIAL` check is a defensive belt-and-braces guard for the schema's intended
- * semantics.
- */
-export function scanSkippedForScopes(scan: {
-  status: string;
-  skippedCategories: readonly string[];
-}): boolean {
-  return scan.status === "PARTIAL" || scan.skippedCategories.length > 0;
 }
 
 /**

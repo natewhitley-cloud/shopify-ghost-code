@@ -57,11 +57,19 @@ export const PREVIEW_READ_BUCKETS: FindingType[][] = (() => {
  * `keptFindings` is the `keptFindings` of getFilteredFindingSummaryAndKept:
  * the scan's non-ignored findings when the shop HAS ignores (picked from
  * directly, no query), or null when it has none (the bounded per-lane read).
+ *
+ * `withheld` is findingTypesWithheldByPlan for the shop's CURRENT plan: types
+ * the plan may not see in full (a downgraded shop's old Broken links or
+ * checkout-sunset findings). They are never picked, but they stay in the
+ * formula's total and in the teaser as locked findings, so the counts do not
+ * change. A scan whose only findings are withheld can therefore return no
+ * rows; the scan page then shows the teaser without a preview table.
  */
 export async function getFreePreviewFindings(
   scanId: string,
   byType: Partial<Record<FindingType, number>>,
   keptFindings: readonly FindingRow[] | null,
+  withheld: readonly FindingType[],
 ) {
   const total = (Object.entries(byType) as [FindingType, number][])
     .filter(([type]) => type !== "MALICIOUS_SCRIPT")
@@ -69,10 +77,17 @@ export async function getFreePreviewFindings(
   const count = freePreviewCount(total);
   if (count === 0) return [];
 
-  if (keptFindings !== null) return pickFreePreviewFindings(keptFindings, count);
+  const visible = (type: FindingType) => !withheld.includes(type);
 
-  const bucketsWithFindings = PREVIEW_READ_BUCKETS.filter((types) =>
-    types.some((t) => (byType[t] ?? 0) > 0),
+  if (keptFindings !== null) {
+    return pickFreePreviewFindings(
+      keptFindings.filter((f) => visible(f.findingType)),
+      count,
+    );
+  }
+
+  const bucketsWithFindings = PREVIEW_READ_BUCKETS.map((types) => types.filter(visible)).filter(
+    (types) => types.some((t) => (byType[t] ?? 0) > 0),
   );
   const perBucket = await Promise.all(
     bucketsWithFindings.map((types) => getTopFindingsOfTypes(scanId, types, count)),

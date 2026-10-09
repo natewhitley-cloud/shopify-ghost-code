@@ -1,5 +1,5 @@
 import { ScanOrigin, Severity } from "@prisma/client";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
   Link,
@@ -33,6 +33,7 @@ import { computeHealthScore } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { logger } from "../lib/logger.server";
 import { mergeSearchParams } from "../lib/merge-search-params";
+import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import {
   canStartScan,
   canUseMultipleThemes,
@@ -47,6 +48,7 @@ import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import { toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
+import type { ScopeRequestOutcome } from "../lib/use-optional-scopes";
 import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polling";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
@@ -301,7 +303,6 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const laneSummary: LaneSummaryRow[] = latestTypeCounts
     ? computeLaneSummary(latestTypeCounts)
     : [];
-  const startHere: LaneKey | null = startHereLane(laneSummary);
   const dominant: LaneKey | null = dominantLane(laneSummary);
 
   const findingSummary = latestSeverity ? { bySeverity: latestSeverity } : null;
@@ -319,11 +320,27 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     latestScan && isSuccessfulScan(latestScan.status) && latestTypeCounts
       ? features.showFindingDetails
         ? await getFullListTopFindings(latestScan.id, latestKeptFindings)
-        : await getFreeTopFindings(latestScan.id, latestTypeCounts, latestKeptFindings)
+        : await getFreeTopFindings(
+            latestScan.id,
+            latestTypeCounts,
+            latestKeptFindings,
+            findingTypesWithheldByPlan(features),
+          )
       : [];
   const topFindings = latestScan
     ? toTopFindingViews(latestScan.id, topFindingRows, Boolean(features.showFindingDetails))
     : [];
+
+  // The lanes' "Start here" chip follows the block's first finding whenever
+  // the block shows (audit fix): both say "Start here", so they must point at
+  // the same thing, and the block's ranking is the stronger signal (severity
+  // first, then urgency, per finding; startHereLane ranks lanes by urgency then
+  // count and ignores severity). With no block, the lane ranking stands alone.
+  const blockLane = topFindings[0]?.lane;
+  const startHere: LaneKey | null =
+    blockLane && laneSummary.some((row) => row.lane === blockLane)
+      ? blockLane
+      : startHereLane(laneSummary);
 
   // Compute health scores from parallel results
   let healthScore: HealthScoreResult | null = null;
@@ -696,55 +713,97 @@ export function HomeScanInProgress({
 /** Copy for the welcome card's optional permissions line (gc-4n0y). */
 export const OPTIONAL_CHECKS_COPY = {
   lead: "Optional: ",
-  link: "allow product, page, and redirect checks",
+  link: "allow product, page, redirect, and translation checks",
   tail: " for a deeper first scan.",
-  granted: "Extra checks are on for your first scan.",
+  grantedFirst: "Extra checks are on for your first scan.",
+  grantedNext: "Extra checks are on for your next scan.",
+  declined: "No problem. You can turn these on later in Settings.",
   failed: "Couldn't update permissions. You can grant them later in Settings.",
 } as const;
+
+/**
+ * The status line after a scopes request. "First scan" only when the grant was
+ * confirmed before the first scan started (the scan job reads the granted
+ * scopes when it runs); a grant that lands once the scan is starting applies
+ * to the next one.
+ */
+export function optionalChecksMessage(
+  outcome: ScopeRequestOutcome | null,
+  scanStartedBeforeOutcome: boolean,
+): string | null {
+  switch (outcome) {
+    case "granted":
+      return scanStartedBeforeOutcome
+        ? OPTIONAL_CHECKS_COPY.grantedNext
+        : OPTIONAL_CHECKS_COPY.grantedFirst;
+    case "declined":
+      return OPTIONAL_CHECKS_COPY.declined;
+    case "failed":
+      return OPTIONAL_CHECKS_COPY.failed;
+    default:
+      return null;
+  }
+}
 
 /**
  * Welcome card's SECONDARY, optional line under "Start First Scan" (gc-4n0y):
  * opens the same App Bridge scopes request as the Settings Permissions card
  * (useOptionalScopes), so a Free merchant can deepen the first scan. Never
- * blocks the primary action. Hidden where App Bridge has no scopes API, and
- * when every optional scope is already granted (unless the merchant just
- * granted them here, which gets a one-line confirmation).
+ * blocks the primary action, and the link is hidden while the scan is
+ * starting (a grant then could miss that scan). The outcome is announced in a
+ * polite status region that is always present.
  */
-export function OptionalChecksLine() {
-  const { granted, unsupported, failed, requesting, missing, requestMissing } = useOptionalScopes();
-  const [asked, setAsked] = useState(false);
+export function OptionalChecksLine({ scanStarting }: { scanStarting: boolean }) {
+  const { granted, unsupported, requesting, missing, requestMissing } = useOptionalScopes();
+  const [result, setResult] = useState<{
+    outcome: ScopeRequestOutcome;
+    scanStarted: boolean;
+  } | null>(null);
+  // Read at the moment the outcome arrives, not when the link was clicked.
+  const scanStartingRef = useRef(scanStarting);
+  scanStartingRef.current = scanStarting;
 
   if (unsupported) return null;
   const allGranted = granted !== null && missing.length === 0;
-  if (allGranted) {
-    return asked ? (
-      <div style={{ fontSize: "13px", color: COLOR_SUCCESS }}>{OPTIONAL_CHECKS_COPY.granted}</div>
-    ) : null;
-  }
+  const message = result ? optionalChecksMessage(result.outcome, result.scanStarted) : null;
+  const showLink = !allGranted && !scanStarting;
+
   return (
     <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
-      {OPTIONAL_CHECKS_COPY.lead}
-      <button
-        type="button"
-        onClick={() => {
-          setAsked(true);
-          void requestMissing();
-        }}
-        disabled={requesting}
+      {showLink && (
+        <div>
+          {OPTIONAL_CHECKS_COPY.lead}
+          <button
+            type="button"
+            onClick={async () => {
+              const outcome = await requestMissing();
+              if (outcome) setResult({ outcome, scanStarted: scanStartingRef.current });
+            }}
+            disabled={requesting}
+            style={{
+              background: "none",
+              border: "none",
+              padding: 0,
+              font: "inherit",
+              color: COLOR_INFO,
+              textDecoration: "underline",
+              cursor: requesting ? "default" : "pointer",
+            }}
+          >
+            {OPTIONAL_CHECKS_COPY.link}
+          </button>
+          {OPTIONAL_CHECKS_COPY.tail}
+        </div>
+      )}
+      <div
+        role="status"
         style={{
-          background: "none",
-          border: "none",
-          padding: 0,
-          font: "inherit",
-          color: COLOR_INFO,
-          textDecoration: "underline",
-          cursor: requesting ? "default" : "pointer",
+          marginTop: message && showLink ? "4px" : 0,
+          color: result?.outcome === "granted" ? COLOR_SUCCESS : TEXT_SUBDUED,
         }}
       >
-        {OPTIONAL_CHECKS_COPY.link}
-      </button>
-      {OPTIONAL_CHECKS_COPY.tail}
-      {asked && failed && <div style={{ marginTop: "4px" }}>{OPTIONAL_CHECKS_COPY.failed}</div>}
+        {message}
+      </div>
     </div>
   );
 }
@@ -1050,7 +1109,7 @@ export default function Dashboard() {
                 {isSubmitting ? "Starting scan…" : "Start First Scan"}
               </s-button>
               {/* gc-4n0y: optional, non-blocking deeper-scan permissions. */}
-              <OptionalChecksLine />
+              <OptionalChecksLine scanStarting={isSubmitting} />
             </s-stack>
           </s-card>
         ) : (

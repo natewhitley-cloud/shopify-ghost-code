@@ -32,6 +32,7 @@ import type { FindingType, Severity } from "@prisma/client";
 import { adminResourceLocatorLabel } from "./admin-resource-url";
 import { isAdminResourceFinding, isStorefrontFinding } from "./finding-classification";
 import { CONSEQUENCE_MAP, LANES, soWhatForLane, URGENCY_RANK } from "./finding-consequence";
+import type { LaneKey } from "./finding-consequence";
 import { findingTypeLabel } from "./finding-type-labels";
 
 /** How many findings the "Start here" block shows at most. */
@@ -124,6 +125,8 @@ export function pickTopFindings<T extends RankableFinding>(
 export type TopFindingView = {
   id: string;
   severity: Severity;
+  /** Primary consequence lane (Home's lane "Start here" chip follows the first row). */
+  lane: LaneKey;
   typeLabel: string;
   /** Where it lives: a theme file (and line), an admin resource, or the storefront. */
   location: string;
@@ -195,6 +198,7 @@ export function toTopFindingViews(
   return findings.map((f) => ({
     id: f.id,
     severity: f.severity,
+    lane: CONSEQUENCE_MAP[f.findingType].primary,
     typeLabel: findingTypeLabel(f.findingType),
     location: findingLocation(f),
     cost: findingCostLine(f.findingType),

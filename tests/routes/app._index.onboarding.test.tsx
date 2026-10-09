@@ -108,6 +108,8 @@ import Dashboard, {
   HomeScanInProgress,
   loader,
   OPTIONAL_CHECKS_COPY,
+  OptionalChecksLine,
+  optionalChecksMessage,
 } from "../../app/routes/app._index";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
@@ -409,7 +411,11 @@ describe("Home Start here (gc-bn0x)", () => {
 
     const data = await load(COMPLETED);
 
-    expect(getFreeTopFindings).toHaveBeenCalledWith("scan-1", TYPE_COUNTS, null);
+    // Free withholds the Standard+ types (a downgraded shop's old findings).
+    expect(getFreeTopFindings).toHaveBeenCalledWith("scan-1", TYPE_COUNTS, null, [
+      "DANGLING_REFERENCE",
+      "CHECKOUT_SUNSET",
+    ]);
     expect(getFullListTopFindings).not.toHaveBeenCalled();
     const html = renderDashboard(data);
     expect(html).toMatch(/<h2 id="top-findings-heading"[^>]*>Start here<\/h2>/);
@@ -434,6 +440,29 @@ describe("Home Start here (gc-bn0x)", () => {
       );
     },
   );
+
+  // Audit fix: both say "Start here", so the lane chip follows the block.
+  it("the lanes' Start here chip follows the block's first finding, not the lane ranking", async () => {
+    // Lane ranking alone: Speed (3 act-now) beats Still tracking you (1 act-now).
+    // The block's first finding is the pixel, so the chip moves to its lane.
+    (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([
+      { ...TOP_ROW, id: "px", findingType: "GHOST_PIXEL" },
+    ]);
+
+    const data = await load(COMPLETED);
+
+    expect(data.startHere).toBe("privacy");
+    const html = renderDashboard(data);
+    expect(html.match(/lane__chip--start/g)).toHaveLength(2); // the CSS rule + one chip
+    expect(html).toMatch(/aria-label="Review 1 Still tracking you finding\. Act now, start here"/);
+    expect(html).not.toMatch(/aria-label="Review 3 Speed findings\. Act now, start here"/);
+  });
+
+  it("with no block, the chip keeps the lane ranking", async () => {
+    (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    const data = await load(COMPLETED);
+    expect(data.startHere).toBe("speed");
+  });
 
   it.each(["PENDING", "IN_PROGRESS"])(
     "the 3s poll while a scan is %s reads nothing for the block and renders none",
@@ -502,5 +531,48 @@ describe("Welcome card optional permissions line (gc-4n0y)", () => {
     });
     const html = renderDashboard(await runLoader());
     expect(html).not.toContain(OPTIONAL_CHECKS_COPY.link);
+  });
+
+  it("the link names every check the modal asks for (products, pages, redirects, translations)", () => {
+    expect(OPTIONAL_CHECKS_COPY.link).toBe("allow product, page, redirect, and translation checks");
+  });
+
+  it("has an always-present polite status region for the outcome", async () => {
+    const html = await welcomeHtml();
+    expect(html).toMatch(/<div role="status"[^>]*><\/div>/);
+  });
+
+  it("hides the link while the first scan is starting (a late grant could miss it)", () => {
+    const starting = renderToStaticMarkup(<OptionalChecksLine scanStarting />);
+    expect(starting).not.toContain(OPTIONAL_CHECKS_COPY.link);
+    expect(starting).toContain('role="status"');
+    const idle = renderToStaticMarkup(<OptionalChecksLine scanStarting={false} />);
+    expect(idle).toContain(OPTIONAL_CHECKS_COPY.link);
+  });
+});
+
+describe("optionalChecksMessage (gc-4n0y audit fix)", () => {
+  it("granted before any scan started: first scan", () => {
+    expect(optionalChecksMessage("granted", false)).toBe(
+      "Extra checks are on for your first scan.",
+    );
+  });
+
+  it("granted once the scan was already starting: next scan", () => {
+    expect(optionalChecksMessage("granted", true)).toBe("Extra checks are on for your next scan.");
+  });
+
+  it("declined or closed: a calm line pointing at Settings", () => {
+    expect(optionalChecksMessage("declined", false)).toBe(
+      "No problem. You can turn these on later in Settings.",
+    );
+  });
+
+  it("failed: the retry-later line", () => {
+    expect(optionalChecksMessage("failed", false)).toBe(OPTIONAL_CHECKS_COPY.failed);
+  });
+
+  it("nothing asked yet: no message", () => {
+    expect(optionalChecksMessage(null, false)).toBeNull();
   });
 });

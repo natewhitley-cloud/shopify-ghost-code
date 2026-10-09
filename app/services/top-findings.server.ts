@@ -127,12 +127,16 @@ export async function getFullListTopFindings(
  * Free). Pass `loaded` when the caller already read both (the scan page);
  * otherwise they are read here, bounded (see the file header).
  *
- * `byType` is the ignore-filtered summary aggregate the preview formula uses.
+ * `byType` is the ignore-filtered summary aggregate the preview formula uses;
+ * `withheld` is findingTypesWithheldByPlan (never shown in full on this plan,
+ * so never in the preview and never in the top 3). Malicious findings are
+ * never withheld.
  */
 export async function getFreeTopFindings(
   scanId: string,
   byType: Partial<Record<FindingType, number>>,
   keptFindings: readonly FindingRow[] | null,
+  withheld: readonly FindingType[],
   loaded?: { preview: readonly FindingRow[]; malicious: readonly FindingRow[] },
 ): Promise<FindingRow[]> {
   if (loaded) return pickTopFindings([...loaded.malicious, ...loaded.preview]);
@@ -146,7 +150,7 @@ export async function getFreeTopFindings(
   };
 
   const [preview, maliciousRows] = await Promise.all([
-    getFreePreviewFindings(scanId, byType, keptFindings),
+    getFreePreviewFindings(scanId, byType, keptFindings, withheld),
     malicious(),
   ]);
   return pickTopFindings([...maliciousRows, ...preview]);

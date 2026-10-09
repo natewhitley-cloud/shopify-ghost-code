@@ -1097,14 +1097,21 @@ describe("app.scans.$scanId loader", () => {
       expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
     });
 
-    it("returns no teaser and emits nothing when there are no preview rows", async () => {
-      summary({ GHOST_SCRIPT: 3 });
+    // Changed on purpose (audit fix): a downgraded Free shop whose only
+    // findings are plan-withheld (old Broken links) has no preview rows, but
+    // those findings are still locked, so the teaser counts them.
+    it("with no preview rows (every finding plan-withheld), the teaser still counts them as locked", async () => {
+      summary({ DANGLING_REFERENCE: 3 });
       mockGetTopFindingsOfTypes.mockResolvedValue([]);
 
-      const result = (await loader(makeLoaderArgs("scan-1"))) as { upgradePreview: unknown };
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        upgradePreview: { hiddenCount: number } | null;
+        previewFindings: unknown[];
+      };
 
-      expect(result.upgradePreview).toBeNull();
-      expect(mockRecordUpgradePreviewStage).not.toHaveBeenCalled();
+      expect(result.previewFindings).toEqual([]);
+      expect(result.upgradePreview?.hiddenCount).toBe(3);
+      expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
     });
 
     it("returns no teaser and emits nothing for an unsuccessful (FAILED) scan", async () => {
@@ -2293,6 +2300,45 @@ describe("app.scans.$scanId loader", () => {
 
       expect(html).not.toContain("Start here");
       expect(html).toContain("No ghost code detected in this scan.");
+    });
+
+    it("a downgraded Free shop never sees old plan-gated findings in full (preview or top 3)", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+      scanWith([
+        row("broken-1", "DANGLING_REFERENCE", "HIGH", 0),
+        row("broken-2", "DANGLING_REFERENCE", "HIGH", 1),
+        row("checkout", "CHECKOUT_SUNSET", "HIGH", 2),
+        row("script", "GHOST_SCRIPT", "LOW", 3),
+        row("pixel", "GHOST_PIXEL", "LOW", 4),
+        row("orphan", "ORPHAN_ASSET", "LOW", 5),
+      ]);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as TopRows & {
+        upgradePreview: { hiddenCount: number } | null;
+      };
+
+      const shown = [...result.previewFindings, ...result.topFindings].map((f) => f.id);
+      expect(shown).not.toContain("broken-1");
+      expect(shown).not.toContain("broken-2");
+      expect(shown).not.toContain("checkout");
+      // 6 findings -> 3 shown, all visible types; the 3 withheld stay locked.
+      expect(result.previewFindings.map((f) => f.id)).toEqual(["script", "pixel", "orphan"]);
+      expect(result.topFindings.map((f) => f.id)).toEqual(["script", "pixel", "orphan"]);
+      expect(result.upgradePreview?.hiddenCount).toBe(3);
+    });
+
+    it("a Free scan whose only findings are plan-withheld: no block, no 'clean' claim, the teaser", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+      scanWith([row("broken", "DANGLING_REFERENCE", "HIGH", 0)]);
+
+      const html = await renderPage();
+
+      expect(html).not.toContain("top-findings-heading");
+      expect(html).not.toContain("No ghost code detected");
+      expect(html).not.toContain("<table");
+      expect(html).toContain("1 more finding on Standard");
     });
 
     it("an in-progress scan reads nothing for the block", async () => {
@@ -3630,7 +3676,6 @@ describe("ScanCoverageNotices", () => {
         createElement(ScanCoverageNotices, {
           isCompleted: true,
           brokenLinksIncluded: true,
-          status: "COMPLETED",
           skippedCategories: [],
           cappedCategories: [],
           ...overrides,
@@ -3757,10 +3802,11 @@ describe("ScanCoverageNotices", () => {
     ).toContain("couldn&#x27;t run");
   });
 
-  it("still renders the permissions warning for a legacy PARTIAL scan with no categories", () => {
-    const html = renderNotices({ status: "PARTIAL" });
-    expect(html).toContain(PERMISSIONS_TEXT);
-    expect(html).not.toContain(CAP_TEXT);
+  it("renders nothing when there is no category to name (never 'skipped 0 checks')", () => {
+    expect(renderNotices({ skippedCategories: [] })).toBe("");
+    expect(
+      renderNotices({ brokenLinksIncluded: false, skippedCategories: ["DANGLING_REFERENCE"] }),
+    ).toBe("");
   });
 });
 

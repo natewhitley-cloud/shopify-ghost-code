@@ -8,7 +8,7 @@ import {
   missingOptionalScopes,
   OPTIONAL_SCOPE_INFO,
   OPTIONAL_SCOPES,
-  scanSkippedForScopes,
+  optionalScopeUnlocks,
   SKIPPABLE_CATEGORY_INFO,
   skippedCategoryLabels,
 } from "../../app/lib/optional-scopes";
@@ -94,26 +94,6 @@ describe("allOptionalScopesGranted", () => {
         "read_online_store_navigation",
       ]),
     ).toBe(false);
-  });
-});
-
-describe("scanSkippedForScopes", () => {
-  it("is true when status is PARTIAL (even with no categories)", () => {
-    expect(scanSkippedForScopes({ status: "PARTIAL", skippedCategories: [] })).toBe(true);
-  });
-
-  it("is true when skippedCategories is non-empty", () => {
-    expect(scanSkippedForScopes({ status: "COMPLETED", skippedCategories: ["GHOST_PAGE"] })).toBe(
-      true,
-    );
-  });
-
-  it("is false for a COMPLETED scan with no skipped categories", () => {
-    expect(scanSkippedForScopes({ status: "COMPLETED", skippedCategories: [] })).toBe(false);
-  });
-
-  it("is false for a FAILED scan with no skipped categories", () => {
-    expect(scanSkippedForScopes({ status: "FAILED", skippedCategories: [] })).toBe(false);
   });
 });
 
@@ -210,6 +190,27 @@ describe("SKIPPABLE_CATEGORY_INFO mapping", () => {
         SKIPPABLE_CATEGORY_INFO[category],
         `scan engine can emit ${category} into ${listName} but SKIPPABLE_CATEGORY_INFO has no entry`,
       ).toBeDefined();
+    }
+  });
+});
+
+describe("optionalScopeUnlocks (plan-aware copy)", () => {
+  it("on a plan without Broken links, read_content makes no broken-links claim", () => {
+    const line = optionalScopeUnlocks("read_content", false);
+    expect(line).toBe("Finds orphaned content pages left behind by uninstalled apps.");
+    expect(line.toLowerCase()).not.toContain("broken");
+  });
+
+  it("on a plan with Broken links, read_content keeps the full line", () => {
+    expect(optionalScopeUnlocks("read_content", true)).toBe(
+      OPTIONAL_SCOPE_INFO.read_content.unlocks,
+    );
+  });
+
+  it("no other scope's line changes by plan", () => {
+    for (const scope of OPTIONAL_SCOPES.filter((s) => s !== "read_content")) {
+      expect(optionalScopeUnlocks(scope, false)).toBe(OPTIONAL_SCOPE_INFO[scope].unlocks);
+      expect(OPTIONAL_SCOPE_INFO[scope].unlocks.toLowerCase()).not.toContain("broken link");
     }
   });
 });
