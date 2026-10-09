@@ -79,6 +79,8 @@ vi.mock("../../app/services/theme-fetcher.server", async (importOriginal) => ({
 vi.mock("../../app/services/scan-engine.server", () => ({
   scanThemeFiles: vi.fn(),
   MAX_SCANNABLE_FILE_BYTES: 1_000_000,
+  // Read on every scan for app-removal detection (gc-frda).
+  enabledAppEmbedApps: () => new Set<string>(),
   isScannableFile: (filename: string) =>
     filename.endsWith(".liquid") &&
     ["templates/", "sections/", "snippets/", "layout/"].some((p) => filename.startsWith(p)),

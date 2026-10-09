@@ -407,6 +407,7 @@ export const scanTheme = inngest.createFunction(
         largestFileBytes,
         scannableTextBytes,
         enabledEmbedApps,
+        appsWithEnabledEmbed,
       } = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -637,6 +638,8 @@ export const scanTheme = inngest.createFunction(
           if (isScannableFile(f.filename)) scannableTextBytes += bytes;
         }
 
+        // Signature names of apps with an ENABLED theme app embed (small).
+        const embedApps = [...enabledAppEmbedApps(files)].sort();
         const output = {
           findingCount: themeFindings.length,
           fileCount: files.length,
@@ -680,9 +683,10 @@ export const scanTheme = inngest.createFunction(
           // dark scan's step output is unchanged; its presence is also what
           // schedules that audit step, so the decision is made once, here,
           // inside this memoized step.
-          ...(isScriptTagSunsetLive()
-            ? { enabledEmbedApps: [...enabledAppEmbedApps(files)].sort() }
-            : {}),
+          ...(isScriptTagSunsetLive() ? { enabledEmbedApps: embedApps } : {}),
+          // The same set, always present: app-removal detection (gc-frda) reads
+          // it at finalize to tell a reinstalled app from a cleaned one.
+          appsWithEnabledEmbed: embedApps,
         };
 
         // Defensive step-output budget (gc-4ce). The caps keep the worst case
@@ -1482,7 +1486,11 @@ export const scanTheme = inngest.createFunction(
           persistedFindingCount = 0;
         }
 
-        await finalizeScan(scanId, {
+        const { computeAppSignatureFingerprints } =
+          await import("../../app/services/app-removal.server");
+        const appSignatureFingerprints = computeAppSignatureFingerprints();
+
+        const finalized = await finalizeScan(scanId, {
           status: finalStatus,
           findingCount: totalFindings,
           skippedCategories,
@@ -1499,7 +1507,66 @@ export const scanTheme = inngest.createFunction(
           // existed lacks it: record NULL so the scan stays unversioned and the
           // alert step skips it.
           liveFindingTypes: finalLiveFindingTypes,
+          // Signature version per app, for app-removal detection (gc-frda).
+          appSignatureFingerprints,
         });
+
+        // App-removal detection (gc-frda). Never fails or retries the scan: the
+        // scan is already finalized, so any error is logged and swallowed. Runs
+        // only when THIS attempt finalized the scan (a watchdog-FAILED scan is
+        // not a baseline) and a baseline exists (no baseline = nothing to
+        // compare, and no open record can be judged).
+        if (finalized?.finalized && previousScan) {
+          try {
+            const [{ planAppRemovals }, appRemovals, { getIgnoredFindingsForShop }] =
+              await Promise.all([
+                import("../../app/services/app-removal.server"),
+                import("../../app/models/app-removal.server"),
+                import("../../app/models/ignored-finding.server"),
+              ]);
+            const [ignores, openRemovals] = await Promise.all([
+              getIgnoredFindingsForShop(shopId),
+              appRemovals.getOpenAppRemovals(shopId, themeId),
+            ]);
+            const plan = planAppRemovals({
+              currentScanId: scanId,
+              current: { ...currentCoverage, findings: currentFindings, appSignatureFingerprints },
+              previous: previousScan,
+              openRemovals,
+              ignores,
+              // Undefined only for a run memoized before the field existed.
+              enabledEmbedApps: Array.isArray(appsWithEnabledEmbed)
+                ? new Set(appsWithEnabledEmbed)
+                : null,
+            });
+            const written = await appRemovals.applyAppRemovalPlan({
+              shopId,
+              themeId,
+              scanId,
+              previousScanId: previousScan.id,
+              plan,
+            });
+            if (written.created > 0 || written.updated > 0) {
+              logger.info("app removals recorded", {
+                function: "scan-theme",
+                event: "app_removals",
+                scanId,
+                shopId,
+                removedApps: plan.creates.map((c) => c.appName),
+                created: written.created,
+                updated: written.updated,
+              });
+            }
+          } catch (err) {
+            logger.warn("app-removal detection failed, scan unaffected", {
+              function: "scan-theme",
+              event: "app_removals_failed",
+              scanId,
+              shopId,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
       });
 
       // Emit ONE scan_signal OpsEvent per completed scan (Feature 2). Runs AFTER

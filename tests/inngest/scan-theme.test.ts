@@ -202,6 +202,12 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
   getIgnoredFindingsForShop: vi.fn(),
 }));
 
+// App-removal persistence (gc-frda): the pure planner runs for real.
+vi.mock("../../app/models/app-removal.server", () => ({
+  getOpenAppRemovals: vi.fn(),
+  applyAppRemovalPlan: vi.fn(),
+}));
+
 // ---------------------------------------------------------------------------
 // Imports (after mocks are registered)
 // ---------------------------------------------------------------------------
@@ -221,6 +227,7 @@ import {
   fetchGrantedOptionalScopes,
   TransientScopeCheckError,
 } from "../../app/lib/scope-check.server";
+import { applyAppRemovalPlan, getOpenAppRemovals } from "../../app/models/app-removal.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getLatestMerchantAlert } from "../../app/models/merchant-alert.server";
@@ -234,6 +241,7 @@ import {
   getScanById,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
+import { computeAppSignatureFingerprints } from "../../app/services/app-removal.server";
 import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.server";
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { resolveDanglingReferences } from "../../app/services/dangling-reference-resolver.server";
@@ -599,6 +607,7 @@ describe("scanTheme — happy path", () => {
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
+      appSignatureFingerprints: expect.any(Object),
     });
   });
 
@@ -627,6 +636,7 @@ describe("scanTheme — happy path", () => {
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
+      appSignatureFingerprints: expect.any(Object),
     });
   });
 
@@ -1129,6 +1139,7 @@ describe("scanTheme — optional audit steps", () => {
         resolvedFindingCount: 0,
         persistedFindingCount: 0,
         liveFindingTypes: expect.any(Array),
+        appSignatureFingerprints: expect.any(Object),
       });
 
       expect(result).toEqual({
@@ -1409,6 +1420,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
+      appSignatureFingerprints: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1557,6 +1569,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
+      appSignatureFingerprints: expect.any(Object),
     });
     expect(result.status).toBe("COMPLETED");
   });
@@ -1605,6 +1618,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
+      appSignatureFingerprints: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1632,6 +1646,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
+      appSignatureFingerprints: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -2346,6 +2361,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       resolvedFindingCount: 0,
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
+      appSignatureFingerprints: expect.any(Object),
     });
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
@@ -3898,7 +3914,9 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     expect(names).not.toContain("storefront-script-tags");
     // fetch-and-scan's output carries no new key while dark.
     expect(results["fetch-and-scan"]).not.toHaveProperty("enabledEmbedApps");
-    expect(enabledAppEmbedApps).not.toHaveBeenCalled();
+    // gc-frda reads the embed set on every scan (app-removal detection); it
+    // travels under its own key, which never schedules this audit.
+    expect(results["fetch-and-scan"]).toHaveProperty("appsWithEnabledEmbed", []);
     // finalize write is unchanged: no unreachableCategories key at all.
     const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
     expect(finalizeArgs).not.toHaveProperty("unreachableCategories");
@@ -4317,5 +4335,181 @@ describe("scanTheme: optional audits on a Free plan (gc-4n0y)", () => {
       expect.arrayContaining(["GHOST_TRANSLATION", "GHOST_TAG", "GHOST_PAGE", "GHOST_REDIRECT"]),
     );
     expect(finalized.skippedCategories).not.toContain("DANGLING_REFERENCE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-frda: app-removal detection at finalize
+// ---------------------------------------------------------------------------
+
+describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
+  const mockIgnores = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
+  const mockOpen = getOpenAppRemovals as ReturnType<typeof vi.fn>;
+  const mockApply = applyAppRemovalPlan as ReturnType<typeof vi.fn>;
+  const mockEmbeds = enabledAppEmbedApps as ReturnType<typeof vi.fn>;
+
+  const ALL_TYPES = Object.values(FindingType);
+  const KLAVIYO = { ...MOCK_FINDINGS[0] };
+  const METAFIELD = {
+    filename: "n/a",
+    lineNumber: 0,
+    codeSnippet: "reviews.rating",
+    findingType: FindingType.GHOST_METAFIELD,
+    severity: Severity.LOW,
+    appName: "Klaviyo",
+    description: "metafield",
+  };
+
+  function arrange(over: { current?: unknown[]; previous?: Record<string, unknown> | null } = {}) {
+    mockFinalizeScan.mockResolvedValue({ finalized: true });
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
+    mockOpen.mockResolvedValue([]);
+    mockApply.mockResolvedValue({ created: 0, updated: 0 });
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      createdAt: new Date("2026-06-15T00:00:00Z"),
+    });
+    mockDb.finding.findMany.mockResolvedValue(over.current ?? [KLAVIYO]);
+    mockGetPreviousScanForTheme.mockResolvedValue(
+      over.previous === null
+        ? null
+        : {
+            ...BASELINE_COVERAGE,
+            id: "prior",
+            findingCount: 0,
+            findings: [],
+            liveFindingTypes: ALL_TYPES,
+            appSignatureFingerprints: computeAppSignatureFingerprints(),
+            ...over.previous,
+          },
+    );
+  }
+
+  const runWith = (after: (name: string, out: Record<string, unknown>) => unknown) => {
+    const base = createMockInngestStep();
+    return runScanTheme(undefined, {
+      run: vi.fn(async (name: string, fn: () => unknown) =>
+        after(name, (await fn()) as Record<string, unknown>),
+      ),
+    } as unknown as Partial<typeof base>);
+  };
+
+  it("records every app's signature fingerprint on the scan at finalize", async () => {
+    await runScanTheme();
+    const arg = mockFinalizeScan.mock.calls[0][1];
+    expect(arg.appSignatureFingerprints).toEqual(computeAppSignatureFingerprints());
+    expect(arg.appSignatureFingerprints.Klaviyo).toMatch(/^[0-9a-f]{8}$/);
+  });
+
+  it("records a removal: app absent from the previous scan, present now", async () => {
+    arrange();
+    const result = await runScanTheme();
+    expect(result).toMatchObject({ status: "COMPLETED" });
+    expect(mockOpen).toHaveBeenCalledWith(SHOP_ID, THEME_ID);
+    expect(mockApply).toHaveBeenCalledWith({
+      shopId: SHOP_ID,
+      themeId: THEME_ID,
+      scanId: SCAN_ID,
+      previousScanId: "prior",
+      plan: { creates: [{ appName: "Klaviyo", leftoverCount: 1 }], updates: [] },
+    });
+  });
+
+  it("read_products granted since the previous scan: newly found metafields are NOT a removal", async () => {
+    arrange({
+      current: [METAFIELD, { ...METAFIELD, codeSnippet: "reviews.count" }],
+      previous: { skippedCategories: [FindingType.GHOST_METAFIELD] },
+    });
+    await runScanTheme();
+    expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
+  });
+
+  it("a legacy baseline without fingerprints yields no removal", async () => {
+    arrange({ previous: { appSignatureFingerprints: null } });
+    await runScanTheme();
+    expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
+  });
+
+  it("app-ignored findings are not a removal (shop ignores are applied)", async () => {
+    arrange();
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set(["Klaviyo"]) });
+    await runScanTheme();
+    expect(mockIgnores).toHaveBeenCalledWith(SHOP_ID);
+    expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
+  });
+
+  it("an open record whose app is gone and whose embed is enabled becomes REINSTALLED", async () => {
+    arrange({ current: [], previous: { findings: [KLAVIYO] } });
+    mockEmbeds.mockReturnValue(new Set(["Klaviyo"]));
+    mockOpen.mockResolvedValue([
+      { id: "r1", appName: "Klaviyo", leftoverCount: 1, detectedScanId: "prior" },
+    ]);
+    await runScanTheme();
+    expect(mockApply.mock.calls[0][0].plan.updates).toEqual([
+      { id: "r1", leftoverCount: 0, state: "REINSTALLED" },
+    ]);
+  });
+
+  it("an open record whose app is gone without an embed becomes CLEANED", async () => {
+    arrange({ current: [], previous: { findings: [KLAVIYO] } });
+    mockOpen.mockResolvedValue([
+      { id: "r1", appName: "Klaviyo", leftoverCount: 1, detectedScanId: "prior" },
+    ]);
+    await runScanTheme();
+    expect(mockApply.mock.calls[0][0].plan.updates).toEqual([
+      { id: "r1", leftoverCount: 0, state: "CLEANED" },
+    ]);
+  });
+
+  it("a fetch-and-scan output memoized before the embed field existed leaves a 0-count record alone", async () => {
+    arrange({ current: [], previous: { findings: [KLAVIYO] } });
+    mockOpen.mockResolvedValue([
+      { id: "r1", appName: "Klaviyo", leftoverCount: 1, detectedScanId: "prior" },
+    ]);
+    await runWith((name, out) => {
+      if (name === "fetch-and-scan") delete out.appsWithEnabledEmbed;
+      return out;
+    });
+    expect(mockApply.mock.calls[0][0].plan.updates).toEqual([]);
+  });
+
+  it("fetch-and-scan returns the enabled-embed set even while SCRIPT_TAG_SUNSET is dark", async () => {
+    mockEmbeds.mockReturnValue(new Set(["Privy", "Klaviyo"]));
+    const outputs: Record<string, Record<string, unknown>> = {};
+    await runWith((name, out) => {
+      outputs[name] = out;
+      return out;
+    });
+    expect(outputs["fetch-and-scan"].appsWithEnabledEmbed).toEqual(["Klaviyo", "Privy"]);
+    expect(outputs["fetch-and-scan"]).not.toHaveProperty("enabledEmbedApps");
+  });
+
+  it("a detection failure never fails the scan: logged, scan COMPLETED, no retry", async () => {
+    arrange();
+    mockApply.mockRejectedValue(new Error("db down"));
+    const warnSpy = vi.spyOn(logger, "warn");
+    const result = await runScanTheme();
+    expect(result).toMatchObject({ status: "COMPLETED" });
+    expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
+    expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
+    expect(warnSpy).toHaveBeenCalledWith(
+      "app-removal detection failed, scan unaffected",
+      expect.objectContaining({ event: "app_removals_failed", scanId: SCAN_ID, error: "db down" }),
+    );
+  });
+
+  it("skipped when this attempt did not finalize the scan (watchdog FAILED it)", async () => {
+    arrange();
+    mockFinalizeScan.mockResolvedValue({ finalized: false });
+    await runScanTheme();
+    expect(mockOpen).not.toHaveBeenCalled();
+    expect(mockApply).not.toHaveBeenCalled();
+  });
+
+  it("skipped on the theme's first scan (no baseline)", async () => {
+    arrange({ previous: null });
+    await runScanTheme();
+    expect(mockOpen).not.toHaveBeenCalled();
+    expect(mockApply).not.toHaveBeenCalled();
   });
 });
