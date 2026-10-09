@@ -1,5 +1,5 @@
 /**
- * Tests for app/models/merchant-alert.server.ts (gc-syz.1). Prisma is mocked;
+ * Tests for app/models/merchant-alert.server.ts (gc-syz.1, gc-ol95). Prisma is mocked;
  * tests never touch a database (.env points at prod).
  */
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -12,14 +12,17 @@ const mockDb = vi.hoisted(() => ({
 vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 import {
+  claimSummaryNoticeShown,
   disableAlertsByToken,
+  dismissSummaryNotice,
   ensureUnsubscribeToken,
   generateUnsubscribeToken,
   getLatestMerchantAlert,
+  markSummaryNoticePending,
   recordMerchantAlert,
   setShopAlertEmail,
   setShopAlertEmailByDomain,
-  setShopAlertsEnabled,
+  setSummaryEmailsEnabled,
 } from "../../app/models/merchant-alert.server";
 
 beforeEach(() => {
@@ -61,6 +64,9 @@ describe("ledger helpers", () => {
       scanId: "scan1",
       findingSetHash: "abc",
       newCount: 3,
+      fixedCount: 1,
+      inactiveAppCount: 2,
+      cleanedAppCount: 0,
       recipient: "owner@example.com",
     };
     mockDb.merchantAlert.create.mockResolvedValue({ id: "a1", ...input });
@@ -83,12 +89,27 @@ describe("shop preference helpers", () => {
     });
   });
 
-  it("setShopAlertsEnabled toggles the flag", async () => {
-    await setShopAlertsEnabled("s1", false);
+  it("setSummaryEmailsEnabled(false) turns the toggle off and clears nothing else", async () => {
+    await setSummaryEmailsEnabled("s1", false, { noticeOwed: true });
     expect(mockDb.shop.update).toHaveBeenCalledWith({
       where: { id: "s1" },
       data: { alertsEnabled: false },
     });
+  });
+
+  it("setSummaryEmailsEnabled(true) records the merchant's own opt-in (gc-ol95)", async () => {
+    await setSummaryEmailsEnabled("s1", true, { noticeOwed: false });
+    const data = mockDb.shop.update.mock.calls[0][0].data;
+    expect(data.alertsEnabled).toBe(true);
+    expect(data.summaryOptedInAt).toBeInstanceOf(Date);
+    expect(data).not.toHaveProperty("summaryNoticePendingAt");
+  });
+
+  it("opting in while sending is not configured also marks the Home notice owed", async () => {
+    await setSummaryEmailsEnabled("s1", true, { noticeOwed: true });
+    const data = mockDb.shop.update.mock.calls[0][0].data;
+    expect(data.summaryOptedInAt).toBeInstanceOf(Date);
+    expect(data.summaryNoticePendingAt).toBe(data.summaryOptedInAt);
   });
 
   it("setShopAlertEmailByDomain only writes when the value differs, including NULL", async () => {
@@ -176,5 +197,50 @@ describe("disableAlertsByToken", () => {
   ])("%s token changes nothing", async (_label, token) => {
     await expect(disableAlertsByToken(token)).resolves.toBe(false);
     expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+  });
+});
+
+describe("summary notice consent stamps (gc-ol95)", () => {
+  it("markSummaryNoticePending claims once, only for a shop never told and never opted in", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await expect(markSummaryNoticePending("a.myshopify.com")).resolves.toBe(true);
+    const call = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({
+      domain: "a.myshopify.com",
+      summaryNoticePendingAt: null,
+      summaryNoticeShownAt: null,
+      summaryOptedInAt: null,
+    });
+    expect(call.data.summaryNoticePendingAt).toBeInstanceOf(Date);
+  });
+
+  it("markSummaryNoticePending reports false when the claim matched no row", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    await expect(markSummaryNoticePending("a.myshopify.com")).resolves.toBe(false);
+  });
+
+  it("claimSummaryNoticeShown stamps shown once, only while the notice is pending", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await expect(claimSummaryNoticeShown("a.myshopify.com")).resolves.toBe(true);
+    const call = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({
+      domain: "a.myshopify.com",
+      summaryNoticeShownAt: null,
+      summaryNoticePendingAt: { not: null },
+    });
+    expect(call.data.summaryNoticeShownAt).toBeInstanceOf(Date);
+  });
+
+  it("claimSummaryNoticeShown loses a concurrent claim (count 0)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    await expect(claimSummaryNoticeShown("a.myshopify.com")).resolves.toBe(false);
+  });
+
+  it("dismissSummaryNotice clears the pending flag for the shop only", async () => {
+    await dismissSummaryNotice("s1");
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { id: "s1" },
+      data: { summaryNoticePendingAt: null },
+    });
   });
 });

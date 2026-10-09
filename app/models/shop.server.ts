@@ -39,6 +39,9 @@ export type ShopMetadata = {
   alertsEnabled: boolean;
   alertEmail: string | null;
   removalNoticeDismissedScanId: string | null;
+  summaryNoticePendingAt: Date | null;
+  summaryNoticeShownAt: Date | null;
+  summaryOptedInAt: Date | null;
 };
 
 /**
@@ -115,6 +118,9 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       alertsEnabled: true,
       alertEmail: true,
       removalNoticeDismissedScanId: true,
+      summaryNoticePendingAt: true,
+      summaryNoticeShownAt: true,
+      summaryOptedInAt: true,
     },
   });
 }
@@ -392,11 +398,18 @@ export type JourneyMilestoneColumn = "firstOpenedAt" | "firstResultsViewedAt";
 /** First time the reconciler saw the shop on a paid plan (gc-97k.8). */
 export type EverPaidColumn = "everPaidAt";
 
+/** Summary-email notice owed / rendered (gc-ol95). */
+export type SummaryNoticeColumn = "summaryNoticePendingAt" | "summaryNoticeShownAt";
+
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target
  * one of these nullable DateTime columns.
  */
-export type ShopStampColumn = NudgeStageColumn | JourneyMilestoneColumn | EverPaidColumn;
+export type ShopStampColumn =
+  | NudgeStageColumn
+  | JourneyMilestoneColumn
+  | EverPaidColumn
+  | SummaryNoticeColumn;
 
 /**
  * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey

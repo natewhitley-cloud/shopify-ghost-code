@@ -44,7 +44,7 @@ vi.mock("../../app/models/billing-event.server", () => ({
 
 // gc-syz.6: monitoring-emails card collaborators, mocked at their boundaries.
 vi.mock("../../app/models/merchant-alert.server", () => ({
-  setShopAlertsEnabled: vi.fn(),
+  setSummaryEmailsEnabled: vi.fn(),
 }));
 
 vi.mock("../../app/services/merchant-alert.server", () => ({
@@ -72,7 +72,7 @@ import { buildPricingPlansUrl, getPlanFeatures } from "../../app/lib/billing.ser
 import { BROKEN_LINKS_STANDARD_NOTE } from "../../app/lib/optional-scopes";
 import { canReceiveAlerts } from "../../app/lib/plan-gating.server";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
-import { setShopAlertsEnabled } from "../../app/models/merchant-alert.server";
+import { setSummaryEmailsEnabled } from "../../app/models/merchant-alert.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import Settings, { action, loader, scopeBadge } from "../../app/routes/app.settings";
 import { getMerchantAlertConfigStatus } from "../../app/services/merchant-alert.server";
@@ -88,7 +88,7 @@ const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockBuildPricingPlansUrl = buildPricingPlansUrl as ReturnType<typeof vi.fn>;
 const mockHasBillingHistory = hasBillingHistory as ReturnType<typeof vi.fn>;
 const mockCanReceiveAlerts = canReceiveAlerts as ReturnType<typeof vi.fn>;
-const mockSetAlertsEnabled = setShopAlertsEnabled as ReturnType<typeof vi.fn>;
+const mockSetAlertsEnabled = setSummaryEmailsEnabled as ReturnType<typeof vi.fn>;
 const mockAlertConfig = getMerchantAlertConfigStatus as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
@@ -107,6 +107,9 @@ const SHOP = {
   everPaidAt: null as Date | null,
   alertsEnabled: true,
   alertEmail: "owner@example.com" as string | null,
+  summaryNoticePendingAt: null as Date | null,
+  summaryNoticeShownAt: null as Date | null,
+  summaryOptedInAt: null as Date | null,
 };
 
 const FREE_FEATURES = {
@@ -453,6 +456,7 @@ describe("app.settings action: set-alerts-enabled", () => {
   beforeEach(() => {
     mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
     mockCanReceiveAlerts.mockReturnValue(true);
+    mockAlertConfig.mockReturnValue({ configured: false, reason: "disabled" });
   });
 
   it.each([
@@ -464,8 +468,30 @@ describe("app.settings action: set-alerts-enabled", () => {
     );
 
     expect(mockGetShopMetadata).toHaveBeenCalledWith(SHOP_DOMAIN);
-    expect(mockSetAlertsEnabled).toHaveBeenCalledExactlyOnceWith("shop-1", expected);
+    expect(mockSetAlertsEnabled).toHaveBeenCalledExactlyOnceWith("shop-1", expected, {
+      noticeOwed: true,
+    });
     expect(result).toEqual({ alertsEnabled: expected });
+  });
+
+  it("opting in while sending is live owes no Home notice (the card told them)", async () => {
+    mockAlertConfig.mockReturnValue({ configured: true });
+    await action(makeActionArgs({ intent: "set-alerts-enabled", enabled: "true" }));
+    expect(mockSetAlertsEnabled).toHaveBeenCalledExactlyOnceWith("shop-1", true, {
+      noticeOwed: false,
+    });
+  });
+
+  it("opting in while dark after the notice was already shown owes no second notice", async () => {
+    mockGetShopMetadata.mockResolvedValue({
+      ...SHOP,
+      plan: "Standard",
+      summaryNoticeShownAt: new Date(),
+    });
+    await action(makeActionArgs({ intent: "set-alerts-enabled", enabled: "true" }));
+    expect(mockSetAlertsEnabled).toHaveBeenCalledExactlyOnceWith("shop-1", true, {
+      noticeOwed: false,
+    });
   });
 
   it.each([

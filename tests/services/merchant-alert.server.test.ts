@@ -1,104 +1,42 @@
 /**
- * Tests for app/services/merchant-alert.server.ts (gc-syz.4).
+ * Tests for app/services/merchant-alert.server.ts (gc-syz.4): the merchant
+ * email transport (env gates, Resend send, links). The summary email that uses
+ * it is covered in summary-email.server.test.ts (gc-ol95).
  * fetch is ALWAYS mocked: no test may reach the real Resend API.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
-const m = vi.hoisted(() => ({
-  record: vi.fn(),
-  ensureToken: vi.fn(),
-  refresh: vi.fn(),
-}));
 vi.mock("../../app/lib/logger.server", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
-}));
-vi.mock("../../app/models/merchant-alert.server", () => ({
-  recordMerchantAlert: m.record,
-  ensureUnsubscribeToken: m.ensureToken,
-}));
-vi.mock("../../app/services/shop-alert-email.server", () => ({
-  refreshShopAlertEmail: m.refresh,
 }));
 
 import { logger } from "../../app/lib/logger.server";
 import {
-  buildAlertSubject,
-  buildAlertText,
-  buildFindingSetHash,
+  buildBodyUnsubscribeUrl,
+  buildHeaderUnsubscribeUrl,
   buildScanAdminUrl,
   getMerchantAlertConfigStatus,
-  notifyNewFindings,
+  getMerchantPostalAddress,
   sendMerchantAlert,
-  MAX_FINDINGS_IN_EMAIL,
 } from "../../app/services/merchant-alert.server";
-import type { NewFinding, NotifyShop } from "../../app/services/merchant-alert.server";
 
 const ORIGINAL_ENV = { ...process.env };
 const fetchMock = vi.fn();
-
-const finding = (
-  filename: string,
-  findingType = "GHOST_SCRIPT",
-  severity = "HIGH",
-): NewFinding => ({
-  filename,
-  findingType,
-  severity,
-  appName: "Klaviyo",
-  description: "SECRET-SNIPPET <script src=x>",
-});
-
-const shop = (over: Partial<NotifyShop> = {}): NotifyShop => ({
-  id: "shop-1",
-  domain: "my-store.myshopify.com",
-  plan: "Professional",
-  alertsEnabled: true,
-  alertEmail: "cached@example.com",
-  uninstalledAt: null,
-  ...over,
-});
-
-const ADMIN = { graphql: vi.fn() };
 
 function enableEnv() {
   process.env.MERCHANT_ALERTS_ENABLED = "true";
   process.env.RESEND_API_KEY = "re_test";
   process.env.MERCHANT_ALERT_FROM = "Ghost Code <alerts@example.com>";
-  process.env.SHOPIFY_APP_URL = "https://app.example.com/";
+  process.env.MERCHANT_EMAIL_POSTAL_ADDRESS = "1 Test St, Testville, CO 80000, USA";
 }
-
-// The caller (scan-theme step) loads the latest alert and passes it in.
-let latest: NotifyArgs["latestAlert"] = null;
-const setLatest = (v: NotifyArgs["latestAlert"]) => {
-  latest = v;
-};
-type NotifyArgs = Parameters<typeof notifyNewFindings>[0];
-
-const notify = (over: Partial<Parameters<typeof notifyNewFindings>[0]> = {}) =>
-  notifyNewFindings({
-    shop: shop(),
-    scan: { id: "scan-1" },
-    newFindings: [finding("layout/theme.liquid")],
-    admin: ADMIN,
-    latestAlert: latest,
-    baseline: "previous_scan",
-    ...over,
-  });
 
 beforeEach(() => {
   vi.clearAllMocks();
   process.env = { ...ORIGINAL_ENV };
-  delete process.env.MERCHANT_ALERTS_ENABLED;
-  delete process.env.RESEND_API_KEY;
-  delete process.env.MERCHANT_ALERT_FROM;
   delete process.env.OPS_ALERT_FROM;
   enableEnv();
   vi.stubGlobal("fetch", fetchMock);
   fetchMock.mockResolvedValue({ ok: true, status: 200 });
-  latest = null;
-  m.record.mockResolvedValue({});
-  m.ensureToken.mockResolvedValue("tok123");
-  m.refresh.mockResolvedValue("fresh@example.com");
 });
 
 afterEach(() => {
@@ -111,6 +49,7 @@ describe("getMerchantAlertConfigStatus / env gates", () => {
     ["MERCHANT_ALERTS_ENABLED", "disabled"],
     ["RESEND_API_KEY", "no_transport"],
     ["MERCHANT_ALERT_FROM", "no_sender"],
+    ["MERCHANT_EMAIL_POSTAL_ADDRESS", "no_postal_address"],
   ])("missing %s => %s", (envVar, reason) => {
     delete process.env[envVar];
     expect(getMerchantAlertConfigStatus()).toEqual({ configured: false, reason });
@@ -121,8 +60,18 @@ describe("getMerchantAlertConfigStatus / env gates", () => {
     expect(getMerchantAlertConfigStatus()).toEqual({ configured: false, reason: "disabled" });
   });
 
-  it("all three set => configured", () => {
+  it("a blank postal address counts as missing (gc-ol95)", () => {
+    process.env.MERCHANT_EMAIL_POSTAL_ADDRESS = "   ";
+    expect(getMerchantAlertConfigStatus()).toEqual({
+      configured: false,
+      reason: "no_postal_address",
+    });
+    expect(getMerchantPostalAddress()).toBeNull();
+  });
+
+  it("all four set => configured", () => {
     expect(getMerchantAlertConfigStatus()).toEqual({ configured: true });
+    expect(getMerchantPostalAddress()).toBe("1 Test St, Testville, CO 80000, USA");
   });
 });
 
@@ -132,7 +81,7 @@ describe("sendMerchantAlert", () => {
     subject: "s",
     text: "t",
     unsubscribeUrl: "https://app.example.com/unsubscribe/tok",
-    idempotencyKey: "merchant-alert:scan-9",
+    idempotencyKey: "summary-email:scan-9",
   };
 
   it("posts to Resend with RFC 8058 headers and the Idempotency-Key", async () => {
@@ -142,7 +91,7 @@ describe("sendMerchantAlert", () => {
     expect(url).toBe("https://api.resend.com/emails");
     expect(init.headers["List-Unsubscribe"]).toBe("<https://app.example.com/unsubscribe/tok>");
     expect(init.headers["List-Unsubscribe-Post"]).toBe("List-Unsubscribe=One-Click");
-    expect(init.headers["Idempotency-Key"]).toBe("merchant-alert:scan-9");
+    expect(init.headers["Idempotency-Key"]).toBe("summary-email:scan-9");
     expect(init.headers.Authorization).toBe("Bearer re_test");
     expect(init.signal).toBeDefined();
     const body = JSON.parse(init.body);
@@ -160,6 +109,7 @@ describe("sendMerchantAlert", () => {
   it.each([
     ["disabled", "MERCHANT_ALERTS_ENABLED"],
     ["no_transport", "RESEND_API_KEY"],
+    ["no_postal_address", "MERCHANT_EMAIL_POSTAL_ADDRESS"],
   ])("returns %s without fetching when %s is unset", async (reason, envVar) => {
     delete process.env[envVar];
     expect(await sendMerchantAlert(input)).toEqual({ sent: false, reason });
@@ -173,376 +123,58 @@ describe("sendMerchantAlert", () => {
     }
   });
 
-  it("returns exception (never throws) on a thrown fetch or timeout", async () => {
-    fetchMock.mockRejectedValueOnce(new Error("network"));
-    expect(await sendMerchantAlert(input)).toEqual({ sent: false, reason: "exception" });
-    fetchMock.mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"));
-    expect(await sendMerchantAlert(input)).toEqual({ sent: false, reason: "exception" });
-  });
-});
-
-describe("buildFindingSetHash", () => {
-  const a = finding("a.liquid", "GHOST_SCRIPT");
-  const b = finding("b.liquid", "GHOST_STYLE");
-
-  it("is stable under reordering", () => {
-    expect(buildFindingSetHash([a, b])).toBe(buildFindingSetHash([b, a]));
-  });
-  it("differs for different sets, files, or types", () => {
-    expect(buildFindingSetHash([a])).not.toBe(buildFindingSetHash([a, b]));
-    expect(buildFindingSetHash([a])).not.toBe(buildFindingSetHash([finding("c.liquid")]));
-    expect(buildFindingSetHash([a])).not.toBe(
-      buildFindingSetHash([finding("a.liquid", "GHOST_STYLE")]),
-    );
-  });
-  it("ignores severity, appName, and description", () => {
-    const variant: NewFinding = { ...a, severity: "LOW", appName: null, description: "x" };
-    expect(buildFindingSetHash([a])).toBe(buildFindingSetHash([variant]));
-  });
-  it("is an 8-char hex string", () => {
-    expect(buildFindingSetHash([a])).toMatch(/^[0-9a-f]{8}$/);
-  });
-});
-
-describe("email copy", () => {
-  const text = buildAlertText({
-    shopDomain: "my-store.myshopify.com",
-    newFindings: [finding("layout/theme.liquid"), finding("snippets/x.liquid", "GHOST_STYLE")],
-    scanUrl: "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
-    unsubscribeUrl: "https://app.example.com/unsubscribe#t=tok",
-    baseline: "last_alert",
-  });
-
-  it("uses monitoring framing and never 'instant'", () => {
-    expect(text).toContain("continuous monitoring");
-    expect(text.toLowerCase()).not.toContain("instant");
-    expect(text.toLowerCase()).not.toContain("uninstall");
-  });
-  it("has no em dash or en dash in subject or body", () => {
-    expect(text).not.toMatch(/[–—]/);
-    expect(buildAlertSubject(2, "my-store.myshopify.com")).not.toMatch(/[–—]/);
-  });
-  it("lists type label and filename but no code snippet", () => {
-    expect(text).toContain("- Scripts: layout/theme.liquid");
-    expect(text).toContain("- Styles: snippets/x.liquid");
-    expect(text).not.toContain("SECRET-SNIPPET");
-    expect(text).not.toContain("<script");
-  });
-  it("includes the scan link and the unsubscribe link", () => {
-    expect(text).toContain("/apps/ghost-code/app/scans/scan-1");
-    expect(text).toContain("Turn off these emails: https://app.example.com/unsubscribe#t=tok");
-  });
-  it("names the baseline: last email vs previous scan (gc-mb9k)", () => {
-    expect(text).toContain("New since we last emailed you:");
-    expect(text).not.toContain("since your last scan");
-    const first = buildAlertText({
-      shopDomain: "s.myshopify.com",
-      newFindings: [finding("a.liquid")],
-      scanUrl: "u",
-      unsubscribeUrl: "v",
-      baseline: "previous_scan",
-    });
-    expect(first).toContain("New since your previous scan:");
-    expect(first).not.toContain("last scan");
-    expect(first).not.toMatch(/[–—]/);
-  });
-  it("caps the list and summarizes the rest", () => {
-    const many = Array.from({ length: MAX_FINDINGS_IN_EMAIL + 3 }, (_, i) =>
-      finding(`f${i}.liquid`),
-    );
-    const t = buildAlertText({
-      shopDomain: "s.myshopify.com",
-      newFindings: many,
-      scanUrl: "u",
-      unsubscribeUrl: "v",
-      baseline: "last_alert",
-    });
-    expect(t.match(/^- Scripts:/gm)).toHaveLength(MAX_FINDINGS_IN_EMAIL);
-    expect(t).toContain("- and 3 more");
-  });
-  it("subject pluralizes and names the shop", () => {
-    expect(buildAlertSubject(1, "s.myshopify.com")).toBe(
-      "Ghost Code found 1 new leftover code issue in s.myshopify.com",
-    );
-    expect(buildAlertSubject(3, "s.myshopify.com")).toBe(
-      "Ghost Code found 3 new leftover code issues in s.myshopify.com",
-    );
-  });
-  it("builds the admin deep link from the store handle", () => {
-    expect(buildScanAdminUrl("my-store.myshopify.com", "scan-1")).toBe(
-      "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
-    );
-  });
-});
-
-describe("notifyNewFindings gating chain", () => {
-  it("sends and records on the happy path", async () => {
-    const outcome = await notify();
-    expect(outcome).toEqual({ sent: true, reason: "sent" });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const init = fetchMock.mock.calls[0][1];
-    expect(init.headers["Idempotency-Key"]).toBe("merchant-alert:scan-1");
-    // Header keeps the path form (identifies the shop for RFC 8058 POSTs).
-    expect(init.headers["List-Unsubscribe"]).toBe("<https://app.example.com/unsubscribe/tok123>");
-    const body = JSON.parse(init.body);
-    // Body link uses the fragment: no token in path or query, so never logged.
-    expect(body.text).toContain(
-      "Turn off these emails: https://app.example.com/unsubscribe#t=tok123",
-    );
-    expect(body.text).not.toContain("/unsubscribe/tok123");
-    expect(body.text).not.toMatch(/unsubscribe\?/);
-    expect(body.text).toContain("New since your previous scan:");
-    expect(body.to).toBe("fresh@example.com");
-    expect(body.subject).toBe(
-      "Ghost Code found 1 new leftover code issue in my-store.myshopify.com",
-    );
-    expect(body.text).not.toMatch(/[–—]/);
-    expect(m.record).toHaveBeenCalledWith({
-      shopId: "shop-1",
-      scanId: "scan-1",
-      findingSetHash: buildFindingSetHash([finding("layout/theme.liquid")]),
-      newCount: 1,
-      recipient: "fresh@example.com",
-    });
-  });
-
-  it.each([
-    ["MERCHANT_ALERTS_ENABLED", "disabled"],
-    ["RESEND_API_KEY", "no_transport"],
-    ["MERCHANT_ALERT_FROM", "no_sender"],
-  ])("env gate: missing %s => %s, nothing happens", async (envVar, reason) => {
-    delete process.env[envVar];
-    expect(await notify()).toEqual({ sent: false, reason });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(m.refresh).not.toHaveBeenCalled();
-    expect(m.record).not.toHaveBeenCalled();
-  });
-
-  it("uninstalled shop: never emails, even with a cached alertEmail (gc-1qt0)", async () => {
-    const outcome = await notify({ shop: shop({ uninstalledAt: new Date("2026-10-01") }) });
-    expect(outcome).toEqual({ sent: false, reason: "shop_uninstalled" });
-    expect(fetchMock).not.toHaveBeenCalled();
-    expect(m.refresh).not.toHaveBeenCalled();
-    expect(m.ensureToken).not.toHaveBeenCalled();
-    expect(m.record).not.toHaveBeenCalled();
-  });
-
-  it("uninstalled shop is skipped before the plan and opt-out gates (early)", async () => {
-    const uninstalledAt = new Date();
-    expect(await notify({ shop: shop({ uninstalledAt, plan: "Free" }) })).toEqual({
-      sent: false,
-      reason: "shop_uninstalled",
-    });
-    expect(await notify({ shop: shop({ uninstalledAt, alertsEnabled: false }) })).toEqual({
-      sent: false,
-      reason: "shop_uninstalled",
-    });
-  });
-
-  it("baseline last_alert is reflected in the sent body", async () => {
-    await notify({ baseline: "last_alert" });
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).text).toContain(
-      "New since we last emailed you:",
-    );
-  });
-
-  it("plan gate: Free is not eligible", async () => {
-    expect(await notify({ shop: shop({ plan: "Free" }) })).toEqual({
-      sent: false,
-      reason: "plan_not_eligible",
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("opt-out: alertsEnabled false", async () => {
-    expect(await notify({ shop: shop({ alertsEnabled: false }) })).toEqual({
-      sent: false,
-      reason: "shop_opted_out",
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("no new findings", async () => {
-    expect(await notify({ newFindings: [] })).toEqual({ sent: false, reason: "no_new_findings" });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("recipient: falls back to the cached email when refresh returns null", async () => {
-    m.refresh.mockResolvedValue(null);
-    await notify();
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).to).toBe("cached@example.com");
-  });
-
-  it("recipient: admin null skips refresh and uses the cached email", async () => {
-    await notify({ admin: null });
-    expect(m.refresh).not.toHaveBeenCalled();
-    expect(JSON.parse(fetchMock.mock.calls[0][1].body).to).toBe("cached@example.com");
-  });
-
-  it("no recipient at all => skip", async () => {
-    m.refresh.mockResolvedValue(null);
-    expect(await notify({ shop: shop({ alertEmail: null }) })).toEqual({
-      sent: false,
-      reason: "no_recipient",
-    });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("dedup: same finding set as the latest alert => skip", async () => {
-    setLatest({
-      findingSetHash: buildFindingSetHash([finding("layout/theme.liquid")]),
-      sentAt: new Date(0),
-    });
-    expect(await notify()).toEqual({ sent: false, reason: "duplicate_set" });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("rate window: a different set inside the plan window => throttled", async () => {
-    setLatest({
-      findingSetHash: "other",
-      sentAt: new Date(Date.now() - 3600_000),
-    });
-    expect(await notify()).toEqual({ sent: false, reason: "throttled" });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it("rate window follows the plan: 8 days ago passes Professional (weekly) but not Standard (monthly)", async () => {
-    setLatest({
-      findingSetHash: "other",
-      sentAt: new Date(Date.now() - 8 * 86_400_000),
-    });
-    expect((await notify({ shop: shop({ plan: "Standard" }) })).reason).toBe("throttled");
-    expect((await notify({ shop: shop({ plan: "Professional" }) })).reason).toBe("sent");
-  });
-
-  it("Standard (monthly): last month's alert on Feb 1 never throttles Mar 1 (28 days)", async () => {
-    setLatest({
-      findingSetHash: "other",
-      sentAt: new Date(Date.now() - 28 * 86_400_000),
-    });
-    expect((await notify({ shop: shop({ plan: "Standard" }) })).reason).toBe("sent");
-  });
-
-  // Default shop is Professional: a 7-day (weekly) window.
-  describe("throttle tolerance (90% of the window)", () => {
-    beforeEach(() => vi.useFakeTimers({ toFake: ["Date"] }));
-    afterEach(() => vi.useRealTimers());
-
-    const sentAgo = (fraction: number) => {
-      const now = new Date("2026-06-15T12:00:00Z");
-      vi.setSystemTime(now);
-      setLatest({
-        findingSetHash: "other",
-        sentAt: new Date(now.getTime() - fraction * 7 * 86_400_000),
-      });
-    };
-
-    it("89% of the window ago => throttled", async () => {
-      sentAgo(0.89);
-      expect((await notify()).reason).toBe("throttled");
-    });
-    it("91% of the window ago => sent (scheduler jitter must not throttle)", async () => {
-      sentAgo(0.91);
-      expect((await notify()).reason).toBe("sent");
-    });
-  });
-
-  it("Resend 409 invalid_idempotent_request => send_failed, no record, no throw", async () => {
-    fetchMock.mockResolvedValue({
+  it("Resend 409 invalid_idempotent_request => http_error with the code logged, no throw", async () => {
+    fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 409,
-      json: async () => ({ name: "invalid_idempotent_request", message: "x" }),
+      json: async () => ({ name: "invalid_idempotent_request" }),
     });
-    expect(await notify()).toEqual({ sent: false, reason: "send_failed" });
-    expect(m.record).not.toHaveBeenCalled();
+    expect(await sendMerchantAlert(input)).toEqual({ sent: false, reason: "http_error" });
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).toContain(
+      "invalid_idempotent_request",
+    );
   });
 
   it("a 409 with an unparseable body still fails cleanly", async () => {
-    fetchMock.mockResolvedValue({
+    fetchMock.mockResolvedValueOnce({
       ok: false,
       status: 409,
       json: async () => {
         throw new Error("bad json");
       },
     });
-    expect(await notify()).toEqual({ sent: false, reason: "send_failed" });
-    expect(m.record).not.toHaveBeenCalled();
+    expect(await sendMerchantAlert(input)).toEqual({ sent: false, reason: "http_error" });
   });
 
-  it("no SHOPIFY_APP_URL => skip", async () => {
-    delete process.env.SHOPIFY_APP_URL;
-    expect(await notify()).toEqual({ sent: false, reason: "no_app_url" });
+  it("returns exception (never throws) on a thrown fetch or timeout", async () => {
+    fetchMock.mockRejectedValueOnce(new Error("network"));
+    expect(await sendMerchantAlert(input)).toEqual({ sent: false, reason: "exception" });
+    fetchMock.mockRejectedValueOnce(new DOMException("timed out", "TimeoutError"));
+    expect(await sendMerchantAlert(input)).toEqual({ sent: false, reason: "exception" });
   });
 
-  it("no unsubscribe token => skip (never send without an unsubscribe link)", async () => {
-    m.ensureToken.mockResolvedValue(null);
-    expect(await notify()).toEqual({ sent: false, reason: "no_unsubscribe_token" });
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
-
-  it.each([
-    ["4xx", () => fetchMock.mockResolvedValue({ ok: false, status: 422 })],
-    ["5xx", () => fetchMock.mockResolvedValue({ ok: false, status: 503 })],
-    ["timeout", () => fetchMock.mockRejectedValue(new DOMException("t", "TimeoutError"))],
-    ["throw", () => fetchMock.mockRejectedValue(new Error("boom"))],
-  ])("Resend %s => no record, no throw", async (_name, arrange) => {
-    arrange();
-    expect(await notify()).toEqual({ sent: false, reason: "send_failed" });
-    expect(m.record).not.toHaveBeenCalled();
-  });
-
-  it("ledger write failure after a successful send is reported, not thrown", async () => {
-    m.record.mockRejectedValue(new Error("db"));
-    expect(await notify()).toEqual({ sent: true, reason: "sent_not_recorded" });
-  });
-
-  it("never throws when a dependency throws", async () => {
-    m.ensureToken.mockRejectedValue(new Error("db down"));
-    expect(await notify()).toEqual({ sent: false, reason: "exception" });
-    expect(fetchMock).not.toHaveBeenCalled();
+  it("never logs the recipient address", async () => {
+    fetchMock.mockResolvedValueOnce({ ok: false, status: 500 });
+    await sendMerchantAlert(input);
+    fetchMock.mockRejectedValueOnce(new Error("network"));
+    await sendMerchantAlert(input);
+    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain("a@example.com");
   });
 });
 
-describe("recipient PII never reaches logs (gc-otn2 item 5)", () => {
-  const EMAIL = "fresh@example.com";
-  // Prisma validation errors embed the offending data in the message.
-  const prismaStyleError = () =>
-    Object.assign(
-      new Error(
-        `Invalid \`prisma.merchantAlert.create()\` invocation: data: { recipient: "${EMAIL}" }`,
-      ),
-      { name: "PrismaClientValidationError", code: "P2000" },
+describe("links", () => {
+  it("builds the admin deep link from the store handle", () => {
+    expect(buildScanAdminUrl("my-store.myshopify.com", "scan-1")).toBe(
+      "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
     );
-
-  it("a ledger write failure logs name/code only, not the address", async () => {
-    m.record.mockRejectedValue(prismaStyleError());
-    expect(await notify()).toEqual({ sent: true, reason: "sent_not_recorded" });
-    const calls = vi.mocked(logger.error).mock.calls;
-    expect(calls.length).toBeGreaterThan(0);
-    expect(JSON.stringify(calls)).not.toContain(EMAIL);
-    expect(JSON.stringify(calls)).toContain("PrismaClientValidationError");
-    expect(JSON.stringify(calls)).toContain("P2000");
   });
 
-  it("an exception in the notify chain logs name/code only, not the address", async () => {
-    m.ensureToken.mockRejectedValue(prismaStyleError());
-    expect(await notify()).toEqual({ sent: false, reason: "exception" });
-    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(EMAIL);
-  });
-
-  it("a thrown fetch error logs name/code only, not the address", async () => {
-    fetchMock.mockRejectedValue(prismaStyleError());
-    expect(await notify()).toEqual({ sent: false, reason: "send_failed" });
-    expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(EMAIL);
-  });
-});
-
-describe("latest alert is passed in, never re-queried (gc-otn2 item 4)", () => {
-  it("dedups on the supplied latestAlert (the model mock has no getLatestMerchantAlert)", async () => {
-    setLatest({
-      findingSetHash: buildFindingSetHash([finding("layout/theme.liquid")]),
-      sentAt: new Date(0),
-    });
-    expect(await notify()).toEqual({ sent: false, reason: "duplicate_set" });
+  it("body link carries the token in the fragment; header link in the path", () => {
+    expect(buildBodyUnsubscribeUrl("https://app.example.com", "tok")).toBe(
+      "https://app.example.com/unsubscribe#t=tok",
+    );
+    expect(buildHeaderUnsubscribeUrl("https://app.example.com", "tok")).toBe(
+      "https://app.example.com/unsubscribe/tok",
+    );
   });
 });

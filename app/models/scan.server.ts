@@ -445,6 +445,24 @@ export async function getPreviousScanForTheme(shopId: string, themeId: string, b
 }
 
 /**
+ * Ids of this shop + theme's scans created strictly after `after` and at or
+ * before `upTo` (gc-ol95): the scans a summary email covers, so app-removal
+ * changes recorded on any of them count once. Ids only.
+ */
+export async function getScanIdsForThemeBetween(
+  shopId: string,
+  themeId: string,
+  after: Date,
+  upTo: Date,
+): Promise<string[]> {
+  const rows = await db.scan.findMany({
+    where: { shopId, themeId, createdAt: { gt: after, lte: upTo } },
+    select: { id: true },
+  });
+  return rows.map((r) => r.id);
+}
+
+/**
  * Count scans created at or after `since` for a given shop.
  * Used by plan-gating to enforce per-month scan limits on the free tier.
  *

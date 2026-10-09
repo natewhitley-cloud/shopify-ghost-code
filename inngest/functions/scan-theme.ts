@@ -73,6 +73,7 @@ import {
   finalizeScan,
   getPreviousScanForTheme,
   getScanById,
+  getScanIdsForThemeBetween,
   markScanStarted,
   updateScanStatus,
 } from "../../app/models/scan.server";
@@ -305,7 +306,7 @@ async function runAuditStep(opts: {
  * are recorded as LIVE for the scan. Returns the kept findings, the suppressed
  * counts per type, and `liveFindingTypes` = every FindingType except those a
  * flag suppressed. The live set is stored on the scan at finalize so the
- * merchant-alert diff can ignore types the baseline scan could not have
+ * summary-email diff can ignore types the baseline scan could not have
  * contained (flag flipped on, or detector shipped, since). Plan/scope gating is
  * NOT part of it (skippedCategories/cappedCategories cover that).
  */
@@ -1457,7 +1458,7 @@ export const scanTheme = inngest.createFunction(
             (t) => t !== FindingType.SCRIPT_TAG_SUNSET || scriptTagResult.audited,
           )
         : undefined;
-      // What THIS scan audited, for every diff below (finalize + alert).
+      // What THIS scan audited, for every diff below (finalize + summary email).
       const currentCoverage = {
         skippedCategories,
         cappedCategories,
@@ -1541,7 +1542,7 @@ export const scanTheme = inngest.createFunction(
           // From the fetch-and-scan output (same flag reads as persistence), see
           // finalLiveFindingTypes. An in-flight run memoized before this field
           // existed lacks it: record NULL so the scan stays unversioned and the
-          // alert step skips it.
+          // summary-email step skips it.
           liveFindingTypes: finalLiveFindingTypes,
           // Signature version per app, for app-removal detection (gc-frda).
           appSignatureFingerprints,
@@ -1734,21 +1735,20 @@ export const scanTheme = inngest.createFunction(
         }
       });
 
-      // Merchant monitoring alert (gc-syz.5): the terminal step. Emails the shop
-      // owner when a SCHEDULED / AUTO_PUBLISH rescan surfaced new findings.
-      // NEVER throws (a failed alert must not fail or retry the scan) and returns a
-      // small serializable outcome so the reason shows in Inngest. The diff is
-      // computed here with diffScans DIRECTLY (not behind canUseScanDiffing:
-      // Standard has scanDiffing:false but still gets alerts), with the same
-      // inputs as the in-app diff route so the email agrees with it. Soft-launched
-      // types are not persisted while their flag is off, so they cannot appear.
-      const alertOutcome: { sent: boolean; reason: string } = await step.run(
-        "notify-new-findings",
+      // Merchant summary email (gc-ol95, replaces the gc-syz.5 per-change
+      // alert): the terminal step. After a SCHEDULED scan only (manual and
+      // AUTO_PUBLISH scans never email), sends ONE summary of what changed
+      // since the last summary, and nothing when nothing changed. NEVER throws
+      // (a failed email must not fail or retry the scan) and returns a small
+      // serializable outcome so the reason shows in Inngest. Cheap gates
+      // (env, origin, shop consent, idempotency, throttle) run before any diff.
+      const summaryOutcome: { sent: boolean; reason: string } = await step.run(
+        "send-summary-email",
         async () => {
           try {
-            const { getMerchantAlertConfigStatus, notifyNewFindings } =
+            const { getMerchantAlertConfigStatus } =
               await import("../../app/services/merchant-alert.server");
-            // Dark by default: skip all alert work (queries, diff) until enabled.
+            // Dark by default: skip all work (queries, diff) until configured.
             const config = getMerchantAlertConfigStatus();
             if (!config.configured) return { sent: false, reason: config.reason };
 
@@ -1758,77 +1758,84 @@ export const scanTheme = inngest.createFunction(
               select: { origin: true, createdAt: true, liveFindingTypes: true },
             });
             if (!scan) return { sent: false, reason: "scan_not_found" };
-            if (scan.origin !== ScanOrigin.SCHEDULED && scan.origin !== ScanOrigin.AUTO_PUBLISH) {
+            if (scan.origin !== ScanOrigin.SCHEDULED) {
               return { sent: false, reason: "origin_not_eligible" };
             }
 
             const shop = await db.shop.findUnique({ where: { id: shopId } });
             if (!shop) return { sent: false, reason: "shop_not_found" };
-            // Uninstalled mid-scan: sessions are gone but alertEmail is cached.
-            // Bail before any query or Admin call (notifyNewFindings re-checks).
-            if (shop.uninstalledAt) return { sent: false, reason: "shop_uninstalled" };
+            const summary = await import("../../app/services/summary-email.server");
+            // Uninstalled, plan, toggle, consent: bail before any query or
+            // Admin call (sendScanSummary re-checks).
+            const shopSkip = summary.summaryShopSkipReason(shop);
+            if (shopSkip) return { sent: false, reason: shopSkip };
 
-            // Baseline = the LAST ALERTED scan when it still exists, is for this
-            // shop + theme and predates this scan: a throttled scan only delays the
-            // email, its findings stay "new since the last alert". Otherwise (no
-            // alert yet, scan deleted, theme switched) fall back to the previous
-            // scan for this theme.
             const { getLatestMerchantAlert } =
               await import("../../app/models/merchant-alert.server");
-            const lastAlert = await getLatestMerchantAlert(shopId);
-            // getScanById includes findings by default; its return type is a union
-            // only because of the optional includeFindings flag.
-            const alertedScan = lastAlert
-              ? ((await getScanById(lastAlert.scanId)) as Awaited<
+            const lastSummary = await getLatestMerchantAlert(shopId);
+            const rateSkip = summary.summaryRateSkipReason(shop.plan, scanId, lastSummary);
+            if (rateSkip) return { sent: false, reason: rateSkip };
+
+            // Baseline = the scan the LAST SUMMARY covered when it still
+            // exists, is for this shop + theme and predates this scan, so
+            // nothing already reported is reported again. Otherwise (no
+            // summary yet, scan deleted, theme switched) the previous scan.
+            // getScanById includes findings by default; its return type is a
+            // union only because of the optional includeFindings flag.
+            const summaryScan = lastSummary
+              ? ((await getScanById(lastSummary.scanId)) as Awaited<
                   ReturnType<typeof getPreviousScanForTheme>
                 >)
               : null;
-            const alertedIsBaseline =
-              !!alertedScan &&
-              alertedScan.shopId === shopId &&
-              alertedScan.themeId === themeId &&
-              alertedScan.createdAt < scan.createdAt;
+            const summaryIsBaseline =
+              !!summaryScan &&
+              summaryScan.shopId === shopId &&
+              summaryScan.themeId === themeId &&
+              summaryScan.createdAt < scan.createdAt;
             const baselineScan: Awaited<ReturnType<typeof getPreviousScanForTheme>> =
-              alertedIsBaseline
-                ? alertedScan
+              summaryIsBaseline
+                ? summaryScan
                 : await getPreviousScanForTheme(shopId, themeId, scan.createdAt);
-            // No baseline: a first-ever scan has nothing to diff against, so it
-            // can never alert (also the natural first-send baseline suppression).
+            // A first-ever scan has nothing to compare against: no summary.
             if (!baselineScan) return { sent: false, reason: "no_baseline" };
 
-            const [
-              { diffScans, scanDiffOptions, parseLiveFindingTypes, restrictToLiveInBoth },
-              { getIgnoredFindingsForShop },
-              agg,
-            ] = await Promise.all([
-              import("../../app/services/scan-differ.server"),
+            const [{ getIgnoredFindingsForShop }, appRemovals] = await Promise.all([
               import("../../app/models/ignored-finding.server"),
-              import("../../app/services/finding-aggregation.server"),
+              import("../../app/models/app-removal.server"),
             ]);
             const currentFindings = await db.finding.findMany({ where: { scanId } });
-            // Same as the diff route: suppressed findings are never "new".
-            const ignores = await getIgnoredFindingsForShop(shopId);
-            const diff = diffScans(
-              agg.filterIgnoredFindings(currentFindings, ignores).kept,
-              agg.filterIgnoredFindings(baselineScan.findings, ignores).kept,
-              // Same coverage rule as finalize and the diff route: a finding in
-              // a category the BASELINE did not audit (unreachable storefront,
-              // scope granted since, cap, flag off) is never "new", so a flaky
-              // read or a newly granted scope cannot trigger an alert email.
-              scanDiffOptions(currentCoverage, baselineScan),
+            const findingChanges = summary.computeFindingChanges({
+              currentFindings,
+              currentCoverage,
+              currentLiveFindingTypes: scan.liveFindingTypes,
+              baseline: baselineScan,
+              // Same as the diff route: suppressed findings never count.
+              ignores: await getIgnoredFindingsForShop(shopId),
+            });
+            if (!findingChanges.ok) return { sent: false, reason: findingChanges.reason };
+
+            // App changes recorded on any scan after the baseline, up to this one.
+            const periodScanIds = await getScanIdsForThemeBetween(
+              shopId,
+              themeId,
+              baselineScan.createdAt,
+              scan.createdAt,
             );
-            // Alert-only guard (gc-rvo0): a type absent from the baseline's live
-            // set was never compared, so its hits are not "new" (scanDiffOptions
-            // already drops them; this stays as the explicit both-sides check).
-            // A legacy baseline that never recorded its set can't be judged:
-            // skip this cycle (the next scan records one).
-            const baselineLive = parseLiveFindingTypes(baselineScan.liveFindingTypes);
-            if (!baselineLive) return { sent: false, reason: "baseline_unversioned" };
-            const currentLive = parseLiveFindingTypes(scan.liveFindingTypes);
-            // finalize-scan wrote it; null here means that write was skipped.
-            if (!currentLive) return { sent: false, reason: "current_unversioned" };
-            const newFindings = restrictToLiveInBoth(diff.newFindings, baselineLive, currentLive);
-            if (newFindings.length === 0) return { sent: false, reason: "no_new_findings" };
+            const removalRows = await appRemovals.getAppRemovalsTouchedByScans(
+              shopId,
+              themeId,
+              periodScanIds,
+            );
+            const changes = {
+              newCount: findingChanges.newCount,
+              fixedCount: findingChanges.fixedCount,
+              openCount: findingChanges.openCount,
+              ...summary.summarizeAppRemovals(removalRows, new Set(periodScanIds)),
+            };
+            // Nothing changed: no email, and no Admin call.
+            if (!summary.hasSummaryChanges(changes)) {
+              return { sent: false, reason: "nothing_changed" };
+            }
 
             // Admin client only to refresh the owner email. A dead offline token
             // (gc-4hk) must not fail the step: fall back to the cached email.
@@ -1837,7 +1844,7 @@ export const scanTheme = inngest.createFunction(
               const { unauthenticated } = await import("../../app/shopify.server");
               admin = (await unauthenticated.admin(shop.domain)).admin;
             } catch (err) {
-              logger.warn("merchant alert: admin client unavailable, using cached email", {
+              logger.warn("summary email: admin client unavailable, using cached email", {
                 function: "scan-theme",
                 scanId,
                 shopId,
@@ -1845,20 +1852,19 @@ export const scanTheme = inngest.createFunction(
               });
             }
 
-            const outcome = await notifyNewFindings({
+            const outcome = await summary.sendScanSummary({
               shop,
               scan: { id: scanId },
-              newFindings,
+              changes,
+              baseline: summaryIsBaseline ? "last_summary" : "previous_scan",
               admin,
               // Already loaded above: the service must not re-query it.
-              latestAlert: lastAlert,
-              // The email copy states which baseline "new" was measured against.
-              baseline: alertedIsBaseline ? "last_alert" : "previous_scan",
+              latestSummary: lastSummary,
             });
             // Reason only: never log the recipient address.
-            logger.info("merchant alert outcome", {
+            logger.info("summary email outcome", {
               function: "scan-theme",
-              event: "merchant_alert",
+              event: "summary_email",
               scanId,
               shopId,
               sent: outcome.sent,
@@ -1866,9 +1872,9 @@ export const scanTheme = inngest.createFunction(
             });
             return { sent: outcome.sent, reason: outcome.reason };
           } catch (err) {
-            logger.warn("merchant alert step failed, scan unaffected", {
+            logger.warn("summary email step failed, scan unaffected", {
               function: "scan-theme",
-              event: "merchant_alert_failed",
+              event: "summary_email_failed",
               scanId,
               shopId,
               error: err instanceof Error ? err.message : String(err),
@@ -1897,7 +1903,7 @@ export const scanTheme = inngest.createFunction(
         redirectFindings: redirectResult.findingCount,
         jsonLdPriceFindings: jsonLdPriceResult.findingCount,
         danglingRefFindings: danglingRefResult.findingCount,
-        merchantAlert: alertOutcome.reason,
+        summaryEmail: summaryOutcome.reason,
       });
 
       return {

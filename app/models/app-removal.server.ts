@@ -63,6 +63,41 @@ export function getRemovalNoticeRows(
   });
 }
 
+/** The fields the summary email reads (gc-ol95). */
+export type SummaryRemovalRow = Pick<
+  AppRemoval,
+  "appName" | "leftoverCount" | "state" | "detectedScanId" | "stateChangedScanId" | "detectedAt"
+>;
+
+/**
+ * Rows of a shop + theme detected on, or changed state on, any of `scanIds`:
+ * the app-removal changes a summary email covers (gc-ol95). Empty ids issue
+ * no query.
+ */
+export async function getAppRemovalsTouchedByScans(
+  shopId: string,
+  themeId: string,
+  scanIds: readonly string[],
+): Promise<SummaryRemovalRow[]> {
+  if (scanIds.length === 0) return [];
+  const ids = [...scanIds];
+  return db.appRemoval.findMany({
+    where: {
+      shopId,
+      themeId,
+      OR: [{ detectedScanId: { in: ids } }, { stateChangedScanId: { in: ids } }],
+    },
+    select: {
+      appName: true,
+      leftoverCount: true,
+      state: true,
+      detectedScanId: true,
+      stateChangedScanId: true,
+      detectedAt: true,
+    },
+  });
+}
+
 /**
  * The record for `appName` detected on `scanId` (any state), or null: the
  * scan page's `?app=` removal context. A unique-key lookup.

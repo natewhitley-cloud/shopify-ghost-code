@@ -164,6 +164,10 @@ describe("getShopMetadata", () => {
         alertEmail: true,
         // gc-frda: Home's per-scan app-removal banner dismissal.
         removalNoticeDismissedScanId: true,
+        // gc-ol95: summary-email consent (Home notice + Settings opt-in).
+        summaryNoticePendingAt: true,
+        summaryNoticeShownAt: true,
+        summaryOptedInAt: true,
       },
     });
   });

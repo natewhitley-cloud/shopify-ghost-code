@@ -21,6 +21,7 @@ import {
   applyAppRemovalPlan,
   getAppRemovalForScanApp,
   getAppRemovalsDetectedOnScan,
+  getAppRemovalsTouchedByScans,
   getOpenAppRemovals,
   getRemovalNoticeRows,
 } from "../../app/models/app-removal.server";
@@ -184,5 +185,32 @@ describe("applyAppRemovalPlan", () => {
         plan: { creates: [{ appName: "Klaviyo", leftoverCount: 1 }], updates: [] },
       }),
     ).rejects.toThrow("db down");
+  });
+});
+
+describe("getAppRemovalsTouchedByScans (gc-ol95 summary email)", () => {
+  it("reads rows detected on, or changed state on, any of the scans, one query", async () => {
+    mockDb.appRemoval.findMany.mockResolvedValue([]);
+    await getAppRemovalsTouchedByScans("s1", "t1", ["a", "b"]);
+    expect(mockDb.appRemoval.findMany).toHaveBeenCalledWith({
+      where: {
+        shopId: "s1",
+        themeId: "t1",
+        OR: [{ detectedScanId: { in: ["a", "b"] } }, { stateChangedScanId: { in: ["a", "b"] } }],
+      },
+      select: {
+        appName: true,
+        leftoverCount: true,
+        state: true,
+        detectedScanId: true,
+        stateChangedScanId: true,
+        detectedAt: true,
+      },
+    });
+  });
+
+  it("no scans: no query, no rows", async () => {
+    await expect(getAppRemovalsTouchedByScans("s1", "t1", [])).resolves.toEqual([]);
+    expect(mockDb.appRemoval.findMany).not.toHaveBeenCalled();
   });
 });

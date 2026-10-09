@@ -2,12 +2,14 @@ import { randomBytes } from "node:crypto";
 
 import type { MerchantAlert } from "@prisma/client";
 
+import { claimShopStamp } from "./shop.server";
 import db from "../db.server";
 
 /**
- * Data access for merchant monitoring alerts (gc-syz.1): the MerchantAlert
- * ledger plus the per-shop alert preferences stored on Shop (alertsEnabled,
- * alertEmail, alertUnsubscribeToken).
+ * Data access for merchant summary emails (gc-syz.1, gc-ol95): the
+ * MerchantAlert ledger plus the per-shop preferences stored on Shop
+ * (alertsEnabled, alertEmail, alertUnsubscribeToken, and the consent stamps
+ * summaryNoticePendingAt / summaryNoticeShownAt / summaryOptedInAt).
  *
  * GDPR: alertEmail and MerchantAlert.recipient are personal data. Both go with
  * the Shop row on shop/redact (deleteShopData also deletes the ledger rows
@@ -24,6 +26,9 @@ export type RecordMerchantAlertInput = {
   scanId: string;
   findingSetHash: string;
   newCount: number;
+  fixedCount: number;
+  inactiveAppCount: number;
+  cleanedAppCount: number;
   recipient: string;
 };
 
@@ -32,12 +37,12 @@ export function generateUnsubscribeToken(): string {
   return randomBytes(UNSUBSCRIBE_TOKEN_BYTES).toString("base64url");
 }
 
-/** The most recent alert sent to a shop, or null if none. Dedup/throttle source. */
+/** The most recent summary sent to a shop, or null: baseline/idempotency/throttle source. */
 export function getLatestMerchantAlert(shopId: string): Promise<MerchantAlert | null> {
   return db.merchantAlert.findFirst({ where: { shopId }, orderBy: { sentAt: "desc" } });
 }
 
-/** Append one sent-alert row to the ledger. */
+/** Append one sent-summary row to the ledger ((shopId, scanId) is unique). */
 export function recordMerchantAlert(input: RecordMerchantAlertInput): Promise<MerchantAlert> {
   return db.merchantAlert.create({ data: input });
 }
@@ -47,9 +52,61 @@ export async function setShopAlertEmail(shopId: string, email: string | null): P
   await db.shop.update({ where: { id: shopId }, data: { alertEmail: email } });
 }
 
-/** Per-shop opt-in/out for merchant alerts (Settings toggle). */
-export async function setShopAlertsEnabled(shopId: string, enabled: boolean): Promise<void> {
-  await db.shop.update({ where: { id: shopId }, data: { alertsEnabled: enabled } });
+/**
+ * The Settings summary-email toggle (gc-ol95). Turning it ON is the merchant's
+ * own opt-in: it also records summaryOptedInAt (consent), and, when
+ * `noticeOwed` (sending is not configured yet and Home's notice was never
+ * shown), marks the Home notice pending so the merchant is told before any
+ * email goes out. Turning it OFF clears nothing else.
+ */
+export async function setSummaryEmailsEnabled(
+  shopId: string,
+  enabled: boolean,
+  opts: { noticeOwed: boolean },
+): Promise<void> {
+  if (!enabled) {
+    await db.shop.update({ where: { id: shopId }, data: { alertsEnabled: false } });
+    return;
+  }
+  const now = new Date();
+  await db.shop.update({
+    where: { id: shopId },
+    data: {
+      alertsEnabled: true,
+      summaryOptedInAt: now,
+      ...(opts.noticeOwed ? { summaryNoticePendingAt: now } : {}),
+    },
+  });
+}
+
+/**
+ * Mark Home's "Summary emails are on" notice as owed (gc-ol95), called when a
+ * shop moves Free -> paid. A once claim that also requires the merchant to
+ * have neither seen the notice nor opted in already (they know). Returns true
+ * IFF this call set it.
+ */
+export function markSummaryNoticePending(domain: string): Promise<boolean> {
+  return claimShopStamp(domain, "summaryNoticePendingAt", {
+    summaryNoticeShownAt: null,
+    summaryOptedInAt: null,
+  });
+}
+
+/**
+ * Claim the render of Home's summary notice (gc-ol95): stamps
+ * summaryNoticeShownAt once, only while the notice is pending. Of concurrent
+ * loads exactly one wins; only the winner renders the banner. Returns true
+ * IFF this call stamped it.
+ */
+export function claimSummaryNoticeShown(domain: string): Promise<boolean> {
+  return claimShopStamp(domain, "summaryNoticeShownAt", {
+    summaryNoticePendingAt: { not: null },
+  });
+}
+
+/** Home notice "Dismiss" (gc-ol95): the notice is no longer owed. Idempotent. */
+export async function dismissSummaryNotice(shopId: string): Promise<void> {
+  await db.shop.updateMany({ where: { id: shopId }, data: { summaryNoticePendingAt: null } });
 }
 
 /**

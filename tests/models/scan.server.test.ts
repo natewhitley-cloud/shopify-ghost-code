@@ -71,6 +71,7 @@ import {
   updateScanStatus,
   markScanStarted,
   getPreviousScanForTheme,
+  getScanIdsForThemeBetween,
   countScansForShopSince,
   hasCompletedScans,
   hasAnyScans,
@@ -1756,5 +1757,28 @@ describe("expireStaleScan", () => {
     const result = await expireStaleScan("gone", DEFAULT_STALE_SCAN_THRESHOLDS);
 
     expect(result).toMatchObject({ expired: false, status: null });
+  });
+});
+
+describe("getScanIdsForThemeBetween (gc-ol95)", () => {
+  it("reads ids of this shop + theme's scans in (after, upTo]", async () => {
+    mockDb.scan.findMany.mockResolvedValue([{ id: "a" }, { id: "b" }]);
+    const after = new Date("2026-10-01T00:00:00Z");
+    const upTo = new Date("2026-10-08T00:00:00Z");
+    await expect(getScanIdsForThemeBetween(SHOP_ID, THEME_ID, after, upTo)).resolves.toEqual([
+      "a",
+      "b",
+    ]);
+    expect(mockDb.scan.findMany).toHaveBeenCalledWith({
+      where: { shopId: SHOP_ID, themeId: THEME_ID, createdAt: { gt: after, lte: upTo } },
+      select: { id: true },
+    });
+  });
+
+  it("returns [] when no scan falls in the range", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+    await expect(
+      getScanIdsForThemeBetween(SHOP_ID, THEME_ID, new Date(0), new Date(1)),
+    ).resolves.toEqual([]);
   });
 });

@@ -94,6 +94,7 @@ vi.mock("../../app/models/scan.server", () => ({
   finalizeScan: vi.fn(),
   getPreviousScanForTheme: vi.fn(),
   getScanById: vi.fn(),
+  getScanIdsForThemeBetween: vi.fn(),
 }));
 
 vi.mock("../../app/models/merchant-alert.server", () => ({
@@ -184,11 +185,18 @@ vi.mock("../../app/lib/scope-check.server", async (importOriginal) => ({
   fetchGrantedOptionalScopes: vi.fn(),
 }));
 
-// Merchant alert service (gc-syz.5): dark by default so every other test in this
-// file never touches the alert path; the notify-new-findings block opts in.
+// Merchant email transport: dark by default so every other test in this file
+// never touches the summary path; the send-summary-email block opts in.
 vi.mock("../../app/services/merchant-alert.server", () => ({
   getMerchantAlertConfigStatus: vi.fn(() => ({ configured: false, reason: "disabled" })),
-  notifyNewFindings: vi.fn(),
+  ALERT_WINDOW_TOLERANCE: 0.9,
+}));
+
+// Summary email (gc-ol95): the real pure helpers (consent gates, diff, app
+// changes) run; only the send is mocked.
+vi.mock("../../app/services/summary-email.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../app/services/summary-email.server")>()),
+  sendScanSummary: vi.fn(),
 }));
 
 // The storefront fetcher's network stack: routed to the global fetch spy below
@@ -210,6 +218,7 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
 vi.mock("../../app/models/app-removal.server", () => ({
   getOpenAppRemovals: vi.fn(),
   applyAppRemovalPlan: vi.fn(),
+  getAppRemovalsTouchedByScans: vi.fn(),
 }));
 
 // ---------------------------------------------------------------------------
@@ -231,7 +240,11 @@ import {
   fetchGrantedOptionalScopes,
   TransientScopeCheckError,
 } from "../../app/lib/scope-check.server";
-import { applyAppRemovalPlan, getOpenAppRemovals } from "../../app/models/app-removal.server";
+import {
+  applyAppRemovalPlan,
+  getAppRemovalsTouchedByScans,
+  getOpenAppRemovals,
+} from "../../app/models/app-removal.server";
 import { saveThemeFindings, createFindings } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getLatestMerchantAlert } from "../../app/models/merchant-alert.server";
@@ -243,6 +256,7 @@ import {
   updateScanStatus,
   getPreviousScanForTheme,
   getScanById,
+  getScanIdsForThemeBetween,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
 import { computeAppSignatureFingerprints } from "../../app/services/app-removal.server";
@@ -250,10 +264,7 @@ import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { resolveDanglingReferences } from "../../app/services/dangling-reference-resolver.server";
 import { auditStaticJsonLdPrices } from "../../app/services/jsonld-price-audit.server";
-import {
-  getMerchantAlertConfigStatus,
-  notifyNewFindings,
-} from "../../app/services/merchant-alert.server";
+import { getMerchantAlertConfigStatus } from "../../app/services/merchant-alert.server";
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
 import { detectOrphanedPages } from "../../app/services/page-detector.server";
 import { detectPersistentDiscounts } from "../../app/services/price-detector.server";
@@ -264,6 +275,7 @@ import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-
 import { diffScans, unauditedCategories } from "../../app/services/scan-differ.server";
 import { enabledAppEmbedApps, observedEmbedApps } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
+import { sendScanSummary } from "../../app/services/summary-email.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import { detectTranslationContent } from "../../app/services/translation-detector.server";
 import {
@@ -3410,20 +3422,35 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
 });
 
 // ---------------------------------------------------------------------------
-// gc-syz.5 — notify-new-findings terminal step
+// gc-ol95 — send-summary-email terminal step (replaced gc-syz.5's per-change
+// notify-new-findings step)
 // ---------------------------------------------------------------------------
 
-describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
+describe("scanTheme — send-summary-email step (gc-ol95)", () => {
   const mockConfig = getMerchantAlertConfigStatus as ReturnType<typeof vi.fn>;
-  const mockNotify = notifyNewFindings as ReturnType<typeof vi.fn>;
+  const mockSend = sendScanSummary as ReturnType<typeof vi.fn>;
   const mockIgnores = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
-  const mockLatestAlert = getLatestMerchantAlert as ReturnType<typeof vi.fn>;
+  const mockLatest = getLatestMerchantAlert as ReturnType<typeof vi.fn>;
   const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
+  const mockPeriodScans = getScanIdsForThemeBetween as ReturnType<typeof vi.fn>;
+  const mockRemovals = getAppRemovalsTouchedByScans as ReturnType<typeof vi.fn>;
 
   // Every detector live for both scans unless a test narrows it (gc-rvo0).
   const ALL_TYPES = Object.values(FindingType);
   const OLD = { ...MOCK_FINDINGS[0] };
   const NEW = { ...MOCK_FINDINGS[1] };
+  const SCAN_CREATED = new Date("2026-06-15T00:00:00Z");
+  const PREV_CREATED = new Date("2026-06-08T00:00:00Z");
+
+  /** An eligible shop: paid, toggle on, the Home notice was shown. */
+  const ELIGIBLE = {
+    plan: "Professional",
+    alertsEnabled: true,
+    alertEmail: "owner@example.com",
+    uninstalledAt: null,
+    summaryNoticeShownAt: new Date("2026-06-01T00:00:00Z"),
+    summaryOptedInAt: null,
+  };
 
   /** Run the scan and capture each step's return value by name. */
   async function run(onStep?: (name: string) => void) {
@@ -3441,42 +3468,57 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     return { results, result, step };
   }
 
-  function arrange(origin: string = "SCHEDULED", shop: Record<string, unknown> = {}) {
-    mockConfig.mockReturnValue({ configured: true });
-    mockNotify.mockResolvedValue({ sent: true, reason: "sent" });
-    mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
-    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, ...shop });
-    mockDb.scan.findUnique.mockResolvedValue({
-      status: "IN_PROGRESS",
-      origin,
-      createdAt: new Date("2026-06-15T00:00:00Z"),
-      liveFindingTypes: ALL_TYPES,
-      startedAt: new Date("2026-06-15T00:00:00Z"),
-      completedAt: new Date("2026-06-15T00:00:05Z"),
-    });
-    // Current persisted findings = OLD + NEW; previous scan only had OLD.
-    mockDb.finding.findMany.mockResolvedValue([OLD, NEW]);
-    mockGetPreviousScanForTheme.mockResolvedValue({
-      ...BASELINE_COVERAGE,
-      id: "prev",
-      findings: [OLD],
-      liveFindingTypes: ALL_TYPES,
-    });
-    // No prior alert by default: the baseline is the previous scan.
-    mockLatestAlert.mockResolvedValue(null);
-    mockGetScanById.mockResolvedValue(null);
-  }
-
-  const alertedScan = (over: Record<string, unknown> = {}) => ({
+  const previousScan = (over: Record<string, unknown> = {}) => ({
     ...BASELINE_COVERAGE,
-    id: "alerted",
+    id: "prev",
     shopId: SHOP_ID,
     themeId: THEME_ID,
-    createdAt: new Date("2026-06-01T00:00:00Z"),
+    createdAt: PREV_CREATED,
     findings: [OLD],
     liveFindingTypes: ALL_TYPES,
     ...over,
   });
+
+  function arrange(origin: string = "SCHEDULED", shop: Record<string, unknown> = {}) {
+    mockConfig.mockReturnValue({ configured: true });
+    mockSend.mockResolvedValue({ sent: true, reason: "sent" });
+    mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, ...ELIGIBLE, ...shop });
+    mockDb.scan.findUnique.mockResolvedValue({
+      status: "IN_PROGRESS",
+      origin,
+      createdAt: SCAN_CREATED,
+      liveFindingTypes: ALL_TYPES,
+      startedAt: SCAN_CREATED,
+      completedAt: new Date("2026-06-15T00:00:05Z"),
+    });
+    // Current persisted findings = OLD + NEW; previous scan only had OLD.
+    mockDb.finding.findMany.mockResolvedValue([OLD, NEW]);
+    mockGetPreviousScanForTheme.mockResolvedValue(previousScan());
+    // No prior summary by default: the baseline is the previous scan.
+    mockLatest.mockResolvedValue(null);
+    mockGetScanById.mockResolvedValue(null);
+    // The period's scans: just this one, with no app-removal changes.
+    mockPeriodScans.mockResolvedValue([SCAN_ID]);
+    mockRemovals.mockResolvedValue([]);
+  }
+
+  /** Same findings in both scans: no finding change at all. */
+  function arrangeNoFindingChange() {
+    mockGetPreviousScanForTheme.mockResolvedValue(previousScan({ findings: [OLD, NEW] }));
+  }
+
+  const removalRow = (over: Record<string, unknown>) => ({
+    appName: "Judge.me",
+    leftoverCount: 3,
+    state: "REMOVED",
+    detectedScanId: SCAN_ID,
+    stateChangedScanId: null,
+    detectedAt: SCAN_CREATED,
+    ...over,
+  });
+
+  const outcome = (results: Record<string, unknown>) => results["send-summary-email"];
 
   beforeEach(() => {
     mockConfig.mockReturnValue({ configured: false, reason: "disabled" });
@@ -3486,129 +3528,147 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
     arrange();
     const { step } = await run();
     const names = step.run.mock.calls.map((c) => c[0]);
-    expect(names.indexOf("notify-new-findings")).toBeGreaterThan(names.indexOf("finalize-scan"));
-    expect(names.at(-1)).toBe("notify-new-findings");
+    expect(names.indexOf("send-summary-email")).toBeGreaterThan(names.indexOf("finalize-scan"));
+    expect(names.at(-1)).toBe("send-summary-email");
+    expect(names).not.toContain("notify-new-findings");
   });
 
-  it("Standard plan still alerts: diff is computed although scanDiffing is false", async () => {
-    expect(canUseScanDiffing("Standard")).toBe(false);
-    arrange("SCHEDULED", { plan: "Standard" });
-
+  it("sends one summary of the changes after a scheduled scan", async () => {
+    arrange();
     const { results } = await run();
-
-    expect(mockNotify).toHaveBeenCalledTimes(1);
-    const arg = mockNotify.mock.calls[0][0];
-    expect(arg.newFindings).toHaveLength(1);
-    expect(arg.newFindings[0]).toMatchObject({
-      filename: NEW.filename,
-      findingType: NEW.findingType,
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    const arg = mockSend.mock.calls[0][0];
+    expect(arg.changes).toEqual({
+      newCount: 1,
+      fixedCount: 0,
+      openCount: 2,
+      inactiveApps: [],
+      cleanedApps: [],
     });
     expect(arg.scan).toEqual({ id: SCAN_ID });
-    expect(arg.shop.plan).toBe("Standard");
     expect(arg.admin).toBe(MOCK_ADMIN);
-    expect(results["notify-new-findings"]).toEqual({ sent: true, reason: "sent" });
+    expect(arg.baseline).toBe("previous_scan");
+    expect(arg.latestSummary).toBeNull();
+    expect(outcome(results)).toEqual({ sent: true, reason: "sent" });
   });
 
-  it("alerts for AUTO_PUBLISH too", async () => {
-    arrange("AUTO_PUBLISH");
+  it("Standard (monthly) gets it too, although its plan has no scan diffing", async () => {
+    expect(canUseScanDiffing("Standard")).toBe(false);
+    arrange("SCHEDULED", { plan: "Standard" });
     await run();
-    expect(mockNotify).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(1);
   });
 
-  it("an uninstalled shop never alerts and builds no Admin client (gc-1qt0)", async () => {
-    arrange("SCHEDULED", { uninstalledAt: new Date("2026-06-14T00:00:00Z") });
-    const adminCalls: string[] = [];
-    const { results, result } = await run((name) => {
-      if (name === "notify-new-findings") {
-        mockUnauthenticated.admin.mockClear();
-        mockLatestAlert.mockClear();
-      }
-    });
-    adminCalls.push(...mockUnauthenticated.admin.mock.calls.map(() => "admin"));
-    expect(mockNotify).not.toHaveBeenCalled();
-    expect(adminCalls).toEqual([]);
-    expect(mockLatestAlert).not.toHaveBeenCalled();
-    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "shop_uninstalled" });
-    expect(result.status).toBe("COMPLETED");
-  });
-
-  it("passes the already-loaded latest alert and the baseline kind to the service (gc-otn2, gc-mb9k)", async () => {
-    arrange();
-    const lastAlert = { scanId: "alerted", findingSetHash: "h", sentAt: new Date("2026-06-01") };
-    mockLatestAlert.mockResolvedValue(lastAlert);
-    mockGetScanById.mockResolvedValue(alertedScan());
-    await run();
-    expect(mockLatestAlert).toHaveBeenCalledTimes(1);
-    expect(mockNotify.mock.calls[0][0].latestAlert).toBe(lastAlert);
-    expect(mockNotify.mock.calls[0][0].baseline).toBe("last_alert");
-  });
-
-  it("baseline is previous_scan with no prior alert, or when the alerted scan is unusable", async () => {
-    arrange();
-    await run();
-    expect(mockNotify.mock.calls[0][0].latestAlert).toBeNull();
-    expect(mockNotify.mock.calls[0][0].baseline).toBe("previous_scan");
-
-    mockNotify.mockClear();
-    arrange();
-    mockLatestAlert.mockResolvedValue({
-      scanId: "alerted",
-      findingSetHash: "h",
-      sentAt: new Date(),
-    });
-    mockGetScanById.mockResolvedValue(alertedScan({ themeId: "other-theme" }));
-    await run();
-    expect(mockNotify.mock.calls[0][0].baseline).toBe("previous_scan");
-  });
-
-  it("MANUAL scans never alert", async () => {
-    arrange("MANUAL");
+  it.each(["MANUAL", "AUTO_PUBLISH"])("%s scans never send", async (origin) => {
+    arrange(origin);
     const { results } = await run();
-    expect(mockNotify).not.toHaveBeenCalled();
-    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "origin_not_eligible" });
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(outcome(results)).toEqual({ sent: false, reason: "origin_not_eligible" });
   });
 
-  it("does no alert work while the env gates are off (dark by default)", async () => {
+  it("does no work while the sender is not configured (dark by default)", async () => {
     arrange();
-    mockConfig.mockReturnValue({ configured: false, reason: "disabled" });
+    mockConfig.mockReturnValue({ configured: false, reason: "no_postal_address" });
     const { results } = await run();
-    expect(mockNotify).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(mockLatest).not.toHaveBeenCalled();
     expect(mockGetPreviousScanForTheme).toHaveBeenCalledTimes(1); // finalize-scan only
-    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "disabled" });
+    expect(outcome(results)).toEqual({ sent: false, reason: "no_postal_address" });
+  });
+
+  describe("shop gates run before any summary query", () => {
+    it.each([
+      [
+        "legacy paid shop (toggle default on, never told, never opted in)",
+        { summaryNoticeShownAt: null, summaryOptedInAt: null },
+        "no_consent",
+      ],
+      ["Free plan", { plan: "free" }, "plan_not_eligible"],
+      ["toggle off", { alertsEnabled: false }, "shop_opted_out"],
+      ["uninstalled", { uninstalledAt: new Date("2026-06-14T00:00:00Z") }, "shop_uninstalled"],
+    ])("%s => %s", async (_label, shop, reason) => {
+      arrange("SCHEDULED", shop);
+      const { results, result } = await run((name) => {
+        if (name === "send-summary-email") mockUnauthenticated.admin.mockClear();
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockLatest).not.toHaveBeenCalled();
+      expect(mockUnauthenticated.admin).not.toHaveBeenCalled();
+      expect(outcome(results)).toEqual({ sent: false, reason });
+      expect(result.status).toBe("COMPLETED");
+    });
+
+    it("a merchant who opted in via Settings (notice never shown) is eligible", async () => {
+      arrange("SCHEDULED", { summaryNoticeShownAt: null, summaryOptedInAt: new Date() });
+      await run();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it("an Inngest retry after the summary was recorded for this scan never re-sends", async () => {
+    arrange();
+    mockLatest.mockResolvedValue({ scanId: SCAN_ID, sentAt: new Date() });
+    const { results } = await run();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(outcome(results)).toEqual({ sent: false, reason: "already_sent" });
+    expect(mockGetPreviousScanForTheme).toHaveBeenCalledTimes(1); // no diff work
+  });
+
+  it("throttled inside the cadence window: no diff, no send", async () => {
+    arrange();
+    mockLatest.mockResolvedValue({ scanId: "older", sentAt: new Date(Date.now() - 86_400_000) });
+    const { results } = await run();
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(outcome(results)).toEqual({ sent: false, reason: "throttled" });
   });
 
   it("skips with no_baseline when there is no previous scan", async () => {
     arrange();
     mockGetPreviousScanForTheme.mockResolvedValue(null);
     const { results } = await run();
-    expect(mockNotify).not.toHaveBeenCalled();
-    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_baseline" });
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(outcome(results)).toEqual({ sent: false, reason: "no_baseline" });
   });
 
-  it("skips (without building an admin client) when the diff has no new findings", async () => {
-    arrange();
-    mockGetPreviousScanForTheme.mockResolvedValue({
-      ...BASELINE_COVERAGE,
-      id: "prev",
-      findings: [OLD, NEW],
-      liveFindingTypes: ALL_TYPES,
+  describe("nothing changed => no email", () => {
+    it("same findings, no app changes: nothing sent and no Admin client built", async () => {
+      arrange();
+      arrangeNoFindingChange();
+      const { results } = await run((name) => {
+        if (name === "send-summary-email") mockUnauthenticated.admin.mockClear();
+      });
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(mockUnauthenticated.admin).not.toHaveBeenCalled();
+      expect(outcome(results)).toEqual({ sent: false, reason: "nothing_changed" });
     });
-    const { results } = await run();
-    expect(mockNotify).not.toHaveBeenCalled();
-    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
-  });
 
-  it.each([
-    ["unreachable (flaky storefront read)", { unreachableCategories: ["SCRIPT_TAG_SUNSET"] }],
-    ["scope-skipped (scope granted since)", { skippedCategories: ["SCRIPT_TAG_SUNSET"] }],
-    ["capped", { cappedCategories: ["SCRIPT_TAG_SUNSET"] }],
-    [
-      "not live (flag turned on since)",
-      { liveFindingTypes: Object.values(FindingType).filter((t) => t !== "SCRIPT_TAG_SUNSET") },
-    ],
-  ])(
-    "never alerts for findings in a category the baseline did not audit: %s (H3)",
-    async (_label, gap) => {
+    it("an app that went inactive and came back (REINSTALLED) is not a change", async () => {
+      arrange();
+      arrangeNoFindingChange();
+      mockRemovals.mockResolvedValue([
+        removalRow({ state: "REINSTALLED", stateChangedScanId: SCAN_ID }),
+      ]);
+      const { results } = await run();
+      expect(outcome(results)).toEqual({ sent: false, reason: "nothing_changed" });
+    });
+
+    it("an app detected on a scan before the period (already covered) is not reported again", async () => {
+      arrange();
+      arrangeNoFindingChange();
+      mockRemovals.mockResolvedValue([removalRow({ detectedScanId: "prev" })]);
+      const { results } = await run();
+      expect(outcome(results)).toEqual({ sent: false, reason: "nothing_changed" });
+    });
+
+    it.each([
+      ["unreachable (flaky storefront read)", { unreachableCategories: ["SCRIPT_TAG_SUNSET"] }],
+      ["scope-skipped (permission granted since)", { skippedCategories: ["SCRIPT_TAG_SUNSET"] }],
+      ["capped", { cappedCategories: ["SCRIPT_TAG_SUNSET"] }],
+      [
+        "not live (detector turned on since)",
+        { liveFindingTypes: ALL_TYPES.filter((t) => t !== "SCRIPT_TAG_SUNSET") },
+      ],
+    ])("a finding in a category the baseline did not audit is not new: %s", async (_l, gap) => {
       arrange();
       const tag = {
         ...NEW,
@@ -3618,251 +3678,161 @@ describe("scanTheme — notify-new-findings step (gc-syz.5)", () => {
         lineNumber: 1,
       };
       mockDb.finding.findMany.mockResolvedValue([OLD, tag]);
-      mockGetPreviousScanForTheme.mockResolvedValue({
-        ...BASELINE_COVERAGE,
-        id: "prev",
-        findings: [OLD],
-        liveFindingTypes: ALL_TYPES,
-        ...gap,
-      });
+      mockGetPreviousScanForTheme.mockResolvedValue(previousScan(gap));
       const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
-      // finalize agrees: nothing new against that baseline.
-      expect(mockFinalizeScan.mock.calls[0][1].newFindingCount).toBe(0);
-    },
-  );
-
-  it("still alerts for a genuinely new finding when the baseline audited its category", async () => {
-    arrange();
-    mockGetPreviousScanForTheme.mockResolvedValue({
-      ...BASELINE_COVERAGE,
-      id: "prev",
-      findings: [OLD],
-      liveFindingTypes: ALL_TYPES,
-      unreachableCategories: ["SCRIPT_TAG_SUNSET"],
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(outcome(results)).toEqual({ sent: false, reason: "nothing_changed" });
     });
-    await run();
-    expect(mockNotify).toHaveBeenCalledTimes(1);
+
+    it("an ignored finding is never new", async () => {
+      arrange();
+      mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set([NEW.appName]) });
+      const { results } = await run();
+      expect(outcome(results)).toEqual({ sent: false, reason: "nothing_changed" });
+    });
   });
 
-  it("an ignored finding is never reported as new (agrees with the diff route)", async () => {
+  describe("each change alone sends", () => {
+    it("a fixed finding", async () => {
+      arrange();
+      mockDb.finding.findMany.mockResolvedValue([OLD]);
+      mockGetPreviousScanForTheme.mockResolvedValue(previousScan({ findings: [OLD, NEW] }));
+      await run();
+      expect(mockSend.mock.calls[0][0].changes).toMatchObject({ newCount: 0, fixedCount: 1 });
+    });
+
+    it("an app newly no longer active", async () => {
+      arrange();
+      arrangeNoFindingChange();
+      mockRemovals.mockResolvedValue([removalRow({})]);
+      await run();
+      expect(mockSend.mock.calls[0][0].changes).toEqual({
+        newCount: 0,
+        fixedCount: 0,
+        openCount: 2,
+        inactiveApps: [{ appName: "Judge.me", leftoverCount: 3 }],
+        cleanedApps: [],
+      });
+    });
+
+    it("an app's leftovers newly cleaned up", async () => {
+      arrange();
+      arrangeNoFindingChange();
+      mockRemovals.mockResolvedValue([
+        removalRow({ state: "CLEANED", detectedScanId: "prev", stateChangedScanId: SCAN_ID }),
+      ]);
+      await run();
+      expect(mockSend.mock.calls[0][0].changes.cleanedApps).toEqual([
+        { appName: "Judge.me", leftoverCount: 3 },
+      ]);
+    });
+
+    it("reads app changes for the scans after the baseline up to this one", async () => {
+      arrange();
+      await run();
+      expect(mockPeriodScans).toHaveBeenCalledWith(SHOP_ID, THEME_ID, PREV_CREATED, SCAN_CREATED);
+      expect(mockRemovals).toHaveBeenCalledWith(SHOP_ID, THEME_ID, [SCAN_ID]);
+    });
+  });
+
+  describe("baseline = the scan the last summary covered", () => {
+    const summaryScan = (over: Record<string, unknown> = {}) =>
+      previousScan({ id: "summarized", createdAt: new Date("2026-06-01T00:00:00Z"), ...over });
+
+    // The previous scan (never summarized: no change then) already contains
+    // NEW; the last SUMMARIZED scan does not, so NEW is still new since then.
+    function arrangeSummarized(summarized: unknown) {
+      arrange();
+      mockGetPreviousScanForTheme.mockResolvedValue(previousScan({ findings: [OLD, NEW] }));
+      mockLatest.mockResolvedValue({ scanId: "summarized", sentAt: new Date("2026-06-01") });
+      mockGetScanById.mockResolvedValue(summarized);
+    }
+
+    it("changes since the last summary are carried across unsummarized scans", async () => {
+      arrangeSummarized(summaryScan());
+      await run();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      const arg = mockSend.mock.calls[0][0];
+      expect(arg.changes.newCount).toBe(1);
+      expect(arg.baseline).toBe("last_summary");
+      expect(arg.latestSummary).toEqual({ scanId: "summarized", sentAt: new Date("2026-06-01") });
+      expect(mockPeriodScans).toHaveBeenCalledWith(
+        SHOP_ID,
+        THEME_ID,
+        new Date("2026-06-01T00:00:00Z"),
+        SCAN_CREATED,
+      );
+    });
+
+    it.each([
+      ["another theme", { themeId: "gid://shopify/Theme/OTHER" }],
+      ["another shop", { shopId: "someone-else" }],
+    ])("a summarized scan of %s is never the baseline", async (_l, over) => {
+      arrangeSummarized(summaryScan(over));
+      const { results } = await run();
+      expect(outcome(results)).toEqual({ sent: false, reason: "nothing_changed" });
+    });
+
+    it("summarized scan deleted: falls back to the previous scan", async () => {
+      arrangeSummarized(null);
+      const { results } = await run();
+      expect(outcome(results)).toEqual({ sent: false, reason: "nothing_changed" });
+    });
+  });
+
+  it.each([
+    ["baseline", "baseline_unversioned"],
+    ["current", "current_unversioned"],
+  ])("a %s scan without a recorded live set cannot be judged", async (which, reason) => {
     arrange();
-    mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set([NEW.appName]) });
+    if (which === "baseline") {
+      mockGetPreviousScanForTheme.mockResolvedValue(previousScan({ liveFindingTypes: null }));
+    } else {
+      mockDb.scan.findUnique.mockResolvedValue({
+        status: "IN_PROGRESS",
+        origin: "SCHEDULED",
+        createdAt: SCAN_CREATED,
+        liveFindingTypes: null,
+        startedAt: SCAN_CREATED,
+        completedAt: SCAN_CREATED,
+      });
+    }
     const { results } = await run();
-    expect(mockNotify).not.toHaveBeenCalled();
-    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
+    expect(mockSend).not.toHaveBeenCalled();
+    expect(outcome(results)).toEqual({ sent: false, reason });
   });
 
   it("falls back to the cached email path (admin null) when unauthenticated.admin fails", async () => {
     arrange();
-    // Earlier scan steps authenticate fine; only the alert step's call fails.
     const { result } = await run((name) => {
-      if (name === "notify-new-findings") {
+      if (name === "send-summary-email") {
         mockUnauthenticated.admin.mockRejectedValue(new Error("dead offline token"));
       }
     });
-    expect(mockNotify).toHaveBeenCalledTimes(1);
-    expect(mockNotify.mock.calls[0][0].admin).toBeNull();
+    expect(mockSend).toHaveBeenCalledTimes(1);
+    expect(mockSend.mock.calls[0][0].admin).toBeNull();
     expect(result.status).toBe("COMPLETED");
   });
 
-  it("never throws when the service throws: scan still completes", async () => {
+  it("never throws when the send throws or a read fails: the scan still completes", async () => {
     arrange();
-    mockNotify.mockRejectedValue(new Error("boom"));
-    const { results, result } = await run();
-    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "exception" });
-    expect(result.status).toBe("COMPLETED");
-  });
+    mockSend.mockRejectedValue(new Error("boom"));
+    let r = await run();
+    expect(outcome(r.results)).toEqual({ sent: false, reason: "exception" });
+    expect(r.result.status).toBe("COMPLETED");
 
-  it("never throws when the db read fails", async () => {
     arrange();
-    mockDb.finding.findMany.mockResolvedValueOnce([]); // finalize-scan read
-    mockDb.finding.findMany.mockRejectedValueOnce(new Error("db down"));
-    const { results, result } = await run();
-    expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "exception" });
-    expect(result.status).toBe("COMPLETED");
-  });
-
-  describe("baseline = last alerted scan", () => {
-    // Previous scan (throttled, never alerted) already contains NEW; the last
-    // ALERTED scan does not. NEW must still count as new since the last alert.
-    function arrangeThrottled(alerted: unknown) {
-      arrange();
-      mockGetPreviousScanForTheme.mockResolvedValue({
-        ...BASELINE_COVERAGE,
-        id: "throttled",
-        findings: [OLD, NEW],
-        liveFindingTypes: ALL_TYPES,
-      });
-      mockLatestAlert.mockResolvedValue({ scanId: "alerted" });
-      mockGetScanById.mockResolvedValue(alerted);
-    }
-
-    it("throttled scan's findings are carried into the next eligible alert", async () => {
-      arrangeThrottled(alertedScan());
-      await run();
-      expect(mockNotify).toHaveBeenCalledTimes(1);
-      expect(mockNotify.mock.calls[0][0].newFindings).toEqual([
-        expect.objectContaining({ filename: NEW.filename, findingType: NEW.findingType }),
-      ]);
-    });
-
-    it("theme change falls back to the previous-scan baseline", async () => {
-      arrangeThrottled(alertedScan({ themeId: "gid://shopify/Theme/OTHER" }));
-      const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
-    });
-
-    it("a last-alerted scan from another shop is never used", async () => {
-      arrangeThrottled(alertedScan({ shopId: "someone-else" }));
-      await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-    });
-
-    it("last-alerted scan deleted falls back to the previous scan", async () => {
-      arrangeThrottled(null);
-      const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
-    });
-
-    it("deleted alerted scan and no previous scan => no_baseline", async () => {
-      arrangeThrottled(null);
-      mockGetPreviousScanForTheme.mockResolvedValue(null);
-      const { results } = await run();
-      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_baseline" });
-    });
-  });
-
-  describe("live detector types (gc-rvo0)", () => {
-    // OLD/NEW are GHOST_SCRIPT / GHOST_STYLE; APP_EMBED_OFF is the soft-launched type.
-    const EMBED = {
-      ...NEW,
-      findingType: FindingType.APP_EMBED_OFF,
-      filename: "config/settings_data.json",
-      appName: "Embed App",
-    };
-    const without = (...types: string[]) => ALL_TYPES.filter((t) => !types.includes(t));
-
-    it("baseline from before liveFindingTypes existed (null) -> baseline_unversioned, no send", async () => {
-      arrange();
-      mockGetPreviousScanForTheme.mockResolvedValue({
-        ...BASELINE_COVERAGE,
-        id: "prev",
-        findings: [OLD],
-        liveFindingTypes: null,
-      });
-      const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({
-        sent: false,
-        reason: "baseline_unversioned",
-      });
-    });
-
-    it("a malformed baseline value is treated as unversioned (never widens an alert)", async () => {
-      arrange();
-      mockGetPreviousScanForTheme.mockResolvedValue({
-        ...BASELINE_COVERAGE,
-        id: "prev",
-        findings: [OLD],
-        liveFindingTypes: { 0: "GHOST_STYLE" },
-      });
-      const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({
-        sent: false,
-        reason: "baseline_unversioned",
-      });
-    });
-
-    it("flag flip: APP_EMBED_OFF live now but not in the baseline -> excluded, no send when it was the only new finding", async () => {
-      arrange();
-      mockDb.finding.findMany.mockResolvedValue([OLD, EMBED]);
-      mockGetPreviousScanForTheme.mockResolvedValue({
-        ...BASELINE_COVERAGE,
-        id: "prev",
-        findings: [OLD],
-        liveFindingTypes: without(FindingType.APP_EMBED_OFF),
-      });
-      const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
-    });
-
-    it("flag flip with a genuinely new finding of a type live in both: alerts for that one only", async () => {
-      arrange();
-      mockDb.finding.findMany.mockResolvedValue([OLD, NEW, EMBED]);
-      mockGetPreviousScanForTheme.mockResolvedValue({
-        ...BASELINE_COVERAGE,
-        id: "prev",
-        findings: [OLD],
-        liveFindingTypes: without(FindingType.APP_EMBED_OFF),
-      });
-      await run();
-      expect(mockNotify).toHaveBeenCalledTimes(1);
-      expect(mockNotify.mock.calls[0][0].newFindings).toEqual([
-        expect.objectContaining({ findingType: NEW.findingType }),
-      ]);
-    });
-
-    it("a type live in both scans still alerts (no regression)", async () => {
-      arrange();
-      await run();
-      expect(mockNotify).toHaveBeenCalledTimes(1);
-    });
-
-    it("a detector present only in the current enum (absent from the baseline set) is excluded", async () => {
-      arrange();
-      mockGetPreviousScanForTheme.mockResolvedValue({
-        ...BASELINE_COVERAGE,
-        id: "prev",
-        findings: [OLD],
-        liveFindingTypes: without(NEW.findingType),
-      });
-      const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({ sent: false, reason: "no_new_findings" });
-    });
-
-    it("the last-alerted baseline's live set is the one used", async () => {
-      arrange();
-      mockLatestAlert.mockResolvedValue({ scanId: "alerted" });
-      mockGetScanById.mockResolvedValue(alertedScan({ liveFindingTypes: null }));
-      const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({
-        sent: false,
-        reason: "baseline_unversioned",
-      });
-    });
-
-    it("current scan without a recorded live set -> current_unversioned, no send", async () => {
-      arrange();
-      mockDb.scan.findUnique.mockResolvedValue({
-        status: "IN_PROGRESS",
-        origin: "SCHEDULED",
-        createdAt: new Date("2026-06-15T00:00:00Z"),
-        liveFindingTypes: null,
-        startedAt: new Date("2026-06-15T00:00:00Z"),
-        completedAt: new Date("2026-06-15T00:00:05Z"),
-      });
-      const { results } = await run();
-      expect(mockNotify).not.toHaveBeenCalled();
-      expect(results["notify-new-findings"]).toEqual({
-        sent: false,
-        reason: "current_unversioned",
-      });
-    });
+    mockRemovals.mockRejectedValue(new Error("db down"));
+    r = await run();
+    expect(outcome(r.results)).toEqual({ sent: false, reason: "exception" });
+    expect(r.result.status).toBe("COMPLETED");
   });
 
   it("logs the outcome reason without the recipient address", async () => {
-    arrange("SCHEDULED", { alertEmail: "owner@example.com" });
+    arrange();
     const infoSpy = vi.spyOn(logger, "info");
     await run();
-    const call = infoSpy.mock.calls.find((c) => c[0] === "merchant alert outcome");
+    const call = infoSpy.mock.calls.find((c) => c[0] === "summary email outcome");
     expect(call?.[1]).toMatchObject({ sent: true, reason: "sent", scanId: SCAN_ID });
     expect(JSON.stringify(call)).not.toContain("owner@example.com");
   });

@@ -14,7 +14,7 @@ import { canReceiveAlerts } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "../lib/trial-cta";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
-import { setShopAlertsEnabled } from "../models/merchant-alert.server";
+import { setSummaryEmailsEnabled } from "../models/merchant-alert.server";
 import { getShopMetadata } from "../models/shop.server";
 import { getMerchantAlertConfigStatus } from "../services/merchant-alert.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
@@ -94,7 +94,11 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: "Monitoring emails are not included in your plan." };
   }
 
-  await setShopAlertsEnabled(shop.id, value === "true");
+  // Turning it on is the merchant's own opt-in (gc-ol95). While sending is not
+  // configured yet, they are also owed Home's notice before any email goes out.
+  const noticeOwed =
+    !getMerchantAlertConfigStatus().configured && shop.summaryNoticeShownAt === null;
+  await setSummaryEmailsEnabled(shop.id, value === "true", { noticeOwed });
   return { alertsEnabled: value === "true" };
 };
 
