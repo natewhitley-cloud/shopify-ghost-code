@@ -198,6 +198,21 @@ model MerchantAlert {
 // follow-up email are optional (null = left blank). Several rows per shop are
 // allowed. Cascade-deleted with the Shop, and ALSO deleted explicitly in
 // deleteShopData (the email is personal data, so the redact path names it).
+model MerchantFeedback {
+  id           String   @id @default(cuid())
+  shopId       String
+  shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  csat         Int
+  valuable     String?
+  improvement  String?
+  wtp          String?
+  contactEmail String?
+  createdAt    DateTime @default(now())
+
+  @@index([shopId])
+  @@index([createdAt])
+}
+
 // An app no longer active on a theme that left code behind (gc-frda, Rule
 // 1D): it had a live hook (enabled app embed or storefront ScriptTag) on the
 // previous successful scan of the same shop + theme, has none on this scan,
@@ -233,21 +248,6 @@ model AppRemoval {
   // Idempotency: an Inngest retry of the same scan cannot insert twice.
   @@unique([shopId, themeId, appName, detectedScanId])
   @@index([shopId, detectedAt])
-}
-
-model MerchantFeedback {
-  id           String   @id @default(cuid())
-  shopId       String
-  shop         Shop     @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  csat         Int
-  valuable     String?
-  improvement  String?
-  wtp          String?
-  contactEmail String?
-  createdAt    DateTime @default(now())
-
-  @@index([shopId])
-  @@index([createdAt])
 }
 
 model BillingEvent {
