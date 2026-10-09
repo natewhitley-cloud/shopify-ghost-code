@@ -2,7 +2,7 @@
 --
 -- Additive only:
 --   Scan.appSignatureFingerprints  nullable JSONB, no default, no backfill
---                                  (NULL = legacy scan: never used as a
+--   Scan.liveAppHooks              (NULL = legacy scan: never used as a
 --                                  removal baseline).
 --   AppRemoval                     new table + enum, nothing references it.
 --                                  Cascades from Shop, so shop/redact removes
@@ -11,13 +11,15 @@
 -- Manual rollback:
 --   DROP TABLE "AppRemoval";
 --   DROP TYPE "AppRemovalState";
---   ALTER TABLE "Scan" DROP COLUMN "appSignatureFingerprints";
+--   ALTER TABLE "Scan" DROP COLUMN "appSignatureFingerprints",
+--     DROP COLUMN "liveAppHooks";
 
 -- CreateEnum
 CREATE TYPE "AppRemovalState" AS ENUM ('REMOVED', 'CLEANED', 'REINSTALLED');
 
 -- AlterTable
-ALTER TABLE "Scan" ADD COLUMN     "appSignatureFingerprints" JSONB;
+ALTER TABLE "Scan" ADD COLUMN     "appSignatureFingerprints" JSONB,
+ADD COLUMN     "liveAppHooks" JSONB;
 
 -- CreateTable
 CREATE TABLE "AppRemoval" (

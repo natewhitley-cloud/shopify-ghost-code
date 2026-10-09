@@ -194,11 +194,14 @@ model MerchantAlert {
 // follow-up email are optional (null = left blank). Several rows per shop are
 // allowed. Cascade-deleted with the Shop, and ALSO deleted explicitly in
 // deleteShopData (the email is personal data, so the redact path names it).
-// An app inferred as REMOVED from a theme (gc-frda): the previous successful
-// scan of the same shop + theme had no audited finding attributed to it and
-// this scan has at least one (see app/services/app-removal.server.ts for the
-// coverage, signature and ignore guards). Rows are never deleted on reinstall
-// (a removal during testing still counts); later scans move a REMOVED row to
+// An app no longer active on a theme that left code behind (gc-frda, Rule
+// 1D): it had a live hook (enabled app embed or storefront ScriptTag) on the
+// previous successful scan of the same shop + theme, has none on this scan,
+// and this scan still finds its code (see app/services/app-removal.server.ts
+// for the hook, coverage, signature and ignore guards). Merchant meaning: "X
+// is no longer active in your store. It left N items behind." Never a claim
+// that the merchant uninstalled it. Rows are never deleted on reinstall (a
+// removal during testing still counts); later scans move a REMOVED row to
 // CLEANED or REINSTALLED. Holds no personal data; deleted with the Shop row on
 // shop/redact via the cascading FK.
 model AppRemoval {
@@ -335,6 +338,13 @@ model Scan {
   // existing leftover code newly match X is never mistaken for an uninstall.
   // NULL = legacy scan, never recorded: no removal is inferred against it.
   appSignatureFingerprints Json?
+  // App-removal detection (gc-frda): apps with a LIVE HOOK on this scan, as
+  // { embedApps: string[] | null, scriptTagApps: string[] | null }: an enabled
+  // theme app embed, or a storefront ScriptTag. null for a source = not
+  // observed this scan (ScriptTag check dark, unreachable or capped). A
+  // removal needs a hook in the previous scan that is gone in this one.
+  // NULL column = legacy scan: no removal is inferred against it.
+  liveAppHooks      Json?
   findings          Finding[]
   unknownScripts    UnknownScript[]
   scanDomains       ScanDomain[]
@@ -485,8 +495,7 @@ enum AppRemovalState {
   REMOVED
   // A later scan found none of the app's leftover code.
   CLEANED
-  // A later scan found no leftovers AND the app's theme app embed is enabled
-  // again, i.e. the app was reinstalled.
+  // A later scan observed the app's live hook again (embed or ScriptTag).
   REINSTALLED
 }
 

@@ -366,6 +366,8 @@ export async function finalizeScan(
     // { [appName]: signature fingerprint } for app-removal detection (gc-frda);
     // written only when supplied (NULL = never recorded).
     appSignatureFingerprints?: Record<string, string>;
+    // Apps with a live hook per source (gc-frda); written only when supplied.
+    liveAppHooks?: { embedApps: string[] | null; scriptTagApps: string[] | null };
   },
 ): Promise<FinalizeScanResult> {
   const result = await db.scan.updateMany({
@@ -394,6 +396,7 @@ export async function finalizeScan(
       ...(args.appSignatureFingerprints !== undefined
         ? { appSignatureFingerprints: args.appSignatureFingerprints }
         : {}),
+      ...(args.liveAppHooks !== undefined ? { liveAppHooks: args.liveAppHooks } : {}),
     },
   });
 

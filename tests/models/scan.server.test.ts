@@ -1303,6 +1303,17 @@ describe("finalizeScan", () => {
     expect(mockDb.scan.updateMany.mock.calls[1][0].data.liveFindingTypes).toEqual(["GHOST_SCRIPT"]);
   });
 
+  it("writes liveAppHooks only when supplied (gc-frda)", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", FINALIZE_ARGS);
+    expect(mockDb.scan.updateMany.mock.calls[0][0].data).not.toHaveProperty("liveAppHooks");
+
+    const hooks = { embedApps: ["Klaviyo"], scriptTagApps: null };
+    await finalizeScan("scan-1", { ...FINALIZE_ARGS, liveAppHooks: hooks });
+    expect(mockDb.scan.updateMany.mock.calls[1][0].data.liveAppHooks).toEqual(hooks);
+  });
+
   it("writes appSignatureFingerprints only when supplied (gc-frda)", async () => {
     mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
 

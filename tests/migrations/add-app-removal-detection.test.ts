@@ -22,8 +22,11 @@ const CODE = SQL.split("\n")
   .trim();
 
 describe("add_app_removal_detection migration (gc-frda)", () => {
-  it("adds Scan.appSignatureFingerprints as nullable JSONB with no default", () => {
-    expect(CODE).toContain('ALTER TABLE "Scan" ADD COLUMN "appSignatureFingerprints" JSONB;');
+  it("adds Scan.appSignatureFingerprints and Scan.liveAppHooks as nullable JSONB, no default", () => {
+    expect(CODE).toContain(
+      'ALTER TABLE "Scan" ADD COLUMN "appSignatureFingerprints" JSONB, ' +
+        'ADD COLUMN "liveAppHooks" JSONB;',
+    );
   });
 
   it("creates the AppRemovalState enum", () => {
@@ -57,10 +60,12 @@ describe("add_app_removal_detection migration (gc-frda)", () => {
   it("documents a manual rollback", () => {
     expect(SQL).toMatch(/-- Manual rollback:/);
     expect(SQL).toContain('DROP TABLE "AppRemoval"');
+    expect(SQL).toContain('DROP COLUMN "liveAppHooks"');
   });
 
   it("matches the Prisma schema (cascade on the Shop relation)", () => {
     expect(SCHEMA).toMatch(/model Scan \{[\s\S]*?\n\s+appSignatureFingerprints\s+Json\?\n/);
+    expect(SCHEMA).toMatch(/model Scan \{[\s\S]*?\n\s+liveAppHooks\s+Json\?\n/);
     expect(SCHEMA).toMatch(
       /model AppRemoval \{[\s\S]*?shop\s+Shop\s+@relation\(fields: \[shopId\], references: \[id\], onDelete: Cascade\)/,
     );
