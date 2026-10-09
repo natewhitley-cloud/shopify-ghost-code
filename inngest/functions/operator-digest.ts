@@ -19,7 +19,8 @@
  *   A. Business  — installs, plan mix + net change, MRR + net change, scans by
  *      status + per store, findings, signature flywheel, activation, activity,
  *      nudge funnel (24h / 7d), merchant feedback (24h / 7d), journey funnel +
- *      per-shop stage + 7d timeline (gc-dpm.3).
+ *      per-shop stage + 7d timeline (gc-dpm.3), scan starts by page + result
+ *      views (24h / 7d).
  *   B. Ops health — scan runs (derived from A's status map), function/worker/
  *      webhook failures, API errors/warns, browser-side client errors (gc-nn6),
  *      cron dead-man's-switch, an alerting
@@ -1480,6 +1481,215 @@ export function evaluateSnapshotMetrics(
 
 /** Serialization-safe stale-cron summary (Date rendered to an ISO string so no
  * Date crosses the step boundary). */
+// ---------------------------------------------------------------------------
+// Scan starts & result views (24h / 7d)
+//
+// From the Scan telemetry columns: requestedFrom (page a MANUAL scan was
+// started from), shopScanNumber (1 = the shop's first scan) and the per-page
+// first-results-view stamps. shopScanNumber is set on EVERY scan created since
+// the feature shipped, so a null marks a row created before tracking began:
+// those are labelled as such, never counted as "unknown".
+// ---------------------------------------------------------------------------
+
+/** Manual scan starts by page. */
+export interface ScanStartPageCounts {
+  home: number;
+  scanPage: number;
+  unknown: number;
+}
+
+/** First results views by page. */
+export interface ScanViewPageCounts {
+  home: number;
+  scanPage: number;
+}
+
+/** One window's counts (serialization-safe; crosses the Inngest step boundary). */
+export interface ScanStartsViewsCounts {
+  /** MANUAL scans that were the shop's first scan (shopScanNumber 1). */
+  firstScans: ScanStartPageCounts;
+  /** MANUAL scans after the first (shopScanNumber > 1). */
+  rescans: ScanStartPageCounts;
+  /** MANUAL scans created before tracking began (page not recorded). */
+  manualUntracked: number;
+  /** SCHEDULED + AUTO_PUBLISH scans. */
+  automatic: number;
+  /** First results view per page, of first scans / rescans / pre-tracking scans. */
+  viewsFirst: ScanViewPageCounts;
+  viewsRescan: ScanViewPageCounts;
+  viewsUntracked: ScanViewPageCounts;
+  /** Scans whose results have now been viewed on BOTH pages (second view in window). */
+  viewedBoth: number;
+  /** Successful scans completed in the window with no view on either page yet. */
+  completedNotViewed: number;
+  /** Same, but created before tracking began (a pre-tracking view is not recorded). */
+  completedUntracked: number;
+}
+
+export interface ScanStartsViewsDigest {
+  last24h: ScanStartsViewsCounts;
+  last7d: ScanStartsViewsCounts;
+}
+
+/** Scans created in the last 7d. */
+export interface ScanStartRow {
+  shopId: string;
+  origin: string;
+  requestedFrom: string | null;
+  shopScanNumber: number | null;
+  createdAt: Date;
+}
+
+/** Scans with a results-view stamp in the last 7d (on either page). */
+export interface ScanViewRow {
+  id: string;
+  shopId: string;
+  shopScanNumber: number | null;
+  viewedOnHomeAt: Date | null;
+  viewedOnScanPageAt: Date | null;
+}
+
+/** Successful scans completed in the last 7d. */
+export interface ScanCompletedRow {
+  shopId: string;
+  shopScanNumber: number | null;
+  completedAt: Date | null;
+  viewedOnHomeAt: Date | null;
+  viewedOnScanPageAt: Date | null;
+}
+
+function emptyScanStartsViewsCounts(): ScanStartsViewsCounts {
+  return {
+    firstScans: { home: 0, scanPage: 0, unknown: 0 },
+    rescans: { home: 0, scanPage: 0, unknown: 0 },
+    manualUntracked: 0,
+    automatic: 0,
+    viewsFirst: { home: 0, scanPage: 0 },
+    viewsRescan: { home: 0, scanPage: 0 },
+    viewsUntracked: { home: 0, scanPage: 0 },
+    viewedBoth: 0,
+    completedNotViewed: 0,
+    completedUntracked: 0,
+  };
+}
+
+/**
+ * Roll scan telemetry rows up into 24h / 7d counts. Pure (consumes Dates,
+ * emits plain numbers).
+ *
+ * Exclusion: only rows whose shopId is in `allowedShopIds` (the handler's
+ * active, non-excluded installs) count, as defense in depth on top of the
+ * query filter. Windows include their boundary; anything older than 7d is
+ * ignored. A tracked MANUAL row whose page is missing or not one of the known
+ * values counts as "unknown"; a row with no shopScanNumber predates tracking.
+ */
+export function aggregateScanStartsViews(
+  rows: { started: ScanStartRow[]; viewed: ScanViewRow[]; completed: ScanCompletedRow[] },
+  allowedShopIds: Iterable<string>,
+  now: Date,
+): ScanStartsViewsDigest {
+  const allowed = new Set(allowedShopIds);
+  const dayAgo = now.getTime() - DAY_MS;
+  const weekAgo = now.getTime() - 7 * DAY_MS;
+  const out = { last24h: emptyScanStartsViewsCounts(), last7d: emptyScanStartsViewsCounts() };
+  /** The windows a timestamp falls in (none when null or older than 7d). */
+  const windowsOf = (at: Date | null): ScanStartsViewsCounts[] => {
+    if (at === null) return [];
+    const t = at.getTime();
+    if (t < weekAgo) return [];
+    return t >= dayAgo ? [out.last24h, out.last7d] : [out.last7d];
+  };
+
+  for (const r of rows.started) {
+    if (!allowed.has(r.shopId)) continue;
+    for (const w of windowsOf(r.createdAt)) {
+      if (r.origin !== "MANUAL") {
+        w.automatic += 1;
+      } else if (r.shopScanNumber === null) {
+        w.manualUntracked += 1;
+      } else {
+        const bucket = r.shopScanNumber === 1 ? w.firstScans : w.rescans;
+        if (r.requestedFrom === "home") bucket.home += 1;
+        else if (r.requestedFrom === "scan_page") bucket.scanPage += 1;
+        else bucket.unknown += 1;
+      }
+    }
+  }
+
+  // The home and scan-page queries can return the same scan: count it once.
+  const seen = new Set<string>();
+  for (const r of rows.viewed) {
+    if (!allowed.has(r.shopId) || seen.has(r.id)) continue;
+    seen.add(r.id);
+    const pick = (w: ScanStartsViewsCounts) =>
+      r.shopScanNumber === null
+        ? w.viewsUntracked
+        : r.shopScanNumber === 1
+          ? w.viewsFirst
+          : w.viewsRescan;
+    for (const w of windowsOf(r.viewedOnHomeAt)) pick(w).home += 1;
+    for (const w of windowsOf(r.viewedOnScanPageAt)) pick(w).scanPage += 1;
+    if (r.viewedOnHomeAt !== null && r.viewedOnScanPageAt !== null) {
+      const second =
+        r.viewedOnHomeAt > r.viewedOnScanPageAt ? r.viewedOnHomeAt : r.viewedOnScanPageAt;
+      for (const w of windowsOf(second)) w.viewedBoth += 1;
+    }
+  }
+
+  for (const r of rows.completed) {
+    if (!allowed.has(r.shopId)) continue;
+    if (r.viewedOnHomeAt !== null || r.viewedOnScanPageAt !== null) continue;
+    for (const w of windowsOf(r.completedAt)) {
+      if (r.shopScanNumber === null) w.completedUntracked += 1;
+      else w.completedNotViewed += 1;
+    }
+  }
+
+  return out;
+}
+
+/** The SCAN STARTS & RESULT VIEWS section, one string per line. */
+export function formatScanStartsViewsLines(d: ScanStartsViewsDigest | undefined): string[] {
+  const lines = ["SCAN STARTS & RESULT VIEWS (24h / 7d)"];
+  if (!d) {
+    lines.push("  No scan start data");
+    return lines;
+  }
+  const { last24h: a, last7d: b } = d;
+  const pair = (x: number, y: number) => `${x} / ${y}`;
+  const sumStarts = (c: ScanStartPageCounts) => c.home + c.scanPage + c.unknown;
+  const starts = (x: ScanStartPageCounts, y: ScanStartPageCounts) =>
+    `${pair(sumStarts(x), sumStarts(y))} (home ${pair(x.home, y.home)}, scan page ${pair(x.scanPage, y.scanPage)}, unknown ${pair(x.unknown, y.unknown)})`;
+  const views = (x: ScanViewPageCounts, y: ScanViewPageCounts) =>
+    `home ${pair(x.home, y.home)}, scan page ${pair(x.scanPage, y.scanPage)}`;
+
+  lines.push(
+    `  Manual scans started: first ${starts(a.firstScans, b.firstScans)} | rescans ${starts(a.rescans, b.rescans)}`,
+  );
+  if (b.manualUntracked > 0) {
+    lines.push(
+      `  Manual scans created before tracking began (page not recorded): ${pair(a.manualUntracked, b.manualUntracked)}`,
+    );
+  }
+  lines.push(`  Automatic scans (scheduled / theme publish): ${pair(a.automatic, b.automatic)}`);
+  lines.push(
+    `  Results viewed (first view per page): first scans ${views(a.viewsFirst, b.viewsFirst)} | rescans ${views(a.viewsRescan, b.viewsRescan)}`,
+  );
+  if (b.viewsUntracked.home + b.viewsUntracked.scanPage > 0) {
+    lines.push(
+      `  Results viewed on scans created before tracking began: ${views(a.viewsUntracked, b.viewsUntracked)}`,
+    );
+  }
+  lines.push(`  Viewed on both pages: ${pair(a.viewedBoth, b.viewedBoth)}`);
+  lines.push(`  Completed, not viewed yet: ${pair(a.completedNotViewed, b.completedNotViewed)}`);
+  if (b.completedUntracked > 0) {
+    lines.push(
+      `  Completed scans created before tracking began, no view recorded: ${pair(a.completedUntracked, b.completedUntracked)}`,
+    );
+  }
+  return lines;
+}
+
 export interface StaleCronSummary {
   key: string;
   ageMs: number;
@@ -1520,6 +1730,9 @@ export interface OperatorDigestData {
   /** Journey funnel + timeline (gc-dpm.3). Optional so callers/tests that
    * predate it still type-check; absent => rendered as "No journey data". */
   journey?: JourneySummary;
+  /** Scan starts by page + result views (24h / 7d). Optional so callers/tests
+   * that predate it still type-check; absent => rendered as "No scan start data". */
+  scanStartsViews?: ScanStartsViewsDigest;
   ops: {
     functionFailures: number;
     workerFallbacks: number;
@@ -1887,6 +2100,9 @@ export function buildDigestBody(data: OperatorDigestData): string {
       }
     }
   }
+  lines.push("");
+
+  lines.push(...formatScanStartsViewsLines(data.scanStartsViews));
   lines.push("");
 
   // ----- Section B: Operational health -----
@@ -2455,6 +2671,55 @@ export const operatorDigest = inngest.createFunction(
       );
     })) as JourneySummary;
 
+    // Scan starts by page + result views (24h / 7d), over ACTIVE installs (the
+    // same activeShopIds as SCANS: excludes the dev store, isInternal and
+    // uninstalled shops). Four window-bounded reads (starts, Home views, scan
+    // page views, completed); the aggregate returns plain numbers only.
+    const scanStartsViews = (await step.run("get-scan-starts-views", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const now = new Date();
+      const since = { gte: new Date(now.getTime() - 7 * DAY_MS) };
+      const empty = { started: [], viewed: [], completed: [] };
+      if (activeShopIds.length === 0) return aggregateScanStartsViews(empty, [], now);
+      const shopId = { in: activeShopIds };
+      const viewSelect = {
+        id: true,
+        shopId: true,
+        shopScanNumber: true,
+        viewedOnHomeAt: true,
+        viewedOnScanPageAt: true,
+      } as const;
+      const [started, viewedHome, viewedScanPage, completed] = await Promise.all([
+        db.scan.findMany({
+          where: { shopId, createdAt: since },
+          select: {
+            shopId: true,
+            origin: true,
+            requestedFrom: true,
+            shopScanNumber: true,
+            createdAt: true,
+          },
+        }),
+        db.scan.findMany({ where: { shopId, viewedOnHomeAt: since }, select: viewSelect }),
+        db.scan.findMany({ where: { shopId, viewedOnScanPageAt: since }, select: viewSelect }),
+        db.scan.findMany({
+          where: { shopId, completedAt: since, status: { in: [...SUCCESSFUL_SCAN_STATUSES] } },
+          select: {
+            shopId: true,
+            shopScanNumber: true,
+            completedAt: true,
+            viewedOnHomeAt: true,
+            viewedOnScanPageAt: true,
+          },
+        }),
+      ]);
+      return aggregateScanStartsViews(
+        { started, viewed: [...viewedHome, ...viewedScanPage], completed },
+        activeShopIds,
+        now,
+      );
+    })) as ScanStartsViewsDigest;
+
     // BillingEvent breakdown for the window. Excludes dev/test/internal/app-review
     // stores (via the SAME isExcluded predicate as every other metric) so a dev
     // store's test upgrade/downgrade can't leak into the "Billing events" line.
@@ -2615,6 +2880,7 @@ export const operatorDigest = inngest.createFunction(
       nudges,
       feedback,
       journey,
+      scanStartsViews,
       ops: { ...ops, clientErrors },
       anomalies: metricAnomalies.anomalies,
       reconciler,

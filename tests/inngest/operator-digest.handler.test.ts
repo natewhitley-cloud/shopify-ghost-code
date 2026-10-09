@@ -1066,3 +1066,149 @@ describe("operator-digest handler: unique findings, resolution breakdown, distin
     );
   });
 });
+
+describe("operator-digest handler: SCAN STARTS & RESULT VIEWS wiring", () => {
+  const section = (body: string) => {
+    const start = body.indexOf("SCAN STARTS & RESULT VIEWS (24h / 7d)");
+    expect(start).toBeGreaterThan(-1);
+    return body.slice(start, body.indexOf("\n\n", start));
+  };
+
+  beforeEach(() => {
+    const now = Date.now();
+    const ago = (ms: number) => new Date(now - ms);
+    // Base-seed scans predate tracking (as every row did at deploy): manual,
+    // no source, no shop scan number, never stamped.
+    for (const s of tables.scan) {
+      Object.assign(s, {
+        origin: "MANUAL",
+        requestedFrom: null,
+        shopScanNumber: null,
+        viewedOnHomeAt: null,
+        viewedOnScanPageAt: null,
+      });
+    }
+    const tracked = (o: Record<string, unknown>) => ({
+      origin: "MANUAL",
+      requestedFrom: null,
+      shopScanNumber: null,
+      viewedOnHomeAt: null,
+      viewedOnScanPageAt: null,
+      status: "COMPLETED",
+      findingCount: 0,
+      newFindingCount: 0,
+      resolvedFindingCount: 0,
+      skippedCategories: [],
+      cappedCategories: [],
+      unreachableCategories: [],
+      themeId: "theme-t",
+      ...o,
+    });
+    tables.scan.push(
+      // real-a's first scan, from Home, viewed on both pages.
+      tracked({
+        id: "t1",
+        shopId: "shop-a",
+        requestedFrom: "home",
+        shopScanNumber: 1,
+        createdAt: ago(2 * HOUR),
+        completedAt: ago(2 * HOUR),
+        viewedOnHomeAt: ago(HOUR),
+        viewedOnScanPageAt: ago(HOUR),
+      }),
+      // real-b's rescan from the scan page, viewed there (7d window only).
+      tracked({
+        id: "t2",
+        shopId: "shop-b",
+        requestedFrom: "scan_page",
+        shopScanNumber: 3,
+        createdAt: ago(30 * HOUR),
+        completedAt: ago(30 * HOUR),
+        viewedOnScanPageAt: ago(29 * HOUR),
+      }),
+      // real-b's scheduled scan, completed, never viewed.
+      tracked({
+        id: "t3",
+        shopId: "shop-b",
+        origin: "SCHEDULED",
+        shopScanNumber: 2,
+        createdAt: ago(72 * HOUR),
+        completedAt: ago(72 * HOUR),
+      }),
+      // Older than 7d: never counted.
+      tracked({
+        id: "t-old",
+        shopId: "shop-a",
+        requestedFrom: "home",
+        shopScanNumber: 1,
+        createdAt: ago(9 * 24 * HOUR),
+        completedAt: ago(9 * 24 * HOUR),
+      }),
+      // Every excluded store AND the churned real shop: 9 tracked, viewed and
+      // unviewed scans each, which would visibly inflate every line if leaked.
+      ...[...EXCLUDED.map((s) => s.id), "shop-churned", "shop-internal-2"].flatMap((shopId) =>
+        Array.from({ length: 9 }, (_, i) =>
+          tracked({
+            id: `tx-${shopId}-${i}`,
+            shopId,
+            origin: i === 8 ? "SCHEDULED" : "MANUAL",
+            requestedFrom: i % 2 === 0 ? "home" : "unknown",
+            shopScanNumber: i + 1,
+            createdAt: ago(HOUR),
+            completedAt: ago(HOUR),
+            viewedOnHomeAt: i < 4 ? ago(HOUR) : null,
+            viewedOnScanPageAt: i < 2 ? ago(HOUR) : null,
+          }),
+        ),
+      ),
+    );
+  });
+
+  it("counts real active installs only, labels pre-tracking rows, and renders the section", async () => {
+    const body = await runDigest();
+
+    expect(section(body).split("\n")).toEqual([
+      "SCAN STARTS & RESULT VIEWS (24h / 7d)",
+      "  Manual scans started: first 1 / 1 (home 1 / 1, scan page 0 / 0, unknown 0 / 0) | rescans 0 / 1 (home 0 / 0, scan page 0 / 1, unknown 0 / 0)",
+      "  Manual scans created before tracking began (page not recorded): 1 / 1",
+      "  Automatic scans (scheduled / theme publish): 0 / 1",
+      "  Results viewed (first view per page): first scans home 1 / 1, scan page 1 / 1 | rescans home 0 / 0, scan page 0 / 1",
+      "  Viewed on both pages: 1 / 1",
+      "  Completed, not viewed yet: 0 / 1",
+      "  Completed scans created before tracking began, no view recorded: 1 / 1",
+    ]);
+  });
+
+  it("keeps every telemetry query window-bounded and scoped to active installs", async () => {
+    await runDigest();
+
+    const telemetryCalls = fakeDb.scan.findMany.mock.calls
+      .map(([args]) => args as Record<string, Record<string, unknown>>)
+      .filter((args) => args.select && "shopScanNumber" in args.select);
+    // Starts, Home views, scan-page views, completed.
+    expect(telemetryCalls).toHaveLength(4);
+    for (const args of telemetryCalls) {
+      expect((args.where.shopId as { in: string[] }).in.sort()).toEqual(["shop-a", "shop-b"]);
+      const bounded = Object.values(args.where).some(
+        (c) => typeof c === "object" && c !== null && "gte" in c,
+      );
+      expect(bounded).toBe(true);
+    }
+  });
+
+  it("renders an all-zero section (no queries) when there are no active installs", async () => {
+    for (const s of tables.shop) s.uninstalledAt = new Date();
+
+    const body = await runDigest();
+
+    expect(section(body)).toContain(
+      "  Manual scans started: first 0 / 0 (home 0 / 0, scan page 0 / 0, unknown 0 / 0)",
+    );
+    const telemetryCalls = fakeDb.scan.findMany.mock.calls.filter(
+      ([args]) =>
+        (args as { select?: object })?.select &&
+        "shopScanNumber" in (args as { select: object }).select,
+    );
+    expect(telemetryCalls).toHaveLength(0);
+  });
+});
