@@ -1,5 +1,7 @@
 # Spec: Merchant-Facing Monitoring Alerts + Subscription Packaging
 
+> **Superseded in part (gc-ol95, 2026-10-09):** the per-change "new findings" alert below was replaced by ONE summary email per store after each SCHEDULED scan (Professional weekly, Standard monthly, Free never), sent only when something changed and only with consent (Home notice shown or Settings opt-in). Where this spec conflicts, `docs/pricing-and-plans.md` ("Merchant summary emails") and `app/services/summary-email.server.ts` win.
+
 > Restored 2026-10-02 from commit 2874b7a (written on a side branch, never on main). Decision 2026-10-02 (Nathan, option 5A): build the paid-shop alerts below DARK first (MERCHANT_ALERTS_ENABLED off); a one-time Free "locked findings" follow-up email reuses this infra later, after a legal/consent check. Verify every file/line reference against current code: this spec predates many changes.
 
 **Status:** DRAFT

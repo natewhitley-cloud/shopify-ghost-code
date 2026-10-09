@@ -17,7 +17,7 @@
 | Themes                 | 1                                                                                                                                                                               |
 | Auto-rescan on publish | No                                                                                                                                                                              |
 | Scan diffing           | No                                                                                                                                                                              |
-| New-findings alerts    | None (`alertCadence: "none"`; Free has no scheduled rescans)                                                                                                                    |
+| Summary emails         | None (`alertCadence: "none"`; Free has no scheduled rescans)                                                                                                                    |
 | Broken-link detection  | No (dangling-reference / Broken Links audit is Standard+)                                                                                                                       |
 | Optional-scope checks  | Yes when granted (gc-4n0y): product tags, compare-at prices, metafields, structured-data prices, content pages, URL redirects, translations                                     |
 
@@ -58,7 +58,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 | Themes                 | 1                                                |
 | Auto-rescan on publish | No                                               |
 | Scan diffing           | No                                               |
-| New-findings alerts    | Monthly (`alertCadence: "monthly"`, gc-syz)      |
+| Summary emails         | Monthly (`alertCadence: "monthly"`, gc-ol95)     |
 | Broken-link detection  | Yes (dangling references verified via Admin API) |
 
 **Purpose:** The mid-tier workhorse. Merchants get full finding details, 1 manual scan a week and a monthly scheduled scan, enough to stay on top of orphaned code without unlimited manual scans. The monthly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap and the monthly (vs Professional's weekly) scheduled scan create clear daylight between Standard and Professional.
@@ -93,7 +93,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 | Auto-rescan on publish | Yes (instant rescan when a theme is published)   |
 | Weekly scheduled scan  | Yes (Sunday 06:40 UTC, theme changed or not)     |
 | Scan diffing           | Yes (new / resolved / unchanged between scans)   |
-| New-findings alerts    | Weekly (`alertCadence: "weekly"`, gc-syz)        |
+| Summary emails         | Weekly (`alertCadence: "weekly"`, gc-ol95)       |
 | Broken-link detection  | Yes (dangling references verified via Admin API) |
 
 **Purpose:** "Set it and forget it" for multi-theme stores. Continuous monitoring with change tracking.
@@ -108,11 +108,15 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 6. Weekly automatic scans
 7. 7-day free trial
 
-### Merchant new-findings alerts (gc-syz, in progress, not yet sending)
+### Merchant summary emails (gc-ol95, built, DARK: not sending)
 
-Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatures.alertCadence` (`app/lib/billing.server.ts`) is `none` (Free), `monthly` (Standard) or `weekly` (Professional), matching each plan's scheduled-scan cadence (Free has no rescans, so nothing to alert on; gc-iefo, 2026-10-09: was Standard weekly, Professional daily). `canReceiveAlerts(plan)` and `getAlertWindowMs(plan)` (`app/lib/plan-gating.server.ts`) are the single source for the gate and the throttle window (weekly 7 days, monthly 28 days = the shortest gap between two runs on the 1st, none null; the sender throttles only inside 90% of the window, so scheduler jitter never blocks the next scan's email). Any plan name that is not Standard or Professional resolves to Free (`none`). The owner email comes from Admin `shop { email }` (no extra scope) cached on `Shop.alertEmail`; opt-out is `Shop.alertsEnabled`; sends are recorded in the `MerchantAlert` ledger. All of it is deleted on shop/redact. The email sender and scan-job step are not built yet, so no merchant receives alerts today.
+One plain-text SUMMARY email per store after each SCHEDULED scan: Professional weekly, Standard monthly, Free never (`PlanFeatures.alertCadence` in `app/lib/billing.server.ts`: `none` / `monthly` / `weekly`, matching each plan's scheduled-scan cadence, gc-iefo). Manual and auto-publish scans never send. It replaced the per-change "new findings" alert (gc-syz.5): merchants test many apps, so per-change mail would be spam. `canReceiveAlerts(plan)` and `getAlertWindowMs(plan)` (`app/lib/plan-gating.server.ts`) are the gate and the throttle window (weekly 7 days, monthly 28 days; at most one summary per window, throttled only inside 90% of it so scheduler jitter never blocks the next one). Any plan name that is not Standard or Professional resolves to Free.
 
----
+**Nothing changed = no email.** "Changed" since the last summary sent to the shop = new findings, fixed findings, an app newly no longer active (AppRemoval REMOVED on a scan since then) or an app's leftovers newly cleaned up (CLEANED since then); an app that went inactive and came back (REINSTALLED) is omitted. The finding diff uses the in-app diff's guards (ignores, `scanDiffOptions` coverage, `restrictToLiveInBoth`), so a permission grant or a newly live detector is never "new". Baseline = the scan the last summary covered (ledger), else the theme's previous scan. The same information is never sent twice.
+
+**Consent: nobody gets an email without knowing it is on.** Sendable only if the plan is Standard/Professional AND `Shop.alertsEnabled` AND (`summaryNoticeShownAt` OR `summaryOptedInAt`) AND not uninstalled AND an owner email is known AND the sender is configured. A Free -> paid move (trial included) after this shipped sets `summaryNoticePendingAt` (billing reconciler); the next paid Home load (once sending is configured) shows "Summary emails are on" once and stamps `summaryNoticeShownAt`. Turning the Settings toggle on records `summaryOptedInAt` (and, while sending is dark, also owes the Home notice). Shops paid before this shipped (e.g. paw-naturals) get no notice and no email unless they opt in; no consent field is backfilled. The Settings checkbox shows "on" only when consent allows sending.
+
+Content: counts and app names only (never code snippets, file names, customer data, upsell, or a "removed"/"uninstalled" claim), with an unsubscribe link and the sender's identity and postal address. Ledger: one `MerchantAlert` row per summary (unique per shop + scan; new/fixed/inactive/cleaned counts). Owner email from Admin `shop { email }` (no extra scope) cached on `Shop.alertEmail`. All of it is deleted on shop/redact. DARK until `MERCHANT_ALERTS_ENABLED`, `RESEND_API_KEY`, `MERCHANT_ALERT_FROM` and `MERCHANT_EMAIL_POSTAL_ADDRESS` are all set (none are in prod); until then Settings says "Summary emails are coming soon".
 
 ## Downgrade & Cancellation
 
@@ -161,6 +165,7 @@ Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatu
 | `app/lib/plan-gating.server.ts`                    | Gating functions (canStartScan, canViewFindingDetails, etc.) |
 | `app/shopify.server.ts`                            | Billing config with Shopify (prices, trial days)             |
 | `app/routes/app.settings.tsx`                      | Settings UI with upgrade buttons                             |
+| `app/services/summary-email.server.ts`             | Summary email: consent gates, changes, copy, send (gc-ol95)  |
 | `app/routes/webhooks.app.subscriptions.update.tsx` | Webhook handler for plan changes                             |
 | `app/models/billing-event.server.ts`               | BillingEvent recording and query functions                   |
 | `tests/lib/plan-gating.server.test.ts`             | Comprehensive gating tests                                   |
@@ -219,3 +224,4 @@ Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatu
 | 2026-10-09 | Apps no longer active: Free sees the full Home banner; the app view scopes the Free preview to that app (gc-frda, 4A) | The banner is the core promise at the moment it matters, so it is never paywalled. The items stay behind the Free preview gate: the `?app=` view runs the existing preview formula and teaser over that app's findings only. Malicious findings stay always visible. |
 | 2026-10-09 | Scheduled scans: Professional **weekly** (was daily), Standard **monthly** (was weekly), Free none; they run whether or not the theme changed; alert cadence follows (gc-iefo) | Daily was too much for what a scheduled scan adds on Professional, which already gets an instant rescan on every theme publish; weekly plus the publish rescan keeps it "set and forget". Standard moves to monthly to widen the gap to Professional (Standard keeps its 1 manual scan/week). The old poll-check-shop skipped any shop whose theme had not changed since its last scan, so the scheduled scans mostly never ran (paw-naturals, Professional: no scan 2026-10-05 to 2026-10-09); leftovers that do not touch theme files (product metafields, tags, pages, redirects) and app removals (gc-frda: an app's embed or ScriptTag disappearing) were never seen. The skip is removed: every scheduled run scans. Code: weekly-scan now targets Professional; new monthly-scan (Standard, 1st 07:20 UTC); poll-theme-changes keeps its id and daily cron as the stale-scan sweep only; `alertCadence` gains `monthly` and drops `daily`; heartbeat expectation for monthly-scan is 31 days. Partner Dashboard plan cards and the listing must be updated by hand (Standard bullet 5, Professional bullet 6). |
 | 2026-10-09 | The 0-100 Theme Health Score is gone from every merchant surface (gc-k2ub) | It floored at 0 on real themes and read as ambiguous; afe0b88 (2026-09-07) dropped it from the Home hero, and this finishes the job: the scan page tile, the PDF and JSON exports, Home's "Theme Health" heading (now "Findings") and copy that referred to it. Standard's feature row is now "Findings trend" (count over time + change between scans), matching the live listing. `app/lib/health-score.ts` is deleted. |
+| 2026-10-09 | Merchant email = one SUMMARY after each scheduled scan (Professional weekly, Standard monthly, Free none); nothing changed = no email; consent required (gc-ol95) | Per-change alerts would be spam for merchants who test many apps. The summary reports only what changed since the last one (new/fixed findings, apps no longer active, leftovers cleaned up) and is skipped when nothing did, so the same information is never sent twice. Consent: a shop must have seen Home's "Summary emails are on" notice (owed after a Free -> paid move, trial included) or opted in itself in Settings; shops paid before this shipped are never backfilled and get nothing until they opt in. Built dark (sending domain gc-syz.8 not done). |
