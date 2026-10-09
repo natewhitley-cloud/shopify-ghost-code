@@ -15,8 +15,14 @@
  * SSRF safety: the only URL ever requested is `https://<primaryDomain host>/`
  * from the Admin API (never a URL from theme content). Redirects are followed
  * manually, at most MAX_REDIRECTS, and only to the primary domain host or the
- * shop's myshopify host; anything else is unreachable. One request chain per
- * scan, homepage only, 10 s total budget, 5 MB body cap.
+ * shop's myshopify host; anything else is unreachable. A well-formed https
+ * redirect to any other hostname (often a market domain the shop owns, e.g.
+ * example.ca) is `redirect_other_domain`; a malformed one (http, credentials,
+ * port, IP literal, no Location) is `redirect_refused`. The shop's other
+ * domains are not added to the allowlist: `shop.domains` is deprecated in the
+ * app's API version (2026-07, "Use `domainsPaginated` instead", which exists
+ * only in `unstable`) and `webPresences` needs the read_markets scope.
+ * One request chain per scan, homepage only, 10 s total budget, 5 MB body cap.
  *
  * Network safety (DNS rebinding): requests go through an undici Agent whose
  * `connect.lookup` resolves the hostname and refuses to connect when ANY
@@ -51,6 +57,7 @@ export type StorefrontUnreachableReason =
   | "password"
   | "http_status"
   | "redirect_refused"
+  | "redirect_other_domain"
   | "too_many_redirects"
   | "timeout"
   | "too_large"
@@ -72,8 +79,22 @@ export type StorefrontScriptTagResult =
 // Parser (pure)
 // ---------------------------------------------------------------------------
 
-const ASYNC_LOAD_RE = /function\s+asyncLoad\s*\(\s*\)\s*\{/;
+const ASYNC_LOAD_RE = /function\s+asyncLoad\s*\(\s*\)\s*\{/g;
 const URLS_DECL_RE = /var\s+urls\s*=\s*\[/;
+/**
+ * How Shopify's block hooks asyncLoad to page load:
+ * `window.attachEvent('onload', asyncLoad)` / `window.addEventListener('load', asyncLoad, false)`.
+ */
+const ASYNC_LOAD_WIRING_RE =
+  /\b(?:attachEvent\s*\(\s*(["'])onload\1|addEventListener\s*\(\s*(["'])load\2)\s*,\s*asyncLoad\s*[,)]/;
+/**
+ * At most this many `function asyncLoad()` candidates are examined (a real page
+ * has 1). Each costs a scan to its `</script>`, so the cap keeps a page full of
+ * lookalikes linear; past it the page reads as unreadable (null), never zero.
+ */
+export const MAX_ASYNC_LOAD_CANDIDATES = 10;
+/** Every real Shopify storefront sets `Shopify.shop = "x.myshopify.com";`. */
+const SHOPIFY_SHOP_RE = /Shopify\.shop\s*=/;
 
 /**
  * Index just past the `]` that closes the array literal starting at `start`
@@ -115,13 +136,36 @@ function closeOfArrayLiteral(text: string, start: number): number {
  * before that script's closing `</script>`. Themes and other apps can declare
  * their own `var urls = [...]` elsewhere on the page; those are ignored, so a
  * page whose only `var urls` is outside asyncLoad reads as zero ScriptTags.
+ *
+ * Which `function asyncLoad()` (themes can ship lookalikes): a candidate is
+ * WIRED when its script (up to `</script>`) hooks asyncLoad to window load the
+ * way Shopify's block does (ASYNC_LOAD_WIRING_RE). The block read is the first
+ * wired candidate after the `Shopify.shop =` marker (content_for_header sets
+ * the marker before it renders the block); failing that, the first wired
+ * candidate anywhere. Candidates exist but none is wired: a format we do not
+ * understand, so null (never zero, and never a theme's URLs). Only the first
+ * MAX_ASYNC_LOAD_CANDIDATES are examined.
  */
 export function parseScriptTagUrls(html: string): string[] | null {
-  const asyncLoad = ASYNC_LOAD_RE.exec(html);
-  if (!asyncLoad) return [];
-  const bodyStart = asyncLoad.index + asyncLoad[0].length;
-  const scriptEnd = html.indexOf("</script>", bodyStart);
-  const body = html.slice(bodyStart, scriptEnd === -1 ? html.length : scriptEnd);
+  const marker = html.search(SHOPIFY_SHOP_RE);
+  let candidates = 0;
+  let firstWired: string | null = null;
+  let chosen: string | null = null;
+  for (const match of html.matchAll(ASYNC_LOAD_RE)) {
+    if (++candidates > MAX_ASYNC_LOAD_CANDIDATES) break;
+    const bodyStart = match.index + match[0].length;
+    const scriptEnd = html.indexOf("</script>", bodyStart);
+    const body = html.slice(bodyStart, scriptEnd === -1 ? html.length : scriptEnd);
+    if (!ASYNC_LOAD_WIRING_RE.test(body)) continue;
+    firstWired ??= body;
+    if (marker !== -1 && match.index > marker) {
+      chosen = body;
+      break;
+    }
+  }
+  if (candidates === 0) return [];
+  const body = chosen ?? firstWired;
+  if (body === null) return null;
 
   const decl = URLS_DECL_RE.exec(body);
   // Shopify's asyncLoad always declares its urls; an asyncLoad without one is
@@ -143,12 +187,23 @@ export function parseScriptTagUrls(html: string): string[] | null {
 
 /** A real Shopify storefront always sets `Shopify.shop = "x.myshopify.com";`. */
 export function isShopifyStorefrontHtml(html: string): boolean {
-  return /Shopify\.shop\s*=/.test(html);
+  return SHOPIFY_SHOP_RE.test(html);
 }
 
-/** Shopify's password page carries a `template-password` body class. */
+/**
+ * A `<form>` tag that posts to exactly `/password` (or `/password/`), with any
+ * quoting, case, or whitespace. Customer-account forms post to `/account/...`,
+ * so they never match; nor do `data-action` or a mere link to /password.
+ */
+const PASSWORD_FORM_RE =
+  /<form\b[^>]*?\saction\s*=\s*(?:"\/password\/?"|'\/password\/?'|\/password\/?(?=[\s>]))/i;
+
+/**
+ * Shopify's password page: a `template-password` body class, or (when a theme
+ * drops that class) the storefront password form posting to `/password`.
+ */
 function isPasswordPageHtml(html: string): boolean {
-  return /\btemplate-password\b/.test(html);
+  return /\btemplate-password\b/.test(html) || PASSWORD_FORM_RE.test(html);
 }
 
 // ---------------------------------------------------------------------------
@@ -469,9 +524,13 @@ export async function fetchStorefrontScriptTags(
         next.username ||
         next.password ||
         next.port ||
-        !allowedHosts.has(next.hostname.toLowerCase())
+        !isBareHostname(next.hostname)
       ) {
         return unreachable("redirect_refused", shopId, domains.primaryHost);
+      }
+      if (!allowedHosts.has(next.hostname.toLowerCase())) {
+        // Well-formed, but not a host this scan may read (see the file header).
+        return unreachable("redirect_other_domain", shopId, domains.primaryHost);
       }
       url = next;
     }

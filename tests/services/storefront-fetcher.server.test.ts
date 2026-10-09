@@ -10,6 +10,7 @@ import {
   isBareHostname,
   isBlockedAddress,
   isShopifyStorefrontHtml,
+  MAX_ASYNC_LOAD_CANDIDATES,
   parseScriptTagUrls,
   STOREFRONT_MAX_BODY_BYTES,
   type StorefrontFetch,
@@ -58,8 +59,16 @@ function page(body: string): string {
   return `<!doctype html><html><head>${SHOPIFY_MARKERS}${body}</head><body class="template-index"></body></html>`;
 }
 
-function asyncLoadWith(arrayLiteral: string): string {
-  return `<script>(function() { function asyncLoad() { var urls = ${arrayLiteral}; }; })();</script>`;
+// Shopify's wiring: the real block always hooks asyncLoad to window load.
+const WIRING = `if(window.attachEvent) { window.attachEvent('onload', asyncLoad); } else { window.addEventListener('load', asyncLoad, false); }`;
+
+function asyncLoadWith(arrayLiteral: string, wiring: string = WIRING): string {
+  return `<script>(function() { function asyncLoad() { var urls = ${arrayLiteral}; }; ${wiring} })();</script>`;
+}
+
+/** A page with `before` ahead of the Shopify.shop marker and `after` behind it. */
+function pageAround(before: string, after: string): string {
+  return `<!doctype html><html><head>${before}${SHOPIFY_MARKERS}${after}</head><body></body></html>`;
 }
 
 // ---------------------------------------------------------------------------
@@ -99,7 +108,9 @@ describe("parseScriptTagUrls", () => {
 
   it("returns null when the array never closes", () => {
     expect(
-      parseScriptTagUrls(page(`<script>function asyncLoad() { var urls = ["https://a.js"`)),
+      parseScriptTagUrls(
+        page(`<script>function asyncLoad() { ${WIRING} var urls = ["https://a.js"`),
+      ),
     ).toBeNull();
   });
 
@@ -111,6 +122,11 @@ describe("parseScriptTagUrls", () => {
   it("returns null when asyncLoad has no urls declaration (unknown format, never zero)", () => {
     expect(
       parseScriptTagUrls(page("<script>function asyncLoad() { doSomething(); }</script>")),
+    ).toBeNull();
+    expect(
+      parseScriptTagUrls(
+        page(`<script>function asyncLoad() { doSomething(); }; ${WIRING}</script>`),
+      ),
     ).toBeNull();
   });
 
@@ -141,6 +157,89 @@ describe("parseScriptTagUrls", () => {
       `<script>function asyncLoad() { noop(); }</script><script>var urls = ["https://other.js"];</script>`,
     );
     expect(parseScriptTagUrls(html)).toBeNull();
+  });
+
+  describe("choosing Shopify's block among lookalikes (gc-ux0y)", () => {
+    const LOOKALIKE = asyncLoadWith('["https://theme-lookalike.example.com/a.js"]');
+    const REAL = asyncLoadWith('["https://scripttag.example.com/b.js"]');
+
+    it("takes the wired block after the Shopify.shop marker over a wired lookalike before it", () => {
+      expect(parseScriptTagUrls(pageAround(LOOKALIKE, REAL))).toEqual([
+        "https://scripttag.example.com/b.js",
+      ]);
+    });
+
+    it("takes the first wired block after the marker over a wired lookalike after it", () => {
+      expect(parseScriptTagUrls(pageAround("", `${REAL}${LOOKALIKE}`))).toEqual([
+        "https://scripttag.example.com/b.js",
+      ]);
+    });
+
+    it("skips an unwired lookalike that comes first after the marker", () => {
+      const unwired = asyncLoadWith('["https://theme-lookalike.example.com/a.js"]', "");
+      expect(parseScriptTagUrls(pageAround("", `${unwired}${REAL}`))).toEqual([
+        "https://scripttag.example.com/b.js",
+      ]);
+    });
+
+    it("skips a lookalike wired to a different function or event", () => {
+      const otherFn = asyncLoadWith(
+        '["https://theme-lookalike.example.com/a.js"]',
+        "window.addEventListener('load', asyncLoadLater, false);",
+      );
+      const otherEvent = asyncLoadWith(
+        '["https://theme-lookalike.example.com/a.js"]',
+        "window.addEventListener('scroll', asyncLoad, false);",
+      );
+      expect(parseScriptTagUrls(pageAround("", `${otherFn}${otherEvent}${REAL}`))).toEqual([
+        "https://scripttag.example.com/b.js",
+      ]);
+    });
+
+    it("accepts the attachEvent-only and double-quoted wiring forms", () => {
+      for (const wiring of [
+        "window.attachEvent('onload', asyncLoad);",
+        'window.addEventListener("load", asyncLoad, false);',
+        "window.addEventListener( 'load' ,asyncLoad,false);",
+      ]) {
+        expect(
+          parseScriptTagUrls(page(asyncLoadWith('["https://a.example.com/x.js"]', wiring))),
+        ).toEqual(["https://a.example.com/x.js"]);
+      }
+    });
+
+    it("falls back to a wired block before the marker when none comes after it", () => {
+      expect(parseScriptTagUrls(pageAround(REAL, ""))).toEqual([
+        "https://scripttag.example.com/b.js",
+      ]);
+    });
+
+    it("returns null (never zero, never the theme's URLs) when no asyncLoad is wired", () => {
+      const unwired = asyncLoadWith('["https://theme-lookalike.example.com/a.js"]', "");
+      expect(parseScriptTagUrls(page(unwired))).toBeNull();
+    });
+
+    it(`examines at most ${MAX_ASYNC_LOAD_CANDIDATES} candidates, then reads as unreadable`, () => {
+      expect(MAX_ASYNC_LOAD_CANDIDATES).toBe(10);
+      const unwired = asyncLoadWith('["https://theme-lookalike.example.com/a.js"]', "");
+      const within = unwired.repeat(MAX_ASYNC_LOAD_CANDIDATES - 1);
+      expect(parseScriptTagUrls(pageAround("", `${within}${REAL}`))).toEqual([
+        "https://scripttag.example.com/b.js",
+      ]);
+      const past = unwired.repeat(MAX_ASYNC_LOAD_CANDIDATES);
+      expect(parseScriptTagUrls(pageAround("", `${past}${REAL}`))).toBeNull();
+    });
+
+    it("stays fast on a page of unterminated lookalikes", () => {
+      const hostile = pageAround("", "<script>function asyncLoad() {".repeat(50_000));
+      const started = Date.now();
+      expect(parseScriptTagUrls(hostile)).toBeNull();
+      expect(Date.now() - started).toBeLessThan(1000);
+    });
+
+    it("parses the real pawnaturals block placed after a wired lookalike", () => {
+      expect(parseScriptTagUrls(pageAround(LOOKALIKE, REAL_BLOCK))).toHaveLength(5);
+    });
   });
 
   it("reads a page whose only `var urls` is outside asyncLoad as zero", () => {
@@ -347,6 +446,43 @@ describe("fetchStorefrontScriptTags", () => {
       expect(await run()).toEqual({ status: "unreachable", reason: "password" });
     });
 
+    describe("password page by its form (served at /, no template class)", () => {
+      // The live markers (verified on 2 password-protected stores, 2026-10-08):
+      // form action="/password", id="password" and name="password" inputs.
+      const passwordPage = (form: string) =>
+        html(
+          `<html><head>${SHOPIFY_MARKERS}</head><body class="password-page">${form}<input type="password" name="password" id="password"></form></body></html>`,
+        );
+
+      it.each([
+        ['<form method="post" action="/password" id="login_form" accept-charset="UTF-8">'],
+        ["<form method='post' action='/password'>"],
+        ['<form method="post"\n      action = "/password"\n>'],
+        ['<FORM METHOD="post" ACTION="/password">'],
+        ["<form action=/password method=post>"],
+        ['<form action="/password/">'],
+      ])("detects %s", async (form) => {
+        fetchImpl.mockResolvedValue(passwordPage(form));
+        expect(await run()).toEqual({ status: "unreachable", reason: "password" });
+      });
+
+      it.each([
+        // The customer-account login form on a normal storefront.
+        [
+          '<form method="post" action="/account/login" id="customer_login"><input type="password" name="customer[password]" id="CustomerPassword"></form>',
+        ],
+        ['<form method="post" action="/account/password">'],
+        ['<form method="post" action="/password-reset">'],
+        ['<form method="post" action="/passwords">'],
+        ['<form data-action="/password" action="/cart">'],
+        ['<a href="/password">Store password</a>'],
+        ['<form action="/search">Forgot your password? action="/password"</form>'],
+      ])("does not flag a normal storefront with %s", async (markup) => {
+        fetchImpl.mockResolvedValue(html(page(`${REAL_BLOCK}</head><body>${markup}`)));
+        expect((await run()).status).toBe("ok");
+      });
+    });
+
     it("password page by body class", async () => {
       fetchImpl.mockResolvedValue(
         html(
@@ -434,7 +570,20 @@ describe("fetchStorefrontScriptTags", () => {
       ["a foreign host", "https://evil.example.com/"],
       ["a lookalike subdomain", `https://${PRIMARY}.evil.com/`],
       ["a subdomain of the primary host", `https://shop.${PRIMARY}/`],
+      ["a market domain the shop may own", "https://pawnaturals.ca/"],
+    ])("refuses a redirect to %s as redirect_other_domain", async (_label, location) => {
+      fetchImpl.mockResolvedValueOnce(redirect(location));
+      expect(await run()).toEqual({ status: "unreachable", reason: "redirect_other_domain" });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      const logged = JSON.stringify((logger.info as ReturnType<typeof vi.fn>).mock.calls);
+      expect(logged).toContain('"reason":"redirect_other_domain"');
+    });
+
+    it.each([
       ["plain http", `http://${PRIMARY}/`],
+      ["plain http to another domain", "http://evil.example.com/"],
+      ["an IP-literal host", "https://23.227.38.65/"],
+      ["a non-default port on another domain", "https://evil.example.com:8443/"],
       ["an internal address", "https://169.254.169.254/latest/meta-data"],
       ["credentials in the URL", `https://user:pass@${PRIMARY}/`],
       ["a non-default port", `https://${PRIMARY}:8443/`],

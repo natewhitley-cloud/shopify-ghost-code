@@ -3863,7 +3863,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     const block =
       urls === null
         ? ""
-        : `<script>(function() {\n  var isLoaded = false;\n  function asyncLoad() {\n    if (isLoaded) return;\n    isLoaded = true;\n    var urls = ${JSON.stringify(urls).replace(/\//g, "\\/")};\n    for (var i = 0; i < urls.length; i++) {}\n  };\n})();</script>`;
+        : `<script>(function() {\n  var isLoaded = false;\n  function asyncLoad() {\n    if (isLoaded) return;\n    isLoaded = true;\n    var urls = ${JSON.stringify(urls).replace(/\//g, "\\/")};\n    for (var i = 0; i < urls.length; i++) {}\n  };\n  if(window.attachEvent) { window.attachEvent('onload', asyncLoad); } else { window.addEventListener('load', asyncLoad, false); }\n})();</script>`;
     return `<html><head><script>var Shopify = Shopify || {};\nShopify.shop = "${MYSHOPIFY}";</script>${block}</head><body></body></html>`;
   }
 
