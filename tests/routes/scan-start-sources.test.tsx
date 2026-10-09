@@ -113,6 +113,7 @@ const HOME_BASE = {
   startHere: null,
   dominant: null,
   findingTrend: null,
+  topFindings: [],
 };
 
 function renderHome(loaderData: unknown) {
@@ -234,6 +235,7 @@ const SCAN_PAGE_DATA = {
   findings: [],
   findingsPagination: { hasNextPage: false, nextCursor: null },
   previewFindings: [],
+  topFindings: [],
   upgradeReturn: null,
   upgradePreview: null,
   teaserCta: true,

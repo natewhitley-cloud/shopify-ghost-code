@@ -6,6 +6,7 @@ import { Link, useFetcher, useLoaderData } from "react-router";
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
 import { ScanProgress } from "../components/ScanProgress";
+import { TopFindings } from "../components/TopFindings";
 import {
   adminResourceLinkLabel,
   adminResourceLocatorLabel,
@@ -47,6 +48,7 @@ import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-reque
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import { staleResultsUpgradeAsk } from "../lib/stale-results";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
+import { findingAnchorId, toTopFindingViews } from "../lib/top-findings";
 import { upgradeCtaLabel } from "../lib/trial-cta";
 import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
 import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
@@ -89,6 +91,7 @@ import { fingerprintFinding } from "../services/scan-differ.server";
 import type { ScanDiff } from "../services/scan-differ.server";
 import { loadStaleResults } from "../services/stale-results.server";
 import type { StaleResults } from "../services/stale-results.server";
+import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { recordUpgradePreviewStageOnce } from "../services/upgrade-preview-nudge.server";
 import { dismissUpgradeReturn, markUpgradeReturnShown } from "../services/upgrade-return.server";
@@ -633,12 +636,19 @@ export function FindingRow({
   scanId,
   shopDomain,
   themeId,
+  anchor,
 }: {
   finding: FindingLike;
   isNew?: boolean;
   scanId?: string;
   shopDomain?: string;
   themeId?: string | null;
+  /**
+   * gc-bn0x: give the row its `finding-{id}` DOM id, the target of the
+   * "Start here" links. Set on exactly one rendering of a finding per page
+   * (a malicious finding is anchored in the security alert, not the list).
+   */
+  anchor?: boolean;
 }) {
   const isVisual = finding.isVisual ?? hasVisualImpact(finding.findingType);
   const confidence = getFindingConfidence(finding.findingType);
@@ -662,7 +672,7 @@ export function FindingRow({
       ? buildAdminResourceUrl(shopDomain, finding.findingType, finding.filename)
       : null;
   return (
-    <tr>
+    <tr id={anchor && finding.id ? findingAnchorId(finding.id) : undefined}>
       <td>
         <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
           <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
@@ -896,7 +906,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   //     BillingEvent read, Free only, skipped once everPaidAt is set); then the
   //     Free preview read, which reuses the summary's full findings read for a
   //     shop with ignores (never a second full read), and at most the prompt /
-  //     telemetry claims.
+  //     telemetry claims. The unfiltered view adds the "Start here" read
+  //     (gc-bn0x): nothing on Free; on a full-list plan nothing with ignores,
+  //     else one groupBy plus a few `take <= 3` reads.
   //   getFilteredFindingSummaryAndKept fast-paths to the lean groupBy when this
   //   shop has no ignores, so the common case is unchanged.
   const now = new Date();
@@ -995,6 +1007,26 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     ...f,
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
+
+  // "Start here" block (gc-bn0x): the scan's top 3 findings, on the
+  // unfiltered results view of a successful scan only (a filtered list is
+  // already narrowed, and the block's own links filter by type). Free ranks
+  // ONLY the preview rows and the non-ignored malicious rows, both already
+  // loaded above and both shown in full on Free, so it adds no query and can
+  // never surface a hidden finding. Full-list plans rank the whole scan: no
+  // query for a shop with ignores (the summary's kept rows), else one
+  // (type, severity) groupBy plus at most a few `take <= 3` reads.
+  const unfiltered = !severity && !findingType && !appName && !lane;
+  const topFindingRows =
+    scanSuccessful && unfiltered
+      ? canViewDetails
+        ? await getFullListTopFindings(scanId, keptFindings)
+        : await getFreeTopFindings(scanId, findingSummary.byType, keptFindings, {
+            preview: rawPreviewFindings,
+            malicious: enrichedMaliciousFindings.filter((f) => !f.isIgnored),
+          })
+      : [];
+  const topFindings = toTopFindingViews(scanId, topFindingRows, canViewDetails);
 
   // Free-tier hidden-findings breakdown (gc-97k.4): per-lane counts of the
   // findings hidden behind the paywall, from the summary's existing groupBy
@@ -1134,6 +1166,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       nextCursor: findingsPage.nextCursor,
     },
     previewFindings,
+    // gc-bn0x: the "Start here" rows (empty on a filtered view or no findings).
+    topFindings,
     // Exactly one of these is non-null when the page has hidden findings: the
     // return-visit banner (gc-97k.9) or the inline teaser (gc-97k.4).
     upgradeReturn: showUpgradeReturn ? hiddenBreakdown : null,
@@ -1393,6 +1427,7 @@ export default function ScanDetail() {
     findings,
     findingsPagination,
     previewFindings,
+    topFindings,
     upgradeReturn,
     upgradePreview,
     teaserCta,
@@ -1854,6 +1889,7 @@ export default function ScanDetail() {
                     finding={f}
                     shopDomain={shopDomain}
                     themeId={scan.themeId}
+                    anchor
                   />
                 ))}
               </FindingsTable>
@@ -2103,6 +2139,10 @@ export default function ScanDetail() {
           unreachableCategories={scan.unreachableCategories}
         />
 
+        {/* "Start here" (gc-bn0x): the top 3 findings and what each costs, above
+          the lists. Empty (renders nothing) on a filtered view or a clean scan. */}
+        {isCompleted && <TopFindings findings={topFindings} />}
+
         {/* Lane-context banner — shown when the merchant arrived via a dashboard
           consequence-lane deep link (`?lane=`). Rendered ABOVE the paid/free
           split so free-tier merchants (who land on the upgrade preview) still
@@ -2335,6 +2375,7 @@ export default function ScanDetail() {
                             scanId={scan.id}
                             shopDomain={shopDomain}
                             themeId={scan.themeId}
+                            anchor={finding.findingType !== "MALICIOUS_SCRIPT"}
                             isNew={newFindingKeys.has(
                               `${finding.findingType}|${finding.filename}|${finding.severity}|${finding.appName ?? ""}`,
                             )}
@@ -2395,6 +2436,7 @@ export default function ScanDetail() {
                         finding={finding}
                         shopDomain={shopDomain}
                         themeId={scan.themeId}
+                        anchor
                       />
                     ))}
                   </FindingsTable>

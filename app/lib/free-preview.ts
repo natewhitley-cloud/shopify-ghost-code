@@ -10,10 +10,10 @@
  * full on every plan by the scan page's security alert, so they are neither
  * counted in the formula's total nor ever picked as a preview row here.
  */
-import type { FindingType, Severity } from "@prisma/client";
-
 import { LANES, laneForType } from "./finding-consequence";
 import type { LaneKey } from "./finding-consequence";
+import { compareFindingImportance } from "./top-findings";
+import type { RankableFinding } from "./top-findings";
 
 /** Most full findings a Free shop sees. */
 export const FREE_PREVIEW_MAX = 5;
@@ -40,27 +40,21 @@ export function freePreviewHiddenCount(total: number): number {
 }
 
 /** The fields the picker reads; loader rows carry more and are returned as-is. */
-export type PreviewCandidate = {
-  id: string;
-  severity: Severity;
-  findingType: FindingType;
-  createdAt: Date;
-};
-
-const SEVERITY_RANK: Record<Severity, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
+export type PreviewCandidate = RankableFinding;
 
 /**
- * Deterministic total order: severity (HIGH first), then createdAt (oldest
- * first), then id. Ids are unique, so no two distinct rows compare equal.
- * Matches the DB read's ORDER BY (severity, createdAt, id).
+ * The picker's order is the shared "Start here" importance ranking
+ * (gc-bn0x, app/lib/top-findings.ts): severity, then consequence urgency, then
+ * lane order, then createdAt and id. Using the same ranking keeps the Free
+ * preview and the Free "Start here" block in agreement: the block's top 3 are
+ * ranked from the preview rows, and the preview's own first rows are the best
+ * ones that ranking can find without breaking one-per-lane.
+ *
+ * Within one (lane, urgency) bucket this reduces to (severity, createdAt, id),
+ * which is the DB read's ORDER BY (app/services/free-preview.server.ts reads
+ * per bucket for exactly that reason).
  */
-export function comparePreviewCandidates(a: PreviewCandidate, b: PreviewCandidate): number {
-  return (
-    SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
-    a.createdAt.getTime() - b.createdAt.getTime() ||
-    (a.id < b.id ? -1 : a.id > b.id ? 1 : 0)
-  );
-}
+export const comparePreviewCandidates = compareFindingImportance;
 
 /**
  * Pick up to `count` preview rows, spread across consequence lanes.
@@ -68,9 +62,11 @@ export function comparePreviewCandidates(a: PreviewCandidate, b: PreviewCandidat
  * Round-robin by PRIMARY lane (finding-consequence's laneForType, the same
  * lane the teaser breakdown and the ?lane= filter use): each round takes the
  * best remaining row of every lane that still has one, so no lane repeats
- * before every lane with findings has contributed. Within a round the taken
- * rows are ordered by comparePreviewCandidates, so the result reads highest
- * severity first and the most severe finding of the scan is always row one.
+ * before every lane with findings has contributed. Each lane's queue and each
+ * round are ordered by comparePreviewCandidates (the shared importance
+ * ranking), so the most important non-malicious finding of the scan is always
+ * row one. The diversity rule of pickTopFindings is NOT applied here: one per
+ * lane already spreads the rows, and the lane guarantee wins.
  *
  * MALICIOUS_SCRIPT candidates are dropped defensively (see the file header).
  * Returns fewer than `count` only when there are fewer candidates.

@@ -17,6 +17,7 @@ import {
 } from "../components/HealthScoreTrendChart";
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { ScanProgress } from "../components/ScanProgress";
+import { TopFindings } from "../components/TopFindings";
 import { getPlanFeatures } from "../lib/billing.server";
 import { FEEDBACK_NUDGE_COPY, FEEDBACK_NUDGE_HREF } from "../lib/feedback-nudge";
 import {
@@ -43,6 +44,8 @@ import { PLANS } from "../lib/plans";
 import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS } from "../lib/prompt-cap";
 import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
+import { toTopFindingViews } from "../lib/top-findings";
+import type { TopFindingView } from "../lib/top-findings";
 import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polling";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
@@ -53,7 +56,8 @@ import {
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
 import { getOrCreateShopMetadata, getShopMetadata } from "../models/shop.server";
-import { getFilteredFindingSummary } from "../services/finding-aggregation.server";
+import { getFilteredFindingSummaryAndKept } from "../services/finding-aggregation.server";
+import type { FindingRow } from "../services/finding-aggregation.server";
 import {
   recordJourneyMilestoneOnce,
   recordScanResultsViewOnce,
@@ -66,6 +70,7 @@ import { dispatchScan } from "../services/scan-dispatch.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
+import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
 import { authenticate } from "../shopify.server";
 import {
   ACCENT_BORDER,
@@ -156,6 +161,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,
       findingTrend: null,
+      topFindings: [] as TopFindingView[],
     };
   }
 
@@ -254,17 +260,26 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const hasIgnores = ignores.fingerprints.size > 0 || ignores.appNames.size > 0;
   let filteredSeverityByScanId: Map<string, Record<Severity, number>> | null = null;
   let latestTypeCounts = typeCounts;
+  // The latest successful scan's kept (non-ignored) findings, which the
+  // filtered summary had to read anyway: the "Start here" ranking reuses them
+  // so a shop with ignores never reads that scan's findings twice.
+  let latestKeptFindings: FindingRow[] | null = null;
   if (hasIgnores) {
     const summaries = await Promise.all(
       severityScanIds.map(
-        async (id) => [id, await getFilteredFindingSummary(id, ignores)] as const,
+        async (id) => [id, await getFilteredFindingSummaryAndKept(id, ignores)] as const,
       ),
     );
-    filteredSeverityByScanId = new Map(summaries.map(([id, summary]) => [id, summary.bySeverity]));
+    filteredSeverityByScanId = new Map(
+      summaries.map(([id, { summary }]) => [id, summary.bySeverity]),
+    );
     // The latest successful scan's ignore-filtered per-type counts feed the lanes.
     if (latestScan && isSuccessfulScan(latestScan.status)) {
       const latest = summaries.find(([id]) => id === latestScan.id);
-      if (latest) latestTypeCounts = latest[1].byType;
+      if (latest) {
+        latestTypeCounts = latest[1].summary.byType;
+        latestKeptFindings = latest[1].keptFindings;
+      }
     }
   }
 
@@ -289,6 +304,25 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const dominant: LaneKey | null = dominantLane(laneSummary);
 
   const findingSummary = latestSeverity ? { bySeverity: latestSeverity } : null;
+
+  // "Start here" (gc-bn0x): the latest successful scan's top 3 findings, by the
+  // same ranking and plan rules as the scan page (Free ranks only its preview
+  // and malicious rows, never a hidden finding). Only for a SUCCESSFUL latest
+  // scan, so the 3s poll while a scan runs adds nothing. Cost per load, no
+  // ignores: full-list plans one (type, severity) groupBy plus a few
+  // `take <= 3` reads; Free the preview's bounded per-bucket reads (`take <= 5`)
+  // plus one `take 3` malicious read only when the scan has malicious findings.
+  // With ignores: no query on full-list plans (the kept rows above), and Free
+  // picks its preview from them too.
+  const topFindingRows =
+    latestScan && isSuccessfulScan(latestScan.status) && latestTypeCounts
+      ? features.showFindingDetails
+        ? await getFullListTopFindings(latestScan.id, latestKeptFindings)
+        : await getFreeTopFindings(latestScan.id, latestTypeCounts, latestKeptFindings)
+      : [];
+  const topFindings = latestScan
+    ? toTopFindingViews(latestScan.id, topFindingRows, Boolean(features.showFindingDetails))
+    : [];
 
   // Compute health scores from parallel results
   let healthScore: HealthScoreResult | null = null;
@@ -463,6 +497,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     startHere,
     dominant,
     findingTrend,
+    topFindings,
   };
 };
 
@@ -723,6 +758,7 @@ export default function Dashboard() {
     startHere,
     dominant,
     findingTrend,
+    topFindings,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
@@ -1313,6 +1349,11 @@ export default function Dashboard() {
                 </s-stack>
               </div>
             </div>
+
+            {/* "Start here" (gc-bn0x): the latest scan's top 3 findings. Renders
+              nothing while a scan runs (no successful latest scan) or when the
+              scan is clean. */}
+            {healthScore && latestScan && <TopFindings findings={topFindings} />}
 
             {/* Consequence lanes — "what it's costing you", worst-first */}
             {healthScore && latestScan && (

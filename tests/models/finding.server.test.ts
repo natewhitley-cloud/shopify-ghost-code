@@ -61,6 +61,8 @@ import {
   getFindingSummary,
   getSeverityCountsForScans,
   getTypeCountsForScan,
+  getTypeSeverityCountsForScan,
+  getTopFindingsInGroup,
   getTopFindingsOfTypes,
   saveThemeFindings,
   type CreateFindingInput,
@@ -1016,5 +1018,75 @@ describe("getFindingByIdForShop", () => {
     const result = await getFindingByIdForShop("f-other", "shop-1");
 
     expect(result).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-bn0x "Start here" reads
+// ---------------------------------------------------------------------------
+
+describe("getTypeSeverityCountsForScan", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("runs ONE groupBy over (findingType, severity) for the scan and flattens the counts", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([
+      { findingType: FindingType.GHOST_SCRIPT, severity: Severity.HIGH, _count: { _all: 4 } },
+      { findingType: FindingType.GHOST_PIXEL, severity: Severity.LOW, _count: { _all: 1 } },
+    ]);
+
+    const rows = await getTypeSeverityCountsForScan(SCAN_ID);
+
+    expect(mockDb.finding.groupBy).toHaveBeenCalledTimes(1);
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith({
+      by: ["findingType", "severity"],
+      where: { scanId: SCAN_ID },
+      _count: { _all: true },
+    });
+    expect(rows).toEqual([
+      { findingType: "GHOST_SCRIPT", severity: "HIGH", count: 4 },
+      { findingType: "GHOST_PIXEL", severity: "LOW", count: 1 },
+    ]);
+  });
+
+  it("returns an empty list for a scan with no findings", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([]);
+    await expect(getTypeSeverityCountsForScan(SCAN_ID)).resolves.toEqual([]);
+  });
+
+  it("propagates a DB error", async () => {
+    mockDb.finding.groupBy.mockRejectedValue(new Error("boom"));
+    await expect(getTypeSeverityCountsForScan(SCAN_ID)).rejects.toThrow("boom");
+  });
+});
+
+describe("getTopFindingsInGroup", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("reads the first `take` rows of one (type, severity) group in ranking order", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getTopFindingsInGroup(SCAN_ID, FindingType.GHOST_SCRIPT, Severity.HIGH, 3);
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: "GHOST_SCRIPT", severity: "HIGH" },
+      orderBy: [{ severity: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+      take: 3,
+    });
+  });
+
+  it("with a null severity reads one type across severities, HIGH first", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getTopFindingsInGroup(SCAN_ID, FindingType.MALICIOUS_SCRIPT, null, 3);
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith({
+      where: { scanId: SCAN_ID, findingType: "MALICIOUS_SCRIPT" },
+      orderBy: [{ severity: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+      take: 3,
+    });
   });
 });

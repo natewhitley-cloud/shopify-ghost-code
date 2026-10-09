@@ -78,7 +78,13 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
 // the health tile, finding-count trend, and trend chart from it. Mock it so tests
 // can supply filtered per-scan counts. The no-ignores path never calls it.
 vi.mock("../../app/services/finding-aggregation.server", () => ({
-  getFilteredFindingSummary: vi.fn(),
+  getFilteredFindingSummaryAndKept: vi.fn(),
+}));
+
+// gc-bn0x: the "Start here" reads, covered in tests/services/top-findings.server.test.ts.
+vi.mock("../../app/services/top-findings.server", () => ({
+  getFullListTopFindings: vi.fn().mockResolvedValue([]),
+  getFreeTopFindings: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../../app/lib/billing.server", () => ({
@@ -151,7 +157,7 @@ import {
   claimPromptSlot,
 } from "../../app/models/shop.server";
 import { diffScanIdToLoad, loader, action, visibleScanDiff } from "../../app/routes/app._index";
-import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
+import { getFilteredFindingSummaryAndKept } from "../../app/services/finding-aggregation.server";
 import {
   recordJourneyMilestoneOnce,
   recordScanResultsViewOnce,
@@ -160,6 +166,7 @@ import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchMainTheme, fetchAllThemes } from "../../app/services/theme-fetcher.server";
+import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -175,7 +182,7 @@ const mockHasCompletedScans = hasCompletedScans as ReturnType<typeof vi.fn>;
 const mockGetSeverityCounts = getSeverityCountsForScans as ReturnType<typeof vi.fn>;
 const mockGetTypeCounts = getTypeCountsForScan as ReturnType<typeof vi.fn>;
 const mockGetIgnoredFindings = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
-const mockGetFilteredFindingSummary = getFilteredFindingSummary as ReturnType<typeof vi.fn>;
+const mockGetFilteredFindingSummary = getFilteredFindingSummaryAndKept as ReturnType<typeof vi.fn>;
 const mockGetPlanFeatures = getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockCanUseMultipleThemes = canUseMultipleThemes as ReturnType<typeof vi.fn>;
@@ -282,6 +289,8 @@ function makeActionArgs(overrides?: Partial<ActionFunctionArgs>): ActionFunction
 
 beforeEach(() => {
   vi.resetAllMocks();
+  (getFullListTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   // The loader's theme reads go through theme-cache.server (real module) which
   // calls the mocked fetchers. Clear its module-level cache each test so a
   // cache hit from a prior test doesn't suppress the expected fetcher call.
@@ -313,9 +322,8 @@ beforeEach(() => {
   mockGetIgnoredFindings.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
   // Safe default; only invoked on the has-ignores path, overridden in those tests.
   mockGetFilteredFindingSummary.mockResolvedValue({
-    total: 0,
-    bySeverity: { HIGH: 0, MEDIUM: 0, LOW: 0 },
-    byType: {},
+    summary: { total: 0, bySeverity: { HIGH: 0, MEDIUM: 0, LOW: 0 }, byType: {} },
+    keptFindings: [],
   });
   mockGetPlanFeatures.mockReturnValue({
     maxScansPerMonth: 1,
@@ -1702,9 +1710,12 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
     mockGetFilteredFindingSummary.mockImplementation(async (scanId: string) => {
       const bySeverity = filtered[scanId] ?? { HIGH: 0, MEDIUM: 0, LOW: 0 };
       return {
-        total: bySeverity.HIGH + bySeverity.MEDIUM + bySeverity.LOW,
-        bySeverity,
-        byType: {},
+        summary: {
+          total: bySeverity.HIGH + bySeverity.MEDIUM + bySeverity.LOW,
+          bySeverity,
+          byType: {},
+        },
+        keptFindings: [],
       };
     });
 
@@ -1753,7 +1764,23 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
     expect(result.findingTrend?.direction).toBe("improving");
   });
 
-  it("does NOT call getFilteredFindingSummary when the shop has no ignores", async () => {
+  it("hands the latest scan's kept rows to the Start-here ranking (no second full read, gc-bn0x)", async () => {
+    const kept = [{ id: "kept-1" }];
+    mockGetFilteredFindingSummary.mockImplementation(async (scanId: string) => ({
+      summary: {
+        total: 1,
+        bySeverity: { HIGH: 1, MEDIUM: 0, LOW: 0 },
+        byType: { GHOST_SCRIPT: 1 },
+      },
+      keptFindings: scanId === "scan-1" ? kept : [],
+    }));
+
+    await loader(makeLoaderArgs());
+
+    expect(getFullListTopFindings).toHaveBeenCalledWith("scan-1", kept);
+  });
+
+  it("does NOT call getFilteredFindingSummaryAndKept when the shop has no ignores", async () => {
     mockGetIgnoredFindings.mockResolvedValue({
       fingerprints: new Set<string>(),
       appNames: new Set<string>(),

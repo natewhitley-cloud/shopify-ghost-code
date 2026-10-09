@@ -62,7 +62,13 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
 }));
 
 vi.mock("../../app/services/finding-aggregation.server", () => ({
-  getFilteredFindingSummary: vi.fn(),
+  getFilteredFindingSummaryAndKept: vi.fn(),
+}));
+
+// gc-bn0x: the "Start here" reads, covered in tests/services/top-findings.server.test.ts.
+vi.mock("../../app/services/top-findings.server", () => ({
+  getFullListTopFindings: vi.fn().mockResolvedValue([]),
+  getFreeTopFindings: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../../app/services/theme-fetcher.server", () => ({
@@ -90,7 +96,7 @@ import {
 } from "../../app/lib/plan-gating.server";
 import { SCAN_DURATION_EXPECTATION, SCAN_PHRASES } from "../../app/lib/scan-progress";
 import { HOME_POLL_TIMEOUT_MESSAGE } from "../../app/lib/use-scan-polling";
-import { getSeverityCountsForScans } from "../../app/models/finding.server";
+import { getSeverityCountsForScans, getTypeCountsForScan } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import {
   getCompletedScansForShop,
@@ -100,7 +106,8 @@ import {
 import { getOrCreateShopMetadata } from "../../app/models/shop.server";
 import Dashboard, { HomeScanInProgress, loader } from "../../app/routes/app._index";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
-import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
+import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
+import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
 import { authenticate } from "../../app/shopify.server";
 
 const mockAuth = authenticate.admin as ReturnType<typeof vi.fn>;
@@ -145,6 +152,8 @@ function renderDashboard(loaderData: unknown): string {
 
 beforeEach(() => {
   vi.resetAllMocks();
+  (getFullListTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+  (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   resetThemeCaches();
   mockAuth.mockResolvedValue({ session: { shop: DOMAIN }, admin: { graphql: vi.fn() } });
   (fetchMainTheme as ReturnType<typeof vi.fn>).mockResolvedValue({
@@ -347,5 +356,97 @@ describe("Home in-progress accessibility", () => {
       expect(html.match(/role="status"/g) ?? []).toHaveLength(1);
       expect(html).toMatch(/<span role="status"[^>]*>Scan in progress<\/span>/);
     })();
+  });
+});
+
+// gc-bn0x: Home's "Start here" block, with the REAL loader and Dashboard. The
+// ranking and its reads are covered in tests/services/top-findings.server.test.ts;
+// here: which reads Home asks for, when, and what renders.
+describe("Home Start here (gc-bn0x)", () => {
+  const COMPLETED = {
+    id: "scan-1",
+    shopId: NEW_SHOP.id,
+    themeId: "gid://shopify/Theme/1",
+    themeName: "Dawn",
+    status: "COMPLETED",
+    findingCount: 4,
+    startedAt: new Date("2026-10-08T10:00:05Z"),
+    completedAt: new Date("2026-10-08T10:01:00Z") as Date | null,
+    createdAt: new Date("2026-10-08T10:00:00Z"),
+  };
+  const TYPE_COUNTS: Record<string, number> = { GHOST_SCRIPT: 3, GHOST_PIXEL: 1 };
+  const TOP_ROW = {
+    id: "f-1",
+    findingType: "GHOST_SCRIPT",
+    severity: "HIGH",
+    createdAt: new Date("2026-10-08T10:00:30Z"),
+    filename: "layout/theme.liquid",
+    lineNumber: 12,
+  };
+
+  async function load(scan: typeof COMPLETED, plan = "free", typeCounts = TYPE_COUNTS) {
+    mockGetOrCreate.mockResolvedValue({ ...NEW_SHOP, plan });
+    (fetchAllThemes as ReturnType<typeof vi.fn>).mockResolvedValue([]);
+    (hasCompletedScans as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    (getScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [scan],
+      hasNextPage: false,
+    });
+    const total = Object.values(typeCounts).reduce((a, b) => a + b, 0);
+    (getSeverityCountsForScans as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Map([["scan-1", { HIGH: total, MEDIUM: 0, LOW: 0 }]]),
+    );
+    (getTypeCountsForScan as ReturnType<typeof vi.fn>).mockResolvedValue(typeCounts);
+    return runLoader();
+  }
+
+  it("Free: ranks only what Free shows (the Free reader), and renders the block", async () => {
+    (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([TOP_ROW]);
+
+    const data = await load(COMPLETED);
+
+    expect(getFreeTopFindings).toHaveBeenCalledWith("scan-1", TYPE_COUNTS, null);
+    expect(getFullListTopFindings).not.toHaveBeenCalled();
+    const html = renderDashboard(data);
+    expect(html).toMatch(/<h2 id="top-findings-heading"[^>]*>Start here<\/h2>/);
+    expect(html).toContain("layout/theme.liquid, line 12");
+    expect(html).toContain('href="/app/scans/scan-1#finding-f-1"');
+    // Between the scan summary and the consequence lanes.
+    expect(html.indexOf("Most Recent Findings")).toBeLessThan(html.indexOf("Start here"));
+    expect(html.indexOf("Start here")).toBeLessThan(html.indexOf("What it&#x27;s costing you"));
+  });
+
+  it.each(["Standard", "Professional"])(
+    "%s: ranks the whole scan and links into the type-filtered list",
+    async (plan) => {
+      (getFullListTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([TOP_ROW]);
+
+      const data = await load(COMPLETED, plan);
+
+      expect(getFullListTopFindings).toHaveBeenCalledWith("scan-1", null);
+      expect(getFreeTopFindings).not.toHaveBeenCalled();
+      expect(renderDashboard(data)).toContain(
+        'href="/app/scans/scan-1?type=GHOST_SCRIPT#finding-f-1"',
+      );
+    },
+  );
+
+  it.each(["PENDING", "IN_PROGRESS"])(
+    "the 3s poll while a scan is %s reads nothing for the block and renders none",
+    async (status) => {
+      const data = await load({ ...COMPLETED, status, completedAt: null });
+
+      expect(getFreeTopFindings).not.toHaveBeenCalled();
+      expect(getFullListTopFindings).not.toHaveBeenCalled();
+      expect(renderDashboard(data)).not.toContain("Start here");
+    },
+  );
+
+  it("a clean latest scan renders no block (the all-clear state stays)", async () => {
+    const data = await load({ ...COMPLETED, findingCount: 0 }, "free", {});
+
+    const html = renderDashboard(data);
+    expect(html).not.toContain("top-findings-heading");
+    expect(html).toContain("You&#x27;re all clear");
   });
 });

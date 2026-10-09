@@ -99,7 +99,13 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
 }));
 
 vi.mock("../../app/services/finding-aggregation.server", () => ({
-  getFilteredFindingSummary: vi.fn(),
+  getFilteredFindingSummaryAndKept: vi.fn(),
+}));
+
+// gc-bn0x: the "Start here" reads, covered in tests/services/top-findings.server.test.ts.
+vi.mock("../../app/services/top-findings.server", () => ({
+  getFullListTopFindings: vi.fn().mockResolvedValue([]),
+  getFreeTopFindings: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../../app/services/theme-fetcher.server", () => ({

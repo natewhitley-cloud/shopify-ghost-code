@@ -71,6 +71,9 @@ vi.mock("../../app/models/finding.server", async (importOriginal) => ({
   getFindingSummary: vi.fn(),
   getFindingsForScan: vi.fn(),
   getTopFindingsOfTypes: vi.fn(),
+  // gc-bn0x "Start here" reads (full-list plans without ignores).
+  getTypeSeverityCountsForScan: vi.fn(),
+  getTopFindingsInGroup: vi.fn(),
   getFindingsPageForScan: vi.fn(),
   getAppAttributionForScan: vi.fn(),
   getFindingFilterOptionsForScan: vi.fn(),
@@ -159,7 +162,9 @@ import {
   getFindingsForScan,
   getFindingsPageForScan,
   getFindingSummary,
+  getTopFindingsInGroup,
   getTopFindingsOfTypes,
+  getTypeSeverityCountsForScan,
 } from "../../app/models/finding.server";
 import {
   getIgnoredFindingsForShop,
@@ -202,6 +207,7 @@ import ScanDetail, {
   UpgradeReturnBanner,
 } from "../../app/routes/app.scans.$scanId";
 import { isTrackerApp } from "../../app/services/app-lookup.server";
+import { PREVIEW_READ_BUCKETS } from "../../app/services/free-preview.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
 import { recordUpgradePreviewStageOnce } from "../../app/services/upgrade-preview-nudge.server";
 import { authenticate } from "../../app/shopify.server";
@@ -227,6 +233,8 @@ const mockGetFindingFilterOptionsForScan = getFindingFilterOptionsForScan as Ret
   typeof vi.fn
 >;
 const mockGetTopFindingsOfTypes = getTopFindingsOfTypes as ReturnType<typeof vi.fn>;
+const mockGetTypeSeverityCounts = getTypeSeverityCountsForScan as ReturnType<typeof vi.fn>;
+const mockGetTopFindingsInGroup = getTopFindingsInGroup as ReturnType<typeof vi.fn>;
 const mockGetFindingsForScan = getFindingsForScan as ReturnType<typeof vi.fn>;
 const mockGetIgnoredFindings = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
 const mockGetFindingByIdForShop = getFindingByIdForShop as ReturnType<typeof vi.fn>;
@@ -398,6 +406,8 @@ beforeEach(() => {
   mockCanUseScanDiffing.mockReturnValue(false);
   mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetTopFindingsOfTypes.mockResolvedValue([]);
+  mockGetTypeSeverityCounts.mockResolvedValue([]);
+  mockGetTopFindingsInGroup.mockResolvedValue([]);
   mockGetFindingsForScan.mockResolvedValue([]);
   mockGetIgnoredFindings.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
   (getUnknownScriptsForScan as ReturnType<typeof vi.fn>).mockResolvedValue([]);
@@ -661,18 +671,20 @@ describe("app.scans.$scanId loader", () => {
 
       const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows;
 
-      // total 10 -> 5 rows. Round 1 = every lane's best (4 lanes), severity
-      // ordered; round 2 = Speed's next best.
+      // total 10 -> 5 rows. Round 1 = every lane's best (4 lanes), in the
+      // shared Start-here order (gc-bn0x): severity, then urgency, so the LOW
+      // act-now pixel leads the LOW compounding hreflang; round 2 = Speed's
+      // next best.
       expect(result.previewFindings.map((f) => f.id)).toEqual([
         "speed-high-1",
         "house-med",
-        "disc-low",
         "track-low",
+        "disc-low",
         "speed-high-2",
       ]);
     });
 
-    it("reads a bounded top-N per non-empty lane (never the full scan) when there are no ignores", async () => {
+    it("reads a bounded top-N per non-empty (lane, urgency) bucket (never the full scan) when there are no ignores", async () => {
       scanWith([
         row("a", "GHOST_SCRIPT", "HIGH", 0),
         row("b", "GHOST_HREFLANG", "LOW", 1),
@@ -682,12 +694,14 @@ describe("app.scans.$scanId loader", () => {
 
       await loader(makeLoaderArgs("scan-1"));
 
-      // Two lanes have findings (Speed, Found by Google & AI); shown = 2.
+      // Two buckets have findings (Speed act-now, Found by Google & AI
+      // compounding); shown = 2.
+      const bucketOf = (t: string) => PREVIEW_READ_BUCKETS.find((b) => b.includes(t as never));
       expect(mockGetTopFindingsOfTypes).toHaveBeenCalledTimes(2);
-      expect(mockGetTopFindingsOfTypes).toHaveBeenCalledWith("scan-1", typesForLane("speed"), 2);
+      expect(mockGetTopFindingsOfTypes).toHaveBeenCalledWith("scan-1", bucketOf("GHOST_SCRIPT"), 2);
       expect(mockGetTopFindingsOfTypes).toHaveBeenCalledWith(
         "scan-1",
-        typesForLane("discoverability"),
+        bucketOf("GHOST_HREFLANG"),
         2,
       );
       // Only the always-on malicious-script query may run; no unfiltered load.
@@ -1937,6 +1951,8 @@ describe("app.scans.$scanId loader", () => {
         getFindingFilterOptionsForScan: mockGetFindingFilterOptionsForScan.mock.calls.length,
         getFindingsForScan: mockGetFindingsForScan.mock.calls.length,
         getTopFindingsOfTypes: mockGetTopFindingsOfTypes.mock.calls.length,
+        getTypeSeverityCountsForScan: mockGetTypeSeverityCounts.mock.calls.length,
+        getTopFindingsInGroup: mockGetTopFindingsInGroup.mock.calls.length,
         getFirstSuccessfulScanCompletedAt: mockGetFirstSuccessfulScan.mock.calls.length,
         hasBillingHistory: mockHasBillingHistory.mock.calls.length,
         claimPromptSlot: mockClaimPromptSlot.mock.calls.length,
@@ -2037,6 +2053,254 @@ describe("app.scans.$scanId loader", () => {
       expect(mockGetIgnoredFindings).toHaveBeenCalledTimes(1);
       releaseScan();
       await pending;
+    });
+  });
+
+  describe("Start here top findings (gc-bn0x)", () => {
+    type TopRows = {
+      topFindings: Array<{ id: string; href: string; typeLabel: string; cost: string }>;
+      previewFindings: Array<{ id: string }>;
+    };
+
+    function row(
+      id: string,
+      findingType: string,
+      severity: "HIGH" | "MEDIUM" | "LOW",
+      minute = 0,
+      extra: Partial<typeof FINDING_ONE> = {},
+    ) {
+      return {
+        ...FINDING_ONE,
+        id,
+        findingType,
+        severity,
+        createdAt: new Date(Date.UTC(2026, 2, 20, 10, minute)),
+        ...extra,
+      };
+    }
+
+    /** Back every finding read with one in-memory scan. */
+    function scanWith(rows: Array<typeof FINDING_ONE>) {
+      const byType: Record<string, number> = {};
+      const bySeverity = { HIGH: 0, MEDIUM: 0, LOW: 0 } as Record<string, number>;
+      const groups = new Map<string, { findingType: string; severity: string; count: number }>();
+      for (const r of rows) {
+        byType[r.findingType] = (byType[r.findingType] ?? 0) + 1;
+        bySeverity[r.severity] += 1;
+        const k = `${r.findingType}|${r.severity}`;
+        const g = groups.get(k) ?? { findingType: r.findingType, severity: r.severity, count: 0 };
+        g.count += 1;
+        groups.set(k, g);
+      }
+      mockGetFindingSummary.mockResolvedValue({ total: rows.length, bySeverity, byType });
+      mockGetTypeSeverityCounts.mockResolvedValue([...groups.values()]);
+      serveTopFindings(rows);
+      mockGetTopFindingsInGroup.mockImplementation(
+        async (_s: string, type: string, severity: string | null, take: number) =>
+          rows
+            .filter((r) => r.findingType === type && (severity === null || r.severity === severity))
+            .sort((a, b) => comparePreviewCandidates(a as never, b as never))
+            .slice(0, take),
+      );
+      mockGetFindingsForScan.mockImplementation(
+        async (_id: string, filters?: { findingType?: string }) =>
+          filters?.findingType ? rows.filter((r) => r.findingType === filters.findingType) : rows,
+      );
+    }
+
+    const MANY = [
+      row("script-1", "GHOST_SCRIPT", "HIGH", 0),
+      row("script-2", "GHOST_SCRIPT", "HIGH", 1),
+      row("script-3", "GHOST_SCRIPT", "HIGH", 2),
+      row("script-4", "GHOST_SCRIPT", "HIGH", 3),
+      row("script-5", "GHOST_SCRIPT", "HIGH", 4),
+      row("snippet", "GHOST_SNIPPET", "LOW", 5),
+      row("pixel", "GHOST_PIXEL", "LOW", 6),
+      row("hreflang", "GHOST_HREFLANG", "LOW", 7),
+      row("orphan-1", "ORPHAN_ASSET", "LOW", 8),
+      row("orphan-2", "ORPHAN_ASSET", "LOW", 9),
+    ];
+
+    it.each(["Standard", "Professional"])(
+      "%s ranks the whole scan and links into the type-filtered full list",
+      async (plan) => {
+        mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
+        mockCanViewFindingDetails.mockReturnValue(true);
+        scanWith(MANY);
+
+        const result = (await loader(makeLoaderArgs("scan-1"))) as TopRows;
+
+        // Three HIGH scripts: no other HIGH type, so diversity keeps severity.
+        expect(result.topFindings.map((f) => f.id)).toEqual(["script-1", "script-2", "script-3"]);
+        expect(result.topFindings[0].href).toBe(
+          "/app/scans/scan-1?type=GHOST_SCRIPT#finding-script-1",
+        );
+        expect(result.topFindings[0].cost).toBe(
+          "This is loading extra code that slows your storefront down.",
+        );
+        // Bounded: one groupBy plus take <= 3 group reads, never the full scan.
+        expect(mockGetTypeSeverityCounts).toHaveBeenCalledTimes(1);
+        for (const call of mockGetTopFindingsInGroup.mock.calls)
+          expect(call[3]).toBeLessThanOrEqual(3);
+        expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1");
+      },
+    );
+
+    it("Free: every top finding is one of the visible preview rows, with no extra read", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+      scanWith(MANY);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as TopRows;
+
+      const visible = result.previewFindings.map((f) => f.id);
+      expect(visible).toHaveLength(5);
+      expect(result.topFindings).toHaveLength(3);
+      for (const f of result.topFindings) expect(visible).toContain(f.id);
+      // The hidden HIGH scripts never surface (a full-list plan would show 3).
+      expect(result.topFindings.map((f) => f.id)).toEqual(["script-1", "snippet", "pixel"]);
+      // Free links stay on the unfiltered page (its preview rows).
+      expect(result.topFindings[0].href).toBe("/app/scans/scan-1#finding-script-1");
+      expect(mockGetTypeSeverityCounts).not.toHaveBeenCalled();
+      expect(mockGetTopFindingsInGroup).not.toHaveBeenCalled();
+    });
+
+    it("Free: a malicious finding leads (shown in full on every plan), linked to the alert", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+      scanWith([...MANY, row("mal", "MALICIOUS_SCRIPT", "HIGH", 20)]);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as TopRows;
+
+      expect(result.topFindings.map((f) => f.id)).toEqual(["mal", "script-1", "snippet"]);
+      expect(result.topFindings[0].href).toBe("/app/scans/scan-1#finding-mal");
+    });
+
+    it("excludes ignored findings, including an ignored malicious one", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Standard" });
+      mockCanViewFindingDetails.mockReturnValue(true);
+      scanWith([
+        row("mal", "MALICIOUS_SCRIPT", "HIGH", 0, { appName: "BadApp" }),
+        row("bad-script", "GHOST_SCRIPT", "HIGH", 1, { appName: "BadApp" }),
+        row("kept", "GHOST_PIXEL", "LOW", 2, { appName: null }),
+      ]);
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["BadApp"]),
+      });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as TopRows;
+
+      expect(result.topFindings.map((f) => f.id)).toEqual(["kept"]);
+      // The summary's kept rows are reused: no counts or group reads.
+      expect(mockGetTypeSeverityCounts).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [0, []],
+      [1, ["script-1"]],
+      [2, ["script-1", "snippet"]],
+    ])("a Standard scan with %i findings shows what exists", async (n, expected) => {
+      mockCanViewFindingDetails.mockReturnValue(true);
+      scanWith(
+        [
+          row("script-1", "GHOST_SCRIPT", "HIGH", 0),
+          row("snippet", "GHOST_SNIPPET", "LOW", 1),
+        ].slice(0, n),
+      );
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as TopRows;
+
+      expect(result.topFindings.map((f) => f.id)).toEqual(expected);
+    });
+
+    it.each([["?type=GHOST_SCRIPT"], ["?severity=HIGH"], ["?lane=speed"], ["?app=SomeApp"]])(
+      "a filtered view (%s) has no block and does not read for it",
+      async (query) => {
+        mockCanViewFindingDetails.mockReturnValue(true);
+        scanWith(MANY);
+
+        const result = (await loader(
+          makeLoaderArgs("scan-1", `https://test-shop.myshopify.com/app/scans/scan-1${query}`),
+        )) as TopRows;
+
+        expect(result.topFindings).toEqual([]);
+        expect(mockGetTypeSeverityCounts).not.toHaveBeenCalled();
+      },
+    );
+
+    /** Run the REAL loader, then render the page as the merchant sees it. */
+    async function renderPage(): Promise<string> {
+      const data = await loader(makeLoaderArgs("scan-1"));
+      const Stub = createRoutesStub([
+        {
+          id: "scan",
+          path: "/app/scans/:scanId",
+          Component: ScanDetail as never,
+          loader: () => data,
+        },
+      ]);
+      return renderToStaticMarkup(
+        createElement(Stub, {
+          initialEntries: ["/app/scans/scan-1"],
+          hydrationData: { loaderData: { scan: data } },
+        }),
+      );
+    }
+
+    it("renders on a Free page, and every link target row is on that page", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+      scanWith([...MANY, row("mal", "MALICIOUS_SCRIPT", "HIGH", 20)]);
+
+      const html = await renderPage();
+
+      expect(html).toMatch(/<h2 id="top-findings-heading"[^>]*>Start here<\/h2>/);
+      const hrefs = [...html.matchAll(/href="\/app\/scans\/scan-1#(finding-[^"]+)"/g)].map(
+        (m) => m[1],
+      );
+      expect(hrefs).toEqual(["finding-mal", "finding-script-1", "finding-snippet"]);
+      for (const id of hrefs) expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
+      // The block sits above the preview list.
+      expect(html.indexOf("Start here")).toBeLessThan(html.indexOf("Preview: Top 5 Findings"));
+    });
+
+    it("renders on a Standard page above the findings list, list rows anchored", async () => {
+      mockCanViewFindingDetails.mockReturnValue(true);
+      scanWith(MANY);
+      mockGetFindingsPageForScan.mockResolvedValue({
+        items: MANY,
+        hasNextPage: false,
+        nextCursor: null,
+      });
+
+      const html = await renderPage();
+
+      expect(html).toContain('href="/app/scans/scan-1?type=GHOST_SCRIPT#finding-script-1"');
+      expect(html).toContain('id="finding-script-1"');
+      expect(html.indexOf("Start here")).toBeLessThan(html.indexOf(">Findings</h2>"));
+    });
+
+    it("a clean scan renders no block", async () => {
+      mockCanViewFindingDetails.mockReturnValue(true);
+      scanWith([]);
+      mockGetFindingsPageForScan.mockResolvedValue(EMPTY_FINDINGS_PAGE);
+
+      const html = await renderPage();
+
+      expect(html).not.toContain("Start here");
+      expect(html).toContain("No ghost code detected in this scan.");
+    });
+
+    it("an in-progress scan reads nothing for the block", async () => {
+      mockGetScanById.mockResolvedValue({ ...SCAN, status: "IN_PROGRESS" });
+      scanWith(MANY);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as TopRows;
+
+      expect(result.topFindings).toEqual([]);
+      expect(mockGetTypeSeverityCounts).not.toHaveBeenCalled();
+      expect(mockGetTopFindingsInGroup).not.toHaveBeenCalled();
     });
   });
 

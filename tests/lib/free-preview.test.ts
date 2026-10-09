@@ -121,6 +121,16 @@ describe("pickFreePreviewFindings", () => {
     expect(ids(pickFreePreviewFindings([rows[2], rows[0], rows[3], rows[1]], 3))).toEqual(expected);
   });
 
+  it("uses the shared Start-here ranking: urgency breaks a same-severity tie inside a lane (gc-bn0x)", () => {
+    // Speed lane, both HIGH: the older preconnect (whenever) loses to the newer
+    // script (act-now), exactly as compareFindingImportance orders them.
+    const picked = pickFreePreviewFindings(
+      [c("preconnect", "GHOST_PRECONNECT", "HIGH", 0), c("script", "GHOST_SCRIPT", "HIGH", 9)],
+      1,
+    );
+    expect(ids(picked)).toEqual(["script"]);
+  });
+
   it("never picks a MALICIOUS_SCRIPT finding", () => {
     const picked = pickFreePreviewFindings(
       [c("mal", "MALICIOUS_SCRIPT", "HIGH", 0), c("px", "GHOST_PIXEL", "LOW", 1)],

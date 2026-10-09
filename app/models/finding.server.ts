@@ -243,6 +243,45 @@ export async function getTopFindingsOfTypes(
 }
 
 /**
+ * Per (findingType, severity) finding counts for one scan, in ONE groupBy over
+ * the scanId index (the same cost class as getTypeCountsForScan). Zero-count
+ * pairs are absent. Feeds the "Start here" planner (gc-bn0x), which needs to
+ * know which type/severity groups can reach the top 3 before reading any row.
+ */
+export async function getTypeSeverityCountsForScan(
+  scanId: string,
+): Promise<Array<{ findingType: FindingType; severity: Severity; count: number }>> {
+  const rows = await db.finding.groupBy({
+    by: ["findingType", "severity"],
+    where: { scanId },
+    _count: { _all: true },
+  });
+  return rows.map((row) => ({
+    findingType: row.findingType,
+    severity: row.severity,
+    count: row._count._all,
+  }));
+}
+
+/**
+ * The first `take` findings of one type (and, when given, one severity) of a
+ * scan, by severity (HIGH first), then createdAt, then id: the "Start here"
+ * ranking's order inside one type (gc-bn0x). Bounded by `take` (at most 3).
+ */
+export async function getTopFindingsInGroup(
+  scanId: string,
+  findingType: FindingType,
+  severity: Severity | null,
+  take: number,
+) {
+  return db.finding.findMany({
+    where: { scanId, findingType, ...(severity !== null ? { severity } : {}) },
+    orderBy: [{ severity: "asc" }, { createdAt: "asc" }, { id: "asc" }],
+    take,
+  });
+}
+
+/**
  * Look up a single finding by id, scoped to a shop via its parent scan.
  *
  * Returns null when the finding does not exist OR belongs to a scan owned by a
