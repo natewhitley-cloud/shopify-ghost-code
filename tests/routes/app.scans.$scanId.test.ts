@@ -107,6 +107,8 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
   canViewFindingDetails: vi.fn(),
   canUseScanDiffing: vi.fn(),
   canExportPdf: vi.fn(),
+  // gc-4n0y: Broken links are Standard+ by plan (coverage notices).
+  canDetectDanglingReferences: vi.fn(),
 }));
 
 vi.mock("../../app/lib/health-score", async (importOriginal) => ({
@@ -149,6 +151,7 @@ import { comparePreviewCandidates } from "../../app/lib/free-preview";
 import { computeHealthScore } from "../../app/lib/health-score";
 import { logger } from "../../app/lib/logger.server";
 import {
+  canDetectDanglingReferences,
   canStartScan,
   canUseScanDiffing,
   canViewFindingDetails,
@@ -3626,7 +3629,7 @@ describe("ScanCoverageNotices", () => {
         null,
         createElement(ScanCoverageNotices, {
           isCompleted: true,
-          canViewDetails: true,
+          brokenLinksIncluded: true,
           status: "COMPLETED",
           skippedCategories: [],
           cappedCategories: [],
@@ -3679,13 +3682,38 @@ describe("ScanCoverageNotices", () => {
     expect(renderNotices()).toBe("");
   });
 
-  it("Free plan (!canViewDetails): renders nothing even when both lists are non-empty", () => {
+  it("Free (gc-4n0y): shows the permissions warning with the Settings link", () => {
     const html = renderNotices({
-      canViewDetails: false,
-      skippedCategories: ["GHOST_PAGE"],
+      brokenLinksIncluded: false,
+      skippedCategories: ["GHOST_PAGE", "GHOST_TAG"],
+    });
+    expect(html).toContain('tone="warning"');
+    expect(html).toContain("This scan skipped 2 checks because");
+    expect(html).toContain("Content pages, Product tags");
+    expect(html).toContain('href="/app/settings"');
+  });
+
+  it("Free: Broken links (Standard by plan) never appear as a permission to grant", () => {
+    const html = renderNotices({
+      brokenLinksIncluded: false,
+      skippedCategories: ["GHOST_PAGE", "DANGLING_REFERENCE"],
       cappedCategories: ["DANGLING_REFERENCE"],
     });
-    expect(html).toBe("");
+    expect(html).toContain("This scan skipped 1 check because");
+    expect(html).toContain("Content pages");
+    expect(html).not.toContain("Broken links");
+    expect(html).not.toContain(CAP_TEXT);
+  });
+
+  it("Free: a scan whose only skip was Broken links renders nothing", () => {
+    expect(
+      renderNotices({ brokenLinksIncluded: false, skippedCategories: ["DANGLING_REFERENCE"] }),
+    ).toBe("");
+  });
+
+  it("Standard: Broken links still appear (the plan includes them)", () => {
+    const html = renderNotices({ skippedCategories: ["DANGLING_REFERENCE"] });
+    expect(html).toContain("Broken links");
   });
 
   it("renders nothing for a scan that is not completed", () => {
@@ -3723,10 +3751,10 @@ describe("ScanCoverageNotices", () => {
     expect(html.indexOf(CAP_TEXT)).toBeLessThan(html.indexOf("couldn&#x27;t run"));
   });
 
-  it("Free plan (!canViewDetails): no storefront notice either", () => {
+  it("Free: the storefront notice shows too", () => {
     expect(
-      renderNotices({ canViewDetails: false, unreachableCategories: ["SCRIPT_TAG_SUNSET"] }),
-    ).toBe("");
+      renderNotices({ brokenLinksIncluded: false, unreachableCategories: ["SCRIPT_TAG_SUNSET"] }),
+    ).toContain("couldn&#x27;t run");
   });
 
   it("still renders the permissions warning for a legacy PARTIAL scan with no categories", () => {
@@ -3894,4 +3922,111 @@ describe("ScanDetail in-progress state (ScanProgress)", () => {
     expect(html).not.toContain(SCAN_DURATION_EXPECTATION);
     for (const phrase of SCAN_PHRASES) expect(html).not.toContain(phrase);
   });
+});
+
+// gc-4n0y: Free shops can grant the optional scopes, so the scan page tells a
+// Free merchant which checks were skipped for permissions (REAL loader + page).
+describe("ScanDetail coverage notice on Free (gc-4n0y)", () => {
+  async function renderPage(): Promise<string> {
+    const data = await loader(makeLoaderArgs("scan-1"));
+    const Stub = createRoutesStub([
+      {
+        id: "scan",
+        path: "/app/scans/:scanId",
+        Component: ScanDetail as never,
+        loader: () => data,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/scans/scan-1"],
+        hydrationData: { loaderData: { scan: data } },
+      }),
+    );
+  }
+
+  it("a Free scan that skipped scope-gated checks shows the Settings notice, without Broken links", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+    mockCanViewFindingDetails.mockReturnValue(false);
+    (canDetectDanglingReferences as ReturnType<typeof vi.fn>).mockReturnValue(false);
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      skippedCategories: ["GHOST_TAG", "GHOST_PAGE", "DANGLING_REFERENCE"],
+      cappedCategories: [],
+      unreachableCategories: [],
+    });
+
+    const html = await renderPage();
+
+    expect(html).toContain("This scan skipped 2 checks because");
+    expect(html).toContain("Product tags, Content pages");
+    expect(html).toContain('href="/app/settings"');
+    expect(html).not.toContain("Broken links");
+  });
+
+  it("a Standard scan keeps Broken links in the notice", async () => {
+    mockCanViewFindingDetails.mockReturnValue(true);
+    (canDetectDanglingReferences as ReturnType<typeof vi.fn>).mockReturnValue(true);
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      skippedCategories: ["DANGLING_REFERENCE"],
+      cappedCategories: [],
+      unreachableCategories: [],
+    });
+
+    expect(await renderPage()).toContain("Broken links");
+  });
+});
+
+// gc-4n0y: granting the optional scopes on Free adds Admin-resource findings
+// (tags, pages, redirects, translations). Free still sees at most 5 in full,
+// never more than half, and the teaser counts exactly the rest.
+describe("Free preview + teaser math with scope-gated findings (gc-4n0y)", () => {
+  it.each([
+    [4, 2],
+    [9, 4],
+    [20, 5],
+  ])(
+    "%i findings incl. Admin-resource types: %i shown, the rest counted as locked",
+    async (total, shown) => {
+      const types = [
+        "GHOST_TAG",
+        "GHOST_PAGE",
+        "GHOST_REDIRECT",
+        "GHOST_TRANSLATION",
+        "GHOST_SCRIPT",
+      ];
+      const rows = Array.from({ length: total }, (_, i) => ({
+        ...FINDING_ONE,
+        id: `f-${i}`,
+        findingType: types[i % types.length],
+        severity: "MEDIUM",
+        createdAt: new Date(Date.UTC(2026, 2, 20, 10, i)),
+      }));
+      const byType: Record<string, number> = {};
+      for (const r of rows) byType[r.findingType] = (byType[r.findingType] ?? 0) + 1;
+      mockGetFindingSummary.mockResolvedValue({
+        total,
+        bySeverity: { HIGH: 0, MEDIUM: total, LOW: 0 },
+        byType,
+      });
+      serveTopFindings(rows);
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as {
+        previewFindings: unknown[];
+        upgradePreview: { hiddenCount: number; groups: Array<{ count: number }> } | null;
+        upgradeReturn: { hiddenCount: number } | null;
+      };
+
+      expect(result.previewFindings).toHaveLength(shown);
+      expect(shown).toBeLessThanOrEqual(total / 2);
+      const ask = result.upgradePreview ?? result.upgradeReturn;
+      expect(ask?.hiddenCount).toBe(total - shown);
+      if (result.upgradePreview) {
+        expect(result.upgradePreview.groups.reduce((n, g) => n + g.count, 0)).toBe(total - shown);
+      }
+    },
+  );
 });

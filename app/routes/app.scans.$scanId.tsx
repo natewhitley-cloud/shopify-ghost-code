@@ -41,7 +41,12 @@ import type { ScanStatus } from "../lib/format";
 import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
 import type { HealthScoreResult } from "../lib/health-score";
 import { scanSkippedForScopes, skippedCategoryLabels } from "../lib/optional-scopes";
-import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/plan-gating.server";
+import {
+  canDetectDanglingReferences,
+  canExportPdf,
+  canUseScanDiffing,
+  canViewFindingDetails,
+} from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
@@ -392,8 +397,9 @@ export function unreachableCategoriesNotice(categories: readonly string[]): stri
 }
 
 /**
- * Scan-coverage notices shown under a completed scan (Standard+ only: Free
- * merchants can't grant these scopes or view the resulting findings).
+ * Scan-coverage notices shown under a completed scan, on every plan (gc-4n0y:
+ * Free shops can grant the optional scopes too, so a Free merchant learns the
+ * scan can go deeper).
  *
  *   - Missing-scope warning (H5 / gc-1wf): optional audits were skipped because
  *     the app lacks the required read-only permission. Links to the settings
@@ -405,27 +411,37 @@ export function unreachableCategoriesNotice(categories: readonly string[]): stri
  *   - Unreachable notice: a storefront check could not run because the public
  *     homepage could not be read (e.g. password page). Info only, like the cap.
  *
+ * Broken links (DANGLING_REFERENCE) are a Standard feature by plan, not by
+ * permission: on a plan without them (`brokenLinksIncluded` false) the
+ * category is dropped from these notices (a scan run while the shop was paid
+ * can still list it), so Free is never told a grant would add it.
+ *
  * Any combination can render at once when several happened this scan.
  */
 export function ScanCoverageNotices({
   isCompleted,
-  canViewDetails,
+  brokenLinksIncluded,
   status,
-  skippedCategories,
-  cappedCategories,
+  skippedCategories: allSkipped,
+  cappedCategories: allCapped,
   unreachableCategories = [],
 }: {
   isCompleted: boolean;
-  canViewDetails: boolean;
+  brokenLinksIncluded: boolean;
   status: string;
   skippedCategories: string[];
   cappedCategories: string[];
   unreachableCategories?: string[];
 }) {
-  if (!isCompleted || !canViewDetails) return null;
+  if (!isCompleted) return null;
+  const planCovers = (category: string) => brokenLinksIncluded || category !== "DANGLING_REFERENCE";
+  const skippedCategories = allSkipped.filter(planCovers);
+  const cappedCategories = allCapped.filter(planCovers);
+  // Every skipped category was one this plan does not include: nothing to grant.
+  const onlyPlanGated = allSkipped.length > 0 && skippedCategories.length === 0;
   return (
     <>
-      {scanSkippedForScopes({ status, skippedCategories }) && (
+      {scanSkippedForScopes({ status, skippedCategories }) && !onlyPlanGated && (
         <div>
           <s-banner tone="warning">
             This scan skipped {skippedCategories.length}{" "}
@@ -1191,6 +1207,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     canViewDetails,
     canUseDiffing,
     canExportPdf: canExportPdf(shop.plan),
+    // gc-4n0y: Broken links are Standard+ by plan; the coverage notices drop
+    // that category for a plan without it.
+    brokenLinksIncluded: canDetectDanglingReferences(shop.plan),
     healthScore,
     unknownScripts,
     appAttributionData,
@@ -1440,6 +1459,7 @@ export default function ScanDetail() {
     canViewDetails,
     canUseDiffing,
     canExportPdf,
+    brokenLinksIncluded,
     healthScore,
     unknownScripts,
     appAttributionData,
@@ -2132,7 +2152,7 @@ export default function ScanDetail() {
         {/* Missing-scope warning + size-cap notice (gc-1wf, gc-11f). */}
         <ScanCoverageNotices
           isCompleted={isCompleted}
-          canViewDetails={canViewDetails}
+          brokenLinksIncluded={brokenLinksIncluded}
           status={scan.status}
           skippedCategories={scan.skippedCategories}
           cappedCategories={scan.cappedCategories}

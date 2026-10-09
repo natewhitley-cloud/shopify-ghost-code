@@ -57,6 +57,14 @@ export const OPTIONAL_SCOPE_INFO: Record<OptionalScope, { label: string; unlocks
 };
 
 /**
+ * Broken links (DANGLING_REFERENCE) use read_products / read_content but are a
+ * Standard feature BY PLAN (gc-m4h.7), so on Free the Permissions card says so
+ * rather than implying a grant adds them (gc-4n0y).
+ */
+export const BROKEN_LINKS_STANDARD_NOTE =
+  "Broken-link checks come with the Standard plan. Granting these permissions doesn't add them on Free.";
+
+/**
  * Reverse map: each skippable finding-type category → the optional scope(s) that
  * unlock it, plus a human label. Sourced from the scan engine's
  * `skippedCategories` builder (`inngest/functions/scan-theme.ts`) and each

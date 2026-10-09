@@ -46,6 +46,7 @@ import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import { toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
+import { useOptionalScopes } from "../lib/use-optional-scopes";
 import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polling";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
@@ -692,6 +693,62 @@ export function HomeScanInProgress({
   );
 }
 
+/** Copy for the welcome card's optional permissions line (gc-4n0y). */
+export const OPTIONAL_CHECKS_COPY = {
+  lead: "Optional: ",
+  link: "allow product, page, and redirect checks",
+  tail: " for a deeper first scan.",
+  granted: "Extra checks are on for your first scan.",
+  failed: "Couldn't update permissions. You can grant them later in Settings.",
+} as const;
+
+/**
+ * Welcome card's SECONDARY, optional line under "Start First Scan" (gc-4n0y):
+ * opens the same App Bridge scopes request as the Settings Permissions card
+ * (useOptionalScopes), so a Free merchant can deepen the first scan. Never
+ * blocks the primary action. Hidden where App Bridge has no scopes API, and
+ * when every optional scope is already granted (unless the merchant just
+ * granted them here, which gets a one-line confirmation).
+ */
+export function OptionalChecksLine() {
+  const { granted, unsupported, failed, requesting, missing, requestMissing } = useOptionalScopes();
+  const [asked, setAsked] = useState(false);
+
+  if (unsupported) return null;
+  const allGranted = granted !== null && missing.length === 0;
+  if (allGranted) {
+    return asked ? (
+      <div style={{ fontSize: "13px", color: COLOR_SUCCESS }}>{OPTIONAL_CHECKS_COPY.granted}</div>
+    ) : null;
+  }
+  return (
+    <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>
+      {OPTIONAL_CHECKS_COPY.lead}
+      <button
+        type="button"
+        onClick={() => {
+          setAsked(true);
+          void requestMissing();
+        }}
+        disabled={requesting}
+        style={{
+          background: "none",
+          border: "none",
+          padding: 0,
+          font: "inherit",
+          color: COLOR_INFO,
+          textDecoration: "underline",
+          cursor: requesting ? "default" : "pointer",
+        }}
+      >
+        {OPTIONAL_CHECKS_COPY.link}
+      </button>
+      {OPTIONAL_CHECKS_COPY.tail}
+      {asked && failed && <div style={{ marginTop: "4px" }}>{OPTIONAL_CHECKS_COPY.failed}</div>}
+    </div>
+  );
+}
+
 /**
  * Per-urgency chip presentation for a consequence lane. Colors come from the
  * shared design tokens — see the CONSEQUENCE_MAP urgency tiers.
@@ -992,6 +1049,8 @@ export default function Dashboard() {
               >
                 {isSubmitting ? "Starting scan…" : "Start First Scan"}
               </s-button>
+              {/* gc-4n0y: optional, non-blocking deeper-scan permissions. */}
+              <OptionalChecksLine />
             </s-stack>
           </s-card>
         ) : (

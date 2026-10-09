@@ -69,6 +69,7 @@ vi.mock("../../app/lib/plans", () => ({
 // ---------------------------------------------------------------------------
 
 import { buildPricingPlansUrl, getPlanFeatures } from "../../app/lib/billing.server";
+import { BROKEN_LINKS_STANDARD_NOTE } from "../../app/lib/optional-scopes";
 import { canReceiveAlerts } from "../../app/lib/plan-gating.server";
 import { hasBillingHistory } from "../../app/models/billing-event.server";
 import { setShopAlertsEnabled } from "../../app/models/merchant-alert.server";
@@ -580,5 +581,52 @@ describe("Settings Monitoring emails card", () => {
 
     expect(html.match(/Upgrade to Standard/g)).toHaveLength(2);
     expect(html).not.toContain("Start 7-day");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Permissions card on every plan (gc-4n0y)
+// ---------------------------------------------------------------------------
+
+describe("Settings Permissions card (gc-4n0y)", () => {
+  function render(plan: string, canDetectDanglingReferences: boolean): string {
+    const loaderData = {
+      shop: { plan, domain: SHOP_DOMAIN },
+      features: { ...FREE_FEATURES, canDetectDanglingReferences },
+      pricingPlansUrl: PRICING_PLANS_URL,
+      trialEligible: true,
+      alerts: DARK_ALERTS,
+    };
+    const Stub = createRoutesStub([
+      {
+        id: "settings",
+        path: "/app/settings",
+        Component: Settings as never,
+        loader: () => loaderData,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/settings"],
+        hydrationData: { loaderData: { settings: loaderData } },
+      }),
+    );
+  }
+
+  it("renders for a Free shop, with the Broken links plan note", () => {
+    const html = render("free", false);
+    expect(html).toContain("<s-heading>Permissions</s-heading>");
+    expect(html).toContain("need extra read-only");
+    expect(html).toContain(BROKEN_LINKS_STANDARD_NOTE.replace(/'/g, "&#x27;"));
+  });
+
+  it.each(["Standard", "Professional"])("renders for %s without the plan note", (plan) => {
+    const html = render(plan, true);
+    expect(html).toContain("<s-heading>Permissions</s-heading>");
+    expect(html).not.toContain("Broken-link checks come with the Standard plan");
+  });
+
+  it("the plan note has no em or en dash", () => {
+    expect(BROKEN_LINKS_STANDARD_NOTE).not.toMatch(/[–—]/);
   });
 });

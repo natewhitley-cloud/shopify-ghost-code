@@ -4252,3 +4252,70 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-4n0y: optional (scope-gated) audits run on Free when the scopes are
+// granted. Only Broken links (DANGLING_REFERENCE) stays Standard+ by plan.
+// ---------------------------------------------------------------------------
+
+describe("scanTheme: optional audits on a Free plan (gc-4n0y)", () => {
+  it("a Free shop with every optional scope granted runs every scope-gated audit, but not Broken links", async () => {
+    process.env.DANGLING_REFERENCE_LIVE_ENABLED = "true";
+    mockExtractDanglingReferences.mockReturnValue({
+      occurrences: [
+        {
+          entityType: "page",
+          handle: "gone",
+          filename: "sections/footer.liquid",
+          lineNumber: 3,
+          snippet: '<a href="/pages/gone">x</a>',
+        },
+      ],
+      distinctHandles: [{ entityType: "page", handle: "gone" }],
+    });
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
+    mockAuditTranslations.mockResolvedValue({
+      locales: ["fr"],
+      summaries: [],
+      totalTranslations: 1,
+      totalOutdated: 0,
+    });
+
+    await runScanTheme();
+
+    // Every scope-gated audit actually ran its fetch + detectors.
+    expect(mockAuditTranslations).toHaveBeenCalled();
+    expect(mockFetchProductAuditData).toHaveBeenCalled();
+    expect(mockDetectOrphanedProductTags).toHaveBeenCalled();
+    expect(mockDetectPersistentDiscounts).toHaveBeenCalled();
+    expect(mockDetectOrphanedMetafields).toHaveBeenCalled();
+    expect(mockFetchPages).toHaveBeenCalled();
+    expect(mockDetectOrphanedPages).toHaveBeenCalled();
+    expect(mockFetchRedirects).toHaveBeenCalled();
+    expect(mockDetectOrphanedRedirects).toHaveBeenCalled();
+    // Broken links: withheld by plan, and not reported as a scope skip.
+    expect(mockResolveDanglingReferences).not.toHaveBeenCalled();
+    expect(mockFinalizeScan).toHaveBeenCalledWith(
+      SCAN_ID,
+      expect.objectContaining({ skippedCategories: [], cappedCategories: [] }),
+    );
+  });
+
+  it("a Free shop WITHOUT the scopes records the skipped categories (feeds the Free coverage notice)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
+    mockFetchGrantedOptionalScopes.mockResolvedValue([]);
+    mockHasTranslationScope.mockResolvedValue(false);
+    mockHasProductScope.mockResolvedValue(false);
+    mockHasContentScope.mockResolvedValue(false);
+    mockHasNavigationScope.mockResolvedValue(false);
+
+    await runScanTheme();
+
+    expect(mockFetchProductAuditData).not.toHaveBeenCalled();
+    const finalized = mockFinalizeScan.mock.calls.at(-1)?.[1] as { skippedCategories: string[] };
+    expect(finalized.skippedCategories).toEqual(
+      expect.arrayContaining(["GHOST_TRANSLATION", "GHOST_TAG", "GHOST_PAGE", "GHOST_REDIRECT"]),
+    );
+    expect(finalized.skippedCategories).not.toContain("DANGLING_REFERENCE");
+  });
+});

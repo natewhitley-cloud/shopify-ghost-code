@@ -1,4 +1,3 @@
-import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { Link, useFetcher, useLoaderData } from "react-router";
 
@@ -6,13 +5,14 @@ import { readChecked } from "../components/polaris-events";
 import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import {
   allOptionalScopesGranted,
-  missingOptionalScopes,
+  BROKEN_LINKS_STANDARD_NOTE,
   OPTIONAL_SCOPE_INFO,
   OPTIONAL_SCOPES,
 } from "../lib/optional-scopes";
 import { canReceiveAlerts } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "../lib/trial-cta";
+import { useOptionalScopes } from "../lib/use-optional-scopes";
 import { setShopAlertsEnabled } from "../models/merchant-alert.server";
 import { getShopMetadata } from "../models/shop.server";
 import { getMerchantAlertConfigStatus } from "../services/merchant-alert.server";
@@ -169,30 +169,8 @@ function MonitoringEmailsCard({
 }
 
 // ---------------------------------------------------------------------------
-// Permissions card (client-side, Standard+ only)
+// Permissions card (client-side, all plans; gc-4n0y)
 // ---------------------------------------------------------------------------
-
-/**
- * The `shopify` global is injected by App Bridge in embedded context. The
- * `scopes` API is relatively new, so it is typed optional and guarded at runtime
- * — on an older App Bridge `shopify.scopes` is undefined and the card degrades
- * to an informational note rather than throwing.
- *
- * Shapes verified against the App Home Scopes API docs
- * (shopify.dev/docs/api/app-home/v1.0/apis/authentication-and-data/scopes-api):
- *   - query()   → { granted, required, optional }  (string[] each)
- *   - request() → { result: "granted-all" | "declined-all", detail: { granted } }
- */
-declare const shopify:
-  | {
-      scopes?: {
-        query: () => Promise<{ granted: string[]; required: string[]; optional: string[] }>;
-        request: (
-          scopes: string[],
-        ) => Promise<{ result: "granted-all" | "declined-all"; detail: { granted: string[] } }>;
-      };
-    }
-  | undefined;
 
 /**
  * The badge treatment for one optional scope, derived from the App Bridge query
@@ -213,58 +191,14 @@ export function scopeBadge(
 
 /**
  * Live granted-scope state for the optional per-audit scopes, with a re-consent
- * button that opens the App Bridge permission modal for only the missing scopes.
- * Rendered only for Standard+ plans (the Admin-resource detectors these scopes
- * unlock are paid features, so Free merchants never see this card).
+ * button that opens the App Bridge permission modal for only the missing scopes
+ * (useOptionalScopes, shared with Home's welcome card). Rendered on every plan
+ * (gc-4n0y): the checks these scopes unlock run on Free scans too. The one
+ * exception is Broken links, which is a Standard feature by plan, not by
+ * permission, so a plan without it says so instead of implying a grant adds it.
  */
-function PermissionsCard() {
-  // null = not yet loaded; string[] = App Bridge query result.
-  const [granted, setGranted] = useState<string[] | null>(null);
-  // true when the App Bridge scopes API is unavailable (older App Bridge).
-  const [unsupported, setUnsupported] = useState(false);
-  // true when the initial query or a request failed.
-  const [failed, setFailed] = useState(false);
-  const [requesting, setRequesting] = useState(false);
-
-  // Query current scopes on mount. Runs only in the browser (App Bridge global),
-  // so the SSR render never touches `shopify`.
-  useEffect(() => {
-    if (typeof shopify === "undefined" || !shopify.scopes) {
-      setUnsupported(true);
-      return;
-    }
-    let cancelled = false;
-    shopify.scopes
-      .query()
-      .then((res) => {
-        if (!cancelled) setGranted(res.granted);
-      })
-      .catch(() => {
-        if (!cancelled) setFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const missing = missingOptionalScopes(granted ?? []);
-
-  async function handleGrant() {
-    if (typeof shopify === "undefined" || !shopify.scopes) return;
-    setRequesting(true);
-    setFailed(false);
-    try {
-      await shopify.scopes.request(missing);
-      // Re-query so the displayed state reflects the merchant's decision (the
-      // modal is all-or-nothing, but re-querying is the authoritative source).
-      const res = await shopify.scopes.query();
-      setGranted(res.granted);
-    } catch {
-      setFailed(true);
-    } finally {
-      setRequesting(false);
-    }
-  }
+export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: boolean }) {
+  const { granted, unsupported, failed, requesting, requestMissing } = useOptionalScopes();
 
   return (
     <div style={{ marginTop: "16px" }}>
@@ -275,6 +209,11 @@ function PermissionsCard() {
             Some checks (products, pages, redirects, and translations) need extra read-only
             permissions. Grant them to include those checks in your scans.
           </s-paragraph>
+          {!brokenLinksIncluded && (
+            <s-paragraph>
+              <span style={{ color: TEXT_SUBDUED }}>{BROKEN_LINKS_STANDARD_NOTE}</span>
+            </s-paragraph>
+          )}
 
           {unsupported ? (
             <s-paragraph>
@@ -326,11 +265,11 @@ function PermissionsCard() {
 
               {granted !== null && allOptionalScopesGranted(granted) ? (
                 <s-banner tone="success">
-                  All permissions granted — every check runs on your scans.
+                  All permissions granted, so these checks run on your scans.
                 </s-banner>
               ) : (
                 <div>
-                  <s-button variant="primary" onClick={handleGrant} disabled={requesting}>
+                  <s-button variant="primary" onClick={requestMissing} disabled={requesting}>
                     {requesting ? "Requesting…" : "Grant access"}
                   </s-button>
                 </div>
@@ -354,7 +293,7 @@ function PermissionsCard() {
 // ---------------------------------------------------------------------------
 
 export default function Settings() {
-  const { shop, pricingPlansUrl, trialEligible, alerts } = useLoaderData<typeof loader>();
+  const { shop, features, pricingPlansUrl, trialEligible, alerts } = useLoaderData<typeof loader>();
 
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
@@ -536,8 +475,9 @@ export default function Settings() {
           />
         )}
 
-        {/* Permissions — Standard+ only (the checks these scopes unlock are paid). */}
-        {!isFree && <PermissionsCard />}
+        {/* Permissions, every plan (gc-4n0y): the checks these scopes unlock run on
+          Free scans too; Broken links stays a Standard feature by plan. */}
+        <PermissionsCard brokenLinksIncluded={features.canDetectDanglingReferences} />
 
         {/* About */}
         <div style={{ marginTop: "16px" }} />

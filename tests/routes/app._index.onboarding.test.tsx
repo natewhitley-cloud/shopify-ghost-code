@@ -104,7 +104,11 @@ import {
   hasCompletedScans,
 } from "../../app/models/scan.server";
 import { getOrCreateShopMetadata } from "../../app/models/shop.server";
-import Dashboard, { HomeScanInProgress, loader } from "../../app/routes/app._index";
+import Dashboard, {
+  HomeScanInProgress,
+  loader,
+  OPTIONAL_CHECKS_COPY,
+} from "../../app/routes/app._index";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
@@ -448,5 +452,55 @@ describe("Home Start here (gc-bn0x)", () => {
     const html = renderDashboard(data);
     expect(html).not.toContain("top-findings-heading");
     expect(html).toContain("You&#x27;re all clear");
+  });
+});
+
+// gc-4n0y: the welcome card's optional, non-blocking permissions line.
+describe("Welcome card optional permissions line (gc-4n0y)", () => {
+  async function welcomeHtml(): Promise<string> {
+    mockGetOrCreate.mockResolvedValue(NEW_SHOP);
+    return renderDashboard(await runLoader());
+  }
+
+  it("sits under Start First Scan as a secondary line, and the primary action stays one click", async () => {
+    const html = await welcomeHtml();
+
+    const line = `${OPTIONAL_CHECKS_COPY.lead}<button type="button"`;
+    expect(html).toContain(line);
+    expect(html).toContain(`>${OPTIONAL_CHECKS_COPY.link}</button>${OPTIONAL_CHECKS_COPY.tail}`);
+    expect(html.indexOf("Start First Scan")).toBeLessThan(html.indexOf(OPTIONAL_CHECKS_COPY.lead));
+    // Exactly one primary button on the card, and it still starts the scan.
+    expect(html.match(/<s-button[^>]*variant="primary"/g)).toHaveLength(1);
+    expect(html).toMatch(/<s-button[^>]*variant="primary"[^>]*>Start First Scan<\/s-button>/);
+  });
+
+  it("the line is copy-clean (no em or en dash) and is a real button, not a form post", async () => {
+    const html = await welcomeHtml();
+    for (const part of Object.values(OPTIONAL_CHECKS_COPY)) {
+      expect(part).not.toMatch(/[–—]/);
+    }
+    expect(html).not.toMatch(/<form[^>]*>[^]*allow product, page/);
+  });
+
+  it("is not shown once the shop has scanned (dashboard, not welcome)", async () => {
+    mockGetOrCreate.mockResolvedValue(NEW_SHOP);
+    (getScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [
+        {
+          id: "scan-1",
+          shopId: NEW_SHOP.id,
+          themeId: "gid://shopify/Theme/1",
+          themeName: "Dawn",
+          status: "IN_PROGRESS",
+          findingCount: 0,
+          startedAt: new Date(),
+          completedAt: null,
+          createdAt: new Date(),
+        },
+      ],
+      hasNextPage: false,
+    });
+    const html = renderDashboard(await runLoader());
+    expect(html).not.toContain(OPTIONAL_CHECKS_COPY.link);
   });
 });
