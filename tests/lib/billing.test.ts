@@ -248,8 +248,8 @@ describe("determineBillingEventType", () => {
 describe("getPlanFeatures alertCadence (gc-syz.3)", () => {
   it.each([
     ["free", "none"],
-    ["Standard", "weekly"],
-    ["Professional", "daily"],
+    ["Standard", "monthly"],
+    ["Professional", "weekly"],
     ["unknown", "none"],
   ])("%s -> %s", (plan, cadence) => {
     expect(getPlanFeatures(plan).alertCadence).toBe(cadence);

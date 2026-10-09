@@ -647,8 +647,8 @@ describe("alert gating (alertCadence)", () => {
   // getPlanFeatures resolves to the free tier.
   const CASES: Array<[string, boolean, number | null]> = [
     ["free", false, null],
-    ["Standard", true, 7 * DAY_MS],
-    ["Professional", true, DAY_MS],
+    ["Standard", true, 28 * DAY_MS], // monthly (gc-iefo)
+    ["Professional", true, 7 * DAY_MS], // weekly (gc-iefo)
     ["unknown-plan", false, null],
     ["standard", false, null], // names are case-sensitive Shopify plan names
     ["", false, null],
@@ -657,6 +657,12 @@ describe("alert gating (alertCadence)", () => {
   it.each(CASES)("%s -> canReceiveAlerts=%s, window=%s", (plan, can, windowMs) => {
     expect(canReceiveAlerts(plan)).toBe(can);
     expect(getAlertWindowMs(plan)).toBe(windowMs);
+  });
+
+  it("the monthly window never throttles the next month's scheduled scan (shortest month)", async () => {
+    const { ALERT_WINDOW_TOLERANCE } = await import("../../app/services/merchant-alert.server");
+    // Feb 1 -> Mar 1 is 28 days; the throttle applies only inside window * tolerance.
+    expect(getAlertWindowMs("Standard")! * ALERT_WINDOW_TOLERANCE).toBeLessThan(28 * DAY_MS);
   });
 
   it("canReceiveAlerts is true exactly when a window exists (one source of truth)", () => {

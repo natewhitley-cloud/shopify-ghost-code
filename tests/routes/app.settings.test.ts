@@ -570,7 +570,7 @@ describe("Settings Monitoring emails card", () => {
     expect(html).toContain("Monitoring emails");
     expect(html).not.toContain("<s-checkbox");
     expect(html).toContain(
-      "Monitoring emails are included with Standard (weekly rescans) and Professional (daily rescans).",
+      "Monitoring emails are included with Standard (monthly rescans) and Professional (weekly rescans).",
     );
     // Standard tile + Professional tile + card CTA + Manage subscription.
     expect(html.match(/Start 7-day free trial/g)).toHaveLength(3);

@@ -190,10 +190,10 @@ export type PlanFeatures = {
   /**
    * How often the merchant can be emailed about NEW findings (gc-syz.3). Mirrors
    * the plan's scheduled-scan cadence (alerts ride the rescans): Free none,
-   * Standard weekly, Professional daily. Single source for the alert gate and
-   * the throttle window.
+   * Standard monthly, Professional weekly (gc-iefo, 2026-10-09). Single source
+   * for the alert gate and the throttle window.
    */
-  alertCadence: "none" | "weekly" | "daily";
+  alertCadence: "none" | "weekly" | "monthly";
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -206,11 +206,11 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         maxThemes: 1,
         autoRescan: false,
         scanDiffing: false,
-        scheduledScan: true, // Weekly scheduled scan, Sunday 6 AM UTC via weekly-scan cron
+        scheduledScan: true, // Monthly, 1st 07:20 UTC via monthly-scan, theme changed or not (gc-iefo)
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
         exportPdf: false, // PDF export is Professional-only (gc-rrh.1)
-        alertCadence: "weekly", // matches the weekly scheduled scan (gc-syz.3)
+        alertCadence: "monthly", // matches the monthly scheduled scan (gc-syz.3, gc-iefo)
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -220,11 +220,11 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         maxThemes: Infinity,
         autoRescan: true,
         scanDiffing: true,
-        scheduledScan: true, // Daily via poll-theme-changes coordinator
+        scheduledScan: true, // Weekly, Sunday 06:40 UTC via weekly-scan, theme changed or not (gc-iefo)
         canDetectDanglingReferences: true, // Standard+ (gc-m4h.7)
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
         exportPdf: true, // Professional-only branded PDF export (gc-rrh.1)
-        alertCadence: "daily", // matches the daily scheduled scan (gc-syz.3)
+        alertCadence: "weekly", // matches the weekly scheduled scan (gc-syz.3, gc-iefo)
       };
     default: // FREE — no active Shopify subscription
       return {

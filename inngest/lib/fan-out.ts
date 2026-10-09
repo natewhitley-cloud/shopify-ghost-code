@@ -1,10 +1,10 @@
 /**
  * Shared fan-out helper for the cron coordinators.
  *
- * Both the weekly-scan (Standard plan) and poll-theme-changes (Professional
- * plan) coordinators fan out one `poll/check-shop` event per shop to the
- * poll-check-shop worker. This helper is the single source of truth for that
- * fan-out so the two coordinators cannot drift apart.
+ * The plan-cadence coordinators (weekly-scan: Professional, monthly-scan:
+ * Standard; see plan-scan-coordinator.ts) fan out one `poll/check-shop` event
+ * per shop to the poll-check-shop worker. This helper is the single source of
+ * truth for that fan-out.
  *
  * Why chunking matters:
  *   `inngest.send()` accepts at most 512 events in a single call — that is a

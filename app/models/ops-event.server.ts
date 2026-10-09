@@ -511,6 +511,8 @@ export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
   { key: "operator-digest", intervalMs: DAY_MS },
   { key: "reconcile-installs", intervalMs: DAY_MS },
   { key: "weekly-scan", intervalMs: 7 * DAY_MS },
+  // 1st of each month (gc-iefo): the longest gap between runs is 31 days.
+  { key: "monthly-scan", intervalMs: 31 * DAY_MS },
 ];
 
 /**

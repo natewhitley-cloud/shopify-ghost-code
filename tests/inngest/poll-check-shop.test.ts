@@ -1,15 +1,14 @@
 /**
  * Tests for the poll-check-shop Inngest worker function.
  *
- * This function is triggered by `poll/check-shop` events (emitted by the
- * poll-theme-changes coordinator). It handles per-shop theme-change detection:
- *   1. Fetch the shop's main theme from Shopify (updatedAt).
- *   2. Check for an active (PENDING or IN_PROGRESS) scan → skip if found.
- *   3. Compare theme updatedAt against the latest SUCCESSFUL scan's createdAt
- *      (FAILED scans ignored — LOG-7).
- *   4. If stale (or no prior successful scan), create a scan record in a
- *      `create-scan` step, then dispatch `scan/requested` via step.sendEvent in
- *      a separate step so each is idempotent on retry (LOG-8).
+ * Triggered by `poll/check-shop` events from the plan-cadence coordinators
+ * (weekly-scan: Professional, monthly-scan: Standard). Per shop:
+ *   1. Fetch the shop's main theme from Shopify.
+ *   2. Check for an active (PENDING or IN_PROGRESS) scan -> skip if found.
+ *   3. Create a SCHEDULED scan record in a `create-scan` step, then dispatch
+ *      `scan/requested` via step.sendEvent in a separate step so each is
+ *      idempotent on retry (LOG-8).
+ * There is no theme-staleness skip (gc-iefo): an unchanged theme is scanned.
  *
  * Strategy:
  *   - Mock all I/O boundaries (db.server, shopify.server, theme-fetcher.server,
@@ -45,7 +44,6 @@ vi.mock("../../app/services/theme-fetcher.server", () => ({
 
 vi.mock("../../app/models/scan.server", () => ({
   createScan: vi.fn(),
-  getLatestSuccessfulScanForTheme: vi.fn(),
 }));
 
 vi.mock("../../inngest/client", () => ({
@@ -67,7 +65,7 @@ vi.mock("../../inngest/client", () => ({
 // ---------------------------------------------------------------------------
 
 import db from "../../app/db.server";
-import { createScan, getLatestSuccessfulScanForTheme } from "../../app/models/scan.server";
+import { createScan } from "../../app/models/scan.server";
 import { fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
@@ -84,7 +82,6 @@ const mockDb = db as unknown as {
 const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockCreateScan = createScan as ReturnType<typeof vi.fn>;
-const mockGetLatestSuccessfulScan = getLatestSuccessfulScanForTheme as ReturnType<typeof vi.fn>;
 // inngest.send is no longer used by the function (dispatch goes through
 // step.sendEvent now — LOG-8). Kept here only to assert it is NOT called.
 const mockInngestSend = (inngest as unknown as { send: ReturnType<typeof vi.fn> }).send;
@@ -159,23 +156,20 @@ async function runPollCheckShop(
 beforeEach(() => {
   vi.clearAllMocks();
 
-  // Default happy-path wiring: stale theme → dispatch scan.
-  // Step 2 (active-scan check) uses db.scan.findFirst; Step 3 (staleness) uses
-  // the getLatestSuccessfulScanForTheme model helper.
+  // Default happy-path wiring: no active scan -> dispatch a SCHEDULED scan.
   mockUnauthenticated.admin.mockResolvedValue({ admin: MOCK_ADMIN });
   mockFetchMainTheme.mockResolvedValue(MOCK_MAIN_THEME);
   mockDb.scan.findFirst.mockResolvedValue(null); // no in-progress scan
-  mockGetLatestSuccessfulScan.mockResolvedValue(null); // no successful scan → needsScan = true
   mockCreateScan.mockResolvedValue(MOCK_SCAN);
   mockInngestSend.mockResolvedValue(undefined);
 });
 
 // ---------------------------------------------------------------------------
-// Happy path — stale theme triggers dispatch
+// Happy path — every scheduled check dispatches a scan
 // ---------------------------------------------------------------------------
 
 describe("pollCheckShop — happy path", () => {
-  it("returns dispatch_triggered outcome when theme is stale", async () => {
+  it("returns dispatch_triggered outcome", async () => {
     const result = await runPollCheckShop();
 
     expect(result.outcome).toBe("dispatch_triggered");
@@ -218,24 +212,33 @@ describe("pollCheckShop — happy path", () => {
     expect(sentEvent.data.scanId).toBe(SCAN_ID);
   });
 
-  it("triggers a scan when the theme was updated after the last successful scan", async () => {
-    const lastScanDate = new Date("2026-03-09T00:00:00Z"); // yesterday
-    // theme was updated at 2026-03-10T08:00:00Z which is AFTER lastScanDate
-    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: lastScanDate });
+  it("scans an UNCHANGED theme: no staleness skip for scheduled checks (gc-iefo)", async () => {
+    // The theme was last edited long before any recent scan; the old worker
+    // returned skipped_up_to_date here. Scheduled scans now run on cadence.
+    mockFetchMainTheme.mockResolvedValue({
+      ...MOCK_MAIN_THEME,
+      updatedAt: new Date("2020-01-01T00:00:00Z"),
+    });
 
     const result = await runPollCheckShop();
 
     expect(result.outcome).toBe("dispatch_triggered");
-    expect(mockCreateScan).toHaveBeenCalled();
+    expect(mockCreateScan).toHaveBeenCalledWith(
+      SHOP_ID,
+      THEME_GID,
+      THEME_NAME,
+      ScanOrigin.SCHEDULED,
+    );
+    expect(lastStep.sendEvent).toHaveBeenCalledOnce();
   });
 
-  it("triggers a scan when there is no previous successful scan at all", async () => {
-    mockGetLatestSuccessfulScan.mockResolvedValue(null);
+  it("runs no theme-staleness step and reads no previous scan", async () => {
+    await runPollCheckShop();
 
-    const result = await runPollCheckShop();
-
-    expect(result.outcome).toBe("dispatch_triggered");
-    expect(mockCreateScan).toHaveBeenCalled();
+    const steps = lastStep.run.mock.calls.map((c) => c[0]);
+    expect(steps).toEqual(["fetch-main-theme", "check-active-scan", "create-scan"]);
+    // Only the active-scan check queries scans.
+    expect(mockDb.scan.findFirst).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -314,52 +317,6 @@ describe("pollCheckShop — skip: in-progress scan", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Skip: theme up to date
-// ---------------------------------------------------------------------------
-
-describe("pollCheckShop — skip: theme up to date", () => {
-  // theme updatedAt = 2026-03-10T08:00:00Z (from MOCK_MAIN_THEME)
-  const COMPLETED_AFTER_THEME = new Date("2026-03-11T00:00:00Z"); // newer than theme
-
-  it("returns skipped_up_to_date when theme updatedAt is older than the latest successful scan", async () => {
-    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: COMPLETED_AFTER_THEME });
-
-    const result = await runPollCheckShop();
-
-    expect(result.outcome).toBe("skipped_up_to_date");
-    expect(result.domain).toBe(SHOP_DOMAIN);
-  });
-
-  // LOG-7: a PARTIAL scan is a legitimate successful result, so a recent
-  // PARTIAL scan newer than the theme update also suppresses a re-scan.
-  it("returns skipped_up_to_date when a PARTIAL scan newer than the theme update exists", async () => {
-    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: COMPLETED_AFTER_THEME });
-
-    const result = await runPollCheckShop();
-
-    expect(result.outcome).toBe("skipped_up_to_date");
-    expect(mockCreateScan).not.toHaveBeenCalled();
-  });
-
-  it("does not create a scan when theme is up to date", async () => {
-    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: COMPLETED_AFTER_THEME });
-
-    await runPollCheckShop();
-
-    expect(mockCreateScan).not.toHaveBeenCalled();
-  });
-
-  it("does not dispatch an event when theme is up to date", async () => {
-    mockGetLatestSuccessfulScan.mockResolvedValue({ createdAt: COMPLETED_AFTER_THEME });
-
-    await runPollCheckShop();
-
-    expect(lastStep.sendEvent).not.toHaveBeenCalled();
-    expect(mockInngestSend).not.toHaveBeenCalled();
-  });
-});
-
-// ---------------------------------------------------------------------------
 // Error paths
 // ---------------------------------------------------------------------------
 
@@ -424,48 +381,6 @@ describe("pollCheckShop — error paths", () => {
 
     expect(result.outcome).toBe("error");
     expect(result.reason).toContain("string error");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// LOG-7: a FAILED last scan must not permanently suppress re-scans
-// ---------------------------------------------------------------------------
-
-describe("pollCheckShop — LOG-7: failed scan does not suppress re-scan", () => {
-  it("uses getLatestSuccessfulScanForTheme (status-filtered) for the staleness check", async () => {
-    await runPollCheckShop();
-
-    expect(mockGetLatestSuccessfulScan).toHaveBeenCalledWith(SHOP_ID, THEME_GID);
-    // Only the active-scan check should hit db.scan.findFirst directly — the
-    // staleness query goes through the model helper, never an unfiltered query.
-    expect(mockDb.scan.findFirst).toHaveBeenCalledTimes(1);
-  });
-
-  it("re-scans when there is no successful scan (e.g. the latest scan FAILED)", async () => {
-    // getLatestSuccessfulScanForTheme filters to COMPLETED/PARTIAL, so a shop
-    // whose most recent scan FAILED has no successful baseline and the helper
-    // returns null → a re-scan must be dispatched. Previously the unfiltered
-    // query returned the FAILED scan's createdAt (always after the theme
-    // update that triggered it) and suppressed re-scans indefinitely.
-    mockGetLatestSuccessfulScan.mockResolvedValue(null);
-
-    const result = await runPollCheckShop();
-
-    expect(result.outcome).toBe("dispatch_triggered");
-    expect(mockCreateScan).toHaveBeenCalled();
-    expect(lastStep.sendEvent).toHaveBeenCalledOnce();
-  });
-
-  it("re-scans when the theme was updated after the last successful scan", async () => {
-    // theme updatedAt = 2026-03-10T08:00:00Z; last success predates it.
-    mockGetLatestSuccessfulScan.mockResolvedValue({
-      createdAt: new Date("2026-03-09T00:00:00Z"),
-    });
-
-    const result = await runPollCheckShop();
-
-    expect(result.outcome).toBe("dispatch_triggered");
-    expect(mockCreateScan).toHaveBeenCalled();
   });
 });
 

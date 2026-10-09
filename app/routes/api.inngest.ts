@@ -14,6 +14,7 @@ import { inngest } from "../../inngest/client";
 import { checkScanStale } from "../../inngest/functions/check-scan-stale";
 import { monitorDeepHealth } from "../../inngest/functions/monitor-deep-health";
 import { monitorScanFailures } from "../../inngest/functions/monitor-scan-failures";
+import { monthlyScan } from "../../inngest/functions/monthly-scan";
 import { operatorDigest } from "../../inngest/functions/operator-digest";
 import { pollCheckShop } from "../../inngest/functions/poll-check-shop";
 import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
@@ -34,6 +35,7 @@ const handler = serve({
     pollThemeChanges,
     pollCheckShop,
     weeklyScan,
+    monthlyScan,
     monitorScanFailures,
     monitorDeepHealth,
     checkScanStale,

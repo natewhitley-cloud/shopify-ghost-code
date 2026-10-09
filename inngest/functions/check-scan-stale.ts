@@ -6,7 +6,7 @@
  *
  * Trigger: the `scan/requested` event, the single choke point every scan goes
  * through (dispatchScan for the dashboard + theme-publish webhook, and
- * poll-check-shop for the daily/weekly scheduled paths). Inngest fans one event
+ * poll-check-shop for the weekly/monthly scheduled paths). Inngest fans one event
  * out to every function listening for it, so scan-theme and this function both
  * start from the same send: no dispatch call site needs to remember to schedule
  * a check, and a new dispatch path is covered automatically. If the send itself

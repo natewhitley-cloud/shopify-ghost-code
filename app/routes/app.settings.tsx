@@ -151,8 +151,8 @@ function MonitoringEmailsCard({
           ) : (
             <>
               <s-paragraph>
-                Monitoring emails are included with Standard (weekly rescans) and Professional
-                (daily rescans).
+                Monitoring emails are included with Standard (monthly rescans) and Professional
+                (weekly rescans).
               </s-paragraph>
               <div>
                 <a href={pricingPlansUrl} target="_top" rel="noreferrer">

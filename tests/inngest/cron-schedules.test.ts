@@ -28,6 +28,7 @@ vi.mock("../../app/db.server", () => ({ default: {} }));
 import { CRON_HEARTBEAT_EXPECTATIONS } from "../../app/models/ops-event.server";
 import { MONITOR_DEEP_HEALTH_CRON } from "../../inngest/functions/monitor-deep-health";
 import { MONITOR_SCAN_FAILURES_CRON } from "../../inngest/functions/monitor-scan-failures";
+import { MONTHLY_SCAN_CRON } from "../../inngest/functions/monthly-scan";
 import { OPERATOR_DIGEST_CRON } from "../../inngest/functions/operator-digest";
 import { POLL_THEME_CHANGES_CRON } from "../../inngest/functions/poll-theme-changes";
 import { RECONCILE_INSTALLS_CRON } from "../../inngest/functions/reconcile-installs";
@@ -39,6 +40,7 @@ const EXPECTED: Array<[string, string, string]> = [
   ["monitor-scan-failures", MONITOR_SCAN_FAILURES_CRON, "15 */6 * * *"],
   ["snapshot-metrics", SNAPSHOT_METRICS_CRON, "20 6 * * *"],
   ["weekly-scan", WEEKLY_SCAN_CRON, "40 6 * * 0"],
+  ["monthly-scan", MONTHLY_SCAN_CRON, "20 7 1 * *"],
   ["poll-theme-changes", POLL_THEME_CHANGES_CRON, "0 6 * * *"],
   ["reconcile-installs", RECONCILE_INSTALLS_CRON, "TZ=America/Denver 0 5 * * *"],
   ["operator-digest", OPERATOR_DIGEST_CRON, "TZ=America/Denver 30 5 * * *"],
@@ -62,6 +64,16 @@ describe("CRON_HEARTBEAT_EXPECTATIONS", () => {
     const byKey = new Map(CRON_HEARTBEAT_EXPECTATIONS.map((e) => [e.key, e.intervalMs]));
     expect(byKey.has("watch-stale-scans")).toBe(false);
     expect(byKey.get("monitor-deep-health")).toBe(60 * 60 * 1000);
+  });
+
+  it("expects the plan-cadence coordinators at their new intervals (gc-iefo)", () => {
+    const byKey = new Map(CRON_HEARTBEAT_EXPECTATIONS.map((e) => [e.key, e.intervalMs]));
+    const DAY = 24 * 60 * 60 * 1000;
+    expect(byKey.get("weekly-scan")).toBe(7 * DAY);
+    // Longest gap between two runs on the 1st is 31 days.
+    expect(byKey.get("monthly-scan")).toBe(31 * DAY);
+    // poll-theme-changes is now the daily stale-scan sweep.
+    expect(byKey.get("poll-theme-changes")).toBe(DAY);
   });
 
   it("covers exactly the registered cron functions", () => {

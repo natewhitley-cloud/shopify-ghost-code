@@ -50,18 +50,18 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 | Scans                  | 1 manual per week (resets Monday 00:00 UTC)      |
 | Finding details        | Full (file, line number, code snippet)           |
 | Theme Health Score     | Yes (score + color band + delta between scans)   |
-| Weekly scheduled scan  | Yes (automatic scan every Sunday 6 AM UTC)       |
+| Monthly scheduled scan | Yes (1st of each month, 07:20 UTC, theme changed or not) |
 | Monthly re-scan nudge  | Yes (in-app prompt on 1st of each month)         |
 | App install nudge      | Yes (in-app banner when a new app is installed)  |
 | Themes                 | 1                                                |
 | Auto-rescan on publish | No                                               |
 | Scan diffing           | No                                               |
-| New-findings alerts    | Weekly (`alertCadence: "weekly"`, gc-syz)        |
+| New-findings alerts    | Monthly (`alertCadence: "monthly"`, gc-syz)      |
 | Broken-link detection  | Yes (dangling references verified via Admin API) |
 
-**Purpose:** The mid-tier workhorse. Merchants get full finding details and weekly cadence — enough to stay on top of orphaned code without unlimited manual scans. The weekly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap creates clear daylight between Standard and Professional (unlimited).
+**Purpose:** The mid-tier workhorse. Merchants get full finding details, 1 manual scan a week and a monthly scheduled scan, enough to stay on top of orphaned code without unlimited manual scans. The monthly scheduled scan ensures no one falls behind even if they forget to scan manually. The 1/week manual cap and the monthly (vs Professional's weekly) scheduled scan create clear daylight between Standard and Professional.
 
-> **Manual-quota exemption (GC-iji):** the weekly cap counts **manual** (merchant-initiated) scans only. The Sunday-6AM scheduled scan and any Professional auto-rescan (theme-publish) are exempt and never consume the manual allowance — a merchant always gets their 1 manual scan/week regardless of how many automatic scans ran. This is enforced by a `Scan.origin` column (`MANUAL` / `SCHEDULED` / `AUTO_PUBLISH`); only `MANUAL` rows are counted in `createScan`'s atomic quota check and in `countScansForShopSince`.
+> **Manual-quota exemption (GC-iji):** the weekly cap counts **manual** (merchant-initiated) scans only. The scheduled scans (Standard monthly, Professional weekly) and any Professional auto-rescan (theme-publish) are exempt and never consume the manual allowance — a merchant always gets their 1 manual scan/week regardless of how many automatic scans ran. This is enforced by a `Scan.origin` column (`MANUAL` / `SCHEDULED` / `AUTO_PUBLISH`); only `MANUAL` rows are counted in `createScan`'s atomic quota check and in `countScansForShopSince`.
 
 **App listing features (max 40 chars each):**
 
@@ -69,13 +69,15 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 2. Full finding details with code
 3. Catch broken links from old apps
 4. Find dead checkout.liquid code
-5. Weekly auto-scan + findings trend
+5. 1 manual scan/week + monthly auto-scan
 6. 7-day free trial
 
 > **Bullet rationale (2026-09-12):** bullets 3–5 name Standard-only _outcomes_ (Broken Links
 > `DANGLING_REFERENCE`, checkout.liquid sunset `CHECKOUT_SUNSET`) instead of _mechanics_, so
 > ad-driven visitors see concrete reasons to pay. The 1-manual-scan/week cap is unchanged and
-> still enforced; it's folded into "Weekly auto-scan" rather than stated as a limit. Checkout
+> still enforced. (2026-10-09, gc-iefo: bullet 5 was "Weekly auto-scan + findings trend"; with the
+> scheduled scan now monthly the word "weekly" no longer covered the manual cap, so the cap is stated
+> outright and "findings trend" moves off the card; it stays on the in-app Settings tile.) Checkout
 > bullet is tense-neutral on purpose; the checkout.liquid sunset fully passed on Aug 28,
 > 2025 for every store (in-app copy made past tense in gc-oam). Apply these in Partner Dashboard → Managed Pricing.
 
@@ -86,9 +88,10 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 | Scans per month        | Unlimited                                        |
 | Finding details        | Full                                             |
 | Themes                 | Unlimited                                        |
-| Auto-rescan on publish | Yes                                              |
+| Auto-rescan on publish | Yes (instant rescan when a theme is published)   |
+| Weekly scheduled scan  | Yes (Sunday 06:40 UTC, theme changed or not)     |
 | Scan diffing           | Yes (new / resolved / unchanged between scans)   |
-| New-findings alerts    | Daily (`alertCadence: "daily"`, gc-syz)          |
+| New-findings alerts    | Weekly (`alertCadence: "weekly"`, gc-syz)        |
 | Broken-link detection  | Yes (dangling references verified via Admin API) |
 
 **Purpose:** "Set it and forget it" for multi-theme stores. Continuous monitoring with change tracking.
@@ -100,12 +103,12 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 3. Unlimited theme scanning
 4. Auto-rescan on theme publish
 5. Scan diffing (New/Resolved)
-6. Daily automatic scans
+6. Weekly automatic scans
 7. 7-day free trial
 
 ### Merchant new-findings alerts (gc-syz, in progress, not yet sending)
 
-Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatures.alertCadence` (`app/lib/billing.server.ts`) is `none` (Free), `weekly` (Standard) or `daily` (Professional), matching each plan's scheduled-scan cadence (Free has no rescans, so nothing to alert on). `canReceiveAlerts(plan)` and `getAlertWindowMs(plan)` (`app/lib/plan-gating.server.ts`) are the single source for the gate and the throttle window (weekly 7 days, daily 1 day, none null). Any plan name that is not Standard or Professional resolves to Free (`none`). The owner email comes from Admin `shop { email }` (no extra scope) cached on `Shop.alertEmail`; opt-out is `Shop.alertsEnabled`; sends are recorded in the `MerchantAlert` ledger. All of it is deleted on shop/redact. The email sender and scan-job step are not built yet, so no merchant receives alerts today.
+Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatures.alertCadence` (`app/lib/billing.server.ts`) is `none` (Free), `monthly` (Standard) or `weekly` (Professional), matching each plan's scheduled-scan cadence (Free has no rescans, so nothing to alert on; gc-iefo, 2026-10-09: was Standard weekly, Professional daily). `canReceiveAlerts(plan)` and `getAlertWindowMs(plan)` (`app/lib/plan-gating.server.ts`) are the single source for the gate and the throttle window (weekly 7 days, monthly 28 days = the shortest gap between two runs on the 1st, none null; the sender throttles only inside 90% of the window, so scheduler jitter never blocks the next scan's email). Any plan name that is not Standard or Professional resolves to Free (`none`). The owner email comes from Admin `shop { email }` (no extra scope) cached on `Shop.alertEmail`; opt-out is `Shop.alertsEnabled`; sends are recorded in the `MerchantAlert` ledger. All of it is deleted on shop/redact. The email sender and scan-job step are not built yet, so no merchant receives alerts today.
 
 ---
 
@@ -127,7 +130,7 @@ Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatu
 ### Standard → Professional
 
 3. **Scan limit hit on Standard** — Standard plan allows 1 manual scan per week (resets Monday 00:00 UTC). Weekly limit reached surfaces an upgrade prompt to Professional (unlimited). Combined with auto-rescan being Pro-only, this creates meaningful upgrade pressure for active merchants.
-4. **Auto-rescan skipped** — Theme publish webhooks arrive but scans are silently skipped on non-Pro plans. Standard shops get a weekly scheduled scan but miss same-day feedback when they publish a theme. Passive trigger (user doesn't see it unless they notice scans aren't auto-running).
+4. **Auto-rescan skipped** — Theme publish webhooks arrive but scans are silently skipped on non-Pro plans. Standard shops get a monthly scheduled scan but miss same-day feedback when they publish a theme. Passive trigger (user doesn't see it unless they notice scans aren't auto-running).
 5. **Scan diffing unavailable** — Standard users don't see "New / Resolved / Unchanged" diff badges. Pro users get change tracking.
 6. **Multi-theme gating** — `canUseMultipleThemes()` (in `app/lib/plan-gating.server.ts`, derived from the plan matrix's `maxThemes`) gates multi-theme scanning to Professional. Standard is capped at 1 theme, so the theme picker is disabled there; a Standard shop whose store has more than one theme also sees an in-app upgrade nudge on the dashboard.
 
@@ -159,9 +162,11 @@ Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatu
 | `app/routes/webhooks.app.subscriptions.update.tsx` | Webhook handler for plan changes                             |
 | `app/models/billing-event.server.ts`               | BillingEvent recording and query functions                   |
 | `tests/lib/plan-gating.server.test.ts`             | Comprehensive gating tests                                   |
-| `inngest/functions/weekly-scan.ts`                 | Weekly scan coordinator (Standard plan, Sunday 6 AM UTC)     |
-| `inngest/functions/poll-theme-changes.ts`          | Daily scan coordinator (Professional plan)                   |
-| `inngest/functions/poll-check-shop.ts`             | Per-shop worker (shared by both coordinators)                |
+| `inngest/functions/weekly-scan.ts`                 | Weekly scan coordinator (Professional, Sunday 06:40 UTC)     |
+| `inngest/functions/monthly-scan.ts`                | Monthly scan coordinator (Standard, 1st 07:20 UTC)           |
+| `inngest/lib/plan-scan-coordinator.ts`             | Shared builder for the two plan-cadence coordinators         |
+| `inngest/functions/poll-check-shop.ts`             | Per-shop worker: starts a SCHEDULED scan, no staleness skip  |
+| `inngest/functions/poll-theme-changes.ts`          | Daily stale-scan sweep only (id kept; no longer dispatches)  |
 
 ---
 
@@ -209,3 +214,4 @@ Alerting is packaged as a cadence tier lever, not a separate paywall: `PlanFeatu
 | 2026-09-18 | Standard $29 → **$9**, Professional $49 → **$29**                                                              | Competitive research on the direct category (leftover/ghost-code scanners): paid comps are Residue ~$4/mo (yearly), Script Scan $4.99/$14.99, GhostSweep $20 flat — median ~$10, and **all four have 0 reviews** (nascent category, no proven WTP, no pricing power). $29 sat above the entire observed range. Chose a land-grab price to maximize install velocity → reviews → social proof, then raise later (grandfather early merchants). $9 is a deliberate floor: it still covers the Admin-API cost of broken-link verification under the weekly scan cap, and sub-$9 signals "toy." Pro held above GhostSweep's $20 on the strength of unlimited scans + multi-theme + auto-rescan + diffing. **Code impact:** `PLAN_AMOUNTS` in `app/lib/billing.server.ts` updated (9/29) — the hand-maintained mirror that feeds `BillingEvent.amount` and the operator-digest MRR; MUST be flipped in the same window as the Partner Dashboard Managed-Pricing change or MRR/billing records drift. Managed-Pricing dollar values changed by Nathan in Partner Dashboard. |
 | 2026-09-26 | Free preview: up to 5 findings in full, never more than half (gc-97k.10)                                       | One full finding undersold the scan. Showing up to 5 (at least 1, at most half the non-malicious total), spread across consequence lanes, makes the value tangible while most findings stay locked. Malicious findings stay outside the count: always shown in full.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | 2026-10-09 | Free shops can grant the optional scopes; scope-gated checks run on Free (gc-4n0y) | First-value bet: a deeper first scan gives a Free merchant more to see and more to tease, without paying first. The Permissions card, the scan page's coverage notice, and a welcome-card optional line now reach Free (one shared App Bridge request, `app/lib/use-optional-scopes.ts`). The worker had no Free gate on these audits to remove. Broken links (`DANGLING_REFERENCE`) stays Standard+ by plan (gc-m4h.7), shown as a Standard feature, not a permission. Free preview limits are unchanged. Same day: the "Start here" top-3 block (gc-bn0x) ranks only what each plan shows in full. |
+| 2026-10-09 | Scheduled scans: Professional **weekly** (was daily), Standard **monthly** (was weekly), Free none; they run whether or not the theme changed; alert cadence follows (gc-iefo) | Daily was too much for what a scheduled scan adds on Professional, which already gets an instant rescan on every theme publish; weekly plus the publish rescan keeps it "set and forget". Standard moves to monthly to widen the gap to Professional (Standard keeps its 1 manual scan/week). The old poll-check-shop skipped any shop whose theme had not changed since its last scan, so the scheduled scans mostly never ran (paw-naturals, Professional: no scan 2026-10-05 to 2026-10-09); leftovers that do not touch theme files (product metafields, tags, pages, redirects) and app removals (gc-frda: an app's embed or ScriptTag disappearing) were never seen. The skip is removed: every scheduled run scans. Code: weekly-scan now targets Professional; new monthly-scan (Standard, 1st 07:20 UTC); poll-theme-changes keeps its id and daily cron as the stale-scan sweep only; `alertCadence` gains `monthly` and drops `daily`; heartbeat expectation for monthly-scan is 31 days. Partner Dashboard plan cards and the listing must be updated by hand (Standard bullet 5, Professional bullet 6). |

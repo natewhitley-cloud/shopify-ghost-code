@@ -1,13 +1,13 @@
 /**
  * Inngest function: poll-check-shop (worker)
  *
- * Processes a single shop's theme change check. Triggered by `poll/check-shop`
- * events emitted by the poll-theme-changes coordinator cron function.
+ * Starts one shop's SCHEDULED scan. Triggered by `poll/check-shop` events from
+ * the plan-cadence coordinators: weekly-scan (Professional, weekly) and
+ * monthly-scan (Standard, monthly). Those coordinators are the only senders.
  *
  * Concurrency:
- *   Up to 5 instances run in parallel. This gives controlled Shopify API
- *   parallelism — fast enough to process 100+ shops well within the daily
- *   window, conservative enough to avoid rate-limit exhaustion.
+ *   Up to 3 instances run in parallel. This gives controlled Shopify API
+ *   parallelism, conservative enough to avoid rate-limit exhaustion.
  *
  * Retry semantics:
  *   Inngest retries each invocation up to 3 times (default) on failure.
@@ -15,25 +15,30 @@
  *   not block others and does not consume the coordinator's retry budget.
  *
  * Per-shop logic:
- *   1. Fetch the main theme from Shopify (updatedAt timestamp).
- *   2. Check for an active (PENDING or IN_PROGRESS) scan → skip if found.
- *   3. Compare theme updatedAt against the latest SUCCESSFUL scan's createdAt
- *      (FAILED scans are ignored so a failed scan never suppresses re-scans).
- *   4. If stale (or no prior successful scan), create a scan record.
- *   5. Dispatch `scan/requested` to trigger the scan pipeline. Steps 4 and 5
+ *   1. Fetch the main theme from Shopify.
+ *   2. Check for an active (PENDING or IN_PROGRESS) scan -> skip if found.
+ *   3. Create a scan record (origin SCHEDULED, quota-exempt).
+ *   4. Dispatch `scan/requested` to trigger the scan pipeline. Steps 3 and 4
  *      are separate so each is idempotent on retry (a send failure never
  *      re-runs createScan).
+ *
+ * No theme-staleness skip (gc-iefo, 2026-10-09): a scheduled scan runs on the
+ * plan cadence even when the theme is unchanged. Leftovers outside theme files
+ * (product metafields, tags, pages, redirects) and app removals (gc-frda: an
+ * app's live hook disappearing) change without a theme edit, so a skip keyed on
+ * the theme's updatedAt hid them. A FAILED last scan needs no special case: the
+ * next scheduled run simply scans again.
  */
 
 import { ScanOrigin, ScanStatus } from "@prisma/client";
 
-import { createScan, getLatestSuccessfulScanForTheme } from "../../app/models/scan.server";
+import { createScan } from "../../app/models/scan.server";
 import { inngest } from "../client";
 
 export const pollCheckShop = inngest.createFunction(
   {
     id: "poll-check-shop",
-    name: "Poll: Check Single Shop for Theme Changes",
+    name: "Scheduled Scan: Start One Shop's Scan",
     // Shares the account-wide 5-slot Inngest pool across the 3 sibling apps; capped
     // at 3 to reserve cron headroom, matching scan-theme.
     concurrency: { limit: 3 },
@@ -75,7 +80,6 @@ export const pollCheckShop = inngest.createFunction(
           ok: true as const,
           themeId: mainTheme.id,
           themeName: mainTheme.name,
-          themeUpdatedAt: mainTheme.updatedAt,
         };
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
@@ -96,7 +100,7 @@ export const pollCheckShop = inngest.createFunction(
       };
     }
 
-    const { themeId, themeName, themeUpdatedAt } = themeResult;
+    const { themeId, themeName } = themeResult;
 
     // -------------------------------------------------------------------------
     // Step 2: Check for an active scan (PENDING or IN_PROGRESS)
@@ -131,35 +135,7 @@ export const pollCheckShop = inngest.createFunction(
     }
 
     // -------------------------------------------------------------------------
-    // Step 3: Compare theme updatedAt against the latest SUCCESSFUL scan
-    //
-    // Only COMPLETED/PARTIAL scans count as a baseline here (LOG-7). A FAILED
-    // latest scan is ignored — otherwise its createdAt (always after the theme
-    // update that triggered it) would make this conclude "up to date" forever,
-    // and a shop whose last scheduled scan failed would never be auto-re-scanned
-    // until the merchant next edited the theme. Treating a FAILED (or absent)
-    // latest successful scan as "needs scan" lets the watchdog-expired case
-    // recover on the next poll.
-    // -------------------------------------------------------------------------
-    const needsScan = await step.run("check-theme-staleness", async () => {
-      const latestSuccessfulScan = await getLatestSuccessfulScanForTheme(shopId, themeId);
-
-      return (
-        latestSuccessfulScan === null ||
-        new Date(themeUpdatedAt) > new Date(latestSuccessfulScan.createdAt)
-      );
-    });
-
-    if (!needsScan) {
-      logger.info(`[poll-check-shop] ${shopDomain}: skipped — theme up to date`);
-      return {
-        domain: shopDomain,
-        outcome: "skipped_up_to_date" as const,
-      };
-    }
-
-    // -------------------------------------------------------------------------
-    // Step 4: Create the scan record (idempotent on retry)
+    // Step 3: Create the scan record (idempotent on retry)
     //
     // Split from the event-send below so each step is independently idempotent
     // (LOG-8). Inngest memoizes a step's successful output, so once this step
@@ -192,11 +168,11 @@ export const pollCheckShop = inngest.createFunction(
     });
 
     // -------------------------------------------------------------------------
-    // Step 5: Dispatch the scan pipeline event
+    // Step 4: Dispatch the scan pipeline event
     //
     // step.sendEvent is Inngest's idempotent event-send primitive: it is a
     // first-class step, so a transient failure retries ONLY the send (the
-    // memoized scanId from Step 4 is reused) rather than re-running createScan.
+    // memoized scanId from Step 3 is reused) rather than re-running createScan.
     // -------------------------------------------------------------------------
     await step.sendEvent("send-scan-requested", {
       name: "scan/requested",

@@ -196,15 +196,16 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Minimum gap between two alert emails to one shop (the throttle window), derived
- * from the plan's alertCadence: weekly -> 7 days, daily -> 1 day, none -> null
- * (the plan receives no alerts).
+ * from the plan's alertCadence: weekly -> 7 days, monthly -> 28 days (the
+ * shortest gap between two runs on the 1st, February), none -> null (the plan
+ * receives no alerts).
  */
 export function getAlertWindowMs(planName: string): number | null {
   switch (getPlanFeatures(planName).alertCadence) {
     case "weekly":
       return 7 * DAY_MS;
-    case "daily":
-      return DAY_MS;
+    case "monthly":
+      return 28 * DAY_MS;
     case "none":
       return null;
   }

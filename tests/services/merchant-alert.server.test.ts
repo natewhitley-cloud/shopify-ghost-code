@@ -406,15 +406,24 @@ describe("notifyNewFindings gating chain", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("rate window follows the plan: 2 days ago passes Professional (daily) but not Standard (weekly)", async () => {
+  it("rate window follows the plan: 8 days ago passes Professional (weekly) but not Standard (monthly)", async () => {
     setLatest({
       findingSetHash: "other",
-      sentAt: new Date(Date.now() - 2 * 86_400_000),
+      sentAt: new Date(Date.now() - 8 * 86_400_000),
     });
     expect((await notify({ shop: shop({ plan: "Standard" }) })).reason).toBe("throttled");
     expect((await notify({ shop: shop({ plan: "Professional" }) })).reason).toBe("sent");
   });
 
+  it("Standard (monthly): last month's alert on Feb 1 never throttles Mar 1 (28 days)", async () => {
+    setLatest({
+      findingSetHash: "other",
+      sentAt: new Date(Date.now() - 28 * 86_400_000),
+    });
+    expect((await notify({ shop: shop({ plan: "Standard" }) })).reason).toBe("sent");
+  });
+
+  // Default shop is Professional: a 7-day (weekly) window.
   describe("throttle tolerance (90% of the window)", () => {
     beforeEach(() => vi.useFakeTimers({ toFake: ["Date"] }));
     afterEach(() => vi.useRealTimers());
@@ -424,7 +433,7 @@ describe("notifyNewFindings gating chain", () => {
       vi.setSystemTime(now);
       setLatest({
         findingSetHash: "other",
-        sentAt: new Date(now.getTime() - fraction * 86_400_000),
+        sentAt: new Date(now.getTime() - fraction * 7 * 86_400_000),
       });
     };
 
