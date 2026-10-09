@@ -130,14 +130,19 @@ export const SCAN_VIEW_COLUMNS = {
 /**
  * Atomically stamp the first time `page` rendered this scan's results.
  *
- * A conditional updateMany (`where id AND <column> IS NULL`) writes now() only
+ * A conditional updateMany (`where id AND shopId AND <column> IS NULL`, the
+ * shop scope as defense in depth) writes now() only
  * if the column is still unset, so of any number of concurrent loads exactly
  * one sees count === 1 and a later load never moves the timestamp. Returns true
  * IFF this call made the stamp. A missing scan row is a safe false.
  */
-export async function claimScanViewStamp(scanId: string, page: ScanResultsPage): Promise<boolean> {
+export async function claimScanViewStamp(
+  scanId: string,
+  shopId: string,
+  page: ScanResultsPage,
+): Promise<boolean> {
   const column = SCAN_VIEW_COLUMNS[page];
-  const where: Prisma.ScanWhereInput = { id: scanId, [column]: null };
+  const where: Prisma.ScanWhereInput = { id: scanId, shopId, [column]: null };
   const { count } = await db.scan.updateMany({ where, data: { [column]: new Date() } });
   return count === 1;
 }

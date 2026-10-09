@@ -431,9 +431,10 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // Per-scan "viewed on Home" stamp (scan-source telemetry): same render
   // condition, on THAT scan. Gated on the loaded value, so once stamped every
   // later load and 3s poll issues no write; the conditional update dedupes
-  // concurrent first loads. Never throws.
+  // concurrent first loads. Never throws. A Home tab left open while the scan
+  // runs stamps it when the poll swaps in the results (counted as a view).
   if (latestScan !== null && latestScanId !== null && latestScan.viewedOnHomeAt === null) {
-    await recordScanResultsViewOnce(latestScanId, "home", session.shop);
+    await recordScanResultsViewOnce(latestScanId, shop.id, "home", session.shop);
   }
   const canDiffLatest =
     latestScan != null && isSuccessfulScan(latestScan.status) && canUseScanDiffing(shop.plan);

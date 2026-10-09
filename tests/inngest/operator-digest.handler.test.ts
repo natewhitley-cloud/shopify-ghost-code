@@ -44,6 +44,7 @@ const fakeDb = vi.hoisted(() => {
   function matches(model: string, row: R, where: R | undefined): boolean {
     if (!where) return true;
     return Object.entries(where).every(([field, cond]) => {
+      if (field === "OR") return (cond as R[]).some((c) => matches(model, row, c));
       const rel = relations[model]?.[field];
       if (rel) {
         const target = rel(row);
@@ -1169,6 +1170,7 @@ describe("operator-digest handler: SCAN STARTS & RESULT VIEWS wiring", () => {
 
     expect(section(body).split("\n")).toEqual([
       "SCAN STARTS & RESULT VIEWS (24h / 7d)",
+      "  (first = no earlier successful scan, any origin, in the current install; a failed attempt and its retry both count as first)",
       "  Manual scans started: first 1 / 1 (home 1 / 1, scan page 0 / 0, unknown 0 / 0) | rescans 0 / 1 (home 0 / 0, scan page 0 / 1, unknown 0 / 0)",
       "  Manual scans created before tracking began (page not recorded): 1 / 1",
       "  Automatic scans (scheduled / theme publish): 0 / 1",
@@ -1184,7 +1186,10 @@ describe("operator-digest handler: SCAN STARTS & RESULT VIEWS wiring", () => {
 
     const telemetryCalls = fakeDb.scan.findMany.mock.calls
       .map(([args]) => args as Record<string, Record<string, unknown>>)
-      .filter((args) => args.select && "shopScanNumber" in args.select);
+      .filter(
+        (args) =>
+          args.select && ("shopScanNumber" in args.select || "viewedOnHomeAt" in args.select),
+      );
     // Starts, Home views, scan-page views, completed.
     expect(telemetryCalls).toHaveLength(4);
     for (const args of telemetryCalls) {
@@ -1210,5 +1215,104 @@ describe("operator-digest handler: SCAN STARTS & RESULT VIEWS wiring", () => {
         "shopScanNumber" in (args as { select: object }).select,
     );
     expect(telemetryCalls).toHaveLength(0);
+    const classification = fakeDb.scan.groupBy.mock.calls.filter(
+      ([args]) => "OR" in ((args as { where?: object }).where ?? {}),
+    );
+    expect(classification).toHaveLength(0);
+  });
+
+  /** Just the "Manual scans started" line. */
+  const startsLine = (body: string) =>
+    section(body)
+      .split("\n")
+      .find((l) => l.startsWith("  Manual scans started:"));
+
+  it("classifies first vs rescan from scan history in ONE grouped query, only for shops in the window", async () => {
+    await runDigest();
+
+    const grouped = fakeDb.scan.groupBy.mock.calls
+      .map(([args]) => args as { where: { OR?: Array<{ shopId: string }> } })
+      .filter((args) => Array.isArray(args.where.OR));
+    expect(grouped).toHaveLength(1);
+    expect(grouped[0].where.OR!.map((c) => c.shopId).sort()).toEqual(["shop-a", "shop-b"]);
+  });
+
+  it("an earlier successful scan in the same install makes the next manual scan a rescan", async () => {
+    // Installed long ago, so only scan history / the uninstall signal decide.
+    tables.shop.find((sh) => sh.id === "shop-a")!.installedAt = new Date(
+      Date.now() - 20 * 24 * HOUR,
+    );
+    tables.scan.push({
+      id: "t-earlier",
+      shopId: "shop-a",
+      origin: "MANUAL",
+      requestedFrom: null,
+      shopScanNumber: null,
+      viewedOnHomeAt: null,
+      viewedOnScanPageAt: null,
+      status: "COMPLETED",
+      // Older than the 7d window: only the classification query sees it.
+      createdAt: new Date(Date.now() - 10 * 24 * HOUR),
+      completedAt: new Date(Date.now() - 10 * 24 * HOUR),
+    });
+
+    const body = await runDigest();
+
+    expect(startsLine(body)).toBe(
+      "  Manual scans started: first 0 / 0 (home 0 / 0, scan page 0 / 0, unknown 0 / 0) | rescans 1 / 2 (home 1 / 1, scan page 0 / 1, unknown 0 / 0)",
+    );
+  });
+
+  it("reinstall within 48h: a success from the previous install does not make the new first scan a rescan", async () => {
+    // Installed long ago, so only scan history / the uninstall signal decide.
+    tables.shop.find((sh) => sh.id === "shop-a")!.installedAt = new Date(
+      Date.now() - 20 * 24 * HOUR,
+    );
+    tables.scan.push({
+      id: "t-old-install",
+      shopId: "shop-a",
+      origin: "MANUAL",
+      requestedFrom: null,
+      shopScanNumber: null,
+      viewedOnHomeAt: null,
+      viewedOnScanPageAt: null,
+      status: "COMPLETED",
+      // Older than the 7d window: only the classification query sees it.
+      createdAt: new Date(Date.now() - 10 * 24 * HOUR),
+      completedAt: new Date(Date.now() - 10 * 24 * HOUR),
+    });
+    // Uninstalled 30h ago (row kept until shop/redact), then reinstalled.
+    tables.opsEvent.push({
+      id: "u-real-a",
+      eventType: "shop_uninstalled",
+      key: "real-a.myshopify.com",
+      createdAt: new Date(Date.now() - 30 * HOUR),
+    });
+
+    const body = await runDigest();
+
+    expect(startsLine(body)).toBe(
+      "  Manual scans started: first 1 / 1 (home 1 / 1, scan page 0 / 0, unknown 0 / 0) | rescans 0 / 1 (home 0 / 0, scan page 0 / 1, unknown 0 / 0)",
+    );
+  });
+
+  it("failed first attempt then retry: both count as first-scan starts", async () => {
+    // The retry (t1) is the shop's 2nd scan by ordinal: the failed one is 1st.
+    tables.scan.find((sc) => sc.id === "t1")!.shopScanNumber = 2;
+    tables.scan.push({
+      id: "t-failed",
+      shopId: "shop-a",
+      origin: "MANUAL",
+      requestedFrom: "home",
+      shopScanNumber: 1,
+      status: "FAILED",
+      createdAt: new Date(Date.now() - 3 * HOUR),
+    });
+
+    const body = await runDigest();
+
+    expect(startsLine(body)).toBe(
+      "  Manual scans started: first 2 / 2 (home 2 / 2, scan page 0 / 0, unknown 0 / 0) | rescans 0 / 1 (home 0 / 0, scan page 0 / 1, unknown 0 / 0)",
+    );
   });
 });

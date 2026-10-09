@@ -2053,7 +2053,7 @@ describe("app.scans.$scanId loader", () => {
       await loader(makeLoaderArgs("scan-1"));
 
       expect(mockClaimScanViewStamp).toHaveBeenCalledTimes(1);
-      expect(mockClaimScanViewStamp).toHaveBeenCalledWith("scan-1", "scan_page");
+      expect(mockClaimScanViewStamp).toHaveBeenCalledWith("scan-1", SHOP.id, "scan_page");
     });
 
     it.each(["FAILED", "IN_PROGRESS", "PENDING"])(

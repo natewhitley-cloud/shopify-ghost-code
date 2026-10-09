@@ -2279,7 +2279,7 @@ describe("Home loader: per-scan viewedOnHomeAt stamp", () => {
       // The same condition that renders the results view (healthScore + latestScanId).
       expect(data.latestScanId).toBe(COMPLETED_SCAN.id);
       expect(mockRecordView).toHaveBeenCalledTimes(1);
-      expect(mockRecordView).toHaveBeenCalledWith(COMPLETED_SCAN.id, "home", SHOP.domain);
+      expect(mockRecordView).toHaveBeenCalledWith(COMPLETED_SCAN.id, SHOP.id, "home", SHOP.domain);
     },
   );
 
@@ -2335,7 +2335,7 @@ describe("Home loader: per-scan viewedOnHomeAt stamp", () => {
     await loader(makeLoaderArgs());
 
     expect(mockRecordView).toHaveBeenCalledTimes(1);
-    expect(mockRecordView).toHaveBeenCalledWith("scan-latest", "home", SHOP.domain);
+    expect(mockRecordView).toHaveBeenCalledWith("scan-latest", SHOP.id, "home", SHOP.domain);
   });
 
   it("never stamps with no scan at all (onboarding renders)", async () => {
@@ -2353,7 +2353,7 @@ describe("Home loader: per-scan viewedOnHomeAt stamp", () => {
     await loader(makeLoaderArgs());
 
     expect(mockRecordMilestone).toHaveBeenCalledWith("firstResultsViewedAt", SHOP.domain);
-    expect(mockRecordView).toHaveBeenCalledWith(COMPLETED_SCAN.id, "home", SHOP.domain);
+    expect(mockRecordView).toHaveBeenCalledWith(COMPLETED_SCAN.id, SHOP.id, "home", SHOP.domain);
   });
 
   it("a stamp that fails (resolves false) never breaks the loader", async () => {

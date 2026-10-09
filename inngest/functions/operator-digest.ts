@@ -1479,16 +1479,27 @@ export function evaluateSnapshotMetrics(
 // Digest body (plaintext; sendOpsAlert is a text-only channel)
 // ---------------------------------------------------------------------------
 
-/** Serialization-safe stale-cron summary (Date rendered to an ISO string so no
- * Date crosses the step boundary). */
 // ---------------------------------------------------------------------------
 // Scan starts & result views (24h / 7d)
 //
 // From the Scan telemetry columns: requestedFrom (page a MANUAL scan was
-// started from), shopScanNumber (1 = the shop's first scan) and the per-page
-// first-results-view stamps. shopScanNumber is set on EVERY scan created since
-// the feature shipped, so a null marks a row created before tracking began:
-// those are labelled as such, never counted as "unknown".
+// started from) and the per-page first-results-view stamps.
+//
+// FIRST scan vs rescan follows the app's own definition (Home's "first scan"
+// and the quota's isFirstScan both mean "no successful scan yet"): a scan is
+// a FIRST scan when the shop had no earlier SUCCESSFUL scan (COMPLETED or
+// PARTIAL, any origin) created since its CURRENT install began. So:
+//   - a failed first attempt and its retry are both first-scan starts;
+//   - a reinstall starts over (the shop row survives ~48h until shop/redact,
+//     and Shop.installedAt is NOT reset on reinstall, so the install start is
+//     the shop's latest SHOP_UNINSTALLED event before the scan, else
+//     installedAt);
+//   - an earlier successful SCHEDULED / AUTO_PUBLISH scan makes the next manual
+//     scan a rescan: the merchant already had results.
+// shopScanNumber (the stored creation ordinal) is NOT used for this split. It
+// is set on EVERY scan created since the feature shipped, so a null marks a row
+// created before tracking began: those rows are labelled as such, never
+// counted as "unknown".
 // ---------------------------------------------------------------------------
 
 /** Manual scan starts by page. */
@@ -1506,18 +1517,17 @@ export interface ScanViewPageCounts {
 
 /** One window's counts (serialization-safe; crosses the Inngest step boundary). */
 export interface ScanStartsViewsCounts {
-  /** MANUAL scans that were the shop's first scan (shopScanNumber 1). */
+  /** MANUAL scans started while the shop had no successful scan this install. */
   firstScans: ScanStartPageCounts;
-  /** MANUAL scans after the first (shopScanNumber > 1). */
+  /** MANUAL scans started after a successful scan this install. */
   rescans: ScanStartPageCounts;
   /** MANUAL scans created before tracking began (page not recorded). */
   manualUntracked: number;
   /** SCHEDULED + AUTO_PUBLISH scans. */
   automatic: number;
-  /** First results view per page, of first scans / rescans / pre-tracking scans. */
+  /** First results view per page, of first scans / rescans. */
   viewsFirst: ScanViewPageCounts;
   viewsRescan: ScanViewPageCounts;
-  viewsUntracked: ScanViewPageCounts;
   /** Scans whose results have now been viewed on BOTH pages (second view in window). */
   viewedBoth: number;
   /** Successful scans completed in the window with no view on either page yet. */
@@ -1531,20 +1541,21 @@ export interface ScanStartsViewsDigest {
   last7d: ScanStartsViewsCounts;
 }
 
-/** Scans created in the last 7d. */
+/** Scans created in the last 7d, classified by classifyFirstScans. */
 export interface ScanStartRow {
   shopId: string;
   origin: string;
   requestedFrom: string | null;
   shopScanNumber: number | null;
   createdAt: Date;
+  firstScan: boolean;
 }
 
-/** Scans with a results-view stamp in the last 7d (on either page). */
+/** Scans with a results-view stamp in the last 7d (on either page), classified. */
 export interface ScanViewRow {
   id: string;
   shopId: string;
-  shopScanNumber: number | null;
+  firstScan: boolean;
   viewedOnHomeAt: Date | null;
   viewedOnScanPageAt: Date | null;
 }
@@ -1558,6 +1569,85 @@ export interface ScanCompletedRow {
   viewedOnScanPageAt: Date | null;
 }
 
+/** A shop's install history: original install plus every uninstall event time. */
+export interface ShopInstallHistory {
+  installedAt: Date;
+  uninstallTimes: readonly Date[];
+}
+
+/** One "earliest successful scan created at or after `start`" lookup. */
+export interface FirstSuccessQuery {
+  shopId: string;
+  start: Date;
+}
+
+/**
+ * Start of the install a scan created at `createdAt` belongs to: the latest
+ * uninstall strictly before it (scans after an uninstall belong to the next
+ * install), else the original installedAt.
+ */
+export function installPeriodStart(createdAt: Date, history: ShopInstallHistory): Date {
+  let start = history.installedAt;
+  for (const u of history.uninstallTimes) {
+    if (u < createdAt && u > start) start = u;
+  }
+  return start;
+}
+
+/**
+ * Split distinct (shop, install start) lookups into batches holding at most ONE
+ * lookup per shop, so each batch is answered by a single query grouped by
+ * shopId. Almost always one batch; a shop that reinstalled inside the window
+ * adds a second.
+ */
+export function batchFirstSuccessQueries(queries: FirstSuccessQuery[]): FirstSuccessQuery[][] {
+  const perShop = new Map<string, Map<number, FirstSuccessQuery>>();
+  for (const q of queries) {
+    const starts = perShop.get(q.shopId) ?? new Map<number, FirstSuccessQuery>();
+    starts.set(q.start.getTime(), q);
+    perShop.set(q.shopId, starts);
+  }
+  const batches: FirstSuccessQuery[][] = [];
+  for (const starts of perShop.values()) {
+    [...starts.values()].forEach((q, i) => (batches[i] ??= []).push(q));
+  }
+  return batches;
+}
+
+/**
+ * Classify each scan as the shop's FIRST scan of its install (see the section
+ * comment). `earliestSuccess` answers one batch: shopId -> createdAt of the
+ * shop's earliest successful scan created at or after that batch's start (no
+ * upper bound is needed: a success from a LATER install is after the scan, so
+ * it never makes the scan a rescan). A shop with no history falls back to
+ * "since forever" (installedAt epoch).
+ */
+export async function classifyFirstScans(
+  rows: ReadonlyArray<{ shopId: string; createdAt: Date }>,
+  installs: ReadonlyMap<string, ShopInstallHistory>,
+  earliestSuccess: (batch: FirstSuccessQuery[]) => Promise<Map<string, Date>>,
+): Promise<boolean[]> {
+  const noHistory: ShopInstallHistory = { installedAt: new Date(0), uninstallTimes: [] };
+  const starts = rows.map((r) =>
+    installPeriodStart(r.createdAt, installs.get(r.shopId) ?? noHistory),
+  );
+  const earliest = new Map<string, Date>();
+  const key = (shopId: string, start: Date) => `${shopId}|${start.getTime()}`;
+  for (const batch of batchFirstSuccessQueries(
+    rows.map((r, i) => ({ shopId: r.shopId, start: starts[i] })),
+  )) {
+    const found = await earliestSuccess(batch);
+    for (const q of batch) {
+      const at = found.get(q.shopId);
+      if (at) earliest.set(key(q.shopId, q.start), at);
+    }
+  }
+  return rows.map((r, i) => {
+    const firstSuccess = earliest.get(key(r.shopId, starts[i]));
+    return firstSuccess === undefined || firstSuccess >= r.createdAt;
+  });
+}
+
 function emptyScanStartsViewsCounts(): ScanStartsViewsCounts {
   return {
     firstScans: { home: 0, scanPage: 0, unknown: 0 },
@@ -1566,7 +1656,6 @@ function emptyScanStartsViewsCounts(): ScanStartsViewsCounts {
     automatic: 0,
     viewsFirst: { home: 0, scanPage: 0 },
     viewsRescan: { home: 0, scanPage: 0 },
-    viewsUntracked: { home: 0, scanPage: 0 },
     viewedBoth: 0,
     completedNotViewed: 0,
     completedUntracked: 0,
@@ -1574,8 +1663,8 @@ function emptyScanStartsViewsCounts(): ScanStartsViewsCounts {
 }
 
 /**
- * Roll scan telemetry rows up into 24h / 7d counts. Pure (consumes Dates,
- * emits plain numbers).
+ * Roll classified scan telemetry rows up into 24h / 7d counts. Pure (consumes
+ * Dates, emits plain numbers).
  *
  * Exclusion: only rows whose shopId is in `allowedShopIds` (the handler's
  * active, non-excluded installs) count, as defense in depth on top of the
@@ -1608,7 +1697,7 @@ export function aggregateScanStartsViews(
       } else if (r.shopScanNumber === null) {
         w.manualUntracked += 1;
       } else {
-        const bucket = r.shopScanNumber === 1 ? w.firstScans : w.rescans;
+        const bucket = r.firstScan ? w.firstScans : w.rescans;
         if (r.requestedFrom === "home") bucket.home += 1;
         else if (r.requestedFrom === "scan_page") bucket.scanPage += 1;
         else bucket.unknown += 1;
@@ -1621,12 +1710,7 @@ export function aggregateScanStartsViews(
   for (const r of rows.viewed) {
     if (!allowed.has(r.shopId) || seen.has(r.id)) continue;
     seen.add(r.id);
-    const pick = (w: ScanStartsViewsCounts) =>
-      r.shopScanNumber === null
-        ? w.viewsUntracked
-        : r.shopScanNumber === 1
-          ? w.viewsFirst
-          : w.viewsRescan;
+    const pick = (w: ScanStartsViewsCounts) => (r.firstScan ? w.viewsFirst : w.viewsRescan);
     for (const w of windowsOf(r.viewedOnHomeAt)) pick(w).home += 1;
     for (const w of windowsOf(r.viewedOnScanPageAt)) pick(w).scanPage += 1;
     if (r.viewedOnHomeAt !== null && r.viewedOnScanPageAt !== null) {
@@ -1664,6 +1748,9 @@ export function formatScanStartsViewsLines(d: ScanStartsViewsDigest | undefined)
     `home ${pair(x.home, y.home)}, scan page ${pair(x.scanPage, y.scanPage)}`;
 
   lines.push(
+    "  (first = no earlier successful scan, any origin, in the current install; a failed attempt and its retry both count as first)",
+  );
+  lines.push(
     `  Manual scans started: first ${starts(a.firstScans, b.firstScans)} | rescans ${starts(a.rescans, b.rescans)}`,
   );
   if (b.manualUntracked > 0) {
@@ -1675,11 +1762,6 @@ export function formatScanStartsViewsLines(d: ScanStartsViewsDigest | undefined)
   lines.push(
     `  Results viewed (first view per page): first scans ${views(a.viewsFirst, b.viewsFirst)} | rescans ${views(a.viewsRescan, b.viewsRescan)}`,
   );
-  if (b.viewsUntracked.home + b.viewsUntracked.scanPage > 0) {
-    lines.push(
-      `  Results viewed on scans created before tracking began: ${views(a.viewsUntracked, b.viewsUntracked)}`,
-    );
-  }
   lines.push(`  Viewed on both pages: ${pair(a.viewedBoth, b.viewedBoth)}`);
   lines.push(`  Completed, not viewed yet: ${pair(a.completedNotViewed, b.completedNotViewed)}`);
   if (b.completedUntracked > 0) {
@@ -1690,6 +1772,8 @@ export function formatScanStartsViewsLines(d: ScanStartsViewsDigest | undefined)
   return lines;
 }
 
+/** Serialization-safe stale-cron summary (Date rendered to an ISO string so no
+ * Date crosses the step boundary). */
 export interface StaleCronSummary {
   key: string;
   ageMs: number;
@@ -2674,7 +2758,8 @@ export const operatorDigest = inngest.createFunction(
     // Scan starts by page + result views (24h / 7d), over ACTIVE installs (the
     // same activeShopIds as SCANS: excludes the dev store, isInternal and
     // uninstalled shops). Four window-bounded reads (starts, Home views, scan
-    // page views, completed); the aggregate returns plain numbers only.
+    // page views, completed), then the first-scan classification reads, scoped
+    // to the shops in those rows; the aggregate returns plain numbers only.
     const scanStartsViews = (await step.run("get-scan-starts-views", async () => {
       const db = (await import("../../app/db.server")).default;
       const now = new Date();
@@ -2685,7 +2770,7 @@ export const operatorDigest = inngest.createFunction(
       const viewSelect = {
         id: true,
         shopId: true,
-        shopScanNumber: true,
+        createdAt: true,
         viewedOnHomeAt: true,
         viewedOnScanPageAt: true,
       } as const;
@@ -2713,8 +2798,64 @@ export const operatorDigest = inngest.createFunction(
           },
         }),
       ]);
+
+      // First scan vs rescan (see the section comment), only for the shops with
+      // a start or a view in the window: their install history (installedAt +
+      // every SHOP_UNINSTALLED event), then ONE query grouped by shopId per
+      // batch for each shop's earliest successful scan since its install start.
+      const viewed = [...viewedHome, ...viewedScanPage];
+      const windowShopIds = [...new Set([...started, ...viewed].map((r) => r.shopId))];
+      const installs = new Map<string, ShopInstallHistory>();
+      if (windowShopIds.length > 0) {
+        const shops = await db.shop.findMany({
+          where: { id: { in: windowShopIds } },
+          select: { id: true, domain: true, installedAt: true },
+        });
+        const uninstalls = await db.opsEvent.findMany({
+          where: {
+            eventType: OPS_EVENT_TYPES.SHOP_UNINSTALLED,
+            key: { in: shops.map((s) => s.domain) },
+          },
+          select: { key: true, createdAt: true },
+        });
+        for (const s of shops) {
+          const domain = s.domain.toLowerCase();
+          installs.set(s.id, {
+            installedAt: s.installedAt,
+            uninstallTimes: uninstalls
+              .filter((u) => u.key?.toLowerCase() === domain)
+              .map((u) => u.createdAt),
+          });
+        }
+      }
+      const earliestSuccess = async (batch: FirstSuccessQuery[]) => {
+        const groups = await db.scan.groupBy({
+          by: ["shopId"],
+          where: {
+            status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+            OR: batch.map((q) => ({ shopId: q.shopId, createdAt: { gte: q.start } })),
+          },
+          _min: { createdAt: true },
+        });
+        return new Map(
+          groups.flatMap((g) => (g._min.createdAt ? [[g.shopId, g._min.createdAt] as const] : [])),
+        );
+      };
+      // Starts and viewed scans classified together: one grouped lookup per batch.
+      const firstScan = await classifyFirstScans(
+        [...started, ...viewed],
+        installs,
+        earliestSuccess,
+      );
+      const startFirst = firstScan.slice(0, started.length);
+      const viewFirst = firstScan.slice(started.length);
+
       return aggregateScanStartsViews(
-        { started, viewed: [...viewedHome, ...viewedScanPage], completed },
+        {
+          started: started.map((r, i) => ({ ...r, firstScan: startFirst[i] })),
+          viewed: viewed.map((r, i) => ({ ...r, firstScan: viewFirst[i] })),
+          completed,
+        },
         activeShopIds,
         now,
       );

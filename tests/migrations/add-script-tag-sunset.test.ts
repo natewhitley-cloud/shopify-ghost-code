@@ -43,8 +43,12 @@ describe("add_script_tag_sunset migration", () => {
 
   it("sorts after the previous latest migration", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().indexOf(NAME)).toBeGreaterThan(
-      dirs.indexOf("20261002140000_add_scan_live_finding_types"),
-    );
+    const sorted = dirs.sort();
+    const self = sorted.indexOf(NAME);
+    const previous = sorted.indexOf("20261002140000_add_scan_live_finding_types");
+    // Both must exist: a missing name (-1) must fail, not pass vacuously.
+    expect(self).toBeGreaterThanOrEqual(0);
+    expect(previous).toBeGreaterThanOrEqual(0);
+    expect(self).toBeGreaterThan(previous);
   });
 });

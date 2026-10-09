@@ -42,19 +42,26 @@ export async function recordJourneyMilestoneOnce(
 
 /**
  * Stamp the first time `page` rendered this scan's RESULTS, if still unset.
- * Callers pass only a SUCCESSFUL scan whose results the page renders, and gate
- * on the stamp value they already loaded (null) so a revisit or a 3s poll
- * issues no query. Returns true when this call made the stamp.
+ * Callers pass only a SUCCESSFUL scan (owned by `shopId`, the session shop's
+ * id) whose results the page renders, and gate on the stamp value they already
+ * loaded (null) so a revisit or a 3s poll issues no query. Returns true when
+ * this call made the stamp.
+ *
+ * What counts as a view (by design): a Home tab left open while a scan runs
+ * stamps "viewed on Home" when its poll swaps in the finished results, even if
+ * nobody is looking; and opening an old scan from the history list stamps a
+ * scan-page view for that scan the first time it is opened.
  *
  * NEVER THROWS: failure logs as `scan-results-view-claim-failed`.
  */
 export async function recordScanResultsViewOnce(
   scanId: string,
+  shopId: string,
   page: ScanResultsPage,
   shopDomain: string,
 ): Promise<boolean> {
   try {
-    return await claimScanViewStamp(scanId, page);
+    return await claimScanViewStamp(scanId, shopId, page);
   } catch (err) {
     logger.error("scan-results-view-claim-failed", {
       shop: shopDomain,

@@ -1091,9 +1091,10 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Per-scan "viewed on the scan page" stamp (scan-source telemetry): the
   // first load that renders THIS successful scan's results. Gated on the
   // loaded value, so a revisit issues no write; the conditional update dedupes
-  // concurrent loads. Never throws.
+  // concurrent loads. Never throws. Opening an OLD scan from the history list
+  // stamps its scan-page view the first time too (counted as a view).
   if (isSuccessfulScan(scan.status) && scan.viewedOnScanPageAt === null) {
-    await recordScanResultsViewOnce(scan.id, "scan_page", session.shop);
+    await recordScanResultsViewOnce(scan.id, shop.id, "scan_page", session.shop);
   }
 
   // Whether this shop+plan combination can trigger the diff resource route.
