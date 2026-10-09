@@ -36,6 +36,7 @@ import { logger } from "../lib/logger.server";
 import { isAccessDeniedError, type GraphQLResponseError } from "../lib/scope-check.server";
 import { UPGRADE_ASK_KEYS } from "../lib/upgrade-preview";
 import { recordBillingEvent } from "../models/billing-event.server";
+import { markSummaryNoticePending } from "../models/merchant-alert.server";
 import {
   claimShopStamp,
   stampPlanReconciledAt,
@@ -228,6 +229,7 @@ export async function reconcileShopPlan(
   const updated = await updateShopPlanByDomain(shop.domain, effectivePlan);
   if (!updated) return { status: "shop-not-found" };
   await stampEverPaid(shop, effectivePlan);
+  await markSummaryNoticeOnUpgrade(shop, effectivePlan);
 
   logger.warn("billing-reconcile-corrected-drift", {
     shop: shop.domain,
@@ -271,6 +273,31 @@ async function stampEverPaid(
     await claimShopStamp(shop.domain, "everPaidAt");
   } catch (err) {
     logger.error("billing-reconcile-ever-paid-stamp-failed", {
+      shop: shop.domain,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+}
+
+/**
+ * Summary emails default ON for a paid plan, but nobody may get one without
+ * knowing (gc-ol95): a Free -> paid move (a trial is an ACTIVE subscription,
+ * so it counts) marks Home's "Summary emails are on" notice as owed. Every
+ * reconcile path (redirect and backstop), since an upgrade can land on either.
+ * The claim skips a shop already told or already opted in. Shops that were
+ * paid before this shipped never pass through here, so they stay unnotified
+ * and ineligible. NEVER THROWS: a failed write is logged; the shop then simply
+ * gets no email until it opts in.
+ */
+async function markSummaryNoticeOnUpgrade(
+  shop: { domain: string; plan: string },
+  effectivePlan: string,
+): Promise<void> {
+  if (shop.plan !== PLANS.FREE || effectivePlan === PLANS.FREE) return;
+  try {
+    await markSummaryNoticePending(shop.domain);
+  } catch (err) {
+    logger.error("billing-reconcile-summary-notice-failed", {
       shop: shop.domain,
       error: err instanceof Error ? err.message : String(err),
     });

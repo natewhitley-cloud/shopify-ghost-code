@@ -37,6 +37,11 @@ vi.mock("../../app/models/billing-event.server", () => ({
   recordBillingEvent: vi.fn(),
 }));
 
+// gc-ol95: the summary-email notice claim, mocked at its model boundary.
+vi.mock("../../app/models/merchant-alert.server", () => ({
+  markSummaryNoticePending: vi.fn(),
+}));
+
 // Silence logger output but allow assertions on calls.
 vi.mock("../../app/lib/logger.server", () => ({
   logger: {
@@ -52,6 +57,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 
 import { logger } from "../../app/lib/logger.server";
 import { recordBillingEvent } from "../../app/models/billing-event.server";
+import { markSummaryNoticePending } from "../../app/models/merchant-alert.server";
 import {
   claimShopStamp,
   stampPlanReconciledAt,
@@ -980,5 +986,93 @@ describe("reconcileShopPlan: everPaidAt on every path that observes a paid plan"
       shop: DOMAIN,
       error: "db down",
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-ol95: Free -> paid marks the summary-email notice owed
+// ---------------------------------------------------------------------------
+
+describe("reconcileShopPlan: summary-email notice on upgrade (gc-ol95)", () => {
+  const mockMarkPending = markSummaryNoticePending as ReturnType<typeof vi.fn>;
+  const DOMAIN = "s.myshopify.com";
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockUpdate.mockResolvedValue({ id: "shop-1", domain: DOMAIN, plan: "x" });
+    mockStamp.mockResolvedValue({ id: "shop-1" });
+    mockRecordEvent.mockResolvedValue({});
+    mockMarkPending.mockResolvedValue(true);
+  });
+
+  it.each([
+    ["Standard", { recordEvent: true }],
+    ["Professional", { recordEvent: true }],
+    // The backstop reconcile (no redirect) catches an upgrade too.
+    ["Standard", { recordEvent: false }],
+  ])("Free -> %s marks the notice pending (%o)", async (plan, opts) => {
+    const admin = makeAdmin([{ name: plan, status: "ACTIVE" }]);
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free", everPaidAt: null }, opts);
+    expect(mockMarkPending).toHaveBeenCalledExactlyOnceWith(DOMAIN);
+  });
+
+  it("Free -> a free trial (an ACTIVE subscription in its trial days) marks it too", async () => {
+    // Shopify reports a subscription in its trial period as ACTIVE.
+    const admin = makeAdmin([{ name: "Professional", status: "ACTIVE" }]);
+    await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: "free", everPaidAt: null },
+      { recordEvent: true },
+    );
+    expect(mockMarkPending).toHaveBeenCalledExactlyOnceWith(DOMAIN);
+  });
+
+  it.each([
+    [
+      "paid -> paid (Standard -> Professional)",
+      "Standard",
+      [{ name: "Professional", status: "ACTIVE" }],
+    ],
+    ["paid -> Free (cancellation)", "Professional", []],
+    [
+      "Free -> Free (a PENDING subscription is not paid)",
+      "free",
+      [{ name: "Standard", status: "PENDING" }],
+    ],
+  ])("%s does not mark it", async (_l, from, subs) => {
+    await reconcileShopPlan(makeAdmin(subs), { domain: DOMAIN, plan: from, everPaidAt: null });
+    expect(mockMarkPending).not.toHaveBeenCalled();
+  });
+
+  it("a shop already paid when this shipped (matched reconcile, no drift) is never marked", async () => {
+    const admin = makeAdmin([{ name: "Professional", status: "ACTIVE" }]);
+    await reconcileShopPlan(admin, {
+      domain: DOMAIN,
+      plan: "Professional",
+      everPaidAt: new Date("2026-09-01"),
+    });
+    expect(mockMarkPending).not.toHaveBeenCalled();
+  });
+
+  it("a failed claim is logged and never breaks the reconcile", async () => {
+    mockMarkPending.mockRejectedValue(new Error("db down"));
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+    const result = await reconcileShopPlan(admin, {
+      domain: DOMAIN,
+      plan: "free",
+      everPaidAt: null,
+    });
+    expect(result).toEqual({ status: "corrected", fromPlan: "free", toPlan: "Standard" });
+    expect(logger.error).toHaveBeenCalledWith(
+      "billing-reconcile-summary-notice-failed",
+      expect.objectContaining({ shop: DOMAIN }),
+    );
+  });
+
+  it("a missing shop row (plan write found nothing) marks nothing", async () => {
+    mockUpdate.mockResolvedValue(null);
+    const admin = makeAdmin([{ name: "Standard", status: "ACTIVE" }]);
+    await reconcileShopPlan(admin, { domain: DOMAIN, plan: "free", everPaidAt: null });
+    expect(mockMarkPending).not.toHaveBeenCalled();
   });
 });
