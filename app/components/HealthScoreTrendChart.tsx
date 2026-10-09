@@ -30,9 +30,6 @@ import {
 
 export type TrendScoreEntry = {
   scanId: string;
-  score: number;
-  tone: string;
-  label: string;
   completedAt: string;
   themeName: string;
   highCount: number;

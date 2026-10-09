@@ -209,7 +209,7 @@ describe("gc-bj4: what the old `!shop` minimal data renders", () => {
       canSelectTheme: false,
       scanUsage: null,
       isFirstScan: true,
-      healthScore: null,
+      hasResults: false,
       showRescanNudge: false,
       showThemeChangeNudge: false,
       showMultiThemeNudge: false,

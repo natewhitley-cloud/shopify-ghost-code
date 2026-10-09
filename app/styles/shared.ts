@@ -20,14 +20,14 @@
 // Semantic status colors
 // ---------------------------------------------------------------------------
 
-/** Errors, high severity, health score 0–49 */
+/** Errors, high severity */
 export const COLOR_CRITICAL = "#d72c0d";
-/** Caution, medium severity, health score 50–79 */
+/** Caution, medium severity */
 // Amber INK for Medium numbers/text (no longer olive). Only used on white/near-
 // white for 24px+ bold numbers and the declining-trend label, so it is tuned to
 // stay AA-legible as large text.
 export const COLOR_WARNING = "#b07d02";
-/** Healthy, low severity, health score 80–100 */
+/** Healthy, low severity */
 // Also serves as the SUCCESS tile-tint text; AA-compliant (≥4.5:1 on white).
 export const COLOR_SUCCESS = "#1a8a3f";
 /** Informational, low-severity findings, links, current-plan highlight */
@@ -175,8 +175,8 @@ export const INFO_FOCUS_RING = "rgba(44, 110, 203, 0.2)";
 
 /**
  * Success badge / pill-label background.
- * Used for the "NEW" badge, health-score success labels, and scan-tile
- * success labels. Slightly darker green tint than SUCCESS_BG.
+ * Used for the "NEW" badge and other success pills. Slightly darker green
+ * tint than SUCCESS_BG.
  */
 export const BG_BADGE_SUCCESS = "#e3f1df";
 
@@ -195,7 +195,7 @@ export const sectionHeader: React.CSSProperties = {
 };
 
 /**
- * Hero stat number: 48px/700 weight, used for the health score on the
+ * Hero stat number: 48px/700 weight, used for the findings count on the
  * dashboard. Letter-spacing of -2px is intentional at this size only.
  */
 export const heroStat: React.CSSProperties = {
@@ -506,18 +506,11 @@ export function htmlTableCss(className: string): string {
  * Produces three rules — success, warning, critical — each applying the
  * appropriate tint border-color and background.
  *
- * Usage (dashboard health tile):
+ * Usage (dashboard findings tile):
  *   tileStatusTintCss({
  *     success: "health-score-tile--success",
  *     warning: "health-score-tile--warning",
  *     critical: "health-score-tile--critical",
- *   })
- *
- * Usage (scan detail health tile):
- *   tileStatusTintCss({
- *     success: "scan-tile--health-success",
- *     warning: "scan-tile--health-warning",
- *     critical: "scan-tile--health-critical",
  *   })
  */
 export function tileStatusTintCss(classNames: {

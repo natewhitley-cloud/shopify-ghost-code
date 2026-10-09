@@ -9,7 +9,7 @@ export type ScanStatus = "PENDING" | "IN_PROGRESS" | "COMPLETED" | "PARTIAL" | "
  *
  * PARTIAL is a success: the core theme audit ran; only optional categories
  * whose scope was not granted were skipped. The UI treats PARTIAL like
- * COMPLETED (findings, diffing, health score) — mirrored server-side by
+ * COMPLETED (findings, diffing, findings trend) — mirrored server-side by
  * SUCCESSFUL_SCAN_STATUSES in scan.server.ts.
  */
 export function isSuccessfulScan(status: ScanStatus | string): boolean {

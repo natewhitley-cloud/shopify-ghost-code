@@ -14,15 +14,15 @@
  *      to end.
  *
  *   3. "Ignore moves nothing" — the acceptance test. Takes a fixture scan +
- *      previous scan, computes all SIX outputs the product derives (total,
- *      per-severity counts, health score, consequence-lane membership, diff
- *      new/resolved/unchanged, and the health delta) with NO ignores, then
+ *      previous scan, computes all FOUR outputs the product derives (total,
+ *      per-severity counts, consequence-lane membership, and diff
+ *      new/resolved/unchanged) with NO ignores, then
  *      re-computes with one finding ignored by fingerprint and one whole app
  *      ignored, and asserts the ignored findings vanish from every output while
  *      a non-ignored finding is untouched — and that un-ignoring restores the
  *      originals. It wires the SAME real functions the routes use
- *      (filterIgnoredFindings, computeHealthScore, computeLaneSummary,
- *      diffScans, computeHealthDelta) so a regression in any path is caught.
+ *      (filterIgnoredFindings, computeLaneSummary, diffScans) so a regression
+ *      in any path is caught.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -46,11 +46,6 @@ vi.mock("../../app/models/finding.server", async (importOriginal) => {
 // ---------------------------------------------------------------------------
 
 import { computeLaneSummary, type LaneKey } from "../../app/lib/finding-consequence";
-import {
-  computeHealthDelta,
-  computeHealthScore,
-  type SeverityDiff,
-} from "../../app/lib/health-score";
 import { getFindingsForScan, getFindingSummary } from "../../app/models/finding.server";
 import type { ShopIgnores } from "../../app/models/ignored-finding.server";
 import {
@@ -228,19 +223,21 @@ describe("getFilteredFindingSummary", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Acceptance: an ignored finding moves NONE of the six outputs
+// Acceptance: an ignored finding moves NONE of the four outputs
 // ---------------------------------------------------------------------------
 
 /**
- * Compute all six product outputs from a current + previous finding set and a
+ * Compute all four product outputs from a current + previous finding set and a
  * set of ignores, wiring the SAME real functions the routes use:
  *   - total / bySeverity / byType : rolled up from filterIgnoredFindings(current).kept
- *   - health score                : computeHealthScore(bySeverity)
  *   - lanes                        : computeLaneSummary(byType) — lane membership
  *   - diff                         : diffScans over BOTH filtered sets
- *   - delta                        : computeHealthDelta(bySeverity, severityDiff)
  */
-function computeSix(current: DiffableFinding[], previous: DiffableFinding[], ignores: ShopIgnores) {
+function computeOutputs(
+  current: DiffableFinding[],
+  previous: DiffableFinding[],
+  ignores: ShopIgnores,
+) {
   const keptCurrent = filterIgnoredFindings(current, ignores).kept;
   const keptPrevious = filterIgnoredFindings(previous, ignores).kept;
 
@@ -252,26 +249,16 @@ function computeSix(current: DiffableFinding[], previous: DiffableFinding[], ign
   }
   const total = bySeverity.HIGH + bySeverity.MEDIUM + bySeverity.LOW;
 
-  const health = computeHealthScore(bySeverity);
   const lanes = computeLaneSummary(byType as Parameters<typeof computeLaneSummary>[0]);
 
   const diff = diffScans(keptCurrent, keptPrevious);
-  const severityDiff: SeverityDiff = {
-    newHigh: diff.newFindings.filter((f) => f.severity === "HIGH").length,
-    newMedium: diff.newFindings.filter((f) => f.severity === "MEDIUM").length,
-    newLow: diff.newFindings.filter((f) => f.severity === "LOW").length,
-    resolvedHigh: diff.resolvedFindings.filter((f) => f.severity === "HIGH").length,
-    resolvedMedium: diff.resolvedFindings.filter((f) => f.severity === "MEDIUM").length,
-    resolvedLow: diff.resolvedFindings.filter((f) => f.severity === "LOW").length,
-  };
-  const delta = computeHealthDelta(bySeverity, severityDiff);
 
   const laneCount = (lane: LaneKey) => lanes.find((r) => r.lane === lane)?.count ?? 0;
 
-  return { total, bySeverity, byType, health, lanes, laneCount, diff, delta };
+  return { total, bySeverity, byType, lanes, laneCount, diff };
 }
 
-describe("ignore moves nothing across all six aggregation outputs", () => {
+describe("ignore moves nothing across all four aggregation outputs", () => {
   // Current scan. F1 (Klaviyo) + F2 (fingerprint) will be ignored; F3/F4/F5 stay.
   // F1..F4 are also present unchanged in the previous scan; F5 is genuinely new.
   const F1 = makeFinding({
@@ -328,10 +315,9 @@ describe("ignore moves nothing across all six aggregation outputs", () => {
   };
 
   it("baseline (no ignores) counts every finding", () => {
-    const base = computeSix(CURRENT, PREVIOUS, NO_IGNORES);
+    const base = computeOutputs(CURRENT, PREVIOUS, NO_IGNORES);
     expect(base.total).toBe(5);
     expect(base.bySeverity).toEqual({ HIGH: 3, MEDIUM: 0, LOW: 2 });
-    expect(base.health.score).toBe(100 - (3 * 10 + 2 * 1)); // 68
     // Lanes present: speed (F1+F4=2), customers-see-it (F2=1), discoverability (F3+F5=2).
     expect(base.laneCount("speed")).toBe(2);
     expect(base.laneCount("customers-see-it")).toBe(1);
@@ -340,11 +326,10 @@ describe("ignore moves nothing across all six aggregation outputs", () => {
     expect(base.diff.newFindings).toHaveLength(1);
     expect(base.diff.resolvedFindings).toHaveLength(1);
     expect(base.diff.unchangedCount).toBe(4);
-    expect(base.delta).toBe(0);
   });
 
   it("removes the fingerprint-ignored and app-ignored findings from every output; keeps the rest", () => {
-    const filtered = computeSix(CURRENT, PREVIOUS, IGNORES);
+    const filtered = computeOutputs(CURRENT, PREVIOUS, IGNORES);
 
     // (1) total: F1 + F2 gone.
     expect(filtered.total).toBe(3);
@@ -352,20 +337,14 @@ describe("ignore moves nothing across all six aggregation outputs", () => {
     // (2) per-severity: both ignored findings were HIGH.
     expect(filtered.bySeverity).toEqual({ HIGH: 1, MEDIUM: 0, LOW: 2 });
 
-    // (3) health score rises because the two HIGH deductions are gone.
-    expect(filtered.health.score).toBe(100 - (1 * 10 + 2 * 1)); // 88
-    expect(filtered.health.score).toBeGreaterThan(
-      computeSix(CURRENT, PREVIOUS, NO_IGNORES).health.score,
-    );
-
-    // (4) lane membership: customers-see-it (only F2) disappears; speed drops
+    // (3) lane membership: customers-see-it (only F2) disappears; speed drops
     //     2 -> 1 (F1 gone, F4 stays); discoverability is untouched (F3, F5).
     expect(filtered.laneCount("customers-see-it")).toBe(0);
     expect(filtered.lanes.some((r) => r.lane === "customers-see-it")).toBe(false);
     expect(filtered.laneCount("speed")).toBe(1);
     expect(filtered.laneCount("discoverability")).toBe(2);
 
-    // (5) diff: F1 (app) + F2 (fingerprint) were "unchanged" — now gone from the
+    // (4) diff: F1 (app) + F2 (fingerprint) were "unchanged" — now gone from the
     //     diff entirely (unchanged 4 -> 2). The non-ignored new (F5) and
     //     resolved (P5) findings are untouched.
     expect(filtered.diff.unchangedCount).toBe(2);
@@ -378,14 +357,10 @@ describe("ignore moves nothing across all six aggregation outputs", () => {
     ];
     expect(diffFiles).not.toContain("a.js"); // F1
     expect(diffFiles).not.toContain("c.liquid"); // F2
-
-    // (6) health delta: the ignored findings were UNCHANGED between scans, so
-    //     removing them from BOTH sides leaves the delta exactly where it was.
-    expect(filtered.delta).toBe(0);
   });
 
   it("does not drop findings for a non-ignored app or fingerprint", () => {
-    const filtered = computeSix(CURRENT, PREVIOUS, IGNORES);
+    const filtered = computeOutputs(CURRENT, PREVIOUS, IGNORES);
     const keptTypes = filterIgnoredFindings(CURRENT, IGNORES).kept.map((f) => f.findingType);
     // Judge.me finding (F3) and the anonymous F4/F5 survive.
     expect(keptTypes).toContain("GHOST_JSON_LD"); // F3, appName Judge.me
@@ -395,18 +370,16 @@ describe("ignore moves nothing across all six aggregation outputs", () => {
   });
 
   it("un-ignoring (empty sets) restores every original output", () => {
-    const base = computeSix(CURRENT, PREVIOUS, NO_IGNORES);
-    const restored = computeSix(CURRENT, PREVIOUS, {
+    const base = computeOutputs(CURRENT, PREVIOUS, NO_IGNORES);
+    const restored = computeOutputs(CURRENT, PREVIOUS, {
       fingerprints: new Set(),
       appNames: new Set(),
     });
     expect(restored.total).toBe(base.total);
     expect(restored.bySeverity).toEqual(base.bySeverity);
-    expect(restored.health.score).toBe(base.health.score);
     expect(restored.laneCount("customers-see-it")).toBe(base.laneCount("customers-see-it"));
     expect(restored.laneCount("speed")).toBe(base.laneCount("speed"));
     expect(restored.diff.unchangedCount).toBe(base.diff.unchangedCount);
-    expect(restored.delta).toBe(base.delta);
   });
 });
 

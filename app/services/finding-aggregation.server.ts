@@ -17,9 +17,8 @@
  *   - `getFilteredFindingSummary` — the aggregate choke point. Loads a scan's
  *     findings once, filters them, and rolls the KEPT set up into the same
  *     `{ total, bySeverity, byType }` shape as `getFindingSummary`. Total +
- *     per-severity counts, the health score (computed from `bySeverity`), and
- *     the consequence lanes (computed from `byType`) therefore all drop ignored
- *     findings in lockstep.
+ *     per-severity counts and the consequence lanes (computed from `byType`)
+ *     therefore all drop ignored findings in lockstep.
  *
  * The fingerprint is a computed djb2 hash, NOT a stored column, so an INSTANCE
  * ignore cannot be pushed into SQL — the findings must be materialized and

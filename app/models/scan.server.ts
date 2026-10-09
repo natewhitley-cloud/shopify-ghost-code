@@ -657,9 +657,9 @@ export async function getLatestSuccessfulScanNonMaliciousCount(
 /**
  * Fetch the N most recent successful (COMPLETED or PARTIAL) scans for a shop,
  * newest first. Used by the dashboard trend chart — only returns successful
- * scans since in-progress/failed scans have no health score. PARTIAL scans have
- * a real health score for the categories they audited, so they belong on the
- * trend.
+ * scans since in-progress/failed scans have no final findings count. PARTIAL
+ * scans have real findings for the categories they audited, so they belong on
+ * the trend.
  *
  * `completedAt` is non-null for all terminal scans by construction
  * (finalizeScan / updateScanStatus stamp it), but the schema column is

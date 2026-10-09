@@ -32,8 +32,6 @@ import {
 } from "../lib/finding-consequence";
 import type { LaneKey, LaneSummaryRow, UrgencyKey } from "../lib/finding-consequence";
 import { isSuccessfulScan } from "../lib/format";
-import { computeHealthScore } from "../lib/health-score";
-import type { HealthScoreResult } from "../lib/health-score";
 import { logger } from "../lib/logger.server";
 import { mergeSearchParams } from "../lib/merge-search-params";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
@@ -160,7 +158,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       canSelectTheme: false,
       scanUsage: null,
       isFirstScan: true,
-      healthScore: null,
+      hasResults: false,
       showRescanNudge: false,
       showThemeChangeNudge: false,
       showMultiThemeNudge: false,
@@ -256,8 +254,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     [Severity.LOW]: 0,
   };
 
-  // Severity + per-type counts for the latest scan, used for the health score,
-  // the findings display, and the consequence lanes. Kept in a `bySeverity`-
+  // Severity + per-type counts for the latest scan, used for the findings
+  // count tile and the consequence lanes. Kept in a `bySeverity`-
   // shaped object so the returned findingSummary stays compatible with the
   // component (which reads only findingSummary?.bySeverity?.HIGH/MEDIUM/LOW).
   //
@@ -265,7 +263,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // lean groupBy aggregates that CANNOT exclude INSTANCE (fingerprint) ignores.
   // So when this shop has active suppressions we rebuild an ignore-filtered
   // severity map covering EVERY scan the dashboard aggregates — latest, previous,
-  // AND the trend scans (exactly `severityScanIds`) — and route the health tile,
+  // AND the trend scans (exactly `severityScanIds`) — and route the findings tile,
   // the finding-count trend, and the trend chart through that single source so
   // they can never disagree for the same scan. Filtering ALL scans (including
   // historical/previous) by the CURRENT ignore set is the correct, consistent
@@ -304,7 +302,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // Single ignore-aware severity accessor: reads the filtered map when the shop
   // has suppressions, else the lean batch groupBy. Every severity read below
-  // (health tile, finding-count trend, trend chart) goes through this so they
+  // (findings tile, finding-count trend, trend chart) goes through this so they
   // stay consistent for any given scan.
   const severityForScan = (scanId: string): Record<Severity, number> =>
     filteredSeverityByScanId?.get(scanId) ?? severityCounts.get(scanId) ?? zeroSeverityRecord;
@@ -358,11 +356,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       ? blockLane
       : startHereLane(laneSummary);
 
-  // Compute health scores from parallel results
-  let healthScore: HealthScoreResult | null = null;
-  if (latestScan && isSuccessfulScan(latestScan.status) && latestSeverity) {
-    healthScore = computeHealthScore(latestSeverity);
-  }
+  // The results view (findings count, Start here, lanes) renders only for a
+  // successful latest scan whose counts loaded.
+  const hasResults = Boolean(latestScan && isSuccessfulScan(latestScan.status) && latestSeverity);
 
   // Finding-count trend: compare the latest scan's total finding count against
   // the previous successful scan's. Fewer findings = improving. Derived from the
@@ -385,7 +381,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     findingTrend = { direction, previousTotal };
   }
 
-  // Compute health score trend — paid plans only, requires >= 3 completed scans.
+  // Compute the findings trend — paid plans only, requires >= 3 completed scans.
   // completedScansForTrend is newest-first; we reverse to oldest-first for the chart.
   // Types TrendScoreEntry and HealthScoreTrend are imported from HealthScoreTrendChart.
 
@@ -399,15 +395,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const scores: TrendScoreEntry[] = completedScansForTrend
       .map((scan) => {
         const counts = severityForScan(scan.id);
-        const { score, tone, label } = computeHealthScore(counts);
         const highCount = counts.HIGH ?? 0;
         const mediumCount = counts.MEDIUM ?? 0;
         const lowCount = counts.LOW ?? 0;
         return {
           scanId: scan.id,
-          score,
-          tone,
-          label,
           completedAt: scan.completedAt.toISOString(),
           themeName: scan.themeName,
           highCount,
@@ -535,7 +527,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     canSelectTheme,
     scanUsage,
     isFirstScan,
-    healthScore,
+    hasResults,
     showRescanNudge,
     showThemeChangeNudge,
     showMultiThemeNudge,
@@ -911,7 +903,7 @@ export default function Dashboard() {
     canSelectTheme,
     scanUsage,
     isFirstScan,
-    healthScore,
+    hasResults,
     showRescanNudge,
     showThemeChangeNudge,
     showMultiThemeNudge,
@@ -1461,7 +1453,7 @@ export default function Dashboard() {
                       findingCount={latestScan.findingCount}
                       pollingTimedOut={pollingTimedOut}
                     />
-                  ) : healthScore && latestScan ? (
+                  ) : hasResults && latestScan ? (
                     <>
                       <div className="dashboard-top-row">
                         {/* Left: findings count tile */}
@@ -1546,12 +1538,12 @@ export default function Dashboard() {
             {/* "Start here" (gc-bn0x): the latest scan's top 3 findings. Renders
               nothing while a scan runs (no successful latest scan) or when the
               scan is clean. */}
-            {healthScore && latestScan && (
+            {hasResults && latestScan && (
               <TopFindings findings={topFindings} newlyInactiveApps={newlyInactiveApps} />
             )}
 
             {/* Consequence lanes — "what it's costing you", worst-first */}
-            {healthScore && latestScan && (
+            {hasResults && latestScan && (
               <div style={{ ...sectionCard, marginBottom: 0 }}>
                 <s-stack direction="block" gap="base">
                   <div>

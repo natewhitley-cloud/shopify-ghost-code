@@ -82,7 +82,7 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
 
 // FIX 1/2: when the shop HAS ignores, the loader rebuilds an ignore-filtered
 // severity map for every aggregated scan via getFilteredFindingSummary and reads
-// the health tile, finding-count trend, and trend chart from it. Mock it so tests
+// the findings tile, finding-count trend, and trend chart from it. Mock it so tests
 // can supply filtered per-scan counts. The no-ignores path never calls it.
 vi.mock("../../app/services/finding-aggregation.server", () => ({
   getFilteredFindingSummaryAndKept: vi.fn(),
@@ -104,10 +104,6 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
   canUseScanDiffing: vi.fn(),
   getScanUsage: vi.fn(),
   getWeekStartUTC: vi.fn(),
-}));
-
-vi.mock("../../app/lib/health-score", () => ({
-  computeHealthScore: vi.fn(),
 }));
 
 vi.mock("../../app/services/theme-fetcher.server", () => ({
@@ -141,7 +137,6 @@ vi.mock("../../app/lib/plans", () => ({
 // ---------------------------------------------------------------------------
 
 import { getPlanFeatures } from "../../app/lib/billing.server";
-import { computeHealthScore } from "../../app/lib/health-score";
 import {
   canStartScan,
   canUseMultipleThemes,
@@ -195,7 +190,6 @@ const mockCanStartScan = canStartScan as ReturnType<typeof vi.fn>;
 const mockCanUseMultipleThemes = canUseMultipleThemes as ReturnType<typeof vi.fn>;
 const mockCanUseScanDiffing = canUseScanDiffing as ReturnType<typeof vi.fn>;
 const mockGetScanUsage = getScanUsage as ReturnType<typeof vi.fn>;
-const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
 const mockFetchMainTheme = fetchMainTheme as ReturnType<typeof vi.fn>;
 const mockFetchAllThemes = fetchAllThemes as ReturnType<typeof vi.fn>;
 const mockGetWeekStartUTC = getWeekStartUTC as ReturnType<typeof vi.fn>;
@@ -261,12 +255,6 @@ function severityCountsImpl(
   return async (scanIds: string[]) =>
     new Map<string, SeverityRecord>(scanIds.map((id) => [id, perScan[id] ?? fallback]));
 }
-
-const HEALTH_SCORE = {
-  score: 69,
-  label: "Fair",
-  tone: "warning" as const,
-};
 
 function makeLoaderArgs(overrides?: Partial<LoaderFunctionArgs>): LoaderFunctionArgs {
   return {
@@ -351,7 +339,6 @@ beforeEach(() => {
   // Default plan is Free/Standard (maxThemes: 1) → cannot use multiple themes.
   // Professional-plan tests override this to true.
   mockCanUseMultipleThemes.mockReturnValue(false);
-  mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetWeekStartUTC.mockReturnValue(new Date("2026-03-16T00:00:00Z"));
   mockFetchAllThemes.mockResolvedValue([]);
   mockGetCompletedScansForShop.mockResolvedValue([]);
@@ -365,7 +352,7 @@ beforeEach(() => {
 
 describe("app._index loader", () => {
   describe("correct data shape", () => {
-    it("returns full data shape with shop, theme, scans, healthScore, and usage", async () => {
+    it("returns full data shape with shop, theme, scans, hasResults, and usage", async () => {
       const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
 
       expect(result).toHaveProperty("shop");
@@ -374,7 +361,8 @@ describe("app._index loader", () => {
       expect(result).toHaveProperty("mainTheme");
       expect(result).toHaveProperty("scanUsage");
       expect(result).toHaveProperty("isFirstScan");
-      expect(result).toHaveProperty("healthScore");
+      expect(result).toHaveProperty("hasResults");
+      expect(result).not.toHaveProperty("healthScore");
       expect(result).toHaveProperty("showRescanNudge");
       expect(result).toHaveProperty("showThemeChangeNudge");
     });
@@ -387,29 +375,35 @@ describe("app._index loader", () => {
       expect(result.latestScan).toEqual(COMPLETED_SCAN);
     });
 
-    it("returns healthScore from computeHealthScore when scan is completed", async () => {
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScore: typeof HEALTH_SCORE;
-      };
+    it("returns hasResults: true when the latest scan is completed", async () => {
+      const result = await loader(makeLoaderArgs());
 
-      expect(result.healthScore).toEqual(HEALTH_SCORE);
-      expect(mockComputeHealthScore).toHaveBeenCalledWith(FINDING_SUMMARY.bySeverity);
+      expect(result.hasResults).toBe(true);
+      expect(result.findingSummary).toEqual({ bySeverity: FINDING_SUMMARY.bySeverity });
     });
 
-    it("computes a healthScore for a PARTIAL scan (treated like COMPLETED) — LOG-4", async () => {
+    it("returns hasResults: true for a PARTIAL scan (treated like COMPLETED) — LOG-4", async () => {
       // PARTIAL is a successful, usable terminal status: the dashboard must
-      // still surface a health score for the categories that were audited.
+      // still surface results for the categories that were audited.
       mockGetScansForShop.mockResolvedValue({
         items: [{ ...COMPLETED_SCAN, status: "PARTIAL", skippedCategories: ["GHOST_TAG"] }],
         hasNextPage: false,
       });
 
-      const result = (await loader(makeLoaderArgs())) as {
-        healthScore: typeof HEALTH_SCORE;
-      };
+      const result = await loader(makeLoaderArgs());
 
-      expect(result.healthScore).toEqual(HEALTH_SCORE);
-      expect(mockComputeHealthScore).toHaveBeenCalledWith(FINDING_SUMMARY.bySeverity);
+      expect(result.hasResults).toBe(true);
+    });
+
+    it("returns hasResults: false while the latest scan is still running", async () => {
+      mockGetScansForShop.mockResolvedValue({
+        items: [{ ...COMPLETED_SCAN, status: "IN_PROGRESS", completedAt: null }],
+        hasNextPage: false,
+      });
+
+      const result = await loader(makeLoaderArgs());
+
+      expect(result.hasResults).toBe(false);
     });
   });
 
@@ -480,7 +474,7 @@ describe("app._index loader", () => {
       expect(result.mainTheme).toBeNull();
       expect(result.scanUsage).toBeNull();
       expect(result.isFirstScan).toBe(true);
-      expect(result.healthScore).toBeNull();
+      expect(result.hasResults).toBe(false);
       expect(result.showRescanNudge).toBe(false);
       expect(result.showThemeChangeNudge).toBe(false);
       expect(result.showFeedbackNudge).toBe(false);
@@ -506,16 +500,13 @@ describe("app._index loader", () => {
       expect(result.isFirstScan).toBe(true);
     });
 
-    it("returns null healthScore when no scans exist", async () => {
+    it("returns hasResults: false when no scans exist", async () => {
       mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
 
-      const result = (await loader(makeLoaderArgs())) as {
-        latestScan: null;
-        healthScore: null;
-      };
+      const result = await loader(makeLoaderArgs());
 
       expect(result.latestScan).toBeNull();
-      expect(result.healthScore).toBeNull();
+      expect(result.hasResults).toBe(false);
     });
   });
 });
@@ -1255,7 +1246,7 @@ describe("app._index action — theme picker", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Loader: health score trend chart
+// Loader: findings trend chart
 // ---------------------------------------------------------------------------
 
 // Fixtures for trend chart tests
@@ -1294,7 +1285,7 @@ const TREND_FINDING_SUMMARY_OLDEST = {
   byType: {},
 };
 
-describe("app._index loader — health score trend chart", () => {
+describe("app._index loader — findings trend chart", () => {
   afterEach(() => {
     delete process.env.ENABLE_TREND_CHART;
   });
@@ -1456,7 +1447,6 @@ describe("app._index loader — health score trend chart", () => {
     });
 
     it("returns healthScoreTrend that is not null", async () => {
-      // computeHealthScore is a vi.fn() — let it return HEALTH_SCORE for all calls
       const result = (await loader(makeLoaderArgs())) as Record<string, unknown>;
 
       expect(result.healthScoreTrend).not.toBeNull();
@@ -1644,15 +1634,15 @@ describe("app._index loader — health score trend chart", () => {
 });
 
 // ---------------------------------------------------------------------------
-// FIX 1/2 (E2.2): ignore-filtered counts are consistent across the health tile,
+// FIX 1/2 (E2.2): ignore-filtered counts are consistent across the findings tile,
 // the finding-count trend, and the trend chart. When a shop has active ignores,
 // all three must read the SAME ignore-filtered source and can never disagree for
-// the same scan — in particular, the newest trend point's score must equal the
-// health-tile score when the newest trend scan IS the latest scan.
+// the same scan — in particular, the newest trend point's counts must equal the
+// findings-tile counts when the newest trend scan IS the latest scan.
 // ---------------------------------------------------------------------------
 describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)", () => {
   // Latest scan (scan-1) doubles as the newest trend scan, mirroring production
-  // where the most recent completed scan is both the health tile's scan and the
+  // where the most recent completed scan is both the findings tile's scan and the
   // right-most point of the trend chart.
   const PREVIOUS_SCAN = {
     ...COMPLETED_SCAN,
@@ -1725,40 +1715,25 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
         keptFindings: [],
       };
     });
-
-    // Deterministic score so tile and trend are directly comparable. Weighted so
-    // filtered (small) and raw (large=9/9/9) inputs yield clearly different scores.
-    mockComputeHealthScore.mockImplementation(
-      (counts: { HIGH: number; MEDIUM: number; LOW: number }) => ({
-        score: 100 - (counts.HIGH * 10 + counts.MEDIUM * 5 + counts.LOW),
-        label: "Computed",
-        tone: "warning" as const,
-      }),
-    );
   });
 
-  it("computes the health tile from the ignore-filtered latest-scan counts", async () => {
-    const result = (await loader(makeLoaderArgs())) as {
-      healthScore: { score: number } | null;
-    };
-    // filtered scan-1 = {HIGH:1} → 100 - 10 = 90 (raw would be 100-(90+45+9) = -44)
-    expect(result.healthScore?.score).toBe(90);
+  it("computes the findings tile from the ignore-filtered latest-scan counts", async () => {
+    const result = await loader(makeLoaderArgs());
+    // filtered scan-1 = {HIGH:1} (raw would be 9/9/9)
+    expect(result.findingSummary?.bySeverity).toEqual({ HIGH: 1, MEDIUM: 0, LOW: 0 });
   });
 
-  it("newest trend point score EQUALS the health-tile score for the same latest scan", async () => {
-    const result = (await loader(makeLoaderArgs())) as {
-      healthScore: { score: number } | null;
-      healthScoreTrend: {
-        scores: Array<{ scanId: string; score: number }>;
-      } | null;
-    };
+  it("newest trend point counts EQUAL the findings-tile counts for the same latest scan", async () => {
+    const result = await loader(makeLoaderArgs());
     const scores = result.healthScoreTrend?.scores ?? [];
     const newest = scores[scores.length - 1];
 
     expect(newest.scanId).toBe("scan-1");
-    // The core invariant: same scan, same ignore-filtered source, same score.
-    expect(newest.score).toBe(result.healthScore?.score);
-    expect(newest.score).toBe(90);
+    // The core invariant: same scan, same ignore-filtered source, same counts.
+    expect({ HIGH: newest.highCount, MEDIUM: newest.mediumCount, LOW: newest.lowCount }).toEqual(
+      result.findingSummary?.bySeverity,
+    );
+    expect(newest.highCount).toBe(1);
   });
 
   it("findingTrend.previousTotal uses the ignore-filtered previous-scan total", async () => {
@@ -2310,7 +2285,7 @@ describe("Home loader: per-scan viewedOnHomeAt stamp", () => {
 
       const data = await loader(makeLoaderArgs());
 
-      // The same condition that renders the results view (healthScore + latestScanId).
+      // The same condition that renders the results view (hasResults + latestScanId).
       expect(data.latestScanId).toBe(COMPLETED_SCAN.id);
       expect(mockRecordView).toHaveBeenCalledTimes(1);
       expect(mockRecordView).toHaveBeenCalledWith(COMPLETED_SCAN.id, SHOP.id, "home", SHOP.domain);

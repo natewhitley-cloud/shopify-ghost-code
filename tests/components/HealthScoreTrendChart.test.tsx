@@ -22,9 +22,6 @@ import type { HealthScoreTrend } from "../../app/components/HealthScoreTrendChar
 function makeEntry(
   overrides: Partial<{
     scanId: string;
-    score: number;
-    tone: string;
-    label: string;
     completedAt: string;
     themeName: string;
     highCount: number;
@@ -34,9 +31,6 @@ function makeEntry(
 ) {
   return {
     scanId: "scan-1",
-    score: 80,
-    tone: "success",
-    label: "Good",
     completedAt: "2026-03-01T12:00:00Z",
     themeName: "Dawn",
     highCount: 2,
@@ -49,9 +43,9 @@ function makeEntry(
 function makeTrend(overrides: Partial<HealthScoreTrend> = {}): HealthScoreTrend {
   return {
     scores: [
-      makeEntry({ scanId: "scan-1", score: 60 }),
-      makeEntry({ scanId: "scan-2", score: 70 }),
-      makeEntry({ scanId: "scan-3", score: 80 }),
+      makeEntry({ scanId: "scan-1" }),
+      makeEntry({ scanId: "scan-2" }),
+      makeEntry({ scanId: "scan-3" }),
     ],
     direction: "improving",
     ...overrides,
@@ -134,14 +128,14 @@ describe("HealthScoreTrendChart — renders chart", () => {
     expect(result!.props.children).toHaveLength(2); // style + div
   });
 
-  it("renders correct number of score entries in the chart data", () => {
+  it("renders correct number of trend entries in the chart data", () => {
     const trend = makeTrend({
       scores: [
-        makeEntry({ scanId: "s1", score: 50 }),
-        makeEntry({ scanId: "s2", score: 65 }),
-        makeEntry({ scanId: "s3", score: 78 }),
-        makeEntry({ scanId: "s4", score: 82 }),
-        makeEntry({ scanId: "s5", score: 90 }),
+        makeEntry({ scanId: "s1" }),
+        makeEntry({ scanId: "s2" }),
+        makeEntry({ scanId: "s3" }),
+        makeEntry({ scanId: "s4" }),
+        makeEntry({ scanId: "s5" }),
       ],
     });
 
