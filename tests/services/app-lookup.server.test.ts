@@ -991,3 +991,44 @@ describe("identifyAppFromEmbedHandle", () => {
     expect(identifyAppFromEmbedHandle("")).toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// ScriptTag-era signatures (exact cdnDomains only, verified 2026-10-08)
+// ---------------------------------------------------------------------------
+
+describe("ScriptTag app signatures (exact hosts)", () => {
+  it.each([
+    ["https://static.affiliatly.com/a.js?shop=s.myshopify.com", "Affiliatly"],
+    ["https://tseish-app.connect.trustedshops.com/a.js?shop=s.myshopify.com", "Trusted Shops"],
+    ["https://cdncozyantitheft.addons.business/a.js?shop=s.myshopify.com", "Cozy AntiTheft"],
+    ["https://dashboard.jetprintapp.com/a.js?shop=s.myshopify.com", "JetPrint"],
+    ["https://trust.conversionbear.com/a.js?shop=s.myshopify.com", "Conversion Bear Trust Badges"],
+    ["https://instagrid.instasell.co.in/_/pd/index.js", "Instafeed (Instasell)"],
+    ["https://master-motivator.hulkapps.com/assets/mha-dao-bar.css", "HulkApps Free Shipping Bar"],
+  ])("attributes %s to %s", (url, app) => {
+    expect(identifyAppFromUrl(url)).toBe(app);
+  });
+
+  it.each([
+    // Sibling hosts of the same vendors: other apps or the marketing site.
+    ["https://www.hulkapps.com/x.js"],
+    ["https://product-options.hulkapps.com/x.js"],
+    ["https://hulkapps.com/x.js"],
+    ["https://www.affiliatly.com/x.js"],
+    ["https://connect.trustedshops.com/x.js"],
+    ["https://widgets.trustedshops.com/x.js"],
+    ["https://addons.business/x.js"],
+    ["https://www.conversionbear.com/x.js"],
+    ["https://instasell.co.in/x.js"],
+    // Lookalike registrable domains.
+    ["https://master-motivator.hulkapps.com.evil.io/x.js"],
+    ["https://evilinstagrid.instasell.co.in.example.com/x.js"],
+    // Candidates deliberately NOT added (vendor or listing unconfirmed).
+    ["https://www.magisto.com/media/shopify/magisto.js"],
+    ["https://d1liekpayvooaz.cloudfront.net/apps/customizery/customizery.js"],
+    ["https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js"],
+    ["https://app.shoplytics.de/scripts/abc"],
+  ])("does not attribute %s", (url) => {
+    expect(identifyAppFromUrl(url)).toBeNull();
+  });
+});

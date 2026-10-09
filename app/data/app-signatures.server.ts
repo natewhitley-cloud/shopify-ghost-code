@@ -1157,4 +1157,82 @@ export const APP_SIGNATURES: AppSignature[] = [
     cssPatterns: [/secomapp/],
     jsonLdPatterns: [/secomapp/i, /searchpie/i],
   },
+
+  // -------------------------------------------------------------------------
+  // ScriptTag-era apps (verified 2026-10-08)
+  // -------------------------------------------------------------------------
+  // Hosts seen live as storefront ScriptTags (SCRIPT_TAG_SUNSET) or as unknown
+  // theme scripts (gc-ppwg). Exact hosts only, no scriptPatterns/snippetNames:
+  // each host is the vendor's own (vendor site, listing, or the app's own
+  // endpoints), and a bare vendor domain would also catch the vendor's other
+  // apps. Matching covers subdomains of the listed host only (domainMatches).
+  {
+    appName: "Affiliatly",
+    // https://apps.shopify.com/affiliatly (vendor site www.affiliatly.com).
+    cdnDomains: ["static.affiliatly.com"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+  },
+  {
+    // Vendor-neutral: Trusted Shops AG has two listings and the host does not
+    // say which. https://apps.shopify.com/trusted-shops-easy-integration (live)
+    // and https://apps.shopify.com/trusted-shops-trustbadge-with-customer-reviews
+    // (delisted). tseish-app.connect.trustedshops.com serves a Shopify embedded
+    // app (App Bridge, shopify-api-key meta).
+    appName: "Trusted Shops",
+    cdnDomains: ["tseish-app.connect.trustedshops.com"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+  },
+  {
+    appName: "Cozy AntiTheft",
+    // https://apps.shopify.com/cozy-antitheft-for-images-and-more (eCommerce
+    // Addons; docs and privacy policy on blog.addons.business).
+    cdnDomains: ["cdncozyantitheft.addons.business"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+  },
+  {
+    appName: "JetPrint",
+    // https://apps.shopify.com/jetprint-fulfillment (vendor site jetprintapp.com).
+    cdnDomains: ["dashboard.jetprintapp.com"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+  },
+  {
+    appName: "Conversion Bear Trust Badges",
+    // https://apps.shopify.com/ultimate-trust-badges (website conversionbear.com;
+    // trust.conversionbear.com serves the app's Shopify embedded admin).
+    cdnDomains: ["trust.conversionbear.com"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+  },
+  {
+    // https://apps.shopify.com/instafeed-by-instasell (developer "Instasell",
+    // delisted). instagrid.instasell.co.in is that Instagram-feed app's
+    // backend: Shopify HMAC-checked endpoints and /_/instagrid/v1/feedposts?shop=.
+    // Named as merchants know it ("Instafeed by Instasell"); distinct from the
+    // "Instagram Feed" entry (LightWidget / Mintt's Instafeed).
+    appName: "Instafeed (Instasell)",
+    cdnDomains: ["instagrid.instasell.co.in"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+  },
+  {
+    // https://apps.shopify.com/master-motivator-promos-bar (HulkApps, delisted;
+    // the handle matches the host, the listing now reads "FSB Free Shipping
+    // Bar"). Exact subdomain only: other HulkApps apps use other hulkapps.com
+    // subdomains.
+    appName: "HulkApps Free Shipping Bar",
+    cdnDomains: ["master-motivator.hulkapps.com"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+  },
 ];

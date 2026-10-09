@@ -9,6 +9,7 @@ import {
   MAX_SCRIPT_TAG_URLS,
   SCRIPT_TAG_FINDING_FILENAME,
   SCRIPT_TAG_SUNSET_AT_MS,
+  normalizeScriptTagUrl,
   stripQueryAndFragment,
 } from "../../app/services/script-tag-sunset-detector.server";
 
@@ -62,6 +63,46 @@ describe("stripQueryAndFragment", () => {
     ["   "],
   ])("rejects %j", (raw) => {
     expect(stripQueryAndFragment(raw)).toBeNull();
+  });
+});
+
+describe("normalizeScriptTagUrl", () => {
+  it.each([
+    [
+      "https://cdn.shopify.com/s/files/1/0013/1642/1703/t/1/assets/x.js?v=1#h",
+      "https://cdn.shopify.com/s/files/<shop>/t/1/assets/x.js",
+    ],
+    [
+      "https://cdn.shopify.com/s/files/1/0001/t/1/assets/app.js",
+      "https://cdn.shopify.com/s/files/<shop>/t/1/assets/app.js",
+    ],
+    [
+      "//cdn.shopify.com/s/files/1/0262/3367/6858/files/widget.js",
+      "https://cdn.shopify.com/s/files/<shop>/files/widget.js",
+    ],
+    ["https://CDN.Shopify.com/s/files/1/0001/x.js", "https://cdn.shopify.com/s/files/<shop>/x.js"],
+  ])("redacts the shop bucket in %s", (raw, expected) => {
+    expect(normalizeScriptTagUrl(raw)).toBe(expected);
+  });
+
+  it.each([
+    // Same path on another host: not Shopify's file bucket, left alone.
+    ["https://cdn.vendor.io/s/files/1/0013/1642/1703/t/1/assets/x.js"],
+    // No bucket id after the version segment.
+    ["https://cdn.shopify.com/s/files/1/app.js"],
+    // Not 4-digit chunks: not the bucket format.
+    ["https://cdn.shopify.com/s/files/1/13/x.js"],
+    // Theme app extension assets carry no shop id.
+    ["https://cdn.shopify.com/extensions/0199c2a1-aaaa/app-1/assets/app.js"],
+    // A lookalike segment later in the path.
+    ["https://cdn.shopify.com/a/s/files/1/0013/x.js"],
+  ])("leaves %s unchanged apart from the query", (raw) => {
+    expect(normalizeScriptTagUrl(raw)).toBe(stripQueryAndFragment(raw));
+  });
+
+  it("returns null for anything stripQueryAndFragment rejects", () => {
+    expect(normalizeScriptTagUrl("javascript:alert(1)")).toBeNull();
+    expect(normalizeScriptTagUrl("")).toBeNull();
   });
 });
 
@@ -134,9 +175,12 @@ describe("detectScriptTagSunset", () => {
       "https://d5zu2f4xvqanl.cloudfront.net/42/fe/other.js",
     ]);
     expect(cloudfront?.description).toMatch(
-      /^An app loading from d5zu2f4xvqanl\.cloudfront\.net loads on your storefront through a script tag\./,
+      /^A script from d5zu2f4xvqanl\.cloudfront\.net, added by one of your apps, is loaded through a script tag\./,
     );
-    expect(cloudfront?.description).toContain("Ask that app's support");
+    expect(cloudfront?.description).toContain(
+      "If you know which app this is, ask its support whether it has moved to an app embed.",
+    );
+    expect(cloudfront?.description).not.toContain("that app");
   });
 
   it("produces the same snippets in the same order whatever the input order", () => {
@@ -145,7 +189,7 @@ describe("detectScriptTagSunset", () => {
     expect(b).toEqual(a);
   });
 
-  it("names a cdn.shopify.com ScriptTag as an app script hosted on Shopify's CDN", () => {
+  it("names a cdn.shopify.com ScriptTag as a script hosted on Shopify's CDN", () => {
     const [f] = detectScriptTagSunset(
       ["https://cdn.shopify.com/s/files/1/0001/t/1/assets/app.js?v=123"],
       NO_EMBEDS,
@@ -154,10 +198,10 @@ describe("detectScriptTagSunset", () => {
     expect(f.appName).toBeUndefined();
     expect(f.severity).toBe(Severity.HIGH);
     expect(f.codeSnippet).toBe(
-      "script-tags: host cdn.shopify.com\nhttps://cdn.shopify.com/s/files/1/0001/t/1/assets/app.js",
+      "script-tags: host cdn.shopify.com\nhttps://cdn.shopify.com/s/files/<shop>/t/1/assets/app.js",
     );
-    expect(f.description).toMatch(
-      /^An app script hosted on Shopify's CDN loads on your storefront/,
+    expect(f.description).toBe(
+      "A script hosted on Shopify's CDN, added by one of your apps, is loaded through a script tag. Shopify will stop running script tags on March 1, 2027, so whatever that script does on your store will stop working unless the app that added it moves to an app embed before then. If you know which app this is, ask its support whether it has moved to an app embed.",
     );
   });
 
@@ -242,10 +286,41 @@ describe("detectScriptTagSunset", () => {
       );
     });
 
-    it("an unmatched host reads 'that app' in past tense too", () => {
-      const [f] = detectScriptTagSunset(["https://x.vendor.io/a.js"], NO_EMBEDS, AFTER);
-      expect(f.description).toContain("so the parts of that app that rely on it have stopped");
-      expect(f.description).toContain("unless that app has moved to an app embed");
+    it("unmatched host copy: future one millisecond before the cutoff", () => {
+      const [f] = detectScriptTagSunset(["https://x.vendor.io/a.js"], NO_EMBEDS, justBefore);
+      expect(f.description).toBe(
+        "A script from x.vendor.io, added by one of your apps, is loaded through a script tag. Shopify will stop running script tags on March 1, 2027, so whatever that script does on your store will stop working unless the app that added it moves to an app embed before then. If you know which app this is, ask its support whether it has moved to an app embed.",
+      );
+    });
+
+    it("unmatched host copy: past tense exactly at the cutoff", () => {
+      const [f] = detectScriptTagSunset(["https://x.vendor.io/a.js"], NO_EMBEDS, exactly);
+      expect(f.description).toBe(
+        "A script from x.vendor.io, added by one of your apps, is loaded through a script tag. Shopify stopped running script tags on March 1, 2027, so whatever that script does on your store has stopped working unless the app that added it has moved to an app embed. If you know which app this is, ask its support whether it has moved to an app embed.",
+      );
+      expect(f.severity).toBe(Severity.HIGH);
+    });
+
+    it("Shopify CDN copy: past tense after the cutoff", () => {
+      const [f] = detectScriptTagSunset(
+        ["https://cdn.shopify.com/s/files/1/0001/t/1/assets/app.js"],
+        NO_EMBEDS,
+        AFTER,
+      );
+      expect(f.description).toBe(
+        "A script hosted on Shopify's CDN, added by one of your apps, is loaded through a script tag. Shopify stopped running script tags on March 1, 2027, so whatever that script does on your store has stopped working unless the app that added it has moved to an app embed. If you know which app this is, ask its support whether it has moved to an app embed.",
+      );
+    });
+
+    it("unmatched host copy stays HIGH wording even when embeds are enabled (it can never be LOW)", () => {
+      const [f] = detectScriptTagSunset(
+        ["https://x.vendor.io/a.js"],
+        new Set(["x.vendor.io", "Klaviyo"]),
+        justBefore,
+      );
+      expect(f.severity).toBe(Severity.HIGH);
+      expect(f.description).not.toContain("embed turned on");
+      expect(f.description).toMatch(/^A script from x\.vendor\.io, added by one of your apps/);
     });
   });
 
@@ -341,7 +416,7 @@ describe("detectScriptTagSunset", () => {
       const host = `${label}.${label}.${label}.example.com`;
       const [f] = detectScriptTagSunset([`https://${host}/a.js`], NO_EMBEDS, BEFORE);
       expect(f.description).not.toContain(host);
-      const named = f.description.match(/^An app loading from (\S+) loads/)?.[1] ?? "";
+      const named = f.description.match(/^A script from (\S+), added/)?.[1] ?? "";
       expect(named.length).toBeLessThanOrEqual(100);
       expect(f.codeSnippet.split("\n")[0].length).toBeLessThanOrEqual(120);
     });
@@ -392,6 +467,56 @@ describe("detectScriptTagSunset", () => {
         "script-tags: Rise.ai",
         "https://str.rise-ai.com/",
         "https://strn.rise-ai.com/",
+      ]);
+    });
+  });
+
+  describe("shop file bucket redaction (cdn.shopify.com)", () => {
+    const snippetUrls = (f: { codeSnippet: string }) => f.codeSnippet.split("\n").slice(1);
+
+    it("replaces the numeric file-bucket id with <shop> in stored URLs", () => {
+      const [f] = detectScriptTagSunset(
+        ["https://cdn.shopify.com/s/files/1/0013/1642/1703/t/1/assets/x.js?v=99"],
+        NO_EMBEDS,
+        BEFORE,
+      );
+      expect(snippetUrls(f)).toEqual(["https://cdn.shopify.com/s/files/<shop>/t/1/assets/x.js"]);
+      expect(f.codeSnippet).not.toMatch(/0013|1642|1703/);
+    });
+
+    it("keeps the group key line (and so the fingerprint) unchanged", () => {
+      const [f] = detectScriptTagSunset(
+        ["https://cdn.shopify.com/s/files/1/0013/1642/1703/t/1/assets/x.js"],
+        NO_EMBEDS,
+        BEFORE,
+      );
+      expect(f.codeSnippet.split("\n")[0]).toBe("script-tags: host cdn.shopify.com");
+      expect(fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber)).toBe(
+        fingerprintFinding(
+          SCRIPT_TAG_FINDING_FILENAME,
+          FindingType.SCRIPT_TAG_SUNSET,
+          "script-tags: host cdn.shopify.com\nhttps://cdn.shopify.com/s/files/1/0013/1642/1703/t/1/assets/x.js",
+          1,
+        ),
+      );
+    });
+
+    it("never collapses two different files of the same shop into one", () => {
+      const [f] = detectScriptTagSunset(
+        [
+          "https://cdn.shopify.com/s/files/1/0013/1642/1703/t/1/assets/x.js",
+          "https://cdn.shopify.com/s/files/1/0013/1642/1703/t/1/assets/y.js",
+          "https://cdn.shopify.com/s/files/1/0013/1642/1703/t/2/assets/x.js",
+          "https://cdn.shopify.com/s/files/1/0013/1642/1703/files/x.js",
+        ],
+        NO_EMBEDS,
+        BEFORE,
+      );
+      expect(snippetUrls(f)).toEqual([
+        "https://cdn.shopify.com/s/files/<shop>/files/x.js",
+        "https://cdn.shopify.com/s/files/<shop>/t/1/assets/x.js",
+        "https://cdn.shopify.com/s/files/<shop>/t/1/assets/y.js",
+        "https://cdn.shopify.com/s/files/<shop>/t/2/assets/x.js",
       ]);
     });
   });
