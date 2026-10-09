@@ -76,7 +76,7 @@ the AI angle in images and body copy instead.
 2. Every fragment traced to the app that left it, with file, line, and snippet
 3. Catch schema prices that disagree with your live price before AI quotes it
 4. Flag scripts from known malicious domains, shown in full on every plan
-5. Track your health score and re-scan to confirm it's gone. First scan free
+5. Track findings over time and re-scan to confirm they're gone. First scan free
 ```
 
 ### Timely hook: checkout.liquid sunset (do NOT put in the hero)
@@ -105,7 +105,7 @@ app," so leading with it blurs the core promise. Use it in three places:
 > deadline framing for a sunset that already happened); owner replaced it with
 > `Find dead checkout.liquid code`. Live Standard card (verified from dashboard 2026-09-23):
 > All features in Free · Full finding details with code · Catch broken links from old apps ·
-> Find dead checkout.liquid code · Weekly auto-scan + findings trend · 7-day free trial.
+> Find dead checkout.liquid code · Monthly auto-scan + findings trend · 7-day free trial.
 > Both Standard-only outcome detectors are now named. Malicious-script alerts are free on every
 > plan, so they belong on the Free card (candidate: `Malicious script alerts on every plan`, 37/40).
 
@@ -117,7 +117,7 @@ decision point: **Broken Links** (`DANGLING_REFERENCE`) and **checkout.liquid su
 
 - `Catch broken links from old apps` (32): names Broken Links
 - `Find dead checkout.liquid code` (30): names checkout sunset, present-harm
-- `Weekly auto-scan + findings trend` (33): folds cadence + trend into one benefit line
+- `Monthly auto-scan + findings trend` (34): folds cadence + trend into one benefit line (was `Weekly auto-scan + findings trend` until 2026-10-09, gc-iefo)
 
 Also update `docs/pricing-and-plans.md` in the same pass; its Standard/Free listing bullets
 have drifted from the live cards ("Findings grouped by impact" and "Findings trend over time"
@@ -166,7 +166,7 @@ Assuming hero **A**:
 |---|---|---|
 | 1 | One finding: file + line + snippet + app attribution | "We trace every fragment to the app that left it" |
 | 2 | The "Found by Google & AI" lane | "Catch wrong prices before Google and AI agents do" |
-| 3 | Health score + trend / re-scan | "Clean it up, re-scan, watch your score climb" |
+| 3 | Findings trend / re-scan | "Track your findings over time, watch them drop" (live 2026-10-09) |
 | 4 | Free-scan entry point | "Your first scan is free" |
 | 5 (optional) | Scan diff (New / Resolved) — sells Pro | "Compare scans: see what's new and what's fixed" |
 

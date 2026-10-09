@@ -356,6 +356,16 @@ describe("Settings plan tile buttons", () => {
     expect(bullets(html)).toContain("Scan diffing (New/Resolved)");
   });
 
+  it("paid tiles state the scheduled-scan cadence (gc-iefo): Standard monthly, Professional weekly", () => {
+    const all = bullets(renderSettings("free", false));
+    expect(all).toContain("Monthly automatic scan");
+    expect(all).toContain("Weekly automatic scans");
+    expect(all.indexOf("Monthly automatic scan")).toBeLessThan(
+      all.indexOf("Weekly automatic scans"),
+    );
+    expect(all.join(" ")).not.toMatch(/daily/i);
+  });
+
   it("the Free tile lists the owner-approved bullets, identical to the doc's App listing features", async () => {
     const freeTile = bullets(renderSettings("free", true)).slice(0, 5);
     expect(freeTile).toEqual([

@@ -71,15 +71,15 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 2. Full finding details with code
 3. Catch broken links from old apps
 4. Find dead checkout.liquid code
-5. 1 manual scan/week + monthly auto-scan
+5. Monthly auto-scan + findings trend
 6. 7-day free trial
 
 > **Bullet rationale (2026-09-12):** bullets 3–5 name Standard-only _outcomes_ (Broken Links
 > `DANGLING_REFERENCE`, checkout.liquid sunset `CHECKOUT_SUNSET`) instead of _mechanics_, so
 > ad-driven visitors see concrete reasons to pay. The 1-manual-scan/week cap is unchanged and
-> still enforced. (2026-10-09, gc-iefo: bullet 5 was "Weekly auto-scan + findings trend"; with the
-> scheduled scan now monthly the word "weekly" no longer covered the manual cap, so the cap is stated
-> outright and "findings trend" moves off the card; it stays on the in-app Settings tile.) Checkout
+> still enforced. (2026-10-09, gc-iefo: bullet 5 was "Weekly auto-scan + findings trend"; Nathan set the live
+> Partner Dashboard card to "Monthly auto-scan + findings trend". The 1/week manual cap is no longer
+> stated on the card; it stays on the in-app Billing tile.) Checkout
 > bullet is tense-neutral on purpose; the checkout.liquid sunset fully passed on Aug 28,
 > 2025 for every store (in-app copy made past tense in gc-oam). Apply these in Partner Dashboard → Managed Pricing.
 

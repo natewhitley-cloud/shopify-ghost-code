@@ -415,6 +415,7 @@ export default function Settings() {
                 <s-list-item>All features in Free</s-list-item>
                 <s-list-item>Full finding details with code</s-list-item>
                 <s-list-item>1 manual scan per week</s-list-item>
+                <s-list-item>Monthly automatic scan</s-list-item>
                 <s-list-item>Findings trend over time</s-list-item>
                 {trialBullet}
               </s-unordered-list>
@@ -443,6 +444,7 @@ export default function Settings() {
                 <s-list-item>All features in Standard</s-list-item>
                 <s-list-item>Unlimited scans</s-list-item>
                 <s-list-item>Unlimited theme scanning</s-list-item>
+                <s-list-item>Weekly automatic scans</s-list-item>
                 <s-list-item>Auto-rescan on theme publish</s-list-item>
                 <s-list-item>Scan diffing (New/Resolved)</s-list-item>
                 {trialBullet}
