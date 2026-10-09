@@ -297,7 +297,7 @@ export interface RemovalUpdate {
  *   - No hook source observed on `current`: unchanged (cannot tell).
  *   - X has a live hook again in an observed source: REINSTALLED.
  *   - X has 0 findings left (ignores applied, SCRIPT_TAG_SUNSET excluded) with
- *     X's categories audited: CLEANED.
+ *     X's categories audited: CLEANED, keeping the record's last count.
  *   - Otherwise the leftover count is refreshed (null when unchanged).
  *
  * "X's categories" are the types of X's findings on `previous` (the scan
@@ -337,7 +337,11 @@ export function nextRemovalState(
 
   const count =
     countByApp(current.findings, opts.ignores, [currentCoverage]).get(record.appName) ?? 0;
-  if (count === 0) return { id: record.id, leftoverCount: 0, state: AppRemovalState.CLEANED };
+  // CLEANED keeps the last REMOVED count: what was cleaned up (Home's "The N
+  // items X left behind are gone as of this scan").
+  if (count === 0) {
+    return { id: record.id, leftoverCount: record.leftoverCount, state: AppRemovalState.CLEANED };
+  }
   return count === record.leftoverCount ? null : { id: record.id, leftoverCount: count };
 }
 

@@ -7,12 +7,16 @@
 --   AppRemoval                     new table + enum, nothing references it.
 --                                  Cascades from Shop, so shop/redact removes
 --                                  it with the Shop row (no personal data).
+--   Shop.removalNoticeDismissedScanId
+--                                  nullable TEXT, no default, no backfill
+--                                  (the Home banner dismissal, per scan).
 --
 -- Manual rollback:
 --   DROP TABLE "AppRemoval";
 --   DROP TYPE "AppRemovalState";
 --   ALTER TABLE "Scan" DROP COLUMN "appSignatureFingerprints",
 --     DROP COLUMN "liveAppHooks";
+--   ALTER TABLE "Shop" DROP COLUMN "removalNoticeDismissedScanId";
 
 -- CreateEnum
 CREATE TYPE "AppRemovalState" AS ENUM ('REMOVED', 'CLEANED', 'REINSTALLED');
@@ -20,6 +24,9 @@ CREATE TYPE "AppRemovalState" AS ENUM ('REMOVED', 'CLEANED', 'REINSTALLED');
 -- AlterTable
 ALTER TABLE "Scan" ADD COLUMN     "appSignatureFingerprints" JSONB,
 ADD COLUMN     "liveAppHooks" JSONB;
+
+-- AlterTable
+ALTER TABLE "Shop" ADD COLUMN     "removalNoticeDismissedScanId" TEXT;
 
 -- CreateTable
 CREATE TABLE "AppRemoval" (
@@ -34,6 +41,7 @@ CREATE TABLE "AppRemoval" (
     "detectedAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" TIMESTAMP(3) NOT NULL,
     "stateChangedAt" TIMESTAMP(3),
+    "stateChangedScanId" TEXT,
 
     CONSTRAINT "AppRemoval_pkey" PRIMARY KEY ("id")
 );

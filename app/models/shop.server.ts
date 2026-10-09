@@ -38,6 +38,7 @@ export type ShopMetadata = {
   everPaidAt: Date | null;
   alertsEnabled: boolean;
   alertEmail: string | null;
+  removalNoticeDismissedScanId: string | null;
 };
 
 /**
@@ -113,7 +114,21 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       everPaidAt: true,
       alertsEnabled: true,
       alertEmail: true,
+      removalNoticeDismissedScanId: true,
     },
+  });
+}
+
+/**
+ * Dismiss Home's app-removal banner for one scan (gc-frda). A plain overwrite,
+ * so repeating it is a no-op and a newer scan's dismissal replaces an older
+ * one. updateMany keyed on id: a missing row is a safe no-op. The caller
+ * checks that `scanId` is one of this shop's scans.
+ */
+export async function dismissRemovalNotice(shopId: string, scanId: string): Promise<void> {
+  await db.shop.updateMany({
+    where: { id: shopId },
+    data: { removalNoticeDismissedScanId: scanId },
   });
 }
 

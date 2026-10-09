@@ -6,7 +6,12 @@ import { AppRemovalState } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockDb = vi.hoisted(() => ({
-  appRemoval: { findMany: vi.fn(), createMany: vi.fn(), updateMany: vi.fn() },
+  appRemoval: {
+    findMany: vi.fn(),
+    findUnique: vi.fn(),
+    createMany: vi.fn(),
+    updateMany: vi.fn(),
+  },
   $transaction: vi.fn(),
 }));
 
@@ -14,8 +19,10 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 import {
   applyAppRemovalPlan,
+  getAppRemovalForScanApp,
   getAppRemovalsDetectedOnScan,
   getOpenAppRemovals,
+  getRemovalNoticeRows,
 } from "../../app/models/app-removal.server";
 
 beforeEach(() => {
@@ -45,6 +52,51 @@ describe("reads", () => {
     expect(mockDb.appRemoval.findMany).toHaveBeenCalledWith({
       where: { shopId: "s1", themeId: "t1", detectedScanId: "scan1" },
       orderBy: { appName: "asc" },
+    });
+  });
+});
+
+describe("Home + scan page reads (gc-frda UI)", () => {
+  it("getRemovalNoticeRows: REMOVED rows detected on the scan OR rows CLEANED on it, one query", async () => {
+    const rows = [{ appName: "Klaviyo", leftoverCount: 3, state: "REMOVED" }];
+    mockDb.appRemoval.findMany.mockResolvedValue(rows);
+    await expect(getRemovalNoticeRows("s1", "t1", "scan2")).resolves.toBe(rows);
+    expect(mockDb.appRemoval.findMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.appRemoval.findMany).toHaveBeenCalledWith({
+      where: {
+        shopId: "s1",
+        themeId: "t1",
+        OR: [
+          { detectedScanId: "scan2", state: AppRemovalState.REMOVED },
+          { stateChangedScanId: "scan2", state: AppRemovalState.CLEANED },
+        ],
+      },
+      select: { appName: true, leftoverCount: true, state: true },
+      orderBy: { appName: "asc" },
+    });
+  });
+
+  it("getRemovalNoticeRows never asks for REINSTALLED rows", async () => {
+    mockDb.appRemoval.findMany.mockResolvedValue([]);
+    await getRemovalNoticeRows("s1", "t1", "scan2");
+    expect(JSON.stringify(mockDb.appRemoval.findMany.mock.calls[0][0])).not.toContain(
+      "REINSTALLED",
+    );
+  });
+
+  it("getAppRemovalForScanApp is a unique-key lookup scoped to the shop + theme", async () => {
+    mockDb.appRemoval.findUnique.mockResolvedValue(null);
+    await expect(getAppRemovalForScanApp("s1", "t1", "Klaviyo", "scan2")).resolves.toBeNull();
+    expect(mockDb.appRemoval.findUnique).toHaveBeenCalledWith({
+      where: {
+        shopId_themeId_appName_detectedScanId: {
+          shopId: "s1",
+          themeId: "t1",
+          appName: "Klaviyo",
+          detectedScanId: "scan2",
+        },
+      },
+      select: { appName: true, previousScanId: true },
     });
   });
 });
@@ -109,6 +161,10 @@ describe("applyAppRemovalPlan", () => {
     expect(calls[0].where).toEqual({ id: "r1", shopId: "s1", state: AppRemovalState.REMOVED });
     expect(calls[0].data).toMatchObject({ leftoverCount: 0, state: AppRemovalState.CLEANED });
     expect(calls[0].data.stateChangedAt).toBeInstanceOf(Date);
+    // gc-frda UI: the scan that changed the state, so Home can say "cleaned
+    // up on this scan" exactly.
+    expect(calls[0].data.stateChangedScanId).toBe("scan2");
+    // A count refresh is not a state change: neither stamp is written.
     expect(calls[1].data).toEqual({ leftoverCount: 4 });
     expect(result.updated).toBe(2);
     // One atomic transaction: createMany first, then the updates.

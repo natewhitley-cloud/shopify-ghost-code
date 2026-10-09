@@ -163,6 +163,10 @@ model Shop {
   alertsEnabled                Boolean   @default(true)
   alertEmail                   String?
   alertUnsubscribeToken        String?   @unique
+  // gc-frda: the scan whose "no longer active" / "cleaned up" Home banner the
+  // merchant dismissed. The banner hides only for that scan; a newer scan's
+  // banner shows again. Null = never dismissed. Plain id (no FK).
+  removalNoticeDismissedScanId String?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]
@@ -205,23 +209,26 @@ model MerchantAlert {
 // CLEANED or REINSTALLED. Holds no personal data; deleted with the Shop row on
 // shop/redact via the cascading FK.
 model AppRemoval {
-  id             String          @id @default(cuid())
-  shopId         String
-  shop           Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
-  themeId        String
-  appName        String
+  id                 String          @id @default(cuid())
+  shopId             String
+  shop               Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  themeId            String
+  appName            String
   // The scan that first saw the leftovers, and the baseline it was compared to.
   // Plain ids (no FK): the record outlives a pruned scan.
-  detectedScanId String
-  previousScanId String
+  detectedScanId     String
+  previousScanId     String
   // Audited, non-ignored findings attributed to the app on the latest scan
-  // that evaluated this row.
-  leftoverCount  Int
-  state          AppRemovalState @default(REMOVED)
-  detectedAt     DateTime        @default(now())
-  updatedAt      DateTime        @updatedAt
-  // When `state` last changed; null while still REMOVED.
-  stateChangedAt DateTime?
+  // that evaluated this row while REMOVED. A CLEANED row keeps its last
+  // REMOVED count: what was cleaned up ("The N items X left behind are gone").
+  leftoverCount      Int
+  state              AppRemovalState @default(REMOVED)
+  detectedAt         DateTime        @default(now())
+  updatedAt          DateTime        @updatedAt
+  // When `state` last changed, and the scan that changed it (Home's "cleaned
+  // up on this scan" banner); both null while still REMOVED. Plain id, no FK.
+  stateChangedAt     DateTime?
+  stateChangedScanId String?
 
   // Idempotency: an Inngest retry of the same scan cannot insert twice.
   @@unique([shopId, themeId, appName, detectedScanId])

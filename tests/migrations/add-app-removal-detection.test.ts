@@ -29,6 +29,10 @@ describe("add_app_removal_detection migration (gc-frda)", () => {
     );
   });
 
+  it("adds Shop.removalNoticeDismissedScanId as nullable TEXT, no default", () => {
+    expect(CODE).toContain('ALTER TABLE "Shop" ADD COLUMN "removalNoticeDismissedScanId" TEXT;');
+  });
+
   it("creates the AppRemovalState enum", () => {
     expect(CODE).toContain(
       "CREATE TYPE \"AppRemovalState\" AS ENUM ('REMOVED', 'CLEANED', 'REINSTALLED');",
@@ -39,6 +43,7 @@ describe("add_app_removal_detection migration (gc-frda)", () => {
     expect(CODE).toContain('CREATE TABLE "AppRemoval"');
     expect(CODE).toContain('"state" "AppRemovalState" NOT NULL DEFAULT \'REMOVED\'');
     expect(CODE).toContain('"stateChangedAt" TIMESTAMP(3),');
+    expect(CODE).toContain('"stateChangedScanId" TEXT,');
     expect(CODE).toContain(
       'CREATE UNIQUE INDEX "AppRemoval_shopId_themeId_appName_detectedScanId_key" ON ' +
         '"AppRemoval"("shopId", "themeId", "appName", "detectedScanId");',
@@ -61,6 +66,7 @@ describe("add_app_removal_detection migration (gc-frda)", () => {
     expect(SQL).toMatch(/-- Manual rollback:/);
     expect(SQL).toContain('DROP TABLE "AppRemoval"');
     expect(SQL).toContain('DROP COLUMN "liveAppHooks"');
+    expect(SQL).toContain('ALTER TABLE "Shop" DROP COLUMN "removalNoticeDismissedScanId"');
   });
 
   it("matches the Prisma schema (cascade on the Shop relation)", () => {
@@ -73,6 +79,8 @@ describe("add_app_removal_detection migration (gc-frda)", () => {
       /model AppRemoval \{[\s\S]*?@@unique\(\[shopId, themeId, appName, detectedScanId\]\)/,
     );
     expect(SCHEMA).toMatch(/model AppRemoval \{[\s\S]*?@@index\(\[shopId, detectedAt\]\)/);
+    expect(SCHEMA).toMatch(/model AppRemoval \{[\s\S]*?\n\s+stateChangedScanId\s+String\?\n/);
+    expect(SCHEMA).toMatch(/model Shop \{[\s\S]*?\n\s+removalNoticeDismissedScanId\s+String\?\n/);
   });
 
   it("is the latest migration", () => {

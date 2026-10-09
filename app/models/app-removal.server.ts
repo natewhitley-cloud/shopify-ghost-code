@@ -34,6 +34,53 @@ export function getAppRemovalsDetectedOnScan(
   });
 }
 
+/** The fields Home's removal banner reads (app/lib/app-removal-notice.ts). */
+export type RemovalNoticeRow = Pick<AppRemoval, "appName" | "leftoverCount" | "state">;
+
+/**
+ * Home's banner rows for one scan of a shop + theme: apps detected as no
+ * longer active ON `scanId` (still REMOVED) and apps whose leftovers became
+ * CLEANED on `scanId` (stateChangedScanId). REINSTALLED rows are never read.
+ * One query on the (shopId, themeId, ...) prefix of the unique key, so it only
+ * ever scans this theme's few rows.
+ */
+export function getRemovalNoticeRows(
+  shopId: string,
+  themeId: string,
+  scanId: string,
+): Promise<RemovalNoticeRow[]> {
+  return db.appRemoval.findMany({
+    where: {
+      shopId,
+      themeId,
+      OR: [
+        { detectedScanId: scanId, state: AppRemovalState.REMOVED },
+        { stateChangedScanId: scanId, state: AppRemovalState.CLEANED },
+      ],
+    },
+    select: { appName: true, leftoverCount: true, state: true },
+    orderBy: { appName: "asc" },
+  });
+}
+
+/**
+ * The record for `appName` detected on `scanId` (any state), or null: the
+ * scan page's `?app=` removal context. A unique-key lookup.
+ */
+export function getAppRemovalForScanApp(
+  shopId: string,
+  themeId: string,
+  appName: string,
+  scanId: string,
+) {
+  return db.appRemoval.findUnique({
+    where: {
+      shopId_themeId_appName_detectedScanId: { shopId, themeId, appName, detectedScanId: scanId },
+    },
+    select: { appName: true, previousScanId: true },
+  });
+}
+
 /**
  * Apply a plan in one transaction. Inserts skip duplicates on the
  * (shopId, themeId, appName, detectedScanId) unique key, and each update only
@@ -74,7 +121,7 @@ export async function applyAppRemovalPlan(args: {
         where: { id: u.id, shopId, state: AppRemovalState.REMOVED },
         data: {
           leftoverCount: u.leftoverCount,
-          ...(u.state ? { state: u.state, stateChangedAt: now } : {}),
+          ...(u.state ? { state: u.state, stateChangedAt: now, stateChangedScanId: scanId } : {}),
         },
       }),
     ),

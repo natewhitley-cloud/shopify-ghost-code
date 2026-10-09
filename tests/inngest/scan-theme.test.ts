@@ -4501,7 +4501,7 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     ]);
     await runScanTheme();
     expect(mockApply.mock.calls[0][0].plan.updates).toEqual([
-      { id: "r1", leftoverCount: 0, state: "CLEANED" },
+      { id: "r1", leftoverCount: 1, state: "CLEANED" },
     ]);
   });
 

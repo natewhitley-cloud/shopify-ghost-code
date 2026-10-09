@@ -431,8 +431,10 @@ describe("nextRemovalState", () => {
     previous: RemovalScan | null = prev(),
   ) => nextRemovalState(record, cur, previous, { ignores });
 
-  it("REMOVED -> CLEANED when the app has no findings left", () => {
-    expect(next(scan([]))).toEqual({ id: "r1", leftoverCount: 0, state: AppRemovalState.CLEANED });
+  it("REMOVED -> CLEANED when the app has no findings left, keeping the last count", () => {
+    // The count is what was cleaned up: Home says "The 3 items Klaviyo left
+    // behind are gone as of this scan".
+    expect(next(scan([]))).toEqual({ id: "r1", leftoverCount: 3, state: AppRemovalState.CLEANED });
   });
 
   it("REMOVED -> REINSTALLED when its embed is back on", () => {
@@ -521,7 +523,7 @@ describe("planAppRemovals", () => {
     });
     expect(plan).toEqual({
       creates: [{ appName: "Klaviyo", leftoverCount: 4 }],
-      updates: [{ id: "r1", leftoverCount: 0, state: AppRemovalState.CLEANED }],
+      updates: [{ id: "r1", leftoverCount: 2, state: AppRemovalState.CLEANED }],
     });
   });
 

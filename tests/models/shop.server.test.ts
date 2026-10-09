@@ -84,6 +84,7 @@ import {
   releaseReviewPopupSlot,
   recordUpgradeReturnDismissal,
   startUpgradeReturnEpisode,
+  dismissRemovalNotice,
 } from "../../app/models/shop.server";
 import {
   NUDGE_KEYS,
@@ -161,6 +162,8 @@ describe("getShopMetadata", () => {
         // gc-syz.6: Settings monitoring-emails card state.
         alertsEnabled: true,
         alertEmail: true,
+        // gc-frda: Home's per-scan app-removal banner dismissal.
+        removalNoticeDismissedScanId: true,
       },
     });
   });
@@ -1633,5 +1636,25 @@ describe("recordUpgradeReturnDismissal", () => {
         DAY_MS,
       ),
     ).rejects.toThrow("db down");
+  });
+});
+
+describe("dismissRemovalNotice (gc-frda)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+  });
+
+  it("overwrites the dismissed scan id for the shop by id", async () => {
+    await dismissRemovalNotice("shop-1", "scan-9");
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { id: "shop-1" },
+      data: { removalNoticeDismissedScanId: "scan-9" },
+    });
+  });
+
+  it("is a safe no-op for a missing shop row (count 0, no throw)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    await expect(dismissRemovalNotice("gone", "scan-9")).resolves.toBeUndefined();
   });
 });
