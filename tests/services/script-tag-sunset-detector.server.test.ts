@@ -178,7 +178,7 @@ describe("detectScriptTagSunset", () => {
       /^A script from d5zu2f4xvqanl\.cloudfront\.net, added by one of your apps, is loaded through a script tag\./,
     );
     expect(cloudfront?.description).toContain(
-      "If you know which app this is, ask its support whether they have migrated.",
+      "If you know which app this is, ask its support whether it has moved to an app embed.",
     );
     expect(cloudfront?.description).not.toContain("that app");
   });
@@ -201,7 +201,7 @@ describe("detectScriptTagSunset", () => {
       "script-tags: host cdn.shopify.com\nhttps://cdn.shopify.com/s/files/<shop>/t/1/assets/app.js",
     );
     expect(f.description).toBe(
-      "A script hosted on Shopify's CDN, added by one of your apps, is loaded through a script tag. Shopify will stop running script tags on March 1, 2027, so whatever that script does on your store will stop working unless the app that added it moves to an app embed before then. If you know which app this is, ask its support whether they have migrated.",
+      "A script hosted on Shopify's CDN, added by one of your apps, is loaded through a script tag. Shopify will stop running script tags on March 1, 2027, so whatever that script does on your store will stop working unless the app that added it moves to an app embed before then. If you know which app this is, ask its support whether it has moved to an app embed.",
     );
   });
 
@@ -289,14 +289,14 @@ describe("detectScriptTagSunset", () => {
     it("unmatched host copy: future one millisecond before the cutoff", () => {
       const [f] = detectScriptTagSunset(["https://x.vendor.io/a.js"], NO_EMBEDS, justBefore);
       expect(f.description).toBe(
-        "A script from x.vendor.io, added by one of your apps, is loaded through a script tag. Shopify will stop running script tags on March 1, 2027, so whatever that script does on your store will stop working unless the app that added it moves to an app embed before then. If you know which app this is, ask its support whether they have migrated.",
+        "A script from x.vendor.io, added by one of your apps, is loaded through a script tag. Shopify will stop running script tags on March 1, 2027, so whatever that script does on your store will stop working unless the app that added it moves to an app embed before then. If you know which app this is, ask its support whether it has moved to an app embed.",
       );
     });
 
     it("unmatched host copy: past tense exactly at the cutoff", () => {
       const [f] = detectScriptTagSunset(["https://x.vendor.io/a.js"], NO_EMBEDS, exactly);
       expect(f.description).toBe(
-        "A script from x.vendor.io, added by one of your apps, is loaded through a script tag. Shopify stopped running script tags on March 1, 2027, so whatever that script does on your store has stopped working unless the app that added it has moved to an app embed. If you know which app this is, ask its support whether they have migrated.",
+        "A script from x.vendor.io, added by one of your apps, is loaded through a script tag. Shopify stopped running script tags on March 1, 2027, so whatever that script does on your store has stopped working unless the app that added it has moved to an app embed. If you know which app this is, ask its support whether it has moved to an app embed.",
       );
       expect(f.severity).toBe(Severity.HIGH);
     });
@@ -308,7 +308,7 @@ describe("detectScriptTagSunset", () => {
         AFTER,
       );
       expect(f.description).toBe(
-        "A script hosted on Shopify's CDN, added by one of your apps, is loaded through a script tag. Shopify stopped running script tags on March 1, 2027, so whatever that script does on your store has stopped working unless the app that added it has moved to an app embed. If you know which app this is, ask its support whether they have migrated.",
+        "A script hosted on Shopify's CDN, added by one of your apps, is loaded through a script tag. Shopify stopped running script tags on March 1, 2027, so whatever that script does on your store has stopped working unless the app that added it has moved to an app embed. If you know which app this is, ask its support whether it has moved to an app embed.",
       );
     });
 

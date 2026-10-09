@@ -1003,7 +1003,7 @@ describe("ScriptTag app signatures (exact hosts)", () => {
     ["https://cdncozyantitheft.addons.business/a.js?shop=s.myshopify.com", "Cozy AntiTheft"],
     ["https://dashboard.jetprintapp.com/a.js?shop=s.myshopify.com", "JetPrint"],
     ["https://trust.conversionbear.com/a.js?shop=s.myshopify.com", "Conversion Bear Trust Badges"],
-    ["https://instagrid.instasell.co.in/_/pd/index.js", "Instasell"],
+    ["https://instagrid.instasell.co.in/_/pd/index.js", "Instafeed (Instasell)"],
     ["https://master-motivator.hulkapps.com/assets/mha-dao-bar.css", "HulkApps Free Shipping Bar"],
   ])("attributes %s to %s", (url, app) => {
     expect(identifyAppFromUrl(url)).toBe(app);

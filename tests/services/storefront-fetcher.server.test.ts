@@ -9,6 +9,7 @@ import {
   fetchStorefrontScriptTags,
   isBareHostname,
   isBlockedAddress,
+  isPasswordPageHtml,
   isShopifyStorefrontHtml,
   MAX_ASYNC_LOAD_CANDIDATES,
   parseScriptTagUrls,
@@ -230,6 +231,22 @@ describe("parseScriptTagUrls", () => {
       expect(parseScriptTagUrls(pageAround("", `${past}${REAL}`))).toBeNull();
     });
 
+    it("known limitation: a fake marker plus a wired lookalike ahead of the real block wins", () => {
+      // Pins current behaviour (documented on parseScriptTagUrls): merchant
+      // head markup before content_for_header can steer the parser.
+      const fakeMarker = `<script>Shopify.shop = "fake.myshopify.com";</script>`;
+      expect(parseScriptTagUrls(pageAround(`${fakeMarker}${LOOKALIKE}`, REAL))).toEqual([
+        "https://theme-lookalike.example.com/a.js",
+      ]);
+    });
+
+    it("known limitation: enough wired lookalikes ahead of the real block exhaust the cap", () => {
+      const wired = LOOKALIKE.repeat(MAX_ASYNC_LOAD_CANDIDATES);
+      expect(parseScriptTagUrls(pageAround(wired, REAL))).toEqual([
+        "https://theme-lookalike.example.com/a.js",
+      ]);
+    });
+
     it("stays fast on a page of unterminated lookalikes", () => {
       const hostile = pageAround("", "<script>function asyncLoad() {".repeat(50_000));
       const started = Date.now();
@@ -246,6 +263,39 @@ describe("parseScriptTagUrls", () => {
     expect(parseScriptTagUrls(page(`<script>var urls = ["https://theme.js"];</script>`))).toEqual(
       [],
     );
+  });
+});
+
+describe("isPasswordPageHtml (linear time)", () => {
+  // A 5 MB body is the cap, and a regex cannot be interrupted by the fetch
+  // timeout, so every adversarial shape must finish fast (audit: the old
+  // `<form\b[^>]*?\saction` regex was quadratic on repeated `<form `).
+  const NEAR_CAP = STOREFRONT_MAX_BODY_BYTES - 1024;
+  it.each([
+    ["repeated `<form `", "<form "],
+    ["repeated `<form action=`", "<form action="],
+    ["repeated `<form` with long attributes", `<form ${"a".repeat(500)} `],
+    ["`<form` then one long tag", "<form x"],
+    ["repeated `<FORM `", "<FORM "],
+  ])("handles 5 MB of %s well under 200 ms", (_label, unit) => {
+    const body = unit.repeat(Math.floor(NEAR_CAP / unit.length));
+    const started = performance.now();
+    expect(isPasswordPageHtml(body)).toBe(false);
+    expect(performance.now() - started).toBeLessThan(200);
+  });
+
+  it("still finds the password form after many ordinary forms", () => {
+    const forms = '<form action="/cart/add" method="post"></form>'.repeat(300);
+    expect(isPasswordPageHtml(`${forms}<form method="post" action="/password">`)).toBe(true);
+  });
+
+  it("ignores a `<form` whose tag never closes within 2 KB", () => {
+    expect(isPasswordPageHtml(`<form ${"x".repeat(3000)} action="/password">`)).toBe(false);
+  });
+
+  it("does not take `<formula` or `<form-field` for a form tag", () => {
+    expect(isPasswordPageHtml('<formula action="/password">')).toBe(false);
+    expect(isPasswordPageHtml('<form-field action="/password">')).toBe(false);
   });
 });
 

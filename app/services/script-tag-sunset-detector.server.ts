@@ -202,7 +202,8 @@ function describeUnmatchedHost(host: string, afterSunset: boolean): string {
       ? "A script hosted on Shopify's CDN"
       : `A script from ${displayHost(host)}`;
   const opening = `${subject}, added by one of your apps, is loaded through a script tag.`;
-  const ask = "If you know which app this is, ask its support whether they have migrated.";
+  const ask =
+    "If you know which app this is, ask its support whether it has moved to an app embed.";
   return afterSunset
     ? `${opening} Shopify stopped running script tags on March 1, 2027, so whatever that script does on your store has stopped working unless the app that added it has moved to an app embed. ${ask}`
     : `${opening} Shopify will stop running script tags on March 1, 2027, so whatever that script does on your store will stop working unless the app that added it moves to an app embed before then. ${ask}`;

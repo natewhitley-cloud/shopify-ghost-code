@@ -1216,7 +1216,9 @@ export const APP_SIGNATURES: AppSignature[] = [
     // https://apps.shopify.com/instafeed-by-instasell (developer "Instasell",
     // delisted). instagrid.instasell.co.in is that Instagram-feed app's
     // backend: Shopify HMAC-checked endpoints and /_/instagrid/v1/feedposts?shop=.
-    appName: "Instasell",
+    // Named as merchants know it ("Instafeed by Instasell"); distinct from the
+    // "Instagram Feed" entry (LightWidget / Mintt's Instafeed).
+    appName: "Instafeed (Instasell)",
     cdnDomains: ["instagrid.instasell.co.in"],
     scriptPatterns: [],
     snippetNames: [],

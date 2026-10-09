@@ -145,6 +145,13 @@ function closeOfArrayLiteral(text: string, start: number): number {
  * candidate anywhere. Candidates exist but none is wired: a format we do not
  * understand, so null (never zero, and never a theme's URLs). Only the first
  * MAX_ASYNC_LOAD_CANDIDATES are examined.
+ *
+ * Known limitation: the preference is a heuristic, not a boundary. Head
+ * markup the merchant controls renders before content_for_header, so a fake
+ * `Shopify.shop =` followed by a wired lookalike (or MAX_ASYNC_LOAD_CANDIDATES
+ * wired lookalikes) placed there wins over Shopify's real block. That only
+ * skews the merchant's own scan of their own store (data integrity, not a
+ * security boundary), so it is accepted rather than defended against.
  */
 export function parseScriptTagUrls(html: string): string[] | null {
   const marker = html.search(SHOPIFY_SHOP_RE);
@@ -190,20 +197,50 @@ export function isShopifyStorefrontHtml(html: string): boolean {
   return SHOPIFY_SHOP_RE.test(html);
 }
 
+/** At most this many `<form` occurrences are examined (homepages can have many). */
+const MAX_FORM_TAGS = 500;
+/** A `<form ...>` tag longer than this is not examined (treated as no match). */
+const MAX_FORM_TAG_CHARS = 2048;
 /**
- * A `<form>` tag that posts to exactly `/password` (or `/password/`), with any
- * quoting, case, or whitespace. Customer-account forms post to `/account/...`,
- * so they never match; nor do `data-action` or a mere link to /password.
+ * Inside ONE `<form ...>` tag (at most MAX_FORM_TAG_CHARS): an `action`
+ * attribute that is exactly `/password` or `/password/`, with any quoting or
+ * whitespace. `\s` before `action` keeps `data-action` out. Only ever run on
+ * a bounded slice, never the whole body.
  */
-const PASSWORD_FORM_RE =
-  /<form\b[^>]*?\saction\s*=\s*(?:"\/password\/?"|'\/password\/?'|\/password\/?(?=[\s>]))/i;
+const PASSWORD_ACTION_RE =
+  /\saction\s*=\s*(?:"\/password\/?"|'\/password\/?'|\/password\/?(?=[\s>]))/;
+
+/**
+ * True when the page has a `<form>` posting to `/password`. Linear time: each
+ * `<form` is found with indexOf, its tag is cut at the next `>` within
+ * MAX_FORM_TAG_CHARS (no `>` in reach: skipped), and only that slice is
+ * tested. A regex over the whole body was quadratic on repeated `<form `, and
+ * the fetch timeout cannot interrupt a synchronous regex. Customer-account
+ * forms post to `/account/...`, so they never match; nor does a link to
+ * /password or a `<formula>`/`<form-field>` tag.
+ */
+function hasPasswordForm(html: string): boolean {
+  const lower = html.toLowerCase();
+  let from = 0;
+  for (let seen = 0; seen < MAX_FORM_TAGS; seen++) {
+    const start = lower.indexOf("<form", from);
+    if (start === -1) return false;
+    from = start + 5;
+    if (!/[\s>/]/.test(lower.charAt(start + 5))) continue;
+    const tag = lower.slice(start, start + MAX_FORM_TAG_CHARS);
+    const end = tag.indexOf(">");
+    if (end === -1) continue;
+    if (PASSWORD_ACTION_RE.test(tag.slice(0, end + 1))) return true;
+  }
+  return false;
+}
 
 /**
  * Shopify's password page: a `template-password` body class, or (when a theme
  * drops that class) the storefront password form posting to `/password`.
  */
-function isPasswordPageHtml(html: string): boolean {
-  return /\btemplate-password\b/.test(html) || PASSWORD_FORM_RE.test(html);
+export function isPasswordPageHtml(html: string): boolean {
+  return /\btemplate-password\b/.test(html) || hasPasswordForm(html);
 }
 
 // ---------------------------------------------------------------------------
