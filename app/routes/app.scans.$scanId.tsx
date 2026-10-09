@@ -44,8 +44,6 @@ import type { RemovalSafety } from "../lib/finding-safety";
 import { FINDING_TYPE_LABELS } from "../lib/finding-type-labels";
 import { isSuccessfulScan, statusLabel, statusTone } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
-import { computeHealthScore, computeHealthDelta } from "../lib/health-score";
-import type { HealthScoreResult } from "../lib/health-score";
 import { skippedCategoryLabels } from "../lib/optional-scopes";
 import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
 import {
@@ -126,7 +124,6 @@ import {
   COLOR_INFO,
   COLOR_SUCCESS,
   COLOR_WARNING,
-  CRIT_BD,
   INFO_BD,
   INFO_BG,
   SEV_HIGH_FILL,
@@ -137,11 +134,8 @@ import {
   htmlTableCss,
   sectionCard,
   TEXT_DISABLED,
-  WARN_BD,
-  WARN_TEXT,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
-  tileStatusTintCss,
   styles,
 } from "../styles/shared";
 
@@ -558,7 +552,7 @@ function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
     return (
       <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
         <span style={{ fontWeight: 600, color: COLOR_SUCCESS }}>Ignored</span> — excluded from
-        counts and score. <Link to="/app/ignored">Manage ignored findings</Link>
+        finding counts. <Link to="/app/ignored">Manage ignored findings</Link>
       </div>
     );
   }
@@ -1062,12 +1056,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       : Promise.resolve(null),
   ]);
 
-  // Compute health score for successful scans (COMPLETED or PARTIAL).
-  let healthScore: HealthScoreResult | null = null;
-  if (isSuccessfulScan(scan.status)) {
-    healthScore = computeHealthScore(findingSummary.bySeverity);
-  }
-
   // Enrich each finding on the current page with the tracker flag and whether it
   // is currently suppressed (E2.3). The findings PAGE is intentionally NOT
   // filtered by ignores (E2.2 only excludes them from the counts/score/lanes, so
@@ -1336,7 +1324,6 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     // gc-4n0y: Broken links are Standard+ by plan; the coverage notices drop
     // that category for a plan without it.
     brokenLinksIncluded: canDetectDanglingReferences(shop.plan),
-    healthScore,
     unknownScripts,
     appAttributionData,
     // Findings-table filter options + active values (controlled selects).
@@ -1589,7 +1576,6 @@ export default function ScanDetail() {
     canUseDiffing,
     canExportPdf,
     brokenLinksIncluded,
-    healthScore,
     unknownScripts,
     appAttributionData,
     filterOptions,
@@ -1735,10 +1721,6 @@ export default function ScanDetail() {
       }
     : null;
 
-  // Change in health score vs the previous scan (null until a diff resolves).
-  // Higher score = healthier, so a positive delta is an improvement.
-  const healthDelta = computeHealthDelta(summary, severityDiff);
-
   const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
   const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
   const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
@@ -1776,17 +1758,6 @@ export default function ScanDetail() {
         )
       : [],
   );
-
-  /**
-   * Map HealthScoreResult tone to the CSS modifier used in tile classes.
-   * The health score tone can be "success", "warning", "critical", "caution", or "info".
-   * We map caution/info to warning for tile styling since we only have three visual tiers.
-   */
-  function healthToneModifier(tone: string): "success" | "warning" | "critical" {
-    if (tone === "success") return "success";
-    if (tone === "critical") return "critical";
-    return "warning";
-  }
 
   /**
    * Download a scan export in the requested format. Uses an authenticated fetch
@@ -1892,18 +1863,12 @@ export default function ScanDetail() {
           background: ${BG_WHITE};
           flex: 1;
         }
-        ${tileStatusTintCss({
-          success: "scan-tile--health-success",
-          warning: "scan-tile--health-warning",
-          critical: "scan-tile--health-critical",
-        })}
         .scan-tile__big-number {
           font-size: 48px;
           font-weight: 700;
           line-height: 1;
           letter-spacing: -2px;
         }
-        .scan-tile__big-number--success { color: ${COLOR_SUCCESS}; }
         .scan-tile__big-number--warning { color: ${COLOR_WARNING}; }
         .scan-tile__big-number--critical { color: ${COLOR_CRITICAL}; }
         .scan-tile__big-number--neutral { color: ${TEXT_PRIMARY}; }
@@ -1912,19 +1877,6 @@ export default function ScanDetail() {
           color: ${TEXT_SUBDUED};
           margin-top: 4px;
         }
-        .scan-tile__label {
-          display: inline-block;
-          margin-top: 12px;
-          padding: 4px 12px;
-          border-radius: 16px;
-          font-size: 13px;
-          font-weight: 600;
-          text-transform: uppercase;
-          letter-spacing: 0.5px;
-        }
-        .scan-tile__label--success { background: ${BG_BADGE_SUCCESS}; color: ${COLOR_SUCCESS}; }
-        .scan-tile__label--warning { background: ${WARN_BD}; color: ${WARN_TEXT}; }
-        .scan-tile__label--critical { background: ${CRIT_BD}; color: ${COLOR_CRITICAL}; }
         .scan-tile__diff {
           font-size: 13px;
           margin-top: 8px;
@@ -2119,43 +2071,7 @@ export default function ScanDetail() {
           </s-card>
         ) : (
           <div className="scan-tiles-row" style={{ ...sectionCard, marginTop: 0, marginBottom: 0 }}>
-            {/* Tile 1: Health Score */}
-            {healthScore && (
-              <div className="scan-tile-wrapper">
-                <h2 className="scan-section-title">Theme Health</h2>
-                <div
-                  className={`scan-tile scan-tile--health-${healthToneModifier(healthScore.tone)}`}
-                  style={{ marginTop: "8px" }}
-                >
-                  <div
-                    className={`scan-tile__big-number scan-tile__big-number--${healthToneModifier(healthScore.tone)}`}
-                  >
-                    {healthScore.score}
-                  </div>
-                  <div className="scan-tile__subtitle">out of 100</div>
-                  <div
-                    className={`scan-tile__label scan-tile__label--${healthToneModifier(healthScore.tone)}`}
-                  >
-                    {healthScore.label}
-                  </div>
-                  {healthDelta !== null && healthDelta > 0 && (
-                    <div className="scan-tile__diff">
-                      <span style={{ color: COLOR_SUCCESS }}>+{healthDelta} vs last scan</span>
-                    </div>
-                  )}
-                  {healthDelta !== null && healthDelta < 0 && (
-                    <div className="scan-tile__diff">
-                      <span style={{ color: COLOR_CRITICAL }}>{healthDelta} vs last scan</span>
-                    </div>
-                  )}
-                  {healthDelta === 0 && (
-                    <div className="scan-tile__diff scan-tile__diff--neutral">no change</div>
-                  )}
-                </div>
-              </div>
-            )}
-
-            {/* Tile 2: Total Findings */}
+            {/* Tile 1: Total Findings */}
             <div className="scan-tile-wrapper">
               <h2 className="scan-section-title">Total Findings</h2>
               <div className="scan-tile" style={{ marginTop: "8px" }}>
@@ -2186,7 +2102,7 @@ export default function ScanDetail() {
               </div>
             </div>
 
-            {/* Tile 3: Severity Breakdown */}
+            {/* Tile 2: Severity Breakdown */}
             <div className="scan-tile-wrapper">
               <h2 className="scan-section-title">Severity Breakdown</h2>
               <div className="scan-tile" style={{ marginTop: "8px" }}>
@@ -2234,7 +2150,7 @@ export default function ScanDetail() {
               </div>
             </div>
 
-            {/* Tile 4: Performance Impact (conditional) */}
+            {/* Tile 3: Performance Impact (conditional) */}
             {externalResourceCount > 0 && (
               <div className="scan-tile-wrapper">
                 <h2 className="scan-section-title">Performance Impact</h2>

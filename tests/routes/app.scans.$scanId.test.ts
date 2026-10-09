@@ -118,13 +118,6 @@ vi.mock("../../app/lib/plan-gating.server", () => ({
   canDetectDanglingReferences: vi.fn(),
 }));
 
-vi.mock("../../app/lib/health-score", async (importOriginal) => ({
-  computeHealthScore: vi.fn(),
-  // Real (pure): only the full-page render tests reach it.
-  computeHealthDelta: (await importOriginal<typeof import("../../app/lib/health-score")>())
-    .computeHealthDelta,
-}));
-
 vi.mock("../../app/models/unknown-script.server", () => ({
   getUnknownScriptsForScan: vi.fn(),
   submitSignatureSuggestion: vi.fn(),
@@ -155,7 +148,6 @@ vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
 
 import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/finding-consequence";
 import { comparePreviewCandidates, pickFreePreviewFindings } from "../../app/lib/free-preview";
-import { computeHealthScore } from "../../app/lib/health-score";
 import { logger } from "../../app/lib/logger.server";
 import {
   canDetectDanglingReferences,
@@ -256,7 +248,6 @@ const mockIgnoreFindingInstance = ignoreFindingInstance as ReturnType<typeof vi.
 const mockIgnoreFindingApp = ignoreFindingApp as ReturnType<typeof vi.fn>;
 const mockCanViewFindingDetails = canViewFindingDetails as ReturnType<typeof vi.fn>;
 const mockCanUseScanDiffing = canUseScanDiffing as ReturnType<typeof vi.fn>;
-const mockComputeHealthScore = computeHealthScore as ReturnType<typeof vi.fn>;
 const mockFindUnknownScriptForShop = findUnknownScriptForShop as ReturnType<typeof vi.fn>;
 const mockIsTrackerApp = isTrackerApp as ReturnType<typeof vi.fn>;
 const mockSubmitSignatureSuggestion = submitSignatureSuggestion as ReturnType<typeof vi.fn>;
@@ -330,12 +321,6 @@ const FINDING_SUMMARY = {
   total: 5,
   bySeverity: { HIGH: 2, MEDIUM: 2, LOW: 1 },
   byType: { GHOST_SCRIPT: 3, GHOST_STYLE: 2, GHOST_SNIPPET: 0 },
-};
-
-const HEALTH_SCORE = {
-  score: 69,
-  label: "Fair",
-  tone: "warning" as const,
 };
 
 const EMPTY_FINDINGS_PAGE = { items: [], hasNextPage: false, nextCursor: null };
@@ -418,7 +403,6 @@ beforeEach(() => {
   mockIsTrackerApp.mockReturnValue(false);
   mockCanViewFindingDetails.mockReturnValue(true);
   mockCanUseScanDiffing.mockReturnValue(false);
-  mockComputeHealthScore.mockReturnValue(HEALTH_SCORE);
   mockGetTopFindingsOfTypes.mockResolvedValue([]);
   mockGetTypeSeverityCounts.mockResolvedValue([]);
   mockGetTopFindingsInGroup.mockResolvedValue([]);
@@ -444,7 +428,6 @@ describe("app.scans.$scanId loader", () => {
       canViewDetails: boolean;
       canUseDiffing: boolean;
       previewFindings: unknown[];
-      healthScore: typeof HEALTH_SCORE;
       findingSummary: typeof FINDING_SUMMARY;
       appAttributionData: unknown[];
     };
@@ -455,7 +438,7 @@ describe("app.scans.$scanId loader", () => {
     expect(result.canViewDetails).toBe(true);
     expect(result.canUseDiffing).toBe(false);
     expect(result.previewFindings).toEqual([]);
-    expect(result.healthScore).toEqual(HEALTH_SCORE);
+    expect(result).not.toHaveProperty("healthScore");
     expect(result.findingSummary).toEqual(FINDING_SUMMARY);
     expect(result.appAttributionData).toEqual([]);
   });
@@ -2788,29 +2771,18 @@ describe("app.scans.$scanId loader", () => {
   });
 
   // -------------------------------------------------------------------------
-  // Health score
+  // No 0-100 health score (gc-k2ub)
   // -------------------------------------------------------------------------
 
-  describe("health score", () => {
-    it("computes health score for completed scans", async () => {
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        healthScore: typeof HEALTH_SCORE;
-      };
-
-      expect(result.healthScore).toEqual(HEALTH_SCORE);
-      expect(mockComputeHealthScore).toHaveBeenCalledWith(FINDING_SUMMARY.bySeverity);
-    });
-
-    it("returns null healthScore for non-completed scans", async () => {
-      mockGetScanById.mockResolvedValue({ ...SCAN, status: "IN_PROGRESS" });
-
-      const result = (await loader(makeLoaderArgs("scan-1"))) as {
-        healthScore: null;
-      };
-
-      expect(result.healthScore).toBeNull();
-      expect(mockComputeHealthScore).not.toHaveBeenCalled();
-    });
+  describe("health score removed (gc-k2ub)", () => {
+    it.each(["COMPLETED", "PARTIAL", "IN_PROGRESS"])(
+      "returns no healthScore for a %s scan",
+      async (status) => {
+        mockGetScanById.mockResolvedValue({ ...SCAN, status });
+        const result = await loader(makeLoaderArgs("scan-1"));
+        expect(result).not.toHaveProperty("healthScore");
+      },
+    );
   });
 
   // -------------------------------------------------------------------------
@@ -3978,11 +3950,24 @@ describe("ScanDetail in-progress state (ScanProgress)", () => {
   it("does not render the progress block once the scan has completed", async () => {
     const html = await renderPage({ ...SCAN, status: "COMPLETED" });
 
-    expect(html).toContain("Theme Health"); // the completed results rendered
+    expect(html).toContain("Total Findings"); // the completed results rendered
     expect(html).not.toContain("Scan In Progress");
     expect(html).not.toContain("Scan in progress");
     expect(html).not.toContain(SCAN_DURATION_EXPECTATION);
     for (const phrase of SCAN_PHRASES) expect(html).not.toContain(phrase);
+  });
+
+  it("shows the findings count tile and no 0-100 health score tile (gc-k2ub)", async () => {
+    const html = await renderPage({ ...SCAN, status: "COMPLETED" });
+
+    expect(html).toMatch(/<h2 class="scan-section-title">Total Findings<\/h2>/);
+    expect(html).toContain('<div class="scan-tile__subtitle">findings detected</div>');
+    expect(html).toContain(">Severity Breakdown</h2>");
+    expect(html).not.toMatch(/out of 100/i);
+    expect(html).not.toMatch(/theme health/i);
+    expect(html).not.toMatch(/health score/i);
+    expect(html).not.toContain("scan-tile--health");
+    expect(html).not.toContain("/100");
   });
 });
 
@@ -4319,7 +4304,7 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       expect(data.upgradePreview?.hiddenCount).toBe(2);
       // The scan-wide preview read never ran.
       expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
-      // The scan-wide summary is untouched (tiles, health score).
+      // The scan-wide summary is untouched (tiles).
       expect(data.findingSummary.total).toBe(10);
     });
 

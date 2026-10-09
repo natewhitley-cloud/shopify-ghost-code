@@ -57,8 +57,8 @@ vi.mock("../../app/lib/scan-report-pdf.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
-import { computeHealthScore } from "../../app/lib/health-score";
 import { canExportPdf, canViewFindingDetails } from "../../app/lib/plan-gating.server";
+import { renderScanReportPdf } from "../../app/lib/scan-report-pdf.server";
 import { getFindingsForScan } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getScanById } from "../../app/models/scan.server";
@@ -468,12 +468,12 @@ describe("JSON export", () => {
     expect(body.findings[1].description).toBe("Orphaned stylesheet rule");
   });
 
-  it("includes a top-level healthScore with numeric score and string label", async () => {
+  it("carries no 0-100 health score (gc-k2ub: the score is gone from every surface)", async () => {
     const response = await callLoader("scan-abc", "json");
     const body = await response.json();
 
-    expect(typeof body.healthScore.score).toBe("number");
-    expect(typeof body.healthScore.label).toBe("string");
+    expect(body).not.toHaveProperty("healthScore");
+    expect(Object.keys(body).sort()).toEqual(["exportedAt", "findings", "scanId", "themeName"]);
   });
 
   it("serialises null appName as null in JSON (not as a string)", async () => {
@@ -493,7 +493,7 @@ describe("JSON export", () => {
     expect(body.findings).toHaveLength(0);
   });
 
-  it("excludes ignored findings from the export and reflects only kept in the health score", async () => {
+  it("excludes ignored findings from the export", async () => {
     // The shop has suppressed FINDINGS[0] (the HIGH Klaviyo finding); only the
     // MEDIUM finding survives filtering.
     mockGetIgnoredFindingsForShop.mockResolvedValue({
@@ -512,10 +512,6 @@ describe("JSON export", () => {
     expect(body.findings).toHaveLength(1);
     expect(body.findings[0].type).toBe("GHOST_STYLE");
     expect(body.findings.some((f: { app: string | null }) => f.app === "Klaviyo")).toBe(false);
-
-    // Health score is computed from the kept set only (0 High, 1 Medium).
-    const expected = computeHealthScore({ HIGH: 0, MEDIUM: 1, LOW: 0 });
-    expect(body.healthScore.score).toBe(expected.score);
   });
 });
 
@@ -544,6 +540,14 @@ describe("PDF export", () => {
     const body = await response.text();
 
     expect(body.startsWith("%PDF")).toBe(true);
+  });
+
+  it("passes the renderer the scan and kept findings, no health score (gc-k2ub)", async () => {
+    await callLoader("scan-abc", "pdf");
+
+    const input = vi.mocked(renderScanReportPdf).mock.calls[0][0];
+    expect(input).not.toHaveProperty("healthScore");
+    expect(Object.keys(input).sort()).toEqual(["exportedAt", "findings", "scan"]);
   });
 
   it("returns 403 when the plan cannot export PDF (Standard/Free)", async () => {

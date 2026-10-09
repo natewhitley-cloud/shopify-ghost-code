@@ -1447,7 +1447,7 @@ export default function Dashboard() {
             }
           `}</style>
 
-            {/* Scan Summary — Theme Health + Findings, one floating card */}
+            {/* Scan Summary — findings count + most recent findings, one floating card */}
             <div style={{ ...sectionCard, marginBottom: 0 }}>
               {/* Not a live region: Home now polls every 3s while a scan runs, so
                   a region here would announce every count and timer change and
@@ -1464,9 +1464,9 @@ export default function Dashboard() {
                   ) : healthScore && latestScan ? (
                     <>
                       <div className="dashboard-top-row">
-                        {/* Left: health score tile */}
+                        {/* Left: findings count tile */}
                         <div style={{ display: "flex", flexDirection: "column" }}>
-                          <h2 className="dashboard-section-title">Theme Health</h2>
+                          <h2 className="dashboard-section-title">Findings</h2>
                           {/* Spacer to match the subtitle line height in the right column */}
                           <div style={{ height: "18px" }} />
                           <div
@@ -1537,7 +1537,7 @@ export default function Dashboard() {
                       </div>
                     </>
                   ) : (
-                    <s-text>Run your first scan to see your theme health score.</s-text>
+                    <s-text>Run your first scan to see your findings.</s-text>
                   )}
                 </s-stack>
               </div>
@@ -1630,7 +1630,6 @@ export default function Dashboard() {
                       </div>
                       <div className="lanes-footer">
                         ✓ Then re-scan to confirm it&apos;s gone. Each fix drops your finding count.
-                        Watch the trend climb back toward 100.
                       </div>
                     </>
                   )}
@@ -1638,7 +1637,7 @@ export default function Dashboard() {
               </div>
             )}
 
-            {/* Health Score Trend — feature-flagged, paid plans only */}
+            {/* Findings Trend — feature-flagged, paid plans only */}
             <HealthScoreTrendChart
               trendChartEnabled={trendChartEnabled}
               healthScoreTrend={healthScoreTrend}

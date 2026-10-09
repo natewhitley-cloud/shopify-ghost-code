@@ -6,6 +6,7 @@
  * used in AppErrorBoundary.test.tsx.
  */
 
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 import {
@@ -334,6 +335,22 @@ describe("HealthScoreTrendEmptyState — renders empty state", () => {
         scanDisabled: false,
       }),
     ).not.toThrow();
+  });
+
+  it('titles the empty state "Findings Trend", with no health score copy (gc-k2ub)', () => {
+    const html = renderToStaticMarkup(
+      HealthScoreTrendEmptyState({
+        trendChartEnabled: true,
+        showTrendEmptyState: true,
+        scansNeeded: 2,
+        onStartScan: noop,
+        isSubmitting: false,
+        scanDisabled: false,
+      }),
+    );
+    expect(html).toContain('<h2 class="trend-chart-empty-heading">Findings Trend</h2>');
+    expect(html).toContain("to see your findings");
+    expect(html).not.toMatch(/health score/i);
   });
 
   it("returns non-null JSX when empty state should be shown", () => {

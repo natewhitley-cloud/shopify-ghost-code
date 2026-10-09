@@ -2,8 +2,8 @@
  * Server-only PDF renderer for scan findings (gc-rrh.1).
  *
  * The `.server` suffix guarantees this module never bundles into the client.
- * It is purely presentational: the caller computes the health score and passes
- * findings in; this module does no DB access and no scoring. It sorts findings
+ * It is purely presentational: the caller passes the (ignore-filtered) findings
+ * in; this module does no DB access. It sorts findings
  * by severity and renders a clean, branded, shareable report.
  */
 
@@ -39,7 +39,6 @@ type ReportFinding = {
 export type ScanReportInput = {
   scan: { id: string; themeName: string; createdAt: Date | string };
   findings: ReportFinding[];
-  healthScore: { score: number; label: string };
   exportedAt: string; // ISO
 };
 
@@ -47,7 +46,7 @@ export type ScanReportInput = {
 const SEVERITY_RANK: Record<Severity, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 
 // Cap the number of finding cards rendered so a pathological scan cannot force a
-// huge synchronous PDF render. The severity summary and health score still
+// huge synchronous PDF render. The findings total and severity summary still
 // reflect ALL findings — only the rendered LIST is capped.
 const MAX_PDF_FINDINGS = 250;
 
@@ -78,7 +77,7 @@ const styles = StyleSheet.create({
     color: SUBDUED,
     marginBottom: 2,
   },
-  healthLine: {
+  totalLine: {
     fontSize: 13,
     color: HEADING,
     fontFamily: "Noto Sans",
@@ -175,7 +174,7 @@ export function hasUnsupportedGlyphs(text: string): boolean {
   return /[぀-ヿ㐀-鿿가-힯֐-׿؀-ۿ]|[\u{1F000}-\u{1FAFF}\u{2600}-\u{27BF}]/u.test(text);
 }
 
-function ScanReportDocument({ scan, findings, healthScore, exportedAt }: ScanReportInput) {
+export function ScanReportDocument({ scan, findings, exportedAt }: ScanReportInput) {
   // Sort a COPY — never rely on input order.
   const sorted = [...findings].sort(
     (a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
@@ -204,8 +203,8 @@ function ScanReportDocument({ scan, findings, healthScore, exportedAt }: ScanRep
           <Text style={styles.title}>Ghost Code — Scan Report</Text>
           <Text style={styles.metaLine}>Theme: {scan.themeName}</Text>
           <Text style={styles.metaLine}>Scan date: {formatDate(scan.createdAt)}</Text>
-          <Text style={styles.healthLine}>
-            Health Score: {healthScore.score}/100 — {healthScore.label}
+          <Text style={styles.totalLine}>
+            {findings.length} {findings.length === 1 ? "finding" : "findings"}
           </Text>
           <Text style={styles.summaryLine}>
             {counts.HIGH} High · {counts.MEDIUM} Medium · {counts.LOW} Low

@@ -189,7 +189,7 @@ export default function IgnoredFindings() {
           <s-empty-state heading="No suppressed findings">
             <s-paragraph>
               Findings you ignore from a scan appear here. Ignored findings are excluded from your
-              theme health score and finding counts, and you can restore any of them at any time.
+              finding counts, and you can restore any of them at any time.
             </s-paragraph>
             {!shopHasAnyScans && <RunFirstScanCta />}
           </s-empty-state>
@@ -197,8 +197,8 @@ export default function IgnoredFindings() {
           <s-card>
             <s-stack direction="block" gap="base">
               <s-paragraph>
-                These findings are excluded from your theme health score, finding counts, and scan
-                comparisons. Un-ignore any of them to bring them back.
+                These findings are excluded from your finding counts and scan comparisons. Un-ignore
+                any of them to bring them back.
               </s-paragraph>
               <table className="ignored-table">
                 <thead>

@@ -322,6 +322,60 @@ describe("Home scan wait experience (ScanProgress)", () => {
   });
 });
 
+// gc-k2ub: the 0-100 health score is gone from Home. The summary card is
+// headed "Findings" over the count, and the lanes footer no longer promises a
+// trend climbing "toward 100". REAL loader + REAL Dashboard render.
+describe("Home results summary: no 0-100 score (gc-k2ub)", () => {
+  const COMPLETED = {
+    id: "scan-1",
+    shopId: NEW_SHOP.id,
+    themeId: "gid://shopify/Theme/1",
+    themeName: "Dawn",
+    status: "COMPLETED",
+    findingCount: 4,
+    startedAt: new Date("2026-10-08T10:00:05Z"),
+    completedAt: new Date("2026-10-08T10:01:00Z"),
+    createdAt: new Date("2026-10-08T10:00:00Z"),
+  };
+
+  async function renderResults(): Promise<string> {
+    mockGetOrCreate.mockResolvedValue(NEW_SHOP);
+    (hasCompletedScans as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+    (getScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      items: [COMPLETED],
+      hasNextPage: false,
+    });
+    (getSeverityCountsForScans as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Map([["scan-1", { HIGH: 2, MEDIUM: 1, LOW: 1 }]]),
+    );
+    (getTypeCountsForScan as ReturnType<typeof vi.fn>).mockResolvedValue({
+      GHOST_SCRIPT: 3,
+      GHOST_STYLE: 1,
+    });
+    return renderDashboard(await runLoader());
+  }
+
+  it('heads the findings count "Findings", not "Theme Health"', async () => {
+    const html = await renderResults();
+
+    expect(html).toMatch(
+      /<h2 class="dashboard-section-title">Findings<\/h2>(?:(?!<h2)[\s\S])*?<div class="health-score-number[^"]*">4<\/div>/,
+    );
+    expect(html).not.toMatch(/theme health/i);
+    expect(html).not.toMatch(/health score/i);
+    expect(html).not.toMatch(/out of 100/i);
+  });
+
+  it("ends the lanes footer at the finding count, with no score reference", async () => {
+    const html = await renderResults();
+
+    expect(html).toContain(
+      '<div class="lanes-footer">✓ Then re-scan to confirm it&#x27;s gone. Each fix drops your finding count.</div>',
+    );
+    expect(html).not.toContain("toward 100");
+  });
+});
+
 describe("HomeScanInProgress: polling timed out", () => {
   const props = { createdAt: "2026-10-08T10:00:00.000Z", findingCount: 2 };
 

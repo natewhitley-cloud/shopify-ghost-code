@@ -7,9 +7,79 @@
  * render path is proven.
  */
 
+import type { ReactElement, ReactNode } from "react";
 import { describe, it, expect } from "vitest";
 
-import { renderScanReportPdf, hasUnsupportedGlyphs } from "../../app/lib/scan-report-pdf.server";
+import {
+  renderScanReportPdf,
+  hasUnsupportedGlyphs,
+  ScanReportDocument,
+} from "../../app/lib/scan-report-pdf.server";
+
+/**
+ * Every text run in the report's element tree, in render order. The react-pdf
+ * primitives are plain string element types ("TEXT", "VIEW"), so calling the
+ * document component gives a tree we can walk without a PDF text extractor
+ * (the rendered PDF's content streams are compressed).
+ */
+function reportText(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(reportText).join("");
+  const el = node as ReactElement<{ children?: ReactNode }>;
+  if (typeof el.type === "function") {
+    return reportText((el.type as (p: unknown) => ReactNode)(el.props));
+  }
+  return `${reportText(el.props?.children)}\n`;
+}
+
+const FINDING = {
+  severity: "HIGH" as const,
+  findingType: "GHOST_SCRIPT",
+  filename: "layout/theme.liquid",
+  lineNumber: 42,
+  appName: "Klaviyo",
+  description: "Orphaned Klaviyo script tag",
+  codeSnippet: '<script src="https://klaviyo.com/track.js"></script>',
+};
+
+describe("ScanReportDocument header (gc-k2ub)", () => {
+  const base = {
+    scan: { id: "scan-xyz", themeName: "Dawn", createdAt: new Date("2026-01-15T10:00:00Z") },
+    exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
+  };
+
+  it("summarizes with the findings count, never a 0-100 health score", () => {
+    const text = reportText(
+      ScanReportDocument({
+        ...base,
+        findings: [
+          FINDING,
+          { ...FINDING, severity: "MEDIUM" },
+          { ...FINDING, severity: "LOW" },
+          { ...FINDING, severity: "LOW" },
+        ],
+      }),
+    );
+
+    expect(text).toContain("4 findings\n");
+    expect(text).toContain("1 High · 1 Medium · 2 Low");
+    expect(text).not.toMatch(/health score/i);
+    expect(text).not.toContain("/100");
+    expect(text).not.toMatch(/out of 100/i);
+  });
+
+  it("uses the singular for one finding", () => {
+    const text = reportText(ScanReportDocument({ ...base, findings: [FINDING] }));
+    expect(text).toContain("1 finding\n");
+  });
+
+  it("states 0 findings for a clean theme", () => {
+    const text = reportText(ScanReportDocument({ ...base, findings: [] }));
+    expect(text).toContain("0 findings\n");
+    expect(text).toContain("No findings — this theme is clean.");
+  });
+});
 
 describe("renderScanReportPdf", () => {
   it("resolves to a Buffer whose first bytes are the %PDF- magic header", async () => {
@@ -39,7 +109,6 @@ describe("renderScanReportPdf", () => {
           codeSnippet: ".old-app-banner { display: none; }",
         },
       ],
-      healthScore: { score: 85, label: "Good" },
       exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
     });
 
@@ -64,7 +133,6 @@ describe("renderScanReportPdf", () => {
     const buffer = await renderScanReportPdf({
       scan: { id: "scan-many", themeName: "Dawn", createdAt: new Date("2026-01-15T10:00:00Z") },
       findings: many,
-      healthScore: { score: 10, label: "Critical" },
       exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
     });
 
@@ -87,7 +155,6 @@ describe("renderScanReportPdf", () => {
           codeSnippet: '<script src="https://example.com/a.js"></script>',
         },
       ],
-      healthScore: { score: 70, label: "Fair" },
       exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
     });
 
@@ -109,7 +176,6 @@ describe("renderScanReportPdf", () => {
           codeSnippet: ".x { display: none; }",
         },
       ],
-      healthScore: { score: 60, label: "Fair" },
       exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
     });
 

@@ -1,7 +1,7 @@
 /**
  * HealthScoreTrendChart and HealthScoreTrendEmptyState components.
  *
- * Renders the health score trend bar chart (SVG) and its empty state for
+ * Renders the findings trend bar chart (SVG) and its empty state for
  * shops on paid plans that have not yet completed enough scans to show
  * a trend. Both components are feature-flagged: they render nothing when
  * `trendChartEnabled` is false.
@@ -338,10 +338,9 @@ export function HealthScoreTrendEmptyState({
         }
       `}</style>
       <div style={{ ...sectionCard, marginBottom: 0 }}>
-        <h2 className="trend-chart-empty-heading">Health Score Trend</h2>
+        <h2 className="trend-chart-empty-heading">Findings Trend</h2>
         <p className="trend-chart-empty-text">
-          Complete {scansNeeded} more scan{scansNeeded !== 1 ? "s" : ""} to see your health score
-          trend.
+          Complete {scansNeeded} more scan{scansNeeded !== 1 ? "s" : ""} to see your findings trend.
         </p>
         <s-button
           variant="secondary"

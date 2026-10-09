@@ -235,6 +235,9 @@ describe("app.ignored zero-scans CTA (gc-vg4)", () => {
     const html = renderPage(data);
     expect(html).toContain("No suppressed findings");
     expect(html).not.toContain("Run your first scan");
+    // gc-k2ub: no 0-100 score left to be excluded from.
+    expect(html).toContain("Ignored findings are excluded from your finding counts");
+    expect(html).not.toMatch(/health score/i);
   });
 
   it("skips the scan query when ignores exist (an ignore implies a scan)", async () => {
