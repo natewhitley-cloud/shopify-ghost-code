@@ -30,6 +30,7 @@ import { ScanOrigin } from "@prisma/client";
 
 import { inngest } from "../../inngest/client";
 import { logger } from "../lib/logger.server";
+import type { ScanRequestSource } from "../lib/scan-source";
 import type { ScanQuota } from "../models/scan.server";
 import { createScan } from "../models/scan.server";
 
@@ -46,6 +47,9 @@ import { createScan } from "../models/scan.server";
  *   exempt from the manual quota (GC-iji). The theme-publish auto-rescan webhook
  *   passes AUTO_PUBLISH; the merchant-initiated dashboard action uses the
  *   MANUAL default.
+ * @param options.requestedFrom - Page a MANUAL scan was started from
+ *   (telemetry only, see app/lib/scan-source.ts). Omit for webhook / cron
+ *   paths; createScan stores null for non-MANUAL origins regardless.
  *
  * @returns `{ scan }` — the newly created scan record.
  * @throws  If createScan throws (active scan, quota exceeded). Callers must
@@ -55,7 +59,7 @@ export async function dispatchScan(
   shopId: string,
   themeId: string,
   themeName: string,
-  options?: { quota?: ScanQuota; origin?: ScanOrigin },
+  options?: { quota?: ScanQuota; origin?: ScanOrigin; requestedFrom?: ScanRequestSource },
 ): Promise<{ scan: Awaited<ReturnType<typeof createScan>> }> {
   // createScan is atomic: checks active scan + quota in one transaction.
   // Throws on conflict — let that propagate so callers can handle it cleanly.
@@ -65,6 +69,7 @@ export async function dispatchScan(
     themeName,
     options?.origin ?? ScanOrigin.MANUAL,
     options?.quota,
+    options?.requestedFrom,
   );
 
   // Best-effort dispatch. A transient inngest.send failure leaves the scan

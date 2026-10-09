@@ -373,6 +373,8 @@ describe("Scan pipeline — Part A: dashboard action (create → queue)", () => 
         THEME_NAME,
         ScanOrigin.MANUAL,
         expect.objectContaining({ periodLabel: "month", isFirstScan: true }),
+        // No source field in the post: the start source is stored as "unknown".
+        "unknown",
       );
     });
 

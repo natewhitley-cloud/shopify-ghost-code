@@ -2,6 +2,8 @@ import { Prisma, ScanOrigin, ScanStatus } from "@prisma/client";
 
 import db from "../db.server";
 import { logger } from "../lib/logger.server";
+import { SCAN_SOURCES } from "../lib/scan-source";
+import type { ScanRequestSource } from "../lib/scan-source";
 
 /**
  * Terminal statuses that represent a successful, usable scan.
@@ -52,6 +54,16 @@ export type ScanQuota = {
  * exempt, so a scheduled or auto scan can never block a merchant's own manual
  * scan. Defaults to MANUAL for callers (and legacy behaviour) that do not
  * specify an origin.
+ *
+ * Telemetry (operator digest only, never gating):
+ * - `requestedFrom` is the page a MANUAL scan was started from. Stored only for
+ *   MANUAL scans ("unknown" when the caller passes none); always null for
+ *   SCHEDULED / AUTO_PUBLISH.
+ * - `shopScanNumber` is 1 + the shop's existing scans of EVERY origin and
+ *   status, counted inside this transaction AFTER the active-scan guard, so a
+ *   rejected request never counts and numbers follow creation order. It shares
+ *   the guard's isolation: only the same concurrent-create race the guard
+ *   itself does not close (READ COMMITTED) could produce a duplicate number.
  */
 export async function createScan(
   shopId: string,
@@ -59,6 +71,7 @@ export async function createScan(
   themeName: string,
   origin: ScanOrigin = ScanOrigin.MANUAL,
   quota?: ScanQuota,
+  requestedFrom?: ScanRequestSource,
 ) {
   return db.$transaction(async (tx) => {
     const activeScan = await tx.scan.findFirst({
@@ -89,10 +102,44 @@ export async function createScan(
       }
     }
 
+    const existingScans = await tx.scan.count({ where: { shopId } });
+
     return tx.scan.create({
-      data: { shopId, themeId, themeName, origin },
+      data: {
+        shopId,
+        themeId,
+        themeName,
+        origin,
+        requestedFrom:
+          origin === ScanOrigin.MANUAL ? (requestedFrom ?? SCAN_SOURCES.UNKNOWN) : null,
+        shopScanNumber: existingScans + 1,
+      },
     });
   });
+}
+
+/** Page that rendered a scan's results (telemetry only). */
+export type ScanResultsPage = "home" | "scan_page";
+
+/** The per-scan "first results view" stamp column for each page. */
+export const SCAN_VIEW_COLUMNS = {
+  home: "viewedOnHomeAt",
+  scan_page: "viewedOnScanPageAt",
+} as const satisfies Record<ScanResultsPage, keyof Prisma.ScanWhereInput>;
+
+/**
+ * Atomically stamp the first time `page` rendered this scan's results.
+ *
+ * A conditional updateMany (`where id AND <column> IS NULL`) writes now() only
+ * if the column is still unset, so of any number of concurrent loads exactly
+ * one sees count === 1 and a later load never moves the timestamp. Returns true
+ * IFF this call made the stamp. A missing scan row is a safe false.
+ */
+export async function claimScanViewStamp(scanId: string, page: ScanResultsPage): Promise<boolean> {
+  const column = SCAN_VIEW_COLUMNS[page];
+  const where: Prisma.ScanWhereInput = { id: scanId, [column]: null };
+  const { count } = await db.scan.updateMany({ where, data: { [column]: new Date() } });
+  return count === 1;
 }
 
 /**

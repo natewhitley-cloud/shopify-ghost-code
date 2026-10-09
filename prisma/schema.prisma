@@ -283,6 +283,19 @@ model Scan {
   newFindingCount       Int          @default(0) // findings not present in the prior scan
   resolvedFindingCount  Int          @default(0) // prior findings no longer present (fixed)
   persistedFindingCount Int          @default(0) // findings unchanged / carried forward
+  // Scan start-source + results-view telemetry (operator digest only; never
+  // read for gating). All null on rows created before the feature shipped.
+  // requestedFrom: page a MANUAL scan was started from ("home" | "scan_page" |
+  // "unknown", see app/lib/scan-source.ts); null for SCHEDULED/AUTO_PUBLISH.
+  requestedFrom      String?
+  // 1-based order of this scan among ALL the shop's scans (every origin and
+  // status) at creation time; 1 = the shop's first scan. Set inside
+  // createScan's transaction, after the active-scan guard.
+  shopScanNumber     Int?
+  // First time each page rendered this scan's RESULTS (successful scans only),
+  // claimed once via a conditional update.
+  viewedOnHomeAt     DateTime?
+  viewedOnScanPageAt DateTime?
   findings          Finding[]
   unknownScripts    UnknownScript[]
   scanDomains       ScanDomain[]

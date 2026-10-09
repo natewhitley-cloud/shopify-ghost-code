@@ -41,8 +41,10 @@ describe("add_script_tag_sunset migration", () => {
     expect(SCHEMA).toMatch(/enum FindingType \{[\s\S]*?\n\s+SCRIPT_TAG_SUNSET\n\}/);
   });
 
-  it("is the latest migration", () => {
+  it("sorts after the previous latest migration", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
+    expect(dirs.sort().indexOf(NAME)).toBeGreaterThan(
+      dirs.indexOf("20261002140000_add_scan_live_finding_types"),
+    );
   });
 });

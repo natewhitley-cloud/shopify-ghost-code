@@ -51,6 +51,9 @@ vi.mock("../../app/services/nudge-stage.server", () => ({
 // covered in the journey-milestone service tests.
 vi.mock("../../app/services/journey-milestone.server", () => ({
   recordJourneyMilestoneOnce: vi.fn(),
+  // Per-scan results-view stamp; its conditional update is covered in the
+  // journey-milestone service tests.
+  recordScanResultsViewOnce: vi.fn(),
 }));
 
 vi.mock("../../app/services/scan-dispatch.server", () => ({
@@ -149,7 +152,10 @@ import {
 } from "../../app/models/shop.server";
 import { diffScanIdToLoad, loader, action, visibleScanDiff } from "../../app/routes/app._index";
 import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
-import { recordJourneyMilestoneOnce } from "../../app/services/journey-milestone.server";
+import {
+  recordJourneyMilestoneOnce,
+  recordScanResultsViewOnce,
+} from "../../app/services/journey-milestone.server";
 import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
@@ -1143,6 +1149,8 @@ describe("app._index action — theme picker", () => {
       expect(mockDispatchScan).toHaveBeenCalledWith("shop-1", "gid://shopify/Theme/789", "Craft", {
         quota: null,
         origin: ScanOrigin.MANUAL,
+        // No source field in this post: stored as "unknown" (telemetry only).
+        requestedFrom: "unknown",
       });
     });
   });
@@ -2250,6 +2258,170 @@ describe("Home loader: firstResultsViewedAt milestone", () => {
     await loader(makeLoaderArgs());
 
     expect(mockRecordMilestone).not.toHaveBeenCalled();
+  });
+});
+
+describe("Home loader: per-scan viewedOnHomeAt stamp", () => {
+  const mockRecordView = recordScanResultsViewOnce as ReturnType<typeof vi.fn>;
+  const mockRecordMilestone = recordJourneyMilestoneOnce as ReturnType<typeof vi.fn>;
+  const unviewed = { ...COMPLETED_SCAN, viewedOnHomeAt: null as Date | null };
+
+  it.each(["COMPLETED", "PARTIAL"])(
+    "stamps the latest %s scan once when Home renders its results",
+    async (status) => {
+      mockGetScansForShop.mockResolvedValue({
+        items: [{ ...unviewed, status }],
+        hasNextPage: false,
+      });
+
+      const data = await loader(makeLoaderArgs());
+
+      // The same condition that renders the results view (healthScore + latestScanId).
+      expect(data.latestScanId).toBe(COMPLETED_SCAN.id);
+      expect(mockRecordView).toHaveBeenCalledTimes(1);
+      expect(mockRecordView).toHaveBeenCalledWith(COMPLETED_SCAN.id, "home", SHOP.domain);
+    },
+  );
+
+  it("second load / poll: an already-stamped scan issues no write", async () => {
+    mockGetScansForShop.mockResolvedValue({
+      items: [{ ...unviewed, viewedOnHomeAt: new Date("2026-10-09T00:00:00Z") }],
+      hasNextPage: false,
+    });
+
+    await loader(makeLoaderArgs());
+    await loader(makeLoaderArgs());
+
+    expect(mockRecordView).not.toHaveBeenCalled();
+  });
+
+  it.each(["PENDING", "IN_PROGRESS", "FAILED"])(
+    "never stamps while the latest scan is %s (no results view renders)",
+    async (status) => {
+      mockGetScansForShop.mockResolvedValue({
+        items: [{ ...unviewed, status }],
+        hasNextPage: false,
+      });
+
+      await loader(makeLoaderArgs());
+
+      expect(mockRecordView).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never stamps an older successful scan when a newer scan is running", async () => {
+    mockGetScansForShop.mockResolvedValue({
+      items: [
+        { ...unviewed, id: "scan-running", status: "IN_PROGRESS" },
+        { ...unviewed, id: "scan-older", status: "COMPLETED" },
+      ],
+      hasNextPage: false,
+    });
+
+    await loader(makeLoaderArgs());
+
+    expect(mockRecordView).not.toHaveBeenCalled();
+  });
+
+  it("stamps only the latest scan, never the previous successful one", async () => {
+    mockGetScansForShop.mockResolvedValue({
+      items: [
+        { ...unviewed, id: "scan-latest" },
+        { ...unviewed, id: "scan-previous" },
+      ],
+      hasNextPage: false,
+    });
+
+    await loader(makeLoaderArgs());
+
+    expect(mockRecordView).toHaveBeenCalledTimes(1);
+    expect(mockRecordView).toHaveBeenCalledWith("scan-latest", "home", SHOP.domain);
+  });
+
+  it("never stamps with no scan at all (onboarding renders)", async () => {
+    mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+
+    await loader(makeLoaderArgs());
+
+    expect(mockRecordView).not.toHaveBeenCalled();
+  });
+
+  it("keeps the shop-level firstResultsViewedAt stamp alongside the per-scan one", async () => {
+    mockGetOrCreateShopMetadata.mockResolvedValue({ ...SHOP, firstResultsViewedAt: null });
+    mockGetScansForShop.mockResolvedValue({ items: [unviewed], hasNextPage: false });
+
+    await loader(makeLoaderArgs());
+
+    expect(mockRecordMilestone).toHaveBeenCalledWith("firstResultsViewedAt", SHOP.domain);
+    expect(mockRecordView).toHaveBeenCalledWith(COMPLETED_SCAN.id, "home", SHOP.domain);
+  });
+
+  it("a stamp that fails (resolves false) never breaks the loader", async () => {
+    mockRecordView.mockResolvedValue(false);
+    mockGetScansForShop.mockResolvedValue({ items: [unviewed], hasNextPage: false });
+
+    const data = await loader(makeLoaderArgs());
+
+    expect(data.latestScanId).toBe(COMPLETED_SCAN.id);
+  });
+});
+
+describe("app._index action: scan-start source (telemetry)", () => {
+  beforeEach(() => {
+    mockCanStartScan.mockResolvedValue({ allowed: true });
+    mockDispatchScan.mockResolvedValue({ scan: { id: "scan-new", shopId: "shop-1" } });
+    mockHasCompletedScans.mockResolvedValue(false);
+  });
+
+  function postWith(fields: Record<string, string>): ActionFunctionArgs {
+    return makeActionArgs({
+      request: new Request("https://test-shop.myshopify.com/app?index", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams(fields).toString(),
+      }),
+    });
+  }
+  const dispatchedSource = () => mockDispatchScan.mock.calls[0][3].requestedFrom;
+
+  it.each(["home", "scan_page", "unknown"])(
+    "passes the allowlisted source %s through to dispatchScan",
+    async (source) => {
+      await action(postWith({ source }));
+
+      expect(dispatchedSource()).toBe(source);
+    },
+  );
+
+  it("a missing source is stored as unknown", async () => {
+    await action(postWith({}));
+
+    expect(dispatchedSource()).toBe("unknown");
+  });
+
+  it.each(["garbage", "HOME", " home", 'home\'; DROP TABLE "Scan"; --', "<img onerror=x>"])(
+    "an unrecognized source %j is stored as unknown",
+    async (source) => {
+      await action(postWith({ source }));
+
+      expect(dispatchedSource()).toBe("unknown");
+    },
+  );
+
+  it("the source never gates: a scan_page source still hits the same plan gate", async () => {
+    mockCanStartScan.mockResolvedValue({ allowed: false, reason: "Weekly scan limit reached." });
+
+    const result = (await action(postWith({ source: "scan_page" }))) as { error: string };
+
+    expect(result.error).toBe("Weekly scan limit reached.");
+    expect(mockDispatchScan).not.toHaveBeenCalled();
+  });
+
+  it("a source alongside an intent never starts a scan", async () => {
+    const result = await action(postWith({ intent: "something-else", source: "home" }));
+
+    expect(result).toEqual({ ignored: true });
+    expect(mockDispatchScan).not.toHaveBeenCalled();
   });
 });
 

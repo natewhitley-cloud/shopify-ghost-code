@@ -44,6 +44,7 @@ import { canExportPdf, canUseScanDiffing, canViewFindingDetails } from "../lib/p
 import { PLANS } from "../lib/plans";
 import { scanResultsDeferredPrompts, scanResultsPrompts } from "../lib/prompt-cap";
 import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-request";
+import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import { staleResultsUpgradeAsk } from "../lib/stale-results";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { upgradeCtaLabel } from "../lib/trial-cta";
@@ -77,7 +78,10 @@ import {
   isFindingIgnored,
 } from "../services/finding-aggregation.server";
 import { getFreePreviewFindings } from "../services/free-preview.server";
-import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
+import {
+  recordJourneyMilestoneOnce,
+  recordScanResultsViewOnce,
+} from "../services/journey-milestone.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
@@ -1084,6 +1088,13 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   if (isSuccessfulScan(scan.status) && shop.firstResultsViewedAt === null) {
     await recordJourneyMilestoneOnce("firstResultsViewedAt", session.shop);
   }
+  // Per-scan "viewed on the scan page" stamp (scan-source telemetry): the
+  // first load that renders THIS successful scan's results. Gated on the
+  // loaded value, so a revisit issues no write; the conditional update dedupes
+  // concurrent loads. Never throws.
+  if (isSuccessfulScan(scan.status) && scan.viewedOnScanPageAt === null) {
+    await recordScanResultsViewOnce(scan.id, "scan_page", session.shop);
+  }
 
   // Whether this shop+plan combination can trigger the diff resource route.
   // Exposed to the component so it knows whether to issue the useFetcher call.
@@ -1450,10 +1461,10 @@ export default function ScanDetail() {
   // Stale-results "Rescan now" (gc-mgi): Home's scan-start action (POST /app
   // with no intent: main theme, plan-gated, redirects to the new scan's page),
   // reused rather than duplicated. An error string (e.g. the quota was used in
-  // another tab) is shown in the banner.
+  // another tab) is shown in the banner. Posts source=scan_page (telemetry).
   const rescanFetcher = useFetcher<{ error?: string }>();
   const handleRescan = () => {
-    rescanFetcher.submit({}, { method: "POST", action: "/app?index" });
+    rescanFetcher.submit(SCAN_PAGE_RESCAN_PAYLOAD, { method: "POST", action: "/app?index" });
   };
   const rescanError =
     rescanFetcher.data && typeof rescanFetcher.data.error === "string"

@@ -1,5 +1,7 @@
 /**
- * Durable journey milestones (gc-dpm.1): firstOpenedAt, firstResultsViewedAt.
+ * Durable journey milestones (gc-dpm.1): firstOpenedAt, firstResultsViewedAt,
+ * plus the per-scan results-view stamps (Scan.viewedOnHomeAt /
+ * viewedOnScanPageAt) behind the operator digest's result-views line.
  *
  * Each milestone is a once-per-merchant Shop stamp claimed through the SAME
  * atomic helper as the nudge stages (claimShopStamp: updateMany where the column
@@ -11,6 +13,8 @@
  * telemetry problem can never break the loader that called it.
  */
 import { logger } from "../lib/logger.server";
+import { claimScanViewStamp } from "../models/scan.server";
+import type { ScanResultsPage } from "../models/scan.server";
 import { claimShopStamp } from "../models/shop.server";
 import type { JourneyMilestoneColumn } from "../models/shop.server";
 
@@ -30,6 +34,32 @@ export async function recordJourneyMilestoneOnce(
     logger.error("journey-milestone-claim-failed", {
       shop: shopDomain,
       milestone: column,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return false;
+  }
+}
+
+/**
+ * Stamp the first time `page` rendered this scan's RESULTS, if still unset.
+ * Callers pass only a SUCCESSFUL scan whose results the page renders, and gate
+ * on the stamp value they already loaded (null) so a revisit or a 3s poll
+ * issues no query. Returns true when this call made the stamp.
+ *
+ * NEVER THROWS: failure logs as `scan-results-view-claim-failed`.
+ */
+export async function recordScanResultsViewOnce(
+  scanId: string,
+  page: ScanResultsPage,
+  shopDomain: string,
+): Promise<boolean> {
+  try {
+    return await claimScanViewStamp(scanId, page);
+  } catch (err) {
+    logger.error("scan-results-view-claim-failed", {
+      shop: shopDomain,
+      scanId,
+      page,
       error: err instanceof Error ? err.message : String(err),
     });
     return false;

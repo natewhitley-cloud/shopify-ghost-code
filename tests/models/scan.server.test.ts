@@ -109,6 +109,8 @@ const baseScan = {
 describe("createScan", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    // The shop's existing scan count (shopScanNumber = count + 1): none yet.
+    mockTx.scan.count.mockResolvedValue(0);
   });
 
   it("creates a scan record when no active scan exists for the shop", async () => {
@@ -124,7 +126,14 @@ describe("createScan", () => {
       }),
     );
     expect(mockTx.scan.create).toHaveBeenCalledWith({
-      data: { shopId: SHOP_ID, themeId: THEME_ID, themeName: "Dawn", origin: ScanOrigin.MANUAL },
+      data: {
+        shopId: SHOP_ID,
+        themeId: THEME_ID,
+        themeName: "Dawn",
+        origin: ScanOrigin.MANUAL,
+        requestedFrom: "unknown",
+        shopScanNumber: 1,
+      },
     });
     expect(result).toEqual(baseScan);
   });
@@ -136,7 +145,14 @@ describe("createScan", () => {
     await createScan(SHOP_ID, THEME_ID, "Dawn");
 
     expect(mockTx.scan.create).toHaveBeenCalledWith({
-      data: { shopId: SHOP_ID, themeId: THEME_ID, themeName: "Dawn", origin: ScanOrigin.MANUAL },
+      data: {
+        shopId: SHOP_ID,
+        themeId: THEME_ID,
+        themeName: "Dawn",
+        origin: ScanOrigin.MANUAL,
+        requestedFrom: "unknown",
+        shopScanNumber: 1,
+      },
     });
   });
 
@@ -152,6 +168,8 @@ describe("createScan", () => {
         themeId: THEME_ID,
         themeName: "Dawn",
         origin: ScanOrigin.SCHEDULED,
+        requestedFrom: null,
+        shopScanNumber: 1,
       },
     });
   });
@@ -192,6 +210,165 @@ describe("createScan", () => {
 
     await expect(createScan(SHOP_ID, THEME_ID, "Dawn")).rejects.toThrow("DB constraint violation");
   });
+});
+
+// ---------------------------------------------------------------------------
+// createScan — start-source + shop scan number telemetry
+// ---------------------------------------------------------------------------
+
+describe("createScan — requestedFrom and shopScanNumber", () => {
+  // Simulates the DB: the shop's existing rows, counted per the where clause the
+  // code passes (shopId + optional origin/status/createdAt filters).
+  type Row = { shopId: string; origin: ScanOrigin; status: ScanStatus; createdAt: Date };
+  function countRows(rows: Row[]) {
+    return async ({
+      where,
+    }: {
+      where: {
+        shopId: string;
+        origin?: ScanOrigin;
+        status?: { in: ScanStatus[] };
+        createdAt?: { gte: Date };
+      };
+    }) =>
+      rows.filter(
+        (r) =>
+          r.shopId === where.shopId &&
+          (where.origin === undefined || r.origin === where.origin) &&
+          (where.status === undefined || where.status.in.includes(r.status)) &&
+          (where.createdAt === undefined || r.createdAt >= where.createdAt.gte),
+      ).length;
+  }
+  const row = (origin: ScanOrigin, status: ScanStatus, shopId = SHOP_ID): Row => ({
+    shopId,
+    origin,
+    status,
+    createdAt: new Date("2026-01-01T00:00:00Z"),
+  });
+  const createdData = () => mockTx.scan.create.mock.calls[0][0].data;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockTx.scan.findFirst.mockResolvedValue(null);
+    mockTx.scan.create.mockResolvedValue(baseScan);
+  });
+
+  it("numbers the shop's first scan ever 1", async () => {
+    mockTx.scan.count.mockImplementation(
+      countRows([row(ScanOrigin.MANUAL, ScanStatus.COMPLETED, "other-shop")]),
+    );
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, null, "home");
+
+    expect(createdData().shopScanNumber).toBe(1);
+  });
+
+  it("numbers the Nth scan N, counting every origin and status (scheduled, auto, failed)", async () => {
+    mockTx.scan.count.mockImplementation(
+      countRows([
+        row(ScanOrigin.MANUAL, ScanStatus.COMPLETED),
+        row(ScanOrigin.SCHEDULED, ScanStatus.COMPLETED),
+        row(ScanOrigin.AUTO_PUBLISH, ScanStatus.PARTIAL),
+        row(ScanOrigin.MANUAL, ScanStatus.FAILED),
+        row(ScanOrigin.MANUAL, ScanStatus.COMPLETED, "other-shop"),
+      ]),
+    );
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, null, "scan_page");
+
+    expect(createdData().shopScanNumber).toBe(5);
+  });
+
+  it("numbers a SCHEDULED scan in the same sequence (it shifts the next manual scan's number)", async () => {
+    mockTx.scan.count.mockImplementation(countRows([row(ScanOrigin.MANUAL, ScanStatus.COMPLETED)]));
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.SCHEDULED);
+
+    expect(createdData().shopScanNumber).toBe(2);
+  });
+
+  it("counts the shop's scans with a shop-only filter (no origin/status/date narrowing)", async () => {
+    mockTx.scan.count.mockResolvedValue(3);
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn");
+
+    expect(mockTx.scan.count).toHaveBeenCalledWith({ where: { shopId: SHOP_ID } });
+  });
+
+  it("numbers the scan correctly when a quota is enforced (quota count is separate)", async () => {
+    mockTx.scan.count.mockImplementation(
+      countRows([
+        row(ScanOrigin.MANUAL, ScanStatus.COMPLETED),
+        row(ScanOrigin.SCHEDULED, ScanStatus.COMPLETED),
+      ]),
+    );
+    const quota = {
+      periodStart: new Date("2027-01-01T00:00:00Z"), // nothing in this period
+      maxScans: 1,
+      periodLabel: "week" as const,
+      isFirstScan: false,
+    };
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, quota, "home");
+
+    expect(createdData().shopScanNumber).toBe(3);
+  });
+
+  it("concurrent-guard path: a rejected request (active scan) counts nothing and creates nothing", async () => {
+    mockTx.scan.findFirst.mockResolvedValue({ id: "running" });
+    mockTx.scan.count.mockResolvedValue(4);
+
+    await expect(
+      createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, null, "home"),
+    ).rejects.toThrow("A scan is already in progress for this shop.");
+    expect(mockTx.scan.count).not.toHaveBeenCalled();
+    expect(mockTx.scan.create).not.toHaveBeenCalled();
+  });
+
+  it("counts inside the transaction AFTER the active-scan guard, so the number is the guarded state", async () => {
+    const order: string[] = [];
+    mockTx.scan.findFirst.mockImplementation(async () => {
+      order.push("guard");
+      return null;
+    });
+    mockTx.scan.count.mockImplementation(async () => {
+      order.push("count");
+      return 0;
+    });
+    mockTx.scan.create.mockImplementation(async () => {
+      order.push("create");
+      return baseScan;
+    });
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn");
+
+    expect(order).toEqual(["guard", "count", "create"]);
+    expect(mockDb.scan.count).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["home", "home"],
+    ["scan_page", "scan_page"],
+    ["unknown", "unknown"],
+    [undefined, "unknown"],
+  ] as const)("MANUAL scan with source %s stores requestedFrom %s", async (source, stored) => {
+    mockTx.scan.count.mockResolvedValue(0);
+
+    await createScan(SHOP_ID, THEME_ID, "Dawn", ScanOrigin.MANUAL, null, source);
+
+    expect(createdData().requestedFrom).toBe(stored);
+  });
+
+  it.each([ScanOrigin.SCHEDULED, ScanOrigin.AUTO_PUBLISH])(
+    "%s scan stores requestedFrom null even if a source is passed",
+    async (origin) => {
+      mockTx.scan.count.mockResolvedValue(0);
+
+      await createScan(SHOP_ID, THEME_ID, "Dawn", origin, null, "home");
+
+      expect(createdData().requestedFrom).toBeNull();
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

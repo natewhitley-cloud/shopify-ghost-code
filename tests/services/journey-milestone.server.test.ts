@@ -8,6 +8,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockDb = vi.hoisted(() => ({
   shop: { updateMany: vi.fn() },
+  scan: { updateMany: vi.fn() },
 }));
 
 vi.mock("../../app/db.server", () => ({ default: mockDb }));
@@ -21,7 +22,10 @@ vi.mock("../../app/lib/logger.server", () => ({
   },
 }));
 
-import { recordJourneyMilestoneOnce } from "../../app/services/journey-milestone.server";
+import {
+  recordJourneyMilestoneOnce,
+  recordScanResultsViewOnce,
+} from "../../app/services/journey-milestone.server";
 
 const DOMAIN = "merchant.myshopify.com";
 
@@ -66,6 +70,62 @@ describe.each(["firstOpenedAt", "firstResultsViewedAt"] as const)("milestone %s"
     await expect(recordJourneyMilestoneOnce(column, DOMAIN)).resolves.toBe(false);
     expect(mockLoggerError).toHaveBeenCalledWith(
       "journey-milestone-claim-failed",
+      expect.objectContaining({ error: "boom" }),
+    );
+  });
+});
+
+// Per-scan results-view stamps (scan-source telemetry): the REAL
+// claimScanViewStamp (scan model) against the mocked Prisma client.
+describe.each([
+  ["home", "viewedOnHomeAt"],
+  ["scan_page", "viewedOnScanPageAt"],
+] as const)("results view on %s", (page, column) => {
+  const SCAN_ID = "scan-42";
+
+  it(`stamps ${column} once, only while it is null, keyed on the scan id`, async () => {
+    mockDb.scan.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(recordScanResultsViewOnce(SCAN_ID, page, DOMAIN)).resolves.toBe(true);
+
+    expect(mockDb.scan.updateMany).toHaveBeenCalledTimes(1);
+    const call = mockDb.scan.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ id: SCAN_ID, [column]: null });
+    expect(Object.keys(call.data)).toEqual([column]);
+    expect(call.data[column]).toBeInstanceOf(Date);
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("conditional-update race: the loser (count 0, already stamped) reports false without error", async () => {
+    mockDb.scan.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+
+    const [first, second] = await Promise.all([
+      recordScanResultsViewOnce(SCAN_ID, page, DOMAIN),
+      recordScanResultsViewOnce(SCAN_ID, page, DOMAIN),
+    ]);
+
+    expect([first, second].sort()).toEqual([false, true]);
+    expect(mockLoggerError).not.toHaveBeenCalled();
+  });
+
+  it("never throws: a failed claim logs and reports false", async () => {
+    mockDb.scan.updateMany.mockRejectedValueOnce(new Error("db down"));
+
+    await expect(recordScanResultsViewOnce(SCAN_ID, page, DOMAIN)).resolves.toBe(false);
+    expect(mockLoggerError).toHaveBeenCalledWith("scan-results-view-claim-failed", {
+      shop: DOMAIN,
+      scanId: SCAN_ID,
+      page,
+      error: "db down",
+    });
+  });
+
+  it("never throws on a non-Error rejection either", async () => {
+    mockDb.scan.updateMany.mockRejectedValueOnce("boom");
+
+    await expect(recordScanResultsViewOnce(SCAN_ID, page, DOMAIN)).resolves.toBe(false);
+    expect(mockLoggerError).toHaveBeenCalledWith(
+      "scan-results-view-claim-failed",
       expect.objectContaining({ error: "boom" }),
     );
   });

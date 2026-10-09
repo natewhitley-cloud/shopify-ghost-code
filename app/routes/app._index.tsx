@@ -41,6 +41,7 @@ import {
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS } from "../lib/prompt-cap";
+import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polling";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
@@ -53,7 +54,10 @@ import {
 import type { ScanQuota } from "../models/scan.server";
 import { getOrCreateShopMetadata, getShopMetadata } from "../models/shop.server";
 import { getFilteredFindingSummary } from "../services/finding-aggregation.server";
-import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
+import {
+  recordJourneyMilestoneOnce,
+  recordScanResultsViewOnce,
+} from "../services/journey-milestone.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
@@ -424,6 +428,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (latestScanId !== null && shop.firstResultsViewedAt === null) {
     await recordJourneyMilestoneOnce("firstResultsViewedAt", session.shop);
   }
+  // Per-scan "viewed on Home" stamp (scan-source telemetry): same render
+  // condition, on THAT scan. Gated on the loaded value, so once stamped every
+  // later load and 3s poll issues no write; the conditional update dedupes
+  // concurrent first loads. Never throws.
+  if (latestScan !== null && latestScanId !== null && latestScan.viewedOnHomeAt === null) {
+    await recordScanResultsViewOnce(latestScanId, "home", session.shop);
+  }
   const canDiffLatest =
     latestScan != null && isSuccessfulScan(latestScan.status) && canUseScanDiffing(shop.plan);
 
@@ -491,6 +502,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   const selectedThemeId = formData.get("themeId") as string | null;
+  // Which page started this scan (telemetry only, never trusted for gating).
+  // Missing or unrecognized values are stored as "unknown".
+  const requestedFrom = parseScanSource(formData.get("source"));
 
   const actionFeatures = getPlanFeatures(shop.plan);
   const allowThemeSelection = canUseMultipleThemes(shop.plan);
@@ -558,6 +572,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     ({ scan } = await dispatchScan(shop.id, themeId, themeName, {
       quota,
       origin: ScanOrigin.MANUAL,
+      requestedFrom,
     }));
   } catch (err) {
     const message = err instanceof Error ? err.message : "Failed to create scan.";
@@ -775,8 +790,10 @@ export default function Dashboard() {
 
   const actionError = fetcher.data && "error" in fetcher.data ? fetcher.data.error : null;
 
+  // Every scan-start control on Home (onboarding, main button, rescan and
+  // theme-change nudges, trend empty state) posts through here: source=home.
   const handleStartScan = () => {
-    fetcher.submit({ themeId: selectedThemeId }, { method: "POST" });
+    fetcher.submit(homeScanStartPayload(selectedThemeId), { method: "POST" });
   };
 
   // Whether the latest scan is still running (findings not yet available).

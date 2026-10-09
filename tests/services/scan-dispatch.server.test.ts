@@ -103,6 +103,7 @@ describe("dispatchScan — happy path", () => {
       THEME_NAME,
       ScanOrigin.MANUAL,
       undefined,
+      undefined,
     );
   });
 
@@ -122,6 +123,7 @@ describe("dispatchScan — happy path", () => {
       THEME_NAME,
       ScanOrigin.MANUAL,
       quota,
+      undefined,
     );
   });
 
@@ -134,7 +136,34 @@ describe("dispatchScan — happy path", () => {
       THEME_NAME,
       ScanOrigin.AUTO_PUBLISH,
       undefined,
+      undefined,
     );
+  });
+
+  it("forwards requestedFrom (the scan-start source) to createScan", async () => {
+    await dispatchScan(SHOP_ID, THEME_ID, THEME_NAME, {
+      origin: ScanOrigin.MANUAL,
+      requestedFrom: "scan_page",
+    });
+
+    expect(mockCreateScan).toHaveBeenCalledWith(
+      SHOP_ID,
+      THEME_ID,
+      THEME_NAME,
+      ScanOrigin.MANUAL,
+      undefined,
+      "scan_page",
+    );
+  });
+
+  it("does not put the source on the scan/requested event (telemetry stays on the row)", async () => {
+    await dispatchScan(SHOP_ID, THEME_ID, THEME_NAME, { requestedFrom: "home" });
+
+    expect(mockInngestSend.mock.calls[0][0].data).toEqual({
+      shopId: SHOP_ID,
+      themeId: THEME_ID,
+      scanId: SCAN_ID,
+    });
   });
 
   it("passes null quota when options is omitted", async () => {
@@ -147,6 +176,7 @@ describe("dispatchScan — happy path", () => {
       THEME_ID,
       THEME_NAME,
       ScanOrigin.MANUAL,
+      undefined,
       undefined,
     );
   });

@@ -62,6 +62,9 @@ vi.mock("../../app/models/scan.server", () => ({
   getLatestSuccessfulScanNonMaliciousCount: vi.fn(),
   // gc-mgi: the stale banner's "is this the latest successful scan" read.
   getCompletedScansForShop: vi.fn(),
+  // Per-scan "viewed on the scan page" stamp, mocked at the model boundary so
+  // the REAL journey-milestone service (never-throws wrapper) runs.
+  claimScanViewStamp: vi.fn(),
 }));
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => ({
@@ -164,6 +167,7 @@ import {
   ignoreFindingInstance,
 } from "../../app/models/ignored-finding.server";
 import {
+  claimScanViewStamp,
   getCompletedScansForShop,
   getFirstSuccessfulScanCompletedAt,
   getLatestSuccessfulScanNonMaliciousCount,
@@ -213,6 +217,7 @@ const mockClaimPromptSlot = claimPromptSlot as ReturnType<typeof vi.fn>;
 const mockStartEpisode = startUpgradeReturnEpisode as ReturnType<typeof vi.fn>;
 const mockRecordDismissal = recordUpgradeReturnDismissal as ReturnType<typeof vi.fn>;
 const mockGetScanById = getScanById as ReturnType<typeof vi.fn>;
+const mockClaimScanViewStamp = claimScanViewStamp as ReturnType<typeof vi.fn>;
 const mockGetFirstSuccessfulScan = getFirstSuccessfulScanCompletedAt as ReturnType<typeof vi.fn>;
 const mockGetLatestCount = getLatestSuccessfulScanNonMaliciousCount as ReturnType<typeof vi.fn>;
 const mockGetFindingSummary = getFindingSummary as ReturnType<typeof vi.fn>;
@@ -1937,6 +1942,7 @@ describe("app.scans.$scanId loader", () => {
         claimPromptSlot: mockClaimPromptSlot.mock.calls.length,
         getLatestSuccessfulScanNonMaliciousCount: mockGetLatestCount.mock.calls.length,
         claimShopStamp: mockClaimShopStamp.mock.calls.length,
+        claimScanViewStamp: mockClaimScanViewStamp.mock.calls.length,
         startUpgradeReturnEpisode: mockStartEpisode.mock.calls.length,
       };
       return Object.fromEntries(Object.entries(counts).filter(([, n]) => n > 0));
@@ -1950,7 +1956,8 @@ describe("app.scans.$scanId loader", () => {
     it.each(["IN_PROGRESS", "PENDING"])(
       "the ~3s poll revalidation (%s) issues exactly the base reads and nothing prompt-, trial- or preview-related",
       async (status) => {
-        mockGetScanById.mockResolvedValue({ ...SCAN, status });
+        // Unviewed, so a stamp on the poll would show up in the counts.
+        mockGetScanById.mockResolvedValue({ ...SCAN, status, viewedOnScanPageAt: null });
         // Even a Free shop with every prompt otherwise eligible.
         mockGetShopMetadata.mockResolvedValue({
           ...SHOP,
@@ -2030,6 +2037,79 @@ describe("app.scans.$scanId loader", () => {
       expect(mockGetIgnoredFindings).toHaveBeenCalledTimes(1);
       releaseScan();
       await pending;
+    });
+  });
+
+  describe("per-scan viewedOnScanPageAt stamp", () => {
+    const unviewed = { ...SCAN, viewedOnScanPageAt: null as Date | null };
+
+    beforeEach(() => {
+      mockClaimScanViewStamp.mockResolvedValue(true);
+    });
+
+    it.each(["COMPLETED", "PARTIAL"])("stamps a %s scan's page view once", async (status) => {
+      mockGetScanById.mockResolvedValue({ ...unviewed, status });
+
+      await loader(makeLoaderArgs("scan-1"));
+
+      expect(mockClaimScanViewStamp).toHaveBeenCalledTimes(1);
+      expect(mockClaimScanViewStamp).toHaveBeenCalledWith("scan-1", "scan_page");
+    });
+
+    it.each(["FAILED", "IN_PROGRESS", "PENDING"])(
+      "never stamps a %s scan (no results render)",
+      async (status) => {
+        mockGetScanById.mockResolvedValue({ ...unviewed, status });
+
+        await loader(makeLoaderArgs("scan-1"));
+
+        expect(mockClaimScanViewStamp).not.toHaveBeenCalled();
+      },
+    );
+
+    it("a revisit of an already-stamped scan issues no write", async () => {
+      mockGetScanById.mockResolvedValue({
+        ...unviewed,
+        viewedOnScanPageAt: new Date("2026-10-09T00:00:00Z"),
+      });
+
+      await loader(makeLoaderArgs("scan-1"));
+
+      expect(mockClaimScanViewStamp).not.toHaveBeenCalled();
+    });
+
+    it("never stamps another shop's scan (404 first)", async () => {
+      mockGetScanById.mockResolvedValue({ ...unviewed, shopId: "other-shop" });
+
+      await expect(loader(makeLoaderArgs("scan-1"))).rejects.toMatchObject({ status: 404 });
+      expect(mockClaimScanViewStamp).not.toHaveBeenCalled();
+    });
+
+    it("a lost race (already stamped by a concurrent load) is silent", async () => {
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+      mockClaimScanViewStamp.mockResolvedValue(false);
+      mockGetScanById.mockResolvedValue(unviewed);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { scan: { id: string } };
+
+      expect(result.scan.id).toBe("scan-1");
+      expect(errorSpy).not.toHaveBeenCalled();
+      errorSpy.mockRestore();
+    });
+
+    it("never breaks the loader when the stamp throws (logged, page still loads)", async () => {
+      const errorSpy = vi.spyOn(logger, "error").mockImplementation(() => {});
+      mockClaimScanViewStamp.mockRejectedValue(new Error("db down"));
+      mockGetScanById.mockResolvedValue(unviewed);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as { scan: { id: string } };
+
+      expect(result.scan.id).toBe("scan-1");
+      expect(errorSpy).toHaveBeenCalledWith(
+        "scan-results-view-claim-failed",
+        expect.objectContaining({ shop: SHOP.domain, scanId: "scan-1", page: "scan_page" }),
+      );
+      errorSpy.mockRestore();
     });
   });
 
