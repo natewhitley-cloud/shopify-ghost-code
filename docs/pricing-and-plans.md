@@ -79,7 +79,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 > ad-driven visitors see concrete reasons to pay. The 1-manual-scan/week cap is unchanged and
 > still enforced. (2026-10-09, gc-iefo: bullet 5 was "Weekly auto-scan + findings trend"; Nathan set the live
 > Partner Dashboard card to "Monthly auto-scan + findings trend". The 1/week manual cap is no longer
-> stated on the card; it stays on the in-app Billing tile.) Checkout
+> stated on the card; it stays on the in-app Settings page plan tile.) Checkout
 > bullet is tense-neutral on purpose; the checkout.liquid sunset fully passed on Aug 28,
 > 2025 for every store (in-app copy made past tense in gc-oam). Apply these in Partner Dashboard → Managed Pricing.
 

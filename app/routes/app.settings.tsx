@@ -343,7 +343,7 @@ export default function Settings() {
   }
 
   return (
-    <s-page heading="Billing">
+    <s-page heading="Settings">
       <Link to="/app" slot="primary-action">
         Back to Dashboard
       </Link>

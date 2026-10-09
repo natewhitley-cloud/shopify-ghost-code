@@ -98,7 +98,7 @@ describe("deriveJourneyMilestones", () => {
       ...NONE,
       clickedUpgrade: true,
     });
-    // Paid via the Billing page without ever seeing the preview.
+    // Paid via the Settings page without ever seeing the preview.
     expect(deriveJourneyMilestones({ ...NO_FACTS, plan: "Standard" })).toEqual({
       ...NONE,
       paid: true,

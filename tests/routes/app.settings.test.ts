@@ -576,6 +576,41 @@ describe("app.settings action: set-alerts-enabled", () => {
   });
 });
 
+describe("the page is called Settings, matching the notice, email and policy (Nathan Q10=10A)", () => {
+  it("page heading is Settings, never Billing", () => {
+    const loaderData = {
+      shop: { plan: "free", domain: SHOP_DOMAIN },
+      features: FREE_FEATURES,
+      pricingPlansUrl: PRICING_PLANS_URL,
+      trialEligible: true,
+      alerts: DARK_ALERTS,
+    };
+    const Stub = createRoutesStub([
+      {
+        id: "settings",
+        path: "/app/settings",
+        Component: Settings as never,
+        loader: () => loaderData,
+      },
+    ]);
+    const html = renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/settings"],
+        hydrationData: { loaderData: { settings: loaderData } },
+      }),
+    );
+    expect(html).toMatch(/<s-page[^>]*heading="Settings"/);
+    expect(html).not.toContain('heading="Billing"');
+  });
+
+  it("the app nav item for /app/settings reads Settings", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../../app/routes/app.tsx", import.meta.url), "utf8");
+    expect(src).toContain('<s-link href="/app/settings">Settings</s-link>');
+    expect(src).not.toMatch(/>Billing</);
+  });
+});
+
 describe("Settings Summary emails card (gc-ol95 copy)", () => {
   function renderSettings(plan: string, trialEligible: boolean, alerts: Partial<AlertsData>) {
     const loaderData = {

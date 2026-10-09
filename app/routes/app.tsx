@@ -132,7 +132,7 @@ export default function App() {
         <s-link href="/app">Dashboard</s-link>
         <s-link href="/app/scans">Scan History</s-link>
         <s-link href="/app/ignored">Ignored Findings</s-link>
-        <s-link href="/app/settings">Billing</s-link>
+        <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
       <Outlet />
     </AppProvider>

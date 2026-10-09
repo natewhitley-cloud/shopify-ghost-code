@@ -27,7 +27,7 @@
  *                   value counts as free, matching the digest's plan mix.
  *
  * Milestones are NOT forced to be monotonic: a merchant can pay from the
- * Billing page without ever seeing the upgrade preview, so each is reported as
+ * Settings page without ever seeing the upgrade preview, so each is reported as
  * observed. The stage label is simply the furthest milestone reached.
  */
 import { PLANS } from "./plans";
