@@ -93,7 +93,8 @@ model Shop {
   // Durable journey milestones (gc-dpm.1). Stamped ONCE via the same atomic
   // claim as the nudge stamps (claimShopStamp): firstOpenedAt on the first
   // authenticated app load, firstResultsViewedAt on the first load of a
-  // successful (COMPLETED/PARTIAL) scan's detail page. Unlike page_visit rows
+  // successful (COMPLETED/PARTIAL) scan's detail page, or of Home with a
+  // successful latest scan (it renders that scan's results). Unlike page_visit rows
   // (pruned at 14 days) these never age out. Null = not happened, or (for shops
   // whose history predates the 14-day page_visit window at backfill) unknown.
   firstOpenedAt             DateTime?

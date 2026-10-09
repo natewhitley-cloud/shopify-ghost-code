@@ -2898,12 +2898,22 @@ describe("journey (gc-dpm.3)", () => {
       expect(viewedStage(j).measurable).toEqual({ of: 1, beforeTracking: 0 });
     });
 
-    it("a scanned shop with no first-success completion time is not measurable", () => {
-      const j = run([viewed("a")], {
-        scanStatuses: ok(["a"]),
-        firstSuccessfulScans: firsts([["a", null]]),
+    it("a scanned shop with no first-success completion time is in neither group", () => {
+      // Unknown date: not measurable, but not "first scanned before tracking
+      // began" either. Same for a scanned shop missing from the query result.
+      const j = run([viewed("a"), viewed("b"), viewed("m")], {
+        scanStatuses: ok(["a", "b", "m"]),
+        firstSuccessfulScans: firsts([
+          ["a", null],
+          ["m", after],
+        ]),
       });
-      expect(viewedStage(j).measurable).toEqual({ of: 0, beforeTracking: 1 });
+      expect(viewedStage(j)).toEqual({
+        label: "Viewed results",
+        count: 1,
+        measurable: { of: 1, beforeTracking: 0 },
+      });
+      expect(funnelLine(j)).toContain("Scanned 3 > Viewed results 1 of 1 measurable >");
     });
 
     it("leaves the per-shop stage label and milestones as observed", () => {

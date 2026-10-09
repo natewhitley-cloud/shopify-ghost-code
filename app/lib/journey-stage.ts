@@ -12,7 +12,9 @@
  *                   and SCHEDULED / AUTO_PUBLISH scans only run for paid plans,
  *                   which are chosen inside the app.
  *   scanned         at least one SUCCESSFUL (COMPLETED or PARTIAL) scan.
- *   viewedResults   firstResultsViewedAt. Only measurable for shops whose
+ *   viewedResults   firstResultsViewedAt: the first load of a successful scan's
+ *                   detail page, or of Home with a successful latest scan
+ *                   (Home renders its results). Only measurable for shops whose
  *                   first successful scan completed on or after
  *                   RESULTS_VIEW_TRACKED_SINCE (see below).
  *   sawUpgrade      ANY Free upgrade ask was shown: upgradePreviewShownAt

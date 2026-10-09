@@ -37,12 +37,31 @@ describe("startScanPolling", () => {
     vi.useRealTimers();
   });
 
-  function start(pollCount = { current: 0 }) {
+  function start(pollCount = { current: 0 }, isIdle: () => boolean = () => true) {
     const revalidate = vi.fn();
     const onTimeout = vi.fn();
-    const stop = startScanPolling({ pollCount, revalidate, onTimeout });
+    const stop = startScanPolling({ pollCount, revalidate, onTimeout, isIdle });
     return { revalidate, onTimeout, stop, pollCount };
   }
+
+  it("skips a tick while the previous revalidation is still running", () => {
+    let idle = false;
+    const { revalidate, pollCount } = start({ current: 0 }, () => idle);
+    vi.advanceTimersByTime(SCAN_POLL_INTERVAL_MS * 3);
+    expect(revalidate).not.toHaveBeenCalled();
+    // Skipped ticks still count toward the cap (it bounds wall-clock time).
+    expect(pollCount.current).toBe(3);
+    idle = true;
+    vi.advanceTimersByTime(SCAN_POLL_INTERVAL_MS);
+    expect(revalidate).toHaveBeenCalledTimes(1);
+  });
+
+  it("still times out at the cap when every load is slow", () => {
+    const { revalidate, onTimeout } = start({ current: 0 }, () => false);
+    vi.advanceTimersByTime(SCAN_POLL_INTERVAL_MS * MAX_POLL_COUNT);
+    expect(revalidate).not.toHaveBeenCalled();
+    expect(onTimeout).toHaveBeenCalledTimes(1);
+  });
 
   it("revalidates every 3 seconds", () => {
     const { revalidate } = start();

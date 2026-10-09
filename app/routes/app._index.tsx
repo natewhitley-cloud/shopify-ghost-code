@@ -1,5 +1,5 @@
 import { ScanOrigin, Severity } from "@prisma/client";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import {
   Link,
@@ -53,6 +53,7 @@ import {
 import type { ScanQuota } from "../models/scan.server";
 import { getOrCreateShopMetadata, getShopMetadata } from "../models/shop.server";
 import { getFilteredFindingSummary } from "../services/finding-aggregation.server";
+import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
@@ -414,6 +415,15 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // the scan-detail page) to surface NEW high-severity findings without loading
   // findings here (avoids the expensive 2-scan full-findings load — see PRF-2).
   const latestScanId = latestScan && isSuccessfulScan(latestScan.status) ? latestScan.id : null;
+
+  // Durable "first viewed results" milestone (gc-dpm.1): Home renders a
+  // SUCCESSFUL latest scan's results itself (including when its 3s poll swaps
+  // the in-progress card for them), so it stamps like the scan detail page.
+  // Gated on the stored value, so an already-stamped shop (every later poll)
+  // issues no query; the atomic claim dedupes concurrent loads. Never throws.
+  if (latestScanId !== null && shop.firstResultsViewedAt === null) {
+    await recordJourneyMilestoneOnce("firstResultsViewedAt", session.shop);
+  }
   const canDiffLatest =
     latestScan != null && isSuccessfulScan(latestScan.status) && canUseScanDiffing(shop.plan);
 
@@ -562,6 +572,34 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 /**
+ * The scan id whose diff Home should request now, or null: the latest
+ * successful scan's, once per id (loadedFor is the id already requested). Null
+ * while a scan runs (no latest successful id) or when the plan cannot diff.
+ */
+export function diffScanIdToLoad(
+  loadedFor: string | null,
+  canDiffLatest: boolean,
+  latestScanId: string | null,
+): string | null {
+  if (!canDiffLatest || latestScanId === null || loadedFor === latestScanId) return null;
+  return latestScanId;
+}
+
+/**
+ * The diff Home may show: only one requested for the CURRENT latest scan and
+ * finished loading, so scan A's new-findings banner never shows for scan B.
+ */
+export function visibleScanDiff(
+  data: ScanDiff | null | undefined,
+  fetcherState: "idle" | "loading" | "submitting",
+  loadedFor: string | null,
+  latestScanId: string | null,
+): ScanDiff | null {
+  if (latestScanId === null || loadedFor !== latestScanId || fetcherState !== "idle") return null;
+  return data ?? null;
+}
+
+/**
  * Home's in-progress card. While polling, the spinner, heading and the shared
  * ScanProgress block (same wait experience as the scan page, live count
  * included). Once polling stops at the cap, no spinner and a heading that
@@ -689,20 +727,27 @@ export default function Dashboard() {
   // (same pattern as scan-detail — see app.scans.$scanId.tsx) to surface NEW
   // high-severity findings. The diff is never computed in the loader (PRF-2).
   const diffFetcher = useFetcher<{ scanDiff: ScanDiff | null }>();
-  // Ref guard prevents re-requesting the diff on subsequent re-renders.
-  const diffLoadTriggered = useRef(false);
+  // Which scan's diff was requested: loaded once per latest successful scan id
+  // (never on a poll re-render), and again when a newer scan completes.
+  const [diffLoadedFor, setDiffLoadedFor] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!canDiffLatest || !latestScanId || diffLoadTriggered.current) return;
-    diffLoadTriggered.current = true;
-    diffFetcher.load(`/app/scans/${latestScanId}/diff`);
+    const toLoad = diffScanIdToLoad(diffLoadedFor, canDiffLatest, latestScanId);
+    if (toLoad === null) return;
+    setDiffLoadedFor(toLoad);
+    diffFetcher.load(`/app/scans/${toLoad}/diff`);
     // diffFetcher is a stable object; canDiffLatest and latestScanId are the
     // meaningful dependencies here.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [canDiffLatest, latestScanId]);
+  }, [canDiffLatest, latestScanId, diffLoadedFor]);
 
   // New high-severity findings from the lazily-loaded diff (null until resolved).
-  const scanDiff = diffFetcher.data?.scanDiff ?? null;
+  const scanDiff = visibleScanDiff(
+    diffFetcher.data?.scanDiff,
+    diffFetcher.state,
+    diffLoadedFor,
+    latestScanId,
+  );
   const newHigh = scanDiff ? scanDiff.newFindings.filter((f) => f.severity === "HIGH").length : 0;
 
   // Optimistically hide the feedback nudge once the merchant clicks "Not now",
@@ -1157,8 +1202,11 @@ export default function Dashboard() {
 
             {/* Scan Summary — Theme Health + Findings, one floating card */}
             <div style={{ ...sectionCard, marginBottom: 0 }}>
-              {/* aria-live="polite" ensures screen readers announce when scan status changes */}
-              <div aria-live="polite">
+              {/* Not a live region: Home now polls every 3s while a scan runs, so
+                  a region here would announce every count and timer change and
+                  double ScanProgress's single role="status", which is the one
+                  announced line while a scan runs. */}
+              <div>
                 <s-stack direction="block" gap="base">
                   {scanInProgress ? (
                     <HomeScanInProgress

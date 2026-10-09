@@ -47,6 +47,12 @@ vi.mock("../../app/services/nudge-stage.server", () => ({
   recordNudgeStageOnce: vi.fn(),
 }));
 
+// gc-dpm.1: the durable "first viewed results" stamp. Its atomic claim is
+// covered in the journey-milestone service tests.
+vi.mock("../../app/services/journey-milestone.server", () => ({
+  recordJourneyMilestoneOnce: vi.fn(),
+}));
+
 vi.mock("../../app/services/scan-dispatch.server", () => ({
   dispatchScan: vi.fn(),
 }));
@@ -141,8 +147,9 @@ import {
   getShopMetadata,
   claimPromptSlot,
 } from "../../app/models/shop.server";
-import { loader, action } from "../../app/routes/app._index";
+import { diffScanIdToLoad, loader, action, visibleScanDiff } from "../../app/routes/app._index";
 import { getFilteredFindingSummary } from "../../app/services/finding-aggregation.server";
+import { recordJourneyMilestoneOnce } from "../../app/services/journey-milestone.server";
 import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { dispatchScan } from "../../app/services/scan-dispatch.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
@@ -2182,5 +2189,105 @@ describe("app._index retired review banner (owner decision 2A)", () => {
     expect(source).not.toContain("APP_STORE_REVIEW_URL");
     expect(source).not.toContain("Leave a Review");
     expect(source).not.toContain('intent: "dismiss-review-prompt"');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-dpm.1: Home stamps "first viewed results" when it renders a successful
+// latest scan (it swaps to those results by itself while polling).
+// ---------------------------------------------------------------------------
+
+describe("Home loader: firstResultsViewedAt milestone", () => {
+  const mockRecordMilestone = recordJourneyMilestoneOnce as ReturnType<typeof vi.fn>;
+  const unstamped = { ...SHOP, firstResultsViewedAt: null as Date | null };
+
+  it.each(["COMPLETED", "PARTIAL"])(
+    "stamps once for an unstamped shop on a %s latest scan",
+    async (status) => {
+      mockGetOrCreateShopMetadata.mockResolvedValue(unstamped);
+      mockGetScansForShop.mockResolvedValue({
+        items: [{ ...COMPLETED_SCAN, status }],
+        hasNextPage: false,
+      });
+
+      await loader(makeLoaderArgs());
+
+      expect(mockRecordMilestone).toHaveBeenCalledTimes(1);
+      expect(mockRecordMilestone).toHaveBeenCalledWith("firstResultsViewedAt", SHOP.domain);
+    },
+  );
+
+  it("issues no claim once stamped (every later poll is free)", async () => {
+    mockGetOrCreateShopMetadata.mockResolvedValue({
+      ...SHOP,
+      firstResultsViewedAt: new Date("2026-10-01T00:00:00Z"),
+    });
+
+    await loader(makeLoaderArgs());
+
+    expect(mockRecordMilestone).not.toHaveBeenCalled();
+  });
+
+  it.each(["PENDING", "IN_PROGRESS", "FAILED"])(
+    "never stamps while the latest scan is %s",
+    async (status) => {
+      mockGetOrCreateShopMetadata.mockResolvedValue(unstamped);
+      mockGetScansForShop.mockResolvedValue({
+        items: [{ ...COMPLETED_SCAN, status }],
+        hasNextPage: false,
+      });
+
+      await loader(makeLoaderArgs());
+
+      expect(mockRecordMilestone).not.toHaveBeenCalled();
+    },
+  );
+
+  it("never stamps with no scan at all", async () => {
+    mockGetOrCreateShopMetadata.mockResolvedValue(unstamped);
+    mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+
+    await loader(makeLoaderArgs());
+
+    expect(mockRecordMilestone).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Home's lazy new-findings diff: once per latest successful scan id, and never
+// another scan's diff.
+// ---------------------------------------------------------------------------
+
+describe("diffScanIdToLoad", () => {
+  it("loads the latest successful scan's diff once", () => {
+    expect(diffScanIdToLoad(null, true, "scan-a")).toBe("scan-a");
+    expect(diffScanIdToLoad("scan-a", true, "scan-a")).toBeNull();
+  });
+
+  it("loads again when the latest scan id changes (scan B finished after A)", () => {
+    expect(diffScanIdToLoad("scan-a", true, "scan-b")).toBe("scan-b");
+  });
+
+  it("loads nothing while a scan runs (no latest successful id) or when diffing is off", () => {
+    expect(diffScanIdToLoad("scan-a", true, null)).toBeNull();
+    expect(diffScanIdToLoad(null, false, "scan-a")).toBeNull();
+  });
+});
+
+describe("visibleScanDiff", () => {
+  const diff = { newFindings: [{ severity: "HIGH" }], resolvedFindings: [] } as never;
+
+  it("shows the loaded diff when it belongs to the latest scan and the load is done", () => {
+    expect(visibleScanDiff(diff, "idle", "scan-a", "scan-a")).toBe(diff);
+  });
+
+  it("never shows scan A's diff for scan B, or while B's diff is loading", () => {
+    expect(visibleScanDiff(diff, "idle", "scan-a", "scan-b")).toBeNull();
+    expect(visibleScanDiff(diff, "loading", "scan-b", "scan-b")).toBeNull();
+    expect(visibleScanDiff(diff, "idle", "scan-a", null)).toBeNull();
+  });
+
+  it("is null with no data", () => {
+    expect(visibleScanDiff(undefined, "idle", "scan-a", "scan-a")).toBeNull();
   });
 });

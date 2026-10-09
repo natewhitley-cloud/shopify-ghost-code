@@ -30,11 +30,17 @@ export function isScanRunning(status: string | null | undefined): boolean {
  * Start the poll interval. `pollCount` is shared across restarts so a restart
  * never extends the cap; the tick that reaches MAX_POLL_COUNT clears the
  * interval and calls `onTimeout` instead of revalidating. Returns the cleanup.
+ *
+ * A tick is skipped while the previous revalidation is still running
+ * (`isIdle` false), so a slow loader is never cancelled by the next tick.
+ * Skipped ticks still COUNT toward the cap: the cap bounds wall-clock time
+ * (~10 minutes), so a slow loader cannot keep a page polling longer.
  */
 export function startScanPolling(opts: {
   pollCount: { current: number };
   revalidate: () => void;
   onTimeout: () => void;
+  isIdle: () => boolean;
 }): () => void {
   const interval = setInterval(() => {
     opts.pollCount.current += 1;
@@ -43,7 +49,7 @@ export function startScanPolling(opts: {
       opts.onTimeout();
       return;
     }
-    opts.revalidate();
+    if (opts.isIdle()) opts.revalidate();
   }, SCAN_POLL_INTERVAL_MS);
   return () => clearInterval(interval);
 }
@@ -54,6 +60,9 @@ export function startScanPolling(opts: {
  */
 export function useScanPolling(status: string | null | undefined): { pollingTimedOut: boolean } {
   const revalidator = useRevalidator();
+  // Latest revalidator each render, so the interval reads its CURRENT state.
+  const revalidatorRef = useRef(revalidator);
+  revalidatorRef.current = revalidator;
   const pollCount = useRef(0);
   const [pollingTimedOut, setPollingTimedOut] = useState(false);
   const running = isScanRunning(status);
@@ -67,12 +76,10 @@ export function useScanPolling(status: string | null | undefined): { pollingTime
     if (pollingTimedOut) return undefined;
     return startScanPolling({
       pollCount,
-      revalidate: () => revalidator.revalidate(),
+      revalidate: () => void revalidatorRef.current.revalidate(),
       onTimeout: () => setPollingTimedOut(true),
+      isIdle: () => revalidatorRef.current.state === "idle",
     });
-    // revalidator is stable across renders; running and pollingTimedOut are
-    // the real dependencies.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [running, pollingTimedOut]);
 
   return { pollingTimedOut };

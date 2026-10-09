@@ -44,6 +44,10 @@ vi.mock("../../app/services/nudge-stage.server", () => ({
   recordNudgeStageOnce: vi.fn(),
 }));
 
+vi.mock("../../app/services/journey-milestone.server", () => ({
+  recordJourneyMilestoneOnce: vi.fn(),
+}));
+
 vi.mock("../../app/services/scan-dispatch.server", () => ({
   dispatchScan: vi.fn(),
 }));
@@ -315,5 +319,33 @@ describe("HomeScanInProgress: polling timed out", () => {
     expect(html).not.toContain(SCAN_PHRASES[0]);
     expect(html).toContain("Scan still running");
     expect(html).toContain(HOME_POLL_TIMEOUT_MESSAGE);
+  });
+});
+
+describe("Home in-progress accessibility", () => {
+  it("has exactly one live region while a scan runs: ScanProgress's stable status", () => {
+    mockGetOrCreate.mockResolvedValue(NEW_SHOP);
+    return (async () => {
+      (getScansForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+        items: [
+          {
+            id: "scan-1",
+            shopId: NEW_SHOP.id,
+            themeId: "gid://shopify/Theme/1",
+            themeName: "Dawn",
+            status: "IN_PROGRESS",
+            findingCount: 2,
+            startedAt: null,
+            completedAt: null,
+            createdAt: new Date("2026-10-08T10:00:00Z"),
+          },
+        ],
+        hasNextPage: false,
+      });
+      const html = renderDashboard(await runLoader());
+      expect(html.match(/aria-live=/g) ?? []).toHaveLength(0);
+      expect(html.match(/role="status"/g) ?? []).toHaveLength(1);
+      expect(html).toMatch(/<span role="status"[^>]*>Scan in progress<\/span>/);
+    })();
   });
 });

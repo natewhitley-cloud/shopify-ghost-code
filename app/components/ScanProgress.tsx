@@ -28,8 +28,10 @@ interface ScanProgressProps {
  * which keeps hydration stable.
  *
  * Accessibility: one stable, visually hidden status ("Scan in progress") is
- * the only announced text; the rotating phrase is aria-hidden so it never
- * spams a screen reader (the home page wraps this in an aria-live region).
+ * the only live region and the only announced text. The rotating phrase and
+ * the per-second elapsed line are aria-hidden so they never spam a screen
+ * reader; the findings count and expectation stay readable on demand. Do not
+ * render this inside another live region (it would announce every change).
  */
 export function ScanProgress({ createdAt, findingCount = 0 }: ScanProgressProps) {
   const [now, setNow] = useState<number | null>(null);
@@ -53,11 +55,10 @@ export function ScanProgress({ createdAt, findingCount = 0 }: ScanProgressProps)
       </div>
       {soFar && <div style={{ fontSize: "14px", color: TEXT_PRIMARY }}>{soFar}</div>}
       <div style={{ fontSize: "13px", color: TEXT_SUBDUED }}>{SCAN_DURATION_EXPECTATION}</div>
-      {now !== null && (
-        <div style={{ fontSize: "13px", color: TEXT_DISABLED }}>
-          Started {formatElapsedTime(elapsedSeconds)} ago
-        </div>
-      )}
+      {/* Always rendered (empty before mount) so it is aria-hidden either way. */}
+      <div aria-hidden="true" style={{ fontSize: "13px", color: TEXT_DISABLED }}>
+        {now !== null && `Started ${formatElapsedTime(elapsedSeconds)} ago`}
+      </div>
     </div>
   );
 }

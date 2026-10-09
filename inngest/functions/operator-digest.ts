@@ -1011,7 +1011,8 @@ export interface JourneyFunnelStage {
   /**
    * Set only on "Viewed results": `count` is over measurable shops only (see
    * RESULTS_VIEW_TRACKED_SINCE), `of` is how many scanned shops are measurable
-   * and `beforeTracking` how many scanned shops are not.
+   * and `beforeTracking` how many first succeeded before tracking began (a
+   * shop with no known first-success time is in neither).
    */
   measurable?: { of: number; beforeTracking: number };
 }
@@ -1277,12 +1278,17 @@ export function aggregateJourney(
   const firstSuccessAt = new Map(firstSuccessfulScans.map((r) => [r.shopId, r.completedAt]));
 
   const active = kept.filter((s) => s.uninstalledAt === null);
-  const activeRows = active.map((s) => ({
-    m: milestonesOf(s),
-    measurable: isResultsViewMeasurable(firstSuccessAt.get(s.id) ?? null),
-  }));
+  const activeRows = active.map((s) => {
+    const first = firstSuccessAt.get(s.id) ?? null;
+    return { m: milestonesOf(s), first, measurable: isResultsViewMeasurable(first) };
+  });
   const scanned = activeRows.filter((r) => r.m.scanned);
   const measurable = scanned.filter((r) => r.measurable);
+  // A scanned shop with NO known first-success completion time (null
+  // completedAt, which should not happen for a terminal scan) is in neither
+  // group: its date is unknown, so it is neither measurable nor provably
+  // "first scanned before tracking began".
+  const beforeTracking = scanned.filter((r) => r.first !== null && !r.measurable);
   const funnel: JourneyFunnelStage[] = [
     { label: "Installed", count: active.length },
     ...JOURNEY_MILESTONES.map(({ key, funnelLabel }): JourneyFunnelStage => {
@@ -1292,7 +1298,7 @@ export function aggregateJourney(
       return {
         label: funnelLabel,
         count: measurable.filter((r) => r.m.viewedResults).length,
-        measurable: { of: measurable.length, beforeTracking: scanned.length - measurable.length },
+        measurable: { of: measurable.length, beforeTracking: beforeTracking.length },
       };
     }),
   ];

@@ -54,3 +54,14 @@ describe("ScanProgress", () => {
     expect(out).not.toMatch(/[—–]/);
   });
 });
+
+describe("ScanProgress: nothing that changes over time is announced", () => {
+  it("aria-hides both the rotating phrase and the per-second elapsed line", () => {
+    const out = render({ createdAt: "2026-10-08T10:00:00.000Z" });
+    // Exactly two hidden blocks: the phrase, then the (pre-mount empty) elapsed slot.
+    expect(out.match(/aria-hidden="true"/g)).toHaveLength(2);
+    expect(out).toMatch(/<div aria-hidden="true"[^>]*><\/div><\/div>$/);
+    // No live region besides the single status.
+    expect(out).not.toContain("aria-live");
+  });
+});
