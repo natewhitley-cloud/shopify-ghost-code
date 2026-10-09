@@ -167,6 +167,17 @@ model Shop {
   // merchant dismissed. The banner hides only for that scan; a newer scan's
   // banner shows again. Null = never dismissed. Plain id (no FK).
   removalNoticeDismissedScanId String?
+  // gc-ol95 summary-email consent. No email is sent unless the merchant knows
+  // it is on: summaryNoticeShownAt (Home's "Summary emails are on" banner was
+  // rendered, claimed once) or summaryOptedInAt (the merchant turned the
+  // Settings toggle on). summaryNoticePendingAt marks a shop that owes that
+  // notice: set when it moves Free -> paid (trial included) after this
+  // shipped, or opts in while sending is not configured yet. Never backfilled:
+  // shops already paid before this shipped stay ineligible until they opt in.
+  // Timestamps only, no personal data; deleted with the Shop row.
+  summaryNoticePendingAt       DateTime?
+  summaryNoticeShownAt         DateTime?
+  summaryOptedInAt             DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]
@@ -175,8 +186,9 @@ model Shop {
   appRemovals         AppRemoval[]
 }
 
-// Ledger of merchant-facing "new findings" alert emails (gc-syz.1): the dedup
-// (findingSetHash) and rate-limit (sentAt) source for gc-syz.4. A dedicated table,
+// Ledger of merchant-facing emails (gc-syz.1), one row per summary email since
+// gc-ol95: the "since your last summary" baseline, the per-scan idempotency key
+// and the rate-limit (sentAt) source. findingSetHash hashes the reported changes. A dedicated table,
 // NOT OpsEvent, so it cascades with the Shop. `recipient` is the merchant's email
 // (personal data), so deleteShopData also deletes these rows explicitly. scanId is
 // a plain string (no FK): the ledger must outlive a pruned/rescanned Scan row.
@@ -187,10 +199,16 @@ model MerchantAlert {
   scanId         String
   findingSetHash String
   newCount       Int
+  // gc-ol95: the other counts the summary reported (0 on pre-summary rows).
+  fixedCount       Int      @default(0)
+  inactiveAppCount Int      @default(0)
+  cleanedAppCount  Int      @default(0)
   recipient      String
   sentAt         DateTime @default(now())
 
   @@index([shopId, sentAt])
+  // One summary per scan (gc-ol95): an Inngest retry can never record twice.
+  @@unique([shopId, scanId])
 }
 
 // Merchant feedback survey submissions (gc-97k.3, ported from ClearSignal

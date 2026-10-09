@@ -83,8 +83,9 @@ describe("add_app_removal_detection migration (gc-frda)", () => {
     expect(SCHEMA).toMatch(/model Shop \{[\s\S]*?\n\s+removalNoticeDismissedScanId\s+String\?\n/);
   });
 
-  it("is the latest migration", () => {
+  it("sorts after the previous latest migration", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
+    expect(dirs).toContain(NAME);
+    expect(NAME > "20261009120000_add_scan_source_telemetry").toBe(true);
   });
 });
