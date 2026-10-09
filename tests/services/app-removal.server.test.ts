@@ -9,6 +9,7 @@ import { describe, it, expect } from "vitest";
 import type { AppSignature } from "../../app/data/app-signatures.server";
 import type { ShopIgnores } from "../../app/models/ignored-finding.server";
 import {
+  appLeftoverFindings,
   computeAppSignatureFingerprints,
   detectAppRemovals,
   nextRemovalState,
@@ -548,5 +549,62 @@ describe("planAppRemovals", () => {
         ignores: NO_IGNORES,
       }),
     ).toEqual({ creates: [], updates: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// appLeftoverFindings: the UI's count uses detection's own guards (audit M1)
+// ---------------------------------------------------------------------------
+
+describe("appLeftoverFindings (gc-frda audit M1)", () => {
+  it("read_products granted between scans: counts what detection counted (3), not every finding (175)", () => {
+    const scripts = many(3, "Reviews App");
+    const metafields = many(172, "Reviews App", { findingType: FindingType.GHOST_METAFIELD });
+    const current = scan([...scripts, ...metafields]);
+    const previous = embedOn(["Reviews App"], [], {
+      skippedCategories: [FindingType.GHOST_METAFIELD],
+    });
+    const [removal] = detect(current, previous);
+    const left = appLeftoverFindings(
+      "Reviews App",
+      current.findings,
+      current,
+      previous,
+      NO_IGNORES,
+    );
+    expect(removal).toEqual({ appName: "Reviews App", leftoverCount: 3 });
+    expect(left).toHaveLength(removal.leftoverCount);
+    expect(left.every((f) => f.findingType === FindingType.GHOST_SCRIPT)).toBe(true);
+  });
+
+  it("drops SCRIPT_TAG_SUNSET, ignored findings, other apps, and size-skipped files", () => {
+    const kept = finding("Klaviyo");
+    const sunset = finding("Klaviyo", { findingType: FindingType.SCRIPT_TAG_SUNSET });
+    const ignored = finding("Klaviyo");
+    const other = finding("Privy");
+    const skipped = finding("Klaviyo", { filename: "assets/huge.js" });
+    const current = scan([kept, sunset, ignored, other, skipped], {
+      skippedFiles: ["assets/huge.js"],
+    });
+    const ignores: ShopIgnores = {
+      fingerprints: new Set([
+        fingerprintFinding(
+          ignored.filename,
+          ignored.findingType,
+          ignored.codeSnippet,
+          ignored.lineNumber,
+        ),
+      ]),
+      appNames: new Set(),
+    };
+    expect(
+      appLeftoverFindings("Klaviyo", current.findings, current, embedOn(["Klaviyo"]), ignores),
+    ).toEqual([kept]);
+  });
+
+  it("no baseline (pruned): only this scan's coverage applies", () => {
+    const metafields = many(2, "Klaviyo", { findingType: FindingType.GHOST_METAFIELD });
+    const current = scan(metafields);
+    expect(appLeftoverFindings("Klaviyo", metafields, current, null, NO_IGNORES)).toHaveLength(2);
   });
 });

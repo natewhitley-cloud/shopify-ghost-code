@@ -4211,7 +4211,7 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       const html = await renderPage();
       expect(html).toContain("Yotpo is no longer active in your store");
       expect(html).toMatch(
-        /Yotpo was active at your previous scan \(<time dateTime="2026-03-13T09:00:00.000Z"[^>]*>[^<]*<\/time>\) and isn&#x27;t now\. It left these 4 items behind\. This code stays in your theme until it&#x27;s cleaned up\./,
+        /Yotpo was active at your previous scan \(<time dateTime="2026-03-13T09:00:00.000Z"[^>]*>[^<]*<\/time>\) and isn&#x27;t now\. It left 4 items behind\. This code stays in your theme until it&#x27;s cleaned up\./,
       );
       expect(html).toContain(">Show all findings</a>");
       expect(html).not.toContain("Removing Yotpo");
@@ -4236,7 +4236,7 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       mockRemovalLookup.mockResolvedValue({ appName: "Yotpo", previousScanId: "gone" });
       const html = await renderPage();
       expect(html).toContain(
-        "Yotpo was active at your previous scan and isn&#x27;t now. It left these 4 items behind.",
+        "Yotpo was active at your previous scan and isn&#x27;t now. It left 4 items behind.",
       );
     });
 
@@ -4281,6 +4281,69 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       });
       const data = await load();
       expect(data.removalContext).toBeNull();
+    });
+  });
+
+  // Audit M1: read_products granted between scans. Detection counted only
+  // what both scans audited (Home: "3 items"); the scan page must say the
+  // same, not 4 + 172 metafields.
+  describe("N uses detection's guards (read_products granted since the baseline)", () => {
+    const metafields = Array.from({ length: 172 }, (_, i) => ({
+      ...yotpo(`m-${i}`, "GHOST_METAFIELD", "LOW", 10 + (i % 40)),
+    }));
+
+    function arrangeGrant() {
+      arrange();
+      const all = [...YOTPO_ROWS, ...metafields, ...OTHER_ROWS];
+      const byType: Record<string, number> = {};
+      const bySeverity = { HIGH: 0, MEDIUM: 0, LOW: 0 } as Record<string, number>;
+      for (const r of all) {
+        byType[r.findingType] = (byType[r.findingType] ?? 0) + 1;
+        bySeverity[r.severity] += 1;
+      }
+      mockGetFindingSummary.mockResolvedValue({ total: all.length, bySeverity, byType });
+      mockGetFindingsForScan.mockImplementation(
+        async (_scanId: string, filters?: { appName?: string; findingType?: string }) =>
+          filters?.appName
+            ? all.filter((r) => r.appName === filters.appName)
+            : filters?.findingType
+              ? all.filter((r) => r.findingType === filters.findingType)
+              : all,
+      );
+      // The baseline skipped the metafield check (scope not granted then).
+      mockGetScanById.mockImplementation(async (id: string) =>
+        id === "scan-1"
+          ? SCAN
+          : id === "scan-0"
+            ? {
+                ...SCAN,
+                id: "scan-0",
+                completedAt: PREVIOUS_AT,
+                skippedCategories: ["GHOST_METAFIELD"],
+              }
+            : null,
+      );
+    }
+
+    it("paid: the banner says 4 items (detection's count), not 176", async () => {
+      arrangeGrant();
+      const data = await load();
+      expect(data.removalContext?.count).toBe(4);
+      const html = await renderPage();
+      expect(html).toContain("It left 4 items behind.");
+      expect(html).not.toContain("176 items");
+    });
+
+    it("Free: the scoped heading, preview and teaser use the same 4", async () => {
+      free();
+      arrangeGrant();
+      const data = await load();
+      expect(data.freeScope?.total).toBe(4);
+      expect(data.freeScope?.byType).not.toHaveProperty("GHOST_METAFIELD");
+      expect(data.previewFindings.every((f) => f.findingType !== "GHOST_METAFIELD")).toBe(true);
+      expect(data.upgradePreview?.hiddenCount).toBe(2);
+      const html = await renderPage();
+      expect(html).toContain("<s-heading>4 findings from Yotpo</s-heading>");
     });
   });
 

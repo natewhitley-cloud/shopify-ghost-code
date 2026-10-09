@@ -138,11 +138,29 @@ interface CoverageView {
   skippedFiles: ReadonlySet<string>;
 }
 
-function coverageOf(scan: RemovalScan): CoverageView {
+function coverageOf(scan: ScanCoverage & { skippedFiles: readonly string[] }): CoverageView {
   return {
     unaudited: new Set(unauditedCategories(scan)),
     skippedFiles: new Set(scan.skippedFiles),
   };
+}
+
+/**
+ * The findings that count as leftovers: not ignored, attributed to an app,
+ * not an excluded type, and audited by every given coverage. The ONE
+ * predicate behind detection, state updates and the UI's counts.
+ */
+function countedLeftovers<T extends RemovalFinding>(
+  findings: readonly T[],
+  ignores: ShopIgnores,
+  coverages: readonly CoverageView[],
+): T[] {
+  return filterIgnoredFindings([...findings], ignores).kept.filter(
+    (f) =>
+      f.appName !== null &&
+      !REMOVAL_EXCLUDED_TYPES.has(f.findingType) &&
+      coverages.every((c) => auditedIn(f, c.unaudited, c.skippedFiles)),
+  );
 }
 
 /** Per-app count of kept findings that every given coverage audited. */
@@ -152,12 +170,32 @@ function countByApp(
   coverages: readonly CoverageView[],
 ): Map<string, number> {
   const counts = new Map<string, number>();
-  for (const f of filterIgnoredFindings([...findings], ignores).kept) {
-    if (f.appName === null || REMOVAL_EXCLUDED_TYPES.has(f.findingType)) continue;
-    if (!coverages.every((c) => auditedIn(f, c.unaudited, c.skippedFiles))) continue;
-    counts.set(f.appName, (counts.get(f.appName) ?? 0) + 1);
+  for (const f of countedLeftovers(findings, ignores, coverages)) {
+    counts.set(f.appName!, (counts.get(f.appName!) ?? 0) + 1);
   }
   return counts;
+}
+
+/**
+ * What `appName` left behind on `current`, by the same guards detection used
+ * (ignores, excluded types, coverage of BOTH scans): the scan page's "It left
+ * N items behind" and its Free scope (gc-frda audit M1), so they match Home's
+ * count for that scan however later scans refresh the record. With no
+ * `previous` (baseline pruned) only `current`'s coverage applies.
+ */
+export function appLeftoverFindings<T extends RemovalFinding>(
+  appName: string,
+  findings: readonly T[],
+  current: ScanCoverage & { skippedFiles: readonly string[] },
+  previous: (ScanCoverage & { skippedFiles: readonly string[] }) | null,
+  ignores: ShopIgnores,
+): T[] {
+  const coverages = previous ? [coverageOf(previous), coverageOf(current)] : [coverageOf(current)];
+  return countedLeftovers(
+    findings.filter((f) => f.appName === appName),
+    ignores,
+    coverages,
+  );
 }
 
 // ---------------------------------------------------------------------------

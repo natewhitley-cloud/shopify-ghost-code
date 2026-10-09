@@ -90,8 +90,8 @@ import {
   submitSignatureSuggestion,
 } from "../models/unknown-script.server";
 import { isTrackerApp } from "../services/app-lookup.server";
+import { appLeftoverFindings } from "../services/app-removal.server";
 import {
-  filterIgnoredFindings,
   getFilteredFindingSummaryAndKept,
   isFindingIgnored,
 } from "../services/finding-aggregation.server";
@@ -105,7 +105,7 @@ import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { loadShopPromptState, resolvePrompt } from "../services/prompt-cap.server";
 import { fingerprintFinding } from "../services/scan-differ.server";
-import type { ScanDiff } from "../services/scan-differ.server";
+import type { ScanCoverage, ScanDiff } from "../services/scan-differ.server";
 import { loadStaleResults } from "../services/stale-results.server";
 import type { StaleResults } from "../services/stale-results.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
@@ -876,25 +876,28 @@ const PAGE_SIZE = 50;
 
 /**
  * The `?app=X` removal context (gc-frda) for an AppRemoval detected on this
- * scan: X's non-ignored findings on the scan, their per-type counts, and the
- * previous scan's completion date (null when that scan was pruned or is not
- * this shop's). Null when X has no findings left after ignores.
+ * scan: what X left behind on it by detection's own guards
+ * (appLeftoverFindings: ignores, excluded types, coverage of this scan AND
+ * its baseline), so N matches Home's count for this scan (audit M1). The
+ * paid table still lists every X finding. Also the per-type counts (Free
+ * scope) and the previous scan's completion date (null when that scan was
+ * pruned or is not this shop's). Null when nothing counts.
  */
 async function loadRemovalContext(
   record: { appName: string; previousScanId: string },
-  scanId: string,
+  scan: ScanCoverage & { id: string; skippedFiles: string[] },
   shopId: string,
   keptFindings: FindingRecord[] | null,
   ignores: ShopIgnores,
 ) {
-  const [findings, previousScan] = await Promise.all([
+  const [appFindings, previousScan] = await Promise.all([
     keptFindings !== null
       ? keptFindings.filter((f) => f.appName === record.appName)
-      : getFindingsForScan(scanId, { appName: record.appName }).then(
-          (rows) => filterIgnoredFindings(rows, ignores).kept,
-        ),
+      : getFindingsForScan(scan.id, { appName: record.appName }),
     getScanById(record.previousScanId, { includeFindings: false }),
   ]);
+  const previous = previousScan && previousScan.shopId === shopId ? previousScan : null;
+  const findings = appLeftoverFindings(record.appName, appFindings, scan, previous, ignores);
   if (findings.length === 0) return null;
   const byType: Partial<Record<FindingType, number>> = {};
   for (const f of findings) byType[f.findingType] = (byType[f.findingType] ?? 0) + 1;
@@ -903,8 +906,7 @@ async function loadRemovalContext(
     count: findings.length,
     findings,
     byType,
-    previousScanAt:
-      previousScan && previousScan.shopId === shopId ? previousScan.completedAt : null,
+    previousScanAt: previous ? previous.completedAt : null,
   };
 }
 
@@ -1084,7 +1086,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // scans). No findings left after ignores: no removal context, the page
   // behaves exactly as today.
   const removalContext = appRemovalRecord
-    ? await loadRemovalContext(appRemovalRecord, scanId, shop.id, keptFindings, ignores)
+    ? await loadRemovalContext(appRemovalRecord, scan, shop.id, keptFindings, ignores)
     : null;
   // Free's view of X (decision 4A): the summary card, preview rows and teaser
   // count only X's findings. Malicious findings stay in the security alert

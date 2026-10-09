@@ -155,8 +155,10 @@ export function removalContextBody(
   count: number,
   hasPreviousDate: boolean,
 ): { before: string; after: string } {
-  const these = count === 1 ? "this 1 item" : `these ${count} items`;
-  const tail = ` It left ${these} behind. This code stays in your theme until it's cleaned up.`;
+  // "N items", not "these N items": N counts what the scan can attribute as
+  // left behind (detection's guards); the paid list below shows every one of
+  // the app's findings, which can be more (gc-frda audit M1).
+  const tail = ` It left ${itemCount(count)} behind. This code stays in your theme until it's cleaned up.`;
   return hasPreviousDate
     ? { before: `${appName} was active at your previous scan (`, after: `) and isn't now.${tail}` }
     : { before: `${appName} was active at your previous scan and isn't now.${tail}`, after: "" };

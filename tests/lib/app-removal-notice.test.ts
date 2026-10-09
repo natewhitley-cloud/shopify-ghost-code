@@ -131,11 +131,11 @@ describe("copy", () => {
     expect(removalContextTitle("Yotpo")).toBe("Yotpo is no longer active in your store");
     const withDate = removalContextBody("Yotpo", 3, true);
     expect(`${withDate.before}Oct 2, 2026${withDate.after}`).toBe(
-      "Yotpo was active at your previous scan (Oct 2, 2026) and isn't now. It left these 3 items behind. This code stays in your theme until it's cleaned up.",
+      "Yotpo was active at your previous scan (Oct 2, 2026) and isn't now. It left 3 items behind. This code stays in your theme until it's cleaned up.",
     );
     const noDate = removalContextBody("Yotpo", 1, false);
     expect(noDate.before + noDate.after).toBe(
-      "Yotpo was active at your previous scan and isn't now. It left this 1 item behind. This code stays in your theme until it's cleaned up.",
+      "Yotpo was active at your previous scan and isn't now. It left 1 item behind. This code stays in your theme until it's cleaned up.",
     );
     expect(scopedFindingsHeading("Yotpo", 3)).toBe("3 findings from Yotpo");
     expect(scopedFindingsHeading("Yotpo", 1)).toBe("1 finding from Yotpo");
