@@ -1,26 +1,39 @@
 /**
  * App-removal detection (gc-frda). Pure: no DB access, no I/O.
  *
- * Rule 1A: app X counts as REMOVED on scan S when, against the previous
- * successful scan P of the SAME shop + theme, P had ZERO audited findings
- * attributed to X and S has at least one. Guards, all of which must pass:
+ * Rule 1D: app X is REMOVED on scan S, against the previous successful scan P
+ * of the SAME shop + theme, when all of these hold:
  *
- *   1. Coverage: a finding only counts when its type was audited in BOTH scans
- *      (not skipped / capped / unreachable / not live in either; see
- *      unauditedCategories) and, for a per-file type, its file was scanned in
- *      both (not size-skipped in either; same rule as diffScans). Real case:
- *      P skipped GHOST_METAFIELD (read_products not granted), the merchant
- *      granted it, S found 172 metafields for one app. That is a newly checked
- *      category, not an uninstall.
- *   2. Signature: X's signature fingerprint (APP_SIGNATURES) must be recorded
- *      on both scans and equal. A signature edit that makes existing code newly
- *      match X is not a removal. A legacy P (no fingerprints) yields none.
- *   3. Ignores: findings the merchant ignored (APP or INSTANCE scope) are
- *      dropped from both sides first, with the merchant alert's filter.
- *   4. Live-app types: SCRIPT_TAG_SUNSET findings describe an app that is still
- *      LIVE on the storefront, so they never count toward a removal.
+ *   1. X had a LIVE HOOK in P: an enabled theme app embed (embedHandles) or a
+ *      storefront ScriptTag (the SCRIPT_TAG_SUNSET check).
+ *   2. X has NO live hook in S, in any hook source S observed.
+ *   3. A hook source only counts when it was OBSERVED in both scans: the embed
+ *      set recorded on both, the ScriptTag set only when the storefront check
+ *      ran and read the storefront in both (not dark, not unreachable, not
+ *      capped). A legacy P with no recorded hooks yields no removals.
+ *   4. X has >= 1 finding in S that passes the guards below; that count is the
+ *      leftover count. Prior findings are irrelevant: a live app's own-file
+ *      findings are hidden while its embed is on, and show once it is off.
  *
- * Embed changes alone are never a trigger.
+ * Finding guards:
+ *   - Coverage: a finding only counts when its type was audited in BOTH scans
+ *     (not skipped / capped / unreachable / not live in either; see
+ *     unauditedCategories) and, for a per-file type, its file was scanned in
+ *     both (not size-skipped in either; same rule as diffScans). Real case:
+ *     P skipped GHOST_METAFIELD (read_products not granted), the merchant
+ *     granted it, S found 172 metafields: a newly checked category.
+ *   - Signature: X's signature fingerprint (APP_SIGNATURES, which includes
+ *     embedHandles) must be recorded on both scans and equal.
+ *   - Ignores: findings the merchant ignored (APP or INSTANCE scope) are
+ *     dropped first, with the merchant alert's filter.
+ *   - SCRIPT_TAG_SUNSET findings describe a LIVE app and never count.
+ *
+ * Findings alone are never a trigger: an app with no recognised hook (most
+ * signatures have no embedHandles) has its code flagged while live, so its
+ * install would otherwise read as a 0 -> N "removal" (the Rule 1A flaw).
+ *
+ * Merchant-facing meaning: "X is no longer active in your store. It left N
+ * items behind." It never claims the merchant uninstalled X.
  */
 
 import { AppRemovalState } from "@prisma/client";
@@ -28,6 +41,7 @@ import { AppRemovalState } from "@prisma/client";
 import { filterIgnoredFindings, type IgnorableFinding } from "./finding-aggregation.server";
 import { djb2Hex, parseLiveFindingTypes, unauditedCategories } from "./scan-differ.server";
 import type { ScanCoverage } from "./scan-differ.server";
+import { MAX_SCRIPT_TAG_GROUPS, MAX_SCRIPT_TAG_URLS } from "./script-tag-sunset-detector.server";
 import { APP_SIGNATURES, type AppSignature } from "../data/app-signatures.server";
 import {
   CROSS_FILE_FINDING_TYPES,
@@ -101,6 +115,8 @@ export interface RemovalScan extends ScanCoverage {
   findings: readonly RemovalFinding[];
   skippedFiles: readonly string[];
   appSignatureFingerprints?: unknown;
+  /** Raw `Scan.liveAppHooks` (see LiveAppHooks). */
+  liveAppHooks?: unknown;
 }
 
 /** True when `scan` actually checked this finding's type (and file). */
@@ -145,6 +161,61 @@ function countByApp(
 }
 
 // ---------------------------------------------------------------------------
+// Live hooks
+// ---------------------------------------------------------------------------
+
+/**
+ * `Scan.liveAppHooks`: app names with a live hook, per source. null = that
+ * source was not observed on this scan.
+ */
+export interface LiveAppHooks {
+  embedApps: string[] | null;
+  scriptTagApps: string[] | null;
+}
+
+interface HookSets {
+  embed: ReadonlySet<string> | null;
+  scriptTag: ReadonlySet<string> | null;
+}
+
+const HOOK_SOURCES = ["embed", "scriptTag"] as const;
+
+function parseHookList(raw: unknown): ReadonlySet<string> | null {
+  if (!Array.isArray(raw) || !raw.every((v) => typeof v === "string")) return null;
+  return new Set(raw as string[]);
+}
+
+/**
+ * Parse `Scan.liveAppHooks` (Json?). NULL or a non-object = never recorded
+ * (null); a malformed source list is "not observed" for that source only.
+ */
+export function parseLiveAppHooks(raw: unknown): HookSets | null {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const record = raw as Record<string, unknown>;
+  return { embed: parseHookList(record.embedApps), scriptTag: parseHookList(record.scriptTagApps) };
+}
+
+/**
+ * The ScriptTag hook set from one storefront read: the signature app names in
+ * the detector's groups. null (not observed) when a detector cap may have
+ * dropped an app (too many URLs or groups), since a missing app would look
+ * like an ended hook.
+ */
+export function scriptTagHookApps(
+  urls: readonly string[],
+  groups: ReadonlyArray<{ appName?: string | null }>,
+): string[] | null {
+  if (urls.length > MAX_SCRIPT_TAG_URLS || groups.length >= MAX_SCRIPT_TAG_GROUPS) return null;
+  const apps = groups.map((g) => g.appName).filter((a): a is string => typeof a === "string");
+  return [...new Set(apps)].sort();
+}
+
+/** True when X has a hook in any source `hooks` observed. */
+function hasObservedHook(hooks: HookSets, appName: string): boolean {
+  return HOOK_SOURCES.some((source) => hooks[source]?.has(appName) === true);
+}
+
+// ---------------------------------------------------------------------------
 // Detection
 // ---------------------------------------------------------------------------
 
@@ -154,15 +225,18 @@ export interface DetectedRemoval {
 }
 
 /**
- * Apps removed between `previous` and `current` (Rule 1A + guards), sorted by
- * appName. Empty when either scan lacks a live set or signature fingerprints
- * (a legacy row cannot be judged).
+ * Apps removed between `previous` and `current` (Rule 1D + guards), sorted by
+ * appName. Empty when either scan lacks recorded hooks, a live set or
+ * signature fingerprints (a legacy row cannot be judged).
  */
 export function detectAppRemovals(
   current: RemovalScan,
   previous: RemovalScan,
   opts: { ignores: ShopIgnores },
 ): DetectedRemoval[] {
+  const previousHooks = parseLiveAppHooks(previous.liveAppHooks);
+  const currentHooks = parseLiveAppHooks(current.liveAppHooks);
+  if (!previousHooks || !currentHooks) return [];
   const previousFingerprints = parseAppSignatureFingerprints(previous.appSignatureFingerprints);
   const currentFingerprints = parseAppSignatureFingerprints(current.appSignatureFingerprints);
   if (!previousFingerprints || !currentFingerprints) return [];
@@ -174,13 +248,25 @@ export function detectAppRemovals(
     return [];
   }
 
-  const both = [coverageOf(previous), coverageOf(current)];
-  const before = countByApp(previous.findings, opts.ignores, both);
-  const after = countByApp(current.findings, opts.ignores, both);
+  // Apps hooked in P through a source observed in BOTH scans.
+  const hookedBefore = new Set<string>();
+  for (const source of HOOK_SOURCES) {
+    const before = previousHooks[source];
+    if (before && currentHooks[source]) for (const app of before) hookedBefore.add(app);
+  }
+  if (hookedBefore.size === 0) return [];
 
+  const counts = countByApp(current.findings, opts.ignores, [
+    coverageOf(previous),
+    coverageOf(current),
+  ]);
   const removals: DetectedRemoval[] = [];
-  for (const [appName, leftoverCount] of after) {
-    if ((before.get(appName) ?? 0) > 0) continue;
+  for (const appName of hookedBefore) {
+    // Still live in S through any observed source: not removed.
+    if (hasObservedHook(currentHooks, appName)) continue;
+    const leftoverCount = counts.get(appName) ?? 0;
+    // Nothing left behind: nothing to tell the merchant.
+    if (leftoverCount === 0) continue;
     const fingerprint = currentFingerprints.get(appName);
     if (fingerprint === undefined || previousFingerprints.get(appName) !== fingerprint) continue;
     removals.push({ appName, leftoverCount });
@@ -208,35 +294,40 @@ export interface RemovalUpdate {
 /**
  * The next state of a REMOVED record on `current`, or null for no change.
  *
- * `previous` is the scan before `current` for the same theme: X's findings
- * there name the categories X's leftovers live in. If `previous` had none
- * (its own view of X was incomplete) or `current` did not audit any of them
- * (scope revoked, cap, file size-skipped), X's count is unknown and nothing
- * changes. Otherwise, with ignores applied and SCRIPT_TAG_SUNSET
- * excluded:
- *   - 0 findings and X's embed is enabled -> REINSTALLED (a live app's own-file
- *     findings are dropped by the scanner, so its code no longer shows);
- *   - 0 findings -> CLEANED;
- *   - otherwise the leftover count is refreshed (null when unchanged).
- * `enabledEmbedApps` null (not known for this run) leaves a 0-count record
- * unchanged. An APP-ignored app is left unchanged: hiding its findings is not
- * cleaning them. No `previous` (baseline pruned) means X's categories are
- * unknown: unchanged.
+ *   - No hook source observed on `current`: unchanged (cannot tell).
+ *   - X has a live hook again in an observed source: REINSTALLED.
+ *   - X has 0 findings left (ignores applied, SCRIPT_TAG_SUNSET excluded) with
+ *     X's categories audited: CLEANED.
+ *   - Otherwise the leftover count is refreshed (null when unchanged).
+ *
+ * "X's categories" are the types of X's findings on `previous` (the scan
+ * before `current` for this theme). If `previous` had none (its own view of X
+ * was incomplete) or `current` did not audit any of them (scope revoked, cap,
+ * file size-skipped), the count is unknown: unchanged. An APP-ignored app is
+ * left unchanged (hiding its findings is not cleaning them), as is a record
+ * with no `previous` (baseline pruned).
  */
 export function nextRemovalState(
   record: OpenRemoval,
   current: RemovalScan,
   previous: RemovalScan | null,
-  opts: { ignores: ShopIgnores; enabledEmbedApps: ReadonlySet<string> | null },
+  opts: { ignores: ShopIgnores },
 ): RemovalUpdate | null {
+  const currentHooks = parseLiveAppHooks(current.liveAppHooks);
+  if (!currentHooks || HOOK_SOURCES.every((source) => currentHooks[source] === null)) return null;
+  if (hasObservedHook(currentHooks, record.appName)) {
+    return {
+      id: record.id,
+      leftoverCount: record.leftoverCount,
+      state: AppRemovalState.REINSTALLED,
+    };
+  }
   if (!previous || opts.ignores.appNames.has(record.appName)) return null;
-  const currentCoverage = coverageOf(current);
 
+  const currentCoverage = coverageOf(current);
   const priorOfApp = filterIgnoredFindings([...previous.findings], opts.ignores).kept.filter(
     (f) => f.appName === record.appName && !REMOVAL_EXCLUDED_TYPES.has(f.findingType),
   );
-  // No prior finding: the last evaluation could not see X's leftovers (its
-  // categories were un-audited then), so they are still unknown.
   if (
     priorOfApp.length === 0 ||
     priorOfApp.some((f) => !auditedIn(f, currentCoverage.unaudited, currentCoverage.skippedFiles))
@@ -244,17 +335,9 @@ export function nextRemovalState(
     return null;
   }
 
-  const count = countByApp(current.findings, opts.ignores, [currentCoverage]).get(record.appName);
-  if (count === undefined) {
-    if (!opts.enabledEmbedApps) return null;
-    return {
-      id: record.id,
-      leftoverCount: 0,
-      state: opts.enabledEmbedApps.has(record.appName)
-        ? AppRemovalState.REINSTALLED
-        : AppRemovalState.CLEANED,
-    };
-  }
+  const count =
+    countByApp(current.findings, opts.ignores, [currentCoverage]).get(record.appName) ?? 0;
+  if (count === 0) return { id: record.id, leftoverCount: 0, state: AppRemovalState.CLEANED };
   return count === record.leftoverCount ? null : { id: record.id, leftoverCount: count };
 }
 
@@ -275,7 +358,6 @@ export function planAppRemovals(input: {
   previous: RemovalScan;
   openRemovals: ReadonlyArray<OpenRemoval & { detectedScanId: string }>;
   ignores: ShopIgnores;
-  enabledEmbedApps: ReadonlySet<string> | null;
 }): AppRemovalPlan {
   const updates: RemovalUpdate[] = [];
   for (const record of input.openRemovals) {

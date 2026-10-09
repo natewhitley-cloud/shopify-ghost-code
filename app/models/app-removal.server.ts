@@ -3,7 +3,9 @@ import { AppRemovalState, type AppRemoval } from "@prisma/client";
 import db from "../db.server";
 
 /**
- * Data access for AppRemoval (gc-frda): apps inferred as removed from a theme.
+ * Data access for AppRemoval (gc-frda): apps no longer active on a theme that
+ * left code behind (Rule 1D). Merchant copy: "X is no longer active in your
+ * store. It left N items behind." Never claim the merchant uninstalled it.
  * The detection rules live in app/services/app-removal.server.ts (pure); this
  * module only reads and writes rows. Rows cascade-delete with their Shop
  * (shop/redact) and are never deleted on reinstall.

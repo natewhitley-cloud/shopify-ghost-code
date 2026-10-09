@@ -684,8 +684,8 @@ export const scanTheme = inngest.createFunction(
           // schedules that audit step, so the decision is made once, here,
           // inside this memoized step.
           ...(isScriptTagSunsetLive() ? { enabledEmbedApps: embedApps } : {}),
-          // The same set, always present: app-removal detection (gc-frda) reads
-          // it at finalize to tell a reinstalled app from a cleaned one.
+          // The same set, always present: app-removal detection (gc-frda)
+          // records it as this scan's embed live hooks.
           appsWithEnabledEmbed: embedApps,
         };
 
@@ -1267,64 +1267,78 @@ export const scanTheme = inngest.createFunction(
       // outside that guard: a DB failure throws so Inngest retries the step,
       // and the retry starts by clearing this scan's SCRIPT_TAG_SUNSET rows, so
       // it never duplicates or leaves stale rows.
-      const scriptTagResult: { findingCount: number; unreachable: boolean; audited: boolean } =
-        Array.isArray(enabledEmbedApps)
-          ? await step.run("storefront-script-tags", async () => {
-              const { logger } = await import("../../app/lib/logger.server");
-              const db = (await import("../../app/db.server")).default;
-              const shop = await db.shop.findUnique({ where: { id: shopId } });
-              if (!shop) return { findingCount: 0, unreachable: false, audited: false };
-              let storefront: StorefrontScriptTagResult;
-              try {
-                const { unauthenticated } = await import("../../app/shopify.server");
-                const { admin } = await unauthenticated.admin(shop.domain);
-                const { fetchStorefrontScriptTags } =
-                  await import("../../app/services/storefront-fetcher.server");
-                storefront = await fetchStorefrontScriptTags(admin, { shopId, themeId });
-              } catch (err) {
-                // Name + a short message only: a library error can echo values.
-                logger.warn("storefront script-tag read failed, recorded as unreachable", {
-                  function: "scan-theme",
-                  stepName: "storefront-script-tags",
-                  shopId,
-                  errorName: err instanceof Error ? err.name : typeof err,
-                  error: (err instanceof Error ? err.message : String(err)).slice(0, 200),
-                });
-                storefront = { status: "unreachable", reason: "network" };
-              }
-              // Flag flipped off mid-scan, or not the published theme: nothing
-              // was requested and nothing is recorded.
-              if (storefront.status === "disabled" || storefront.status === "not_published") {
-                return { findingCount: 0, unreachable: false, audited: false };
-              }
-
-              // Idempotent on retry: clear any rows an earlier attempt wrote.
-              await db.finding.deleteMany({
-                where: { scanId, findingType: FindingType.SCRIPT_TAG_SUNSET },
-              });
-              if (storefront.status === "unreachable") {
-                return { findingCount: 0, unreachable: true, audited: true };
-              }
-
-              const { detectScriptTagSunset } =
-                await import("../../app/services/script-tag-sunset-detector.server");
-              // Same soft-launch filter as every other detector (gc-rvo0).
-              const findings = detectScriptTagSunset(
-                storefront.urls,
-                new Set(enabledEmbedApps),
-              ).filter((f) => isSoftLaunchLive(f.findingType));
-
-              await persistAuditFindings({
-                scanId,
+      const scriptTagResult: {
+        findingCount: number;
+        unreachable: boolean;
+        audited: boolean;
+        // App names loading through a storefront ScriptTag (gc-frda live hook).
+        // Present only when the storefront was read and no detector cap hit;
+        // absent = not observed (also for a run memoized before the field).
+        scriptTagApps?: string[];
+      } = Array.isArray(enabledEmbedApps)
+        ? await step.run("storefront-script-tags", async () => {
+            const { logger } = await import("../../app/lib/logger.server");
+            const db = (await import("../../app/db.server")).default;
+            const shop = await db.shop.findUnique({ where: { id: shopId } });
+            if (!shop) return { findingCount: 0, unreachable: false, audited: false };
+            let storefront: StorefrontScriptTagResult;
+            try {
+              const { unauthenticated } = await import("../../app/shopify.server");
+              const { admin } = await unauthenticated.admin(shop.domain);
+              const { fetchStorefrontScriptTags } =
+                await import("../../app/services/storefront-fetcher.server");
+              storefront = await fetchStorefrontScriptTags(admin, { shopId, themeId });
+            } catch (err) {
+              // Name + a short message only: a library error can echo values.
+              logger.warn("storefront script-tag read failed, recorded as unreachable", {
+                function: "scan-theme",
+                stepName: "storefront-script-tags",
                 shopId,
-                findingType: FindingType.SCRIPT_TAG_SUNSET,
-                findings,
-                event: "script_tag_sunset_findings",
-                logMessage: "script tag sunset findings persisted",
+                errorName: err instanceof Error ? err.name : typeof err,
+                error: (err instanceof Error ? err.message : String(err)).slice(0, 200),
               });
-              return { findingCount: findings.length, unreachable: false, audited: true };
-            })
-          : { findingCount: 0, unreachable: false, audited: false };
+              storefront = { status: "unreachable", reason: "network" };
+            }
+            // Flag flipped off mid-scan, or not the published theme: nothing
+            // was requested and nothing is recorded.
+            if (storefront.status === "disabled" || storefront.status === "not_published") {
+              return { findingCount: 0, unreachable: false, audited: false };
+            }
+
+            // Idempotent on retry: clear any rows an earlier attempt wrote.
+            await db.finding.deleteMany({
+              where: { scanId, findingType: FindingType.SCRIPT_TAG_SUNSET },
+            });
+            if (storefront.status === "unreachable") {
+              return { findingCount: 0, unreachable: true, audited: true };
+            }
+
+            const { detectScriptTagSunset } =
+              await import("../../app/services/script-tag-sunset-detector.server");
+            const groups = detectScriptTagSunset(storefront.urls, new Set(enabledEmbedApps));
+            // Same soft-launch filter as every other detector (gc-rvo0).
+            const findings = groups.filter((f) => isSoftLaunchLive(f.findingType));
+            // Live hooks come from every group (persisted or not): this set
+            // is what was observed on the storefront, not what is shown.
+            const { scriptTagHookApps } = await import("../../app/services/app-removal.server");
+            const scriptTagApps = scriptTagHookApps(storefront.urls, groups);
+
+            await persistAuditFindings({
+              scanId,
+              shopId,
+              findingType: FindingType.SCRIPT_TAG_SUNSET,
+              findings,
+              event: "script_tag_sunset_findings",
+              logMessage: "script tag sunset findings persisted",
+            });
+            return {
+              findingCount: findings.length,
+              unreachable: false,
+              audited: true,
+              ...(scriptTagApps ? { scriptTagApps } : {}),
+            };
+          })
+        : { findingCount: 0, unreachable: false, audited: false };
 
       const totalFindings =
         findingCount +
@@ -1489,6 +1503,18 @@ export const scanTheme = inngest.createFunction(
         const { computeAppSignatureFingerprints } =
           await import("../../app/services/app-removal.server");
         const appSignatureFingerprints = computeAppSignatureFingerprints();
+        // Live hooks observed this scan (gc-frda). null = source not observed:
+        // the embed set is absent only for a run memoized before the field;
+        // the ScriptTag set needs a storefront read that was not capped.
+        const liveAppHooks = {
+          embedApps: Array.isArray(appsWithEnabledEmbed) ? appsWithEnabledEmbed : null,
+          scriptTagApps:
+            scriptTagResult.audited &&
+            !scriptTagResult.unreachable &&
+            Array.isArray(scriptTagResult.scriptTagApps)
+              ? scriptTagResult.scriptTagApps
+              : null,
+        };
 
         const finalized = await finalizeScan(scanId, {
           status: finalStatus,
@@ -1509,6 +1535,7 @@ export const scanTheme = inngest.createFunction(
           liveFindingTypes: finalLiveFindingTypes,
           // Signature version per app, for app-removal detection (gc-frda).
           appSignatureFingerprints,
+          liveAppHooks,
         });
 
         // App-removal detection (gc-frda). Never fails or retries the scan: the
@@ -1530,14 +1557,15 @@ export const scanTheme = inngest.createFunction(
             ]);
             const plan = planAppRemovals({
               currentScanId: scanId,
-              current: { ...currentCoverage, findings: currentFindings, appSignatureFingerprints },
+              current: {
+                ...currentCoverage,
+                findings: currentFindings,
+                appSignatureFingerprints,
+                liveAppHooks,
+              },
               previous: previousScan,
               openRemovals,
               ignores,
-              // Undefined only for a run memoized before the field existed.
-              enabledEmbedApps: Array.isArray(appsWithEnabledEmbed)
-                ? new Set(appsWithEnabledEmbed)
-                : null,
             });
             const written = await appRemovals.applyAppRemovalPlan({
               shopId,

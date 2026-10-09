@@ -608,6 +608,7 @@ describe("scanTheme — happy path", () => {
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
+      liveAppHooks: expect.any(Object),
     });
   });
 
@@ -637,6 +638,7 @@ describe("scanTheme — happy path", () => {
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
+      liveAppHooks: expect.any(Object),
     });
   });
 
@@ -1140,6 +1142,7 @@ describe("scanTheme — optional audit steps", () => {
         persistedFindingCount: 0,
         liveFindingTypes: expect.any(Array),
         appSignatureFingerprints: expect.any(Object),
+        liveAppHooks: expect.any(Object),
       });
 
       expect(result).toEqual({
@@ -1421,6 +1424,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
+      liveAppHooks: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1570,6 +1574,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
+      liveAppHooks: expect.any(Object),
     });
     expect(result.status).toBe("COMPLETED");
   });
@@ -1619,6 +1624,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
+      liveAppHooks: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1647,6 +1653,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
+      liveAppHooks: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -2362,6 +2369,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       persistedFindingCount: 0,
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
+      liveAppHooks: expect.any(Object),
     });
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
@@ -3952,6 +3960,8 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
     expect(finalizeArgs.status).toBe("COMPLETED");
     expect(finalizeArgs.unreachableCategories).toEqual([FindingType.SCRIPT_TAG_SUNSET]);
+    // gc-frda: an unreadable storefront is "not observed", never "no tags".
+    expect(finalizeArgs.liveAppHooks.scriptTagApps).toBeNull();
     // Not a scope problem: never in skippedCategories (permissions banner).
     expect(finalizeArgs.skippedCategories).toEqual([]);
     expect(finalizeArgs.cappedCategories).toEqual([]);
@@ -3999,6 +4009,12 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       findingCount: 2,
       unreachable: false,
       audited: true,
+      // gc-frda live hooks: the signature apps seen loading via ScriptTag.
+      scriptTagApps: ["Klaviyo", "Rise.ai"],
+    });
+    expect(mockFinalizeScan.mock.calls[0][1].liveAppHooks).toEqual({
+      embedApps: ["Klaviyo"],
+      scriptTagApps: ["Klaviyo", "Rise.ai"],
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
     expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
@@ -4015,6 +4031,8 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       findingCount: 0,
       unreachable: false,
       audited: true,
+      // Observed and empty: no app loads through a ScriptTag (gc-frda).
+      scriptTagApps: [],
     });
     expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("unreachableCategories");
   });
@@ -4360,6 +4378,11 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     description: "metafield",
   };
 
+  /**
+   * Current scan: `current` findings, embed set from enabledAppEmbedApps
+   * (none on by default), ScriptTag check dark. Previous scan: Klaviyo's embed
+   * ON unless overridden.
+   */
   function arrange(over: { current?: unknown[]; previous?: Record<string, unknown> | null } = {}) {
     mockFinalizeScan.mockResolvedValue({ finalized: true });
     mockIgnores.mockResolvedValue({ fingerprints: new Set(), appNames: new Set() });
@@ -4380,6 +4403,7 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
             findings: [],
             liveFindingTypes: ALL_TYPES,
             appSignatureFingerprints: computeAppSignatureFingerprints(),
+            liveAppHooks: { embedApps: ["Klaviyo"], scriptTagApps: null },
             ...over.previous,
           },
     );
@@ -4394,14 +4418,17 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     } as unknown as Partial<typeof base>);
   };
 
-  it("records every app's signature fingerprint on the scan at finalize", async () => {
+  it("records signature fingerprints and live hooks on the scan at finalize", async () => {
+    mockEmbeds.mockReturnValue(new Set(["Privy", "Klaviyo"]));
     await runScanTheme();
     const arg = mockFinalizeScan.mock.calls[0][1];
     expect(arg.appSignatureFingerprints).toEqual(computeAppSignatureFingerprints());
     expect(arg.appSignatureFingerprints.Klaviyo).toMatch(/^[0-9a-f]{8}$/);
+    // ScriptTag check dark: that source is recorded as not observed.
+    expect(arg.liveAppHooks).toEqual({ embedApps: ["Klaviyo", "Privy"], scriptTagApps: null });
   });
 
-  it("records a removal: app absent from the previous scan, present now", async () => {
+  it("records a removal: embed on before, off now, code left behind", async () => {
     arrange();
     const result = await runScanTheme();
     expect(result).toMatchObject({ status: "COMPLETED" });
@@ -4415,7 +4442,20 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     });
   });
 
-  it("read_products granted since the previous scan: newly found metafields are NOT a removal", async () => {
+  it("installing a non-embed app (findings appear, no hook either side) is NOT a removal", async () => {
+    arrange({ previous: { liveAppHooks: { embedApps: [], scriptTagApps: null } } });
+    await runScanTheme();
+    expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
+  });
+
+  it("embed still on: no removal", async () => {
+    arrange();
+    mockEmbeds.mockReturnValue(new Set(["Klaviyo"]));
+    await runScanTheme();
+    expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
+  });
+
+  it("read_products granted since the previous scan: newly found metafields are not leftovers", async () => {
     arrange({
       current: [METAFIELD, { ...METAFIELD, codeSnippet: "reviews.count" }],
       previous: { skippedCategories: [FindingType.GHOST_METAFIELD] },
@@ -4424,7 +4464,11 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
   });
 
-  it("a legacy baseline without fingerprints yields no removal", async () => {
+  it("a legacy baseline without recorded hooks or fingerprints yields no removal", async () => {
+    arrange({ previous: { liveAppHooks: null } });
+    await runScanTheme();
+    expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
+    mockApply.mockClear();
     arrange({ previous: { appSignatureFingerprints: null } });
     await runScanTheme();
     expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
@@ -4438,7 +4482,7 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     expect(mockApply.mock.calls[0][0].plan.creates).toEqual([]);
   });
 
-  it("an open record whose app is gone and whose embed is enabled becomes REINSTALLED", async () => {
+  it("an open record whose embed is back on becomes REINSTALLED", async () => {
     arrange({ current: [], previous: { findings: [KLAVIYO] } });
     mockEmbeds.mockReturnValue(new Set(["Klaviyo"]));
     mockOpen.mockResolvedValue([
@@ -4446,11 +4490,11 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     ]);
     await runScanTheme();
     expect(mockApply.mock.calls[0][0].plan.updates).toEqual([
-      { id: "r1", leftoverCount: 0, state: "REINSTALLED" },
+      { id: "r1", leftoverCount: 1, state: "REINSTALLED" },
     ]);
   });
 
-  it("an open record whose app is gone without an embed becomes CLEANED", async () => {
+  it("an open record with no code left and no hook becomes CLEANED", async () => {
     arrange({ current: [], previous: { findings: [KLAVIYO] } });
     mockOpen.mockResolvedValue([
       { id: "r1", appName: "Klaviyo", leftoverCount: 1, detectedScanId: "prior" },
@@ -4461,7 +4505,7 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     ]);
   });
 
-  it("a fetch-and-scan output memoized before the embed field existed leaves a 0-count record alone", async () => {
+  it("a fetch-and-scan output memoized before the embed field existed: no hook observed, nothing changes", async () => {
     arrange({ current: [], previous: { findings: [KLAVIYO] } });
     mockOpen.mockResolvedValue([
       { id: "r1", appName: "Klaviyo", leftoverCount: 1, detectedScanId: "prior" },
@@ -4470,7 +4514,11 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
       if (name === "fetch-and-scan") delete out.appsWithEnabledEmbed;
       return out;
     });
-    expect(mockApply.mock.calls[0][0].plan.updates).toEqual([]);
+    expect(mockFinalizeScan.mock.calls[0][1].liveAppHooks).toEqual({
+      embedApps: null,
+      scriptTagApps: null,
+    });
+    expect(mockApply.mock.calls[0][0].plan).toEqual({ creates: [], updates: [] });
   });
 
   it("fetch-and-scan returns the enabled-embed set even while SCRIPT_TAG_SUNSET is dark", async () => {

@@ -1,6 +1,7 @@
 /**
- * Tests for app/services/app-removal.server.ts (gc-frda): pure removal
- * detection, signature fingerprints and REMOVED-record state transitions.
+ * Tests for app/services/app-removal.server.ts (gc-frda): pure Rule 1D removal
+ * detection (live hook gone + leftovers), signature fingerprints and
+ * REMOVED-record state transitions.
  */
 import { AppRemovalState, FindingType } from "@prisma/client";
 import { describe, it, expect } from "vitest";
@@ -12,11 +13,18 @@ import {
   detectAppRemovals,
   nextRemovalState,
   parseAppSignatureFingerprints,
+  parseLiveAppHooks,
   planAppRemovals,
+  scriptTagHookApps,
+  type LiveAppHooks,
   type RemovalFinding,
   type RemovalScan,
 } from "../../app/services/app-removal.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
+import {
+  MAX_SCRIPT_TAG_GROUPS,
+  MAX_SCRIPT_TAG_URLS,
+} from "../../app/services/script-tag-sunset-detector.server";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -43,6 +51,11 @@ function many(n: number, appName: string, over: Partial<RemovalFinding> = {}) {
   return Array.from({ length: n }, () => finding(appName, over));
 }
 
+/** Hooks: embed set observed (default none on), ScriptTag check dark. */
+function hooks(over: Partial<LiveAppHooks> = {}): LiveAppHooks {
+  return { embedApps: [], scriptTagApps: null, ...over };
+}
+
 function scan(findings: RemovalFinding[], over: Partial<RemovalScan> = {}): RemovalScan {
   return {
     findings,
@@ -52,54 +65,155 @@ function scan(findings: RemovalFinding[], over: Partial<RemovalScan> = {}): Remo
     skippedFiles: [],
     liveFindingTypes: ALL_TYPES,
     appSignatureFingerprints: FP,
+    liveAppHooks: hooks(),
     ...over,
   };
 }
+
+/** P with X's embed on (its own-file findings were hidden by the scanner). */
+const embedOn = (
+  apps: string[],
+  findings: RemovalFinding[] = [],
+  over: Partial<RemovalScan> = {},
+) => scan(findings, { liveAppHooks: hooks({ embedApps: apps }), ...over });
 
 const detect = (cur: RemovalScan, prev: RemovalScan, ignores: ShopIgnores = NO_IGNORES) =>
   detectAppRemovals(cur, prev, { ignores });
 
 // ---------------------------------------------------------------------------
-// detectAppRemovals
+// detectAppRemovals: Rule 1D triggers
 // ---------------------------------------------------------------------------
 
-describe("detectAppRemovals", () => {
-  it("0 -> N findings for an app is a removal with leftoverCount N", () => {
-    expect(detect(scan(many(3, "Klaviyo")), scan([]))).toEqual([
+describe("detectAppRemovals: live hook gone + leftovers (Rule 1D)", () => {
+  it("installing a non-embed app (0 -> N findings, no hook either side) is NOT a removal", () => {
+    // Regression for the Rule 1A flaw: a LIVE app without a recognised hook
+    // has its code flagged, so its install reads as 0 -> N findings.
+    expect(detect(scan(many(3, "Klaviyo")), scan([]))).toEqual([]);
+  });
+
+  it("embed on in P, off in S, findings in S -> removal with leftoverCount", () => {
+    expect(detect(scan(many(3, "Klaviyo")), embedOn(["Klaviyo"]))).toEqual([
       { appName: "Klaviyo", leftoverCount: 3 },
     ]);
   });
 
-  it("N -> M findings is not a removal", () => {
-    expect(detect(scan(many(5, "Klaviyo")), scan(many(2, "Klaviyo")))).toEqual([]);
+  it("prior findings are irrelevant: N -> M with the embed gone is still a removal", () => {
+    expect(detect(scan(many(5, "Klaviyo")), embedOn(["Klaviyo"], many(2, "Klaviyo")))).toEqual([
+      { appName: "Klaviyo", leftoverCount: 5 },
+    ]);
   });
 
-  it("empty current scan: no removals", () => {
-    expect(detect(scan([]), scan(many(2, "Klaviyo")))).toEqual([]);
+  it("embed on in P, off in S, 0 findings -> NOT a removal (nothing left behind)", () => {
+    expect(detect(scan([]), embedOn(["Klaviyo"]))).toEqual([]);
   });
 
-  it("type unaudited in P (scope granted since: the read_products case) is not a removal", () => {
+  it("embed stays on -> no removal", () => {
+    expect(detect(embedOn(["Klaviyo"], many(2, "Klaviyo")), embedOn(["Klaviyo"]))).toEqual([]);
+  });
+
+  it("embed set not recorded on P (or S) -> no removal", () => {
+    const prev = scan([], { liveAppHooks: hooks({ embedApps: null }) });
+    expect(detect(scan(many(2, "Klaviyo")), prev)).toEqual([]);
+    expect(
+      detect(
+        scan(many(2, "Klaviyo"), { liveAppHooks: hooks({ embedApps: null }) }),
+        embedOn(["Klaviyo"]),
+      ),
+    ).toEqual([]);
+  });
+
+  it("legacy P with no recorded hooks (NULL column or malformed) -> no removals", () => {
+    const cur = scan(many(2, "Klaviyo"));
+    expect(detect(cur, embedOn(["Klaviyo"], [], { liveAppHooks: null }))).toEqual([]);
+    expect(detect(cur, embedOn(["Klaviyo"], [], { liveAppHooks: undefined }))).toEqual([]);
+    expect(detect(cur, embedOn(["Klaviyo"], [], { liveAppHooks: ["Klaviyo"] }))).toEqual([]);
+  });
+
+  it("ScriptTag in P, absent in S, check ran in both -> removal", () => {
+    const prev = scan([], { liveAppHooks: hooks({ scriptTagApps: ["Privy"] }) });
+    const cur = scan(many(2, "Privy"), { liveAppHooks: hooks({ scriptTagApps: [] }) });
+    expect(detect(cur, prev)).toEqual([{ appName: "Privy", leftoverCount: 2 }]);
+  });
+
+  it("ScriptTag signal ignored when the check was dark or unreachable in either scan", () => {
+    const tagged = hooks({ scriptTagApps: ["Privy"] });
+    const notObserved = hooks({ scriptTagApps: null });
+    // Not observed in S: cannot END the hook.
+    expect(
+      detect(
+        scan(many(2, "Privy"), { liveAppHooks: notObserved }),
+        scan([], { liveAppHooks: tagged }),
+      ),
+    ).toEqual([]);
+    // Not observed in P: cannot CREATE the hook.
+    expect(
+      detect(
+        scan(many(2, "Privy"), { liveAppHooks: hooks({ scriptTagApps: [] }) }),
+        scan([], { liveAppHooks: notObserved }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("still live through the other source in S -> no removal", () => {
+    // Embed off in S, but the app still loads through a ScriptTag in S.
+    const prev = scan([], { liveAppHooks: hooks({ embedApps: ["Klaviyo"] }) });
+    const cur = scan(many(2, "Klaviyo"), {
+      liveAppHooks: hooks({ embedApps: [], scriptTagApps: ["Klaviyo"] }),
+    });
+    expect(detect(cur, prev)).toEqual([]);
+  });
+
+  it("multiple apps at once, sorted by name; only hook-ended apps with leftovers", () => {
+    const prev = embedOn(["Reviews App", "Klaviyo", "Privy"]);
+    const cur = scan([...many(1, "Reviews App"), ...many(2, "Klaviyo"), ...many(4, "Unhooked")], {
+      liveAppHooks: hooks({ embedApps: ["Privy"] }),
+    });
+    expect(detect(cur, prev)).toEqual([
+      { appName: "Klaviyo", leftoverCount: 2 },
+      { appName: "Reviews App", leftoverCount: 1 },
+    ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// detectAppRemovals: finding guards
+// ---------------------------------------------------------------------------
+
+describe("detectAppRemovals: finding guards", () => {
+  const prev = (over: Partial<RemovalScan> = {}) => embedOn(["Klaviyo", "Reviews App"], [], over);
+
+  it("type unaudited in P (scope granted since: the read_products case) does not count", () => {
     const metafields = many(172, "Reviews App", { findingType: FindingType.GHOST_METAFIELD });
-    const prev = scan([], { skippedCategories: [FindingType.GHOST_METAFIELD] });
-    expect(detect(scan(metafields), prev)).toEqual([]);
+    expect(
+      detect(scan(metafields), prev({ skippedCategories: [FindingType.GHOST_METAFIELD] })),
+    ).toEqual([]);
   });
 
-  it("type capped or unreachable in either scan is excluded from both sides", () => {
+  it("the read_products case without any hook change is never a removal", () => {
+    const metafields = many(172, "Reviews App", { findingType: FindingType.GHOST_METAFIELD });
+    expect(
+      detect(scan(metafields), scan([], { skippedCategories: [FindingType.GHOST_METAFIELD] })),
+    ).toEqual([]);
+  });
+
+  it("type capped or unreachable in either scan does not count", () => {
     const metafields = many(4, "Reviews App", { findingType: FindingType.GHOST_METAFIELD });
     expect(
-      detect(scan(metafields), scan([], { cappedCategories: [FindingType.GHOST_METAFIELD] })),
+      detect(scan(metafields), prev({ cappedCategories: [FindingType.GHOST_METAFIELD] })),
     ).toEqual([]);
     expect(
-      detect(scan(metafields, { unreachableCategories: [FindingType.GHOST_METAFIELD] }), scan([])),
+      detect(scan(metafields, { unreachableCategories: [FindingType.GHOST_METAFIELD] }), prev()),
     ).toEqual([]);
   });
 
-  it("type not live in P is not a removal", () => {
+  it("type not live in P does not count", () => {
     const embed = many(2, "Klaviyo", { findingType: FindingType.GHOST_APP_EMBED });
-    const prev = scan([], {
-      liveFindingTypes: ALL_TYPES.filter((t) => t !== FindingType.GHOST_APP_EMBED),
-    });
-    expect(detect(scan(embed), prev)).toEqual([]);
+    expect(
+      detect(
+        scan(embed),
+        prev({ liveFindingTypes: ALL_TYPES.filter((t) => t !== FindingType.GHOST_APP_EMBED) }),
+      ),
+    ).toEqual([]);
   });
 
   it("a mix: only the audited-in-both findings count toward leftoverCount", () => {
@@ -107,18 +221,19 @@ describe("detectAppRemovals", () => {
       ...many(2, "Reviews App"),
       ...many(9, "Reviews App", { findingType: FindingType.GHOST_METAFIELD }),
     ];
-    const prev = scan([], { skippedCategories: [FindingType.GHOST_METAFIELD] });
-    expect(detect(scan(cur), prev)).toEqual([{ appName: "Reviews App", leftoverCount: 2 }]);
+    expect(detect(scan(cur), prev({ skippedCategories: [FindingType.GHOST_METAFIELD] }))).toEqual([
+      { appName: "Reviews App", leftoverCount: 2 },
+    ]);
   });
 
   it("legacy scan with no recorded live set (either side): no removals", () => {
-    expect(detect(scan(many(2, "Klaviyo")), scan([], { liveFindingTypes: null }))).toEqual([]);
-    expect(detect(scan(many(2, "Klaviyo"), { liveFindingTypes: undefined }), scan([]))).toEqual([]);
+    expect(detect(scan(many(2, "Klaviyo")), prev({ liveFindingTypes: null }))).toEqual([]);
+    expect(detect(scan(many(2, "Klaviyo"), { liveFindingTypes: undefined }), prev())).toEqual([]);
   });
 
-  it("per-file findings in a file size-skipped in P are not a removal", () => {
+  it("per-file findings in a file size-skipped in P do not count", () => {
     const f = finding("Klaviyo", { filename: "layout/theme.liquid" });
-    expect(detect(scan([f]), scan([], { skippedFiles: ["layout/theme.liquid"] }))).toEqual([]);
+    expect(detect(scan([f]), prev({ skippedFiles: ["layout/theme.liquid"] }))).toEqual([]);
   });
 
   it("a cross-file type in a size-skipped file still counts (it was computed)", () => {
@@ -126,44 +241,46 @@ describe("detectAppRemovals", () => {
       filename: "assets/klaviyo.js",
       findingType: FindingType.ORPHAN_ASSET,
     });
-    expect(detect(scan([f]), scan([], { skippedFiles: ["assets/klaviyo.js"] }))).toEqual([
+    expect(detect(scan([f]), prev({ skippedFiles: ["assets/klaviyo.js"] }))).toEqual([
       { appName: "Klaviyo", leftoverCount: 1 },
     ]);
   });
 
   it("signature fingerprint differs between P and S: not a removal", () => {
-    const prev = scan([], { appSignatureFingerprints: { ...FP, Klaviyo: "k0" } });
-    expect(detect(scan(many(2, "Klaviyo")), prev)).toEqual([]);
+    expect(
+      detect(
+        scan(many(2, "Klaviyo")),
+        prev({ appSignatureFingerprints: { ...FP, Klaviyo: "k0" } }),
+      ),
+    ).toEqual([]);
   });
 
   it("P fingerprints NULL (legacy scan): no removals at all", () => {
-    const cur = scan([...many(2, "Klaviyo"), ...many(1, "Privy")]);
-    expect(detect(cur, scan([], { appSignatureFingerprints: null }))).toEqual([]);
-    expect(detect(cur, scan([], { appSignatureFingerprints: undefined }))).toEqual([]);
+    const cur = scan([...many(2, "Klaviyo"), ...many(1, "Reviews App")]);
+    expect(detect(cur, prev({ appSignatureFingerprints: null }))).toEqual([]);
+    expect(detect(cur, prev({ appSignatureFingerprints: undefined }))).toEqual([]);
   });
 
   it("malformed fingerprints JSON is treated as never recorded", () => {
     const cur = scan(many(2, "Klaviyo"));
-    expect(detect(cur, scan([], { appSignatureFingerprints: ["k1"] }))).toEqual([]);
-    expect(detect(cur, scan([], { appSignatureFingerprints: { Klaviyo: 1 } }))).toEqual([]);
+    expect(detect(cur, prev({ appSignatureFingerprints: ["k1"] }))).toEqual([]);
+    expect(detect(cur, prev({ appSignatureFingerprints: { Klaviyo: 1 } }))).toEqual([]);
   });
 
   it("app missing from the fingerprints (either side): not a removal", () => {
     const withoutKlaviyo: Record<string, string> = { ...FP };
     delete withoutKlaviyo.Klaviyo;
     expect(
-      detect(scan(many(2, "Klaviyo")), scan([], { appSignatureFingerprints: withoutKlaviyo })),
+      detect(scan(many(2, "Klaviyo")), prev({ appSignatureFingerprints: withoutKlaviyo })),
     ).toEqual([]);
     expect(
-      detect(scan(many(2, "Klaviyo"), { appSignatureFingerprints: withoutKlaviyo }), scan([])),
+      detect(scan(many(2, "Klaviyo"), { appSignatureFingerprints: withoutKlaviyo }), prev()),
     ).toEqual([]);
-    // An app attributed outside APP_SIGNATURES is never eligible.
-    expect(detect(scan(many(2, "Unknown Vendor")), scan([]))).toEqual([]);
   });
 
   it("APP-scope ignored app is not a removal", () => {
     const ignores = { fingerprints: new Set<string>(), appNames: new Set(["Klaviyo"]) };
-    expect(detect(scan(many(3, "Klaviyo")), scan([]), ignores)).toEqual([]);
+    expect(detect(scan(many(3, "Klaviyo")), prev(), ignores)).toEqual([]);
   });
 
   it("instance-ignored findings reduce the count, and can zero it", () => {
@@ -171,40 +288,58 @@ describe("detectAppRemovals", () => {
     const fpOf = (f: RemovalFinding) =>
       fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
     const one = { fingerprints: new Set([fpOf(fs[0])]), appNames: new Set<string>() };
-    expect(detect(scan(fs), scan([]), one)).toEqual([{ appName: "Klaviyo", leftoverCount: 2 }]);
+    expect(detect(scan(fs), prev(), one)).toEqual([{ appName: "Klaviyo", leftoverCount: 2 }]);
     const all = { fingerprints: new Set(fs.map(fpOf)), appNames: new Set<string>() };
-    expect(detect(scan(fs), scan([]), all)).toEqual([]);
-  });
-
-  it("an ignored finding in P does not stop a removal of the app's other code", () => {
-    const old = finding("Klaviyo");
-    const ignores = {
-      fingerprints: new Set([
-        fingerprintFinding(old.filename, old.findingType, old.codeSnippet, old.lineNumber),
-      ]),
-      appNames: new Set<string>(),
-    };
-    expect(detect(scan([old, ...many(2, "Klaviyo")]), scan([old]), ignores)).toEqual([
-      { appName: "Klaviyo", leftoverCount: 2 },
-    ]);
-  });
-
-  it("multiple apps at once, sorted by name; apps already present are skipped", () => {
-    const cur = scan([...many(1, "Reviews App"), ...many(2, "Klaviyo"), ...many(4, "Privy")]);
-    const prev = scan(many(1, "Privy"));
-    expect(detect(cur, prev)).toEqual([
-      { appName: "Klaviyo", leftoverCount: 2 },
-      { appName: "Reviews App", leftoverCount: 1 },
-    ]);
+    expect(detect(scan(fs), prev(), all)).toEqual([]);
   });
 
   it("findings with a null appName never count", () => {
-    expect(detect(scan([finding(null), finding(null)]), scan([]))).toEqual([]);
+    expect(detect(scan([finding(null), finding(null)]), prev())).toEqual([]);
   });
 
-  it("SCRIPT_TAG_SUNSET (a LIVE app's script tags) never counts toward a removal", () => {
+  it("SCRIPT_TAG_SUNSET (a LIVE app's script tags) never counts toward leftovers", () => {
     const tags = many(2, "Klaviyo", { findingType: FindingType.SCRIPT_TAG_SUNSET });
-    expect(detect(scan(tags), scan([]))).toEqual([]);
+    expect(detect(scan(tags), prev())).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-hook helpers
+// ---------------------------------------------------------------------------
+
+describe("parseLiveAppHooks", () => {
+  it("parses both sources; null lists stay null (not observed)", () => {
+    const parsed = parseLiveAppHooks({ embedApps: ["A"], scriptTagApps: null });
+    expect([...(parsed?.embed ?? [])]).toEqual(["A"]);
+    expect(parsed?.scriptTag).toBeNull();
+  });
+
+  it("NULL / non-object = never recorded; a malformed list = that source not observed", () => {
+    expect(parseLiveAppHooks(null)).toBeNull();
+    expect(parseLiveAppHooks(["A"])).toBeNull();
+    expect(parseLiveAppHooks({ embedApps: [1], scriptTagApps: ["B"] })?.embed).toBeNull();
+  });
+});
+
+describe("scriptTagHookApps", () => {
+  it("returns the sorted, de-duplicated signature apps; host-only groups are skipped", () => {
+    expect(
+      scriptTagHookApps(
+        ["u1", "u2", "u3"],
+        [{ appName: "Privy" }, { appName: undefined }, { appName: "Klaviyo" }],
+      ),
+    ).toEqual(["Klaviyo", "Privy"]);
+  });
+
+  it("no script tags: observed and empty", () => {
+    expect(scriptTagHookApps([], [])).toEqual([]);
+  });
+
+  it("null (not observed) when a detector cap may have dropped an app", () => {
+    const urls = Array.from({ length: MAX_SCRIPT_TAG_URLS + 1 }, (_, i) => `u${i}`);
+    expect(scriptTagHookApps(urls, [{ appName: "Privy" }])).toBeNull();
+    const groups = Array.from({ length: MAX_SCRIPT_TAG_GROUPS }, (_, i) => ({ appName: `A${i}` }));
+    expect(scriptTagHookApps(["u"], groups)).toBeNull();
   });
 });
 
@@ -292,35 +427,25 @@ describe("nextRemovalState", () => {
   const prev = () => scan(many(3, "Klaviyo"));
   const next = (
     cur: RemovalScan,
-    opts: Partial<{ ignores: ShopIgnores; enabledEmbedApps: Set<string> | null }> = {},
+    ignores: ShopIgnores = NO_IGNORES,
     previous: RemovalScan | null = prev(),
-  ) =>
-    nextRemovalState(record, cur, previous, {
-      ignores: opts.ignores ?? NO_IGNORES,
-      enabledEmbedApps: opts.enabledEmbedApps === undefined ? new Set() : opts.enabledEmbedApps,
-    });
+  ) => nextRemovalState(record, cur, previous, { ignores });
 
   it("REMOVED -> CLEANED when the app has no findings left", () => {
-    expect(next(scan([]))).toEqual({
-      id: "r1",
-      leftoverCount: 0,
-      state: AppRemovalState.CLEANED,
-    });
+    expect(next(scan([]))).toEqual({ id: "r1", leftoverCount: 0, state: AppRemovalState.CLEANED });
   });
 
-  it("REMOVED -> REINSTALLED when no findings are left and its embed is enabled", () => {
-    expect(next(scan([]), { enabledEmbedApps: new Set(["Klaviyo"]) })).toEqual({
+  it("REMOVED -> REINSTALLED when its embed is back on", () => {
+    expect(next(embedOn(["Klaviyo"]))).toEqual({
       id: "r1",
-      leftoverCount: 0,
+      leftoverCount: 3,
       state: AppRemovalState.REINSTALLED,
     });
   });
 
-  it("embed enabled but leftovers still found: stays REMOVED, count updated", () => {
-    expect(next(scan(many(1, "Klaviyo")), { enabledEmbedApps: new Set(["Klaviyo"]) })).toEqual({
-      id: "r1",
-      leftoverCount: 1,
-    });
+  it("REMOVED -> REINSTALLED when its ScriptTag is back, even with leftovers present", () => {
+    const cur = scan(many(2, "Klaviyo"), { liveAppHooks: hooks({ scriptTagApps: ["Klaviyo"] }) });
+    expect(next(cur)).toMatchObject({ state: AppRemovalState.REINSTALLED });
   });
 
   it("updates leftoverCount when it changed; null when unchanged", () => {
@@ -328,32 +453,38 @@ describe("nextRemovalState", () => {
     expect(next(scan(many(3, "Klaviyo")))).toBeNull();
   });
 
+  it("no hook source observed in S: unchanged", () => {
+    const blind = { liveAppHooks: hooks({ embedApps: null, scriptTagApps: null }) };
+    expect(next(scan([], blind))).toBeNull();
+    expect(next(scan([], { liveAppHooks: null }))).toBeNull();
+  });
+
   it("X's category not audited in S (scope revoked): no change", () => {
     const previous = scan(many(3, "Klaviyo", { findingType: FindingType.GHOST_METAFIELD }));
     const cur = scan([], { skippedCategories: [FindingType.GHOST_METAFIELD] });
-    expect(next(cur, {}, previous)).toBeNull();
+    expect(next(cur, NO_IGNORES, previous)).toBeNull();
   });
 
   it("X's leftover file size-skipped in S: no change", () => {
     const previous = scan([finding("Klaviyo", { filename: "layout/theme.liquid" })]);
-    expect(next(scan([], { skippedFiles: ["layout/theme.liquid"] }), {}, previous)).toBeNull();
+    expect(
+      next(scan([], { skippedFiles: ["layout/theme.liquid"] }), NO_IGNORES, previous),
+    ).toBeNull();
   });
 
   it("previous scan had no visible findings for X (unknown then): no change", () => {
-    expect(next(scan([]), {}, scan([]))).toBeNull();
+    expect(next(scan([]), NO_IGNORES, scan([]))).toBeNull();
   });
 
-  it("no previous scan: no change", () => {
-    expect(next(scan([]), {}, null)).toBeNull();
-  });
-
-  it("embed set unknown for this run: a 0-count record is left unchanged", () => {
-    expect(next(scan([]), { enabledEmbedApps: null })).toBeNull();
+  it("no previous scan: no change (but a returned hook still reads REINSTALLED)", () => {
+    expect(next(scan([]), NO_IGNORES, null)).toBeNull();
+    expect(next(embedOn(["Klaviyo"]), NO_IGNORES, null)).toMatchObject({
+      state: AppRemovalState.REINSTALLED,
+    });
   });
 
   it("APP-ignored app is left unchanged (hiding is not cleaning)", () => {
-    const ignores = { fingerprints: new Set<string>(), appNames: new Set(["Klaviyo"]) };
-    expect(next(scan([]), { ignores })).toBeNull();
+    expect(next(scan([]), { fingerprints: new Set(), appNames: new Set(["Klaviyo"]) })).toBeNull();
   });
 
   it("instance ignores reduce the leftover count", () => {
@@ -364,7 +495,7 @@ describe("nextRemovalState", () => {
       ]),
       appNames: new Set<string>(),
     };
-    expect(next(scan(fs), { ignores })).toEqual({ id: "r1", leftoverCount: 1 });
+    expect(next(scan(fs), ignores)).toEqual({ id: "r1", leftoverCount: 1 });
   });
 
   it("SCRIPT_TAG_SUNSET findings do not keep a record open", () => {
@@ -379,7 +510,7 @@ describe("nextRemovalState", () => {
 
 describe("planAppRemovals", () => {
   it("combines new detections with updates to earlier open records", () => {
-    const previous = scan(many(2, "Privy"));
+    const previous = embedOn(["Klaviyo"], many(2, "Privy"));
     const current = scan(many(4, "Klaviyo"));
     const plan = planAppRemovals({
       currentScanId: "s2",
@@ -387,7 +518,6 @@ describe("planAppRemovals", () => {
       previous,
       openRemovals: [{ id: "r1", appName: "Privy", leftoverCount: 2, detectedScanId: "s1" }],
       ignores: NO_IGNORES,
-      enabledEmbedApps: new Set(),
     });
     expect(plan).toEqual({
       creates: [{ appName: "Klaviyo", leftoverCount: 4 }],
@@ -402,7 +532,6 @@ describe("planAppRemovals", () => {
       previous: scan(many(2, "Privy")),
       openRemovals: [{ id: "r1", appName: "Privy", leftoverCount: 2, detectedScanId: "s2" }],
       ignores: NO_IGNORES,
-      enabledEmbedApps: new Set(),
     });
     expect(plan.updates).toEqual([]);
   });
@@ -415,7 +544,6 @@ describe("planAppRemovals", () => {
         previous: scan([]),
         openRemovals: [],
         ignores: NO_IGNORES,
-        enabledEmbedApps: null,
       }),
     ).toEqual({ creates: [], updates: [] });
   });
