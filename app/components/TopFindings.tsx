@@ -1,7 +1,8 @@
 import { Link } from "react-router";
 
+import { newlyInactiveBadge } from "../lib/app-removal-notice";
 import type { TopFindingView } from "../lib/top-findings";
-import { sectionCard, sectionHeader, TEXT_PRIMARY, textSubduedSm } from "../styles/shared";
+import { sectionCard, sectionHeader, styles, TEXT_PRIMARY, textSubduedSm } from "../styles/shared";
 
 const SEVERITY_TONE: Record<TopFindingView["severity"], "critical" | "warning" | "info"> = {
   HIGH: "critical",
@@ -23,12 +24,26 @@ export function topFindingsIntro(count: number): string {
  * page and Home. Renders nothing for an empty list, so a clean scan keeps its
  * existing state.
  *
+ * A finding from an app the scan found no longer active (gc-frda) carries
+ * the shared NEW badge style with the app's name.
+ *
  * Accessibility: a labelled region with a real heading and an ordered list.
  * Not a live region: Home revalidates every 3s while a scan runs, and this
  * block must not announce on those polls.
  */
-export function TopFindings({ findings }: { findings: readonly TopFindingView[] }) {
+export function TopFindings({
+  findings,
+  newlyInactiveApps = [],
+}: {
+  findings: readonly TopFindingView[];
+  /**
+   * gc-frda: apps found no longer active on THIS scan. A finding from one of
+   * them gets a "New · {App}" badge after its severity badge.
+   */
+  newlyInactiveApps?: readonly string[];
+}) {
   if (findings.length === 0) return null;
+  const inactive = new Set(newlyInactiveApps);
   return (
     <section aria-labelledby="top-findings-heading" style={{ ...sectionCard, marginBottom: 0 }}>
       <h2 id="top-findings-heading" style={{ ...sectionHeader, margin: 0 }}>
@@ -43,6 +58,9 @@ export function TopFindings({ findings }: { findings: readonly TopFindingView[] 
                 {f.typeLabel}
               </h3>
               <s-badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</s-badge>
+              {f.appName !== null && inactive.has(f.appName) && (
+                <span style={styles.newBadge}>{newlyInactiveBadge(f.appName)}</span>
+              )}
             </div>
             <div style={{ ...textSubduedSm, marginTop: "2px", wordBreak: "break-word" }}>
               {f.location}

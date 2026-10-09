@@ -134,10 +134,16 @@ export type TopFindingView = {
   cost: string;
   /** Where "See how to fix" goes on the scan page. */
   href: string;
+  /** The attributed app, or null (gc-frda: the "New · {App}" badge). */
+  appName: string | null;
 };
 
 /** The finding fields toTopFindingView reads. */
-export type TopFindingSource = RankableFinding & { filename: string; lineNumber: number };
+export type TopFindingSource = RankableFinding & {
+  filename: string;
+  lineNumber: number;
+  appName: string | null;
+};
 
 /**
  * One plain line on what a finding costs: its primary lane's "so what" copy
@@ -152,7 +158,9 @@ export function findingCostLine(findingType: FindingType): string {
 }
 
 /** Merchant-facing location: theme file (with line), admin resource, or storefront. */
-export function findingLocation(finding: TopFindingSource): string {
+export function findingLocation(
+  finding: Pick<TopFindingSource, "findingType" | "filename" | "lineNumber">,
+): string {
   if (isAdminResourceFinding(finding.findingType)) {
     return adminResourceLocatorLabel(finding.findingType, finding.filename);
   }
@@ -203,5 +211,6 @@ export function toTopFindingViews(
     location: findingLocation(f),
     cost: findingCostLine(f.findingType),
     href: topFindingHref(scanId, f, fullList),
+    appName: f.appName,
   }));
 }

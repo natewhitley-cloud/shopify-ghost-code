@@ -10,6 +10,7 @@ import {
   useSearchParams,
 } from "react-router";
 
+import { AppRemovalBanner } from "../components/AppRemovalBanner";
 import { FormattedDate } from "../components/FormattedDate";
 import {
   HealthScoreTrendChart,
@@ -18,6 +19,8 @@ import {
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { ScanProgress } from "../components/ScanProgress";
 import { TopFindings } from "../components/TopFindings";
+import { buildRemovalNotice } from "../lib/app-removal-notice";
+import type { RemovalNotice } from "../lib/app-removal-notice";
 import { getPlanFeatures } from "../lib/billing.server";
 import { FEEDBACK_NUDGE_COPY, FEEDBACK_NUDGE_HREF } from "../lib/feedback-nudge";
 import {
@@ -50,15 +53,21 @@ import type { TopFindingView } from "../lib/top-findings";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
 import type { ScopeRequestOutcome } from "../lib/use-optional-scopes";
 import { HOME_POLL_TIMEOUT_MESSAGE, useScanPolling } from "../lib/use-scan-polling";
+import { getRemovalNoticeRows } from "../models/app-removal.server";
 import { getSeverityCountsForScans, getTypeCountsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import {
+  getScanById,
   getScansForShop,
   hasCompletedScans,
   getCompletedScansForShop,
 } from "../models/scan.server";
 import type { ScanQuota } from "../models/scan.server";
-import { getOrCreateShopMetadata, getShopMetadata } from "../models/shop.server";
+import {
+  dismissRemovalNotice,
+  getOrCreateShopMetadata,
+  getShopMetadata,
+} from "../models/shop.server";
 import { getFilteredFindingSummaryAndKept } from "../services/finding-aggregation.server";
 import type { FindingRow } from "../services/finding-aggregation.server";
 import {
@@ -165,6 +174,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       dominant: null as LaneKey | null,
       findingTrend: null,
       topFindings: [] as TopFindingView[],
+      removalBanner: null as RemovalBanner | null,
+      newlyInactiveApps: [] as string[],
     };
   }
 
@@ -221,17 +232,22 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // The shop's prompt state (gc-97k.6) loads in the same batch: the shared
   // loader reads the first successful scan only when a prompt rule can use it,
   // so a retired or not-yet-eligible shop costs no query.
+  // The app-removal rows (gc-frda) load here too, only for a successful latest
+  // scan: ONE indexed read (the AppRemoval unique key's shop + theme prefix,
+  // a handful of rows), never on the in-progress poll.
   const now = new Date();
-  const [severityCounts, usage, completedScanCheck, typeCounts, ignores, promptState] =
+  const latestSuccessful = latestScan && isSuccessfulScan(latestScan.status) ? latestScan : null;
+  const [severityCounts, usage, completedScanCheck, typeCounts, ignores, promptState, removalRows] =
     await Promise.all([
       getSeverityCountsForScans(severityScanIds),
       getScanUsage(shop.id, shop.plan),
       hasCompletedScans(shop.id),
-      latestScan && isSuccessfulScan(latestScan.status)
-        ? getTypeCountsForScan(latestScan.id)
-        : Promise.resolve(null),
+      latestSuccessful ? getTypeCountsForScan(latestSuccessful.id) : Promise.resolve(null),
       getIgnoredFindingsForShop(shop.id),
       loadShopPromptState(shop, now),
+      latestSuccessful
+        ? getRemovalNoticeRows(shop.id, latestSuccessful.themeId, latestSuccessful.id)
+        : Promise.resolve([]),
     ]);
 
   const zeroSeverityRecord: Record<Severity, number> = {
@@ -491,6 +507,23 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const canDiffLatest =
     latestScan != null && isSuccessfulScan(latestScan.status) && canUseScanDiffing(shop.plan);
 
+  // App-removal banner (gc-frda): apps the latest successful scan found no
+  // longer active (or whose leftovers it found cleaned up). Content, not an
+  // interruptive prompt, so no prompt cap; Free sees it in full (decision 4A).
+  // Hidden once the merchant dismissed it for THIS scan; a newer scan's
+  // removals show again. Start here badges a finding from an app newly
+  // inactive on this scan whether or not the banner was dismissed.
+  const removalNotice = latestSuccessful ? buildRemovalNotice(removalRows) : null;
+  const removalBanner: RemovalBanner | null =
+    latestSuccessful && removalNotice && shop.removalNoticeDismissedScanId !== latestSuccessful.id
+      ? {
+          notice: removalNotice,
+          scanId: latestSuccessful.id,
+          fullList: Boolean(features.showFindingDetails),
+        }
+      : null;
+  const newlyInactiveApps = removalRows.filter((r) => r.state === "REMOVED").map((r) => r.appName);
+
   return {
     shop,
     latestScan,
@@ -516,8 +549,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     dominant,
     findingTrend,
     topFindings,
+    removalBanner,
+    newlyInactiveApps,
   };
 };
+
+/** Home's app-removal banner data (gc-frda), bound to the scan it describes. */
+export type RemovalBanner = { notice: RemovalNotice; scanId: string; fullList: boolean };
 
 // ---------------------------------------------------------------------------
 // Action
@@ -539,6 +577,18 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // feedbackNudgeDismissedAt (which retires the nudge) and emits `dismissed`.
   if (intent === "dismiss-feedback-nudge") {
     await recordNudgeStageOnce(NUDGE_KEYS.FEEDBACK, "dismissed", session.shop);
+    return { dismissed: true };
+  }
+
+  // App-removal banner "Dismiss" (gc-frda): per scan, for the SESSION shop
+  // only. The scan id must be one of this shop's scans; anything else is a
+  // no-op. Repeating it rewrites the same value (idempotent).
+  if (intent === "dismiss-removal-notice") {
+    const scanId = formData.get("scanId");
+    if (typeof scanId !== "string" || scanId === "") return { ignored: true };
+    const scan = await getScanById(scanId, { includeFindings: false });
+    if (!scan || scan.shopId !== shop.id) return { ignored: true };
+    await dismissRemovalNotice(shop.id, scanId);
     return { dismissed: true };
   }
 
@@ -875,6 +925,8 @@ export default function Dashboard() {
     dominant,
     findingTrend,
     topFindings,
+    removalBanner,
+    newlyInactiveApps,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
@@ -926,6 +978,16 @@ export default function Dashboard() {
   const handleDismissFeedbackNudge = () => {
     setFeedbackNudgeDismissed(true);
     dismissFetcher.submit({ intent: "dismiss-feedback-nudge" }, { method: "POST" });
+  };
+
+  // App-removal banner "Dismiss" (gc-frda): hide optimistically for the scan
+  // it describes (so a newer scan's banner still shows), then persist. Its own
+  // fetcher, so it never interrupts a feedback-nudge dismissal in flight.
+  const removalDismissFetcher = useFetcher<typeof action>();
+  const [removalDismissedFor, setRemovalDismissedFor] = useState<string | null>(null);
+  const handleDismissRemovalNotice = (scanId: string) => {
+    setRemovalDismissedFor(scanId);
+    removalDismissFetcher.submit({ intent: "dismiss-removal-notice", scanId }, { method: "POST" });
   };
 
   // Default the picker to the MAIN theme id. Falls back to empty string when
@@ -989,6 +1051,19 @@ export default function Dashboard() {
           <s-banner tone="critical">
             <s-paragraph>{actionError}</s-paragraph>
           </s-banner>
+        )}
+
+        {/* App-removal banner (gc-frda): apps the latest scan found no longer
+          active, or cleaned up. Top of the ground stack; none while a scan
+          runs (the loader only builds it for a successful latest scan). */}
+        {removalBanner && !scanInProgress && removalDismissedFor !== removalBanner.scanId && (
+          <AppRemovalBanner
+            notice={removalBanner.notice}
+            scanId={removalBanner.scanId}
+            fullList={removalBanner.fullList}
+            linkParams={searchParams}
+            onDismiss={() => handleDismissRemovalNotice(removalBanner.scanId)}
+          />
         )}
 
         {/* New high-severity findings callout — shown once the lazily-loaded diff
@@ -1471,7 +1546,9 @@ export default function Dashboard() {
             {/* "Start here" (gc-bn0x): the latest scan's top 3 findings. Renders
               nothing while a scan runs (no successful latest scan) or when the
               scan is clean. */}
-            {healthScore && latestScan && <TopFindings findings={topFindings} />}
+            {healthScore && latestScan && (
+              <TopFindings findings={topFindings} newlyInactiveApps={newlyInactiveApps} />
+            )}
 
             {/* Consequence lanes — "what it's costing you", worst-first */}
             {healthScore && latestScan && (

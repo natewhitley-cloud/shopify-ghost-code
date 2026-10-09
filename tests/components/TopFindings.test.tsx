@@ -20,12 +20,13 @@ function view(n: number): TopFindingView {
     location: `snippets/file-${n}.liquid, line ${n}`,
     cost: `Cost line ${n}.`,
     href: `/app/scans/scan-1#finding-f${n}`,
+    appName: null,
   };
 }
 
-function render(findings: TopFindingView[]): string {
+function render(findings: TopFindingView[], newlyInactiveApps?: string[]): string {
   return renderToStaticMarkup(
-    createElement(MemoryRouter, null, createElement(TopFindings, { findings })),
+    createElement(MemoryRouter, null, createElement(TopFindings, { findings, newlyInactiveApps })),
   );
 }
 
@@ -67,5 +68,34 @@ describe("TopFindings", () => {
       "The 3 findings that matter most in this scan, and what each costs you.",
     );
     expect(topFindingsIntro(3)).not.toMatch(/[–—]/);
+  });
+
+  describe("New · {App} badge (gc-frda)", () => {
+    const fromApp = (n: number, appName: string | null): TopFindingView => ({
+      ...view(n),
+      appName,
+    });
+
+    it("badges a finding whose app is newly inactive on the scan, after its severity", () => {
+      const html = render([fromApp(1, "Yotpo"), fromApp(2, "Privy")], ["Yotpo"]);
+      expect(html).toMatch(/HIGH<\/s-badge><span style="[^"]*">New · Yotpo<\/span>/);
+      expect(html).not.toContain("New · Privy");
+      expect(html.match(/New · /g)).toHaveLength(1);
+    });
+
+    it("no set (Home with nothing inactive, or a page that passes none): no badge", () => {
+      expect(render([fromApp(1, "Yotpo")])).not.toContain("New · ");
+      expect(render([fromApp(1, "Yotpo")], [])).not.toContain("New · ");
+    });
+
+    it("an unattributed finding never gets the badge", () => {
+      expect(render([fromApp(1, null)], ["Yotpo"])).not.toContain("New · ");
+    });
+
+    it("uses the shared NEW badge style (no inline hex of its own)", () => {
+      const html = render([fromApp(1, "Yotpo")], ["Yotpo"]);
+      // styles.newBadge renders uppercase on a tinted chip.
+      expect(html).toMatch(/<span style="[^"]*text-transform:uppercase[^"]*">New · Yotpo/);
+    });
   });
 });

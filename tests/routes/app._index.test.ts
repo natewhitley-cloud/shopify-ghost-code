@@ -60,6 +60,13 @@ vi.mock("../../app/services/scan-dispatch.server", () => ({
   dispatchScan: vi.fn(),
 }));
 
+// gc-frda: Home's app-removal banner rows (the model's query is covered in
+// tests/models/app-removal.server.test.ts). No removals by default; the
+// original implementation survives vi.resetAllMocks.
+vi.mock("../../app/models/app-removal.server", () => ({
+  getRemovalNoticeRows: vi.fn(async () => []),
+}));
+
 vi.mock("../../app/models/finding.server", () => ({
   getSeverityCountsForScans: vi.fn(),
   getTypeCountsForScan: vi.fn(),

@@ -178,6 +178,7 @@ describe("presentation helpers", () => {
     ...c("f1", "GHOST_SCRIPT", "HIGH"),
     filename: "layout/theme.liquid",
     lineNumber: 42,
+    appName: "Klaviyo",
   };
 
   it("cost line is the primary lane's so-what copy", () => {
@@ -249,6 +250,8 @@ describe("presentation helpers", () => {
       location: "layout/theme.liquid, line 42",
       cost: "This is loading extra code that slows your storefront down.",
       href: "/app/scans/scan-1#finding-f1",
+      // gc-frda: the "New · {App}" badge reads it.
+      appName: "Klaviyo",
     });
   });
 });
