@@ -72,7 +72,7 @@
  * needs redaction, which stays with shop/redact (48h grace) + the separate
  * gc-qkd cleanup. That residual is a known, separately-tracked gap.
  *
- * Cron: 6:00 AM America/Denver, one hour BEFORE the 7:00 AM operator-digest, so
+ * Cron: 5:00 AM America/Denver, 30 minutes BEFORE the 5:30 AM operator-digest, so
  * the digest reflects any shop this run freshly marked (the digest counts
  * uninstalls from the SHOP_UNINSTALLED OpsEvent stream, which this run writes).
  * Wrapped in withCronHeartbeat so it participates in the dead-man's-switch
@@ -688,7 +688,7 @@ async function probeInstall(domain: string): Promise<InstallStatus> {
 
 // Daily 06:00 America/Denver (DST-correct), one hour before operator-digest.
 // Unchanged by gc-ngx6.
-export const RECONCILE_INSTALLS_CRON = "TZ=America/Denver 0 6 * * *";
+export const RECONCILE_INSTALLS_CRON = "TZ=America/Denver 0 5 * * *";
 
 export const reconcileInstalls = inngest.createFunction(
   { id: "reconcile-installs", name: "Periodic Install-Status Reconciler" },

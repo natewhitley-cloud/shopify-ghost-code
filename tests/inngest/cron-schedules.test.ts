@@ -40,8 +40,8 @@ const EXPECTED: Array<[string, string, string]> = [
   ["snapshot-metrics", SNAPSHOT_METRICS_CRON, "20 6 * * *"],
   ["weekly-scan", WEEKLY_SCAN_CRON, "40 6 * * 0"],
   ["poll-theme-changes", POLL_THEME_CHANGES_CRON, "0 6 * * *"],
-  ["reconcile-installs", RECONCILE_INSTALLS_CRON, "TZ=America/Denver 0 6 * * *"],
-  ["operator-digest", OPERATOR_DIGEST_CRON, "TZ=America/Denver 0 7 * * *"],
+  ["reconcile-installs", RECONCILE_INSTALLS_CRON, "TZ=America/Denver 0 5 * * *"],
+  ["operator-digest", OPERATOR_DIGEST_CRON, "TZ=America/Denver 30 5 * * *"],
 ];
 
 describe("cron schedules", () => {

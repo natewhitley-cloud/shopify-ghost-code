@@ -12,7 +12,7 @@
  * tomorrow's run can diff against a prior snapshot for a net up/down line. No
  * shop/plan/billing state is ever written.
  *
- * Cron: 7:00 AM America/Denver (DST-correct via the Inngest `TZ=` prefix).
+ * Cron: 5:30 AM America/Denver (DST-correct via the Inngest `TZ=` prefix).
  * Wrapped in withCronHeartbeat so it participates in the dead-man's-switch.
  *
  * Sections (each "in 24h" = trailing 24h unless noted):
@@ -2291,8 +2291,8 @@ export function buildDigestBody(data: OperatorDigestData): string {
 // Inngest function
 // ---------------------------------------------------------------------------
 
-// Daily 07:00 America/Denver, after reconcile-installs (06:00). Unchanged by gc-ngx6.
-export const OPERATOR_DIGEST_CRON = "TZ=America/Denver 0 7 * * *";
+// Daily 05:30 America/Denver, after reconcile-installs (05:00). Moved from 07:00 on 2026-10-09 (owner request).
+export const OPERATOR_DIGEST_CRON = "TZ=America/Denver 30 5 * * *";
 
 export const operatorDigest = inngest.createFunction(
   { id: "operator-digest", name: "Operator Daily Digest" },
