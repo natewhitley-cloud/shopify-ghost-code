@@ -17,22 +17,27 @@ import {
 describe("summaryEffectivelyOn", () => {
   const at = new Date("2026-10-09T00:00:00Z");
   it.each([
-    [true, at, null, true],
-    [true, null, at, true],
-    [true, at, at, true],
-    // Legacy paid shop: toggle at its default ON but never told -> off.
-    [true, null, null, false],
-    [false, at, at, false],
-    [false, null, null, false],
-  ])("alertsEnabled=%s shown=%s optedIn=%s => %s", (alertsEnabled, shown, optedIn, expected) => {
-    expect(
-      summaryEffectivelyOn({
-        alertsEnabled,
-        summaryNoticeShownAt: shown,
-        summaryOptedInAt: optedIn,
-      }),
-    ).toBe(expected);
-  });
+    [true, null, at, null, true],
+    [true, null, null, at, true],
+    // Notice pending (upgraded, or opted in while dark): on, told before any email.
+    [true, at, null, null, true],
+    // Legacy paid shop: toggle at its default ON, never told, nothing owed -> off.
+    [true, null, null, null, false],
+    [false, at, at, at, false],
+    [false, null, null, null, false],
+  ])(
+    "alertsEnabled=%s pending=%s shown=%s optedIn=%s => %s",
+    (alertsEnabled, pending, shown, optedIn, expected) => {
+      expect(
+        summaryEffectivelyOn({
+          alertsEnabled,
+          summaryNoticePendingAt: pending,
+          summaryNoticeShownAt: shown,
+          summaryOptedInAt: optedIn,
+        }),
+      ).toBe(expected);
+    },
+  );
 });
 
 describe("copy", () => {

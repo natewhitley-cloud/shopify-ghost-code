@@ -446,6 +446,16 @@ describe("app.settings loader: alerts", () => {
     expect(result.alerts.enabled).toBe(false);
   });
 
+  it("a dark opt-in (notice pending, no summaryOptedInAt) reads ON, so the checkbox stays honest", async () => {
+    mockAlertConfig.mockReturnValue({ configured: false, reason: "disabled" });
+    mockGetShopMetadata.mockResolvedValue({
+      ...SHOP,
+      plan: "Standard",
+      summaryNoticePendingAt: new Date(),
+    });
+    expect(((await loader(makeLoaderArgs())) as { alerts: AlertsData }).alerts.enabled).toBe(true);
+  });
+
   it("an opted-in shop reads ON; toggled off reads OFF", async () => {
     mockGetShopMetadata.mockResolvedValue({
       ...SHOP,
@@ -502,16 +512,18 @@ describe("app.settings action: set-alerts-enabled", () => {
 
     expect(mockGetShopMetadata).toHaveBeenCalledWith(SHOP_DOMAIN);
     expect(mockSetAlertsEnabled).toHaveBeenCalledExactlyOnceWith("shop-1", expected, {
-      noticeOwed: true,
+      sendingLive: false,
+      noticeShown: false,
     });
     expect(result).toEqual({ alertsEnabled: expected });
   });
 
-  it("opting in while sending is live owes no Home notice (the card told them)", async () => {
+  it("opting in while sending is live is passed as a live opt-in (consent)", async () => {
     mockAlertConfig.mockReturnValue({ configured: true });
     await action(makeActionArgs({ intent: "set-alerts-enabled", enabled: "true" }));
     expect(mockSetAlertsEnabled).toHaveBeenCalledExactlyOnceWith("shop-1", true, {
-      noticeOwed: false,
+      sendingLive: true,
+      noticeShown: false,
     });
   });
 
@@ -523,7 +535,8 @@ describe("app.settings action: set-alerts-enabled", () => {
     });
     await action(makeActionArgs({ intent: "set-alerts-enabled", enabled: "true" }));
     expect(mockSetAlertsEnabled).toHaveBeenCalledExactlyOnceWith("shop-1", true, {
-      noticeOwed: false,
+      sendingLive: false,
+      noticeShown: true,
     });
   });
 

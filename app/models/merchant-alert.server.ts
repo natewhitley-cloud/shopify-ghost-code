@@ -53,16 +53,19 @@ export async function setShopAlertEmail(shopId: string, email: string | null): P
 }
 
 /**
- * The Settings summary-email toggle (gc-ol95). Turning it ON is the merchant's
- * own opt-in: it also records summaryOptedInAt (consent), and, when
- * `noticeOwed` (sending is not configured yet and Home's notice was never
- * shown), marks the Home notice pending so the merchant is told before any
- * email goes out. Turning it OFF clears nothing else.
+ * The Settings summary-email toggle (gc-ol95). Turning it OFF clears nothing
+ * else. Turning it ON depends on whether sending is live:
+ *   - live (`sendingLive`): the merchant read the live card ("We email ...
+ *     only when something changed"), so this is consent: summaryOptedInAt.
+ *   - dark: the card promised "We'll let you know before any are sent", so it
+ *     is NOT consent on its own (Nathan Q9=9A). Only the toggle is turned on,
+ *     and, unless Home's notice was already shown (`noticeShown`), the notice
+ *     is marked pending: the merchant becomes eligible only once it is shown.
  */
 export async function setSummaryEmailsEnabled(
   shopId: string,
   enabled: boolean,
-  opts: { noticeOwed: boolean },
+  opts: { sendingLive: boolean; noticeShown: boolean },
 ): Promise<void> {
   if (!enabled) {
     await db.shop.update({ where: { id: shopId }, data: { alertsEnabled: false } });
@@ -73,8 +76,11 @@ export async function setSummaryEmailsEnabled(
     where: { id: shopId },
     data: {
       alertsEnabled: true,
-      summaryOptedInAt: now,
-      ...(opts.noticeOwed ? { summaryNoticePendingAt: now } : {}),
+      ...(opts.sendingLive
+        ? { summaryOptedInAt: now }
+        : opts.noticeShown
+          ? {}
+          : { summaryNoticePendingAt: now }),
     },
   });
 }

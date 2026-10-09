@@ -107,11 +107,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     return { error: SUMMARY_NOT_IN_PLAN };
   }
 
-  // Turning it on is the merchant's own opt-in (gc-ol95). While sending is not
-  // configured yet, they are also owed Home's notice before any email goes out.
-  const noticeOwed =
-    !getMerchantAlertConfigStatus().configured && shop.summaryNoticeShownAt === null;
-  await setSummaryEmailsEnabled(shop.id, value === "true", { noticeOwed });
+  // Turning it on while sending is live is the merchant's own opt-in (gc-ol95).
+  // While dark it is not consent: they must see Home's notice first (Q9=9A).
+  await setSummaryEmailsEnabled(shop.id, value === "true", {
+    sendingLive: getMerchantAlertConfigStatus().configured,
+    noticeShown: shop.summaryNoticeShownAt !== null,
+  });
   return { alertsEnabled: value === "true" };
 };
 

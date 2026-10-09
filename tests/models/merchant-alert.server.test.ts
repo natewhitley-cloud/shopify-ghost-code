@@ -24,6 +24,7 @@ import {
   setShopAlertEmailByDomain,
   setSummaryEmailsEnabled,
 } from "../../app/models/merchant-alert.server";
+import { summaryShopSkipReason } from "../../app/services/summary-email.server";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -90,26 +91,32 @@ describe("shop preference helpers", () => {
   });
 
   it("setSummaryEmailsEnabled(false) turns the toggle off and clears nothing else", async () => {
-    await setSummaryEmailsEnabled("s1", false, { noticeOwed: true });
+    await setSummaryEmailsEnabled("s1", false, { sendingLive: true, noticeShown: false });
     expect(mockDb.shop.update).toHaveBeenCalledWith({
       where: { id: "s1" },
       data: { alertsEnabled: false },
     });
   });
 
-  it("setSummaryEmailsEnabled(true) records the merchant's own opt-in (gc-ol95)", async () => {
-    await setSummaryEmailsEnabled("s1", true, { noticeOwed: false });
+  it("opting in while sending is LIVE records consent (summaryOptedInAt), no notice owed", async () => {
+    await setSummaryEmailsEnabled("s1", true, { sendingLive: true, noticeShown: false });
     const data = mockDb.shop.update.mock.calls[0][0].data;
     expect(data.alertsEnabled).toBe(true);
     expect(data.summaryOptedInAt).toBeInstanceOf(Date);
     expect(data).not.toHaveProperty("summaryNoticePendingAt");
   });
 
-  it("opting in while sending is not configured also marks the Home notice owed", async () => {
-    await setSummaryEmailsEnabled("s1", true, { noticeOwed: true });
+  it("opting in while DARK is not consent: toggle on + Home notice owed, no summaryOptedInAt (Q9=9A)", async () => {
+    await setSummaryEmailsEnabled("s1", true, { sendingLive: false, noticeShown: false });
     const data = mockDb.shop.update.mock.calls[0][0].data;
-    expect(data.summaryOptedInAt).toBeInstanceOf(Date);
-    expect(data.summaryNoticePendingAt).toBe(data.summaryOptedInAt);
+    expect(data.alertsEnabled).toBe(true);
+    expect(data.summaryNoticePendingAt).toBeInstanceOf(Date);
+    expect(data).not.toHaveProperty("summaryOptedInAt");
+  });
+
+  it("opting in while dark after the notice was already shown only turns the toggle on", async () => {
+    await setSummaryEmailsEnabled("s1", true, { sendingLive: false, noticeShown: true });
+    expect(mockDb.shop.update.mock.calls[0][0].data).toEqual({ alertsEnabled: true });
   });
 
   it("setShopAlertEmailByDomain only writes when the value differs, including NULL", async () => {
@@ -242,5 +249,36 @@ describe("summary notice consent stamps (gc-ol95)", () => {
       where: { id: "s1" },
       data: { summaryNoticePendingAt: null },
     });
+  });
+});
+
+describe("Settings opt-in -> summary eligibility (gc-ol95, Nathan Q9=9A)", () => {
+  /** A paid shop that was never told and never opted in, as stored. */
+  const BASE = {
+    id: "s1",
+    domain: "a.myshopify.com",
+    plan: "Professional",
+    alertsEnabled: false,
+    alertEmail: "o@example.com",
+    uninstalledAt: null,
+    summaryNoticePendingAt: null as Date | null,
+    summaryNoticeShownAt: null as Date | null,
+    summaryOptedInAt: null as Date | null,
+  };
+  /** Apply what setSummaryEmailsEnabled wrote to the stored row. */
+  async function optIn(sendingLive: boolean) {
+    await setSummaryEmailsEnabled("s1", true, { sendingLive, noticeShown: false });
+    return { ...BASE, ...mockDb.shop.update.mock.calls.at(-1)![0].data };
+  }
+
+  it("dark opt-in is NOT eligible until Home's notice is shown", async () => {
+    const row = await optIn(false);
+    expect(summaryShopSkipReason(row)).toBe("no_consent");
+    // Home renders the notice (claimSummaryNoticeShown stamps it): now eligible.
+    expect(summaryShopSkipReason({ ...row, summaryNoticeShownAt: new Date() })).toBeNull();
+  });
+
+  it("live opt-in is eligible immediately", async () => {
+    expect(summaryShopSkipReason(await optIn(true))).toBeNull();
   });
 });

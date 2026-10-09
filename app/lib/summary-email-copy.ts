@@ -48,17 +48,22 @@ export const SUMMARY_SAVED_OFF = "Summary emails are off.";
 export const SUMMARY_NOT_IN_PLAN = "Summary emails are not included in your plan.";
 
 /**
- * Whether summaries can actually go to this shop as far as consent goes: the
- * toggle is on AND the merchant knows (saw the notice or opted in). The
- * Settings checkbox shows this, so a shop that was never told (toggle at its
- * default ON) is shown unchecked rather than falsely "on".
+ * What the Settings checkbox shows (gc-ol95): the toggle is on AND the merchant
+ * either knows (notice shown, or opted in while sending was live) or will be
+ * told before any email (notice pending). A shop that was never told and owes
+ * no notice (paid before this shipped, toggle at its default ON) reads OFF,
+ * matching the fact that nothing will be sent to it.
  */
 export function summaryEffectivelyOn(shop: {
   alertsEnabled: boolean;
+  summaryNoticePendingAt: Date | string | null;
   summaryNoticeShownAt: Date | string | null;
   summaryOptedInAt: Date | string | null;
 }): boolean {
   return (
-    shop.alertsEnabled && (shop.summaryNoticeShownAt !== null || shop.summaryOptedInAt !== null)
+    shop.alertsEnabled &&
+    (shop.summaryNoticeShownAt !== null ||
+      shop.summaryOptedInAt !== null ||
+      shop.summaryNoticePendingAt !== null)
   );
 }
