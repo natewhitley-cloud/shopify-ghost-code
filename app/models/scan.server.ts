@@ -363,6 +363,9 @@ export async function finalizeScan(
     // Categories whose check could not run because the public storefront was
     // unreadable (SCRIPT_TAG_SUNSET); written only when supplied (default []).
     unreachableCategories?: string[];
+    // { [appName]: signature fingerprint } for app-removal detection (gc-frda);
+    // written only when supplied (NULL = never recorded).
+    appSignatureFingerprints?: Record<string, string>;
   },
 ): Promise<FinalizeScanResult> {
   const result = await db.scan.updateMany({
@@ -387,6 +390,9 @@ export async function finalizeScan(
       ...(args.liveFindingTypes !== undefined ? { liveFindingTypes: args.liveFindingTypes } : {}),
       ...(args.unreachableCategories !== undefined
         ? { unreachableCategories: args.unreachableCategories }
+        : {}),
+      ...(args.appSignatureFingerprints !== undefined
+        ? { appSignatureFingerprints: args.appSignatureFingerprints }
         : {}),
     },
   });

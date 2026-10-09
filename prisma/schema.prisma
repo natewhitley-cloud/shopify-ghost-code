@@ -168,6 +168,7 @@ model Shop {
   ignoredFindings     IgnoredFinding[]
   merchantFeedback    MerchantFeedback[]
   merchantAlerts      MerchantAlert[]
+  appRemovals         AppRemoval[]
 }
 
 // Ledger of merchant-facing "new findings" alert emails (gc-syz.1): the dedup
@@ -193,6 +194,37 @@ model MerchantAlert {
 // follow-up email are optional (null = left blank). Several rows per shop are
 // allowed. Cascade-deleted with the Shop, and ALSO deleted explicitly in
 // deleteShopData (the email is personal data, so the redact path names it).
+// An app inferred as REMOVED from a theme (gc-frda): the previous successful
+// scan of the same shop + theme had no audited finding attributed to it and
+// this scan has at least one (see app/services/app-removal.server.ts for the
+// coverage, signature and ignore guards). Rows are never deleted on reinstall
+// (a removal during testing still counts); later scans move a REMOVED row to
+// CLEANED or REINSTALLED. Holds no personal data; deleted with the Shop row on
+// shop/redact via the cascading FK.
+model AppRemoval {
+  id             String          @id @default(cuid())
+  shopId         String
+  shop           Shop            @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  themeId        String
+  appName        String
+  // The scan that first saw the leftovers, and the baseline it was compared to.
+  // Plain ids (no FK): the record outlives a pruned scan.
+  detectedScanId String
+  previousScanId String
+  // Audited, non-ignored findings attributed to the app on the latest scan
+  // that evaluated this row.
+  leftoverCount  Int
+  state          AppRemovalState @default(REMOVED)
+  detectedAt     DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+  // When `state` last changed; null while still REMOVED.
+  stateChangedAt DateTime?
+
+  // Idempotency: an Inngest retry of the same scan cannot insert twice.
+  @@unique([shopId, themeId, appName, detectedScanId])
+  @@index([shopId, detectedAt])
+}
+
 model MerchantFeedback {
   id           String   @id @default(cuid())
   shopId       String
@@ -296,6 +328,13 @@ model Scan {
   // claimed once via a conditional update.
   viewedOnHomeAt     DateTime?
   viewedOnScanPageAt DateTime?
+  // App-removal detection (gc-frda): a fingerprint of each app's signature in
+  // APP_SIGNATURES when this scan ran, as a JSON object { [appName]: hash }.
+  // A removal of app X is only inferred between two scans whose fingerprints
+  // for X are equal, so a signature edit (new pattern or domain) that makes
+  // existing leftover code newly match X is never mistaken for an uninstall.
+  // NULL = legacy scan, never recorded: no removal is inferred against it.
+  appSignatureFingerprints Json?
   findings          Finding[]
   unknownScripts    UnknownScript[]
   scanDomains       ScanDomain[]
@@ -439,6 +478,17 @@ model IgnoredFinding {
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
+
+// Lifecycle of an AppRemoval (gc-frda).
+enum AppRemovalState {
+  // Leftover code from the app is still in the theme.
+  REMOVED
+  // A later scan found none of the app's leftover code.
+  CLEANED
+  // A later scan found no leftovers AND the app's theme app embed is enabled
+  // again, i.e. the app was reinstalled.
+  REINSTALLED
+}
 
 // Granularity of a false-positive suppression (see IgnoredFinding).
 enum IgnoreScope {

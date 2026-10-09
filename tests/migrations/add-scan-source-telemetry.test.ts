@@ -48,8 +48,9 @@ describe("add_scan_source_telemetry migration", () => {
     expect(SCHEMA).toMatch(/model Scan \{[\s\S]*?\n\s+viewedOnScanPageAt\s+DateTime\?\n/);
   });
 
-  it("is the latest migration", () => {
+  it("sorts after the previous latest migration", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
+    expect(dirs).toContain(NAME);
+    expect(NAME > "20261005120000_add_script_tag_sunset").toBe(true);
   });
 });

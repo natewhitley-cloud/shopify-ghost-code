@@ -1303,6 +1303,20 @@ describe("finalizeScan", () => {
     expect(mockDb.scan.updateMany.mock.calls[1][0].data.liveFindingTypes).toEqual(["GHOST_SCRIPT"]);
   });
 
+  it("writes appSignatureFingerprints only when supplied (gc-frda)", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", FINALIZE_ARGS);
+    expect(mockDb.scan.updateMany.mock.calls[0][0].data).not.toHaveProperty(
+      "appSignatureFingerprints",
+    );
+
+    await finalizeScan("scan-1", { ...FINALIZE_ARGS, appSignatureFingerprints: { Klaviyo: "ab" } });
+    expect(mockDb.scan.updateMany.mock.calls[1][0].data.appSignatureFingerprints).toEqual({
+      Klaviyo: "ab",
+    });
+  });
+
   it("writes unreachableCategories only when supplied (column defaults to [])", async () => {
     mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
 
