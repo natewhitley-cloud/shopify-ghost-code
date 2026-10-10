@@ -687,6 +687,7 @@ describe("body", () => {
       h
         .replace(/<br>/g, "\n")
         .replace(/<\/tr>/g, "\n")
+        .replace(/<\/li>/g, "\n")
         .replace(/<[^>]+>/g, "")
         .replace(/&lt;/g, "<")
         .replace(/&gt;/g, ">")
@@ -700,8 +701,8 @@ describe("body", () => {
     it("carries the same facts as the text, in the same order", () => {
       expect(visible(html())).toEqual([
         "Here is your weekly digest for Paw Naturals from GhostCode.",
-        "- Judge.me is no longer active. It left 3 items behind.",
-        "- Klaviyo: cleaned up. All 4 items it left are gone.",
+        "Judge.me is no longer active. It left 3 items behind.",
+        "Klaviyo: cleaned up. All 4 items it left are gone.",
         "New since your last summary: 2",
         "Fixed since your last summary: 1",
         "Still in your theme: 7",
@@ -710,6 +711,16 @@ describe("body", () => {
         "support@alpenglowsoftware.com",
         "Unsubscribe",
       ]);
+    });
+
+    it("renders app lines as a real bullet list, without the text version's '- '", () => {
+      const h = html();
+      expect(h).toContain(
+        '<li style="margin:0 0 4px">Judge.me is no longer active. It left 3 items behind.</li>',
+      );
+      expect(h).toMatch(/<ul style="[^"]*">/);
+      expect(h).not.toContain(">- ");
+      expect(text()).toContain("- Judge.me is no longer active.");
     });
 
     it("links the scan, the support mailbox and the unsubscribe URL", () => {
@@ -765,11 +776,11 @@ describe("body", () => {
         unsubscribeUrl: 'https://app.example.com/unsubscribe#t=a&b"c',
       });
       expect(h).not.toContain("<script");
-      expect(h).toContain("- &lt;script&gt;alert(1)&lt;/script&gt; is no longer active.");
+      expect(h).toContain(">&lt;script&gt;alert(1)&lt;/script&gt; is no longer active.");
       expect(h).toContain(
         "digest for x&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;y from GhostCode.",
       );
-      expect(h).toContain("- Tom &amp; Jerry&#39;s &quot;Reviews&quot;: cleaned up.");
+      expect(h).toContain(">Tom &amp; Jerry&#39;s &quot;Reviews&quot;: cleaned up.");
       expect(h).toContain('href="https://admin.shopify.com/a?x=1&amp;y=&quot;&gt;&lt;script&gt;"');
       expect(h).toContain('href="https://app.example.com/unsubscribe#t=a&amp;b&quot;c"');
     });

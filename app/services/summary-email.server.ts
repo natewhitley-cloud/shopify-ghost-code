@@ -326,9 +326,16 @@ export function buildSummaryHtml(opts: SummaryBodyOptions): string {
     `<tr><td style="padding:${pad}">${lines.map(escapeHtml).join("<br>")}</td></tr>`;
   const link = (href: string, label: string) =>
     `<a href="${escapeHtml(href)}" style="${LINK_STYLE}">${escapeHtml(label)}</a>`;
+  // App lines render as a real bullet list (the text version keeps "- ").
+  const list = (lines: string[]) =>
+    `<tr><td style="padding:0 0 16px"><ul style="margin:0;padding:0 0 0 20px">` +
+    lines
+      .map((l) => `<li style="margin:0 0 4px">${escapeHtml(l.replace(/^- /, ""))}</li>`)
+      .join("") +
+    `</ul></td></tr>`;
   const rows = [
     block([body.intro]),
-    ...body.appBlocks.map((lines) => block(lines)),
+    ...body.appBlocks.map(list),
     block(body.counts),
     `<tr><td style="padding:0 0 24px">${link(body.scanUrl, SCAN_LINK_LABEL)}</td></tr>`,
     `<tr><td style="padding:16px 0 0;border-top:1px solid #e5e5e5">` +
