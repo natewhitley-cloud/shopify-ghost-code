@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 
-import type { MerchantAlert } from "@prisma/client";
+import type { MerchantAlert, Prisma } from "@prisma/client";
 
 import { claimShopStamp } from "./shop.server";
 import db from "../db.server";
@@ -13,7 +13,7 @@ import db from "../db.server";
  *
  * GDPR: alertEmail and MerchantAlert.recipient are personal data. Both go with
  * the Shop row on shop/redact (deleteShopData also deletes the ledger rows
- * explicitly).
+ * explicitly), as does the cached Shop.storeName.
  */
 
 /** 32 random bytes = 256 bits, base64url (URL-safe, no padding) = 43 chars. */
@@ -161,13 +161,26 @@ export async function disableAlertsByToken(token: string): Promise<boolean> {
 }
 
 /**
- * Cache the owner email by shop domain (the scan job knows the domain, not the
- * id). A no-op, with no write, when the stored value already equals `email`;
- * the explicit null branch is needed because SQL `<> 'x'` excludes NULL rows.
+ * Cache the owner email and the store name by shop domain (the scan job knows
+ * the domain, not the id). Only non-null values are written (a failed read
+ * never clears a cached value), and there is no write when every stored value
+ * already matches; the explicit null branches are needed because SQL
+ * `<> 'x'` excludes NULL rows.
  */
-export async function setShopAlertEmailByDomain(domain: string, email: string): Promise<void> {
-  await db.shop.updateMany({
-    where: { domain, OR: [{ alertEmail: null }, { alertEmail: { not: email } }] },
-    data: { alertEmail: email },
-  });
+export async function setShopContactByDomain(
+  domain: string,
+  contact: { email: string | null; storeName: string | null },
+): Promise<void> {
+  const data: { alertEmail?: string; storeName?: string } = {};
+  const differs: Prisma.ShopWhereInput[] = [];
+  if (contact.email) {
+    data.alertEmail = contact.email;
+    differs.push({ alertEmail: null }, { alertEmail: { not: contact.email } });
+  }
+  if (contact.storeName) {
+    data.storeName = contact.storeName;
+    differs.push({ storeName: null }, { storeName: { not: contact.storeName } });
+  }
+  if (differs.length === 0) return;
+  await db.shop.updateMany({ where: { domain, OR: differs }, data });
 }

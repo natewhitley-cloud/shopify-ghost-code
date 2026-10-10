@@ -19,7 +19,7 @@ vi.mock("../../app/models/merchant-alert.server", () => ({
   ensureUnsubscribeToken: m.ensureToken,
 }));
 vi.mock("../../app/services/shop-alert-email.server", () => ({
-  refreshShopAlertEmail: m.refresh,
+  refreshShopContact: m.refresh,
 }));
 // finding-aggregation imports the db client; the pure filter needs none.
 vi.mock("../../app/db.server", () => ({ default: {} }));
@@ -29,6 +29,7 @@ import type { SummaryRemovalRow } from "../../app/models/app-removal.server";
 import {
   ALPENGLOW_LOGO_URL,
   MAX_APPS_IN_EMAIL,
+  MAX_STORE_NAME_IN_EMAIL,
   buildSummaryHash,
   buildSummaryHtml,
   buildSummarySubject,
@@ -36,6 +37,7 @@ import {
   computeFindingChanges,
   hasSummaryChanges,
   sendScanSummary,
+  storeNameForEmail,
   summarizeAppRemovals,
   summaryRateSkipReason,
   summaryShopSkipReason,
@@ -73,6 +75,7 @@ const shop = (over: Partial<SummaryShop> = {}): SummaryShop => ({
   plan: "Professional",
   alertsEnabled: true,
   alertEmail: "cached@example.com",
+  storeName: "Cached Store",
   uninstalledAt: null,
   summaryNoticeShownAt: new Date("2026-10-01T00:00:00Z"),
   summaryOptedInAt: null,
@@ -128,7 +131,7 @@ beforeEach(() => {
   fetchMock.mockResolvedValue({ ok: true, status: 200 });
   m.record.mockResolvedValue({});
   m.ensureToken.mockResolvedValue("tok123");
-  m.refresh.mockResolvedValue("fresh@example.com");
+  m.refresh.mockResolvedValue({ email: "fresh@example.com", storeName: "Fresh Store" });
 });
 
 afterEach(() => {
@@ -218,6 +221,7 @@ describe("eligibility matrix (consent, plan, toggle, install)", () => {
     await send();
     const email = sentEmail();
     const opts = {
+      storeName: "Fresh Store",
       shopDomain: SHOP_DOMAIN,
       cadence: "weekly" as const,
       changes: changes(),
@@ -230,7 +234,7 @@ describe("eligibility matrix (consent, plan, toggle, install)", () => {
   });
 
   it("no owner email (none fetched, none cached) => no_recipient", async () => {
-    m.refresh.mockResolvedValue(null);
+    m.refresh.mockResolvedValue({ email: null, storeName: null });
     expect(await send({ shop: shop({ alertEmail: null }) })).toEqual({
       sent: false,
       reason: "no_recipient",
@@ -242,7 +246,7 @@ describe("eligibility matrix (consent, plan, toggle, install)", () => {
     await send();
     expect(sentEmail().to).toBe("fresh@example.com");
     fetchMock.mockClear();
-    m.refresh.mockResolvedValue(null);
+    m.refresh.mockResolvedValue({ email: null, storeName: null });
     await send();
     expect(sentEmail().to).toBe("cached@example.com");
   });
@@ -251,6 +255,20 @@ describe("eligibility matrix (consent, plan, toggle, install)", () => {
     await send({ admin: null });
     expect(m.refresh).not.toHaveBeenCalled();
     expect(sentEmail().to).toBe("cached@example.com");
+  });
+
+  it("store name: the freshly read one wins, then the cached one, then the domain", async () => {
+    await send();
+    expect(sentEmail().subject).toBe("GhostCode digest for Fresh Store");
+    expect(sentEmail().text).toContain("digest for Fresh Store from GhostCode.");
+    fetchMock.mockClear();
+    m.refresh.mockResolvedValue({ email: "fresh@example.com", storeName: null });
+    await send();
+    expect(sentEmail().subject).toBe("GhostCode digest for Cached Store");
+    fetchMock.mockClear();
+    await send({ admin: null, shop: shop({ storeName: null }) });
+    expect(sentEmail().subject).toBe("GhostCode digest for my-store.myshopify.com");
+    expect(sentEmail().text).toContain("digest for my-store.myshopify.com from GhostCode.");
   });
 
   it("no SHOPIFY_APP_URL or no unsubscribe token => never sends", async () => {
@@ -554,43 +572,57 @@ describe("computeFindingChanges", () => {
 // Subject
 // ---------------------------------------------------------------------------
 
-describe("subject rule", () => {
-  const subj = (over: Partial<SummaryChanges>) =>
-    buildSummarySubject({ ...NO_CHANGES, ...over }, SHOP_DOMAIN);
-
-  it("one app no longer active names it", () => {
-    expect(subj({ inactiveApps: [app("Judge.me")], newCount: 4 })).toBe(
-      "Ghost Code: Judge.me is no longer active in my-store.myshopify.com",
+describe("subject", () => {
+  it("is 'GhostCode digest for {Store Name}'", () => {
+    expect(buildSummarySubject("Paw Naturals", SHOP_DOMAIN)).toBe(
+      "GhostCode digest for Paw Naturals",
     );
   });
 
-  it("several apps no longer active are counted", () => {
-    expect(subj({ inactiveApps: [app("A"), app("B")] })).toBe(
-      "Ghost Code: 2 apps are no longer active in my-store.myshopify.com",
+  it.each([
+    ["Professional (weekly)", "Professional"],
+    ["Standard (monthly)", "Standard"],
+  ])(
+    "%s gets the same subject whatever changed: no cadence, no app names",
+    async (_label, plan) => {
+      await send({
+        shop: shop({ plan }),
+        changes: changes({ inactiveApps: [app("Judge.me")], cleanedApps: [app("Klaviyo")] }),
+      });
+      const { subject } = sentEmail();
+      expect(subject).toBe("GhostCode digest for Fresh Store");
+      expect(subject).not.toMatch(/Judge\.me|Klaviyo|weekly|monthly|\[|\]/);
+    },
+  );
+
+  it("falls back to the myshopify domain when the store name is null or blank", () => {
+    expect(buildSummarySubject(null, SHOP_DOMAIN)).toBe(
+      "GhostCode digest for my-store.myshopify.com",
+    );
+    expect(buildSummarySubject(" \n\t ", SHOP_DOMAIN)).toBe(
+      "GhostCode digest for my-store.myshopify.com",
     );
   });
 
-  it("new/fixed when no app went inactive (cleaned-up apps do not change it)", () => {
-    expect(subj({ newCount: 3, fixedCount: 1, cleanedApps: [app("C")] })).toBe(
-      "Ghost Code: 3 new and 1 fixed in my-store.myshopify.com",
-    );
-    expect(subj({ fixedCount: 2 })).toBe("Ghost Code: 0 new and 2 fixed in my-store.myshopify.com");
+  it("strips newlines and control characters (no header injection)", () => {
+    const subject = buildSummarySubject("Evil\r\nBcc: x@example.com\u0000\u200bShop", SHOP_DOMAIN);
+    expect(subject).toBe("GhostCode digest for Evil Bcc: x@example.com Shop");
+    expect(subject).not.toMatch(/[\p{Cc}\u200b]/u);
   });
 
-  it("cleaned up only", () => {
-    expect(subj({ cleanedApps: [app("Klaviyo")] })).toBe(
-      "Ghost Code: leftovers from Klaviyo are cleaned up in my-store.myshopify.com",
+  it(`caps the store name at ${MAX_STORE_NAME_IN_EMAIL} characters`, () => {
+    const long = "A".repeat(MAX_STORE_NAME_IN_EMAIL + 40);
+    expect(buildSummarySubject(long, SHOP_DOMAIN)).toBe(
+      `GhostCode digest for ${"A".repeat(MAX_STORE_NAME_IN_EMAIL)}`,
     );
-    expect(subj({ cleanedApps: [app("A"), app("B"), app("C")] })).toBe(
-      "Ghost Code: leftovers from 3 apps are cleaned up in my-store.myshopify.com",
-    );
+    // Never splits an emoji (surrogate pair) at the cap.
+    const name = storeNameForEmail("😀".repeat(MAX_STORE_NAME_IN_EMAIL + 1), SHOP_DOMAIN);
+    expect(Array.from(name)).toHaveLength(MAX_STORE_NAME_IN_EMAIL);
+    expect(name).toBe("😀".repeat(MAX_STORE_NAME_IN_EMAIL));
   });
 
-  it("is the subject actually sent", async () => {
-    await send({ changes: changes({ inactiveApps: [app("Judge.me")] }) });
-    expect(sentEmail().subject).toBe(
-      "Ghost Code: Judge.me is no longer active in my-store.myshopify.com",
-    );
+  it("keeps a normal store name as is", () => {
+    expect(storeNameForEmail("Tom & Jerry's Pet Shop", SHOP_DOMAIN)).toBe("Tom & Jerry's Pet Shop");
   });
 });
 
@@ -602,6 +634,7 @@ describe("body", () => {
   const opts = (
     over: Partial<Parameters<typeof buildSummaryText>[0]> = {},
   ): Parameters<typeof buildSummaryText>[0] => ({
+    storeName: "Paw Naturals",
     shopDomain: SHOP_DOMAIN,
     cadence: "weekly",
     changes: changes({ inactiveApps: [app("Judge.me", 3)], cleanedApps: [app("Klaviyo", 4)] }),
@@ -618,7 +651,7 @@ describe("body", () => {
   it("renders the full body in order", () => {
     expect(text()).toBe(
       [
-        "Here is what changed in my-store.myshopify.com since your last summary.",
+        "Here is your weekly digest for Paw Naturals from GhostCode.",
         "",
         "- Judge.me is no longer active. It left 3 items behind.",
         "",
@@ -628,7 +661,7 @@ describe("body", () => {
         "Fixed since your last summary: 1",
         "Still in your theme: 7",
         "",
-        "See the details in Ghost Code:",
+        "See the details in GhostCode:",
         "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
         "",
         "Alpenglow Software LLC",
@@ -666,13 +699,13 @@ describe("body", () => {
 
     it("carries the same facts as the text, in the same order", () => {
       expect(visible(html())).toEqual([
-        "Here is what changed in my-store.myshopify.com since your last summary.",
+        "Here is your weekly digest for Paw Naturals from GhostCode.",
         "- Judge.me is no longer active. It left 3 items behind.",
         "- Klaviyo: cleaned up. All 4 items it left are gone.",
         "New since your last summary: 2",
         "Fixed since your last summary: 1",
         "Still in your theme: 7",
-        "See the details in Ghost Code",
+        "See the details in GhostCode",
         "Alpenglow Software LLC",
         "support@alpenglowsoftware.com",
         "Unsubscribe",
@@ -682,7 +715,7 @@ describe("body", () => {
     it("links the scan, the support mailbox and the unsubscribe URL", () => {
       const h = html();
       expect(h).toContain(
-        '<a href="https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1" style="color:#1a56db;text-decoration:underline">See the details in Ghost Code</a>',
+        '<a href="https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1" style="color:#1a56db;text-decoration:underline">See the details in GhostCode</a>',
       );
       expect(h).toMatch(
         /<a href="mailto:support@alpenglowsoftware\.com"[^>]*>support@alpenglowsoftware\.com<\/a>/,
@@ -720,9 +753,10 @@ describe("body", () => {
       expect(h).not.toContain("cleaned up");
     });
 
-    it("escapes every interpolated value (app names, shop domain, URLs in attributes)", () => {
+    it("escapes every interpolated value (app names, store name, URLs in attributes)", () => {
       const h = html({
-        shopDomain: 'x<script>alert(1)</script>&"y.myshopify.com',
+        storeName: 'x<script>alert(1)</script>&"y',
+        shopDomain: "z.myshopify.com",
         changes: changes({
           inactiveApps: [app("<script>alert(1)</script>", 1)],
           cleanedApps: [app(`Tom & Jerry's "Reviews"`, 2)],
@@ -732,7 +766,9 @@ describe("body", () => {
       });
       expect(h).not.toContain("<script");
       expect(h).toContain("- &lt;script&gt;alert(1)&lt;/script&gt; is no longer active.");
-      expect(h).toContain("x&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;y.myshopify.com");
+      expect(h).toContain(
+        "digest for x&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;y from GhostCode.",
+      );
       expect(h).toContain("- Tom &amp; Jerry&#39;s &quot;Reviews&quot;: cleaned up.");
       expect(h).toContain('href="https://admin.shopify.com/a?x=1&amp;y=&quot;&gt;&lt;script&gt;"');
       expect(h).toContain('href="https://app.example.com/unsubscribe#t=a&amp;b&quot;c"');
@@ -751,7 +787,31 @@ describe("body", () => {
     const t = text({ changes: changes() });
     expect(t).not.toContain("no longer active");
     expect(t).not.toContain("cleaned up");
-    expect(t.startsWith("Here is what changed")).toBe(true);
+    expect(t.startsWith("Here is your weekly digest")).toBe(true);
+  });
+
+  it("Standard's opening line says monthly", () => {
+    expect(text({ cadence: "monthly" }).split("\n")[0]).toBe(
+      "Here is your monthly digest for Paw Naturals from GhostCode.",
+    );
+    expect(html({ cadence: "monthly" })).toContain(
+      "Here is your monthly digest for Paw Naturals from GhostCode.",
+    );
+  });
+
+  it("opening line falls back to the domain and sanitizes the name", () => {
+    expect(text({ storeName: null }).split("\n")[0]).toBe(
+      "Here is your weekly digest for my-store.myshopify.com from GhostCode.",
+    );
+    expect(text({ storeName: "Two\nLines" }).split("\n")[0]).toBe(
+      "Here is your weekly digest for Two Lines from GhostCode.",
+    );
+  });
+
+  it("brand is 'GhostCode' (one word) everywhere in the email", () => {
+    for (const t of [text(), html(), buildSummarySubject("S", SHOP_DOMAIN)]) {
+      expect(t).not.toContain("Ghost Code");
+    }
   });
 
   it("first summary (no ledger baseline) says 'since your previous scan'", () => {
@@ -790,11 +850,8 @@ describe("body", () => {
       ].map((b) => b.replace(ALPENGLOW_LOGO_URL, "LOGO_URL"));
     };
     const subjects = [
-      buildSummarySubject(changes({ inactiveApps: [app("A")] }), SHOP_DOMAIN),
-      buildSummarySubject(changes({ inactiveApps: [app("A"), app("B")] }), SHOP_DOMAIN),
-      buildSummarySubject(changes(), SHOP_DOMAIN),
-      buildSummarySubject({ ...NO_CHANGES, cleanedApps: [app("A")] }, SHOP_DOMAIN),
-      buildSummarySubject({ ...NO_CHANGES, cleanedApps: [app("A"), app("B")] }, SHOP_DOMAIN),
+      buildSummarySubject("Paw Naturals", SHOP_DOMAIN),
+      buildSummarySubject(null, SHOP_DOMAIN),
     ];
     const all = () => [...bodies(), ...subjects];
 

@@ -727,7 +727,7 @@ export async function deleteShopData(domain: string) {
     db.merchantFeedback.deleteMany({ where: { shopId: shop.id } }),
     // MerchantAlert (gc-syz.1) cascades from Shop too, but its `recipient` is the
     // merchant's email, so it is named explicitly like MerchantFeedback. The Shop
-    // row delete below also removes alertEmail / alertUnsubscribeToken.
+    // row delete below also removes alertEmail / alertUnsubscribeToken / storeName.
     db.merchantAlert.deleteMany({ where: { shopId: shop.id } }),
     // Shop delete cascades to: Scans → Findings, UnknownScripts → SignatureSubmissions,
     // and BillingEvents (all have onDelete: Cascade on their Shop/Scan FK).

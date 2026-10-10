@@ -163,6 +163,11 @@ model Shop {
   alertsEnabled                Boolean   @default(true)
   alertEmail                   String?
   alertUnsubscribeToken        String?   @unique
+  // gc-ol95: the store's display name from Admin `shop { name }` (read in the
+  // same query as the owner email, no extra scope), cached for the summary
+  // email's subject and opening line. Null = never read; the email then uses
+  // the myshopify domain. Deleted with the Shop row on shop/redact.
+  storeName                    String?
   // gc-frda: the scan whose "no longer active" / "cleaned up" Home banner the
   // merchant dismissed. The banner hides only for that scan; a newer scan's
   // banner shows again. Null = never dismissed. Plain id (no FK).

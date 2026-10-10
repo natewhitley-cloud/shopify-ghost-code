@@ -6,7 +6,7 @@
  * backfill (a shop already paid before this shipped must stay ineligible), the
  * ledger's summary counts (default 0) and the one-summary-per-scan unique key.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, it, expect } from "vitest";
@@ -72,10 +72,5 @@ describe("add_summary_email_consent migration (gc-ol95)", () => {
       );
     }
     expect(SCHEMA).toMatch(/model MerchantAlert \{[\s\S]*?@@unique\(\[shopId, scanId\]\)/);
-  });
-
-  it("is the latest migration", () => {
-    const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
   });
 });

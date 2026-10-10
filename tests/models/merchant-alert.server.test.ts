@@ -21,7 +21,7 @@ import {
   markSummaryNoticePending,
   recordMerchantAlert,
   setShopAlertEmail,
-  setShopAlertEmailByDomain,
+  setShopContactByDomain,
   setSummaryEmailsEnabled,
 } from "../../app/models/merchant-alert.server";
 import { summaryShopSkipReason } from "../../app/services/summary-email.server";
@@ -119,15 +119,42 @@ describe("shop preference helpers", () => {
     expect(mockDb.shop.update.mock.calls[0][0].data).toEqual({ alertsEnabled: true });
   });
 
-  it("setShopAlertEmailByDomain only writes when the value differs, including NULL", async () => {
-    await setShopAlertEmailByDomain("a.myshopify.com", "o@example.com");
+  it("setShopContactByDomain writes both fields only when either differs, including NULL", async () => {
+    await setShopContactByDomain("a.myshopify.com", {
+      email: "o@example.com",
+      storeName: "Paw Naturals",
+    });
     expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
       where: {
         domain: "a.myshopify.com",
-        OR: [{ alertEmail: null }, { alertEmail: { not: "o@example.com" } }],
+        OR: [
+          { alertEmail: null },
+          { alertEmail: { not: "o@example.com" } },
+          { storeName: null },
+          { storeName: { not: "Paw Naturals" } },
+        ],
       },
-      data: { alertEmail: "o@example.com" },
+      data: { alertEmail: "o@example.com", storeName: "Paw Naturals" },
     });
+  });
+
+  it("setShopContactByDomain never clears a cached field it could not read", async () => {
+    await setShopContactByDomain("a.myshopify.com", { email: null, storeName: "Paw Naturals" });
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: {
+        domain: "a.myshopify.com",
+        OR: [{ storeName: null }, { storeName: { not: "Paw Naturals" } }],
+      },
+      data: { storeName: "Paw Naturals" },
+    });
+    vi.mocked(mockDb.shop.updateMany).mockClear();
+    await setShopContactByDomain("a.myshopify.com", { email: "o@example.com", storeName: null });
+    expect(mockDb.shop.updateMany.mock.calls[0][0].data).toEqual({ alertEmail: "o@example.com" });
+  });
+
+  it("setShopContactByDomain with nothing read writes nothing", async () => {
+    await setShopContactByDomain("a.myshopify.com", { email: null, storeName: null });
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
   });
 });
 

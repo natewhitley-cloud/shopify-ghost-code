@@ -44,7 +44,7 @@ import {
   scanDiffOptions,
 } from "./scan-differ.server";
 import type { DiffableFinding, ScanCoverage } from "./scan-differ.server";
-import { refreshShopAlertEmail } from "./shop-alert-email.server";
+import { refreshShopContact } from "./shop-alert-email.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { canReceiveAlerts, getAlertWindowMs } from "../lib/plan-gating.server";
@@ -64,7 +64,7 @@ export const SUPPORT_EMAIL = "support@alpenglowsoftware.com";
 /** 128x128 PNG on our public site, shown at 32x32 left of SENDER_NAME in the HTML footer. */
 export const ALPENGLOW_LOGO_URL = "https://alpenglowsoftware.com/assets/icons/alpenglow.png";
 /** Label of the scan deep link (text: "{label}:" then the URL; HTML: the link text). */
-const SCAN_LINK_LABEL = "See the details in Ghost Code";
+const SCAN_LINK_LABEL = "See the details in GhostCode";
 
 // ---------------------------------------------------------------------------
 // Changes
@@ -195,29 +195,35 @@ const SINCE_PHRASE: Record<SummaryBaseline, string> = {
 
 const items = (n: number) => (n === 1 ? "1 item" : `${n} items`);
 
+/** Longest store name the subject and opening line show. */
+export const MAX_STORE_NAME_IN_EMAIL = 80;
+
 /**
- * Subject rule (status, never an offer), first match wins:
- *   1. apps no longer active: "{App} is no longer active" (one) or
- *      "{N} apps are no longer active" (several);
- *   2. new or fixed findings: "{N} new and {M} fixed";
- *   3. cleaned up only: "leftovers from {App} are cleaned up" (one) or
- *      "leftovers from {N} apps are cleaned up".
- * Always "Ghost Code: ... in {shop}".
+ * The store name as the email shows it: the cached Shop.storeName with control
+ * characters (newlines included) turned into spaces, invisible format
+ * characters dropped, whitespace collapsed, and capped at
+ * MAX_STORE_NAME_IN_EMAIL characters. The myshopify domain when the name is
+ * null or blank. The HTML builder escapes the result like any other value.
  */
-export function buildSummarySubject(c: SummaryChanges, shopDomain: string): string {
-  let status: string;
-  if (c.inactiveApps.length === 1) {
-    status = `${c.inactiveApps[0].appName} is no longer active`;
-  } else if (c.inactiveApps.length > 1) {
-    status = `${c.inactiveApps.length} apps are no longer active`;
-  } else if (c.newCount > 0 || c.fixedCount > 0) {
-    status = `${c.newCount} new and ${c.fixedCount} fixed`;
-  } else if (c.cleanedApps.length === 1) {
-    status = `leftovers from ${c.cleanedApps[0].appName} are cleaned up`;
-  } else {
-    status = `leftovers from ${c.cleanedApps.length} apps are cleaned up`;
-  }
-  return `Ghost Code: ${status} in ${shopDomain}`;
+export function storeNameForEmail(storeName: string | null, shopDomain: string): string {
+  const clean = (storeName ?? "")
+    .replace(/\p{Cc}/gu, " ")
+    .replace(/\p{Cf}/gu, "")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (!clean) return shopDomain;
+  const chars = Array.from(clean);
+  return chars.length > MAX_STORE_NAME_IN_EMAIL
+    ? chars.slice(0, MAX_STORE_NAME_IN_EMAIL).join("").trimEnd()
+    : clean;
+}
+
+/**
+ * One digest subject for every summary, whatever changed: no status, no app
+ * names, no cadence. "GhostCode digest for {Store Name}".
+ */
+export function buildSummarySubject(storeName: string | null, shopDomain: string): string {
+  return `GhostCode digest for ${storeNameForEmail(storeName, shopDomain)}`;
 }
 
 function cappedLines(apps: SummaryApp[], line: (a: SummaryApp) => string): string[] {
@@ -228,6 +234,8 @@ function cappedLines(apps: SummaryApp[], line: (a: SummaryApp) => string): strin
 }
 
 export type SummaryBodyOptions = {
+  /** Cached Shop.storeName; the domain stands in when it is null or blank. */
+  storeName: string | null;
   shopDomain: string;
   cadence: SummaryCadence;
   changes: SummaryChanges;
@@ -263,7 +271,7 @@ function buildSummaryContent(opts: SummaryBodyOptions) {
     );
   }
   return {
-    intro: `Here is what changed in ${opts.shopDomain} ${since}.`,
+    intro: `Here is your ${opts.cadence} digest for ${storeNameForEmail(opts.storeName, opts.shopDomain)} from GhostCode.`,
     appBlocks,
     counts: [
       `New ${since}: ${c.newCount}`,
@@ -360,6 +368,7 @@ export type SummaryShop = {
   plan: string;
   alertsEnabled: boolean;
   alertEmail: string | null;
+  storeName: string | null;
   uninstalledAt: Date | null;
   summaryNoticeShownAt: Date | null;
   summaryOptedInAt: Date | null;
@@ -444,9 +453,10 @@ function isUniqueViolation(error: unknown): boolean {
  * Run every gate and, if all pass, email the shop owner one summary for
  * `scan`, then record it in the ledger. Order: env gates, shop gates
  * (uninstalled, plan, toggle, consent), idempotency + throttle, nothing
- * changed, recipient (fresh owner email, else the cached one), app URL,
- * unsubscribe token, send, record. `admin` may be null (dead offline token):
- * the cached Shop.alertEmail is then the recipient. Never throws.
+ * changed, recipient and store name (freshly read, else the cached ones), app
+ * URL, unsubscribe token, send, record. `admin` may be null (dead offline
+ * token): the cached Shop.alertEmail and Shop.storeName are then used. Never
+ * throws.
  */
 export async function sendScanSummary(args: {
   shop: SummaryShop;
@@ -468,9 +478,10 @@ export async function sendScanSummary(args: {
     if (rateSkip) return skip(rateSkip);
     if (!hasSummaryChanges(changes)) return skip("nothing_changed");
 
-    // refreshShopAlertEmail never throws and returns null on any failure.
-    const fresh = admin ? await refreshShopAlertEmail(shop.domain, admin) : null;
-    const recipient = fresh ?? shop.alertEmail;
+    // refreshShopContact never throws; a field it could not read is null.
+    const fresh = admin ? await refreshShopContact(shop.domain, admin) : null;
+    const recipient = fresh?.email ?? shop.alertEmail;
+    const storeName = fresh?.storeName ?? shop.storeName;
     if (!recipient) return skip("no_recipient");
 
     const appUrl = process.env.SHOPIFY_APP_URL?.replace(/\/+$/, "");
@@ -483,6 +494,7 @@ export async function sendScanSummary(args: {
     if (cadence === "none") return skip("plan_not_eligible");
 
     const bodyOptions: SummaryBodyOptions = {
+      storeName,
       shopDomain: shop.domain,
       cadence,
       changes,
@@ -492,7 +504,7 @@ export async function sendScanSummary(args: {
     };
     const result = await sendMerchantAlert({
       to: recipient,
-      subject: buildSummarySubject(changes, shop.domain),
+      subject: buildSummarySubject(storeName, shop.domain),
       text: buildSummaryText(bodyOptions),
       html: buildSummaryHtml(bodyOptions),
       unsubscribeUrl: buildHeaderUnsubscribeUrl(appUrl, token),

@@ -1,85 +1,114 @@
 /**
- * Shop-owner email for merchant alerts (gc-syz.2).
+ * Shop-owner email and store name for merchant summary emails (gc-syz.2,
+ * gc-ol95).
  *
- * Admin GraphQL `shop { email }` is the shop OWNER's address (not customer
- * data), readable without any access scope, so no scope change is needed. It is
- * cached on Shop.alertEmail so the Settings UI and the alert sender have an
- * address without a live fetch.
+ * Admin GraphQL `shop { email name }`: the shop OWNER's address (not customer
+ * data) and the store's display name, both readable without any access scope,
+ * so no scope change is needed. They are cached on Shop.alertEmail and
+ * Shop.storeName so the Settings UI and the summary sender have them without a
+ * live fetch.
  *
- * Both functions NEVER throw: an email problem must never fail or retry a scan.
+ * Every function NEVER throws: an email problem must never fail or retry a scan.
  */
 
 import { logger } from "../lib/logger.server";
 import { safeErrorFields } from "../lib/safe-error";
-import { setShopAlertEmailByDomain } from "../models/merchant-alert.server";
+import { setShopContactByDomain } from "../models/merchant-alert.server";
 import type { AdminApiContext } from "../types/shopify";
 
-const SHOP_EMAIL_QUERY = `#graphql
-  query ShopOwnerEmail {
+const SHOP_CONTACT_QUERY = `#graphql
+  query ShopOwnerContact {
     shop {
       email
+      name
     }
   }
 `;
 
-type ShopEmailResponse = {
-  data?: { shop?: { email?: string | null } | null } | null;
+type ShopContactResponse = {
+  data?: { shop?: { email?: unknown; name?: unknown } | null } | null;
   errors?: Array<{ message?: string }>;
 };
+
+/** What one read returns; each field is null when missing or invalid. */
+export type ShopContact = { email: string | null; storeName: string | null };
+
+const NO_CONTACT: ShopContact = { email: null, storeName: null };
 
 /** RFC 5321 maximum address length. */
 const MAX_EMAIL_LENGTH = 254;
 const EMAIL_SHAPE = /^[^\s@]+@[^\s@]+$/;
+/** Upper bound on a cached store name (the email shows at most 80 chars). */
+const MAX_STORE_NAME_LENGTH = 255;
+
+function validEmail(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_EMAIL_LENGTH || !EMAIL_SHAPE.test(trimmed)) {
+    return null;
+  }
+  return trimmed;
+}
+
+function validStoreName(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? null : trimmed.slice(0, MAX_STORE_NAME_LENGTH);
+}
 
 /**
- * Fetch the shop owner's email. Returns the trimmed address, or null on a
- * GraphQL/transport error, a missing/blank email, or a malformed value.
+ * Read the owner email and store name in one query. Each field is null when
+ * missing, blank or malformed; both are null on a GraphQL/transport error.
  */
-export async function fetchShopOwnerEmail(admin: AdminApiContext): Promise<string | null> {
+export async function fetchShopContact(admin: AdminApiContext): Promise<ShopContact> {
   try {
-    const response = await admin.graphql(SHOP_EMAIL_QUERY);
-    const json = (await response.json()) as ShopEmailResponse;
+    const response = await admin.graphql(SHOP_CONTACT_QUERY);
+    const json = (await response.json()) as ShopContactResponse;
 
     if (json.errors && json.errors.length > 0) {
       logger.warn("shop-owner-email-graphql-error", { error: json.errors[0]?.message });
-      return null;
+      return NO_CONTACT;
     }
-
-    const email = json.data?.shop?.email;
-    if (typeof email !== "string") return null;
-    const trimmed = email.trim();
-    if (trimmed.length === 0 || trimmed.length > MAX_EMAIL_LENGTH || !EMAIL_SHAPE.test(trimmed)) {
-      return null;
-    }
-    return trimmed;
+    const shop = json.data?.shop;
+    return { email: validEmail(shop?.email), storeName: validStoreName(shop?.name) };
   } catch (err) {
     logger.warn("shop-owner-email-fetch-failed", {
       error: err instanceof Error ? err.message : String(err),
     });
-    return null;
+    return NO_CONTACT;
   }
 }
 
 /**
- * Fetch the owner email and cache it on Shop.alertEmail (written only when it
- * changed). Returns the fetched email, or null when the fetch yielded nothing
- * (the previously cached value is left untouched, never cleared on a failure).
- * A cache-write failure is logged and the fetched email is still returned.
- * For slice B to call from the scan job.
+ * Read the owner email and store name and cache whatever was read on the Shop
+ * row (a field that came back null leaves its cached value untouched; nothing
+ * is written when nothing changed). A cache-write failure is logged and the
+ * fetched values are still returned.
  */
-export async function refreshShopAlertEmail(
+export async function refreshShopContact(
   shopDomain: string,
   admin: AdminApiContext,
-): Promise<string | null> {
-  const email = await fetchShopOwnerEmail(admin);
-  if (!email) return null;
+): Promise<ShopContact> {
+  const contact = await fetchShopContact(admin);
+  if (!contact.email && !contact.storeName) return contact;
   try {
-    await setShopAlertEmailByDomain(shopDomain, email);
+    await setShopContactByDomain(shopDomain, contact);
   } catch (err) {
     logger.warn("shop-alert-email-cache-failed", {
       shop: shopDomain,
       ...safeErrorFields(err),
     });
   }
-  return email;
+  return contact;
+}
+
+/**
+ * refreshShopContact for callers that only need the owner email (the store
+ * name is still refreshed and cached). Null when no email was read.
+ */
+export async function refreshShopAlertEmail(
+  shopDomain: string,
+  admin: AdminApiContext,
+): Promise<string | null> {
+  return (await refreshShopContact(shopDomain, admin)).email;
 }
