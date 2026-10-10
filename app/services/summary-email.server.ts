@@ -1,6 +1,6 @@
 /**
  * Merchant summary email (gc-ol95). Replaces the per-change "new findings"
- * alert (gc-syz.4/5): ONE plain-text summary per store after each SCHEDULED
+ * alert (gc-syz.4/5): ONE summary per store after each SCHEDULED
  * scan (Professional weekly, Standard monthly; Free never), and ONLY when
  * something changed since the last summary. Merchants test many apps, so
  * per-change mail would be spam; nothing changed means no email, and the same
@@ -19,6 +19,7 @@
  * on themselves (summaryOptedInAt). Shops paid before this shipped have
  * neither and stay ineligible until they opt in.
  *
+ * Sent as multipart text + HTML with the same facts in the same order.
  * Content is a transactional service message: counts and app names only.
  * Never code snippets, file names, customer data, upsell, or a claim that an
  * app was removed or uninstalled (we only observe it is no longer active).
@@ -33,7 +34,6 @@ import {
   buildHeaderUnsubscribeUrl,
   buildScanAdminUrl,
   getMerchantAlertConfigStatus,
-  getMerchantPostalAddress,
   sendMerchantAlert,
 } from "./merchant-alert.server";
 import {
@@ -59,7 +59,12 @@ import type { AdminApiContext } from "../types/shopify";
 export const MAX_APPS_IN_EMAIL = 5;
 
 /** Sender identity printed in every footer. */
-export const SENDER_IDENTITY = "Alpenglow Software LLC, support@alpenglowsoftware.com";
+export const SENDER_NAME = "Alpenglow Software LLC";
+export const SUPPORT_EMAIL = "support@alpenglowsoftware.com";
+/** 128x128 PNG on our public site, shown at 32x32 left of SENDER_NAME in the HTML footer. */
+export const ALPENGLOW_LOGO_URL = "https://alpenglowsoftware.com/assets/icons/alpenglow.png";
+/** Label of the scan deep link (text: "{label}:" then the URL; HTML: the link text). */
+const SCAN_LINK_LABEL = "See the details in Ghost Code";
 
 // ---------------------------------------------------------------------------
 // Changes
@@ -188,11 +193,6 @@ const SINCE_PHRASE: Record<SummaryBaseline, string> = {
   previous_scan: "since your previous scan",
 };
 
-const CADENCE_PERIOD: Record<SummaryCadence, string> = {
-  weekly: "week",
-  monthly: "month",
-};
-
 const items = (n: number) => (n === 1 ? "1 item" : `${n} items`);
 
 /**
@@ -227,56 +227,127 @@ function cappedLines(apps: SummaryApp[], line: (a: SummaryApp) => string): strin
   return shown;
 }
 
-/** Plain-text body. Counts and app names only; see the module comment. */
-export function buildSummaryText(opts: {
+export type SummaryBodyOptions = {
   shopDomain: string;
   cadence: SummaryCadence;
   changes: SummaryChanges;
   baseline: SummaryBaseline;
   scanUrl: string;
   unsubscribeUrl: string;
-  postalAddress: string;
-}): string {
+};
+
+/**
+ * The body's facts in order, shared by the text and HTML versions so they can
+ * never drift: the intro, one block per app section, the counts, then the
+ * scan and unsubscribe links. Plain strings: the HTML builder escapes them.
+ */
+function buildSummaryContent(opts: SummaryBodyOptions) {
   const { changes: c } = opts;
   const since = SINCE_PHRASE[opts.baseline];
-  const lines = [`Here is what changed in ${opts.shopDomain} ${since}.`, ""];
-
+  const appBlocks: string[][] = [];
   if (c.inactiveApps.length > 0) {
-    lines.push(
-      ...cappedLines(
+    appBlocks.push(
+      cappedLines(
         c.inactiveApps,
         (a) => `- ${a.appName} is no longer active. It left ${items(a.leftoverCount)} behind.`,
       ),
-      "",
     );
   }
   if (c.cleanedApps.length > 0) {
-    lines.push(
-      ...cappedLines(c.cleanedApps, (a) =>
+    appBlocks.push(
+      cappedLines(c.cleanedApps, (a) =>
         a.leftoverCount === 1
           ? `- ${a.appName}: cleaned up. The 1 item it left is gone.`
           : `- ${a.appName}: cleaned up. All ${a.leftoverCount} items it left are gone.`,
       ),
-      "",
     );
   }
+  return {
+    intro: `Here is what changed in ${opts.shopDomain} ${since}.`,
+    appBlocks,
+    counts: [
+      `New ${since}: ${c.newCount}`,
+      `Fixed ${since}: ${c.fixedCount}`,
+      `Still in your theme: ${c.openCount}`,
+    ],
+    scanUrl: opts.scanUrl,
+    unsubscribeUrl: opts.unsubscribeUrl,
+  };
+}
 
+/** Plain-text body. Counts and app names only; see the module comment. */
+export function buildSummaryText(opts: SummaryBodyOptions): string {
+  const body = buildSummaryContent(opts);
+  const lines = [body.intro, ""];
+  for (const block of body.appBlocks) lines.push(...block, "");
   lines.push(
-    `New ${since}: ${c.newCount}`,
-    `Fixed ${since}: ${c.fixedCount}`,
-    `Still in your theme: ${c.openCount}`,
+    ...body.counts,
     "",
-    "See the details in Ghost Code:",
-    opts.scanUrl,
+    `${SCAN_LINK_LABEL}:`,
+    body.scanUrl,
     "",
-    `You're getting this because summary emails are on for ${opts.shopDomain}. Ghost Code scans your store every ${CADENCE_PERIOD[opts.cadence]} and sends one summary when something changed.`,
-    "",
-    `Turn off these emails: ${opts.unsubscribeUrl}`,
-    "",
-    SENDER_IDENTITY,
-    opts.postalAddress,
+    SENDER_NAME,
+    SUPPORT_EMAIL,
+    `Unsubscribe: ${body.unsubscribeUrl}`,
   );
   return lines.join("\n");
+}
+
+/** Escape a value for HTML text or a double-quoted attribute. */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
+const FONT_STACK = "-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif";
+const LINK_STYLE = "color:#1a56db;text-decoration:underline";
+
+/**
+ * HTML body, sent alongside the text (multipart). Same facts in the same order
+ * as buildSummaryText. Email-client-safe: table layout, inline styles only, no
+ * external CSS, no scripts. Every interpolated value is escaped. Exported so
+ * the rendered email can be eyeballed (write the string to a .html file).
+ */
+export function buildSummaryHtml(opts: SummaryBodyOptions): string {
+  const body = buildSummaryContent(opts);
+  const block = (lines: string[], pad = "0 0 16px") =>
+    `<tr><td style="padding:${pad}">${lines.map(escapeHtml).join("<br>")}</td></tr>`;
+  const link = (href: string, label: string) =>
+    `<a href="${escapeHtml(href)}" style="${LINK_STYLE}">${escapeHtml(label)}</a>`;
+  const rows = [
+    block([body.intro]),
+    ...body.appBlocks.map((lines) => block(lines)),
+    block(body.counts),
+    `<tr><td style="padding:0 0 24px">${link(body.scanUrl, SCAN_LINK_LABEL)}</td></tr>`,
+    `<tr><td style="padding:16px 0 0;border-top:1px solid #e5e5e5">` +
+      `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>` +
+      `<td valign="middle" style="padding:0 12px 0 0">` +
+      `<img src="${escapeHtml(ALPENGLOW_LOGO_URL)}" width="32" height="32" alt="${escapeHtml(SENDER_NAME)}" style="border-radius:6px;display:block"></td>` +
+      `<td valign="middle" style="font-size:13px;line-height:1.5;color:#555555">` +
+      `${escapeHtml(SENDER_NAME)}<br>` +
+      `${link(`mailto:${SUPPORT_EMAIL}`, SUPPORT_EMAIL)}<br>` +
+      `${link(body.unsubscribeUrl, "Unsubscribe")}` +
+      `</td></tr></table></td></tr>`,
+  ];
+  return [
+    "<!doctype html>",
+    '<html lang="en">',
+    '<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"></head>',
+    '<body style="margin:0;padding:0;background:#ffffff">',
+    '<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#ffffff">',
+    '<tr><td align="center" style="padding:24px 16px">',
+    `<table role="presentation" width="100%" cellpadding="0" cellspacing="0" border="0" style="max-width:560px;font-family:${FONT_STACK};font-size:15px;line-height:1.5;color:#1a1a1a;text-align:left">`,
+    ...rows,
+    "</table>",
+    "</td></tr>",
+    "</table>",
+    "</body>",
+    "</html>",
+  ].join("\n");
 }
 
 // ---------------------------------------------------------------------------
@@ -345,7 +416,6 @@ export type SummaryOutcomeReason =
   | "disabled"
   | "no_transport"
   | "no_sender"
-  | "no_postal_address"
   | SummaryShopSkipReason
   | "already_sent"
   | "throttled"
@@ -391,9 +461,6 @@ export async function sendScanSummary(args: {
   try {
     const config = getMerchantAlertConfigStatus();
     if (!config.configured) return skip(config.reason);
-    // Configured implies a postal address; this narrows it for the footer.
-    const postalAddress = getMerchantPostalAddress();
-    if (!postalAddress) return skip("no_postal_address");
 
     const shopSkip = summaryShopSkipReason(shop);
     if (shopSkip) return skip(shopSkip);
@@ -415,18 +482,19 @@ export async function sendScanSummary(args: {
     // summaryShopSkipReason already excluded "none"; this narrows the type.
     if (cadence === "none") return skip("plan_not_eligible");
 
+    const bodyOptions: SummaryBodyOptions = {
+      shopDomain: shop.domain,
+      cadence,
+      changes,
+      baseline,
+      scanUrl: buildScanAdminUrl(shop.domain, scan.id),
+      unsubscribeUrl: buildBodyUnsubscribeUrl(appUrl, token),
+    };
     const result = await sendMerchantAlert({
       to: recipient,
       subject: buildSummarySubject(changes, shop.domain),
-      text: buildSummaryText({
-        shopDomain: shop.domain,
-        cadence,
-        changes,
-        baseline,
-        scanUrl: buildScanAdminUrl(shop.domain, scan.id),
-        unsubscribeUrl: buildBodyUnsubscribeUrl(appUrl, token),
-        postalAddress,
-      }),
+      text: buildSummaryText(bodyOptions),
+      html: buildSummaryHtml(bodyOptions),
       unsubscribeUrl: buildHeaderUnsubscribeUrl(appUrl, token),
       // Same key on an Inngest retry: Resend returns the original response.
       idempotencyKey: `summary-email:${scan.id}`,

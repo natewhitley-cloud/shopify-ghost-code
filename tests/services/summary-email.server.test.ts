@@ -27,8 +27,10 @@ vi.mock("../../app/db.server", () => ({ default: {} }));
 import { logger } from "../../app/lib/logger.server";
 import type { SummaryRemovalRow } from "../../app/models/app-removal.server";
 import {
+  ALPENGLOW_LOGO_URL,
   MAX_APPS_IN_EMAIL,
   buildSummaryHash,
+  buildSummaryHtml,
   buildSummarySubject,
   buildSummaryText,
   computeFindingChanges,
@@ -48,7 +50,6 @@ const ORIGINAL_ENV = { ...process.env };
 const fetchMock = vi.fn();
 const DAY = 24 * 60 * 60 * 1000;
 const SHOP_DOMAIN = "my-store.myshopify.com";
-const POSTAL = "1 Test St, Testville, CO 80000, USA";
 
 const NO_CHANGES: SummaryChanges = {
   newCount: 0,
@@ -84,7 +85,6 @@ function enableEnv() {
   process.env.MERCHANT_ALERTS_ENABLED = "true";
   process.env.RESEND_API_KEY = "re_test";
   process.env.MERCHANT_ALERT_FROM = "Ghost Code <summary@example.com>";
-  process.env.MERCHANT_EMAIL_POSTAL_ADDRESS = POSTAL;
   process.env.SHOPIFY_APP_URL = "https://app.example.com/";
 }
 
@@ -100,17 +100,24 @@ const send = (over: Partial<SendArgs> = {}) =>
     ...over,
   });
 
-/** The subject and text of the one email sent. */
+/** The subject, text and HTML of the one email sent. */
 function sentEmail(): {
   subject: string;
   text: string;
+  html: string;
   to: string;
   headers: Record<string, string>;
 } {
   expect(fetchMock).toHaveBeenCalledTimes(1);
   const [, init] = fetchMock.mock.calls[0];
   const body = JSON.parse(init.body);
-  return { subject: body.subject, text: body.text, to: body.to, headers: init.headers };
+  return {
+    subject: body.subject,
+    text: body.text,
+    html: body.html,
+    to: body.to,
+    headers: init.headers,
+  };
 }
 
 beforeEach(() => {
@@ -196,11 +203,30 @@ describe("eligibility matrix (consent, plan, toggle, install)", () => {
     ["MERCHANT_ALERTS_ENABLED", "disabled"],
     ["RESEND_API_KEY", "no_transport"],
     ["MERCHANT_ALERT_FROM", "no_sender"],
-    ["MERCHANT_EMAIL_POSTAL_ADDRESS", "no_postal_address"],
   ])("not configured (%s unset) => %s, nothing sent", async (envVar, reason) => {
     delete process.env[envVar];
     expect(await send()).toEqual({ sent: false, reason });
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it("sends without any postal address configured", async () => {
+    delete process.env.MERCHANT_EMAIL_POSTAL_ADDRESS;
+    expect(await send()).toEqual({ sent: true, reason: "sent" });
+  });
+
+  it("sends the text and the HTML version of the same body together", async () => {
+    await send();
+    const email = sentEmail();
+    const opts = {
+      shopDomain: SHOP_DOMAIN,
+      cadence: "weekly" as const,
+      changes: changes(),
+      baseline: "last_summary" as const,
+      scanUrl: "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
+      unsubscribeUrl: "https://app.example.com/unsubscribe#t=tok123",
+    };
+    expect(email.text).toBe(buildSummaryText(opts));
+    expect(email.html).toBe(buildSummaryHtml(opts));
   });
 
   it("no owner email (none fetched, none cached) => no_recipient", async () => {
@@ -573,17 +599,21 @@ describe("subject rule", () => {
 // ---------------------------------------------------------------------------
 
 describe("body", () => {
+  const opts = (
+    over: Partial<Parameters<typeof buildSummaryText>[0]> = {},
+  ): Parameters<typeof buildSummaryText>[0] => ({
+    shopDomain: SHOP_DOMAIN,
+    cadence: "weekly",
+    changes: changes({ inactiveApps: [app("Judge.me", 3)], cleanedApps: [app("Klaviyo", 4)] }),
+    baseline: "last_summary",
+    scanUrl: "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
+    unsubscribeUrl: "https://app.example.com/unsubscribe#t=tok",
+    ...over,
+  });
   const text = (over: Partial<Parameters<typeof buildSummaryText>[0]> = {}) =>
-    buildSummaryText({
-      shopDomain: SHOP_DOMAIN,
-      cadence: "weekly",
-      changes: changes({ inactiveApps: [app("Judge.me", 3)], cleanedApps: [app("Klaviyo", 4)] }),
-      baseline: "last_summary",
-      scanUrl: "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
-      unsubscribeUrl: "https://app.example.com/unsubscribe#t=tok",
-      postalAddress: POSTAL,
-      ...over,
-    });
+    buildSummaryText(opts(over));
+  const html = (over: Partial<Parameters<typeof buildSummaryHtml>[0]> = {}) =>
+    buildSummaryHtml(opts(over));
 
   it("renders the full body in order", () => {
     expect(text()).toBe(
@@ -601,20 +631,112 @@ describe("body", () => {
         "See the details in Ghost Code:",
         "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
         "",
-        "You're getting this because summary emails are on for my-store.myshopify.com. Ghost Code scans your store every week and sends one summary when something changed.",
-        "",
-        "Turn off these emails: https://app.example.com/unsubscribe#t=tok",
-        "",
-        "Alpenglow Software LLC, support@alpenglowsoftware.com",
-        POSTAL,
+        "Alpenglow Software LLC",
+        "support@alpenglowsoftware.com",
+        "Unsubscribe: https://app.example.com/unsubscribe#t=tok",
       ].join("\n"),
     );
   });
 
-  it("Standard says every month", () => {
-    expect(text({ cadence: "monthly" })).toContain(
-      "Ghost Code scans your store every month and sends one summary when something changed.",
-    );
+  it("drops the old 'You're getting this', 'Turn off' and postal lines", () => {
+    for (const t of [text(), text({ cadence: "monthly" }), html()]) {
+      expect(t).not.toContain("You're getting this");
+      expect(t).not.toContain("summary emails are on");
+      expect(t).not.toContain("Turn off these emails");
+      expect(t).not.toMatch(/scans your store every/);
+      expect(t).not.toContain("Alpenglow Software LLC, support@");
+    }
+  });
+
+  describe("HTML version", () => {
+    /** Visible text of the HTML, tags dropped and entities decoded, in order. */
+    const visible = (h: string) =>
+      h
+        .replace(/<br>/g, "\n")
+        .replace(/<\/tr>/g, "\n")
+        .replace(/<[^>]+>/g, "")
+        .replace(/&lt;/g, "<")
+        .replace(/&gt;/g, ">")
+        .replace(/&quot;/g, '"')
+        .replace(/&#39;/g, "'")
+        .replace(/&amp;/g, "&")
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean);
+
+    it("carries the same facts as the text, in the same order", () => {
+      expect(visible(html())).toEqual([
+        "Here is what changed in my-store.myshopify.com since your last summary.",
+        "- Judge.me is no longer active. It left 3 items behind.",
+        "- Klaviyo: cleaned up. All 4 items it left are gone.",
+        "New since your last summary: 2",
+        "Fixed since your last summary: 1",
+        "Still in your theme: 7",
+        "See the details in Ghost Code",
+        "Alpenglow Software LLC",
+        "support@alpenglowsoftware.com",
+        "Unsubscribe",
+      ]);
+    });
+
+    it("links the scan, the support mailbox and the unsubscribe URL", () => {
+      const h = html();
+      expect(h).toContain(
+        '<a href="https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1" style="color:#1a56db;text-decoration:underline">See the details in Ghost Code</a>',
+      );
+      expect(h).toMatch(
+        /<a href="mailto:support@alpenglowsoftware\.com"[^>]*>support@alpenglowsoftware\.com<\/a>/,
+      );
+      expect(h).toMatch(
+        /<a href="https:\/\/app\.example\.com\/unsubscribe#t=tok"[^>]*>Unsubscribe<\/a>/,
+      );
+      expect(h.match(/<a /g)).toHaveLength(3);
+    });
+
+    it("shows the Alpenglow logo (https, 32x32, alt text) left of the sender name", () => {
+      expect(ALPENGLOW_LOGO_URL).toBe("https://alpenglowsoftware.com/assets/icons/alpenglow.png");
+      const h = html();
+      expect(h).toContain(
+        '<img src="https://alpenglowsoftware.com/assets/icons/alpenglow.png" width="32" height="32" alt="Alpenglow Software LLC" style="border-radius:6px;display:block">',
+      );
+      expect(h.indexOf("<img ")).toBeLessThan(h.indexOf("Alpenglow Software LLC<br>"));
+      expect(h.match(/<img /g)).toHaveLength(1);
+    });
+
+    it("is email-client safe: tables, inline styles, no scripts or external CSS, max 560px", () => {
+      const h = html();
+      expect(h.startsWith("<!doctype html>")).toBe(true);
+      expect(h).toContain('role="presentation"');
+      expect(h).toContain("max-width:560px");
+      expect(h).toContain("background:#ffffff");
+      expect(h).toMatch(/font-family:-apple-system,/);
+      expect(h).not.toMatch(/<script|<style|<link|class=|javascript:/i);
+      expect(h).not.toMatch(/src="http:/);
+    });
+
+    it("omits empty app sections", () => {
+      const h = html({ changes: changes() });
+      expect(h).not.toContain("no longer active");
+      expect(h).not.toContain("cleaned up");
+    });
+
+    it("escapes every interpolated value (app names, shop domain, URLs in attributes)", () => {
+      const h = html({
+        shopDomain: 'x<script>alert(1)</script>&"y.myshopify.com',
+        changes: changes({
+          inactiveApps: [app("<script>alert(1)</script>", 1)],
+          cleanedApps: [app(`Tom & Jerry's "Reviews"`, 2)],
+        }),
+        scanUrl: 'https://admin.shopify.com/a?x=1&y="><script>',
+        unsubscribeUrl: 'https://app.example.com/unsubscribe#t=a&b"c',
+      });
+      expect(h).not.toContain("<script");
+      expect(h).toContain("- &lt;script&gt;alert(1)&lt;/script&gt; is no longer active.");
+      expect(h).toContain("x&lt;script&gt;alert(1)&lt;/script&gt;&amp;&quot;y.myshopify.com");
+      expect(h).toContain("- Tom &amp; Jerry&#39;s &quot;Reviews&quot;: cleaned up.");
+      expect(h).toContain('href="https://admin.shopify.com/a?x=1&amp;y=&quot;&gt;&lt;script&gt;"');
+      expect(h).toContain('href="https://app.example.com/unsubscribe#t=a&amp;b&quot;c"');
+    });
   });
 
   it("singular item wording", () => {
@@ -662,7 +784,10 @@ describe("body", () => {
         text({ cadence: "monthly", baseline: "previous_scan" }),
         text({ changes: { ...NO_CHANGES, newCount: 1, inactiveApps: many, cleanedApps: many } }),
         text({ changes: { ...NO_CHANGES, cleanedApps: [app("Solo", 1)] } }),
-      ];
+        html(),
+        html({ changes: { ...NO_CHANGES, newCount: 1, inactiveApps: many, cleanedApps: many } }),
+        // The logo's public-site path ("assets/icons/...") is not a theme path.
+      ].map((b) => b.replace(ALPENGLOW_LOGO_URL, "LOGO_URL"));
     };
     const subjects = [
       buildSummarySubject(changes({ inactiveApps: [app("A")] }), SHOP_DOMAIN),

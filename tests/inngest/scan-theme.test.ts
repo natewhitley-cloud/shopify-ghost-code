@@ -3568,12 +3568,12 @@ describe("scanTheme — send-summary-email step (gc-ol95)", () => {
 
   it("does no work while the sender is not configured (dark by default)", async () => {
     arrange();
-    mockConfig.mockReturnValue({ configured: false, reason: "no_postal_address" });
+    mockConfig.mockReturnValue({ configured: false, reason: "no_sender" });
     const { results } = await run();
     expect(mockSend).not.toHaveBeenCalled();
     expect(mockLatest).not.toHaveBeenCalled();
     expect(mockGetPreviousScanForTheme).toHaveBeenCalledTimes(1); // finalize-scan only
-    expect(outcome(results)).toEqual({ sent: false, reason: "no_postal_address" });
+    expect(outcome(results)).toEqual({ sent: false, reason: "no_sender" });
   });
 
   describe("shop gates run before any summary query", () => {

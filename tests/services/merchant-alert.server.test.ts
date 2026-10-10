@@ -16,7 +16,6 @@ import {
   buildHeaderUnsubscribeUrl,
   buildScanAdminUrl,
   getMerchantAlertConfigStatus,
-  getMerchantPostalAddress,
   sendMerchantAlert,
 } from "../../app/services/merchant-alert.server";
 
@@ -27,7 +26,6 @@ function enableEnv() {
   process.env.MERCHANT_ALERTS_ENABLED = "true";
   process.env.RESEND_API_KEY = "re_test";
   process.env.MERCHANT_ALERT_FROM = "Ghost Code <alerts@example.com>";
-  process.env.MERCHANT_EMAIL_POSTAL_ADDRESS = "1 Test St, Testville, CO 80000, USA";
 }
 
 beforeEach(() => {
@@ -49,7 +47,6 @@ describe("getMerchantAlertConfigStatus / env gates", () => {
     ["MERCHANT_ALERTS_ENABLED", "disabled"],
     ["RESEND_API_KEY", "no_transport"],
     ["MERCHANT_ALERT_FROM", "no_sender"],
-    ["MERCHANT_EMAIL_POSTAL_ADDRESS", "no_postal_address"],
   ])("missing %s => %s", (envVar, reason) => {
     delete process.env[envVar];
     expect(getMerchantAlertConfigStatus()).toEqual({ configured: false, reason });
@@ -60,18 +57,9 @@ describe("getMerchantAlertConfigStatus / env gates", () => {
     expect(getMerchantAlertConfigStatus()).toEqual({ configured: false, reason: "disabled" });
   });
 
-  it("a blank postal address counts as missing (gc-ol95)", () => {
-    process.env.MERCHANT_EMAIL_POSTAL_ADDRESS = "   ";
-    expect(getMerchantAlertConfigStatus()).toEqual({
-      configured: false,
-      reason: "no_postal_address",
-    });
-    expect(getMerchantPostalAddress()).toBeNull();
-  });
-
-  it("all four set => configured", () => {
+  it("all three set => configured; no postal address is required (gc-ol95)", () => {
+    delete process.env.MERCHANT_EMAIL_POSTAL_ADDRESS;
     expect(getMerchantAlertConfigStatus()).toEqual({ configured: true });
-    expect(getMerchantPostalAddress()).toBe("1 Test St, Testville, CO 80000, USA");
   });
 });
 
@@ -98,6 +86,16 @@ describe("sendMerchantAlert", () => {
     expect(body).toMatchObject({ from: "Ghost Code <alerts@example.com>", to: "a@example.com" });
   });
 
+  it("sends the HTML part alongside the text when given, and omits it otherwise", async () => {
+    await sendMerchantAlert({ ...input, html: "<p>h</p>" });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toMatchObject({
+      text: "t",
+      html: "<p>h</p>",
+    });
+    await sendMerchantAlert(input);
+    expect(JSON.parse(fetchMock.mock.calls[1][1].body)).not.toHaveProperty("html");
+  });
+
   it("never falls back to the ops sender", async () => {
     process.env.OPS_ALERT_FROM = "Ops <ops@example.com>";
     delete process.env.MERCHANT_ALERT_FROM;
@@ -109,7 +107,7 @@ describe("sendMerchantAlert", () => {
   it.each([
     ["disabled", "MERCHANT_ALERTS_ENABLED"],
     ["no_transport", "RESEND_API_KEY"],
-    ["no_postal_address", "MERCHANT_EMAIL_POSTAL_ADDRESS"],
+    ["no_sender", "MERCHANT_ALERT_FROM"],
   ])("returns %s without fetching when %s is unset", async (reason, envVar) => {
     delete process.env[envVar];
     expect(await sendMerchantAlert(input)).toEqual({ sent: false, reason });

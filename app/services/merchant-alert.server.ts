@@ -5,11 +5,9 @@
  * alert was replaced by one summary per scheduled scan.
  *
  * DARK BY DEFAULT: nothing is sent unless MERCHANT_ALERTS_ENABLED === "true"
- * AND RESEND_API_KEY, MERCHANT_ALERT_FROM and MERCHANT_EMAIL_POSTAL_ADDRESS
- * are all set. Merchant mail NEVER falls back to the ops sender
- * (onboarding@resend.dev): a merchant-facing From must be a verified,
- * reputation-isolated domain. The postal address is the sender identity the
- * footer must carry, so without it nothing is "configured".
+ * AND RESEND_API_KEY and MERCHANT_ALERT_FROM are both set. Merchant mail NEVER
+ * falls back to the ops sender (onboarding@resend.dev): a merchant-facing From
+ * must be a verified, reputation-isolated domain.
  *
  * NEVER THROWS (mirrors ops-alert.server.ts): a failed email must never fail or
  * retry a scan. Every path returns a typed outcome.
@@ -37,7 +35,7 @@ export type MerchantAlertConfigStatus =
   | { configured: true }
   | {
       configured: false;
-      reason: "disabled" | "no_transport" | "no_sender" | "no_postal_address";
+      reason: "disabled" | "no_transport" | "no_sender";
     };
 
 /** Report whether merchant mail may be sent, WITHOUT sending. */
@@ -47,14 +45,7 @@ export function getMerchantAlertConfigStatus(): MerchantAlertConfigStatus {
   }
   if (!process.env.RESEND_API_KEY) return { configured: false, reason: "no_transport" };
   if (!process.env.MERCHANT_ALERT_FROM) return { configured: false, reason: "no_sender" };
-  if (!getMerchantPostalAddress()) return { configured: false, reason: "no_postal_address" };
   return { configured: true };
-}
-
-/** The sender's postal address for the email footer, or null when unset/blank. */
-export function getMerchantPostalAddress(): string | null {
-  const value = process.env.MERCHANT_EMAIL_POSTAL_ADDRESS?.trim();
-  return value ? value : null;
 }
 
 // ---------------------------------------------------------------------------
@@ -72,14 +63,7 @@ export interface SendMerchantAlertInput {
 
 export interface SendMerchantAlertResult {
   sent: boolean;
-  reason:
-    | "sent"
-    | "disabled"
-    | "no_transport"
-    | "no_sender"
-    | "no_postal_address"
-    | "http_error"
-    | "exception";
+  reason: "sent" | "disabled" | "no_transport" | "no_sender" | "http_error" | "exception";
 }
 
 /**
