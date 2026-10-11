@@ -43,6 +43,7 @@ vi.mock("../../app/shopify.server", () => ({ unauthenticated: { admin: vi.fn() }
 const svc = vi.hoisted(() => ({
   prepareSpeedReportRun: vi.fn(),
   resolveSpeedTargets: vi.fn(),
+  precheckStorefrontPassword: vi.fn(),
   runPageSpeedAttempt: vi.fn(),
   finalizeSpeedReport: vi.fn(),
 }));
@@ -94,6 +95,7 @@ beforeEach(() => {
       product: { status: "OK", url: PRODUCT },
     },
   });
+  svc.precheckStorefrontPassword.mockResolvedValue("open");
   svc.runPageSpeedAttempt.mockResolvedValue(okAttempt());
   svc.finalizeSpeedReport.mockResolvedValue({ status: "COMPLETED", calls: 6 });
 });
@@ -171,6 +173,7 @@ describe("speed-report-run (worker)", () => {
     expect(stepNames(step)).toEqual([
       "prepare",
       "resolve-urls",
+      "password-check",
       "psi-home-1",
       "psi-home-2",
       "psi-home-3",
@@ -240,6 +243,41 @@ describe("speed-report-run (worker)", () => {
       "psi-home-3",
     ]);
   });
+
+  it("password found by the pre-check: no PageSpeed call at all, finalize as password (gc-wt3y #1)", async () => {
+    svc.precheckStorefrontPassword.mockResolvedValue("password");
+    svc.finalizeSpeedReport.mockResolvedValue({ status: "UNAVAILABLE_PASSWORD", calls: 0 });
+    const step = createMockInngestStep();
+    expect(await handler({ event, step, logger })).toEqual({
+      outcome: "UNAVAILABLE_PASSWORD",
+      calls: 0,
+    });
+    expect(stepNames(step)).toEqual(["prepare", "resolve-urls", "password-check", "finalize"]);
+    expect(svc.runPageSpeedAttempt).not.toHaveBeenCalled();
+    expect(svc.precheckStorefrontPassword).toHaveBeenCalledWith({
+      shopId: "s1",
+      primaryHost: "shop.example",
+      storeHosts: ["shop.example", "shop.myshopify.com"],
+    });
+    expect(svc.finalizeSpeedReport.mock.calls[0][0]).toMatchObject({
+      passwordProtected: true,
+      tested: [
+        { page: "home", url: HOME, attempts: [] },
+        { page: "product", url: PRODUCT, attempts: [] },
+      ],
+    });
+  });
+
+  it.each(["unknown", "skipped", "open"])(
+    "pre-check %s: the run goes on to PageSpeed",
+    async (outcome) => {
+      svc.precheckStorefrontPassword.mockResolvedValue(outcome);
+      const step = createMockInngestStep();
+      await handler({ event, step, logger });
+      expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(6);
+      expect(svc.finalizeSpeedReport.mock.calls[0][0].passwordProtected).toBeUndefined();
+    },
+  );
 
   it("password on the first call: stops everything (1 call), product never tested", async () => {
     svc.runPageSpeedAttempt.mockResolvedValueOnce({ kind: "password" });

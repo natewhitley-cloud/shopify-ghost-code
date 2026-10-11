@@ -44,6 +44,7 @@ import {
   checkSpeedReportEligibility,
   finalizeSpeedReport,
   isAllowedSpeedTarget,
+  precheckStorefrontPassword,
   prepareSpeedReportRun,
   productUrlOnPrimaryHost,
   requestSpeedReportRunNow,
@@ -53,6 +54,7 @@ import {
   type SpeedAttempt,
   type SpeedTargets,
 } from "../../app/services/speed-report.server";
+import type { StorefrontFetch } from "../../app/services/storefront-fetcher.server";
 import {
   buildPageSpeedError,
   buildPageSpeedResponse,
@@ -475,6 +477,31 @@ describe("runPageSpeedAttempt", () => {
     });
   });
 
+  it("password page: Lighthouse got a 401 for the document (gc-wt3y #1)", async () => {
+    const fetchImpl = fetchReturning(() =>
+      json(
+        400,
+        buildPageSpeedError(
+          400,
+          "Lighthouse returned error: ERRORED_DOCUMENT_REQUEST. Lighthouse was unable to reliably load the page you requested. (Status code: 401)",
+        ),
+      ),
+    );
+    await expect(runPageSpeedAttempt(attemptInput(fetchImpl))).resolves.toEqual({
+      kind: "password",
+    });
+  });
+
+  it("a document failure with another status stays document_failed", async () => {
+    const fetchImpl = fetchReturning(() =>
+      json(400, buildPageSpeedError(400, "ERRORED_DOCUMENT_REQUEST. (Status code: 403)")),
+    );
+    await expect(runPageSpeedAttempt(attemptInput(fetchImpl))).resolves.toEqual({
+      kind: "error",
+      code: "document_failed",
+    });
+  });
+
   it.each([
     [429, buildPageSpeedError(429, "Quota exceeded"), "rate_limited"],
     [500, buildPageSpeedError(500, "Backend Error"), "server_error"],
@@ -509,6 +536,86 @@ describe("runPageSpeedAttempt", () => {
     expect(logged).not.toContain(KEY);
     expect(logged).not.toContain("googleapis.com");
     expect(logged).not.toContain("key=");
+  });
+});
+
+describe("precheckStorefrontPassword (gc-wt3y #1)", () => {
+  const SHOPIFY_MARKER = `<script>Shopify.shop = "${MYSHOPIFY_HOST}";</script>`;
+  const PASSWORD_HTML = `<html><head>${SHOPIFY_MARKER}</head><body class="password-page"><form method="post" action="/password" id="login_form"><input type="password" name="password"></form></body></html>`;
+  const STORE_HTML = `<html><head>${SHOPIFY_MARKER}</head><body class="template-index">Shop</body></html>`;
+
+  function page(body: string, status = 200): Response {
+    return new Response(body, { status, headers: { "content-type": "text/html" } });
+  }
+
+  function precheck(fetchImpl: StorefrontFetch) {
+    return precheckStorefrontPassword({
+      shopId: SHOP_ID,
+      primaryHost: STORE_HOST,
+      storeHosts: STORE_HOSTS,
+      fetchImpl,
+    });
+  }
+
+  it("redirect to /password -> password, reading only the shop's own hosts", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: `https://${STORE_HOST}/password` },
+        }),
+      )
+      .mockResolvedValueOnce(page(PASSWORD_HTML));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("password");
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(`https://${STORE_HOST}/`);
+    expect(fetchImpl.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+  });
+
+  it("password page served at / with a 200 (no redirect) -> password", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(page(PASSWORD_HTML));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("password");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("password page served at / with a 401 -> password", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(page(PASSWORD_HTML, 401));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("password");
+  });
+
+  it("an open storefront -> open", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(page(STORE_HTML));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("open");
+  });
+
+  it("network failure -> unknown (the run goes on to PageSpeed, never blocked)", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("unknown");
+  });
+
+  it("a redirect off the shop's hosts is not followed -> unknown", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 301, headers: { location: "https://evil.example/" } }),
+      );
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("unknown");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("flag off or shop no longer eligible: no fetch at all -> skipped", async () => {
+    const fetchImpl = vi.fn();
+    delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("skipped");
+    process.env.SPEED_REPORT_LIVE_ENABLED = "true";
+    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" });
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("skipped");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("never reserves PageSpeed budget", async () => {
+    await precheck(vi.fn().mockResolvedValue(page(PASSWORD_HTML)) as unknown as StorefrontFetch);
+    expect(mockModel.reservePageSpeedCall).not.toHaveBeenCalled();
   });
 });
 
@@ -720,6 +827,29 @@ describe("finalizeSpeedReport", () => {
       ],
     });
     expect(r).toEqual({ status: "UNAVAILABLE_PASSWORD", calls: 1 });
+  });
+
+  it("password found by the pre-check -> UNAVAILABLE_PASSWORD with 0 calls (gc-wt3y #1)", async () => {
+    const r = await finalizeSpeedReport({
+      ...base,
+      targets: TARGETS,
+      tested: [
+        { page: "home", url: HOME, attempts: [] },
+        { page: "product", url: HOME, attempts: [] },
+      ],
+      passwordProtected: true,
+    });
+    expect(r).toEqual({ status: "UNAVAILABLE_PASSWORD", calls: 0 });
+    const written = mockModel.finishSpeedReport.mock.calls[0][1];
+    expect(written).toMatchObject({ status: "UNAVAILABLE_PASSWORD", psiCalls: 0 });
+    expect(written.pages.map((p: { status: string }) => p.status)).toEqual([
+      "PASSWORD",
+      "PASSWORD",
+    ]);
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({
+      status: "UNAVAILABLE_PASSWORD",
+      calls: 0,
+    });
   });
 
   it("budget before any result -> SKIPPED_BUDGET with reason budget and 0 calls", async () => {

@@ -20,6 +20,9 @@
  *     Google failure, so a call step is not retried either;
  *   - retries: 1 (a DB blip), finish timeout 45 m: a failed run cannot loop;
  *   - the global daily budget is reserved before each call (inside the step);
+ *   - a password-protected storefront is found BEFORE any call by one
+ *     storefront GET (password-check); PageSpeed's final URL / 401 are the
+ *     fallback when that read fails;
  *   - a 429 / 4xx / password page / exhausted budget / lost eligibility halts
  *     the rest of the run.
  *   - Manual "Run now" runs get queue priority over the Sunday batch.
@@ -124,6 +127,27 @@ export const speedReportRun = inngest.createFunction(
       { page: "home", url: targets.homeUrl },
     ];
     if (targets.product.status === "OK") pages.push({ page: "product", url: targets.product.url });
+
+    // Zero-PageSpeed-cost check first: a password page is found without
+    // spending (or reserving) a single call.
+    const precheck = await step.run("password-check", () =>
+      svc.precheckStorefrontPassword({
+        shopId,
+        primaryHost: targets.primaryHost,
+        storeHosts: targets.storeHosts,
+      }),
+    );
+    if (precheck === "password") {
+      const result = await step.run("finalize", () =>
+        svc.finalizeSpeedReport({
+          ...finalizeBase,
+          targets,
+          tested: pages.map((p) => ({ ...p, attempts: [] })),
+          passwordProtected: true,
+        }),
+      );
+      return { outcome: result.status, calls: result.calls };
+    }
 
     const tested: Array<{
       page: "home" | "product";

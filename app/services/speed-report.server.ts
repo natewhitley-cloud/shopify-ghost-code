@@ -4,6 +4,7 @@
  *
  *   prepareSpeedReportRun   gate (flag, plan, install) + key check + report row
  *   resolveSpeedTargets     Admin API: primary domain + one product URL
+ *   precheckStorefrontPassword  one storefront GET: password page? (no PSI cost)
  *   runPageSpeedAttempt     ONE PageSpeed call (re-gates, reserves budget first)
  *   finalizeSpeedReport     median per page, status, row, OpsEvent
  *
@@ -30,7 +31,13 @@ import {
   getPageSpeedApiKey,
   isSpeedReportLive,
 } from "./speed-report-config.server";
-import { isBareHostname } from "./storefront-fetcher.server";
+import {
+  isBareHostname,
+  isPasswordPageHtml,
+  isPasswordPath,
+  readStorefrontHomepage,
+  type StorefrontFetch,
+} from "./storefront-fetcher.server";
 import { inngest } from "../../inngest/client";
 import db from "../db.server";
 import { getPlanFeatures } from "../lib/billing.server";
@@ -336,6 +343,66 @@ export async function resolveSpeedTargets(admin: AdminApiContext): Promise<Resol
 }
 
 // ---------------------------------------------------------------------------
+// Step 2b: password pre-check (no PageSpeed cost)
+// ---------------------------------------------------------------------------
+
+/**
+ * password  the homepage is Shopify's password page: test nothing
+ * open      the homepage is readable and not the password page
+ * unknown   the read failed (network, timeout, refused redirect, too large):
+ *           go on to PageSpeed, whose final-URL / 401 checks still apply
+ * skipped   flag off or the shop is no longer eligible: nothing was fetched
+ */
+export type PasswordPrecheck = "password" | "open" | "unknown" | "skipped";
+
+/**
+ * One GET of `https://<primary host>/` through the scanner's SSRF-safe
+ * storefront read (readStorefrontHomepage: connect-time address guard,
+ * redirects only to the shop's own hosts, 10 s, 5 MB), BEFORE any PageSpeed
+ * call or budget reservation. A password-protected store either redirects to
+ * /password or serves the password page at / (200 or 401), so both the final
+ * path and the HTML are checked. A failed read never blocks the run.
+ */
+export async function precheckStorefrontPassword(input: {
+  shopId: string;
+  primaryHost: string;
+  storeHosts: string[];
+  fetchImpl?: StorefrontFetch;
+}): Promise<PasswordPrecheck> {
+  const gate = await checkSpeedReportEligibility(input.shopId);
+  if (!gate.eligible) return "skipped";
+
+  const primaryHost = input.primaryHost.toLowerCase();
+  const read = await readStorefrontHomepage(
+    {
+      primaryHost,
+      myshopifyHost: input.storeHosts.find((h) => h.toLowerCase() !== primaryHost) ?? null,
+    },
+    {
+      // A password page can answer 401, so its body is read too.
+      readBody: (url, status) =>
+        !isPasswordPath(url.pathname) && ((status >= 200 && status < 300) || status === 401),
+      fetchImpl: input.fetchImpl,
+    },
+  );
+  let outcome: PasswordPrecheck;
+  if (read.status === "unreachable") outcome = "unknown";
+  else if (isPasswordPath(read.url.pathname)) outcome = "password";
+  else if (read.html !== null && isPasswordPageHtml(read.html)) outcome = "password";
+  else outcome = read.html === null ? "unknown" : "open";
+
+  logger.info("speed report password pre-check", {
+    function: LOG_FN,
+    event: "speed_password_precheck",
+    shopId: input.shopId,
+    host: primaryHost,
+    outcome: read.status === "unreachable" ? `${outcome}:${read.reason}` : outcome,
+    ...(read.status === "read" ? { httpStatus: read.httpStatus } : {}),
+  });
+  return outcome;
+}
+
+// ---------------------------------------------------------------------------
 // Step 3: one PageSpeed call
 // ---------------------------------------------------------------------------
 
@@ -411,7 +478,11 @@ export async function runPageSpeedAttempt(input: {
   const result = await callPageSpeed(input.pageUrl, { apiKey, fetchImpl: input.fetchImpl });
   let attempt: SpeedAttempt;
   if (!result.ok) {
-    attempt = { kind: "error", code: result.code };
+    // The storefront answered Lighthouse 401: Shopify's password page.
+    attempt =
+      result.code === "document_failed" && result.documentStatus === 401
+        ? { kind: "password" }
+        : { kind: "error", code: result.code };
   } else {
     const run = summarizeLighthouse(result.lighthouse, input.storeHosts);
     if (!run) attempt = { kind: "error", code: "bad_response" };
@@ -502,6 +573,8 @@ export type PageAttempts = { page: SpeedPageKey; url: string; attempts: SpeedAtt
 /**
  * Build the pages, roll up the status, write the report and its OpsEvent.
  * `targets` null = the URLs could not be resolved (FAILED / no_domain).
+ * `passwordProtected` = the pre-check found the password page: every tested
+ * page is PASSWORD with no call made.
  */
 export async function finalizeSpeedReport(input: {
   reportId: string;
@@ -511,6 +584,7 @@ export async function finalizeSpeedReport(input: {
   targets: SpeedTargets | null;
   tested: PageAttempts[];
   haltCode?: SpeedFailureCode;
+  passwordProtected?: boolean;
 }): Promise<{ status: SpeedReportStatus; calls: number }> {
   const calls = input.tested.reduce((n, p) => n + p.attempts.filter(attemptCalledGoogle).length, 0);
   let status: SpeedReportStatus;
@@ -522,7 +596,9 @@ export async function finalizeSpeedReport(input: {
     failureReason = "no_domain";
   } else {
     pages = input.tested.map((p) =>
-      buildSpeedPageResult(p.page, p.url, p.attempts, input.haltCode),
+      input.passwordProtected
+        ? { page: p.page, url: p.url, status: "PASSWORD" as const, runsAttempted: 0, runsOk: 0 }
+        : buildSpeedPageResult(p.page, p.url, p.attempts, input.haltCode),
     );
     const product = input.targets.product;
     if (product.status !== "OK") {

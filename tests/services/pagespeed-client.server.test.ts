@@ -86,6 +86,7 @@ describe("callPageSpeed", () => {
         "Lighthouse returned error: ERRORED_DOCUMENT_REQUEST. (Status code: 404)",
       ),
       "document_failed",
+      404,
     ],
     [400, buildPageSpeedError(400, "Lighthouse returned error: NO_FCP."), "document_failed"],
     [
@@ -94,12 +95,50 @@ describe("callPageSpeed", () => {
       "http_error",
     ],
     [403, buildPageSpeedError(403, "PageSpeed Insights API has not been used"), "http_error"],
-  ])("maps HTTP %i to %s", async (status, body, code) => {
+  ])("maps HTTP %i to %s", async (status, body, code, documentStatus?: number) => {
     const result = await callPageSpeed(URLS.document, {
       apiKey: KEY,
       fetchImpl: respond(status, body),
     });
-    expect(result).toEqual({ ok: false, code, httpStatus: status });
+    expect(result).toEqual({
+      ok: false,
+      code,
+      httpStatus: status,
+      ...(documentStatus ? { documentStatus } : {}),
+    });
+  });
+
+  it("reports the storefront's own status when Lighthouse names it (401 = password page, gc-wt3y #1)", async () => {
+    const message =
+      "Lighthouse returned error: ERRORED_DOCUMENT_REQUEST. Lighthouse was unable to reliably load the page you requested. Make sure you are testing the correct URL and that the server is properly responding to all requests. (Status code: 401)";
+    const viaHttp = await callPageSpeed(URLS.document, {
+      apiKey: KEY,
+      fetchImpl: respond(400, buildPageSpeedError(400, message)),
+    });
+    expect(viaHttp).toEqual({
+      ok: false,
+      code: "document_failed",
+      httpStatus: 400,
+      documentStatus: 401,
+    });
+    const viaBody = await callPageSpeed(URLS.document, {
+      apiKey: KEY,
+      fetchImpl: respond(
+        200,
+        buildPageSpeedResponse({
+          runtimeError: {
+            code: "ERRORED_DOCUMENT_REQUEST",
+            message: "Unable to load (Status code: 401)",
+          },
+        }),
+      ),
+    });
+    expect(viaBody).toEqual({
+      ok: false,
+      code: "document_failed",
+      httpStatus: 200,
+      documentStatus: 401,
+    });
   });
 
   it("maps a 200 with a Lighthouse runtimeError to document_failed", async () => {
