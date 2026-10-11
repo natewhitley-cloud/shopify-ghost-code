@@ -49,23 +49,38 @@ export const FAN_OUT_CHUNK_SIZE = 500;
  * @param shops Shops to dispatch a check event for.
  */
 export async function fanOutShopChecks(step: FanOutStep, shops: FanOutShop[]): Promise<void> {
-  for (let offset = 0; offset < shops.length; offset += FAN_OUT_CHUNK_SIZE) {
-    const chunk = shops.slice(offset, offset + FAN_OUT_CHUNK_SIZE);
-    const chunkIndex = offset / FAN_OUT_CHUNK_SIZE;
+  await fanOutInChunks(step, shops, "fan-out-shops-chunk", async (chunk) => {
+    // Dynamic import matches the coordinators' existing in-step idiom and
+    // keeps the client mockable in tests via the resolved module path.
+    const { inngest } = await import("../client");
+    await inngest.send(
+      chunk.map((shop) => ({
+        name: "poll/check-shop" as const,
+        data: {
+          shopId: shop.id,
+          shopDomain: shop.domain,
+        },
+      })),
+    );
+  });
+}
 
-    await step.run(`fan-out-shops-chunk-${chunkIndex}`, async () => {
-      // Dynamic import matches the coordinators' existing in-step idiom and
-      // keeps the client mockable in tests via the resolved module path.
-      const { inngest } = await import("../client");
-      await inngest.send(
-        chunk.map((shop) => ({
-          name: "poll/check-shop" as const,
-          data: {
-            shopId: shop.id,
-            shopDomain: shop.domain,
-          },
-        })),
-      );
-    });
+/**
+ * The chunking core shared by every coordinator fan-out (poll/check-shop
+ * above, the store speed report's speed-report/requested): `send` runs once per
+ * FAN_OUT_CHUNK_SIZE chunk, each inside its own step named
+ * `${stepPrefix}-${chunkIndex}`, so a retry re-sends only the failed chunk.
+ * No-op for an empty list.
+ */
+export async function fanOutInChunks<T>(
+  step: FanOutStep,
+  items: T[],
+  stepPrefix: string,
+  send: (chunk: T[]) => Promise<void>,
+): Promise<void> {
+  for (let offset = 0; offset < items.length; offset += FAN_OUT_CHUNK_SIZE) {
+    const chunk = items.slice(offset, offset + FAN_OUT_CHUNK_SIZE);
+    const chunkIndex = offset / FAN_OUT_CHUNK_SIZE;
+    await step.run(`${stepPrefix}-${chunkIndex}`, () => send(chunk));
   }
 }

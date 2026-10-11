@@ -33,6 +33,7 @@ import { OPERATOR_DIGEST_CRON } from "../../inngest/functions/operator-digest";
 import { POLL_THEME_CHANGES_CRON } from "../../inngest/functions/poll-theme-changes";
 import { RECONCILE_INSTALLS_CRON } from "../../inngest/functions/reconcile-installs";
 import { SNAPSHOT_METRICS_CRON } from "../../inngest/functions/snapshot-metrics";
+import { SPEED_REPORT_CRON } from "../../inngest/functions/speed-report";
 import { WEEKLY_SCAN_CRON } from "../../inngest/functions/weekly-scan";
 
 const EXPECTED: Array<[string, string, string]> = [
@@ -44,6 +45,8 @@ const EXPECTED: Array<[string, string, string]> = [
   ["poll-theme-changes", POLL_THEME_CHANGES_CRON, "0 6 * * *"],
   ["reconcile-installs", RECONCILE_INSTALLS_CRON, "TZ=America/Denver 0 5 * * *"],
   ["operator-digest", OPERATOR_DIGEST_CRON, "TZ=America/Denver 30 5 * * *"],
+  // gc-wt3y: Sunday 08:10 UTC, 90 min after weekly-scan.
+  ["speed-report-weekly", SPEED_REPORT_CRON, "10 8 * * 0"],
 ];
 
 describe("cron schedules", () => {
@@ -74,6 +77,8 @@ describe("CRON_HEARTBEAT_EXPECTATIONS", () => {
     expect(byKey.get("monthly-scan")).toBe(31 * DAY);
     // poll-theme-changes is now the daily stale-scan sweep.
     expect(byKey.get("poll-theme-changes")).toBe(DAY);
+    // gc-wt3y store speed report coordinator, weekly.
+    expect(byKey.get("speed-report-weekly")).toBe(7 * DAY);
   });
 
   it("covers exactly the registered cron functions", () => {

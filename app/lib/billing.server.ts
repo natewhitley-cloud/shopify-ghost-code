@@ -194,6 +194,12 @@ export type PlanFeatures = {
    * for the alert gate and the throttle window.
    */
   alertCadence: "none" | "weekly" | "monthly";
+  /**
+   * Weekly store speed report: Google PageSpeed results for the homepage and
+   * one product page, with the cost broken down by app (gc-wt3y).
+   * Professional-only. Also DARK behind SPEED_REPORT_LIVE_ENABLED.
+   */
+  speedReport: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -211,6 +217,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
         exportPdf: false, // PDF export is Professional-only (gc-rrh.1)
         alertCadence: "monthly", // matches the monthly scheduled scan (gc-syz.3, gc-iefo)
+        speedReport: false, // Professional-only (gc-wt3y)
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -225,6 +232,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
         exportPdf: true, // Professional-only branded PDF export (gc-rrh.1)
         alertCadence: "weekly", // matches the weekly scheduled scan (gc-syz.3, gc-iefo)
+        speedReport: true, // Professional-only weekly store speed report (gc-wt3y)
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -241,6 +249,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectCheckoutSunset: false, // Free does NOT get checkout-sunset detection (gc-b3c)
         exportPdf: false, // Free does NOT get PDF export (gc-rrh.1)
         alertCadence: "none", // Free has no scheduled rescans, so nothing to alert on (gc-syz.3)
+        speedReport: false, // Professional-only (gc-wt3y)
       };
   }
 }

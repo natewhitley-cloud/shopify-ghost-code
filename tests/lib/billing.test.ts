@@ -262,3 +262,15 @@ describe("getPlanFeatures alertCadence (gc-syz.3)", () => {
     }
   });
 });
+
+describe("getPlanFeatures speedReport (gc-wt3y)", () => {
+  it.each([
+    ["free", false],
+    ["Standard", false],
+    ["Professional", true],
+    ["unknown", false],
+    ["professional", false], // plan names are exact; a lowercase variant is not a paid plan
+  ])("%s -> %s", (plan, enabled) => {
+    expect(getPlanFeatures(plan).speedReport).toBe(enabled);
+  });
+});
