@@ -248,7 +248,13 @@ describe("stale_results stages (gc-mgi)", () => {
 describe("speed_teaser stages (gc-iirv)", () => {
   const SPEED_STAGES = {
     shown: { column: "speedTeaserShownAt", event: "nudge_shown", extra: {} },
-    clicked: { column: "speedTeaserClickedAt", event: "nudge_clicked", extra: {} },
+    clicked: {
+      column: "speedTeaserClickedAt",
+      event: "nudge_clicked",
+      // Security LOW-2: a click counts only after the teaser was SHOWN, so a
+      // stray src=speed_teaser ping cannot write a click for a shop that never saw it.
+      extra: { speedTeaserShownAt: { not: null } },
+    },
     converted: {
       column: "speedTeaserConvertedAt",
       event: "nudge_converted",
@@ -302,6 +308,17 @@ describe("speed_teaser stages (gc-iirv)", () => {
 
     await expect(recordNudgeStageOnce("speed_teaser", "shown", DOMAIN)).resolves.toBe(false);
 
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("clicked before shown (precondition unmet, no row matched): no event (security LOW-2)", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(recordNudgeStageOnce("speed_teaser", "clicked", DOMAIN)).resolves.toBe(false);
+
+    expect(mockDb.shop.updateMany.mock.calls[0][0].where).toMatchObject({
+      speedTeaserShownAt: { not: null },
+    });
     expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
   });
 

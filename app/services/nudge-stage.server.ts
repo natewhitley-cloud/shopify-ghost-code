@@ -83,9 +83,12 @@ const NUDGE_STAGE_CLAIMS = {
   // speed page, shown to Free AND Standard (it asks for Professional). No
   // dismiss control (so no `dismissed`); converted counts only a merchant who
   // SAW it (the click ping can be lost), on any upgrade to Professional.
+  // clicked also requires shown (security LOW-2): any page can POST
+  // src=speed_teaser to /app/upgrade, so a click is counted only for a shop
+  // that saw the teaser.
   [NUDGE_KEYS.SPEED_TEASER]: {
     shown: { column: "speedTeaserShownAt" },
-    clicked: { column: "speedTeaserClickedAt" },
+    clicked: { column: "speedTeaserClickedAt", extraWhere: { speedTeaserShownAt: { not: null } } },
     converted: {
       column: "speedTeaserConvertedAt",
       extraWhere: { speedTeaserShownAt: { not: null } },
