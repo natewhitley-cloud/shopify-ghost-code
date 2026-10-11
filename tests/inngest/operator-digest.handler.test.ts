@@ -683,6 +683,14 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
     for (const s of EXCLUDED) expect(section).not.toContain(s.domain);
   });
 
+  it("SCANS shows the trigger split, reading Scan.origin (separate from speed)", async () => {
+    for (const scan of tables.scan) scan.origin = "SCHEDULED";
+    const body = await runDigest();
+    const section = body.slice(body.indexOf("SCANS (last 24h)"));
+    expect(section).toMatch(/ {2}By trigger: 0 manual, [1-9]\d* scheduled, 0 theme publish/);
+    expect(section).toMatch(/real-a\.myshopify\.com -- \d+ \(scheduled \d+\)/);
+  });
+
   it("SPEED REPORTS empty state when no runs in 24h", async () => {
     const body = await runDigest();
     expect(body).toContain(

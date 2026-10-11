@@ -65,6 +65,8 @@ import {
   type RollupScanRow,
   computeScanStatusCounts,
   computeScansPerStore,
+  computeScanTriggerCounts,
+  formatScanTriggerSplit,
   countUninstallEventsExcluding,
   DAY_MS,
   diffSnapshot,
@@ -584,18 +586,24 @@ describe("computeScansPerStore", () => {
 
   it("groups by shop and sorts most-active first", () => {
     const rows = computeScansPerStore(
-      [{ shopId: "s1" }, { shopId: "s2" }, { shopId: "s2" }],
+      [
+        { shopId: "s1", origin: "SCHEDULED" },
+        { shopId: "s2", origin: "MANUAL" },
+        { shopId: "s2", origin: "AUTO_PUBLISH" },
+      ],
       domainById,
     );
     expect(rows).toEqual([
-      { domain: "b.myshopify.com", count: 2 },
-      { domain: "a.myshopify.com", count: 1 },
+      { domain: "b.myshopify.com", count: 2, triggers: { manual: 1, scheduled: 0, publish: 1 } },
+      { domain: "a.myshopify.com", count: 1, triggers: { manual: 0, scheduled: 1, publish: 0 } },
     ]);
   });
 
   it("falls back to the shopId when the domain is unknown", () => {
     const rows = computeScansPerStore([{ shopId: "ghost" }], domainById);
-    expect(rows).toEqual([{ domain: "ghost", count: 1 }]);
+    expect(rows).toEqual([
+      { domain: "ghost", count: 1, triggers: { manual: 1, scheduled: 0, publish: 0 } },
+    ]);
   });
 
   it("returns an empty list for no scans", () => {
@@ -3160,6 +3168,43 @@ describe("journey (gc-dpm.3)", () => {
       ]);
     });
 
+    it("labels each scan with its trigger: manual, scheduled, theme-publish", () => {
+      const s = shop({ id: "scanner", installedAt: at("01:00") });
+      const j = run([s], {
+        rows: {
+          scans: [
+            {
+              shopId: "scanner",
+              createdAt: at("01:10"),
+              status: "COMPLETED",
+              findingCount: 2,
+              origin: "MANUAL",
+            },
+            {
+              shopId: "scanner",
+              createdAt: at("01:20"),
+              status: "COMPLETED",
+              findingCount: 3,
+              origin: "SCHEDULED",
+            },
+            {
+              shopId: "scanner",
+              createdAt: at("01:30"),
+              status: "FAILED",
+              findingCount: 0,
+              origin: "AUTO_PUBLISH",
+            },
+          ],
+        },
+      });
+      expect(j.timeline[0].events.map((e) => e.label)).toEqual([
+        "installed",
+        "manual scan COMPLETED (2)",
+        "scheduled scan COMPLETED (3)",
+        "theme-publish scan FAILED",
+      ]);
+    });
+
     it("labels nudge stamps and billing events, keeping the latest when capped", () => {
       const s = shop({
         id: "busy",
@@ -3766,5 +3811,75 @@ describe("SPEED REPORTS section", () => {
     const i = body.indexOf("SPEED REPORTS (last 24h)\n  No speed runs in the last 24h");
     expect(i).toBeGreaterThan(body.indexOf("=== OPERATIONAL HEALTH"));
     expect(i).toBeLessThan(body.indexOf("CRON HEALTH"));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Scan trigger (manual / scheduled / theme publish)
+// ---------------------------------------------------------------------------
+
+describe("scan trigger in SCANS and the journey timeline", () => {
+  it("counts each origin; an unknown origin counts as manual (the column default)", () => {
+    expect(
+      computeScanTriggerCounts([
+        { origin: "MANUAL" },
+        { origin: "SCHEDULED" },
+        { origin: "SCHEDULED" },
+        { origin: "AUTO_PUBLISH" },
+        { origin: "WEIRD" },
+      ]),
+    ).toEqual({ manual: 2, scheduled: 2, publish: 1 });
+  });
+
+  it("formats the per-store split, omitting zero buckets", () => {
+    expect(formatScanTriggerSplit({ manual: 2, scheduled: 1, publish: 0 })).toBe(
+      "manual 2, scheduled 1",
+    );
+    expect(formatScanTriggerSplit({ manual: 0, scheduled: 1, publish: 0 })).toBe("scheduled 1");
+    expect(formatScanTriggerSplit({ manual: 0, scheduled: 0, publish: 3 })).toBe("theme publish 3");
+    expect(formatScanTriggerSplit({ manual: 0, scheduled: 0, publish: 0 })).toBe("");
+  });
+
+  it("renders By trigger after By status, and the split on each store line", () => {
+    const body = buildDigestBody(
+      makeData({
+        scans: {
+          ...makeData().scans,
+          byTrigger: { manual: 3, scheduled: 1, publish: 1 },
+          perStore: [
+            {
+              domain: "a.myshopify.com",
+              count: 3,
+              triggers: { manual: 2, scheduled: 1, publish: 0 },
+            },
+            {
+              domain: "paw-naturals-llc.myshopify.com",
+              count: 1,
+              triggers: { manual: 0, scheduled: 1, publish: 0 },
+            },
+            {
+              domain: "c.myshopify.com",
+              count: 1,
+              triggers: { manual: 0, scheduled: 0, publish: 1 },
+            },
+          ],
+        },
+      }),
+    );
+    const section = body.slice(body.indexOf("SCANS (last 24h)"));
+    const status = section.indexOf("  By status:");
+    const trigger = section.indexOf("  By trigger: 3 manual, 1 scheduled, 1 theme publish");
+    expect(status).toBeGreaterThan(-1);
+    expect(trigger).toBeGreaterThan(status);
+    expect(trigger).toBeLessThan(section.indexOf("  By store:"));
+    expect(section).toContain("    a.myshopify.com -- 3 (manual 2, scheduled 1)");
+    expect(section).toContain("    paw-naturals-llc.myshopify.com -- 1 (scheduled 1)");
+    expect(section).toContain("    c.myshopify.com -- 1 (theme publish 1)");
+  });
+
+  it("omits By trigger and the split when the data predates them", () => {
+    const body = buildDigestBody(makeData());
+    expect(body).not.toContain("By trigger:");
+    expect(body).toContain("    a.myshopify.com -- 3\n");
   });
 });
