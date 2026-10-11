@@ -4,9 +4,12 @@
  */
 import { describe, expect, it } from "vitest";
 
+import { getPlanFeatures } from "../../app/lib/billing.server";
+import { PLANS } from "../../app/lib/plans";
 import {
   parseWalkCoverage,
   walkCoverageNotices,
+  walkCoverageUpgradeLine,
   type WalkCoverage,
 } from "../../app/lib/walk-coverage";
 
@@ -108,5 +111,23 @@ describe("walkCoverageNotices", () => {
       redirects: { checked: 1000, total: null, truncated: true, lastId: null },
     });
     for (const line of lines) expect(line).not.toMatch(/[—–]/);
+  });
+});
+
+describe("walkCoverageUpgradeLine (decision 3A)", () => {
+  it("reads Professional's caps from getPlanFeatures", () => {
+    expect(walkCoverageUpgradeLine(getPlanFeatures(PLANS.PROFESSIONAL))).toBe(
+      "Professional checks up to 5,000 products and 10,000 redirects.",
+    );
+  });
+
+  it("uses the caps it is given, not literals (single source)", () => {
+    expect(walkCoverageUpgradeLine({ productAuditCap: 1234, redirectAuditCap: 98765 })).toBe(
+      "Professional checks up to 1,234 products and 98,765 redirects.",
+    );
+  });
+
+  it("has no em or en dash", () => {
+    expect(walkCoverageUpgradeLine(getPlanFeatures(PLANS.PROFESSIONAL))).not.toMatch(/[—–]/);
   });
 });

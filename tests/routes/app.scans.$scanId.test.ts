@@ -146,6 +146,7 @@ vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { getPlanFeatures } from "../../app/lib/billing.server";
 import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/finding-consequence";
 import { comparePreviewCandidates, pickFreePreviewFindings } from "../../app/lib/free-preview";
 import { logger } from "../../app/lib/logger.server";
@@ -491,6 +492,60 @@ describe("app.scans.$scanId loader", () => {
 
     expect(result.scan.walkCoverage).toEqual({
       products: { checked: 5000, total: 7213, truncated: true, lastId: "gid://shopify/Product/9" },
+    });
+  });
+
+  describe("coverageUpgrade under a truncated walk (decision 3A)", () => {
+    const TRUNCATED = {
+      products: { checked: 500, total: null, truncated: true, lastId: "gid://shopify/Product/9" },
+    };
+    const PRO_LINE = "Professional checks up to 5,000 products and 10,000 redirects.";
+    type Result = { coverageUpgrade: { line: string; cta: string } | null };
+
+    it("Free (never paid): the Professional line, from getPlanFeatures, with the trial label", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+      mockCanViewFindingDetails.mockReturnValue(false);
+      mockHasBillingHistory.mockResolvedValue(false);
+      mockGetScanById.mockResolvedValue({ ...SCAN, walkCoverage: TRUNCATED });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as Result;
+
+      const pro = getPlanFeatures("Professional");
+      expect(result.coverageUpgrade).toEqual({
+        line: `Professional checks up to ${pro.productAuditCap.toLocaleString("en-US")} products and ${pro.redirectAuditCap.toLocaleString("en-US")} redirects.`,
+        cta: "Start 7-day free trial",
+      });
+      expect(result.coverageUpgrade!.line).toBe(PRO_LINE);
+    });
+
+    it("Standard: the same line, pointing to Professional", async () => {
+      mockGetScanById.mockResolvedValue({
+        ...SCAN,
+        walkCoverage: {
+          redirects: { checked: 4000, total: 6001, truncated: true, lastId: "gid://x/1" },
+        },
+      });
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as Result;
+
+      expect(result.coverageUpgrade).toEqual({ line: PRO_LINE, cta: "Upgrade to Professional" });
+    });
+
+    it("Professional: no upgrade line", async () => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "Professional" });
+      mockGetScanById.mockResolvedValue({ ...SCAN, walkCoverage: TRUNCATED });
+
+      expect(((await loader(makeLoaderArgs("scan-1"))) as Result).coverageUpgrade).toBeNull();
+    });
+
+    it("no truncated walk (or a legacy scan): no upgrade line on any plan", async () => {
+      for (const walkCoverage of [
+        null,
+        { products: { checked: 42, total: null, truncated: false, lastId: null } },
+      ]) {
+        mockGetScanById.mockResolvedValue({ ...SCAN, walkCoverage });
+        expect(((await loader(makeLoaderArgs("scan-1"))) as Result).coverageUpgrade).toBeNull();
+      }
     });
   });
 
@@ -3862,6 +3917,56 @@ describe("ScanCoverageNotices", () => {
 
     it("never renders for a scan that is not completed", () => {
       expect(renderNotices({ isCompleted: false, walkCoverage: truncatedProducts })).toBe("");
+    });
+
+    describe("upgrade line (decision 3A)", () => {
+      const PLANS_URL =
+        "https://admin.shopify.com/store/test-shop/charges/ghost-code/pricing_plans";
+      const freeNote = {
+        products: { checked: 500, total: null, truncated: true, lastId: "gid://shopify/Product/1" },
+      };
+
+      it("Free / Standard: the note, then the line and the shared top-level upgrade link", () => {
+        const html = renderNotices({
+          walkCoverage: freeNote,
+          coverageUpgrade: {
+            line: "Professional checks up to 5,000 products and 10,000 redirects.",
+            cta: "Upgrade to Professional",
+          },
+          pricingPlansUrl: PLANS_URL,
+        });
+        expect(html.split('tone="info"')).toHaveLength(2);
+        expect(html).toContain("This scan checked the first 500 products in your store.");
+        expect(html).toContain("Professional checks up to 5,000 products and 10,000 redirects.");
+        expect(html.indexOf("checked the first 500")).toBeLessThan(
+          html.indexOf("Professional checks up to"),
+        );
+        expect(html).toMatch(
+          new RegExp(
+            `<a href="${PLANS_URL.replace(/[.]/g, "\\.")}" target="_top" rel="noreferrer">`,
+          ),
+        );
+        expect(html).toMatch(/<s-button variant="primary">Upgrade to Professional<\/s-button>/);
+        expect(html).not.toMatch(/[—–]/);
+      });
+
+      it("Professional (no coverageUpgrade): the note only, no upgrade line or link", () => {
+        const html = renderNotices({ walkCoverage: freeNote, pricingPlansUrl: PLANS_URL });
+        expect(html).toContain("This scan checked the first 500 products in your store.");
+        expect(html).not.toContain("Professional checks");
+        expect(html).not.toContain("<a ");
+        expect(html).not.toContain("<s-button");
+      });
+
+      it("no truncated walk: nothing, even with an upgrade line passed", () => {
+        expect(
+          renderNotices({
+            walkCoverage: null,
+            coverageUpgrade: { line: "x", cta: "y" },
+            pricingPlansUrl: PLANS_URL,
+          }),
+        ).toBe("");
+      });
     });
   });
 });

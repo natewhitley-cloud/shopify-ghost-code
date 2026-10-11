@@ -69,7 +69,11 @@ import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
 import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upgrade-return";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import { useScanPolling } from "../lib/use-scan-polling";
-import { parseWalkCoverage, walkCoverageNotices } from "../lib/walk-coverage";
+import {
+  parseWalkCoverage,
+  walkCoverageNotices,
+  walkCoverageUpgradeLine,
+} from "../lib/walk-coverage";
 import type { ScanWalkCoverage } from "../lib/walk-coverage";
 import {
   getAppRemovalForScanApp,
@@ -177,10 +181,11 @@ function safetyTone(safety: RemovalSafety): "success" | "caution" | "neutral" {
 }
 
 /**
- * The Free upgrade asks' CTA (gc-97k.4, gc-97k.9): a plain top-level link to
- * the Managed Pricing plan page, exactly like the Settings upgrade buttons (an
+ * The upgrade asks' CTA (gc-97k.4, gc-97k.9): a plain top-level link to the
+ * Managed Pricing plan page, exactly like the Settings upgrade buttons (an
  * iframe cannot navigate to the admin itself, so `target="_top"`), plus the
- * best-effort click ping tagged with the ask's `src`.
+ * best-effort click ping tagged with the ask's `src`. No `src`: an ask that is
+ * not in the nudge funnel (the walk-coverage upgrade line), so no ping.
  */
 function UpgradeCtaLink({
   pricingPlansUrl,
@@ -188,7 +193,7 @@ function UpgradeCtaLink({
   label,
 }: {
   pricingPlansUrl: string;
-  src: UpgradeAskKey;
+  src?: UpgradeAskKey;
   label: string;
 }) {
   return (
@@ -196,7 +201,7 @@ function UpgradeCtaLink({
       href={pricingPlansUrl}
       target="_top"
       rel="noreferrer"
-      onClick={() => recordUpgradeClick(src)}
+      onClick={src ? () => recordUpgradeClick(src) : undefined}
     >
       <s-button variant="primary">{label}</s-button>
     </a>
@@ -435,8 +440,11 @@ export function unreachableCategoriesNotice(categories: readonly string[]): stri
  *   - Unreachable notice: a storefront check could not run because the public
  *     homepage could not be read (e.g. password page). Info only, like the cap.
  *   - Walk-coverage notice (gc-747u): the product or redirect walk reached the
- *     plan's cap with records left, so the scan checked only the first N. Info
- *     only; see walkCoverageNotices for the copy.
+ *     plan's cap with records left, so the scan checked only the first N; see
+ *     walkCoverageNotices for the copy. On Free and Standard the loader adds
+ *     `coverageUpgrade` (what Professional checks + the upgrade button label),
+ *     rendered under the note with the shared upgrade link; Professional gets
+ *     the note only.
  *
  * Broken links (DANGLING_REFERENCE) are a Standard feature by plan, not by
  * permission: on a plan without them (`brokenLinksIncluded` false) the
@@ -452,6 +460,8 @@ export function ScanCoverageNotices({
   cappedCategories: allCapped,
   unreachableCategories = [],
   walkCoverage = null,
+  coverageUpgrade = null,
+  pricingPlansUrl = null,
 }: {
   isCompleted: boolean;
   brokenLinksIncluded: boolean;
@@ -459,6 +469,9 @@ export function ScanCoverageNotices({
   cappedCategories: string[];
   unreachableCategories?: string[];
   walkCoverage?: ScanWalkCoverage | null;
+  /** Free / Standard: the upgrade line and button label under the walk note. */
+  coverageUpgrade?: { line: string; cta: string } | null;
+  pricingPlansUrl?: string | null;
 }) {
   if (!isCompleted) return null;
   const walkNotices = walkCoverageNotices(walkCoverage);
@@ -494,7 +507,17 @@ export function ScanCoverageNotices({
       )}
       {walkNotices.length > 0 && (
         <div>
-          <s-banner tone="info">{walkNotices.join(" ")}</s-banner>
+          <s-banner tone="info">
+            {coverageUpgrade && pricingPlansUrl ? (
+              <s-stack direction="block" gap="base">
+                <s-text>{walkNotices.join(" ")}</s-text>
+                <s-text>{coverageUpgrade.line}</s-text>
+                <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} label={coverageUpgrade.cta} />
+              </s-stack>
+            ) : (
+              walkNotices.join(" ")
+            )}
+          </s-banner>
         </div>
       )}
     </>
@@ -1233,6 +1256,15 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Trial vs upgrade framing for whichever ask renders (gc-97k.8).
   const trialEligible = hiddenBreakdown !== null && trialEligibleForShop;
 
+  const walkCoverage = parseWalkCoverage(scan.walkCoverage);
+  const coverageUpgrade =
+    shop.plan !== PLANS.PROFESSIONAL && walkCoverageNotices(walkCoverage).length > 0
+      ? {
+          line: walkCoverageUpgradeLine(getPlanFeatures(PLANS.PROFESSIONAL)),
+          cta: upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligibleForShop),
+        }
+      : null;
+
   // Durable "first viewed results" milestone (gc-dpm.1): the first load of a
   // SUCCESSFUL scan's detail page. Gated on the stored value, so an
   // already-stamped shop issues no query; the atomic claim dedupes concurrent
@@ -1281,8 +1313,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       unreachableCategories: scan.unreachableCategories,
       // What the capped product / redirect walks covered (gc-747u). Drives the
       // "checked the first N" info notice; null for legacy scans.
-      walkCoverage: parseWalkCoverage(scan.walkCoverage),
+      walkCoverage,
     },
+    // Decision 3A: under a truncated-walk note, Free and Standard see what
+    // Professional checks (caps from getPlanFeatures) and the upgrade button.
+    coverageUpgrade,
     findings: enrichedFindingsPage,
     findingsPagination: {
       hasNextPage: findingsPage.hasNextPage,
@@ -1576,6 +1611,7 @@ export default function ScanDetail() {
     staleResults,
     pricingPlansUrl,
     trialEligible,
+    coverageUpgrade,
     reviewRequestNonce,
     maliciousFindings,
     findingSummary,
@@ -2209,6 +2245,8 @@ export default function ScanDetail() {
           cappedCategories={scan.cappedCategories}
           unreachableCategories={scan.unreachableCategories}
           walkCoverage={scan.walkCoverage}
+          coverageUpgrade={coverageUpgrade}
+          pricingPlansUrl={pricingPlansUrl}
         />
 
         {/* "Start here" (gc-bn0x): the top 3 findings and what each costs, above

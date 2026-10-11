@@ -112,3 +112,16 @@ export function walkCoverageNotices(coverage: ScanWalkCoverage | null): string[]
   }
   return lines;
 }
+
+/**
+ * The upgrade line under a truncated-walk notice for Free and Standard: what
+ * Professional walks. The caps come from the caller (getPlanFeatures for
+ * Professional), never from literals here: "Professional checks up to 5,000
+ * products and 10,000 redirects."
+ */
+export function walkCoverageUpgradeLine(caps: {
+  productAuditCap: number;
+  redirectAuditCap: number;
+}): string {
+  return `Professional checks up to ${formatCount(caps.productAuditCap)} products and ${formatCount(caps.redirectAuditCap)} redirects.`;
+}
