@@ -33,7 +33,7 @@
  * Network safety (DNS rebinding): requests go through an undici Agent whose
  * `connect.lookup` resolves the hostname and refuses to connect when ANY
  * resolved address is private, loopback, link-local, CGNAT, multicast,
- * reserved, or a v4-mapped form of those. The check runs at connect time, on
+ * reserved, documentation, or a v4-mapped, NAT64 or 6to4 form of those. The check runs at connect time, on
  * every hop, so a name that re-resolves to an internal address is refused
  * (`blocked_address`). IP-literal hosts are rejected before any request.
  *
@@ -351,8 +351,11 @@ for (const [network, prefix] of [
   ["169.254.0.0", 16], // link-local (incl. cloud metadata)
   ["172.16.0.0", 12], // private
   ["192.0.0.0", 24], // IETF protocol assignments
+  ["192.0.2.0", 24], // documentation (TEST-NET-1)
   ["192.168.0.0", 16], // private
   ["198.18.0.0", 15], // benchmarking
+  ["198.51.100.0", 24], // documentation (TEST-NET-2)
+  ["203.0.113.0", 24], // documentation (TEST-NET-3)
   ["224.0.0.0", 4], // multicast
   ["240.0.0.0", 4], // reserved + broadcast
 ] as const) {
@@ -361,6 +364,7 @@ for (const [network, prefix] of [
 for (const [network, prefix] of [
   ["::", 128], // unspecified
   ["::1", 128], // loopback
+  ["2001:db8::", 32], // documentation
   ["fc00::", 7], // unique local
   ["fe80::", 10], // link-local
   ["ff00::", 8], // multicast
@@ -368,17 +372,38 @@ for (const [network, prefix] of [
   BLOCKED_RANGES.addSubnet(network, prefix, "ipv6");
 }
 
-/** The IPv4 address inside a v4-mapped IPv6 address (::ffff:a.b.c.d / ::ffff:hhhh:hhhh). */
-function v4FromMapped(ip: string): string | null {
-  const match = /^(?:0{0,4}:){0,4}:?(?:0{0,4}:)?ffff:(.+)$/i.exec(ip);
-  if (!match) return null;
-  const tail = match[1];
-  if (isIP(tail) === 4) return tail;
-  const hex = /^([0-9a-f]{1,4}):([0-9a-f]{1,4})$/i.exec(tail);
-  if (!hex) return null;
-  const hi = parseInt(hex[1], 16);
-  const lo = parseInt(hex[2], 16);
-  return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+/** The eight 16-bit groups of a valid IPv6 address (zone id dropped). */
+function ipv6Groups(ip: string): number[] {
+  let addr = ip.split("%")[0];
+  // A dotted IPv4 tail (::ffff:1.2.3.4, 64:ff9b::1.2.3.4) becomes two groups.
+  const dotted = /^(.*:)(\d+\.\d+\.\d+\.\d+)$/.exec(addr);
+  if (dotted) {
+    const [a, b, c, d] = dotted[2].split(".").map(Number);
+    addr = `${dotted[1]}${((a << 8) | b).toString(16)}:${((c << 8) | d).toString(16)}`;
+  }
+  const parse = (part: string) => (part === "" ? [] : part.split(":").map((g) => parseInt(g, 16)));
+  const [head, tail] = addr.split("::");
+  if (tail === undefined) return parse(head);
+  const left = parse(head);
+  const right = parse(tail);
+  return [...left, ...new Array<number>(8 - left.length - right.length).fill(0), ...right];
+}
+
+/**
+ * The IPv4 address embedded in an IPv6 one, when the form routes to it:
+ *   - v4-mapped  ::ffff:a.b.c.d       (last 32 bits)
+ *   - NAT64      64:ff9b::a.b.c.d     (well-known prefix /96, last 32 bits)
+ *   - 6to4       2002:aabb:ccdd::     (bits 16-47)
+ * Null for any other IPv6 address.
+ */
+function embeddedV4(ip: string): string | null {
+  const g = ipv6Groups(ip);
+  const v4 = (hi: number, lo: number) => `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`;
+  const zero = (from: number, to: number) => g.slice(from, to).every((x) => x === 0);
+  if (zero(0, 5) && g[5] === 0xffff) return v4(g[6], g[7]);
+  if (g[0] === 0x64 && g[1] === 0xff9b && zero(2, 6)) return v4(g[6], g[7]);
+  if (g[0] === 0x2002) return v4(g[1], g[2]);
+  return null;
 }
 
 /** True when the storefront fetch must never connect to `ip` (or it is not an IP). */
@@ -386,8 +411,8 @@ export function isBlockedAddress(ip: string): boolean {
   const family = isIP(ip);
   if (family === 4) return BLOCKED_RANGES.check(ip, "ipv4");
   if (family === 6) {
-    const mapped = v4FromMapped(ip);
-    if (mapped) return BLOCKED_RANGES.check(mapped, "ipv4");
+    const embedded = embeddedV4(ip);
+    if (embedded) return BLOCKED_RANGES.check(embedded, "ipv4");
     return BLOCKED_RANGES.check(ip, "ipv6");
   }
   return true;

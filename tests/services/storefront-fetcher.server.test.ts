@@ -745,6 +745,41 @@ describe("isBlockedAddress", () => {
     ["not-an-ip"],
   ])("blocks %s", (ip) => expect(isBlockedAddress(ip)).toBe(true));
 
+  // Security LOW-1: documentation / TEST-NET ranges.
+  it.each([
+    ["192.0.2.1"], // TEST-NET-1 192.0.2.0/24
+    ["192.0.2.255"],
+    ["198.51.100.7"], // TEST-NET-2 198.51.100.0/24
+    ["203.0.113.200"], // TEST-NET-3 203.0.113.0/24
+    ["2001:db8::1"], // IPv6 documentation 2001:db8::/32
+    ["2001:db8:ffff:ffff:ffff:ffff:ffff:ffff"],
+  ])("blocks documentation address %s", (ip) => expect(isBlockedAddress(ip)).toBe(true));
+
+  it.each([["192.0.3.1"], ["198.51.101.1"], ["203.0.114.1"], ["2001:db9::1"]])(
+    "allows the public neighbour %s of a documentation range",
+    (ip) => expect(isBlockedAddress(ip)).toBe(false),
+  );
+
+  // Security LOW-1: NAT64 (64:ff9b::/96) and 6to4 (2002::/16) embed an IPv4
+  // address; it is checked against the IPv4 blocklist like a v4-mapped one.
+  it.each([
+    ["64:ff9b::127.0.0.1"], // NAT64, dotted tail
+    ["64:ff9b::7f00:1"], // NAT64 loopback, hex tail
+    ["64:ff9b::a9fe:a9fe"], // NAT64 169.254.169.254 (cloud metadata)
+    ["64:ff9b:0:0:0:0:a00:1"], // NAT64 10.0.0.1, uncompressed
+    ["64:ff9b::c000:201"], // NAT64 192.0.2.1 (TEST-NET-1)
+    ["2002:7f00:1::"], // 6to4 127.0.0.1
+    ["2002:a9fe:a9fe::1"], // 6to4 169.254.169.254
+    ["2002:c0a8:101:1::1"], // 6to4 192.168.1.1
+    ["2002:0a00:0001:0000:0000:0000:0000:0001"], // 6to4 10.0.0.1, uncompressed
+  ])("blocks %s (embedded IPv4 is blocked)", (ip) => expect(isBlockedAddress(ip)).toBe(true));
+
+  it.each([
+    ["64:ff9b::17e3:2641"], // NAT64 23.227.38.65
+    ["64:ff9b::8.8.8.8"],
+    ["2002:17e3:2641::1"], // 6to4 23.227.38.65
+  ])("allows %s (embedded IPv4 is public)", (ip) => expect(isBlockedAddress(ip)).toBe(false));
+
   it.each([
     ["23.227.38.65"],
     ["100.63.255.255"],
