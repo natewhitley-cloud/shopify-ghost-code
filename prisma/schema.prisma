@@ -191,6 +191,14 @@ model Shop {
   summaryNoticePendingAt       DateTime?
   summaryNoticeShownAt         DateTime?
   summaryOptedInAt             DateTime?
+  // gc-xorg: the merchant answered Home's one-time "New: summary emails" opt-in
+  // prompt (shown only to shops paid before gc-ol95 shipped, which hold no
+  // consent stamp) with "No thanks". Stamped once (conditional write); the
+  // prompt never shows again. NOT an opt-out: alertsEnabled is untouched and
+  // the Settings toggle still works. Null = never declined. Accepting writes no
+  // column of its own: it is the Settings opt-in (summaryOptedInAt). Timestamp
+  // only, no personal data; deleted with the Shop row.
+  summaryOptInDeclinedAt       DateTime?
   // gc-wt3y store speed report: when the merchant last pressed "Run speed test
   // now". Claimed atomically (conditional updateMany) so the button runs at
   // most once per 24h per shop. Null = never. Deleted with the Shop row.

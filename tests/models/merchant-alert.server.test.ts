@@ -13,6 +13,7 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 import {
   claimSummaryNoticeShown,
+  declineSummaryOptIn,
   disableAlertsByToken,
   dismissSummaryNotice,
   ensureUnsubscribeToken,
@@ -25,6 +26,7 @@ import {
   setSummaryEmailsEnabled,
 } from "../../app/models/merchant-alert.server";
 import { summaryShopSkipReason } from "../../app/services/summary-email.server";
+import { installFakeShopRow } from "../mocks/fake-shop-row";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -276,6 +278,49 @@ describe("summary notice consent stamps (gc-ol95)", () => {
       where: { id: "s1" },
       data: { summaryNoticePendingAt: null },
     });
+  });
+});
+
+describe("declineSummaryOptIn (gc-xorg)", () => {
+  it("stamps summaryOptInDeclinedAt once, keyed on the domain and the column IS NULL", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await expect(declineSummaryOptIn("a.myshopify.com")).resolves.toBe(true);
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+    const call = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ domain: "a.myshopify.com", summaryOptInDeclinedAt: null });
+    // Only the decline stamp: alertsEnabled and the consent stamps are untouched.
+    expect(Object.keys(call.data)).toEqual(["summaryOptInDeclinedAt"]);
+    expect(call.data.summaryOptInDeclinedAt).toBeInstanceOf(Date);
+  });
+
+  it("a repeat (already stamped) matches no row: false, the first answer is kept", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    await expect(declineSummaryOptIn("a.myshopify.com")).resolves.toBe(false);
+  });
+
+  it("concurrent declines: exactly one stamps (real compare-and-set on one row)", async () => {
+    const row = installFakeShopRow(
+      { updateMany: mockDb.shop.updateMany },
+      { domain: "a.myshopify.com", summaryOptInDeclinedAt: null, alertsEnabled: true },
+    );
+    const results = await Promise.all([
+      declineSummaryOptIn("a.myshopify.com"),
+      declineSummaryOptIn("a.myshopify.com"),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const first = row.summaryOptInDeclinedAt;
+    expect(first).toBeInstanceOf(Date);
+    await expect(declineSummaryOptIn("a.myshopify.com")).resolves.toBe(false);
+    expect(row.summaryOptInDeclinedAt).toBe(first);
+    expect(row.alertsEnabled).toBe(true);
+  });
+
+  it("another shop's domain never matches", async () => {
+    installFakeShopRow(
+      { updateMany: mockDb.shop.updateMany },
+      { domain: "a.myshopify.com", summaryOptInDeclinedAt: null },
+    );
+    await expect(declineSummaryOptIn("b.myshopify.com")).resolves.toBe(false);
   });
 });
 

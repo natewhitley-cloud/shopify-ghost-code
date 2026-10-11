@@ -170,6 +170,7 @@ describe("getShopMetadata", () => {
         summaryNoticePendingAt: true,
         summaryNoticeShownAt: true,
         summaryOptedInAt: true,
+        summaryOptInDeclinedAt: true,
       },
     });
   });

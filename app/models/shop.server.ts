@@ -43,6 +43,7 @@ export type ShopMetadata = {
   summaryNoticePendingAt: Date | null;
   summaryNoticeShownAt: Date | null;
   summaryOptedInAt: Date | null;
+  summaryOptInDeclinedAt: Date | null;
 };
 
 /**
@@ -123,6 +124,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       summaryNoticePendingAt: true,
       summaryNoticeShownAt: true,
       summaryOptedInAt: true,
+      summaryOptInDeclinedAt: true,
     },
   });
 }
@@ -406,6 +408,9 @@ export type EverPaidColumn = "everPaidAt";
 /** Summary-email notice owed / rendered (gc-ol95). */
 export type SummaryNoticeColumn = "summaryNoticePendingAt" | "summaryNoticeShownAt";
 
+/** Home's summary-email opt-in prompt answered "No thanks" (gc-xorg). */
+export type SummaryOptInColumn = "summaryOptInDeclinedAt";
+
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target
  * one of these nullable DateTime columns.
@@ -414,7 +419,8 @@ export type ShopStampColumn =
   | NudgeStageColumn
   | JourneyMilestoneColumn
   | EverPaidColumn
-  | SummaryNoticeColumn;
+  | SummaryNoticeColumn
+  | SummaryOptInColumn;
 
 /**
  * Atomically claim a once-per-merchant Shop stamp (a nudge stage or a journey

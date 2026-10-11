@@ -8,8 +8,9 @@ import db from "../db.server";
 /**
  * Data access for merchant summary emails (gc-syz.1, gc-ol95): the
  * MerchantAlert ledger plus the per-shop preferences stored on Shop
- * (alertsEnabled, alertEmail, alertUnsubscribeToken, and the consent stamps
- * summaryNoticePendingAt / summaryNoticeShownAt / summaryOptedInAt).
+ * (alertsEnabled, alertEmail, alertUnsubscribeToken, the consent stamps
+ * summaryNoticePendingAt / summaryNoticeShownAt / summaryOptedInAt, and
+ * summaryOptInDeclinedAt: the answer to Home's opt-in prompt, gc-xorg).
  *
  * GDPR: alertEmail and MerchantAlert.recipient are personal data. Both go with
  * the Shop row on shop/redact (deleteShopData also deletes the ledger rows
@@ -108,6 +109,17 @@ export function claimSummaryNoticeShown(domain: string): Promise<boolean> {
   return claimShopStamp(domain, "summaryNoticeShownAt", {
     summaryNoticePendingAt: { not: null },
   });
+}
+
+/**
+ * Home's summary-email opt-in prompt "No thanks" (gc-xorg): stamps
+ * summaryOptInDeclinedAt once (conditional write, so repeats and concurrent
+ * clicks never move the first answer). Nothing else changes: alertsEnabled is
+ * untouched and the Settings toggle still works. Returns true IFF this call
+ * stamped it. ("Turn on" has no model of its own: it is setSummaryEmailsEnabled.)
+ */
+export function declineSummaryOptIn(domain: string): Promise<boolean> {
+  return claimShopStamp(domain, "summaryOptInDeclinedAt");
 }
 
 /** Home notice "Dismiss" (gc-ol95): the notice is no longer owed. Idempotent. */
