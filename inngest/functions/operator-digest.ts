@@ -44,6 +44,12 @@ import {
   type JourneyStage,
 } from "../../app/lib/journey-stage";
 import {
+  formatBytes,
+  formatSeconds,
+  readSpeedPages,
+  type SpeedPageResult,
+} from "../../app/lib/speed-report";
+import {
   isExcluded,
   isExcludedShop,
   parseExcludePrefixes,
@@ -815,6 +821,222 @@ function formatClientErrorsLine(c: ClientErrorDigest | undefined): string {
       ? `${c.top.message.slice(0, CLIENT_ERROR_TOP_MESSAGE_CHARS)}...`
       : c.top.message;
   return `  Client errors: ${c.total} (shops: ${c.shops}; top: "${msg}" x${c.top.count})`;
+}
+
+// ---------------------------------------------------------------------------
+// Store speed reports (gc-wt3y)
+//
+// Backed by SpeedReport rows (created in the trailing 24h) plus today's global
+// PageSpeed call counter. Same exclusion predicate as every other section
+// (isExcludedShop: durable isInternal, env list, app-review prefix) for the
+// totals and per-shop lines; excluded/internal runs are counted on ONE separate
+// line because internal dev stores are where the feature is tested. Never
+// renders a URL or a key: only the shop domain, codes and numbers.
+// ---------------------------------------------------------------------------
+
+export interface SpeedRunRow {
+  domain: string;
+  isInternal: boolean;
+  origin: string;
+  status: string;
+  failureReason: string | null;
+  pages: unknown;
+  psiCalls: number;
+  createdAt: Date;
+  completedAt: Date | null;
+}
+
+export interface SpeedPageDigest {
+  status: string;
+  score: number | null;
+  lcpMs: number | null;
+  failureCode: string | null;
+  topApp: { name: string; mainThreadMs: number; transferBytes: number } | null;
+}
+
+export interface SpeedShopDigest {
+  domain: string;
+  origin: string;
+  status: string;
+  failureReason: string | null;
+  /** Row created -> completed; null while still running. */
+  durationMs: number | null;
+  calls: number;
+  home: SpeedPageDigest | null;
+  product: SpeedPageDigest | null;
+}
+
+export interface SpeedReportDigest {
+  runs: number;
+  scheduled: number;
+  manual: number;
+  completed: number;
+  partial: number;
+  failed: number;
+  password: number;
+  budgetSkipped: number;
+  notConfigured: number;
+  running: number;
+  /** Runs on excluded/internal stores (not in any other number). */
+  internalRuns: number;
+  callsToday: number;
+  dailyBudget: number;
+  /** Most recent run per non-excluded shop, newest first. */
+  perShop: SpeedShopDigest[];
+}
+
+function speedPageDigest(page: SpeedPageResult | undefined): SpeedPageDigest | null {
+  if (!page) return null;
+  const top = [...(page.apps ?? [])].sort((a, b) => b.mainThreadMs - a.mainThreadMs)[0];
+  return {
+    status: page.status,
+    score: page.metrics?.score ?? null,
+    lcpMs: page.metrics?.lcpMs ?? null,
+    failureCode: page.failureCode ?? null,
+    topApp: top
+      ? { name: top.name, mainThreadMs: top.mainThreadMs, transferBytes: top.transferBytes }
+      : null,
+  };
+}
+
+/** Roll the trailing-24h SpeedReport rows up. Pure; output has no Dates. */
+export function aggregateSpeedReports(
+  rows: SpeedRunRow[],
+  excludeSet: Set<string>,
+  excludePrefixes: Set<string>,
+  now: Date,
+  usage: { callsToday: number; dailyBudget: number },
+): SpeedReportDigest {
+  const dayAgo = now.getTime() - DAY_MS;
+  const out: SpeedReportDigest = {
+    runs: 0,
+    scheduled: 0,
+    manual: 0,
+    completed: 0,
+    partial: 0,
+    failed: 0,
+    password: 0,
+    budgetSkipped: 0,
+    notConfigured: 0,
+    running: 0,
+    internalRuns: 0,
+    callsToday: usage.callsToday,
+    dailyBudget: usage.dailyBudget,
+    perShop: [],
+  };
+  const latestByShop = new Map<string, SpeedRunRow>();
+  for (const r of rows) {
+    if (r.createdAt.getTime() < dayAgo) continue; // defensive; the query bounds to 24h
+    if (
+      isExcludedShop({ domain: r.domain, isInternal: r.isInternal }, excludeSet, excludePrefixes)
+    ) {
+      out.internalRuns += 1;
+      continue;
+    }
+    out.runs += 1;
+    if (r.origin === "MANUAL") out.manual += 1;
+    else out.scheduled += 1;
+    switch (r.status) {
+      case "COMPLETED":
+        out.completed += 1;
+        break;
+      case "PARTIAL":
+        out.partial += 1;
+        break;
+      case "UNAVAILABLE_PASSWORD":
+        out.password += 1;
+        break;
+      case "SKIPPED_BUDGET":
+        out.budgetSkipped += 1;
+        break;
+      case "RUNNING":
+        out.running += 1;
+        break;
+      default:
+        if (r.failureReason === "not_configured") out.notConfigured += 1;
+        else out.failed += 1;
+    }
+    const prev = latestByShop.get(r.domain);
+    if (!prev || r.createdAt > prev.createdAt) latestByShop.set(r.domain, r);
+  }
+  out.perShop = [...latestByShop.values()]
+    .sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+    .map((r) => {
+      const pages = readSpeedPages(r.pages);
+      return {
+        domain: r.domain,
+        origin: r.origin,
+        status: r.status,
+        failureReason: r.failureReason,
+        durationMs: r.completedAt ? r.completedAt.getTime() - r.createdAt.getTime() : null,
+        calls: r.psiCalls,
+        home: speedPageDigest(pages.find((p) => p.page === "home")),
+        product: speedPageDigest(pages.find((p) => p.page === "product")),
+      };
+    });
+  return out;
+}
+
+function fmtDuration(ms: number | null): string {
+  if (ms === null) return "still running";
+  const totalS = Math.max(0, Math.round(ms / 1000));
+  const m = Math.floor(totalS / 60);
+  return m > 0 ? `${m}m ${totalS % 60}s` : `${totalS}s`;
+}
+
+const SPEED_PAGE_STATUS_TEXT: Record<string, string> = {
+  PASSWORD: "password-protected",
+  NOT_RUN: "not run",
+  NO_PRODUCT: "no published product",
+  NEEDS_PRODUCT_ACCESS: "no product access",
+};
+
+function fmtSpeedPage(label: string, p: SpeedPageDigest | null): string | null {
+  if (!p) return null;
+  if (p.status === "OK") {
+    const top = p.topApp
+      ? `top app: ${p.topApp.name} ${formatSeconds(p.topApp.mainThreadMs)}, ${formatBytes(p.topApp.transferBytes)}`
+      : "top app: none";
+    return `${label} ${p.score ?? "n/a"} (LCP ${formatSeconds(p.lcpMs)}; ${top})`;
+  }
+  if (p.status === "FAILED") return `${label} failed (${p.failureCode ?? "unknown"})`;
+  return `${label} ${SPEED_PAGE_STATUS_TEXT[p.status] ?? p.status}`;
+}
+
+/** The SPEED REPORTS section lines (header included). */
+export function formatSpeedReportLines(d: SpeedReportDigest | undefined): string[] {
+  const lines = ["SPEED REPORTS (last 24h)"];
+  if (!d) {
+    lines.push("  No speed runs in the last 24h");
+    return lines;
+  }
+  if (d.runs === 0) {
+    lines.push("  No speed runs in the last 24h");
+  } else {
+    lines.push(`  Runs: ${d.runs} (scheduled ${d.scheduled}, run now ${d.manual})`);
+    lines.push(
+      `  By status: completed ${d.completed}, partial ${d.partial}, failed ${d.failed}, ` +
+        `password-protected ${d.password}, budget-skipped ${d.budgetSkipped}, ` +
+        `not configured ${d.notConfigured}, running ${d.running}`,
+    );
+  }
+  lines.push(`  PageSpeed calls today (UTC): ${d.callsToday} / ${d.dailyBudget}`);
+  if (d.internalRuns > 0) lines.push(`  internal/dev: ${d.internalRuns} runs`);
+  if (d.perShop.length > 0) {
+    lines.push("  By store (most recent run):");
+    for (const s of d.perShop) {
+      const origin = s.origin === "MANUAL" ? "run now" : "scheduled";
+      const reason = s.failureReason ? ` (${s.failureReason})` : "";
+      const parts = [fmtSpeedPage("home", s.home), fmtSpeedPage("product", s.product)].filter(
+        (x): x is string => x !== null,
+      );
+      lines.push(
+        `    ${s.domain} -- ${origin} ${s.status}${reason}, ${fmtDuration(s.durationMs)}, ` +
+          `${s.calls} calls${parts.length > 0 ? `; ${parts.join("; ")}` : ""}`,
+      );
+    }
+  }
+  return lines;
 }
 
 // ---------------------------------------------------------------------------
@@ -1833,6 +2055,8 @@ export interface OperatorDigestData {
   /** Snapshot-metric threshold/trend anomalies (gc-06e.13). Optional so callers
    * that predate the metric evaluation still type-check; absent => none. */
   anomalies?: string[];
+  /** Store speed report runs (gc-wt3y). Optional: absent => "No speed runs". */
+  speedReports?: SpeedReportDigest;
   /** Latest reconcile-installs run (gc-dwp). null = never run; undefined = section omitted. */
   reconciler?: ReconcilerStatus | null;
 }
@@ -2212,6 +2436,9 @@ export function buildDigestBody(data: OperatorDigestData): string {
 
   lines.push("BROWSER (embedded app)");
   lines.push(formatClientErrorsLine(ops.clientErrors));
+  lines.push("");
+
+  lines.push(...formatSpeedReportLines(data.speedReports));
   lines.push("");
 
   lines.push("CRON HEALTH (dead-man's-switch)");
@@ -2956,6 +3183,50 @@ export const operatorDigest = inngest.createFunction(
       return aggregateClientErrors(events, Object.values(domainById), now);
     })) as ClientErrorDigest;
 
+    // Store speed reports (gc-wt3y): trailing-24h SpeedReport rows with the
+    // shop's domain + isInternal (for the shared exclusion predicate), and
+    // today's global PageSpeed call count.
+    const speedReports = (await step.run("get-speed-reports", async () => {
+      const db = (await import("../../app/db.server")).default;
+      const { utcDayKey } = await import("../../app/models/speed-report.server");
+      const { getDailyCallBudget } = await import("../../app/services/speed-report-config.server");
+      const now = new Date();
+      const [rows, usage] = await Promise.all([
+        db.speedReport.findMany({
+          where: { createdAt: { gte: new Date(now.getTime() - DAY_MS) } },
+          orderBy: { createdAt: "desc" },
+          select: {
+            origin: true,
+            status: true,
+            failureReason: true,
+            pages: true,
+            psiCalls: true,
+            createdAt: true,
+            completedAt: true,
+            shop: { select: { domain: true, isInternal: true } },
+          },
+        }),
+        db.pageSpeedDailyUsage.findUnique({ where: { day: utcDayKey(now) } }),
+      ]);
+      return aggregateSpeedReports(
+        rows.map((r) => ({
+          domain: r.shop.domain,
+          isInternal: r.shop.isInternal,
+          origin: r.origin,
+          status: r.status,
+          failureReason: r.failureReason,
+          pages: r.pages,
+          psiCalls: r.psiCalls,
+          createdAt: r.createdAt,
+          completedAt: r.completedAt,
+        })),
+        excludeSet,
+        excludePrefixes,
+        now,
+        { callsToday: usage?.calls ?? 0, dailyBudget: getDailyCallBudget() },
+      );
+    })) as SpeedReportDigest;
+
     // Latest reconcile-installs outcome (gc-dwp): both rows are counts-only and
     // keyed on a constant, so nothing per-shop crosses into the digest.
     const reconciler = (await step.run("get-reconciler-status", async () => {
@@ -3023,6 +3294,7 @@ export const operatorDigest = inngest.createFunction(
       journey,
       scanStartsViews,
       ops: { ...ops, clientErrors },
+      speedReports,
       anomalies: metricAnomalies.anomalies,
       reconciler,
     };

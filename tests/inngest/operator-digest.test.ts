@@ -48,7 +48,10 @@ import {
   aggregateFeedback,
   aggregateJourney,
   aggregateNudgeFunnel,
+  aggregateSpeedReports,
   buildDigestBody,
+  type SpeedRunRow,
+  formatSpeedReportLines,
   formatFunnelStage,
   CLIENT_ERROR_TOP_MESSAGE_CHARS,
   computeMrr,
@@ -3540,5 +3543,228 @@ describe("buildDigestBody: NUDGES not_shown line (gc-97k.7)", () => {
       ].join("\n"),
     );
     expect(body).not.toMatch(/[–—]/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Store speed reports (gc-wt3y)
+// ---------------------------------------------------------------------------
+
+describe("SPEED REPORTS section", () => {
+  const now = new Date("2026-10-11T12:00:00.000Z");
+  const at = (minutesAgo: number) => new Date(now.getTime() - minutesAgo * 60_000);
+  const KEY = "AIza-DIGEST-SECRET";
+  const EXCL = parseExcludeShops("dev-store.myshopify.com");
+  const PREFIXES = new Set(["app-review-"]);
+  const homeOk = {
+    page: "home",
+    status: "OK",
+    url: "https://paw-naturals.example/",
+    runsAttempted: 3,
+    runsOk: 3,
+    metrics: {
+      score: 28,
+      lcpMs: 14212,
+      tbtMs: 9000,
+      cls: 0,
+      fcpMs: 1,
+      speedIndexMs: 1,
+      totalBytes: 1,
+      requestCount: 1,
+    },
+    apps: [
+      {
+        name: "Recharge",
+        mainThreadMs: 640,
+        blockingMs: 0,
+        transferBytes: 169000,
+        unusedPct: 80,
+        requestCount: 1,
+      },
+      {
+        name: "Klaviyo",
+        mainThreadMs: 4012,
+        blockingMs: 0,
+        transferBytes: 621000,
+        unusedPct: 50,
+        requestCount: 3,
+      },
+    ],
+  };
+  const productOk = {
+    ...homeOk,
+    page: "product",
+    url: "https://paw-naturals.example/products/a",
+    metrics: { ...homeOk.metrics, score: 41, lcpMs: 9000 },
+    apps: [],
+  };
+  const row = (over: Partial<SpeedRunRow>): SpeedRunRow => ({
+    domain: "a.myshopify.com",
+    isInternal: false,
+    origin: "SCHEDULED",
+    status: "COMPLETED",
+    failureReason: null,
+    pages: [homeOk, productOk],
+    psiCalls: 6,
+    createdAt: at(30),
+    completedAt: at(27),
+    ...over,
+  });
+  const usage = { callsToday: 14, dailyBudget: 5000 };
+  const render = (rows: SpeedRunRow[]) =>
+    formatSpeedReportLines(aggregateSpeedReports(rows, EXCL, PREFIXES, now, usage)).join("\n");
+
+  it("empty state still shows today's calls vs budget", () => {
+    expect(render([])).toBe(
+      [
+        "SPEED REPORTS (last 24h)",
+        "  No speed runs in the last 24h",
+        "  PageSpeed calls today (UTC): 14 / 5000",
+      ].join("\n"),
+    );
+    expect(formatSpeedReportLines(undefined)).toEqual([
+      "SPEED REPORTS (last 24h)",
+      "  No speed runs in the last 24h",
+    ]);
+  });
+
+  it("totals by origin and every status, plus the budget line", () => {
+    const text = render([
+      row({ domain: "a.myshopify.com" }),
+      row({ domain: "b.myshopify.com", origin: "MANUAL", status: "PARTIAL" }),
+      row({ domain: "c.myshopify.com", status: "FAILED", failureReason: "timeout", pages: null }),
+      row({
+        domain: "d.myshopify.com",
+        status: "UNAVAILABLE_PASSWORD",
+        pages: [{ page: "home", status: "PASSWORD", url: null, runsAttempted: 1, runsOk: 0 }],
+      }),
+      row({
+        domain: "e.myshopify.com",
+        status: "SKIPPED_BUDGET",
+        failureReason: "budget",
+        pages: null,
+        psiCalls: 0,
+      }),
+      row({
+        domain: "f.myshopify.com",
+        origin: "MANUAL",
+        status: "FAILED",
+        failureReason: "not_configured",
+        pages: null,
+        psiCalls: 0,
+      }),
+      row({ domain: "g.myshopify.com", status: "RUNNING", pages: null, completedAt: null }),
+    ]);
+    expect(text).toContain("  Runs: 7 (scheduled 5, run now 2)");
+    expect(text).toContain(
+      "  By status: completed 1, partial 1, failed 1, password-protected 1, budget-skipped 1, not configured 1, running 1",
+    );
+    expect(text).toContain("  PageSpeed calls today (UTC): 14 / 5000");
+  });
+
+  it("per shop: most recent run with duration, calls, scores, LCP and the top app by main-thread time", () => {
+    const text = render([
+      row({ createdAt: at(300), completedAt: at(298), status: "FAILED", failureReason: "timeout" }),
+      row({}),
+    ]);
+    expect(text).toContain("  By store (most recent run):");
+    expect(text).toContain(
+      "    a.myshopify.com -- scheduled COMPLETED, 3m 0s, 6 calls; home 28 (LCP 14 s; top app: Klaviyo 4.0 s, 621 KB); product 41 (LCP 9.0 s; top app: none)",
+    );
+    expect(text.match(/a\.myshopify\.com --/g)).toHaveLength(1);
+  });
+
+  it("failed runs show the merchant-safe code; page states read in words", () => {
+    const text = render([
+      row({
+        domain: "c.myshopify.com",
+        origin: "MANUAL",
+        status: "FAILED",
+        failureReason: "document_failed",
+        pages: null,
+        psiCalls: 3,
+        completedAt: at(29),
+      }),
+      row({
+        domain: "h.myshopify.com",
+        status: "PARTIAL",
+        pages: [
+          homeOk,
+          {
+            page: "product",
+            status: "FAILED",
+            url: null,
+            runsAttempted: 3,
+            runsOk: 0,
+            failureCode: "timeout",
+          },
+        ],
+      }),
+      row({
+        domain: "i.myshopify.com",
+        pages: [
+          homeOk,
+          {
+            page: "product",
+            status: "NEEDS_PRODUCT_ACCESS",
+            url: null,
+            runsAttempted: 0,
+            runsOk: 0,
+          },
+        ],
+      }),
+      row({ domain: "g.myshopify.com", status: "RUNNING", pages: null, completedAt: null }),
+    ]);
+    expect(text).toContain(
+      "    c.myshopify.com -- run now FAILED (document_failed), 1m 0s, 3 calls",
+    );
+    expect(text).toContain("product failed (timeout)");
+    expect(text).toContain("product no product access");
+    expect(text).toContain("    g.myshopify.com -- scheduled RUNNING, still running, 6 calls");
+  });
+
+  it("excluded/internal stores stay out of totals and store lines, counted on one line", () => {
+    const text = render([
+      row({ domain: "a.myshopify.com" }),
+      row({ domain: "dev-store.myshopify.com" }),
+      row({ domain: "renamed.myshopify.com", isInternal: true }),
+      row({ domain: "app-review-123.myshopify.com" }),
+    ]);
+    expect(text).toContain("  Runs: 1 (scheduled 1, run now 0)");
+    expect(text).toContain("  internal/dev: 3 runs");
+    expect(text).not.toContain("dev-store.myshopify.com");
+    expect(text).not.toContain("renamed.myshopify.com");
+    expect(text).not.toContain("app-review-123");
+  });
+
+  it("only internal runs: empty state plus the internal line", () => {
+    const text = render([row({ domain: "dev-store.myshopify.com" })]);
+    expect(text).toContain("  No speed runs in the last 24h");
+    expect(text).toContain("  internal/dev: 1 runs");
+  });
+
+  it("ignores rows outside the window", () => {
+    expect(render([row({ createdAt: at(25 * 60) })])).toContain("No speed runs in the last 24h");
+  });
+
+  it("never renders a URL or a key, even when stored pages carry URLs", () => {
+    const leaky = { ...homeOk, url: `https://x.example/?key=${KEY}`, failureCode: undefined };
+    const body = buildDigestBody(
+      makeData({
+        speedReports: aggregateSpeedReports([row({ pages: [leaky] })], EXCL, PREFIXES, now, usage),
+      }),
+    );
+    const section = body.slice(body.indexOf("SPEED REPORTS"), body.indexOf("CRON HEALTH"));
+    expect(section).toContain("a.myshopify.com -- scheduled COMPLETED");
+    expect(section).not.toMatch(/https?:/);
+    expect(section).not.toContain(KEY);
+    expect(section).not.toContain("x.example");
+  });
+
+  it("the digest body places the section before CRON HEALTH; absent data renders the empty state", () => {
+    const body = buildDigestBody(makeData());
+    const i = body.indexOf("SPEED REPORTS (last 24h)\n  No speed runs in the last 24h");
+    expect(i).toBeGreaterThan(body.indexOf("=== OPERATIONAL HEALTH"));
+    expect(i).toBeLessThan(body.indexOf("CRON HEALTH"));
   });
 });

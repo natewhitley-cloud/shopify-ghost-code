@@ -31,6 +31,8 @@ const tables = vi.hoisted(() => ({
   billingEvent: [] as Record<string, unknown>[],
   metricSnapshot: [] as Record<string, unknown>[],
   merchantFeedback: [] as Record<string, unknown>[],
+  speedReport: [] as Record<string, unknown>[],
+  pageSpeedDailyUsage: [] as Record<string, unknown>[],
 }));
 
 const fakeDb = vi.hoisted(() => {
@@ -39,6 +41,7 @@ const fakeDb = vi.hoisted(() => {
   const relations: Record<string, Record<string, (row: R) => R | undefined>> = {
     finding: { scan: (row) => tables.scan.find((s) => s.id === row.scanId) },
     billingEvent: { shop: (row) => tables.shop.find((s) => s.id === row.shopId) },
+    speedReport: { shop: (row) => tables.shop.find((s) => s.id === row.shopId) },
   };
 
   function matches(model: string, row: R, where: R | undefined): boolean {
@@ -97,6 +100,9 @@ const fakeDb = vi.hoisted(() => {
         if (typeof args.take === "number") out = out.slice(0, args.take);
         return out.map((r) => withSelectedRelations(model, r, args.select as R));
       }),
+      findUnique: vi.fn(
+        async (args: R = {}) => rows().find((r) => matches(model, r, args.where as R)) ?? null,
+      ),
       findFirst: vi.fn(async (args: R = {}) => {
         const out = rows()
           .filter((r) => matches(model, r, args.where as R))
@@ -148,6 +154,8 @@ const fakeDb = vi.hoisted(() => {
     billingEvent: delegate("billingEvent"),
     metricSnapshot: delegate("metricSnapshot"),
     merchantFeedback: delegate("merchantFeedback"),
+    speedReport: delegate("speedReport"),
+    pageSpeedDailyUsage: delegate("pageSpeedDailyUsage"),
   };
 });
 
@@ -622,6 +630,64 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
     expect(body).toContain('  Client errors: 3 (shops: 2; top: "GET /app.data -> 502" x2)');
     expect(body).not.toContain("excluded-client-leak");
     expect(body).not.toContain("too old");
+  });
+
+  it("SPEED REPORTS: real shops in totals and per-store lines, excluded/internal runs on one line, no URL/key (gc-wt3y)", async () => {
+    const ago = (ms: number) => new Date(Date.now() - ms);
+    const run = (id: string, shopId: string, status: string, calls: number, at: Date) => ({
+      id,
+      shopId,
+      origin: "SCHEDULED",
+      status,
+      failureReason: status === "FAILED" ? "timeout" : null,
+      pages: [
+        {
+          page: "home",
+          status: "OK",
+          url: "https://real-a.example/?key=AIza-LEAK",
+          runsAttempted: 3,
+          runsOk: 3,
+          metrics: { score: 30, lcpMs: 12000 },
+          apps: [{ name: "Klaviyo", mainThreadMs: 4000, transferBytes: 621000 }],
+        },
+      ],
+      psiCalls: calls,
+      createdAt: at,
+      completedAt: new Date(at.getTime() + 90_000),
+    });
+    tables.speedReport.push(
+      run("sr1", "shop-a", "COMPLETED", 6, ago(HOUR)),
+      run("sr2", "shop-a", "FAILED", 3, ago(3 * HOUR)), // older run of the same shop
+      run("sr3", "shop-a", "COMPLETED", 6, ago(30 * HOUR)), // outside 24h
+      ...EXCLUDED.map((s, i) => run(`srx-${i}`, s.id, "FAILED", 6, ago(HOUR))),
+    );
+    const today = new Date().toISOString().slice(0, 10);
+    tables.pageSpeedDailyUsage.push({ id: today, day: today, calls: 21 });
+    process.env.PAGESPEED_DAILY_CALL_BUDGET = "300";
+
+    const body = await runDigest();
+
+    const section = body.slice(
+      body.indexOf("SPEED REPORTS (last 24h)"),
+      body.indexOf("CRON HEALTH"),
+    );
+    expect(section).toContain("  Runs: 2 (scheduled 2, run now 0)");
+    expect(section).toContain("completed 1, partial 0, failed 1,");
+    expect(section).toContain("  PageSpeed calls today (UTC): 21 / 300");
+    expect(section).toContain("  internal/dev: 3 runs");
+    expect(section).toContain(
+      "    real-a.myshopify.com -- scheduled COMPLETED, 1m 30s, 6 calls; home 30 (LCP 12 s; top app: Klaviyo 4.0 s, 621 KB)",
+    );
+    expect(section).not.toMatch(/https?:/);
+    expect(section).not.toContain("AIza-LEAK");
+    for (const s of EXCLUDED) expect(section).not.toContain(s.domain);
+  });
+
+  it("SPEED REPORTS empty state when no runs in 24h", async () => {
+    const body = await runDigest();
+    expect(body).toContain(
+      "SPEED REPORTS (last 24h)\n  No speed runs in the last 24h\n  PageSpeed calls today (UTC): 0 / 5000",
+    );
   });
 
   it("renders the nudge empty state when there are no nudge events", async () => {
