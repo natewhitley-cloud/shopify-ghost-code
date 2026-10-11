@@ -2174,11 +2174,15 @@ export const scanTheme = inngest.createFunction(
               themeId,
               periodScanIds,
             );
+            // gc-2wnf: Professional's speed section (null unless live, Pro,
+            // fresh and first-or-material). A material change alone sends.
+            const { loadSummarySpeed } = await import("../../app/services/summary-speed.server");
             const changes = {
               newCount: findingChanges.newCount,
               fixedCount: findingChanges.fixedCount,
               openCount: findingChanges.openCount,
               ...summary.summarizeAppRemovals(removalRows, new Set(periodScanIds)),
+              speed: await loadSummarySpeed(shop, lastSummary?.sentAt ?? null),
             };
             // Nothing changed: no email, and no Admin call.
             if (!summary.hasSummaryChanges(changes)) {

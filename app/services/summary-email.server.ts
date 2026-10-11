@@ -11,7 +11,9 @@
  * measured since the scan covered by the last summary (else the theme's
  * previous scan). The finding diff reuses the in-app diff's guards
  * (ignores, scanDiffOptions coverage, restrictToLiveInBoth), so a permission
- * grant or a newly live detector never counts as "new".
+ * grant or a newly live detector never counts as "new". For Professional, a
+ * material store speed change (or the first speed report) is also a change,
+ * and adds a short speed section (gc-2wnf, summary-speed.server).
  *
  * CONSENT: nobody gets an email without knowing it is on. Sendable only when
  * the plan includes it, the toggle is on, AND the merchant either saw Home's
@@ -33,6 +35,7 @@ import {
   buildBodyUnsubscribeUrl,
   buildHeaderUnsubscribeUrl,
   buildScanAdminUrl,
+  buildSpeedAdminUrl,
   getMerchantAlertConfigStatus,
   sendMerchantAlert,
 } from "./merchant-alert.server";
@@ -45,6 +48,8 @@ import {
 } from "./scan-differ.server";
 import type { DiffableFinding, ScanCoverage } from "./scan-differ.server";
 import { refreshShopContact } from "./shop-alert-email.server";
+import { SPEED_LINK_LABEL, summarySpeedLines } from "./summary-speed.server";
+import type { SummarySpeed } from "./summary-speed.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { canReceiveAlerts, getAlertWindowMs } from "../lib/plan-gating.server";
@@ -79,6 +84,11 @@ export type SummaryChanges = {
   openCount: number;
   inactiveApps: SummaryApp[];
   cleanedApps: SummaryApp[];
+  /**
+   * gc-2wnf: the speed section, present only when it is worth sending
+   * (loadSummarySpeed: live, Professional, fresh, first or material).
+   */
+  speed?: SummarySpeed | null;
 };
 
 /** What "since" means in the copy: the last summary's scan, or the previous scan. */
@@ -87,7 +97,12 @@ export type SummaryBaseline = "last_summary" | "previous_scan";
 /** True when the summary has anything to report (else: no email). */
 export function hasSummaryChanges(c: SummaryChanges): boolean {
   return (
-    c.newCount > 0 || c.fixedCount > 0 || c.inactiveApps.length > 0 || c.cleanedApps.length > 0
+    c.newCount > 0 ||
+    c.fixedCount > 0 ||
+    c.inactiveApps.length > 0 ||
+    c.cleanedApps.length > 0 ||
+    // A material speed change is a reason to send on its own (gc-2wnf).
+    !!c.speed
   );
 }
 
@@ -169,7 +184,8 @@ export function computeFindingChanges(args: {
 
 /**
  * Order-independent hash of what a summary reported (the ledger's
- * findingSetHash column): counts plus the app lines.
+ * findingSetHash column): counts plus the app lines, plus the speed report
+ * emailed (gc-2wnf; absent = the same hash as before speed existed).
  */
 export function buildSummaryHash(c: SummaryChanges): string {
   const apps = (list: SummaryApp[]) => list.map((a) => `${a.appName}\0${a.leftoverCount}`).sort();
@@ -180,6 +196,7 @@ export function buildSummaryHash(c: SummaryChanges): string {
       o: c.openCount,
       i: apps(c.inactiveApps),
       c: apps(c.cleanedApps),
+      s: c.speed?.reportId,
     }),
   );
 }
@@ -241,6 +258,8 @@ export type SummaryBodyOptions = {
   changes: SummaryChanges;
   baseline: SummaryBaseline;
   scanUrl: string;
+  /** Store speed page link; the speed section renders only with it (gc-2wnf). */
+  speedUrl?: string;
   unsubscribeUrl: string;
 };
 
@@ -279,6 +298,8 @@ function buildSummaryContent(opts: SummaryBodyOptions) {
       `Still in your theme: ${c.openCount}`,
     ],
     scanUrl: opts.scanUrl,
+    speed:
+      c.speed && opts.speedUrl ? { lines: summarySpeedLines(c.speed), url: opts.speedUrl } : null,
     unsubscribeUrl: opts.unsubscribeUrl,
   };
 }
@@ -288,16 +309,9 @@ export function buildSummaryText(opts: SummaryBodyOptions): string {
   const body = buildSummaryContent(opts);
   const lines = [body.intro, ""];
   for (const block of body.appBlocks) lines.push(...block, "");
-  lines.push(
-    ...body.counts,
-    "",
-    `${SCAN_LINK_LABEL}:`,
-    body.scanUrl,
-    "",
-    SENDER_NAME,
-    SUPPORT_EMAIL,
-    `Unsubscribe: ${body.unsubscribeUrl}`,
-  );
+  lines.push(...body.counts, "", `${SCAN_LINK_LABEL}:`, body.scanUrl, "");
+  if (body.speed) lines.push(...body.speed.lines, "", `${SPEED_LINK_LABEL}:`, body.speed.url, "");
+  lines.push(SENDER_NAME, SUPPORT_EMAIL, `Unsubscribe: ${body.unsubscribeUrl}`);
   return lines.join("\n");
 }
 
@@ -338,6 +352,12 @@ export function buildSummaryHtml(opts: SummaryBodyOptions): string {
     ...body.appBlocks.map(list),
     block(body.counts),
     `<tr><td style="padding:0 0 24px">${link(body.scanUrl, SCAN_LINK_LABEL)}</td></tr>`,
+    ...(body.speed
+      ? [
+          block(body.speed.lines, "0 0 8px"),
+          `<tr><td style="padding:0 0 24px">${link(body.speed.url, SPEED_LINK_LABEL)}</td></tr>`,
+        ]
+      : []),
     `<tr><td style="padding:16px 0 0;border-top:1px solid #e5e5e5">` +
       `<table role="presentation" cellpadding="0" cellspacing="0" border="0"><tr>` +
       `<td valign="middle" style="padding:0 12px 0 0">` +
@@ -507,6 +527,7 @@ export async function sendScanSummary(args: {
       changes,
       baseline,
       scanUrl: buildScanAdminUrl(shop.domain, scan.id),
+      ...(changes.speed ? { speedUrl: buildSpeedAdminUrl(shop.domain) } : {}),
       unsubscribeUrl: buildBodyUnsubscribeUrl(appUrl, token),
     };
     const result = await sendMerchantAlert({

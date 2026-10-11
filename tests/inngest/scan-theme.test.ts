@@ -14,7 +14,7 @@
 
 import { FindingType, Severity } from "@prisma/client";
 import { NonRetriableError } from "inngest";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -206,6 +206,13 @@ vi.mock("../../app/services/summary-email.server", async (importOriginal) => ({
   sendScanSummary: vi.fn(),
 }));
 
+// Summary speed section (gc-2wnf): mocked here; its own rules are tested in
+// tests/services/summary-speed.server.test.ts. Default: no speed section.
+vi.mock("../../app/services/summary-speed.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../app/services/summary-speed.server")>()),
+  loadSummarySpeed: vi.fn(async () => null),
+}));
+
 // The storefront fetcher's network stack: routed to the global fetch spy below
 // (never the real network), with an inert Agent.
 vi.mock("undici", () => ({
@@ -293,6 +300,7 @@ import { diffScans, unauditedCategories } from "../../app/services/scan-differ.s
 import { enabledAppEmbedApps, observedEmbedApps } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import { sendScanSummary } from "../../app/services/summary-email.server";
+import { loadSummarySpeed } from "../../app/services/summary-speed.server";
 import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
 import { detectTranslationContent } from "../../app/services/translation-detector.server";
 import {
@@ -3611,6 +3619,8 @@ describe("scanTheme — send-summary-email step (gc-ol95)", () => {
       openCount: 2,
       inactiveApps: [],
       cleanedApps: [],
+      // gc-2wnf: no speed section (feature dark in this suite's default).
+      speed: null,
     });
     expect(arg.scan).toEqual({ id: SCAN_ID });
     expect(arg.admin).toBe(MOCK_ADMIN);
@@ -3779,6 +3789,7 @@ describe("scanTheme — send-summary-email step (gc-ol95)", () => {
         openCount: 2,
         inactiveApps: [{ appName: "Judge.me", leftoverCount: 3 }],
         cleanedApps: [],
+        speed: null,
       });
     });
 
@@ -3799,6 +3810,65 @@ describe("scanTheme — send-summary-email step (gc-ol95)", () => {
       await run();
       expect(mockPeriodScans).toHaveBeenCalledWith(SHOP_ID, THEME_ID, PREV_CREATED, SCAN_CREATED);
       expect(mockRemovals).toHaveBeenCalledWith(SHOP_ID, THEME_ID, [SCAN_ID]);
+    });
+  });
+
+  describe("speed section (gc-2wnf)", () => {
+    const mockSpeed = loadSummarySpeed as ReturnType<typeof vi.fn>;
+    // Back to "no speed section" so nothing leaks into the other summary tests.
+    afterEach(() => {
+      mockSpeed.mockReset();
+      mockSpeed.mockResolvedValue(null);
+    });
+    const SPEED = {
+      reportId: "rep-1",
+      testedAt: new Date("2026-06-07T08:12:00Z"),
+      score: 62,
+      scoreDelta: 7,
+      topApp: null,
+    };
+
+    it("a material speed change alone sends (no finding or app change)", async () => {
+      arrange();
+      arrangeNoFindingChange();
+      mockSpeed.mockResolvedValue(SPEED);
+      const { results } = await run();
+      expect(mockSend).toHaveBeenCalledTimes(1);
+      expect(mockSend.mock.calls[0][0].changes).toMatchObject({
+        newCount: 0,
+        fixedCount: 0,
+        speed: SPEED,
+      });
+      expect(outcome(results)).toEqual({ sent: true, reason: "sent" });
+    });
+
+    it("no speed section (immaterial, stale, dark or not Pro) keeps a quiet week quiet", async () => {
+      arrange();
+      arrangeNoFindingChange();
+      mockSpeed.mockResolvedValue(null);
+      const { results } = await run();
+      expect(mockSend).not.toHaveBeenCalled();
+      expect(outcome(results)).toEqual({ sent: false, reason: "nothing_changed" });
+    });
+
+    it("rides along with finding changes, and is asked with the shop + last summary time", async () => {
+      arrange();
+      const sentAt = new Date("2026-06-08T07:00:00Z");
+      mockLatest.mockResolvedValue({ scanId: "gone", sentAt });
+      mockSpeed.mockResolvedValue(SPEED);
+      await run();
+      expect(mockSpeed).toHaveBeenCalledWith(
+        expect.objectContaining({ id: SHOP_ID, plan: "Professional" }),
+        sentAt,
+      );
+      expect(mockSend.mock.calls[0][0].changes).toMatchObject({ newCount: 1, speed: SPEED });
+    });
+
+    it("never asked when an earlier gate stops the summary (no baseline)", async () => {
+      arrange();
+      mockGetPreviousScanForTheme.mockResolvedValue(null);
+      await run();
+      expect(mockSpeed).not.toHaveBeenCalled();
     });
   });
 

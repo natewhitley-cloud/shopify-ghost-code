@@ -47,6 +47,7 @@ import type {
   SummaryChanges,
   SummaryShop,
 } from "../../app/services/summary-email.server";
+import type { SummarySpeed } from "../../app/services/summary-speed.server";
 
 const ORIGINAL_ENV = { ...process.env };
 const fetchMock = vi.fn();
@@ -67,6 +68,23 @@ const changes = (over: Partial<SummaryChanges> = {}): SummaryChanges => ({
   ...over,
 });
 const app = (appName: string, leftoverCount = 3): SummaryApp => ({ appName, leftoverCount });
+
+/** A speed section as loadSummarySpeed returns it (gc-2wnf). */
+const SPEED: SummarySpeed = {
+  reportId: "rep-9",
+  testedAt: new Date("2026-10-11T08:12:00Z"),
+  score: 62,
+  scoreDelta: 5,
+  topApp: {
+    name: "Klaviyo",
+    mainThreadMs: 4000,
+    blockingMs: 1200,
+    transferBytes: 621_000,
+    unusedPct: 40,
+    requestCount: 3,
+  },
+};
+const SPEED_URL = "https://admin.shopify.com/store/my-store/apps/ghost-code/app/speed";
 
 /** A shop that is fully eligible (notice shown) unless overridden. */
 const shop = (over: Partial<SummaryShop> = {}): SummaryShop => ({
@@ -302,11 +320,17 @@ describe("nothing changed => no email", () => {
     expect(hasSummaryChanges({ ...NO_CHANGES, openCount: 50 })).toBe(false);
   });
 
+  it("no speed section (null or absent) is not a change (gc-2wnf)", () => {
+    expect(hasSummaryChanges({ ...NO_CHANGES, speed: null })).toBe(false);
+    expect(hasSummaryChanges({ ...NO_CHANGES, speed: undefined })).toBe(false);
+  });
+
   it.each([
     ["a new finding", { newCount: 1 }],
     ["a fixed finding", { fixedCount: 1 }],
     ["an app no longer active", { inactiveApps: [app("Judge.me")] }],
     ["an app cleaned up", { cleanedApps: [app("Klaviyo")] }],
+    ["a material speed change (gc-2wnf)", { speed: SPEED }],
   ])("%s alone is a change and sends one email", async (_label, over) => {
     const c = { ...NO_CHANGES, ...over };
     expect(hasSummaryChanges(c)).toBe(true);
@@ -351,6 +375,15 @@ describe("idempotency per scan and the cadence throttle", () => {
       cleanedAppCount: 1,
       recipient: "fresh@example.com",
     });
+  });
+
+  it("the hash covers the speed report emailed, and is unchanged without one (gc-2wnf)", () => {
+    const c = changes();
+    expect(buildSummaryHash({ ...c, speed: null })).toBe(buildSummaryHash(c));
+    expect(buildSummaryHash({ ...c, speed: SPEED })).not.toBe(buildSummaryHash(c));
+    expect(buildSummaryHash({ ...c, speed: SPEED })).not.toBe(
+      buildSummaryHash({ ...c, speed: { ...SPEED, reportId: "rep-10" } }),
+    );
   });
 
   it.each([
@@ -671,6 +704,79 @@ describe("body", () => {
     );
   });
 
+  describe("speed section (gc-2wnf)", () => {
+    const withSpeed = (over: Partial<SummaryChanges> = {}) => ({
+      changes: changes({ ...over, speed: SPEED }),
+      speedUrl: SPEED_URL,
+    });
+
+    it("text: after the scan link, two lines then the Store speed link", () => {
+      expect(text(withSpeed({ inactiveApps: [], cleanedApps: [] }))).toBe(
+        [
+          "Here is your weekly digest for Paw Naturals from GhostCode.",
+          "",
+          "New since your last summary: 2",
+          "Fixed since your last summary: 1",
+          "Still in your theme: 7",
+          "",
+          "See the details in GhostCode:",
+          "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
+          "",
+          "Last speed test (Oct 11, 2026): your homepage scored 62 / 100, up 5 from the test before.",
+          "Klaviyo used 4.0 s of processing time and 621 KB on your homepage.",
+          "",
+          "See your store speed in GhostCode:",
+          SPEED_URL,
+          "",
+          "Alpenglow Software LLC",
+          "support@alpenglowsoftware.com",
+          "Unsubscribe: https://app.example.com/unsubscribe#t=tok",
+        ].join("\n"),
+      );
+    });
+
+    it("HTML: the same lines in the same place, and a fourth link", () => {
+      const h = html(withSpeed());
+      expect(h).toContain(
+        "Last speed test (Oct 11, 2026): your homepage scored 62 / 100, up 5 from the test before.<br>Klaviyo used 4.0 s of processing time and 621 KB on your homepage.",
+      );
+      expect(h).toContain(
+        `<a href="${SPEED_URL}" style="color:#1a56db;text-decoration:underline">See your store speed in GhostCode</a>`,
+      );
+      expect(h.match(/<a /g)).toHaveLength(4);
+      const order = [
+        "See the details in GhostCode</a>",
+        "Last speed test",
+        "See your store speed in GhostCode</a>",
+        "Alpenglow Software LLC<br>",
+      ].map((s) => h.indexOf(s));
+      expect(order.every((i) => i > -1)).toBe(true);
+      expect([...order].sort((a, b) => a - b)).toEqual(order);
+    });
+
+    it("escapes the app name in HTML", () => {
+      const h = html({
+        changes: changes({
+          speed: { ...SPEED, topApp: { ...SPEED.topApp!, name: '<b>"X" & Y</b>' } },
+        }),
+        speedUrl: SPEED_URL,
+      });
+      expect(h).toContain("&lt;b&gt;&quot;X&quot; &amp; Y&lt;/b&gt; used 4.0 s");
+      expect(h).not.toContain("<b>");
+    });
+
+    it("no speed section without a speed change, or without the link", () => {
+      for (const t of [
+        text(),
+        text({ speedUrl: SPEED_URL }),
+        text({ changes: changes({ speed: SPEED }) }),
+      ]) {
+        expect(t).not.toContain("speed");
+      }
+      expect(html({ changes: changes({ speed: SPEED }) })).not.toContain("Last speed test");
+    });
+  });
+
   it("drops the old 'You're getting this', 'Turn off' and postal lines", () => {
     for (const t of [text(), text({ cadence: "monthly" }), html()]) {
       expect(t).not.toContain("You're getting this");
@@ -857,6 +963,10 @@ describe("body", () => {
         text({ changes: { ...NO_CHANGES, cleanedApps: [app("Solo", 1)] } }),
         html(),
         html({ changes: { ...NO_CHANGES, newCount: 1, inactiveApps: many, cleanedApps: many } }),
+        // gc-2wnf speed section, up, down and first.
+        text({ changes: changes({ speed: SPEED }), speedUrl: SPEED_URL }),
+        text({ changes: changes({ speed: { ...SPEED, scoreDelta: -6 } }), speedUrl: SPEED_URL }),
+        html({ changes: changes({ speed: { ...SPEED, scoreDelta: null } }), speedUrl: SPEED_URL }),
         // The logo's public-site path ("assets/icons/...") is not a theme path.
       ].map((b) => b.replace(ALPENGLOW_LOGO_URL, "LOGO_URL"));
     };
@@ -918,5 +1028,38 @@ describe("recipient PII never reaches logs", () => {
     m.ensureToken.mockRejectedValue(prismaStyleError());
     expect(await send()).toEqual({ sent: false, reason: "exception" });
     expect(JSON.stringify(vi.mocked(logger.error).mock.calls)).not.toContain(EMAIL);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Speed section end to end (gc-2wnf)
+// ---------------------------------------------------------------------------
+
+describe("sendScanSummary with a speed section (gc-2wnf)", () => {
+  it("a speed-only change sends one email whose text and HTML carry the section and link", async () => {
+    expect(await send({ changes: { ...NO_CHANGES, speed: SPEED } })).toEqual({
+      sent: true,
+      reason: "sent",
+    });
+    const email = sentEmail();
+    for (const part of [email.text, email.html]) {
+      expect(part).toContain("Last speed test (Oct 11, 2026): your homepage scored 62 / 100");
+      expect(part).toContain("Klaviyo used 4.0 s of processing time and 621 KB on your homepage.");
+      expect(part).toContain(SPEED_URL);
+    }
+    expect(m.record).toHaveBeenCalledWith(
+      expect.objectContaining({
+        newCount: 0,
+        fixedCount: 0,
+        findingSetHash: buildSummaryHash({ ...NO_CHANGES, speed: SPEED }),
+      }),
+    );
+  });
+
+  it("no speed section: no speed link in either part", async () => {
+    await send();
+    const email = sentEmail();
+    expect(email.text).not.toContain("/app/speed");
+    expect(email.html).not.toContain("/app/speed");
   });
 });

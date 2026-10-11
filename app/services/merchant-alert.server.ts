@@ -141,6 +141,11 @@ export function buildScanAdminUrl(shopDomain: string, scanId: string): string {
   return `https://admin.shopify.com/store/${storeHandleFromDomain(shopDomain)}/apps/${APP_HANDLE}/app/scans/${scanId}`;
 }
 
+/** Deep link to the Store speed page in the embedded admin (gc-2wnf). */
+export function buildSpeedAdminUrl(shopDomain: string): string {
+  return `https://admin.shopify.com/store/${storeHandleFromDomain(shopDomain)}/apps/${APP_HANDLE}/app/speed`;
+}
+
 /**
  * Human unsubscribe link for the email body. The token rides in the URL
  * FRAGMENT, which browsers never send to the server, so it cannot reach access

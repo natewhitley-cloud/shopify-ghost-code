@@ -13,6 +13,15 @@
  * Proof 1 (static, transitive): walk every relative import (static and
  * dynamic `import("...")`) from each scan-side entry point and assert no
  * speed module is reachable.
+ *
+ * ONE sanctioned exception (gc-2wnf, the summary email's speed section): the
+ * summary email may READ stored SpeedReport rows through
+ * app/services/summary-speed.server.ts, and only through it. That module
+ * reaches the read-only data modules (SPEED_DATA_MODULES: the model, the pure
+ * lib, the flag) and never the PageSpeed client, the speed service or the
+ * worker (SPEED_ACTIVE_MODULES), so nothing on the scan path can call Google,
+ * dispatch a speed run or wait on one. Its reads never throw (no section on
+ * error), and the send step runs after finalize-scan.
  * Proof 2 (runtime): with the PageSpeed client and speed services mocked to
  * THROW on any use, the scan-side modules still load.
  */
@@ -23,15 +32,25 @@ import { describe, it, expect, vi } from "vitest";
 
 const ROOT = join(__dirname, "..", "..");
 
-const SPEED_MODULES = [
+/** Modules that call Google, run or dispatch a speed report: never reachable. */
+const SPEED_ACTIVE_MODULES = [
   "app/services/pagespeed-client.server.ts",
   "app/services/speed-attribution.server.ts",
   "app/services/speed-report.server.ts",
+  "inngest/functions/speed-report.ts",
+];
+
+/** Read-only speed data: reachable from the scan path only via SUMMARY_SPEED. */
+const SPEED_DATA_MODULES = [
   "app/services/speed-report-config.server.ts",
   "app/models/speed-report.server.ts",
   "app/lib/speed-report.ts",
-  "inngest/functions/speed-report.ts",
 ];
+
+const SPEED_MODULES = [...SPEED_ACTIVE_MODULES, ...SPEED_DATA_MODULES];
+
+/** The one sanctioned bridge (gc-2wnf): the summary email's speed section. */
+const SUMMARY_SPEED = "app/services/summary-speed.server.ts";
 
 const SCAN_ENTRY_POINTS = [
   "inngest/functions/scan-theme.ts",
@@ -59,14 +78,19 @@ function resolveRelative(fromFile: string, spec: string): string | null {
   return null;
 }
 
-/** Every local module reachable from `entry` (relative imports only). */
-function reachable(entry: string): Set<string> {
+/**
+ * Every local module reachable from `entry` (relative imports only). Modules
+ * in `stopAt` are recorded but not walked into.
+ */
+function reachable(entry: string, stopAt: readonly string[] = []): Set<string> {
   const seen = new Set<string>();
+  const stops = new Set(stopAt.map((s) => join(ROOT, s)));
   const stack = [join(ROOT, entry)];
   while (stack.length) {
     const file = stack.pop()!;
     if (seen.has(file)) continue;
     seen.add(file);
+    if (stops.has(file)) continue;
     const src = readFileSync(file, "utf8");
     for (const m of src.matchAll(IMPORT_RE)) {
       const next = resolveRelative(file, m[1] ?? m[2] ?? m[3]);
@@ -83,10 +107,34 @@ describe("scan pipeline never depends on the speed report (static)", () => {
     expect(graph).toContain("app/services/speed-report.server.ts");
   });
 
-  it.each(SCAN_ENTRY_POINTS)("%s reaches no speed module", (entry) => {
-    const graph = reachable(entry);
-    expect(graph.size).toBeGreaterThan(1);
-    for (const mod of SPEED_MODULES) expect(graph).not.toContain(mod);
+  it.each(SCAN_ENTRY_POINTS)(
+    "%s reaches no speed module except read-only data via the summary speed section",
+    (entry) => {
+      const graph = reachable(entry);
+      expect(graph.size).toBeGreaterThan(1);
+      for (const mod of SPEED_ACTIVE_MODULES) expect(graph).not.toContain(mod);
+      // With the sanctioned bridge cut, nothing speed-related is reachable.
+      const withoutBridge = reachable(entry, [SUMMARY_SPEED]);
+      for (const mod of SPEED_MODULES) expect(withoutBridge).not.toContain(mod);
+    },
+  );
+
+  it("the bridge is used only by the summary email path (gc-2wnf)", () => {
+    for (const entry of SCAN_ENTRY_POINTS) {
+      const usesBridge = reachable(entry).has(SUMMARY_SPEED);
+      expect([entry, usesBridge]).toEqual([
+        entry,
+        entry === "app/services/summary-email.server.ts" ||
+          entry === "inngest/functions/scan-theme.ts",
+      ]);
+    }
+  });
+
+  it("the summary speed section only reads: no PageSpeed, speed service, worker or Inngest client", () => {
+    const graph = reachable(SUMMARY_SPEED);
+    expect(graph).toContain("app/models/speed-report.server.ts");
+    for (const mod of SPEED_ACTIVE_MODULES) expect(graph).not.toContain(mod);
+    expect(graph).not.toContain("inngest/client.ts");
   });
 
   it("the speed report is its own cron, never chained off a scan", () => {

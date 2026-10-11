@@ -15,6 +15,7 @@ import {
   buildBodyUnsubscribeUrl,
   buildHeaderUnsubscribeUrl,
   buildScanAdminUrl,
+  buildSpeedAdminUrl,
   getMerchantAlertConfigStatus,
   sendMerchantAlert,
 } from "../../app/services/merchant-alert.server";
@@ -164,6 +165,12 @@ describe("links", () => {
   it("builds the admin deep link from the store handle", () => {
     expect(buildScanAdminUrl("my-store.myshopify.com", "scan-1")).toBe(
       "https://admin.shopify.com/store/my-store/apps/ghost-code/app/scans/scan-1",
+    );
+  });
+
+  it("Store speed deep link (gc-2wnf) uses the same admin app path", () => {
+    expect(buildSpeedAdminUrl("my-store.myshopify.com")).toBe(
+      "https://admin.shopify.com/store/my-store/apps/ghost-code/app/speed",
     );
   });
 

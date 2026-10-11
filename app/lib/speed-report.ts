@@ -341,14 +341,22 @@ export function formatBytes(bytes: number | null): string {
 export const HEADLINE_MAX_APPS = 3;
 
 /**
+ * The `n` costliest apps by main-thread (processing) time, most first; only
+ * apps with any. Shared by the page headline and the summary email (gc-2wnf).
+ */
+export function topCostlyApps(apps: readonly SpeedCostRow[], n: number): SpeedCostRow[] {
+  return apps
+    .filter((a) => a.mainThreadMs > 0)
+    .sort((a, b) => b.mainThreadMs - a.mainThreadMs)
+    .slice(0, n);
+}
+
+/**
  * "These 3 apps cost your homepage 4.2 s of processing time." over the top
  * apps by main-thread time (only apps with any). Null when no app has any.
  */
 export function appCostHeadline(apps: SpeedCostRow[], page: SpeedPageKey): string | null {
-  const top = apps
-    .filter((a) => a.mainThreadMs > 0)
-    .sort((a, b) => b.mainThreadMs - a.mainThreadMs)
-    .slice(0, HEADLINE_MAX_APPS);
+  const top = topCostlyApps(apps, HEADLINE_MAX_APPS);
   if (top.length === 0) return null;
   const total = top.reduce((sum, a) => sum + a.mainThreadMs, 0);
   const pageName = page === "home" ? "homepage" : "product page";
