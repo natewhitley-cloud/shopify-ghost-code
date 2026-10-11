@@ -100,7 +100,7 @@ export const speedReportRun = inngest.createFunction(
       try {
         const { unauthenticated } = await import("../../app/shopify.server");
         const { admin } = await unauthenticated.admin(prep.shopDomain);
-        return await svc.resolveSpeedTargets(admin);
+        return await svc.resolveSpeedTargets(admin, { shopId });
       } catch {
         return { ok: false as const };
       }

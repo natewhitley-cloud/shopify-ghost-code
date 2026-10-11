@@ -70,7 +70,10 @@ export type SpeedPageStatus =
   | "NOT_RUN"
   /** The store has no product published to the online store. */
   | "NO_PRODUCT"
-  /** The optional read_products scope is not granted. */
+  /**
+   * The optional read_products scope is not granted AND the public
+   * /products.json fallback (gc-9mbw) found no usable product.
+   */
   | "NEEDS_PRODUCT_ACCESS";
 
 export type SpeedMetrics = {

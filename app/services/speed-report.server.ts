@@ -3,7 +3,8 @@
  * worker is a thin sequence of steps over these functions:
  *
  *   prepareSpeedReportRun   gate (flag, plan, install) + key check + report row
- *   resolveSpeedTargets     Admin API: primary domain + one product URL
+ *   resolveSpeedTargets     Admin API: primary domain + one product URL (without
+ *                           read_products: the public /products.json, gc-9mbw)
  *   runPageSpeedAttempt     ONE PageSpeed call (re-gates, reserves budget first)
  *   finalizeSpeedReport     median per page, status, row, OpsEvent
  *
@@ -30,7 +31,12 @@ import {
   getPageSpeedApiKey,
   isSpeedReportLive,
 } from "./speed-report-config.server";
-import { isBareHostname } from "./storefront-fetcher.server";
+import {
+  type DnsLookupAll,
+  guardedStorefrontGet,
+  isBareHostname,
+  type StorefrontFetch,
+} from "./storefront-fetcher.server";
 import { inngest } from "../../inngest/client";
 import db from "../db.server";
 import { getPlanFeatures } from "../lib/billing.server";
@@ -294,8 +300,142 @@ async function resolveProductTarget(
   return { status: "NO_PRODUCT" };
 }
 
-/** Read the shop's primary host, then pick the product page. */
-export async function resolveSpeedTargets(admin: AdminApiContext): Promise<ResolveTargetsResult> {
+// ---------------------------------------------------------------------------
+// Product fallback without read_products (gc-9mbw): the public /products.json
+// ---------------------------------------------------------------------------
+
+/** Products read from /products.json (Shopify's public max per page). */
+export const PUBLIC_PRODUCTS_LIMIT = 250;
+
+/**
+ * A product handle we are willing to put in a URL: letters (any script),
+ * digits, "-" and "_", starting with a letter or digit, at most 255 chars.
+ * Rejects everything that could change the path or host: "/", "\\", ".",
+ * "%" (pre-encoded input), "?", "#", ":", "@", whitespace and controls.
+ */
+const SAFE_HANDLE_RE = /^[\p{L}\p{N}][\p{L}\p{N}_-]{0,254}$/u;
+
+export function isSafeProductHandle(handle: unknown): handle is string {
+  return typeof handle === "string" && SAFE_HANDLE_RE.test(handle);
+}
+
+/**
+ * Pick the product page from a /products.json body: the OLDEST product by
+ * created_at (id breaks ties), the same "oldest first" rule as the Admin path
+ * (sortKey ID), so the same product is tested week after week. The endpoint
+ * lists only products published to the online store; a product with a
+ * published_at of null is skipped anyway. Products with an unsafe handle or
+ * no parseable created_at are skipped. The URL is built on the primary host
+ * and must pass productUrlOnPrimaryHost and isAllowedSpeedTarget.
+ * Null = no usable product (malformed body, empty list, nothing safe).
+ *
+ * Limit: only the first PUBLIC_PRODUCTS_LIMIT products are seen, so on a
+ * larger catalog "oldest" is the oldest of that page.
+ */
+export function pickPublicProductUrl(body: string, primaryHost: string): string | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  const products = (parsed as { products?: unknown } | null)?.products;
+  if (!Array.isArray(products)) return null;
+
+  let best: { created: number; id: number; handle: string } | null = null;
+  for (const p of products) {
+    if (!p || typeof p !== "object") continue;
+    const o = p as Record<string, unknown>;
+    if (!isSafeProductHandle(o.handle)) continue;
+    if (typeof o.published_at !== "string") continue;
+    const created = typeof o.created_at === "string" ? Date.parse(o.created_at) : NaN;
+    if (!Number.isFinite(created)) continue;
+    const id = typeof o.id === "number" && Number.isFinite(o.id) ? o.id : Number.MAX_SAFE_INTEGER;
+    if (!best || created < best.created || (created === best.created && id < best.id)) {
+      best = { created, id, handle: o.handle };
+    }
+  }
+  if (!best) return null;
+
+  const url = productUrlOnPrimaryHost(
+    `https://${primaryHost}/products/${encodeURIComponent(best.handle)}`,
+    primaryHost,
+  );
+  return url && isAllowedSpeedTarget(url, primaryHost) ? url : null;
+}
+
+/**
+ * Without read_products, pick the product page from the PUBLIC storefront:
+ * `https://<primary host>/products.json?limit=PUBLIC_PRODUCTS_LIMIT`, read
+ * through the storefront fetcher's guarded GET (primary host only, https,
+ * manual redirects capped and limited to the shop's own hosts, DNS-rebinding
+ * safe agent, body cap, timeout). Re-checks the speed gate FIRST (flag,
+ * install, Professional), so a dark feature or a non-Pro shop never reads the
+ * storefront. Anything short of a usable product (password page, 404,
+ * redirect elsewhere, non-JSON, empty) keeps NEEDS_PRODUCT_ACCESS: homepage
+ * only, with the same message as before. Logs host + outcome only. Never throws.
+ */
+export async function resolvePublicProductTarget(input: {
+  shopId: string;
+  primaryHost: string;
+  storeHosts: string[];
+  fetchImpl?: StorefrontFetch;
+  dnsLookup?: DnsLookupAll;
+}): Promise<ProductTarget> {
+  const fallback: ProductTarget = { status: "NEEDS_PRODUCT_ACCESS" };
+  const log = (outcome: string) =>
+    logger.info("speed product fallback", {
+      function: LOG_FN,
+      event: "speed_product_fallback",
+      shopId: input.shopId,
+      host: input.primaryHost,
+      outcome,
+    });
+  try {
+    const gate = await checkSpeedReportEligibility(input.shopId);
+    if (!gate.eligible) {
+      log(gate.reason);
+      return fallback;
+    }
+    if (!isBareHostname(input.primaryHost)) {
+      log("no_domain");
+      return fallback;
+    }
+    const res = await guardedStorefrontGet(
+      new URL(`https://${input.primaryHost}/products.json?limit=${PUBLIC_PRODUCTS_LIMIT}`),
+      {
+        allowedHosts: new Set(input.storeHosts),
+        accept: "application/json",
+        fetchImpl: input.fetchImpl,
+        dnsLookup: input.dnsLookup,
+      },
+    );
+    if (!res.ok) {
+      log(res.reason);
+      return fallback;
+    }
+    const url = pickPublicProductUrl(res.body, input.primaryHost);
+    if (!url) {
+      log("no_usable_product");
+      return fallback;
+    }
+    log("ok");
+    return { status: "OK", url };
+  } catch {
+    log("error");
+    return fallback;
+  }
+}
+
+/**
+ * Read the shop's primary host, then pick the product page: the Admin path
+ * when read_products is granted (preferred), else the public /products.json
+ * fallback (gc-9mbw).
+ */
+export async function resolveSpeedTargets(
+  admin: AdminApiContext,
+  opts: { shopId: string; fetchImpl?: StorefrontFetch; dnsLookup?: DnsLookupAll },
+): Promise<ResolveTargetsResult> {
   let primaryHost: string | null = null;
   let myshopifyHost: string | null = null;
   try {
@@ -327,8 +467,17 @@ export async function resolveSpeedTargets(admin: AdminApiContext): Promise<Resol
   if (!primaryHost || !isBareHostname(primaryHost)) return { ok: false };
   primaryHost = primaryHost.toLowerCase();
 
-  const product = await resolveProductTarget(admin, primaryHost);
   const storeHosts = [primaryHost, ...(myshopifyHost ? [myshopifyHost] : [])];
+  let product = await resolveProductTarget(admin, primaryHost);
+  if (product.status === "NEEDS_PRODUCT_ACCESS") {
+    product = await resolvePublicProductTarget({
+      shopId: opts.shopId,
+      primaryHost,
+      storeHosts,
+      fetchImpl: opts.fetchImpl,
+      dnsLookup: opts.dnsLookup,
+    });
+  }
   return {
     ok: true,
     targets: { homeUrl: `https://${primaryHost}/`, primaryHost, storeHosts, product },

@@ -24,6 +24,11 @@
  * only in `unstable`) and `webPresences` needs the read_markets scope.
  * One request chain per scan, homepage only, 10 s total budget, 5 MB body cap.
  *
+ * Second reader (gc-9mbw): the store speed report's product-page fallback
+ * reads `https://<primary host>/products.json` through the SAME guarded GET
+ * (guardedStorefrontGet), gated by its own flag and plan check
+ * (speed-report.server resolvePublicProductTarget).
+ *
  * Network safety (DNS rebinding): requests go through an undici Agent whose
  * `connect.lookup` resolves the hostname and refuses to connect when ANY
  * resolved address is private, loopback, link-local, CGNAT, multicast,
@@ -401,7 +406,7 @@ type LookupCallback = (
   address: string | dns.LookupAddress[],
   family?: number,
 ) => void;
-type DnsLookupAll = (
+export type DnsLookupAll = (
   hostname: string,
   options: dns.LookupAllOptions,
   callback: (err: NodeJS.ErrnoException | null, addresses: dns.LookupAddress[]) => void,
@@ -493,6 +498,102 @@ function unreachable(
   return { status: "unreachable", reason };
 }
 
+export type GuardedGetResult =
+  | { ok: true; body: string }
+  | {
+      ok: false;
+      reason: Exclude<StorefrontUnreachableReason, "no_domain" | "not_shopify" | "parse_failed">;
+    };
+
+/**
+ * ONE guarded GET of a public storefront URL, shared by the ScriptTag audit
+ * (the homepage) and the store speed report's product fallback (gc-9mbw,
+ * /products.json). Every guard in the file header applies: the caller passes
+ * an https URL on the shop's primary host; redirects are followed manually, at
+ * most STOREFRONT_MAX_REDIRECTS, only to `allowedHosts` (well-formed https to
+ * any other host is `redirect_other_domain`, anything malformed is
+ * `redirect_refused`); every hop connects through the DNS-rebinding-safe
+ * Agent; a final /password path is `password`; a non-2xx is `http_status`;
+ * the body is capped at STOREFRONT_MAX_BODY_BYTES; the whole chain shares one
+ * timeout. Never throws and never logs: the caller logs host + outcome.
+ */
+export async function guardedStorefrontGet(
+  startUrl: URL,
+  opts: {
+    allowedHosts: ReadonlySet<string>;
+    accept: string;
+    fetchImpl?: StorefrontFetch;
+    dnsLookup?: DnsLookupAll;
+    timeoutMs?: number;
+  },
+): Promise<GuardedGetResult> {
+  const fetchImpl = opts.fetchImpl ?? (undiciFetch as unknown as StorefrontFetch);
+  const dispatcher = new Agent({
+    connect: { lookup: createGuardedLookup(opts.dnsLookup) },
+  });
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? STOREFRONT_FETCH_TIMEOUT_MS);
+  let url = startUrl;
+  try {
+    let response: Response;
+    for (let redirects = 0; ; redirects++) {
+      response = await fetchImpl(url, {
+        method: "GET",
+        redirect: "manual",
+        signal: controller.signal,
+        dispatcher,
+        headers: { "User-Agent": STOREFRONT_USER_AGENT, Accept: opts.accept },
+      });
+      if (response.status < 300 || response.status >= 400) break;
+
+      await response.body?.cancel().catch(() => {});
+      if (redirects >= STOREFRONT_MAX_REDIRECTS) return { ok: false, reason: "too_many_redirects" };
+      const location = response.headers.get("location");
+      let next: URL | null = null;
+      try {
+        next = location ? new URL(location, url) : null;
+      } catch {
+        next = null;
+      }
+      if (
+        !next ||
+        next.protocol !== "https:" ||
+        next.username ||
+        next.password ||
+        next.port ||
+        !isBareHostname(next.hostname)
+      ) {
+        return { ok: false, reason: "redirect_refused" };
+      }
+      if (!opts.allowedHosts.has(next.hostname.toLowerCase())) {
+        // Well-formed, but not a host this read may reach (see the file header).
+        return { ok: false, reason: "redirect_other_domain" };
+      }
+      url = next;
+    }
+
+    // Password-protected stores serve /password instead of the page.
+    if (isPasswordPath(url.pathname)) {
+      await response.body?.cancel().catch(() => {});
+      return { ok: false, reason: "password" };
+    }
+    if (response.status < 200 || response.status >= 300) {
+      await response.body?.cancel().catch(() => {});
+      return { ok: false, reason: "http_status" };
+    }
+
+    return { ok: true, body: await readCappedText(response, STOREFRONT_MAX_BODY_BYTES) };
+  } catch (err) {
+    if (err instanceof BodyTooLargeError) return { ok: false, reason: "too_large" };
+    if (isBlockedAddressFailure(err)) return { ok: false, reason: "blocked_address" };
+    return { ok: false, reason: controller.signal.aborted ? "timeout" : "network" };
+  } finally {
+    clearTimeout(timer);
+    void dispatcher.close().catch(() => {});
+  }
+}
+
 /**
  * Read the shop's public homepage and extract its ScriptTag URLs.
  *
@@ -530,97 +631,32 @@ export async function fetchStorefrontScriptTags(
   const { domains } = context;
   if (!domains) return unreachable("no_domain", shopId, null);
 
-  const fetchImpl = opts.fetchImpl ?? (undiciFetch as unknown as StorefrontFetch);
-  const dispatcher = new Agent({
-    connect: { lookup: createGuardedLookup(opts.dnsLookup) },
-  });
-
   const allowedHosts = new Set([domains.primaryHost]);
   if (domains.myshopifyHost) allowedHosts.add(domains.myshopifyHost);
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), opts.timeoutMs ?? STOREFRONT_FETCH_TIMEOUT_MS);
-  let url = new URL(`https://${domains.primaryHost}/`);
-  try {
-    let response: Response;
-    for (let redirects = 0; ; redirects++) {
-      response = await fetchImpl(url, {
-        method: "GET",
-        redirect: "manual",
-        signal: controller.signal,
-        dispatcher,
-        headers: { "User-Agent": STOREFRONT_USER_AGENT, Accept: "text/html" },
-      });
-      if (response.status < 300 || response.status >= 400) break;
+  const res = await guardedStorefrontGet(new URL(`https://${domains.primaryHost}/`), {
+    allowedHosts,
+    accept: "text/html",
+    fetchImpl: opts.fetchImpl,
+    dnsLookup: opts.dnsLookup,
+    timeoutMs: opts.timeoutMs,
+  });
+  if (!res.ok) return unreachable(res.reason, shopId, domains.primaryHost);
 
-      await response.body?.cancel().catch(() => {});
-      if (redirects >= STOREFRONT_MAX_REDIRECTS) {
-        return unreachable("too_many_redirects", shopId, domains.primaryHost);
-      }
-      const location = response.headers.get("location");
-      let next: URL | null = null;
-      try {
-        next = location ? new URL(location, url) : null;
-      } catch {
-        next = null;
-      }
-      if (
-        !next ||
-        next.protocol !== "https:" ||
-        next.username ||
-        next.password ||
-        next.port ||
-        !isBareHostname(next.hostname)
-      ) {
-        return unreachable("redirect_refused", shopId, domains.primaryHost);
-      }
-      if (!allowedHosts.has(next.hostname.toLowerCase())) {
-        // Well-formed, but not a host this scan may read (see the file header).
-        return unreachable("redirect_other_domain", shopId, domains.primaryHost);
-      }
-      url = next;
-    }
-
-    // Password-protected stores serve /password instead of the homepage.
-    if (isPasswordPath(url.pathname)) {
-      await response.body?.cancel().catch(() => {});
-      return unreachable("password", shopId, domains.primaryHost);
-    }
-    if (response.status < 200 || response.status >= 300) {
-      await response.body?.cancel().catch(() => {});
-      return unreachable("http_status", shopId, domains.primaryHost);
-    }
-
-    const html = await readCappedText(response, STOREFRONT_MAX_BODY_BYTES);
-    if (isPasswordPageHtml(html)) return unreachable("password", shopId, domains.primaryHost);
-    if (!isShopifyStorefrontHtml(html)) {
-      return unreachable("not_shopify", shopId, domains.primaryHost);
-    }
-    const urls = parseScriptTagUrls(html);
-    if (urls === null) return unreachable("parse_failed", shopId, domains.primaryHost);
-
-    logger.info("storefront script tags read", {
-      function: "storefront-fetcher",
-      event: "storefront_read",
-      shopId,
-      host: domains.primaryHost,
-      scriptTagCount: urls.length,
-    });
-    return { status: "ok", host: domains.primaryHost, urls };
-  } catch (err) {
-    if (err instanceof BodyTooLargeError) {
-      return unreachable("too_large", shopId, domains.primaryHost);
-    }
-    if (isBlockedAddressFailure(err)) {
-      return unreachable("blocked_address", shopId, domains.primaryHost);
-    }
-    return unreachable(
-      controller.signal.aborted ? "timeout" : "network",
-      shopId,
-      domains.primaryHost,
-    );
-  } finally {
-    clearTimeout(timer);
-    void dispatcher.close().catch(() => {});
+  const html = res.body;
+  if (isPasswordPageHtml(html)) return unreachable("password", shopId, domains.primaryHost);
+  if (!isShopifyStorefrontHtml(html)) {
+    return unreachable("not_shopify", shopId, domains.primaryHost);
   }
+  const urls = parseScriptTagUrls(html);
+  if (urls === null) return unreachable("parse_failed", shopId, domains.primaryHost);
+
+  logger.info("storefront script tags read", {
+    function: "storefront-fetcher",
+    event: "storefront_read",
+    shopId,
+    host: domains.primaryHost,
+    scriptTagCount: urls.length,
+  });
+  return { status: "ok", host: domains.primaryHost, urls };
 }

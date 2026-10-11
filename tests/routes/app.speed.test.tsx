@@ -507,6 +507,26 @@ describe("rendering", () => {
     );
   });
 
+  it("Products access prompt only when neither path found a product (gc-9mbw)", () => {
+    const needs = report("COMPLETED", [
+      HOME_PAGE,
+      { page: "product", status: "NEEDS_PRODUCT_ACCESS", url: null, runsAttempted: 0, runsOk: 0 },
+    ]);
+    let html = render(pro({ latest: needs, lastResults: needs }));
+    expect(html).toContain("To test a product page too, allow Products access in Settings.");
+    expect(html).toContain('href="/app/settings"');
+
+    // Product chosen from the public storefront (no read_products): tested, no prompt.
+    const fromStorefront = report("COMPLETED", [
+      HOME_PAGE,
+      { ...HOME_PAGE, page: "product", url: "https://paw-naturals.example/products/duck-treats" },
+    ]);
+    html = render(pro({ latest: fromStorefront, lastResults: fromStorefront }));
+    expect(html).toContain("/products/duck-treats");
+    expect(html).not.toContain("allow Products access");
+    expect(html).not.toContain("Open Settings");
+  });
+
   it("no app with measurable load", () => {
     const latest = report("COMPLETED", [{ ...HOME_PAGE, apps: [], otherThirdParty: [] }]);
     const html = render(pro({ latest, lastResults: latest }));

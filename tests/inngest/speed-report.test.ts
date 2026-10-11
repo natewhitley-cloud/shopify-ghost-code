@@ -179,6 +179,8 @@ describe("speed-report-run (worker)", () => {
       "psi-product-3",
       "finalize",
     ]);
+    // gc-9mbw: the shop id rides along so the product fallback re-checks the gate.
+    expect(svc.resolveSpeedTargets.mock.calls[0][1]).toEqual({ shopId: "s1" });
     expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(6);
     expect(svc.runPageSpeedAttempt.mock.calls[3][0]).toMatchObject({
       shopId: "s1",

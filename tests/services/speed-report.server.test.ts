@@ -44,15 +44,19 @@ import {
   checkSpeedReportEligibility,
   finalizeSpeedReport,
   isAllowedSpeedTarget,
+  isSafeProductHandle,
+  pickPublicProductUrl,
   prepareSpeedReportRun,
   productUrlOnPrimaryHost,
   requestSpeedReportRunNow,
+  resolvePublicProductTarget,
   resolveSpeedTargets,
   RUN_NOW_ERRORS,
   runPageSpeedAttempt,
   type SpeedAttempt,
   type SpeedTargets,
 } from "../../app/services/speed-report.server";
+import type { StorefrontFetch } from "../../app/services/storefront-fetcher.server";
 import {
   buildPageSpeedError,
   buildPageSpeedResponse,
@@ -260,6 +264,23 @@ const SHOP_BODY = {
   },
 };
 
+/** A storefront fetch that must never run (the Admin path needs no storefront read). */
+function noStorefront() {
+  return vi.fn(async () => {
+    throw new Error("storefront must not be read");
+  });
+}
+
+function resolve(
+  admin: ReturnType<typeof adminWith>,
+  fetchImpl: StorefrontFetch = noStorefront(),
+): ReturnType<typeof resolveSpeedTargets> {
+  return resolveSpeedTargets(admin as unknown as Parameters<typeof resolveSpeedTargets>[0], {
+    shopId: SHOP_ID,
+    fetchImpl,
+  });
+}
+
 describe("resolveSpeedTargets", () => {
   it("homepage on the primary domain + the first product with an online store URL", async () => {
     const admin = adminWith(SHOP_BODY, {
@@ -273,7 +294,7 @@ describe("resolveSpeedTargets", () => {
         },
       },
     });
-    await expect(resolveSpeedTargets(admin)).resolves.toEqual({
+    await expect(resolve(admin)).resolves.toEqual({
       ok: true,
       targets: {
         homeUrl: HOME,
@@ -291,7 +312,7 @@ describe("resolveSpeedTargets", () => {
     const admin = adminWith(SHOP_BODY, {
       data: { products: { nodes: [{ onlineStoreUrl: `https://${MYSHOPIFY_HOST}/products/a` }] } },
     });
-    const r = await resolveSpeedTargets(admin);
+    const r = await resolve(admin);
     expect(r.ok && r.targets.product).toEqual({
       status: "OK",
       url: `https://${STORE_HOST}/products/a`,
@@ -300,40 +321,51 @@ describe("resolveSpeedTargets", () => {
 
   it("NO_PRODUCT when no product is published to the online store", async () => {
     for (const nodes of [[], [{ onlineStoreUrl: null }, { onlineStoreUrl: "not a url" }]]) {
-      const r = await resolveSpeedTargets(adminWith(SHOP_BODY, { data: { products: { nodes } } }));
+      const r = await resolve(adminWith(SHOP_BODY, { data: { products: { nodes } } }));
       expect(r.ok && r.targets.product).toEqual({ status: "NO_PRODUCT" });
     }
   });
 
-  it("NEEDS_PRODUCT_ACCESS when read_products is not granted (returned or thrown)", async () => {
+  it("NEEDS_PRODUCT_ACCESS when read_products is not granted (returned or thrown) and the public fallback finds nothing", async () => {
+    const notFound = () => vi.fn(async () => new Response("Not found", { status: 404 }));
     const returned = adminWith(SHOP_BODY, {
       errors: [
         { message: "Access denied for products field.", extensions: { code: "ACCESS_DENIED" } },
       ],
     });
-    expect(
-      ((await resolveSpeedTargets(returned)) as { targets: SpeedTargets }).targets.product,
-    ).toEqual({
+    const f1 = notFound();
+    expect(((await resolve(returned, f1)) as { targets: SpeedTargets }).targets.product).toEqual({
       status: "NEEDS_PRODUCT_ACCESS",
     });
+    expect(f1).toHaveBeenCalledTimes(1);
     const thrownErr = Object.assign(new Error("GraphQL Client: Forbidden"), {
       body: { errors: { graphQLErrors: [{ extensions: { code: "ACCESS_DENIED" } }] } },
     });
     expect(
-      ((await resolveSpeedTargets(adminWith(SHOP_BODY, thrownErr))) as { targets: SpeedTargets })
+      ((await resolve(adminWith(SHOP_BODY, thrownErr), notFound())) as { targets: SpeedTargets })
         .targets.product,
     ).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
   });
 
+  it("never reads the storefront when the Admin path answers (OK, NO_PRODUCT or FAILED)", async () => {
+    for (const second of [
+      { data: { products: { nodes: [{ onlineStoreUrl: `https://${STORE_HOST}/products/a` }] } } },
+      { data: { products: { nodes: [] } } },
+      new Error("THROTTLED"),
+    ]) {
+      const storefront = noStorefront();
+      await resolve(adminWith(SHOP_BODY, second), storefront);
+      expect(storefront).not.toHaveBeenCalled();
+    }
+  });
+
   it("product lookup FAILED on any other error, homepage still tested", async () => {
-    const r = await resolveSpeedTargets(adminWith(SHOP_BODY, new Error("THROTTLED")));
+    const r = await resolve(adminWith(SHOP_BODY, new Error("THROTTLED")));
     expect(r).toMatchObject({
       ok: true,
       targets: { homeUrl: HOME, product: { status: "FAILED" } },
     });
-    const r2 = await resolveSpeedTargets(
-      adminWith(SHOP_BODY, { errors: [{ message: "Internal" }] }),
-    );
+    const r2 = await resolve(adminWith(SHOP_BODY, { errors: [{ message: "Internal" }] }));
     expect(r2).toMatchObject({ ok: true, targets: { product: { status: "FAILED" } } });
   });
 
@@ -343,9 +375,9 @@ describe("resolveSpeedTargets", () => {
       { primaryDomain: { url: "https://10.0.0.1", host: "10.0.0.1" } },
       { primaryDomain: { url: "::bad", host: "http://evil" } },
     ]) {
-      expect(await resolveSpeedTargets(adminWith({ data: { shop } }))).toEqual({ ok: false });
+      expect(await resolve(adminWith({ data: { shop } }))).toEqual({ ok: false });
     }
-    expect(await resolveSpeedTargets(adminWith(new Error("401")))).toEqual({ ok: false });
+    expect(await resolve(adminWith(new Error("401")))).toEqual({ ok: false });
   });
 });
 
@@ -374,6 +406,265 @@ describe("target hygiene", () => {
     expect(productUrlOnPrimaryHost(`https://x.example/collections/a`, STORE_HOST)).toBeNull();
     expect(productUrlOnPrimaryHost(`ftp://x.example/products/a`, STORE_HOST)).toBeNull();
     expect(productUrlOnPrimaryHost(null, STORE_HOST)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Product fallback without read_products (gc-9mbw): public /products.json
+// ---------------------------------------------------------------------------
+
+const ACCESS_DENIED = {
+  errors: [{ message: "Access denied for products field.", extensions: { code: "ACCESS_DENIED" } }],
+};
+
+type PublicProduct = {
+  id?: unknown;
+  handle?: unknown;
+  created_at?: unknown;
+  published_at?: unknown;
+};
+
+function product(handle: unknown, createdAt: string, extra: Partial<PublicProduct> = {}) {
+  return {
+    id: 1,
+    handle,
+    created_at: createdAt,
+    published_at: createdAt,
+    ...extra,
+  };
+}
+
+function productsJson(products: PublicProduct[]): Response {
+  return new Response(JSON.stringify({ products }), {
+    status: 200,
+    headers: { "content-type": "application/json; charset=utf-8" },
+  });
+}
+
+function redirect(location: string, status = 302): Response {
+  return new Response(null, { status, headers: { location } });
+}
+
+/** A storefront fetch answering each request in turn. */
+function storefront(...responses: Array<() => Response>) {
+  const fn = vi.fn();
+  for (const r of responses) fn.mockImplementationOnce(async () => r());
+  return fn;
+}
+
+async function fallbackProduct(fetchImpl: ReturnType<typeof storefront>) {
+  const r = await resolve(adminWith(SHOP_BODY, ACCESS_DENIED), fetchImpl);
+  return (r as { targets: SpeedTargets }).targets.product;
+}
+
+describe("product fallback without read_products (gc-9mbw)", () => {
+  it("picks the OLDEST published product from /products.json on the primary host", async () => {
+    const fetchImpl = storefront(() =>
+      productsJson([
+        product("newest", "2026-09-01T00:00:00Z", { id: 30 }),
+        product("oldest", "2024-01-02T00:00:00-05:00", { id: 20 }),
+        product("middle", "2025-05-01T00:00:00Z", { id: 10 }),
+        // Same instant as "oldest": the lower id wins the tie.
+        product("oldest-tie-higher-id", "2024-01-02T05:00:00Z", { id: 21 }),
+      ]),
+    );
+
+    expect(await fallbackProduct(fetchImpl)).toEqual({
+      status: "OK",
+      url: `https://${STORE_HOST}/products/oldest`,
+    });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchImpl.mock.calls[0] as [URL, Record<string, unknown>];
+    expect(url.toString()).toBe(`https://${STORE_HOST}/products.json?limit=250`);
+    expect(init.redirect).toBe("manual");
+    expect(init.dispatcher).toBeDefined();
+    expect((init.headers as Record<string, string>).Accept).toBe("application/json");
+  });
+
+  it("skips unpublished products and ones without a parseable created_at", async () => {
+    const fetchImpl = storefront(() =>
+      productsJson([
+        product("draft", "2020-01-01T00:00:00Z", { published_at: null }),
+        product("no-date", "not a date"),
+        product("live", "2026-01-01T00:00:00Z"),
+      ]),
+    );
+    expect(await fallbackProduct(fetchImpl)).toEqual({
+      status: "OK",
+      url: `https://${STORE_HOST}/products/live`,
+    });
+  });
+
+  it("encodes a non-Latin handle into a single path segment", async () => {
+    const fetchImpl = storefront(() =>
+      productsJson([product("ドッグ-treats", "2026-01-01T00:00:00Z")]),
+    );
+    expect(await fallbackProduct(fetchImpl)).toEqual({
+      status: "OK",
+      url: `https://${STORE_HOST}/products/${encodeURIComponent("ドッグ-treats")}`,
+    });
+  });
+
+  it("follows a redirect to the shop's myshopify host, still testing the primary host", async () => {
+    const fetchImpl = storefront(
+      () => redirect(`https://${MYSHOPIFY_HOST}/products.json?limit=250`, 301),
+      () => productsJson([product("a", "2026-01-01T00:00:00Z")]),
+    );
+    expect(await fallbackProduct(fetchImpl)).toEqual({
+      status: "OK",
+      url: `https://${STORE_HOST}/products/a`,
+    });
+  });
+
+  it.each([
+    ["password page (redirect to /password)", () => redirect("/password")],
+    ["404 (endpoint disabled)", () => new Response("Not found", { status: 404 })],
+    ["500", () => new Response("oops", { status: 500 })],
+    ["malformed JSON", () => new Response("{ products: [", { status: 200 })],
+    [
+      "an HTML page served with 200",
+      () => new Response("<!doctype html><html></html>", { status: 200 }),
+    ],
+    ["JSON without a products array", () => new Response('{"products":{}}', { status: 200 })],
+    ["an empty product list", () => productsJson([])],
+    ["JSON null", () => new Response("null", { status: 200 })],
+  ])("%s: homepage only, same NEEDS_PRODUCT_ACCESS message", async (_label, response) => {
+    expect(await fallbackProduct(storefront(response))).toEqual({
+      status: "NEEDS_PRODUCT_ACCESS",
+    });
+  });
+
+  it("refuses a redirect to another domain (no request to it)", async () => {
+    const fetchImpl = storefront(
+      () => redirect("https://evil.example/products.json"),
+      () => productsJson([product("a", "2026-01-01T00:00:00Z")]),
+    );
+    expect(await fallbackProduct(fetchImpl)).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses a malformed redirect (http, credentials, IP literal)", async () => {
+    for (const location of [
+      `http://${STORE_HOST}/products.json`,
+      `https://user:pw@${STORE_HOST}/products.json`,
+      "https://10.0.0.1/products.json",
+    ]) {
+      const fetchImpl = storefront(() => redirect(location));
+      expect(await fallbackProduct(fetchImpl)).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  describe("handle injection never leaves the primary host or the product path", () => {
+    const BAD_HANDLES: unknown[] = [
+      "a/b",
+      "..",
+      "../admin",
+      "//evil.com",
+      "%2F%2Fevil.com",
+      "a%2Fb",
+      "evil.com",
+      "a?b=1",
+      "a#b",
+      "a b",
+      "\\evil.com",
+      "@evil.com",
+      "https://evil.com",
+      "",
+      "-leading-dash",
+      "a\nb",
+      42,
+      null,
+      "x".repeat(256),
+    ];
+
+    it.each(BAD_HANDLES.map((h) => [JSON.stringify(h), h]))(
+      "handle %s alone: no product, homepage only",
+      async (_label, handle) => {
+        const fetchImpl = storefront(() => productsJson([product(handle, "2020-01-01T00:00:00Z")]));
+        expect(await fallbackProduct(fetchImpl)).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
+      },
+    );
+
+    it("an older product with a bad handle is skipped for the next safe one", async () => {
+      const fetchImpl = storefront(() =>
+        productsJson([
+          ...BAD_HANDLES.map((h) => product(h, "2019-01-01T00:00:00Z")),
+          product("safe-one", "2026-01-01T00:00:00Z"),
+        ]),
+      );
+      expect(await fallbackProduct(fetchImpl)).toEqual({
+        status: "OK",
+        url: `https://${STORE_HOST}/products/safe-one`,
+      });
+    });
+
+    it("isSafeProductHandle / pickPublicProductUrl agree with isAllowedSpeedTarget", () => {
+      for (const h of BAD_HANDLES) expect(isSafeProductHandle(h)).toBe(false);
+      const url = pickPublicProductUrl(
+        JSON.stringify({ products: [product("ok-1_2", "2026-01-01T00:00:00Z")] }),
+        STORE_HOST,
+      );
+      expect(url).toBe(`https://${STORE_HOST}/products/ok-1_2`);
+      expect(isAllowedSpeedTarget(url!, STORE_HOST)).toBe(true);
+    });
+  });
+
+  describe("gate: never reads the storefront unless the feature is live for a Pro shop", () => {
+    it("flag off: no storefront request", async () => {
+      delete process.env.SPEED_REPORT_LIVE_ENABLED;
+      const fetchImpl = noStorefront();
+      const r = await resolvePublicProductTarget({
+        shopId: SHOP_ID,
+        primaryHost: STORE_HOST,
+        storeHosts: STORE_HOSTS,
+        fetchImpl,
+      });
+      expect(r).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+      expect(mockDb.shop.findUnique).not.toHaveBeenCalled();
+    });
+
+    it("flag off via resolveSpeedTargets: no storefront request", async () => {
+      delete process.env.SPEED_REPORT_LIVE_ENABLED;
+      const fetchImpl = noStorefront();
+      expect(await fallbackProduct(fetchImpl as never)).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      ["Standard", { ...PRO, plan: "Standard" }],
+      ["free", { ...PRO, plan: "free" }],
+      ["uninstalled", { ...PRO, uninstalledAt: NOW }],
+      ["unknown shop", null],
+    ])("%s: no storefront request", async (_label, shop) => {
+      mockDb.shop.findUnique.mockResolvedValue(shop);
+      const fetchImpl = noStorefront();
+      expect(await fallbackProduct(fetchImpl as never)).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it("a gate DB error falls back to homepage only (never throws)", async () => {
+      mockDb.shop.findUnique.mockRejectedValue(new Error("db down"));
+      const fetchImpl = noStorefront();
+      expect(await fallbackProduct(fetchImpl as never)).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+
+  it("logs host + outcome only: never the products.json URL, a handle or the body", async () => {
+    await fallbackProduct(
+      storefront(() => productsJson([product("secret-handle", "2026-01-01T00:00:00Z")])),
+    );
+    await fallbackProduct(storefront(() => new Response("Not found", { status: 404 })));
+    const logged = everythingLogged();
+    expect(logged).toContain('"event":"speed_product_fallback"');
+    expect(logged).toContain(`"host":"${STORE_HOST}"`);
+    expect(logged).toContain('"outcome":"ok"');
+    expect(logged).toContain('"outcome":"http_status"');
+    expect(logged).not.toContain("products.json");
+    expect(logged).not.toContain("secret-handle");
+    expect(logged).not.toContain("/products/");
   });
 });
 
