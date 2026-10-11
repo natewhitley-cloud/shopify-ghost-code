@@ -14,12 +14,12 @@
  * (recordNudgeStageOnce) would need a per-stage Shop stamp for `shown` (and
  * `converted`), i.e. more columns than the one this feature adds.
  */
-import { getMerchantAlertConfigStatus } from "./merchant-alert.server";
+import { summaryOptInFacts } from "./prompt-cap.server";
 import { refreshShopAlertEmail } from "./shop-alert-email.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
-import { canReceiveAlerts } from "../lib/plan-gating.server";
 import type { SummaryCadence } from "../lib/summary-email-copy";
+import { isSummaryOptInEligible } from "../lib/summary-optin";
 import { declineSummaryOptIn, setSummaryEmailsEnabled } from "../models/merchant-alert.server";
 import type { ShopMetadata } from "../models/shop.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -52,20 +52,32 @@ export async function summaryOptInForHome(
 }
 
 /**
- * "Turn on". `shop` must be the SESSION shop's freshly read row. Re-checks what
- * makes consent meaningful: a plan with summaries and sending configured (so
- * the opt-in is the live-card consent, never the dark "we'll tell you first"
- * case). Returns false, writing nothing, when that fails. Idempotent: a shop
- * already on with consent is left as is (its first consent time is kept).
+ * "Turn on". `shop` must be the SESSION shop's freshly read row.
+ *
+ * Idempotent: a shop already on with consent returns true with no write (its
+ * first consent time is kept). Otherwise the shop must be FULLY eligible for
+ * the prompt right now (isSummaryOptInEligible on this row plus the live plan
+ * and sending facts): a stale tab must never undo an unsubscribe or a "No
+ * thanks", and a direct POST must never record consent for a shop that was
+ * never offered the prompt. Ineligible returns false, writing nothing; the
+ * Settings toggle stays the way to re-enable.
  */
 export async function acceptSummaryOptIn(
   shop: Pick<
     ShopMetadata,
-    "id" | "domain" | "plan" | "alertsEnabled" | "summaryNoticeShownAt" | "summaryOptedInAt"
+    | "id"
+    | "domain"
+    | "plan"
+    | "alertsEnabled"
+    | "uninstalledAt"
+    | "summaryNoticePendingAt"
+    | "summaryNoticeShownAt"
+    | "summaryOptedInAt"
+    | "summaryOptInDeclinedAt"
   >,
 ): Promise<boolean> {
-  if (!canReceiveAlerts(shop.plan) || !getMerchantAlertConfigStatus().configured) return false;
   if (shop.alertsEnabled && shop.summaryOptedInAt !== null) return true;
+  if (!isSummaryOptInEligible({ ...shop, ...summaryOptInFacts(shop.plan) })) return false;
   await setSummaryEmailsEnabled(shop.id, true, {
     sendingLive: true,
     noticeShown: shop.summaryNoticeShownAt !== null,

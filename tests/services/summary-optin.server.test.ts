@@ -26,6 +26,7 @@ vi.mock("../../app/lib/logger.server", () => ({
 }));
 
 import { logger } from "../../app/lib/logger.server";
+import { setSummaryEmailsEnabled } from "../../app/models/merchant-alert.server";
 import type { ShopMetadata } from "../../app/models/shop.server";
 import { refreshShopAlertEmail } from "../../app/services/shop-alert-email.server";
 import { summaryShopSkipReason } from "../../app/services/summary-email.server";
@@ -49,7 +50,7 @@ const LEGACY = {
   alertsEnabled: true,
   alertEmail: "owner@example.com" as string | null,
   storeName: "Legacy Store",
-  uninstalledAt: null,
+  uninstalledAt: null as Date | null,
   summaryNoticePendingAt: null as Date | null,
   summaryNoticeShownAt: null as Date | null,
   summaryOptedInAt: null as Date | null,
@@ -100,23 +101,52 @@ describe("acceptSummaryOptIn", () => {
     ).toHaveLength(1);
   });
 
-  it("turns alerts back on for a shop that had them off (an explicit choice)", async () => {
+  it("alerts turned off / unsubscribed: ignored, nothing written (a stale tab never undoes it)", async () => {
     row.alertsEnabled = false;
-    await expect(acceptSummaryOptIn(stored())).resolves.toBe(true);
-    expect(row.alertsEnabled).toBe(true);
-    expect(summaryShopSkipReason(stored())).toBeNull();
+    await expect(acceptSummaryOptIn(stored())).resolves.toBe(false);
+    expect(mockDb.shop.update).not.toHaveBeenCalled();
+    expect(row.alertsEnabled).toBe(false);
+    expect(row.summaryOptedInAt).toBeNull();
+    expect(summaryShopSkipReason(stored())).toBe("shop_opted_out");
   });
 
-  it.each([
-    ["Free plan", { plan: "free" }, true],
-    ["sending not configured (never the dark 'we'll tell you first' case)", {}, false],
-  ])("ineligible (%s): false, nothing written", async (_l, shop, configured) => {
+  it.each<[string, Partial<typeof LEGACY>]>([
+    ["Free plan", { plan: "free" }],
+    ["declined (No thanks)", { summaryOptInDeclinedAt: new Date("2026-10-01T00:00:00Z") }],
+    [
+      "the Free -> paid notice is pending",
+      { summaryNoticePendingAt: new Date("2026-10-01T00:00:00Z") },
+    ],
+    [
+      "the notice was shown (never offered the prompt)",
+      { summaryNoticeShownAt: new Date("2026-10-01T00:00:00Z") },
+    ],
+    ["uninstalled", { uninstalledAt: new Date("2026-10-01T00:00:00Z") }],
+  ])("ineligible (%s): false, nothing written", async (_l, shop) => {
     Object.assign(row, shop);
-    if (!configured) mockConfigStatus.mockReturnValue({ configured: false, reason: "disabled" });
+    const before = { ...row };
     await expect(acceptSummaryOptIn(stored())).resolves.toBe(false);
     expect(mockDb.shop.update).not.toHaveBeenCalled();
     expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+    expect(row).toEqual(before);
+    expect(logger.info).not.toHaveBeenCalled();
+  });
+
+  it("sending not configured (never the dark 'we'll tell you first' case): false, nothing written", async () => {
+    mockConfigStatus.mockReturnValue({ configured: false, reason: "disabled" });
+    await expect(acceptSummaryOptIn(stored())).resolves.toBe(false);
+    expect(mockDb.shop.update).not.toHaveBeenCalled();
     expect(row.summaryOptedInAt).toBeNull();
+  });
+
+  it("already consented: true with no write, whatever else the row says", async () => {
+    Object.assign(row, {
+      summaryOptedInAt: new Date("2026-10-01T00:00:00Z"),
+      summaryOptInDeclinedAt: new Date("2026-09-01T00:00:00Z"),
+    });
+    mockConfigStatus.mockReturnValue({ configured: false, reason: "disabled" });
+    await expect(acceptSummaryOptIn(stored())).resolves.toBe(true);
+    expect(mockDb.shop.update).not.toHaveBeenCalled();
     expect(logger.info).not.toHaveBeenCalled();
   });
 });
@@ -141,9 +171,16 @@ describe("declineSummaryOptInForHome", () => {
     expect(logger.info).toHaveBeenCalledTimes(1);
   });
 
-  it("the Settings toggle still works after a decline (opt in later = consent)", async () => {
+  it("after a decline, Turn on from a stale tab is ignored; the Settings toggle still works", async () => {
     await declineSummaryOptInForHome(DOMAIN);
-    await acceptSummaryOptIn(stored());
+    await expect(acceptSummaryOptIn(stored())).resolves.toBe(false);
+    expect(summaryShopSkipReason(stored())).toBe("no_consent");
+
+    // Settings (sending live) is the way back in, and it is consent.
+    await setSummaryEmailsEnabled(row.id as string, true, {
+      sendingLive: true,
+      noticeShown: false,
+    });
     expect(summaryShopSkipReason(stored())).toBeNull();
   });
 });

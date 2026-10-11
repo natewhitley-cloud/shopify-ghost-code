@@ -42,6 +42,13 @@ export const SUMMARY_OPTIN_DECLINE = "No thanks";
 /** Shown after "Turn on", before its "Settings" link (rendered as a link to /app/settings). */
 export const SUMMARY_OPTIN_SUCCESS_LEAD = "Summary emails are on. You can turn them off in";
 
+/**
+ * Shown when "Turn on" was not applied (the shop is no longer eligible, or the
+ * request failed), before its "Settings" link.
+ */
+export const SUMMARY_OPTIN_FAILED_LEAD =
+  "We couldn't turn on summary emails. You can turn them on in";
+
 export const SUMMARY_CARD_HEADING = "Summary emails";
 
 export function summaryToggleLabel(cadence: SummaryCadence): string {

@@ -431,6 +431,14 @@ describe("Home actions: summary-optin-accept / summary-optin-decline (gc-xorg)",
   it.each<[string, Partial<typeof SHOP>, boolean]>([
     ["the plan is Free now", { plan: "free" }, true],
     ["sending is not configured", {}, false],
+    ["the merchant said No thanks (stale tab)", { summaryOptInDeclinedAt: hoursAgo(1) }, true],
+    ["alerts are off / unsubscribed (stale tab)", { alertsEnabled: false }, true],
+    [
+      "the Free -> paid notice is pending (never offered)",
+      { summaryNoticePendingAt: hoursAgo(1) },
+      true,
+    ],
+    ["the shop is uninstalled", { uninstalledAt: hoursAgo(1) }, true],
   ])("Turn on is ignored, nothing written, when %s", async (_l, shop, configured) => {
     mock(getShopMetadata).mockResolvedValue({ ...SHOP, ...shop });
     mock(getMerchantAlertConfigStatus).mockReturnValue(
@@ -484,30 +492,58 @@ describe("Home actions: summary-optin-accept / summary-optin-decline (gc-xorg)",
 describe("summaryOptInView: client state after a click (gc-xorg)", () => {
   const PROMPT = { email: "owner@example.com", cadence: "weekly" as const };
 
-  it("before any answer: the banner shows, no success line", () => {
-    expect(summaryOptInView(PROMPT, false, undefined)).toEqual({
+  it("before any answer: the banner shows, no line", () => {
+    expect(summaryOptInView(PROMPT, null, undefined)).toEqual({
       visible: PROMPT,
       confirmed: false,
+      failed: false,
     });
   });
 
-  it("right after a click (request in flight): hidden at once, no success line yet", () => {
-    expect(summaryOptInView(PROMPT, true, undefined)).toEqual({ visible: null, confirmed: false });
-  });
+  it.each(["accept", "decline"] as const)(
+    "right after %s (request in flight): hidden at once, no line yet",
+    (answer) => {
+      expect(summaryOptInView(PROMPT, answer, undefined)).toEqual({
+        visible: null,
+        confirmed: false,
+        failed: false,
+      });
+    },
+  );
 
-  it("Turn on confirmed by the server: the success line shows", () => {
-    expect(summaryOptInView(PROMPT, true, { summaryOptedIn: true })).toEqual({
+  it("Turn on confirmed by the server: the success line only", () => {
+    expect(summaryOptInView(PROMPT, "accept", { summaryOptedIn: true })).toEqual({
       visible: null,
       confirmed: true,
+      failed: false,
     });
   });
 
-  it("an ignored accept or a decline never shows the success line", () => {
-    expect(summaryOptInView(PROMPT, true, { ignored: true }).confirmed).toBe(false);
-    expect(summaryOptInView(PROMPT, true, { dismissed: true }).confirmed).toBe(false);
+  it("Turn on ignored by the server: the neutral couldn't-turn-on line only", () => {
+    expect(summaryOptInView(PROMPT, "accept", { ignored: true })).toEqual({
+      visible: null,
+      confirmed: false,
+      failed: true,
+    });
+  });
+
+  it("Turn on answered with an error: the neutral line", () => {
+    expect(summaryOptInView(PROMPT, "accept", { error: "Shop not found." })).toEqual({
+      visible: null,
+      confirmed: false,
+      failed: true,
+    });
+  });
+
+  it("No thanks shows neither line", () => {
+    expect(summaryOptInView(PROMPT, "decline", { dismissed: true })).toEqual({
+      visible: null,
+      confirmed: false,
+      failed: false,
+    });
   });
 
   it("stays hidden after the loader revalidates without the prompt", () => {
-    expect(summaryOptInView(null, true, { summaryOptedIn: true }).visible).toBeNull();
+    expect(summaryOptInView(null, "accept", { summaryOptedIn: true }).visible).toBeNull();
   });
 });

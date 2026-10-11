@@ -10,6 +10,7 @@ import {
   SUMMARY_NOTICE_HEADING,
   SUMMARY_OPTIN_ACCEPT,
   SUMMARY_OPTIN_DECLINE,
+  SUMMARY_OPTIN_FAILED_LEAD,
   SUMMARY_OPTIN_HEADING,
   SUMMARY_OPTIN_SUCCESS_LEAD,
   summaryEffectivelyOn,
@@ -113,11 +114,18 @@ describe("summary-email opt-in copy (gc-xorg, owner-approved verbatim)", () => {
     );
   });
 
+  it("couldn't-turn-on line (rendered before a Settings link)", () => {
+    expect(`${SUMMARY_OPTIN_FAILED_LEAD} Settings.`).toBe(
+      "We couldn't turn on summary emails. You can turn them on in Settings.",
+    );
+  });
+
   it("no em or en dashes", () => {
     for (const text of [
       SUMMARY_OPTIN_HEADING,
       summaryOptInBody("o@example.com", "weekly"),
       SUMMARY_OPTIN_SUCCESS_LEAD,
+      SUMMARY_OPTIN_FAILED_LEAD,
     ]) {
       expect(text).not.toMatch(/[\u2014\u2013]/);
     }

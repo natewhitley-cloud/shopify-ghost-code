@@ -51,6 +51,7 @@ import {
   SUMMARY_NOTICE_HEADING,
   SUMMARY_OPTIN_ACCEPT,
   SUMMARY_OPTIN_DECLINE,
+  SUMMARY_OPTIN_FAILED_LEAD,
   SUMMARY_OPTIN_HEADING,
   SUMMARY_OPTIN_SUCCESS_LEAD,
   summaryNoticeLead,
@@ -742,19 +743,25 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 
 /**
- * Home's summary-email opt-in banner state (gc-xorg): the banner hides the
- * moment the merchant answers (optimistic), and the success line shows only
- * once the server confirmed "Turn on" (`{ summaryOptedIn: true }`); an
- * ignored accept or a decline shows none.
+ * Home's summary-email opt-in banner state (gc-xorg). `answered` is the button
+ * the merchant clicked (null: none yet). The banner hides the moment they
+ * answer (optimistic). After "Turn on", the server's reply decides the line
+ * shown: `{ summaryOptedIn: true }` -> the success line (`confirmed`); any
+ * other reply (`{ ignored: true }`, `{ error }`) -> the neutral "couldn't turn
+ * on" line (`failed`). Nothing shows while the request is in flight, and a
+ * decline shows neither.
  */
 export function summaryOptInView(
   prompt: SummaryOptInPrompt | null,
-  answered: boolean,
+  answered: "accept" | "decline" | null,
   actionData: object | undefined,
-): { visible: SummaryOptInPrompt | null; confirmed: boolean } {
+): { visible: SummaryOptInPrompt | null; confirmed: boolean; failed: boolean } {
+  const acceptReply = answered === "accept" ? actionData : undefined;
+  const confirmed = acceptReply !== undefined && "summaryOptedIn" in acceptReply;
   return {
-    visible: answered ? null : prompt,
-    confirmed: actionData !== undefined && "summaryOptedIn" in actionData,
+    visible: answered === null ? prompt : null,
+    confirmed,
+    failed: acceptReply !== undefined && !confirmed,
   };
 }
 
@@ -1078,19 +1085,21 @@ export default function Dashboard() {
   };
 
   // Summary-email opt-in (gc-xorg): hide it the moment the merchant answers
-  // (optimistic, like the notice and the feedback nudge). The success line
-  // shows only once the server confirmed "Turn on" (an ignored accept, e.g.
-  // the plan changed meanwhile, shows nothing). Its own fetcher.
+  // (optimistic, like the notice and the feedback nudge). After "Turn on" the
+  // server's reply picks the line: success, or a neutral "couldn't turn on"
+  // pointing to Settings (e.g. the shop is no longer eligible). Its own fetcher.
   const summaryOptInFetcher = useFetcher<typeof action>();
-  const [summaryOptInAnswered, setSummaryOptInAnswered] = useState(false);
-  const { visible: visibleSummaryOptIn, confirmed: summaryOptInConfirmed } = summaryOptInView(
-    summaryOptIn,
-    summaryOptInAnswered,
-    summaryOptInFetcher.data,
+  const [summaryOptInAnswered, setSummaryOptInAnswered] = useState<"accept" | "decline" | null>(
+    null,
   );
-  const handleSummaryOptIn = (intent: "summary-optin-accept" | "summary-optin-decline") => {
-    setSummaryOptInAnswered(true);
-    summaryOptInFetcher.submit({ intent }, { method: "POST" });
+  const {
+    visible: visibleSummaryOptIn,
+    confirmed: summaryOptInConfirmed,
+    failed: summaryOptInFailed,
+  } = summaryOptInView(summaryOptIn, summaryOptInAnswered, summaryOptInFetcher.data);
+  const handleSummaryOptIn = (answer: "accept" | "decline") => {
+    setSummaryOptInAnswered(answer);
+    summaryOptInFetcher.submit({ intent: `summary-optin-${answer}` }, { method: "POST" });
   };
 
   // Default the picker to the MAIN theme id. Falls back to empty string when
@@ -1182,16 +1191,10 @@ export default function Dashboard() {
                 {summaryOptInBody(visibleSummaryOptIn.email, visibleSummaryOptIn.cadence)}
               </s-paragraph>
               <s-stack direction="inline" gap="base">
-                <s-button
-                  variant="primary"
-                  onClick={() => handleSummaryOptIn("summary-optin-accept")}
-                >
+                <s-button variant="primary" onClick={() => handleSummaryOptIn("accept")}>
                   {SUMMARY_OPTIN_ACCEPT}
                 </s-button>
-                <s-button
-                  variant="secondary"
-                  onClick={() => handleSummaryOptIn("summary-optin-decline")}
-                >
+                <s-button variant="secondary" onClick={() => handleSummaryOptIn("decline")}>
                   {SUMMARY_OPTIN_DECLINE}
                 </s-button>
               </s-stack>
@@ -1202,6 +1205,13 @@ export default function Dashboard() {
           <s-banner tone="success">
             <s-paragraph>
               {SUMMARY_OPTIN_SUCCESS_LEAD} <Link to="/app/settings">Settings</Link>.
+            </s-paragraph>
+          </s-banner>
+        )}
+        {summaryOptInFailed && (
+          <s-banner tone="info">
+            <s-paragraph>
+              {SUMMARY_OPTIN_FAILED_LEAD} <Link to="/app/settings">Settings</Link>.
             </s-paragraph>
           </s-banner>
         )}
