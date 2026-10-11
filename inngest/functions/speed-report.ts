@@ -125,7 +125,8 @@ export const speedReportRun = inngest.createFunction(
         const { admin } = await unauthenticated.admin(prep.shopDomain);
         return await svc.resolveSpeedTargets(admin);
       } catch {
-        return { ok: false as const };
+        // No Admin session (offline token gone): not the merchant's address.
+        return { ok: false as const, reason: "admin_unavailable" as const };
       }
     });
 
@@ -137,7 +138,12 @@ export const speedReportRun = inngest.createFunction(
     };
     if (!resolved.ok) {
       const result = await step.run("finalize", () =>
-        svc.finalizeSpeedReport({ ...finalizeBase, targets: null, tested: [] }),
+        svc.finalizeSpeedReport({
+          ...finalizeBase,
+          targets: null,
+          targetsFailure: resolved.reason,
+          tested: [],
+        }),
       );
       return { outcome: result.status };
     }

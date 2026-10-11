@@ -296,7 +296,16 @@ export type SpeedTargets = {
   product: ProductTarget;
 };
 
-export type ResolveTargetsResult = { ok: true; targets: SpeedTargets } | { ok: false };
+/**
+ * Why the URLs could not be resolved: the shop has no usable primary domain
+ * (`no_domain`), or the Admin API itself could not be read (`admin_unavailable`:
+ * offline token gone, throttled, outage), which is not the merchant's address.
+ */
+export type TargetsFailure = Extract<SpeedFailureCode, "no_domain" | "admin_unavailable">;
+
+export type ResolveTargetsResult =
+  | { ok: true; targets: SpeedTargets }
+  | { ok: false; reason: TargetsFailure };
 
 const SHOP_DOMAIN_QUERY = `
   query SpeedReportShop {
@@ -422,7 +431,11 @@ export async function resolveSpeedTargets(admin: AdminApiContext): Promise<Resol
           myshopifyDomain?: unknown;
         } | null;
       };
+      errors?: unknown[];
     };
+    if (Array.isArray(body?.errors) && body.errors.length > 0 && !body.data?.shop) {
+      return { ok: false, reason: "admin_unavailable" };
+    }
     const shop = body?.data?.shop;
     const primary = shop?.primaryDomain;
     if (typeof primary?.url === "string") {
@@ -437,9 +450,9 @@ export async function resolveSpeedTargets(admin: AdminApiContext): Promise<Resol
       myshopifyHost = shop.myshopifyDomain.toLowerCase();
     }
   } catch {
-    return { ok: false };
+    return { ok: false, reason: "admin_unavailable" };
   }
-  if (!primaryHost || !isBareHostname(primaryHost)) return { ok: false };
+  if (!primaryHost || !isBareHostname(primaryHost)) return { ok: false, reason: "no_domain" };
   primaryHost = primaryHost.toLowerCase();
 
   const product = await resolveProductTarget(admin, primaryHost);
@@ -680,7 +693,8 @@ export type PageAttempts = { page: SpeedPageKey; url: string; attempts: SpeedAtt
 
 /**
  * Build the pages, roll up the status, write the report and its OpsEvent.
- * `targets` null = the URLs could not be resolved (FAILED / no_domain).
+ * `targets` null = the URLs could not be resolved: FAILED with `targetsFailure`
+ * (no_domain when not given).
  * `passwordProtected` = the pre-check found the password page: every tested
  * page is PASSWORD with no call made.
  */
@@ -690,6 +704,7 @@ export async function finalizeSpeedReport(input: {
   origin: SpeedReportOrigin;
   startedAt: string;
   targets: SpeedTargets | null;
+  targetsFailure?: TargetsFailure;
   tested: PageAttempts[];
   haltCode?: SpeedFailureCode;
   passwordProtected?: boolean;
@@ -701,7 +716,7 @@ export async function finalizeSpeedReport(input: {
 
   if (!input.targets) {
     status = SPEED_REPORT_STATUS.FAILED;
-    failureReason = "no_domain";
+    failureReason = input.targetsFailure ?? "no_domain";
   } else {
     pages = input.tested.map((p) =>
       input.passwordProtected

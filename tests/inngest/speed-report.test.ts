@@ -299,13 +299,28 @@ describe("speed-report-run (worker)", () => {
     });
   });
 
-  it("URL lookup failed (or the Admin session is gone): finalize FAILED, no calls", async () => {
+  it("the Admin session is gone (offline token): finalize FAILED/admin_unavailable, no calls (gc-wt3y #12)", async () => {
     (unauthenticated.admin as ReturnType<typeof vi.fn>).mockRejectedValue(new Error("no session"));
     svc.finalizeSpeedReport.mockResolvedValue({ status: "FAILED", calls: 0 });
     const step = createMockInngestStep();
     expect(await handler({ event, step, logger })).toEqual({ outcome: "FAILED" });
     expect(stepNames(step)).toEqual(["prepare", "resolve-urls", "finalize"]);
-    expect(svc.finalizeSpeedReport.mock.calls[0][0]).toMatchObject({ targets: null, tested: [] });
+    expect(svc.finalizeSpeedReport.mock.calls[0][0]).toMatchObject({
+      targets: null,
+      targetsFailure: "admin_unavailable",
+      tested: [],
+    });
+  });
+
+  it("no usable primary domain: finalize FAILED/no_domain", async () => {
+    svc.resolveSpeedTargets.mockResolvedValue({ ok: false, reason: "no_domain" });
+    svc.finalizeSpeedReport.mockResolvedValue({ status: "FAILED", calls: 0 });
+    const step = createMockInngestStep();
+    await handler({ event, step, logger });
+    expect(svc.finalizeSpeedReport.mock.calls[0][0]).toMatchObject({
+      targets: null,
+      targetsFailure: "no_domain",
+    });
   });
 
   it("no testable product: homepage only", async () => {

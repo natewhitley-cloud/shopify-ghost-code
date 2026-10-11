@@ -34,7 +34,7 @@ import {
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
 } from "../../app/models/speed-report.server";
-import StoreSpeed, { action, loader } from "../../app/routes/app.speed";
+import StoreSpeed, { action, loader, StatusBanner } from "../../app/routes/app.speed";
 import type { SpeedLoaderData } from "../../app/routes/app.speed";
 import { requestSpeedReportRunNow } from "../../app/services/speed-report.server";
 import { getTrialEligibility } from "../../app/services/trial-eligibility.server";
@@ -328,6 +328,46 @@ describe("rendering", () => {
     expect(html).toContain("We couldn&#x27;t test your store on");
     expect(html).toContain("Google couldn&#x27;t load this page of your store.");
     expect(html).toContain("try again next week, or you");
+  });
+
+  it("failed while Run now is in cooldown: no 'run it now' offer (gc-wt3y #11)", () => {
+    const html = render(
+      pro({
+        latest: report("FAILED", [], { failureReason: "timeout" }),
+        runNowAvailableAt: "2026-10-12T10:00:00.000Z",
+      }),
+    );
+    expect(html).toContain("We&#x27;ll try again next week.");
+    expect(html).not.toContain("run it now");
+  });
+
+  it("Admin API failure is not reported as a missing web address (gc-wt3y #12)", () => {
+    const html = render(
+      pro({ latest: report("FAILED", [], { failureReason: "admin_unavailable" }) }),
+    );
+    expect(html).toContain(
+      "We couldn&#x27;t reach your store&#x27;s settings. We&#x27;ll try again next week",
+    );
+    expect(html).not.toContain("web address");
+  });
+
+  it("running past the polling cap: tells the merchant to refresh (gc-wt3y #11)", () => {
+    const html = renderToStaticMarkup(
+      createElement(StatusBanner, {
+        latest: report("RUNNING") as never,
+        canRunNow: false,
+        pollingTimedOut: true,
+      }),
+    );
+    expect(html).toContain("Still running. Refresh the page in a few minutes to see the results.");
+    const fresh = renderToStaticMarkup(
+      createElement(StatusBanner, {
+        latest: report("RUNNING") as never,
+        canRunNow: false,
+        pollingTimedOut: false,
+      }),
+    );
+    expect(fresh).toContain("Speed test running. It takes a few minutes");
   });
 
   it("budget skipped", () => {

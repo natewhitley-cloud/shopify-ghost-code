@@ -58,6 +58,8 @@ export type SpeedFailureCode =
   | "not_configured"
   | "budget"
   | "no_domain"
+  /** The Admin API (offline token, throttling, outage) could not be read. */
+  | "admin_unavailable"
   | "not_eligible"
   | "dispatch_failed"
   | "stuck"
@@ -387,6 +389,8 @@ export function speedFailureMessage(code: SpeedFailureCode | null | undefined): 
       return "Speed tests aren't available right now.";
     case "no_domain":
       return "We couldn't find your store's web address.";
+    case "admin_unavailable":
+      return "We couldn't reach your store's settings.";
     case "stuck":
       return "The speed test didn't finish.";
     default:

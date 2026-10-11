@@ -487,15 +487,28 @@ describe("resolveSpeedTargets", () => {
     expect(r2).toMatchObject({ ok: true, targets: { product: { status: "FAILED" } } });
   });
 
-  it("no usable primary domain (missing, IP literal, Admin error) -> not ok", async () => {
+  it("no usable primary domain (missing, IP literal) -> not ok, no_domain", async () => {
     for (const shop of [
       { primaryDomain: null },
       { primaryDomain: { url: "https://10.0.0.1", host: "10.0.0.1" } },
       { primaryDomain: { url: "::bad", host: "http://evil" } },
     ]) {
-      expect(await resolveSpeedTargets(adminWith({ data: { shop } }))).toEqual({ ok: false });
+      expect(await resolveSpeedTargets(adminWith({ data: { shop } }))).toEqual({
+        ok: false,
+        reason: "no_domain",
+      });
     }
-    expect(await resolveSpeedTargets(adminWith(new Error("401")))).toEqual({ ok: false });
+  });
+
+  it("the Admin API call failing (thrown, or GraphQL errors) is admin_unavailable, not no_domain (gc-wt3y #12)", async () => {
+    expect(await resolveSpeedTargets(adminWith(new Error("401")))).toEqual({
+      ok: false,
+      reason: "admin_unavailable",
+    });
+    expect(await resolveSpeedTargets(adminWith({ errors: [{ message: "Throttled" }] }))).toEqual({
+      ok: false,
+      reason: "admin_unavailable",
+    });
   });
 });
 
@@ -1041,6 +1054,22 @@ describe("finalizeSpeedReport", () => {
     });
     expect(r.status).toBe("FAILED");
     expect(mockModel.finishSpeedReport.mock.calls[0][1].failureReason).toBe("rate_limited");
+  });
+
+  it("no targets because the Admin API failed -> FAILED/admin_unavailable (gc-wt3y #12)", async () => {
+    await finalizeSpeedReport({
+      ...base,
+      targets: null,
+      targetsFailure: "admin_unavailable",
+      tested: [],
+    });
+    expect(mockModel.finishSpeedReport.mock.calls[0][1]).toMatchObject({
+      status: "FAILED",
+      failureReason: "admin_unavailable",
+    });
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({
+      reason: "admin_unavailable",
+    });
   });
 
   it("no targets (domain lookup failed) -> FAILED/no_domain, no pages", async () => {
