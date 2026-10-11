@@ -1,6 +1,7 @@
 /**
  * Merchant-facing in-app copy for summary emails (gc-ol95): Home's one-time
- * "Summary emails are on" notice and the Settings "Summary emails" card.
+ * "Summary emails are on" notice, Home's one-time "New: summary emails" opt-in
+ * prompt (gc-xorg) and the Settings "Summary emails" card.
  * Pure and client-safe. The email's own copy lives in
  * app/services/summary-email.server.ts.
  *
@@ -24,6 +25,22 @@ export function summaryNoticeLead(email: string | null, cadence: SummaryCadence)
 }
 
 export const SUMMARY_NOTICE_DISMISS = "Dismiss";
+
+/**
+ * Home's opt-in prompt (gc-xorg, owner-approved copy) for shops paid before
+ * gc-ol95 shipped: they were never told, so they get nothing until they choose.
+ */
+export const SUMMARY_OPTIN_HEADING = "New: summary emails";
+
+export function summaryOptInBody(email: string | null, cadence: SummaryCadence): string {
+  return `Get a ${cadence} digest of what changed in your store: new or fixed findings, and apps that are no longer active. We'll send it to ${email ?? OWNER_EMAIL_FALLBACK}, only when something changed.`;
+}
+
+export const SUMMARY_OPTIN_ACCEPT = "Turn on";
+export const SUMMARY_OPTIN_DECLINE = "No thanks";
+
+/** Shown after "Turn on", before its "Settings" link (rendered as a link to /app/settings). */
+export const SUMMARY_OPTIN_SUCCESS_LEAD = "Summary emails are on. You can turn them off in";
 
 export const SUMMARY_CARD_HEADING = "Summary emails";
 

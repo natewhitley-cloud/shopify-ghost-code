@@ -43,13 +43,18 @@ import {
   getWeekStartUTC,
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
-import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS } from "../lib/prompt-cap";
+import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS, promptClaimNeeded } from "../lib/prompt-cap";
 import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import {
   SUMMARY_NOTICE_DISMISS,
   SUMMARY_NOTICE_HEADING,
+  SUMMARY_OPTIN_ACCEPT,
+  SUMMARY_OPTIN_DECLINE,
+  SUMMARY_OPTIN_HEADING,
+  SUMMARY_OPTIN_SUCCESS_LEAD,
   summaryNoticeLead,
+  summaryOptInBody,
 } from "../lib/summary-email-copy";
 import { toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
@@ -85,6 +90,12 @@ import type { ScanDiff } from "../services/scan-differ.server";
 import { dispatchScan } from "../services/scan-dispatch.server";
 import { claimSummaryNoticeForHome } from "../services/summary-notice.server";
 import type { SummaryNotice } from "../services/summary-notice.server";
+import {
+  acceptSummaryOptIn,
+  declineSummaryOptInForHome,
+  summaryOptInForHome,
+} from "../services/summary-optin.server";
+import type { SummaryOptInPrompt } from "../services/summary-optin.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
@@ -183,6 +194,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       removalBanner: null as RemovalBanner | null,
       newlyInactiveApps: [] as string[],
       summaryNotice: null as SummaryNotice | null,
+      summaryOptIn: null as SummaryOptInPrompt | null,
     };
   }
 
@@ -464,10 +476,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   const showMultiThemeNudge = !canUseMultipleThemes(shop.plan) && allThemes.length > 1;
 
   // Interruptive prompts (gc-97k.6, strict global priority): Home can render
-  // only the feedback nudge (gc-97k.3). resolvePrompt computes the shop's
-  // GLOBAL eligibility, so while a higher-priority prompt (the review popup or
-  // the Free return banner, both scan-page only) is pending, Home renders
-  // nothing and claims nothing.
+  // the summary-email opt-in (gc-xorg) and the feedback nudge (gc-97k.3), at
+  // most one, the opt-in first. resolvePrompt computes the shop's GLOBAL
+  // eligibility, so while a higher-priority prompt (the review popup or the
+  // Free return banner, both scan-page only) is pending, Home renders nothing
+  // and claims nothing.
+  // Whether rendering the opt-in would open a NEW 24h window (read before the
+  // claim): its first render in that window, the one telemetry counts.
+  const optInOpensWindow = promptClaimNeeded("summary_optin", promptState, now);
   const homePrompt = await resolvePrompt({
     shopDomain: session.shop,
     state: promptState,
@@ -482,6 +498,14 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (showFeedbackNudge && shop.feedbackNudgeShownAt === null) {
     await recordNudgeStageOnce(NUDGE_KEYS.FEEDBACK, "shown", session.shop);
   }
+
+  // "New: summary emails" (gc-xorg): the one-time opt-in for a paid shop that
+  // never consented (paid before gc-ol95 shipped). Re-renders inside its 24h
+  // window until the merchant answers; an ignored prompt may return later.
+  const summaryOptIn =
+    homePrompt === "summary_optin"
+      ? await summaryOptInForHome(shop, admin, optInOpensWindow)
+      : null;
 
   // Expose the latest successful scan id and whether this shop+plan can diff it,
   // so the component can lazily fetch the diff resource route (same pattern as
@@ -559,6 +583,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     removalBanner,
     newlyInactiveApps,
     summaryNotice,
+    summaryOptIn,
   };
 };
 
@@ -604,6 +629,17 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   // Session shop only; idempotent.
   if (intent === "dismiss-summary-notice") {
     await dismissSummaryNotice(shop.id);
+    return { dismissed: true };
+  }
+
+  // Summary-email opt-in (gc-xorg), session shop only, both idempotent.
+  // "Turn on" re-checks the plan and sending on the row read above; when that
+  // fails nothing is written. "No thanks" stamps the decline once.
+  if (intent === "summary-optin-accept") {
+    return (await acceptSummaryOptIn(shop)) ? { summaryOptedIn: true } : { ignored: true };
+  }
+  if (intent === "summary-optin-decline") {
+    await declineSummaryOptInForHome(session.shop);
     return { dismissed: true };
   }
 
@@ -704,6 +740,23 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 // ---------------------------------------------------------------------------
 // Component helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * Home's summary-email opt-in banner state (gc-xorg): the banner hides the
+ * moment the merchant answers (optimistic), and the success line shows only
+ * once the server confirmed "Turn on" (`{ summaryOptedIn: true }`); an
+ * ignored accept or a decline shows none.
+ */
+export function summaryOptInView(
+  prompt: SummaryOptInPrompt | null,
+  answered: boolean,
+  actionData: object | undefined,
+): { visible: SummaryOptInPrompt | null; confirmed: boolean } {
+  return {
+    visible: answered ? null : prompt,
+    confirmed: actionData !== undefined && "summaryOptedIn" in actionData,
+  };
+}
 
 /**
  * The scan id whose diff Home should request now, or null: the latest
@@ -943,6 +996,7 @@ export default function Dashboard() {
     removalBanner,
     newlyInactiveApps,
     summaryNotice,
+    summaryOptIn,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
@@ -1023,6 +1077,22 @@ export default function Dashboard() {
     summaryNoticeFetcher.submit({ intent: "dismiss-summary-notice" }, { method: "POST" });
   };
 
+  // Summary-email opt-in (gc-xorg): hide it the moment the merchant answers
+  // (optimistic, like the notice and the feedback nudge). The success line
+  // shows only once the server confirmed "Turn on" (an ignored accept, e.g.
+  // the plan changed meanwhile, shows nothing). Its own fetcher.
+  const summaryOptInFetcher = useFetcher<typeof action>();
+  const [summaryOptInAnswered, setSummaryOptInAnswered] = useState(false);
+  const { visible: visibleSummaryOptIn, confirmed: summaryOptInConfirmed } = summaryOptInView(
+    summaryOptIn,
+    summaryOptInAnswered,
+    summaryOptInFetcher.data,
+  );
+  const handleSummaryOptIn = (intent: "summary-optin-accept" | "summary-optin-decline") => {
+    setSummaryOptInAnswered(true);
+    summaryOptInFetcher.submit({ intent }, { method: "POST" });
+  };
+
   // Default the picker to the MAIN theme id. Falls back to empty string when
   // mainTheme is null (no published theme) — the scan button will be disabled.
   const mainThemeId = mainTheme?.id ?? "";
@@ -1100,6 +1170,39 @@ export default function Dashboard() {
                 </s-button>
               </div>
             </s-stack>
+          </s-banner>
+        )}
+
+        {/* "New: summary emails" (gc-xorg): the one-time opt-in, an
+          interruptive prompt (resolvePrompt in the loader). */}
+        {visibleSummaryOptIn && (
+          <s-banner tone="info" heading={SUMMARY_OPTIN_HEADING}>
+            <s-stack direction="block" gap="base">
+              <s-paragraph>
+                {summaryOptInBody(visibleSummaryOptIn.email, visibleSummaryOptIn.cadence)}
+              </s-paragraph>
+              <s-stack direction="inline" gap="base">
+                <s-button
+                  variant="primary"
+                  onClick={() => handleSummaryOptIn("summary-optin-accept")}
+                >
+                  {SUMMARY_OPTIN_ACCEPT}
+                </s-button>
+                <s-button
+                  variant="secondary"
+                  onClick={() => handleSummaryOptIn("summary-optin-decline")}
+                >
+                  {SUMMARY_OPTIN_DECLINE}
+                </s-button>
+              </s-stack>
+            </s-stack>
+          </s-banner>
+        )}
+        {summaryOptInConfirmed && (
+          <s-banner tone="success">
+            <s-paragraph>
+              {SUMMARY_OPTIN_SUCCESS_LEAD} <Link to="/app/settings">Settings</Link>.
+            </s-paragraph>
           </s-banner>
         )}
 
@@ -1185,8 +1288,8 @@ export default function Dashboard() {
           </s-banner>
         )}
 
-        {/* Merchant feedback nudge (gc-97k.3), the only interruptive prompt Home
-          can render (resolvePrompt in the loader). */}
+        {/* Merchant feedback nudge (gc-97k.3), an interruptive prompt
+          (resolvePrompt in the loader; never alongside the summary opt-in). */}
         {showFeedbackBanner && (
           <s-banner tone="info" heading={FEEDBACK_NUDGE_COPY.heading}>
             <s-stack direction="block" gap="base">

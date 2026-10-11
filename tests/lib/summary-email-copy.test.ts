@@ -8,9 +8,14 @@ import {
   SUMMARY_COMING_SOON,
   SUMMARY_FREE_PARAGRAPH,
   SUMMARY_NOTICE_HEADING,
+  SUMMARY_OPTIN_ACCEPT,
+  SUMMARY_OPTIN_DECLINE,
+  SUMMARY_OPTIN_HEADING,
+  SUMMARY_OPTIN_SUCCESS_LEAD,
   summaryEffectivelyOn,
   summaryLiveParagraph,
   summaryNoticeLead,
+  summaryOptInBody,
   summaryToggleLabel,
 } from "../../app/lib/summary-email-copy";
 
@@ -79,5 +84,42 @@ describe("copy", () => {
     ].join(" ");
     expect(all).not.toMatch(/[—–]/);
     expect(all).not.toMatch(/\b(removed|uninstalled)\b/i);
+  });
+});
+
+describe("summary-email opt-in copy (gc-xorg, owner-approved verbatim)", () => {
+  it("heading and buttons", () => {
+    expect(SUMMARY_OPTIN_HEADING).toBe("New: summary emails");
+    expect(SUMMARY_OPTIN_ACCEPT).toBe("Turn on");
+    expect(SUMMARY_OPTIN_DECLINE).toBe("No thanks");
+  });
+
+  it.each(["weekly", "monthly"] as const)("body names the %s cadence and the owner email", (c) => {
+    expect(summaryOptInBody("owner@example.com", c)).toBe(
+      `Get a ${c} digest of what changed in your store: new or fixed findings, and apps that are no longer active. We'll send it to owner@example.com, only when something changed.`,
+    );
+  });
+
+  it("unknown owner email: the same fallback phrasing as the notice", () => {
+    expect(summaryOptInBody(null, "weekly")).toContain(
+      "We'll send it to your store owner email, only when something changed.",
+    );
+    expect(summaryNoticeLead(null, "weekly")).toContain("your store owner email");
+  });
+
+  it("success line (rendered before a Settings link)", () => {
+    expect(`${SUMMARY_OPTIN_SUCCESS_LEAD} Settings.`).toBe(
+      "Summary emails are on. You can turn them off in Settings.",
+    );
+  });
+
+  it("no em or en dashes", () => {
+    for (const text of [
+      SUMMARY_OPTIN_HEADING,
+      summaryOptInBody("o@example.com", "weekly"),
+      SUMMARY_OPTIN_SUCCESS_LEAD,
+    ]) {
+      expect(text).not.toMatch(/[\u2014\u2013]/);
+    }
   });
 });
