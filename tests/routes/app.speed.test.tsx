@@ -27,6 +27,9 @@ vi.mock("../../app/services/speed-report.server", () => ({
 vi.mock("../../app/services/trial-eligibility.server", () => ({
   getTrialEligibility: vi.fn(),
 }));
+vi.mock("../../app/services/nudge-stage.server", () => ({
+  recordNudgeStageOnce: vi.fn(),
+}));
 
 import type { SpeedPageResult } from "../../app/lib/speed-report";
 import { getShopMetadata } from "../../app/models/shop.server";
@@ -34,8 +37,9 @@ import {
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
 } from "../../app/models/speed-report.server";
-import StoreSpeed, { action, loader } from "../../app/routes/app.speed";
+import StoreSpeed, { action, LockedTeaser, loader } from "../../app/routes/app.speed";
 import type { SpeedLoaderData } from "../../app/routes/app.speed";
+import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { requestSpeedReportRunNow } from "../../app/services/speed-report.server";
 import { getTrialEligibility } from "../../app/services/trial-eligibility.server";
 import { authenticate } from "../../app/shopify.server";
@@ -46,9 +50,16 @@ const mockReports = getRecentSpeedReports as ReturnType<typeof vi.fn>;
 const mockRequestedAt = getSpeedReportRequestedAt as ReturnType<typeof vi.fn>;
 const mockRunNow = requestSpeedReportRunNow as ReturnType<typeof vi.fn>;
 const mockTrial = getTrialEligibility as ReturnType<typeof vi.fn>;
+const mockNudge = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
 
 const DOMAIN = "paw-naturals.myshopify.com";
-const PRO = { id: "shop-1", domain: DOMAIN, plan: "Professional", everPaidAt: null };
+const PRO = {
+  id: "shop-1",
+  domain: DOMAIN,
+  plan: "Professional",
+  everPaidAt: null,
+  speedTeaserShownAt: null,
+};
 
 function loaderArgs(): LoaderFunctionArgs {
   return {
@@ -146,6 +157,86 @@ describe("loader", () => {
   it("404s for an unknown shop", async () => {
     mockShop.mockResolvedValue(null);
     await expect404(loader(loaderArgs()));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Teaser nudge telemetry (gc-iirv): speed_teaser shown, once per merchant
+// ---------------------------------------------------------------------------
+
+describe("loader: speed_teaser nudge", () => {
+  it.each(["free", "Standard"])(
+    "plan %s, never shown: records `shown` for the unmodified session shop",
+    async (plan) => {
+      mockShop.mockResolvedValue({ ...PRO, plan });
+      await loader(loaderArgs());
+      expect(mockNudge).toHaveBeenCalledTimes(1);
+      expect(mockNudge).toHaveBeenCalledWith("speed_teaser", "shown", DOMAIN);
+    },
+  );
+
+  it("already shown: no claim query on later loads", async () => {
+    mockShop.mockResolvedValue({ ...PRO, plan: "free", speedTeaserShownAt: new Date() });
+    await loader(loaderArgs());
+    expect(mockNudge).not.toHaveBeenCalled();
+  });
+
+  it("Professional sees no teaser, so nothing is recorded", async () => {
+    await loader(loaderArgs());
+    expect(mockNudge).not.toHaveBeenCalled();
+  });
+
+  it("dark: nothing is recorded", async () => {
+    delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    await expect404(loader(loaderArgs()));
+    expect(mockNudge).not.toHaveBeenCalled();
+  });
+
+  it("a failed claim still renders the teaser (recordNudgeStageOnce never throws; false)", async () => {
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    mockNudge.mockResolvedValue(false);
+    const data = await loader(loaderArgs());
+    expect(data.access).toBe("locked");
+  });
+});
+
+describe("LockedTeaser: click ping (gc-iirv)", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  type El = { type: unknown; props: Record<string, unknown> & { children?: unknown } };
+  function findAnchor(node: unknown): El | null {
+    if (!node || typeof node !== "object") return null;
+    if (Array.isArray(node)) {
+      for (const child of node) {
+        const hit = findAnchor(child);
+        if (hit) return hit;
+      }
+      return null;
+    }
+    const el = node as El;
+    if (el.type === "a") return el;
+    return findAnchor(el.props?.children);
+  }
+
+  it("the upgrade link POSTs src=speed_teaser and keeps its plain top-level href", () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const anchor = findAnchor(
+      LockedTeaser({ pricingPlansUrl: "https://x/plans", trialEligible: false }),
+    );
+
+    expect(anchor!.props.href).toBe("https://x/plans");
+    expect(anchor!.props.target).toBe("_top");
+    (anchor!.props.onClick as () => void)();
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe("/app/upgrade");
+    expect(init.keepalive).toBe(true);
+    expect(String(init.body)).toBe("src=speed_teaser");
   });
 });
 

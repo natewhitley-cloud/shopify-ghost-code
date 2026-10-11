@@ -14,7 +14,9 @@ import { describe, it, expect } from "vitest";
 
 import {
   buildUpgradePreview,
+  isUpgradeAskKey,
   UPGRADE_PREVIEW_MAX_GROUPS,
+  upgradeAsksConvertedBy,
   upgradePreviewCopy,
   upgradePreviewHeadline,
 } from "../../app/lib/upgrade-preview";
@@ -251,5 +253,34 @@ describe("upgradePreviewCopy", () => {
       const copy = upgradePreviewCopy(PREVIEW, eligible);
       expect(copy.body + copy.cta).not.toContain("—");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Which asks an upgrade converts (gc-iirv adds the Store speed teaser)
+// ---------------------------------------------------------------------------
+
+describe("upgradeAsksConvertedBy", () => {
+  const FREE_ASKS = ["upgrade_preview", "upgrade_return", "stale_results"];
+
+  it("free -> Standard converts the Free asks only (the speed teaser asks for Professional)", () => {
+    expect(upgradeAsksConvertedBy("free", "Standard")).toEqual(FREE_ASKS);
+  });
+
+  it("free -> Professional converts the Free asks and the speed teaser", () => {
+    expect(upgradeAsksConvertedBy("free", "Professional")).toEqual([...FREE_ASKS, "speed_teaser"]);
+  });
+
+  it("Standard -> Professional converts the speed teaser only", () => {
+    expect(upgradeAsksConvertedBy("Standard", "Professional")).toEqual(["speed_teaser"]);
+  });
+
+  it("Professional -> Professional converts nothing", () => {
+    expect(upgradeAsksConvertedBy("Professional", "Professional")).toEqual([]);
+  });
+
+  it("speed_teaser is an accepted click src", () => {
+    expect(isUpgradeAskKey("speed_teaser")).toBe(true);
+    expect(isUpgradeAskKey("speed_report")).toBe(false);
   });
 });

@@ -216,6 +216,9 @@ const NULL_STAMPS = {
   staleResultsShownAt: null,
   staleResultsClickedAt: null,
   staleResultsConvertedAt: null,
+  speedTeaserShownAt: null,
+  speedTeaserClickedAt: null,
+  speedTeaserConvertedAt: null,
   reviewPopupRequestedAt: null,
   reviewPopupLastResult: null,
   reviewPopupLastAttemptAt: null,
@@ -566,7 +569,7 @@ describe("operator-digest handler: exclusion wiring end-to-end (gc-zeh)", () => 
       [
         "NUDGES (funnel per nudge, 24h / 7d)",
         "  counts per stage; each merchant counted once per stage, on the day it happened",
-        "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return, stale_results); do not add them together",
+        "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return, stale_results, speed_teaser); do not add them together",
         "  upgrade_preview",
         "    shown 1 / 2 | clicked 1 / 1 | dismissed 0 / 0 | converted 0 / 0",
         "  feedback",

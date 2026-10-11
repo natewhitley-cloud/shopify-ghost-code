@@ -43,9 +43,12 @@ import type {
   SpeedReportView,
 } from "../lib/speed-report";
 import { upgradeCtaLabel } from "../lib/trial-cta";
+import { recordUpgradeClick } from "../lib/upgrade-preview";
 import { useScanPolling } from "../lib/use-scan-polling";
 import { getShopMetadata } from "../models/shop.server";
 import { getRecentSpeedReports, getSpeedReportRequestedAt } from "../models/speed-report.server";
+import { recordNudgeStageOnce } from "../services/nudge-stage.server";
+import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { isSpeedReportLive } from "../services/speed-report-config.server";
 import { requestSpeedReportRunNow } from "../services/speed-report.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
@@ -82,6 +85,12 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
 
   if (!getPlanFeatures(shop.plan).speedReport) {
     // Teaser only: no report data is read for a plan without the feature.
+    // gc-iirv: the teaser's upgrade ask joins the nudge funnel. `shown` once
+    // per merchant: the stored stamp skips the claim query on later loads; the
+    // atomic claim dedupes concurrent first loads. Never throws.
+    if (shop.speedTeaserShownAt === null) {
+      await recordNudgeStageOnce(NUDGE_KEYS.SPEED_TEASER, "shown", session.shop);
+    }
     return {
       access: "locked",
       pricingPlansUrl: buildPricingPlansUrl(session.shop),
@@ -369,7 +378,7 @@ function RunNowControl({ availableAt }: { availableAt: string | null }) {
   );
 }
 
-function LockedTeaser({
+export function LockedTeaser({
   pricingPlansUrl,
   trialEligible,
 }: {
@@ -381,8 +390,14 @@ function LockedTeaser({
       <h2 style={sectionHeader}>{SPEED_TEASER_HEADING}</h2>
       <s-paragraph>{SPEED_TEASER_BODY}</s-paragraph>
       <div style={{ marginTop: "16px" }}>
-        {/* Same proven upgrade link as the Settings plan tiles. */}
-        <a href={pricingPlansUrl} target="_top" rel="noreferrer">
+        {/* Same proven upgrade link as the Settings plan tiles, plus the
+            best-effort click ping (gc-iirv). */}
+        <a
+          href={pricingPlansUrl}
+          target="_top"
+          rel="noreferrer"
+          onClick={() => recordUpgradeClick("speed_teaser")}
+        >
           <s-button variant="primary">
             {upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligible)}
           </s-button>

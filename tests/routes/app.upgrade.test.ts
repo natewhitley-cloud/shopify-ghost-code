@@ -49,7 +49,7 @@ beforeEach(() => {
 });
 
 describe("app.upgrade action", () => {
-  it.each(["upgrade_preview", "upgrade_return", "stale_results"])(
+  it.each(["upgrade_preview", "upgrade_return", "stale_results", "speed_teaser"])(
     "records the %s click once with the unmodified session shop, returns 204",
     async (src) => {
       const res = await action(args({ src }));
@@ -75,6 +75,8 @@ describe("app.upgrade action", () => {
     "UPGRADE_RETURN",
     "upgrade_return ",
     "STALE_RESULTS",
+    "SPEED_TEASER",
+    "speed_report",
   ])("does not record for an unknown src value %j", async (src) => {
     const res = await action(args({ src }));
 

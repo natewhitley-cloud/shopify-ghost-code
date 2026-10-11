@@ -79,6 +79,18 @@ const NUDGE_STAGE_CLAIMS = {
       extraWhere: { staleResultsShownAt: { not: null } },
     },
   },
+  // Store speed teaser's upgrade ask (gc-iirv): the locked card on the Store
+  // speed page, shown to Free AND Standard (it asks for Professional). No
+  // dismiss control (so no `dismissed`); converted counts only a merchant who
+  // SAW it (the click ping can be lost), on any upgrade to Professional.
+  [NUDGE_KEYS.SPEED_TEASER]: {
+    shown: { column: "speedTeaserShownAt" },
+    clicked: { column: "speedTeaserClickedAt" },
+    converted: {
+      column: "speedTeaserConvertedAt",
+      extraWhere: { speedTeaserShownAt: { not: null } },
+    },
+  },
 } as const satisfies Record<NudgeKey, Partial<Record<NudgeStage, StageClaim>>>;
 
 /** The stages a given nudge supports (e.g. no `dismissed` for the upgrade preview). */

@@ -60,7 +60,11 @@ import { staleResultsUpgradeAsk } from "../lib/stale-results";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
 import { findingAnchorId, toTopFindingViews } from "../lib/top-findings";
 import { upgradeCtaLabel } from "../lib/trial-cta";
-import { buildUpgradePreview, upgradePreviewCopy } from "../lib/upgrade-preview";
+import {
+  buildUpgradePreview,
+  recordUpgradeClick,
+  upgradePreviewCopy,
+} from "../lib/upgrade-preview";
 import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
 import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upgrade-return";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
@@ -344,24 +348,9 @@ export function UpgradeReturnBanner({
   );
 }
 
-/**
- * Best-effort `clicked` ping for a Free upgrade ask. Never prevents or blocks
- * the link's navigation: no preventDefault, no await, and any error (sync or
- * async) is swallowed. `keepalive` lets the request outlive the iframe as the
- * top frame navigates away. The session token is added by App Bridge's patched
- * global `fetch`, as for the export download above.
- */
-export function recordUpgradeClick(src: UpgradeAskKey): void {
-  try {
-    fetch("/app/upgrade", {
-      method: "POST",
-      keepalive: true,
-      body: new URLSearchParams({ src }),
-    }).catch(() => {});
-  } catch {
-    // Telemetry must never break the upgrade click.
-  }
-}
+// Moved to app/lib/upgrade-preview.ts (gc-iirv: the Store speed teaser shares
+// it); re-exported so existing imports keep working.
+export { recordUpgradeClick };
 
 /**
  * The scan page's removal context body (gc-frda): "{X} was active at your

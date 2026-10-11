@@ -1212,6 +1212,10 @@ export interface JourneyShopInput {
   staleResultsShownAt: Date | null;
   staleResultsClickedAt: Date | null;
   staleResultsConvertedAt: Date | null;
+  // Store speed teaser upgrade-ask funnel stamps (gc-iirv).
+  speedTeaserShownAt: Date | null;
+  speedTeaserClickedAt: Date | null;
+  speedTeaserConvertedAt: Date | null;
   // Native review popup (gc-97k.7): terminal stamp, last result, attempts.
   reviewPopupRequestedAt: Date | null;
   reviewPopupLastResult: string | null;
@@ -1458,6 +1462,9 @@ function buildShopEvents(
     [shop.staleResultsShownAt, "stale banner shown"],
     [shop.staleResultsClickedAt, "stale banner clicked"],
     [shop.staleResultsConvertedAt, "stale banner converted"],
+    [shop.speedTeaserShownAt, "speed teaser shown"],
+    [shop.speedTeaserClickedAt, "speed teaser clicked"],
+    [shop.speedTeaserConvertedAt, "speed teaser converted"],
     ...reviewPopupStamps(shop),
     [shop.feedbackNudgeShownAt, "feedback nudge shown"],
     [shop.feedbackNudgeClickedAt, "feedback nudge clicked"],
@@ -2404,7 +2411,7 @@ export function buildDigestBody(data: OperatorDigestData): string {
     // Raw counts only (no ratios): stages are stamped on different days.
     lines.push("  counts per stage; each merchant counted once per stage, on the day it happened");
     lines.push(
-      "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return, stale_results); do not add them together",
+      "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return, stale_results, speed_teaser); do not add them together",
     );
     for (const n of nudges) {
       const d = n.last24h;
@@ -2917,6 +2924,9 @@ export const operatorDigest = inngest.createFunction(
             staleResultsShownAt: true,
             staleResultsClickedAt: true,
             staleResultsConvertedAt: true,
+            speedTeaserShownAt: true,
+            speedTeaserClickedAt: true,
+            speedTeaserConvertedAt: true,
             reviewPopupRequestedAt: true,
             reviewPopupLastResult: true,
             reviewPopupLastAttemptAt: true,

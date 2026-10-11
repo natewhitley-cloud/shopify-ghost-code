@@ -19,10 +19,13 @@
  *                   RESULTS_VIEW_TRACKED_SINCE (see below).
  *   sawUpgrade      ANY Free upgrade ask was shown: upgradePreviewShownAt
  *                   (inline teaser, gc-97k.4), upgradeReturnShownAt (return
- *                   banner, gc-97k.9) or staleResultsShownAt (stale-results
- *                   banner, gc-mgi).
+ *                   banner, gc-97k.9), staleResultsShownAt (stale-results
+ *                   banner, gc-mgi) or speedTeaserShownAt (Store speed
+ *                   teaser, gc-iirv; also shown to Standard, whose stage is
+ *                   already "paid", so it only moves Free shops).
  *   clickedUpgrade  ANY ask was clicked: upgradePreviewClickedAt,
- *                   upgradeReturnClickedAt or staleResultsClickedAt.
+ *                   upgradeReturnClickedAt, staleResultsClickedAt or
+ *                   speedTeaserClickedAt.
  *   paid            plan is a paid tier (Standard / Professional). Any other
  *                   value counts as free, matching the digest's plan mix.
  *
@@ -72,6 +75,8 @@ export interface JourneyFacts {
   upgradeReturnClickedAt: Date | null;
   staleResultsShownAt: Date | null;
   staleResultsClickedAt: Date | null;
+  speedTeaserShownAt: Date | null;
+  speedTeaserClickedAt: Date | null;
   /** Any Scan row at all, whatever its status. */
   hasAnyScan: boolean;
   /** At least one COMPLETED or PARTIAL scan. */
@@ -135,11 +140,13 @@ export function deriveJourneyMilestones(facts: JourneyFacts): JourneyMilestones 
     sawUpgrade:
       facts.upgradePreviewShownAt !== null ||
       facts.upgradeReturnShownAt !== null ||
-      facts.staleResultsShownAt !== null,
+      facts.staleResultsShownAt !== null ||
+      facts.speedTeaserShownAt !== null,
     clickedUpgrade:
       facts.upgradePreviewClickedAt !== null ||
       facts.upgradeReturnClickedAt !== null ||
-      facts.staleResultsClickedAt !== null,
+      facts.staleResultsClickedAt !== null ||
+      facts.speedTeaserClickedAt !== null,
     paid: isPaidPlan(facts.plan),
   };
 }

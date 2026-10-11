@@ -61,6 +61,7 @@ describe("nudge constants", () => {
       REVIEW_REQUEST: "review_request",
       UPGRADE_RETURN: "upgrade_return",
       STALE_RESULTS: "stale_results",
+      SPEED_TEASER: "speed_teaser",
     });
   });
 

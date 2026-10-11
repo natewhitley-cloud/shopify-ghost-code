@@ -2228,6 +2228,30 @@ describe("aggregateNudgeFunnel", () => {
     ]);
   });
 
+  it("counts speed_teaser (gc-iirv) under its own key, after stale_results", () => {
+    const events = [
+      ev("nudge_converted", "speed_teaser", HOUR_MS),
+      ev("nudge_shown", "speed_teaser", HOUR_MS),
+      ev("nudge_clicked", "speed_teaser", 2 * DAY_MS),
+      ev("nudge_shown", "stale_results", HOUR_MS),
+    ];
+
+    const rows = aggregateNudgeFunnel(events, allowed, now);
+
+    expect(rows).toEqual<NudgeFunnelRow[]>([
+      {
+        nudgeKey: "stale_results",
+        last24h: { ...zero, shown: 1 },
+        last7d: { ...zero, shown: 1 },
+      },
+      {
+        nudgeKey: "speed_teaser",
+        last24h: { ...zero, shown: 1, converted: 1 },
+        last7d: { ...zero, shown: 1, clicked: 1, converted: 1 },
+      },
+    ]);
+  });
+
   it("orders rows by NUDGE_KEYS declaration, then other, and omits nudges with no events", () => {
     const events = [ev("nudge_shown", "mystery", HOUR_MS), ev("nudge_shown", "feedback", HOUR_MS)];
 
@@ -2331,7 +2355,7 @@ describe("buildDigestBody — NUDGES section (gc-97k.1)", () => {
       [
         "NUDGES (funnel per nudge, 24h / 7d)",
         "  counts per stage; each merchant counted once per stage, on the day it happened",
-        "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return, stale_results); do not add them together",
+        "  one upgrade counts as converted under EACH ask the merchant was shown (upgrade_preview, upgrade_return, stale_results, speed_teaser); do not add them together",
         "  upgrade_preview",
         "    shown 3 / 10 | clicked 1 / 4 | dismissed 0 / 2 | converted 0 / 1",
       ].join("\n"),
@@ -2597,6 +2621,9 @@ describe("journey (gc-dpm.3)", () => {
       staleResultsShownAt: null,
       staleResultsClickedAt: null,
       staleResultsConvertedAt: null,
+      speedTeaserShownAt: null,
+      speedTeaserClickedAt: null,
+      speedTeaserConvertedAt: null,
       reviewPopupRequestedAt: null,
       reviewPopupLastResult: null,
       reviewPopupLastAttemptAt: null,
@@ -2985,6 +3012,33 @@ describe("journey (gc-dpm.3)", () => {
         "stale banner clicked",
         "stale banner converted",
       ]);
+    });
+
+    it("labels the Store speed teaser's shown / clicked / converted stamps (gc-iirv)", () => {
+      const s = shop({
+        id: "speed",
+        installedAt: at("01:00"),
+        speedTeaserShownAt: at("02:00"),
+        speedTeaserClickedAt: at("02:01"),
+        speedTeaserConvertedAt: at("02:02"),
+      });
+      expect(run([s]).timeline[0].events.map((e) => e.label)).toEqual([
+        "installed",
+        "speed teaser shown",
+        "speed teaser clicked",
+        "speed teaser converted",
+      ]);
+    });
+
+    it("the Store speed teaser counts as saw / clicked upgrade in the journey (gc-iirv)", () => {
+      const s = shop({
+        id: "speed-j",
+        speedTeaserShownAt: daysAgo(2),
+        speedTeaserClickedAt: daysAgo(2),
+      });
+      const byLabel = Object.fromEntries(run([s]).funnel.map((f) => [f.label, f.count]));
+      expect(byLabel["Saw upgrade"]).toBe(1);
+      expect(byLabel.Clicked).toBe(1);
     });
 
     it("the stale-results banner counts as saw / clicked upgrade in the journey (gc-mgi)", () => {

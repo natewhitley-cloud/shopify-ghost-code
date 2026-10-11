@@ -157,6 +157,8 @@ describe("getShopMetadata", () => {
         upgradeReturnShownAt: true,
         // gc-mgi: the stale-results banner's `shown` pre-check.
         staleResultsShownAt: true,
+        // gc-iirv: the Store speed teaser's `shown` pre-check.
+        speedTeaserShownAt: true,
         // gc-97k.8: the durable ever-paid signal behind the trial promise.
         everPaidAt: true,
         // gc-syz.6: Settings monitoring-emails card state.

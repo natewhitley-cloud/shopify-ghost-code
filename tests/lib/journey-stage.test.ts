@@ -30,6 +30,8 @@ const NO_FACTS: JourneyFacts = {
   upgradeReturnClickedAt: null,
   staleResultsShownAt: null,
   staleResultsClickedAt: null,
+  speedTeaserShownAt: null,
+  speedTeaserClickedAt: null,
   hasAnyScan: false,
   hasSuccessfulScan: false,
 };
@@ -112,6 +114,7 @@ describe("deriveJourneyMilestones: either upgrade ask (audit 2 #2)", () => {
     ["return banner only", { upgradeReturnShownAt: T }, true],
     ["both", { upgradePreviewShownAt: T, upgradeReturnShownAt: T }, true],
     ["stale-results banner only (gc-mgi)", { staleResultsShownAt: T }, true],
+    ["speed teaser only (gc-iirv)", { speedTeaserShownAt: T }, true],
     ["neither", {}, false],
   ])("saw upgrade: %s -> %s", (_name, facts, expected) => {
     expect(deriveJourneyMilestones({ ...NO_FACTS, ...facts }).sawUpgrade).toBe(expected);
@@ -122,6 +125,7 @@ describe("deriveJourneyMilestones: either upgrade ask (audit 2 #2)", () => {
     ["return banner only", { upgradeReturnClickedAt: T }, true],
     ["both", { upgradePreviewClickedAt: T, upgradeReturnClickedAt: T }, true],
     ["stale-results banner only (gc-mgi)", { staleResultsClickedAt: T }, true],
+    ["speed teaser only (gc-iirv)", { speedTeaserClickedAt: T }, true],
     ["neither", {}, false],
   ])("clicked: %s -> %s", (_name, facts, expected) => {
     expect(deriveJourneyMilestones({ ...NO_FACTS, ...facts }).clickedUpgrade).toBe(expected);

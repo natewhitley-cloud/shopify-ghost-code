@@ -147,6 +147,14 @@ model Shop {
   staleResultsShownAt          DateTime?
   staleResultsClickedAt        DateTime?
   staleResultsConvertedAt      DateTime?
+  // Store speed teaser's upgrade ask (gc-iirv): the locked "See which apps
+  // slow your store" card on the Store speed page, shown to Free and Standard.
+  // Once per merchant via claimShopStamp. No dismiss control, so no dismissed
+  // stamp. Converted = any upgrade to Professional by a merchant who saw it.
+  // Deleted with the Shop row on shop/redact.
+  speedTeaserShownAt           DateTime?
+  speedTeaserClickedAt         DateTime?
+  speedTeaserConvertedAt       DateTime?
   // Durable "has ever been on a paid plan" (audit fix, gc-97k.8). Stamped ONCE,
   // via claimShopStamp, the first time reconcileShopPlan observes a paid plan
   // (every reconcile path: redirect and stale/backstop). Backfilled from

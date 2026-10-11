@@ -612,8 +612,22 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
       );
 
       // One claim per Free upgrade ask (gc-97k.4 teaser, gc-97k.9 return banner,
-      // gc-mgi stale-results banner), each requiring that ask's own `shown` stamp.
-      expect(conversionClaims()).toHaveLength(3);
+      // gc-mgi stale-results banner), each requiring that ask's own `shown` stamp,
+      // plus the Store speed teaser (gc-iirv) when the upgrade is to Professional.
+      const pro = plan === "Professional";
+      expect(conversionClaims()).toHaveLength(pro ? 4 : 3);
+      if (pro) {
+        expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "speedTeaserConvertedAt", {
+          speedTeaserShownAt: { not: null },
+        });
+        expect(mockRecordConverted).toHaveBeenCalledWith("speed_teaser", DOMAIN);
+      } else {
+        expect(mockClaimStage).not.toHaveBeenCalledWith(
+          DOMAIN,
+          "speedTeaserConvertedAt",
+          expect.anything(),
+        );
+      }
       expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "upgradePreviewConvertedAt", {
         upgradePreviewShownAt: { not: null },
       });
@@ -623,7 +637,7 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
       expect(mockClaimStage).toHaveBeenCalledWith(DOMAIN, "staleResultsConvertedAt", {
         staleResultsShownAt: { not: null },
       });
-      expect(mockRecordConverted).toHaveBeenCalledTimes(3);
+      expect(mockRecordConverted).toHaveBeenCalledTimes(pro ? 4 : 3);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_preview", DOMAIN);
       expect(mockRecordConverted).toHaveBeenCalledWith("upgrade_return", DOMAIN);
       expect(mockRecordConverted).toHaveBeenCalledWith("stale_results", DOMAIN);
@@ -672,7 +686,6 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
     ["Professional", [{ name: "Standard", status: "ACTIVE" }], "downgrade"],
     ["Standard", [], "cancellation"],
     ["Professional", [], "cancellation"],
-    ["Standard", [{ name: "Professional", status: "ACTIVE" }], "paid -> paid upgrade"],
   ])("does not emit for %s -> %j (%s)", async (fromPlan, subs) => {
     const admin = makeAdmin(subs as Sub[]);
 
@@ -694,6 +707,21 @@ describe("reconcileShopPlan: upgrade-preview conversion", () => {
     expect(mockRecordEvent).not.toHaveBeenCalled();
     expect(conversionClaims()).toEqual([]);
     expect(mockRecordConverted).not.toHaveBeenCalled();
+  });
+
+  it("Standard -> Professional (paid -> paid upgrade) converts ONLY the speed teaser (gc-iirv)", async () => {
+    const admin = makeAdmin([{ name: "Professional", status: "ACTIVE" }]);
+
+    await reconcileShopPlan(
+      admin,
+      { domain: DOMAIN, plan: "Standard", everPaidAt: null },
+      { recordEvent: true },
+    );
+
+    expect(conversionClaims()).toEqual([
+      [DOMAIN, "speedTeaserConvertedAt", { speedTeaserShownAt: { not: null } }],
+    ]);
+    expect(mockRecordConverted.mock.calls).toEqual([["speed_teaser", DOMAIN]]);
   });
 
   it("does not emit when the plan already matches (no plan change)", async () => {
@@ -786,6 +814,9 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
       staleResultsShownAt: null,
       staleResultsClickedAt: null,
       staleResultsConvertedAt: null,
+      speedTeaserShownAt: null,
+      speedTeaserClickedAt: null,
+      speedTeaserConvertedAt: null,
       everPaidAt: null,
     };
   });
@@ -845,6 +876,30 @@ describe("reconcileShopPlan: upgrade-preview conversion against a stamped Shop r
     expect(row.staleResultsConvertedAt).toBeInstanceOf(Date);
     expect(row.upgradePreviewConvertedAt).toBeNull();
     expect(row.upgradeReturnConvertedAt).toBeNull();
+  });
+
+  it("converts the speed teaser (gc-iirv) once, on an upgrade to Professional, only when it was shown", async () => {
+    const toPro = (fromPlan: string) =>
+      reconcileShopPlan(
+        makeAdmin([{ name: "Professional", status: "ACTIVE" }]),
+        { domain: DOMAIN, plan: fromPlan, everPaidAt: null },
+        { recordEvent: true },
+      );
+
+    // Never shown: nothing.
+    await toPro("Standard");
+    expect(mockRecordConverted).not.toHaveBeenCalled();
+
+    // Free -> Standard after seeing it: still nothing (it asks for Professional).
+    row.speedTeaserShownAt = new Date();
+    await upgrade();
+    expect(mockRecordConverted).not.toHaveBeenCalled();
+
+    // Standard -> Professional: converted once, and never again.
+    await toPro("Standard");
+    await toPro("Standard");
+    expect(mockRecordConverted.mock.calls).toEqual([["speed_teaser", DOMAIN]]);
+    expect(row.speedTeaserConvertedAt).toBeInstanceOf(Date);
   });
 
   it("converts BOTH asks once each when the merchant saw both", async () => {

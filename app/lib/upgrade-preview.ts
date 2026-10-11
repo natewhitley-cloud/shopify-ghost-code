@@ -16,17 +16,63 @@ import { PLANS } from "./plans";
 import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "./trial-cta";
 
 /**
- * Every Free upgrade ask, by its NUDGE_KEYS value: the inline teaser (gc-97k.4),
- * the return-visit banner (gc-97k.9) and the stale-results banner (gc-mgi). The /app/upgrade click ping accepts
- * exactly these as `src`, and a Free -> paid upgrade converts each one the
- * merchant was shown.
+ * Every upgrade ask, by its NUDGE_KEYS value: the inline teaser (gc-97k.4),
+ * the return-visit banner (gc-97k.9) and the stale-results banner (gc-mgi),
+ * all Free only, plus the Store speed teaser (gc-iirv, Free and Standard). The
+ * /app/upgrade click ping accepts exactly these as `src`; which ones an upgrade
+ * converts is upgradeAsksConvertedBy.
  */
-export const UPGRADE_ASK_KEYS = ["upgrade_preview", "upgrade_return", "stale_results"] as const;
+export const UPGRADE_ASK_KEYS = [
+  "upgrade_preview",
+  "upgrade_return",
+  "stale_results",
+  "speed_teaser",
+] as const;
 
 export type UpgradeAskKey = (typeof UPGRADE_ASK_KEYS)[number];
 
 export function isUpgradeAskKey(value: unknown): value is UpgradeAskKey {
   return typeof value === "string" && (UPGRADE_ASK_KEYS as readonly string[]).includes(value);
+}
+
+/** The Free-only asks: a Free -> paid upgrade converts each one the merchant saw. */
+const FREE_UPGRADE_ASK_KEYS: readonly UpgradeAskKey[] = [
+  "upgrade_preview",
+  "upgrade_return",
+  "stale_results",
+];
+
+/**
+ * The asks an UPGRADE from `fromPlan` to `toPlan` converts (the caller has
+ * already established it is an upgrade). Each conversion claim also requires
+ * that ask's own `shown` stamp, so an ask the merchant never saw is not counted.
+ *   - Free -> any paid plan: the Free-only asks.
+ *   - any plan -> Professional: the Store speed teaser (it asks for Professional,
+ *     so Standard -> Professional counts too; Free -> Standard does not).
+ */
+export function upgradeAsksConvertedBy(fromPlan: string, toPlan: string): UpgradeAskKey[] {
+  const keys: UpgradeAskKey[] = fromPlan === PLANS.FREE ? [...FREE_UPGRADE_ASK_KEYS] : [];
+  if (toPlan === PLANS.PROFESSIONAL && fromPlan !== PLANS.PROFESSIONAL) keys.push("speed_teaser");
+  return keys;
+}
+
+/**
+ * Best-effort `clicked` ping for an upgrade ask. Never prevents or blocks
+ * the link's navigation: no preventDefault, no await, and any error (sync or
+ * async) is swallowed. `keepalive` lets the request outlive the iframe as the
+ * top frame navigates away. The session token is added by App Bridge's patched
+ * global `fetch`. Shared by the scan page asks and the Store speed teaser.
+ */
+export function recordUpgradeClick(src: UpgradeAskKey): void {
+  try {
+    fetch("/app/upgrade", {
+      method: "POST",
+      keepalive: true,
+      body: new URLSearchParams({ src }),
+    }).catch(() => {});
+  } catch {
+    // Telemetry must never break the upgrade click.
+  }
 }
 
 /** Most entries the breakdown lists; any overflow folds into one "Other" entry. */

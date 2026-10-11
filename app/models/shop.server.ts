@@ -35,6 +35,7 @@ export type ShopMetadata = {
   upgradeReturnDismissCount: number;
   upgradeReturnShownAt: Date | null;
   staleResultsShownAt: Date | null;
+  speedTeaserShownAt: Date | null;
   everPaidAt: Date | null;
   alertsEnabled: boolean;
   alertEmail: string | null;
@@ -114,6 +115,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       upgradeReturnDismissCount: true,
       upgradeReturnShownAt: true,
       staleResultsShownAt: true,
+      speedTeaserShownAt: true,
       everPaidAt: true,
       alertsEnabled: true,
       alertEmail: true,
@@ -387,6 +389,9 @@ export type NudgeStageColumn =
   | "staleResultsShownAt"
   | "staleResultsClickedAt"
   | "staleResultsConvertedAt"
+  | "speedTeaserShownAt"
+  | "speedTeaserClickedAt"
+  | "speedTeaserConvertedAt"
   | "feedbackNudgeShownAt"
   | "feedbackNudgeClickedAt"
   | "feedbackNudgeDismissedAt"

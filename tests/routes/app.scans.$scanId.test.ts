@@ -3927,7 +3927,7 @@ describe("recordUpgradeClick", () => {
     vi.unstubAllGlobals();
   });
 
-  it.each(["upgrade_preview", "upgrade_return"] as const)(
+  it.each(["upgrade_preview", "upgrade_return", "speed_teaser"] as const)(
     "POSTs src=%s to /app/upgrade with keepalive",
     (src) => {
       const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));

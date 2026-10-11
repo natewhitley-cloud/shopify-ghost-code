@@ -34,7 +34,7 @@ import {
 } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { isAccessDeniedError, type GraphQLResponseError } from "../lib/scope-check.server";
-import { UPGRADE_ASK_KEYS } from "../lib/upgrade-preview";
+import { upgradeAsksConvertedBy } from "../lib/upgrade-preview";
 import { recordBillingEvent } from "../models/billing-event.server";
 import { markSummaryNoticePending } from "../models/merchant-alert.server";
 import {
@@ -240,15 +240,13 @@ export async function reconcileShopPlan(
 
   if (options.recordEvent) {
     recordReconcileBillingEvent(updated.id, shop.plan, effectivePlan);
-    // Upgrade nudge conversions (gc-97k.4 teaser, gc-97k.9 return banner): a
-    // merchant-initiated move from Free to a paid plan counts once ever for
-    // EACH upgrade ask the merchant was shown (enforced by each claim's shown
-    // precondition). Never throws.
-    if (
-      shop.plan === PLANS.FREE &&
-      determineBillingEventType(shop.plan, effectivePlan) === "upgrade"
-    ) {
-      for (const nudgeKey of UPGRADE_ASK_KEYS) {
+    // Upgrade nudge conversions (gc-97k.4 teaser, gc-97k.9 return banner,
+    // gc-mgi stale banner, gc-iirv speed teaser): a merchant-initiated upgrade
+    // counts once ever for EACH ask it answers that the merchant was shown
+    // (enforced by each claim's shown precondition): Free -> paid for the Free
+    // asks, any -> Professional for the speed teaser. Never throws.
+    if (determineBillingEventType(shop.plan, effectivePlan) === "upgrade") {
+      for (const nudgeKey of upgradeAsksConvertedBy(shop.plan, effectivePlan)) {
         await recordNudgeStageOnce(nudgeKey, "converted", shop.domain);
       }
     }

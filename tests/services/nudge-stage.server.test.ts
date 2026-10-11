@@ -240,3 +240,74 @@ describe("stale_results stages (gc-mgi)", () => {
     expect(typeof invalid).toBe("function");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Store speed teaser stages (gc-iirv): an upgrade ask with no dismiss control
+// ---------------------------------------------------------------------------
+
+describe("speed_teaser stages (gc-iirv)", () => {
+  const SPEED_STAGES = {
+    shown: { column: "speedTeaserShownAt", event: "nudge_shown", extra: {} },
+    clicked: { column: "speedTeaserClickedAt", event: "nudge_clicked", extra: {} },
+    converted: {
+      column: "speedTeaserConvertedAt",
+      event: "nudge_converted",
+      // Only a merchant who SAW the teaser converts it (the click ping can be lost).
+      extra: { speedTeaserShownAt: { not: null } },
+    },
+  } as const;
+
+  it.each(Object.keys(SPEED_STAGES) as Array<keyof typeof SPEED_STAGES>)(
+    "%s claims its own column (with its precondition) and emits one speed_teaser event",
+    async (stage) => {
+      const { column, event, extra } = SPEED_STAGES[stage];
+      mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+
+      await expect(recordNudgeStageOnce("speed_teaser", stage, DOMAIN)).resolves.toBe(true);
+
+      expect(mockDb.shop.updateMany.mock.calls[0][0].where).toEqual({
+        ...extra,
+        domain: DOMAIN,
+        [column]: null,
+      });
+      expect(mockDb.opsEvent.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          eventType: event,
+          key: DOMAIN,
+          metadata: { nudgeKey: "speed_teaser" },
+        }),
+      });
+    },
+  );
+
+  it.each(Object.keys(SPEED_STAGES) as Array<keyof typeof SPEED_STAGES>)(
+    "%s emits once across concurrent calls (each merchant counted once per stage)",
+    async (stage) => {
+      mockDb.shop.updateMany
+        .mockResolvedValueOnce({ count: 1 })
+        .mockResolvedValueOnce({ count: 0 });
+
+      const results = await Promise.all([
+        recordNudgeStageOnce("speed_teaser", stage, DOMAIN),
+        recordNudgeStageOnce("speed_teaser", stage, DOMAIN),
+      ]);
+
+      expect(results.filter(Boolean)).toHaveLength(1);
+      expect(mockDb.opsEvent.create).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it("a lost claim (already stamped) emits nothing", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
+
+    await expect(recordNudgeStageOnce("speed_teaser", "shown", DOMAIN)).resolves.toBe(false);
+
+    expect(mockDb.opsEvent.create).not.toHaveBeenCalled();
+  });
+
+  it("rejects, at compile time, a dismissed stage (the teaser has no dismiss control)", () => {
+    // @ts-expect-error speed_teaser has no `dismissed` stage
+    const invalid = () => recordNudgeStageOnce("speed_teaser", "dismissed", DOMAIN);
+    expect(typeof invalid).toBe("function");
+  });
+});

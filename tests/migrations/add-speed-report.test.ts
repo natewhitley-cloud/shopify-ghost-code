@@ -77,8 +77,8 @@ describe("add_speed_report migration (gc-wt3y)", () => {
     expect(SCHEMA).toMatch(/model PageSpeedDailyUsage \{[\s\S]*?day\s+String\s+@id/);
   });
 
-  it("is the latest migration", () => {
+  it("sorts after every earlier migration (gc-iirv's speed-teaser stamps come later)", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
+    expect(dirs.sort().filter((d) => d > NAME)).toEqual(["20261014120000_add_shop_speed_teaser"]);
   });
 });
