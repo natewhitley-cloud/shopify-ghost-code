@@ -81,7 +81,13 @@ export function classifyPageSpeedBody(body: unknown): PageSpeedCallResult {
     return { ok: false, code: "bad_response", httpStatus: 200 };
   }
   const runtimeError = (lhr as { runtimeError?: { code?: unknown } }).runtimeError;
-  if (runtimeError && typeof runtimeError.code === "string" && runtimeError.code !== "") {
+  // Lighthouse can report `runtimeError: { code: "NO_ERROR" }` on a good run.
+  if (
+    runtimeError &&
+    typeof runtimeError.code === "string" &&
+    runtimeError.code !== "" &&
+    runtimeError.code !== "NO_ERROR"
+  ) {
     return { ok: false, code: "document_failed", httpStatus: 200 };
   }
   return { ok: true, lighthouse: lhr };

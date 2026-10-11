@@ -180,6 +180,11 @@ describe("classifiers", () => {
     expect(classifyPageSpeedBody(body).ok).toBe(true);
   });
 
+  it("classifyPageSpeedBody accepts Lighthouse's NO_ERROR runtimeError code (gc-wt3y #5)", () => {
+    const body = buildPageSpeedResponse({ runtimeError: { code: "NO_ERROR", message: "" } });
+    expect(classifyPageSpeedBody(body)).toMatchObject({ ok: true });
+  });
+
   it("classifyPageSpeedHttpError treats an unparseable error body by status alone", () => {
     expect(classifyPageSpeedHttpError(502, null)).toBe("server_error");
     expect(classifyPageSpeedHttpError(404, null)).toBe("http_error");
