@@ -97,8 +97,6 @@ export type SpeedCostRow = {
   name: string;
   /** Main-thread (processing) time, ms. */
   mainThreadMs: number;
-  /** Time it blocked the page from responding (TBT share), ms. */
-  blockingMs: number;
   transferBytes: number;
   /** Share of its JavaScript that went unused, 0-100; null = not reported. */
   unusedPct: number | null;
@@ -221,7 +219,6 @@ function readCostRows(v: unknown): SpeedCostRow[] {
     rows.push({
       name: o.name,
       mainThreadMs: isNum(o.mainThreadMs) ? o.mainThreadMs : 0,
-      blockingMs: isNum(o.blockingMs) ? o.blockingMs : 0,
       transferBytes: isNum(o.transferBytes) ? o.transferBytes : 0,
       unusedPct: numOrNull(o.unusedPct),
       requestCount: isNum(o.requestCount) ? o.requestCount : 0,

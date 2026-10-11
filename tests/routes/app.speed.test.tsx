@@ -37,12 +37,7 @@ import {
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
 } from "../../app/models/speed-report.server";
-import StoreSpeed, {
-  action,
-  LockedTeaser,
-  loader,
-  StatusBanner,
-} from "../../app/routes/app.speed";
+import StoreSpeed, { action, LockedTeaser, loader, StatusBanner } from "../../app/routes/app.speed";
 import type { SpeedLoaderData } from "../../app/routes/app.speed";
 import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
 import { requestSpeedReportRunNow } from "../../app/services/speed-report.server";
@@ -326,7 +321,6 @@ const HOME_PAGE: SpeedPageResult = {
     {
       name: "Klaviyo",
       mainThreadMs: 4123,
-      blockingMs: 2050,
       transferBytes: 1851000,
       unusedPct: 50,
       requestCount: 3,
@@ -334,7 +328,6 @@ const HOME_PAGE: SpeedPageResult = {
     {
       name: "Recharge",
       mainThreadMs: 640,
-      blockingMs: 310,
       transferBytes: 169000,
       unusedPct: 80,
       requestCount: 1,
@@ -344,7 +337,6 @@ const HOME_PAGE: SpeedPageResult = {
     {
       name: "fonts.gstatic.com",
       mainThreadMs: 0,
-      blockingMs: 0,
       transferBytes: 48000,
       unusedPct: null,
       requestCount: 1,

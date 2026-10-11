@@ -93,8 +93,6 @@ describe("summarizeLighthouse: attribution", () => {
       name: "Klaviyo",
       // 3900.4 (summary, wins over bootup 3800) + 12.1 (image) + 210 (embed, bootup only)
       mainThreadMs: 4123,
-      // 2050.1 + 0; the "Other resources" remainder row (50) is skipped
-      blockingMs: 2050,
       transferBytes: 621000 + 1200000 + 30000,
       // 310500 / 621000
       unusedPct: 50,
@@ -106,7 +104,6 @@ describe("summarizeLighthouse: attribution", () => {
     expect(s.apps.find((a) => a.name === "Recharge")).toEqual({
       name: "Recharge",
       mainThreadMs: 640,
-      blockingMs: 310,
       transferBytes: 169000,
       unusedPct: 80,
       requestCount: 1,
@@ -122,7 +119,6 @@ describe("summarizeLighthouse: attribution", () => {
       {
         name: "fonts.gstatic.com",
         mainThreadMs: 0,
-        blockingMs: 0,
         transferBytes: 48000,
         unusedPct: null,
         requestCount: 1,
@@ -130,7 +126,6 @@ describe("summarizeLighthouse: attribution", () => {
       {
         name: "fonts.googleapis.com",
         mainThreadMs: 0,
-        blockingMs: 0,
         transferBytes: 2000,
         unusedPct: null,
         requestCount: 1,
@@ -159,6 +154,12 @@ describe("summarizeLighthouse: attribution", () => {
     bootup.details.items.find((i) => i.url === URLS.klaviyo)!.total = 99999;
     const klaviyo = summarizeLighthouse(lhr, STORE_HOSTS)!.apps.find((a) => a.name === "Klaviyo")!;
     expect(klaviyo.mainThreadMs).toBe(4123);
+  });
+
+  it("has no per-app blocking figure (Lighthouse 13 dropped per-URL blocking time)", () => {
+    for (const row of [...s.apps, ...s.otherThirdParty]) {
+      expect(row).not.toHaveProperty("blockingMs");
+    }
   });
 
   it("caps other third-party rows at MAX_OTHER_THIRD_PARTY_ROWS, keeping the heaviest", () => {
@@ -329,5 +330,62 @@ describe("selectMedianRun", () => {
   it("returns the only run, or null for none", () => {
     expect(selectMedianRun([run(70, "a")])!.tag).toBe("a");
     expect(selectMedianRun([])).toBeNull();
+  });
+});
+
+/**
+ * Lighthouse 13 (what PageSpeed serves since 2026) replaced the
+ * third-party-summary audit with third-parties-insight: the same per-URL
+ * subItems (url, transferSize, mainThreadTime) and no blockingTime.
+ */
+describe("summarizeLighthouse: Lighthouse 13 third-parties-insight", () => {
+  type Audits = Record<
+    string,
+    { id?: string; details?: { items?: Array<Record<string, unknown>> } }
+  >;
+
+  /** The default fixture with its third-party audit renamed to the LH13 insight. */
+  function lighthouse13Result(): Record<string, unknown> {
+    const lhr = buildLighthouseResult();
+    const audits = lhr.audits as Audits;
+    const summary = audits["third-party-summary"];
+    delete audits["third-party-summary"];
+    for (const entity of summary.details!.items!) {
+      delete entity.blockingTime;
+      const subs = (entity.subItems as { items: Array<Record<string, unknown>> }).items;
+      for (const sub of subs) delete sub.blockingTime;
+    }
+    audits["third-parties-insight"] = { ...summary, id: "third-parties-insight" };
+    return lhr;
+  }
+
+  it("reads per-URL main-thread time from the insight exactly as from the old summary", () => {
+    const legacy = summarizeLighthouse(buildLighthouseResult(), STORE_HOSTS)!;
+    const lh13 = summarizeLighthouse(lighthouse13Result(), STORE_HOSTS)!;
+    expect(lh13.apps).toEqual(legacy.apps);
+    expect(lh13.otherThirdParty).toEqual(legacy.otherThirdParty);
+    expect(lh13.firstParty).toEqual(legacy.firstParty);
+    // The insight's 3900.4 wins over bootup's 3800 for the Klaviyo CDN script.
+    expect(lh13.apps.find((a) => a.name === "Klaviyo")!.mainThreadMs).toBe(4123);
+  });
+
+  it("prefers the insight when a result carries both audits (never sums them)", () => {
+    const lhr = lighthouse13Result();
+    const audits = lhr.audits as Audits;
+    audits["third-party-summary"] = {
+      details: {
+        items: [{ subItems: { items: [{ url: URLS.klaviyo, mainThreadTime: 99999 }] } }],
+      },
+    };
+    const klaviyo = summarizeLighthouse(lhr, STORE_HOSTS)!.apps.find((a) => a.name === "Klaviyo")!;
+    expect(klaviyo.mainThreadMs).toBe(4123);
+  });
+
+  it("falls back to bootup-time when neither third-party audit is present", () => {
+    const lhr = lighthouse13Result();
+    delete (lhr.audits as Audits)["third-parties-insight"];
+    const klaviyo = summarizeLighthouse(lhr, STORE_HOSTS)!.apps.find((a) => a.name === "Klaviyo")!;
+    // bootup 3800 (CDN script) + 210 (embed); the image has no bootup entry.
+    expect(klaviyo.mainThreadMs).toBe(4010);
   });
 });

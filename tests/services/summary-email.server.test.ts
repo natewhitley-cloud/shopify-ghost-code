@@ -78,7 +78,6 @@ const SPEED: SummarySpeed = {
   topApp: {
     name: "Klaviyo",
     mainThreadMs: 4000,
-    blockingMs: 1200,
     transferBytes: 621_000,
     unusedPct: 40,
     requestCount: 3,

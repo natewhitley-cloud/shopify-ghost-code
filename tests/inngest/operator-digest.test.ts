@@ -3675,7 +3675,6 @@ describe("SPEED REPORTS section", () => {
       {
         name: "Recharge",
         mainThreadMs: 640,
-        blockingMs: 0,
         transferBytes: 169000,
         unusedPct: 80,
         requestCount: 1,
@@ -3683,7 +3682,6 @@ describe("SPEED REPORTS section", () => {
       {
         name: "Klaviyo",
         mainThreadMs: 4012,
-        blockingMs: 0,
         transferBytes: 621000,
         unusedPct: 50,
         requestCount: 3,

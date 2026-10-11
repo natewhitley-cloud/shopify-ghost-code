@@ -1105,7 +1105,6 @@ function run(score: number, tag: string): SpeedAttempt {
         {
           name: tag,
           mainThreadMs: 1,
-          blockingMs: 0,
           transferBytes: 1,
           unusedPct: null,
           requestCount: 1,

@@ -188,7 +188,6 @@ describe("readSpeedPages", () => {
         {
           name: "Klaviyo",
           mainThreadMs: 4000,
-          blockingMs: 2000,
           transferBytes: 621000,
           unusedPct: 50,
           requestCount: 3,
@@ -226,7 +225,6 @@ describe("readSpeedPages", () => {
           {
             name: "A",
             mainThreadMs: 0,
-            blockingMs: 0,
             transferBytes: 0,
             unusedPct: null,
             requestCount: 0,
@@ -310,7 +308,6 @@ describe("appCostHeadline", () => {
   const row = (name: string, mainThreadMs: number): SpeedCostRow => ({
     name,
     mainThreadMs,
-    blockingMs: 0,
     transferBytes: 0,
     unusedPct: null,
     requestCount: 1,

@@ -6,7 +6,12 @@
  *     total-byte-weight, request count;
  *   - per-URL cost, then grouped by app:
  *       network-requests   transferSize + request count (every request)
- *       third-party-summary per-URL subItems: mainThreadTime, blockingTime
+ *       third-parties-insight per-URL subItems: mainThreadTime (Lighthouse
+ *                          13+; older results carry the same subItems under
+ *                          third-party-summary, read only when the insight is
+ *                          absent). Lighthouse 13 dropped per-URL blocking
+ *                          time, so the report has no per-app blocking figure;
+ *                          the page-level TBT metric remains.
  *       bootup-time        per-script `total`: main-thread time for URLs the
  *                          third-party summary does not list (first-party
  *                          hosted app files, small third parties)
@@ -119,7 +124,6 @@ type UrlCost = {
   transferBytes: number;
   requestCount: number;
   tpsMainMs: number | null;
-  tpsBlockingMs: number | null;
   bootupMs: number | null;
   unusedBytes: number;
   scriptBytes: number;
@@ -130,7 +134,6 @@ function emptyCost(): UrlCost {
     transferBytes: 0,
     requestCount: 0,
     tpsMainMs: null,
-    tpsBlockingMs: null,
     bootupMs: null,
     unusedBytes: 0,
     scriptBytes: 0,
@@ -139,7 +142,6 @@ function emptyCost(): UrlCost {
 
 type RowAcc = {
   mainThreadMs: number;
-  blockingMs: number;
   transferBytes: number;
   requestCount: number;
   unusedBytes: number;
@@ -150,7 +152,6 @@ function toRow(name: string, a: RowAcc): SpeedCostRow {
   return {
     name,
     mainThreadMs: Math.round(a.mainThreadMs),
-    blockingMs: Math.round(a.blockingMs),
     transferBytes: Math.round(a.transferBytes),
     unusedPct: a.scriptBytes > 0 ? Math.round((a.unusedBytes / a.scriptBytes) * 100) : null,
     requestCount: a.requestCount,
@@ -220,7 +221,11 @@ export function summarizeLighthouse(
     c.transferBytes += num(item.transferSize) ?? 0;
     c.requestCount += 1;
   }
-  for (const entity of auditItems(audits, "third-party-summary")) {
+  const thirdPartyAudit =
+    auditItems(audits, "third-parties-insight").length > 0
+      ? "third-parties-insight"
+      : "third-party-summary";
+  for (const entity of auditItems(audits, thirdPartyAudit)) {
     const subItems = obj(entity.subItems)?.items;
     if (!Array.isArray(subItems)) continue;
     for (const raw of subItems) {
@@ -228,7 +233,6 @@ export function summarizeLighthouse(
       if (!sub || !isHttpUrl(sub.url)) continue;
       const c = costFor(sub.url);
       c.tpsMainMs = (c.tpsMainMs ?? 0) + (num(sub.mainThreadTime) ?? 0);
-      c.tpsBlockingMs = (c.tpsBlockingMs ?? 0) + (num(sub.blockingTime) ?? 0);
     }
   }
   for (const item of auditItems(audits, "bootup-time")) {
@@ -253,7 +257,6 @@ export function summarizeLighthouse(
     if (!a) {
       a = {
         mainThreadMs: 0,
-        blockingMs: 0,
         transferBytes: 0,
         requestCount: 0,
         unusedBytes: 0,
@@ -276,15 +279,13 @@ export function summarizeLighthouse(
     }
     const a = accFor(owner.kind === "app" ? apps : others, owner.name);
     a.mainThreadMs += mainMs;
-    a.blockingMs += c.tpsBlockingMs ?? 0;
     a.transferBytes += c.transferBytes;
     a.requestCount += c.requestCount;
     a.unusedBytes += c.unusedBytes;
     a.scriptBytes += c.scriptBytes;
   }
 
-  const hasCost = (r: SpeedCostRow) =>
-    r.mainThreadMs > 0 || r.transferBytes > 0 || r.blockingMs > 0;
+  const hasCost = (r: SpeedCostRow) => r.mainThreadMs > 0 || r.transferBytes > 0;
   return {
     finalUrl,
     passwordProtected,

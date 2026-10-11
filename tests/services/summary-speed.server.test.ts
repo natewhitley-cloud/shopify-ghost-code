@@ -32,7 +32,6 @@ const HOME_URL = "https://paw-naturals.example/";
 const appRow = (name: string, mainThreadMs: number, transferBytes = 100_000): SpeedCostRow => ({
   name,
   mainThreadMs,
-  blockingMs: 0,
   transferBytes,
   unusedPct: null,
   requestCount: 1,

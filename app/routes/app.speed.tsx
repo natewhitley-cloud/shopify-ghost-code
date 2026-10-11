@@ -175,7 +175,6 @@ function CostTable({ rows, nameHeading }: { rows: SpeedCostRow[]; nameHeading: s
         <tr>
           <th scope="col">{nameHeading}</th>
           <th scope="col">Processing time</th>
-          <th scope="col">Time it froze the page</th>
           <th scope="col">Download size</th>
           <th scope="col">Unused code</th>
         </tr>
@@ -185,7 +184,6 @@ function CostTable({ rows, nameHeading }: { rows: SpeedCostRow[]; nameHeading: s
           <tr key={row.name}>
             <td>{row.name}</td>
             <td>{formatSeconds(row.mainThreadMs)}</td>
-            <td>{formatSeconds(row.blockingMs)}</td>
             <td>{formatBytes(row.transferBytes)}</td>
             <td>{row.unusedPct === null ? "Not measured" : `${row.unusedPct}% unused`}</td>
           </tr>
