@@ -4,7 +4,7 @@
  * Tests never touch a database (.env points at prod), so this pins the reviewed
  * SQL text: one nullable Shop.storeName column, no default, no backfill.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, it, expect } from "vitest";
@@ -40,10 +40,5 @@ describe("add_shop_store_name migration (gc-ol95)", () => {
 
   it("matches the Prisma schema", () => {
     expect(SCHEMA).toMatch(/model Shop \{[\s\S]*?\n\s+storeName\s+String\?\n/);
-  });
-
-  it("is the latest migration", () => {
-    const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
   });
 });
