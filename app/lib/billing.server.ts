@@ -1,5 +1,13 @@
 import { logger } from "./logger.server";
 import { APP_HANDLE, PLANS } from "./plans";
+import {
+  PRODUCT_AUDIT_CAP,
+  PROFESSIONAL_PRODUCT_AUDIT_CAP,
+  PROFESSIONAL_REDIRECT_CAP,
+  REDIRECT_CAP,
+  STANDARD_PRODUCT_AUDIT_CAP,
+  STANDARD_REDIRECT_CAP,
+} from "./scan-limits";
 import type { BillingEventType } from "../models/billing-event.server";
 // Re-export PLANS so existing server-side import sites need no change.
 export { PLANS };
@@ -194,6 +202,13 @@ export type PlanFeatures = {
    * for the alert gate and the throttle window.
    */
   alertCadence: "none" | "weekly" | "monthly";
+  /**
+   * Max products the product audit (tags, prices, metafields) walks per scan,
+   * and max URL redirects the redirect audit walks (gc-747u). Free keeps the
+   * original caps; a walk still cut short is disclosed on the scan page.
+   */
+  productAuditCap: number;
+  redirectAuditCap: number;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -211,6 +226,8 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
         exportPdf: false, // PDF export is Professional-only (gc-rrh.1)
         alertCadence: "monthly", // matches the monthly scheduled scan (gc-syz.3, gc-iefo)
+        productAuditCap: STANDARD_PRODUCT_AUDIT_CAP, // gc-747u
+        redirectAuditCap: STANDARD_REDIRECT_CAP, // gc-747u
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -225,6 +242,8 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectCheckoutSunset: true, // Standard+ (gc-b3c)
         exportPdf: true, // Professional-only branded PDF export (gc-rrh.1)
         alertCadence: "weekly", // matches the weekly scheduled scan (gc-syz.3, gc-iefo)
+        productAuditCap: PROFESSIONAL_PRODUCT_AUDIT_CAP, // gc-747u
+        redirectAuditCap: PROFESSIONAL_REDIRECT_CAP, // gc-747u
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -241,6 +260,8 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         canDetectCheckoutSunset: false, // Free does NOT get checkout-sunset detection (gc-b3c)
         exportPdf: false, // Free does NOT get PDF export (gc-rrh.1)
         alertCadence: "none", // Free has no scheduled rescans, so nothing to alert on (gc-syz.3)
+        productAuditCap: PRODUCT_AUDIT_CAP, // unchanged Free cap (gc-747u)
+        redirectAuditCap: REDIRECT_CAP, // unchanged Free cap (gc-747u)
       };
   }
 }

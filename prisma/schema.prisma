@@ -375,6 +375,13 @@ model Scan {
   // removal needs a hook in the previous scan that is gone in this one.
   // NULL column = legacy scan: no removal is inferred against it.
   liveAppHooks      Json?
+  // Capped Admin API walks (gc-747u): per walk that ran ("products",
+  // "redirects"), { checked, total, truncated, lastId } (see
+  // app/lib/walk-coverage.ts). Walks are ID-ordered up to the plan's cap, so a
+  // truncated walk checked exactly the records with an ID up to lastId: the
+  // differ never resolves a prior finding past it, and the scan page discloses
+  // "checked N of M". NULL = legacy scan (walked the Free caps, recorded nothing).
+  walkCoverage      Json?
   findings          Finding[]
   unknownScripts    UnknownScript[]
   scanDomains       ScanDomain[]

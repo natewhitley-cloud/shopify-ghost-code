@@ -37,6 +37,7 @@ vi.mock("../../app/models/ops-event.server", () => ({
 
 import {
   checkRateLimit,
+  parseRequestedQueryCost,
   checkThrottleStatus,
   checkThrottleStatusFromExtensions,
   isThrottledError,
@@ -533,4 +534,82 @@ describe("checkRateLimit", () => {
     await checkRateLimit({ cost: { throttleStatus: { currentlyAvailable: 0 } } });
     expect(sleepDurations[0]).toBe(2000);
   });
+});
+
+// ---------------------------------------------------------------------------
+// gc-747u: cost-aware backoff (minPoints) + requestedQueryCost parsing
+// ---------------------------------------------------------------------------
+
+describe("checkRateLimit minPoints (gc-747u)", () => {
+  function captureSleeps(): number[] {
+    const sleeps: number[] = [];
+    vi.spyOn(global, "setTimeout").mockImplementation(((
+      fn: (...args: unknown[]) => void,
+      ms?: number,
+    ) => {
+      sleeps.push(ms ?? 0);
+      fn();
+      return 0 as unknown as ReturnType<typeof setTimeout>;
+    }) as typeof setTimeout);
+    return sleeps;
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("waits until minPoints are available when that exceeds the flat 100", async () => {
+    const sleeps = captureSleeps();
+    const result = await checkRateLimit(
+      {
+        cost: {
+          throttleStatus: { currentlyAvailable: 200, maximumAvailable: 2000, restoreRate: 100 },
+        },
+      },
+      700,
+    );
+    // (700 - 200) / 100 pts/s = 5 s
+    expect(sleeps).toEqual([5000]);
+    expect(result).toBe(700);
+  });
+
+  it("never waits for more than the bucket holds", async () => {
+    const sleeps = captureSleeps();
+    await checkRateLimit(
+      {
+        cost: {
+          throttleStatus: { currentlyAvailable: 0, maximumAvailable: 1000, restoreRate: 50 },
+        },
+      },
+      5000,
+    );
+    // Capped at the 1000-point bucket: 1000 / 50 = 20 s.
+    expect(sleeps).toEqual([20_000]);
+  });
+
+  it("keeps the flat 100 floor when minPoints is smaller", async () => {
+    const sleeps = captureSleeps();
+    await checkRateLimit(
+      {
+        cost: {
+          throttleStatus: { currentlyAvailable: 50, maximumAvailable: 2000, restoreRate: 50 },
+        },
+      },
+      10,
+    );
+    expect(sleeps).toEqual([1000]);
+  });
+});
+
+describe("parseRequestedQueryCost (gc-747u)", () => {
+  it("reads cost.requestedQueryCost", () => {
+    expect(parseRequestedQueryCost({ cost: { requestedQueryCost: 752 } })).toBe(752);
+  });
+
+  it.each([[null], [undefined], [{}], [{ cost: {} }], [{ cost: { requestedQueryCost: "752" } }]])(
+    "returns 0 when absent or malformed (%j)",
+    (ext) => {
+      expect(parseRequestedQueryCost(ext)).toBe(0);
+    },
+  );
 });

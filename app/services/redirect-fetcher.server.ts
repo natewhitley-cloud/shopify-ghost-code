@@ -6,6 +6,7 @@
  */
 
 import {
+  fetchExactCount,
   type GraphQLConnection,
   type PaginateStats,
   paginateConnection,
@@ -52,9 +53,11 @@ export async function hasNavigationScope(
 // GraphQL query
 // ---------------------------------------------------------------------------
 
+// `sortKey: ID` is the API default, spelled out because the scan's coverage
+// window depends on it (gc-747u): a capped walk covers the lowest redirect IDs.
 const REDIRECTS_QUERY = `
   query UrlRedirects($first: Int!, $after: String) {
-    urlRedirects(first: $first, after: $after) {
+    urlRedirects(first: $first, after: $after, sortKey: ID) {
       nodes {
         id
         path
@@ -87,11 +90,17 @@ const REDIRECTS_QUERY = `
  *                      cap truncates the walk, `stats.truncated` is set so the
  *                      caller can record a coverage gap (the differ must not
  *                      false-resolve redirects beyond the cap).
+ * @param resume        Chunked walk (gc-747u): `after` resumes a walk an earlier
+ *                      step stopped, `deadline` stops paging once the step's
+ *                      time budget is spent (`stats.hasMore` + `stats.endCursor`
+ *                      then say where to resume). `maxRedirects` is the cap for
+ *                      THIS call.
  */
 export async function fetchRedirects(
   admin: AdminApiContext,
   maxRedirects = REDIRECT_CAP,
   stats?: PaginateStats,
+  resume: { after?: string | null; deadline?: number } = {},
 ): Promise<RedirectData[]> {
   const PAGE_SIZE = 50;
 
@@ -107,5 +116,16 @@ export async function fetchRedirects(
       (data as { urlRedirects?: GraphQLConnection<RedirectNode> } | null | undefined)?.urlRedirects,
     mapNode: (node) => [{ id: node.id, path: node.path, target: node.target }],
     stats,
+    after: resume.after,
+    deadline: resume.deadline,
   });
+}
+
+/**
+ * Exact number of URL redirects in the store (gc-747u), for the "checked N of
+ * M" disclosure when the walk hit its cap. Null on any failure (see
+ * fetchExactCount): the disclosure then omits the total.
+ */
+export async function fetchRedirectsTotal(admin: AdminApiContext): Promise<number | null> {
+  return fetchExactCount(admin, "urlRedirectsCount");
 }

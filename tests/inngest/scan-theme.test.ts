@@ -124,6 +124,8 @@ vi.mock("../../app/services/product-fetcher.server", () => ({
   hasProductScope: vi.fn(),
   // gc-1bd: the three product walks are now ONE consolidated fetch.
   fetchProductAuditData: vi.fn(),
+  // gc-747u: the store's product total, read only when the walk is truncated.
+  fetchProductsTotal: vi.fn(),
 }));
 
 vi.mock("../../app/services/product-tag-detector.server", () => ({
@@ -150,10 +152,15 @@ vi.mock("../../app/services/metafield-detector.server", () => ({
 vi.mock("../../app/services/redirect-fetcher.server", () => ({
   hasNavigationScope: vi.fn(),
   fetchRedirects: vi.fn(),
+  fetchRedirectsTotal: vi.fn(),
 }));
 
-vi.mock("../../app/services/redirect-detector.server", () => ({
-  detectOrphanedRedirects: vi.fn(),
+// gc-747u: the worker calls the chunkable pieces. App-pattern detection is
+// mocked (tests control its findings); the bulk tally + bulk findings are the
+// real pure functions, so a chunked walk's bulk detection is exercised for real.
+vi.mock("../../app/services/redirect-detector.server", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../app/services/redirect-detector.server")>()),
+  detectAppPatternRedirects: vi.fn(),
 }));
 
 vi.mock("../../app/services/jsonld-price-audit.server", () => ({
@@ -235,6 +242,8 @@ import {
   DANGLING_MAX_OCCURRENCES_PER_HANDLE,
   JSONLD_PRICE_CANDIDATE_CAP,
   MAX_FINDINGS_PER_FILE_PER_TYPE,
+  PRODUCT_WALK_CHUNK,
+  REDIRECT_GROUPS_BUDGET_BYTES,
 } from "../../app/lib/scan-limits";
 import {
   fetchGrantedOptionalScopes,
@@ -268,10 +277,18 @@ import { getMerchantAlertConfigStatus } from "../../app/services/merchant-alert.
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
 import { detectOrphanedPages } from "../../app/services/page-detector.server";
 import { detectPersistentDiscounts } from "../../app/services/price-detector.server";
-import { hasProductScope, fetchProductAuditData } from "../../app/services/product-fetcher.server";
+import {
+  hasProductScope,
+  fetchProductAuditData,
+  fetchProductsTotal,
+} from "../../app/services/product-fetcher.server";
 import { detectOrphanedProductTags } from "../../app/services/product-tag-detector.server";
-import { detectOrphanedRedirects } from "../../app/services/redirect-detector.server";
-import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
+import { detectAppPatternRedirects } from "../../app/services/redirect-detector.server";
+import {
+  hasNavigationScope,
+  fetchRedirects,
+  fetchRedirectsTotal,
+} from "../../app/services/redirect-fetcher.server";
 import { diffScans, unauditedCategories } from "../../app/services/scan-differ.server";
 import { enabledAppEmbedApps, observedEmbedApps } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
@@ -331,7 +348,9 @@ const mockDetectOrphanedProductTags = detectOrphanedProductTags as ReturnType<ty
 const mockDetectPersistentDiscounts = detectPersistentDiscounts as ReturnType<typeof vi.fn>;
 const mockDetectOrphanedPages = detectOrphanedPages as ReturnType<typeof vi.fn>;
 const mockDetectOrphanedMetafields = detectOrphanedMetafields as ReturnType<typeof vi.fn>;
-const mockDetectOrphanedRedirects = detectOrphanedRedirects as ReturnType<typeof vi.fn>;
+const mockDetectAppPatternRedirects = detectAppPatternRedirects as ReturnType<typeof vi.fn>;
+const mockFetchProductsTotal = fetchProductsTotal as ReturnType<typeof vi.fn>;
+const mockFetchRedirectsTotal = fetchRedirectsTotal as ReturnType<typeof vi.fn>;
 const mockAuditStaticJsonLdPrices = auditStaticJsonLdPrices as ReturnType<typeof vi.fn>;
 const mockExtractDanglingReferences = extractDanglingReferences as ReturnType<typeof vi.fn>;
 const mockResolveDanglingReferences = resolveDanglingReferences as ReturnType<typeof vi.fn>;
@@ -488,7 +507,9 @@ beforeEach(() => {
   mockDetectPersistentDiscounts.mockReturnValue([]);
   mockDetectOrphanedPages.mockReturnValue([]);
   mockDetectOrphanedMetafields.mockReturnValue([]);
-  mockDetectOrphanedRedirects.mockReturnValue([]);
+  mockDetectAppPatternRedirects.mockReturnValue([]);
+  mockFetchProductsTotal.mockResolvedValue(null);
+  mockFetchRedirectsTotal.mockResolvedValue(null);
 
   // Live-price audit: default to no findings. The step is also flag-gated
   // (JSONLD_LIVE_PRICE_ENABLED) — cleared here so it is inert unless a test
@@ -537,6 +558,25 @@ function makeAuditFinding(findingType: FindingType, overrides?: Record<string, u
   };
 }
 
+// gc-747u: the stats out-param the redirect walk threads into fetchRedirects.
+type PaginateStatsLike = {
+  truncated: boolean;
+  pageCount: number;
+  throttleSleepMs: number;
+  hasMore?: boolean;
+  endCursor?: string | null;
+};
+
+// gc-747u: `count` redirects with ascending numeric IDs starting at `from`,
+// under `prefix` (one bulk group).
+function makeRedirects(count: number, from = 1, prefix = "/old") {
+  return Array.from({ length: count }, (_, i) => ({
+    id: `gid://shopify/UrlRedirect/${from + i}`,
+    path: `${prefix}/page-${from + i}`,
+    target: `/new/page-${from + i}`,
+  }));
+}
+
 // gc-1bd: the consolidated product-audit fetch returns detector-shaped arrays
 // plus walk observability. Defaults are an empty, untruncated walk.
 function makeProductAuditData(overrides?: Record<string, unknown>) {
@@ -547,6 +587,11 @@ function makeProductAuditData(overrides?: Record<string, unknown>) {
     truncated: false,
     pageCount: 0,
     throttleSleepMs: 0,
+    // gc-747u chunked-walk fields: one chunk that consumed every product.
+    checked: 0,
+    lastId: null,
+    hasMore: false,
+    endCursor: null,
     ...overrides,
   };
 }
@@ -628,6 +673,7 @@ describe("scanTheme — happy path", () => {
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
+      walkCoverage: expect.any(Object),
     });
   });
 
@@ -658,6 +704,7 @@ describe("scanTheme — happy path", () => {
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
+      walkCoverage: expect.any(Object),
     });
   });
 
@@ -1162,6 +1209,7 @@ describe("scanTheme — optional audit steps", () => {
         liveFindingTypes: expect.any(Array),
         appSignatureFingerprints: expect.any(Object),
         liveAppHooks: expect.any(Object),
+        walkCoverage: expect.any(Object),
       });
 
       expect(result).toEqual({
@@ -1279,11 +1327,18 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
     // on every rescan (the exact regression Option C fixes). Detectors find
     // nothing here to keep the assertion focused.
     const warnSpy = vi.spyOn(logger, "warn");
+    // gc-747u: a Free shop's ONE 500-product chunk reaches the Free cap with more
+    // products left, so the walk ends truncated in its first step.
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
     mockFetchProductAuditData.mockResolvedValue(
       makeProductAuditData({
         tags: [{ id: "gid://shopify/Product/1", title: "P1", tags: [] }],
         truncated: true,
         pageCount: 10,
+        checked: 500,
+        lastId: "gid://shopify/Product/500",
+        hasMore: true,
+        endCursor: "c500",
       }),
     );
 
@@ -1339,17 +1394,16 @@ describe("scanTheme — consolidated product audit (gc-1bd)", () => {
     // The redirect step threads a stats out-param into fetchRedirects; simulate a
     // cap-truncated walk by having the mock flip stats.truncated. Under Option C
     // the scanned subset was still audited, so GHOST_REDIRECT must NOT be skipped.
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
     mockFetchRedirects.mockImplementation(
-      async (
-        _admin: unknown,
-        _cap: unknown,
-        stats?: { truncated: boolean; pageCount: number; throttleSleepMs: number },
-      ) => {
+      async (_admin: unknown, cap: number, stats?: PaginateStatsLike) => {
         if (stats) {
           stats.truncated = true;
           stats.pageCount = 3;
+          stats.hasMore = true;
+          stats.endCursor = "r-end";
         }
-        return [];
+        return makeRedirects(cap);
       },
     );
 
@@ -1444,6 +1498,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
+      walkCoverage: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1594,6 +1649,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
+      walkCoverage: expect.any(Object),
     });
     expect(result.status).toBe("COMPLETED");
   });
@@ -1644,6 +1700,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
+      walkCoverage: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1673,6 +1730,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
+      walkCoverage: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -2389,6 +2447,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       liveFindingTypes: expect.any(Array),
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
+      walkCoverage: expect.any(Object),
     });
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
@@ -2808,8 +2867,10 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
     //
     // Fails on pre-fix code: GHOST_TAG lands in skippedCategories, so the prior
     // finding is filtered out, newFindingCount is 1, persistedFindingCount is 0.
+    // A real product finding's filename (products/<GID>): inside the walk's
+    // window, so the record-level window (gc-747u) diffs it normally too.
     const tagFinding = {
-      filename: "n/a",
+      filename: "products/gid://shopify/Product/1",
       findingType: "GHOST_TAG",
       codeSnippet: "orphaned-tag",
       lineNumber: 0,
@@ -2818,12 +2879,18 @@ describe("scanTheme — resolution counts (Feature 3)", () => {
       description: "Orphaned GHOST_TAG",
     };
     // Scope present so the walk actually runs and truncates (telemetry path).
+    // Free shop: its one chunk reaches the 500 cap with products left.
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
     mockHasProductScope.mockResolvedValue(true);
     mockFetchProductAuditData.mockResolvedValue(
       makeProductAuditData({
         tags: [{ id: "gid://shopify/Product/1" }],
         truncated: true,
         pageCount: 9,
+        checked: 500,
+        lastId: "gid://shopify/Product/500",
+        hasMore: true,
+        endCursor: "c500",
       }),
     );
     // Current persisted findings (what the differ reads) + prior scan both hold
@@ -4305,7 +4372,7 @@ describe("scanTheme: optional audits on a Free plan (gc-4n0y)", () => {
     expect(mockFetchPages).toHaveBeenCalled();
     expect(mockDetectOrphanedPages).toHaveBeenCalled();
     expect(mockFetchRedirects).toHaveBeenCalled();
-    expect(mockDetectOrphanedRedirects).toHaveBeenCalled();
+    expect(mockDetectAppPatternRedirects).toHaveBeenCalled();
     // Broken links: withheld by plan, and not reported as a scope skip.
     expect(mockResolveDanglingReferences).not.toHaveBeenCalled();
     expect(mockFinalizeScan).toHaveBeenCalledWith(
@@ -4581,5 +4648,350 @@ describe("scanTheme - app-removal detection at finalize (gc-frda)", () => {
     await runScanTheme();
     expect(mockOpen).not.toHaveBeenCalled();
     expect(mockApply).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-747u: plan-aware walk caps, chunked across steps, coverage recorded
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
+  type StepOutput = { name: string; out: unknown };
+
+  /** A step mock that records every step's name and return value. */
+  function recordingStep() {
+    const outputs: StepOutput[] = [];
+    const run = vi.fn(async (name: string, fn: () => unknown) => {
+      const out = await fn();
+      outputs.push({ name, out });
+      return out;
+    });
+    return { outputs, run };
+  }
+
+  const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
+
+  /**
+   * A catalog of `total` products, IDs 1..total, served in ID order. The
+   * cursor "c<N>" means "after product N". `perCall` simulates a step that hit
+   * its time budget early (returns fewer than asked, with more left).
+   */
+  function simulateCatalog(total: number, opts: { perCall?: number; heavy?: boolean } = {}): void {
+    // Pro worst case per product: variants(first: 100) + metafields(first: 50),
+    // with long values. Shared strings keep the fixture cheap in memory.
+    const bigValue = "v".repeat(2_000);
+    const variants = Array.from({ length: 100 }, (_, i) => ({
+      id: `gid://shopify/ProductVariant/${i}`,
+      title: "Default Title / Large / Blue",
+      price: "19.99",
+      compareAtPrice: "29.99",
+    }));
+    const metafields = Array.from({ length: 50 }, (_, i) => ({
+      namespace: `app--${i}`,
+      key: `key_${i}`,
+      value: bigValue,
+      type: "json",
+    }));
+    mockFetchProductAuditData.mockImplementation(
+      async (_admin: unknown, max: number, resume: { after?: string | null } = {}) => {
+        const start = resume.after ? Number(resume.after.slice(1)) : 0;
+        const take = Math.min(max, opts.perCall ?? max, total - start);
+        const ids = Array.from({ length: take }, (_, i) => start + i + 1);
+        const end = start + take;
+        const hasMore = end < total;
+        return makeProductAuditData({
+          tags: ids.map((n) => ({ id: `gid://shopify/Product/${n}`, title: `P${n}`, tags: [] })),
+          prices: opts.heavy
+            ? ids.map((n) => ({ id: `gid://shopify/Product/${n}`, title: `P${n}`, variants }))
+            : [],
+          metafields: opts.heavy
+            ? ids.map((n) => ({ id: `gid://shopify/Product/${n}`, title: `P${n}`, metafields }))
+            : [],
+          truncated: hasMore && take === max,
+          pageCount: Math.ceil(take / 50),
+          checked: take,
+          lastId: take > 0 ? `gid://shopify/Product/${end}` : null,
+          hasMore,
+          endCursor: hasMore ? `c${end}` : null,
+        });
+      },
+    );
+  }
+
+  /** `total` redirects, IDs 1..total, `prefixOf(n)` choosing each path prefix. */
+  function simulateRedirects(
+    total: number,
+    prefixOf: (n: number) => string = () => "/old",
+    opts: { perCall?: number } = {},
+  ): void {
+    mockFetchRedirects.mockImplementation(
+      async (
+        _admin: unknown,
+        max: number,
+        stats: PaginateStatsLike,
+        resume: { after?: string | null } = {},
+      ) => {
+        const start = resume.after ? Number(resume.after.slice(1)) : 0;
+        const take = Math.min(max, opts.perCall ?? max, total - start);
+        const end = start + take;
+        const hasMore = end < total;
+        stats.pageCount += Math.ceil(take / 50);
+        stats.truncated = hasMore && take === max;
+        stats.hasMore = hasMore;
+        stats.endCursor = hasMore ? `r${end}` : null;
+        return Array.from({ length: take }, (_, i) => {
+          const n = start + i + 1;
+          return {
+            id: `gid://shopify/UrlRedirect/${n}`,
+            path: `${prefixOf(n)}/p-${n}`,
+            target: "/",
+          };
+        });
+      },
+    );
+  }
+
+  const finalized = () =>
+    mockFinalizeScan.mock.calls.at(-1)?.[1] as {
+      walkCoverage: Record<string, unknown>;
+      cappedCategories: string[];
+      skippedCategories: string[];
+    };
+
+  it.each([
+    ["free", 500, 1000],
+    ["Standard", 2000, 4000],
+    ["Professional", 5000, 10000],
+  ])(
+    "%s: walks up to %i products and %i redirects, then records the truncation",
+    async (plan, productCap, redirectCap) => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan });
+      simulateCatalog(7213);
+      simulateRedirects(12_400);
+      mockFetchProductsTotal.mockResolvedValue(7213);
+      mockFetchRedirectsTotal.mockResolvedValue(12_400);
+
+      await runScanTheme();
+
+      // Every chunk asked for at most PRODUCT_WALK_CHUNK, never past the cap.
+      const productAsks = mockFetchProductAuditData.mock.calls.map((c) => c[1] as number);
+      expect(productAsks.reduce((a, b) => a + b, 0)).toBe(productCap);
+      expect(Math.max(...productAsks)).toBeLessThanOrEqual(PRODUCT_WALK_CHUNK);
+      expect(productAsks).toHaveLength(productCap / PRODUCT_WALK_CHUNK);
+      const redirectAsks = mockFetchRedirects.mock.calls.map((c) => c[1] as number);
+      expect(redirectAsks.reduce((a, b) => a + b, 0)).toBe(redirectCap);
+
+      expect(finalized().walkCoverage).toEqual({
+        products: {
+          checked: productCap,
+          total: 7213,
+          truncated: true,
+          lastId: `gid://shopify/Product/${productCap}`,
+        },
+        redirects: {
+          checked: redirectCap,
+          total: 12_400,
+          truncated: true,
+          lastId: `gid://shopify/UrlRedirect/${redirectCap}`,
+        },
+      });
+      // Truncation never marks the categories skipped or capped (Option C).
+      expect(finalized().skippedCategories).toEqual([]);
+      expect(finalized().cappedCategories).toEqual([]);
+      const [signal] = mockRecordOpsEvent.mock.calls[0];
+      expect(signal.metadata.truncatedWalks).toEqual(["products", "redirects"]);
+    },
+  );
+
+  it("Free is unchanged: ONE 'product-audit' step and ONE 'redirect-audit' step", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
+    simulateCatalog(7213);
+    simulateRedirects(12_400);
+    const { outputs, run } = recordingStep();
+
+    await runScanTheme(undefined, { run } as never);
+
+    const walkSteps = outputs.map((o) => o.name).filter((n) => /^(product|redirect)-audit/.test(n));
+    expect(walkSteps).toEqual(["product-audit", "redirect-audit"]);
+    expect(mockFetchProductAuditData).toHaveBeenCalledTimes(1);
+    expect(mockFetchProductAuditData.mock.calls[0][1]).toBe(500);
+    expect(mockFetchRedirects.mock.calls[0][1]).toBe(1000);
+  });
+
+  it("names later chunk steps deterministically and resumes each from the previous cursor", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateCatalog(1200);
+    const { outputs, run } = recordingStep();
+
+    await runScanTheme(undefined, { run } as never);
+
+    const names = outputs.map((o) => o.name).filter((n) => n.startsWith("product-audit"));
+    expect(names).toEqual(["product-audit", "product-audit-2", "product-audit-3"]);
+    const afters = mockFetchProductAuditData.mock.calls.map(
+      (c) => (c[2] as { after: string | null }).after,
+    );
+    expect(afters).toEqual([null, "c500", "c1000"]);
+  });
+
+  it("a walk split by the time budget (not the cap) ends untruncated and reads no total", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    // Each step only manages 150 products before its budget runs out.
+    simulateCatalog(800, { perCall: 150 });
+
+    await runScanTheme();
+
+    expect(mockFetchProductAuditData).toHaveBeenCalledTimes(6);
+    expect(finalized().walkCoverage.products).toEqual({
+      checked: 800,
+      total: null,
+      truncated: false,
+      lastId: null,
+    });
+    expect(mockFetchProductsTotal).not.toHaveBeenCalled();
+    const [signal] = mockRecordOpsEvent.mock.calls[0];
+    expect(signal.metadata.truncatedWalks).toEqual([]);
+    expect(signal.metadata.walkSteps.products).toBe(6);
+  });
+
+  it("records a null total (copy falls back to 'the first N') when the count is unavailable", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
+    simulateCatalog(900);
+    mockFetchProductsTotal.mockResolvedValue(null);
+
+    await runScanTheme();
+
+    expect(mockFetchProductsTotal).toHaveBeenCalledTimes(1);
+    expect(finalized().walkCoverage.products).toMatchObject({
+      checked: 500,
+      total: null,
+      truncated: true,
+    });
+  });
+
+  it("reads the plan cap ONCE per scan: a plan change mid-walk does not move it", async () => {
+    simulateCatalog(7213);
+    // Professional until the walk's first chunk has fetched; Free afterwards
+    // (a downgrade landing mid-scan).
+    mockDb.shop.findUnique.mockImplementation(async () => ({
+      ...MOCK_SHOP,
+      plan: mockFetchProductAuditData.mock.calls.length === 0 ? "Professional" : "free",
+    }));
+
+    await runScanTheme();
+
+    const asks = mockFetchProductAuditData.mock.calls.map((c) => c[1] as number);
+    expect(asks.reduce((a, b) => a + b, 0)).toBe(5000);
+    expect(finalized().walkCoverage.products).toMatchObject({ checked: 5000, truncated: true });
+  });
+
+  it("a later chunk's idempotency delete is scoped to its own products (never wipes chunk 1)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateCatalog(700);
+    mockDetectOrphanedProductTags.mockImplementation((tags: Array<{ id: string }>) =>
+      tags
+        .slice(0, 1)
+        .map((p) => makeAuditFinding(FindingType.GHOST_TAG, { filename: `products/${p.id}` })),
+    );
+
+    await runScanTheme();
+
+    const tagDeletes = mockDb.finding.deleteMany.mock.calls
+      .map((c) => c[0].where)
+      .filter((w) => w.findingType === FindingType.GHOST_TAG);
+    expect(tagDeletes).toHaveLength(2);
+    // Chunk 1 clears the type (retry-safe, as before)...
+    expect(tagDeletes[0]).toEqual({ scanId: SCAN_ID, findingType: FindingType.GHOST_TAG });
+    // ...chunk 2 deletes only rows for ITS products (501..700).
+    const owned = tagDeletes[1].filename.in as string[];
+    expect(owned).toContain("products/gid://shopify/Product/501");
+    expect(owned).toContain("products/gid://shopify/Product/700/metafields");
+    expect(owned).not.toContain("products/gid://shopify/Product/1");
+    expect(mockCreateFindings).toHaveBeenCalledTimes(2);
+  });
+
+  it("detects a bulk redirect pattern that spans chunks, once, at the end", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateRedirects(2500, () => "/collections");
+
+    await runScanTheme();
+
+    const persisted = mockCreateFindings.mock.calls.flatMap(
+      (c) => c[1] as Array<{ filename: string; description: string }>,
+    );
+    const bulk = persisted.filter((f) => f.filename === "redirects/bulk/_collections");
+    expect(bulk).toHaveLength(1);
+    expect(bulk[0].description).toContain("2500 bulk redirects");
+    // The final chunk's delete also owns the bulk rows; earlier chunks never touch them.
+    const redirectDeletes = mockDb.finding.deleteMany.mock.calls
+      .map((c) => c[0].where)
+      .filter((w) => w.findingType === FindingType.GHOST_REDIRECT);
+    expect(JSON.stringify(redirectDeletes.at(-1))).toContain("redirects/bulk/");
+  });
+
+  it("gives up on bulk detection (category capped, no false resolve) when the tally outgrows its budget", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    // Every redirect has its own long first path segment: ~10,000 prefixes.
+    simulateRedirects(10_000, (n) => `/${"legacy-page-".repeat(6)}${n}`);
+
+    await runScanTheme();
+
+    expect(finalized().cappedCategories).toContain(FindingType.GHOST_REDIRECT);
+    const persisted = mockCreateFindings.mock.calls.flatMap(
+      (c) => c[1] as Array<{ filename: string }>,
+    );
+    expect(persisted.some((f) => f.filename.startsWith("redirects/bulk/"))).toBe(false);
+  });
+
+  it("a run memoized before gc-747u records NO walk coverage (stays legacy, never 'fully covered')", async () => {
+    // The pre-deploy "product-audit" output had no cap/checked/next/coverage.
+    const oldMemo = {
+      tagCount: 0,
+      priceCount: 0,
+      metafieldCount: 0,
+      scopeAbsent: false,
+      truncated: true,
+      tagGap: false,
+      priceGap: false,
+      metafieldGap: false,
+      pageCount: 10,
+      throttleSleepMs: 0,
+    };
+    const run = vi.fn(async (name: string, fn: () => unknown) =>
+      name === "product-audit" ? oldMemo : fn(),
+    );
+
+    await runScanTheme(undefined, { run } as never);
+
+    expect(mockFetchProductAuditData).not.toHaveBeenCalled();
+    // undefined = finalizeScan leaves the column NULL (written only when supplied).
+    expect(finalized().walkCoverage).toBeUndefined();
+    const [signal] = mockRecordOpsEvent.mock.calls[0];
+    expect(signal.metadata.truncatedWalks).toEqual(["products"]);
+  });
+
+  it("keeps every walk step's output far under the step budget at the Pro worst case", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    // 5,000 products x (100 variants + 50 x 2 KB metafields) and 10,000
+    // redirects spread over ~3,000 prefixes (samples kept), more than exist.
+    simulateCatalog(7213, { heavy: true });
+    simulateRedirects(12_400, (n) => `/section-${n % 3000}`);
+    mockFetchProductsTotal.mockResolvedValue(7213);
+    const { outputs, run } = recordingStep();
+
+    await runScanTheme(undefined, { run } as never);
+
+    const walk = outputs.filter((o) => /^(product|redirect)-audit/.test(o.name));
+    expect(walk.length).toBeGreaterThan(2);
+    for (const { out } of walk) {
+      expect(bytes(out)).toBeLessThan(CORE_STEP_OUTPUT_BUDGET_BYTES);
+      expect(bytes(out)).toBeLessThan(REDIRECT_GROUPS_BUDGET_BYTES + 10_000);
+    }
+    // Product steps carry only scalars + a cursor, whatever the catalog holds.
+    for (const { name, out } of walk.filter((o) => o.name.startsWith("product"))) {
+      expect(bytes(out), name).toBeLessThan(2_000);
+    }
+    // All walk outputs together stay far under Inngest's 32 MiB run state.
+    const total = walk.reduce((sum, o) => sum + bytes(o.out), 0);
+    expect(total).toBeLessThan(16 * 1024 * 1024);
   });
 });

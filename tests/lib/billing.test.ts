@@ -13,6 +13,7 @@ import {
   resolvePlanAmount,
 } from "../../app/lib/billing.server";
 import { logger } from "../../app/lib/logger.server";
+import { PRODUCT_AUDIT_CAP, REDIRECT_CAP } from "../../app/lib/scan-limits";
 import type { BillingEventType } from "../../app/models/billing-event.server";
 
 describe("getPlanFeatures", () => {
@@ -260,5 +261,32 @@ describe("getPlanFeatures alertCadence (gc-syz.3)", () => {
       const f = getPlanFeatures(plan);
       expect(f.alertCadence !== "none").toBe(f.scheduledScan);
     }
+  });
+});
+
+describe("getPlanFeatures walk caps (gc-747u)", () => {
+  it.each([
+    ["free", 500, 1000],
+    ["Standard", 2000, 4000],
+    ["Professional", 5000, 10000],
+    ["unknown", 500, 1000],
+  ])("%s -> %i products, %i redirects", (plan, products, redirects) => {
+    const f = getPlanFeatures(plan);
+    expect(f.productAuditCap).toBe(products);
+    expect(f.redirectAuditCap).toBe(redirects);
+  });
+
+  it("Free keeps the original scan-limits caps (unchanged behavior)", () => {
+    const f = getPlanFeatures(PLANS.FREE);
+    expect(f.productAuditCap).toBe(PRODUCT_AUDIT_CAP);
+    expect(f.redirectAuditCap).toBe(REDIRECT_CAP);
+  });
+
+  it("caps never shrink on a higher plan", () => {
+    const [free, std, pro] = [PLANS.FREE, PLANS.STANDARD, PLANS.PROFESSIONAL].map(getPlanFeatures);
+    expect(std.productAuditCap).toBeGreaterThanOrEqual(free.productAuditCap);
+    expect(pro.productAuditCap).toBeGreaterThanOrEqual(std.productAuditCap);
+    expect(std.redirectAuditCap).toBeGreaterThanOrEqual(free.redirectAuditCap);
+    expect(pro.redirectAuditCap).toBeGreaterThanOrEqual(std.redirectAuditCap);
   });
 });

@@ -4,6 +4,7 @@ import db from "../db.server";
 import { logger } from "../lib/logger.server";
 import { SCAN_SOURCES } from "../lib/scan-source";
 import type { ScanRequestSource } from "../lib/scan-source";
+import type { ScanWalkCoverage } from "../lib/walk-coverage";
 
 /**
  * Terminal statuses that represent a successful, usable scan.
@@ -368,6 +369,9 @@ export async function finalizeScan(
     appSignatureFingerprints?: Record<string, string>;
     // Apps with a live hook per source (gc-frda); written only when supplied.
     liveAppHooks?: { embedApps: string[] | null; scriptTagApps: string[] | null };
+    // What the capped product / redirect walks covered (gc-747u); written only
+    // when supplied (NULL = legacy scan).
+    walkCoverage?: ScanWalkCoverage;
   },
 ): Promise<FinalizeScanResult> {
   const result = await db.scan.updateMany({
@@ -397,6 +401,7 @@ export async function finalizeScan(
         ? { appSignatureFingerprints: args.appSignatureFingerprints }
         : {}),
       ...(args.liveAppHooks !== undefined ? { liveAppHooks: args.liveAppHooks } : {}),
+      ...(args.walkCoverage !== undefined ? { walkCoverage: args.walkCoverage } : {}),
     },
   });
 

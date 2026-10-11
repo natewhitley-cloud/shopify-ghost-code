@@ -1,6 +1,10 @@
 import { describe, it, expect, vi } from "vitest";
 
-import { hasNavigationScope, fetchRedirects } from "../../app/services/redirect-fetcher.server";
+import {
+  hasNavigationScope,
+  fetchRedirects,
+  fetchRedirectsTotal,
+} from "../../app/services/redirect-fetcher.server";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -187,5 +191,60 @@ describe("fetchRedirects", () => {
     ]);
 
     await expect(fetchRedirects(admin)).rejects.toThrow("Failed to fetch redirects");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-747u: resumable chunks, ID order, total count
+// ---------------------------------------------------------------------------
+
+describe("fetchRedirects chunked walk (gc-747u)", () => {
+  const pageOf = (ids: number[], hasNextPage: boolean, endCursor: string | null) => ({
+    data: {
+      urlRedirects: {
+        nodes: ids.map((n) => ({
+          id: `gid://shopify/UrlRedirect/${n}`,
+          path: `/p${n}`,
+          target: "/",
+        })),
+        pageInfo: { hasNextPage, endCursor },
+      },
+    },
+  });
+
+  it("walks in explicit ID order and resumes from the given cursor", async () => {
+    const admin = mockAdmin([pageOf([5, 6], false, null)]);
+    await fetchRedirects(admin, 1000, undefined, { after: "c4" });
+    const [query, opts] = admin.graphql.mock.calls[0] as unknown as [
+      string,
+      { variables: { after?: string } },
+    ];
+    expect(query).toContain("sortKey: ID");
+    expect(opts.variables.after).toBe("c4");
+  });
+
+  it("stops at the deadline and reports where to resume", async () => {
+    const admin = mockAdmin([pageOf([1, 2], true, "c2")]);
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+    const redirects = await fetchRedirects(admin, 1000, stats, { deadline: Date.now() - 1 });
+    expect(redirects).toHaveLength(2);
+    expect(stats).toMatchObject({ hasMore: true, endCursor: "c2", truncated: false });
+  });
+});
+
+describe("fetchRedirectsTotal (gc-747u)", () => {
+  it("reads urlRedirectsCount with no limit", async () => {
+    const admin = mockAdmin([
+      { data: { urlRedirectsCount: { count: 12400, precision: "EXACT" } } },
+    ]);
+    await expect(fetchRedirectsTotal(admin)).resolves.toBe(12400);
+    expect(admin.graphql.mock.calls[0]).toEqual([
+      expect.stringContaining("urlRedirectsCount(limit: null)"),
+    ]);
+  });
+
+  it("returns null on an error response", async () => {
+    const admin = mockAdmin([{ errors: [{ message: "Access denied" }] }]);
+    await expect(fetchRedirectsTotal(admin)).resolves.toBeNull();
   });
 });

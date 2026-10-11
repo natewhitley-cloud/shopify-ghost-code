@@ -123,6 +123,8 @@ vi.mock("../../app/services/product-fetcher.server", () => ({
   hasProductScope: vi.fn(),
   // gc-1bd: three product walks consolidated into one fetch.
   fetchProductAuditData: vi.fn(),
+  // gc-747u: total read only when a walk is truncated.
+  fetchProductsTotal: vi.fn(),
 }));
 
 vi.mock("../../app/services/content-fetcher.server", () => ({
@@ -133,6 +135,7 @@ vi.mock("../../app/services/content-fetcher.server", () => ({
 vi.mock("../../app/services/redirect-fetcher.server", () => ({
   hasNavigationScope: vi.fn(),
   fetchRedirects: vi.fn(),
+  fetchRedirectsTotal: vi.fn(),
 }));
 
 vi.mock("../../inngest/client", () => ({

@@ -6,6 +6,7 @@
  */
 
 import {
+  fetchExactCount,
   type GraphQLConnection,
   type PaginateStats,
   paginateConnection,
@@ -69,6 +70,12 @@ export type ProductMetafieldData = {
  * `truncated` is true when the {@link PRODUCT_AUDIT_CAP} cut the walk short while
  * more products existed, so the caller records a coverage gap for all three
  * product categories (the differ must not false-resolve un-scanned products).
+ *
+ * Chunked walks (gc-747u): `checked` is the products this call consumed,
+ * `lastId` the GID of the last one (the walk is in ascending ID order, so the
+ * scan covered exactly the products with an ID up to it), and `hasMore` +
+ * `endCursor` let the next step resume when the time budget or chunk size
+ * stopped this call before the cap.
  */
 export type ProductAuditData = {
   tags: ProductTagData[];
@@ -77,6 +84,10 @@ export type ProductAuditData = {
   truncated: boolean;
   pageCount: number;
   throttleSleepMs: number;
+  checked: number;
+  lastId: string | null;
+  hasMore: boolean;
+  endCursor: string | null;
 };
 
 // ---------------------------------------------------------------------------
@@ -90,10 +101,14 @@ export type ProductAuditData = {
  * detector reads only namespace+key from the same block). One walk over this
  * connection replaces three separate paginations. `variants(first: 100)` and
  * `metafields(first: 50)` mirror the legacy per-detector caps exactly.
+ *
+ * `sortKey: ID` is the API default, spelled out because the scan's coverage
+ * window depends on it (gc-747u): a capped walk covers the products with the
+ * lowest IDs, so "beyond the cap" means "ID above the last one checked".
  */
 const PRODUCT_AUDIT_QUERY = `
   query ProductAudit($first: Int!, $after: String) {
-    products(first: $first, after: $after) {
+    products(first: $first, after: $after, sortKey: ID) {
       nodes {
         id
         title
@@ -186,10 +201,15 @@ type ProductAuditNode = {
  * Caps at {@link PRODUCT_AUDIT_CAP} (the max of the legacy caps) and reports
  * `truncated` when the cap cut the walk short so the caller can record a
  * coverage gap. Uses cursor-based pagination with 50 products per page.
+ *
+ * `resume` (gc-747u): `after` continues a walk an earlier step stopped, and
+ * `deadline` stops requesting pages once the step's time budget is spent.
+ * `maxProducts` is then the cap for THIS call (the chunk), not the whole walk.
  */
 export async function fetchProductAuditData(
   admin: AdminApiContext,
   maxProducts: number = PRODUCT_AUDIT_CAP,
+  resume: { after?: string | null; deadline?: number } = {},
 ): Promise<ProductAuditData> {
   const PAGE_SIZE = 50;
 
@@ -214,6 +234,8 @@ export async function fetchProductAuditData(
       (data as { products?: GraphQLConnection<ProductAuditNode> } | null | undefined)?.products,
     mapNode: (node) => [node],
     stats,
+    after: resume.after,
+    deadline: resume.deadline,
   });
 
   const tags: ProductTagData[] = nodes.map((n) => ({
@@ -248,5 +270,20 @@ export async function fetchProductAuditData(
     truncated: stats.truncated,
     pageCount: stats.pageCount,
     throttleSleepMs: stats.throttleSleepMs,
+    checked: nodes.length,
+    lastId: nodes.length > 0 ? nodes[nodes.length - 1].id : null,
+    hasMore: stats.hasMore === true,
+    endCursor: stats.endCursor ?? null,
   };
+}
+
+/**
+ * Exact number of products in the store (gc-747u), for the "checked N of M"
+ * disclosure when the walk hit its cap. `limit: null` lifts the default
+ * 10,000 ceiling so the count is EXACT. Returns null on any failure or a
+ * non-exact count: the disclosure then says "the first N" without a total,
+ * and a count problem never fails the scan.
+ */
+export async function fetchProductsTotal(admin: AdminApiContext): Promise<number | null> {
+  return fetchExactCount(admin, "productsCount");
 }

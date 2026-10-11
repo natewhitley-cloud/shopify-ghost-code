@@ -26,8 +26,10 @@ vi.mock("../../app/models/ops-event.server", () => ({
 }));
 
 import {
+  fetchExactCount,
   paginateConnection,
   type GraphQLConnection,
+  type PaginateStats,
 } from "../../app/lib/graphql-pagination.server";
 
 // ---------------------------------------------------------------------------
@@ -404,5 +406,167 @@ describe("paginateConnection THROTTLED resume", () => {
     // pages, so neither throttle exhausted the budget.
     expect(result).toEqual([{ id: "a" }, { id: "b" }]);
     expect(graphql).toHaveBeenCalledTimes(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-747u: resumable walks (after cursor + step time budget) and exact counts
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection resumable walk (gc-747u)", () => {
+  const freshStats = (): PaginateStats => ({
+    pageCount: 0,
+    nodeCount: 0,
+    truncated: false,
+    throttleSleepMs: 0,
+  });
+
+  it("starts from the given after cursor", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(page([{ id: "x" }], { hasNextPage: false, endCursor: null }));
+
+    await paginateConnection({ ...baseOptions(graphql), after: "resume-here" });
+
+    expect(graphql.mock.calls[0][1].variables.after).toBe("resume-here");
+  });
+
+  it("records the end cursor and hasMore when the chunk cap stops the walk", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(
+        page([{ id: "a" }, { id: "b" }], { hasNextPage: true, endCursor: "c2" }),
+      );
+    const stats = freshStats();
+
+    await paginateConnection({ ...baseOptions(graphql), pageSize: 2, maxNodes: 2, stats });
+
+    expect(stats).toMatchObject({ truncated: true, hasMore: true, endCursor: "c2" });
+  });
+
+  it("stops at the deadline with hasMore set but NOT truncated, and never sleeps past it", async () => {
+    // The page reports low headroom: without the deadline the walk would sleep
+    // before requesting page 2. Past the deadline it must stop first.
+    const graphql = vi.fn().mockResolvedValueOnce(
+      page(
+        [{ id: "a" }],
+        { hasNextPage: true, endCursor: "c1" },
+        {
+          currentlyAvailable: 0,
+          restoreRate: 1,
+        },
+      ),
+    );
+    const stats = freshStats();
+    const started = Date.now();
+
+    const result = await paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() - 1,
+    });
+
+    expect(result).toEqual([{ id: "a" }]);
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(stats).toMatchObject({ truncated: false, hasMore: true, endCursor: "c1" });
+    expect(stats.throttleSleepMs).toBe(0);
+    expect(Date.now() - started).toBeLessThan(1000);
+  });
+
+  it("keeps paging while the deadline has not passed", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: true, endCursor: "c1" }))
+      .mockResolvedValueOnce(page([{ id: "b" }], { hasNextPage: false, endCursor: null }));
+    const stats = freshStats();
+
+    const result = await paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() + 60_000,
+    });
+
+    expect(result).toEqual([{ id: "a" }, { id: "b" }]);
+    expect(stats.hasMore).toBe(false);
+  });
+
+  it("an empty page with hasNextPage still true reports hasMore false (no endless resume)", async () => {
+    const graphql = vi.fn().mockResolvedValue(page([], { hasNextPage: true, endCursor: "c1" }));
+    const stats = freshStats();
+
+    await paginateConnection({ ...baseOptions(graphql), stats });
+
+    expect(stats.hasMore).toBe(false);
+    expect(graphql).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("paginateConnection cost-aware backoff (gc-747u)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("waits for a whole page's requested cost, not the flat 100 points", async () => {
+    // 150 available, page requests 650, restore 50/s: needs (650-150)/50 = 10 s.
+    // The flat threshold (100) alone would not sleep at all and the next request
+    // would come back THROTTLED.
+    const costlyPage = (hasNextPage: boolean) => ({
+      json: vi.fn().mockResolvedValue({
+        data: { items: { nodes: [{ id: "a" }], pageInfo: { hasNextPage, endCursor: "c1" } } },
+        extensions: {
+          cost: {
+            requestedQueryCost: 650,
+            throttleStatus: { maximumAvailable: 2000, currentlyAvailable: 150, restoreRate: 50 },
+          },
+        },
+      }),
+    });
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(costlyPage(true))
+      .mockResolvedValueOnce(costlyPage(false));
+    const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+
+    const promise = paginateConnection({ ...baseOptions(graphql), stats });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(graphql).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(1);
+    await promise;
+
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(stats.throttleSleepMs).toBe(10_000);
+  });
+});
+
+describe("fetchExactCount (gc-747u)", () => {
+  const countResponse = (body: unknown) => ({ json: vi.fn().mockResolvedValue(body) });
+
+  it("returns an EXACT count and asks for no limit", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(
+        countResponse({ data: { productsCount: { count: 7213, precision: "EXACT" } } }),
+      );
+
+    await expect(fetchExactCount(makeAdmin(graphql), "productsCount")).resolves.toBe(7213);
+    expect(graphql.mock.calls[0][0]).toContain("productsCount(limit: null)");
+  });
+
+  it.each([
+    ["a non-exact count", { data: { urlRedirectsCount: { count: 10000, precision: "AT_LEAST" } } }],
+    ["a GraphQL error", { errors: [{ message: "Access denied" }] }],
+    ["a null count", { data: { urlRedirectsCount: null } }],
+  ])("returns null on %s", async (_label, body) => {
+    const graphql = vi.fn().mockResolvedValue(countResponse(body));
+    await expect(fetchExactCount(makeAdmin(graphql), "urlRedirectsCount")).resolves.toBeNull();
+  });
+
+  it("returns null (never throws) when the request itself fails", async () => {
+    const graphql = vi.fn().mockRejectedValue(new Error("network"));
+    await expect(fetchExactCount(makeAdmin(graphql), "productsCount")).resolves.toBeNull();
   });
 });

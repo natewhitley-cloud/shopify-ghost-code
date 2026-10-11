@@ -23,11 +23,61 @@
 export const PRODUCT_AUDIT_CAP = 500;
 
 /**
+ * Plan-aware walk caps (gc-747u). {@link PRODUCT_AUDIT_CAP} and
+ * {@link REDIRECT_CAP} are the FREE caps (unchanged); paid plans walk further.
+ * `getPlanFeatures` (billing.server.ts) is the one place a plan picks its caps:
+ * the scan reads them ONCE (first walk chunk) and reuses that number for the
+ * fetch, the truncation check and the coverage it records.
+ */
+export const STANDARD_PRODUCT_AUDIT_CAP = 2_000;
+export const PROFESSIONAL_PRODUCT_AUDIT_CAP = 5_000;
+
+/**
  * Max URL redirects fetched in the redirect-audit walk. Large stores can carry
  * thousands of redirects; this bounds the walk and, when hit, is reported as a
  * coverage gap so prior redirect findings beyond the cap are not false-resolved.
  */
 export const REDIRECT_CAP = 1000;
+
+/** Paid-plan redirect caps (gc-747u); see STANDARD_PRODUCT_AUDIT_CAP. */
+export const STANDARD_REDIRECT_CAP = 4_000;
+export const PROFESSIONAL_REDIRECT_CAP = 10_000;
+
+/**
+ * Wall-clock budget for ONE product or redirect walk step (gc-747u). A paid
+ * plan's walk can be 10x the Free walk (100 product pages, 200 redirect pages),
+ * and with Shopify's rate limit that is minutes, not seconds. A single Inngest
+ * step is one HTTP request to /api/inngest that sends no bytes until it ends,
+ * and Railway's edge has been seen to drop such requests at ~60 s. So a walk
+ * stops paging once this budget is spent and the next step resumes from the
+ * saved cursor. Worst case per step: this budget, plus one in-flight page, plus
+ * one rate-limit sleep (at most ~20 s for a 1,000-point page at 50 pts/s).
+ */
+export const WALK_STEP_TIME_BUDGET_MS = 15_000;
+
+/**
+ * Max records fetched in ONE walk step (gc-747u), independent of the time
+ * budget: bounds the in-memory product payload (variants + metafield values) to
+ * what a single Free walk held before paid caps existed.
+ */
+export const PRODUCT_WALK_CHUNK = 500;
+export const REDIRECT_WALK_CHUNK = 1000;
+
+/**
+ * Byte budget for the bulk-redirect groups a redirect walk step hands to the
+ * next one (gc-747u). Bulk detection needs every unmatched redirect's path
+ * prefix, so a chunked walk carries a per-prefix count plus up to 3 sample
+ * lines across the step boundary. Realistic stores have a few dozen prefixes
+ * (a few KB); this is the backstop for a store whose redirects mostly have
+ * distinct first path segments. Over budget, samples are dropped first; still
+ * over, bulk detection stops for the scan and GHOST_REDIRECT is recorded as
+ * capped so the differ never false-resolves a bulk finding.
+ *
+ * Sized against Inngest's 32 MiB per-run state (every step output is kept for
+ * the run): a 10,000-redirect walk is ~200 pages at >= ~10 pages per 15 s step,
+ * so ~20 steps x 500 KB = ~10 MB worst case, beside the 3 MB core step.
+ */
+export const REDIRECT_GROUPS_BUDGET_BYTES = 500_000;
 
 /**
  * Max distinct `(entityType, handle)` pairs one scan resolves against the Admin

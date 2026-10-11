@@ -217,6 +217,9 @@ describe("app.scans.$scanId.diff loader", () => {
       skippedCategories: [],
       skippedFiles: [],
       notNewCategories: [],
+      // Legacy fixtures: no walk coverage recorded (gc-747u).
+      currentWalks: null,
+      baselineWalks: null,
     });
   });
 
@@ -245,6 +248,9 @@ describe("app.scans.$scanId.diff loader", () => {
       skippedCategories: ["GHOST_TAG"],
       skippedFiles: [],
       notNewCategories: [],
+      // Legacy fixtures: no walk coverage recorded (gc-747u).
+      currentWalks: null,
+      baselineWalks: null,
     });
   });
 
@@ -263,6 +269,9 @@ describe("app.scans.$scanId.diff loader", () => {
       skippedCategories: ["GHOST_TAG", "DANGLING_REFERENCE"],
       skippedFiles: [],
       notNewCategories: [],
+      // Legacy fixtures: no walk coverage recorded (gc-747u).
+      currentWalks: null,
+      baselineWalks: null,
     });
   });
 
@@ -278,6 +287,9 @@ describe("app.scans.$scanId.diff loader", () => {
       skippedCategories: ["JSON_LD_PRICE_CONFLICT"],
       skippedFiles: [],
       notNewCategories: [],
+      // Legacy fixtures: no walk coverage recorded (gc-747u).
+      currentWalks: null,
+      baselineWalks: null,
     });
   });
 
@@ -293,6 +305,9 @@ describe("app.scans.$scanId.diff loader", () => {
       skippedCategories: ["SCRIPT_TAG_SUNSET"],
       skippedFiles: [],
       notNewCategories: [],
+      // Legacy fixtures: no walk coverage recorded (gc-747u).
+      currentWalks: null,
+      baselineWalks: null,
     });
   });
 
@@ -309,6 +324,9 @@ describe("app.scans.$scanId.diff loader", () => {
       skippedCategories: [],
       skippedFiles: [],
       notNewCategories: ["GHOST_PAGE", "SCRIPT_TAG_SUNSET"],
+      // Legacy fixtures: no walk coverage recorded (gc-747u).
+      currentWalks: null,
+      baselineWalks: null,
     });
   });
 

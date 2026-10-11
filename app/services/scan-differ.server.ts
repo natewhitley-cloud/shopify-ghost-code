@@ -15,6 +15,14 @@ import {
   CROSS_FILE_FINDING_TYPES,
   SIZE_SKIP_STILL_SCANNED_FINDING_TYPES,
 } from "../lib/finding-classification";
+import {
+  LEGACY_WALK_CAPS,
+  parseWalkCoverage,
+  WALK_FINDING_TYPES,
+  type ScanWalkCoverage,
+  type WalkCoverage,
+  type WalkName,
+} from "../lib/walk-coverage";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -164,6 +172,8 @@ export interface ScanCoverage {
   cappedCategories: readonly string[];
   unreachableCategories: readonly string[];
   liveFindingTypes?: unknown;
+  /** Raw `Scan.walkCoverage` (Json?, gc-747u); omitted/NULL = legacy scan. */
+  walkCoverage?: unknown;
 }
 
 /**
@@ -196,6 +206,105 @@ export interface DiffOptions {
   skippedCategories?: Iterable<string>;
   skippedFiles?: Iterable<string>;
   notNewCategories?: Iterable<string>;
+  /** Walk coverage of the CURRENT scan (gc-747u); null/omitted = legacy. */
+  currentWalks?: ScanWalkCoverage | null;
+  /** Walk coverage of the BASELINE scan (gc-747u); null/omitted = legacy. */
+  baselineWalks?: ScanWalkCoverage | null;
+}
+
+// ---------------------------------------------------------------------------
+// Capped-walk record windows (gc-747u)
+// ---------------------------------------------------------------------------
+
+/**
+ * Product findings are filed under `products/<Product GID>` (tags, prices) or
+ * `products/<Product GID>/metafields`; redirect findings under
+ * `redirects/<UrlRedirect GID>`, or `redirects/bulk/<prefix>` for a bulk
+ * pattern, which spans many redirects and has no single record.
+ */
+const PRODUCT_FILENAME_RE = /^products\/gid:\/\/shopify\/Product\/(\d+)(?:\/metafields)?$/;
+const REDIRECT_FILENAME_RE = /^redirects\/gid:\/\/shopify\/UrlRedirect\/(\d+)$/;
+const GID_NUMBER_RE = /\/(\d+)$/;
+
+/**
+ * Which capped walk produced `f`, and its record's numeric ID (null for a bulk
+ * redirect or an unrecognised filename). Null when `f` is not a walk finding.
+ */
+function walkRecordOf(f: { filename: string; findingType: string }): {
+  walk: WalkName;
+  id: bigint | null;
+} | null {
+  if (WALK_FINDING_TYPES.products.includes(f.findingType)) {
+    const m = PRODUCT_FILENAME_RE.exec(f.filename);
+    return { walk: "products", id: m ? BigInt(m[1]) : null };
+  }
+  if (WALK_FINDING_TYPES.redirects.includes(f.findingType)) {
+    const m = REDIRECT_FILENAME_RE.exec(f.filename);
+    return { walk: "redirects", id: m ? BigInt(m[1]) : null };
+  }
+  return null;
+}
+
+/** Numeric tail of a truncated walk's `lastId` GID, or null if unparseable. */
+function lastIdNumber(c: WalkCoverage): bigint | null {
+  const m = c.lastId ? GID_NUMBER_RE.exec(c.lastId) : null;
+  return m ? BigInt(m[1]) : null;
+}
+
+/**
+ * True when walk coverage `a` checked FEWER records than `b` (a truncated
+ * window ending below b's, or b covered everything). Unknown `b` (legacy or
+ * not run) is never wider: legacy scans walked the Free caps, which every
+ * plan's cap meets.
+ */
+function windowNarrower(a: WalkCoverage | undefined, b: WalkCoverage | undefined): boolean {
+  if (!a?.truncated || !b) return false;
+  if (!b.truncated) return true;
+  const aLast = lastIdNumber(a);
+  const bLast = lastIdNumber(b);
+  return aLast === null || bLast === null || aLast < bLast;
+}
+
+/**
+ * Whether `walks` (one scan's coverage) checked the record behind finding `f`.
+ * Walks are ID-ordered, so a truncated walk checked exactly the IDs up to its
+ * `lastId`. A finding with no single record (a bulk redirect pattern) counts as
+ * checked unless this window is narrower than `other`'s (the other scan in the
+ * diff), since a bulk pattern is computed over the whole window. Unparseable
+ * IDs in a truncated walk count as NOT checked (never a false resolve).
+ */
+function walkChecked(
+  f: { filename: string; findingType: string },
+  walks: ScanWalkCoverage | null | undefined,
+  other: ScanWalkCoverage | null | undefined,
+): boolean {
+  const rec = walkRecordOf(f);
+  if (!rec || !walks) return true;
+  const coverage = walks[rec.walk];
+  if (!coverage?.truncated) return true;
+  if (rec.id === null) {
+    return f.filename.startsWith("redirects/bulk/")
+      ? !windowNarrower(coverage, other?.[rec.walk])
+      : false;
+  }
+  const last = lastIdNumber(coverage);
+  return last !== null && rec.id <= last;
+}
+
+/**
+ * Walk categories a LEGACY baseline (no recorded walk coverage) may not have
+ * covered: it walked the Free caps, so when the current scan checked more
+ * records than that, the extra records were never looked at. Their current
+ * findings must not be "new" (the first scan after a paid cap rises).
+ */
+function legacyBaselineWalkGaps(
+  current: ScanWalkCoverage | null,
+  baseline: ScanWalkCoverage | null,
+): string[] {
+  if (baseline !== null || current === null) return [];
+  return (Object.keys(LEGACY_WALK_CAPS) as WalkName[]).flatMap((walk) =>
+    (current[walk]?.checked ?? 0) > LEGACY_WALK_CAPS[walk] ? [...WALK_FINDING_TYPES[walk]] : [],
+  );
 }
 
 /**
@@ -207,15 +316,28 @@ export interface DiffOptions {
  *     "new": they were not looked for last time (a scope granted since, a
  *     storefront that was unreadable, a cap, a flag turned on). The operator
  *     digest's "newly checked" breakdown is the same idea.
+ *   - capped product/redirect walks (gc-747u) at RECORD level: a prior finding
+ *     for a record past the current walk's window is never "resolved", and a
+ *     current finding for a record past the baseline's window is never "new"
+ *     (a cap raised or lowered by a plan change). See diffScans.
  */
 export function scanDiffOptions(
   current: ScanCoverage & { skippedFiles: readonly string[] },
   baseline: ScanCoverage,
 ): DiffOptions {
+  const currentWalks = parseWalkCoverage(current.walkCoverage);
+  const baselineWalks = parseWalkCoverage(baseline.walkCoverage);
   return {
     skippedCategories: unauditedCategories(current),
     skippedFiles: current.skippedFiles,
-    notNewCategories: unauditedCategories(baseline),
+    notNewCategories: [
+      ...new Set([
+        ...unauditedCategories(baseline),
+        ...legacyBaselineWalkGaps(currentWalks, baselineWalks),
+      ]),
+    ],
+    currentWalks,
+    baselineWalks,
   };
 }
 
@@ -287,6 +409,14 @@ export function restrictToLiveInBoth<T extends { findingType: string }>(
  *   genuine resolution. The same holds for the per-file MALICIOUS_SCRIPT
  *   detector, which deliberately still runs on oversized files (gc-qqt — see
  *   SIZE_SKIP_STILL_SCANNED_FINDING_TYPES).
+ *
+ * Capped walks (gc-747u, `opts.currentWalks` / `opts.baselineWalks`):
+ *   The product and redirect audits walk records in ID order up to a plan cap.
+ *   A prior finding for a record the CURRENT walk did not reach is excluded
+ *   like a skipped category (unknown, not fixed); a current finding for a
+ *   record the BASELINE walk did not reach is never "new". Records inside both
+ *   windows diff normally, so a store that is truncated every scan still sees
+ *   real fixes and real new findings in the part it checks.
  */
 export function diffScans(
   currentFindings: DiffableFinding[],
@@ -310,8 +440,10 @@ export function diffScans(
   const notNewCats = new Set(opts?.notNewCategories ?? []);
   const hasCatFilter = skippedCats !== null && skippedCats.size > 0;
   const hasFileFilter = skippedFiles !== null && skippedFiles.size > 0;
+  const currentWalks = opts?.currentWalks ?? null;
+  const baselineWalks = opts?.baselineWalks ?? null;
   const effectivePrevious =
-    hasCatFilter || hasFileFilter
+    hasCatFilter || hasFileFilter || currentWalks !== null
       ? previousFindings.filter(
           (f) =>
             !(hasCatFilter && skippedCats!.has(f.findingType)) &&
@@ -320,7 +452,9 @@ export function diffScans(
               skippedFiles!.has(f.filename) &&
               !CROSS_FILE_FINDING_TYPES.has(f.findingType) &&
               !SIZE_SKIP_STILL_SCANNED_FINDING_TYPES.has(f.findingType)
-            ),
+            ) &&
+            // gc-747u: a record past the current capped walk was not re-checked.
+            walkChecked(f, currentWalks, baselineWalks),
         )
       : previousFindings;
 
@@ -348,7 +482,7 @@ export function diffScans(
       // Decrement so that duplicate current findings beyond the previous count
       // are treated as new.
       remainingPrevious.set(fp, prevCount - 1);
-    } else if (!notNewCats.has(f.findingType)) {
+    } else if (!notNewCats.has(f.findingType) && walkChecked(f, baselineWalks, currentWalks)) {
       // No matching previous finding — this is new.
       newFindings.push({
         filename: f.filename,

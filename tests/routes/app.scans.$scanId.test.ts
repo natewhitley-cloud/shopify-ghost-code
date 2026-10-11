@@ -471,6 +471,35 @@ describe("app.scans.$scanId loader", () => {
     expect(result.scan.cappedCategories).toEqual(["DANGLING_REFERENCE"]);
   });
 
+  it("exposes the parsed scan.walkCoverage for the 'checked N of M' notice (gc-747u)", async () => {
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      walkCoverage: {
+        products: {
+          checked: 5000,
+          total: 7213,
+          truncated: true,
+          lastId: "gid://shopify/Product/9",
+        },
+        redirects: "garbage",
+      },
+    });
+
+    const result = (await loader(makeLoaderArgs("scan-1"))) as {
+      scan: { walkCoverage: unknown };
+    };
+
+    expect(result.scan.walkCoverage).toEqual({
+      products: { checked: 5000, total: 7213, truncated: true, lastId: "gid://shopify/Product/9" },
+    });
+  });
+
+  it("exposes a null scan.walkCoverage for a legacy scan (gc-747u)", async () => {
+    mockGetScanById.mockResolvedValue({ ...SCAN, walkCoverage: null });
+    const result = (await loader(makeLoaderArgs("scan-1"))) as { scan: { walkCoverage: unknown } };
+    expect(result.scan.walkCoverage).toBeNull();
+  });
+
   it("exposes scan.unreachableCategories for the storefront notice", async () => {
     mockGetScanById.mockResolvedValue({
       ...SCAN,
@@ -3795,6 +3824,43 @@ describe("ScanCoverageNotices", () => {
     expect(
       renderNotices({ brokenLinksIncluded: false, skippedCategories: ["DANGLING_REFERENCE"] }),
     ).toBe("");
+  });
+
+  describe("walk coverage (gc-747u)", () => {
+    const truncatedProducts = {
+      products: { checked: 5000, total: 7213, truncated: true, lastId: "gid://shopify/Product/1" },
+    };
+
+    it("discloses a truncated walk in an info notice", () => {
+      const html = renderNotices({ walkCoverage: truncatedProducts });
+      expect(html).toContain('tone="info"');
+      expect(html).toContain("Your store has 7,213 products. This scan checked the first 5,000.");
+    });
+
+    it("joins both walks into ONE notice", () => {
+      const html = renderNotices({
+        walkCoverage: {
+          ...truncatedProducts,
+          redirects: { checked: 1000, total: null, truncated: true, lastId: null },
+        },
+      });
+      expect(html.split('tone="info"')).toHaveLength(2);
+      expect(html).toContain("This scan checked the first 1,000 URL redirects in your store.");
+    });
+
+    it("renders nothing when no walk was truncated, or for a legacy scan", () => {
+      expect(
+        renderNotices({
+          walkCoverage: { products: { checked: 42, total: null, truncated: false, lastId: null } },
+        }),
+      ).toBe("");
+      expect(renderNotices({ walkCoverage: null })).toBe("");
+      expect(renderNotices()).toBe("");
+    });
+
+    it("never renders for a scan that is not completed", () => {
+      expect(renderNotices({ isCompleted: false, walkCoverage: truncatedProducts })).toBe("");
+    });
   });
 });
 

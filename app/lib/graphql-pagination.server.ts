@@ -20,6 +20,7 @@ import {
   checkRateLimit,
   checkThrottleStatusFromExtensions,
   isThrottledError,
+  parseRequestedQueryCost,
 } from "./rate-limit-monitor.server";
 import { recordApiError } from "../models/ops-event.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -45,12 +46,20 @@ export type GraphQLConnection<TNode> = {
  *   - `throttleSleepMs`: accumulated wall-clock spent in proactive rate-limit
  *                        backoff (checkRateLimit sleeps only when headroom is low;
  *                        otherwise it adds ~0), summed across all pages.
+ *   - `hasMore`:         true iff the walk stopped (cap OR `deadline`) while the
+ *                        connection still had more nodes (gc-747u). A superset of
+ *                        `truncated`: a deadline stop is NOT truncation, the
+ *                        caller resumes from `endCursor` in a later step.
+ *   - `endCursor`:       the cursor after the last consumed page (gc-747u), to
+ *                        resume a chunked walk with `after`.
  */
 export type PaginateStats = {
   pageCount: number;
   nodeCount: number;
   truncated: boolean;
   throttleSleepMs: number;
+  hasMore?: boolean;
+  endCursor?: string | null;
 };
 
 /** Minimal shape of the JSON envelope returned by `admin.graphql`. */
@@ -110,6 +119,17 @@ export type PaginateOptions<TNode, TResult> = {
    */
   mapNode: (node: TNode) => TResult[];
   /**
+   * Cursor to start from (gc-747u): resumes a walk a previous step stopped.
+   * Omit (or null) to start at the beginning of the connection.
+   */
+  after?: string | null;
+  /**
+   * Epoch ms after which no NEW page is requested (gc-747u). Checked after each
+   * page (before any backoff sleep), so the walk overruns it by at most the page
+   * in flight. Stopping here sets `stats.hasMore`, never `stats.truncated`.
+   */
+  deadline?: number;
+  /**
    * Optional walk-observability out-parameter (gc-1bd). When provided, the
    * helper mutates it with page/node counts, cap truncation, and accumulated
    * throttle-backoff sleep. See {@link PaginateStats}. Omit it and pagination
@@ -140,10 +160,12 @@ export async function paginateConnection<TNode, TResult>(
     getConnection,
     mapNode,
     stats,
+    after = null,
+    deadline,
   } = options;
 
   const results: TResult[] = [];
-  let cursor: string | null = null;
+  let cursor: string | null = after;
   let totalNodes = 0;
   let throttleRetries = 0;
 
@@ -180,7 +202,7 @@ export async function paginateConnection<TNode, TResult>(
         // Back off using whatever throttle headroom the response reported; if it
         // carried none, checkRateLimit is a no-op and we retry promptly.
         const sleepStart = Date.now();
-        await checkRateLimit(json.extensions);
+        await checkRateLimit(json.extensions, parseRequestedQueryCost(json.extensions));
         if (stats) stats.throttleSleepMs += Date.now() - sleepStart;
         continue; // retry the same page — cursor unchanged
       }
@@ -218,11 +240,17 @@ export async function paginateConnection<TNode, TResult>(
     if (stats) {
       stats.pageCount += 1;
       stats.nodeCount += nodes.length;
+      stats.endCursor = pageInfo.endCursor ?? null;
+      stats.hasMore = pageInfo.hasNextPage === true;
     }
 
     // Defensive: an empty page with hasNextPage still true would otherwise spin
     // forever (the cap is by node count, which is not advancing).
-    if (allNodes.length === 0) break;
+    if (allNodes.length === 0) {
+      // ...and a chunked caller must not resume it either (gc-747u).
+      if (stats) stats.hasMore = false;
+      break;
+    }
     if (maxNodes !== undefined && totalNodes >= maxNodes) {
       // Cap reached. If the connection still had more, records beyond the cap
       // were NOT scanned — flag the walk truncated so callers can record a
@@ -234,9 +262,14 @@ export async function paginateConnection<TNode, TResult>(
 
     cursor = pageInfo.endCursor ?? null;
 
-    // Proactively back off before the next request, then log throttle proximity.
+    // Step time budget spent (gc-747u): stop BEFORE any backoff sleep; the next
+    // step resumes from `stats.endCursor` (`stats.hasMore` is already true).
+    if (deadline !== undefined && Date.now() >= deadline) break;
+
+    // Proactively back off before the next request (waiting for the points one
+    // more page of this shape requests, gc-747u), then log throttle proximity.
     const sleepStart = Date.now();
-    await checkRateLimit(json.extensions);
+    await checkRateLimit(json.extensions, parseRequestedQueryCost(json.extensions));
     if (stats) stats.throttleSleepMs += Date.now() - sleepStart;
     if (shopDomain) {
       checkThrottleStatusFromExtensions(shopDomain, json.extensions);
@@ -244,4 +277,31 @@ export async function paginateConnection<TNode, TResult>(
   }
 
   return results;
+}
+
+/**
+ * Exact total for a capped walk's disclosure (gc-747u), shared by the product
+ * and redirect fetchers. `field` is a QueryRoot `*Count` field returning
+ * `Count { count precision }`.
+ * `limit: null` lifts the default 10,000 ceiling so the count is EXACT; any
+ * error or a non-exact count returns null (the caller falls back to copy
+ * without a total), so a count problem never fails a scan.
+ */
+export async function fetchExactCount(
+  admin: AdminApiContext,
+  field: "productsCount" | "urlRedirectsCount",
+): Promise<number | null> {
+  try {
+    const response = await admin.graphql(`{ ${field}(limit: null) { count precision } }`);
+    const json = (await response.json()) as {
+      errors?: unknown[];
+      data?: Record<string, { count?: unknown; precision?: unknown } | null> | null;
+    };
+    if (json.errors?.length) return null;
+    const result = json.data?.[field];
+    if (!result || result.precision !== "EXACT" || typeof result.count !== "number") return null;
+    return result.count;
+  } catch {
+    return null;
+  }
 }

@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
-import { hasProductScope, fetchProductAuditData } from "../../app/services/product-fetcher.server";
+import {
+  hasProductScope,
+  fetchProductAuditData,
+  fetchProductsTotal,
+} from "../../app/services/product-fetcher.server";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -298,5 +302,88 @@ describe("fetchProductAuditData", () => {
       const result = await promise;
       expect(result.throttleSleepMs).toBe(0);
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-747u: resumable chunks, ID order, coverage boundary, total count
+// ---------------------------------------------------------------------------
+
+describe("fetchProductAuditData chunked walk (gc-747u)", () => {
+  it("walks in explicit ID order (the coverage window depends on it)", async () => {
+    const graphql = vi.fn().mockResolvedValue(makeAuditResponse([fullNode("p1")]));
+    await fetchProductAuditData(makeAdmin(graphql));
+    expect(graphql.mock.calls[0][0]).toContain("sortKey: ID");
+  });
+
+  it("resumes from the given cursor and reports checked + lastId", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(
+        makeAuditResponse([
+          fullNode("gid://shopify/Product/7"),
+          fullNode("gid://shopify/Product/9"),
+        ]),
+      );
+
+    const result = await fetchProductAuditData(makeAdmin(graphql), 500, { after: "cur-6" });
+
+    expect(graphql.mock.calls[0][1].variables.after).toBe("cur-6");
+    expect(result).toMatchObject({
+      checked: 2,
+      lastId: "gid://shopify/Product/9",
+      hasMore: false,
+      endCursor: null,
+    });
+  });
+
+  it("reports hasMore + endCursor when the chunk size stops it, so the next step resumes", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(
+        makeAuditResponse([fullNode("p1"), fullNode("p2")], { hasNextPage: true, endCursor: "c2" }),
+      );
+
+    const result = await fetchProductAuditData(makeAdmin(graphql), 2);
+
+    expect(result).toMatchObject({ checked: 2, hasMore: true, endCursor: "c2", truncated: true });
+  });
+
+  it("stops at the deadline without truncating", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(
+        makeAuditResponse([fullNode("p1")], { hasNextPage: true, endCursor: "c1" }),
+      );
+
+    const result = await fetchProductAuditData(makeAdmin(graphql), 500, {
+      deadline: Date.now() - 1,
+    });
+
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(result).toMatchObject({ checked: 1, hasMore: true, endCursor: "c1", truncated: false });
+  });
+
+  it("reports a null lastId for an empty catalog", async () => {
+    const graphql = vi.fn().mockResolvedValue(makeAuditResponse([]));
+    const result = await fetchProductAuditData(makeAdmin(graphql));
+    expect(result).toMatchObject({ checked: 0, lastId: null, hasMore: false });
+  });
+});
+
+describe("fetchProductsTotal (gc-747u)", () => {
+  it("reads productsCount with no limit", async () => {
+    const graphql = vi.fn().mockResolvedValue({
+      json: vi
+        .fn()
+        .mockResolvedValue({ data: { productsCount: { count: 7213, precision: "EXACT" } } }),
+    });
+    await expect(fetchProductsTotal(makeAdmin(graphql))).resolves.toBe(7213);
+    expect(graphql.mock.calls[0][0]).toContain("productsCount(limit: null)");
+  });
+
+  it("returns null when the count is unavailable", async () => {
+    const graphql = vi.fn().mockRejectedValue(new Error("boom"));
+    await expect(fetchProductsTotal(makeAdmin(graphql))).resolves.toBeNull();
   });
 });

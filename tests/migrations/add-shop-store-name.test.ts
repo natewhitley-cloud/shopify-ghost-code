@@ -42,8 +42,9 @@ describe("add_shop_store_name migration (gc-ol95)", () => {
     expect(SCHEMA).toMatch(/model Shop \{[\s\S]*?\n\s+storeName\s+String\?\n/);
   });
 
-  it("is the latest migration", () => {
+  it("sorts before the next migration (gc-747u)", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
+    const sorted = dirs.sort();
+    expect(sorted.indexOf(NAME)).toBe(sorted.indexOf("20261013120000_add_scan_walk_coverage") - 1);
   });
 });

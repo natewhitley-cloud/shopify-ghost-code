@@ -1047,3 +1047,244 @@ describe("scanDiffOptions + diffScans notNewCategories (H3, M4)", () => {
     ).toEqual(["assets/big.js"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-747u: capped product / redirect walks — record-level windows
+// ---------------------------------------------------------------------------
+
+describe("diffScans — capped walk windows (gc-747u)", () => {
+  const ALL = Object.values(FindingType);
+  const scan = (walkCoverage: unknown) => ({
+    skippedCategories: [] as string[],
+    cappedCategories: [] as string[],
+    unreachableCategories: [] as string[],
+    skippedFiles: [] as string[],
+    liveFindingTypes: ALL as unknown,
+    walkCoverage,
+  });
+  const truncatedAt = (lastNum: number, checked: number) => ({
+    checked,
+    total: null,
+    truncated: true,
+    // Only the GID's numeric tail matters to the window.
+    lastId: `gid://shopify/Product/${lastNum}`,
+  });
+  const fullWalk = (checked: number) => ({ checked, total: null, truncated: false, lastId: null });
+
+  const tagFor = (n: number) =>
+    makeFinding(`products/gid://shopify/Product/${n}`, "GHOST_TAG", `Product: P${n}\nTag: bold-x`, {
+      lineNumber: 0,
+    });
+  const metafieldFor = (n: number) =>
+    makeFinding(`products/gid://shopify/Product/${n}/metafields`, "GHOST_METAFIELD", `mf ${n}`, {
+      lineNumber: 0,
+    });
+  const redirectFor = (n: number) =>
+    makeFinding(`redirects/gid://shopify/UrlRedirect/${n}`, "GHOST_REDIRECT", `/a/seo-${n} → /`, {
+      lineNumber: 0,
+    });
+  const bulk = (prefix: string, count: number) =>
+    makeFinding(
+      `redirects/bulk/_${prefix}`,
+      "GHOST_REDIRECT",
+      `${count} redirects under /${prefix}:\n  /${prefix}/a → /b`,
+      { lineNumber: 0 },
+    );
+
+  it("never resolves a prior finding for a product past the current cap (downgrade Pro -> Free)", () => {
+    // Baseline (Pro) checked all 3,000 products; current (Free) stopped at
+    // product 500. Product 2,000's finding was NOT re-checked: unknown, not fixed.
+    const previous = [tagFor(10), tagFor(2000), metafieldFor(2500)];
+    const current = [tagFor(10)];
+    const diff = diffScans(
+      current,
+      previous,
+      scanDiffOptions(
+        scan({ products: truncatedAt(500, 500) }),
+        scan({ products: fullWalk(3000) }),
+      ),
+    );
+    expect(diff.resolvedFindings).toEqual([]);
+    expect(diff.unchangedCount).toBe(1);
+    expect(diff.newFindings).toEqual([]);
+  });
+
+  it("non-vacuous: without the walk coverage the same diff false-resolves them", () => {
+    const previous = [tagFor(10), tagFor(2000), metafieldFor(2500)];
+    const diff = diffScans([tagFor(10)], previous, scanDiffOptions(scan(null), scan(null)));
+    expect(diff.resolvedFindings).toHaveLength(2);
+  });
+
+  it("still resolves a genuinely fixed record INSIDE the window", () => {
+    const diff = diffScans(
+      [],
+      [tagFor(10), tagFor(499)],
+      scanDiffOptions(
+        scan({ products: truncatedAt(500, 500) }),
+        scan({ products: truncatedAt(500, 500) }),
+      ),
+    );
+    expect(diff.resolvedFindings).toHaveLength(2);
+  });
+
+  it("the boundary record itself (ID == lastId) was checked", () => {
+    const diff = diffScans(
+      [],
+      [tagFor(500), tagFor(501)],
+      scanDiffOptions(scan({ products: truncatedAt(500, 500) }), scan({ products: fullWalk(900) })),
+    );
+    expect(diff.resolvedFindings.map((f) => f.filename)).toEqual([
+      "products/gid://shopify/Product/500",
+    ]);
+  });
+
+  it("a current finding past the BASELINE window is not new (upgrade Free -> Pro)", () => {
+    const diff = diffScans(
+      [tagFor(10), tagFor(3000), redirectFor(4000)],
+      [tagFor(10)],
+      scanDiffOptions(
+        scan({ products: fullWalk(4000), redirects: fullWalk(5000) }),
+        scan({ products: truncatedAt(500, 500), redirects: truncatedAt(1000, 1000) }),
+      ),
+    );
+    expect(diff.newFindings).toEqual([]);
+    expect(diff.unchangedCount).toBe(1);
+  });
+
+  it("a new finding inside both windows is still new", () => {
+    const diff = diffScans(
+      [tagFor(10), tagFor(20)],
+      [tagFor(10)],
+      scanDiffOptions(
+        scan({ products: truncatedAt(500, 500) }),
+        scan({ products: truncatedAt(500, 500) }),
+      ),
+    );
+    expect(diff.newFindings.map((f) => f.filename)).toEqual(["products/gid://shopify/Product/20"]);
+  });
+
+  it("compares IDs numerically, not as strings (999 < 1000)", () => {
+    const diff = diffScans(
+      [],
+      [tagFor(999), tagFor(1001)],
+      scanDiffOptions(
+        scan({ products: truncatedAt(1000, 1000) }),
+        scan({ products: fullWalk(2000) }),
+      ),
+    );
+    expect(diff.resolvedFindings.map((f) => f.filename)).toEqual([
+      "products/gid://shopify/Product/999",
+    ]);
+  });
+
+  it("redirect records past the window are never resolved", () => {
+    const diff = diffScans(
+      [],
+      [redirectFor(5), redirectFor(4500)],
+      scanDiffOptions(
+        scan({ redirects: truncatedAt(1000, 1000) }),
+        scan({ redirects: truncatedAt(4000, 4000) }),
+      ),
+    );
+    expect(diff.resolvedFindings.map((f) => f.filename)).toEqual([
+      "redirects/gid://shopify/UrlRedirect/5",
+    ]);
+  });
+
+  it("a bulk redirect pattern is not resolved when the current window is narrower", () => {
+    const diff = diffScans(
+      [],
+      [bulk("collections", 80)],
+      scanDiffOptions(
+        scan({ redirects: truncatedAt(1000, 1000) }),
+        scan({ redirects: truncatedAt(4000, 4000) }),
+      ),
+    );
+    expect(diff.resolvedFindings).toEqual([]);
+  });
+
+  it("a bulk redirect pattern diffs normally when the window is the same", () => {
+    const diff = diffScans(
+      [],
+      [bulk("collections", 80)],
+      scanDiffOptions(
+        scan({ redirects: truncatedAt(1000, 1000) }),
+        scan({ redirects: truncatedAt(1000, 1000) }),
+      ),
+    );
+    expect(diff.resolvedFindings).toHaveLength(1);
+  });
+
+  it("a bulk pattern seen only through a wider window is not new", () => {
+    const diff = diffScans(
+      [bulk("pages", 60)],
+      [],
+      scanDiffOptions(
+        scan({ redirects: fullWalk(9000) }),
+        scan({ redirects: truncatedAt(1000, 1000) }),
+      ),
+    );
+    expect(diff.newFindings).toEqual([]);
+  });
+
+  it("treats a walk finding with an unparseable record as unchecked (never resolved)", () => {
+    const odd = makeFinding("products/not-a-gid", "GHOST_TAG", "x", { lineNumber: 0 });
+    const diff = diffScans(
+      [],
+      [odd],
+      scanDiffOptions(scan({ products: truncatedAt(500, 500) }), scan({ products: fullWalk(900) })),
+    );
+    expect(diff.resolvedFindings).toEqual([]);
+  });
+
+  it("does not touch non-walk categories", () => {
+    const script = makeFinding("layout/theme.liquid", "GHOST_SCRIPT", "s");
+    const diff = diffScans(
+      [],
+      [script],
+      scanDiffOptions(scan({ products: truncatedAt(1, 1) }), scan({ products: fullWalk(900) })),
+    );
+    expect(diff.resolvedFindings).toHaveLength(1);
+  });
+
+  it("an untruncated (or not-run) current walk diffs exactly as before", () => {
+    const previous = [tagFor(10), tagFor(2000)];
+    const withCoverage = diffScans(
+      [],
+      previous,
+      scanDiffOptions(scan({ products: fullWalk(3000) }), scan({ products: fullWalk(3000) })),
+    );
+    const legacy = diffScans([], previous, scanDiffOptions(scan(null), scan(null)));
+    expect(withCoverage).toEqual(legacy);
+  });
+
+  describe("legacy baseline (no recorded coverage, walked the Free caps)", () => {
+    it("current walked past the legacy cap: that walk's types are not new for this one diff", () => {
+      const opts = scanDiffOptions(scan({ products: fullWalk(4000) }), scan(null));
+      expect(opts.notNewCategories).toEqual(
+        expect.arrayContaining(["GHOST_TAG", "GHOST_PRICE", "GHOST_METAFIELD"]),
+      );
+      expect(opts.notNewCategories).not.toContain("GHOST_REDIRECT");
+      const diff = diffScans([tagFor(10), tagFor(3000)], [tagFor(10)], opts);
+      expect(diff.newFindings).toEqual([]);
+      expect(diff.unchangedCount).toBe(1);
+    });
+
+    it("current within the legacy cap: nothing suppressed (Free behavior unchanged)", () => {
+      const opts = scanDiffOptions(
+        scan({ products: truncatedAt(500, 500), redirects: fullWalk(1000) }),
+        scan(null),
+      );
+      expect(opts.notNewCategories).toEqual([]);
+      const diff = diffScans([tagFor(10), tagFor(20)], [tagFor(10)], opts);
+      expect(diff.newFindings).toHaveLength(1);
+    });
+
+    it("legacy on both sides: options carry null windows and nothing changes", () => {
+      const opts = scanDiffOptions(scan(null), scan(null));
+      expect(opts.currentWalks).toBeNull();
+      expect(opts.baselineWalks).toBeNull();
+      expect(opts.notNewCategories).toEqual([]);
+    });
+  });
+});

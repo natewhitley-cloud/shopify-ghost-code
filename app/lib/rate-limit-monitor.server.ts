@@ -109,6 +109,16 @@ export function isThrottledError(error: GraphQLErrorLike | null | undefined): bo
 }
 
 /**
+ * The `requestedQueryCost` a GraphQL response reports (gc-747u), or 0 when
+ * absent. Shopify checks a query's REQUESTED cost against the bucket before
+ * running it, so this is the headroom the next same-shaped page needs.
+ */
+export function parseRequestedQueryCost(extensions: unknown): number {
+  const cost = (extensions as { cost?: { requestedQueryCost?: unknown } } | null | undefined)?.cost;
+  return typeof cost?.requestedQueryCost === "number" ? cost.requestedQueryCost : 0;
+}
+
+/**
  * Inspect throttleStatus and sleep if headroom is low, so the next paginated
  * request does not get throttled. Proactive backoff (QLT-4).
  *
@@ -118,25 +128,32 @@ export function isThrottledError(error: GraphQLErrorLike | null | undefined): bo
  * {@link parseThrottleStatus}, and logs a neutral `[rate-limit]` prefix.
  *
  * @param extensions  Raw extensions object from a GraphQL response.
+ * @param minPoints   Optional headroom the NEXT request needs (gc-747u): a
+ *                    paginated walk passes the page's `requestedQueryCost`, so
+ *                    it waits for a whole page's worth of points instead of
+ *                    the flat 100 and is not THROTTLED on the next request.
+ *                    Never below the flat threshold, never above the bucket.
  * @returns           Currently available query-cost points (after any sleep).
  *                    `Infinity` when the response carries no throttle status.
  */
-export async function checkRateLimit(extensions: unknown): Promise<number> {
+export async function checkRateLimit(extensions: unknown, minPoints = 0): Promise<number> {
   const throttle = parseThrottleStatus(extensions);
   if (!throttle) return Infinity;
 
   const currentlyAvailable = throttle.currentlyAvailable ?? 0;
   const restoreRate = throttle.restoreRate ?? DEFAULT_RESTORE_RATE;
+  const bucket = throttle.maximumAvailable ?? Infinity;
+  const threshold = Math.max(RATE_LIMIT_THRESHOLD, Math.min(minPoints, bucket));
 
-  if (currentlyAvailable < RATE_LIMIT_THRESHOLD) {
-    const pointsNeeded = RATE_LIMIT_THRESHOLD - currentlyAvailable;
+  if (currentlyAvailable < threshold) {
+    const pointsNeeded = threshold - currentlyAvailable;
     const sleepMs = Math.ceil((pointsNeeded / restoreRate) * 1000);
     console.log(
       `[rate-limit] Headroom low (${currentlyAvailable} pts). ` +
         `Sleeping ${sleepMs}ms to restore capacity.`,
     );
     await new Promise((resolve) => setTimeout(resolve, sleepMs));
-    return RATE_LIMIT_THRESHOLD; // optimistic — we just waited for it
+    return threshold; // optimistic — we just waited for it
   }
 
   return currentlyAvailable;

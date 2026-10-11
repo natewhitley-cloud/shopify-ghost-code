@@ -65,6 +65,8 @@ import type { UpgradeAskKey, UpgradePreview } from "../lib/upgrade-preview";
 import { UPGRADE_RETURN_DISMISS_LABEL, UPGRADE_RETURN_HEADING } from "../lib/upgrade-return";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import { useScanPolling } from "../lib/use-scan-polling";
+import { parseWalkCoverage, walkCoverageNotices } from "../lib/walk-coverage";
+import type { ScanWalkCoverage } from "../lib/walk-coverage";
 import {
   getAppRemovalForScanApp,
   getAppRemovalsDetectedOnScan,
@@ -443,6 +445,9 @@ export function unreachableCategoriesNotice(categories: readonly string[]): stri
  *     no Settings link, since there is nothing to grant.
  *   - Unreachable notice: a storefront check could not run because the public
  *     homepage could not be read (e.g. password page). Info only, like the cap.
+ *   - Walk-coverage notice (gc-747u): the product or redirect walk reached the
+ *     plan's cap with records left, so the scan checked only the first N. Info
+ *     only; see walkCoverageNotices for the copy.
  *
  * Broken links (DANGLING_REFERENCE) are a Standard feature by plan, not by
  * permission: on a plan without them (`brokenLinksIncluded` false) the
@@ -457,14 +462,17 @@ export function ScanCoverageNotices({
   skippedCategories: allSkipped,
   cappedCategories: allCapped,
   unreachableCategories = [],
+  walkCoverage = null,
 }: {
   isCompleted: boolean;
   brokenLinksIncluded: boolean;
   skippedCategories: string[];
   cappedCategories: string[];
   unreachableCategories?: string[];
+  walkCoverage?: ScanWalkCoverage | null;
 }) {
   if (!isCompleted) return null;
+  const walkNotices = walkCoverageNotices(walkCoverage);
   const planCovers = (category: string) => brokenLinksIncluded || category !== "DANGLING_REFERENCE";
   const skippedCategories = allSkipped.filter(planCovers);
   const cappedCategories = allCapped.filter(planCovers);
@@ -493,6 +501,11 @@ export function ScanCoverageNotices({
       {unreachableCategories.length > 0 && (
         <div>
           <s-banner tone="info">{unreachableCategoriesNotice(unreachableCategories)}</s-banner>
+        </div>
+      )}
+      {walkNotices.length > 0 && (
+        <div>
+          <s-banner tone="info">{walkNotices.join(" ")}</s-banner>
         </div>
       )}
     </>
@@ -1277,6 +1290,9 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       // Categories whose check could not run because the public storefront was
       // unreadable (SCRIPT_TAG_SUNSET). Drives a separate info notice.
       unreachableCategories: scan.unreachableCategories,
+      // What the capped product / redirect walks covered (gc-747u). Drives the
+      // "checked the first N" info notice; null for legacy scans.
+      walkCoverage: parseWalkCoverage(scan.walkCoverage),
     },
     findings: enrichedFindingsPage,
     findingsPagination: {
@@ -2203,6 +2219,7 @@ export default function ScanDetail() {
           skippedCategories={scan.skippedCategories}
           cappedCategories={scan.cappedCategories}
           unreachableCategories={scan.unreachableCategories}
+          walkCoverage={scan.walkCoverage}
         />
 
         {/* "Start here" (gc-bn0x): the top 3 findings and what each costs, above

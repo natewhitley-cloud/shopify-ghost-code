@@ -55,17 +55,23 @@
  * successful terminal status (COMPLETED/PARTIAL) on an earlier attempt.
  */
 
-import { FindingType, ScanOrigin, ScanStatus } from "@prisma/client";
+import { FindingType, type Prisma, ScanOrigin, ScanStatus } from "@prisma/client";
 import { NonRetriableError } from "inngest";
 
+import type { PaginateStats } from "../../app/lib/graphql-pagination.server";
 import { logger } from "../../app/lib/logger.server";
 import {
   CORE_STEP_OUTPUT_BUDGET_BYTES,
   DANGLING_MAX_OCCURRENCES_PER_HANDLE,
   JSONLD_PRICE_CANDIDATE_CAP,
   MAX_FINDINGS_PER_FILE_PER_TYPE,
-  PRODUCT_AUDIT_CAP,
+  PRODUCT_WALK_CHUNK,
+  REDIRECT_GROUPS_BUDGET_BYTES,
+  REDIRECT_WALK_CHUNK,
+  WALK_STEP_TIME_BUDGET_MS,
 } from "../../app/lib/scan-limits";
+import type { GrantedOptionalScopes } from "../../app/lib/scope-check.server";
+import type { ScanWalkCoverage, WalkCoverage } from "../../app/lib/walk-coverage";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { saveThemeFindings } from "../../app/models/finding.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
@@ -86,6 +92,7 @@ import {
   compareByFileThenLine,
   extractDanglingReferences,
 } from "../../app/services/dangling-reference-extractor.server";
+import type { BulkRedirectGroups } from "../../app/services/redirect-detector.server";
 import {
   enabledAppEmbedApps,
   observedEmbedApps,
@@ -118,18 +125,6 @@ import { inngest } from "../client";
 type AuditStepResult = {
   findingCount: number;
   skipped: boolean;
-  /**
-   * True when the audit's paginated walk hit its cap and left records
-   * un-scanned (gc-1bd). Strictly distinct from `skipped`: truncation is
-   * TELEMETRY ONLY (Option C) — it drives the `truncatedWalks` metadata and a
-   * logger.warn, but it does NOT enter `skippedCategories`. Only a genuinely
-   * absent scope marks a category skipped. Absent for audits with no bounded walk.
-   */
-  truncated?: boolean;
-  /** GraphQL page requests the walk made (walk observability, gc-1bd). */
-  pageCount?: number;
-  /** Accumulated proactive rate-limit backoff for this walk, ms (gc-1bd). */
-  throttleSleepMs?: number;
 };
 
 /**
@@ -158,15 +153,12 @@ function flaggedCategories(pairs: Array<[boolean, FindingType]>): string[] {
 }
 
 /**
- * What an audit's `fetchAndDetect` returns. `truncated`/`pageCount`/
- * `throttleSleepMs` are optional walk observability (gc-1bd) — an audit whose
- * fetch has no bounded pagination simply returns `{ findings }`.
+ * What an audit's `fetchAndDetect` returns. The capped product and redirect
+ * walks have their own chunked steps (gc-747u), so no runAuditStep audit has
+ * walk observability to report.
  */
 type AuditFetchResult = {
   findings: CreateFindingInput[];
-  truncated?: boolean;
-  pageCount?: number;
-  throttleSleepMs?: number;
 };
 
 /**
@@ -188,6 +180,13 @@ async function persistAuditFindings(opts: {
   findings: CreateFindingInput[];
   event: string;
   logMessage: string;
+  /**
+   * Narrows the idempotency delete to the rows THIS call owns (gc-747u): a
+   * later chunk of a walk split across steps must not delete the findings an
+   * earlier chunk persisted. Omitted = every finding of the type (one-shot
+   * audits, and a walk's first chunk).
+   */
+  deleteScope?: Prisma.FindingWhereInput;
 }): Promise<void> {
   if (opts.findings.length === 0) return;
 
@@ -201,6 +200,7 @@ async function persistAuditFindings(opts: {
     where: {
       scanId: opts.scanId,
       findingType: opts.findingType,
+      ...opts.deleteScope,
     },
   });
   const { createFindings } = await import("../../app/models/finding.server");
@@ -264,7 +264,7 @@ async function runAuditStep(opts: {
     return { findingCount: 0, skipped: true };
   }
 
-  const { findings, truncated, pageCount, throttleSleepMs } = await opts.fetchAndDetect(admin);
+  const { findings } = await opts.fetchAndDetect(admin);
 
   await persistAuditFindings({
     scanId: opts.scanId,
@@ -276,18 +276,409 @@ async function runAuditStep(opts: {
   });
 
   // Scope was present (the scope-absence early return above is the ONLY skip
-  // path), so this category was audited: `skipped` is false. A truncated walk is
-  // TELEMETRY ONLY (gc-1bd, Option C) — it flows to `truncated`/`truncatedWalks`
-  // and the logger.warn, but must NOT enter skippedCategories. Feeding truncation
-  // into the diff's coverage-gap filter drops the prior findings for the scanned
-  // subset while their still-present current findings persist, so an unchanged
-  // finding in a truncated category reported as "new" on every rescan.
+  // path), so this category was audited: `skipped` is false.
+  return { findingCount: findings.length, skipped: false };
+}
+
+// ---------------------------------------------------------------------------
+// Capped product / redirect walks, split across steps (gc-747u)
+// ---------------------------------------------------------------------------
+
+/**
+ * Where a walk resumes in its next step. Only a cursor (and, for redirects,
+ * the bulk tally) crosses the step boundary: product nodes and redirect lists
+ * stay inside the step that fetched them.
+ */
+type WalkResume = { after: string };
+
+/** What one product-walk step returns (all small scalars, gc-747u). */
+type ProductChunkResult = {
+  tagCount: number;
+  priceCount: number;
+  metafieldCount: number;
+  scopeAbsent: boolean;
+  /** The PLAN cap stopped the walk while more products existed (final step). */
+  truncated: boolean;
+  tagGap: boolean;
+  priceGap: boolean;
+  metafieldGap: boolean;
+  pageCount: number;
+  throttleSleepMs: number;
+  /** Wall-clock of this step's walk, measured inside the step (memoized). */
+  walkMs: number;
+  /** The plan cap, read ONCE by the first step and reused by the rest. */
+  cap: number;
+  /** Products checked so far, across every step of the walk. */
+  checked: number;
+  /** Resume point for the next step; null = the walk is over. */
+  next: WalkResume | null;
+  /** Set by the final step when the walk ran (scope granted, shop found). */
+  coverage: WalkCoverage | null;
+};
+
+/**
+ * True when a walk that stopped with records left could not be resumed (no
+ * cursor) or reached `cap`: either way the records past it were not checked,
+ * so the walk counts as truncated (never a silent partial walk).
+ */
+function walkStoppedShort(hasMore: boolean, checked: number, cap: number, cursor: string | null) {
+  return hasMore && (checked >= cap || cursor === null);
+}
+
+/**
+ * One step of the consolidated product walk (gc-1bd + gc-747u). Step 0 probes
+ * `read_products` and reads the plan's cap; every step fetches at most
+ * PRODUCT_WALK_CHUNK products within WALK_STEP_TIME_BUDGET_MS, runs the three
+ * detectors on them (each is per-product, so a chunk is self-contained), and
+ * persists their findings. Step 0's persist deletes the type's prior rows (as
+ * the single-step audit did); later steps delete only rows for their own
+ * products, so a retried step never duplicates or wipes an earlier step's.
+ */
+async function runProductAuditChunk(opts: {
+  scanId: string;
+  shopId: string;
+  grantedOptionalScopes: GrantedOptionalScopes;
+  index: number;
+  after: string | null;
+  checkedSoFar: number;
+  cap: number | null;
+}): Promise<ProductChunkResult> {
+  const empty = (scopeAbsent: boolean): ProductChunkResult => ({
+    tagCount: 0,
+    priceCount: 0,
+    metafieldCount: 0,
+    scopeAbsent,
+    truncated: false,
+    tagGap: false,
+    priceGap: false,
+    metafieldGap: false,
+    pageCount: 0,
+    throttleSleepMs: 0,
+    walkMs: 0,
+    cap: opts.cap ?? 0,
+    checked: opts.checkedSoFar,
+    next: null,
+    coverage: null,
+  });
+
+  const db = (await import("../../app/db.server")).default;
+  const shop = await db.shop.findUnique({ where: { id: opts.shopId } });
+  // No shop record: no-op, not a scope skip (mirrors runAuditStep).
+  if (!shop) return empty(false);
+
+  const { unauthenticated } = await import("../../app/shopify.server");
+  const { admin } = await unauthenticated.admin(shop.domain);
+  const { hasProductScope, fetchProductAuditData, fetchProductsTotal } =
+    await import("../../app/services/product-fetcher.server");
+  const { logger } = await import("../../app/lib/logger.server");
+
+  if (opts.index === 0) {
+    const hasScope = await hasProductScope(admin, opts.grantedOptionalScopes);
+    if (!hasScope) {
+      logger.info("read_products scope not available — skipping product audits", {
+        function: "scan-theme",
+        stepName: "product-audit",
+        shopId: opts.shopId,
+      });
+      // Scope not granted → all THREE product categories un-audited.
+      return empty(true);
+    }
+  }
+
+  // ONE number per scan: step 0 reads the plan's cap, later steps reuse it, so
+  // a plan change mid-scan cannot make the walk and its coverage disagree.
+  const { getPlanFeatures } = await import("../../app/lib/billing.server");
+  const cap = opts.cap ?? getPlanFeatures(shop.plan).productAuditCap;
+
+  const walkStart = Date.now();
+  const { tags, prices, metafields, pageCount, throttleSleepMs, ...walk } =
+    await fetchProductAuditData(admin, Math.min(PRODUCT_WALK_CHUNK, cap - opts.checkedSoFar), {
+      after: opts.after,
+      deadline: walkStart + WALK_STEP_TIME_BUDGET_MS,
+    });
+  const walkMs = Date.now() - walkStart;
+
+  const checked = opts.checkedSoFar + walk.checked;
+  const truncated = walkStoppedShort(walk.hasMore, checked, cap, walk.endCursor);
+  const next = walk.hasMore && !truncated ? { after: walk.endCursor! } : null;
+
+  if (truncated) {
+    // Observable cap (gc-1bd): never silently drop the tail of the catalog.
+    logger.warn("product-audit walk hit the cap; products beyond it were not scanned", {
+      function: "scan-theme",
+      stepName: "product-audit",
+      shopId: opts.shopId,
+      cap,
+      checked,
+    });
+  }
+
+  const { detectOrphanedProductTags } =
+    await import("../../app/services/product-tag-detector.server");
+  const { detectPersistentDiscounts } = await import("../../app/services/price-detector.server");
+  const { detectOrphanedMetafields } = await import("../../app/services/metafield-detector.server");
+
+  // Per-detector isolation: a throw in one detector must not sink the other
+  // two. A throw records that category as a coverage gap (a category we could
+  // not verify at all this run — unlike truncation, which still fully audited
+  // the scanned subset), so the differ never false-resolves its prior findings
+  // from a run we could not fully verify.
+  const runDetector = (
+    fn: () => CreateFindingInput[],
+    label: string,
+  ): { findings: CreateFindingInput[]; gap: boolean } => {
+    try {
+      return { findings: fn(), gap: false };
+    } catch (err) {
+      logger.warn("product detector threw — recording category as a coverage gap", {
+        function: "scan-theme",
+        stepName: "product-audit",
+        shopId: opts.shopId,
+        detector: label,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { findings: [], gap: true };
+    }
+  };
+
+  const tagOut = runDetector(() => detectOrphanedProductTags(tags), "GHOST_TAG");
+  const priceOut = runDetector(() => detectPersistentDiscounts(prices), "GHOST_PRICE");
+  const metafieldOut = runDetector(() => detectOrphanedMetafields(metafields), "GHOST_METAFIELD");
+
+  // Later chunks own only their own products' rows (see the doc comment).
+  // `tags` holds every product in the chunk, unfiltered.
+  const deleteScope: Prisma.FindingWhereInput | undefined =
+    opts.index === 0
+      ? undefined
+      : {
+          filename: {
+            in: tags.flatMap((p) => [`products/${p.id}`, `products/${p.id}/metafields`]),
+          },
+        };
+
+  // Persist ALL THREE FindingTypes (invariant a). Each delete-then-create is
+  // scoped to its own type, so the three never clobber each other and a retry
+  // stays idempotent. persistAuditFindings no-ops on an empty batch, exactly as
+  // the three legacy steps did.
+  await persistAuditFindings({
+    scanId: opts.scanId,
+    shopId: opts.shopId,
+    findingType: FindingType.GHOST_TAG,
+    findings: tagOut.findings,
+    event: "product_tag_findings",
+    logMessage: "product tag findings persisted",
+    deleteScope,
+  });
+  await persistAuditFindings({
+    scanId: opts.scanId,
+    shopId: opts.shopId,
+    findingType: FindingType.GHOST_PRICE,
+    findings: priceOut.findings,
+    event: "product_price_findings",
+    logMessage: "product price findings persisted",
+    deleteScope,
+  });
+  await persistAuditFindings({
+    scanId: opts.scanId,
+    shopId: opts.shopId,
+    findingType: FindingType.GHOST_METAFIELD,
+    findings: metafieldOut.findings,
+    event: "product_metafield_findings",
+    logMessage: "product metafield findings persisted",
+    deleteScope,
+  });
+
+  return {
+    tagCount: tagOut.findings.length,
+    priceCount: priceOut.findings.length,
+    metafieldCount: metafieldOut.findings.length,
+    scopeAbsent: false,
+    truncated,
+    tagGap: tagOut.gap,
+    priceGap: priceOut.gap,
+    metafieldGap: metafieldOut.gap,
+    pageCount,
+    throttleSleepMs,
+    walkMs,
+    cap,
+    checked,
+    next,
+    // The total is read only when it will be shown (a truncated walk).
+    coverage:
+      next === null
+        ? {
+            checked,
+            total: truncated ? await fetchProductsTotal(admin) : null,
+            truncated,
+            lastId: truncated ? walk.lastId : null,
+          }
+        : null,
+  };
+}
+
+/** What one redirect-walk step returns (gc-747u). */
+type RedirectChunkResult = {
+  findingCount: number;
+  skipped: boolean;
+  /** Bulk detection was abandoned (tally over budget): GHOST_REDIRECT capped. */
+  capped: boolean;
+  truncated: boolean;
+  pageCount: number;
+  throttleSleepMs: number;
+  walkMs: number;
+  cap: number;
+  checked: number;
+  /** Resume point plus the bulk tally so far (null groups = abandoned). */
+  next: (WalkResume & { groups: BulkRedirectGroups | null }) | null;
+  coverage: WalkCoverage | null;
+};
+
+/**
+ * Keep the bulk-redirect tally inside REDIRECT_GROUPS_BUDGET_BYTES before it
+ * crosses a step boundary (gc-747u): drop the display samples first (the
+ * finding's identity is its prefix, not its samples), then give up on bulk
+ * detection for this scan (null) rather than risk the run-state limit.
+ */
+function boundBulkGroups(groups: BulkRedirectGroups): BulkRedirectGroups | null {
+  const fits = () =>
+    Buffer.byteLength(JSON.stringify(groups), "utf8") <= REDIRECT_GROUPS_BUDGET_BYTES;
+  if (fits()) return groups;
+  for (const group of Object.values(groups)) group.samples = [];
+  return fits() ? groups : null;
+}
+
+/**
+ * One step of the redirect walk (gc-747u), the redirect twin of
+ * runProductAuditChunk. App-pattern redirects (one finding per redirect) are
+ * detected and persisted per chunk; bulk patterns need every unmatched
+ * redirect's prefix, so each step adds its chunk to a compact per-prefix tally
+ * that rides to the next step, and the final step turns it into findings.
+ */
+async function runRedirectAuditChunk(opts: {
+  scanId: string;
+  shopId: string;
+  grantedOptionalScopes: GrantedOptionalScopes;
+  index: number;
+  after: string | null;
+  checkedSoFar: number;
+  cap: number | null;
+  groups: BulkRedirectGroups | null;
+}): Promise<RedirectChunkResult> {
+  const empty = (skipped: boolean): RedirectChunkResult => ({
+    findingCount: 0,
+    skipped,
+    capped: false,
+    truncated: false,
+    pageCount: 0,
+    throttleSleepMs: 0,
+    walkMs: 0,
+    cap: opts.cap ?? 0,
+    checked: opts.checkedSoFar,
+    next: null,
+    coverage: null,
+  });
+
+  const db = (await import("../../app/db.server")).default;
+  const shop = await db.shop.findUnique({ where: { id: opts.shopId } });
+  // No shop record: treat as no-op, not a scope skip (do not mark PARTIAL).
+  if (!shop) return empty(false);
+
+  const { unauthenticated } = await import("../../app/shopify.server");
+  const { admin } = await unauthenticated.admin(shop.domain);
+  const { hasNavigationScope, fetchRedirects, fetchRedirectsTotal } =
+    await import("../../app/services/redirect-fetcher.server");
+
+  if (opts.index === 0 && !(await hasNavigationScope(admin, opts.grantedOptionalScopes))) {
+    const { logger } = await import("../../app/lib/logger.server");
+    logger.info("scope not available — skipping audit step", {
+      function: "scan-theme",
+      stepName: "redirect-audit",
+      shopId: opts.shopId,
+    });
+    return empty(true);
+  }
+
+  const { getPlanFeatures } = await import("../../app/lib/billing.server");
+  const cap = opts.cap ?? getPlanFeatures(shop.plan).redirectAuditCap;
+
+  const stats: PaginateStats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
+  const walkStart = Date.now();
+  const redirects = await fetchRedirects(
+    admin,
+    Math.min(REDIRECT_WALK_CHUNK, cap - opts.checkedSoFar),
+    stats,
+    { after: opts.after, deadline: walkStart + WALK_STEP_TIME_BUDGET_MS },
+  );
+  const walkMs = Date.now() - walkStart;
+
+  const checked = opts.checkedSoFar + redirects.length;
+  const endCursor = stats.endCursor ?? null;
+  const hasMore = stats.hasMore === true;
+  const truncated = walkStoppedShort(hasMore, checked, cap, endCursor);
+  const last = !hasMore || truncated;
+
+  const { addToBulkRedirectGroups, bulkRedirectFindings, detectAppPatternRedirects } =
+    await import("../../app/services/redirect-detector.server");
+  let groups = opts.index === 0 ? {} : opts.groups;
+  if (groups) addToBulkRedirectGroups(groups, redirects);
+  if (groups && !last) groups = boundBulkGroups(groups);
+
+  const findings = [
+    ...detectAppPatternRedirects(redirects),
+    ...(last && groups ? bulkRedirectFindings(groups) : []),
+  ];
+
+  // Later chunks own only their own redirects' rows, plus (final chunk) the
+  // bulk rows, which only the final chunk ever writes.
+  const ownFilenames = redirects.map((r) => `redirects/${r.id}`);
+  await persistAuditFindings({
+    scanId: opts.scanId,
+    shopId: opts.shopId,
+    findingType: FindingType.GHOST_REDIRECT,
+    findings,
+    event: "redirect-audit_findings",
+    logMessage: "audit step findings persisted",
+    deleteScope:
+      opts.index === 0
+        ? undefined
+        : {
+            OR: [
+              { filename: { in: ownFilenames } },
+              ...(last ? [{ filename: { startsWith: "redirects/bulk/" } }] : []),
+            ],
+          },
+  });
+
+  if (truncated) {
+    const { logger } = await import("../../app/lib/logger.server");
+    logger.warn("redirect-audit walk hit the cap; redirects beyond it were not scanned", {
+      function: "scan-theme",
+      stepName: "redirect-audit",
+      shopId: opts.shopId,
+      cap,
+      checked,
+    });
+  }
+
   return {
     findingCount: findings.length,
     skipped: false,
-    truncated: truncated ?? false,
-    pageCount,
-    throttleSleepMs,
+    capped: groups === null,
+    truncated,
+    pageCount: stats.pageCount,
+    throttleSleepMs: stats.throttleSleepMs,
+    walkMs,
+    cap,
+    checked,
+    next: last ? null : { after: endCursor!, groups },
+    coverage: last
+      ? {
+          checked,
+          total: truncated ? await fetchRedirectsTotal(admin) : null,
+          truncated,
+          lastId: truncated ? (redirects[redirects.length - 1]?.id ?? null) : null,
+        }
+      : null,
   };
 }
 
@@ -835,148 +1226,61 @@ export const scanTheme = inngest.createFunction(
       // makes all three unavailable (they share the data source) and propagates so
       // Inngest retries; but a single DETECTOR throwing is caught and recorded as a
       // coverage gap for just that category, leaving the other two intact.
+      //
+      // Plan-aware caps, split across steps (gc-747u): a paid plan walks up to
+      // 10x the Free cap, which can take minutes under the rate limit, so the
+      // walk runs in steps of at most WALK_STEP_TIME_BUDGET_MS each. Step 0
+      // keeps the original "product-audit" id (a Free walk usually fits in it,
+      // exactly as before); each later step resumes from the previous one's
+      // memoized cursor, so replays are deterministic.
       const productsStart = Date.now();
-      const productResult = await step.run("product-audit", async () => {
-        const db = (await import("../../app/db.server")).default;
-        const shop = await db.shop.findUnique({ where: { id: shopId } });
-        // No shop record: no-op, not a scope skip (mirrors runAuditStep).
-        if (!shop) {
-          return {
-            tagCount: 0,
-            priceCount: 0,
-            metafieldCount: 0,
-            scopeAbsent: false,
-            truncated: false,
-            tagGap: false,
-            priceGap: false,
-            metafieldGap: false,
-            pageCount: 0,
-            throttleSleepMs: 0,
-          };
-        }
-
-        const { unauthenticated } = await import("../../app/shopify.server");
-        const { admin } = await unauthenticated.admin(shop.domain);
-        const { hasProductScope, fetchProductAuditData } =
-          await import("../../app/services/product-fetcher.server");
-        const { logger } = await import("../../app/lib/logger.server");
-
-        const hasScope = await hasProductScope(admin, grantedOptionalScopes);
-        if (!hasScope) {
-          logger.info("read_products scope not available — skipping product audits", {
-            function: "scan-theme",
-            stepName: "product-audit",
+      const productChunks: ProductChunkResult[] = [];
+      let productChunk = await step.run("product-audit", () =>
+        runProductAuditChunk({
+          scanId,
+          shopId,
+          grantedOptionalScopes,
+          index: 0,
+          after: null,
+          checkedSoFar: 0,
+          cap: null,
+        }),
+      );
+      productChunks.push(productChunk);
+      while (productChunk.next) {
+        const prev = productChunk;
+        const index = productChunks.length;
+        productChunk = await step.run(`product-audit-${index + 1}`, () =>
+          runProductAuditChunk({
+            scanId,
             shopId,
-          });
-          // Scope not granted → all THREE product categories un-audited.
-          return {
-            tagCount: 0,
-            priceCount: 0,
-            metafieldCount: 0,
-            scopeAbsent: true,
-            truncated: false,
-            tagGap: false,
-            priceGap: false,
-            metafieldGap: false,
-            pageCount: 0,
-            throttleSleepMs: 0,
-          };
-        }
-
-        // ONE catalog walk feeds all three detectors.
-        const { tags, prices, metafields, truncated, pageCount, throttleSleepMs } =
-          await fetchProductAuditData(admin);
-
-        if (truncated) {
-          // Observable cap (gc-1bd): never silently drop the tail of the catalog.
-          logger.warn("product-audit walk hit the cap; products beyond it were not scanned", {
-            function: "scan-theme",
-            stepName: "product-audit",
-            shopId,
-            cap: PRODUCT_AUDIT_CAP,
-            pageCount,
-          });
-        }
-
-        const { detectOrphanedProductTags } =
-          await import("../../app/services/product-tag-detector.server");
-        const { detectPersistentDiscounts } =
-          await import("../../app/services/price-detector.server");
-        const { detectOrphanedMetafields } =
-          await import("../../app/services/metafield-detector.server");
-
-        // Per-detector isolation: a throw in one detector must not sink the other
-        // two. A throw records that category as a coverage gap (a category we
-        // could not verify at all this run — unlike truncation, which still fully
-        // audited the scanned subset), so the differ never false-resolves its
-        // prior findings from a run we could not fully verify.
-        const runDetector = (
-          fn: () => CreateFindingInput[],
-          label: string,
-        ): { findings: CreateFindingInput[]; gap: boolean } => {
-          try {
-            return { findings: fn(), gap: false };
-          } catch (err) {
-            logger.warn("product detector threw — recording category as a coverage gap", {
-              function: "scan-theme",
-              stepName: "product-audit",
-              shopId,
-              detector: label,
-              error: err instanceof Error ? err.message : String(err),
-            });
-            return { findings: [], gap: true };
-          }
-        };
-
-        const tagOut = runDetector(() => detectOrphanedProductTags(tags), "GHOST_TAG");
-        const priceOut = runDetector(() => detectPersistentDiscounts(prices), "GHOST_PRICE");
-        const metafieldOut = runDetector(
-          () => detectOrphanedMetafields(metafields),
-          "GHOST_METAFIELD",
+            grantedOptionalScopes,
+            index,
+            after: prev.next!.after,
+            checkedSoFar: prev.checked,
+            cap: prev.cap,
+          }),
         );
-
-        // Persist ALL THREE FindingTypes (invariant a). Each delete-then-create is
-        // scoped to its own type, so the three never clobber each other and a
-        // retry stays idempotent. persistAuditFindings no-ops on an empty batch,
-        // exactly as the three legacy steps did.
-        await persistAuditFindings({
-          scanId,
-          shopId,
-          findingType: FindingType.GHOST_TAG,
-          findings: tagOut.findings,
-          event: "product_tag_findings",
-          logMessage: "product tag findings persisted",
-        });
-        await persistAuditFindings({
-          scanId,
-          shopId,
-          findingType: FindingType.GHOST_PRICE,
-          findings: priceOut.findings,
-          event: "product_price_findings",
-          logMessage: "product price findings persisted",
-        });
-        await persistAuditFindings({
-          scanId,
-          shopId,
-          findingType: FindingType.GHOST_METAFIELD,
-          findings: metafieldOut.findings,
-          event: "product_metafield_findings",
-          logMessage: "product metafield findings persisted",
-        });
-
-        return {
-          tagCount: tagOut.findings.length,
-          priceCount: priceOut.findings.length,
-          metafieldCount: metafieldOut.findings.length,
-          scopeAbsent: false,
-          truncated,
-          tagGap: tagOut.gap,
-          priceGap: priceOut.gap,
-          metafieldGap: metafieldOut.gap,
-          pageCount,
-          throttleSleepMs,
-        };
-      });
+        productChunks.push(productChunk);
+      }
+      const sumProducts = (pick: (c: ProductChunkResult) => number) =>
+        productChunks.reduce((total, c) => total + pick(c), 0);
+      const productResult = {
+        tagCount: sumProducts((c) => c.tagCount),
+        priceCount: sumProducts((c) => c.priceCount),
+        metafieldCount: sumProducts((c) => c.metafieldCount),
+        scopeAbsent: productChunks[0].scopeAbsent,
+        truncated: productChunk.truncated,
+        tagGap: productChunks.some((c) => c.tagGap),
+        priceGap: productChunks.some((c) => c.priceGap),
+        metafieldGap: productChunks.some((c) => c.metafieldGap),
+        pageCount: sumProducts((c) => c.pageCount),
+        throttleSleepMs: sumProducts((c) => c.throttleSleepMs),
+        walkMs: sumProducts((c) => c.walkMs ?? 0),
+        steps: productChunks.length,
+        // Absent on a run memoized before gc-747u: no coverage recorded.
+        coverage: productChunk.coverage ?? null,
+      };
       const productsMs = Date.now() - productsStart;
 
       // Per-category skip (gc-1bd): a product category is un-audited (excluded
@@ -985,8 +1289,10 @@ export const scanTheme = inngest.createFunction(
       // deliberately NOT here (Option C): a cap-truncated walk still fully audited
       // the scanned subset, so its findings must diff normally — treating it as a
       // coverage gap dropped the prior findings for that subset and reported the
-      // still-present current ones as "new" every rescan. Truncation is telemetry
-      // only (see `truncatedWalks` below + the logger.warn in the walk).
+      // still-present current ones as "new" every rescan. Records PAST the cap are
+      // handled per record instead (gc-747u): the walk's coverage window is
+      // stored on the scan (`walkCoverage`) and the differ never resolves a prior
+      // finding beyond it.
       const tagSkipped = productResult.scopeAbsent || productResult.tagGap;
       const priceSkipped = productResult.scopeAbsent || productResult.priceGap;
       const metafieldSkipped = productResult.scopeAbsent || productResult.metafieldGap;
@@ -1012,39 +1318,70 @@ export const scanTheme = inngest.createFunction(
       );
       const pagesMs = Date.now() - pagesStart;
 
+      // Redirect walk, plan-aware and split across steps like the product walk
+      // (gc-747u). Truncation stays telemetry for the CATEGORY (Option C); the
+      // per-record window is recorded in walkCoverage for the differ.
       const redirectsStart = Date.now();
-      const redirectResult = await step.run("redirect-audit", () =>
-        runAuditStep({
+      const redirectChunks: RedirectChunkResult[] = [];
+      let redirectChunk = await step.run("redirect-audit", () =>
+        runRedirectAuditChunk({
           scanId,
           shopId,
-          stepName: "redirect-audit",
-          findingType: FindingType.GHOST_REDIRECT,
-          checkScope: async (admin) => {
-            const { hasNavigationScope } =
-              await import("../../app/services/redirect-fetcher.server");
-            return hasNavigationScope(admin, grantedOptionalScopes);
-          },
-          fetchAndDetect: async (admin) => {
-            const { REDIRECT_CAP } = await import("../../app/lib/scan-limits");
-            const { fetchRedirects } = await import("../../app/services/redirect-fetcher.server");
-            // Thread a stats out-param so a cap-truncated redirect walk surfaces in
-            // `truncatedWalks` telemetry (gc-1bd). Telemetry ONLY (Option C): the
-            // truncation does NOT mark GHOST_REDIRECT skipped — runAuditStep audited
-            // the scanned subset, which must diff normally.
-            const stats = { pageCount: 0, nodeCount: 0, truncated: false, throttleSleepMs: 0 };
-            const redirects = await fetchRedirects(admin, REDIRECT_CAP, stats);
-            const { detectOrphanedRedirects } =
-              await import("../../app/services/redirect-detector.server");
-            return {
-              findings: detectOrphanedRedirects(redirects),
-              truncated: stats.truncated,
-              pageCount: stats.pageCount,
-              throttleSleepMs: stats.throttleSleepMs,
-            };
-          },
+          grantedOptionalScopes,
+          index: 0,
+          after: null,
+          checkedSoFar: 0,
+          cap: null,
+          groups: null,
         }),
       );
+      redirectChunks.push(redirectChunk);
+      while (redirectChunk.next) {
+        const prev = redirectChunk;
+        const index = redirectChunks.length;
+        redirectChunk = await step.run(`redirect-audit-${index + 1}`, () =>
+          runRedirectAuditChunk({
+            scanId,
+            shopId,
+            grantedOptionalScopes,
+            index,
+            after: prev.next!.after,
+            checkedSoFar: prev.checked,
+            cap: prev.cap,
+            groups: prev.next!.groups,
+          }),
+        );
+        redirectChunks.push(redirectChunk);
+      }
+      const sumRedirects = (pick: (c: RedirectChunkResult) => number) =>
+        redirectChunks.reduce((total, c) => total + pick(c), 0);
+      const redirectResult = {
+        findingCount: sumRedirects((c) => c.findingCount),
+        skipped: redirectChunks[0].skipped,
+        capped: redirectChunks.some((c) => c.capped === true),
+        truncated: redirectChunk.truncated === true,
+        pageCount: sumRedirects((c) => c.pageCount ?? 0),
+        throttleSleepMs: sumRedirects((c) => c.throttleSleepMs ?? 0),
+        walkMs: sumRedirects((c) => c.walkMs ?? 0),
+        steps: redirectChunks.length,
+        // Absent on a run memoized before gc-747u: no coverage recorded.
+        coverage: redirectChunk.coverage ?? null,
+      };
+
       const redirectsMs = Date.now() - redirectsStart;
+
+      // What the capped walks covered (gc-747u), for the differ and the scan
+      // page disclosure. Only walks that ran get a key. A run whose first walk
+      // step was memoized before gc-747u (no `cap` in its output) walked the
+      // old Free caps without recording a window: leave the column NULL so the
+      // scan reads as legacy, never as "fully covered".
+      const walkCoverage: ScanWalkCoverage | undefined =
+        productChunks[0].cap === undefined || redirectChunks[0].cap === undefined
+          ? undefined
+          : {
+              ...(productResult.coverage ? { products: productResult.coverage } : {}),
+              ...(redirectResult.coverage ? { redirects: redirectResult.coverage } : {}),
+            };
 
       // Step 9: Live-price audit for stale static JSON-LD (optional — requires
       // read_products scope AND the JSONLD_LIVE_PRICE_ENABLED flag). Modeled on
@@ -1393,6 +1730,9 @@ export const scanTheme = inngest.createFunction(
       const cappedCategories: string[] = flaggedCategories([
         [jsonLdPriceResult.capped, FindingType.JSON_LD_PRICE_CONFLICT],
         [danglingRefResult.capped, FindingType.DANGLING_REFERENCE],
+        // gc-747u: the bulk-redirect tally outgrew its step-boundary budget, so
+        // bulk patterns were not checked this scan.
+        [redirectResult.capped, FindingType.GHOST_REDIRECT],
       ]);
 
       // Categories whose check could not run because the public storefront could
@@ -1403,9 +1743,10 @@ export const scanTheme = inngest.createFunction(
       ]);
 
       // Walks that hit their cap this scan (gc-1bd). Surfaced in scan_signal for
-      // observability ONLY (Option C): truncation is deliberately NOT reflected in
+      // observability (Option C): truncation is deliberately NOT reflected in
       // skippedCategories or cappedCategories, so the differ still diffs the
-      // scanned subset normally.
+      // scanned subset normally. The per-record window is `walkCoverage`
+      // (gc-747u), which also drives the scan page's "checked N of M" notice.
       const truncatedWalks: string[] = [];
       if (productResult.truncated) truncatedWalks.push("products");
       if (redirectResult.truncated) truncatedWalks.push("redirects");
@@ -1465,6 +1806,7 @@ export const scanTheme = inngest.createFunction(
         unreachableCategories,
         skippedFiles: skippedFilePaths,
         liveFindingTypes: finalLiveFindingTypes,
+        walkCoverage,
       };
 
       // FINAL step: compute resolution counts vs the previous scan, then set the
@@ -1547,6 +1889,9 @@ export const scanTheme = inngest.createFunction(
           // Signature version per app, for app-removal detection (gc-frda).
           appSignatureFingerprints,
           liveAppHooks,
+          // What the capped walks covered (gc-747u): the differ's record windows
+          // and the scan page's "checked N of M" notice.
+          walkCoverage,
         });
 
         // App-removal detection (gc-frda). Never fails or retries the scan: the
@@ -1711,11 +2056,14 @@ export const scanTheme = inngest.createFunction(
               },
               pageCounts: {
                 products: productResult.pageCount,
-                redirects: redirectResult.pageCount ?? 0,
+                redirects: redirectResult.pageCount,
               },
-              throttleSleepMs:
-                productResult.throttleSleepMs + (redirectResult.throttleSleepMs ?? 0),
+              throttleSleepMs: productResult.throttleSleepMs + redirectResult.throttleSleepMs,
               truncatedWalks,
+              // gc-747u: walk wall-clock measured INSIDE the steps (memoized, so
+              // true on replay, unlike phaseMs) and how many steps each walk took.
+              walkMs: { products: productResult.walkMs, redirects: redirectResult.walkMs },
+              walkSteps: { products: productResult.steps, redirects: redirectResult.steps },
               // Step-output bounds (gc-4ce): a cap dropped dangling handles /
               // occurrences, the byte budget dropped ALL dangling candidates, or
               // the static JSON-LD candidate cap dropped some.
