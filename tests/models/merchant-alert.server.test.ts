@@ -237,7 +237,7 @@ describe("disableAlertsByToken", () => {
 });
 
 describe("summary notice consent stamps (gc-ol95)", () => {
-  it("markSummaryNoticePending claims once, only for a shop never told and never opted in", async () => {
+  it("markSummaryNoticePending claims once, only for a shop never told, never opted in, never declined", async () => {
     mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
     await expect(markSummaryNoticePending("a.myshopify.com")).resolves.toBe(true);
     const call = mockDb.shop.updateMany.mock.calls[0][0];
@@ -246,8 +246,29 @@ describe("summary notice consent stamps (gc-ol95)", () => {
       summaryNoticePendingAt: null,
       summaryNoticeShownAt: null,
       summaryOptedInAt: null,
+      summaryOptInDeclinedAt: null,
     });
     expect(call.data.summaryNoticePendingAt).toBeInstanceOf(Date);
+  });
+
+  it("markSummaryNoticePending respects a No thanks (gc-xorg): declined, dropped to Free, upgraded again -> no notice owed", async () => {
+    const row = installFakeShopRow(
+      { updateMany: mockDb.shop.updateMany },
+      {
+        domain: "a.myshopify.com",
+        summaryNoticePendingAt: null,
+        summaryNoticeShownAt: null,
+        summaryOptedInAt: null,
+        summaryOptInDeclinedAt: new Date("2026-10-01T00:00:00Z"),
+      },
+    );
+    await expect(markSummaryNoticePending("a.myshopify.com")).resolves.toBe(false);
+    expect(row.summaryNoticePendingAt).toBeNull();
+
+    // Control: the same shop without the decline IS owed the notice.
+    row.summaryOptInDeclinedAt = null;
+    await expect(markSummaryNoticePending("a.myshopify.com")).resolves.toBe(true);
+    expect(row.summaryNoticePendingAt).toBeInstanceOf(Date);
   });
 
   it("markSummaryNoticePending reports false when the claim matched no row", async () => {

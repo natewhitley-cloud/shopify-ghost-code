@@ -282,7 +282,8 @@ async function stampEverPaid(
  * knowing (gc-ol95): a Free -> paid move (a trial is an ACTIVE subscription,
  * so it counts) marks Home's "Summary emails are on" notice as owed. Every
  * reconcile path (redirect and backstop), since an upgrade can land on either.
- * The claim skips a shop already told or already opted in. Shops that were
+ * The claim skips a shop already told, already opted in, or that declined
+ * Home's summary opt-in prompt (gc-xorg). Shops that were
  * paid before this shipped never pass through here, so they stay unnotified
  * and ineligible. NEVER THROWS: a failed write is logged; the shop then simply
  * gets no email until it opts in.

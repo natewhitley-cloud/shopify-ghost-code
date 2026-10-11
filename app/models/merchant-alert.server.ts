@@ -89,13 +89,16 @@ export async function setSummaryEmailsEnabled(
 /**
  * Mark Home's "Summary emails are on" notice as owed (gc-ol95), called when a
  * shop moves Free -> paid. A once claim that also requires the merchant to
- * have neither seen the notice nor opted in already (they know). Returns true
- * IFF this call set it.
+ * have neither seen the notice nor opted in already (they know), nor answered
+ * Home's opt-in prompt with "No thanks" (gc-xorg: a shop that declined, dropped
+ * to Free and upgraded again is not told summaries are on; Settings remains
+ * the way in). Returns true IFF this call set it.
  */
 export function markSummaryNoticePending(domain: string): Promise<boolean> {
   return claimShopStamp(domain, "summaryNoticePendingAt", {
     summaryNoticeShownAt: null,
     summaryOptedInAt: null,
+    summaryOptInDeclinedAt: null,
   });
 }
 
