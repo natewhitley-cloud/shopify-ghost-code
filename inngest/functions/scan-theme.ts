@@ -67,8 +67,10 @@ import {
   JSONLD_PRICE_CANDIDATE_CAP,
   MAX_FINDINGS_PER_FILE_PER_TYPE,
   PRODUCT_WALK_CHUNK,
+  PRODUCT_WALK_TIME_BUDGET_MS,
   REDIRECT_GROUPS_BUDGET_BYTES,
   REDIRECT_WALK_CHUNK,
+  REDIRECT_WALK_TIME_BUDGET_MS,
   WALK_STEP_TIME_BUDGET_MS,
 } from "../../app/lib/scan-limits";
 import type { GrantedOptionalScopes } from "../../app/lib/scope-check.server";
@@ -318,6 +320,10 @@ type ProductChunkResult = {
   coverage: WalkCoverage | null;
   /** Last throttle status seen; the next step waits on it first (audit #3). */
   throttle: ThrottleSnapshot | null;
+  /** Epoch ms the whole walk stops paging, set ONCE by step 0 (audit #1). */
+  walkDeadline: number;
+  /** GID of the last product checked so far, across every step. */
+  lastId: string | null;
 };
 
 /**
@@ -334,6 +340,19 @@ function walkStoppedShort(
   throttleStopped: boolean,
 ) {
   return hasMore && (checked >= cap || (cursor === null && !throttleStopped));
+}
+
+/**
+ * Deadlines for one walk step (gc-747u audit #1). `walk` is the whole walk's
+ * deadline: step 0 sets it (now + budget) and returns it in its memoized
+ * output, and every later step reuses that number, so a replay or a retried
+ * step never starts a fresh budget. `page` bounds this step's paging: its own
+ * WALK_STEP_TIME_BUDGET_MS, never past the walk deadline. Call at step start.
+ */
+function walkStepDeadlines(walkDeadline: number | null, budgetMs: number) {
+  const now = Date.now();
+  const walk = walkDeadline ?? now + budgetMs;
+  return { walk, page: Math.min(now + WALK_STEP_TIME_BUDGET_MS, walk) };
 }
 
 /**
@@ -354,7 +373,10 @@ async function runProductAuditChunk(opts: {
   checkedSoFar: number;
   cap: number | null;
   throttle: ThrottleSnapshot | null;
+  walkDeadline: number | null;
+  lastIdSoFar: string | null;
 }): Promise<ProductChunkResult> {
+  const deadlines = walkStepDeadlines(opts.walkDeadline, PRODUCT_WALK_TIME_BUDGET_MS);
   const empty = (scopeAbsent: boolean): ProductChunkResult => ({
     tagCount: 0,
     priceCount: 0,
@@ -372,6 +394,8 @@ async function runProductAuditChunk(opts: {
     next: null,
     coverage: null,
     throttle: null,
+    walkDeadline: deadlines.walk,
+    lastId: opts.lastIdSoFar,
   });
 
   const db = (await import("../../app/db.server")).default;
@@ -407,30 +431,33 @@ async function runProductAuditChunk(opts: {
   const { tags, prices, metafields, pageCount, throttleSleepMs, ...walk } =
     await fetchProductAuditData(admin, Math.min(PRODUCT_WALK_CHUNK, cap - opts.checkedSoFar), {
       after: opts.after,
-      deadline: walkStart + WALK_STEP_TIME_BUDGET_MS,
+      deadline: deadlines.page,
       throttle: opts.throttle,
     });
   const walkMs = Date.now() - walkStart;
 
   const checked = opts.checkedSoFar + walk.checked;
-  const truncated = walkStoppedShort(
-    walk.hasMore,
-    checked,
-    cap,
-    walk.endCursor,
-    walk.throttleStopped,
-  );
+  const lastId = walk.lastId ?? opts.lastIdSoFar;
+  // Out of walk time with products left: truncated like a cap hit (audit #1).
+  const outOfTime = walk.hasMore && Date.now() >= deadlines.walk;
+  const truncated =
+    outOfTime || walkStoppedShort(walk.hasMore, checked, cap, walk.endCursor, walk.throttleStopped);
   const next = walk.hasMore && !truncated ? { after: walk.endCursor } : null;
 
   if (truncated) {
     // Observable cap (gc-1bd): never silently drop the tail of the catalog.
-    logger.warn("product-audit walk hit the cap; products beyond it were not scanned", {
-      function: "scan-theme",
-      stepName: "product-audit",
-      shopId: opts.shopId,
-      cap,
-      checked,
-    });
+    logger.warn(
+      outOfTime
+        ? "product-audit walk ran out of time; products beyond it were not scanned"
+        : "product-audit walk hit the cap; products beyond it were not scanned",
+      {
+        function: "scan-theme",
+        stepName: "product-audit",
+        shopId: opts.shopId,
+        cap,
+        checked,
+      },
+    );
   }
 
   const { detectOrphanedProductTags } =
@@ -530,10 +557,12 @@ async function runProductAuditChunk(opts: {
             checked,
             total: truncated ? await fetchProductsTotal(admin) : null,
             truncated,
-            lastId: truncated ? walk.lastId : null,
+            lastId: truncated ? lastId : null,
           }
         : null,
     throttle: walk.throttle,
+    walkDeadline: deadlines.walk,
+    lastId,
   };
 }
 
@@ -554,6 +583,10 @@ type RedirectChunkResult = {
   coverage: WalkCoverage | null;
   /** Last throttle status seen; the next step waits on it first (audit #3). */
   throttle: ThrottleSnapshot | null;
+  /** Epoch ms the whole walk stops paging, set ONCE by step 0 (audit #1). */
+  walkDeadline: number;
+  /** GID of the last redirect checked so far, across every step. */
+  lastId: string | null;
 };
 
 /**
@@ -587,7 +620,10 @@ async function runRedirectAuditChunk(opts: {
   cap: number | null;
   groups: BulkRedirectGroups | null;
   throttle: ThrottleSnapshot | null;
+  walkDeadline: number | null;
+  lastIdSoFar: string | null;
 }): Promise<RedirectChunkResult> {
+  const deadlines = walkStepDeadlines(opts.walkDeadline, REDIRECT_WALK_TIME_BUDGET_MS);
   const empty = (skipped: boolean): RedirectChunkResult => ({
     findingCount: 0,
     skipped,
@@ -601,6 +637,8 @@ async function runRedirectAuditChunk(opts: {
     next: null,
     coverage: null,
     throttle: null,
+    walkDeadline: deadlines.walk,
+    lastId: opts.lastIdSoFar,
   });
 
   const db = (await import("../../app/db.server")).default;
@@ -632,20 +670,18 @@ async function runRedirectAuditChunk(opts: {
     admin,
     Math.min(REDIRECT_WALK_CHUNK, cap - opts.checkedSoFar),
     stats,
-    { after: opts.after, deadline: walkStart + WALK_STEP_TIME_BUDGET_MS, throttle: opts.throttle },
+    { after: opts.after, deadline: deadlines.page, throttle: opts.throttle },
   );
   const walkMs = Date.now() - walkStart;
 
   const checked = opts.checkedSoFar + redirects.length;
+  const lastId = redirects[redirects.length - 1]?.id ?? opts.lastIdSoFar;
   const endCursor = stats.endCursor ?? null;
   const hasMore = stats.hasMore === true;
-  const truncated = walkStoppedShort(
-    hasMore,
-    checked,
-    cap,
-    endCursor,
-    stats.throttleStopped === true,
-  );
+  // Out of walk time with redirects left: truncated like a cap hit (audit #1).
+  const outOfTime = hasMore && Date.now() >= deadlines.walk;
+  const truncated =
+    outOfTime || walkStoppedShort(hasMore, checked, cap, endCursor, stats.throttleStopped === true);
   const last = !hasMore || truncated;
 
   const { addToBulkRedirectGroups, bulkRedirectFindings, detectAppPatternRedirects } =
@@ -682,13 +718,18 @@ async function runRedirectAuditChunk(opts: {
 
   if (truncated) {
     const { logger } = await import("../../app/lib/logger.server");
-    logger.warn("redirect-audit walk hit the cap; redirects beyond it were not scanned", {
-      function: "scan-theme",
-      stepName: "redirect-audit",
-      shopId: opts.shopId,
-      cap,
-      checked,
-    });
+    logger.warn(
+      outOfTime
+        ? "redirect-audit walk ran out of time; redirects beyond it were not scanned"
+        : "redirect-audit walk hit the cap; redirects beyond it were not scanned",
+      {
+        function: "scan-theme",
+        stepName: "redirect-audit",
+        shopId: opts.shopId,
+        cap,
+        checked,
+      },
+    );
   }
 
   return {
@@ -707,10 +748,12 @@ async function runRedirectAuditChunk(opts: {
           checked,
           total: truncated ? await fetchRedirectsTotal(admin) : null,
           truncated,
-          lastId: truncated ? (redirects[redirects.length - 1]?.id ?? null) : null,
+          lastId: truncated ? lastId : null,
         }
       : null,
     throttle: stats.throttle ?? null,
+    walkDeadline: deadlines.walk,
+    lastId,
   };
 }
 
@@ -1277,6 +1320,8 @@ export const scanTheme = inngest.createFunction(
           checkedSoFar: 0,
           cap: null,
           throttle: null,
+          walkDeadline: null,
+          lastIdSoFar: null,
         }),
       );
       productChunks.push(productChunk);
@@ -1294,6 +1339,10 @@ export const scanTheme = inngest.createFunction(
             cap: prev.cap,
             // Absent on a step memoized before audit #3: no carried wait.
             throttle: prev.throttle ?? null,
+            // Step 0's memoized deadline (audit #1); absent only on a step
+            // memoized before it, which then starts the budget here.
+            walkDeadline: prev.walkDeadline ?? null,
+            lastIdSoFar: prev.lastId ?? null,
           }),
         );
         productChunks.push(productChunk);
@@ -1369,6 +1418,8 @@ export const scanTheme = inngest.createFunction(
           cap: null,
           groups: null,
           throttle: null,
+          walkDeadline: null,
+          lastIdSoFar: null,
         }),
       );
       redirectChunks.push(redirectChunk);
@@ -1386,6 +1437,8 @@ export const scanTheme = inngest.createFunction(
             cap: prev.cap,
             groups: prev.next!.groups,
             throttle: prev.throttle ?? null,
+            walkDeadline: prev.walkDeadline ?? null,
+            lastIdSoFar: prev.lastId ?? null,
           }),
         );
         redirectChunks.push(redirectChunk);

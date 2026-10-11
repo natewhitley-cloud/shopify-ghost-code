@@ -14,7 +14,7 @@
 
 import { FindingType, Severity } from "@prisma/client";
 import { NonRetriableError } from "inngest";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks
@@ -243,12 +243,16 @@ import {
   JSONLD_PRICE_CANDIDATE_CAP,
   MAX_FINDINGS_PER_FILE_PER_TYPE,
   PRODUCT_WALK_CHUNK,
+  PRODUCT_WALK_TIME_BUDGET_MS,
   REDIRECT_GROUPS_BUDGET_BYTES,
+  REDIRECT_WALK_TIME_BUDGET_MS,
+  WALK_STEP_TIME_BUDGET_MS,
 } from "../../app/lib/scan-limits";
 import {
   fetchGrantedOptionalScopes,
   TransientScopeCheckError,
 } from "../../app/lib/scope-check.server";
+import { parseWalkCoverage, walkCoverageNotices } from "../../app/lib/walk-coverage";
 import {
   applyAppRemovalPlan,
   getAppRemovalsTouchedByScans,
@@ -5047,6 +5051,175 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
       (c) => (c[3] as { throttle?: unknown }).throttle ?? null,
     );
     expect(redirectCarried).toEqual([null, snapshot(101), snapshot(102)]);
+  });
+
+  describe("whole-walk time budget (audit #1)", () => {
+    const T0 = Date.UTC(2026, 9, 11, 12, 0, 0);
+    const MIN = 60_000;
+
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(T0);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** Each fetch call of `mock` takes `ms` of wall-clock. */
+    function slowCalls(mock: ReturnType<typeof vi.fn>, ms: number): void {
+      const inner = mock.getMockImplementation()!;
+      mock.mockImplementation(async (...args: unknown[]) => {
+        const out = await (inner as (...a: unknown[]) => Promise<unknown>)(...args);
+        vi.setSystemTime(Date.now() + ms);
+        return out;
+      });
+    }
+
+    it("the product walk stops at its deadline: truncated coverage, total read, disclosure shown", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+      simulateCatalog(7213);
+      slowCalls(mockFetchProductAuditData, 4 * MIN);
+      simulateRedirects(300);
+      mockFetchProductsTotal.mockResolvedValue(7213);
+
+      await runScanTheme();
+
+      // Steps end at +4, +8, +12 min: the third ends past the 10 min deadline.
+      expect(PRODUCT_WALK_TIME_BUDGET_MS).toBe(10 * MIN);
+      expect(mockFetchProductAuditData).toHaveBeenCalledTimes(3);
+      expect(finalized().walkCoverage.products).toEqual({
+        checked: 1500,
+        total: 7213,
+        truncated: true,
+        lastId: "gid://shopify/Product/1500",
+      });
+      const notices = walkCoverageNotices(parseWalkCoverage(finalized().walkCoverage));
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toContain("This scan checked the first 1,500.");
+      const [signal] = mockRecordOpsEvent.mock.calls[0];
+      expect(signal.metadata.truncatedWalks).toEqual(["products"]);
+      // The redirect walk has its own budget, counted from its own start.
+      expect(finalized().walkCoverage.redirects).toMatchObject({ checked: 300, truncated: false });
+    });
+
+    it("no step pages past the walk deadline, even inside its 15 s step budget", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+      simulateCatalog(7213);
+      slowCalls(mockFetchProductAuditData, 9 * MIN + 55_000);
+
+      await runScanTheme();
+
+      const deadlines = mockFetchProductAuditData.mock.calls.map(
+        (c) => (c[2] as { deadline: number }).deadline,
+      );
+      // Step 1 starts at T0 (step budget applies); step 2 starts 5 s before the
+      // walk deadline, so its page deadline is the walk deadline, not +15 s.
+      expect(deadlines).toEqual([T0 + WALK_STEP_TIME_BUDGET_MS, T0 + PRODUCT_WALK_TIME_BUDGET_MS]);
+    });
+
+    it("the redirect walk stops at its own 4 min deadline", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+      simulateRedirects(12_400);
+      slowCalls(mockFetchRedirects, 1.5 * MIN);
+      mockFetchRedirectsTotal.mockResolvedValue(12_400);
+
+      await runScanTheme();
+
+      expect(REDIRECT_WALK_TIME_BUDGET_MS).toBe(4 * MIN);
+      expect(mockFetchRedirects).toHaveBeenCalledTimes(3);
+      expect(finalized().walkCoverage.redirects).toEqual({
+        checked: 3000,
+        total: 12_400,
+        truncated: true,
+        lastId: "gid://shopify/UrlRedirect/3000",
+      });
+    });
+
+    it("replay is deterministic: later steps use the deadline memoized by step 0", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+      simulateCatalog(7213);
+      mockFetchProductsTotal.mockResolvedValue(7213);
+      // Step 0 ran 11 min ago (memoized); its deadline has passed. A replay
+      // must NOT start a fresh 10 min budget for the remaining steps.
+      const memo = {
+        tagCount: 0,
+        priceCount: 0,
+        metafieldCount: 0,
+        scopeAbsent: false,
+        truncated: false,
+        tagGap: false,
+        priceGap: false,
+        metafieldGap: false,
+        pageCount: 10,
+        throttleSleepMs: 0,
+        walkMs: 1000,
+        cap: 5000,
+        checked: 500,
+        next: { after: "c500" },
+        coverage: null,
+        throttle: null,
+        walkDeadline: T0 - MIN,
+        lastId: "gid://shopify/Product/500",
+      };
+      const run = vi.fn(async (name: string, fn: () => unknown) =>
+        name === "product-audit" ? memo : fn(),
+      );
+
+      await runScanTheme(undefined, { run } as never);
+
+      // ONE more step (it always makes progress), then out of time.
+      expect(mockFetchProductAuditData).toHaveBeenCalledTimes(1);
+      expect((mockFetchProductAuditData.mock.calls[0][2] as { deadline: number }).deadline).toBe(
+        T0 - MIN,
+      );
+      expect(finalized().walkCoverage.products).toEqual({
+        checked: 1000,
+        total: 7213,
+        truncated: true,
+        lastId: "gid://shopify/Product/1000",
+      });
+    });
+
+    it("a step that checked nothing past the deadline keeps the walk's last checked ID", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+      simulateCatalog(7213);
+      const simulated = mockFetchProductAuditData.getMockImplementation()!;
+      mockFetchProductAuditData.mockImplementationOnce(simulated);
+      // Step 2 is THROTTLED at once and the walk deadline has passed meanwhile.
+      mockFetchProductAuditData.mockImplementationOnce(async () => {
+        vi.setSystemTime(Date.now() + 11 * MIN);
+        return makeProductAuditData({ hasMore: true, endCursor: "c500", throttleStopped: true });
+      });
+
+      await runScanTheme();
+
+      expect(mockFetchProductAuditData).toHaveBeenCalledTimes(2);
+      expect(finalized().walkCoverage.products).toMatchObject({
+        checked: 500,
+        truncated: true,
+        lastId: "gid://shopify/Product/500",
+      });
+    });
+
+    it("Free is unchanged: one step, the 15 s step budget, the cap truncation as before", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "free" });
+      simulateCatalog(7213);
+      mockFetchProductsTotal.mockResolvedValue(7213);
+
+      await runScanTheme();
+
+      expect(mockFetchProductAuditData).toHaveBeenCalledTimes(1);
+      expect((mockFetchProductAuditData.mock.calls[0][2] as { deadline: number }).deadline).toBe(
+        T0 + WALK_STEP_TIME_BUDGET_MS,
+      );
+      expect(finalized().walkCoverage.products).toEqual({
+        checked: 500,
+        total: 7213,
+        truncated: true,
+        lastId: "gid://shopify/Product/500",
+      });
+    });
   });
 
   it("keeps every walk step's output far under the step budget at the Pro worst case", async () => {
