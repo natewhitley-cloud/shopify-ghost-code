@@ -296,14 +296,21 @@ function walkChecked(
  * covered: it walked the Free caps, so when the current scan checked more
  * records than that, the extra records were never looked at. Their current
  * findings must not be "new" (the first scan after a paid cap rises).
+ *
+ * Per walk (audit #4): a baseline with coverage but no key for a walk is
+ * legacy for THAT walk (a run that straddled the gc-747u deploy recorded only
+ * its new-code walk). A walk that did not run for want of a scope also has no
+ * key, but its types are already "not new" via its skippedCategories.
  */
 function legacyBaselineWalkGaps(
   current: ScanWalkCoverage | null,
   baseline: ScanWalkCoverage | null,
 ): string[] {
-  if (baseline !== null || current === null) return [];
+  if (current === null) return [];
   return (Object.keys(LEGACY_WALK_CAPS) as WalkName[]).flatMap((walk) =>
-    (current[walk]?.checked ?? 0) > LEGACY_WALK_CAPS[walk] ? [...WALK_FINDING_TYPES[walk]] : [],
+    baseline?.[walk] === undefined && (current[walk]?.checked ?? 0) > LEGACY_WALK_CAPS[walk]
+      ? [...WALK_FINDING_TYPES[walk]]
+      : [],
   );
 }
 

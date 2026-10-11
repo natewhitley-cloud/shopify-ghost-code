@@ -1461,16 +1461,24 @@ export const scanTheme = inngest.createFunction(
       const redirectsMs = Date.now() - redirectsStart;
 
       // What the capped walks covered (gc-747u), for the differ and the scan
-      // page disclosure. Only walks that ran get a key. A run whose first walk
-      // step was memoized before gc-747u (no `cap` in its output) walked the
-      // old Free caps without recording a window: leave the column NULL so the
-      // scan reads as legacy, never as "fully covered".
+      // page disclosure. Only walks that ran get a key. A walk whose first step
+      // was memoized before gc-747u (no `cap` in its output) walked the old
+      // Free caps without recording a window, so it gets no key: per walk
+      // (audit #4), so a run that straddled the deploy keeps the other walk's
+      // window. The differ reads a missing key in a baseline as legacy for that
+      // walk. Both walks old: the column stays NULL (a legacy scan).
+      const productWalkNew = productChunks[0].cap !== undefined;
+      const redirectWalkNew = redirectChunks[0].cap !== undefined;
       const walkCoverage: ScanWalkCoverage | undefined =
-        productChunks[0].cap === undefined || redirectChunks[0].cap === undefined
+        !productWalkNew && !redirectWalkNew
           ? undefined
           : {
-              ...(productResult.coverage ? { products: productResult.coverage } : {}),
-              ...(redirectResult.coverage ? { redirects: redirectResult.coverage } : {}),
+              ...(productWalkNew && productResult.coverage
+                ? { products: productResult.coverage }
+                : {}),
+              ...(redirectWalkNew && redirectResult.coverage
+                ? { redirects: redirectResult.coverage }
+                : {}),
             };
 
       // Step 9: Live-price audit for stale static JSON-LD (optional — requires

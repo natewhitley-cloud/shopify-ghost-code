@@ -4946,7 +4946,7 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
     expect(persisted.some((f) => f.filename.startsWith("redirects/bulk/"))).toBe(false);
   });
 
-  it("a run memoized before gc-747u records NO walk coverage (stays legacy, never 'fully covered')", async () => {
+  it("a product walk memoized before gc-747u records no PRODUCT coverage (stays legacy for that walk)", async () => {
     // The pre-deploy "product-audit" output had no cap/checked/next/coverage.
     const oldMemo = {
       tagCount: 0,
@@ -4964,13 +4964,63 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
       name === "product-audit" ? oldMemo : fn(),
     );
 
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateRedirects(12_400);
+    mockFetchRedirectsTotal.mockResolvedValue(12_400);
+
     await runScanTheme(undefined, { run } as never);
 
     expect(mockFetchProductAuditData).not.toHaveBeenCalled();
+    // Audit #4: the redirect walk ran the new code, so ITS window is kept;
+    // only the old-code product walk is left out (legacy for that walk).
+    expect(finalized().walkCoverage).toEqual({
+      redirects: {
+        checked: 10_000,
+        total: 12_400,
+        truncated: true,
+        lastId: "gid://shopify/UrlRedirect/10000",
+      },
+    });
+    const [signal] = mockRecordOpsEvent.mock.calls[0];
+    expect(signal.metadata.truncatedWalks).toEqual(["products", "redirects"]);
+  });
+
+  it("both walks memoized before gc-747u: NO walk coverage (the column stays NULL, legacy)", async () => {
+    const oldProducts = {
+      tagCount: 0,
+      priceCount: 0,
+      metafieldCount: 0,
+      scopeAbsent: false,
+      truncated: false,
+      tagGap: false,
+      priceGap: false,
+      metafieldGap: false,
+      pageCount: 2,
+      throttleSleepMs: 0,
+    };
+    const oldRedirects = { findingCount: 0, skipped: false, capped: false };
+    const run = vi.fn(async (name: string, fn: () => unknown) =>
+      name === "product-audit" ? oldProducts : name === "redirect-audit" ? oldRedirects : fn(),
+    );
+
+    await runScanTheme(undefined, { run } as never);
+
     // undefined = finalizeScan leaves the column NULL (written only when supplied).
     expect(finalized().walkCoverage).toBeUndefined();
-    const [signal] = mockRecordOpsEvent.mock.calls[0];
-    expect(signal.metadata.truncatedWalks).toEqual(["products"]);
+  });
+
+  it("a redirect walk memoized before gc-747u keeps the product window", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateCatalog(700);
+    const run = vi.fn(async (name: string, fn: () => unknown) =>
+      name === "redirect-audit" ? { findingCount: 0, skipped: false, capped: false } : fn(),
+    );
+
+    await runScanTheme(undefined, { run } as never);
+
+    expect(finalized().walkCoverage).toEqual({
+      products: { checked: 700, total: null, truncated: false, lastId: null },
+    });
   });
 
   it("a THROTTLED stop on the walk's first request resumes from the start, not truncated (audit #2)", async () => {
