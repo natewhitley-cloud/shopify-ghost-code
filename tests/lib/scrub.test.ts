@@ -131,3 +131,38 @@ describe("nested query-param recursion is bounded (ft-edm M1)", () => {
     ).toContain("shopify-reload=%2Fapp");
   });
 });
+
+describe("store speed report log lines (gc-wt3y S3)", () => {
+  it("keeps the pagespeed log fields intact", () => {
+    const line = {
+      function: "speed-report",
+      event: "pagespeed_call",
+      shopId: "shop-1",
+      reportId: "rep-1",
+      page: "home",
+      host: "paw-naturals.example",
+      outcome: "document_failed",
+      httpStatus: 400,
+      durationMs: 31_250,
+      calls: 4,
+    };
+    expect(scrubContext(line)).toEqual(line);
+  });
+
+  it("still redacts a `key` field and a `?key=` query param (the PageSpeed API key's name)", () => {
+    expect(scrubContext({ key: "AIzaSECRET" }).key).toBe("[REDACTED]");
+    expect(scrubContext({ KEY: "AIzaSECRET" }).KEY).toBe("[REDACTED]");
+    const url = scrubString(
+      "https://www.googleapis.com/pagespeedonline/v5/runPagespeed?url=x&key=AIzaSECRET",
+    );
+    expect(url).not.toContain("AIzaSECRET");
+    expect(url).toContain("key=[REDACTED]");
+  });
+
+  it("matches `key` exactly, not as a substring of operational names", () => {
+    expect(scrubContext({ monkeyCount: 3, keyboard: "qwerty" })).toEqual({
+      monkeyCount: 3,
+      keyboard: "qwerty",
+    });
+  });
+});
