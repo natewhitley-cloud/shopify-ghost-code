@@ -20,6 +20,7 @@ import {
   checkRateLimit,
   checkThrottleStatusFromExtensions,
   isThrottledError,
+  parseActualQueryCost,
   parseRequestedQueryCost,
   rateLimitSleepMs,
   throttleSnapshot,
@@ -65,6 +66,9 @@ export type GraphQLConnection<TNode> = {
  *                        audit #3). A deadline stop skips the rate-limit wait, so
  *                        a chunked caller passes this to the next step's
  *                        `initialThrottle` and the wait happens there instead.
+ *   - `cost`:            query cost over the pages counted in `pageCount`
+ *                        (gc-747u audit #7): max + sum of `requestedQueryCost`
+ *                        (avg = sum / pageCount) and the sum of `actualQueryCost`.
  */
 export type PaginateStats = {
   pageCount: number;
@@ -75,7 +79,27 @@ export type PaginateStats = {
   endCursor?: string | null;
   throttleStopped?: boolean;
   throttle?: ThrottleSnapshot | null;
+  cost?: QueryCostStats;
 };
+
+/** Query cost over a walk's successful pages (gc-747u audit #7). */
+export type QueryCostStats = {
+  requestedMax: number;
+  requestedSum: number;
+  actualSum: number;
+};
+
+/** Combine per-step cost stats into one walk's (absent = no pages). */
+export function sumQueryCost(parts: Array<QueryCostStats | null | undefined>): QueryCostStats {
+  return parts.reduce<QueryCostStats>(
+    (total, c) => ({
+      requestedMax: Math.max(total.requestedMax, c?.requestedMax ?? 0),
+      requestedSum: total.requestedSum + (c?.requestedSum ?? 0),
+      actualSum: total.actualSum + (c?.actualSum ?? 0),
+    }),
+    { requestedMax: 0, requestedSum: 0, actualSum: 0 },
+  );
+}
 
 /** Minimal shape of the JSON envelope returned by `admin.graphql`. */
 type GraphQLResponseJson = {
@@ -288,6 +312,15 @@ export async function paginateConnection<TNode, TResult>(
     if (stats) {
       stats.pageCount += 1;
       stats.nodeCount += nodes.length;
+      const requested = parseRequestedQueryCost(json.extensions);
+      stats.cost = sumQueryCost([
+        stats.cost,
+        {
+          requestedMax: requested,
+          requestedSum: requested,
+          actualSum: parseActualQueryCost(json.extensions),
+        },
+      ]);
       stats.endCursor = pageInfo.endCursor ?? null;
       stats.hasMore = pageInfo.hasNextPage === true;
     }

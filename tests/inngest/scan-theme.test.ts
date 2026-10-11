@@ -5371,6 +5371,50 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
     });
   });
 
+  it("reports per-walk query cost and throttle sleep in the scan_signal (audit #7)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateCatalog(1200);
+    simulateRedirects(1500);
+    const products = mockFetchProductAuditData.getMockImplementation()!;
+    let call = 0;
+    mockFetchProductAuditData.mockImplementation(async (...args: unknown[]) => {
+      const out = (await (products as (...a: unknown[]) => Promise<{ pageCount: number }>)(
+        ...args,
+      )) as { pageCount: number };
+      call += 1;
+      return {
+        ...out,
+        throttleSleepMs: 1000 * call,
+        cost: {
+          requestedMax: 600 + call,
+          requestedSum: 600 * out.pageCount,
+          actualSum: 100 * call,
+        },
+      };
+    });
+    const redirects = mockFetchRedirects.getMockImplementation()!;
+    mockFetchRedirects.mockImplementation(async (...args: unknown[]) => {
+      const out = await (redirects as (...a: unknown[]) => Promise<unknown>)(...args);
+      const stats = args[2] as { pageCount: number; throttleSleepMs: number; cost?: unknown };
+      stats.throttleSleepMs += 7;
+      stats.cost = { requestedMax: 52, requestedSum: 52 * 20, actualSum: 30 };
+      return out;
+    });
+
+    await runScanTheme();
+
+    const [signal] = mockRecordOpsEvent.mock.calls[0];
+    // Products: 3 steps, pages 10 + 10 + 4 = 24, requested 600 each.
+    expect(signal.metadata.queryCost).toEqual({
+      products: { requestedMax: 603, requestedAvg: 600, actualSum: 600 },
+      // Redirects: 2 steps x 20 pages at 52 (the simulated stats count 30 pages).
+      redirects: { requestedMax: 52, requestedAvg: Math.round(2080 / 30), actualSum: 60 },
+    });
+    expect(signal.metadata.walkThrottleSleepMs).toEqual({ products: 6000, redirects: 14 });
+    // The existing combined field is unchanged.
+    expect(signal.metadata.throttleSleepMs).toBe(6014);
+  });
+
   it("keeps every walk step's output far under the step budget at the Pro worst case", async () => {
     mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
     // 5,000 products x (100 variants + 50 x 2 KB metafields) and 10,000

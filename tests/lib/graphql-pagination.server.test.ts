@@ -779,3 +779,46 @@ describe("paginateConnection throttle carry-over between steps (gc-747u #3)", ()
     expect(stats.throttle).toMatchObject({ currentlyAvailable: 0, restoreRate: 50 });
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-747u audit #7: per-walk query cost observability
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection query-cost stats (gc-747u #7)", () => {
+  const costPage = (requested: number, actual: number, hasNextPage: boolean) => ({
+    json: vi.fn().mockResolvedValue({
+      data: { items: { nodes: [{ id: "a" }], pageInfo: { hasNextPage, endCursor: "c" } } },
+      extensions: {
+        cost: {
+          requestedQueryCost: requested,
+          actualQueryCost: actual,
+          throttleStatus: { maximumAvailable: 2000, currentlyAvailable: 1900, restoreRate: 100 },
+        },
+      },
+    }),
+  });
+
+  it("records max + sum of requested cost and the sum of actual cost over successful pages", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(costPage(652, 120, true))
+      .mockResolvedValueOnce(
+        errorPage([{ extensions: { code: "THROTTLED" } }], {
+          currentlyAvailable: 1900,
+          restoreRate: 100,
+        }),
+      )
+      .mockResolvedValueOnce(costPage(452, 80, false));
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    await paginateConnection({ ...baseOptions(graphql), stats });
+
+    expect(stats.pageCount).toBe(2);
+    expect(stats.cost).toEqual({ requestedMax: 652, requestedSum: 1104, actualSum: 200 });
+  });
+});

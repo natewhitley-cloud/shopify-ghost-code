@@ -10,6 +10,8 @@ import {
   type GraphQLConnection,
   type PaginateStats,
   paginateConnection,
+  type QueryCostStats,
+  sumQueryCost,
 } from "../lib/graphql-pagination.server";
 import type { ThrottleSnapshot } from "../lib/rate-limit-monitor.server";
 import { PRODUCT_AUDIT_CAP } from "../lib/scan-limits";
@@ -93,6 +95,8 @@ export type ProductAuditData = {
   throttleStopped: boolean;
   /** Last throttle status seen, for the next step's first wait (audit #3). */
   throttle: ThrottleSnapshot | null;
+  /** Query cost of this call's pages (audit #7). */
+  cost: QueryCostStats;
 };
 
 // ---------------------------------------------------------------------------
@@ -283,6 +287,7 @@ export async function fetchProductAuditData(
     endCursor: stats.endCursor ?? null,
     throttleStopped: stats.throttleStopped === true,
     throttle: stats.throttle ?? null,
+    cost: sumQueryCost([stats.cost]),
   };
 }
 

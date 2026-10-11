@@ -114,8 +114,24 @@ export function isThrottledError(error: GraphQLErrorLike | null | undefined): bo
  * running it, so this is the headroom the next same-shaped page needs.
  */
 export function parseRequestedQueryCost(extensions: unknown): number {
-  const cost = (extensions as { cost?: { requestedQueryCost?: unknown } } | null | undefined)?.cost;
-  return typeof cost?.requestedQueryCost === "number" ? cost.requestedQueryCost : 0;
+  return parseCostField(extensions, "requestedQueryCost");
+}
+
+/**
+ * The `actualQueryCost` a GraphQL response reports (gc-747u audit #7), or 0
+ * when absent: what the page really drew from the bucket (walk observability).
+ */
+export function parseActualQueryCost(extensions: unknown): number {
+  return parseCostField(extensions, "actualQueryCost");
+}
+
+function parseCostField(
+  extensions: unknown,
+  field: "requestedQueryCost" | "actualQueryCost",
+): number {
+  const cost = (extensions as { cost?: Record<string, unknown> } | null | undefined)?.cost;
+  const value = cost?.[field];
+  return typeof value === "number" ? value : 0;
 }
 
 /**

@@ -58,7 +58,11 @@
 import { FindingType, type Prisma, ScanOrigin, ScanStatus } from "@prisma/client";
 import { NonRetriableError } from "inngest";
 
-import type { PaginateStats } from "../../app/lib/graphql-pagination.server";
+import {
+  type PaginateStats,
+  type QueryCostStats,
+  sumQueryCost,
+} from "../../app/lib/graphql-pagination.server";
 import { logger } from "../../app/lib/logger.server";
 import type { ThrottleSnapshot } from "../../app/lib/rate-limit-monitor.server";
 import {
@@ -327,6 +331,8 @@ type ProductChunkResult = {
   throttle: ThrottleSnapshot | null;
   /** Epoch ms the whole walk stops paging, set ONCE by step 0 (audit #1). */
   walkDeadline: number;
+  /** Query cost of this step's pages (audit #7). */
+  cost: QueryCostStats;
   /** GID of the last product checked so far, across every step. */
   lastId: string | null;
 };
@@ -384,6 +390,15 @@ async function laterStepDeleteScope(
   return { OR: [{ filename: { in: ownFilenames } }, { id: { in: pastBoundary } }] };
 }
 
+/** One walk's query cost for the scan_signal (audit #7): avg over its pages. */
+function walkCostSignal(cost: QueryCostStats, pageCount: number) {
+  return {
+    requestedMax: cost.requestedMax,
+    requestedAvg: pageCount > 0 ? Math.round(cost.requestedSum / pageCount) : 0,
+    actualSum: cost.actualSum,
+  };
+}
+
 /**
  * Deadlines for one walk step (gc-747u audit #1). `walk` is the whole walk's
  * deadline: step 0 sets it (now + budget) and returns it in its memoized
@@ -438,6 +453,7 @@ async function runProductAuditChunk(opts: {
     throttle: null,
     walkDeadline: deadlines.walk,
     lastId: opts.lastIdSoFar,
+    cost: sumQueryCost([]),
   });
 
   const db = (await import("../../app/db.server")).default;
@@ -606,6 +622,7 @@ async function runProductAuditChunk(opts: {
     throttle: walk.throttle,
     walkDeadline: deadlines.walk,
     lastId,
+    cost: walk.cost,
   };
 }
 
@@ -628,6 +645,8 @@ type RedirectChunkResult = {
   throttle: ThrottleSnapshot | null;
   /** Epoch ms the whole walk stops paging, set ONCE by step 0 (audit #1). */
   walkDeadline: number;
+  /** Query cost of this step's pages (audit #7). */
+  cost: QueryCostStats;
   /** GID of the last redirect checked so far, across every step. */
   lastId: string | null;
 };
@@ -682,6 +701,7 @@ async function runRedirectAuditChunk(opts: {
     throttle: null,
     walkDeadline: deadlines.walk,
     lastId: opts.lastIdSoFar,
+    cost: sumQueryCost([]),
   });
 
   const db = (await import("../../app/db.server")).default;
@@ -800,6 +820,7 @@ async function runRedirectAuditChunk(opts: {
     throttle: stats.throttle ?? null,
     walkDeadline: deadlines.walk,
     lastId,
+    cost: sumQueryCost([stats.cost]),
   };
 }
 
@@ -1407,6 +1428,7 @@ export const scanTheme = inngest.createFunction(
         pageCount: sumProducts((c) => c.pageCount),
         throttleSleepMs: sumProducts((c) => c.throttleSleepMs),
         walkMs: sumProducts((c) => c.walkMs ?? 0),
+        cost: sumQueryCost(productChunks.map((c) => c.cost)),
         steps: productChunks.length,
         // Absent on a run memoized before gc-747u: no coverage recorded.
         coverage: productChunk.coverage ?? null,
@@ -1499,6 +1521,7 @@ export const scanTheme = inngest.createFunction(
         pageCount: sumRedirects((c) => c.pageCount ?? 0),
         throttleSleepMs: sumRedirects((c) => c.throttleSleepMs ?? 0),
         walkMs: sumRedirects((c) => c.walkMs ?? 0),
+        cost: sumQueryCost(redirectChunks.map((c) => c.cost)),
         steps: redirectChunks.length,
         // Absent on a run memoized before gc-747u: no coverage recorded.
         coverage: redirectChunk.coverage ?? null,
@@ -2208,6 +2231,17 @@ export const scanTheme = inngest.createFunction(
               // true on replay, unlike phaseMs) and how many steps each walk took.
               walkMs: { products: productResult.walkMs, redirects: redirectResult.walkMs },
               walkSteps: { products: productResult.steps, redirects: redirectResult.steps },
+              // gc-747u audit #7: what each walk's pages cost and how long it
+              // waited on the rate limit, so the first real Pro scan confirms
+              // the walk-duration estimate behind the walk time budgets.
+              queryCost: {
+                products: walkCostSignal(productResult.cost, productResult.pageCount),
+                redirects: walkCostSignal(redirectResult.cost, redirectResult.pageCount),
+              },
+              walkThrottleSleepMs: {
+                products: productResult.throttleSleepMs,
+                redirects: redirectResult.throttleSleepMs,
+              },
               // Step-output bounds (gc-4ce): a cap dropped dangling handles /
               // occurrences, the byte budget dropped ALL dangling candidates, or
               // the static JSON-LD candidate cap dropped some.
