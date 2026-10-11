@@ -173,8 +173,8 @@ describe("pickSummarySpeed", () => {
     expect(r).toMatchObject({ reportId: "r3", scoreDelta: 10 });
   });
 
-  it("uses the newest COMPLETED report when the latest is RUNNING / FAILED / PARTIAL", () => {
-    for (const status of ["RUNNING", "FAILED", "PARTIAL", "UNAVAILABLE_PASSWORD"]) {
+  it("skips a newer report whose status has no results (RUNNING / FAILED / password / budget)", () => {
+    for (const status of ["RUNNING", "FAILED", "UNAVAILABLE_PASSWORD", "SKIPPED_BUDGET"]) {
       const r = pick([
         row("latest", new Date(NOW.getTime() - DAY), [home(99, [RECHARGE])], status),
         row("r1", LAST_WEEK, [home(62, [KLAVIYO])]),
@@ -183,9 +183,29 @@ describe("pickSummarySpeed", () => {
     }
   });
 
-  it("no completed report => no section", () => {
+  it("MED-5: a newer PARTIAL report with a homepage result beats an older COMPLETED one", () => {
+    const r = pick([
+      row("partial", new Date(NOW.getTime() - DAY), [home(70, [KLAVIYO])], "PARTIAL"),
+      row("r1", LAST_WEEK, [home(60, [KLAVIYO])]),
+    ]);
+    expect(r).toMatchObject({ reportId: "partial", score: 70, scoreDelta: 10 });
+  });
+
+  it("MED-5: a newer report (PARTIAL or COMPLETED) WITHOUT a homepage result is skipped", () => {
+    const productOnly = { ...home(80, [RECHARGE]), page: "product" as const };
+    const failedHome = { ...home(null), status: "FAILED" as const, metrics: undefined };
+    for (const status of ["PARTIAL", "COMPLETED"]) {
+      const r = pick([
+        row("newer", new Date(NOW.getTime() - DAY), [failedHome, productOnly], status),
+        row("r1", LAST_WEEK, [home(62, [KLAVIYO])]),
+      ]);
+      expect(r).toMatchObject({ reportId: "r1", score: 62 });
+    }
+  });
+
+  it("no report with results and a homepage => no section", () => {
     expect(pick([])).toBeNull();
-    expect(pick([row("r1", LAST_WEEK, [home(62)], "PARTIAL")])).toBeNull();
+    expect(pick([row("r1", LAST_WEEK, [], "PARTIAL")])).toBeNull();
     expect(pick([row("r1", LAST_WEEK, [], "FAILED")])).toBeNull();
   });
 

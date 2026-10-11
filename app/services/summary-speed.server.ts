@@ -5,7 +5,8 @@
  *   - the speed feature is live (SPEED_REPORT_LIVE_ENABLED), checked first so
  *     a dark feature reads nothing;
  *   - the shop's plan includes the speed report (Professional);
- *   - a COMPLETED report exists from the last SUMMARY_SPEED_MAX_AGE_MS (8 days);
+ *   - the newest report with results (COMPLETED or PARTIAL) and a homepage
+ *     result is from the last SUMMARY_SPEED_MAX_AGE_MS (8 days);
  *   - that report is newer than the last summary sent, so one report is never
  *     emailed twice (e.g. a week whose speed run failed would otherwise repeat
  *     last week's report, which is still inside the 8-day window);
@@ -31,7 +32,6 @@ import {
   formatSeconds,
   isSpeedReportWithResults,
   readSpeedPages,
-  SPEED_REPORT_STATUS,
   type SpeedCostRow,
   type SpeedPageResult,
   speedPageDelta,
@@ -95,15 +95,26 @@ export function pickSummarySpeed(
   rows: readonly SpeedReportRowLike[],
   opts: { now: Date; lastSummarySentAt: Date | null },
 ): SummarySpeed | null {
-  const index = rows.findIndex((r) => r.status === SPEED_REPORT_STATUS.COMPLETED);
-  if (index === -1) return null;
+  // The newest report with results (COMPLETED or PARTIAL) AND a homepage
+  // result (audit MED-5: a newer PARTIAL one is not skipped for an older
+  // COMPLETED one).
+  let index = -1;
+  let home: SpeedPageResult | null = null;
+  for (const [i, row] of rows.entries()) {
+    if (!isSpeedReportWithResults(row.status)) continue;
+    home = homeOf(readSpeedPages(row.pages));
+    if (home) {
+      index = i;
+      break;
+    }
+  }
+  if (index === -1 || !home) return null;
   const report = rows[index];
   if (opts.now.getTime() - report.createdAt.getTime() > SUMMARY_SPEED_MAX_AGE_MS) return null;
   if (opts.lastSummarySentAt && report.createdAt.getTime() <= opts.lastSummarySentAt.getTime()) {
     return null;
   }
-  const home = homeOf(readSpeedPages(report.pages));
-  if (!home || home.metrics!.score === null) return null;
+  if (home.metrics!.score === null) return null;
 
   // The baseline: the newest EARLIER report with a homepage result.
   let previous: SpeedPageResult | null = null;
