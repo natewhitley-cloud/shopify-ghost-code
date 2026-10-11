@@ -176,6 +176,21 @@ function formatTestDate(d: Date): string {
   });
 }
 
+/** Longest app name the email shows (security LOW-3). */
+export const SUMMARY_SPEED_APP_NAME_MAX = 80;
+
+/**
+ * An app name as the email shows it (security LOW-3): every run of control
+ * characters (C0 incl. CR/LF/tab, DEL, C1) becomes one space, so a name can
+ * never start a new line in either part, then it is trimmed and cut to
+ * SUMMARY_SPEED_APP_NAME_MAX characters.
+ */
+function emailAppName(name: string): string {
+  // eslint-disable-next-line no-control-regex
+  const clean = name.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ").trim();
+  return clean.slice(0, SUMMARY_SPEED_APP_NAME_MAX).trimEnd();
+}
+
 /**
  * The section's lines:
  *   "Last speed test (Oct 4, 2026): your homepage scored 62 / 100, up 5 from the test before."
@@ -196,7 +211,7 @@ export function summarySpeedLines(speed: SummarySpeed): string[] {
   ];
   if (speed.topApp) {
     lines.push(
-      `${speed.topApp.name} used ${formatSeconds(speed.topApp.mainThreadMs)} of processing time and ${formatBytes(speed.topApp.transferBytes)} on your homepage.`,
+      `${emailAppName(speed.topApp.name)} used ${formatSeconds(speed.topApp.mainThreadMs)} of processing time and ${formatBytes(speed.topApp.transferBytes)} on your homepage.`,
     );
   }
   return lines;

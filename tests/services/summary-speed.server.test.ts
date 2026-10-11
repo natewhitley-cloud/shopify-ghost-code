@@ -319,6 +319,36 @@ describe("summarySpeedLines", () => {
     );
   });
 
+  describe("app name hygiene (security LOW-3)", () => {
+    const withName = (name: string) =>
+      summarySpeedLines(speed({ topApp: { ...KLAVIYO, name } }))[1];
+    const nameIn = (line: string) => line.slice(0, line.indexOf(" used 4.0 s"));
+
+    it("truncates the app name to 80 characters", () => {
+      const line = withName("A".repeat(200));
+      expect(nameIn(line)).toBe("A".repeat(80));
+      expect(withName("B".repeat(80))).toBe(
+        `${"B".repeat(80)} used 4.0 s of processing time and 621 KB on your homepage.`,
+      );
+    });
+
+    it("removes CR, LF and other control characters (no injected lines)", () => {
+      const line = withName("Evil\r\nBcc: x@example.com\u0000\u0007\t\u007f\u0085App");
+      const control = [...line].filter((ch) => {
+        const code = ch.charCodeAt(0);
+        return code <= 0x1f || (code >= 0x7f && code <= 0x9f);
+      });
+      expect(control).toEqual([]);
+      expect(nameIn(line)).toBe("Evil Bcc: x@example.com App");
+    });
+
+    it("control characters around the name leave no stray spaces", () => {
+      expect(withName("\r\n Klaviyo \n")).toBe(
+        "Klaviyo used 4.0 s of processing time and 621 KB on your homepage.",
+      );
+    });
+  });
+
   it("no app line when no app added processing time", () => {
     expect(summarySpeedLines(speed({ topApp: null }))).toHaveLength(1);
   });

@@ -765,6 +765,27 @@ describe("body", () => {
       expect(h).not.toContain("<b>");
     });
 
+    it("a CR/LF in the app name never reaches either part as a new line (security LOW-3)", () => {
+      const opts = {
+        changes: changes({
+          inactiveApps: [],
+          cleanedApps: [],
+          speed: {
+            ...SPEED,
+            topApp: { ...SPEED.topApp!, name: `Evil\r\nInjected${"x".repeat(100)}` },
+          },
+        }),
+        speedUrl: SPEED_URL,
+      };
+      const t = text(opts);
+      expect(t).not.toContain("\r");
+      expect(t.split("\n").some((l) => l.startsWith("Injected"))).toBe(false);
+      expect(t).toContain(`Evil Injected${"x".repeat(67)} used 4.0 s`);
+      const h = html(opts);
+      expect(h).not.toMatch(/[\r]|Evil\n/);
+      expect(h).toContain(`Evil Injected${"x".repeat(67)} used 4.0 s`);
+    });
+
     it("no speed section without a speed change, or without the link", () => {
       for (const t of [
         text(),
