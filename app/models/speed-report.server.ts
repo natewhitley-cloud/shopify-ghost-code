@@ -6,6 +6,7 @@
 import { Prisma } from "@prisma/client";
 
 import db from "../db.server";
+import { OPS_EVENT_TYPES } from "./ops-event.server";
 import {
   RUN_NOW_COOLDOWN_MS,
   SPEED_REPORT_STATUS,
@@ -25,6 +26,71 @@ export async function createSpeedReport(shopId: string, origin: SpeedReportOrigi
     data: { shopId, origin, status: SPEED_REPORT_STATUS.RUNNING },
     select: { id: true, createdAt: true },
   });
+}
+
+/**
+ * The report row for this Inngest run (a run with no Run-now row: the weekly
+ * batch), created RUNNING and started now. Keyed on the run (unique `runId`):
+ * a retried prepare step finds the row it already made instead of leaving an
+ * orphan RUNNING one (gc-wt3y #8).
+ */
+export async function startSpeedReportForRun(
+  shopId: string,
+  origin: SpeedReportOrigin,
+  runId: string,
+  now: Date,
+) {
+  return db.speedReport.upsert({
+    where: { runId },
+    create: {
+      shopId,
+      origin,
+      status: SPEED_REPORT_STATUS.RUNNING,
+      runId,
+      startedAt: now,
+    },
+    update: {},
+    select: { id: true },
+  });
+}
+
+/**
+ * The worker picked up a MANUAL report (created by Run now): stamp its run
+ * and start time. False when the row is gone (shop redacted) or no longer
+ * RUNNING; nothing is changed then.
+ */
+export async function startManualSpeedReport(
+  reportId: string,
+  runId: string,
+  now: Date,
+): Promise<boolean> {
+  const { count } = await db.speedReport.updateMany({
+    where: { id: reportId, status: SPEED_REPORT_STATUS.RUNNING },
+    data: { runId, startedAt: now },
+  });
+  return count > 0;
+}
+
+/**
+ * Close the report a dead or cancelled run left RUNNING (gc-wt3y #2/#3): by
+ * the run that owned it, or the MANUAL report id when the run never started.
+ * Only a RUNNING row of this shop is touched, so a finished report is never
+ * rewritten. Tolerates a missing row (shop redacted): returns the count.
+ */
+export async function failAbandonedSpeedReport(
+  target: { shopId: string; runId: string; reportId?: string },
+  failureReason: SpeedFailureCode,
+  now: Date,
+): Promise<number> {
+  const { count } = await db.speedReport.updateMany({
+    where: {
+      shopId: target.shopId,
+      status: SPEED_REPORT_STATUS.RUNNING,
+      OR: [{ runId: target.runId }, ...(target.reportId ? [{ id: target.reportId }] : [])],
+    },
+    data: { status: SPEED_REPORT_STATUS.FAILED, failureReason, completedAt: now },
+  });
+  return count;
 }
 
 /** Write a report's final state. */
@@ -67,9 +133,30 @@ export async function getRecentSpeedReports(shopId: string) {
       failureReason: true,
       pages: true,
       createdAt: true,
+      startedAt: true,
       completedAt: true,
     },
   });
+}
+
+/**
+ * Whether this shop already has a speed_report OpsEvent with `reason` since
+ * `since` (used to rate-limit the "not configured" event, gc-wt3y #9).
+ */
+export async function hasRecentSpeedReportEvent(
+  shopDomain: string,
+  reason: SpeedFailureCode,
+  since: Date,
+): Promise<boolean> {
+  const count = await db.opsEvent.count({
+    where: {
+      eventType: OPS_EVENT_TYPES.SPEED_REPORT,
+      key: shopDomain,
+      createdAt: { gte: since },
+      metadata: { path: ["reason"], equals: reason },
+    },
+  });
+  return count > 0;
 }
 
 // ---------------------------------------------------------------------------

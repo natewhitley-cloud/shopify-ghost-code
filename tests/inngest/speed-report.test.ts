@@ -46,6 +46,7 @@ const svc = vi.hoisted(() => ({
   precheckStorefrontPassword: vi.fn(),
   runPageSpeedAttempt: vi.fn(),
   finalizeSpeedReport: vi.fn(),
+  closeAbandonedSpeedReport: vi.fn(),
 }));
 vi.mock("../../app/services/speed-report.server", async (importActual) => {
   const actual = await importActual<typeof import("../../app/services/speed-report.server")>();
@@ -57,6 +58,7 @@ import { unauthenticated } from "../../app/shopify.server";
 import { inngest } from "../../inngest/client";
 import {
   SPEED_REPORT_CRON,
+  speedReportCancelled,
   speedReportRun,
   speedReportWeekly,
 } from "../../inngest/functions/speed-report";
@@ -111,13 +113,92 @@ describe("function config (quota guardrails)", () => {
     expect(SPEED_REPORT_CRON).toBe("10 8 * * 0");
   });
 
-  it("worker: one at a time globally and per shop, 1 retry, finish timeout, manual priority", () => {
+  it("worker: one at a time globally and per shop, 1 retry, start + finish timeouts, manual priority", () => {
     const c = created.find((f) => f.config.id === "speed-report-run")!;
     expect(c.trigger).toEqual({ event: "speed-report/requested" });
     expect(c.config.retries).toBe(1);
     expect(c.config.concurrency).toEqual([{ limit: 1 }, { key: "event.data.shopId", limit: 1 }]);
-    expect(c.config.timeouts).toEqual({ finish: "45m" });
+    expect(c.config.timeouts).toEqual({ start: "6h", finish: "45m" });
     expect((c.config.priority as { run: string }).run).toContain("MANUAL");
+  });
+});
+
+describe("abandoned runs are closed (gc-wt3y #2/#3)", () => {
+  const manual = {
+    name: "speed-report/requested",
+    data: {
+      shopId: "s1",
+      origin: "MANUAL",
+      reportId: "rep-9",
+      runNowClaimedAt: "2026-10-11T11:00:00.000Z",
+      runNowPrevious: null,
+    },
+  };
+
+  it("onFailure (retries exhausted): closes the run's report as worker_failed", async () => {
+    const c = created.find((f) => f.config.id === "speed-report-run")!;
+    const onFailure = c.config.onFailure as (ctx: unknown) => Promise<unknown>;
+    expect(typeof onFailure).toBe("function");
+    await onFailure({
+      event: {
+        name: "inngest/function.failed",
+        data: {
+          function_id: "ghost-code-speed-report-run",
+          run_id: "run-1",
+          error: {},
+          event: manual,
+        },
+      },
+      error: new Error("boom"),
+      step: createMockInngestStep(),
+      logger,
+    });
+    expect(svc.closeAbandonedSpeedReport).toHaveBeenCalledWith(
+      {
+        shopId: "s1",
+        origin: "MANUAL",
+        runId: "run-1",
+        reportId: "rep-9",
+        runNowClaimedAt: "2026-10-11T11:00:00.000Z",
+        runNowPrevious: null,
+      },
+      "worker_failed",
+    );
+  });
+
+  it("a cancelled run (start or finish timeout) is closed as stuck, only for this function", async () => {
+    const c = created.find((f) => f.config.id === "speed-report-cancelled")!;
+    expect(c.trigger).toEqual({
+      event: "inngest/function.cancelled",
+      if: "event.data.function_id == 'ghost-code-speed-report-run'",
+    });
+    const handler = getInngestHandler(speedReportCancelled);
+    await handler({
+      event: {
+        name: "inngest/function.cancelled",
+        data: {
+          function_id: "ghost-code-speed-report-run",
+          run_id: "run-2",
+          event: { ...manual, data: { shopId: "s2", origin: "SCHEDULED" } },
+        },
+      },
+      step: createMockInngestStep(),
+      logger,
+    });
+    expect(svc.closeAbandonedSpeedReport).toHaveBeenCalledWith(
+      { shopId: "s2", origin: "SCHEDULED", runId: "run-2" },
+      "stuck",
+    );
+  });
+
+  it("a cancel event without the original event data is ignored (nothing to close)", async () => {
+    const handler = getInngestHandler(speedReportCancelled);
+    await handler({
+      event: { name: "inngest/function.cancelled", data: { function_id: "x", run_id: "run-3" } },
+      step: createMockInngestStep(),
+      logger,
+    });
+    expect(svc.closeAbandonedSpeedReport).not.toHaveBeenCalled();
   });
 });
 
@@ -202,17 +283,19 @@ describe("speed-report-run (worker)", () => {
     expect(svc.runPageSpeedAttempt).not.toHaveBeenCalled();
   });
 
-  it("passes the MANUAL report id through to prepare", async () => {
+  it("passes the MANUAL report id and the run id through to prepare", async () => {
     const step = createMockInngestStep();
     await handler({
       event: { ...event, data: { shopId: "s1", origin: "MANUAL", reportId: "rep-9" } },
       step,
       logger,
+      runId: "run-7",
     });
     expect(svc.prepareSpeedReportRun).toHaveBeenCalledWith({
       shopId: "s1",
       origin: "MANUAL",
       reportId: "rep-9",
+      runId: "run-7",
     });
   });
 

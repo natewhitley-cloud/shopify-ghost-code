@@ -15,6 +15,10 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 const mockModel = vi.hoisted(() => ({
   createSpeedReport: vi.fn(),
+  startSpeedReportForRun: vi.fn(),
+  startManualSpeedReport: vi.fn(),
+  failAbandonedSpeedReport: vi.fn(),
+  hasRecentSpeedReportEvent: vi.fn(),
   finishSpeedReport: vi.fn(),
   reservePageSpeedCall: vi.fn(),
   claimSpeedReportRunNow: vi.fn(),
@@ -42,6 +46,7 @@ import {
   attemptHaltsRun,
   buildSpeedPageResult,
   checkSpeedReportEligibility,
+  closeAbandonedSpeedReport,
   finalizeSpeedReport,
   isAllowedSpeedTarget,
   precheckStorefrontPassword,
@@ -100,6 +105,9 @@ beforeEach(() => {
   mockDb.shop.findUnique.mockResolvedValue(PRO);
   mockModel.reservePageSpeedCall.mockResolvedValue(true);
   mockModel.createSpeedReport.mockResolvedValue({ id: "rep-1", createdAt: NOW });
+  mockModel.startSpeedReportForRun.mockResolvedValue({ id: "rep-1" });
+  mockModel.startManualSpeedReport.mockResolvedValue(true);
+  mockModel.hasRecentSpeedReportEvent.mockResolvedValue(false);
   logSpies = [
     vi.spyOn(logger, "info").mockImplementation(() => {}),
     vi.spyOn(logger, "warn").mockImplementation(() => {}),
@@ -171,34 +179,85 @@ describe("checkSpeedReportEligibility", () => {
 // ---------------------------------------------------------------------------
 
 describe("prepareSpeedReportRun", () => {
-  it("SCHEDULED + eligible: creates the report row and proceeds", async () => {
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" });
+  const RUN = "run-1";
+  // The worker picks the run up 3 h after the click (queued behind a batch).
+  const STARTED = new Date(NOW.getTime() + 3 * 3_600_000);
+
+  it("SCHEDULED + eligible: starts the run's report row and proceeds", async () => {
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "SCHEDULED",
+      runId: RUN,
+      now: STARTED,
+    });
     expect(r).toEqual({
       proceed: true,
       reportId: "rep-1",
       shopDomain: DOMAIN,
-      startedAt: NOW.toISOString(),
+      startedAt: STARTED.toISOString(),
     });
-    expect(mockModel.createSpeedReport).toHaveBeenCalledWith(SHOP_ID, "SCHEDULED");
+    expect(mockModel.startSpeedReportForRun).toHaveBeenCalledWith(
+      SHOP_ID,
+      "SCHEDULED",
+      RUN,
+      STARTED,
+    );
+    expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
   });
 
-  it("MANUAL with a reportId: uses the action's row, creates none", async () => {
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "MANUAL", reportId: "rep-9" });
-    expect(r).toMatchObject({ proceed: true, reportId: "rep-9" });
+  it("a retried prepare reuses the run's row: the same report, no orphan (gc-wt3y #8)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(PRO);
+    // First attempt: the row is made, then the step dies before returning.
+    mockModel.finishSpeedReport.mockRejectedValueOnce(new Error("db blip"));
+    delete process.env.PAGESPEED_API_KEY;
+    await expect(
+      prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN, now: STARTED }),
+    ).rejects.toThrow("db blip");
+    await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN, now: STARTED });
+    expect(mockModel.startSpeedReportForRun.mock.calls.map((c) => c[2])).toEqual([RUN, RUN]);
     expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
+  });
+
+  it("MANUAL with a reportId: stamps the action's row with the run and the START time (gc-wt3y #3)", async () => {
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "MANUAL",
+      reportId: "rep-9",
+      runId: RUN,
+      now: STARTED,
+    });
+    expect(r).toMatchObject({ proceed: true, reportId: "rep-9", startedAt: STARTED.toISOString() });
+    expect(mockModel.startManualSpeedReport).toHaveBeenCalledWith("rep-9", RUN, STARTED);
+    expect(mockModel.startSpeedReportForRun).not.toHaveBeenCalled();
+  });
+
+  it("MANUAL row gone or no longer RUNNING: stops without a call", async () => {
+    mockModel.startManualSpeedReport.mockResolvedValue(false);
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "MANUAL",
+      reportId: "rep-9",
+      runId: RUN,
+    });
+    expect(r).toEqual({ proceed: false, outcome: "no_report" });
   });
 
   it("flag off: no row, no event", async () => {
     delete process.env.SPEED_REPORT_LIVE_ENABLED;
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" });
+    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN });
     expect(r).toEqual({ proceed: false, outcome: "disabled" });
-    expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
+    expect(mockModel.startSpeedReportForRun).not.toHaveBeenCalled();
     expect(mockRecordOpsEvent).not.toHaveBeenCalled();
   });
 
   it("downgraded since the click: closes the MANUAL row as FAILED/not_eligible", async () => {
     mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" });
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "MANUAL", reportId: "rep-9" });
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "MANUAL",
+      reportId: "rep-9",
+      runId: RUN,
+    });
     expect(r).toEqual({ proceed: false, outcome: "not_in_plan" });
     expect(mockModel.finishSpeedReport).toHaveBeenCalledWith("rep-9", {
       status: "FAILED",
@@ -210,7 +269,7 @@ describe("prepareSpeedReportRun", () => {
 
   it("key missing while flag on: FAILED/not_configured row + a not-configured ops event, no crash", async () => {
     delete process.env.PAGESPEED_API_KEY;
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" });
+    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN });
     expect(r).toEqual({ proceed: false, outcome: "not_configured" });
     expect(mockModel.finishSpeedReport).toHaveBeenCalledWith("rep-1", {
       status: "FAILED",
@@ -233,10 +292,99 @@ describe("prepareSpeedReportRun", () => {
 
   it("a blank key counts as missing", async () => {
     process.env.PAGESPEED_API_KEY = "   ";
-    expect(await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" })).toEqual({
+    expect(
+      await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN }),
+    ).toEqual({
       proceed: false,
       outcome: "not_configured",
     });
+  });
+});
+
+describe("closeAbandonedSpeedReport (gc-wt3y #2/#3)", () => {
+  const base = { shopId: SHOP_ID, runId: "run-1" };
+  const claimedAt = "2026-10-11T11:00:00.000Z";
+  const previous = "2026-10-01T00:00:00.000Z";
+
+  beforeEach(() => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(1);
+  });
+
+  it("MANUAL: closes the row FAILED, writes the ops event and hands the Run-now slot back", async () => {
+    await closeAbandonedSpeedReport(
+      {
+        ...base,
+        origin: "MANUAL",
+        reportId: "rep-9",
+        runNowClaimedAt: claimedAt,
+        runNowPrevious: previous,
+      },
+      "worker_failed",
+      NOW,
+    );
+    expect(mockModel.failAbandonedSpeedReport).toHaveBeenCalledWith(
+      { shopId: SHOP_ID, runId: "run-1", reportId: "rep-9" },
+      "worker_failed",
+      NOW,
+    );
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(
+      SHOP_ID,
+      new Date(claimedAt),
+      new Date(previous),
+    );
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith({
+      eventType: "speed_report",
+      key: DOMAIN,
+      metadata: {
+        status: "FAILED",
+        origin: "MANUAL",
+        calls: 0,
+        durationMs: 0,
+        reason: "worker_failed",
+      },
+    });
+  });
+
+  it("MANUAL first click (no previous claim): the slot goes back to null", async () => {
+    await closeAbandonedSpeedReport(
+      {
+        ...base,
+        origin: "MANUAL",
+        reportId: "rep-9",
+        runNowClaimedAt: claimedAt,
+        runNowPrevious: null,
+      },
+      "stuck",
+      NOW,
+    );
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(
+      SHOP_ID,
+      new Date(claimedAt),
+      null,
+    );
+  });
+
+  it("SCHEDULED: closes by run id, never touches the Run-now slot", async () => {
+    await closeAbandonedSpeedReport({ ...base, origin: "SCHEDULED" }, "stuck", NOW);
+    expect(mockModel.failAbandonedSpeedReport).toHaveBeenCalledWith(
+      { shopId: SHOP_ID, runId: "run-1" },
+      "stuck",
+      NOW,
+    );
+    expect(mockModel.releaseSpeedReportRunNow).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({ reason: "stuck" });
+  });
+
+  it("no RUNNING row (finished, or the shop was redacted): no ops event is written", async () => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(0);
+    await closeAbandonedSpeedReport({ ...base, origin: "SCHEDULED" }, "worker_failed", NOW);
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+  });
+
+  it("row closed but the shop row is gone: no ops event keyed on a redacted shop", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+    await closeAbandonedSpeedReport({ ...base, origin: "SCHEDULED" }, "worker_failed", NOW);
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -931,8 +1079,33 @@ describe("requestSpeedReportRunNow", () => {
     expect(mockModel.createSpeedReport).toHaveBeenCalledWith(SHOP_ID, "MANUAL");
     expect(mockSend).toHaveBeenCalledWith({
       name: "speed-report/requested",
-      data: { shopId: SHOP_ID, origin: "MANUAL", reportId: "rep-7" },
+      data: {
+        shopId: SHOP_ID,
+        origin: "MANUAL",
+        reportId: "rep-7",
+        runNowClaimedAt: NOW.toISOString(),
+        runNowPrevious: null,
+      },
     });
+  });
+
+  it("carries the previous claim so a failed run can hand the slot back", async () => {
+    const prev = new Date("2026-10-01T00:00:00Z");
+    mockModel.getSpeedReportRequestedAt.mockResolvedValue(prev);
+    await requestSpeedReportRunNow(shop, NOW);
+    expect(mockSend.mock.calls[0][0].data.runNowPrevious).toBe(prev.toISOString());
+  });
+
+  it("creating the row fails after the claim: the slot is handed back (gc-wt3y #7)", async () => {
+    const prev = new Date("2026-10-01T00:00:00Z");
+    mockModel.getSpeedReportRequestedAt.mockResolvedValue(prev);
+    mockModel.createSpeedReport.mockRejectedValue(new Error("db down"));
+    await expect(requestSpeedReportRunNow(shop, NOW)).resolves.toEqual({
+      ok: false,
+      error: RUN_NOW_ERRORS.dispatch,
+    });
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(SHOP_ID, NOW, prev);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it.each(["free", "Standard"])("plan %s: refused, nothing claimed or sent", async (plan) => {
@@ -956,6 +1129,20 @@ describe("requestSpeedReportRunNow", () => {
     });
   });
 
+  it("key missing: repeated clicks write at most one not-configured event per hour (gc-wt3y #9)", async () => {
+    delete process.env.PAGESPEED_API_KEY;
+    mockModel.hasRecentSpeedReportEvent.mockResolvedValue(true);
+    const r = await requestSpeedReportRunNow(shop, NOW);
+    expect(r).toEqual({ ok: false, error: "Speed tests aren't available right now." });
+    expect(mockModel.hasRecentSpeedReportEvent).toHaveBeenCalledWith(
+      DOMAIN,
+      "not_configured",
+      new Date(NOW.getTime() - 60 * 60_000),
+    );
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+    expect(mockModel.claimSpeedReportRunNow).not.toHaveBeenCalled();
+  });
+
   it("a run already in progress: refused without claiming", async () => {
     mockModel.getRecentSpeedReports.mockResolvedValue([
       {
@@ -975,7 +1162,7 @@ describe("requestSpeedReportRunNow", () => {
     expect(mockModel.claimSpeedReportRunNow).not.toHaveBeenCalled();
   });
 
-  it("an abandoned RUNNING row does not block a new run", async () => {
+  it("an abandoned RUNNING row (started over an hour ago) does not block a new run", async () => {
     mockModel.getRecentSpeedReports.mockResolvedValue([
       {
         id: "r1",
@@ -984,10 +1171,30 @@ describe("requestSpeedReportRunNow", () => {
         failureReason: null,
         pages: null,
         createdAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
+        startedAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
         completedAt: null,
       },
     ]);
     expect((await requestSpeedReportRunNow(shop, NOW)).ok).toBe(true);
+  });
+
+  it("a run still queued hours after the click blocks a second one (gc-wt3y #3)", async () => {
+    mockModel.getRecentSpeedReports.mockResolvedValue([
+      {
+        id: "r1",
+        origin: "MANUAL",
+        status: "RUNNING",
+        failureReason: null,
+        pages: null,
+        createdAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
+        startedAt: null,
+        completedAt: null,
+      },
+    ]);
+    await expect(requestSpeedReportRunNow(shop, NOW)).resolves.toEqual({
+      ok: false,
+      error: RUN_NOW_ERRORS.running,
+    });
   });
 
   it("within 24h: refused with when the next test is available", async () => {
@@ -1027,7 +1234,11 @@ describe("requestSpeedReportRunNow", () => {
 
 describe("the API key never leaves the request", () => {
   it("across prepare, attempts (ok / error / timeout-ish) and finalize", async () => {
-    const prep = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" });
+    const prep = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "SCHEDULED",
+      runId: "run-1",
+    });
     expect(prep.proceed).toBe(true);
     const attempts: SpeedAttempt[] = [];
     for (const fetchImpl of [

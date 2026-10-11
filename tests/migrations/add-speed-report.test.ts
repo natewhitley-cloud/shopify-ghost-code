@@ -6,7 +6,7 @@
  * cascading Shop FK so shop/redact removes the rows, and the global
  * PageSpeedDailyUsage counter), matching the schema.
  */
-import { readdirSync, readFileSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import { describe, it, expect } from "vitest";
@@ -75,10 +75,5 @@ describe("add_speed_report migration (gc-wt3y)", () => {
       /model SpeedReport \{[\s\S]*?shop\s+Shop\s+@relation\(fields: \[shopId\], references: \[id\], onDelete: Cascade\)/,
     );
     expect(SCHEMA).toMatch(/model PageSpeedDailyUsage \{[\s\S]*?day\s+String\s+@id/);
-  });
-
-  it("is the latest migration", () => {
-    const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
   });
 });

@@ -21,7 +21,11 @@ import { pollThemeChanges } from "../../inngest/functions/poll-theme-changes";
 import { reconcileInstalls } from "../../inngest/functions/reconcile-installs";
 import { scanTheme } from "../../inngest/functions/scan-theme";
 import { snapshotMetrics } from "../../inngest/functions/snapshot-metrics";
-import { speedReportRun, speedReportWeekly } from "../../inngest/functions/speed-report";
+import {
+  speedReportCancelled,
+  speedReportRun,
+  speedReportWeekly,
+} from "../../inngest/functions/speed-report";
 import { weeklyScan } from "../../inngest/functions/weekly-scan";
 
 const handler = serve({
@@ -45,6 +49,7 @@ const handler = serve({
     reconcileInstalls,
     speedReportWeekly,
     speedReportRun,
+    speedReportCancelled,
   ],
 });
 

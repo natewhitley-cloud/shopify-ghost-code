@@ -298,7 +298,14 @@ model SpeedReport {
   pages         Json?
   // PageSpeed calls this run made (counted before each call).
   psiCalls      Int       @default(0)
+  // The Inngest run working on this report (gc-wt3y #2/#8): prepare's retry
+  // reuses the row, the failure/cancel handlers find it. Null until a worker
+  // picks the report up.
+  runId         String?   @unique
   createdAt     DateTime  @default(now())
+  // When the worker started the run (null = still queued). The stuck rule
+  // counts from here, not from the click (gc-wt3y #3).
+  startedAt     DateTime?
   completedAt   DateTime?
 
   @@index([shopId, createdAt])

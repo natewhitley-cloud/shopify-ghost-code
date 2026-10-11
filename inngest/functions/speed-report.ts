@@ -19,6 +19,15 @@
  *     step never re-issues a call; runPageSpeedAttempt never throws for a
  *     Google failure, so a call step is not retried either;
  *   - retries: 1 (a DB blip), finish timeout 45 m: a failed run cannot loop;
+ *   - start timeout 6 h: a run still queued that long is cancelled (a manual
+ *     click can wait behind the Sunday batch at concurrency 1, so this is
+ *     generous; the UI's queued threshold, SPEED_REPORT_QUEUED_STUCK_MS, is
+ *     longer still). NOTE: a Sunday batch that needs more than 6 h of worker
+ *     time single file would get its tail cancelled; revisit this with the
+ *     concurrency when Professional grows;
+ *   - a run that dies (onFailure) or is cancelled (speed-report-cancelled, on
+ *     Inngest's inngest/function.cancelled: timeouts cancel, they do not fail)
+ *     closes its RUNNING report as FAILED and hands a Run-now slot back;
  *   - the global daily budget is reserved before each call (inside the step);
  *   - a password-protected storefront is found BEFORE any call by one
  *     storefront GET (password-check); PageSpeed's final URL / 401 are the
@@ -77,25 +86,36 @@ export const speedReportWeekly = inngest.createFunction(
   }),
 );
 
+export const SPEED_REPORT_RUN_ID = "speed-report-run";
+
+/** Inngest's function_id for the worker: "<app id>-<function id>". */
+const SPEED_REPORT_RUN_FUNCTION_ID = `ghost-code-${SPEED_REPORT_RUN_ID}`;
+
 export const speedReportRun = inngest.createFunction(
   {
-    id: "speed-report-run",
+    id: SPEED_REPORT_RUN_ID,
     name: "Store Speed Report: Run One Shop",
     retries: 1,
     concurrency: [{ limit: 1 }, { key: "event.data.shopId", limit: 1 }],
     // Seconds of queue priority: a merchant waiting on "Run now" goes ahead of
     // scheduled reports queued up to 10 minutes earlier.
     priority: { run: "event.data.origin == 'MANUAL' ? 600 : 0" },
-    timeouts: { finish: "45m" },
+    timeouts: { start: "6h", finish: "45m" },
+    // Retries exhausted: close the report instead of leaving it RUNNING.
+    onFailure: async ({ event }) => {
+      const svc = await import("../../app/services/speed-report.server");
+      const run = svc.abandonedRunFromEvent(event.data.event, event.data.run_id);
+      if (run) await svc.closeAbandonedSpeedReport(run, "worker_failed");
+    },
   },
   { event: "speed-report/requested" },
-  async ({ event, step }) => {
+  async ({ event, step, runId }) => {
     const svc = await import("../../app/services/speed-report.server");
     const { SPEED_RUNS_PER_PAGE } = await import("../../app/lib/speed-report");
     const { shopId, origin, reportId } = event.data;
 
     const prep = await step.run("prepare", () =>
-      svc.prepareSpeedReportRun({ shopId, origin, reportId }),
+      svc.prepareSpeedReportRun({ shopId, origin, reportId, runId }),
     );
     if (!prep.proceed) return { outcome: prep.outcome };
 
@@ -183,5 +203,27 @@ export const speedReportRun = inngest.createFunction(
       svc.finalizeSpeedReport({ ...finalizeBase, targets, tested, haltCode }),
     );
     return { outcome: result.status, calls: result.calls };
+  },
+);
+
+/**
+ * A speed-report-run cancelled by its start or finish timeout (or by hand)
+ * fires no onFailure, only Inngest's inngest/function.cancelled system event:
+ * close its report as FAILED/stuck and hand a Run-now slot back.
+ */
+export const speedReportCancelled = inngest.createFunction(
+  { id: "speed-report-cancelled", name: "Store Speed Report: Close Cancelled Run" },
+  {
+    event: "inngest/function.cancelled",
+    if: `event.data.function_id == '${SPEED_REPORT_RUN_FUNCTION_ID}'`,
+  },
+  async ({ event }) => {
+    const svc = await import("../../app/services/speed-report.server");
+    // The cancel payload carries the triggering event (not in the SDK's type).
+    const original = (event.data as { event?: unknown }).event;
+    const run = svc.abandonedRunFromEvent(original, event.data.run_id);
+    if (!run) return { closed: false };
+    await svc.closeAbandonedSpeedReport(run, "stuck");
+    return { closed: true };
   },
 );

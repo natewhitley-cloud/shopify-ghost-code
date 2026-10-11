@@ -11,10 +11,13 @@ const SOURCE = readFileSync(join(__dirname, "..", "..", "app/routes/api.inngest.
 const FUNCTIONS = SOURCE.slice(SOURCE.indexOf("functions: ["), SOURCE.indexOf("],"));
 
 describe("api.inngest serve list", () => {
-  it.each(["speedReportWeekly", "speedReportRun"])("registers %s", (name) => {
-    expect(SOURCE).toContain(
-      'import { speedReportRun, speedReportWeekly } from "../../inngest/functions/speed-report";',
-    );
-    expect(FUNCTIONS).toMatch(new RegExp(`\\b${name},`));
-  });
+  it.each(["speedReportWeekly", "speedReportRun", "speedReportCancelled"])(
+    "registers %s",
+    (name) => {
+      expect(SOURCE).toMatch(
+        /import \{[^}]*\bspeedReportCancelled\b[^}]*\bspeedReportRun\b[^}]*\bspeedReportWeekly\b[^}]*\} from "\.\.\/\.\.\/inngest\/functions\/speed-report";/,
+      );
+      expect(FUNCTIONS).toMatch(new RegExp(`\\b${name},`));
+    },
+  );
 });

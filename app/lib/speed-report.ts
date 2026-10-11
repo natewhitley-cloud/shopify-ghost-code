@@ -60,7 +60,9 @@ export type SpeedFailureCode =
   | "no_domain"
   | "not_eligible"
   | "dispatch_failed"
-  | "stuck";
+  | "stuck"
+  /** The worker died (retries exhausted); closed by its failure handler. */
+  | "worker_failed";
 
 export type SpeedPageStatus =
   | "OK"
@@ -123,10 +125,20 @@ export const SPEED_RUNS_PER_PAGE = 3;
 export const RUN_NOW_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /**
- * A RUNNING report older than this is shown (and treated) as failed: the
- * worker's own finish timeout is shorter, so a row this old was abandoned.
+ * A RUNNING report whose worker STARTED (startedAt) longer ago than this is
+ * shown (and treated) as failed: the worker's finish timeout (45 m) is
+ * shorter, so a started row this old was abandoned.
  */
 export const SPEED_REPORT_STUCK_MS = 60 * 60 * 1000;
+
+/**
+ * A RUNNING report the worker never started, created longer ago than this,
+ * is shown (and treated) as failed. Generous on purpose: a manual click can
+ * wait behind the Sunday batch (concurrency 1). Longer than the worker's
+ * 6 h start timeout, whose cancel handler closes the row first; this is the
+ * fallback if that handler never ran.
+ */
+export const SPEED_REPORT_QUEUED_STUCK_MS = 7 * 60 * 60 * 1000;
 
 /** When the shop may next press "Run speed test now" (null = now). */
 export function runNowAvailableAt(lastRequestedAt: Date | null, now: Date): Date | null {
@@ -135,18 +147,25 @@ export function runNowAvailableAt(lastRequestedAt: Date | null, now: Date): Date
   return next.getTime() <= now.getTime() ? null : next;
 }
 
-/** The status to show and act on: an abandoned RUNNING row reads as FAILED. */
+/**
+ * The status to show and act on: an abandoned RUNNING row reads as FAILED.
+ * The clock starts when the worker started the run (`startedAt`), not at the
+ * click; a run still queued (`startedAt` null/absent) gets the longer
+ * SPEED_REPORT_QUEUED_STUCK_MS from `createdAt`.
+ */
 export function effectiveSpeedReportStatus(
-  report: { status: string; createdAt: Date },
+  report: { status: string; createdAt: Date; startedAt?: Date | null },
   now: Date,
 ): { status: string; failureReason: SpeedFailureCode | null } {
-  if (
-    report.status === SPEED_REPORT_STATUS.RUNNING &&
-    now.getTime() - report.createdAt.getTime() > SPEED_REPORT_STUCK_MS
-  ) {
-    return { status: SPEED_REPORT_STATUS.FAILED, failureReason: "stuck" };
+  if (report.status !== SPEED_REPORT_STATUS.RUNNING) {
+    return { status: report.status, failureReason: null };
   }
-  return { status: report.status, failureReason: null };
+  const abandoned = report.startedAt
+    ? now.getTime() - report.startedAt.getTime() > SPEED_REPORT_STUCK_MS
+    : now.getTime() - report.createdAt.getTime() > SPEED_REPORT_QUEUED_STUCK_MS;
+  return abandoned
+    ? { status: SPEED_REPORT_STATUS.FAILED, failureReason: "stuck" }
+    : { status: report.status, failureReason: null };
 }
 
 // ---------------------------------------------------------------------------
@@ -395,6 +414,8 @@ export type SpeedReportRowLike = {
   failureReason: string | null;
   pages: unknown;
   createdAt: Date;
+  /** When the worker started the run; null/absent = still queued. */
+  startedAt?: Date | null;
   completedAt: Date | null;
 };
 
