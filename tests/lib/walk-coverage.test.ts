@@ -69,7 +69,9 @@ describe("walkCoverageNotices", () => {
           lastId: "gid://shopify/Product/1",
         },
       }),
-    ).toEqual(["Your store has 7,213 products. This scan checked the first 5,000."]);
+    ).toEqual([
+      "Your store has 7,213 products, including drafts and archived. This scan checked the first 5,000.",
+    ]);
   });
 
   it("falls back to 'the first N' when the total is unavailable", () => {
