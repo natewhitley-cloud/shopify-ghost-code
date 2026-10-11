@@ -3834,7 +3834,9 @@ describe("ScanCoverageNotices", () => {
     it("discloses a truncated walk in an info notice", () => {
       const html = renderNotices({ walkCoverage: truncatedProducts });
       expect(html).toContain('tone="info"');
-      expect(html).toContain("Your store has 7,213 products. This scan checked the first 5,000.");
+      expect(html).toContain(
+        "Your store has 7,213 products, including drafts and archived. This scan checked the first 5,000.",
+      );
     });
 
     it("joins both walks into ONE notice", () => {

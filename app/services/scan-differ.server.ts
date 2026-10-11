@@ -229,8 +229,9 @@ const GID_NUMBER_RE = /\/(\d+)$/;
 /**
  * Which capped walk produced `f`, and its record's numeric ID (null for a bulk
  * redirect or an unrecognised filename). Null when `f` is not a walk finding.
+ * Also used by the scan worker to scope a walk step's idempotency delete.
  */
-function walkRecordOf(f: { filename: string; findingType: string }): {
+export function walkRecordOf(f: { filename: string; findingType: string }): {
   walk: WalkName;
   id: bigint | null;
 } | null {
@@ -245,10 +246,15 @@ function walkRecordOf(f: { filename: string; findingType: string }): {
   return null;
 }
 
+/** Numeric tail of a GID ("gid://shopify/Product/123" -> 123n), or null. */
+export function gidNumber(gid: string): bigint | null {
+  const m = GID_NUMBER_RE.exec(gid);
+  return m ? BigInt(m[1]) : null;
+}
+
 /** Numeric tail of a truncated walk's `lastId` GID, or null if unparseable. */
 function lastIdNumber(c: WalkCoverage): bigint | null {
-  const m = c.lastId ? GID_NUMBER_RE.exec(c.lastId) : null;
-  return m ? BigInt(m[1]) : null;
+  return c.lastId ? gidNumber(c.lastId) : null;
 }
 
 /**
@@ -296,14 +302,21 @@ function walkChecked(
  * covered: it walked the Free caps, so when the current scan checked more
  * records than that, the extra records were never looked at. Their current
  * findings must not be "new" (the first scan after a paid cap rises).
+ *
+ * Per walk (audit #4): a baseline with coverage but no key for a walk is
+ * legacy for THAT walk (a run that straddled the gc-747u deploy recorded only
+ * its new-code walk). A walk that did not run for want of a scope also has no
+ * key, but its types are already "not new" via its skippedCategories.
  */
 function legacyBaselineWalkGaps(
   current: ScanWalkCoverage | null,
   baseline: ScanWalkCoverage | null,
 ): string[] {
-  if (baseline !== null || current === null) return [];
+  if (current === null) return [];
   return (Object.keys(LEGACY_WALK_CAPS) as WalkName[]).flatMap((walk) =>
-    (current[walk]?.checked ?? 0) > LEGACY_WALK_CAPS[walk] ? [...WALK_FINDING_TYPES[walk]] : [],
+    baseline?.[walk] === undefined && (current[walk]?.checked ?? 0) > LEGACY_WALK_CAPS[walk]
+      ? [...WALK_FINDING_TYPES[walk]]
+      : [],
   );
 }
 

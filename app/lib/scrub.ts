@@ -30,6 +30,15 @@ const REDACT_KEY_SUBSTRINGS = [
   "session",
 ];
 
+/**
+ * Key names whose VALUE is redacted on an EXACT (case-insensitive,
+ * separator-free) match only: too short to be a safe substring ("key" is in
+ * "monkey", "keyboard"). `key` is the query param that carries the PageSpeed
+ * API key (gc-wt3y), and the field name a careless log line would use for it.
+ * NOTE: GhostCode-only for now; port to the ClearSignal / FraudPilot copies.
+ */
+const REDACT_EXACT_KEYS = new Set(["key"]);
+
 const REDACTED = "[REDACTED]";
 
 const EMAIL_REGEX = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g;
@@ -93,7 +102,7 @@ function keyIsSensitive(key: string): boolean {
   // Strip separators so `X-Api-Key` / `api_key` / `session-token` still match
   // the separator-free fragments (a hyphen otherwise breaks the substring).
   const lower = key.toLowerCase().replace(/[-_]/g, "");
-  return REDACT_KEY_SUBSTRINGS.some((frag) => lower.includes(frag));
+  return REDACT_EXACT_KEYS.has(lower) || REDACT_KEY_SUBSTRINGS.some((frag) => lower.includes(frag));
 }
 
 /** URL-decode for matching; a malformed escape matches raw. */

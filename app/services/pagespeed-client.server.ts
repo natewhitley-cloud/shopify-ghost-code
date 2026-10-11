@@ -44,7 +44,17 @@ export type PageSpeedErrorCode = Extract<
 
 export type PageSpeedCallResult =
   | { ok: true; lighthouse: unknown }
-  | { ok: false; code: PageSpeedErrorCode; httpStatus: number | null };
+  | {
+      ok: false;
+      code: PageSpeedErrorCode;
+      httpStatus: number | null;
+      /**
+       * document_failed only: the HTTP status the STOREFRONT answered
+       * Lighthouse with, when Google's message names it ("(Status code: 401)").
+       * A number, never Google's text.
+       */
+      documentStatus?: number;
+    };
 
 /**
  * Lighthouse runtime error codes meaning "the page itself could not be
@@ -54,6 +64,15 @@ export type PageSpeedCallResult =
  */
 const DOCUMENT_FAILURE_RE =
   /\b(FAILED_DOCUMENT_REQUEST|ERRORED_DOCUMENT_REQUEST|DNS_FAILURE|NO_FCP|NO_LCP|NOT_HTML|PAGE_HUNG|INSECURE_DOCUMENT_REQUEST|CRI_TIMEOUT|NO_NAVSTART|PROTOCOL_TIMEOUT)\b/;
+
+/** Lighthouse's "(Status code: 401)" suffix on a document failure message. */
+const DOCUMENT_STATUS_RE = /\(Status code: (\d{3})\)/;
+
+/** The storefront status a Lighthouse message names, if any. */
+function documentStatusOf(message: string): { documentStatus: number } | Record<string, never> {
+  const match = DOCUMENT_STATUS_RE.exec(message);
+  return match ? { documentStatus: Number(match[1]) } : {};
+}
 
 /** Build the PageSpeed request URL. Exported for tests; never log its result. */
 export function buildPageSpeedRequestUrl(pageUrl: string, apiKey: string): string {
@@ -80,9 +99,17 @@ export function classifyPageSpeedBody(body: unknown): PageSpeedCallResult {
   if (!lhr || typeof lhr !== "object") {
     return { ok: false, code: "bad_response", httpStatus: 200 };
   }
-  const runtimeError = (lhr as { runtimeError?: { code?: unknown } }).runtimeError;
-  if (runtimeError && typeof runtimeError.code === "string" && runtimeError.code !== "") {
-    return { ok: false, code: "document_failed", httpStatus: 200 };
+  const runtimeError = (lhr as { runtimeError?: { code?: unknown; message?: unknown } })
+    .runtimeError;
+  // Lighthouse can report `runtimeError: { code: "NO_ERROR" }` on a good run.
+  if (
+    runtimeError &&
+    typeof runtimeError.code === "string" &&
+    runtimeError.code !== "" &&
+    runtimeError.code !== "NO_ERROR"
+  ) {
+    const message = typeof runtimeError.message === "string" ? runtimeError.message : "";
+    return { ok: false, code: "document_failed", httpStatus: 200, ...documentStatusOf(message) };
   }
   return { ok: true, lighthouse: lhr };
 }
@@ -145,10 +172,12 @@ export async function callPageSpeed(
     }
 
     if (!response.ok) {
+      const code = classifyPageSpeedHttpError(response.status, body);
       return {
         ok: false,
-        code: classifyPageSpeedHttpError(response.status, body),
+        code,
         httpStatus: response.status,
+        ...(code === "document_failed" ? documentStatusOf(errorMessageOf(body)) : {}),
       };
     }
     if (body === null) return { ok: false, code: "bad_response", httpStatus: response.status };

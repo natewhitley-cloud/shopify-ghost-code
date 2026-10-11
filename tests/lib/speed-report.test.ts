@@ -17,6 +17,7 @@ import {
   RUN_NOW_COOLDOWN_MS,
   runNowAvailableAt,
   SPEED_REPORT_STATUS,
+  SPEED_REPORT_QUEUED_STUCK_MS,
   SPEED_REPORT_STUCK_MS,
   speedFailureMessage,
   speedPageDelta,
@@ -71,20 +72,57 @@ describe("runNowAvailableAt (24h per shop)", () => {
 });
 
 describe("effectiveSpeedReportStatus", () => {
-  it("keeps a fresh RUNNING row running", () => {
-    const createdAt = new Date(NOW.getTime() - SPEED_REPORT_STUCK_MS);
-    expect(effectiveSpeedReportStatus({ status: "RUNNING", createdAt }, NOW)).toEqual({
+  const ago = (ms: number) => new Date(NOW.getTime() - ms);
+
+  it("keeps a RUNNING row running until the worker has run SPEED_REPORT_STUCK_MS", () => {
+    const report = {
+      status: "RUNNING",
+      createdAt: ago(3 * 3_600_000),
+      startedAt: ago(SPEED_REPORT_STUCK_MS),
+    };
+    expect(effectiveSpeedReportStatus(report, NOW)).toEqual({
       status: "RUNNING",
       failureReason: null,
     });
   });
 
-  it("treats an abandoned RUNNING row as FAILED/stuck", () => {
-    const createdAt = new Date(NOW.getTime() - SPEED_REPORT_STUCK_MS - 1);
-    expect(effectiveSpeedReportStatus({ status: "RUNNING", createdAt }, NOW)).toEqual({
+  it("treats a row the worker started more than SPEED_REPORT_STUCK_MS ago as FAILED/stuck", () => {
+    const report = {
+      status: "RUNNING",
+      createdAt: ago(SPEED_REPORT_STUCK_MS + 1),
+      startedAt: ago(SPEED_REPORT_STUCK_MS + 1),
+    };
+    expect(effectiveSpeedReportStatus(report, NOW)).toEqual({
       status: "FAILED",
       failureReason: "stuck",
     });
+  });
+
+  it("a queued run (never started) is still RUNNING hours after the click (gc-wt3y #3)", () => {
+    // Sunday batch at concurrency 1: a manual click can wait well past an hour.
+    const report = { status: "RUNNING", createdAt: ago(3 * 3_600_000), startedAt: null };
+    expect(effectiveSpeedReportStatus(report, NOW).status).toBe("RUNNING");
+    expect(
+      effectiveSpeedReportStatus({ ...report, createdAt: ago(SPEED_REPORT_QUEUED_STUCK_MS) }, NOW)
+        .status,
+    ).toBe("RUNNING");
+  });
+
+  it("a run never started after SPEED_REPORT_QUEUED_STUCK_MS reads as FAILED/stuck", () => {
+    const report = {
+      status: "RUNNING",
+      createdAt: ago(SPEED_REPORT_QUEUED_STUCK_MS + 1),
+      startedAt: null,
+    };
+    expect(effectiveSpeedReportStatus(report, NOW)).toEqual({
+      status: "FAILED",
+      failureReason: "stuck",
+    });
+  });
+
+  it("the queued threshold outlasts the worker's 6 h start timeout, the running one its 45 m finish timeout", () => {
+    expect(SPEED_REPORT_QUEUED_STUCK_MS).toBeGreaterThan(6 * 3_600_000);
+    expect(SPEED_REPORT_STUCK_MS).toBeGreaterThan(45 * 60_000);
   });
 
   it("never rewrites a finished status", () => {
@@ -334,7 +372,10 @@ describe("buildSpeedReportView", () => {
   });
 
   it("an abandoned RUNNING row reads as FAILED/stuck", () => {
-    const view = buildSpeedReportView([row("r1", "RUNNING", 61)], NOW);
+    const view = buildSpeedReportView(
+      [{ ...row("r1", "RUNNING", 61), startedAt: new Date(NOW.getTime() - 61 * 60_000) }],
+      NOW,
+    );
     expect(view.latest).toMatchObject({ status: "FAILED", failureReason: "stuck" });
   });
 

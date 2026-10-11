@@ -1280,6 +1280,21 @@ describe("diffScans — capped walk windows (gc-747u)", () => {
       expect(diff.newFindings).toHaveLength(1);
     });
 
+    it("a baseline missing ONE walk's key is legacy for that walk only (audit #4)", () => {
+      // An in-flight scan across the gc-747u deploy: its product walk ran the
+      // old code (no window recorded), its redirect walk the new code.
+      const opts = scanDiffOptions(
+        scan({ products: fullWalk(4000), redirects: fullWalk(9000) }),
+        scan({ redirects: fullWalk(9000) }),
+      );
+      expect(opts.notNewCategories).toEqual(
+        expect.arrayContaining(["GHOST_TAG", "GHOST_PRICE", "GHOST_METAFIELD"]),
+      );
+      expect(opts.notNewCategories).not.toContain("GHOST_REDIRECT");
+      const diff = diffScans([tagFor(3000)], [], opts);
+      expect(diff.newFindings).toEqual([]);
+    });
+
     it("legacy on both sides: options carry null windows and nothing changes", () => {
       const opts = scanDiffOptions(scan(null), scan(null));
       expect(opts.currentWalks).toBeNull();

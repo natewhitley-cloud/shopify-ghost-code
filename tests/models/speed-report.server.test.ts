@@ -6,7 +6,14 @@ import { Prisma } from "@prisma/client";
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
 const mockDb = vi.hoisted(() => ({
-  speedReport: { create: vi.fn(), update: vi.fn(), findMany: vi.fn() },
+  speedReport: {
+    create: vi.fn(),
+    update: vi.fn(),
+    findMany: vi.fn(),
+    upsert: vi.fn(),
+    updateMany: vi.fn(),
+  },
+  opsEvent: { count: vi.fn() },
   shop: { findUnique: vi.fn(), updateMany: vi.fn() },
   pageSpeedDailyUsage: { updateMany: vi.fn(), create: vi.fn() },
 }));
@@ -17,7 +24,11 @@ import { RUN_NOW_COOLDOWN_MS } from "../../app/lib/speed-report";
 import {
   claimSpeedReportRunNow,
   createSpeedReport,
+  failAbandonedSpeedReport,
   finishSpeedReport,
+  hasRecentSpeedReportEvent,
+  startManualSpeedReport,
+  startSpeedReportForRun,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
   releaseSpeedReportRunNow,
@@ -78,6 +89,78 @@ describe("reports", () => {
         take: SPEED_REPORT_HISTORY_TAKE,
       }),
     );
+    expect(mockDb.speedReport.findMany.mock.calls[0][0].select).toMatchObject({ startedAt: true });
+  });
+});
+
+describe("run tracking (gc-wt3y #2/#3/#8)", () => {
+  it("startSpeedReportForRun is keyed on the run: a retried prepare reuses the row", async () => {
+    mockDb.speedReport.upsert.mockResolvedValue({ id: "r1" });
+    expect(await startSpeedReportForRun("s1", "SCHEDULED", "run-1", NOW)).toEqual({ id: "r1" });
+    expect(mockDb.speedReport.upsert).toHaveBeenCalledWith({
+      where: { runId: "run-1" },
+      create: {
+        shopId: "s1",
+        origin: "SCHEDULED",
+        status: "RUNNING",
+        runId: "run-1",
+        startedAt: NOW,
+      },
+      update: {},
+      select: { id: true },
+    });
+  });
+
+  it("startManualSpeedReport stamps run + start time on the still-RUNNING row only", async () => {
+    mockDb.speedReport.updateMany.mockResolvedValue({ count: 1 });
+    expect(await startManualSpeedReport("r9", "run-2", NOW)).toBe(true);
+    expect(mockDb.speedReport.updateMany).toHaveBeenCalledWith({
+      where: { id: "r9", status: "RUNNING" },
+      data: { runId: "run-2", startedAt: NOW },
+    });
+    mockDb.speedReport.updateMany.mockResolvedValue({ count: 0 });
+    expect(await startManualSpeedReport("gone", "run-2", NOW)).toBe(false);
+  });
+
+  it("failAbandonedSpeedReport closes only a RUNNING row of this shop, by run or report id", async () => {
+    mockDb.speedReport.updateMany.mockResolvedValue({ count: 1 });
+    expect(
+      await failAbandonedSpeedReport(
+        { shopId: "s1", runId: "run-1", reportId: "r9" },
+        "stuck",
+        NOW,
+      ),
+    ).toBe(1);
+    expect(mockDb.speedReport.updateMany).toHaveBeenCalledWith({
+      where: { shopId: "s1", status: "RUNNING", OR: [{ runId: "run-1" }, { id: "r9" }] },
+      data: { status: "FAILED", failureReason: "stuck", completedAt: NOW },
+    });
+  });
+
+  it("failAbandonedSpeedReport tolerates a missing row (count 0, no throw) and needs no report id", async () => {
+    mockDb.speedReport.updateMany.mockResolvedValue({ count: 0 });
+    expect(
+      await failAbandonedSpeedReport({ shopId: "s1", runId: "run-1" }, "worker_failed", NOW),
+    ).toBe(0);
+    expect(mockDb.speedReport.updateMany.mock.calls[0][0].where.OR).toEqual([{ runId: "run-1" }]);
+  });
+});
+
+describe("hasRecentSpeedReportEvent (gc-wt3y #9)", () => {
+  it("counts this shop's speed_report events with that reason since the cutoff", async () => {
+    mockDb.opsEvent.count.mockResolvedValue(1);
+    const since = new Date(NOW.getTime() - 3_600_000);
+    expect(await hasRecentSpeedReportEvent("a.myshopify.com", "not_configured", since)).toBe(true);
+    expect(mockDb.opsEvent.count).toHaveBeenCalledWith({
+      where: {
+        eventType: "speed_report",
+        key: "a.myshopify.com",
+        createdAt: { gte: since },
+        metadata: { path: ["reason"], equals: "not_configured" },
+      },
+    });
+    mockDb.opsEvent.count.mockResolvedValue(0);
+    expect(await hasRecentSpeedReportEvent("a.myshopify.com", "not_configured", since)).toBe(false);
   });
 });
 

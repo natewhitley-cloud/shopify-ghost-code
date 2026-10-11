@@ -32,13 +32,18 @@ export type Events = {
    * One store speed report run (gc-wt3y). Sent by the speed-report-weekly
    * coordinator (SCHEDULED, no reportId: the worker creates the row) and by the
    * Store speed page's "Run speed test now" (MANUAL, with the RUNNING row the
-   * action already created).
+   * action already created, and the Run-now claim it took so a run that dies
+   * or is cancelled can hand the slot back).
    */
   "speed-report/requested": {
     data: {
       shopId: string;
       origin: "SCHEDULED" | "MANUAL";
       reportId?: string;
+      /** MANUAL: when the Run-now slot was claimed (ISO). */
+      runNowClaimedAt?: string;
+      /** MANUAL: the claim before it (ISO; null = never pressed). */
+      runNowPrevious?: string | null;
     };
   };
 };

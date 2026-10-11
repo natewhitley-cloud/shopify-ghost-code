@@ -15,6 +15,10 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 const mockModel = vi.hoisted(() => ({
   createSpeedReport: vi.fn(),
+  startSpeedReportForRun: vi.fn(),
+  startManualSpeedReport: vi.fn(),
+  failAbandonedSpeedReport: vi.fn(),
+  hasRecentSpeedReportEvent: vi.fn(),
   finishSpeedReport: vi.fn(),
   reservePageSpeedCall: vi.fn(),
   claimSpeedReportRunNow: vi.fn(),
@@ -42,10 +46,12 @@ import {
   attemptHaltsRun,
   buildSpeedPageResult,
   checkSpeedReportEligibility,
+  closeAbandonedSpeedReport,
   finalizeSpeedReport,
   isAllowedSpeedTarget,
   isSafeProductHandle,
   pickPublicProductUrl,
+  precheckStorefrontPassword,
   prepareSpeedReportRun,
   productUrlOnPrimaryHost,
   requestSpeedReportRunNow,
@@ -102,6 +108,9 @@ beforeEach(() => {
   mockDb.shop.findUnique.mockResolvedValue(PRO);
   mockModel.reservePageSpeedCall.mockResolvedValue(true);
   mockModel.createSpeedReport.mockResolvedValue({ id: "rep-1", createdAt: NOW });
+  mockModel.startSpeedReportForRun.mockResolvedValue({ id: "rep-1" });
+  mockModel.startManualSpeedReport.mockResolvedValue(true);
+  mockModel.hasRecentSpeedReportEvent.mockResolvedValue(false);
   logSpies = [
     vi.spyOn(logger, "info").mockImplementation(() => {}),
     vi.spyOn(logger, "warn").mockImplementation(() => {}),
@@ -173,34 +182,85 @@ describe("checkSpeedReportEligibility", () => {
 // ---------------------------------------------------------------------------
 
 describe("prepareSpeedReportRun", () => {
-  it("SCHEDULED + eligible: creates the report row and proceeds", async () => {
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" });
+  const RUN = "run-1";
+  // The worker picks the run up 3 h after the click (queued behind a batch).
+  const STARTED = new Date(NOW.getTime() + 3 * 3_600_000);
+
+  it("SCHEDULED + eligible: starts the run's report row and proceeds", async () => {
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "SCHEDULED",
+      runId: RUN,
+      now: STARTED,
+    });
     expect(r).toEqual({
       proceed: true,
       reportId: "rep-1",
       shopDomain: DOMAIN,
-      startedAt: NOW.toISOString(),
+      startedAt: STARTED.toISOString(),
     });
-    expect(mockModel.createSpeedReport).toHaveBeenCalledWith(SHOP_ID, "SCHEDULED");
+    expect(mockModel.startSpeedReportForRun).toHaveBeenCalledWith(
+      SHOP_ID,
+      "SCHEDULED",
+      RUN,
+      STARTED,
+    );
+    expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
   });
 
-  it("MANUAL with a reportId: uses the action's row, creates none", async () => {
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "MANUAL", reportId: "rep-9" });
-    expect(r).toMatchObject({ proceed: true, reportId: "rep-9" });
+  it("a retried prepare reuses the run's row: the same report, no orphan (gc-wt3y #8)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(PRO);
+    // First attempt: the row is made, then the step dies before returning.
+    mockModel.finishSpeedReport.mockRejectedValueOnce(new Error("db blip"));
+    delete process.env.PAGESPEED_API_KEY;
+    await expect(
+      prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN, now: STARTED }),
+    ).rejects.toThrow("db blip");
+    await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN, now: STARTED });
+    expect(mockModel.startSpeedReportForRun.mock.calls.map((c) => c[2])).toEqual([RUN, RUN]);
     expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
+  });
+
+  it("MANUAL with a reportId: stamps the action's row with the run and the START time (gc-wt3y #3)", async () => {
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "MANUAL",
+      reportId: "rep-9",
+      runId: RUN,
+      now: STARTED,
+    });
+    expect(r).toMatchObject({ proceed: true, reportId: "rep-9", startedAt: STARTED.toISOString() });
+    expect(mockModel.startManualSpeedReport).toHaveBeenCalledWith("rep-9", RUN, STARTED);
+    expect(mockModel.startSpeedReportForRun).not.toHaveBeenCalled();
+  });
+
+  it("MANUAL row gone or no longer RUNNING: stops without a call", async () => {
+    mockModel.startManualSpeedReport.mockResolvedValue(false);
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "MANUAL",
+      reportId: "rep-9",
+      runId: RUN,
+    });
+    expect(r).toEqual({ proceed: false, outcome: "no_report" });
   });
 
   it("flag off: no row, no event", async () => {
     delete process.env.SPEED_REPORT_LIVE_ENABLED;
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" });
+    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN });
     expect(r).toEqual({ proceed: false, outcome: "disabled" });
-    expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
+    expect(mockModel.startSpeedReportForRun).not.toHaveBeenCalled();
     expect(mockRecordOpsEvent).not.toHaveBeenCalled();
   });
 
   it("downgraded since the click: closes the MANUAL row as FAILED/not_eligible", async () => {
     mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" });
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "MANUAL", reportId: "rep-9" });
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "MANUAL",
+      reportId: "rep-9",
+      runId: RUN,
+    });
     expect(r).toEqual({ proceed: false, outcome: "not_in_plan" });
     expect(mockModel.finishSpeedReport).toHaveBeenCalledWith("rep-9", {
       status: "FAILED",
@@ -212,7 +272,7 @@ describe("prepareSpeedReportRun", () => {
 
   it("key missing while flag on: FAILED/not_configured row + a not-configured ops event, no crash", async () => {
     delete process.env.PAGESPEED_API_KEY;
-    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" });
+    const r = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN });
     expect(r).toEqual({ proceed: false, outcome: "not_configured" });
     expect(mockModel.finishSpeedReport).toHaveBeenCalledWith("rep-1", {
       status: "FAILED",
@@ -235,10 +295,99 @@ describe("prepareSpeedReportRun", () => {
 
   it("a blank key counts as missing", async () => {
     process.env.PAGESPEED_API_KEY = "   ";
-    expect(await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" })).toEqual({
+    expect(
+      await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED", runId: RUN }),
+    ).toEqual({
       proceed: false,
       outcome: "not_configured",
     });
+  });
+});
+
+describe("closeAbandonedSpeedReport (gc-wt3y #2/#3)", () => {
+  const base = { shopId: SHOP_ID, runId: "run-1" };
+  const claimedAt = "2026-10-11T11:00:00.000Z";
+  const previous = "2026-10-01T00:00:00.000Z";
+
+  beforeEach(() => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(1);
+  });
+
+  it("MANUAL: closes the row FAILED, writes the ops event and hands the Run-now slot back", async () => {
+    await closeAbandonedSpeedReport(
+      {
+        ...base,
+        origin: "MANUAL",
+        reportId: "rep-9",
+        runNowClaimedAt: claimedAt,
+        runNowPrevious: previous,
+      },
+      "worker_failed",
+      NOW,
+    );
+    expect(mockModel.failAbandonedSpeedReport).toHaveBeenCalledWith(
+      { shopId: SHOP_ID, runId: "run-1", reportId: "rep-9" },
+      "worker_failed",
+      NOW,
+    );
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(
+      SHOP_ID,
+      new Date(claimedAt),
+      new Date(previous),
+    );
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith({
+      eventType: "speed_report",
+      key: DOMAIN,
+      metadata: {
+        status: "FAILED",
+        origin: "MANUAL",
+        calls: 0,
+        durationMs: 0,
+        reason: "worker_failed",
+      },
+    });
+  });
+
+  it("MANUAL first click (no previous claim): the slot goes back to null", async () => {
+    await closeAbandonedSpeedReport(
+      {
+        ...base,
+        origin: "MANUAL",
+        reportId: "rep-9",
+        runNowClaimedAt: claimedAt,
+        runNowPrevious: null,
+      },
+      "stuck",
+      NOW,
+    );
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(
+      SHOP_ID,
+      new Date(claimedAt),
+      null,
+    );
+  });
+
+  it("SCHEDULED: closes by run id, never touches the Run-now slot", async () => {
+    await closeAbandonedSpeedReport({ ...base, origin: "SCHEDULED" }, "stuck", NOW);
+    expect(mockModel.failAbandonedSpeedReport).toHaveBeenCalledWith(
+      { shopId: SHOP_ID, runId: "run-1" },
+      "stuck",
+      NOW,
+    );
+    expect(mockModel.releaseSpeedReportRunNow).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({ reason: "stuck" });
+  });
+
+  it("no RUNNING row (finished, or the shop was redacted): no ops event is written", async () => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(0);
+    await closeAbandonedSpeedReport({ ...base, origin: "SCHEDULED" }, "worker_failed", NOW);
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+  });
+
+  it("row closed but the shop row is gone: no ops event keyed on a redacted shop", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(null);
+    await closeAbandonedSpeedReport({ ...base, origin: "SCHEDULED" }, "worker_failed", NOW);
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
   });
 });
 
@@ -264,21 +413,15 @@ const SHOP_BODY = {
   },
 };
 
-/** A storefront fetch that must never run (the Admin path needs no storefront read). */
+/** A storefront fetch that must never run. */
 function noStorefront() {
   return vi.fn(async () => {
     throw new Error("storefront must not be read");
   });
 }
 
-function resolve(
-  admin: ReturnType<typeof adminWith>,
-  fetchImpl: StorefrontFetch = noStorefront(),
-): ReturnType<typeof resolveSpeedTargets> {
-  return resolveSpeedTargets(admin as unknown as Parameters<typeof resolveSpeedTargets>[0], {
-    shopId: SHOP_ID,
-    fetchImpl,
-  });
+function resolve(admin: ReturnType<typeof adminWith>): ReturnType<typeof resolveSpeedTargets> {
+  return resolveSpeedTargets(admin as unknown as Parameters<typeof resolveSpeedTargets>[0]);
 }
 
 describe("resolveSpeedTargets", () => {
@@ -326,37 +469,22 @@ describe("resolveSpeedTargets", () => {
     }
   });
 
-  it("NEEDS_PRODUCT_ACCESS when read_products is not granted (returned or thrown) and the public fallback finds nothing", async () => {
-    const notFound = () => vi.fn(async () => new Response("Not found", { status: 404 }));
+  it("NEEDS_PRODUCT_ACCESS when read_products is not granted (returned or thrown); the public fallback is a later, separate step", async () => {
     const returned = adminWith(SHOP_BODY, {
       errors: [
         { message: "Access denied for products field.", extensions: { code: "ACCESS_DENIED" } },
       ],
     });
-    const f1 = notFound();
-    expect(((await resolve(returned, f1)) as { targets: SpeedTargets }).targets.product).toEqual({
+    expect(((await resolve(returned)) as { targets: SpeedTargets }).targets.product).toEqual({
       status: "NEEDS_PRODUCT_ACCESS",
     });
-    expect(f1).toHaveBeenCalledTimes(1);
     const thrownErr = Object.assign(new Error("GraphQL Client: Forbidden"), {
       body: { errors: { graphQLErrors: [{ extensions: { code: "ACCESS_DENIED" } }] } },
     });
     expect(
-      ((await resolve(adminWith(SHOP_BODY, thrownErr), notFound())) as { targets: SpeedTargets })
-        .targets.product,
+      ((await resolve(adminWith(SHOP_BODY, thrownErr))) as { targets: SpeedTargets }).targets
+        .product,
     ).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
-  });
-
-  it("never reads the storefront when the Admin path answers (OK, NO_PRODUCT or FAILED)", async () => {
-    for (const second of [
-      { data: { products: { nodes: [{ onlineStoreUrl: `https://${STORE_HOST}/products/a` }] } } },
-      { data: { products: { nodes: [] } } },
-      new Error("THROTTLED"),
-    ]) {
-      const storefront = noStorefront();
-      await resolve(adminWith(SHOP_BODY, second), storefront);
-      expect(storefront).not.toHaveBeenCalled();
-    }
   });
 
   it("product lookup FAILED on any other error, homepage still tested", async () => {
@@ -369,15 +497,28 @@ describe("resolveSpeedTargets", () => {
     expect(r2).toMatchObject({ ok: true, targets: { product: { status: "FAILED" } } });
   });
 
-  it("no usable primary domain (missing, IP literal, Admin error) -> not ok", async () => {
+  it("no usable primary domain (missing, IP literal) -> not ok, no_domain", async () => {
     for (const shop of [
       { primaryDomain: null },
       { primaryDomain: { url: "https://10.0.0.1", host: "10.0.0.1" } },
       { primaryDomain: { url: "::bad", host: "http://evil" } },
     ]) {
-      expect(await resolve(adminWith({ data: { shop } }))).toEqual({ ok: false });
+      expect(await resolve(adminWith({ data: { shop } }))).toEqual({
+        ok: false,
+        reason: "no_domain",
+      });
     }
-    expect(await resolve(adminWith(new Error("401")))).toEqual({ ok: false });
+  });
+
+  it("the Admin API call failing (thrown, or GraphQL errors) is admin_unavailable, not no_domain (gc-wt3y #12)", async () => {
+    expect(await resolve(adminWith(new Error("401")))).toEqual({
+      ok: false,
+      reason: "admin_unavailable",
+    });
+    expect(await resolve(adminWith({ errors: [{ message: "Throttled" }] }))).toEqual({
+      ok: false,
+      reason: "admin_unavailable",
+    });
   });
 });
 
@@ -412,10 +553,6 @@ describe("target hygiene", () => {
 // ---------------------------------------------------------------------------
 // Product fallback without read_products (gc-9mbw): public /products.json
 // ---------------------------------------------------------------------------
-
-const ACCESS_DENIED = {
-  errors: [{ message: "Access denied for products field.", extensions: { code: "ACCESS_DENIED" } }],
-};
 
 type PublicProduct = {
   id?: unknown;
@@ -452,9 +589,13 @@ function storefront(...responses: Array<() => Response>) {
   return fn;
 }
 
-async function fallbackProduct(fetchImpl: ReturnType<typeof storefront>) {
-  const r = await resolve(adminWith(SHOP_BODY, ACCESS_DENIED), fetchImpl);
-  return (r as { targets: SpeedTargets }).targets.product;
+function fallbackProduct(fetchImpl: StorefrontFetch) {
+  return resolvePublicProductTarget({
+    shopId: SHOP_ID,
+    primaryHost: STORE_HOST,
+    storeHosts: STORE_HOSTS,
+    fetchImpl,
+  });
 }
 
 describe("product fallback without read_products (gc-9mbw)", () => {
@@ -625,13 +766,6 @@ describe("product fallback without read_products (gc-9mbw)", () => {
       expect(mockDb.shop.findUnique).not.toHaveBeenCalled();
     });
 
-    it("flag off via resolveSpeedTargets: no storefront request", async () => {
-      delete process.env.SPEED_REPORT_LIVE_ENABLED;
-      const fetchImpl = noStorefront();
-      expect(await fallbackProduct(fetchImpl as never)).toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
-      expect(fetchImpl).not.toHaveBeenCalled();
-    });
-
     it.each([
       ["Standard", { ...PRO, plan: "Standard" }],
       ["free", { ...PRO, plan: "free" }],
@@ -766,6 +900,31 @@ describe("runPageSpeedAttempt", () => {
     });
   });
 
+  it("password page: Lighthouse got a 401 for the document (gc-wt3y #1)", async () => {
+    const fetchImpl = fetchReturning(() =>
+      json(
+        400,
+        buildPageSpeedError(
+          400,
+          "Lighthouse returned error: ERRORED_DOCUMENT_REQUEST. Lighthouse was unable to reliably load the page you requested. (Status code: 401)",
+        ),
+      ),
+    );
+    await expect(runPageSpeedAttempt(attemptInput(fetchImpl))).resolves.toEqual({
+      kind: "password",
+    });
+  });
+
+  it("a document failure with another status stays document_failed", async () => {
+    const fetchImpl = fetchReturning(() =>
+      json(400, buildPageSpeedError(400, "ERRORED_DOCUMENT_REQUEST. (Status code: 403)")),
+    );
+    await expect(runPageSpeedAttempt(attemptInput(fetchImpl))).resolves.toEqual({
+      kind: "error",
+      code: "document_failed",
+    });
+  });
+
   it.each([
     [429, buildPageSpeedError(429, "Quota exceeded"), "rate_limited"],
     [500, buildPageSpeedError(500, "Backend Error"), "server_error"],
@@ -800,6 +959,86 @@ describe("runPageSpeedAttempt", () => {
     expect(logged).not.toContain(KEY);
     expect(logged).not.toContain("googleapis.com");
     expect(logged).not.toContain("key=");
+  });
+});
+
+describe("precheckStorefrontPassword (gc-wt3y #1)", () => {
+  const SHOPIFY_MARKER = `<script>Shopify.shop = "${MYSHOPIFY_HOST}";</script>`;
+  const PASSWORD_HTML = `<html><head>${SHOPIFY_MARKER}</head><body class="password-page"><form method="post" action="/password" id="login_form"><input type="password" name="password"></form></body></html>`;
+  const STORE_HTML = `<html><head>${SHOPIFY_MARKER}</head><body class="template-index">Shop</body></html>`;
+
+  function page(body: string, status = 200): Response {
+    return new Response(body, { status, headers: { "content-type": "text/html" } });
+  }
+
+  function precheck(fetchImpl: StorefrontFetch) {
+    return precheckStorefrontPassword({
+      shopId: SHOP_ID,
+      primaryHost: STORE_HOST,
+      storeHosts: STORE_HOSTS,
+      fetchImpl,
+    });
+  }
+
+  it("redirect to /password -> password, reading only the shop's own hosts", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 302,
+          headers: { location: `https://${STORE_HOST}/password` },
+        }),
+      )
+      .mockResolvedValueOnce(page(PASSWORD_HTML));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("password");
+    expect(String(fetchImpl.mock.calls[0][0])).toBe(`https://${STORE_HOST}/`);
+    expect(fetchImpl.mock.calls[0][1]).toMatchObject({ redirect: "manual" });
+  });
+
+  it("password page served at / with a 200 (no redirect) -> password", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(page(PASSWORD_HTML));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("password");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("password page served at / with a 401 -> password", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(page(PASSWORD_HTML, 401));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("password");
+  });
+
+  it("an open storefront -> open", async () => {
+    const fetchImpl = vi.fn().mockResolvedValue(page(STORE_HTML));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("open");
+  });
+
+  it("network failure -> unknown (the run goes on to PageSpeed, never blocked)", async () => {
+    const fetchImpl = vi.fn().mockRejectedValue(new TypeError("fetch failed"));
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("unknown");
+  });
+
+  it("a redirect off the shop's hosts is not followed -> unknown", async () => {
+    const fetchImpl = vi
+      .fn()
+      .mockResolvedValue(
+        new Response(null, { status: 301, headers: { location: "https://evil.example/" } }),
+      );
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("unknown");
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+  });
+
+  it("flag off or shop no longer eligible: no fetch at all -> skipped", async () => {
+    const fetchImpl = vi.fn();
+    delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("skipped");
+    process.env.SPEED_REPORT_LIVE_ENABLED = "true";
+    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "Standard" });
+    expect(await precheck(fetchImpl as unknown as StorefrontFetch)).toBe("skipped");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("never reserves PageSpeed budget", async () => {
+    await precheck(vi.fn().mockResolvedValue(page(PASSWORD_HTML)) as unknown as StorefrontFetch);
+    expect(mockModel.reservePageSpeedCall).not.toHaveBeenCalled();
   });
 });
 
@@ -1013,6 +1252,29 @@ describe("finalizeSpeedReport", () => {
     expect(r).toEqual({ status: "UNAVAILABLE_PASSWORD", calls: 1 });
   });
 
+  it("password found by the pre-check -> UNAVAILABLE_PASSWORD with 0 calls (gc-wt3y #1)", async () => {
+    const r = await finalizeSpeedReport({
+      ...base,
+      targets: TARGETS,
+      tested: [
+        { page: "home", url: HOME, attempts: [] },
+        { page: "product", url: HOME, attempts: [] },
+      ],
+      passwordProtected: true,
+    });
+    expect(r).toEqual({ status: "UNAVAILABLE_PASSWORD", calls: 0 });
+    const written = mockModel.finishSpeedReport.mock.calls[0][1];
+    expect(written).toMatchObject({ status: "UNAVAILABLE_PASSWORD", psiCalls: 0 });
+    expect(written.pages.map((p: { status: string }) => p.status)).toEqual([
+      "PASSWORD",
+      "PASSWORD",
+    ]);
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({
+      status: "UNAVAILABLE_PASSWORD",
+      calls: 0,
+    });
+  });
+
   it("budget before any result -> SKIPPED_BUDGET with reason budget and 0 calls", async () => {
     const r = await finalizeSpeedReport({
       ...base,
@@ -1056,6 +1318,22 @@ describe("finalizeSpeedReport", () => {
     expect(mockModel.finishSpeedReport.mock.calls[0][1].failureReason).toBe("rate_limited");
   });
 
+  it("no targets because the Admin API failed -> FAILED/admin_unavailable (gc-wt3y #12)", async () => {
+    await finalizeSpeedReport({
+      ...base,
+      targets: null,
+      targetsFailure: "admin_unavailable",
+      tested: [],
+    });
+    expect(mockModel.finishSpeedReport.mock.calls[0][1]).toMatchObject({
+      status: "FAILED",
+      failureReason: "admin_unavailable",
+    });
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({
+      reason: "admin_unavailable",
+    });
+  });
+
   it("no targets (domain lookup failed) -> FAILED/no_domain, no pages", async () => {
     const r = await finalizeSpeedReport({ ...base, targets: null, tested: [] });
     expect(r).toEqual({ status: "FAILED", calls: 0 });
@@ -1092,8 +1370,33 @@ describe("requestSpeedReportRunNow", () => {
     expect(mockModel.createSpeedReport).toHaveBeenCalledWith(SHOP_ID, "MANUAL");
     expect(mockSend).toHaveBeenCalledWith({
       name: "speed-report/requested",
-      data: { shopId: SHOP_ID, origin: "MANUAL", reportId: "rep-7" },
+      data: {
+        shopId: SHOP_ID,
+        origin: "MANUAL",
+        reportId: "rep-7",
+        runNowClaimedAt: NOW.toISOString(),
+        runNowPrevious: null,
+      },
     });
+  });
+
+  it("carries the previous claim so a failed run can hand the slot back", async () => {
+    const prev = new Date("2026-10-01T00:00:00Z");
+    mockModel.getSpeedReportRequestedAt.mockResolvedValue(prev);
+    await requestSpeedReportRunNow(shop, NOW);
+    expect(mockSend.mock.calls[0][0].data.runNowPrevious).toBe(prev.toISOString());
+  });
+
+  it("creating the row fails after the claim: the slot is handed back (gc-wt3y #7)", async () => {
+    const prev = new Date("2026-10-01T00:00:00Z");
+    mockModel.getSpeedReportRequestedAt.mockResolvedValue(prev);
+    mockModel.createSpeedReport.mockRejectedValue(new Error("db down"));
+    await expect(requestSpeedReportRunNow(shop, NOW)).resolves.toEqual({
+      ok: false,
+      error: RUN_NOW_ERRORS.dispatch,
+    });
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(SHOP_ID, NOW, prev);
+    expect(mockSend).not.toHaveBeenCalled();
   });
 
   it.each(["free", "Standard"])("plan %s: refused, nothing claimed or sent", async (plan) => {
@@ -1117,6 +1420,20 @@ describe("requestSpeedReportRunNow", () => {
     });
   });
 
+  it("key missing: repeated clicks write at most one not-configured event per hour (gc-wt3y #9)", async () => {
+    delete process.env.PAGESPEED_API_KEY;
+    mockModel.hasRecentSpeedReportEvent.mockResolvedValue(true);
+    const r = await requestSpeedReportRunNow(shop, NOW);
+    expect(r).toEqual({ ok: false, error: "Speed tests aren't available right now." });
+    expect(mockModel.hasRecentSpeedReportEvent).toHaveBeenCalledWith(
+      DOMAIN,
+      "not_configured",
+      new Date(NOW.getTime() - 60 * 60_000),
+    );
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+    expect(mockModel.claimSpeedReportRunNow).not.toHaveBeenCalled();
+  });
+
   it("a run already in progress: refused without claiming", async () => {
     mockModel.getRecentSpeedReports.mockResolvedValue([
       {
@@ -1136,7 +1453,7 @@ describe("requestSpeedReportRunNow", () => {
     expect(mockModel.claimSpeedReportRunNow).not.toHaveBeenCalled();
   });
 
-  it("an abandoned RUNNING row does not block a new run", async () => {
+  it("an abandoned RUNNING row (started over an hour ago) does not block a new run", async () => {
     mockModel.getRecentSpeedReports.mockResolvedValue([
       {
         id: "r1",
@@ -1145,10 +1462,30 @@ describe("requestSpeedReportRunNow", () => {
         failureReason: null,
         pages: null,
         createdAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
+        startedAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
         completedAt: null,
       },
     ]);
     expect((await requestSpeedReportRunNow(shop, NOW)).ok).toBe(true);
+  });
+
+  it("a run still queued hours after the click blocks a second one (gc-wt3y #3)", async () => {
+    mockModel.getRecentSpeedReports.mockResolvedValue([
+      {
+        id: "r1",
+        origin: "MANUAL",
+        status: "RUNNING",
+        failureReason: null,
+        pages: null,
+        createdAt: new Date(NOW.getTime() - 2 * 60 * 60_000),
+        startedAt: null,
+        completedAt: null,
+      },
+    ]);
+    await expect(requestSpeedReportRunNow(shop, NOW)).resolves.toEqual({
+      ok: false,
+      error: RUN_NOW_ERRORS.running,
+    });
   });
 
   it("within 24h: refused with when the next test is available", async () => {
@@ -1188,7 +1525,11 @@ describe("requestSpeedReportRunNow", () => {
 
 describe("the API key never leaves the request", () => {
   it("across prepare, attempts (ok / error / timeout-ish) and finalize", async () => {
-    const prep = await prepareSpeedReportRun({ shopId: SHOP_ID, origin: "SCHEDULED" });
+    const prep = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "SCHEDULED",
+      runId: "run-1",
+    });
     expect(prep.proceed).toBe(true);
     const attempts: SpeedAttempt[] = [];
     for (const fetchImpl of [

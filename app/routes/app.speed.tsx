@@ -303,7 +303,17 @@ export function SpeedPageSection({
   );
 }
 
-function StatusBanner({ latest }: { latest: SpeedReportSummaryView | null }) {
+export function StatusBanner({
+  latest,
+  canRunNow,
+  pollingTimedOut,
+}: {
+  latest: SpeedReportSummaryView | null;
+  /** Run now is available (not in its 24h cooldown). */
+  canRunNow: boolean;
+  /** The page stopped polling (~10 min) while the run was still going. */
+  pollingTimedOut: boolean;
+}) {
   if (!latest) {
     return (
       <s-banner tone="info">
@@ -316,7 +326,9 @@ function StatusBanner({ latest }: { latest: SpeedReportSummaryView | null }) {
       return (
         <s-banner tone="info">
           <s-paragraph>
-            Speed test running. It takes a few minutes; results appear here when it finishes.
+            {pollingTimedOut
+              ? "Still running. Refresh the page in a few minutes to see the results."
+              : "Speed test running. It takes a few minutes; results appear here when it finishes."}
           </s-paragraph>
         </s-banner>
       );
@@ -339,8 +351,10 @@ function StatusBanner({ latest }: { latest: SpeedReportSummaryView | null }) {
         <s-banner tone="critical">
           <s-paragraph>
             We couldn&apos;t test your store on <FormattedDate value={latest.createdAt} />.{" "}
-            {speedFailureMessage(latest.failureReason)} We&apos;ll try again next week, or you can
-            run it now.
+            {speedFailureMessage(latest.failureReason)}{" "}
+            {canRunNow
+              ? "We'll try again next week, or you can run it now."
+              : "We'll try again next week."}
           </s-paragraph>
         </s-banner>
       );
@@ -411,7 +425,7 @@ export default function StoreSpeed() {
   const data = useLoaderData<typeof loader>();
   const running = data.access === "pro" && data.latest?.status === SPEED_REPORT_STATUS.RUNNING;
   // Reuse the scan page's capped revalidation poll while a run is in progress.
-  useScanPolling(running ? "IN_PROGRESS" : null);
+  const { pollingTimedOut } = useScanPolling(running ? "IN_PROGRESS" : null);
 
   return (
     <s-page heading="Store speed">
@@ -443,7 +457,11 @@ export default function StoreSpeed() {
                 <RunNowControl availableAt={running ? null : data.runNowAvailableAt} />
               </s-stack>
             </div>
-            <StatusBanner latest={data.latest} />
+            <StatusBanner
+              latest={data.latest}
+              canRunNow={data.runNowAvailableAt === null}
+              pollingTimedOut={pollingTimedOut}
+            />
             {data.lastResults?.pages.map((page) => (
               <SpeedPageSection
                 key={`${data.lastResults!.id}-${page.page}`}

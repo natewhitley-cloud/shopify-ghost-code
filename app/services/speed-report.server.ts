@@ -3,8 +3,11 @@
  * worker is a thin sequence of steps over these functions:
  *
  *   prepareSpeedReportRun   gate (flag, plan, install) + key check + report row
- *   resolveSpeedTargets     Admin API: primary domain + one product URL (without
- *                           read_products: the public /products.json, gc-9mbw)
+ *   resolveSpeedTargets     Admin API: primary domain + one product URL
+ *   precheckStorefrontPassword  one storefront GET: password page? (no PSI cost)
+ *   resolvePublicProductTarget  without read_products, and only when the
+ *                           pre-check found no password page: the product URL
+ *                           from the public /products.json (gc-9mbw)
  *   runPageSpeedAttempt     ONE PageSpeed call (re-gates, reserves budget first)
  *   finalizeSpeedReport     median per page, status, row, OpsEvent
  *
@@ -35,6 +38,9 @@ import {
   type DnsLookupAll,
   guardedStorefrontGet,
   isBareHostname,
+  isPasswordPageHtml,
+  isPasswordPath,
+  readStorefrontHomepage,
   type StorefrontFetch,
 } from "./storefront-fetcher.server";
 import { inngest } from "../../inngest/client";
@@ -59,11 +65,15 @@ import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
 import {
   claimSpeedReportRunNow,
   createSpeedReport,
+  failAbandonedSpeedReport,
   finishSpeedReport,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
+  hasRecentSpeedReportEvent,
   releaseSpeedReportRunNow,
   reservePageSpeedCall,
+  startManualSpeedReport,
+  startSpeedReportForRun,
 } from "../models/speed-report.server";
 import type { AdminApiContext } from "../types/shopify";
 
@@ -103,11 +113,14 @@ export async function checkSpeedReportEligibility(shopId: string): Promise<Speed
 
 export type PrepareResult =
   | { proceed: true; reportId: string; shopDomain: string; startedAt: string }
-  | { proceed: false; outcome: SpeedIneligibleReason | "not_configured" };
+  | { proceed: false; outcome: SpeedIneligibleReason | "not_configured" | "no_report" };
 
 /**
- * Gate the run and make sure a report row exists. MANUAL runs arrive with the
- * RUNNING row the Run-now action created; SCHEDULED runs create theirs here.
+ * Gate the run and make sure a report row exists, stamped with this Inngest
+ * run and the time the worker STARTED it (the stuck clock, gc-wt3y #3).
+ * MANUAL runs arrive with the RUNNING row the Run-now action created (gone or
+ * no longer RUNNING: `no_report`, nothing is called); SCHEDULED runs create
+ * theirs here, keyed on the run so a retried prepare reuses it (gc-wt3y #8).
  * Refused runs never call Google: an ineligible MANUAL row is closed as
  * FAILED/not_eligible; a missing key (flag on) closes the row as
  * FAILED/not_configured and records a "not configured" ops event.
@@ -116,7 +129,10 @@ export async function prepareSpeedReportRun(input: {
   shopId: string;
   origin: SpeedReportOrigin;
   reportId?: string;
+  runId: string;
+  now?: Date;
 }): Promise<PrepareResult> {
+  const now = input.now ?? new Date();
   const gate = await checkSpeedReportEligibility(input.shopId);
   if (!gate.eligible) {
     if (input.reportId) {
@@ -136,9 +152,21 @@ export async function prepareSpeedReportRun(input: {
     return { proceed: false, outcome: gate.reason };
   }
 
-  const row = input.reportId
-    ? { id: input.reportId, createdAt: new Date() }
-    : await createSpeedReport(input.shopId, input.origin);
+  let row: { id: string };
+  if (input.reportId) {
+    if (!(await startManualSpeedReport(input.reportId, input.runId, now))) {
+      logger.info("speed report row missing", {
+        function: LOG_FN,
+        event: "speed_report_no_row",
+        shopId: input.shopId,
+        reportId: input.reportId,
+      });
+      return { proceed: false, outcome: "no_report" };
+    }
+    row = { id: input.reportId };
+  } else {
+    row = await startSpeedReportForRun(input.shopId, input.origin, input.runId, now);
+  }
 
   if (!getPageSpeedApiKey()) {
     await finishSpeedReport(row.id, {
@@ -166,8 +194,94 @@ export async function prepareSpeedReportRun(input: {
     proceed: true,
     reportId: row.id,
     shopDomain: gate.shop.domain,
-    startedAt: row.createdAt.toISOString(),
+    startedAt: now.toISOString(),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Failure / cancel cleanup
+// ---------------------------------------------------------------------------
+
+export type AbandonedRun = {
+  shopId: string;
+  origin: SpeedReportOrigin;
+  /** The Inngest run that died or was cancelled. */
+  runId: string;
+  /** MANUAL: the Run-now row (it exists even when the run never started). */
+  reportId?: string;
+  /** MANUAL: the Run-now claim to hand back (ISO), and the value before it. */
+  runNowClaimedAt?: string;
+  runNowPrevious?: string | null;
+};
+
+/**
+ * The AbandonedRun for a failed/cancelled run, from the event that started it
+ * (`speed-report/requested` data, carried in Inngest's failure/cancel event).
+ * Null when that data is missing or malformed: nothing can be closed.
+ */
+export function abandonedRunFromEvent(original: unknown, runId: unknown): AbandonedRun | null {
+  const data = (original as { data?: Record<string, unknown> } | null | undefined)?.data;
+  if (!data || typeof runId !== "string" || runId === "") return null;
+  const { shopId, origin, reportId, runNowClaimedAt, runNowPrevious } = data;
+  if (typeof shopId !== "string" || shopId === "") return null;
+  if (origin !== SPEED_REPORT_ORIGIN.SCHEDULED && origin !== SPEED_REPORT_ORIGIN.MANUAL) {
+    return null;
+  }
+  return {
+    shopId,
+    origin,
+    runId,
+    ...(typeof reportId === "string" ? { reportId } : {}),
+    ...(typeof runNowClaimedAt === "string" ? { runNowClaimedAt } : {}),
+    ...(typeof runNowPrevious === "string" || runNowPrevious === null ? { runNowPrevious } : {}),
+  };
+}
+
+/**
+ * A speed-report-run that will not finish (retries exhausted: `worker_failed`;
+ * cancelled by its start/finish timeout: `stuck`) must not leave its report
+ * RUNNING forever (gc-wt3y #2/#3). Closes the RUNNING row as FAILED (missing
+ * row tolerated), hands a MANUAL run's Run-now slot back, and records the
+ * speed_report ops event ONLY when a row was actually closed and the shop
+ * still exists: a redacted shop gets no new row keyed on its domain. `calls`
+ * is 0 in that event: calls made before the failure are not tracked per run.
+ */
+export async function closeAbandonedSpeedReport(
+  run: AbandonedRun,
+  reason: Extract<SpeedFailureCode, "worker_failed" | "stuck">,
+  now: Date = new Date(),
+): Promise<void> {
+  const closed = await failAbandonedSpeedReport(
+    { shopId: run.shopId, runId: run.runId, ...(run.reportId ? { reportId: run.reportId } : {}) },
+    reason,
+    now,
+  );
+  if (run.origin === SPEED_REPORT_ORIGIN.MANUAL && run.runNowClaimedAt) {
+    await releaseSpeedReportRunNow(
+      run.shopId,
+      new Date(run.runNowClaimedAt),
+      run.runNowPrevious ? new Date(run.runNowPrevious) : null,
+    );
+  }
+  if (closed > 0) {
+    const shop = await db.shop.findUnique({ where: { id: run.shopId }, select: { domain: true } });
+    if (shop) {
+      await recordSpeedReportEvent(shop.domain, {
+        status: SPEED_REPORT_STATUS.FAILED,
+        origin: run.origin,
+        calls: 0,
+        durationMs: 0,
+        reason,
+      });
+    }
+  }
+  logger.warn("speed report abandoned", {
+    function: LOG_FN,
+    event: "speed_report_abandoned",
+    shopId: run.shopId,
+    outcome: reason,
+    closed,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -187,7 +301,16 @@ export type SpeedTargets = {
   product: ProductTarget;
 };
 
-export type ResolveTargetsResult = { ok: true; targets: SpeedTargets } | { ok: false };
+/**
+ * Why the URLs could not be resolved: the shop has no usable primary domain
+ * (`no_domain`), or the Admin API itself could not be read (`admin_unavailable`:
+ * offline token gone, throttled, outage), which is not the merchant's address.
+ */
+export type TargetsFailure = Extract<SpeedFailureCode, "no_domain" | "admin_unavailable">;
+
+export type ResolveTargetsResult =
+  | { ok: true; targets: SpeedTargets }
+  | { ok: false; reason: TargetsFailure };
 
 const SHOP_DOMAIN_QUERY = `
   query SpeedReportShop {
@@ -401,20 +524,30 @@ export async function resolvePublicProductTarget(input: {
       log("no_domain");
       return fallback;
     }
-    const res = await guardedStorefrontGet(
+    const read = await guardedStorefrontGet(
       new URL(`https://${input.primaryHost}/products.json?limit=${PUBLIC_PRODUCTS_LIMIT}`),
       {
         allowedHosts: new Set(input.storeHosts),
         accept: "application/json",
+        // Only a 2xx that is not the password page is worth reading.
+        readBody: (url, status) => !isPasswordPath(url.pathname) && status >= 200 && status < 300,
         fetchImpl: input.fetchImpl,
         dnsLookup: input.dnsLookup,
       },
     );
-    if (!res.ok) {
-      log(res.reason);
+    if (read.status === "unreachable") {
+      log(read.reason);
       return fallback;
     }
-    const url = pickPublicProductUrl(res.body, input.primaryHost);
+    if (isPasswordPath(read.url.pathname)) {
+      log("password");
+      return fallback;
+    }
+    if (read.body === null) {
+      log("http_status");
+      return fallback;
+    }
+    const url = pickPublicProductUrl(read.body, input.primaryHost);
     if (!url) {
       log("no_usable_product");
       return fallback;
@@ -428,14 +561,13 @@ export async function resolvePublicProductTarget(input: {
 }
 
 /**
- * Read the shop's primary host, then pick the product page: the Admin path
- * when read_products is granted (preferred), else the public /products.json
- * fallback (gc-9mbw).
+ * Read the shop's primary host, then pick the product page through the Admin
+ * API (read_products). Without that scope the product stays
+ * NEEDS_PRODUCT_ACCESS here: the public /products.json fallback
+ * (resolvePublicProductTarget) runs only after the password pre-check, so a
+ * password-protected store gets no storefront read beyond that check.
  */
-export async function resolveSpeedTargets(
-  admin: AdminApiContext,
-  opts: { shopId: string; fetchImpl?: StorefrontFetch; dnsLookup?: DnsLookupAll },
-): Promise<ResolveTargetsResult> {
+export async function resolveSpeedTargets(admin: AdminApiContext): Promise<ResolveTargetsResult> {
   let primaryHost: string | null = null;
   let myshopifyHost: string | null = null;
   try {
@@ -447,7 +579,11 @@ export async function resolveSpeedTargets(
           myshopifyDomain?: unknown;
         } | null;
       };
+      errors?: unknown[];
     };
+    if (Array.isArray(body?.errors) && body.errors.length > 0 && !body.data?.shop) {
+      return { ok: false, reason: "admin_unavailable" };
+    }
     const shop = body?.data?.shop;
     const primary = shop?.primaryDomain;
     if (typeof primary?.url === "string") {
@@ -462,26 +598,77 @@ export async function resolveSpeedTargets(
       myshopifyHost = shop.myshopifyDomain.toLowerCase();
     }
   } catch {
-    return { ok: false };
+    return { ok: false, reason: "admin_unavailable" };
   }
-  if (!primaryHost || !isBareHostname(primaryHost)) return { ok: false };
+  if (!primaryHost || !isBareHostname(primaryHost)) return { ok: false, reason: "no_domain" };
   primaryHost = primaryHost.toLowerCase();
 
+  const product = await resolveProductTarget(admin, primaryHost);
   const storeHosts = [primaryHost, ...(myshopifyHost ? [myshopifyHost] : [])];
-  let product = await resolveProductTarget(admin, primaryHost);
-  if (product.status === "NEEDS_PRODUCT_ACCESS") {
-    product = await resolvePublicProductTarget({
-      shopId: opts.shopId,
-      primaryHost,
-      storeHosts,
-      fetchImpl: opts.fetchImpl,
-      dnsLookup: opts.dnsLookup,
-    });
-  }
   return {
     ok: true,
     targets: { homeUrl: `https://${primaryHost}/`, primaryHost, storeHosts, product },
   };
+}
+
+// ---------------------------------------------------------------------------
+// Step 2b: password pre-check (no PageSpeed cost)
+// ---------------------------------------------------------------------------
+
+/**
+ * password  the homepage is Shopify's password page: test nothing
+ * open      the homepage is readable and not the password page
+ * unknown   the read failed (network, timeout, refused redirect, too large):
+ *           go on to PageSpeed, whose final-URL / 401 checks still apply
+ * skipped   flag off or the shop is no longer eligible: nothing was fetched
+ */
+export type PasswordPrecheck = "password" | "open" | "unknown" | "skipped";
+
+/**
+ * One GET of `https://<primary host>/` through the scanner's SSRF-safe
+ * storefront read (readStorefrontHomepage: connect-time address guard,
+ * redirects only to the shop's own hosts, 10 s, 5 MB), BEFORE any PageSpeed
+ * call or budget reservation. A password-protected store either redirects to
+ * /password or serves the password page at / (200 or 401), so both the final
+ * path and the HTML are checked. A failed read never blocks the run.
+ */
+export async function precheckStorefrontPassword(input: {
+  shopId: string;
+  primaryHost: string;
+  storeHosts: string[];
+  fetchImpl?: StorefrontFetch;
+}): Promise<PasswordPrecheck> {
+  const gate = await checkSpeedReportEligibility(input.shopId);
+  if (!gate.eligible) return "skipped";
+
+  const primaryHost = input.primaryHost.toLowerCase();
+  const read = await readStorefrontHomepage(
+    {
+      primaryHost,
+      myshopifyHost: input.storeHosts.find((h) => h.toLowerCase() !== primaryHost) ?? null,
+    },
+    {
+      // A password page can answer 401, so its body is read too.
+      readBody: (url, status) =>
+        !isPasswordPath(url.pathname) && ((status >= 200 && status < 300) || status === 401),
+      fetchImpl: input.fetchImpl,
+    },
+  );
+  let outcome: PasswordPrecheck;
+  if (read.status === "unreachable") outcome = "unknown";
+  else if (isPasswordPath(read.url.pathname)) outcome = "password";
+  else if (read.body !== null && isPasswordPageHtml(read.body)) outcome = "password";
+  else outcome = read.body === null ? "unknown" : "open";
+
+  logger.info("speed report password pre-check", {
+    function: LOG_FN,
+    event: "speed_password_precheck",
+    shopId: input.shopId,
+    host: primaryHost,
+    outcome: read.status === "unreachable" ? `${outcome}:${read.reason}` : outcome,
+    ...(read.status === "read" ? { httpStatus: read.httpStatus } : {}),
+  });
+  return outcome;
 }
 
 // ---------------------------------------------------------------------------
@@ -525,10 +712,12 @@ export function attemptHaltsPage(a: SpeedAttempt): boolean {
 /**
  * One PageSpeed run of one page. Re-checks the gate and the key, validates the
  * target, reserves the call against today's budget, then calls Google. NEVER
- * THROWS for a Google-side failure (those are `error` attempts), so an Inngest
- * step retry can never re-issue a call that already happened; a DB error before
- * the call (gate/budget) may throw and is retried by the step, which is safe
- * because nothing was sent yet.
+ * THROWS for a Google-side failure (those are `error` attempts), so a Google
+ * error does not make Inngest retry the step and repeat the call. A call can
+ * still repeat if the worker dies after it but before the step's result is
+ * recorded: at most once (the function has retries: 1), and the repeat
+ * reserves its own budget. A DB error before the call (gate/budget) may throw
+ * and is retried by the step, which is safe because nothing was sent yet.
  */
 export async function runPageSpeedAttempt(input: {
   shopId: string;
@@ -560,7 +749,11 @@ export async function runPageSpeedAttempt(input: {
   const result = await callPageSpeed(input.pageUrl, { apiKey, fetchImpl: input.fetchImpl });
   let attempt: SpeedAttempt;
   if (!result.ok) {
-    attempt = { kind: "error", code: result.code };
+    // The storefront answered Lighthouse 401: Shopify's password page.
+    attempt =
+      result.code === "document_failed" && result.documentStatus === 401
+        ? { kind: "password" }
+        : { kind: "error", code: result.code };
   } else {
     const run = summarizeLighthouse(result.lighthouse, input.storeHosts);
     if (!run) attempt = { kind: "error", code: "bad_response" };
@@ -650,7 +843,10 @@ export type PageAttempts = { page: SpeedPageKey; url: string; attempts: SpeedAtt
 
 /**
  * Build the pages, roll up the status, write the report and its OpsEvent.
- * `targets` null = the URLs could not be resolved (FAILED / no_domain).
+ * `targets` null = the URLs could not be resolved: FAILED with `targetsFailure`
+ * (no_domain when not given).
+ * `passwordProtected` = the pre-check found the password page: every tested
+ * page is PASSWORD with no call made.
  */
 export async function finalizeSpeedReport(input: {
   reportId: string;
@@ -658,8 +854,10 @@ export async function finalizeSpeedReport(input: {
   origin: SpeedReportOrigin;
   startedAt: string;
   targets: SpeedTargets | null;
+  targetsFailure?: TargetsFailure;
   tested: PageAttempts[];
   haltCode?: SpeedFailureCode;
+  passwordProtected?: boolean;
 }): Promise<{ status: SpeedReportStatus; calls: number }> {
   const calls = input.tested.reduce((n, p) => n + p.attempts.filter(attemptCalledGoogle).length, 0);
   let status: SpeedReportStatus;
@@ -668,10 +866,12 @@ export async function finalizeSpeedReport(input: {
 
   if (!input.targets) {
     status = SPEED_REPORT_STATUS.FAILED;
-    failureReason = "no_domain";
+    failureReason = input.targetsFailure ?? "no_domain";
   } else {
     pages = input.tested.map((p) =>
-      buildSpeedPageResult(p.page, p.url, p.attempts, input.haltCode),
+      input.passwordProtected
+        ? { page: p.page, url: p.url, status: "PASSWORD" as const, runsAttempted: 0, runsOk: 0 }
+        : buildSpeedPageResult(p.page, p.url, p.attempts, input.haltCode),
     );
     const product = input.targets.product;
     if (product.status !== "OK") {
@@ -751,12 +951,18 @@ export type RunNowResult =
   | { ok: true; reportId: string }
   | { ok: false; error: string; nextAvailableAt?: string };
 
+/** At most one "not configured" ops event per shop per this window. */
+export const NOT_CONFIGURED_EVENT_WINDOW_MS = 60 * 60 * 1000;
+
 /**
  * Start a MANUAL speed report for the session shop: at most once per 24h,
  * never while one is already running, Professional only (the caller has
  * already 404ed when the feature is dark). A missing key refuses before the
- * 24h slot is claimed (and records the "not configured" ops event). If the
- * event cannot be sent, the row is closed as FAILED and the slot handed back.
+ * 24h slot is claimed and records the "not configured" ops event at most once
+ * an hour per shop (clicks cannot write unbounded events, gc-wt3y #9). If the
+ * row cannot be created or the event cannot be sent, the slot is handed back
+ * (and a created row closed as FAILED, gc-wt3y #7). The event carries the
+ * claim so a run that later dies or is cancelled hands it back too.
  */
 export async function requestSpeedReportRunNow(
   shop: { id: string; domain: string; plan: string },
@@ -766,13 +972,16 @@ export async function requestSpeedReportRunNow(
     return { ok: false, error: RUN_NOW_ERRORS.notInPlan };
 
   if (!getPageSpeedApiKey()) {
-    await recordSpeedReportEvent(shop.domain, {
-      status: SPEED_REPORT_STATUS.FAILED,
-      origin: SPEED_REPORT_ORIGIN.MANUAL,
-      calls: 0,
-      durationMs: 0,
-      reason: "not_configured",
-    });
+    const since = new Date(now.getTime() - NOT_CONFIGURED_EVENT_WINDOW_MS);
+    if (!(await hasRecentSpeedReportEvent(shop.domain, "not_configured", since))) {
+      await recordSpeedReportEvent(shop.domain, {
+        status: SPEED_REPORT_STATUS.FAILED,
+        origin: SPEED_REPORT_ORIGIN.MANUAL,
+        calls: 0,
+        durationMs: 0,
+        reason: "not_configured",
+      });
+    }
     logger.warn("speed report not configured", {
       function: LOG_FN,
       event: "speed_report_not_configured",
@@ -796,11 +1005,29 @@ export async function requestSpeedReportRunNow(
     };
   }
 
-  const row = await createSpeedReport(shop.id, SPEED_REPORT_ORIGIN.MANUAL);
+  let row: { id: string };
+  try {
+    row = await createSpeedReport(shop.id, SPEED_REPORT_ORIGIN.MANUAL);
+  } catch (err) {
+    logger.error("speed report row create failed", {
+      function: LOG_FN,
+      event: "speed_report_create_failed",
+      shopId: shop.id,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    await releaseSpeedReportRunNow(shop.id, now, previous);
+    return { ok: false, error: RUN_NOW_ERRORS.dispatch };
+  }
   try {
     await inngest.send({
       name: "speed-report/requested",
-      data: { shopId: shop.id, origin: SPEED_REPORT_ORIGIN.MANUAL, reportId: row.id },
+      data: {
+        shopId: shop.id,
+        origin: SPEED_REPORT_ORIGIN.MANUAL,
+        reportId: row.id,
+        runNowClaimedAt: now.toISOString(),
+        runNowPrevious: previous ? previous.toISOString() : null,
+      },
     });
   } catch (err) {
     logger.error("speed report dispatch failed", {

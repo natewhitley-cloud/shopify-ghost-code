@@ -10,7 +10,10 @@ import {
   type GraphQLConnection,
   type PaginateStats,
   paginateConnection,
+  type QueryCostStats,
+  sumQueryCost,
 } from "../lib/graphql-pagination.server";
+import type { ThrottleSnapshot } from "../lib/rate-limit-monitor.server";
 import { PRODUCT_AUDIT_CAP } from "../lib/scan-limits";
 import { checkOptionalScope, type GrantedOptionalScopes } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -88,6 +91,12 @@ export type ProductAuditData = {
   lastId: string | null;
   hasMore: boolean;
   endCursor: string | null;
+  /** A THROTTLED backoff hit the deadline: `endCursor` is a retry point (audit #2). */
+  throttleStopped: boolean;
+  /** Last throttle status seen, for the next step's first wait (audit #3). */
+  throttle: ThrottleSnapshot | null;
+  /** Query cost of this call's pages (audit #7). */
+  cost: QueryCostStats;
 };
 
 // ---------------------------------------------------------------------------
@@ -202,14 +211,15 @@ type ProductAuditNode = {
  * `truncated` when the cap cut the walk short so the caller can record a
  * coverage gap. Uses cursor-based pagination with 50 products per page.
  *
- * `resume` (gc-747u): `after` continues a walk an earlier step stopped, and
- * `deadline` stops requesting pages once the step's time budget is spent.
+ * `resume` (gc-747u): `after` continues a walk an earlier step stopped,
+ * `deadline` stops requesting pages once the step's time budget is spent, and
+ * `throttle` is the status the earlier step last saw (waited on first).
  * `maxProducts` is then the cap for THIS call (the chunk), not the whole walk.
  */
 export async function fetchProductAuditData(
   admin: AdminApiContext,
   maxProducts: number = PRODUCT_AUDIT_CAP,
-  resume: { after?: string | null; deadline?: number } = {},
+  resume: { after?: string | null; deadline?: number; throttle?: ThrottleSnapshot | null } = {},
 ): Promise<ProductAuditData> {
   const PAGE_SIZE = 50;
 
@@ -236,6 +246,7 @@ export async function fetchProductAuditData(
     stats,
     after: resume.after,
     deadline: resume.deadline,
+    initialThrottle: resume.throttle,
   });
 
   const tags: ProductTagData[] = nodes.map((n) => ({
@@ -274,6 +285,9 @@ export async function fetchProductAuditData(
     lastId: nodes.length > 0 ? nodes[nodes.length - 1].id : null,
     hasMore: stats.hasMore === true,
     endCursor: stats.endCursor ?? null,
+    throttleStopped: stats.throttleStopped === true,
+    throttle: stats.throttle ?? null,
+    cost: sumQueryCost([stats.cost]),
   };
 }
 

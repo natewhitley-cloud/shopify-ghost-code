@@ -56,6 +56,24 @@ export const PROFESSIONAL_REDIRECT_CAP = 10_000;
 export const WALK_STEP_TIME_BUDGET_MS = 15_000;
 
 /**
+ * Wall-clock budget for a WHOLE product / redirect walk (gc-747u audit #1),
+ * from the walk's first step. The stale sweeper fails a scan 30 min after it
+ * started (DEFAULT_STALE_SCAN_THRESHOLDS.inProgressMaxAgeMinutes), and a
+ * heavy-catalog Pro walk on a 50 pts/s bucket (100 pages at ~1,000 points)
+ * would take ~33 min on its own. Past its deadline a walk stops paging and is
+ * recorded as truncated (the "checked the first N" disclosure shows and the
+ * differ never resolves a record past the last one checked).
+ *
+ * Products 10 min: a full Pro walk (5,000 products) measured ~6-8 min on a
+ * real store. Redirects 4 min: a 10,000-redirect walk is 200 cheap pages,
+ * ~1-2 min. Each can overrun by one rate-limit wait plus one page (~25 s), so
+ * the walks take at most ~15 min, leaving ~15 min of the 30 for the theme
+ * fetch + scan, the other audits, finalize and Inngest's step retries.
+ */
+export const PRODUCT_WALK_TIME_BUDGET_MS = 10 * 60_000;
+export const REDIRECT_WALK_TIME_BUDGET_MS = 4 * 60_000;
+
+/**
  * Max records fetched in ONE walk step (gc-747u), independent of the time
  * budget: bounds the in-memory product payload (variants + metafield values) to
  * what a single Free walk held before paid caps existed.

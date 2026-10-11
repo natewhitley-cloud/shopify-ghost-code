@@ -38,6 +38,9 @@ vi.mock("../../app/models/ops-event.server", () => ({
 import {
   checkRateLimit,
   parseRequestedQueryCost,
+  rateLimitSleepMs,
+  throttleSnapshot,
+  waitForThrottleSnapshot,
   checkThrottleStatus,
   checkThrottleStatusFromExtensions,
   isThrottledError,
@@ -612,4 +615,85 @@ describe("parseRequestedQueryCost (gc-747u)", () => {
       expect(parseRequestedQueryCost(ext)).toBe(0);
     },
   );
+});
+
+describe("rateLimitSleepMs (gc-747u audit #2)", () => {
+  const ext = (currentlyAvailable: number, requestedQueryCost?: number) => ({
+    cost: {
+      requestedQueryCost,
+      throttleStatus: { maximumAvailable: 1000, currentlyAvailable, restoreRate: 50 },
+    },
+  });
+
+  it("returns the sleep checkRateLimit would take, without sleeping", () => {
+    // Needs 650, has 150, refills 50/s: 10 s.
+    expect(rateLimitSleepMs(ext(150, 650), 650)).toBe(10_000);
+  });
+
+  it("is 0 with enough headroom or no throttle status", () => {
+    expect(rateLimitSleepMs(ext(900, 650), 650)).toBe(0);
+    expect(rateLimitSleepMs({})).toBe(0);
+  });
+
+  it("never waits for more than the bucket holds", () => {
+    // Requested 5,000 against a 1,000-point bucket: waits for 1,000 (20 s).
+    expect(rateLimitSleepMs(ext(0, 5_000), 5_000)).toBe(20_000);
+  });
+});
+
+describe("throttle snapshot across a step boundary (gc-747u audit #3)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000_000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const ext = {
+    cost: {
+      requestedQueryCost: 650,
+      actualQueryCost: 400,
+      throttleStatus: { maximumAvailable: 1000, currentlyAvailable: 0, restoreRate: 50 },
+    },
+  };
+
+  it("captures the status, the requested cost and when it was observed (plain JSON)", () => {
+    const snap = throttleSnapshot(ext);
+    expect(snap).toEqual({
+      currentlyAvailable: 0,
+      maximumAvailable: 1000,
+      restoreRate: 50,
+      requestedQueryCost: 650,
+      observedAt: 1_000_000,
+    });
+    expect(JSON.parse(JSON.stringify(snap))).toEqual(snap);
+  });
+
+  it("is null when the response carries no throttle status", () => {
+    expect(throttleSnapshot({})).toBeNull();
+    expect(throttleSnapshot(undefined)).toBeNull();
+  });
+
+  it("waits for the requested cost, crediting the refill since it was observed", async () => {
+    const snap = throttleSnapshot(ext)!;
+    // 4 s later the bucket has refilled 200 of the 650 needed: 450 / 50 = 9 s.
+    vi.setSystemTime(1_004_000);
+    let done = false;
+    const wait = waitForThrottleSnapshot(snap).then(() => (done = true));
+    await vi.advanceTimersByTimeAsync(8_999);
+    expect(done).toBe(false);
+    await vi.advanceTimersByTimeAsync(1);
+    await wait;
+    expect(done).toBe(true);
+  });
+
+  it("does not wait when the bucket has refilled enough since", async () => {
+    const snap = throttleSnapshot(ext)!;
+    vi.setSystemTime(1_000_000 + 60_000);
+    const started = Date.now();
+    await waitForThrottleSnapshot(snap);
+    expect(Date.now()).toBe(started);
+  });
 });
