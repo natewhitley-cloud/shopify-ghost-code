@@ -208,6 +208,57 @@ describe("attributeSpeedUrl (shared scanner matcher)", () => {
     });
   });
 
+  describe("store / Shopify hosts: only app embeds can be an app (gc-wt3y #4)", () => {
+    // Theme assets whose FILE NAME matches an app signature: the merchant's
+    // theme code, never the app's.
+    it.each([
+      [`https://${STORE_HOST}/cdn/shop/t/3/assets/back-in-stock.js`],
+      ["https://cdn.shopify.com/s/files/1/0001/t/3/assets/klaviyo-form.js"],
+      [`https://${STORE_HOST}/cdn/shop/t/3/assets/recharge.js`],
+      [`https://${STORE_HOST}/cdn/shop/t/3/assets/yotpo.js`],
+      [`https://${STORE_HOST}/cdn/shop/t/3/assets/privy.js`],
+      ["https://cdn.shopify.com/s/files/1/0001/t/3/assets/stamped.js"],
+    ])("theme asset %s stays first party", (url) => {
+      expect(attributeSpeedUrl(url, HOSTS)).toEqual({ kind: "first_party" });
+    });
+
+    it("an app embed matching a signature is named for that app (Shopify CDN or store host)", () => {
+      expect(
+        attributeSpeedUrl(
+          "https://cdn.shopify.com/extensions/0198f00d-aaaa/back-in-stock-notify-7/assets/bis.js",
+          HOSTS,
+        ),
+      ).toEqual({ kind: "app", name: "Back in Stock (Appikon)" });
+      expect(
+        attributeSpeedUrl(
+          `https://${STORE_HOST}/cdn/shop/extensions/0199abcd/klaviyo-onsite-12/assets/onsite.js`,
+          HOSTS,
+        ),
+      ).toEqual({ kind: "app", name: "Klaviyo" });
+    });
+
+    it("an unmatched app embed is still an app, labelled by its extension handle", () => {
+      expect(
+        attributeSpeedUrl(
+          "https://cdn.shopify.com/extensions/019a1b2c-3d4e/judgeme-reviews-145/assets/loader.js",
+          HOSTS,
+        ),
+      ).toEqual({ kind: "app", name: "App embed (judgeme-reviews)" });
+      expect(
+        attributeSpeedUrl(
+          `https://${STORE_HOST}/cdn/shop/extensions/0198f00d-bbbb/tiny-unknown-app/assets/w.js`,
+          HOSTS,
+        ),
+      ).toEqual({ kind: "app", name: "App embed (tiny-unknown-app)" });
+    });
+
+    it("Shopify's own scripts stay first party even when a signature matches", () => {
+      expect(
+        attributeSpeedUrl(`https://${STORE_HOST}/cdn/shopifycloud/x/klaviyo.js`, HOSTS),
+      ).toEqual({ kind: "first_party" });
+    });
+  });
+
   it("does not treat a Shopify lookalike host as first party", () => {
     expect(attributeSpeedUrl("https://evilshopify.com/x.js", HOSTS)).toEqual({
       kind: "other",

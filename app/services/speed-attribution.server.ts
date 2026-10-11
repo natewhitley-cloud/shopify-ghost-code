@@ -17,12 +17,17 @@
  *
  * Attribution reuses the scanner's matcher (identifyAppForExternalUrl, the
  * same one behind ScanDomain matched/appName) and Shopify first-party check
- * (isShopifyDomain). Precedence differs from the scanner on purpose: a URL
- * that matches a known app counts for that app EVEN on a Shopify host, since
- * app embeds are served from cdn.shopify.com/extensions/... and would
- * otherwise vanish into "Shopify". Then: the store's own hosts or a Shopify
- * host = first party (in page totals, never an app row); anything else =
- * "other third-party", grouped by host.
+ * (isShopifyDomain). On the store's own hosts and Shopify hosts only an APP
+ * EMBED (a theme app extension asset, `.../extensions/<id>/<handle>/...` on
+ * cdn.shopify.com or the store's /cdn/shop/) can belong to an app: named by
+ * the matcher when it knows the app, else "App embed (<handle>)" (only apps
+ * ship extensions, so it is an app row, not "other third-party", which would
+ * lump every unknown embed under cdn.shopify.com). Every other URL on those
+ * hosts (theme assets /cdn/shop/t/, /s/files/, Shopify's own scripts) is
+ * first party even when its file name matches an app signature: a theme file
+ * named back-in-stock.js is the merchant's theme code, not the app (gc-wt3y
+ * #4). Third-party hosts: a known app by the matcher, else "other
+ * third-party", grouped by host.
  *
  * Only this summary is kept; the raw multi-MB result is dropped by the caller.
  */
@@ -73,6 +78,13 @@ function isHttpUrl(v: unknown): v is string {
   return typeof v === "string" && /^https?:\/\//i.test(v);
 }
 
+/**
+ * A theme app extension asset: `/extensions/<id>/<handle>/...` (cdn.shopify.com)
+ * or `/cdn/shop/extensions/<id>/<handle>/...` (the store's own host). Group 1
+ * is the handle (the extension's name, with a trailing `-<version>`).
+ */
+const APP_EMBED_PATH_RE = /^(?:\/cdn\/shop)?\/extensions\/[^/]+\/([a-z0-9][a-z0-9-]*)\//i;
+
 export type UrlAttribution =
   | { kind: "app"; name: string }
   | { kind: "first_party" }
@@ -83,15 +95,23 @@ export type UrlAttribution =
  * precedence). `storeHosts` are the shop's own storefront hosts, lowercased.
  */
 export function attributeSpeedUrl(url: string, storeHosts: ReadonlySet<string>): UrlAttribution {
-  let host: string;
+  let parsed: URL;
   try {
-    host = new URL(url).hostname.toLowerCase();
+    parsed = new URL(url);
   } catch {
     return { kind: "first_party" };
   }
+  const host = parsed.hostname.toLowerCase();
+  if (storeHosts.has(host) || isShopifyDomain(host)) {
+    const embed = APP_EMBED_PATH_RE.exec(parsed.pathname);
+    if (!embed) return { kind: "first_party" };
+    const appName = identifyAppForExternalUrl(url);
+    if (appName) return { kind: "app", name: appName };
+    const handle = embed[1].toLowerCase().replace(/-\d+$/, "");
+    return { kind: "app", name: `App embed (${handle})` };
+  }
   const appName = identifyAppForExternalUrl(url);
   if (appName) return { kind: "app", name: appName };
-  if (storeHosts.has(host) || isShopifyDomain(host)) return { kind: "first_party" };
   return { kind: "other", name: host };
 }
 
