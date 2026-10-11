@@ -56,6 +56,11 @@ describe("copy", () => {
     expect(summaryLiveParagraph("a@b.co")).toBe(
       "We email a@b.co only when something changed: new or fixed findings, or an app that is no longer active.",
     );
+    expect(summaryLiveParagraph("a@b.co", false)).toBe(summaryLiveParagraph("a@b.co"));
+    // gc-2wnf: Professional with the speed report live.
+    expect(summaryLiveParagraph("a@b.co", true)).toBe(
+      "We email a@b.co only when something changed: new or fixed findings, an app that is no longer active, or a noticeable change in your store speed.",
+    );
     expect(SUMMARY_COMING_SOON).toBe(
       "Summary emails are coming soon. We'll let you know before any are sent.",
     );
@@ -68,6 +73,7 @@ describe("copy", () => {
     const all = [
       summaryNoticeLead("a@b.co", "weekly"),
       summaryLiveParagraph(null),
+      summaryLiveParagraph(null, true),
       SUMMARY_COMING_SOON,
       SUMMARY_FREE_PARAGRAPH,
     ].join(" ");

@@ -14,7 +14,7 @@ import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { ActionFunctionArgs, LoaderFunctionArgs } from "react-router";
 import { createRoutesStub } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // ---------------------------------------------------------------------------
 // Module mocks (hoisted by Vitest)
@@ -137,6 +137,7 @@ type AlertsData = {
   cadence: string;
   enabled: boolean;
   email: string | null;
+  speedInSummary: boolean;
 };
 const DARK_ALERTS: AlertsData = {
   configured: false,
@@ -144,6 +145,7 @@ const DARK_ALERTS: AlertsData = {
   cadence: "none",
   enabled: true,
   email: null,
+  speedInSummary: false,
 };
 
 // ---------------------------------------------------------------------------
@@ -437,6 +439,33 @@ describe("app.settings loader: alerts", () => {
       cadence: "weekly",
       enabled: true,
       email: "owner@example.com",
+      speedInSummary: false,
+    });
+  });
+
+  describe("speedInSummary (gc-2wnf): Professional AND the speed report live", () => {
+    afterEach(() => {
+      delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    });
+
+    it.each([
+      ["Professional, live", "Professional", true, "true", true],
+      ["Professional, dark", "Professional", true, undefined, false],
+      ["Professional, flag not exactly true", "Professional", true, "TRUE", false],
+      ["Standard, live", "Standard", false, "true", false],
+      ["free, live", "free", false, "true", false],
+    ])("%s", async (_label, plan, speedReport, flag, expected) => {
+      if (flag === undefined) delete process.env.SPEED_REPORT_LIVE_ENABLED;
+      else process.env.SPEED_REPORT_LIVE_ENABLED = flag;
+      mockGetPlanFeatures.mockReturnValue({
+        ...FREE_FEATURES,
+        alertCadence: "weekly",
+        speedReport,
+      });
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
+      const result = (await loader(makeLoaderArgs())) as { alerts: AlertsData };
+      expect(mockGetPlanFeatures).toHaveBeenCalledWith(plan);
+      expect(result.alerts.speedInSummary).toBe(expected);
     });
   });
 
@@ -678,6 +707,24 @@ describe("Settings Summary emails card (gc-ol95 copy)", () => {
     expect(html).not.toContain("coming soon");
   });
 
+  it("live, Professional with the speed report live: the paragraph adds the speed change (gc-2wnf)", () => {
+    const html = renderSettings("Professional", false, { ...PAID, speedInSummary: true });
+
+    expect(html).toContain(
+      "We email owner@example.com only when something changed: new or fixed findings, an app that is no longer active, or a noticeable change in your store speed.",
+    );
+    expect(html).not.toMatch(/[—–]/);
+  });
+
+  it("live, Professional with the speed report dark: the paragraph never mentions speed", () => {
+    const html = renderSettings("Professional", false, { ...PAID, speedInSummary: false });
+
+    expect(html).toContain(
+      "We email owner@example.com only when something changed: new or fixed findings, or an app that is no longer active.",
+    );
+    expect(html).not.toContain("store speed");
+  });
+
   it("live, Standard: monthly label and the owner-email fallback when none is cached", () => {
     const html = renderSettings("Standard", false, {
       ...PAID,
@@ -689,6 +736,7 @@ describe("Settings Summary emails card (gc-ol95 copy)", () => {
     expect(html).toContain(
       "We email your store owner email only when something changed: new or fixed findings, or an app that is no longer active.",
     );
+    expect(html).not.toContain("store speed");
   });
 
   it("unchecked when not effectively on", () => {

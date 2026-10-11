@@ -6,7 +6,9 @@
  *
  * Honesty rules: the card never says emails are sent while sending is not
  * configured, and never promises more than the email does (only when something
- * changed: new or fixed findings, or an app that is no longer active).
+ * changed: new or fixed findings, or an app that is no longer active; for
+ * Professional while the store speed report is live, also a noticeable speed
+ * change, which can trigger a send on its own, gc-2wnf).
  */
 
 export type SummaryCadence = "weekly" | "monthly";
@@ -29,9 +31,17 @@ export function summaryToggleLabel(cadence: SummaryCadence): string {
   return `Email me a summary after each ${cadence} scan`;
 }
 
-/** Card paragraph while sending is configured. */
-export function summaryLiveParagraph(email: string | null): string {
-  return `We email ${email ?? OWNER_EMAIL_FALLBACK} only when something changed: new or fixed findings, or an app that is no longer active.`;
+/**
+ * Card paragraph while sending is configured. `speedInSummary`: the email can
+ * carry (and be sent for) a store speed change, i.e. Professional with the
+ * speed report live (gc-2wnf).
+ */
+export function summaryLiveParagraph(email: string | null, speedInSummary = false): string {
+  const who = email ?? OWNER_EMAIL_FALLBACK;
+  if (speedInSummary) {
+    return `We email ${who} only when something changed: new or fixed findings, an app that is no longer active, or a noticeable change in your store speed.`;
+  }
+  return `We email ${who} only when something changed: new or fixed findings, or an app that is no longer active.`;
 }
 
 /** Card paragraph while sending is not configured (dark). */

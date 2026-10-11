@@ -29,6 +29,7 @@ import { useOptionalScopes } from "../lib/use-optional-scopes";
 import { setSummaryEmailsEnabled } from "../models/merchant-alert.server";
 import { getShopMetadata } from "../models/shop.server";
 import { getMerchantAlertConfigStatus } from "../services/merchant-alert.server";
+import { isSpeedReportLive } from "../services/speed-report-config.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -76,6 +77,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       cadence: features.alertCadence,
       enabled: summaryEffectivelyOn(shop),
       email: shop.alertEmail,
+      // gc-2wnf: Professional's email can also report (and be sent for) a
+      // store speed change, but only while the speed report is live.
+      speedInSummary: isSpeedReportLive() && features.speedReport === true,
     },
   };
 };
@@ -131,6 +135,7 @@ function SummaryEmailsCard({
     cadence: string;
     enabled: boolean;
     email: string | null;
+    speedInSummary: boolean;
   };
   pricingPlansUrl: string;
   trialEligible: boolean;
@@ -160,7 +165,9 @@ function SummaryEmailsCard({
                 }
               />
               <s-paragraph>
-                {alerts.configured ? summaryLiveParagraph(alerts.email) : SUMMARY_COMING_SOON}
+                {alerts.configured
+                  ? summaryLiveParagraph(alerts.email, alerts.speedInSummary)
+                  : SUMMARY_COMING_SOON}
               </s-paragraph>
               {fetcher.data && "error" in fetcher.data && (
                 <s-banner tone="critical">{fetcher.data.error}</s-banner>
