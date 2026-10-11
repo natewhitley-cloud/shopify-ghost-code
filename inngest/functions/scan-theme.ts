@@ -60,6 +60,7 @@ import { NonRetriableError } from "inngest";
 
 import type { PaginateStats } from "../../app/lib/graphql-pagination.server";
 import { logger } from "../../app/lib/logger.server";
+import type { ThrottleSnapshot } from "../../app/lib/rate-limit-monitor.server";
 import {
   CORE_STEP_OUTPUT_BUDGET_BYTES,
   DANGLING_MAX_OCCURRENCES_PER_HANDLE,
@@ -315,6 +316,8 @@ type ProductChunkResult = {
   next: WalkResume | null;
   /** Set by the final step when the walk ran (scope granted, shop found). */
   coverage: WalkCoverage | null;
+  /** Last throttle status seen; the next step waits on it first (audit #3). */
+  throttle: ThrottleSnapshot | null;
 };
 
 /**
@@ -350,6 +353,7 @@ async function runProductAuditChunk(opts: {
   after: string | null;
   checkedSoFar: number;
   cap: number | null;
+  throttle: ThrottleSnapshot | null;
 }): Promise<ProductChunkResult> {
   const empty = (scopeAbsent: boolean): ProductChunkResult => ({
     tagCount: 0,
@@ -367,6 +371,7 @@ async function runProductAuditChunk(opts: {
     checked: opts.checkedSoFar,
     next: null,
     coverage: null,
+    throttle: null,
   });
 
   const db = (await import("../../app/db.server")).default;
@@ -403,6 +408,7 @@ async function runProductAuditChunk(opts: {
     await fetchProductAuditData(admin, Math.min(PRODUCT_WALK_CHUNK, cap - opts.checkedSoFar), {
       after: opts.after,
       deadline: walkStart + WALK_STEP_TIME_BUDGET_MS,
+      throttle: opts.throttle,
     });
   const walkMs = Date.now() - walkStart;
 
@@ -527,6 +533,7 @@ async function runProductAuditChunk(opts: {
             lastId: truncated ? walk.lastId : null,
           }
         : null,
+    throttle: walk.throttle,
   };
 }
 
@@ -545,6 +552,8 @@ type RedirectChunkResult = {
   /** Resume point plus the bulk tally so far (null groups = abandoned). */
   next: (WalkResume & { groups: BulkRedirectGroups | null }) | null;
   coverage: WalkCoverage | null;
+  /** Last throttle status seen; the next step waits on it first (audit #3). */
+  throttle: ThrottleSnapshot | null;
 };
 
 /**
@@ -577,6 +586,7 @@ async function runRedirectAuditChunk(opts: {
   checkedSoFar: number;
   cap: number | null;
   groups: BulkRedirectGroups | null;
+  throttle: ThrottleSnapshot | null;
 }): Promise<RedirectChunkResult> {
   const empty = (skipped: boolean): RedirectChunkResult => ({
     findingCount: 0,
@@ -590,6 +600,7 @@ async function runRedirectAuditChunk(opts: {
     checked: opts.checkedSoFar,
     next: null,
     coverage: null,
+    throttle: null,
   });
 
   const db = (await import("../../app/db.server")).default;
@@ -621,7 +632,7 @@ async function runRedirectAuditChunk(opts: {
     admin,
     Math.min(REDIRECT_WALK_CHUNK, cap - opts.checkedSoFar),
     stats,
-    { after: opts.after, deadline: walkStart + WALK_STEP_TIME_BUDGET_MS },
+    { after: opts.after, deadline: walkStart + WALK_STEP_TIME_BUDGET_MS, throttle: opts.throttle },
   );
   const walkMs = Date.now() - walkStart;
 
@@ -699,6 +710,7 @@ async function runRedirectAuditChunk(opts: {
           lastId: truncated ? (redirects[redirects.length - 1]?.id ?? null) : null,
         }
       : null,
+    throttle: stats.throttle ?? null,
   };
 }
 
@@ -1264,6 +1276,7 @@ export const scanTheme = inngest.createFunction(
           after: null,
           checkedSoFar: 0,
           cap: null,
+          throttle: null,
         }),
       );
       productChunks.push(productChunk);
@@ -1279,6 +1292,8 @@ export const scanTheme = inngest.createFunction(
             after: prev.next!.after,
             checkedSoFar: prev.checked,
             cap: prev.cap,
+            // Absent on a step memoized before audit #3: no carried wait.
+            throttle: prev.throttle ?? null,
           }),
         );
         productChunks.push(productChunk);
@@ -1353,6 +1368,7 @@ export const scanTheme = inngest.createFunction(
           checkedSoFar: 0,
           cap: null,
           groups: null,
+          throttle: null,
         }),
       );
       redirectChunks.push(redirectChunk);
@@ -1369,6 +1385,7 @@ export const scanTheme = inngest.createFunction(
             checkedSoFar: prev.checked,
             cap: prev.cap,
             groups: prev.next!.groups,
+            throttle: prev.throttle ?? null,
           }),
         );
         redirectChunks.push(redirectChunk);

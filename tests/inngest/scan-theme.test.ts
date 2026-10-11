@@ -5012,6 +5012,43 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
     expect(finalized().walkCoverage.redirects).toMatchObject({ checked: 1500, truncated: false });
   });
 
+  it("each walk step hands its last throttle status to the next step's first wait (audit #3)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateCatalog(1200);
+    simulateRedirects(2500);
+    const snapshot = (n: number) => ({
+      currentlyAvailable: n,
+      maximumAvailable: 1000,
+      restoreRate: 50,
+      requestedQueryCost: 650,
+      observedAt: n,
+    });
+    const products = mockFetchProductAuditData.getMockImplementation()!;
+    let productCall = 0;
+    mockFetchProductAuditData.mockImplementation(async (...args: unknown[]) => ({
+      ...(await (products as (...a: unknown[]) => Promise<object>)(...args)),
+      throttle: snapshot(++productCall),
+    }));
+    const redirects = mockFetchRedirects.getMockImplementation()!;
+    let redirectCall = 0;
+    mockFetchRedirects.mockImplementation(async (...args: unknown[]) => {
+      const out = await (redirects as (...a: unknown[]) => Promise<unknown>)(...args);
+      (args[2] as { throttle?: unknown }).throttle = snapshot(100 + ++redirectCall);
+      return out;
+    });
+
+    await runScanTheme();
+
+    const productCarried = mockFetchProductAuditData.mock.calls.map(
+      (c) => (c[2] as { throttle?: unknown }).throttle ?? null,
+    );
+    expect(productCarried).toEqual([null, snapshot(1), snapshot(2)]);
+    const redirectCarried = mockFetchRedirects.mock.calls.map(
+      (c) => (c[3] as { throttle?: unknown }).throttle ?? null,
+    );
+    expect(redirectCarried).toEqual([null, snapshot(101), snapshot(102)]);
+  });
+
   it("keeps every walk step's output far under the step budget at the Pro worst case", async () => {
     mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
     // 5,000 products x (100 variants + 50 x 2 KB metafields) and 10,000

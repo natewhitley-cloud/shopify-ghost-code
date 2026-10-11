@@ -153,6 +153,62 @@ export async function checkRateLimit(extensions: unknown, minPoints = 0): Promis
 }
 
 /**
+ * The throttle status one response reported, plus when (gc-747u audit #3). A
+ * walk split across Inngest steps stops at a step deadline BEFORE its
+ * rate-limit wait, so the step returns this (plain JSON, memoized with the
+ * step output) and the next step waits on it before its first request.
+ */
+export type ThrottleSnapshot = {
+  currentlyAvailable: number;
+  maximumAvailable: number | null;
+  restoreRate: number;
+  /** The next same-shaped request needs this much headroom. */
+  requestedQueryCost: number;
+  /** Epoch ms the status was observed (the bucket refills from then on). */
+  observedAt: number;
+};
+
+/** Snapshot of a response's throttle status, or null when it carried none. */
+export function throttleSnapshot(
+  extensions: unknown,
+  observedAt = Date.now(),
+): ThrottleSnapshot | null {
+  const throttle = parseThrottleStatus(extensions);
+  if (throttle?.currentlyAvailable === undefined) return null;
+  return {
+    currentlyAvailable: throttle.currentlyAvailable,
+    maximumAvailable: throttle.maximumAvailable ?? null,
+    restoreRate: throttle.restoreRate ?? DEFAULT_RESTORE_RATE,
+    requestedQueryCost: parseRequestedQueryCost(extensions),
+    observedAt,
+  };
+}
+
+/**
+ * Wait as {@link checkRateLimit} would on the response `snapshot` came from,
+ * crediting what the bucket has refilled since it was observed (the time the
+ * step boundary took), so a carried status never over-waits.
+ */
+export async function waitForThrottleSnapshot(snapshot: ThrottleSnapshot): Promise<void> {
+  const elapsedSec = Math.max(0, Date.now() - snapshot.observedAt) / 1000;
+  const refilled = snapshot.currentlyAvailable + snapshot.restoreRate * elapsedSec;
+  await checkRateLimit(
+    {
+      cost: {
+        throttleStatus: {
+          currentlyAvailable: Math.min(refilled, snapshot.maximumAvailable ?? Infinity),
+          ...(snapshot.maximumAvailable !== null
+            ? { maximumAvailable: snapshot.maximumAvailable }
+            : {}),
+          restoreRate: snapshot.restoreRate,
+        },
+      },
+    },
+    snapshot.requestedQueryCost,
+  );
+}
+
+/**
  * How long {@link checkRateLimit} would sleep for these extensions (0 when the
  * headroom suffices or the response carries no throttle status), without
  * sleeping. Lets a deadline-bound walk decide BEFORE a backoff whether it

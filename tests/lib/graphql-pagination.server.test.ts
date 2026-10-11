@@ -679,3 +679,103 @@ describe("paginateConnection THROTTLED retry vs the step deadline (gc-747u #2)",
     expect(graphql).toHaveBeenCalledTimes(3);
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-747u audit #3: the rate-limit wait survives the step boundary
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection throttle carry-over between steps (gc-747u #3)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_000_000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const lowHeadroomPage = () => ({
+    json: vi.fn().mockResolvedValue({
+      data: { items: { nodes: [{ id: "a" }], pageInfo: { hasNextPage: true, endCursor: "c1" } } },
+      extensions: {
+        cost: {
+          requestedQueryCost: 650,
+          throttleStatus: { maximumAvailable: 1000, currentlyAvailable: 150, restoreRate: 50 },
+        },
+      },
+    }),
+  });
+
+  it("a deadline stop records the last throttle status for the next step", async () => {
+    const graphql = vi.fn().mockResolvedValueOnce(lowHeadroomPage());
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    await paginateConnection({ ...baseOptions(graphql), stats, deadline: Date.now() - 1 });
+
+    expect(stats.throttleSleepMs).toBe(0);
+    expect(stats.throttle).toEqual({
+      currentlyAvailable: 150,
+      maximumAvailable: 1000,
+      restoreRate: 50,
+      requestedQueryCost: 650,
+      observedAt: 5_000_000,
+    });
+  });
+
+  it("the next step waits for the carried status BEFORE its first request", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(page([{ id: "b" }], { hasNextPage: false, endCursor: null }));
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    // Observed now: 150 of the 650 needed, 50/s refill => a 10 s wait.
+    const promise = paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      after: "c1",
+      initialThrottle: {
+        currentlyAvailable: 150,
+        maximumAvailable: 1000,
+        restoreRate: 50,
+        requestedQueryCost: 650,
+        observedAt: Date.now(),
+      },
+    });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(graphql).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await promise;
+
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(stats.throttleSleepMs).toBe(10_000);
+  });
+
+  it("a THROTTLED stop carries the throttled response's status", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      errorPage([{ extensions: { code: "THROTTLED" } }], {
+        currentlyAvailable: 0,
+        restoreRate: 50,
+      }),
+    );
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    await paginateConnection({ ...baseOptions(graphql), stats, deadline: Date.now() + 1_000 });
+
+    expect(stats.throttle).toMatchObject({ currentlyAvailable: 0, restoreRate: 50 });
+  });
+});

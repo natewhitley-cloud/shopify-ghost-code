@@ -22,6 +22,9 @@ import {
   isThrottledError,
   parseRequestedQueryCost,
   rateLimitSleepMs,
+  throttleSnapshot,
+  type ThrottleSnapshot,
+  waitForThrottleSnapshot,
 } from "./rate-limit-monitor.server";
 import { recordApiError } from "../models/ops-event.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -58,6 +61,10 @@ export type GraphQLConnection<TNode> = {
  *                        (gc-747u audit #2). `hasMore` is true and `endCursor`
  *                        is the cursor to RETRY, which is null when the walk's
  *                        very first request was throttled (resume from the start).
+ *   - `throttle`:        the last throttle status a response reported (gc-747u
+ *                        audit #3). A deadline stop skips the rate-limit wait, so
+ *                        a chunked caller passes this to the next step's
+ *                        `initialThrottle` and the wait happens there instead.
  */
 export type PaginateStats = {
   pageCount: number;
@@ -67,6 +74,7 @@ export type PaginateStats = {
   hasMore?: boolean;
   endCursor?: string | null;
   throttleStopped?: boolean;
+  throttle?: ThrottleSnapshot | null;
 };
 
 /** Minimal shape of the JSON envelope returned by `admin.graphql`. */
@@ -139,6 +147,14 @@ export type PaginateOptions<TNode, TResult> = {
    */
   deadline?: number;
   /**
+   * Throttle status the previous step of this walk last saw (gc-747u audit #3,
+   * from its `stats.throttle`). The helper waits on it, crediting the refill
+   * since, BEFORE the first request, so the step boundary never skips the wait
+   * the deadline stop deferred. This wait does not check `deadline`: skipping
+   * it would make the step fire into an empty bucket and make no progress.
+   */
+  initialThrottle?: ThrottleSnapshot | null;
+  /**
    * Optional walk-observability out-parameter (gc-1bd). When provided, the
    * helper mutates it with page/node counts, cap truncation, and accumulated
    * throttle-backoff sleep. See {@link PaginateStats}. Omit it and pagination
@@ -171,12 +187,19 @@ export async function paginateConnection<TNode, TResult>(
     stats,
     after = null,
     deadline,
+    initialThrottle,
   } = options;
 
   const results: TResult[] = [];
   let cursor: string | null = after;
   let totalNodes = 0;
   let throttleRetries = 0;
+
+  if (initialThrottle) {
+    const sleepStart = Date.now();
+    await waitForThrottleSnapshot(initialThrottle);
+    if (stats) stats.throttleSleepMs += Date.now() - sleepStart;
+  }
 
   for (;;) {
     // When capped, request only the remaining count on the final page so the
@@ -193,6 +216,7 @@ export async function paginateConnection<TNode, TResult>(
     });
 
     const json = (await response.json()) as GraphQLResponseJson;
+    if (stats) stats.throttle = throttleSnapshot(json.extensions) ?? stats.throttle ?? null;
 
     if (json.errors?.length) {
       // PRF-3: a THROTTLED error is transient — back off and retry the SAME

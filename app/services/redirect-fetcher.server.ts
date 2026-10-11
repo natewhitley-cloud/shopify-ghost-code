@@ -11,6 +11,7 @@ import {
   type PaginateStats,
   paginateConnection,
 } from "../lib/graphql-pagination.server";
+import type { ThrottleSnapshot } from "../lib/rate-limit-monitor.server";
 import { REDIRECT_CAP } from "../lib/scan-limits";
 import { checkOptionalScope, type GrantedOptionalScopes } from "../lib/scope-check.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -93,14 +94,15 @@ const REDIRECTS_QUERY = `
  * @param resume        Chunked walk (gc-747u): `after` resumes a walk an earlier
  *                      step stopped, `deadline` stops paging once the step's
  *                      time budget is spent (`stats.hasMore` + `stats.endCursor`
- *                      then say where to resume). `maxRedirects` is the cap for
- *                      THIS call.
+ *                      then say where to resume). `throttle` is the status the
+ *                      earlier step last saw, waited on first (audit #3).
+ *                      `maxRedirects` is the cap for THIS call.
  */
 export async function fetchRedirects(
   admin: AdminApiContext,
   maxRedirects = REDIRECT_CAP,
   stats?: PaginateStats,
-  resume: { after?: string | null; deadline?: number } = {},
+  resume: { after?: string | null; deadline?: number; throttle?: ThrottleSnapshot | null } = {},
 ): Promise<RedirectData[]> {
   const PAGE_SIZE = 50;
 
@@ -118,6 +120,7 @@ export async function fetchRedirects(
     stats,
     after: resume.after,
     deadline: resume.deadline,
+    initialThrottle: resume.throttle,
   });
 }
 
