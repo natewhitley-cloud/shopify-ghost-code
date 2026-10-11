@@ -500,13 +500,15 @@ describe("app.scans.$scanId loader", () => {
       products: { checked: 500, total: null, truncated: true, lastId: "gid://shopify/Product/9" },
     };
     const PRO_LINE = "Professional checks up to 5,000 products and 10,000 redirects.";
-    type Result = { coverageUpgrade: { line: string; cta: string } | null };
+    type Result = { coverageUpgrade: { line: string; cta: string | null } | null };
 
-    it("Free (never paid): the Professional line, from getPlanFeatures, with the trial label", async () => {
+    it("Free (never paid), no other ask on the page: the Professional line, from getPlanFeatures, with the trial label", async () => {
       mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
       mockCanViewFindingDetails.mockReturnValue(false);
       mockHasBillingHistory.mockResolvedValue(false);
       mockGetScanById.mockResolvedValue({ ...SCAN, walkCoverage: TRUNCATED });
+      // A clean scan: nothing hidden, so no teaser or return banner asks.
+      mockGetFindingSummary.mockResolvedValue({ total: 0, bySeverity: {}, byType: {} });
 
       const result = (await loader(makeLoaderArgs("scan-1"))) as Result;
 
@@ -536,6 +538,33 @@ describe("app.scans.$scanId loader", () => {
       mockGetScanById.mockResolvedValue({ ...SCAN, walkCoverage: TRUNCATED });
 
       expect(((await loader(makeLoaderArgs("scan-1"))) as Result).coverageUpgrade).toBeNull();
+    });
+
+    it("LOW-2: a walk already at Professional's cap (scan ran on Pro, shop now Standard): no line", async () => {
+      mockGetScanById.mockResolvedValue({
+        ...SCAN,
+        walkCoverage: {
+          products: { checked: 5000, total: 7213, truncated: true, lastId: "gid://x/1" },
+          redirects: { checked: 10000, total: null, truncated: true, lastId: "gid://x/2" },
+        },
+      });
+
+      expect(((await loader(makeLoaderArgs("scan-1"))) as Result).coverageUpgrade).toBeNull();
+    });
+
+    it("LOW-2: one walk at Professional's cap, the other below it: the line shows", async () => {
+      mockGetScanById.mockResolvedValue({
+        ...SCAN,
+        walkCoverage: {
+          products: { checked: 5000, total: 7213, truncated: true, lastId: "gid://x/1" },
+          redirects: { checked: 4000, total: null, truncated: true, lastId: "gid://x/2" },
+        },
+      });
+
+      expect(((await loader(makeLoaderArgs("scan-1"))) as Result).coverageUpgrade).toEqual({
+        line: PRO_LINE,
+        cta: "Upgrade to Professional",
+      });
     });
 
     it("no truncated walk (or a legacy scan): no upgrade line on any plan", async () => {
@@ -1470,6 +1499,51 @@ describe("app.scans.$scanId loader", () => {
       expect(claimedColumns()).not.toContain("upgradeReturnShownAt");
     });
 
+    describe("coverage-cap upgrade line with a truncated walk (gc-mgi one ask, decision 5A)", () => {
+      const TRUNCATED = {
+        products: { checked: 500, total: null, truncated: true, lastId: "gid://shopify/Product/9" },
+      };
+      type CoverageResult = Result & {
+        teaserCta: boolean;
+        staleResults: unknown;
+        coverageUpgrade: { line: string; cta: string | null } | null;
+      };
+      const asks = (r: CoverageResult) =>
+        [
+          r.upgradeReturn !== null,
+          r.upgradePreview !== null && r.teaserCta,
+          r.staleResults !== null,
+          r.coverageUpgrade?.cta != null,
+        ].filter(Boolean).length;
+
+      beforeEach(() => {
+        mockGetScanById.mockResolvedValue({ ...SCAN, walkCoverage: TRUNCATED });
+      });
+
+      it("return banner renders: the coverage line stays, its button is hidden (exactly one CTA)", async () => {
+        const result = (await load()) as CoverageResult;
+
+        expect(result.upgradeReturn).not.toBeNull();
+        expect(result.coverageUpgrade).toEqual({
+          line: "Professional checks up to 5,000 products and 10,000 redirects.",
+          cta: null,
+        });
+        expect(asks(result)).toBe(1);
+      });
+
+      it("teaser renders with its CTA: the coverage line stays, its button is hidden (exactly one CTA)", async () => {
+        freeShop({ upgradeReturnDismissCount: 3 });
+
+        const result = (await load()) as CoverageResult;
+
+        expect(result.upgradeReturn).toBeNull();
+        expect(result.upgradePreview).not.toBeNull();
+        expect(result.teaserCta).toBe(true);
+        expect(result.coverageUpgrade?.cta).toBeNull();
+        expect(asks(result)).toBe(1);
+      });
+    });
+
     describe("eligibility boundaries", () => {
       it("first successful scan exactly 24h ago: shows", async () => {
         mockGetFirstSuccessfulScan.mockResolvedValue(ago(DAY));
@@ -1897,6 +1971,26 @@ describe("app.scans.$scanId loader", () => {
         expect(result.reviewRequestNonce).toBe("none");
         expect(result.staleResults?.action.kind).toBe("free_blocked");
         expect(result.upgradeReturn).toBeNull();
+      });
+
+      it("truncated walk: the coverage line renders WITHOUT its button (the banner is the ask)", async () => {
+        mockGetScanById.mockResolvedValue({
+          ...SCAN,
+          completedAt: COMPLETED,
+          walkCoverage: {
+            products: { checked: 500, total: null, truncated: true, lastId: "gid://x/1" },
+          },
+        });
+
+        const result = (await load()) as Result & {
+          coverageUpgrade: { line: string; cta: string | null } | null;
+        };
+
+        expect(result.staleResults?.action.kind).toBe("free_blocked");
+        expect(result.coverageUpgrade).toEqual({
+          line: "Professional checks up to 5,000 products and 10,000 redirects.",
+          cta: null,
+        });
       });
     });
 
@@ -3948,6 +4042,21 @@ describe("ScanCoverageNotices", () => {
         );
         expect(html).toMatch(/<s-button variant="primary">Upgrade to Professional<\/s-button>/);
         expect(html).not.toMatch(/[—–]/);
+      });
+
+      it("another ask on the page (cta null): the line renders, no link or button", () => {
+        const html = renderNotices({
+          walkCoverage: freeNote,
+          coverageUpgrade: {
+            line: "Professional checks up to 5,000 products and 10,000 redirects.",
+            cta: null,
+          },
+          pricingPlansUrl: PLANS_URL,
+        });
+        expect(html).toContain("This scan checked the first 500 products in your store.");
+        expect(html).toContain("Professional checks up to 5,000 products and 10,000 redirects.");
+        expect(html).not.toContain("<a ");
+        expect(html).not.toContain("<s-button");
       });
 
       it("Professional (no coverageUpgrade): the note only, no upgrade line or link", () => {

@@ -71,6 +71,7 @@ import { useFilterSearchParams } from "../lib/use-filter-search-params";
 import { useScanPolling } from "../lib/use-scan-polling";
 import {
   parseWalkCoverage,
+  walkCoverageBelowCaps,
   walkCoverageNotices,
   walkCoverageUpgradeLine,
 } from "../lib/walk-coverage";
@@ -443,7 +444,8 @@ export function unreachableCategoriesNotice(categories: readonly string[]): stri
  *     plan's cap with records left, so the scan checked only the first N; see
  *     walkCoverageNotices for the copy. On Free and Standard the loader adds
  *     `coverageUpgrade` (what Professional checks + the upgrade button label),
- *     rendered under the note with the shared upgrade link; Professional gets
+ *     rendered under the note with the shared upgrade link (the line without
+ *     the link when another upgrade ask renders: gc-mgi); Professional gets
  *     the note only.
  *
  * Broken links (DANGLING_REFERENCE) are a Standard feature by plan, not by
@@ -469,8 +471,12 @@ export function ScanCoverageNotices({
   cappedCategories: string[];
   unreachableCategories?: string[];
   walkCoverage?: ScanWalkCoverage | null;
-  /** Free / Standard: the upgrade line and button label under the walk note. */
-  coverageUpgrade?: { line: string; cta: string } | null;
+  /**
+   * Free / Standard: the upgrade line and button label under the walk note.
+   * `cta` is null when another upgrade ask renders on the page (gc-mgi): the
+   * line shows without its button.
+   */
+  coverageUpgrade?: { line: string; cta: string | null } | null;
   pricingPlansUrl?: string | null;
 }) {
   if (!isCompleted) return null;
@@ -508,11 +514,13 @@ export function ScanCoverageNotices({
       {walkNotices.length > 0 && (
         <div>
           <s-banner tone="info">
-            {coverageUpgrade && pricingPlansUrl ? (
+            {coverageUpgrade ? (
               <s-stack direction="block" gap="base">
                 <s-text>{walkNotices.join(" ")}</s-text>
                 <s-text>{coverageUpgrade.line}</s-text>
-                <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} label={coverageUpgrade.cta} />
+                {coverageUpgrade.cta && pricingPlansUrl && (
+                  <UpgradeCtaLink pricingPlansUrl={pricingPlansUrl} label={coverageUpgrade.cta} />
+                )}
               </s-stack>
             ) : (
               walkNotices.join(" ")
@@ -1256,12 +1264,21 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Trial vs upgrade framing for whichever ask renders (gc-97k.8).
   const trialEligible = hiddenBreakdown !== null && trialEligibleForShop;
 
+  // gc-mgi one-ask rule (decision 5A): true when the return banner, the teaser
+  // with its CTA, or the stale-results banner already asks this view.
+  const pageHasUpgradeAsk =
+    showUpgradeReturn || (upgradePreview !== null && teaserCta) || staleUpgradeAsk;
+
+  // Decision 3A: the Professional line under a truncated walk, only when
+  // Professional's caps would walk further than this scan did (LOW-2). Its
+  // button is dropped (cta null) while another ask renders on the page.
   const walkCoverage = parseWalkCoverage(scan.walkCoverage);
+  const professionalFeatures = getPlanFeatures(PLANS.PROFESSIONAL);
   const coverageUpgrade =
-    shop.plan !== PLANS.PROFESSIONAL && walkCoverageNotices(walkCoverage).length > 0
+    shop.plan !== PLANS.PROFESSIONAL && walkCoverageBelowCaps(walkCoverage, professionalFeatures)
       ? {
-          line: walkCoverageUpgradeLine(getPlanFeatures(PLANS.PROFESSIONAL)),
-          cta: upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligibleForShop),
+          line: walkCoverageUpgradeLine(professionalFeatures),
+          cta: pageHasUpgradeAsk ? null : upgradeCtaLabel(PLANS.PROFESSIONAL, trialEligibleForShop),
         }
       : null;
 

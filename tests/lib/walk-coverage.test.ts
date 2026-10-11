@@ -8,6 +8,7 @@ import { getPlanFeatures } from "../../app/lib/billing.server";
 import { PLANS } from "../../app/lib/plans";
 import {
   parseWalkCoverage,
+  walkCoverageBelowCaps,
   walkCoverageNotices,
   walkCoverageUpgradeLine,
   type WalkCoverage,
@@ -129,5 +130,37 @@ describe("walkCoverageUpgradeLine (decision 3A)", () => {
 
   it("has no em or en dash", () => {
     expect(walkCoverageUpgradeLine(getPlanFeatures(PLANS.PROFESSIONAL))).not.toMatch(/[—–]/);
+  });
+});
+
+describe("walkCoverageBelowCaps (audit LOW-2)", () => {
+  const PRO = getPlanFeatures(PLANS.PROFESSIONAL);
+  const walk = (checked: number, truncated = true): WalkCoverage => ({
+    checked,
+    total: null,
+    truncated,
+    lastId: truncated ? "gid://x/1" : null,
+  });
+
+  it("true when a truncated walk checked fewer than that walk's cap", () => {
+    expect(walkCoverageBelowCaps({ products: walk(500) }, PRO)).toBe(true);
+    expect(walkCoverageBelowCaps({ redirects: walk(4000) }, PRO)).toBe(true);
+  });
+
+  it("false when every truncated walk is already at the cap (downgraded after a Pro scan)", () => {
+    expect(walkCoverageBelowCaps({ products: walk(5000), redirects: walk(10000) }, PRO)).toBe(
+      false,
+    );
+  });
+
+  it("compares each walk against its own cap", () => {
+    // 5,000 redirects is below the 10,000 redirect cap even though it equals the product cap.
+    expect(walkCoverageBelowCaps({ products: walk(5000), redirects: walk(5000) }, PRO)).toBe(true);
+  });
+
+  it("ignores walks that were not truncated, and legacy scans", () => {
+    expect(walkCoverageBelowCaps({ products: walk(42, false) }, PRO)).toBe(false);
+    expect(walkCoverageBelowCaps(null, PRO)).toBe(false);
+    expect(walkCoverageBelowCaps({}, PRO)).toBe(false);
   });
 });

@@ -125,3 +125,24 @@ export function walkCoverageUpgradeLine(caps: {
 }): string {
   return `Professional checks up to ${formatCount(caps.productAuditCap)} products and ${formatCount(caps.redirectAuditCap)} redirects.`;
 }
+
+/**
+ * Whether a bigger plan's caps would walk further than this scan did (audit
+ * LOW-2): true when some truncated walk checked fewer records than the given
+ * cap for that walk. A scan that ran on Professional and stopped at its cap
+ * (shop since downgraded) gains nothing from the Professional line.
+ */
+export function walkCoverageBelowCaps(
+  coverage: ScanWalkCoverage | null,
+  caps: { productAuditCap: number; redirectAuditCap: number },
+): boolean {
+  if (!coverage) return false;
+  const capFor: Record<WalkName, number> = {
+    products: caps.productAuditCap,
+    redirects: caps.redirectAuditCap,
+  };
+  return WALK_NAMES.some((walk) => {
+    const c = coverage[walk];
+    return c?.truncated === true && c.checked < capFor[walk];
+  });
+}
