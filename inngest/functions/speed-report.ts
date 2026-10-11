@@ -15,9 +15,13 @@
  *   - concurrency 1 across all shops (and 1 per shop), and the calls inside a
  *     run are sequential steps, so a Sunday batch is a slow single file (one
  *     call at a time, each 10-40 s), nowhere near the per-100 s limit;
- *   - each call is its OWN step: Inngest memoizes it, so a retry of a later
- *     step never re-issues a call; runPageSpeedAttempt never throws for a
- *     Google failure, so a call step is not retried either;
+ *   - each call is its OWN step: Inngest memoizes a finished step, so a retry
+ *     of a later step does not re-issue it; runPageSpeedAttempt never throws
+ *     for a Google failure, so a Google error does not retry the step either.
+ *     A call step CAN still repeat if the worker dies after the call but
+ *     before its result is recorded (crash, deploy, lost response): with
+ *     retries: 1 that is at most one extra call, reserved against the budget
+ *     like any other;
  *   - retries: 1 (a DB blip), finish timeout 45 m: a failed run cannot loop;
  *   - start timeout 6 h: a run still queued that long is cancelled (a manual
  *     click can wait behind the Sunday batch at concurrency 1, so this is

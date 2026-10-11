@@ -564,10 +564,12 @@ export function attemptHaltsPage(a: SpeedAttempt): boolean {
 /**
  * One PageSpeed run of one page. Re-checks the gate and the key, validates the
  * target, reserves the call against today's budget, then calls Google. NEVER
- * THROWS for a Google-side failure (those are `error` attempts), so an Inngest
- * step retry can never re-issue a call that already happened; a DB error before
- * the call (gate/budget) may throw and is retried by the step, which is safe
- * because nothing was sent yet.
+ * THROWS for a Google-side failure (those are `error` attempts), so a Google
+ * error does not make Inngest retry the step and repeat the call. A call can
+ * still repeat if the worker dies after it but before the step's result is
+ * recorded: at most once (the function has retries: 1), and the repeat
+ * reserves its own budget. A DB error before the call (gate/budget) may throw
+ * and is retried by the step, which is safe because nothing was sent yet.
  */
 export async function runPageSpeedAttempt(input: {
   shopId: string;
