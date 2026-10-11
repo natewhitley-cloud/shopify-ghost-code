@@ -4969,6 +4969,49 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
     expect(signal.metadata.truncatedWalks).toEqual(["products"]);
   });
 
+  it("a THROTTLED stop on the walk's first request resumes from the start, not truncated (audit #2)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateCatalog(700);
+    const simulated = mockFetchProductAuditData.getMockImplementation()!;
+    // Step 0's very first request came back THROTTLED with a backoff past the
+    // step deadline: nothing checked, retry cursor null (= the start).
+    mockFetchProductAuditData.mockImplementationOnce(async () =>
+      makeProductAuditData({ hasMore: true, endCursor: null, throttleStopped: true }),
+    );
+    mockFetchProductAuditData.mockImplementation(simulated);
+
+    await runScanTheme();
+
+    const afters = mockFetchProductAuditData.mock.calls.map(
+      (c) => (c[2] as { after: string | null }).after,
+    );
+    expect(afters).toEqual([null, null, "c500"]);
+    expect(finalized().walkCoverage.products).toEqual({
+      checked: 700,
+      total: null,
+      truncated: false,
+      lastId: null,
+    });
+  });
+
+  it("a THROTTLED stop on the redirect walk's first request resumes too (audit #2)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+    simulateRedirects(1500);
+    const simulated = mockFetchRedirects.getMockImplementation()!;
+    mockFetchRedirects.mockImplementationOnce(
+      async (_a: unknown, _m: number, stats: PaginateStatsLike) => {
+        Object.assign(stats, { hasMore: true, endCursor: null, throttleStopped: true });
+        return [];
+      },
+    );
+    mockFetchRedirects.mockImplementation(simulated);
+
+    await runScanTheme();
+
+    expect(mockFetchRedirects).toHaveBeenCalledTimes(3);
+    expect(finalized().walkCoverage.redirects).toMatchObject({ checked: 1500, truncated: false });
+  });
+
   it("keeps every walk step's output far under the step budget at the Pro worst case", async () => {
     mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
     // 5,000 products x (100 variants + 50 x 2 KB metafields) and 10,000

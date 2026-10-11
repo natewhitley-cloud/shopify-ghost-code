@@ -88,6 +88,8 @@ export type ProductAuditData = {
   lastId: string | null;
   hasMore: boolean;
   endCursor: string | null;
+  /** A THROTTLED backoff hit the deadline: `endCursor` is a retry point (audit #2). */
+  throttleStopped: boolean;
 };
 
 // ---------------------------------------------------------------------------
@@ -274,6 +276,7 @@ export async function fetchProductAuditData(
     lastId: nodes.length > 0 ? nodes[nodes.length - 1].id : null,
     hasMore: stats.hasMore === true,
     endCursor: stats.endCursor ?? null,
+    throttleStopped: stats.throttleStopped === true,
   };
 }
 

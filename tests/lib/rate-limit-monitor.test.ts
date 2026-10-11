@@ -38,6 +38,7 @@ vi.mock("../../app/models/ops-event.server", () => ({
 import {
   checkRateLimit,
   parseRequestedQueryCost,
+  rateLimitSleepMs,
   checkThrottleStatus,
   checkThrottleStatusFromExtensions,
   isThrottledError,
@@ -612,4 +613,28 @@ describe("parseRequestedQueryCost (gc-747u)", () => {
       expect(parseRequestedQueryCost(ext)).toBe(0);
     },
   );
+});
+
+describe("rateLimitSleepMs (gc-747u audit #2)", () => {
+  const ext = (currentlyAvailable: number, requestedQueryCost?: number) => ({
+    cost: {
+      requestedQueryCost,
+      throttleStatus: { maximumAvailable: 1000, currentlyAvailable, restoreRate: 50 },
+    },
+  });
+
+  it("returns the sleep checkRateLimit would take, without sleeping", () => {
+    // Needs 650, has 150, refills 50/s: 10 s.
+    expect(rateLimitSleepMs(ext(150, 650), 650)).toBe(10_000);
+  });
+
+  it("is 0 with enough headroom or no throttle status", () => {
+    expect(rateLimitSleepMs(ext(900, 650), 650)).toBe(0);
+    expect(rateLimitSleepMs({})).toBe(0);
+  });
+
+  it("never waits for more than the bucket holds", () => {
+    // Requested 5,000 against a 1,000-point bucket: waits for 1,000 (20 s).
+    expect(rateLimitSleepMs(ext(0, 5_000), 5_000)).toBe(20_000);
+  });
 });

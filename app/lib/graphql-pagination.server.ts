@@ -21,6 +21,7 @@ import {
   checkThrottleStatusFromExtensions,
   isThrottledError,
   parseRequestedQueryCost,
+  rateLimitSleepMs,
 } from "./rate-limit-monitor.server";
 import { recordApiError } from "../models/ops-event.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -52,6 +53,11 @@ export type GraphQLConnection<TNode> = {
  *                        caller resumes from `endCursor` in a later step.
  *   - `endCursor`:       the cursor after the last consumed page (gc-747u), to
  *                        resume a chunked walk with `after`.
+ *   - `throttleStopped`: true iff a THROTTLED backoff would have crossed
+ *                        `deadline`, so the walk stopped instead of sleeping
+ *                        (gc-747u audit #2). `hasMore` is true and `endCursor`
+ *                        is the cursor to RETRY, which is null when the walk's
+ *                        very first request was throttled (resume from the start).
  */
 export type PaginateStats = {
   pageCount: number;
@@ -60,6 +66,7 @@ export type PaginateStats = {
   throttleSleepMs: number;
   hasMore?: boolean;
   endCursor?: string | null;
+  throttleStopped?: boolean;
 };
 
 /** Minimal shape of the JSON envelope returned by `admin.graphql`. */
@@ -126,7 +133,9 @@ export type PaginateOptions<TNode, TResult> = {
   /**
    * Epoch ms after which no NEW page is requested (gc-747u). Checked after each
    * page (before any backoff sleep), so the walk overruns it by at most the page
-   * in flight. Stopping here sets `stats.hasMore`, never `stats.truncated`.
+   * in flight. Stopping here sets `stats.hasMore`, never `stats.truncated`. A
+   * THROTTLED backoff that would end past it also stops the walk (audit #2):
+   * `stats.throttleStopped` then marks the cursor as one to retry.
    */
   deadline?: number;
   /**
@@ -199,10 +208,25 @@ export async function paginateConnection<TNode, TResult>(
           });
           throw new Error(`${errorContext}: still THROTTLED after ${maxThrottleRetries} retries`);
         }
+        const requestedCost = parseRequestedQueryCost(json.extensions);
+        // gc-747u audit #2: never back off past the step deadline (up to 5
+        // retries x ~20 s would outlast the step and Railway's ~60 s idle cut).
+        // Stop instead; the next step retries this same cursor.
+        if (
+          deadline !== undefined &&
+          Date.now() + rateLimitSleepMs(json.extensions, requestedCost) >= deadline
+        ) {
+          if (stats) {
+            stats.hasMore = true;
+            stats.endCursor = cursor;
+            stats.throttleStopped = true;
+          }
+          break;
+        }
         // Back off using whatever throttle headroom the response reported; if it
         // carried none, checkRateLimit is a no-op and we retry promptly.
         const sleepStart = Date.now();
-        await checkRateLimit(json.extensions, parseRequestedQueryCost(json.extensions));
+        await checkRateLimit(json.extensions, requestedCost);
         if (stats) stats.throttleSleepMs += Date.now() - sleepStart;
         continue; // retry the same page — cursor unchanged
       }

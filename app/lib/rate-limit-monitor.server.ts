@@ -137,26 +137,48 @@ export function parseRequestedQueryCost(extensions: unknown): number {
  *                    `Infinity` when the response carries no throttle status.
  */
 export async function checkRateLimit(extensions: unknown, minPoints = 0): Promise<number> {
+  const plan = planRateLimitSleep(extensions, minPoints);
+  if (!plan) return Infinity;
+
+  if (plan.sleepMs > 0) {
+    console.log(
+      `[rate-limit] Headroom low (${plan.currentlyAvailable} pts). ` +
+        `Sleeping ${plan.sleepMs}ms to restore capacity.`,
+    );
+    await new Promise((resolve) => setTimeout(resolve, plan.sleepMs));
+    return plan.threshold; // optimistic — we just waited for it
+  }
+
+  return plan.currentlyAvailable;
+}
+
+/**
+ * How long {@link checkRateLimit} would sleep for these extensions (0 when the
+ * headroom suffices or the response carries no throttle status), without
+ * sleeping. Lets a deadline-bound walk decide BEFORE a backoff whether it
+ * still fits in its step (gc-747u audit #2).
+ */
+export function rateLimitSleepMs(extensions: unknown, minPoints = 0): number {
+  return planRateLimitSleep(extensions, minPoints)?.sleepMs ?? 0;
+}
+
+/** The one backoff computation shared by checkRateLimit and rateLimitSleepMs. */
+function planRateLimitSleep(
+  extensions: unknown,
+  minPoints: number,
+): { currentlyAvailable: number; threshold: number; sleepMs: number } | null {
   const throttle = parseThrottleStatus(extensions);
-  if (!throttle) return Infinity;
+  if (!throttle) return null;
 
   const currentlyAvailable = throttle.currentlyAvailable ?? 0;
   const restoreRate = throttle.restoreRate ?? DEFAULT_RESTORE_RATE;
   const bucket = throttle.maximumAvailable ?? Infinity;
   const threshold = Math.max(RATE_LIMIT_THRESHOLD, Math.min(minPoints, bucket));
-
-  if (currentlyAvailable < threshold) {
-    const pointsNeeded = threshold - currentlyAvailable;
-    const sleepMs = Math.ceil((pointsNeeded / restoreRate) * 1000);
-    console.log(
-      `[rate-limit] Headroom low (${currentlyAvailable} pts). ` +
-        `Sleeping ${sleepMs}ms to restore capacity.`,
-    );
-    await new Promise((resolve) => setTimeout(resolve, sleepMs));
-    return threshold; // optimistic — we just waited for it
-  }
-
-  return currentlyAvailable;
+  const sleepMs =
+    currentlyAvailable < threshold
+      ? Math.ceil(((threshold - currentlyAvailable) / restoreRate) * 1000)
+      : 0;
+  return { currentlyAvailable, threshold, sleepMs };
 }
 
 /**

@@ -570,3 +570,112 @@ describe("fetchExactCount (gc-747u)", () => {
     await expect(fetchExactCount(makeAdmin(graphql), "productsCount")).resolves.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-747u audit #2: a THROTTLED retry never sleeps past the step deadline
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection THROTTLED retry vs the step deadline (gc-747u #2)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const throttled = () =>
+    errorPage([{ message: "Throttled", extensions: { code: "THROTTLED" } }], {
+      currentlyAvailable: 0,
+      restoreRate: 50,
+    });
+
+  it("stops with hasMore and the SAME cursor when the backoff sleep would cross the deadline", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: true, endCursor: "c1" }))
+      .mockResolvedValue(throttled());
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    // 0 of 100 points at 50/s = a 2 s backoff; only 1 s of budget is left.
+    const promise = paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() + 1_000,
+    });
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toEqual([{ id: "a" }]);
+    // Page 1 + ONE throttled attempt: no sleep, no retry past the deadline.
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(stats).toMatchObject({
+      hasMore: true,
+      endCursor: "c1",
+      truncated: false,
+      throttleStopped: true,
+      throttleSleepMs: 0,
+    });
+  });
+
+  it("a throttle stop on the walk's FIRST request is resumable from the start (null cursor)", async () => {
+    const graphql = vi.fn().mockResolvedValue(throttled());
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    const promise = paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() + 1_000,
+    });
+    await vi.runAllTimersAsync();
+    expect(await promise).toEqual([]);
+
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(stats).toMatchObject({ hasMore: true, endCursor: null, throttleStopped: true });
+  });
+
+  it("still sleeps and retries when the backoff fits inside the deadline", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(throttled())
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: false, endCursor: null }));
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    const promise = paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() + 15_000,
+    });
+    await vi.runAllTimersAsync();
+
+    expect(await promise).toEqual([{ id: "a" }]);
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(stats.throttleSleepMs).toBe(2_000);
+    expect(stats.throttleStopped).toBeUndefined();
+  });
+
+  it("without a deadline, keeps the old retry-then-throw behaviour", async () => {
+    const graphql = vi.fn().mockResolvedValue(throttled());
+
+    const promise = paginateConnection({ ...baseOptions(graphql), maxThrottleRetries: 2 });
+    const assertion = expect(promise).rejects.toThrow("still THROTTLED after 2 retries");
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(graphql).toHaveBeenCalledTimes(3);
+  });
+});

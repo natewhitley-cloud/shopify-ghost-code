@@ -287,9 +287,10 @@ async function runAuditStep(opts: {
 /**
  * Where a walk resumes in its next step. Only a cursor (and, for redirects,
  * the bulk tally) crosses the step boundary: product nodes and redirect lists
- * stay inside the step that fetched them.
+ * stay inside the step that fetched them. `after` is null only when the walk's
+ * first request was THROTTLED past the step deadline (retry from the start).
  */
-type WalkResume = { after: string };
+type WalkResume = { after: string | null };
 
 /** What one product-walk step returns (all small scalars, gc-747u). */
 type ProductChunkResult = {
@@ -319,10 +320,17 @@ type ProductChunkResult = {
 /**
  * True when a walk that stopped with records left could not be resumed (no
  * cursor) or reached `cap`: either way the records past it were not checked,
- * so the walk counts as truncated (never a silent partial walk).
+ * so the walk counts as truncated (never a silent partial walk). A THROTTLED
+ * stop (audit #2) is always resumable: its cursor, even null, is a retry point.
  */
-function walkStoppedShort(hasMore: boolean, checked: number, cap: number, cursor: string | null) {
-  return hasMore && (checked >= cap || cursor === null);
+function walkStoppedShort(
+  hasMore: boolean,
+  checked: number,
+  cap: number,
+  cursor: string | null,
+  throttleStopped: boolean,
+) {
+  return hasMore && (checked >= cap || (cursor === null && !throttleStopped));
 }
 
 /**
@@ -399,8 +407,14 @@ async function runProductAuditChunk(opts: {
   const walkMs = Date.now() - walkStart;
 
   const checked = opts.checkedSoFar + walk.checked;
-  const truncated = walkStoppedShort(walk.hasMore, checked, cap, walk.endCursor);
-  const next = walk.hasMore && !truncated ? { after: walk.endCursor! } : null;
+  const truncated = walkStoppedShort(
+    walk.hasMore,
+    checked,
+    cap,
+    walk.endCursor,
+    walk.throttleStopped,
+  );
+  const next = walk.hasMore && !truncated ? { after: walk.endCursor } : null;
 
   if (truncated) {
     // Observable cap (gc-1bd): never silently drop the tail of the catalog.
@@ -614,7 +628,13 @@ async function runRedirectAuditChunk(opts: {
   const checked = opts.checkedSoFar + redirects.length;
   const endCursor = stats.endCursor ?? null;
   const hasMore = stats.hasMore === true;
-  const truncated = walkStoppedShort(hasMore, checked, cap, endCursor);
+  const truncated = walkStoppedShort(
+    hasMore,
+    checked,
+    cap,
+    endCursor,
+    stats.throttleStopped === true,
+  );
   const last = !hasMore || truncated;
 
   const { addToBulkRedirectGroups, bulkRedirectFindings, detectAppPatternRedirects } =
@@ -670,7 +690,7 @@ async function runRedirectAuditChunk(opts: {
     walkMs,
     cap,
     checked,
-    next: last ? null : { after: endCursor!, groups },
+    next: last ? null : { after: endCursor, groups },
     coverage: last
       ? {
           checked,
