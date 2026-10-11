@@ -236,6 +236,15 @@ function hasPasswordForm(html: string): boolean {
 }
 
 /**
+ * A storefront path that is Shopify's password page (a password-protected
+ * store redirects every page there). Shared with the store speed report
+ * (gc-wt3y), which reads it from PageSpeed's final URL.
+ */
+export function isPasswordPath(pathname: string): boolean {
+  return pathname === "/password" || pathname.startsWith("/password/");
+}
+
+/**
  * Shopify's password page: a `template-password` body class, or (when a theme
  * drops that class) the storefront password form posting to `/password`.
  */
@@ -573,7 +582,7 @@ export async function fetchStorefrontScriptTags(
     }
 
     // Password-protected stores serve /password instead of the homepage.
-    if (url.pathname === "/password" || url.pathname.startsWith("/password/")) {
+    if (isPasswordPath(url.pathname)) {
       await response.body?.cancel().catch(() => {});
       return unreachable("password", shopId, domains.primaryHost);
     }

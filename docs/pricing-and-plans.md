@@ -98,6 +98,7 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 | Summary emails         | Weekly (`alertCadence: "weekly"`, gc-ol95)       |
 | Broken-link detection  | Yes (dangling references verified via Admin API) |
 | Catalog coverage       | First 5,000 products and 10,000 URL redirects per scan (gc-747u) |
+| Store speed report     | Weekly + "Run now" once a day (`speedReport`, gc-wt3y, built, DARK) |
 
 **Purpose:** "Set it and forget it" for multi-theme stores. Continuous monitoring with change tracking.
 
@@ -110,6 +111,10 @@ Stale-results banner (gc-mgi, Free and Standard): when a theme was published aft
 5. Scan diffing (New/Resolved)
 6. Weekly automatic scans
 7. 7-day free trial
+
+### Store speed report (gc-wt3y, built, DARK: `SPEED_REPORT_LIVE_ENABLED`)
+
+Professional only (`PlanFeatures.speedReport`; Free and Standard see a locked teaser on the Store speed page with the Professional upgrade button). Google PageSpeed Insights, mobile, performance only, for the homepage and one product page (oldest active product with an online store URL; needs the optional `read_products` scope, else homepage only). 3 runs per page, the median by score is reported, with the cost broken down by app via the scanner's app matcher. Weekly from its own cron (`speed-report-weekly`, Sunday 08:10 UTC) plus a merchant "Run speed test now" limited to once per 24h per shop. Guardrails: global daily call budget `PAGESPEED_DAILY_CALL_BUDGET` (default 5000, counted before each call), each call its own Inngest step, concurrency 1, plan/flag/install re-checked before every call. Key: `PAGESPEED_API_KEY`. Password-protected storefronts get an UNAVAILABLE_PASSWORD report. Known limit: some apps skip loading under Lighthouse (gc-xewx), so their cost is under-reported; the page says so.
 
 ### Merchant summary emails (gc-ol95, built, DARK: not sending)
 
@@ -229,3 +234,4 @@ Framing: a digest, never a status alert. Subject is always `GhostCode digest for
 | 2026-10-09 | The 0-100 Theme Health Score is gone from every merchant surface (gc-k2ub) | It floored at 0 on real themes and read as ambiguous; afe0b88 (2026-09-07) dropped it from the Home hero, and this finishes the job: the scan page tile, the PDF and JSON exports, Home's "Theme Health" heading (now "Findings") and copy that referred to it. Standard's feature row is now "Findings trend" (count over time + change between scans), matching the live listing. `app/lib/health-score.ts` is deleted. |
 | 2026-10-09 | Merchant email = one SUMMARY after each scheduled scan (Professional weekly, Standard monthly, Free none); nothing changed = no email; consent required (gc-ol95) | Per-change alerts would be spam for merchants who test many apps. The summary reports only what changed since the last one (new/fixed findings, apps no longer active, leftovers cleaned up) and is skipped when nothing did, so the same information is never sent twice. Consent: a shop must have seen Home's "Summary emails are on" notice (owed after a Free -> paid move, trial included) or opted in itself in Settings; shops paid before this shipped are never backfilled and get nothing until they opt in. Built dark (sending domain gc-syz.8 not done). |
 | 2026-10-11 | Product and redirect checks cover more on paid plans: Free 500 products / 1,000 redirects (unchanged), Standard 2,000 / 4,000, Professional 5,000 / 10,000; a scan that still stops short says so (gc-747u) | paw-naturals (Professional) truncated at the old 500 / 1,000 on every scan, silently. Caps live in `PlanFeatures.productAuditCap` / `redirectAuditCap` (`getPlanFeatures`), read once per scan. The scan page shows "Your store has 7,213 products. This scan checked the first 5,000." (or "checked the first N" when the count is unavailable). Walks run ID-ordered across several steps (each under ~15 s) and record their window on `Scan.walkCoverage`, so the differ never marks a finding past the cap as fixed (a downgrade) or as new (an upgrade). No upgrade hint in the notice for now. |
+| 2026-10-11 | Store speed report is **Professional-only**: weekly PageSpeed (mobile) for homepage + 1 product page, median of 3 runs, cost by app, plus "Run now" once per 24h (gc-wt3y, built DARK) | Answers "what does $29/mo buy after the cleanup is done": an ongoing, measurable reason to stay on Professional. PageSpeed is free but quota-limited (25,000/day per project), so a global daily budget, one call per Inngest step and concurrency 1 keep a Sunday batch from bursting the quota. |

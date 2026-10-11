@@ -139,7 +139,7 @@ describe("app.tsx loader — plan reconciliation hook", () => {
       { domain: "test-shop.myshopify.com", plan: "Standard", everPaidAt: null },
       { recordEvent: false },
     );
-    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: false });
   });
 
   it("passes the stored everPaidAt to every reconcile (gc-97k.8: a stamped shop skips the write)", async () => {
@@ -220,7 +220,7 @@ describe("app.tsx loader — plan reconciliation hook", () => {
 
     const result = await runLoader();
 
-    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: false });
     expect(mockReconcile).not.toHaveBeenCalled();
     expect(mockReactivate).not.toHaveBeenCalled();
   });
@@ -232,7 +232,7 @@ describe("app.tsx loader — plan reconciliation hook", () => {
 
     const result = await runLoader();
 
-    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: false });
     expect(logger.error).toHaveBeenCalledWith(
       "billing-reconcile-loader-failed",
       expect.objectContaining({ shop: "test-shop.myshopify.com", error: "boom" }),
@@ -304,7 +304,7 @@ describe("app.tsx loader — activity telemetry", () => {
 
     const result = await runLoader("https://example.com/app");
 
-    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: false });
     expect(logger.error).toHaveBeenCalledWith(
       "last-seen-touch-failed",
       expect.objectContaining({ shop: "test-shop.myshopify.com", error: "db down" }),
@@ -328,7 +328,7 @@ describe("app.tsx loader — activity telemetry", () => {
 
     const result = await runLoader("https://example.com/app/scans/scan-abc");
 
-    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: false });
     expect(mockRecordPageVisit).toHaveBeenCalledOnce();
   });
 });
@@ -356,7 +356,7 @@ describe("app.tsx loader — firstOpenedAt milestone (gc-dpm.1)", () => {
 
     const result = await runLoader("https://example.com/app");
 
-    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: false });
     expect(mockClaimShopStamp).toHaveBeenCalledTimes(1);
     expect(mockClaimShopStamp).toHaveBeenCalledWith("test-shop.myshopify.com", "firstOpenedAt");
   });
@@ -402,7 +402,7 @@ describe("app.tsx loader — firstOpenedAt milestone (gc-dpm.1)", () => {
 
     const result = await runLoader("https://example.com/app");
 
-    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: false });
     expect(logger.error).toHaveBeenCalledWith(
       "journey-milestone-claim-failed",
       expect.objectContaining({ shop: "test-shop.myshopify.com", milestone: "firstOpenedAt" }),
@@ -416,6 +416,37 @@ describe("app.tsx loader — firstOpenedAt milestone (gc-dpm.1)", () => {
 
     const result = await runLoader("https://example.com/app");
 
-    expect(result).toEqual({ apiKey: "test-api-key" });
+    expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: false });
+  });
+});
+
+describe("app.tsx loader: Store speed nav flag (gc-wt3y)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    process.env.SHOPIFY_API_KEY = "test-api-key";
+    mockAdminAuth.mockResolvedValue({
+      session: { shop: "test-shop.myshopify.com" },
+      admin: fakeAdmin,
+    });
+    mockGetShop.mockResolvedValue(makeShop());
+    mockIsStale.mockReturnValue(false);
+    mockIsLastSeenStale.mockReturnValue(false);
+    mockRecordPageVisit.mockResolvedValue(undefined);
+  });
+
+  it.each([
+    [undefined, false],
+    ["false", false],
+    ["1", false],
+    ["true", true],
+  ])("SPEED_REPORT_LIVE_ENABLED=%s -> speedReportEnabled %s", async (flag, enabled) => {
+    if (flag === undefined) delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    else process.env.SPEED_REPORT_LIVE_ENABLED = flag;
+    try {
+      const result = await runLoader();
+      expect(result).toEqual({ apiKey: "test-api-key", speedReportEnabled: enabled });
+    } finally {
+      delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    }
   });
 });

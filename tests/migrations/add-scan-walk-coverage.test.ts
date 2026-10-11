@@ -36,8 +36,11 @@ describe("add_scan_walk_coverage migration (gc-747u)", () => {
     expect(SCHEMA).toMatch(/model Scan \{[\s\S]*?\n\s+walkCoverage\s+Json\?\n/);
   });
 
-  it("is the latest migration", () => {
+  it("sorts before the next migration (gc-wt3y)", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe("20261013120000_add_scan_walk_coverage");
+    const sorted = dirs.sort();
+    expect(sorted.indexOf("20261013120000_add_scan_walk_coverage")).toBe(
+      sorted.indexOf("20261013120001_add_speed_report") - 1,
+    );
   });
 });

@@ -32,6 +32,7 @@ vi.mock("../../../inngest/client", () => ({
 
 import { inngest } from "../../../inngest/client";
 import {
+  fanOutInChunks,
   fanOutShopChecks,
   FAN_OUT_CHUNK_SIZE,
   type FanOutShop,
@@ -173,5 +174,32 @@ describe("fanOutShopChecks — chunking across the 512 cap", () => {
       "fan-out-shops-chunk-1",
       "fan-out-shops-chunk-2",
     ]);
+  });
+});
+
+describe("fanOutInChunks (shared core, gc-wt3y)", () => {
+  it("calls send once per chunk, each inside a step named <prefix>-<index>", async () => {
+    const step = createMockInngestStep();
+    const send = vi.fn(async () => {});
+    const items = Array.from({ length: FAN_OUT_CHUNK_SIZE + 1 }, (_, i) => i);
+
+    await fanOutInChunks(step, items, "fan-out-speed-reports-chunk", send);
+
+    expect(step.run.mock.calls.map((c) => c[0])).toEqual([
+      "fan-out-speed-reports-chunk-0",
+      "fan-out-speed-reports-chunk-1",
+    ]);
+    expect(send.mock.calls.map((c) => (c as unknown as [number[]])[0].length)).toEqual([
+      FAN_OUT_CHUNK_SIZE,
+      1,
+    ]);
+  });
+
+  it("is a no-op for an empty list", async () => {
+    const step = createMockInngestStep();
+    const send = vi.fn(async () => {});
+    await fanOutInChunks(step, [], "x", send);
+    expect(step.run).not.toHaveBeenCalled();
+    expect(send).not.toHaveBeenCalled();
   });
 });

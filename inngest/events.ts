@@ -27,4 +27,18 @@ export type Events = {
       shopDomain: string;
     };
   };
+
+  /**
+   * One store speed report run (gc-wt3y). Sent by the speed-report-weekly
+   * coordinator (SCHEDULED, no reportId: the worker creates the row) and by the
+   * Store speed page's "Run speed test now" (MANUAL, with the RUNNING row the
+   * action already created).
+   */
+  "speed-report/requested": {
+    data: {
+      shopId: string;
+      origin: "SCHEDULED" | "MANUAL";
+      reportId?: string;
+    };
+  };
 };

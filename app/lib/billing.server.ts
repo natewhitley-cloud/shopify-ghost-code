@@ -209,6 +209,12 @@ export type PlanFeatures = {
    */
   productAuditCap: number;
   redirectAuditCap: number;
+  /**
+   * Weekly store speed report: Google PageSpeed results for the homepage and
+   * one product page, with the cost broken down by app (gc-wt3y).
+   * Professional-only. Also DARK behind SPEED_REPORT_LIVE_ENABLED.
+   */
+  speedReport: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -228,6 +234,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         alertCadence: "monthly", // matches the monthly scheduled scan (gc-syz.3, gc-iefo)
         productAuditCap: STANDARD_PRODUCT_AUDIT_CAP, // gc-747u
         redirectAuditCap: STANDARD_REDIRECT_CAP, // gc-747u
+        speedReport: false, // Professional-only (gc-wt3y)
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -244,6 +251,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         alertCadence: "weekly", // matches the weekly scheduled scan (gc-syz.3, gc-iefo)
         productAuditCap: PROFESSIONAL_PRODUCT_AUDIT_CAP, // gc-747u
         redirectAuditCap: PROFESSIONAL_REDIRECT_CAP, // gc-747u
+        speedReport: true, // Professional-only weekly store speed report (gc-wt3y)
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -262,6 +270,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         alertCadence: "none", // Free has no scheduled rescans, so nothing to alert on (gc-syz.3)
         productAuditCap: PRODUCT_AUDIT_CAP, // unchanged Free cap (gc-747u)
         redirectAuditCap: REDIRECT_CAP, // unchanged Free cap (gc-747u)
+        speedReport: false, // Professional-only (gc-wt3y)
       };
   }
 }

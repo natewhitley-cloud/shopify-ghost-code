@@ -183,12 +183,17 @@ model Shop {
   summaryNoticePendingAt       DateTime?
   summaryNoticeShownAt         DateTime?
   summaryOptedInAt             DateTime?
+  // gc-wt3y store speed report: when the merchant last pressed "Run speed test
+  // now". Claimed atomically (conditional updateMany) so the button runs at
+  // most once per 24h per shop. Null = never. Deleted with the Shop row.
+  speedReportRequestedAt       DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]
   merchantFeedback    MerchantFeedback[]
   merchantAlerts      MerchantAlert[]
   appRemovals         AppRemoval[]
+  speedReports        SpeedReport[]
 }
 
 // Ledger of merchant-facing emails (gc-syz.1), one row per summary email since
@@ -271,6 +276,42 @@ model AppRemoval {
   // Idempotency: an Inngest retry of the same scan cannot insert twice.
   @@unique([shopId, themeId, appName, detectedScanId])
   @@index([shopId, detectedAt])
+}
+
+// Store speed report (gc-wt3y, Professional, DARK behind
+// SPEED_REPORT_LIVE_ENABLED): one row per run (weekly SCHEDULED or merchant
+// MANUAL). `pages` holds only the SUMMARIZED Google PageSpeed result per page
+// (metrics + per-app cost rows; see SpeedPageResult in app/lib/speed-report.ts),
+// never the raw multi-MB response. `origin`/`status` are plain strings (values
+// in app/lib/speed-report.ts) so client route code never imports Prisma enum
+// values. Holds no personal data (public storefront URLs and timings only);
+// deleted with the Shop row on shop/redact via the cascading FK.
+model SpeedReport {
+  id            String    @id @default(cuid())
+  shopId        String
+  shop          Shop      @relation(fields: [shopId], references: [id], onDelete: Cascade)
+  origin        String
+  status        String
+  // Short machine code for FAILED / SKIPPED_BUDGET (e.g. "timeout"); mapped to
+  // merchant copy in app/lib/speed-report.ts. Never free text from Google.
+  failureReason String?
+  pages         Json?
+  // PageSpeed calls this run made (counted before each call).
+  psiCalls      Int       @default(0)
+  createdAt     DateTime  @default(now())
+  completedAt   DateTime?
+
+  @@index([shopId, createdAt])
+}
+
+// Global PageSpeed call counter per UTC day (gc-wt3y): the daily budget
+// (PAGESPEED_DAILY_CALL_BUDGET) is reserved here atomically BEFORE each call.
+// Not per shop: holds no shop data, so it needs no redact coverage.
+model PageSpeedDailyUsage {
+  // UTC day, "YYYY-MM-DD".
+  day       String   @id
+  calls     Int      @default(0)
+  updatedAt DateTime @updatedAt
 }
 
 model BillingEvent {

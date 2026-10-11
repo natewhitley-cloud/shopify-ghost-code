@@ -76,6 +76,14 @@ export const OPS_EVENT_TYPES = {
   // (CLIENT_ERROR_RETENTION_DAYS) and capped per shop per hour
   // (CLIENT_ERROR_HOURLY_LIMIT).
   CLIENT_ERROR: "client_error",
+  // Store speed report run outcome (gc-wt3y): one row per run, plus one when a
+  // run is refused because PAGESPEED_API_KEY is missing while the flag is on.
+  // Keyed on the shop DOMAIN, so deleteShopData's existing `key: domain` clause
+  // covers redact. metadata = { status, origin, calls, durationMs, reason? }:
+  // counts and short codes only, never a URL (the PageSpeed request URL carries
+  // the API key) and never Google's error text. Low volume (one per Pro shop
+  // per week plus at most one manual run a day), so no prune coverage.
+  SPEED_REPORT: "speed_report",
 } as const;
 
 /** All nudge-funnel event types, for the prune and the digest's grouped read. */
@@ -513,6 +521,9 @@ export const CRON_HEARTBEAT_EXPECTATIONS: CronExpectation[] = [
   { key: "weekly-scan", intervalMs: 7 * DAY_MS },
   // 1st of each month (gc-iefo): the longest gap between runs is 31 days.
   { key: "monthly-scan", intervalMs: 31 * DAY_MS },
+  // Store speed report coordinator (gc-wt3y), Sunday 08:10 UTC. Heartbeats even
+  // while the feature is dark (the cron runs and returns early).
+  { key: "speed-report-weekly", intervalMs: 7 * DAY_MS },
 ];
 
 /**

@@ -2385,8 +2385,18 @@ const SHOPIFY_BASE_DOMAINS = [
  * Uses an exact-or-dot-boundary check so lookalikes (e.g. "evilshopify.com",
  * "notshopifycdn.net") are NOT treated as first-party.
  */
-function isShopifyDomain(hostname: string): boolean {
+export function isShopifyDomain(hostname: string): boolean {
   return SHOPIFY_BASE_DOMAINS.some((base) => hostname === base || hostname.endsWith(`.${base}`));
+}
+
+/**
+ * The known app an external URL belongs to, or null when unmatched. The single
+ * URL-to-app matcher behind the ScanDomain `matched/appName` classification
+ * (collectThirdPartyDomains) and the store speed report's per-app cost rows
+ * (gc-wt3y), so both name the same app for the same URL.
+ */
+export function identifyAppForExternalUrl(rawUrl: string): string | null {
+  return identifyAppFromUrl(rawUrl) ?? identifyAppFromCode(rawUrl);
 }
 
 export function collectUnknownScripts(
@@ -2611,7 +2621,7 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
 
     let entry = byHost.get(hostname);
     if (!entry) {
-      const appName = identifyAppFromUrl(rawUrl) ?? identifyAppFromCode(rawUrl);
+      const appName = identifyAppForExternalUrl(rawUrl);
       const matched = appName !== null;
       const benign = !matched && (isBenignLibrary(rawUrl) || isSharedCdnDomain(hostname));
       entry = {
@@ -2626,7 +2636,7 @@ export function collectThirdPartyDomains(file: ThemeFile): ThirdPartyDomainRef[]
       // A later reference on the same host may carry app-identifying context the
       // first did not (e.g. a different URL that resolves to a known app). Upgrade
       // to matched — a matched host is never also benign.
-      const appName = identifyAppFromUrl(rawUrl) ?? identifyAppFromCode(rawUrl);
+      const appName = identifyAppForExternalUrl(rawUrl);
       if (appName !== null) {
         entry.matched = true;
         entry.appName = appName;
