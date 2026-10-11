@@ -362,25 +362,28 @@ function walkStoppedShort(
  * store before the retry. The range is open above: later steps have not run
  * yet (steps are sequential), so every row past `afterId` is this attempt's to
  * replace. Rows at or below `afterId` (earlier steps) and unparseable
- * filenames are never touched. `afterId` null: no earlier step checked
- * anything, so any parseable row is this step's.
+ * filenames are never touched. `afterId` null with nothing checked yet: any
+ * parseable row is this step's. An UNKNOWN boundary (unparseable, or null
+ * although records were checked: an earlier step memoized before lastId was
+ * carried) falls back to own filenames only, never wiping earlier rows.
  */
 async function laterStepDeleteScope(
   scanId: string,
   walk: WalkName,
   afterId: string | null,
+  checkedSoFar: number,
   ownFilenames: string[],
 ): Promise<Prisma.FindingWhereInput> {
   const db = (await import("../../app/db.server")).default;
   const { gidNumber, walkRecordOf } = await import("../../app/services/scan-differ.server");
   const floor = afterId === null ? null : gidNumber(afterId);
-  const rows =
-    afterId !== null && floor === null
-      ? [] // Unparseable boundary: fall back to own filenames only.
-      : await db.finding.findMany({
-          where: { scanId, findingType: { in: WALK_FINDING_TYPES[walk] as FindingType[] } },
-          select: { id: true, filename: true, findingType: true },
-        });
+  const boundaryUnknown = afterId === null ? checkedSoFar > 0 : floor === null;
+  const rows = boundaryUnknown
+    ? []
+    : await db.finding.findMany({
+        where: { scanId, findingType: { in: WALK_FINDING_TYPES[walk] as FindingType[] } },
+        select: { id: true, filename: true, findingType: true },
+      });
   const pastBoundary = rows
     .filter((r) => {
       const id = walkRecordOf(r)?.id ?? null;
@@ -559,6 +562,7 @@ async function runProductAuditChunk(opts: {
           opts.scanId,
           "products",
           opts.lastIdSoFar,
+          opts.checkedSoFar,
           tags.flatMap((p) => [`products/${p.id}`, `products/${p.id}/metafields`]),
         );
 
@@ -768,6 +772,7 @@ async function runRedirectAuditChunk(opts: {
           opts.scanId,
           "redirects",
           opts.lastIdSoFar,
+          opts.checkedSoFar,
           redirects.map((r) => `redirects/${r.id}`),
         );
   await persistAuditFindings({

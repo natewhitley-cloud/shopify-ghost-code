@@ -4982,6 +4982,46 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
       expect(scope).toContain("products/gid://shopify/Product/501");
     });
 
+    it("a step memoized before audit #5 (no lastId) never widens the delete to earlier rows", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+      simulateCatalog(700);
+      mockDetectOrphanedProductTags.mockImplementation((tags: Array<{ id: string }>) =>
+        tags
+          .slice(0, 1)
+          .map((p) => makeAuditFinding(FindingType.GHOST_TAG, { filename: `products/${p.id}` })),
+      );
+      existingWalkRows([row("f-7", "products/gid://shopify/Product/7", FindingType.GHOST_TAG)]);
+      // Step 0 as memoized by the first gc-747u deploy: no lastId (nor any
+      // later audit field), 500 products already checked.
+      const memo = {
+        tagCount: 1,
+        priceCount: 0,
+        metafieldCount: 0,
+        scopeAbsent: false,
+        truncated: false,
+        tagGap: false,
+        priceGap: false,
+        metafieldGap: false,
+        pageCount: 10,
+        throttleSleepMs: 0,
+        walkMs: 1000,
+        cap: 5000,
+        checked: 500,
+        next: { after: "c500" },
+        coverage: null,
+      };
+      const run = vi.fn(async (name: string, fn: () => unknown) =>
+        name === "product-audit" ? memo : fn(),
+      );
+
+      await runScanTheme(undefined, { run } as never);
+
+      const [later] = deletesOf(FindingType.GHOST_TAG);
+      const scope = JSON.stringify(later);
+      expect(scope).not.toContain('"f-7"');
+      expect(scope).toContain("products/gid://shopify/Product/501");
+    });
+
     it("a retried redirect chunk also deletes rows for a redirect deleted between attempts", async () => {
       mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
       simulateRedirects(1500);
