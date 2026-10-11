@@ -15,6 +15,7 @@ import {
 } from "../models/shop.server";
 import { isPlanReconcileStale, reconcileShopPlan } from "../services/billing-reconciler.server";
 import { recordJourneyMilestoneOnce } from "../services/journey-milestone.server";
+import { isSpeedReportLive } from "../services/speed-report-config.server";
 import { authenticate } from "../shopify.server";
 
 export const loader = async ({ request }: LoaderFunctionArgs) => {
@@ -112,11 +113,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // eslint-disable-next-line no-undef
   return {
     apiKey: process.env.SHOPIFY_API_KEY || "",
+    // gc-wt3y: the Store speed nav entry exists only while the feature is live.
+    speedReportEnabled: isSpeedReportLive(),
   };
 };
 
 export default function App() {
-  const { apiKey } = useLoaderData<typeof loader>();
+  const { apiKey, speedReportEnabled } = useLoaderData<typeof loader>();
 
   // Browser-side error telemetry for every /app page (gc-nn6): window errors,
   // unhandled rejections and failed same-origin fetches, beaconed to
@@ -132,6 +135,7 @@ export default function App() {
         <s-link href="/app">Dashboard</s-link>
         <s-link href="/app/scans">Scan History</s-link>
         <s-link href="/app/ignored">Ignored Findings</s-link>
+        {speedReportEnabled && <s-link href="/app/speed">Store speed</s-link>}
         <s-link href="/app/settings">Settings</s-link>
       </s-app-nav>
       <Outlet />
