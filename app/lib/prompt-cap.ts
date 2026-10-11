@@ -35,11 +35,14 @@ import { PLANS } from "./plans";
 import { REVIEW_POPUP_MIN_SCAN_AGE_MS } from "./review-request";
 
 /** Every interruptive prompt, in priority order (first = highest). */
-export const PROMPT_KEYS = ["review_popup", "upgrade_return", "feedback"] as const;
+export const PROMPT_KEYS = ["review_popup", "upgrade_return", "summary_optin", "feedback"] as const;
 
 /**
  * review_popup:   native App Store review popup (gc-97k.7).
  * upgrade_return: return-visit upgrade nudge, Free only (gc-97k.9).
+ * summary_optin:  Home's one-time summary-email opt-in, paid shops that never
+ *                 consented (gc-xorg). Paid only, so it never competes with
+ *                 upgrade_return (Free only).
  * feedback:       home-page feedback nudge (gc-97k.3).
  *
  * The former home-page review banner (`review_banner`) is retired (owner
@@ -69,14 +72,19 @@ export type PromptCapState = {
 // Page renderability: which prompts each page can render
 // ---------------------------------------------------------------------------
 
-/** Home (/app) can render only the feedback nudge. */
-export const HOME_PROMPTS: readonly PromptKey[] = ["feedback"];
+/**
+ * Home (/app) can render the summary-email opt-in (gc-xorg) and the feedback
+ * nudge. Both have no eligibleSince, so neither blocks the other beyond
+ * priority: summary_optin wins while it is eligible.
+ */
+export const HOME_PROMPTS: readonly PromptKey[] = ["summary_optin", "feedback"];
 
 /** Home defers nothing. */
 export const HOME_DEFERRED_PROMPTS: readonly PromptKey[] = [];
 
 /**
- * The scan results page (/app/scans/:id) can render, for a SUCCESSFUL
+ * The scan results page (/app/scans/:id) never renders summary_optin or
+ * feedback (Home only). It can render, for a SUCCESSFUL
  * (COMPLETED / PARTIAL) scan only:
  *   - review_popup on every plan, unless the scan completed less than
  *     REVIEW_POPUP_MIN_SCAN_AGE_MS ago (then it is DEFERRED on this page, see
@@ -141,8 +149,9 @@ export type PickPromptInput = PromptCapState & {
   eligible: readonly PromptKey[];
   /**
    * When each eligible prompt became eligible (shopPromptEligibility). A key
-   * without a date never stops blocking (used for the lowest-priority prompt,
-   * which blocks nothing).
+   * without a date never stops blocking (used for the Home-only prompts,
+   * summary_optin and feedback, which block only each other and only by
+   * priority; no lower prompt exists that another page could render).
    */
   eligibleSince: Partial<Record<PromptKey, Date>>;
   /** The prompts THIS page can render (HOME_PROMPTS / scanResultsPrompts). */

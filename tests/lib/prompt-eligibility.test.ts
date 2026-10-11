@@ -40,6 +40,15 @@ function state(overrides: Partial<ShopPromptState> = {}): ShopPromptState {
     upgradeReturnDismissCount: 0,
     feedbackNudgeDismissedAt: null,
     feedbackSubmittedAt: null,
+    // gc-xorg: Free has no summaries, so the opt-in is off by default here.
+    summaryCadence: "none",
+    summarySendingConfigured: true,
+    alertsEnabled: true,
+    uninstalledAt: null,
+    summaryNoticePendingAt: null,
+    summaryNoticeShownAt: null,
+    summaryOptedInAt: null,
+    summaryOptInDeclinedAt: null,
     ...overrides,
   };
 }
@@ -90,6 +99,40 @@ describe("shopPromptEligibility", () => {
         NOW,
       ),
     ).toEqual([]);
+  });
+});
+
+describe("shopPromptEligibility: summary_optin (gc-xorg)", () => {
+  /** A legacy Professional shop (no consent stamps), sending configured. */
+  const legacyPaid = (overrides: Partial<ShopPromptState> = {}) =>
+    state({ plan: "Professional", summaryCadence: "weekly", ...overrides });
+
+  it("a legacy paid shop is eligible, ranked after review_popup and before feedback", () => {
+    expect(keys(legacyPaid(), NOW)).toEqual(["review_popup", "summary_optin", "feedback"]);
+  });
+
+  it("has no eligibleSince (it never needs to stop blocking)", () => {
+    const { eligibleSince } = shopPromptEligibility(legacyPaid(), NOW);
+    expect(eligibleSince).not.toHaveProperty("summary_optin");
+  });
+
+  it("is independent of scans: eligible before any successful scan", () => {
+    expect(
+      keys(legacyPaid({ firstSuccessfulScanAt: null, firstResultsViewedAt: null }), NOW),
+    ).toEqual(["summary_optin"]);
+  });
+
+  it.each<[string, Partial<ShopPromptState>]>([
+    ["Free plan", { plan: "free", summaryCadence: "none" }],
+    ["sending not configured", { summarySendingConfigured: false }],
+    ["alerts turned off", { alertsEnabled: false }],
+    ["uninstalled", { uninstalledAt: ago(DAY) }],
+    ["notice owed", { summaryNoticePendingAt: ago(DAY) }],
+    ["notice shown", { summaryNoticeShownAt: ago(DAY) }],
+    ["opted in", { summaryOptedInAt: ago(DAY) }],
+    ["declined", { summaryOptInDeclinedAt: ago(DAY) }],
+  ])("drops summary_optin: %s", (_label, overrides) => {
+    expect(keys(legacyPaid(overrides), NOW)).not.toContain("summary_optin");
   });
 });
 

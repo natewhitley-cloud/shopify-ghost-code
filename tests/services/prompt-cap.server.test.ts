@@ -29,6 +29,13 @@ vi.mock("../../app/services/nudge-telemetry.server", async (importOriginal) => (
   recordNudgeConverted: vi.fn(),
 }));
 
+// Sending configured is env-derived (getMerchantAlertConfigStatus); each test
+// says which it is. Default: not configured (no summary opt-in).
+const mockConfigStatus = vi.hoisted(() => vi.fn());
+vi.mock("../../app/services/merchant-alert.server", () => ({
+  getMerchantAlertConfigStatus: mockConfigStatus,
+}));
+
 const mockLoggerError = vi.fn();
 vi.mock("../../app/lib/logger.server", () => ({
   logger: {
@@ -62,7 +69,7 @@ const ago = (ms: number) => new Date(NOW.getTime() - ms);
 const FRESH = { lastPromptKey: null, lastPromptShownAt: null };
 
 /** Every page that can render everything, so only eligibility and the cap decide. */
-const ALL: PromptKey[] = ["review_popup", "upgrade_return", "feedback"];
+const ALL: PromptKey[] = ["review_popup", "upgrade_return", "summary_optin", "feedback"];
 
 /**
  * Prompt state eligible for exactly `keys` (a paid, brand-new shop is eligible
@@ -88,6 +95,16 @@ function stateFor(
     upgradeReturnDismissCount: 0,
     feedbackNudgeDismissedAt: null,
     feedbackSubmittedAt: null,
+    // gc-xorg: a paid shop with no consent decision; the opt-in switches on
+    // with sending configured.
+    summaryCadence: keys.includes("upgrade_return") ? "none" : "monthly",
+    summarySendingConfigured: keys.includes("summary_optin"),
+    alertsEnabled: true,
+    uninstalledAt: null,
+    summaryNoticePendingAt: null,
+    summaryNoticeShownAt: null,
+    summaryOptedInAt: null,
+    summaryOptInDeclinedAt: null,
     ...cap,
   };
 }
@@ -102,6 +119,7 @@ function input(
 
 beforeEach(() => {
   vi.resetAllMocks();
+  mockConfigStatus.mockReturnValue({ configured: false, reason: "disabled" });
 });
 
 /**
@@ -627,5 +645,128 @@ describe("10-day simulation: Home visited first each day, then the scan page", (
     const log = await simulate(7, 0);
 
     expect(log.at(-1)).toEqual([7, "feedback", null]);
+  });
+});
+
+describe("summary_optin (gc-xorg)", () => {
+  /** A legacy paid shop eligible for the opt-in AND feedback, as stored. */
+  const legacy = (cap: { lastPromptKey: string | null; lastPromptShownAt: Date | null } = FRESH) =>
+    stateFor(["summary_optin", "feedback"], cap);
+  const CONFIGURED = { configured: true };
+
+  it("loadShopPromptState carries the plan's cadence and whether sending is configured", async () => {
+    const shop = { id: "shop-1", domain: DOMAIN, ...stateFor([]) } as unknown as ShopMetadata;
+
+    mockConfigStatus.mockReturnValue(CONFIGURED);
+    let state = await loadShopPromptState({ ...shop, plan: "Professional" }, NOW);
+    expect(state.summaryCadence).toBe("weekly");
+    expect(state.summarySendingConfigured).toBe(true);
+
+    state = await loadShopPromptState({ ...shop, plan: "Standard" }, NOW);
+    expect(state.summaryCadence).toBe("monthly");
+
+    mockConfigStatus.mockReturnValue({ configured: false, reason: "no_transport" });
+    state = await loadShopPromptState({ ...shop, plan: "free", upgradeReturnDismissCount: 3 }, NOW);
+    expect(state.summaryCadence).toBe("none");
+    expect(state.summarySendingConfigured).toBe(false);
+  });
+
+  it("Home: the opt-in outranks feedback and claims the slot for it", async () => {
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+
+    await expect(
+      resolvePrompt({ ...input([], FRESH, HOME_PROMPTS), state: legacy() }),
+    ).resolves.toBe("summary_optin");
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: { domain: DOMAIN, lastPromptKey: null, lastPromptShownAt: null },
+      data: { lastPromptKey: "summary_optin", lastPromptShownAt: NOW },
+    });
+  });
+
+  it("Home: feedback holding the 24h window keeps the opt-in out (no write)", async () => {
+    const cap = { lastPromptKey: "feedback", lastPromptShownAt: ago(HOUR) };
+    await expect(
+      resolvePrompt({ ...input([], cap, HOME_PROMPTS), state: legacy(cap) }),
+    ).resolves.toBeNull();
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("Home: re-renders inside its own window with no write; an ignored prompt returns after it", async () => {
+    const held = { lastPromptKey: "summary_optin", lastPromptShownAt: ago(HOUR) };
+    await expect(
+      resolvePrompt({ ...input([], held, HOME_PROMPTS), state: legacy(held) }),
+    ).resolves.toBe("summary_optin");
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+
+    const expired = { lastPromptKey: "summary_optin", lastPromptShownAt: ago(DAY) };
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+    await expect(
+      resolvePrompt({ ...input([], expired, HOME_PROMPTS), state: legacy(expired) }),
+    ).resolves.toBe("summary_optin");
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("the scan results page never renders it, and it does not stop the review popup there", async () => {
+    const scanPage = scanResultsPrompts({
+      scanSuccessful: true,
+      plan: "Professional",
+      hasHiddenFindings: false,
+      scanCompletedAt: ago(DAY),
+      now: NOW,
+    });
+    await expect(
+      resolvePrompt({ ...input([], FRESH, scanPage), state: legacy() }),
+    ).resolves.toBeNull();
+    await expect(
+      resolvePrompt({
+        ...input([], FRESH, scanPage),
+        state: stateFor(["review_popup", "summary_optin", "feedback"]),
+      }),
+    ).resolves.toBe("review_popup");
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+  });
+
+  it("lost claim, winner took the opt-in: the re-pick (fresh state + fresh facts) renders it", async () => {
+    mockConfigStatus.mockReturnValue(CONFIGURED);
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
+    mockDb.shop.findUnique.mockResolvedValueOnce({
+      ...legacy(),
+      plan: "Professional",
+      lastPromptKey: "summary_optin",
+      lastPromptShownAt: NOW,
+    });
+
+    await expect(
+      resolvePrompt({ ...input([], FRESH, HOME_PROMPTS), state: legacy() }),
+    ).resolves.toBe("summary_optin");
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("lost claim: the re-pick derives the facts from the FRESH row (not the stale state)", async () => {
+    // The stale state says eligible; the fresh row is now Free, so not eligible.
+    mockConfigStatus.mockReturnValue(CONFIGURED);
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
+    mockDb.shop.findUnique.mockResolvedValueOnce({
+      ...legacy(),
+      plan: "free",
+      lastPromptKey: "summary_optin",
+      lastPromptShownAt: NOW,
+    });
+    await expect(
+      resolvePrompt({ ...input([], FRESH, HOME_PROMPTS), state: legacy() }),
+    ).resolves.toBeNull();
+
+    // Sending went dark between the reads: not eligible either.
+    mockConfigStatus.mockReturnValue({ configured: false, reason: "disabled" });
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 0 });
+    mockDb.shop.findUnique.mockResolvedValueOnce({
+      ...legacy(),
+      plan: "Professional",
+      lastPromptKey: "summary_optin",
+      lastPromptShownAt: NOW,
+    });
+    await expect(
+      resolvePrompt({ ...input([], FRESH, HOME_PROMPTS), state: legacy() }),
+    ).resolves.toBeNull();
   });
 });

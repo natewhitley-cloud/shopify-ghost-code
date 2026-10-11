@@ -10,7 +10,8 @@
  *     passes (was: the holder kept re-rendering).
  *   - A page renders nothing (and claims nothing) when it cannot render the
  *     shop's top prompt; a lower prompt it could render no longer steps in.
- * Owner decision 2A retired `review_banner`, so PROMPT_KEYS has three keys.
+ * Owner decision 2A retired `review_banner`; gc-xorg added `summary_optin`
+ * (after upgrade_return, before feedback), so PROMPT_KEYS has four keys.
  */
 import { describe, it, expect } from "vitest";
 
@@ -58,7 +59,7 @@ function pick(overrides: Partial<PickPromptInput> & Pick<PickPromptInput, "eligi
 
 describe("PROMPT_KEYS / PROMPT_CAP_WINDOW_MS", () => {
   it("lists every interruptive prompt in the owner-approved priority order (no review_banner)", () => {
-    expect(PROMPT_KEYS).toEqual(["review_popup", "upgrade_return", "feedback"]);
+    expect(PROMPT_KEYS).toEqual(["review_popup", "upgrade_return", "summary_optin", "feedback"]);
   });
 
   it("is exactly 24 hours", () => {
@@ -67,8 +68,26 @@ describe("PROMPT_KEYS / PROMPT_CAP_WINDOW_MS", () => {
 });
 
 describe("page renderability", () => {
-  it("Home renders only the feedback nudge", () => {
-    expect(HOME_PROMPTS).toEqual(["feedback"]);
+  it("Home renders the summary opt-in and the feedback nudge (gc-xorg)", () => {
+    expect(HOME_PROMPTS).toEqual(["summary_optin", "feedback"]);
+  });
+
+  it("the scan results page never renders the summary opt-in, whatever the scan or plan", () => {
+    for (const plan of ["free", "Standard", "Professional"]) {
+      for (const scanSuccessful of [true, false]) {
+        for (const completedAgo of [MS, DAY_MS]) {
+          const page = {
+            scanCompletedAt: ago(completedAgo),
+            now: NOW,
+            scanSuccessful,
+            plan,
+            hasHiddenFindings: true,
+          };
+          expect(scanResultsPrompts(page)).not.toContain("summary_optin");
+          expect(scanResultsDeferredPrompts(page)).not.toContain("summary_optin");
+        }
+      }
+    }
   });
 
   it("a successful Free scan with hidden findings renders the popup and the return banner", () => {
@@ -265,8 +284,8 @@ describe("pickPrompt: priority (no prompt shown yet)", () => {
     PROMPT_KEYS.slice(i + 1).forEach((lower) => pairs.push([higher, lower]));
   });
 
-  it("covers all 3 priority pairs", () => {
-    expect(pairs).toHaveLength(3);
+  it("covers all 6 priority pairs", () => {
+    expect(pairs).toHaveLength(6);
   });
 
   it.each(pairs)("%s outranks %s, whatever order eligible lists them", (higher, lower) => {
@@ -281,7 +300,7 @@ describe("pickPrompt: priority (no prompt shown yet)", () => {
     },
   );
 
-  it("all three eligible: review_popup", () => {
+  it("all four eligible: review_popup", () => {
     expect(pick({ eligible: [...PROMPT_KEYS].reverse() })).toBe("review_popup");
   });
 
@@ -311,6 +330,96 @@ describe("pickPrompt: page renderability", () => {
       expect(pick({ eligible: [pending, "feedback"], renderable: HOME_PROMPTS })).toBeNull();
     },
   );
+
+  it("Home with the summary opt-in and feedback both eligible: the opt-in (gc-xorg)", () => {
+    expect(pick({ eligible: ["feedback", "summary_optin"], renderable: HOME_PROMPTS })).toBe(
+      "summary_optin",
+    );
+  });
+
+  it("Home with only the summary opt-in eligible: the opt-in", () => {
+    expect(pick({ eligible: ["summary_optin"], renderable: HOME_PROMPTS })).toBe("summary_optin");
+  });
+
+  it.each<PromptKey>(["review_popup", "upgrade_return"])(
+    "Home with %s pending (and the summary opt-in eligible): nothing while it blocks",
+    (pending) => {
+      expect(
+        pick({
+          eligible: [pending, "summary_optin"],
+          eligibleSince: { [pending]: ago(DAY_MS) },
+          renderable: HOME_PROMPTS,
+        }),
+      ).toBeNull();
+    },
+  );
+
+  it.each<PromptKey>(["review_popup", "upgrade_return"])(
+    "Home: %s pending 7+ days stops blocking, so the summary opt-in renders",
+    (pending) => {
+      expect(
+        pick({
+          eligible: [pending, "summary_optin", "feedback"],
+          eligibleSince: { [pending]: ago(PROMPT_BLOCK_MAX_MS) },
+          renderable: HOME_PROMPTS,
+        }),
+      ).toBe("summary_optin");
+    },
+  );
+
+  it("Home: feedback holding the 24h window keeps the summary opt-in out", () => {
+    expect(
+      pick({
+        lastPromptKey: "feedback",
+        lastPromptShownAt: ago(HOUR),
+        eligible: ["summary_optin", "feedback"],
+        renderable: HOME_PROMPTS,
+      }),
+    ).toBeNull();
+  });
+
+  it("Home: the summary opt-in re-renders inside its own window, and again after it", () => {
+    const base = {
+      eligible: ["summary_optin", "feedback"] as PromptKey[],
+      renderable: HOME_PROMPTS,
+    };
+    expect(pick({ ...base, lastPromptKey: "summary_optin", lastPromptShownAt: ago(HOUR) })).toBe(
+      "summary_optin",
+    );
+    expect(pick({ ...base, lastPromptKey: "summary_optin", lastPromptShownAt: ago(DAY_MS) })).toBe(
+      "summary_optin",
+    );
+  });
+
+  it("scan page with the summary opt-in eligible still renders the review popup above it", () => {
+    expect(
+      pick({
+        eligible: ["review_popup", "summary_optin"],
+        renderable: scanResultsPrompts({
+          scanCompletedAt: ago(DAY_MS),
+          now: NOW,
+          scanSuccessful: true,
+          plan: "Professional",
+          hasHiddenFindings: false,
+        }),
+      }),
+    ).toBe("review_popup");
+  });
+
+  it("scan page with only the summary opt-in eligible: nothing (Home only)", () => {
+    expect(
+      pick({
+        eligible: ["summary_optin"],
+        renderable: scanResultsPrompts({
+          scanCompletedAt: ago(DAY_MS),
+          now: NOW,
+          scanSuccessful: true,
+          plan: "Professional",
+          hasHiddenFindings: false,
+        }),
+      }),
+    ).toBeNull();
+  });
 
   it("scan page with only feedback pending: nothing (it cannot render feedback)", () => {
     expect(

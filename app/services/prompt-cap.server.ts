@@ -12,10 +12,17 @@
  * Home and the scan results page therefore always agree on which prompt is
  * pending (owner decision 1A).
  *
+ * The summary-email opt-in (gc-xorg) also reads two server-only facts that are
+ * not Shop columns: the plan's summary cadence (billing.server) and whether
+ * sending is configured (env). summaryOptInFacts derives both, for the state
+ * loaded here and for the fresh state re-read after a lost claim.
+ *
  * resolvePrompt NEVER THROWS: on any failure it logs and returns null (no
  * prompt). Failing closed keeps the cap honest, and a missing prompt never
  * breaks a page.
  */
+import { getMerchantAlertConfigStatus } from "./merchant-alert.server";
+import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { pickPrompt, promptClaimNeeded } from "../lib/prompt-cap";
 import type { PromptCapState, PromptKey } from "../lib/prompt-cap";
@@ -25,6 +32,7 @@ import {
   upgradeReturnPossible,
 } from "../lib/prompt-eligibility";
 import type { ShopPromptState } from "../lib/prompt-eligibility";
+import type { SummaryOptInState } from "../lib/summary-optin";
 import {
   getFirstSuccessfulScanCompletedAt,
   getLatestSuccessfulScanNonMaliciousCount,
@@ -34,6 +42,20 @@ import type { ShopMetadata } from "../models/shop.server";
 
 /** The shop's prompt eligibility inputs plus its cap state. */
 export type ShopPromptContext = ShopPromptState & PromptCapState;
+
+/**
+ * The summary-email opt-in's server-derived facts (gc-xorg) for a plan: its
+ * summary cadence ("none" on Free) and whether sending is configured now.
+ * Env-only, no query.
+ */
+export function summaryOptInFacts(
+  plan: string,
+): Pick<SummaryOptInState, "summaryCadence" | "summarySendingConfigured"> {
+  return {
+    summaryCadence: getPlanFeatures(plan).alertCadence,
+    summarySendingConfigured: getMerchantAlertConfigStatus().configured,
+  };
+}
 
 /**
  * Load the shop's prompt state. `shop` is the metadata the loader already
@@ -60,7 +82,12 @@ export async function loadShopPromptState(
       ? getLatestSuccessfulScanNonMaliciousCount(shop.id)
       : Promise.resolve(null),
   ]);
-  return { ...shop, firstSuccessfulScanAt, latestScanNonMaliciousCount };
+  return {
+    ...shop,
+    ...summaryOptInFacts(shop.plan),
+    firstSuccessfulScanAt,
+    latestScanNonMaliciousCount,
+  };
 }
 
 export type ResolvePromptInput = {
@@ -110,9 +137,11 @@ export async function resolvePrompt(input: ResolvePromptInput): Promise<PromptKe
     const fresh = await getShopMetadata(shopDomain);
     if (fresh === null) return null;
     // The scan facts cannot change between the two reads that matter here, so
-    // the values this load already read are reused.
+    // the values this load already read are reused. The summary-email facts
+    // follow the FRESH plan.
     const freshState: ShopPromptContext = {
       ...fresh,
+      ...summaryOptInFacts(fresh.plan),
       firstSuccessfulScanAt: state.firstSuccessfulScanAt,
       latestScanNonMaliciousCount: state.latestScanNonMaliciousCount,
     };

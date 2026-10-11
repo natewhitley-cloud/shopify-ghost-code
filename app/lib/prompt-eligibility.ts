@@ -9,6 +9,7 @@
  * the prompt:
  *   review_popup    isReviewPopupEligible     (./review-request)
  *   upgrade_return  isUpgradeReturnEligible   (./upgrade-return)
+ *   summary_optin   isSummaryOptInEligible    (./summary-optin)
  *   feedback        shouldShowFeedbackNudge   (./feedback-nudge)
  * It also reports when each eligible prompt became eligible, for the 7-day
  * bounded blocking in pickPrompt (./prompt-cap), which then applies priority,
@@ -20,6 +21,8 @@ import { PLANS } from "./plans";
 import type { PromptKey } from "./prompt-cap";
 import { isReviewPopupEligible, reviewPopupEligibleSince } from "./review-request";
 import type { ReviewPopupEligibilityInput } from "./review-request";
+import { isSummaryOptInEligible } from "./summary-optin";
+import type { SummaryOptInState } from "./summary-optin";
 import {
   isUpgradeReturnEligible,
   UPGRADE_RETURN_MAX_DISMISSALS,
@@ -27,9 +30,14 @@ import {
 } from "./upgrade-return";
 import type { UpgradeReturnState } from "./upgrade-return";
 
-/** Everything the prompt rules read: Shop fields plus the first successful scan. */
+/**
+ * Everything the prompt rules read: Shop fields plus the first successful scan,
+ * plus two server-derived summary-email facts (the plan's cadence and whether
+ * sending is configured; see loadShopPromptState).
+ */
 export type ShopPromptState = ReviewPopupEligibilityInput &
   UpgradeReturnState &
+  SummaryOptInState &
   FeedbackNudgeGateInput;
 
 /** The shop's eligible prompts and when each became eligible. */
@@ -38,7 +46,8 @@ export type ShopPromptEligibility = {
   eligible: PromptKey[];
   /**
    * For the prompts that can block a lower one (review_popup, upgrade_return).
-   * feedback has none: it is the lowest priority and blocks nothing.
+   * summary_optin and feedback have none: they are Home-only and only Home can
+   * render the prompts below them, so they never need to stop blocking.
    */
   eligibleSince: Partial<Record<PromptKey, Date>>;
 };
@@ -54,6 +63,7 @@ export function shopPromptEligibility(state: ShopPromptState, now: Date): ShopPr
     eligible.push("upgrade_return");
     eligibleSince.upgrade_return = upgradeReturnEligibleSince(state, now);
   }
+  if (isSummaryOptInEligible(state)) eligible.push("summary_optin");
   if (shouldShowFeedbackNudge(state, now)) eligible.push("feedback");
   return { eligible, eligibleSince };
 }
