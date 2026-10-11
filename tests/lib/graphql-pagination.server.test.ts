@@ -570,3 +570,255 @@ describe("fetchExactCount (gc-747u)", () => {
     await expect(fetchExactCount(makeAdmin(graphql), "productsCount")).resolves.toBeNull();
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-747u audit #2: a THROTTLED retry never sleeps past the step deadline
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection THROTTLED retry vs the step deadline (gc-747u #2)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const throttled = () =>
+    errorPage([{ message: "Throttled", extensions: { code: "THROTTLED" } }], {
+      currentlyAvailable: 0,
+      restoreRate: 50,
+    });
+
+  it("stops with hasMore and the SAME cursor when the backoff sleep would cross the deadline", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: true, endCursor: "c1" }))
+      .mockResolvedValue(throttled());
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    // 0 of 100 points at 50/s = a 2 s backoff; only 1 s of budget is left.
+    const promise = paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() + 1_000,
+    });
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toEqual([{ id: "a" }]);
+    // Page 1 + ONE throttled attempt: no sleep, no retry past the deadline.
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(stats).toMatchObject({
+      hasMore: true,
+      endCursor: "c1",
+      truncated: false,
+      throttleStopped: true,
+      throttleSleepMs: 0,
+    });
+  });
+
+  it("a throttle stop on the walk's FIRST request is resumable from the start (null cursor)", async () => {
+    const graphql = vi.fn().mockResolvedValue(throttled());
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    const promise = paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() + 1_000,
+    });
+    await vi.runAllTimersAsync();
+    expect(await promise).toEqual([]);
+
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(stats).toMatchObject({ hasMore: true, endCursor: null, throttleStopped: true });
+  });
+
+  it("still sleeps and retries when the backoff fits inside the deadline", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(throttled())
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: false, endCursor: null }));
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    const promise = paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() + 15_000,
+    });
+    await vi.runAllTimersAsync();
+
+    expect(await promise).toEqual([{ id: "a" }]);
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(stats.throttleSleepMs).toBe(2_000);
+    expect(stats.throttleStopped).toBeUndefined();
+  });
+
+  it("without a deadline, keeps the old retry-then-throw behaviour", async () => {
+    const graphql = vi.fn().mockResolvedValue(throttled());
+
+    const promise = paginateConnection({ ...baseOptions(graphql), maxThrottleRetries: 2 });
+    const assertion = expect(promise).rejects.toThrow("still THROTTLED after 2 retries");
+    await vi.runAllTimersAsync();
+    await assertion;
+    expect(graphql).toHaveBeenCalledTimes(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-747u audit #3: the rate-limit wait survives the step boundary
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection throttle carry-over between steps (gc-747u #3)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_000_000);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const lowHeadroomPage = () => ({
+    json: vi.fn().mockResolvedValue({
+      data: { items: { nodes: [{ id: "a" }], pageInfo: { hasNextPage: true, endCursor: "c1" } } },
+      extensions: {
+        cost: {
+          requestedQueryCost: 650,
+          throttleStatus: { maximumAvailable: 1000, currentlyAvailable: 150, restoreRate: 50 },
+        },
+      },
+    }),
+  });
+
+  it("a deadline stop records the last throttle status for the next step", async () => {
+    const graphql = vi.fn().mockResolvedValueOnce(lowHeadroomPage());
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    await paginateConnection({ ...baseOptions(graphql), stats, deadline: Date.now() - 1 });
+
+    expect(stats.throttleSleepMs).toBe(0);
+    expect(stats.throttle).toEqual({
+      currentlyAvailable: 150,
+      maximumAvailable: 1000,
+      restoreRate: 50,
+      requestedQueryCost: 650,
+      observedAt: 5_000_000,
+    });
+  });
+
+  it("the next step waits for the carried status BEFORE its first request", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(page([{ id: "b" }], { hasNextPage: false, endCursor: null }));
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    // Observed now: 150 of the 650 needed, 50/s refill => a 10 s wait.
+    const promise = paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      after: "c1",
+      initialThrottle: {
+        currentlyAvailable: 150,
+        maximumAvailable: 1000,
+        restoreRate: 50,
+        requestedQueryCost: 650,
+        observedAt: Date.now(),
+      },
+    });
+    await vi.advanceTimersByTimeAsync(9_999);
+    expect(graphql).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await promise;
+
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(stats.throttleSleepMs).toBe(10_000);
+  });
+
+  it("a THROTTLED stop carries the throttled response's status", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      errorPage([{ extensions: { code: "THROTTLED" } }], {
+        currentlyAvailable: 0,
+        restoreRate: 50,
+      }),
+    );
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    await paginateConnection({ ...baseOptions(graphql), stats, deadline: Date.now() + 1_000 });
+
+    expect(stats.throttle).toMatchObject({ currentlyAvailable: 0, restoreRate: 50 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-747u audit #7: per-walk query cost observability
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection query-cost stats (gc-747u #7)", () => {
+  const costPage = (requested: number, actual: number, hasNextPage: boolean) => ({
+    json: vi.fn().mockResolvedValue({
+      data: { items: { nodes: [{ id: "a" }], pageInfo: { hasNextPage, endCursor: "c" } } },
+      extensions: {
+        cost: {
+          requestedQueryCost: requested,
+          actualQueryCost: actual,
+          throttleStatus: { maximumAvailable: 2000, currentlyAvailable: 1900, restoreRate: 100 },
+        },
+      },
+    }),
+  });
+
+  it("records max + sum of requested cost and the sum of actual cost over successful pages", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(costPage(652, 120, true))
+      .mockResolvedValueOnce(
+        errorPage([{ extensions: { code: "THROTTLED" } }], {
+          currentlyAvailable: 1900,
+          restoreRate: 100,
+        }),
+      )
+      .mockResolvedValueOnce(costPage(452, 80, false));
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    await paginateConnection({ ...baseOptions(graphql), stats });
+
+    expect(stats.pageCount).toBe(2);
+    expect(stats.cost).toEqual({ requestedMax: 652, requestedSum: 1104, actualSum: 200 });
+  });
+});

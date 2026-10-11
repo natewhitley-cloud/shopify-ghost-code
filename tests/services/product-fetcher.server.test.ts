@@ -310,6 +310,19 @@ describe("fetchProductAuditData", () => {
 // ---------------------------------------------------------------------------
 
 describe("fetchProductAuditData chunked walk (gc-747u)", () => {
+  it("reports the walk's query cost (audit #7)", async () => {
+    const graphql = vi.fn().mockResolvedValue({
+      json: vi.fn().mockResolvedValue({
+        data: {
+          products: { nodes: [fullNode("p1")], pageInfo: { hasNextPage: false, endCursor: null } },
+        },
+        extensions: { cost: { requestedQueryCost: 652, actualQueryCost: 31 } },
+      }),
+    });
+    const result = await fetchProductAuditData(makeAdmin(graphql));
+    expect(result.cost).toEqual({ requestedMax: 652, requestedSum: 652, actualSum: 31 });
+  });
+
   it("walks in explicit ID order (the coverage window depends on it)", async () => {
     const graphql = vi.fn().mockResolvedValue(makeAuditResponse([fullNode("p1")]));
     await fetchProductAuditData(makeAdmin(graphql));

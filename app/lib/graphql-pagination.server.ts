@@ -20,7 +20,12 @@ import {
   checkRateLimit,
   checkThrottleStatusFromExtensions,
   isThrottledError,
+  parseActualQueryCost,
   parseRequestedQueryCost,
+  rateLimitSleepMs,
+  throttleSnapshot,
+  type ThrottleSnapshot,
+  waitForThrottleSnapshot,
 } from "./rate-limit-monitor.server";
 import { recordApiError } from "../models/ops-event.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -52,6 +57,18 @@ export type GraphQLConnection<TNode> = {
  *                        caller resumes from `endCursor` in a later step.
  *   - `endCursor`:       the cursor after the last consumed page (gc-747u), to
  *                        resume a chunked walk with `after`.
+ *   - `throttleStopped`: true iff a THROTTLED backoff would have crossed
+ *                        `deadline`, so the walk stopped instead of sleeping
+ *                        (gc-747u audit #2). `hasMore` is true and `endCursor`
+ *                        is the cursor to RETRY, which is null when the walk's
+ *                        very first request was throttled (resume from the start).
+ *   - `throttle`:        the last throttle status a response reported (gc-747u
+ *                        audit #3). A deadline stop skips the rate-limit wait, so
+ *                        a chunked caller passes this to the next step's
+ *                        `initialThrottle` and the wait happens there instead.
+ *   - `cost`:            query cost over the pages counted in `pageCount`
+ *                        (gc-747u audit #7): max + sum of `requestedQueryCost`
+ *                        (avg = sum / pageCount) and the sum of `actualQueryCost`.
  */
 export type PaginateStats = {
   pageCount: number;
@@ -60,7 +77,29 @@ export type PaginateStats = {
   throttleSleepMs: number;
   hasMore?: boolean;
   endCursor?: string | null;
+  throttleStopped?: boolean;
+  throttle?: ThrottleSnapshot | null;
+  cost?: QueryCostStats;
 };
+
+/** Query cost over a walk's successful pages (gc-747u audit #7). */
+export type QueryCostStats = {
+  requestedMax: number;
+  requestedSum: number;
+  actualSum: number;
+};
+
+/** Combine per-step cost stats into one walk's (absent = no pages). */
+export function sumQueryCost(parts: Array<QueryCostStats | null | undefined>): QueryCostStats {
+  return parts.reduce<QueryCostStats>(
+    (total, c) => ({
+      requestedMax: Math.max(total.requestedMax, c?.requestedMax ?? 0),
+      requestedSum: total.requestedSum + (c?.requestedSum ?? 0),
+      actualSum: total.actualSum + (c?.actualSum ?? 0),
+    }),
+    { requestedMax: 0, requestedSum: 0, actualSum: 0 },
+  );
+}
 
 /** Minimal shape of the JSON envelope returned by `admin.graphql`. */
 type GraphQLResponseJson = {
@@ -126,9 +165,19 @@ export type PaginateOptions<TNode, TResult> = {
   /**
    * Epoch ms after which no NEW page is requested (gc-747u). Checked after each
    * page (before any backoff sleep), so the walk overruns it by at most the page
-   * in flight. Stopping here sets `stats.hasMore`, never `stats.truncated`.
+   * in flight. Stopping here sets `stats.hasMore`, never `stats.truncated`. A
+   * THROTTLED backoff that would end past it also stops the walk (audit #2):
+   * `stats.throttleStopped` then marks the cursor as one to retry.
    */
   deadline?: number;
+  /**
+   * Throttle status the previous step of this walk last saw (gc-747u audit #3,
+   * from its `stats.throttle`). The helper waits on it, crediting the refill
+   * since, BEFORE the first request, so the step boundary never skips the wait
+   * the deadline stop deferred. This wait does not check `deadline`: skipping
+   * it would make the step fire into an empty bucket and make no progress.
+   */
+  initialThrottle?: ThrottleSnapshot | null;
   /**
    * Optional walk-observability out-parameter (gc-1bd). When provided, the
    * helper mutates it with page/node counts, cap truncation, and accumulated
@@ -162,12 +211,19 @@ export async function paginateConnection<TNode, TResult>(
     stats,
     after = null,
     deadline,
+    initialThrottle,
   } = options;
 
   const results: TResult[] = [];
   let cursor: string | null = after;
   let totalNodes = 0;
   let throttleRetries = 0;
+
+  if (initialThrottle) {
+    const sleepStart = Date.now();
+    await waitForThrottleSnapshot(initialThrottle);
+    if (stats) stats.throttleSleepMs += Date.now() - sleepStart;
+  }
 
   for (;;) {
     // When capped, request only the remaining count on the final page so the
@@ -184,6 +240,7 @@ export async function paginateConnection<TNode, TResult>(
     });
 
     const json = (await response.json()) as GraphQLResponseJson;
+    if (stats) stats.throttle = throttleSnapshot(json.extensions) ?? stats.throttle ?? null;
 
     if (json.errors?.length) {
       // PRF-3: a THROTTLED error is transient — back off and retry the SAME
@@ -199,10 +256,25 @@ export async function paginateConnection<TNode, TResult>(
           });
           throw new Error(`${errorContext}: still THROTTLED after ${maxThrottleRetries} retries`);
         }
+        const requestedCost = parseRequestedQueryCost(json.extensions);
+        // gc-747u audit #2: never back off past the step deadline (up to 5
+        // retries x ~20 s would outlast the step and Railway's ~60 s idle cut).
+        // Stop instead; the next step retries this same cursor.
+        if (
+          deadline !== undefined &&
+          Date.now() + rateLimitSleepMs(json.extensions, requestedCost) >= deadline
+        ) {
+          if (stats) {
+            stats.hasMore = true;
+            stats.endCursor = cursor;
+            stats.throttleStopped = true;
+          }
+          break;
+        }
         // Back off using whatever throttle headroom the response reported; if it
         // carried none, checkRateLimit is a no-op and we retry promptly.
         const sleepStart = Date.now();
-        await checkRateLimit(json.extensions, parseRequestedQueryCost(json.extensions));
+        await checkRateLimit(json.extensions, requestedCost);
         if (stats) stats.throttleSleepMs += Date.now() - sleepStart;
         continue; // retry the same page — cursor unchanged
       }
@@ -240,6 +312,15 @@ export async function paginateConnection<TNode, TResult>(
     if (stats) {
       stats.pageCount += 1;
       stats.nodeCount += nodes.length;
+      const requested = parseRequestedQueryCost(json.extensions);
+      stats.cost = sumQueryCost([
+        stats.cost,
+        {
+          requestedMax: requested,
+          requestedSum: requested,
+          actualSum: parseActualQueryCost(json.extensions),
+        },
+      ]);
       stats.endCursor = pageInfo.endCursor ?? null;
       stats.hasMore = pageInfo.hasNextPage === true;
     }

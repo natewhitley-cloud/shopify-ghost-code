@@ -74,6 +74,16 @@ export function parseWalkCoverage(raw: unknown): ScanWalkCoverage | null {
 
 const NOUNS: Record<WalkName, string> = { products: "products", redirects: "URL redirects" };
 
+/**
+ * What the store total counts beyond the obvious (audit #6): productsCount
+ * includes draft and archived products, and so does the walk, so the merchant
+ * is told the total is not just their live catalog.
+ */
+const TOTAL_QUALIFIERS: Record<WalkName, string> = {
+  products: ", including drafts and archived",
+  redirects: "",
+};
+
 function formatCount(n: number): string {
   return n.toLocaleString("en-US");
 }
@@ -81,7 +91,9 @@ function formatCount(n: number): string {
 /**
  * Merchant-facing disclosure for each truncated walk, in walk order (empty
  * when nothing was truncated). With an exact total larger than what was
- * checked: "Your store has 7,213 products. This scan checked the first 5,000."
+ * checked: "Your store has 7,213 products, including drafts and archived. This
+ * scan checked the first 5,000." (redirects: "Your store has 6,001 URL
+ * redirects. This scan checked the first 4,000.")
  * Otherwise (no total, or a total that no longer exceeds it): "This scan
  * checked the first 5,000 products in your store."
  */
@@ -94,7 +106,7 @@ export function walkCoverageNotices(coverage: ScanWalkCoverage | null): string[]
     const noun = NOUNS[walk];
     lines.push(
       c.total !== null && c.total > c.checked
-        ? `Your store has ${formatCount(c.total)} ${noun}. This scan checked the first ${formatCount(c.checked)}.`
+        ? `Your store has ${formatCount(c.total)} ${noun}${TOTAL_QUALIFIERS[walk]}. This scan checked the first ${formatCount(c.checked)}.`
         : `This scan checked the first ${formatCount(c.checked)} ${noun} in your store.`,
     );
   }

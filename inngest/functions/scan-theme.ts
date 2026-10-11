@@ -58,20 +58,32 @@
 import { FindingType, type Prisma, ScanOrigin, ScanStatus } from "@prisma/client";
 import { NonRetriableError } from "inngest";
 
-import type { PaginateStats } from "../../app/lib/graphql-pagination.server";
+import {
+  type PaginateStats,
+  type QueryCostStats,
+  sumQueryCost,
+} from "../../app/lib/graphql-pagination.server";
 import { logger } from "../../app/lib/logger.server";
+import type { ThrottleSnapshot } from "../../app/lib/rate-limit-monitor.server";
 import {
   CORE_STEP_OUTPUT_BUDGET_BYTES,
   DANGLING_MAX_OCCURRENCES_PER_HANDLE,
   JSONLD_PRICE_CANDIDATE_CAP,
   MAX_FINDINGS_PER_FILE_PER_TYPE,
   PRODUCT_WALK_CHUNK,
+  PRODUCT_WALK_TIME_BUDGET_MS,
   REDIRECT_GROUPS_BUDGET_BYTES,
   REDIRECT_WALK_CHUNK,
+  REDIRECT_WALK_TIME_BUDGET_MS,
   WALK_STEP_TIME_BUDGET_MS,
 } from "../../app/lib/scan-limits";
 import type { GrantedOptionalScopes } from "../../app/lib/scope-check.server";
-import type { ScanWalkCoverage, WalkCoverage } from "../../app/lib/walk-coverage";
+import {
+  type ScanWalkCoverage,
+  WALK_FINDING_TYPES,
+  type WalkCoverage,
+  type WalkName,
+} from "../../app/lib/walk-coverage";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { saveThemeFindings } from "../../app/models/finding.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
@@ -287,9 +299,10 @@ async function runAuditStep(opts: {
 /**
  * Where a walk resumes in its next step. Only a cursor (and, for redirects,
  * the bulk tally) crosses the step boundary: product nodes and redirect lists
- * stay inside the step that fetched them.
+ * stay inside the step that fetched them. `after` is null only when the walk's
+ * first request was THROTTLED past the step deadline (retry from the start).
  */
-type WalkResume = { after: string };
+type WalkResume = { after: string | null };
 
 /** What one product-walk step returns (all small scalars, gc-747u). */
 type ProductChunkResult = {
@@ -314,15 +327,92 @@ type ProductChunkResult = {
   next: WalkResume | null;
   /** Set by the final step when the walk ran (scope granted, shop found). */
   coverage: WalkCoverage | null;
+  /** Last throttle status seen; the next step waits on it first (audit #3). */
+  throttle: ThrottleSnapshot | null;
+  /** Epoch ms the whole walk stops paging, set ONCE by step 0 (audit #1). */
+  walkDeadline: number;
+  /** Query cost of this step's pages (audit #7). */
+  cost: QueryCostStats;
+  /** GID of the last product checked so far, across every step. */
+  lastId: string | null;
 };
 
 /**
  * True when a walk that stopped with records left could not be resumed (no
  * cursor) or reached `cap`: either way the records past it were not checked,
- * so the walk counts as truncated (never a silent partial walk).
+ * so the walk counts as truncated (never a silent partial walk). A THROTTLED
+ * stop (audit #2) is always resumable: its cursor, even null, is a retry point.
  */
-function walkStoppedShort(hasMore: boolean, checked: number, cap: number, cursor: string | null) {
-  return hasMore && (checked >= cap || cursor === null);
+function walkStoppedShort(
+  hasMore: boolean,
+  checked: number,
+  cap: number,
+  cursor: string | null,
+  throttleStopped: boolean,
+) {
+  return hasMore && (checked >= cap || (cursor === null && !throttleStopped));
+}
+
+/**
+ * Idempotency delete scope for a LATER step of a walk (gc-747u audit #5). The
+ * step owns its own fetched records' rows (`ownFilenames`) AND every row of
+ * this walk's types for a record with an ID above `afterId`, the last record
+ * the earlier steps checked. Scoping by fetched filenames alone missed a row
+ * a failed earlier attempt of this step wrote for a record deleted from the
+ * store before the retry. The range is open above: later steps have not run
+ * yet (steps are sequential), so every row past `afterId` is this attempt's to
+ * replace. Rows at or below `afterId` (earlier steps) and unparseable
+ * filenames are never touched. `afterId` null with nothing checked yet: any
+ * parseable row is this step's. An UNKNOWN boundary (unparseable, or null
+ * although records were checked: an earlier step memoized before lastId was
+ * carried) falls back to own filenames only, never wiping earlier rows.
+ */
+async function laterStepDeleteScope(
+  scanId: string,
+  walk: WalkName,
+  afterId: string | null,
+  checkedSoFar: number,
+  ownFilenames: string[],
+): Promise<Prisma.FindingWhereInput> {
+  const db = (await import("../../app/db.server")).default;
+  const { gidNumber, walkRecordOf } = await import("../../app/services/scan-differ.server");
+  const floor = afterId === null ? null : gidNumber(afterId);
+  const boundaryUnknown = afterId === null ? checkedSoFar > 0 : floor === null;
+  const rows = boundaryUnknown
+    ? []
+    : await db.finding.findMany({
+        where: { scanId, findingType: { in: WALK_FINDING_TYPES[walk] as FindingType[] } },
+        select: { id: true, filename: true, findingType: true },
+      });
+  const pastBoundary = rows
+    .filter((r) => {
+      const id = walkRecordOf(r)?.id ?? null;
+      return id !== null && (floor === null || id > floor);
+    })
+    .map((r) => r.id);
+  return { OR: [{ filename: { in: ownFilenames } }, { id: { in: pastBoundary } }] };
+}
+
+/** One walk's query cost for the scan_signal (audit #7): avg over its pages. */
+function walkCostSignal(cost: QueryCostStats, pageCount: number) {
+  return {
+    requestedMax: cost.requestedMax,
+    requestedAvg: pageCount > 0 ? Math.round(cost.requestedSum / pageCount) : 0,
+    actualSum: cost.actualSum,
+  };
+}
+
+/**
+ * Deadlines for one walk step (gc-747u audit #1). `walk` is the whole walk's
+ * deadline: step 0 sets it (now + budget) and returns it in its memoized
+ * output, and every later step reuses that number, so a replay or a retried
+ * step never starts a fresh budget. `page` bounds this step's paging: its own
+ * WALK_STEP_TIME_BUDGET_MS, never past the walk deadline. Call at step start.
+ */
+function walkStepDeadlines(walkDeadline: number | null, budgetMs: number) {
+  const now = Date.now();
+  const walk = walkDeadline ?? now + budgetMs;
+  return { walk, page: Math.min(now + WALK_STEP_TIME_BUDGET_MS, walk) };
 }
 
 /**
@@ -342,7 +432,11 @@ async function runProductAuditChunk(opts: {
   after: string | null;
   checkedSoFar: number;
   cap: number | null;
+  throttle: ThrottleSnapshot | null;
+  walkDeadline: number | null;
+  lastIdSoFar: string | null;
 }): Promise<ProductChunkResult> {
+  const deadlines = walkStepDeadlines(opts.walkDeadline, PRODUCT_WALK_TIME_BUDGET_MS);
   const empty = (scopeAbsent: boolean): ProductChunkResult => ({
     tagCount: 0,
     priceCount: 0,
@@ -359,6 +453,10 @@ async function runProductAuditChunk(opts: {
     checked: opts.checkedSoFar,
     next: null,
     coverage: null,
+    throttle: null,
+    walkDeadline: deadlines.walk,
+    lastId: opts.lastIdSoFar,
+    cost: sumQueryCost([]),
   });
 
   const db = (await import("../../app/db.server")).default;
@@ -394,23 +492,33 @@ async function runProductAuditChunk(opts: {
   const { tags, prices, metafields, pageCount, throttleSleepMs, ...walk } =
     await fetchProductAuditData(admin, Math.min(PRODUCT_WALK_CHUNK, cap - opts.checkedSoFar), {
       after: opts.after,
-      deadline: walkStart + WALK_STEP_TIME_BUDGET_MS,
+      deadline: deadlines.page,
+      throttle: opts.throttle,
     });
   const walkMs = Date.now() - walkStart;
 
   const checked = opts.checkedSoFar + walk.checked;
-  const truncated = walkStoppedShort(walk.hasMore, checked, cap, walk.endCursor);
-  const next = walk.hasMore && !truncated ? { after: walk.endCursor! } : null;
+  const lastId = walk.lastId ?? opts.lastIdSoFar;
+  // Out of walk time with products left: truncated like a cap hit (audit #1).
+  const outOfTime = walk.hasMore && Date.now() >= deadlines.walk;
+  const truncated =
+    outOfTime || walkStoppedShort(walk.hasMore, checked, cap, walk.endCursor, walk.throttleStopped);
+  const next = walk.hasMore && !truncated ? { after: walk.endCursor } : null;
 
   if (truncated) {
     // Observable cap (gc-1bd): never silently drop the tail of the catalog.
-    logger.warn("product-audit walk hit the cap; products beyond it were not scanned", {
-      function: "scan-theme",
-      stepName: "product-audit",
-      shopId: opts.shopId,
-      cap,
-      checked,
-    });
+    logger.warn(
+      outOfTime
+        ? "product-audit walk ran out of time; products beyond it were not scanned"
+        : "product-audit walk hit the cap; products beyond it were not scanned",
+      {
+        function: "scan-theme",
+        stepName: "product-audit",
+        shopId: opts.shopId,
+        cap,
+        checked,
+      },
+    );
   }
 
   const { detectOrphanedProductTags } =
@@ -450,11 +558,13 @@ async function runProductAuditChunk(opts: {
   const deleteScope: Prisma.FindingWhereInput | undefined =
     opts.index === 0
       ? undefined
-      : {
-          filename: {
-            in: tags.flatMap((p) => [`products/${p.id}`, `products/${p.id}/metafields`]),
-          },
-        };
+      : await laterStepDeleteScope(
+          opts.scanId,
+          "products",
+          opts.lastIdSoFar,
+          opts.checkedSoFar,
+          tags.flatMap((p) => [`products/${p.id}`, `products/${p.id}/metafields`]),
+        );
 
   // Persist ALL THREE FindingTypes (invariant a). Each delete-then-create is
   // scoped to its own type, so the three never clobber each other and a retry
@@ -510,9 +620,13 @@ async function runProductAuditChunk(opts: {
             checked,
             total: truncated ? await fetchProductsTotal(admin) : null,
             truncated,
-            lastId: truncated ? walk.lastId : null,
+            lastId: truncated ? lastId : null,
           }
         : null,
+    throttle: walk.throttle,
+    walkDeadline: deadlines.walk,
+    lastId,
+    cost: walk.cost,
   };
 }
 
@@ -531,6 +645,14 @@ type RedirectChunkResult = {
   /** Resume point plus the bulk tally so far (null groups = abandoned). */
   next: (WalkResume & { groups: BulkRedirectGroups | null }) | null;
   coverage: WalkCoverage | null;
+  /** Last throttle status seen; the next step waits on it first (audit #3). */
+  throttle: ThrottleSnapshot | null;
+  /** Epoch ms the whole walk stops paging, set ONCE by step 0 (audit #1). */
+  walkDeadline: number;
+  /** Query cost of this step's pages (audit #7). */
+  cost: QueryCostStats;
+  /** GID of the last redirect checked so far, across every step. */
+  lastId: string | null;
 };
 
 /**
@@ -563,7 +685,11 @@ async function runRedirectAuditChunk(opts: {
   checkedSoFar: number;
   cap: number | null;
   groups: BulkRedirectGroups | null;
+  throttle: ThrottleSnapshot | null;
+  walkDeadline: number | null;
+  lastIdSoFar: string | null;
 }): Promise<RedirectChunkResult> {
+  const deadlines = walkStepDeadlines(opts.walkDeadline, REDIRECT_WALK_TIME_BUDGET_MS);
   const empty = (skipped: boolean): RedirectChunkResult => ({
     findingCount: 0,
     skipped,
@@ -576,6 +702,10 @@ async function runRedirectAuditChunk(opts: {
     checked: opts.checkedSoFar,
     next: null,
     coverage: null,
+    throttle: null,
+    walkDeadline: deadlines.walk,
+    lastId: opts.lastIdSoFar,
+    cost: sumQueryCost([]),
   });
 
   const db = (await import("../../app/db.server")).default;
@@ -607,14 +737,18 @@ async function runRedirectAuditChunk(opts: {
     admin,
     Math.min(REDIRECT_WALK_CHUNK, cap - opts.checkedSoFar),
     stats,
-    { after: opts.after, deadline: walkStart + WALK_STEP_TIME_BUDGET_MS },
+    { after: opts.after, deadline: deadlines.page, throttle: opts.throttle },
   );
   const walkMs = Date.now() - walkStart;
 
   const checked = opts.checkedSoFar + redirects.length;
+  const lastId = redirects[redirects.length - 1]?.id ?? opts.lastIdSoFar;
   const endCursor = stats.endCursor ?? null;
   const hasMore = stats.hasMore === true;
-  const truncated = walkStoppedShort(hasMore, checked, cap, endCursor);
+  // Out of walk time with redirects left: truncated like a cap hit (audit #1).
+  const outOfTime = hasMore && Date.now() >= deadlines.walk;
+  const truncated =
+    outOfTime || walkStoppedShort(hasMore, checked, cap, endCursor, stats.throttleStopped === true);
   const last = !hasMore || truncated;
 
   const { addToBulkRedirectGroups, bulkRedirectFindings, detectAppPatternRedirects } =
@@ -628,9 +762,19 @@ async function runRedirectAuditChunk(opts: {
     ...(last && groups ? bulkRedirectFindings(groups) : []),
   ];
 
-  // Later chunks own only their own redirects' rows, plus (final chunk) the
-  // bulk rows, which only the final chunk ever writes.
-  const ownFilenames = redirects.map((r) => `redirects/${r.id}`);
+  // Later chunks own only their own redirects' rows (plus the ID range past
+  // the earlier steps, audit #5), plus (final chunk) the bulk rows, which only
+  // the final chunk ever writes.
+  const ownScope =
+    opts.index === 0
+      ? undefined
+      : await laterStepDeleteScope(
+          opts.scanId,
+          "redirects",
+          opts.lastIdSoFar,
+          opts.checkedSoFar,
+          redirects.map((r) => `redirects/${r.id}`),
+        );
   await persistAuditFindings({
     scanId: opts.scanId,
     shopId: opts.shopId,
@@ -638,26 +782,25 @@ async function runRedirectAuditChunk(opts: {
     findings,
     event: "redirect-audit_findings",
     logMessage: "audit step findings persisted",
-    deleteScope:
-      opts.index === 0
-        ? undefined
-        : {
-            OR: [
-              { filename: { in: ownFilenames } },
-              ...(last ? [{ filename: { startsWith: "redirects/bulk/" } }] : []),
-            ],
-          },
+    deleteScope: ownScope && {
+      OR: [ownScope, ...(last ? [{ filename: { startsWith: "redirects/bulk/" } }] : [])],
+    },
   });
 
   if (truncated) {
     const { logger } = await import("../../app/lib/logger.server");
-    logger.warn("redirect-audit walk hit the cap; redirects beyond it were not scanned", {
-      function: "scan-theme",
-      stepName: "redirect-audit",
-      shopId: opts.shopId,
-      cap,
-      checked,
-    });
+    logger.warn(
+      outOfTime
+        ? "redirect-audit walk ran out of time; redirects beyond it were not scanned"
+        : "redirect-audit walk hit the cap; redirects beyond it were not scanned",
+      {
+        function: "scan-theme",
+        stepName: "redirect-audit",
+        shopId: opts.shopId,
+        cap,
+        checked,
+      },
+    );
   }
 
   return {
@@ -670,15 +813,19 @@ async function runRedirectAuditChunk(opts: {
     walkMs,
     cap,
     checked,
-    next: last ? null : { after: endCursor!, groups },
+    next: last ? null : { after: endCursor, groups },
     coverage: last
       ? {
           checked,
           total: truncated ? await fetchRedirectsTotal(admin) : null,
           truncated,
-          lastId: truncated ? (redirects[redirects.length - 1]?.id ?? null) : null,
+          lastId: truncated ? lastId : null,
         }
       : null,
+    throttle: stats.throttle ?? null,
+    walkDeadline: deadlines.walk,
+    lastId,
+    cost: sumQueryCost([stats.cost]),
   };
 }
 
@@ -1244,6 +1391,9 @@ export const scanTheme = inngest.createFunction(
           after: null,
           checkedSoFar: 0,
           cap: null,
+          throttle: null,
+          walkDeadline: null,
+          lastIdSoFar: null,
         }),
       );
       productChunks.push(productChunk);
@@ -1259,6 +1409,12 @@ export const scanTheme = inngest.createFunction(
             after: prev.next!.after,
             checkedSoFar: prev.checked,
             cap: prev.cap,
+            // Absent on a step memoized before audit #3: no carried wait.
+            throttle: prev.throttle ?? null,
+            // Step 0's memoized deadline (audit #1); absent only on a step
+            // memoized before it, which then starts the budget here.
+            walkDeadline: prev.walkDeadline ?? null,
+            lastIdSoFar: prev.lastId ?? null,
           }),
         );
         productChunks.push(productChunk);
@@ -1277,6 +1433,7 @@ export const scanTheme = inngest.createFunction(
         pageCount: sumProducts((c) => c.pageCount),
         throttleSleepMs: sumProducts((c) => c.throttleSleepMs),
         walkMs: sumProducts((c) => c.walkMs ?? 0),
+        cost: sumQueryCost(productChunks.map((c) => c.cost)),
         steps: productChunks.length,
         // Absent on a run memoized before gc-747u: no coverage recorded.
         coverage: productChunk.coverage ?? null,
@@ -1333,6 +1490,9 @@ export const scanTheme = inngest.createFunction(
           checkedSoFar: 0,
           cap: null,
           groups: null,
+          throttle: null,
+          walkDeadline: null,
+          lastIdSoFar: null,
         }),
       );
       redirectChunks.push(redirectChunk);
@@ -1349,6 +1509,9 @@ export const scanTheme = inngest.createFunction(
             checkedSoFar: prev.checked,
             cap: prev.cap,
             groups: prev.next!.groups,
+            throttle: prev.throttle ?? null,
+            walkDeadline: prev.walkDeadline ?? null,
+            lastIdSoFar: prev.lastId ?? null,
           }),
         );
         redirectChunks.push(redirectChunk);
@@ -1363,6 +1526,7 @@ export const scanTheme = inngest.createFunction(
         pageCount: sumRedirects((c) => c.pageCount ?? 0),
         throttleSleepMs: sumRedirects((c) => c.throttleSleepMs ?? 0),
         walkMs: sumRedirects((c) => c.walkMs ?? 0),
+        cost: sumQueryCost(redirectChunks.map((c) => c.cost)),
         steps: redirectChunks.length,
         // Absent on a run memoized before gc-747u: no coverage recorded.
         coverage: redirectChunk.coverage ?? null,
@@ -1371,16 +1535,24 @@ export const scanTheme = inngest.createFunction(
       const redirectsMs = Date.now() - redirectsStart;
 
       // What the capped walks covered (gc-747u), for the differ and the scan
-      // page disclosure. Only walks that ran get a key. A run whose first walk
-      // step was memoized before gc-747u (no `cap` in its output) walked the
-      // old Free caps without recording a window: leave the column NULL so the
-      // scan reads as legacy, never as "fully covered".
+      // page disclosure. Only walks that ran get a key. A walk whose first step
+      // was memoized before gc-747u (no `cap` in its output) walked the old
+      // Free caps without recording a window, so it gets no key: per walk
+      // (audit #4), so a run that straddled the deploy keeps the other walk's
+      // window. The differ reads a missing key in a baseline as legacy for that
+      // walk. Both walks old: the column stays NULL (a legacy scan).
+      const productWalkNew = productChunks[0].cap !== undefined;
+      const redirectWalkNew = redirectChunks[0].cap !== undefined;
       const walkCoverage: ScanWalkCoverage | undefined =
-        productChunks[0].cap === undefined || redirectChunks[0].cap === undefined
+        !productWalkNew && !redirectWalkNew
           ? undefined
           : {
-              ...(productResult.coverage ? { products: productResult.coverage } : {}),
-              ...(redirectResult.coverage ? { redirects: redirectResult.coverage } : {}),
+              ...(productWalkNew && productResult.coverage
+                ? { products: productResult.coverage }
+                : {}),
+              ...(redirectWalkNew && redirectResult.coverage
+                ? { redirects: redirectResult.coverage }
+                : {}),
             };
 
       // Step 9: Live-price audit for stale static JSON-LD (optional — requires
@@ -2064,6 +2236,17 @@ export const scanTheme = inngest.createFunction(
               // true on replay, unlike phaseMs) and how many steps each walk took.
               walkMs: { products: productResult.walkMs, redirects: redirectResult.walkMs },
               walkSteps: { products: productResult.steps, redirects: redirectResult.steps },
+              // gc-747u audit #7: what each walk's pages cost and how long it
+              // waited on the rate limit, so the first real Pro scan confirms
+              // the walk-duration estimate behind the walk time budgets.
+              queryCost: {
+                products: walkCostSignal(productResult.cost, productResult.pageCount),
+                redirects: walkCostSignal(redirectResult.cost, redirectResult.pageCount),
+              },
+              walkThrottleSleepMs: {
+                products: productResult.throttleSleepMs,
+                redirects: redirectResult.throttleSleepMs,
+              },
               // Step-output bounds (gc-4ce): a cap dropped dangling handles /
               // occurrences, the byte budget dropped ALL dangling candidates, or
               // the static JSON-LD candidate cap dropped some.
