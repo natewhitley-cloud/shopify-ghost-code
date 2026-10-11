@@ -74,7 +74,12 @@ import {
   WALK_STEP_TIME_BUDGET_MS,
 } from "../../app/lib/scan-limits";
 import type { GrantedOptionalScopes } from "../../app/lib/scope-check.server";
-import type { ScanWalkCoverage, WalkCoverage } from "../../app/lib/walk-coverage";
+import {
+  type ScanWalkCoverage,
+  WALK_FINDING_TYPES,
+  type WalkCoverage,
+  type WalkName,
+} from "../../app/lib/walk-coverage";
 import type { CreateFindingInput } from "../../app/models/finding.server";
 import { saveThemeFindings } from "../../app/models/finding.server";
 import { createScanDomains } from "../../app/models/scan-domain.server";
@@ -343,6 +348,43 @@ function walkStoppedShort(
 }
 
 /**
+ * Idempotency delete scope for a LATER step of a walk (gc-747u audit #5). The
+ * step owns its own fetched records' rows (`ownFilenames`) AND every row of
+ * this walk's types for a record with an ID above `afterId`, the last record
+ * the earlier steps checked. Scoping by fetched filenames alone missed a row
+ * a failed earlier attempt of this step wrote for a record deleted from the
+ * store before the retry. The range is open above: later steps have not run
+ * yet (steps are sequential), so every row past `afterId` is this attempt's to
+ * replace. Rows at or below `afterId` (earlier steps) and unparseable
+ * filenames are never touched. `afterId` null: no earlier step checked
+ * anything, so any parseable row is this step's.
+ */
+async function laterStepDeleteScope(
+  scanId: string,
+  walk: WalkName,
+  afterId: string | null,
+  ownFilenames: string[],
+): Promise<Prisma.FindingWhereInput> {
+  const db = (await import("../../app/db.server")).default;
+  const { gidNumber, walkRecordOf } = await import("../../app/services/scan-differ.server");
+  const floor = afterId === null ? null : gidNumber(afterId);
+  const rows =
+    afterId !== null && floor === null
+      ? [] // Unparseable boundary: fall back to own filenames only.
+      : await db.finding.findMany({
+          where: { scanId, findingType: { in: WALK_FINDING_TYPES[walk] as FindingType[] } },
+          select: { id: true, filename: true, findingType: true },
+        });
+  const pastBoundary = rows
+    .filter((r) => {
+      const id = walkRecordOf(r)?.id ?? null;
+      return id !== null && (floor === null || id > floor);
+    })
+    .map((r) => r.id);
+  return { OR: [{ filename: { in: ownFilenames } }, { id: { in: pastBoundary } }] };
+}
+
+/**
  * Deadlines for one walk step (gc-747u audit #1). `walk` is the whole walk's
  * deadline: step 0 sets it (now + budget) and returns it in its memoized
  * output, and every later step reuses that number, so a replay or a retried
@@ -497,11 +539,12 @@ async function runProductAuditChunk(opts: {
   const deleteScope: Prisma.FindingWhereInput | undefined =
     opts.index === 0
       ? undefined
-      : {
-          filename: {
-            in: tags.flatMap((p) => [`products/${p.id}`, `products/${p.id}/metafields`]),
-          },
-        };
+      : await laterStepDeleteScope(
+          opts.scanId,
+          "products",
+          opts.lastIdSoFar,
+          tags.flatMap((p) => [`products/${p.id}`, `products/${p.id}/metafields`]),
+        );
 
   // Persist ALL THREE FindingTypes (invariant a). Each delete-then-create is
   // scoped to its own type, so the three never clobber each other and a retry
@@ -695,9 +738,18 @@ async function runRedirectAuditChunk(opts: {
     ...(last && groups ? bulkRedirectFindings(groups) : []),
   ];
 
-  // Later chunks own only their own redirects' rows, plus (final chunk) the
-  // bulk rows, which only the final chunk ever writes.
-  const ownFilenames = redirects.map((r) => `redirects/${r.id}`);
+  // Later chunks own only their own redirects' rows (plus the ID range past
+  // the earlier steps, audit #5), plus (final chunk) the bulk rows, which only
+  // the final chunk ever writes.
+  const ownScope =
+    opts.index === 0
+      ? undefined
+      : await laterStepDeleteScope(
+          opts.scanId,
+          "redirects",
+          opts.lastIdSoFar,
+          redirects.map((r) => `redirects/${r.id}`),
+        );
   await persistAuditFindings({
     scanId: opts.scanId,
     shopId: opts.shopId,
@@ -705,15 +757,9 @@ async function runRedirectAuditChunk(opts: {
     findings,
     event: "redirect-audit_findings",
     logMessage: "audit step findings persisted",
-    deleteScope:
-      opts.index === 0
-        ? undefined
-        : {
-            OR: [
-              { filename: { in: ownFilenames } },
-              ...(last ? [{ filename: { startsWith: "redirects/bulk/" } }] : []),
-            ],
-          },
+    deleteScope: ownScope && {
+      OR: [ownScope, ...(last ? [{ filename: { startsWith: "redirects/bulk/" } }] : [])],
+    },
   });
 
   if (truncated) {

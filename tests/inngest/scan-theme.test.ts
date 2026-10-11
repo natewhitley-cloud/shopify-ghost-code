@@ -4905,12 +4905,111 @@ describe("scanTheme — plan-aware product/redirect walks (gc-747u)", () => {
     expect(tagDeletes).toHaveLength(2);
     // Chunk 1 clears the type (retry-safe, as before)...
     expect(tagDeletes[0]).toEqual({ scanId: SCAN_ID, findingType: FindingType.GHOST_TAG });
-    // ...chunk 2 deletes only rows for ITS products (501..700).
-    const owned = tagDeletes[1].filename.in as string[];
+    // ...chunk 2 deletes only rows for ITS products (501..700), by filename
+    // plus the ID range past chunk 1 (audit #5; no rows exist in this test).
+    const [byFilename, byRange] = tagDeletes[1].OR as [
+      { filename: { in: string[] } },
+      { id: { in: string[] } },
+    ];
+    expect(byRange).toEqual({ id: { in: [] } });
+    const owned = byFilename.filename.in;
     expect(owned).toContain("products/gid://shopify/Product/501");
     expect(owned).toContain("products/gid://shopify/Product/700/metafields");
     expect(owned).not.toContain("products/gid://shopify/Product/1");
     expect(mockCreateFindings).toHaveBeenCalledTimes(2);
+  });
+
+  describe("later-chunk idempotency delete by ID range (audit #5)", () => {
+    const row = (id: string, filename: string, findingType: FindingType) => ({
+      id,
+      filename,
+      findingType,
+    });
+    /** findMany for the walk's own types returns `rows`; anything else []. */
+    function existingWalkRows(rows: Array<ReturnType<typeof row>>): void {
+      mockDb.finding.findMany.mockImplementation(
+        async (args: { where: { findingType?: { in?: string[] } } }) => {
+          const types = args.where.findingType?.in;
+          return types ? rows.filter((r) => types.includes(r.findingType)) : [];
+        },
+      );
+    }
+    const deletesOf = (type: FindingType) =>
+      mockDb.finding.deleteMany.mock.calls
+        .map((c) => c[0].where)
+        .filter((w) => w.findingType === type);
+
+    it("a retried product chunk also deletes rows for a product deleted between attempts", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+      simulateCatalog(700);
+      mockDetectOrphanedProductTags.mockImplementation((tags: Array<{ id: string }>) =>
+        tags
+          .slice(0, 1)
+          .map((p) => makeAuditFinding(FindingType.GHOST_TAG, { filename: `products/${p.id}` })),
+      );
+      // Rows already in the scan: chunk 1's product 7, and from chunk 2's
+      // first (failed) attempt product 600, deleted from the store since, so
+      // the retry never fetches it. Plus chunk 2's own product 650.
+      existingWalkRows([
+        row("f-7", "products/gid://shopify/Product/7", FindingType.GHOST_TAG),
+        row("f-600", "products/gid://shopify/Product/600", FindingType.GHOST_TAG),
+        row("f-600m", "products/gid://shopify/Product/600/metafields", FindingType.GHOST_METAFIELD),
+        row("f-650", "products/gid://shopify/Product/650", FindingType.GHOST_PRICE),
+        row("f-odd", "products/not-a-gid", FindingType.GHOST_TAG),
+      ]);
+      const simulated = mockFetchProductAuditData.getMockImplementation()!;
+      mockFetchProductAuditData.mockImplementation(async (...args: unknown[]) => {
+        const out = (await (
+          simulated as (...a: unknown[]) => Promise<{ tags: Array<{ id: string }> }>
+        )(...args)) as { tags: Array<{ id: string }> };
+        // Product 600 no longer exists in the store.
+        return { ...out, tags: out.tags.filter((t) => t.id !== "gid://shopify/Product/600") };
+      });
+
+      await runScanTheme();
+
+      const [first, second] = deletesOf(FindingType.GHOST_TAG);
+      expect(first).toEqual({ scanId: SCAN_ID, findingType: FindingType.GHOST_TAG });
+      const scope = JSON.stringify(second);
+      // Everything past chunk 1's last product (500) is chunk 2's to replace...
+      expect(scope).toContain('"f-600"');
+      expect(scope).toContain('"f-600m"');
+      expect(scope).toContain('"f-650"');
+      // ...never chunk 1's rows, nor an unparseable filename.
+      expect(scope).not.toContain('"f-7"');
+      expect(scope).not.toContain('"f-odd"');
+      // Its own fetched products stay in scope by filename, as before.
+      expect(scope).toContain("products/gid://shopify/Product/501");
+    });
+
+    it("a retried redirect chunk also deletes rows for a redirect deleted between attempts", async () => {
+      mockDb.shop.findUnique.mockResolvedValue({ ...MOCK_SHOP, plan: "Professional" });
+      simulateRedirects(1500);
+      mockDetectAppPatternRedirects.mockImplementation((redirects: Array<{ id: string }>) =>
+        redirects
+          .slice(0, 1)
+          .map((r) =>
+            makeAuditFinding(FindingType.GHOST_REDIRECT, { filename: `redirects/${r.id}` }),
+          ),
+      );
+      existingWalkRows([
+        row("r-5", "redirects/gid://shopify/UrlRedirect/5", FindingType.GHOST_REDIRECT),
+        // From the final chunk's failed first attempt: redirect 1600, deleted
+        // from the store since (the walk now ends at 1500).
+        row("r-1600", "redirects/gid://shopify/UrlRedirect/1600", FindingType.GHOST_REDIRECT),
+        row("r-bulk", "redirects/bulk/_old", FindingType.GHOST_REDIRECT),
+      ]);
+
+      await runScanTheme();
+
+      const deletes = deletesOf(FindingType.GHOST_REDIRECT);
+      expect(deletes).toHaveLength(2);
+      const scope = JSON.stringify(deletes[1]);
+      expect(scope).toContain('"r-1600"');
+      expect(scope).not.toContain('"r-5"');
+      // The bulk rows stay owned by the final chunk's startsWith clause.
+      expect(scope).toContain("redirects/bulk/");
+    });
   });
 
   it("detects a bulk redirect pattern that spans chunks, once, at the end", async () => {

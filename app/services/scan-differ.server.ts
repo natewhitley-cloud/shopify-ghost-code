@@ -229,8 +229,9 @@ const GID_NUMBER_RE = /\/(\d+)$/;
 /**
  * Which capped walk produced `f`, and its record's numeric ID (null for a bulk
  * redirect or an unrecognised filename). Null when `f` is not a walk finding.
+ * Also used by the scan worker to scope a walk step's idempotency delete.
  */
-function walkRecordOf(f: { filename: string; findingType: string }): {
+export function walkRecordOf(f: { filename: string; findingType: string }): {
   walk: WalkName;
   id: bigint | null;
 } | null {
@@ -245,10 +246,15 @@ function walkRecordOf(f: { filename: string; findingType: string }): {
   return null;
 }
 
+/** Numeric tail of a GID ("gid://shopify/Product/123" -> 123n), or null. */
+export function gidNumber(gid: string): bigint | null {
+  const m = GID_NUMBER_RE.exec(gid);
+  return m ? BigInt(m[1]) : null;
+}
+
 /** Numeric tail of a truncated walk's `lastId` GID, or null if unparseable. */
 function lastIdNumber(c: WalkCoverage): bigint | null {
-  const m = c.lastId ? GID_NUMBER_RE.exec(c.lastId) : null;
-  return m ? BigInt(m[1]) : null;
+  return c.lastId ? gidNumber(c.lastId) : null;
 }
 
 /**
