@@ -129,7 +129,7 @@ export const RUN_NOW_COOLDOWN_MS = 24 * 60 * 60 * 1000;
 
 /**
  * A RUNNING report whose worker STARTED (startedAt) longer ago than this is
- * shown (and treated) as failed: the worker's finish timeout (45 m) is
+ * shown (and treated) as failed: the worker's finish timeout (55 m) is
  * shorter, so a started row this old was abandoned.
  */
 export const SPEED_REPORT_STUCK_MS = 60 * 60 * 1000;

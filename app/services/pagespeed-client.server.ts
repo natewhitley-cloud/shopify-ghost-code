@@ -23,8 +23,8 @@ export const PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5
  * (attemptHaltsPage), so a hopeless page holds the (concurrency 1) worker for
  * one timeout, not three.
  *
- * Ceilings this must stay under: the worker's 45 m finish timeout (worst case
- * 6 calls x 240 s = 24 m) and the host's HTTP limits: each call runs inside
+ * Ceilings this must stay under: the worker's 55 m finish timeout (worst case
+ * 6 calls x 240 s = 24 m without a crash) and the host's HTTP limits: each call runs inside
  * one Inngest step request, which answers only when the step ends. Node's
  * server timeouts only bound receiving the request, but Railway's proxy is
  * reported to cut a response that sends nothing for 5 minutes (15 m hard

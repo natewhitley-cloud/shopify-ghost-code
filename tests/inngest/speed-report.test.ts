@@ -120,7 +120,7 @@ describe("function config (quota guardrails)", () => {
     expect(c.trigger).toEqual({ event: "speed-report/requested" });
     expect(c.config.retries).toBe(1);
     expect(c.config.concurrency).toEqual([{ limit: 1 }, { key: "event.data.shopId", limit: 1 }]);
-    expect(c.config.timeouts).toEqual({ start: "6h", finish: "45m" });
+    expect(c.config.timeouts).toEqual({ start: "6h", finish: "55m" });
     expect((c.config.priority as { run: string }).run).toContain("MANUAL");
   });
 });

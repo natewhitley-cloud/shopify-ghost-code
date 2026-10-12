@@ -23,9 +23,11 @@
  *     before its result is recorded (crash, deploy, lost response): with
  *     retries: 1 that is at most one extra call, reserved against the budget
  *     like any other;
- *   - retries: 1 (a DB blip), finish timeout 45 m: a failed run cannot loop.
- *     Worst case is 6 calls (2 pages x SPEED_RUNS_PER_PAGE) x 240 s = 24 m,
- *     well inside 45 m; in practice a timeout ends that page's remaining runs
+ *   - retries: 1 (a DB blip), finish timeout 55 m: a failed run cannot loop.
+ *     Without a crash the worst case is 6 calls (2 pages x
+ *     SPEED_RUNS_PER_PAGE) x 240 s = 24 m. Retries apply PER STEP, so a worker
+ *     crash or deploy mid-call can repeat a 240 s call; 55 m absorbs about
+ *     five such repeats and stays below SPEED_REPORT_STUCK_MS (60 m). In practice a timeout ends that page's remaining runs
  *     (attemptHaltsPage), so a slow store spends at most one timeout per page;
  *   - start timeout 6 h: a run still queued that long is cancelled (a manual
  *     click can wait behind the Sunday batch at concurrency 1, so this is
@@ -109,7 +111,7 @@ export const speedReportRun = inngest.createFunction(
     // Seconds of queue priority: a merchant waiting on "Run now" goes ahead of
     // scheduled reports queued up to 10 minutes earlier.
     priority: { run: "event.data.origin == 'MANUAL' ? 600 : 0" },
-    timeouts: { start: "6h", finish: "45m" },
+    timeouts: { start: "6h", finish: "55m" },
     // Retries exhausted: close the report instead of leaving it RUNNING.
     onFailure: async ({ event }) => {
       const svc = await import("../../app/services/speed-report.server");
