@@ -1699,22 +1699,34 @@ export function blankLiquidComments(content: string): string {
 
 // Char codes used by the comment scanner below.
 const CC_NEWLINE = 10;
+const CC_RETURN = 13;
+const CC_BANG = 33;
 const CC_DQUOTE = 34;
+const CC_DOLLAR = 36;
+const CC_PERCENT = 37;
 const CC_SQUOTE = 39;
 const CC_RPAREN = 41;
 const CC_STAR = 42;
 const CC_DOT = 46;
 const CC_SLASH = 47;
 const CC_COLON = 58;
+const CC_LT = 60;
+const CC_EQ = 61;
 const CC_GT = 62;
+const CC_QUESTION = 63;
 const CC_LBRACKET = 91;
 const CC_BACKSLASH = 92;
 const CC_RBRACKET = 93;
 const CC_BACKTICK = 96;
+const CC_LBRACE = 123;
 
 const isAsciiSpace = (c: number): boolean => c === 32 || (c >= 9 && c <= 13);
-const isAsciiAlnum = (c: number): boolean =>
-  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+const isAsciiAlpha = (c: number): boolean => (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+const isAsciiAlnum = (c: number): boolean => (c >= 48 && c <= 57) || isAsciiAlpha(c);
+// HTML's own whitespace set (no vertical tab) and JS's line terminators.
+const isHtmlSpace = (c: number): boolean => c === 32 || c === 9 || c === 10 || c === 12 || c === 13;
+const isLineTerminator = (c: number): boolean =>
+  c === CC_NEWLINE || c === CC_RETURN || c === 0x2028 || c === 0x2029;
 // Hostname label chars as URL_HOST_RE accepts them: [a-z0-9_-].
 const isHostLabelChar = (c: number): boolean => isAsciiAlnum(c) || c === 95 || c === 45;
 // Chars that end a hostname or a URL path segment. A protocol-relative `//host`
@@ -1743,6 +1755,26 @@ const REGEX_PRECEDING_KEYWORDS = new Set([
   "await",
 ]);
 
+// Elements whose content is text, not markup: a `<!--` inside one opens no
+// comment. `script` and `style` content gets the JS / CSS comment rules.
+const RAW_TEXT_ELEMENTS = [
+  "script",
+  "style",
+  "textarea",
+  "title",
+  "xmp",
+  "iframe",
+  "noembed",
+  "noframes",
+  "noscript",
+];
+// Attribute states of the HTML tokenizer, as far as quoting depends on them.
+const TAG_NAME = 0;
+const BEFORE_ATTR_NAME = 1;
+const ATTR_NAME = 2;
+const BEFORE_ATTR_VALUE = 3;
+const UNQUOTED_ATTR_VALUE = 4;
+
 /**
  * `indexOf(needle, from)` for callers whose `from` only moves forward. The last
  * answer is cached, so a flood of openers with no closer costs one search, not
@@ -1768,14 +1800,22 @@ function forwardFinder(haystack: string, needle: string): (from: number) => numb
  *     `.liquid`/`.html` files get `<!-- -->`, plus the JS rules inside
  *     `<script>` and the CSS rule inside `<style>`. JSON and anything else has
  *     no comments: nothing is blanked.
- *   - `<!--` inside `<script>` is NOT a comment (the legacy
- *     `<script><!-- ... //--></script>` wrapper is live code), and `//` or
- *     `/*` in HTML text outside `<script>`/`<style>` is plain text.
+ *   - `<!--` opens a comment only in plain markup: not inside a tag (its
+ *     attribute values included), a Liquid `{% %}` / `{{ }}` tag, or a raw-text
+ *     element (RAW_TEXT_ELEMENTS). It closes at `-->` or `--!>`.
+ *   - `//` or `/*` in HTML text outside `<script>`/`<style>` is plain text.
  *   - An unterminated `<!--` or `/*` blanks nothing. A `/*` must close before
  *     its own `</script>`.
  *   - Strings, template literals and regex literals are skipped, so a `//` or
  *     `/*` inside one is not a comment. Regex-vs-division is the usual
  *     previous-token heuristic.
+ *   - Blanking STOPS (everything after stays live) at anything this scanner
+ *     does not model. In JS/CSS, for the rest of that file or block: a `'` or
+ *     `"` string still open at the end of its line, a template literal that
+ *     contains `${` or never closes. In markup, for the rest of the file: a
+ *     quote in a tag where no attribute value can start, an unterminated tag,
+ *     quote or Liquid tag, a `<![CDATA[` section, and a `<script>` containing
+ *     `<!--` (which can change where the script ends).
  *   - `//` is never a comment start when it follows `:` (`https://`) or is
  *     itself the start of a `//host.tld` URL. So a bare `//cdn.polyfill.io/x`
  *     line in JS stays reported even though JS reads it as a comment.
@@ -1794,8 +1834,8 @@ export function blankInertComments(content: string, filename: string): string {
   const blanked: Array<[number, number]> = [];
   const findBlockClose = forwardFinder(content, "*/");
   const findHtmlClose = forwardFinder(content, "-->");
-  const findNewline = forwardFinder(content, "\n");
-  const findGt = forwardFinder(content, ">");
+  const findHtmlBangClose = forwardFinder(content, "--!>");
+  const findHtmlOpen = forwardFinder(content, "<!--");
 
   // True when a `label.label` hostname starts at `k`.
   const startsHost = (k: number): boolean => {
@@ -1817,14 +1857,9 @@ export function blankInertComments(content: string, filename: string): string {
     // the last token was a string/regex literal (an operand).
     let prevIdx = from - 1;
     let prevIsLiteral = false;
-    // A lookahead that ran to `stop` without finding its closer is not retried
-    // before `stop`: [regex, ', ", `].
+    // A regex lookahead that ran to `stop` without finding its closer is not
+    // retried before `stop`.
     let noRegexBefore = from;
-    const noStringBefore: Record<number, number> = {
-      [CC_SQUOTE]: from,
-      [CC_DQUOTE]: from,
-      [CC_BACKTICK]: from,
-    };
 
     const regexCanStart = (): boolean => {
       if (prevIsLiteral) return false;
@@ -1846,29 +1881,30 @@ export function blankInertComments(content: string, filename: string): string {
         i += 2;
         continue;
       }
-      if (
-        (c === CC_SQUOTE || c === CC_DQUOTE || (js && c === CC_BACKTICK)) &&
-        i >= noStringBefore[c]
-      ) {
-        // Closing quote, or (for ' and ") the end of the line: an unterminated
-        // quote is an ordinary char, never a string that swallows later lines.
+      if (c === CC_SQUOTE || c === CC_DQUOTE || (js && c === CC_BACKTICK)) {
+        // Skip to the closing quote. Stop blanking altogether when the string
+        // is not one this scanner can follow: a ' or " still open at the end
+        // of its line, a template with `${` (nesting is not modelled), or no
+        // closer at all. What follows might be code or might be string.
         let j = i + 1;
-        let closed = false;
-        for (; j < to; j++) {
+        for (; ; j++) {
+          if (j >= to) return;
           const d = content.charCodeAt(j);
           if (d === CC_BACKSLASH) j++;
-          else if (d === c) {
-            closed = true;
-            break;
-          } else if (d === CC_NEWLINE && c !== CC_BACKTICK) break;
+          else if (d === c) break;
+          else if (
+            c === CC_BACKTICK
+              ? d === CC_DOLLAR && content.charCodeAt(j + 1) === CC_LBRACE
+              : d === CC_NEWLINE || d === CC_RETURN
+          ) {
+            return;
+          }
         }
-        if (closed) {
-          prevIsLiteral = true;
-          i = j + 1;
-          continue;
-        }
-        noStringBefore[c] = j;
-      } else if (c === CC_SLASH) {
+        prevIsLiteral = true;
+        i = j + 1;
+        continue;
+      }
+      if (c === CC_SLASH) {
         const next = content.charCodeAt(i + 1);
         if (next === CC_STAR) {
           const close = findBlockClose(i + 2);
@@ -1884,8 +1920,8 @@ export function blankInertComments(content: string, filename: string): string {
             i += 2;
             continue;
           }
-          const newline = findNewline(i);
-          const end = newline === -1 || newline > to ? to : newline;
+          let end = i + 2;
+          while (end < to && !isLineTerminator(content.charCodeAt(end))) end++;
           blanked.push([i, end]);
           i = end;
           continue;
@@ -1897,7 +1933,7 @@ export function blankInertComments(content: string, filename: string): string {
           for (; j < to; j++) {
             const d = content.charCodeAt(j);
             if (d === CC_BACKSLASH) j++;
-            else if (d === CC_NEWLINE) break;
+            else if (isLineTerminator(d)) break;
             else if (d === CC_LBRACKET) inClass = true;
             else if (d === CC_RBRACKET) inClass = false;
             else if (d === CC_SLASH && !inClass) {
@@ -1924,34 +1960,124 @@ export function blankInertComments(content: string, filename: string): string {
   if (isJsFile || isCssFile) {
     scanCode(0, content.length, isJsFile);
   } else {
-    // `<script` / `<style` followed by whitespace, `>`, `/` or end of input.
+    const n = content.length;
+    // `<tag` followed by whitespace, `/` or `>`.
     const opensTag = (lt: number, tag: string): boolean => {
       const end = lt + 1 + tag.length;
       if (content.slice(lt + 1, end).toLowerCase() !== tag) return false;
       const c = content.charCodeAt(end);
-      return Number.isNaN(c) || isAsciiSpace(c) || c === CC_GT || c === CC_SLASH;
+      return isHtmlSpace(c) || c === CC_GT || c === CC_SLASH;
     };
+    // Where the raw-text element `tag` opened before `from` ends: at its
+    // closing tag, or at end of input when it has none, as in HTML.
+    const rawTextEnd = (tag: string, from: number): number => {
+      for (let k = from; ; k++) {
+        k = indexOfIgnoreCase(content, `</${tag}`, k);
+        if (k === -1) return n;
+        if (opensTag(k + 1, tag)) return k;
+      }
+    };
+    // End of the Liquid `{{ }}` / `{% %}` tag opening at `k`: `k` itself when
+    // none opens there, -1 when it never closes.
+    const liquidEnd = (k: number): number => {
+      const next = content.charCodeAt(k + 1);
+      if (next !== CC_LBRACE && next !== CC_PERCENT) return k;
+      const close = content.indexOf(next === CC_LBRACE ? "}}" : "%}", k + 2);
+      return close === -1 ? -1 : close + 2;
+    };
+    // Index of the `>` that ends the tag whose name starts at `from`, following
+    // the HTML tokenizer: a `>` inside a quoted attribute value does not end
+    // it, and a quote opens a value only straight after `name=`. Liquid tags
+    // are opaque. -1 when in doubt: no `>`, an unclosed quote or Liquid tag, or
+    // a quote anywhere else (HTML reads that one as a plain character).
+    const tagEnd = (from: number): number => {
+      let state = TAG_NAME;
+      for (let j = from; j < n; j++) {
+        let c = content.charCodeAt(j);
+        if (c === CC_GT) return j;
+        if (c === CC_LBRACE) {
+          const end = liquidEnd(j);
+          if (end === -1) return -1;
+          if (end !== j) {
+            j = end - 1;
+            c = CC_LBRACE; // whatever it renders counts as one ordinary char
+          }
+        }
+        if (c === CC_SQUOTE || c === CC_DQUOTE) {
+          if (state !== BEFORE_ATTR_VALUE) return -1;
+          for (j++; ; j++) {
+            if (j >= n) return -1;
+            const d = content.charCodeAt(j);
+            if (d === c) break;
+            if (d === CC_LBRACE) {
+              const end = liquidEnd(j);
+              if (end === -1) return -1;
+              if (end !== j) j = end - 1;
+            }
+          }
+          state = BEFORE_ATTR_NAME;
+        } else if (isHtmlSpace(c)) {
+          if (state === TAG_NAME || state === UNQUOTED_ATTR_VALUE) state = BEFORE_ATTR_NAME;
+        } else if (c === CC_SLASH && state !== BEFORE_ATTR_VALUE && state !== UNQUOTED_ATTR_VALUE) {
+          state = BEFORE_ATTR_NAME;
+        } else if (state === BEFORE_ATTR_NAME) state = ATTR_NAME;
+        else if (state === ATTR_NAME && c === CC_EQ) state = BEFORE_ATTR_VALUE;
+        else if (state === BEFORE_ATTR_VALUE) state = UNQUOTED_ATTR_VALUE;
+      }
+      return -1;
+    };
+
+    // Every `break` below is "in doubt": blanking stops, the rest stays live.
     let i = 0;
-    for (;;) {
-      const lt = content.indexOf("<", i);
-      if (lt === -1) break;
-      i = lt + 1;
-      if (content.startsWith("!--", lt + 1)) {
-        // From lt + 2 so the spec's abrupt closers `<!-->` and `<!--->` count.
-        const close = findHtmlClose(lt + 2);
-        if (close === -1) continue;
-        blanked.push([lt, close + 3]);
-        i = close + 3;
+    while (i < n) {
+      const c = content.charCodeAt(i);
+      if (c === CC_LBRACE) {
+        const end = liquidEnd(i);
+        if (end === -1) break;
+        i = end === i ? i + 1 : end;
         continue;
       }
-      const isScript = opensTag(lt, "script");
-      if (!isScript && !opensTag(lt, "style")) continue;
-      const open = findGt(lt);
-      if (open === -1) break;
-      // An element with no closing tag runs to end of input, as in HTML.
-      const close = indexOfIgnoreCase(content, isScript ? "</script" : "</style", open + 1);
-      const end = close === -1 ? content.length : close;
-      scanCode(open + 1, end, isScript);
+      if (c !== CC_LT) {
+        i++;
+        continue;
+      }
+      const lt = i;
+      if (content.startsWith("!--", lt + 1)) {
+        // From lt + 2 so the spec's abrupt closers `<!-->` and `<!--->` count.
+        const dash = findHtmlClose(lt + 2);
+        const bang = findHtmlBangClose(lt + 4);
+        if (dash === -1 && bang === -1) break;
+        i = bang === -1 || (dash !== -1 && dash < bang) ? dash + 3 : bang + 4;
+        blanked.push([lt, i]);
+        continue;
+      }
+      const next = content.charCodeAt(lt + 1);
+      const nameAt = next === CC_SLASH ? lt + 2 : lt + 1;
+      if (!isAsciiAlpha(content.charCodeAt(nameAt))) {
+        if (next !== CC_BANG && next !== CC_QUESTION && next !== CC_SLASH) {
+          i++; // a literal `<`
+          continue;
+        }
+        // `<!doctype ...>`, `<?x ...>`, `</3>`: HTML ends these at the first
+        // `>`. A CDATA section ends there too, except in SVG/MathML: doubt.
+        const gt = content.startsWith("![CDATA[", lt + 1) ? -1 : content.indexOf(">", lt);
+        if (gt === -1) break;
+        i = gt + 1;
+        continue;
+      }
+      const gt = tagEnd(nameAt);
+      if (gt === -1) break;
+      i = gt + 1;
+      const raw = nameAt === lt + 1 && RAW_TEXT_ELEMENTS.find((tag) => opensTag(lt, tag));
+      if (!raw) continue;
+      const end = rawTextEnd(raw, i);
+      if (raw === "script") {
+        // `<!--` then `<script` inside a script makes HTML ignore the next
+        // `</script>`, so where this block ends is in doubt.
+        const escape = findHtmlOpen(i);
+        if (escape !== -1 && escape < end) break;
+        scanCode(i, end, true);
+      } else if (raw === "style") scanCode(i, end, false);
       i = end;
     }
   }

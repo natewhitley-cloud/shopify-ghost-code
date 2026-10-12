@@ -7419,6 +7419,167 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     expect(domainsFound(filename, content)).toEqual(expected);
   });
 
+  // Verification review of the comment guard: "when in doubt, report". Each
+  // input below was once treated as commented out although the reference is
+  // live. P is a live loader; every case must report it.
+  const P = '<script src="https://cdn.polyfill.io/x"></script>';
+  const U = 'var u="https://cdn.polyfill.io/x";';
+
+  it.each<[string, string, string, string[]]>([
+    // 1. `<!--` where HTML does not read it as a comment opener.
+    [
+      "<!-- inside <textarea>",
+      THEME,
+      `<textarea><!--</textarea>${P}<textarea>--></textarea>`,
+      ["1:polyfill.io"],
+    ],
+    ["<!-- inside <title>", THEME, `<title><!--</title>${P}<title>--></title>`, ["1:polyfill.io"]],
+    [
+      "<!-- inside <noscript>",
+      THEME,
+      `<noscript><!--</noscript>${P}<noscript>--></noscript>`,
+      ["1:polyfill.io"],
+    ],
+    [
+      "<!-- inside an attribute value",
+      THEME,
+      `<img alt="<!--">${P}<img alt="-->">`,
+      ["1:polyfill.io"],
+    ],
+    [
+      "<!-- inside an attribute value that also holds a >",
+      THEME,
+      `<img alt="a>b <!--">${P}<img alt="-->">`,
+      ["1:polyfill.io"],
+    ],
+    [
+      "a quote HTML reads as a plain character (unquoted value)",
+      THEME,
+      `<a b=x"y c="> <!--">${P} -->`,
+      ["1:polyfill.io"],
+    ],
+    [
+      "a quote HTML reads as a plain character (= inside an unquoted value)",
+      THEME,
+      `<a b=c="> <p title="> <!-- ">${P}<p t="-->">`,
+      ["1:polyfill.io"],
+    ],
+    ["<!-- inside a CDATA section", THEME, `<![CDATA[ <!-- ]]>${P} -->`, ["1:polyfill.io"]],
+    ["<!-- inside a Liquid tag", THEME, `{% assign x = "<!--" %}\n${P}\n-->`, ["2:polyfill.io"]],
+    [
+      "<!-- inside a Liquid output (conservative: the rendered page does comment it out)",
+      THEME,
+      `{{ "<!--" }}\n${P}\n-->`,
+      ["2:polyfill.io"],
+    ],
+    ["a comment closed by --!>", THEME, `<!-- x --!>${P}<!-- y -->`, ["1:polyfill.io"]],
+    [
+      "a </scriptx> that does not end the script",
+      THEME,
+      `<script>var a="</scriptx><!--";</script>${P}<!-- -->`,
+      ["1:polyfill.io"],
+    ],
+    [
+      "a <!-- <script> pair that makes HTML ignore the next </script>",
+      THEME,
+      `<script><!--<script></script><!--\n${U}\n--></script>`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a vertical tab, which is not HTML whitespace, after <script",
+      THEME,
+      `<script\v>/* </script\v>${P} */`,
+      ["1:polyfill.io"],
+    ],
+    // 2. Template literals with ${ }.
+    [
+      "a nested template inside ${ }",
+      JS,
+      "var a=`x ${ `/*` } y`;\n" + `${U} /* x */`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a backtick string inside ${ }",
+      JS,
+      'var a=`${ "`" } /* `;\n' + `${U} /* x */`,
+      ["2:polyfill.io"],
+    ],
+    [
+      "a nested template inside an inline <script>",
+      THEME,
+      "<script>\nvar a=`x ${ `/*` } y`;\n" + `${U} /* x */</script>`,
+      ["3:polyfill.io"],
+    ],
+    ["a template that never closes", JS, "var a=`x /* ;\n" + `${U} /* x */`, ["2:polyfill.io"]],
+    // 3. Line terminators other than \n end a // comment.
+    ["a // comment ended by a lone \\r", JS, `// c\r${U}`, ["1:polyfill.io"]],
+    ["a // comment ended by U+2028", JS, `// c\u2028${U}`, ["1:polyfill.io"]],
+    ["a // comment ended by U+2029", JS, `// c\u2029${U}`, ["1:polyfill.io"]],
+    [
+      "a // comment ended by U+2028 inside an inline <script>",
+      THEME,
+      `<script>// c\u2028${U}</script>`,
+      ["1:polyfill.io"],
+    ],
+    [
+      "a // comment ended by a lone \\r, reported on the right line",
+      JS,
+      `var a = 1;\n/* one\ntwo */\n// c\r${U}\nvar b = 2; // https://polyfill.io`,
+      ["4:polyfill.io"],
+    ],
+    // 4. A ' or " string still open at the end of its line.
+    [
+      "an unterminated quote before a /* on the next line",
+      THEME,
+      `<script>\nvar s = 'a\n/*';\n${U} /* */</script>`,
+      ["4:polyfill.io"],
+    ],
+    ["an unterminated quote in a JS file", JS, `var s = "a\n/*";\n${U} /* */`, ["3:polyfill.io"]],
+    ["a quote ended by a lone \\r", JS, `var s = 'a\r/*';\r${U} /* */`, ["1:polyfill.io"]],
+  ])(
+    "good-faith entry DOES fire (in doubt, report) for %s",
+    (_label, filename, content, expected) => {
+      expect(domainsFound(filename, content)).toEqual(expected);
+    },
+  );
+
+  // The same rules must not cost the ordinary remediation: a commented-out
+  // reference after everyday markup and code is still not reported.
+  it.each<[string, string, string]>([
+    ["a comment closed by --!>", THEME, `<!-- ${P} --!>`],
+    ["an attribute value holding a >", THEME, `<a href="/x" title="a > b">x</a>\n<!-- ${P} -->`],
+    ["an attribute value holding the other quote", THEME, `<img alt='say "hi"' />\n<!-- ${P} -->`],
+    [
+      "an unquoted attribute value and a bare attribute",
+      THEME,
+      `<input disabled value=a/b>\n<!-- ${P} -->`,
+    ],
+    [
+      "a Liquid tag with its own quotes inside an attribute value",
+      THEME,
+      `<div class="{% if a == "b" %}x{% endif %}" {% if c > d %}hidden{% endif %}>\n<!-- ${P} -->`,
+    ],
+    ["Liquid tags in markup", THEME, `{% assign x = "y" %}{{ x | append: "z" }}\n<!-- ${P} -->`],
+    [
+      "a doctype and closed raw-text elements",
+      THEME,
+      `<!DOCTYPE html>\n<title>a</title><textarea>b</textarea><noscript>c</noscript>\n<!-- ${P} -->`,
+    ],
+    [
+      "CRLF line endings and closed strings",
+      JS,
+      "var a = `plain`; var s = 'it\\'s';\r\n// see https://polyfill.io\r\nvar b = 2;\r\n",
+    ],
+    ["a U+2028 inside a string (legal JS)", JS, "var s = 'a\u2028b'; /* https://polyfill.io */"],
+    [
+      "a second inline <script> after one that stopped the guard",
+      THEME,
+      "<script>var a = `${b}`;</script>\n<script>\n// see https://polyfill.io\n</script>",
+    ],
+  ])("good-faith entry still does NOT fire after %s", (_label, filename, content) => {
+    expect(domainsFound(filename, content)).toEqual([]);
+  });
+
   it("centres the snippet on the live reference, not the commented one on the same line", () => {
     const pad = "x".repeat(400);
     const [f] = detectMaliciousScripts({

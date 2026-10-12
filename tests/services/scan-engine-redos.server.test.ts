@@ -801,4 +801,46 @@ describe("detectMaliciousScripts comment blanking is linear on adversarial input
     // The trailing live reference is on its own line and is always reported.
     expect(result.length).toBeGreaterThanOrEqual(1);
   });
+
+  // Verification review: the "in doubt, report" bail-outs and the tag, Liquid
+  // and raw-text handling must be linear too.
+  it.each<[string, string, string]>([
+    ["template literals with ${", "assets/vendor.js", fill("`${")],
+    ["closed template literals with ${", "assets/vendor.js", fill("`${a}`;")],
+    ["unterminated quotes, one per line", "assets/vendor.js", fill("'a\n")],
+    ["unterminated quotes, one per <script>", "layout/theme.liquid", fill("<script>'</script>")],
+    ["line comments ended by a lone \\r", "assets/vendor.js", fill("// x\r")],
+    ["line comments ended by U+2028", "assets/vendor.js", fill("// x\u2028")],
+    ["unclosed <textarea> openers", "layout/theme.liquid", fill("<textarea>")],
+    ["<title> with look-alike closers", "layout/theme.liquid", fill("<title>x</titlex>")],
+    ["closed raw-text elements", "layout/theme.liquid", fill("<textarea><!--</textarea>")],
+    ["unterminated {% openers", "layout/theme.liquid", fill("{% ")],
+    ["unterminated {{ openers", "layout/theme.liquid", fill("{{ ")],
+    ["closed Liquid tags", "layout/theme.liquid", fill('{% assign x = "<!--" %}{{ x }}')],
+    ["unterminated attribute quotes", "layout/theme.liquid", fill('<img alt="')],
+    ["tags with a stray quote", "layout/theme.liquid", fill('<a b=x"y>')],
+    ["tags that never close", "layout/theme.liquid", fill("<a b=c ")],
+    [
+      "closed tags with quoted > and Liquid",
+      "layout/theme.liquid",
+      fill('<a b="x>y" c={{ d }} e>'),
+    ],
+    ["CDATA openers", "layout/theme.liquid", fill("<![CDATA[ ")],
+    ["bogus comments", "layout/theme.liquid", fill("<!x <?y </3 ")],
+    ["comments closed by --!>", "layout/theme.liquid", fill("<!-- x --!>")],
+    ["comments closed by -->, no --!> anywhere", "layout/theme.liquid", fill("<!-- x -->")],
+    ["scripts containing <!--", "layout/theme.liquid", fill("<script><!--</script>")],
+    [
+      "closed scripts and styles",
+      "layout/theme.liquid",
+      fill("<script>/* x */</script><style>/* y */</style>"),
+    ],
+  ])("stays within budget and still reports for %s", (_label, filename, flood) => {
+    const file: ThemeFile = { filename, content: `${flood}\n${LIVE}` };
+    expect(file.content.length).toBeGreaterThanOrEqual(MB);
+    let result: ReturnType<typeof detectMaliciousScripts> = [];
+    expect(timed(() => (result = detectMaliciousScripts(file)))).toBeLessThan(REDOS_BUDGET_MS);
+    // The trailing live reference is reported, on the last line.
+    expect(result.map((f) => f.lineNumber)).toContain(file.content.split("\n").length);
+  });
 });
