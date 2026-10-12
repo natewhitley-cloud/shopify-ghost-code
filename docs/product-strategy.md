@@ -19,6 +19,29 @@ Updated from market research (2026-03-22). Source data: `~/shopify/strategy/mark
 
 ---
 
+## Theme health (gc-i6du, owner decision A, 2026-10-11)
+
+**The opening.** Merchants search the App Store for "theme health" and "theme checker", and nothing there is built for it. The broad scanners that show up lead with a 0-100 score.
+
+**Our answer: what old apps left behind, and what it costs you.** Not a score. GhostCode removed its own 0-100 health score on 2026-10-09 because a composite number misled merchants (it floored at 0 on real themes and said nothing about what to do). Theme health here is a plain checklist on Home: each thing we checked reads "Clean" or "N issues", with the cost in things a merchant can picture (extra requests on every page, a Liquid error shoppers can read on the homepage, leftover records in products and redirects). No grade, no percentage, no "x of y".
+
+**What it covers.** The existing findings, grouped the way a merchant thinks about a theme (malicious code, errors shoppers can see, leftover scripts and styles, leftover snippets and sections, SEO and AI tags, tracking still running, store data left behind, the script tag deadline), plus three things added for it:
+
+- **Liquid errors shoppers can see.** The classic uninstall leftover ("Liquid error: Could not find asset snippets/app.liquid") printed on the live homepage. It is the most searched symptom in our own community research, and the one a merchant can verify with their own eyes.
+- **Theme type and version.** A vintage (non Online Store 2.0) theme is flagged, because apps cannot use app blocks or app embeds on it and so write straight into theme files: the mechanism behind most leftovers.
+- **Unpublished themes.** How many sit in the library against Shopify's 20-theme limit, and what the last scan of each found.
+
+**Rules that keep it honest.**
+
+- **No score, ever.** If a number is wanted, it is a count of a real thing.
+- **Read-only.** We never edit the theme. Every row ends in where to look and how to fix it yourself.
+- **Never "Clean" about something we did not check.** A password-protected storefront, a missing permission or a plan-gated check reads "Not checked" or "None found", with the reason.
+- **Same list on every plan.** Counts are free; file, line and fix stay behind the existing preview gate.
+
+**Listing language to test:** "Theme health check: see what old apps left in your theme and what it costs you. No score, just the list." Keywords: theme health, theme checker, theme audit, liquid error.
+
+---
+
 ## Validated pain points (from review data)
 
 ### Orphaned code after uninstall — cross-category signal
