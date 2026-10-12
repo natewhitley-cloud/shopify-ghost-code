@@ -1058,7 +1058,7 @@ describe("attempt control flow", () => {
     }
   });
 
-  it("keeps going on ok, timeouts and 5xx; stops only the page when it can't load", () => {
+  it("keeps the run going on ok, timeouts and 5xx; a load failure or timeout stops only the page", () => {
     for (const a of [
       ok,
       { kind: "error", code: "timeout" },
@@ -1069,7 +1069,16 @@ describe("attempt control flow", () => {
       expect(attemptHaltsRun(a)).toBe(false);
     }
     expect(attemptHaltsPage({ kind: "error", code: "document_failed" })).toBe(true);
-    expect(attemptHaltsPage({ kind: "error", code: "timeout" })).toBe(false);
+    // gc-zees: a timed-out run would only time out again; skip the page's rest.
+    expect(attemptHaltsPage({ kind: "error", code: "timeout" })).toBe(true);
+    for (const a of [
+      ok,
+      { kind: "error", code: "server_error" },
+      { kind: "error", code: "network" },
+      { kind: "error", code: "bad_response" },
+    ] as SpeedAttempt[]) {
+      expect(attemptHaltsPage(a)).toBe(false);
+    }
   });
 
   it("only attempts that reached Google count as calls", () => {
@@ -1145,6 +1154,37 @@ describe("buildSpeedPageResult", () => {
       url: HOME,
       status: "FAILED",
       runsAttempted: 3,
+      runsOk: 0,
+      failureCode: "timeout",
+    });
+  });
+
+  it("ok then a timeout (the timeout ended the page): OK from the ok run alone (gc-zees)", () => {
+    const p = buildSpeedPageResult("home", HOME, [
+      run(40, "a"),
+      { kind: "error", code: "timeout" },
+    ]);
+    expect(p).toMatchObject({ status: "OK", runsAttempted: 2, runsOk: 1, url: HOME });
+    expect(p.metrics!.score).toBe(40);
+    expect(p.failureCode).toBeUndefined();
+  });
+
+  it("two ok runs then a timeout: OK, median of the 2 ok runs (lower) (gc-zees)", () => {
+    const p = buildSpeedPageResult("home", HOME, [
+      run(40, "a"),
+      run(20, "b"),
+      { kind: "error", code: "timeout" },
+    ]);
+    expect(p).toMatchObject({ status: "OK", runsAttempted: 3, runsOk: 2 });
+    expect(p.metrics!.score).toBe(20);
+  });
+
+  it("first run timed out (page ended): FAILED/timeout with 1 run attempted (gc-zees)", () => {
+    expect(buildSpeedPageResult("home", HOME, [{ kind: "error", code: "timeout" }])).toEqual({
+      page: "home",
+      url: HOME,
+      status: "FAILED",
+      runsAttempted: 1,
       runsOk: 0,
       failureCode: "timeout",
     });

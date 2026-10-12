@@ -16,11 +16,21 @@ import type { SpeedFailureCode } from "../lib/speed-report";
 export const PAGESPEED_ENDPOINT = "https://www.googleapis.com/pagespeedonline/v5/runPagespeed";
 
 /**
- * Per-call timeout. A mobile Lighthouse run on a heavy storefront routinely
- * takes 20-40 s at Google; 90 s leaves headroom without letting one call hold
- * the (concurrency 1) worker for long.
+ * Per-call timeout (gc-zees). A mobile Lighthouse run on a typical storefront
+ * takes ~30 s at Google, but a heavy one can take far longer (measured
+ * 2026-10-11: allbirds.com returned a valid result after 193 s), so 240 s
+ * lets heavy stores finish. A timeout ends that page's remaining runs
+ * (attemptHaltsPage), so a hopeless page holds the (concurrency 1) worker for
+ * one timeout, not three.
+ *
+ * Ceilings this must stay under: the worker's 45 m finish timeout (worst case
+ * 6 calls x 240 s = 24 m) and the host's HTTP limits: each call runs inside
+ * one Inngest step request, which answers only when the step ends. Node's
+ * server timeouts only bound receiving the request, but Railway's proxy is
+ * reported to cut a response that sends nothing for 5 minutes (15 m hard
+ * max). Do not raise this much past ~270 s without streaming the response.
  */
-export const PAGESPEED_TIMEOUT_MS = 90_000;
+export const PAGESPEED_TIMEOUT_MS = 240_000;
 
 /** A PageSpeed response larger than this is refused (they are ~1-3 MB). */
 export const PAGESPEED_MAX_RESPONSE_CHARS = 25_000_000;

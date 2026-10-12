@@ -14,7 +14,8 @@
  * Quota guardrails (PageSpeed: 25,000 calls/day, ~400 per 100 s):
  *   - concurrency 1 across all shops (and 1 per shop), and the calls inside a
  *     run are sequential steps, so a Sunday batch is a slow single file (one
- *     call at a time, each 10-40 s), nowhere near the per-100 s limit;
+ *     call at a time, typically ~30 s, up to PAGESPEED_TIMEOUT_MS = 240 s on
+ *     a heavy storefront), nowhere near the per-100 s limit;
  *   - each call is its OWN step: Inngest memoizes a finished step, so a retry
  *     of a later step does not re-issue it; runPageSpeedAttempt never throws
  *     for a Google failure, so a Google error does not retry the step either.
@@ -22,7 +23,10 @@
  *     before its result is recorded (crash, deploy, lost response): with
  *     retries: 1 that is at most one extra call, reserved against the budget
  *     like any other;
- *   - retries: 1 (a DB blip), finish timeout 45 m: a failed run cannot loop;
+ *   - retries: 1 (a DB blip), finish timeout 45 m: a failed run cannot loop.
+ *     Worst case is 6 calls (2 pages x SPEED_RUNS_PER_PAGE) x 240 s = 24 m,
+ *     well inside 45 m; in practice a timeout ends that page's remaining runs
+ *     (attemptHaltsPage), so a slow store spends at most one timeout per page;
  *   - start timeout 6 h: a run still queued that long is cancelled (a manual
  *     click can wait behind the Sunday batch at concurrency 1, so this is
  *     generous; the UI's queued threshold, SPEED_REPORT_QUEUED_STUCK_MS, is
@@ -37,7 +41,8 @@
  *     storefront GET (password-check); PageSpeed's final URL / 401 are the
  *     fallback when that read fails;
  *   - a 429 / 4xx / password page / exhausted budget / lost eligibility halts
- *     the rest of the run.
+ *     the rest of the run; a page that cannot load or a timed-out call halts
+ *     only that page.
  *   - Manual "Run now" runs get queue priority over the Sunday batch.
  */
 

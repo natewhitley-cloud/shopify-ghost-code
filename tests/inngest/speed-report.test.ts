@@ -485,12 +485,66 @@ describe("speed-report-run (worker)", () => {
     ]);
   });
 
-  it("timeouts and 5xx keep trying (3 runs per page)", async () => {
+  it("5xx and network errors keep trying (3 runs per page)", async () => {
     svc.runPageSpeedAttempt
-      .mockResolvedValueOnce({ kind: "error", code: "timeout" })
-      .mockResolvedValueOnce({ kind: "error", code: "server_error" });
+      .mockResolvedValueOnce({ kind: "error", code: "server_error" })
+      .mockResolvedValueOnce({ kind: "error", code: "network" });
     const step = createMockInngestStep();
     await handler({ event, step, logger });
     expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(6);
+  });
+
+  function psiSteps(step: ReturnType<typeof createMockInngestStep>): string[] {
+    return stepNames(step).filter((n) => n.startsWith("psi-"));
+  }
+
+  it("a first-run timeout stops that page only (1 call); the product page still runs 3 (gc-zees)", async () => {
+    svc.runPageSpeedAttempt.mockResolvedValueOnce({ kind: "error", code: "timeout" });
+    const step = createMockInngestStep();
+    await handler({ event, step, logger });
+    expect(psiSteps(step)).toEqual([
+      "psi-home-1",
+      "psi-product-1",
+      "psi-product-2",
+      "psi-product-3",
+    ]);
+    expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(4);
+    const fin = svc.finalizeSpeedReport.mock.calls[0][0];
+    expect(fin.tested.map((t: { attempts: unknown[] }) => t.attempts.length)).toEqual([1, 3]);
+    expect(fin.tested[0].attempts).toEqual([{ kind: "error", code: "timeout" }]);
+    // A page halt is not a run halt: nothing labels the other page.
+    expect(fin.haltCode).toBeUndefined();
+  });
+
+  it("ok then a timeout: the page stops after 2 calls and keeps its ok run; product runs 3 (gc-zees)", async () => {
+    svc.runPageSpeedAttempt
+      .mockResolvedValueOnce(okAttempt(55))
+      .mockResolvedValueOnce({ kind: "error", code: "timeout" });
+    const step = createMockInngestStep();
+    await handler({ event, step, logger });
+    expect(psiSteps(step)).toEqual([
+      "psi-home-1",
+      "psi-home-2",
+      "psi-product-1",
+      "psi-product-2",
+      "psi-product-3",
+    ]);
+    expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(5);
+    const fin = svc.finalizeSpeedReport.mock.calls[0][0];
+    expect(fin.tested[0].attempts).toEqual([okAttempt(55), { kind: "error", code: "timeout" }]);
+    expect(fin.haltCode).toBeUndefined();
+  });
+
+  it("a product-page timeout stops only the product page; the homepage keeps its 3 runs (gc-zees)", async () => {
+    svc.runPageSpeedAttempt
+      .mockResolvedValueOnce(okAttempt())
+      .mockResolvedValueOnce(okAttempt())
+      .mockResolvedValueOnce(okAttempt())
+      .mockResolvedValueOnce({ kind: "error", code: "timeout" });
+    const step = createMockInngestStep();
+    await handler({ event, step, logger });
+    expect(psiSteps(step)).toEqual(["psi-home-1", "psi-home-2", "psi-home-3", "psi-product-1"]);
+    expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(4);
+    expect(stepNames(step).at(-1)).toBe("finalize");
   });
 });

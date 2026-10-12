@@ -11,6 +11,7 @@ import {
   classifyPageSpeedHttpError,
   PAGESPEED_ENDPOINT,
   PAGESPEED_MAX_RESPONSE_CHARS,
+  PAGESPEED_TIMEOUT_MS,
   type PageSpeedFetch,
 } from "../../app/services/pagespeed-client.server";
 import {
@@ -188,6 +189,34 @@ describe("callPageSpeed", () => {
     );
     const result = await callPageSpeed(URLS.document, { apiKey: KEY, fetchImpl, timeoutMs: 5 });
     expect(result).toEqual({ ok: false, code: "timeout", httpStatus: null });
+  });
+
+  it("gives a heavy storefront 240 s per call (gc-zees: allbirds.com took 193 s)", () => {
+    expect(PAGESPEED_TIMEOUT_MS).toBe(240_000);
+  });
+
+  it("uses PAGESPEED_TIMEOUT_MS when no timeout is passed: alive at 239.999 s, aborted at 240 s", async () => {
+    vi.useFakeTimers();
+    try {
+      let aborted = false;
+      const fetchImpl: PageSpeedFetch = vi.fn(
+        (_url, init) =>
+          new Promise<Response>((_resolve, reject) => {
+            init.signal.addEventListener("abort", () => {
+              aborted = true;
+              reject(new Error("aborted"));
+            });
+          }),
+      );
+      const pending = callPageSpeed(URLS.document, { apiKey: KEY, fetchImpl });
+      await vi.advanceTimersByTimeAsync(PAGESPEED_TIMEOUT_MS - 1);
+      expect(aborted).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(aborted).toBe(true);
+      expect(await pending).toEqual({ ok: false, code: "timeout", httpStatus: null });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("never echoes the key or Google's error text in a result (even when Google echoes the URL)", async () => {

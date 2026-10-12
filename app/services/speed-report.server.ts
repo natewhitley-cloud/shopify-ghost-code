@@ -704,9 +704,16 @@ export function attemptHaltsRun(a: SpeedAttempt): boolean {
   return a.kind !== "ok";
 }
 
-/** Whether this attempt ends this page only (the page itself cannot be loaded). */
+/**
+ * Whether this attempt ends this page only: the page itself cannot be loaded,
+ * or a run timed out (gc-zees). A run that outlasts PAGESPEED_TIMEOUT_MS means
+ * the page is too heavy for Google to finish in time, and the next runs of
+ * that page would almost surely time out too, each holding the worker for the
+ * full timeout and spending a call. The other page still runs. The page keeps
+ * an OK result when an earlier run of it succeeded (buildSpeedPageResult).
+ */
 export function attemptHaltsPage(a: SpeedAttempt): boolean {
-  return a.kind === "error" && a.code === "document_failed";
+  return a.kind === "error" && (a.code === "document_failed" || a.code === "timeout");
 }
 
 /**
