@@ -33,6 +33,18 @@ export type MaliciousDomain = {
    * where "injected" and "compromised" would be false.
    */
   advice?: string;
+  /**
+   * Set ONLY for a domain that developers added to themes in good faith before
+   * it turned bad. For those, a reference left inside an HTML or JS/CSS comment
+   * is a remediation (the merchant or developer commented the tag out), not an
+   * attack, and such domains also turn up in vendored-library comments. The
+   * detector does not report those inert references. Kept separate from
+   * `advice` on purpose: wording and matching are independent decisions.
+   *
+   * Never set it for an attacker-injected domain: nobody comments one of those
+   * out in good faith, so any reference to it stays reported, comment or not.
+   */
+  ignoreInComments?: true;
 };
 
 export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<MaliciousDomain> = [
@@ -72,6 +84,7 @@ export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<MaliciousDomain> = [
     note: "sold in 2024 and then served malicious redirects",
     advice:
       "It is no longer under trusted control. Remove this reference; modern browsers do not need it",
+    ignoreInComments: true,
   },
   {
     // Fake Google Analytics host that delivered the polyfill.io payload.
@@ -98,6 +111,7 @@ export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<MaliciousDomain> = [
     domain: "shinedezign.tk",
     note: "script host Shopify staff tied to redirects to random sites",
     advice: "Remove this reference",
+    ignoreInComments: true,
   },
 ];
 

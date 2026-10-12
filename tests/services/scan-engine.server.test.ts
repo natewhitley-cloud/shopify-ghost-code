@@ -7168,6 +7168,312 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
       expect(findings[0].description).toContain(domain);
     }
   });
+
+  // ---- Good-faith entries ignore commented-out references (reviewer M1) ----
+
+  const domainsFound = (filename: string, content: string): string[] =>
+    detectMaliciousScripts({ filename, content }).map(
+      (f) =>
+        `${f.lineNumber}:${/(?:References known-malicious domain|References) (\S+)/.exec(f.description)?.[1]}`,
+    );
+
+  it("flags exactly polyfill.io and shinedezign.tk as ignoreInComments", () => {
+    expect(KNOWN_MALICIOUS_DOMAINS.filter((d) => d.ignoreInComments).map((d) => d.domain)).toEqual([
+      "polyfill.io",
+      "shinedezign.tk",
+    ]);
+  });
+
+  const THEME = "layout/theme.liquid";
+  const JS = "assets/vendor.js";
+
+  it.each<[string, string, string]>([
+    [
+      "a single-line HTML comment",
+      THEME,
+      "<!-- https://cdn.polyfill.io/v3/polyfill.min.js removed -->",
+    ],
+    [
+      "a commented-out script tag",
+      THEME,
+      '<!-- <script src="https://cdn.polyfill.io/v3/polyfill.min.js"></script> -->',
+    ],
+    [
+      "a multi-line HTML comment",
+      THEME,
+      '<head>\n<!-- removed 2024:\n<script src="https://cdn.polyfill.io/v3/polyfill.min.js"></script>\n<script src="//cdn.polyfill.io/v2/polyfill.min.js"></script>\n-->\n</head>',
+    ],
+    [
+      "an IE conditional comment (an HTML comment to every current browser)",
+      THEME,
+      '<!--[if lt IE 9]><script src="https://cdn.polyfill.io/v2/polyfill.min.js"></script><![endif]-->',
+    ],
+    ["a single-line JS block comment", JS, "/* see https://polyfill.io/v3/ */\nvar a = 1;"],
+    [
+      "a multi-line JS block comment",
+      JS,
+      "/*\n * Polyfills formerly loaded from\n * https://cdn.polyfill.io/v3/polyfill.min.js\n */\nvar a = 1;",
+    ],
+    ["a JS line comment", JS, "var a = 1;\n// see https://polyfill.io\nvar b = 2;"],
+    [
+      "a trailing JS line comment",
+      JS,
+      "var a = 1; // was https://cdn.polyfill.io/v3/polyfill.min.js",
+    ],
+    [
+      "a commented-out JS statement with a protocol-relative URL",
+      JS,
+      "// s.src = '//cdn.polyfill.io/v2/polyfill.min.js';",
+    ],
+    [
+      "a JS line comment after a string holding another URL",
+      JS,
+      'var u = "https://example.com/a.js"; // not https://polyfill.io any more',
+    ],
+    [
+      "a JS line comment after a regex literal holding quotes and slashes",
+      JS,
+      "var t = s.replace(/[\"'/]/g, '').replace(/https?:\\/\\//, ''); // was https://polyfill.io",
+    ],
+    [
+      "a block comment in an asset .js.liquid file",
+      "assets/theme.js.liquid",
+      "/* https://polyfill.io/v3/ */",
+    ],
+    [
+      "JS comments inside an inline <script>",
+      THEME,
+      "<script>\n/* https://polyfill.io/v3/ */\n// see https://polyfill.io\nvar a = 1;\n</script>",
+    ],
+    ["a CSS comment inside <style>", THEME, "<style>\n/* https://polyfill.io/v3/ */\n</style>"],
+    [
+      "a Liquid comment",
+      THEME,
+      '{% comment %}<script src="https://cdn.polyfill.io/v3/polyfill.min.js"></script>{% endcomment %}',
+    ],
+    [
+      "a // that is a path segment of another URL",
+      THEME,
+      '<a href="https://evil.com//polyfill.io/x">x</a>',
+    ],
+    [
+      "the cdnjs replacement carrying polyfill.io only in its query string",
+      THEME,
+      '<script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?from=polyfill.io"></script>',
+    ],
+    [
+      "a longer host that merely contains it",
+      THEME,
+      '<script src="https://cdn.polyfill.io.evil.com/x.js"></script>',
+    ],
+    [
+      "shinedezign.tk in an HTML comment",
+      THEME,
+      '<!-- <script src="//shinedezign.tk/preorder/js/preorder.js"></script> -->',
+    ],
+  ])("good-faith entry does NOT fire for %s", (_label, filename, content) => {
+    expect(domainsFound(filename, content)).toEqual([]);
+  });
+
+  it.each<[string, string, string, string[]]>([
+    [
+      "a live https script tag",
+      THEME,
+      '<script src="https://cdn.polyfill.io/v3/polyfill.min.js"></script>',
+      ["1:polyfill.io"],
+    ],
+    [
+      "a live protocol-relative script tag",
+      THEME,
+      '<script src="//cdn.polyfill.io/v2/polyfill.min.js">',
+      ["1:polyfill.io"],
+    ],
+    [
+      "an unquoted protocol-relative src",
+      THEME,
+      "<script src=//cdn.polyfill.io/v2/polyfill.min.js></script>",
+      ["1:polyfill.io"],
+    ],
+    ["a JS assignment", JS, "s.src = 'https://polyfill.io/v3/polyfill.min.js';", ["1:polyfill.io"]],
+    [
+      "a JS assignment inside an inline <script>",
+      THEME,
+      "<script>\nvar s = document.createElement('script');\ns.src = '//cdn.polyfill.io/v2/polyfill.min.js';\n</script>",
+      ["3:polyfill.io"],
+    ],
+    [
+      "a live tag on the same line after a closed HTML comment",
+      THEME,
+      '<!-- old --><script src="https://cdn.polyfill.io/x.js"></script>',
+      ["1:polyfill.io"],
+    ],
+    [
+      "a live tag between two HTML comments on one line",
+      THEME,
+      '<!-- a --><script src="https://cdn.polyfill.io/x.js"></script><!-- b -->',
+      ["1:polyfill.io"],
+    ],
+    [
+      "a live tag on the line after a multi-line HTML comment closes",
+      THEME,
+      '<!-- old loader\nremoved -->\n<script src="https://cdn.polyfill.io/x.js"></script>',
+      ["3:polyfill.io"],
+    ],
+    [
+      "live JS on the same line after a closed block comment",
+      JS,
+      "/* polyfills */ s.src = 'https://polyfill.io/v3/polyfill.min.js';",
+      ["1:polyfill.io"],
+    ],
+    [
+      "live JS on the line after a multi-line block comment closes",
+      JS,
+      "/*\n * loader\n */\ns.src = '//cdn.polyfill.io/v2/polyfill.min.js';",
+      ["4:polyfill.io"],
+    ],
+    [
+      "live JS on the line after a line comment",
+      JS,
+      "// load polyfills\ns.src = 'https://polyfill.io/v3/polyfill.min.js';",
+      ["2:polyfill.io"],
+    ],
+    [
+      "a reference inside a JSON template string value",
+      "templates/index.json",
+      '{"sections":{"a":{"settings":{"custom_liquid":"<script src=\\"https:\\/\\/cdn.polyfill.io\\/v3\\/polyfill.min.js\\"><\\/script>"}}}}',
+      ["1:polyfill.io"],
+    ],
+    [
+      "JSON has no comments: a commented-out reference in a JSON string is still reported",
+      "templates/index.json",
+      '{"custom_liquid":"<!-- <script src=\\"https://cdn.polyfill.io/x.js\\"></script> -->"}',
+      ["1:polyfill.io"],
+    ],
+    [
+      "the legacy <script><!-- ... //--> wrapper (live code, not an HTML comment)",
+      THEME,
+      "<script><!--\ns.src = 'https://cdn.polyfill.io/v2/polyfill.min.js';\n//--></script>",
+      ["2:polyfill.io"],
+    ],
+    [
+      "a string holding // before the live URL on a minified line",
+      JS,
+      'var a="//example.com/a.js",b="/*";s.src="//cdn.polyfill.io/v2/polyfill.min.js";var c="*/";',
+      ["1:polyfill.io"],
+    ],
+    [
+      "a regex literal holding a quote before the live URL on a minified line",
+      JS,
+      'x=y.replace(/"/g,"&quot;");z=w.replace(/https?:\\/\\//,"");s.src="//cdn.polyfill.io/v2/polyfill.min.js"',
+      ["1:polyfill.io"],
+    ],
+    [
+      "a template literal",
+      JS,
+      "s.src = `${location.protocol}//cdn.polyfill.io/v3/polyfill.min.js`;",
+      ["1:polyfill.io"],
+    ],
+    [
+      "an unterminated HTML comment opener (blanks nothing)",
+      THEME,
+      '<!-- note\n<script src="https://cdn.polyfill.io/x.js"></script>',
+      ["2:polyfill.io"],
+    ],
+    [
+      "an unterminated /* in one <script> does not swallow the next <script>",
+      THEME,
+      '<script>/* open</script>\n<script src="https://cdn.polyfill.io/x.js"></script>\n<script>/* x */</script>',
+      ["2:polyfill.io"],
+    ],
+    [
+      "/* and // in HTML text outside <script> are not comments",
+      THEME,
+      '<p>/* note</p><script src="https://cdn.polyfill.io/x.js"></script><p>*/ // x</p>',
+      ["1:polyfill.io"],
+    ],
+    [
+      "an abruptly closed <!--> comment hides nothing after it",
+      THEME,
+      '<!--><script src="https://cdn.polyfill.io/x.js"></script><!-- x -->',
+      ["1:polyfill.io"],
+    ],
+    [
+      "a bare //host line in JS (conservative: the URL's own // is never a comment start)",
+      JS,
+      "//cdn.polyfill.io/v2/polyfill.min.js",
+      ["1:polyfill.io"],
+    ],
+    [
+      "extra slashes, which browsers collapse",
+      THEME,
+      '<script src="https:///cdn.polyfill.io/x.js"></script>',
+      ["1:polyfill.io"],
+    ],
+    [
+      "live shinedezign.tk after a commented-out copy",
+      THEME,
+      '<!-- <script src="//shinedezign.tk/a.js"></script> -->\n<script src="//shinedezign.tk/preorder/js/preorder.js"></script>',
+      ["2:shinedezign.tk"],
+    ],
+  ])("good-faith entry DOES fire for %s", (_label, filename, content, expected) => {
+    expect(domainsFound(filename, content)).toEqual(expected);
+  });
+
+  it("centres the snippet on the live reference, not the commented one on the same line", () => {
+    const pad = "x".repeat(400);
+    const [f] = detectMaliciousScripts({
+      filename: THEME,
+      content: `<!-- https://cdn.polyfill.io/OLD ${pad} --><script src="https://cdn.polyfill.io/LIVE.js"></script>`,
+    });
+    expect(f.codeSnippet).toContain("cdn.polyfill.io/LIVE.js");
+    expect(f.severity).toBe(Severity.HIGH);
+  });
+
+  // Unflagged (attacker-injected) entries: behaviour unchanged, comments included.
+  it.each(["jsdeliver.cloud", "cb28utrk.com", "googie-anaiytics.com", "wp54trk.com"])(
+    "%s still fires inside HTML, block and line comments",
+    (domain) => {
+      expect(
+        domainsFound(
+          THEME,
+          `<!-- <script src="https://www.${domain}/x.js"></script> -->\n<!--\nhttps://${domain}/y.js\n-->`,
+        ),
+      ).toEqual([`1:${domain}`, `3:${domain}`]);
+      expect(
+        domainsFound(
+          JS,
+          `/* https://www.${domain}/x.js */\n// https://${domain}/y.js\n/*\n//${domain}/z.js\n*/`,
+        ),
+      ).toEqual([`1:${domain}`, `2:${domain}`, `4:${domain}`]);
+    },
+  );
+
+  it.each(KNOWN_MALICIOUS_DOMAINS.map((d) => d.domain))(
+    "%s does not fire when //host is a path segment of another URL, and fires right after a delimiter",
+    (domain) => {
+      for (const inert of [
+        `<a href="https://evil.com//${domain}/x">x</a>`,
+        `<a href="https://evil.com/a/b//${domain}/x">x</a>`,
+        `<a href="//evil.com/a_b-c~d%20//${domain}/x">x</a>`,
+      ]) {
+        expect(domainsFound(THEME, inert), inert).toEqual([]);
+      }
+      for (const live of [
+        `//${domain}/x.js`,
+        ` //${domain}/x.js`,
+        `<script src="//${domain}/x.js">`,
+        `<script src='//${domain}/x.js'>`,
+        `<script src=//${domain}/x.js>`,
+        `background:url(//${domain}/x.png)`,
+        `<img srcset="a.png 1x,//${domain}/x.png 2x">`,
+        `<b>//${domain}/x</b>`,
+        `wss://${domain}/x`,
+        `<a href="https://evil.com/?u=//${domain}/x">x</a>`,
+      ]) {
+        expect(domainsFound("templates/index.json", live), live).toEqual([`1:${domain}`]);
+      }
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

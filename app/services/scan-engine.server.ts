@@ -76,7 +76,11 @@ import {
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
-import { maliciousDescription, matchMaliciousDomain } from "../data/malicious-domains.server";
+import {
+  maliciousDescription,
+  matchMaliciousDomain,
+  type MaliciousDomain,
+} from "../data/malicious-domains.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
 import { MAX_FINDINGS_PER_FILE_PER_TYPE } from "../lib/scan-limits";
 import { hostnameFromUrl } from "../lib/url.server";
@@ -1693,6 +1697,298 @@ export function blankLiquidComments(content: string): string {
   return out + content.slice(from);
 }
 
+// Char codes used by the comment scanner below.
+const CC_NEWLINE = 10;
+const CC_DQUOTE = 34;
+const CC_SQUOTE = 39;
+const CC_RPAREN = 41;
+const CC_STAR = 42;
+const CC_DOT = 46;
+const CC_SLASH = 47;
+const CC_COLON = 58;
+const CC_GT = 62;
+const CC_LBRACKET = 91;
+const CC_BACKSLASH = 92;
+const CC_RBRACKET = 93;
+const CC_BACKTICK = 96;
+
+const isAsciiSpace = (c: number): boolean => c === 32 || (c >= 9 && c <= 13);
+const isAsciiAlnum = (c: number): boolean =>
+  (c >= 48 && c <= 57) || (c >= 65 && c <= 90) || (c >= 97 && c <= 122);
+// Hostname label chars as URL_HOST_RE accepts them: [a-z0-9_-].
+const isHostLabelChar = (c: number): boolean => isAsciiAlnum(c) || c === 95 || c === 45;
+// Chars that end a hostname or a URL path segment. A protocol-relative `//host`
+// directly after one is a path segment of ANOTHER URL
+// (`https://evil.com//polyfill.io/x`), not a load from `host`. `/` is left out
+// on purpose: browsers collapse extra slashes (`https:///host`, `///host`), so
+// those do load from the host and keep firing.
+const isUrlPathChar = (c: number): boolean =>
+  isHostLabelChar(c) || c === CC_DOT || c === 126 /* ~ */ || c === 37; /* % */
+
+// Words after which a `/` starts a regex literal rather than a division.
+const REGEX_PRECEDING_KEYWORDS = new Set([
+  "return",
+  "typeof",
+  "case",
+  "in",
+  "of",
+  "void",
+  "delete",
+  "do",
+  "else",
+  "throw",
+  "new",
+  "instanceof",
+  "yield",
+  "await",
+]);
+
+/**
+ * `indexOf(needle, from)` for callers whose `from` only moves forward. The last
+ * answer is cached, so a flood of openers with no closer costs one search, not
+ * one per opener.
+ */
+function forwardFinder(haystack: string, needle: string): (from: number) => number {
+  let at = -2; // -2: not searched yet. -1: none at or after any later `from`.
+  return (from) => {
+    if (at === -2 || (at !== -1 && at < from)) at = haystack.indexOf(needle, from);
+    return at;
+  };
+}
+
+/**
+ * Blank out HTML and JS/CSS comments while preserving length and every newline,
+ * so the caller can tell a live reference from a commented-out one. Used ONLY
+ * for list entries flagged `ignoreInComments`.
+ *
+ * Every doubtful case is resolved toward "live" (reported), because a wrongly
+ * blanked span would hide a real reference:
+ *   - Which comment syntax applies depends on the file: JS files (`.js`, `.mjs`,
+ *     `.js.liquid`) get `/* *\/` and `//`; CSS files get `/* *\/`; other
+ *     `.liquid`/`.html` files get `<!-- -->`, plus the JS rules inside
+ *     `<script>` and the CSS rule inside `<style>`. JSON and anything else has
+ *     no comments: nothing is blanked.
+ *   - `<!--` inside `<script>` is NOT a comment (the legacy
+ *     `<script><!-- ... //--></script>` wrapper is live code), and `//` or
+ *     `/*` in HTML text outside `<script>`/`<style>` is plain text.
+ *   - An unterminated `<!--` or `/*` blanks nothing. A `/*` must close before
+ *     its own `</script>`.
+ *   - Strings, template literals and regex literals are skipped, so a `//` or
+ *     `/*` inside one is not a comment. Regex-vs-division is the usual
+ *     previous-token heuristic.
+ *   - `//` is never a comment start when it follows `:` (`https://`) or is
+ *     itself the start of a `//host.tld` URL. So a bare `//cdn.polyfill.io/x`
+ *     line in JS stays reported even though JS reads it as a comment.
+ *
+ * Single forward pass; every lookahead that can fail records how far it got so
+ * it is not repeated, keeping the whole thing linear in the file size.
+ */
+export function blankInertComments(content: string, filename: string): string {
+  const name = filename.toLowerCase().replace(/\.liquid$/, "");
+  const isJsFile = name.endsWith(".js") || name.endsWith(".mjs");
+  const isCssFile = name.endsWith(".css") || name.endsWith(".scss");
+  const isHtmlFile =
+    !isJsFile && !isCssFile && (name !== filename.toLowerCase() || name.endsWith(".html"));
+  if (!isJsFile && !isCssFile && !isHtmlFile) return content;
+
+  const blanked: Array<[number, number]> = [];
+  const findBlockClose = forwardFinder(content, "*/");
+  const findHtmlClose = forwardFinder(content, "-->");
+  const findNewline = forwardFinder(content, "\n");
+  const findGt = forwardFinder(content, ">");
+
+  // True when a `label.label` hostname starts at `k`.
+  const startsHost = (k: number): boolean => {
+    let dotPending = false;
+    for (let j = k; j < content.length; j++) {
+      const c = content.charCodeAt(j);
+      if (c === CC_DOT) {
+        if (j === k || dotPending) return false;
+        dotPending = true;
+      } else if (!isHostLabelChar(c)) return false;
+      else if (dotPending) return true;
+    }
+    return false;
+  };
+
+  // Scan JS (or, with js=false, CSS) source in [from, to) and record its comments.
+  const scanCode = (from: number, to: number, js: boolean): void => {
+    // Regex-vs-division: index of the last significant code char, or -1 when
+    // the last token was a string/regex literal (an operand).
+    let prevIdx = from - 1;
+    let prevIsLiteral = false;
+    // A lookahead that ran to `stop` without finding its closer is not retried
+    // before `stop`: [regex, ', ", `].
+    let noRegexBefore = from;
+    const noStringBefore: Record<number, number> = {
+      [CC_SQUOTE]: from,
+      [CC_DQUOTE]: from,
+      [CC_BACKTICK]: from,
+    };
+
+    const regexCanStart = (): boolean => {
+      if (prevIsLiteral) return false;
+      if (prevIdx < from) return true;
+      const c = content.charCodeAt(prevIdx);
+      if (c === CC_RPAREN || c === CC_RBRACKET) return false;
+      if (!isAsciiAlnum(c) && c !== 95 && c !== 36) return true;
+      let start = prevIdx;
+      while (start > from && prevIdx - start < 11 && isAsciiAlnum(content.charCodeAt(start - 1))) {
+        start--;
+      }
+      return REGEX_PRECEDING_KEYWORDS.has(content.slice(start, prevIdx + 1));
+    };
+
+    let i = from;
+    while (i < to) {
+      const c = content.charCodeAt(i);
+      if (c === CC_BACKSLASH) {
+        i += 2;
+        continue;
+      }
+      if (
+        (c === CC_SQUOTE || c === CC_DQUOTE || (js && c === CC_BACKTICK)) &&
+        i >= noStringBefore[c]
+      ) {
+        // Closing quote, or (for ' and ") the end of the line: an unterminated
+        // quote is an ordinary char, never a string that swallows later lines.
+        let j = i + 1;
+        let closed = false;
+        for (; j < to; j++) {
+          const d = content.charCodeAt(j);
+          if (d === CC_BACKSLASH) j++;
+          else if (d === c) {
+            closed = true;
+            break;
+          } else if (d === CC_NEWLINE && c !== CC_BACKTICK) break;
+        }
+        if (closed) {
+          prevIsLiteral = true;
+          i = j + 1;
+          continue;
+        }
+        noStringBefore[c] = j;
+      } else if (c === CC_SLASH) {
+        const next = content.charCodeAt(i + 1);
+        if (next === CC_STAR) {
+          const close = findBlockClose(i + 2);
+          if (close !== -1 && close + 2 <= to) {
+            blanked.push([i, close + 2]);
+            i = close + 2;
+          } else i += 2;
+          continue;
+        }
+        if (js && next === CC_SLASH) {
+          const afterScheme = i > from && content.charCodeAt(i - 1) === CC_COLON;
+          if (afterScheme || startsHost(i + 2)) {
+            i += 2;
+            continue;
+          }
+          const newline = findNewline(i);
+          const end = newline === -1 || newline > to ? to : newline;
+          blanked.push([i, end]);
+          i = end;
+          continue;
+        }
+        if (js && i >= noRegexBefore && regexCanStart()) {
+          let j = i + 1;
+          let inClass = false;
+          let closed = false;
+          for (; j < to; j++) {
+            const d = content.charCodeAt(j);
+            if (d === CC_BACKSLASH) j++;
+            else if (d === CC_NEWLINE) break;
+            else if (d === CC_LBRACKET) inClass = true;
+            else if (d === CC_RBRACKET) inClass = false;
+            else if (d === CC_SLASH && !inClass) {
+              closed = true;
+              break;
+            }
+          }
+          if (closed) {
+            prevIsLiteral = true;
+            i = j + 1;
+            continue;
+          }
+          noRegexBefore = j;
+        }
+      }
+      if (!isAsciiSpace(c)) {
+        prevIdx = i;
+        prevIsLiteral = false;
+      }
+      i++;
+    }
+  };
+
+  if (isJsFile || isCssFile) {
+    scanCode(0, content.length, isJsFile);
+  } else {
+    // `<script` / `<style` followed by whitespace, `>`, `/` or end of input.
+    const opensTag = (lt: number, tag: string): boolean => {
+      const end = lt + 1 + tag.length;
+      if (content.slice(lt + 1, end).toLowerCase() !== tag) return false;
+      const c = content.charCodeAt(end);
+      return Number.isNaN(c) || isAsciiSpace(c) || c === CC_GT || c === CC_SLASH;
+    };
+    let i = 0;
+    for (;;) {
+      const lt = content.indexOf("<", i);
+      if (lt === -1) break;
+      i = lt + 1;
+      if (content.startsWith("!--", lt + 1)) {
+        // From lt + 2 so the spec's abrupt closers `<!-->` and `<!--->` count.
+        const close = findHtmlClose(lt + 2);
+        if (close === -1) continue;
+        blanked.push([lt, close + 3]);
+        i = close + 3;
+        continue;
+      }
+      const isScript = opensTag(lt, "script");
+      if (!isScript && !opensTag(lt, "style")) continue;
+      const open = findGt(lt);
+      if (open === -1) break;
+      // An element with no closing tag runs to end of input, as in HTML.
+      const close = indexOfIgnoreCase(content, isScript ? "</script" : "</style", open + 1);
+      const end = close === -1 ? content.length : close;
+      scanCode(open + 1, end, isScript);
+      i = end;
+    }
+  }
+
+  let out = "";
+  let from = 0;
+  for (const [a, b] of blanked) {
+    out += content.slice(from, a) + content.slice(a, b).replace(/[^\n]/g, " ");
+    from = b;
+  }
+  return out + content.slice(from);
+}
+
+/**
+ * The distinct list entries that a line references by URL host, in order of
+ * first appearance. Decodes encoded slashes first. A protocol-relative `//host`
+ * that is a path segment of another URL (see isUrlPathChar) is not a reference.
+ */
+function maliciousHitsOnLine(line: string): MaliciousDomain[] {
+  const text = line.replace(ENCODED_SLASH_RE, "/");
+  const hits: MaliciousDomain[] = [];
+  URL_HOST_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = URL_HOST_RE.exec(text)) !== null) {
+    if (
+      match.index > 0 &&
+      text.charCodeAt(match.index) === CC_SLASH &&
+      isUrlPathChar(text.charCodeAt(match.index - 1))
+    ) {
+      continue;
+    }
+    const hit = matchMaliciousDomain(match[1]);
+    if (hit && !hits.includes(hit)) hits.push(hit);
+  }
+  return hits;
+}
+
 /**
  * Emit one MALICIOUS_SCRIPT finding per (line, distinct domain) for every live
  * theme reference to a domain on the curated KNOWN_MALICIOUS_DOMAINS list.
@@ -1706,37 +2002,53 @@ export function blankLiquidComments(content: string): string {
  *     Code outside a comment on the same line is never skipped.
  *   - Encoded slashes (`https:\/\/host`, `\\/`, `&#47;`, `&#x2F;`, `&sol;`) are decoded
  *     before matching.
- *   - Other inert forms (HTML/JS comments) are still reported: a leftover
- *     malicious reference is worth removing, and the description says
- *     "references", not "loads".
+ *   - HTML and JS/CSS comments depend on the entry:
+ *       - Default (attacker-injected domains): still reported. A leftover
+ *         reference to one is worth removing, and the description says
+ *         "references", not "loads".
+ *       - Entries flagged `ignoreInComments` (domains developers added in good
+ *         faith, e.g. polyfill.io): NOT reported when the reference sits inside
+ *         an HTML comment, a JS/CSS block comment or a JS line comment, single
+ *         or multi-line. Commenting the tag out is how a merchant fixes it, and
+ *         it must clear the alert. See blankInertComments for the exact rules
+ *         and for what is deliberately still reported (JSON files, unterminated
+ *         comments, a bare `//host` line). Live code sharing a line with a
+ *         comment is never skipped.
+ *   - For every entry, `//host` directly after a hostname or path character
+ *     (`https://evil.com//polyfill.io/x`) is a path segment of another URL, not
+ *     a reference to `host`, and is skipped.
  *   - The snippet is centred on the matched domain so the row preview shows it.
  *   - Severity is ALWAYS HIGH, set directly rather than via classifySeverity
- *     (whose comment-context downgrade does not apply: comments are excluded).
+ *     (whose comment-context downgrade does not apply: a reported finding is
+ *     never downgraded for sitting in a comment).
  *
  * Theme-file only, NO scope gate, ALL plans.
  */
 export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
   const originalLines = file.content.split("\n");
-  const scanLines = (
-    file.filename.endsWith(".liquid") ? blankLiquidComments(file.content) : file.content
-  ).split("\n");
+  const liquidBlanked = file.filename.endsWith(".liquid")
+    ? blankLiquidComments(file.content)
+    : file.content;
+  const scanLines = liquidBlanked.split("\n");
+  // Built on the first `ignoreInComments` hit: other files never pay for it.
+  let liveLines: string[] | null = null;
 
   scanLines.forEach((rawText, i) => {
-    const text = rawText.replace(ENCODED_SLASH_RE, "/");
-    const seen = new Set<string>();
-    URL_HOST_RE.lastIndex = 0;
-    let match: RegExpExecArray | null;
-    while ((match = URL_HOST_RE.exec(text)) !== null) {
-      const hit = matchMaliciousDomain(match[1]);
-      if (!hit || seen.has(hit.domain)) continue;
-      seen.add(hit.domain);
+    for (const hit of maliciousHitsOnLine(rawText)) {
+      // The line as it counts for this entry: comments blanked when flagged.
+      let liveText = rawText;
+      if (hit.ignoreInComments) {
+        liveLines ??= blankInertComments(liquidBlanked, file.filename).split("\n");
+        liveText = liveLines[i];
+        if (!maliciousHitsOnLine(liveText).includes(hit)) continue;
+      }
 
       const lineNumber = i + 1;
       const original = originalLines[i];
       // Search the blanked (same length as original) but undecoded line so the
       // snippet centres on the first LIVE occurrence, not one in a comment.
-      const at = indexOfIgnoreCase(rawText, hit.domain);
+      const at = indexOfIgnoreCase(liveText, hit.domain);
       const from = Math.max(0, at - MALICIOUS_SNIPPET_LEAD);
       findings.push({
         filename: file.filename,

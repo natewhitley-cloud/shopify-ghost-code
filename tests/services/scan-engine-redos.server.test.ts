@@ -42,6 +42,7 @@ import {
   detectGhostTitle,
   detectInvalidJsonLd,
   detectJsonLdConflicts,
+  detectMaliciousScripts,
   detectOverlappingChatWidgets,
   extractStaticProductCandidates,
   parseSettingsData,
@@ -763,5 +764,41 @@ describe("detectGhostLayouts is linear on adversarial input (gc-vi7b)", () => {
     let result: unknown[] = [];
     expect(timed(() => (result = detectGhostLayouts(files)))).toBeLessThan(REDOS_BUDGET_MS);
     expect(result).toHaveLength(1);
+  });
+});
+
+// Reviewer M1: good-faith list entries (polyfill.io) get a comment-blanking
+// pass. It must stay linear: it runs on files past the size cap too.
+describe("detectMaliciousScripts comment blanking is linear on adversarial input", () => {
+  // Each file carries one live polyfill.io reference so the blanking pass runs.
+  const LIVE = '<script src="https://cdn.polyfill.io/v3/polyfill.min.js"></script>';
+  const MB = 1_000_000;
+  const fill = (fragment: string): string => fragment.repeat(Math.ceil(MB / fragment.length));
+
+  it.each<[string, string, string]>([
+    ["a 1 MB single line of text", "layout/theme.liquid", "a".repeat(MB)],
+    ["a 1 MB single line of slashes", "assets/vendor.js", "/".repeat(MB)],
+    ["a 1 MB single line of https:// URLs", "assets/vendor.js", fill('"https://a.example/x",')],
+    ["unterminated <!-- openers", "layout/theme.liquid", fill("<!-- ")],
+    ["unterminated /* openers in JS", "assets/vendor.js", fill("/* ")],
+    [
+      "unterminated /* openers, one per <script>",
+      "layout/theme.liquid",
+      fill("<script>/* </script>"),
+    ],
+    ["unterminated <script and <style tags", "layout/theme.liquid", fill("<script <style ")],
+    ["unterminated regex character classes", "assets/vendor.js", fill("x=/[")],
+    ["unterminated quotes of every kind", "assets/vendor.js", fill("'a\"b`c")],
+    ["escaped quotes with no closer", "assets/vendor.js", "'" + fill("\\'")],
+    ["line comments with no newline", "assets/vendor.js", fill("// x ")],
+    ["protocol-relative hosts with no newline", "assets/vendor.js", fill("//a.b ")],
+    ["many closed comments", "assets/vendor.js", fill("/* x */ // y\n<!-- z -->")],
+  ])("stays within budget for %s", (_label, filename, flood) => {
+    const file: ThemeFile = { filename, content: `${flood}\n${LIVE}` };
+    expect(file.content.length).toBeGreaterThanOrEqual(MB);
+    let result: unknown[] = [];
+    expect(timed(() => (result = detectMaliciousScripts(file)))).toBeLessThan(REDOS_BUDGET_MS);
+    // The trailing live reference is on its own line and is always reported.
+    expect(result.length).toBeGreaterThanOrEqual(1);
   });
 });
