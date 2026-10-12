@@ -29,7 +29,7 @@
  * NEVER THROWS: a failed email must never fail or retry a scan.
  */
 
-import { filterIgnoredExceptMalicious, filterIgnoredFindings } from "./finding-aggregation.server";
+import { filterIgnoredExceptMalicious } from "./finding-aggregation.server";
 import {
   ALERT_WINDOW_TOLERANCE,
   buildBodyUnsubscribeUrl,
@@ -152,15 +152,15 @@ type BaselineScan = ScanCoverage & { findings: DiffableFinding[]; liveFindingTyp
 
 /**
  * Finding counts for the summary, with the same guards as the in-app diff:
- * ignored findings never count, a category either scan did not audit is
+ * ignored findings never count (one exception below), a category either scan did not audit is
  * neither new nor fixed (scanDiffOptions), and only types live in BOTH scans
  * count (restrictToLiveInBoth), so a permission grant or a newly live detector
  * cannot produce "new". A scan without a recorded live set cannot be judged.
  *
- * The one exception is `openCount` (gc-j8xq): known malicious code shows
- * regardless of ignores, so an ignored MALICIOUS_SCRIPT finding still counts
- * as in the theme and the email never reads "Still in your theme: 0" over it.
- * New and fixed are unchanged: an ignored finding is never either.
+ * The one exception (gc-j8xq, gc-kxfb): known malicious code shows regardless
+ * of ignores. An ignored MALICIOUS_SCRIPT finding counts in all three numbers
+ * like any other finding, so the email never reads "Still in your theme: 0"
+ * over it, and one that appears or goes away is reported as new or fixed.
  */
 export function computeFindingChanges(args: {
   currentFindings: DiffableFinding[];
@@ -176,17 +176,17 @@ export function computeFindingChanges(args: {
   const currentLive = parseLiveFindingTypes(args.currentLiveFindingTypes);
   if (!currentLive) return { ok: false, reason: "current_unversioned" };
 
-  const current = filterIgnoredFindings(args.currentFindings, args.ignores).kept;
+  const current = filterIgnoredExceptMalicious(args.currentFindings, args.ignores).shown;
   const diff = diffScans(
     current,
-    filterIgnoredFindings(args.baseline.findings, args.ignores).kept,
+    filterIgnoredExceptMalicious(args.baseline.findings, args.ignores).shown,
     scanDiffOptions(args.currentCoverage, args.baseline),
   );
   return {
     ok: true,
     newCount: restrictToLiveInBoth(diff.newFindings, baselineLive, currentLive).length,
     fixedCount: restrictToLiveInBoth(diff.resolvedFindings, baselineLive, currentLive).length,
-    openCount: filterIgnoredExceptMalicious(args.currentFindings, args.ignores).shown.length,
+    openCount: current.length,
   };
 }
 

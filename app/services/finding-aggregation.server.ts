@@ -132,9 +132,9 @@ export function filterIgnoredFindings<T extends IgnorableFinding>(
  * Pure: no DB, no mutation of the input. With no suppressions it returns the
  * input array as `shown` without fingerprinting anything.
  *
- * Used by the scan export (CSV, JSON, PDF) and by the summary email's "Still
- * in your theme" count. The diff, the summary email's new and fixed counts and
- * the lane counts keep using `filterIgnoredFindings`.
+ * Used by the scan export (CSV, JSON, PDF) and by the summary email's new,
+ * fixed and "Still in your theme" counts. The in-app diff and the lane counts
+ * keep using `filterIgnoredFindings`.
  */
 export function filterIgnoredExceptMalicious<T extends IgnorableFinding>(
   findings: T[],
@@ -190,17 +190,26 @@ export type FindingRow = Awaited<ReturnType<typeof getFindingsForScan>>[number];
  *
  * `keptFindings` is null on the no-ignores fast path (nothing was read beyond
  * the lean groupBy), and the scan's full non-ignored findings otherwise.
+ *
+ * `ignoredMalicious` is how many MALICIOUS_SCRIPT findings the ignores dropped
+ * from the summary (0 on the fast path). Known malicious code shows regardless
+ * of ignores, so Home's trend chart adds them back (gc-kxfb).
  */
 export async function getFilteredFindingSummaryAndKept(
   scanId: string,
   ignores: ShopIgnores,
-): Promise<{ summary: FilteredFindingSummary; keptFindings: FindingRow[] | null }> {
+): Promise<{
+  summary: FilteredFindingSummary;
+  keptFindings: FindingRow[] | null;
+  ignoredMalicious: number;
+}> {
   if (ignores.fingerprints.size === 0 && ignores.appNames.size === 0) {
-    return { summary: await getFindingSummary(scanId), keptFindings: null };
+    return { summary: await getFindingSummary(scanId), keptFindings: null, ignoredMalicious: 0 };
   }
 
   const findings = await getFindingsForScan(scanId);
-  const { kept } = filterIgnoredFindings(findings, ignores);
+  const { kept, ignored } = filterIgnoredFindings(findings, ignores);
+  const ignoredMalicious = ignored.filter((f) => f.findingType === "MALICIOUS_SCRIPT").length;
 
   const bySeverity = createZeroSeverityCounts();
   const byType = createZeroTypeCounts();
@@ -210,5 +219,5 @@ export async function getFilteredFindingSummaryAndKept(
   }
   const total = bySeverity.HIGH + bySeverity.MEDIUM + bySeverity.LOW;
 
-  return { summary: { total, bySeverity, byType }, keptFindings: kept };
+  return { summary: { total, bySeverity, byType }, keptFindings: kept, ignoredMalicious };
 }

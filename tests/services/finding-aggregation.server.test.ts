@@ -52,6 +52,7 @@ import {
   filterIgnoredExceptMalicious,
   filterIgnoredFindings,
   getFilteredFindingSummary,
+  getFilteredFindingSummaryAndKept,
   isFindingIgnored,
 } from "../../app/services/finding-aggregation.server";
 import { diffScans, fingerprintFinding } from "../../app/services/scan-differ.server";
@@ -220,6 +221,65 @@ describe("getFilteredFindingSummary", () => {
     // getFindingSummary must NOT be used on the ignore path.
     expect(mockGetFindingSummary).not.toHaveBeenCalled();
     expect(mockGetFindingsForScan).toHaveBeenCalledWith("scan-1");
+  });
+});
+
+// gc-kxfb: Home's trend chart adds ignored malicious findings back, so the
+// summary reports how many the ignores dropped.
+describe("getFilteredFindingSummaryAndKept: ignoredMalicious", () => {
+  it("is 0 on the no-ignores fast path", async () => {
+    mockGetFindingSummary.mockResolvedValue({
+      total: 1,
+      bySeverity: { HIGH: 1, MEDIUM: 0, LOW: 0 },
+      byType: { MALICIOUS_SCRIPT: 1 },
+    });
+
+    const result = await getFilteredFindingSummaryAndKept("scan-1", NO_IGNORES);
+
+    expect(result.ignoredMalicious).toBe(0);
+    expect(result.keptFindings).toBeNull();
+  });
+
+  it("counts only the MALICIOUS_SCRIPT findings the ignores dropped", async () => {
+    mockGetFindingsForScan.mockResolvedValue([
+      // Ignored (app rule) and malicious: counted.
+      makeFinding({
+        filename: "a",
+        findingType: "MALICIOUS_SCRIPT",
+        severity: "HIGH",
+        appName: "Klaviyo",
+      }),
+      makeFinding({
+        filename: "b",
+        findingType: "MALICIOUS_SCRIPT",
+        severity: "HIGH",
+        appName: "Klaviyo",
+      }),
+      // Ignored but not malicious: not counted.
+      makeFinding({
+        filename: "c",
+        findingType: "GHOST_SCRIPT",
+        severity: "HIGH",
+        appName: "Klaviyo",
+      }),
+      // Malicious but not ignored: stays in the summary, not counted.
+      makeFinding({
+        filename: "d",
+        findingType: "MALICIOUS_SCRIPT",
+        severity: "HIGH",
+        appName: null,
+      }),
+    ]);
+
+    const result = await getFilteredFindingSummaryAndKept("scan-1", {
+      fingerprints: new Set(),
+      appNames: new Set(["Klaviyo"]),
+    });
+
+    expect(result.ignoredMalicious).toBe(2);
+    expect(result.summary.total).toBe(1);
+    expect(result.summary.byType.MALICIOUS_SCRIPT).toBe(1);
+    expect(result.keptFindings).toHaveLength(1);
   });
 });
 

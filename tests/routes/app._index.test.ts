@@ -1753,6 +1753,44 @@ describe("app._index loader — ignore-filtered counts stay consistent (FIX 1/2)
     expect(newest.highCount).toBe(1);
   });
 
+  // gc-kxfb: known malicious code shows regardless of ignores, so each trend
+  // point adds back the malicious findings the merchant ignored (always HIGH),
+  // and the newest point's total equals the findings tile's number.
+  it("adds ignored malicious findings back to each trend point, matching the tile", async () => {
+    const ignoredMalicious: Record<string, number> = { "scan-1": 2, "trend-old": 1 };
+    const filtered: Record<string, { HIGH: number; MEDIUM: number; LOW: number }> = {
+      "scan-1": { HIGH: 1, MEDIUM: 0, LOW: 0 },
+      "scan-0": { HIGH: 0, MEDIUM: 2, LOW: 0 },
+      "trend-old": { HIGH: 0, MEDIUM: 0, LOW: 3 },
+    };
+    mockGetFilteredFindingSummary.mockImplementation(async (scanId: string) => ({
+      summary: { total: 0, bySeverity: filtered[scanId], byType: {} },
+      keptFindings: [],
+      ignoredMalicious: ignoredMalicious[scanId] ?? 0,
+    }));
+    // What the latest scan FOUND, ignored ones included (feeds the tile).
+    mockGetTypeCounts.mockResolvedValue({ MALICIOUS_SCRIPT: 2 });
+
+    const result = (await loader(makeLoaderArgs())) as unknown as {
+      findingsTile: { total: number } | null;
+      healthScoreTrend: {
+        scores: Array<{ scanId: string; highCount: number; mediumCount: number; lowCount: number }>;
+      } | null;
+    };
+    const scores = result.healthScoreTrend?.scores ?? [];
+
+    expect(scores.map((s) => [s.scanId, s.highCount, s.mediumCount, s.lowCount])).toEqual([
+      ["trend-old", 1, 0, 3],
+      ["scan-0", 0, 2, 0],
+      ["scan-1", 3, 0, 0],
+    ]);
+    const newest = scores[scores.length - 1];
+    expect(newest.highCount + newest.mediumCount + newest.lowCount).toBe(
+      result.findingsTile?.total,
+    );
+    expect(result.findingsTile?.total).toBe(3);
+  });
+
   it("findingTrend.previousTotal uses the ignore-filtered previous-scan total", async () => {
     const result = (await loader(makeLoaderArgs())) as {
       findingTrend: { direction: string; previousTotal: number } | null;

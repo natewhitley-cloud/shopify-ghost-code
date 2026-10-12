@@ -300,6 +300,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // historical/previous) by the CURRENT ignore set is the correct, consistent
   // behavior: an ignored fingerprint or app-level rule applies across every scan,
   // so a merchant who suppresses a finding sees it removed from history too.
+  // The exception is known malicious code, which shows regardless of ignores:
+  // the tile and the trend chart add ignored MALICIOUS_SCRIPT findings back.
   //
   // Cost: shops with NO suppressions skip this entirely and keep the fast batch
   // groupBy path (zero extra queries). When ignores exist, the per-scan filtered
@@ -309,6 +311,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   let filteredSeverityByScanId: Map<string, Record<Severity, number>> | null = null;
   // Ignore-filtered MALICIOUS_SCRIPT count per scan (findings tile, gc-j8xq).
   let filteredMaliciousByScanId: Map<string, number> | null = null;
+  // MALICIOUS_SCRIPT findings the ignores dropped, per scan (trend chart, gc-kxfb).
+  let ignoredMaliciousByScanId: Map<string, number> | null = null;
   let latestTypeCounts = typeCounts;
   // The latest successful scan's kept (non-ignored) findings, which the
   // filtered summary had to read anyway: the "Start here" ranking reuses them
@@ -325,6 +329,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     );
     filteredMaliciousByScanId = new Map(
       summaries.map(([id, { summary }]) => [id, summary.byType?.MALICIOUS_SCRIPT ?? 0]),
+    );
+    ignoredMaliciousByScanId = new Map(
+      summaries.map(([id, { ignoredMalicious }]) => [id, ignoredMalicious]),
     );
     // The latest successful scan's ignore-filtered per-type counts feed the lanes.
     if (latestScan && isSuccessfulScan(latestScan.status)) {
@@ -462,7 +469,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     const scores: TrendScoreEntry[] = completedScansForTrend
       .map((scan) => {
         const counts = severityForScan(scan.id);
-        const highCount = counts.HIGH ?? 0;
+        // Counted the way the tile counts (gc-kxfb): ignored malicious
+        // findings are added back, and MALICIOUS_SCRIPT is always HIGH.
+        const highCount = (counts.HIGH ?? 0) + (ignoredMaliciousByScanId?.get(scan.id) ?? 0);
         const mediumCount = counts.MEDIUM ?? 0;
         const lowCount = counts.LOW ?? 0;
         return {
