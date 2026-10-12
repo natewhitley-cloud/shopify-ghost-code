@@ -18,6 +18,7 @@ import {
 } from "../components/HealthScoreTrendChart";
 import type { HealthScoreTrend, TrendScoreEntry } from "../components/HealthScoreTrendChart";
 import { ScanProgress } from "../components/ScanProgress";
+import { ThemeHealthChecklist } from "../components/ThemeHealthChecklist";
 import { TopFindings } from "../components/TopFindings";
 import { buildRemovalNotice } from "../lib/app-removal-notice";
 import type { RemovalNotice } from "../lib/app-removal-notice";
@@ -57,6 +58,7 @@ import {
   summaryNoticeLead,
   summaryOptInBody,
 } from "../lib/summary-email-copy";
+import type { HealthRow } from "../lib/theme-health";
 import { toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
@@ -100,6 +102,7 @@ import type { SummaryOptInPrompt } from "../services/summary-optin.server";
 import { getCachedAllThemes, getCachedMainTheme } from "../services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../services/theme-fetcher.server";
 import type { ThemeSummary } from "../services/theme-fetcher.server";
+import { loadThemeHealth } from "../services/theme-health.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../services/top-findings.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -196,6 +199,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       newlyInactiveApps: [] as string[],
       summaryNotice: null as SummaryNotice | null,
       summaryOptIn: null as SummaryOptInPrompt | null,
+      themeHealth: [] as HealthRow[],
     };
   }
 
@@ -552,6 +556,28 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       : null;
   const newlyInactiveApps = removalRows.filter((r) => r.state === "REMOVED").map((r) => r.appName);
 
+  // Theme health checklist (gc-i6du): what the latest successful scan checked
+  // and found, by category, plus the theme's type/version and the unpublished
+  // themes. Only with results on screen, so the 3s poll while a scan runs adds
+  // nothing. Counts and fixed copy only: nothing here is plan-gated content.
+  // The theme list is already loaded for Standard and Professional (the
+  // picker); Free reads it here, through the same 60s cache, and a failed read
+  // only drops the unpublished-themes row.
+  let themeHealth: HealthRow[] = [];
+  if (hasResults && latestSuccessful && latestTypeCounts) {
+    const themesForHealth: ThemeSummary[] | null = shouldFetchThemes
+      ? allThemes
+      : await getCachedAllThemes(admin, session.shop).catch(() => null);
+    themeHealth = await loadThemeHealth({
+      shop,
+      scan: latestSuccessful,
+      typeCounts: latestTypeCounts,
+      mainThemeId: mainTheme?.id ?? null,
+      themes: themesForHealth,
+      now,
+    });
+  }
+
   // "Summary emails are on" (gc-ol95): shown ONCE to a shop that owes it (moved
   // Free -> paid, or opted in while sending was dark); the load that wins the
   // claim renders it, and that claim is the merchant's notice. Pre-checked on
@@ -587,6 +613,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     newlyInactiveApps,
     summaryNotice,
     summaryOptIn,
+    themeHealth,
   };
 };
 
@@ -1008,6 +1035,7 @@ export default function Dashboard() {
     newlyInactiveApps,
     summaryNotice,
     summaryOptIn,
+    themeHealth,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
@@ -1803,6 +1831,10 @@ export default function Dashboard() {
                 </s-stack>
               </div>
             )}
+
+            {/* Theme health (gc-i6du): what the scan checked and found, by
+              category. A plain list: no score, no percentage. */}
+            {hasResults && latestScan && <ThemeHealthChecklist rows={themeHealth} />}
 
             {/* Findings Trend — feature-flagged, paid plans only */}
             <HealthScoreTrendChart

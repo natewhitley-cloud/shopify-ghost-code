@@ -72,6 +72,12 @@ vi.mock("../../app/services/top-findings.server", () => ({
   getFreeTopFindings: vi.fn(async () => []),
 }));
 
+// Theme health checklist (gc-i6du): its own queries and rows are covered in
+// app._index.theme-health.test.tsx; here it returns no rows (renders nothing).
+vi.mock("../../app/services/theme-health.server", () => ({
+  loadThemeHealth: vi.fn(async () => []),
+}));
+
 vi.mock("../../app/services/theme-fetcher.server", () => ({
   fetchMainTheme: vi.fn(),
   fetchAllThemes: vi.fn(),

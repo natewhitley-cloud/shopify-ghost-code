@@ -78,6 +78,12 @@ vi.mock("../../app/services/top-findings.server", () => ({
   getFreeTopFindings: vi.fn().mockResolvedValue([]),
 }));
 
+// Theme health checklist (gc-i6du): its own queries and rows are covered in
+// app._index.theme-health.test.tsx; here it returns no rows (renders nothing).
+vi.mock("../../app/services/theme-health.server", () => ({
+  loadThemeHealth: vi.fn(async () => []),
+}));
+
 vi.mock("../../app/services/theme-fetcher.server", () => ({
   fetchMainTheme: vi.fn(),
   fetchAllThemes: vi.fn(),
@@ -361,6 +367,10 @@ describe("Home results summary: no 0-100 score (gc-k2ub)", () => {
     expect(html).toMatch(
       /<h2 class="dashboard-section-title">Findings<\/h2>(?:(?!<h2)[\s\S])*?<div class="health-score-number[^"]*">4<\/div>/,
     );
+    // The findings count is never headed "Theme Health" again (gc-k2ub). The
+    // only "Theme health" on Home is the checklist section (gc-i6du), a plain
+    // list with no score; it has no rows in this file (see the mock above) and
+    // is covered in app._index.theme-health.test.tsx.
     expect(html).not.toMatch(/theme health/i);
     expect(html).not.toMatch(/health score/i);
     expect(html).not.toMatch(/out of 100/i);

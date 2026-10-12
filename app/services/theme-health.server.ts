@@ -1,0 +1,98 @@
+/**
+ * Theme health checklist for Home (gc-i6du): gathers what the pure builder
+ * (app/lib/theme-health.ts) needs for the latest successful scan.
+ *
+ * Cost per Home load, and only for a successful latest scan (never on the 3s
+ * poll while a scan runs): one small read of the unpublished themes' latest
+ * scans, only when the store has unpublished themes. Everything else comes
+ * from data the loader already holds. No speed-report data is read here: Home
+ * stays decoupled from it (tests/integration/speed-report-decoupling).
+ * Never throws: a failed lookup drops that one detail and the rest renders.
+ */
+
+import type { FindingType } from "@prisma/client";
+
+import { parseLiveFindingTypes } from "./scan-differ.server";
+import { SCRIPT_TAG_SUNSET_AT_MS } from "./script-tag-sunset-detector.server";
+import type { ThemeSummary } from "./theme-fetcher.server";
+import { getPlanFeatures } from "../lib/billing.server";
+import { logger } from "../lib/logger.server";
+import { findingTypesWithheldByPlan } from "../lib/plan-finding-types";
+import { safeErrorFields } from "../lib/safe-error";
+import {
+  buildThemeHealthChecklist,
+  type HealthRow,
+  type ThemeInventoryItem,
+} from "../lib/theme-health";
+import { parseThemeInfo } from "../lib/theme-info";
+import { getLatestScanFindingCountsByTheme } from "../models/scan.server";
+
+/** The scan columns the checklist reads. */
+export interface ThemeHealthScan {
+  id: string;
+  themeId: string;
+  themeName: string;
+  skippedCategories: readonly string[];
+  cappedCategories: readonly string[];
+  unreachableCategories: readonly string[];
+  liveFindingTypes: unknown;
+  themeInfo: unknown;
+}
+
+const LOG_FN = "theme-health";
+
+export async function loadThemeHealth(input: {
+  shop: { id: string; plan: string };
+  scan: ThemeHealthScan;
+  /** The scan's (ignore-filtered) finding counts per type. */
+  typeCounts: Partial<Record<FindingType, number>>;
+  /** The published theme's id; null = not known. */
+  mainThemeId: string | null;
+  /** The store's themes; null = the list was not available. */
+  themes: readonly ThemeSummary[] | null;
+  now: Date;
+}): Promise<HealthRow[]> {
+  const { shop, scan, typeCounts } = input;
+  const features = getPlanFeatures(shop.plan);
+
+  let inventory: ThemeInventoryItem[] | null = null;
+  if (input.themes !== null) {
+    const unpublishedIds = input.themes
+      .filter((t) => t.role !== "MAIN" && t.role !== "DEVELOPMENT")
+      .map((t) => t.id);
+    let counts = new Map<string, number>();
+    try {
+      counts = await getLatestScanFindingCountsByTheme(shop.id, unpublishedIds);
+    } catch (err) {
+      logger.warn("theme health: unpublished theme scans unavailable", {
+        function: LOG_FN,
+        shopId: shop.id,
+        ...safeErrorFields(err),
+      });
+    }
+    inventory = input.themes.map((t) => ({
+      id: t.id,
+      name: t.name,
+      role: t.role,
+      lastScanFindingCount: t.role === "MAIN" ? null : (counts.get(t.id) ?? null),
+    }));
+  }
+
+  return buildThemeHealthChecklist({
+    scanId: scan.id,
+    typeCounts,
+    coverage: {
+      skippedCategories: scan.skippedCategories,
+      cappedCategories: scan.cappedCategories,
+      unreachableCategories: scan.unreachableCategories,
+      liveTypes: parseLiveFindingTypes(scan.liveFindingTypes),
+      planWithheld: findingTypesWithheldByPlan(features),
+      isPublishedTheme: input.mainThemeId === null ? null : scan.themeId === input.mainThemeId,
+    },
+    fullList: Boolean(features.showFindingDetails),
+    themeInfo: parseThemeInfo(scan.themeInfo),
+    scanThemeName: scan.themeName,
+    themes: inventory,
+    scriptTagsStopped: input.now.getTime() >= SCRIPT_TAG_SUNSET_AT_MS,
+  });
+}

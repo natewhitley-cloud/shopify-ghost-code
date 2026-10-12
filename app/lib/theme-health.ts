@@ -1,0 +1,584 @@
+/**
+ * Theme health checklist (gc-i6du): the latest scan as a plain list of what
+ * was checked and what each check found, with a concrete cost where the scan
+ * has one (extra requests, Liquid errors shoppers can read, records left).
+ *
+ * Not here: KB and processing time from the speed report. Home must render
+ * with no dependency on speed data (tests/integration/speed-report-decoupling,
+ * owner decision 2026-10-11), so those numbers stay on the Store speed page.
+ *
+ * NO score, grade, percentage or "x of y" headline, here or in any consumer:
+ * the 0-100 health score was removed on 2026-10-09 (gc-k2ub) because a
+ * composite misled merchants. Each row stands on its own.
+ *
+ * Where the lanes (finding-consequence.ts) answer "what is this costing me",
+ * this answers "what did you check, and is it clean". Every FindingType lands
+ * in exactly ONE category (HEALTH_CATEGORY_OF is an exhaustive Record, so a
+ * new type does not compile until it is placed), plus two rows that are not
+ * findings: the theme's own type/version, and the unpublished themes.
+ *
+ * Plan gating: a row carries COUNTS and fixed copy only, never a file, a line,
+ * a snippet or an app name, so Free sees exactly what paid plans see here and
+ * nothing is unlocked.
+ *
+ * Pure and client-safe: no React, no server imports.
+ */
+
+import type { FindingType } from "@prisma/client";
+
+import type { ThemeInfo } from "./theme-info";
+
+// ---------------------------------------------------------------------------
+// Categories
+// ---------------------------------------------------------------------------
+
+export type HealthCategoryKey =
+  | "malicious"
+  | "shopper-visible"
+  | "scripts-styles"
+  | "snippets-sections"
+  | "seo-ai"
+  | "tracking"
+  | "store-data"
+  | "script-tag-deadline";
+
+/**
+ * Fixed display order, label and a one-line "what this checks" for each
+ * category. Labels are merchant copy: plain words, no em dashes.
+ */
+export const HEALTH_CATEGORIES: ReadonlyArray<{
+  key: HealthCategoryKey;
+  label: string;
+  checks: string;
+}> = [
+  {
+    key: "malicious",
+    label: "Known malicious code",
+    checks: "Code that loads from sources known to steal data or redirect shoppers.",
+  },
+  {
+    key: "shopper-visible",
+    label: "Errors shoppers can see",
+    checks: "Liquid errors on your homepage, broken links, and leftover app text or widgets.",
+  },
+  {
+    key: "scripts-styles",
+    label: "Leftover scripts and styles",
+    checks: "Scripts, stylesheets, fonts and app calls from apps you removed.",
+  },
+  {
+    key: "snippets-sections",
+    label: "Leftover snippets and sections",
+    checks: "Snippets, sections, layouts and settings an app left in your theme.",
+  },
+  {
+    key: "seo-ai",
+    label: "SEO and AI tags",
+    checks: "Tags that tell Google and AI assistants what your store and products are.",
+  },
+  {
+    key: "tracking",
+    label: "Tracking still running",
+    checks: "Tracking pixels from removed apps, and trackers set up twice.",
+  },
+  {
+    key: "store-data",
+    label: "Store data left behind",
+    checks: "Product tags, prices, pages, metafields, redirects and translations an app left.",
+  },
+  {
+    key: "script-tag-deadline",
+    label: "Script tag deadline",
+    checks: "Apps that still load through script tags, which Shopify is retiring.",
+  },
+];
+
+/**
+ * THE MAPPING: every FindingType to the ONE checklist category it counts in.
+ * `Record<FindingType, ...>` makes the compiler enforce completeness; a test
+ * also asserts it against the runtime enum and that every category is used.
+ * No type is excluded: a finding the scan stores always shows up in a row.
+ */
+export const HEALTH_CATEGORY_OF: Record<FindingType, HealthCategoryKey> = {
+  MALICIOUS_SCRIPT: "malicious",
+
+  LIQUID_ERROR_RENDERED: "shopper-visible",
+  GHOST_TEXT: "shopper-visible",
+  DANGLING_REFERENCE: "shopper-visible",
+  OVERLAPPING_CHAT_WIDGET: "shopper-visible",
+
+  GHOST_SCRIPT: "scripts-styles",
+  GHOST_STYLE: "scripts-styles",
+  GHOST_PRECONNECT: "scripts-styles",
+  GHOST_FONT: "scripts-styles",
+  GHOST_AJAX: "scripts-styles",
+  DUPLICATE_LIBRARY: "scripts-styles",
+
+  GHOST_SNIPPET: "snippets-sections",
+  GHOST_SECTION: "snippets-sections",
+  ORPHAN_ASSET: "snippets-sections",
+  GHOST_LAYOUT: "snippets-sections",
+  SETTINGS_DRIFT: "snippets-sections",
+  GHOST_APP_EMBED: "snippets-sections",
+  // The retired checkout.liquid file: dead code still sitting in the theme.
+  CHECKOUT_SUNSET: "snippets-sections",
+
+  GHOST_HREFLANG: "seo-ai",
+  DUPLICATE_META: "seo-ai",
+  GHOST_JSON_LD: "seo-ai",
+  JSON_LD_CONFLICT: "seo-ai",
+  JSON_LD_PRICE_CONFLICT: "seo-ai",
+  JSON_LD_INVALID: "seo-ai",
+  GHOST_ROBOTS: "seo-ai",
+  GHOST_CANONICAL: "seo-ai",
+  GHOST_TITLE: "seo-ai",
+  GHOST_OG: "seo-ai",
+
+  GHOST_PIXEL: "tracking",
+  DUPLICATE_TRACKER: "tracking",
+
+  GHOST_TAG: "store-data",
+  GHOST_PRICE: "store-data",
+  GHOST_PAGE: "store-data",
+  GHOST_METAFIELD: "store-data",
+  GHOST_REDIRECT: "store-data",
+  GHOST_TRANSLATION: "store-data",
+
+  // Both are about the 2027-03-01 move from script tags to app embeds.
+  SCRIPT_TAG_SUNSET: "script-tag-deadline",
+  APP_EMBED_OFF: "script-tag-deadline",
+};
+
+/** The finding types counted in `category`, in enum-map order. */
+export function typesForHealthCategory(category: HealthCategoryKey): FindingType[] {
+  return (Object.keys(HEALTH_CATEGORY_OF) as FindingType[]).filter(
+    (type) => HEALTH_CATEGORY_OF[type] === category,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Coverage: was each type actually checked by this scan?
+// ---------------------------------------------------------------------------
+
+/**
+ * Why a type was (or was not) checked by the scan, so a row never says "Clean"
+ * about something nobody looked at.
+ *   - checked:     the check ran in full.
+ *   - capped:      it ran, but a size cap left part unchecked.
+ *   - permission:  skipped, its optional permission is not granted.
+ *   - unreachable: the public storefront homepage could not be read.
+ *   - unpublished: a storefront check, and this scan was not the published theme.
+ *   - plan:        the plan does not include the check (Broken links,
+ *                  checkout.liquid on Free).
+ *   - dark:        the check is not switched on for anyone (soft-launch flag).
+ *                  A dark type is left out of its row entirely: the merchant
+ *                  has never been offered it.
+ */
+export type TypeCoverage =
+  | "checked"
+  | "capped"
+  | "permission"
+  | "unreachable"
+  | "unpublished"
+  | "plan"
+  | "dark";
+
+/** The storefront step's types: only ever checked on the published theme. */
+const STOREFRONT_TYPES: ReadonlySet<string> = new Set([
+  "SCRIPT_TAG_SUNSET",
+  "LIQUID_ERROR_RENDERED",
+]);
+
+/** What a scan recorded about its own coverage (the Scan row's columns). */
+export interface HealthCoverageInput {
+  skippedCategories: readonly string[];
+  cappedCategories: readonly string[];
+  unreachableCategories: readonly string[];
+  /** Parsed `Scan.liveFindingTypes`; null = a legacy scan that never recorded it. */
+  liveTypes: ReadonlySet<string> | null;
+  /** Finding types the shop's PLAN does not run (findingTypesWithheldByPlan). */
+  planWithheld: readonly string[];
+  /** Whether the scanned theme is the published one (null = not known). */
+  isPublishedTheme: boolean | null;
+}
+
+/** How `type` was covered by a scan. See TypeCoverage for the meanings. */
+export function coverageForType(type: FindingType, scan: HealthCoverageInput): TypeCoverage {
+  if (scan.planWithheld.includes(type)) return "plan";
+  if (scan.unreachableCategories.includes(type)) return "unreachable";
+  if (scan.skippedCategories.includes(type)) return "permission";
+  if (scan.liveTypes !== null && !scan.liveTypes.has(type)) {
+    // The storefront step drops its types from the live set when it did not
+    // run. On another theme that is expected; on the published theme it means
+    // the check is off.
+    return STOREFRONT_TYPES.has(type) && scan.isPublishedTheme === false ? "unpublished" : "dark";
+  }
+  if (scan.cappedCategories.includes(type)) return "capped";
+  return "checked";
+}
+
+/** Why part of a row was not checked, most useful to act on first. */
+const GAP_ORDER: ReadonlyArray<Exclude<TypeCoverage, "checked" | "dark">> = [
+  "unreachable",
+  "permission",
+  "plan",
+  "unpublished",
+  "capped",
+];
+
+const GAP_COPY: Record<Exclude<TypeCoverage, "checked" | "dark">, string> = {
+  unreachable:
+    "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.",
+  permission:
+    "Part of this needs a permission you haven't allowed yet. You can allow it in Settings.",
+  plan: "Part of this is checked on Standard and Professional.",
+  unpublished: "This is only checked on your published theme.",
+  capped: "Your store has more of these than one scan checks, so part of this wasn't checked.",
+};
+
+/** What the plan leaves out of a row, named (the two plan-gated checks). */
+const PLAN_GAP_COPY: Partial<Record<HealthCategoryKey, string>> = {
+  "shopper-visible": "Broken links are checked on Standard and Professional.",
+  "snippets-sections": "Old checkout code is checked on Standard and Professional.",
+};
+
+/** The line explaining a row's gap. */
+function gapLine(
+  reason: Exclude<TypeCoverage, "checked" | "dark">,
+  category: HealthCategoryKey,
+): string {
+  return reason === "plan" ? (PLAN_GAP_COPY[category] ?? GAP_COPY.plan) : GAP_COPY[reason];
+}
+
+// ---------------------------------------------------------------------------
+// Rows
+// ---------------------------------------------------------------------------
+
+/**
+ * - issues:      something was found (the count is in `statusLabel`).
+ * - clean:       every check in the row ran and found nothing.
+ * - partial:     nothing found, but part of the row was not checked.
+ * - not_checked: no check in the row ran.
+ * - info:        a fact, not a pass or a fail (theme version, theme inventory).
+ */
+export type HealthStatus = "issues" | "clean" | "partial" | "not_checked" | "info";
+
+export interface HealthRow {
+  /** A category key, "theme" or "unpublished-themes". */
+  key: HealthCategoryKey | "theme" | "unpublished-themes";
+  label: string;
+  /** One line on what the row covers. Always shown. */
+  checks: string;
+  status: HealthStatus;
+  /** "Clean", "3 issues", "Not checked", "Vintage theme", "2 unpublished"... */
+  statusLabel: string;
+  /** Findings counted in the row (0 for the two rows that are not findings). */
+  count: number;
+  /** The concrete cost, or why it was not checked. Null when there is nothing to add. */
+  detail: string | null;
+  /** Where to look at the findings, or null when there is nothing to open. */
+  href: string | null;
+}
+
+/** One theme of the store, as the Admin API lists it. */
+export interface ThemeInventoryItem {
+  id: string;
+  name: string;
+  role: string;
+  /** Findings in this theme's latest successful scan; null = never scanned. */
+  lastScanFindingCount: number | null;
+}
+
+/** Shopify's theme library limit (stores on Shopify Plus can hold more). */
+export const THEME_LIBRARY_LIMIT = 20;
+/** At most this many scanned unpublished themes are named in the row. */
+export const MAX_NAMED_UNPUBLISHED_THEMES = 3;
+
+type TypeCounts = Partial<Record<FindingType, number>>;
+
+function plural(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** Join cost phrases into one sentence: "A, B and C." */
+function sentence(parts: string[]): string {
+  if (parts.length === 0) return "";
+  const joined =
+    parts.length === 1
+      ? parts[0]
+      : `${parts.slice(0, -1).join(", ")} and ${parts[parts.length - 1]}`;
+  return `${joined.charAt(0).toUpperCase()}${joined.slice(1)}.`;
+}
+
+/**
+ * The concrete cost of a category's findings, from counts only. Each phrase is
+ * a number of things the merchant can picture, never a rating.
+ */
+export function healthCostLine(
+  category: HealthCategoryKey,
+  counts: TypeCounts,
+  opts: { scriptTagsStopped: boolean },
+): string {
+  const n = (...types: FindingType[]) => types.reduce((sum, t) => sum + (counts[t] ?? 0), 0);
+  const parts: string[] = [];
+  switch (category) {
+    case "malicious": {
+      const k = n("MALICIOUS_SCRIPT");
+      return `${plural(k, "piece", "pieces")} of code from a known malicious source ${k === 1 ? "is" : "are"} in your theme. It can steal shopper data or send your customers to other sites.`;
+    }
+    case "shopper-visible": {
+      const errors = n("LIQUID_ERROR_RENDERED");
+      const links = n("DANGLING_REFERENCE");
+      const text = n("GHOST_TEXT");
+      const chat = n("OVERLAPPING_CHAT_WIDGET");
+      if (errors > 0) {
+        parts.push(
+          `${plural(errors, "Liquid error", "Liquid errors")} shoppers can read on your homepage`,
+        );
+      }
+      if (links > 0) parts.push(plural(links, "broken link", "broken links"));
+      if (text > 0)
+        parts.push(plural(text, "piece of leftover app text", "pieces of leftover app text"));
+      if (chat > 0) parts.push("more than one chat widget loading at once");
+      return sentence(parts);
+    }
+    case "scripts-styles": {
+      const requests = n("GHOST_SCRIPT", "GHOST_STYLE", "GHOST_FONT", "GHOST_AJAX");
+      const hints = n("GHOST_PRECONNECT");
+      const duplicates = n("DUPLICATE_LIBRARY");
+      if (requests > 0) {
+        parts.push(
+          `${plural(requests, "extra request", "extra requests")} to apps you removed, on every page that loads ${requests === 1 ? "it" : "them"}`,
+        );
+      }
+      if (hints > 0) parts.push(plural(hints, "wasted connection hint", "wasted connection hints"));
+      if (duplicates > 0) {
+        parts.push(
+          plural(duplicates, "library loaded more than once", "libraries loaded more than once"),
+        );
+      }
+      return sentence(parts);
+    }
+    case "snippets-sections": {
+      const code = n("GHOST_SNIPPET", "GHOST_SECTION", "GHOST_LAYOUT", "ORPHAN_ASSET");
+      const settings = n("SETTINGS_DRIFT", "GHOST_APP_EMBED");
+      if (code > 0) {
+        parts.push(
+          `${plural(code, "leftover snippet, section or file", "leftover snippets, sections and files")} in your theme code`,
+        );
+      }
+      if (settings > 0)
+        parts.push(plural(settings, "leftover theme setting", "leftover theme settings"));
+      if (n("CHECKOUT_SUNSET") > 0) parts.push("a checkout.liquid file Shopify no longer runs");
+      return sentence(parts);
+    }
+    case "seo-ai": {
+      const k = n(...typesForHealthCategory("seo-ai"));
+      return `${plural(k, "tag gives", "tags give")} Google and AI assistants wrong or conflicting information about your store.`;
+    }
+    case "tracking": {
+      const pixels = n("GHOST_PIXEL");
+      const twice = n("DUPLICATE_TRACKER");
+      if (pixels > 0) {
+        parts.push(
+          `${plural(pixels, "tracking pixel", "tracking pixels")} that may still send shopper data to apps you removed`,
+        );
+      }
+      if (twice > 0) parts.push(plural(twice, "tracker set up twice", "trackers set up twice"));
+      return sentence(parts);
+    }
+    case "store-data": {
+      const k = n(...typesForHealthCategory("store-data"));
+      return `${plural(k, "leftover record", "leftover records")} in your products, pages, redirects and translations.`;
+    }
+    case "script-tag-deadline": {
+      const tags = n("SCRIPT_TAG_SUNSET");
+      const embeds = n("APP_EMBED_OFF");
+      if (tags > 0)
+        parts.push(`${plural(tags, "app still loads", "apps still load")} through script tags`);
+      if (embeds > 0) parts.push(`${plural(embeds, "app embed is", "app embeds are")} turned off`);
+      const deadline = opts.scriptTagsStopped
+        ? "Shopify stopped running script tags on March 1, 2027."
+        : "Shopify stops running script tags on March 1, 2027.";
+      return `${sentence(parts)} ${deadline}`;
+    }
+  }
+}
+
+function issuesLabel(count: number): string {
+  return plural(count, "issue", "issues");
+}
+
+/**
+ * Where a row's findings open on the scan page: filtered to the type when the
+ * plan shows the full list and the row's findings are all ONE type (the page
+ * filters by a single type), else the scan page itself.
+ */
+function findingsHref(
+  scanId: string,
+  category: HealthCategoryKey,
+  counts: TypeCounts,
+  fullList: boolean,
+): string {
+  const present = typesForHealthCategory(category).filter((t) => (counts[t] ?? 0) > 0);
+  // Malicious findings live in the security alert on the unfiltered page.
+  if (fullList && present.length === 1 && present[0] !== "MALICIOUS_SCRIPT") {
+    return `/app/scans/${scanId}?type=${encodeURIComponent(present[0])}`;
+  }
+  return `/app/scans/${scanId}`;
+}
+
+/** "Dawn 15.2.0 by Shopify", from whatever the theme lists about itself. */
+export function themeTitle(info: ThemeInfo, fallbackName: string): string {
+  const name = info.name ?? fallbackName;
+  return `${name}${info.version ? ` ${info.version}` : ""}${info.author ? ` by ${info.author}` : ""}`;
+}
+
+const THEME_ROW_CHECKS =
+  "Your theme's name and version, and whether it is an Online Store 2.0 theme.";
+
+function themeRow(info: ThemeInfo | null, scanThemeName: string): HealthRow {
+  const base = { key: "theme" as const, label: "Theme type and version", checks: THEME_ROW_CHECKS };
+  const none = { count: 0, href: null };
+  if (info === null) {
+    return {
+      ...base,
+      ...none,
+      status: "not_checked",
+      statusLabel: "Not checked",
+      detail: "Run a new scan to see your theme's name, version and type.",
+    };
+  }
+  const title = themeTitle(info, scanThemeName);
+  if (info.architecture === "vintage") {
+    return {
+      ...base,
+      ...none,
+      status: "issues",
+      statusLabel: "Vintage theme",
+      detail: `${title} is a vintage theme, not Online Store 2.0. Apps can't add app blocks or app embeds to it, so they write their code into your theme files, and it stays there when you remove them.`,
+    };
+  }
+  if (info.architecture === "os2") {
+    return { ...base, ...none, status: "clean", statusLabel: "Online Store 2.0", detail: title };
+  }
+  return { ...base, ...none, status: "info", statusLabel: "Type not detected", detail: title };
+}
+
+const UNPUBLISHED_CHECKS = "Themes in your library that shoppers don't see.";
+
+/**
+ * The store's theme library (development themes are not part of it). Null when
+ * the list was not available: the row is left out rather than guessed.
+ */
+function unpublishedThemesRow(themes: readonly ThemeInventoryItem[] | null): HealthRow | null {
+  if (themes === null) return null;
+  const library = themes.filter((t) => t.role !== "DEVELOPMENT");
+  if (library.length === 0) return null;
+  const unpublished = library.filter((t) => t.role !== "MAIN");
+  const limit = `Your store has ${plural(library.length, "theme", "themes")}. Shopify allows ${THEME_LIBRARY_LIMIT} (more on Plus).`;
+  const scanned = unpublished
+    .filter(
+      (t): t is ThemeInventoryItem & { lastScanFindingCount: number } =>
+        t.lastScanFindingCount !== null,
+    )
+    .sort((a, b) => b.lastScanFindingCount - a.lastScanFindingCount);
+  const named = scanned
+    .slice(0, MAX_NAMED_UNPUBLISHED_THEMES)
+    .map((t) => `${t.name}: ${plural(t.lastScanFindingCount, "finding", "findings")}`);
+  const more = scanned.length - named.length;
+  const leftovers =
+    named.length === 0
+      ? ""
+      : ` In their last scans: ${named.join("; ")}${more > 0 ? `; and ${more} more` : ""}.`;
+  return {
+    key: "unpublished-themes",
+    label: "Unpublished themes",
+    checks: UNPUBLISHED_CHECKS,
+    status: "info",
+    statusLabel: unpublished.length === 0 ? "None" : `${unpublished.length} unpublished`,
+    count: 0,
+    detail: `${limit}${leftovers}`,
+    href: null,
+  };
+}
+
+export interface ThemeHealthInput {
+  scanId: string;
+  /** The scan's (ignore-filtered) finding counts per type. */
+  typeCounts: TypeCounts;
+  coverage: HealthCoverageInput;
+  /** True when the plan shows the full finding list (Standard, Professional). */
+  fullList: boolean;
+  /** Parsed `Scan.themeInfo`; null = legacy scan. */
+  themeInfo: ThemeInfo | null;
+  /** The scanned theme's name as the merchant named it (fallback title). */
+  scanThemeName: string;
+  /** The store's themes; null = the list was not available. */
+  themes: readonly ThemeInventoryItem[] | null;
+  /** Whether Shopify has already stopped running script tags (2027-03-01). */
+  scriptTagsStopped: boolean;
+}
+
+/**
+ * The checklist's rows, in display order: the eight finding categories, then
+ * the theme's type and version, then the unpublished themes.
+ *
+ * A category whose every type is dark (not switched on for anyone) and that
+ * has no findings is left out: nothing was promised there.
+ */
+export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] {
+  const rows: HealthRow[] = [];
+
+  for (const category of HEALTH_CATEGORIES) {
+    const types = typesForHealthCategory(category.key);
+    const count = types.reduce((sum, t) => sum + (input.typeCounts[t] ?? 0), 0);
+    const covered = types
+      .map((t) => coverageForType(t, input.coverage))
+      .filter((c): c is Exclude<TypeCoverage, "dark"> => c !== "dark");
+    const base = { key: category.key, label: category.label, checks: category.checks };
+
+    if (count > 0) {
+      rows.push({
+        ...base,
+        status: "issues",
+        statusLabel: issuesLabel(count),
+        count,
+        detail: healthCostLine(category.key, input.typeCounts, {
+          scriptTagsStopped: input.scriptTagsStopped,
+        }),
+        href: findingsHref(input.scanId, category.key, input.typeCounts, input.fullList),
+      });
+      continue;
+    }
+    if (covered.length === 0) continue;
+
+    const gaps = covered.filter((c) => c !== "checked");
+    const reason = GAP_ORDER.find((g) => gaps.includes(g));
+    const none = { count: 0, href: null };
+    if (gaps.length === 0) {
+      rows.push({ ...base, ...none, status: "clean", statusLabel: "Clean", detail: null });
+    } else if (gaps.length === covered.length) {
+      rows.push({
+        ...base,
+        ...none,
+        status: "not_checked",
+        statusLabel: "Not checked",
+        detail: reason ? gapLine(reason, category.key) : null,
+      });
+    } else {
+      rows.push({
+        ...base,
+        ...none,
+        status: "partial",
+        statusLabel: "None found",
+        detail: reason ? gapLine(reason, category.key) : null,
+      });
+    }
+  }
+
+  rows.push(themeRow(input.themeInfo, input.scanThemeName));
+  const unpublished = unpublishedThemesRow(input.themes);
+  if (unpublished) rows.push(unpublished);
+  return rows;
+}

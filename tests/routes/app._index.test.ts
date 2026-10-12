@@ -94,6 +94,12 @@ vi.mock("../../app/services/top-findings.server", () => ({
   getFreeTopFindings: vi.fn().mockResolvedValue([]),
 }));
 
+// Theme health checklist (gc-i6du): its own queries and rows are covered in
+// app._index.theme-health.test.tsx; here it returns no rows (renders nothing).
+vi.mock("../../app/services/theme-health.server", () => ({
+  loadThemeHealth: vi.fn(async () => []),
+}));
+
 vi.mock("../../app/lib/billing.server", () => ({
   getPlanFeatures: vi.fn(),
 }));
@@ -946,16 +952,25 @@ describe("app._index loader — theme picker", () => {
       expect(result.allThemes).toEqual(ALL_THEMES);
     });
 
-    it("returns empty allThemes for Free plan and does not call fetchAllThemes", async () => {
-      // Default SHOP fixture has plan: "Free" — no override needed
-      mockFetchAllThemes.mockResolvedValue(ALL_THEMES); // would be non-empty if called
+    it("returns empty allThemes for Free plan (the picker stays hidden)", async () => {
+      // Default SHOP fixture has plan: "Free" — no override needed. The theme
+      // health checklist (gc-i6du) may read the list, but only for its own row.
+      mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
 
       const result = (await loader(makeLoaderArgs())) as {
         allThemes: unknown[];
       };
 
-      expect(mockFetchAllThemes).not.toHaveBeenCalled();
       expect(result.allThemes).toEqual([]);
+    });
+
+    it("Free with no successful scan never reads the theme list", async () => {
+      mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
+      mockGetScansForShop.mockResolvedValue({ items: [], hasNextPage: false });
+
+      await loader(makeLoaderArgs());
+
+      expect(mockFetchAllThemes).not.toHaveBeenCalled();
     });
   });
 
@@ -1067,13 +1082,15 @@ describe("app._index loader — multi-theme upgrade nudge", () => {
     expect(result.showMultiThemeNudge).toBe(false);
   });
 
-  it("does not show the nudge for a Free shop (themes are never fetched)", async () => {
-    // Default SHOP fixture is Free; loader skips fetchAllThemes so allThemes is [].
+  it("does not show the nudge for a Free shop, even with several themes", async () => {
+    // Default SHOP fixture is Free. The theme health checklist (gc-i6du) reads
+    // the theme list for Free too, but it never reaches the picker's allThemes,
+    // which is what the nudge counts.
     mockCanUseMultipleThemes.mockReturnValue(false);
+    mockFetchAllThemes.mockResolvedValue(ALL_THEMES);
 
     const result = (await loader(makeLoaderArgs())) as { showMultiThemeNudge: boolean };
 
-    expect(mockFetchAllThemes).not.toHaveBeenCalled();
     expect(result.showMultiThemeNudge).toBe(false);
   });
 
