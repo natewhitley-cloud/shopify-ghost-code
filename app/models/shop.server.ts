@@ -44,6 +44,7 @@ export type ShopMetadata = {
   summaryNoticeShownAt: Date | null;
   summaryOptedInAt: Date | null;
   summaryOptInDeclinedAt: Date | null;
+  summaryOptInFirstShownAt: Date | null;
 };
 
 /**
@@ -125,6 +126,7 @@ export async function getShopMetadata(domain: string): Promise<ShopMetadata | nu
       summaryNoticeShownAt: true,
       summaryOptedInAt: true,
       summaryOptInDeclinedAt: true,
+      summaryOptInFirstShownAt: true,
     },
   });
 }
@@ -408,8 +410,11 @@ export type EverPaidColumn = "everPaidAt";
 /** Summary-email notice owed / rendered (gc-ol95). */
 export type SummaryNoticeColumn = "summaryNoticePendingAt" | "summaryNoticeShownAt";
 
-/** Home's summary-email opt-in prompt answered "No thanks" (gc-xorg). */
-export type SummaryOptInColumn = "summaryOptInDeclinedAt";
+/**
+ * Home's summary-email opt-in prompt: answered "No thanks" (gc-xorg), first
+ * rendered (gc-rxq0).
+ */
+export type SummaryOptInColumn = "summaryOptInDeclinedAt" | "summaryOptInFirstShownAt";
 
 /**
  * Every once-per-merchant Shop stamp column. Typed so a claim can only target

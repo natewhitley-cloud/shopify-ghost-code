@@ -36,8 +36,15 @@ describe("add_shop_summary_optin_declined migration (gc-xorg)", () => {
     expect(SCHEMA).toMatch(/model Shop \{[\s\S]*?\n\s+summaryOptInDeclinedAt\s+DateTime\?\n/);
   });
 
-  it("is the latest migration (applied last on deploy)", () => {
-    const dirs = readdirSync(join(ROOT, "prisma/migrations")).filter((d) => /^\d{14}_/.test(d));
-    expect(dirs.sort().at(-1)).toBe(NAME);
+  it("sorts after the previous latest migration (gc-rxq0's first-shown column follows it)", () => {
+    const dirs = readdirSync(join(ROOT, "prisma/migrations"))
+      .filter((d) => /^\d{14}_/.test(d))
+      .sort();
+    const self = dirs.indexOf(NAME);
+    const previous = dirs.indexOf("20261014120000_add_shop_speed_teaser");
+    // Both must exist: a missing name (-1) must fail, not pass vacuously.
+    expect(self).toBeGreaterThanOrEqual(0);
+    expect(previous).toBeGreaterThanOrEqual(0);
+    expect(self).toBeGreaterThan(previous);
   });
 });

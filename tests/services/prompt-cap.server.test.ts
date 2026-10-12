@@ -105,6 +105,7 @@ function stateFor(
     summaryNoticeShownAt: null,
     summaryOptedInAt: null,
     summaryOptInDeclinedAt: null,
+    summaryOptInFirstShownAt: null,
     ...cap,
   };
 }
@@ -704,6 +705,51 @@ describe("summary_optin (gc-xorg)", () => {
       resolvePrompt({ ...input([], expired, HOME_PROMPTS), state: legacy(expired) }),
     ).resolves.toBe("summary_optin");
     expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+  });
+
+  it("Home: retired 14 days after first shown (gc-rxq0), feedback takes the slot", async () => {
+    // Still offered at 14 days minus 1 ms: the opt-in keeps outranking feedback.
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+    await expect(
+      resolvePrompt({
+        ...input([], FRESH, HOME_PROMPTS),
+        state: { ...legacy(), summaryOptInFirstShownAt: ago(14 * DAY - 1) },
+      }),
+    ).resolves.toBe("summary_optin");
+
+    // Exactly 14 days: retired, feedback is picked and claims the slot.
+    mockDb.shop.updateMany.mockReset();
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+    await expect(
+      resolvePrompt({
+        ...input([], FRESH, HOME_PROMPTS),
+        state: { ...legacy(), summaryOptInFirstShownAt: ago(14 * DAY) },
+      }),
+    ).resolves.toBe("feedback");
+    expect(mockDb.shop.updateMany).toHaveBeenCalledExactlyOnceWith({
+      where: { domain: DOMAIN, lastPromptKey: null, lastPromptShownAt: null },
+      data: { lastPromptKey: "feedback", lastPromptShownAt: NOW },
+    });
+  });
+
+  it("Home: a retired opt-in still holding its 24h window blocks feedback until it passes", async () => {
+    // The ordinary cap rule: the window's holder is no longer eligible, so
+    // nothing renders until the window has passed.
+    const held = { lastPromptKey: "summary_optin", lastPromptShownAt: ago(HOUR) };
+    const retired = { ...legacy(held), summaryOptInFirstShownAt: ago(14 * DAY) };
+    await expect(
+      resolvePrompt({ ...input([], held, HOME_PROMPTS), state: retired }),
+    ).resolves.toBeNull();
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+
+    const expired = { lastPromptKey: "summary_optin", lastPromptShownAt: ago(DAY) };
+    mockDb.shop.updateMany.mockResolvedValueOnce({ count: 1 });
+    await expect(
+      resolvePrompt({
+        ...input([], expired, HOME_PROMPTS),
+        state: { ...legacy(expired), summaryOptInFirstShownAt: ago(15 * DAY) },
+      }),
+    ).resolves.toBe("feedback");
   });
 
   it("the scan results page never renders it, and it does not stop the review popup there", async () => {

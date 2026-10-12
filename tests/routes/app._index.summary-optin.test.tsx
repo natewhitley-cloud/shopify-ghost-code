@@ -99,6 +99,7 @@ vi.mock("../../app/models/merchant-alert.server", () => ({
   dismissSummaryNotice: vi.fn(),
   setSummaryEmailsEnabled: vi.fn(),
   declineSummaryOptIn: vi.fn(),
+  claimSummaryOptInFirstShown: vi.fn(),
 }));
 
 vi.mock("../../app/services/merchant-alert.server", () => ({
@@ -117,6 +118,7 @@ import { getSeverityCountsForScans, getTypeCountsForScan } from "../../app/model
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import {
   claimSummaryNoticeShown,
+  claimSummaryOptInFirstShown,
   declineSummaryOptIn,
   setSummaryEmailsEnabled,
 } from "../../app/models/merchant-alert.server";
@@ -147,6 +149,8 @@ const THEME_ID = "gid://shopify/OnlineStoreTheme/77";
 const ADMIN = { graphql: vi.fn() };
 const HOUR = 60 * 60 * 1000;
 const hoursAgo = (h: number) => new Date(Date.now() - h * HOUR);
+/** gc-rxq0: the opt-in is offered for 14 days from its first render. */
+const OFFER_HOURS = 14 * 24;
 
 /**
  * A LEGACY Professional shop: paid before gc-ol95 shipped, so no consent stamp
@@ -191,6 +195,7 @@ const SHOP = {
   summaryNoticeShownAt: null as Date | null,
   summaryOptedInAt: null as Date | null,
   summaryOptInDeclinedAt: null as Date | null,
+  summaryOptInFirstShownAt: null as Date | null,
 };
 const COMPLETED = {
   id: "scan-2",
@@ -391,6 +396,48 @@ describe("Home loader: summary-email opt-in (gc-xorg)", () => {
     expect(html).not.toContain(HEADING);
   });
 
+  it("first render stamps summaryOptInFirstShownAt for the SESSION shop (gc-rxq0)", async () => {
+    mock(claimSummaryOptInFirstShown).mockResolvedValue(true);
+    await load();
+    expect(claimSummaryOptInFirstShown).toHaveBeenCalledExactlyOnceWith(DOMAIN);
+  });
+
+  it("an already-stamped shop renders without a new stamp write", async () => {
+    const data = await load({ summaryOptInFirstShownAt: hoursAgo(48) });
+    expect(data.summaryOptIn).not.toBeNull();
+    expect(claimSummaryOptInFirstShown).not.toHaveBeenCalled();
+  });
+
+  it("no stamp when the opt-in does not render (another prompt holds the window)", async () => {
+    await load({ lastPromptKey: "feedback", lastPromptShownAt: hoursAgo(1) });
+    expect(claimSummaryOptInFirstShown).not.toHaveBeenCalled();
+  });
+
+  it("still offered 1 hour before its 14 days are up", async () => {
+    const data = await load({ summaryOptInFirstShownAt: hoursAgo(OFFER_HOURS - 1) });
+    expect(data.summaryOptIn).toEqual({ email: "owner@example.com", cadence: "weekly" });
+    expect(data.showFeedbackNudge).toBe(false);
+  });
+
+  it("retired 14 days after first shown: the feedback nudge takes Home's slot; nothing else written", async () => {
+    const data = await load({ summaryOptInFirstShownAt: hoursAgo(OFFER_HOURS) });
+    expect(data.summaryOptIn).toBeNull();
+    expect(data.showFeedbackNudge).toBe(true);
+    expect(claimPromptSlot).toHaveBeenCalledExactlyOnceWith(
+      DOMAIN,
+      "feedback",
+      expect.anything(),
+      expect.anything(),
+    );
+    // Retirement is not a decline and not an opt-out.
+    expect(declineSummaryOptIn).not.toHaveBeenCalled();
+    expect(setSummaryEmailsEnabled).not.toHaveBeenCalled();
+    expect(claimSummaryOptInFirstShown).not.toHaveBeenCalled();
+    const html = renderDashboard(data);
+    expect(html).not.toContain(HEADING);
+    expect(html).toContain(FEEDBACK_NUDGE_COPY.heading);
+  });
+
   it("not eligible: the feedback nudge takes Home's slot as before", async () => {
     const data = await load({ summaryOptInDeclinedAt: hoursAgo(48) });
     expect(data.summaryOptIn).toBeNull();
@@ -447,6 +494,25 @@ describe("Home actions: summary-optin-accept / summary-optin-decline (gc-xorg)",
     await expect(post("summary-optin-accept")).resolves.toEqual({ ignored: true });
     expect(setSummaryEmailsEnabled).not.toHaveBeenCalled();
     expect(infoEvents()).not.toContain("summary_optin_accepted");
+  });
+
+  it("Turn on from a tab older than the 14-day offer (gc-rxq0): ignored, nothing written, the neutral line", async () => {
+    mock(getShopMetadata).mockResolvedValue({
+      ...SHOP,
+      summaryOptInFirstShownAt: hoursAgo(OFFER_HOURS),
+    });
+    const result = await post("summary-optin-accept");
+    expect(result).toEqual({ ignored: true });
+    expect(setSummaryEmailsEnabled).not.toHaveBeenCalled();
+    expect(declineSummaryOptIn).not.toHaveBeenCalled();
+    expect(infoEvents()).not.toContain("summary_optin_accepted");
+    // The client shows the existing neutral "We couldn't turn on summary emails..." line.
+    const prompt = { email: "owner@example.com", cadence: "weekly" as const };
+    expect(summaryOptInView(prompt, "accept", result as never)).toEqual({
+      visible: null,
+      confirmed: false,
+      failed: true,
+    });
   });
 
   it("Turn on is idempotent: an already-consented shop is left as is", async () => {

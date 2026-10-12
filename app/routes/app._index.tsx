@@ -502,7 +502,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
 
   // "New: summary emails" (gc-xorg): the one-time opt-in for a paid shop that
   // never consented (paid before gc-ol95 shipped). Re-renders inside its 24h
-  // window until the merchant answers; an ignored prompt may return later.
+  // window until the merchant answers; an ignored prompt may return on a later
+  // visit, until it is retired 14 days after its first render (gc-rxq0, the
+  // first render stamps summaryOptInFirstShownAt).
   const summaryOptIn =
     homePrompt === "summary_optin"
       ? await summaryOptInForHome(shop, admin, optInOpensWindow)
@@ -634,10 +636,12 @@ export const action = async ({ request }: ActionFunctionArgs) => {
   }
 
   // Summary-email opt-in (gc-xorg), session shop only, both idempotent.
-  // "Turn on" re-checks the plan and sending on the row read above; when that
-  // fails nothing is written. "No thanks" stamps the decline once.
+  // "Turn on" re-checks full eligibility (plan, sending, the 14-day offer) on
+  // the row read above; when that fails nothing is written. "No thanks" stamps the decline once.
   if (intent === "summary-optin-accept") {
-    return (await acceptSummaryOptIn(shop)) ? { summaryOptedIn: true } : { ignored: true };
+    return (await acceptSummaryOptIn(shop, new Date()))
+      ? { summaryOptedIn: true }
+      : { ignored: true };
   }
   if (intent === "summary-optin-decline") {
     await declineSummaryOptInForHome(session.shop);

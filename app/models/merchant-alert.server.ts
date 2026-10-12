@@ -125,6 +125,16 @@ export function declineSummaryOptIn(domain: string): Promise<boolean> {
   return claimShopStamp(domain, "summaryOptInDeclinedAt");
 }
 
+/**
+ * Home's summary-email opt-in prompt rendered (gc-rxq0): stamps
+ * summaryOptInFirstShownAt once (conditional write, so later renders and
+ * concurrent loads never move it). Its 14-day offer window counts from this
+ * stamp (SUMMARY_OPTIN_OFFER_MS). Returns true IFF this call stamped it.
+ */
+export function claimSummaryOptInFirstShown(domain: string): Promise<boolean> {
+  return claimShopStamp(domain, "summaryOptInFirstShownAt");
+}
+
 /** Home notice "Dismiss" (gc-ol95): the notice is no longer owed. Idempotent. */
 export async function dismissSummaryNotice(shopId: string): Promise<void> {
   await db.shop.updateMany({ where: { id: shopId }, data: { summaryNoticePendingAt: null } });

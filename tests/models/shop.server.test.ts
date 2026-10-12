@@ -171,6 +171,8 @@ describe("getShopMetadata", () => {
         summaryNoticeShownAt: true,
         summaryOptedInAt: true,
         summaryOptInDeclinedAt: true,
+        // gc-rxq0: when Home's opt-in prompt first rendered (14-day offer).
+        summaryOptInFirstShownAt: true,
       },
     });
   });

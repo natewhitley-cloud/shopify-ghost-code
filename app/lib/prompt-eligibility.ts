@@ -63,7 +63,7 @@ export function shopPromptEligibility(state: ShopPromptState, now: Date): ShopPr
     eligible.push("upgrade_return");
     eligibleSince.upgrade_return = upgradeReturnEligibleSince(state, now);
   }
-  if (isSummaryOptInEligible(state)) eligible.push("summary_optin");
+  if (isSummaryOptInEligible(state, now)) eligible.push("summary_optin");
   if (shouldShowFeedbackNudge(state, now)) eligible.push("feedback");
   return { eligible, eligibleSince };
 }

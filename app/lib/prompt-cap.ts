@@ -75,7 +75,9 @@ export type PromptCapState = {
 /**
  * Home (/app) can render the summary-email opt-in (gc-xorg) and the feedback
  * nudge. Both have no eligibleSince, so neither blocks the other beyond
- * priority: summary_optin wins while it is eligible.
+ * priority: summary_optin wins while it is eligible, which ends 14 days after
+ * its first render at the latest (SUMMARY_OPTIN_OFFER_MS, gc-rxq0), so it can
+ * never starve the feedback nudge for good.
  */
 export const HOME_PROMPTS: readonly PromptKey[] = ["summary_optin", "feedback"];
 

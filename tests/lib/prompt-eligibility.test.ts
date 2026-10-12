@@ -49,6 +49,7 @@ function state(overrides: Partial<ShopPromptState> = {}): ShopPromptState {
     summaryNoticeShownAt: null,
     summaryOptedInAt: null,
     summaryOptInDeclinedAt: null,
+    summaryOptInFirstShownAt: null,
     ...overrides,
   };
 }
@@ -131,8 +132,21 @@ describe("shopPromptEligibility: summary_optin (gc-xorg)", () => {
     ["notice shown", { summaryNoticeShownAt: ago(DAY) }],
     ["opted in", { summaryOptedInAt: ago(DAY) }],
     ["declined", { summaryOptInDeclinedAt: ago(DAY) }],
+    ["retired (first shown 14 days ago)", { summaryOptInFirstShownAt: ago(14 * DAY) }],
   ])("drops summary_optin: %s", (_label, overrides) => {
     expect(keys(legacyPaid(overrides), NOW)).not.toContain("summary_optin");
+  });
+
+  it("retired (gc-rxq0): the feedback nudge is next in line", () => {
+    expect(keys(legacyPaid({ summaryOptInFirstShownAt: ago(14 * DAY - 1) }), NOW)).toEqual([
+      "review_popup",
+      "summary_optin",
+      "feedback",
+    ]);
+    expect(keys(legacyPaid({ summaryOptInFirstShownAt: ago(14 * DAY) }), NOW)).toEqual([
+      "review_popup",
+      "feedback",
+    ]);
   });
 });
 

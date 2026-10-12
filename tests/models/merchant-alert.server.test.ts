@@ -13,6 +13,7 @@ vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 import {
   claimSummaryNoticeShown,
+  claimSummaryOptInFirstShown,
   declineSummaryOptIn,
   disableAlertsByToken,
   dismissSummaryNotice,
@@ -342,6 +343,35 @@ describe("declineSummaryOptIn (gc-xorg)", () => {
       { domain: "a.myshopify.com", summaryOptInDeclinedAt: null },
     );
     await expect(declineSummaryOptIn("b.myshopify.com")).resolves.toBe(false);
+  });
+});
+
+describe("claimSummaryOptInFirstShown (gc-rxq0)", () => {
+  it("stamps summaryOptInFirstShownAt only, keyed on the domain and the column IS NULL", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await expect(claimSummaryOptInFirstShown("a.myshopify.com")).resolves.toBe(true);
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+    const call = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(call.where).toEqual({ domain: "a.myshopify.com", summaryOptInFirstShownAt: null });
+    expect(Object.keys(call.data)).toEqual(["summaryOptInFirstShownAt"]);
+    expect(call.data.summaryOptInFirstShownAt).toBeInstanceOf(Date);
+  });
+
+  it("never overwrites: a later or concurrent claim keeps the first stamp", async () => {
+    const row = installFakeShopRow(
+      { updateMany: mockDb.shop.updateMany },
+      { domain: "a.myshopify.com", summaryOptInFirstShownAt: null, alertsEnabled: true },
+    );
+    const results = await Promise.all([
+      claimSummaryOptInFirstShown("a.myshopify.com"),
+      claimSummaryOptInFirstShown("a.myshopify.com"),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+    const first = row.summaryOptInFirstShownAt;
+    expect(first).toBeInstanceOf(Date);
+    await expect(claimSummaryOptInFirstShown("a.myshopify.com")).resolves.toBe(false);
+    expect(row.summaryOptInFirstShownAt).toBe(first);
+    expect(row.alertsEnabled).toBe(true);
   });
 });
 
