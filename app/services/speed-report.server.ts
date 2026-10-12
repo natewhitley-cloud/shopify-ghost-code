@@ -11,6 +11,12 @@
  *   runPageSpeedAttempt     ONE PageSpeed call (re-gates, reserves budget first)
  *   finalizeSpeedReport     median per page, status, row, OpsEvent
  *
+ * Free speed test: a plan without the report (PlanFeatures.freeSpeedTest)
+ * gets ONE homepage-only FREE_TEST run, once ever: never a product page (no
+ * Admin product read, no /products.json), and it is used up only by a report
+ * that COMPLETED with a homepage score. Every gate below takes the run's
+ * origin, so the plan and the unused test are re-checked before every call.
+ *
  * Guardrails (Nathan, 2026-10-11): Professional only; DARK unless
  * SPEED_REPORT_LIVE_ENABLED; the plan/flag/install gate is re-checked right
  * before EVERY call (a shop that downgraded or uninstalled mid-run gets
@@ -51,6 +57,8 @@ import { type GraphQLResponseError, isAccessDeniedError } from "../lib/scope-che
 import {
   buildSpeedReportView,
   computeSpeedReportStatus,
+  freeSpeedTestConsumed,
+  isSpeedReportOrigin,
   runNowAvailableAt,
   SPEED_REPORT_ORIGIN,
   SPEED_REPORT_STATUS,
@@ -63,10 +71,12 @@ import {
 } from "../lib/speed-report";
 import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
 import {
+  claimFreeSpeedTest,
   claimSpeedReportRunNow,
   createSpeedReport,
   failAbandonedSpeedReport,
   finishSpeedReport,
+  getFreeSpeedTestUsedAt,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
   hasRecentSpeedReportEvent,
@@ -83,27 +93,49 @@ const LOG_FN = "speed-report";
 // Gate
 // ---------------------------------------------------------------------------
 
-export type SpeedIneligibleReason = "disabled" | "no_shop" | "uninstalled" | "not_in_plan";
+export type SpeedIneligibleReason =
+  | "disabled"
+  | "no_shop"
+  | "uninstalled"
+  | "not_in_plan"
+  /** A FREE_TEST run for a shop whose free test is already used up. */
+  | "free_test_used";
 
 export type SpeedEligibility =
   | { eligible: true; shop: { id: string; domain: string; plan: string } }
   | { eligible: false; reason: SpeedIneligibleReason };
 
 /**
- * Whether this shop may get a speed report right now: flag on (checked first,
- * so a dark feature does not even read the DB), shop exists, still installed,
- * plan includes it. Internal/dev stores are NOT excluded: that is how the
- * feature is tested (the operator digest filters them out of its numbers).
+ * Whether this shop may get a speed report of this origin right now: flag on
+ * (checked first, so a dark feature does not even read the DB), shop exists,
+ * still installed, and:
+ *   - SCHEDULED / MANUAL (or no origin): the plan includes the full report;
+ *   - FREE_TEST: the free test is unused AND the plan has it (or the full
+ *     report: a test asked for just before an upgrade still finishes, still
+ *     homepage only).
+ * Internal/dev stores are NOT excluded: that is how the feature is tested (the
+ * operator digest filters them out of its numbers).
  */
-export async function checkSpeedReportEligibility(shopId: string): Promise<SpeedEligibility> {
+export async function checkSpeedReportEligibility(
+  shopId: string,
+  origin?: SpeedReportOrigin,
+): Promise<SpeedEligibility> {
   if (!isSpeedReportLive()) return { eligible: false, reason: "disabled" };
   const shop = await db.shop.findUnique({
     where: { id: shopId },
-    select: { id: true, domain: true, plan: true, uninstalledAt: true },
+    select: { id: true, domain: true, plan: true, uninstalledAt: true, freeSpeedTestUsedAt: true },
   });
   if (!shop) return { eligible: false, reason: "no_shop" };
   if (shop.uninstalledAt) return { eligible: false, reason: "uninstalled" };
-  if (!getPlanFeatures(shop.plan).speedReport) return { eligible: false, reason: "not_in_plan" };
+  const features = getPlanFeatures(shop.plan);
+  if (origin === SPEED_REPORT_ORIGIN.FREE_TEST) {
+    if (!features.freeSpeedTest && !features.speedReport) {
+      return { eligible: false, reason: "not_in_plan" };
+    }
+    if (shop.freeSpeedTestUsedAt) return { eligible: false, reason: "free_test_used" };
+  } else if (!features.speedReport) {
+    return { eligible: false, reason: "not_in_plan" };
+  }
   return { eligible: true, shop: { id: shop.id, domain: shop.domain, plan: shop.plan } };
 }
 
@@ -133,7 +165,7 @@ export async function prepareSpeedReportRun(input: {
   now?: Date;
 }): Promise<PrepareResult> {
   const now = input.now ?? new Date();
-  const gate = await checkSpeedReportEligibility(input.shopId);
+  const gate = await checkSpeedReportEligibility(input.shopId, input.origin);
   if (!gate.eligible) {
     if (input.reportId) {
       await finishSpeedReport(input.reportId, {
@@ -207,9 +239,9 @@ export type AbandonedRun = {
   origin: SpeedReportOrigin;
   /** The Inngest run that died or was cancelled. */
   runId: string;
-  /** MANUAL: the Run-now row (it exists even when the run never started). */
+  /** MANUAL / FREE_TEST: the action's row (it exists even when the run never started). */
   reportId?: string;
-  /** MANUAL: the Run-now claim to hand back (ISO), and the value before it. */
+  /** MANUAL / FREE_TEST: the 24h claim to hand back (ISO), and the value before it. */
   runNowClaimedAt?: string;
   runNowPrevious?: string | null;
 };
@@ -224,9 +256,7 @@ export function abandonedRunFromEvent(original: unknown, runId: unknown): Abando
   if (!data || typeof runId !== "string" || runId === "") return null;
   const { shopId, origin, reportId, runNowClaimedAt, runNowPrevious } = data;
   if (typeof shopId !== "string" || shopId === "") return null;
-  if (origin !== SPEED_REPORT_ORIGIN.SCHEDULED && origin !== SPEED_REPORT_ORIGIN.MANUAL) {
-    return null;
-  }
+  if (!isSpeedReportOrigin(origin)) return null;
   return {
     shopId,
     origin,
@@ -241,7 +271,8 @@ export function abandonedRunFromEvent(original: unknown, runId: unknown): Abando
  * A speed-report-run that will not finish (retries exhausted: `worker_failed`;
  * cancelled by its start/finish timeout: `stuck`) must not leave its report
  * RUNNING forever (gc-wt3y #2/#3). Closes the RUNNING row as FAILED (missing
- * row tolerated), hands a MANUAL run's Run-now slot back, and records the
+ * row tolerated), hands a MANUAL or FREE_TEST run's 24h slot back (a FREE_TEST
+ * run that died is not used up: the merchant may try again), and records the
  * speed_report ops event ONLY when a row was actually closed and the shop
  * still exists: a redacted shop gets no new row keyed on its domain. `calls`
  * is 0 in that event: calls made before the failure are not tracked per run.
@@ -256,7 +287,7 @@ export async function closeAbandonedSpeedReport(
     reason,
     now,
   );
-  if (run.origin === SPEED_REPORT_ORIGIN.MANUAL && run.runNowClaimedAt) {
+  if (run.origin !== SPEED_REPORT_ORIGIN.SCHEDULED && run.runNowClaimedAt) {
     await releaseSpeedReportRunNow(
       run.shopId,
       new Date(run.runNowClaimedAt),
@@ -290,7 +321,9 @@ export async function closeAbandonedSpeedReport(
 
 export type ProductTarget =
   | { status: "OK"; url: string }
-  | { status: "NO_PRODUCT" | "NEEDS_PRODUCT_ACCESS" | "FAILED" };
+  | { status: "NO_PRODUCT" | "NEEDS_PRODUCT_ACCESS" | "FAILED" }
+  /** A FREE_TEST run: the product page is not part of it (never looked up or stored). */
+  | { status: "HOME_ONLY" };
 
 export type SpeedTargets = {
   /** https://<primary host>/ */
@@ -566,8 +599,12 @@ export async function resolvePublicProductTarget(input: {
  * NEEDS_PRODUCT_ACCESS here: the public /products.json fallback
  * (resolvePublicProductTarget) runs only after the password pre-check, so a
  * password-protected store gets no storefront read beyond that check.
+ * `homeOnly` (a FREE_TEST run): no product query at all; product = HOME_ONLY.
  */
-export async function resolveSpeedTargets(admin: AdminApiContext): Promise<ResolveTargetsResult> {
+export async function resolveSpeedTargets(
+  admin: AdminApiContext,
+  opts: { homeOnly?: boolean } = {},
+): Promise<ResolveTargetsResult> {
   let primaryHost: string | null = null;
   let myshopifyHost: string | null = null;
   try {
@@ -603,7 +640,9 @@ export async function resolveSpeedTargets(admin: AdminApiContext): Promise<Resol
   if (!primaryHost || !isBareHostname(primaryHost)) return { ok: false, reason: "no_domain" };
   primaryHost = primaryHost.toLowerCase();
 
-  const product = await resolveProductTarget(admin, primaryHost);
+  const product: ProductTarget = opts.homeOnly
+    ? { status: "HOME_ONLY" }
+    : await resolveProductTarget(admin, primaryHost);
   const storeHosts = [primaryHost, ...(myshopifyHost ? [myshopifyHost] : [])];
   return {
     ok: true,
@@ -634,11 +673,13 @@ export type PasswordPrecheck = "password" | "open" | "unknown" | "skipped";
  */
 export async function precheckStorefrontPassword(input: {
   shopId: string;
+  /** The run's origin, for the gate (absent = a Professional run). */
+  origin?: SpeedReportOrigin;
   primaryHost: string;
   storeHosts: string[];
   fetchImpl?: StorefrontFetch;
 }): Promise<PasswordPrecheck> {
-  const gate = await checkSpeedReportEligibility(input.shopId);
+  const gate = await checkSpeedReportEligibility(input.shopId, input.origin);
   if (!gate.eligible) return "skipped";
 
   const primaryHost = input.primaryHost.toLowerCase();
@@ -717,8 +758,10 @@ export function attemptHaltsPage(a: SpeedAttempt): boolean {
 }
 
 /**
- * One PageSpeed run of one page. Re-checks the gate and the key, validates the
- * target, reserves the call against today's budget, then calls Google. NEVER
+ * One PageSpeed run of one page. Re-checks the gate (for the run's origin) and
+ * the key, validates the target, reserves the call against today's budget,
+ * then calls Google. A FREE_TEST run never tests the product page: such an
+ * attempt is refused before anything is reserved or called. NEVER
  * THROWS for a Google-side failure (those are `error` attempts), so a Google
  * error does not make Inngest retry the step and repeat the call. A call can
  * still repeat if the worker dies after it but before the step's result is
@@ -728,6 +771,8 @@ export function attemptHaltsPage(a: SpeedAttempt): boolean {
  */
 export async function runPageSpeedAttempt(input: {
   shopId: string;
+  /** The run's origin, for the gate (absent = a Professional run). */
+  origin?: SpeedReportOrigin;
   page: SpeedPageKey;
   pageUrl: string;
   primaryHost: string;
@@ -735,7 +780,10 @@ export async function runPageSpeedAttempt(input: {
   fetchImpl?: PageSpeedFetch;
   now?: () => Date;
 }): Promise<SpeedAttempt> {
-  const gate = await checkSpeedReportEligibility(input.shopId);
+  if (input.origin === SPEED_REPORT_ORIGIN.FREE_TEST && input.page !== "home") {
+    return { kind: "not_eligible" };
+  }
+  const gate = await checkSpeedReportEligibility(input.shopId, input.origin);
   if (!gate.eligible) return { kind: "not_eligible" };
   const apiKey = getPageSpeedApiKey();
   if (!apiKey) return { kind: "not_configured" };
@@ -854,9 +902,14 @@ export type PageAttempts = { page: SpeedPageKey; url: string; attempts: SpeedAtt
  * (no_domain when not given).
  * `passwordProtected` = the pre-check found the password page: every tested
  * page is PASSWORD with no call made.
+ * FREE_TEST: only the homepage is ever stored (a product entry passed in is
+ * dropped), and a COMPLETED report with a homepage score uses the free test up
+ * (Shop.freeSpeedTestUsedAt of `shopId`, written in the same transaction as
+ * the report).
  */
 export async function finalizeSpeedReport(input: {
   reportId: string;
+  shopId: string;
   shopDomain: string;
   origin: SpeedReportOrigin;
   startedAt: string;
@@ -866,7 +919,9 @@ export async function finalizeSpeedReport(input: {
   haltCode?: SpeedFailureCode;
   passwordProtected?: boolean;
 }): Promise<{ status: SpeedReportStatus; calls: number }> {
-  const calls = input.tested.reduce((n, p) => n + p.attempts.filter(attemptCalledGoogle).length, 0);
+  const homeOnly = input.origin === SPEED_REPORT_ORIGIN.FREE_TEST;
+  const tested = homeOnly ? input.tested.filter((p) => p.page === "home") : input.tested;
+  const calls = tested.reduce((n, p) => n + p.attempts.filter(attemptCalledGoogle).length, 0);
   let status: SpeedReportStatus;
   let failureReason: SpeedFailureCode | null = null;
   let pages: SpeedPageResult[] | null = null;
@@ -875,13 +930,13 @@ export async function finalizeSpeedReport(input: {
     status = SPEED_REPORT_STATUS.FAILED;
     failureReason = input.targetsFailure ?? "no_domain";
   } else {
-    pages = input.tested.map((p) =>
+    pages = tested.map((p) =>
       input.passwordProtected
         ? { page: p.page, url: p.url, status: "PASSWORD" as const, runsAttempted: 0, runsOk: 0 }
         : buildSpeedPageResult(p.page, p.url, p.attempts, input.haltCode),
     );
     const product = input.targets.product;
-    if (product.status !== "OK") {
+    if (!homeOnly && product.status !== "OK" && product.status !== "HOME_ONLY") {
       pages.push({
         page: "product",
         url: null,
@@ -891,7 +946,7 @@ export async function finalizeSpeedReport(input: {
         ...(product.status === "FAILED" ? { failureCode: "bad_response" as const } : {}),
       });
     }
-    const budgetExhausted = input.tested.some((p) => p.attempts.some((a) => a.kind === "budget"));
+    const budgetExhausted = tested.some((p) => p.attempts.some((a) => a.kind === "budget"));
     status = computeSpeedReportStatus(pages, { budgetExhausted });
     if (status === SPEED_REPORT_STATUS.SKIPPED_BUDGET) failureReason = "budget";
     else if (status === SPEED_REPORT_STATUS.FAILED) {
@@ -899,7 +954,13 @@ export async function finalizeSpeedReport(input: {
     }
   }
 
-  await finishSpeedReport(input.reportId, { status, failureReason, pages, psiCalls: calls });
+  const freeTestUsed = homeOnly && freeSpeedTestConsumed(status, pages);
+  const result = { status, failureReason, pages, psiCalls: calls };
+  if (freeTestUsed) {
+    await finishSpeedReport(input.reportId, result, { consumeFreeTestOf: input.shopId });
+  } else {
+    await finishSpeedReport(input.reportId, result);
+  }
   const durationMs = Date.now() - new Date(input.startedAt).getTime();
   await recordSpeedReportEvent(input.shopDomain, {
     status,
@@ -915,6 +976,7 @@ export async function finalizeSpeedReport(input: {
     outcome: status,
     calls,
     durationMs,
+    ...(homeOnly ? { freeTestUsed } : {}),
   });
   return { status, calls };
 }
@@ -944,7 +1006,8 @@ export async function recordSpeedReportEvent(
 }
 
 // ---------------------------------------------------------------------------
-// "Run speed test now" (request context: the Store speed route action)
+// "Run speed test now" and the free speed test (request context: the Store
+// speed route action)
 // ---------------------------------------------------------------------------
 
 export const RUN_NOW_ERRORS = {
@@ -954,12 +1017,20 @@ export const RUN_NOW_ERRORS = {
   dispatch: "We couldn't start the speed test. Try again in a few minutes.",
 } as const;
 
+export const FREE_TEST_ERRORS = {
+  notInPlan: "The free speed test isn't part of your plan.",
+  used: "You've already used your free speed test.",
+  cooldown: "You can try the free speed test once a day.",
+} as const;
+
 export type RunNowResult =
   | { ok: true; reportId: string }
   | { ok: false; error: string; nextAvailableAt?: string };
 
 /** At most one "not configured" ops event per shop per this window. */
 export const NOT_CONFIGURED_EVENT_WINDOW_MS = 60 * 60 * 1000;
+
+type MerchantRunShop = { id: string; domain: string; plan: string };
 
 /**
  * Start a MANUAL speed report for the session shop: at most once per 24h,
@@ -972,18 +1043,48 @@ export const NOT_CONFIGURED_EVENT_WINDOW_MS = 60 * 60 * 1000;
  * claim so a run that later dies or is cancelled hands it back too.
  */
 export async function requestSpeedReportRunNow(
-  shop: { id: string; domain: string; plan: string },
+  shop: MerchantRunShop,
   now: Date,
 ): Promise<RunNowResult> {
   if (!getPlanFeatures(shop.plan).speedReport)
     return { ok: false, error: RUN_NOW_ERRORS.notInPlan };
+  return startMerchantSpeedRun(shop, now, SPEED_REPORT_ORIGIN.MANUAL);
+}
 
+/**
+ * Start the shop's one free speed test (FREE_TEST: homepage only), for a plan
+ * WITHOUT the full report that has PlanFeatures.freeSpeedTest. Same guards as
+ * Run now (key, nothing running, the 24h slot, hand-back on failure); the
+ * claim of the 24h slot is ALSO conditional on the test being unused, in one
+ * write, so two clicks can never start two runs and a used test can never be
+ * claimed. The test is used up later, by the worker, only when the report
+ * COMPLETES with a homepage score.
+ */
+export async function requestFreeSpeedTest(
+  shop: MerchantRunShop,
+  now: Date,
+): Promise<RunNowResult> {
+  const features = getPlanFeatures(shop.plan);
+  if (features.speedReport || !features.freeSpeedTest) {
+    return { ok: false, error: FREE_TEST_ERRORS.notInPlan };
+  }
+  if (await getFreeSpeedTestUsedAt(shop.id)) return { ok: false, error: FREE_TEST_ERRORS.used };
+  return startMerchantSpeedRun(shop, now, SPEED_REPORT_ORIGIN.FREE_TEST);
+}
+
+/** The shared body of Run now and the free test (plan already checked). */
+async function startMerchantSpeedRun(
+  shop: MerchantRunShop,
+  now: Date,
+  origin: typeof SPEED_REPORT_ORIGIN.MANUAL | typeof SPEED_REPORT_ORIGIN.FREE_TEST,
+): Promise<RunNowResult> {
+  const free = origin === SPEED_REPORT_ORIGIN.FREE_TEST;
   if (!getPageSpeedApiKey()) {
     const since = new Date(now.getTime() - NOT_CONFIGURED_EVENT_WINDOW_MS);
     if (!(await hasRecentSpeedReportEvent(shop.domain, "not_configured", since))) {
       await recordSpeedReportEvent(shop.domain, {
         status: SPEED_REPORT_STATUS.FAILED,
-        origin: SPEED_REPORT_ORIGIN.MANUAL,
+        origin,
         calls: 0,
         durationMs: 0,
         reason: "not_configured",
@@ -997,24 +1098,34 @@ export async function requestSpeedReportRunNow(
     return { ok: false, error: speedFailureMessage("not_configured") };
   }
 
+  // Any origin: a run in flight (e.g. a Professional run before a downgrade)
+  // blocks another one.
   const { latest } = buildSpeedReportView(await getRecentSpeedReports(shop.id), now);
   if (latest?.status === SPEED_REPORT_STATUS.RUNNING) {
     return { ok: false, error: RUN_NOW_ERRORS.running };
   }
 
   const previous = await getSpeedReportRequestedAt(shop.id);
-  if (!(await claimSpeedReportRunNow(shop.id, now))) {
+  const claimed = free
+    ? await claimFreeSpeedTest(shop.id, now)
+    : await claimSpeedReportRunNow(shop.id, now);
+  if (!claimed) {
+    // The free claim also fails once the test is used (e.g. a concurrent run
+    // finished in between): say so rather than "once a day".
+    if (free && (await getFreeSpeedTestUsedAt(shop.id))) {
+      return { ok: false, error: FREE_TEST_ERRORS.used };
+    }
     const next = runNowAvailableAt(previous, now);
     return {
       ok: false,
-      error: RUN_NOW_ERRORS.cooldown,
+      error: free ? FREE_TEST_ERRORS.cooldown : RUN_NOW_ERRORS.cooldown,
       ...(next ? { nextAvailableAt: next.toISOString() } : {}),
     };
   }
 
   let row: { id: string };
   try {
-    row = await createSpeedReport(shop.id, SPEED_REPORT_ORIGIN.MANUAL);
+    row = await createSpeedReport(shop.id, origin);
   } catch (err) {
     logger.error("speed report row create failed", {
       function: LOG_FN,
@@ -1030,7 +1141,7 @@ export async function requestSpeedReportRunNow(
       name: "speed-report/requested",
       data: {
         shopId: shop.id,
-        origin: SPEED_REPORT_ORIGIN.MANUAL,
+        origin,
         reportId: row.id,
         runNowClaimedAt: now.toISOString(),
         runNowPrevious: previous ? previous.toISOString() : null,

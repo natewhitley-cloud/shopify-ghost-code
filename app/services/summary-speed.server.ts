@@ -28,8 +28,7 @@ import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
 import { safeErrorFields } from "../lib/safe-error";
 import {
-  formatBytes,
-  formatSeconds,
+  costliestAppLine,
   isSpeedReportWithResults,
   readSpeedPages,
   type SpeedCostRow,
@@ -210,9 +209,7 @@ export function summarySpeedLines(speed: SummarySpeed): string[] {
     `Last speed test (${formatTestDate(speed.testedAt)}): your homepage scored ${speed.score} / 100${change}.`,
   ];
   if (speed.topApp) {
-    lines.push(
-      `${emailAppName(speed.topApp.name)} used ${formatSeconds(speed.topApp.mainThreadMs)} of processing time and ${formatBytes(speed.topApp.transferBytes)} on your homepage.`,
-    );
+    lines.push(costliestAppLine({ ...speed.topApp, name: emailAppName(speed.topApp.name) }));
   }
   return lines;
 }

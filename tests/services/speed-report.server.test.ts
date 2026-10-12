@@ -22,6 +22,8 @@ const mockModel = vi.hoisted(() => ({
   finishSpeedReport: vi.fn(),
   reservePageSpeedCall: vi.fn(),
   claimSpeedReportRunNow: vi.fn(),
+  claimFreeSpeedTest: vi.fn(),
+  getFreeSpeedTestUsedAt: vi.fn(),
   releaseSpeedReportRunNow: vi.fn(),
   getRecentSpeedReports: vi.fn(),
   getSpeedReportRequestedAt: vi.fn(),
@@ -48,12 +50,14 @@ import {
   checkSpeedReportEligibility,
   closeAbandonedSpeedReport,
   finalizeSpeedReport,
+  FREE_TEST_ERRORS,
   isAllowedSpeedTarget,
   isSafeProductHandle,
   pickPublicProductUrl,
   precheckStorefrontPassword,
   prepareSpeedReportRun,
   productUrlOnPrimaryHost,
+  requestFreeSpeedTest,
   requestSpeedReportRunNow,
   resolvePublicProductTarget,
   resolveSpeedTargets,
@@ -1219,6 +1223,7 @@ const TARGETS: SpeedTargets = {
 describe("finalizeSpeedReport", () => {
   const base = {
     reportId: "rep-1",
+    shopId: SHOP_ID,
     shopDomain: DOMAIN,
     origin: "SCHEDULED" as const,
     startedAt: new Date(Date.now() - 1000).toISOString(),
@@ -1582,6 +1587,7 @@ describe("the API key never leaves the request", () => {
     }
     await finalizeSpeedReport({
       reportId: "rep-1",
+      shopId: SHOP_ID,
       shopDomain: DOMAIN,
       origin: "SCHEDULED",
       startedAt: NOW.toISOString(),
@@ -1591,4 +1597,498 @@ describe("the API key never leaves the request", () => {
     expect(JSON.stringify(attempts)).not.toContain(KEY);
     expect(everythingLogged()).not.toContain(KEY);
   });
+});
+
+// ---------------------------------------------------------------------------
+// Free speed test (FREE_TEST): eligibility, home-only, consume, request
+// ---------------------------------------------------------------------------
+
+const USED_AT = new Date("2026-10-05T00:00:00.000Z");
+
+function shopRow(plan: string, freeSpeedTestUsedAt: Date | null = null) {
+  return { ...PRO, plan, freeSpeedTestUsedAt };
+}
+
+describe("free speed test: eligibility matrix (plan x used x origin)", () => {
+  it.each([
+    // plan, used, origin, expected
+    ["free", false, "FREE_TEST", "eligible"],
+    ["free", true, "FREE_TEST", "free_test_used"],
+    ["Standard", false, "FREE_TEST", "eligible"],
+    ["Standard", true, "FREE_TEST", "free_test_used"],
+    // A test asked for just before an upgrade still finishes (homepage only).
+    ["Professional", false, "FREE_TEST", "eligible"],
+    ["Professional", true, "FREE_TEST", "free_test_used"],
+    // The full report stays Professional only, whatever the free test says.
+    ["free", false, "MANUAL", "not_in_plan"],
+    ["Standard", false, "MANUAL", "not_in_plan"],
+    ["free", false, "SCHEDULED", "not_in_plan"],
+    ["Standard", false, undefined, "not_in_plan"],
+    ["Professional", true, "MANUAL", "eligible"],
+    ["Professional", false, "SCHEDULED", "eligible"],
+  ] as const)("%s, used=%s, origin %s -> %s", async (plan, used, origin, expected) => {
+    mockDb.shop.findUnique.mockResolvedValue(shopRow(plan, used ? USED_AT : null));
+    const gate = await checkSpeedReportEligibility(SHOP_ID, origin);
+    if (expected === "eligible") expect(gate.eligible).toBe(true);
+    else expect(gate).toEqual({ eligible: false, reason: expected });
+  });
+
+  it("FREE_TEST: an uninstalled shop or a dark feature is still refused", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...shopRow("free"), uninstalledAt: NOW });
+    await expect(checkSpeedReportEligibility(SHOP_ID, "FREE_TEST")).resolves.toEqual({
+      eligible: false,
+      reason: "uninstalled",
+    });
+    delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    await expect(checkSpeedReportEligibility(SHOP_ID, "FREE_TEST")).resolves.toEqual({
+      eligible: false,
+      reason: "disabled",
+    });
+  });
+
+  it("prepare: a FREE_TEST run for a used test closes its row FAILED/not_eligible", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(shopRow("free", USED_AT));
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "FREE_TEST",
+      reportId: "rep-f",
+      runId: "run-f",
+    });
+    expect(r).toEqual({ proceed: false, outcome: "free_test_used" });
+    expect(mockModel.finishSpeedReport).toHaveBeenCalledWith("rep-f", {
+      status: "FAILED",
+      failureReason: "not_eligible",
+      pages: null,
+      psiCalls: 0,
+    });
+    expect(mockModel.startManualSpeedReport).not.toHaveBeenCalled();
+  });
+
+  it("prepare: an unused FREE_TEST on Free stamps the action's row and proceeds", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(shopRow("free"));
+    const r = await prepareSpeedReportRun({
+      shopId: SHOP_ID,
+      origin: "FREE_TEST",
+      reportId: "rep-f",
+      runId: "run-f",
+      now: NOW,
+    });
+    expect(r).toMatchObject({ proceed: true, reportId: "rep-f" });
+    expect(mockModel.startManualSpeedReport).toHaveBeenCalledWith("rep-f", "run-f", NOW);
+  });
+});
+
+describe("free speed test: homepage only, never the product page", () => {
+  it("resolveSpeedTargets(homeOnly): one shop query, NO product query, product HOME_ONLY", async () => {
+    const admin = adminWith(SHOP_BODY);
+    const r = await resolveSpeedTargets(
+      admin as unknown as Parameters<typeof resolveSpeedTargets>[0],
+      { homeOnly: true },
+    );
+    expect(r).toEqual({
+      ok: true,
+      targets: {
+        homeUrl: HOME,
+        primaryHost: STORE_HOST,
+        storeHosts: STORE_HOSTS,
+        product: { status: "HOME_ONLY" },
+      },
+    });
+    expect(admin.graphql).toHaveBeenCalledTimes(1);
+    expect(admin.graphql.mock.calls[0][0]).not.toContain("products");
+  });
+
+  it.each(["free", "Standard"])(
+    "%s: the public /products.json fallback is never read (Professional gate)",
+    async (plan) => {
+      mockDb.shop.findUnique.mockResolvedValue(shopRow(plan));
+      const fetchImpl = noStorefront();
+      await expect(fallbackProduct(fetchImpl)).resolves.toEqual({ status: "NEEDS_PRODUCT_ACCESS" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    },
+  );
+
+  it("a FREE_TEST product-page attempt is refused before any budget or call, even on Professional", async () => {
+    for (const plan of ["free", "Professional"]) {
+      mockDb.shop.findUnique.mockResolvedValue(shopRow(plan));
+      const fetchImpl = vi.fn() as unknown as PageSpeedFetch;
+      const a = await runPageSpeedAttempt({
+        ...attemptInput(fetchImpl),
+        origin: "FREE_TEST",
+        page: "product",
+        pageUrl: `https://${STORE_HOST}/products/a`,
+      });
+      expect(a).toEqual({ kind: "not_eligible" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    }
+    expect(mockModel.reservePageSpeedCall).not.toHaveBeenCalled();
+  });
+
+  it("a forged MANUAL/SCHEDULED attempt for a Free shop (no origin = Professional run) calls nothing", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(shopRow("free"));
+    for (const origin of ["MANUAL", "SCHEDULED", undefined] as const) {
+      for (const page of ["home", "product"] as const) {
+        const fetchImpl = vi.fn() as unknown as PageSpeedFetch;
+        const a = await runPageSpeedAttempt({ ...attemptInput(fetchImpl), origin, page });
+        expect(a).toEqual({ kind: "not_eligible" });
+        expect(fetchImpl).not.toHaveBeenCalled();
+      }
+    }
+    expect(mockModel.reservePageSpeedCall).not.toHaveBeenCalled();
+  });
+
+  it("FREE_TEST homepage attempt on Free (unused) reserves and calls once", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(shopRow("free"));
+    const fetchImpl = fetchReturning(() => json(200, buildPageSpeedResponse()));
+    const a = await runPageSpeedAttempt({ ...attemptInput(fetchImpl), origin: "FREE_TEST" });
+    expect(a.kind).toBe("ok");
+    expect(mockModel.reservePageSpeedCall).toHaveBeenCalledTimes(1);
+  });
+
+  it("FREE_TEST attempt once the test is used up (a parallel run finished): nothing called", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(shopRow("free", USED_AT));
+    const fetchImpl = vi.fn() as unknown as PageSpeedFetch;
+    const a = await runPageSpeedAttempt({ ...attemptInput(fetchImpl), origin: "FREE_TEST" });
+    expect(a).toEqual({ kind: "not_eligible" });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("the password pre-check runs for an unused free test, and is skipped once it is used", async () => {
+    const open = () =>
+      new Response("<html><body>Shop</body></html>", {
+        status: 200,
+        headers: { "content-type": "text/html" },
+      });
+    mockDb.shop.findUnique.mockResolvedValue(shopRow("free"));
+    const fetchImpl = vi.fn().mockResolvedValue(open());
+    const input = {
+      shopId: SHOP_ID,
+      origin: "FREE_TEST" as const,
+      primaryHost: STORE_HOST,
+      storeHosts: STORE_HOSTS,
+      fetchImpl: fetchImpl as unknown as StorefrontFetch,
+    };
+    await expect(precheckStorefrontPassword(input)).resolves.not.toBe("skipped");
+    expect(fetchImpl).toHaveBeenCalled();
+
+    fetchImpl.mockClear();
+    mockDb.shop.findUnique.mockResolvedValue(shopRow("free", USED_AT));
+    await expect(precheckStorefrontPassword(input)).resolves.toBe("skipped");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe("free speed test: used up ONLY by a COMPLETED report with a homepage score", () => {
+  const base = {
+    reportId: "rep-f",
+    shopId: SHOP_ID,
+    shopDomain: DOMAIN,
+    origin: "FREE_TEST" as const,
+    startedAt: new Date(Date.now() - 1000).toISOString(),
+  };
+  const HOME_ONLY: SpeedTargets = { ...TARGETS, product: { status: "HOME_ONLY" } };
+
+  function consumed(): boolean {
+    const call = mockModel.finishSpeedReport.mock.calls[0];
+    return call.length === 3 && call[2]?.consumeFreeTestOf === SHOP_ID;
+  }
+
+  it("COMPLETED with a score: written with the consume (same transaction), homepage only", async () => {
+    const r = await finalizeSpeedReport({
+      ...base,
+      targets: HOME_ONLY,
+      tested: [{ page: "home", url: HOME, attempts: [run(30, "a"), run(31, "b"), run(29, "c")] }],
+    });
+    expect(r).toEqual({ status: "COMPLETED", calls: 3 });
+    expect(consumed()).toBe(true);
+    const written = mockModel.finishSpeedReport.mock.calls[0][1];
+    expect(written.pages.map((p: { page: string }) => p.page)).toEqual(["home"]);
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({
+      status: "COMPLETED",
+      origin: "FREE_TEST",
+      calls: 3,
+    });
+  });
+
+  it("a product page handed in (forged targets/tested) is dropped: never stored, never counted", async () => {
+    const r = await finalizeSpeedReport({
+      ...base,
+      targets: TARGETS, // product OK, as a Professional run would have
+      tested: [
+        { page: "home", url: HOME, attempts: [run(30, "a")] },
+        { page: "product", url: `https://${STORE_HOST}/products/a`, attempts: [run(50, "d")] },
+      ],
+    });
+    expect(r).toEqual({ status: "COMPLETED", calls: 1 });
+    const written = mockModel.finishSpeedReport.mock.calls[0][1];
+    expect(written.pages.map((p: { page: string }) => p.page)).toEqual(["home"]);
+    expect(JSON.stringify(written)).not.toContain("/products/");
+  });
+
+  it.each([
+    [
+      "password page found by the pre-check",
+      { passwordProtected: true, tested: [{ page: "home", url: HOME, attempts: [] }] },
+      "UNAVAILABLE_PASSWORD",
+    ],
+    [
+      "password page found by PageSpeed",
+      { tested: [{ page: "home", url: HOME, attempts: [{ kind: "password" }] }] },
+      "UNAVAILABLE_PASSWORD",
+    ],
+    [
+      "every run failed",
+      {
+        tested: [
+          {
+            page: "home",
+            url: HOME,
+            attempts: [
+              { kind: "error", code: "server_error" },
+              { kind: "error", code: "server_error" },
+              { kind: "error", code: "server_error" },
+            ],
+          },
+        ],
+      },
+      "FAILED",
+    ],
+    [
+      "Google timed out",
+      { tested: [{ page: "home", url: HOME, attempts: [{ kind: "error", code: "timeout" }] }] },
+      "FAILED",
+    ],
+    [
+      "the budget ran out (NOT_RUN)",
+      { tested: [{ page: "home", url: HOME, attempts: [{ kind: "budget" }] }] },
+      "SKIPPED_BUDGET",
+    ],
+    [
+      "lost eligibility before the call (NOT_RUN)",
+      { tested: [{ page: "home", url: HOME, attempts: [{ kind: "not_eligible" }] }] },
+      "FAILED",
+    ],
+    [
+      "Google rate limited us",
+      {
+        tested: [{ page: "home", url: HOME, attempts: [{ kind: "error", code: "rate_limited" }] }],
+      },
+      "FAILED",
+    ],
+  ] as const)("%s -> %s, the free test stays unused", async (_label, extra, status) => {
+    const r = await finalizeSpeedReport({
+      ...base,
+      targets: HOME_ONLY,
+      ...(extra as unknown as { tested: Parameters<typeof finalizeSpeedReport>[0]["tested"] }),
+    });
+    expect(r.status).toBe(status);
+    expect(mockModel.finishSpeedReport).toHaveBeenCalledTimes(1);
+    expect(consumed()).toBe(false);
+    expect(mockModel.finishSpeedReport.mock.calls[0]).toHaveLength(2);
+  });
+
+  it("no targets (Admin API down, no domain) -> FAILED, unused", async () => {
+    await finalizeSpeedReport({
+      ...base,
+      targets: null,
+      targetsFailure: "admin_unavailable",
+      tested: [],
+    });
+    expect(consumed()).toBe(false);
+  });
+
+  it("COMPLETED but the homepage has no score -> unused", async () => {
+    const noScore = run(30, "a");
+    if (noScore.kind === "ok") noScore.run.metrics.score = null;
+    const r = await finalizeSpeedReport({
+      ...base,
+      targets: HOME_ONLY,
+      tested: [{ page: "home", url: HOME, attempts: [noScore] }],
+    });
+    expect(r.status).toBe("COMPLETED");
+    expect(consumed()).toBe(false);
+  });
+
+  it("a Professional (SCHEDULED/MANUAL) report never uses the free test up", async () => {
+    for (const origin of ["SCHEDULED", "MANUAL"] as const) {
+      mockModel.finishSpeedReport.mockClear();
+      await finalizeSpeedReport({
+        ...base,
+        origin,
+        targets: { ...TARGETS, product: { status: "NO_PRODUCT" } },
+        tested: [{ page: "home", url: HOME, attempts: [run(30, "a")] }],
+      });
+      expect(mockModel.finishSpeedReport.mock.calls[0]).toHaveLength(2);
+    }
+  });
+
+  it("a cancelled / dead free test hands the 24h slot back (it was not used up)", async () => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(1);
+    await closeAbandonedSpeedReport(
+      {
+        shopId: SHOP_ID,
+        origin: "FREE_TEST",
+        runId: "run-f",
+        reportId: "rep-f",
+        runNowClaimedAt: "2026-10-11T11:00:00.000Z",
+        runNowPrevious: null,
+      },
+      "stuck",
+      NOW,
+    );
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(
+      SHOP_ID,
+      new Date("2026-10-11T11:00:00.000Z"),
+      null,
+    );
+    // Nothing writes the used stamp on this path.
+    expect(mockModel.finishSpeedReport).not.toHaveBeenCalled();
+  });
+});
+
+describe("requestFreeSpeedTest", () => {
+  const free = { id: SHOP_ID, domain: DOMAIN, plan: "free" };
+
+  beforeEach(() => {
+    mockModel.getRecentSpeedReports.mockResolvedValue([]);
+    mockModel.getSpeedReportRequestedAt.mockResolvedValue(null);
+    mockModel.getFreeSpeedTestUsedAt.mockResolvedValue(null);
+    mockModel.claimFreeSpeedTest.mockResolvedValue(true);
+    mockModel.createSpeedReport.mockResolvedValue({ id: "rep-f", createdAt: NOW });
+    mockSend.mockResolvedValue({ ids: ["e1"] });
+  });
+
+  it.each(["free", "Standard"])(
+    "%s: claims the free test, creates a FREE_TEST row and sends a FREE_TEST event",
+    async (plan) => {
+      await expect(requestFreeSpeedTest({ ...free, plan }, NOW)).resolves.toEqual({
+        ok: true,
+        reportId: "rep-f",
+      });
+      expect(mockModel.claimFreeSpeedTest).toHaveBeenCalledWith(SHOP_ID, NOW);
+      expect(mockModel.claimSpeedReportRunNow).not.toHaveBeenCalled();
+      expect(mockModel.createSpeedReport).toHaveBeenCalledWith(SHOP_ID, "FREE_TEST");
+      expect(mockSend).toHaveBeenCalledWith({
+        name: "speed-report/requested",
+        data: {
+          shopId: SHOP_ID,
+          origin: "FREE_TEST",
+          reportId: "rep-f",
+          runNowClaimedAt: NOW.toISOString(),
+          runNowPrevious: null,
+        },
+      });
+    },
+  );
+
+  it("Professional: refused (it has the full report), nothing claimed", async () => {
+    await expect(requestFreeSpeedTest({ ...free, plan: "Professional" }, NOW)).resolves.toEqual({
+      ok: false,
+      error: FREE_TEST_ERRORS.notInPlan,
+    });
+    expect(mockModel.claimFreeSpeedTest).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("already used: refused before any claim, row or event (a forged second POST)", async () => {
+    mockModel.getFreeSpeedTestUsedAt.mockResolvedValue(USED_AT);
+    await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
+      ok: false,
+      error: FREE_TEST_ERRORS.used,
+    });
+    expect(mockModel.claimFreeSpeedTest).not.toHaveBeenCalled();
+    expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
+    expect(mockSend).not.toHaveBeenCalled();
+  });
+
+  it("a run in flight (any origin) blocks it without claiming", async () => {
+    mockModel.getRecentSpeedReports.mockResolvedValue([
+      {
+        id: "r0",
+        origin: "MANUAL",
+        status: "RUNNING",
+        failureReason: null,
+        pages: null,
+        createdAt: new Date(NOW.getTime() - 60_000),
+        startedAt: new Date(NOW.getTime() - 60_000),
+        completedAt: null,
+      },
+    ]);
+    await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
+      ok: false,
+      error: RUN_NOW_ERRORS.running,
+    });
+    expect(mockModel.claimFreeSpeedTest).not.toHaveBeenCalled();
+  });
+
+  it("claim lost within 24h of the last try: refused with the next time", async () => {
+    const prev = new Date(NOW.getTime() - 3_600_000);
+    mockModel.getSpeedReportRequestedAt.mockResolvedValue(prev);
+    mockModel.claimFreeSpeedTest.mockResolvedValue(false);
+    await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
+      ok: false,
+      error: FREE_TEST_ERRORS.cooldown,
+      nextAvailableAt: new Date(prev.getTime() + 24 * 3_600_000).toISOString(),
+    });
+    expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
+  });
+
+  it("claim lost because the test was used up in between: says used, not 'once a day'", async () => {
+    mockModel.getFreeSpeedTestUsedAt.mockResolvedValueOnce(null).mockResolvedValueOnce(USED_AT);
+    mockModel.claimFreeSpeedTest.mockResolvedValue(false);
+    await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
+      ok: false,
+      error: FREE_TEST_ERRORS.used,
+    });
+  });
+
+  it("two clicks at once: the atomic claim lets exactly one start a run", async () => {
+    mockModel.claimFreeSpeedTest.mockResolvedValueOnce(true).mockResolvedValueOnce(false);
+    const results = await Promise.all([
+      requestFreeSpeedTest(free, NOW),
+      requestFreeSpeedTest(free, NOW),
+    ]);
+    expect(results.filter((r) => r.ok)).toHaveLength(1);
+    expect(mockModel.createSpeedReport).toHaveBeenCalledTimes(1);
+    expect(mockSend).toHaveBeenCalledTimes(1);
+  });
+
+  it("the key is missing: refused before the claim", async () => {
+    delete process.env.PAGESPEED_API_KEY;
+    const r = await requestFreeSpeedTest(free, NOW);
+    expect(r.ok).toBe(false);
+    expect(mockModel.claimFreeSpeedTest).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({
+      origin: "FREE_TEST",
+      reason: "not_configured",
+    });
+  });
+
+  it("send fails: row closed FAILED/dispatch_failed and the slot handed back (test unused)", async () => {
+    mockSend.mockRejectedValue(new Error("inngest down"));
+    await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
+      ok: false,
+      error: RUN_NOW_ERRORS.dispatch,
+    });
+    expect(mockModel.finishSpeedReport).toHaveBeenCalledWith("rep-f", {
+      status: "FAILED",
+      failureReason: "dispatch_failed",
+      pages: null,
+      psiCalls: 0,
+    });
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(SHOP_ID, NOW, null);
+  });
+
+  it.each(["free", "Standard"])(
+    "a forged Run-now POST from %s is refused: no claim, no run (never the full report)",
+    async (plan) => {
+      await expect(requestSpeedReportRunNow({ ...free, plan }, NOW)).resolves.toEqual({
+        ok: false,
+        error: RUN_NOW_ERRORS.notInPlan,
+      });
+      expect(mockModel.claimSpeedReportRunNow).not.toHaveBeenCalled();
+      expect(mockModel.claimFreeSpeedTest).not.toHaveBeenCalled();
+      expect(mockSend).not.toHaveBeenCalled();
+    },
+  );
 });

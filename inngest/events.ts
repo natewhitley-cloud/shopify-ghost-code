@@ -33,16 +33,17 @@ export type Events = {
    * coordinator (SCHEDULED, no reportId: the worker creates the row) and by the
    * Store speed page's "Run speed test now" (MANUAL, with the RUNNING row the
    * action already created, and the Run-now claim it took so a run that dies
-   * or is cancelled can hand the slot back).
+   * or is cancelled can hand the slot back) and by its "Run your free speed
+   * test" (FREE_TEST: homepage only, same row and claim fields as MANUAL).
    */
   "speed-report/requested": {
     data: {
       shopId: string;
-      origin: "SCHEDULED" | "MANUAL";
+      origin: "SCHEDULED" | "MANUAL" | "FREE_TEST";
       reportId?: string;
-      /** MANUAL: when the Run-now slot was claimed (ISO). */
+      /** MANUAL / FREE_TEST: when the 24h slot was claimed (ISO). */
       runNowClaimedAt?: string;
-      /** MANUAL: the claim before it (ISO; null = never pressed). */
+      /** MANUAL / FREE_TEST: the claim before it (ISO; null = never pressed). */
       runNowPrevious?: string | null;
     };
   };

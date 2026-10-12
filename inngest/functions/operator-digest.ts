@@ -46,7 +46,9 @@ import {
 import {
   formatBytes,
   formatSeconds,
+  freeSpeedTestConsumed,
   readSpeedPages,
+  SPEED_REPORT_ORIGIN,
   type SpeedPageResult,
 } from "../../app/lib/speed-report";
 import {
@@ -909,6 +911,10 @@ export interface SpeedReportDigest {
   runs: number;
   scheduled: number;
   manual: number;
+  /** Free speed tests started (FREE_TEST rows created). */
+  freeTests: number;
+  /** Of those, the ones that used the test up (COMPLETED with a homepage score). */
+  freeTestsUsed: number;
   completed: number;
   partial: number;
   failed: number;
@@ -951,6 +957,8 @@ export function aggregateSpeedReports(
     runs: 0,
     scheduled: 0,
     manual: 0,
+    freeTests: 0,
+    freeTestsUsed: 0,
     completed: 0,
     partial: 0,
     failed: 0,
@@ -973,8 +981,11 @@ export function aggregateSpeedReports(
       continue;
     }
     out.runs += 1;
-    if (r.origin === "MANUAL") out.manual += 1;
-    else out.scheduled += 1;
+    if (r.origin === SPEED_REPORT_ORIGIN.MANUAL) out.manual += 1;
+    else if (r.origin === SPEED_REPORT_ORIGIN.FREE_TEST) {
+      out.freeTests += 1;
+      if (freeSpeedTestConsumed(r.status, readSpeedPages(r.pages))) out.freeTestsUsed += 1;
+    } else out.scheduled += 1;
     switch (r.status) {
       case "COMPLETED":
         out.completed += 1;
@@ -1052,7 +1063,14 @@ export function formatSpeedReportLines(d: SpeedReportDigest | undefined): string
   if (d.runs === 0) {
     lines.push("  No speed runs in the last 24h");
   } else {
-    lines.push(`  Runs: ${d.runs} (scheduled ${d.scheduled}, run now ${d.manual})`);
+    const free = d.freeTests > 0 ? `, free test ${d.freeTests}` : "";
+    lines.push(`  Runs: ${d.runs} (scheduled ${d.scheduled}, run now ${d.manual}${free})`);
+    if (d.freeTests > 0) {
+      // Upgrade clicks from the free test's ask are the speed_teaser funnel.
+      lines.push(
+        `  Free tests: started ${d.freeTests}, used up ${d.freeTestsUsed} (completed with a homepage score)`,
+      );
+    }
     lines.push(
       `  By status: completed ${d.completed}, partial ${d.partial}, failed ${d.failed}, ` +
         `password-protected ${d.password}, budget-skipped ${d.budgetSkipped}, ` +
@@ -1064,7 +1082,12 @@ export function formatSpeedReportLines(d: SpeedReportDigest | undefined): string
   if (d.perShop.length > 0) {
     lines.push("  By store (most recent run):");
     for (const s of d.perShop) {
-      const origin = s.origin === "MANUAL" ? "run now" : "scheduled";
+      const origin =
+        s.origin === SPEED_REPORT_ORIGIN.MANUAL
+          ? "run now"
+          : s.origin === SPEED_REPORT_ORIGIN.FREE_TEST
+            ? "free test"
+            : "scheduled";
       const reason = s.failureReason ? ` (${s.failureReason})` : "";
       const parts = [fmtSpeedPage("home", s.home), fmtSpeedPage("product", s.product)].filter(
         (x): x is string => x !== null,

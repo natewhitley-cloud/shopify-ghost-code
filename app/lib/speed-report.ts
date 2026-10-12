@@ -14,8 +14,20 @@
 export const SPEED_REPORT_ORIGIN = {
   SCHEDULED: "SCHEDULED",
   MANUAL: "MANUAL",
+  /**
+   * The one free homepage-only test of a plan without the full report
+   * (PlanFeatures.freeSpeedTest). Never tests the product page.
+   */
+  FREE_TEST: "FREE_TEST",
 } as const;
 export type SpeedReportOrigin = (typeof SPEED_REPORT_ORIGIN)[keyof typeof SPEED_REPORT_ORIGIN];
+
+const ORIGINS: ReadonlySet<unknown> = new Set(Object.values(SPEED_REPORT_ORIGIN));
+
+/** Whether a value (e.g. from an Inngest event) is a known origin. */
+export function isSpeedReportOrigin(value: unknown): value is SpeedReportOrigin {
+  return ORIGINS.has(value);
+}
 
 export const SPEED_REPORT_STATUS = {
   RUNNING: "RUNNING",
@@ -370,6 +382,19 @@ export function topCostlyApps(apps: readonly SpeedCostRow[], n: number): SpeedCo
 }
 
 /**
+ * "Klaviyo used 4.0 s of processing time and 621 KB on your homepage." The
+ * costliest app's line, shared by the summary email (gc-2wnf, which passes a
+ * sanitized name) and the free speed test result.
+ */
+export function costliestAppLine(app: {
+  name: string;
+  mainThreadMs: number;
+  transferBytes: number;
+}): string {
+  return `${app.name} used ${formatSeconds(app.mainThreadMs)} of processing time and ${formatBytes(app.transferBytes)} on your homepage.`;
+}
+
+/**
  * "These 3 apps cost your homepage 4.2 s of processing time." over the top
  * apps by main-thread time (only apps with any). Null when no app has any.
  */
@@ -414,6 +439,24 @@ export const NO_PRODUCT_MESSAGE =
 
 export const NEEDS_PRODUCT_ACCESS_MESSAGE =
   "To test a product page too, allow Products access in Settings.";
+
+export const SPEED_RUNNING_MESSAGE =
+  "Speed test running. It takes a few minutes; results appear here when it finishes.";
+export const SPEED_RUNNING_TIMED_OUT_MESSAGE =
+  "Still running. Refresh the page in a few minutes to see the results.";
+
+// Free speed test copy (plans without the full report).
+export const FREE_TEST_INTRO =
+  "See how fast your homepage loads on a phone, and which app slows it down the most. Your plan includes one free test with Google PageSpeed Insights.";
+export const FREE_TEST_BUTTON = "Run your free speed test";
+/** The Free and Standard plan-tile bullet (max 40 chars, Managed Pricing card limit). */
+export const FREE_SPEED_TEST_BULLET = "One free homepage speed test";
+export const FREE_TEST_NOT_USED = "Your free test wasn't used, so you can run it again.";
+export const FREE_TEST_RESULT_HEADING = "Your free speed test";
+export const FREE_TEST_NO_APP = "No known app added measurable load to your homepage.";
+export const FREE_TEST_UPGRADE_HEADING = "Test every week and see the cost of every app";
+export const FREE_TEST_UPGRADE_BODY =
+  "Professional includes a weekly speed report for your homepage and a product page, with the cost of every app: how long it keeps the page busy and how much it adds to the download.";
 
 // ---------------------------------------------------------------------------
 // Page view model (pure; built in the Store speed loader)
@@ -500,4 +543,110 @@ export function formatSpeedDelta(
   }
   if (Math.abs(delta) < 1000) return "About the same as last week";
   return `${formatBytes(Math.abs(delta))} ${delta < 0 ? "smaller" : "larger"} than last week`;
+}
+
+// ---------------------------------------------------------------------------
+// Free speed test (pure; plans without the full report)
+// ---------------------------------------------------------------------------
+
+/** The homepage page of a report when it has a score, else null. */
+function scoredHome(
+  pages: SpeedPageResult[],
+): (SpeedPageResult & { metrics: SpeedMetrics }) | null {
+  const home = pages.find((p) => p.page === "home");
+  if (!home || home.status !== "OK" || !home.metrics || home.metrics.score === null) return null;
+  return home as SpeedPageResult & { metrics: SpeedMetrics };
+}
+
+/**
+ * Whether a FREE_TEST report uses the free test up: it COMPLETED with a
+ * homepage score. A password page, a failure, a budget skip, a run with no
+ * score and a cancelled run do not. The worker stamps Shop.freeSpeedTestUsedAt
+ * on exactly this condition.
+ */
+export function freeSpeedTestConsumed(status: string, pages: SpeedPageResult[] | null): boolean {
+  return status === SPEED_REPORT_STATUS.COMPLETED && scoredHome(pages ?? []) !== null;
+}
+
+/**
+ * What a plan without the full report may see of its free test: the homepage
+ * score and core timings, and ONE line about the costliest app. Never the
+ * per-app table, other third parties, first-party totals, the product page
+ * or any other report: the loader sends only this.
+ */
+export type FreeSpeedTestResult = {
+  reportId: string;
+  createdAt: string;
+  metrics: {
+    score: number;
+    lcpMs: number | null;
+    tbtMs: number | null;
+    totalBytes: number | null;
+    requestCount: number | null;
+  };
+  costliestApp: { name: string; mainThreadMs: number; transferBytes: number } | null;
+};
+
+export type FreeSpeedTestView = {
+  /** available: the test can be run; running: one is in progress; used: done. */
+  state: "available" | "running" | "used";
+  /** The result that used the test up (state "used"). */
+  result: FreeSpeedTestResult | null;
+  /** The latest attempt that did NOT use the test up (state "available"). */
+  lastAttempt: { status: string; failureReason: SpeedFailureCode | null; createdAt: string } | null;
+};
+
+/** The stripped result of one report, or null when it did not use the test up. */
+export function freeSpeedTestResultOf(row: SpeedReportRowLike): FreeSpeedTestResult | null {
+  const pages = readSpeedPages(row.pages);
+  if (!freeSpeedTestConsumed(row.status, pages)) return null;
+  const home = scoredHome(pages)!;
+  const top = topCostlyApps(home.apps ?? [], 1)[0];
+  return {
+    reportId: row.id,
+    createdAt: row.createdAt.toISOString(),
+    metrics: {
+      score: home.metrics.score!,
+      lcpMs: home.metrics.lcpMs,
+      tbtMs: home.metrics.tbtMs,
+      totalBytes: home.metrics.totalBytes,
+      requestCount: home.metrics.requestCount,
+    },
+    costliestApp: top
+      ? { name: top.name, mainThreadMs: top.mainThreadMs, transferBytes: top.transferBytes }
+      : null,
+  };
+}
+
+/**
+ * The free test's state from the shop's FREE_TEST reports (newest first) and
+ * Shop.freeSpeedTestUsedAt. Used = the stamp is set (the result shown is the
+ * newest report that used it up). Otherwise a RUNNING report (not abandoned)
+ * means running, else available, with the latest attempt to explain why it can
+ * be run again.
+ */
+export function buildFreeSpeedTestView(
+  rows: SpeedReportRowLike[],
+  usedAt: Date | null,
+  now: Date,
+): FreeSpeedTestView {
+  if (usedAt) {
+    let result: FreeSpeedTestResult | null = null;
+    for (const row of rows) {
+      result = freeSpeedTestResultOf(row);
+      if (result) break;
+    }
+    return { state: "used", result, lastAttempt: null };
+  }
+  const latest = rows[0] ? toSummaryView(rows[0], now) : null;
+  if (latest?.status === SPEED_REPORT_STATUS.RUNNING) {
+    return { state: "running", result: null, lastAttempt: null };
+  }
+  return {
+    state: "available",
+    result: null,
+    lastAttempt: latest
+      ? { status: latest.status, failureReason: latest.failureReason, createdAt: latest.createdAt }
+      : null,
+  };
 }

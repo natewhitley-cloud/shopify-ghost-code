@@ -215,6 +215,14 @@ export type PlanFeatures = {
    * Professional-only. Also DARK behind SPEED_REPORT_LIVE_ENABLED.
    */
   speedReport: boolean;
+  /**
+   * One free store speed test: homepage only, score + costliest app, once ever
+   * per shop (Shop.freeSpeedTestUsedAt). Every plan WITHOUT speedReport; the
+   * owner asked for Free, and Standard has it too so a paying Standard shop
+   * never gets less than Free. To narrow it to Free, set Standard's to false.
+   * Also DARK behind SPEED_REPORT_LIVE_ENABLED.
+   */
+  freeSpeedTest: boolean;
 };
 
 export function getPlanFeatures(planName: string): PlanFeatures {
@@ -235,6 +243,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         productAuditCap: STANDARD_PRODUCT_AUDIT_CAP, // gc-747u
         redirectAuditCap: STANDARD_REDIRECT_CAP, // gc-747u
         speedReport: false, // Professional-only (gc-wt3y)
+        freeSpeedTest: true, // never less than Free; set false to narrow the free test to Free
       };
     case PLANS.PROFESSIONAL:
       return {
@@ -252,6 +261,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         productAuditCap: PROFESSIONAL_PRODUCT_AUDIT_CAP, // gc-747u
         redirectAuditCap: PROFESSIONAL_REDIRECT_CAP, // gc-747u
         speedReport: true, // Professional-only weekly store speed report (gc-wt3y)
+        freeSpeedTest: false, // Professional has the full report instead
       };
     default: // FREE — no active Shopify subscription
       return {
@@ -271,6 +281,7 @@ export function getPlanFeatures(planName: string): PlanFeatures {
         productAuditCap: PRODUCT_AUDIT_CAP, // unchanged Free cap (gc-747u)
         redirectAuditCap: REDIRECT_CAP, // unchanged Free cap (gc-747u)
         speedReport: false, // Professional-only (gc-wt3y)
+        freeSpeedTest: true, // one free homepage speed test, once ever
       };
   }
 }

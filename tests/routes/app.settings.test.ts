@@ -186,6 +186,39 @@ describe("app.settings loader", () => {
     expect(result.features).toEqual(FREE_FEATURES);
   });
 
+  describe("freeSpeedTestTiles: from the plan matrix, only while the speed report is live", () => {
+    afterEach(() => {
+      delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    });
+
+    it.each([
+      [
+        "live, both plans have it",
+        "true",
+        { free: true, standard: true },
+        { free: true, standard: true },
+      ],
+      [
+        "live, narrowed to Free",
+        "true",
+        { free: true, standard: false },
+        { free: true, standard: false },
+      ],
+      ["dark", undefined, { free: true, standard: true }, { free: false, standard: false }],
+    ] as const)("%s", async (_label, flag, has, expected) => {
+      if (flag === undefined) delete process.env.SPEED_REPORT_LIVE_ENABLED;
+      else process.env.SPEED_REPORT_LIVE_ENABLED = flag;
+      mockGetPlanFeatures.mockImplementation((plan: string) => ({
+        ...FREE_FEATURES,
+        freeSpeedTest: plan === "Standard" ? has.standard : has.free,
+      }));
+      const result = (await loader(makeLoaderArgs())) as {
+        freeSpeedTestTiles: { free: boolean; standard: boolean };
+      };
+      expect(result.freeSpeedTestTiles).toEqual(expected);
+    });
+  });
+
   it("never-paid Free shop: trialEligible", async () => {
     const result = (await loader(makeLoaderArgs())) as { trialEligible: boolean };
 
@@ -278,6 +311,7 @@ describe("Settings plan tile buttons", () => {
     plan: string,
     trialEligible: boolean,
     alerts: Partial<AlertsData> = {},
+    freeSpeedTestTiles = { free: true, standard: true },
   ): string {
     const loaderData = {
       shop: { plan, domain: SHOP_DOMAIN },
@@ -285,6 +319,7 @@ describe("Settings plan tile buttons", () => {
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible,
       alerts: { ...DARK_ALERTS, ...alerts },
+      freeSpeedTestTiles,
     };
     const Stub = createRoutesStub([
       {
@@ -375,13 +410,14 @@ describe("Settings plan tile buttons", () => {
   });
 
   it("the Free tile lists the owner-approved bullets, identical to the doc's App listing features", async () => {
-    const freeTile = bullets(renderSettings("free", true)).slice(0, 5);
+    const freeTile = bullets(renderSettings("free", true)).slice(0, 6);
     expect(freeTile).toEqual([
       "First scan always free",
       "1 scan per month after first",
       "Findings grouped by impact, with counts",
       "Up to 5 findings shown in full",
       "Single theme scanning",
+      "One free homepage speed test",
     ]);
     expect(freeTile).not.toContain("Preview of top finding in full");
     for (const b of freeTile) {
@@ -394,8 +430,29 @@ describe("Settings plan tile buttons", () => {
     const { readFileSync } = await import("node:fs");
     const doc = readFileSync(new URL("../../docs/pricing-and-plans.md", import.meta.url), "utf8");
     const listing = doc.slice(doc.indexOf("**App listing features (max 40 chars each):**"));
-    const docBullets = [...listing.matchAll(/^\d\. (.+)$/gm)].slice(0, 5).map((m) => m[1]);
+    const docBullets = [...listing.matchAll(/^\d\. (.+)$/gm)].slice(0, 6).map((m) => m[1]);
     expect(docBullets).toEqual(freeTile);
+  });
+
+  it("free speed test: listed on the Free AND Standard tiles while live, never on Professional's", () => {
+    const html = renderSettings("free", false);
+    const all = bullets(html);
+    expect(all.filter((b) => b === "One free homepage speed test")).toHaveLength(2);
+    // Standard's comes right after "All features in Free".
+    expect(all[all.indexOf("All features in Free") + 1]).toBe("One free homepage speed test");
+    const proStart = all.indexOf("All features in Standard");
+    expect(all.slice(proStart)).not.toContain("One free homepage speed test");
+  });
+
+  it("free speed test: absent while the speed report is dark, and from Standard when narrowed to Free", () => {
+    expect(
+      bullets(renderSettings("free", false, {}, { free: false, standard: false })),
+    ).not.toContain("One free homepage speed test");
+    const narrowed = bullets(renderSettings("free", false, {}, { free: true, standard: false }));
+    expect(narrowed.filter((b) => b === "One free homepage speed test")).toHaveLength(1);
+    expect(narrowed.indexOf("One free homepage speed test")).toBeLessThan(
+      narrowed.indexOf("All features in Free"),
+    );
   });
 
   it("every plan button links top-level to the Managed Pricing page", () => {
@@ -613,6 +670,7 @@ describe("the page is called Settings, matching the notice, email and policy (Na
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible: true,
       alerts: DARK_ALERTS,
+      freeSpeedTestTiles: { free: false, standard: false },
     };
     const Stub = createRoutesStub([
       {
@@ -648,6 +706,7 @@ describe("Settings Summary emails card (gc-ol95 copy)", () => {
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible,
       alerts: { ...DARK_ALERTS, ...alerts },
+      freeSpeedTestTiles: { free: true, standard: true },
     };
     const Stub = createRoutesStub([
       {
@@ -788,6 +847,7 @@ describe("Settings Permissions card (gc-4n0y)", () => {
       pricingPlansUrl: PRICING_PLANS_URL,
       trialEligible: true,
       alerts: DARK_ALERTS,
+      freeSpeedTestTiles: { free: false, standard: false },
     };
     const Stub = createRoutesStub([
       {

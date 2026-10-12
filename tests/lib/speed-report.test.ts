@@ -430,3 +430,142 @@ describe("merchant copy", () => {
     expect(SPEED_REPORT_STATUS.UNAVAILABLE_PASSWORD).toBe("UNAVAILABLE_PASSWORD");
   });
 });
+
+// ---------------------------------------------------------------------------
+// Free speed test (pure helpers)
+// ---------------------------------------------------------------------------
+
+describe("free speed test helpers", () => {
+  const APPS: SpeedCostRow[] = [
+    { name: "Recharge", mainThreadMs: 640, transferBytes: 169000, unusedPct: 80, requestCount: 1 },
+    { name: "Klaviyo", mainThreadMs: 4123, transferBytes: 1851000, unusedPct: 50, requestCount: 3 },
+  ];
+
+  function freeRow(
+    status: string,
+    pages: SpeedPageResult[] | null,
+    extra: Partial<{ id: string; createdAt: Date; startedAt: Date | null }> = {},
+  ) {
+    const createdAt = extra.createdAt ?? new Date(NOW.getTime() - 3600_000);
+    return {
+      id: extra.id ?? `r-${status}`,
+      origin: "FREE_TEST",
+      status,
+      failureReason: null,
+      pages,
+      createdAt,
+      startedAt: extra.startedAt === undefined ? createdAt : extra.startedAt,
+      completedAt: createdAt,
+    };
+  }
+
+  it("FREE_TEST is a known origin; junk is not", () => {
+    expect(speed.SPEED_REPORT_ORIGIN.FREE_TEST).toBe("FREE_TEST");
+    for (const o of ["SCHEDULED", "MANUAL", "FREE_TEST"])
+      expect(speed.isSpeedReportOrigin(o)).toBe(true);
+    for (const o of ["free_test", "", null, undefined, 1])
+      expect(speed.isSpeedReportOrigin(o)).toBe(false);
+  });
+
+  it("costliestAppLine is the summary email's sentence", () => {
+    expect(speed.costliestAppLine(APPS[1])).toBe(
+      "Klaviyo used 4.1 s of processing time and 1.9 MB on your homepage.",
+    );
+  });
+
+  it.each([
+    ["COMPLETED", [okPage()], true],
+    ["COMPLETED", [okPage({ metrics: { ...okPage().metrics!, score: null } })], false],
+    ["COMPLETED", [], false],
+    ["COMPLETED", null, false],
+    ["COMPLETED", [okPage({ page: "product" })], false],
+    ["PARTIAL", [okPage()], false],
+    ["FAILED", [okPage()], false],
+    ["UNAVAILABLE_PASSWORD", [okPage({ status: "PASSWORD", metrics: undefined })], false],
+    ["SKIPPED_BUDGET", [okPage({ status: "NOT_RUN", metrics: undefined })], false],
+    ["RUNNING", null, false],
+  ] as const)("freeSpeedTestConsumed(%s, ...) -> %s", (status, pages, expected) => {
+    expect(speed.freeSpeedTestConsumed(status, pages as unknown as SpeedPageResult[] | null)).toBe(
+      expected,
+    );
+  });
+
+  it("the result keeps ONLY the homepage score, timings and the costliest app", () => {
+    const pages = [
+      okPage({
+        apps: APPS,
+        otherThirdParty: APPS,
+        firstParty: { mainThreadMs: 1, transferBytes: 2 },
+      }),
+      okPage({ page: "product", url: "https://shop.example/products/a" }),
+    ];
+    const r = speed.freeSpeedTestResultOf(freeRow("COMPLETED", pages));
+    expect(r).toEqual({
+      reportId: "r-COMPLETED",
+      createdAt: new Date(NOW.getTime() - 3600_000).toISOString(),
+      metrics: {
+        score: 28,
+        lcpMs: okPage().metrics!.lcpMs,
+        tbtMs: okPage().metrics!.tbtMs,
+        totalBytes: okPage().metrics!.totalBytes,
+        requestCount: okPage().metrics!.requestCount,
+      },
+      costliestApp: { name: "Klaviyo", mainThreadMs: 4123, transferBytes: 1851000 },
+    });
+    expect(JSON.stringify(r)).not.toMatch(/Recharge|unusedPct|firstParty|products/);
+  });
+
+  it("no app with processing time: no costliest app", () => {
+    const r = speed.freeSpeedTestResultOf(
+      freeRow("COMPLETED", [okPage({ apps: [{ ...APPS[0], mainThreadMs: 0 }] })]),
+    );
+    expect(r!.costliestApp).toBeNull();
+  });
+
+  it("view: used shows the report that used it up, even behind newer failed rows", () => {
+    const v = speed.buildFreeSpeedTestView(
+      [
+        freeRow("FAILED", null, { id: "newer" }),
+        freeRow("COMPLETED", [okPage({ apps: APPS })], { id: "used" }),
+      ],
+      new Date(),
+      NOW,
+    );
+    expect(v.state).toBe("used");
+    expect(v.result!.reportId).toBe("used");
+    expect(v.lastAttempt).toBeNull();
+  });
+
+  it("view: used stamp but no matching report: used, no result (never offers a run)", () => {
+    expect(speed.buildFreeSpeedTestView([], new Date(), NOW)).toEqual({
+      state: "used",
+      result: null,
+      lastAttempt: null,
+    });
+  });
+
+  it("view: unused and nothing run: available", () => {
+    expect(speed.buildFreeSpeedTestView([], null, NOW)).toEqual({
+      state: "available",
+      result: null,
+      lastAttempt: null,
+    });
+  });
+
+  it("view: a RUNNING row is running; an abandoned one reads as a failed try (stuck)", () => {
+    const fresh = freeRow("RUNNING", null, { createdAt: new Date(NOW.getTime() - 60_000) });
+    expect(speed.buildFreeSpeedTestView([fresh], null, NOW).state).toBe("running");
+    const stale = freeRow("RUNNING", null, {
+      createdAt: new Date(NOW.getTime() - SPEED_REPORT_STUCK_MS - 60_000),
+    });
+    const v = speed.buildFreeSpeedTestView([stale], null, NOW);
+    expect(v.state).toBe("available");
+    expect(v.lastAttempt).toMatchObject({ status: "FAILED", failureReason: "stuck" });
+  });
+
+  it("view: a COMPLETED row without the used stamp never shows a result (the stamp is the truth)", () => {
+    const v = speed.buildFreeSpeedTestView([freeRow("COMPLETED", [okPage()])], null, NOW);
+    expect(v.state).toBe("available");
+    expect(v.result).toBeNull();
+  });
+});

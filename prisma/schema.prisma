@@ -213,6 +213,14 @@ model Shop {
   // now". Claimed atomically (conditional updateMany) so the button runs at
   // most once per 24h per shop. Null = never. Deleted with the Shop row.
   speedReportRequestedAt       DateTime?
+  // Free speed test: when this shop's one free homepage-only speed test (Free
+  // and Standard, PlanFeatures.freeSpeedTest) was used up. Stamped once
+  // (conditional write, in the same transaction that writes the report) and
+  // only by a FREE_TEST run that ends COMPLETED with a homepage score; a
+  // password page, failure, budget skip or cancel leaves it null so the
+  // merchant can try again (still once per 24h via speedReportRequestedAt).
+  // Null = never used. Timestamp only, no personal data; deleted with the Shop row.
+  freeSpeedTestUsedAt          DateTime?
   scans               Scan[]
   billingEvents       BillingEvent[]
   ignoredFindings     IgnoredFinding[]

@@ -93,7 +93,13 @@ export async function failAbandonedSpeedReport(
   return count;
 }
 
-/** Write a report's final state. */
+/**
+ * Write a report's final state. `consumeFreeTestOf` (a FREE_TEST report that
+ * used the free test up) also stamps that shop's Shop.freeSpeedTestUsedAt, in
+ * the SAME transaction, conditional on it still being null: a report that
+ * used the test up never exists without the stamp, and a retried write never
+ * moves the stamp.
+ */
 export async function finishSpeedReport(
   reportId: string,
   result: {
@@ -102,8 +108,10 @@ export async function finishSpeedReport(
     pages: SpeedPageResult[] | null;
     psiCalls: number;
   },
+  opts: { consumeFreeTestOf?: string } = {},
 ) {
-  return db.speedReport.update({
+  const completedAt = new Date();
+  const update = db.speedReport.update({
     where: { id: reportId },
     data: {
       status: result.status,
@@ -111,19 +119,34 @@ export async function finishSpeedReport(
       pages:
         result.pages === null ? Prisma.DbNull : (result.pages as unknown as Prisma.InputJsonValue),
       psiCalls: result.psiCalls,
-      completedAt: new Date(),
+      completedAt,
     },
     select: { id: true, createdAt: true, completedAt: true },
   });
+  if (!opts.consumeFreeTestOf) return update;
+  const [row] = await db.$transaction([
+    update,
+    db.shop.updateMany({
+      where: { id: opts.consumeFreeTestOf, freeSpeedTestUsedAt: null },
+      data: { freeSpeedTestUsedAt: completedAt },
+    }),
+  ]);
+  return row;
 }
 
 /** How many recent reports the Store speed page reads (latest + a baseline). */
 export const SPEED_REPORT_HISTORY_TAKE = 10;
 
-/** The shop's most recent reports, newest first. */
-export async function getRecentSpeedReports(shopId: string) {
+/**
+ * The shop's most recent reports, newest first. `origin` narrows them to one
+ * origin (the free test view reads only FREE_TEST reports).
+ */
+export async function getRecentSpeedReports(
+  shopId: string,
+  opts: { origin?: SpeedReportOrigin } = {},
+) {
   return db.speedReport.findMany({
-    where: { shopId },
+    where: { shopId, ...(opts.origin ? { origin: opts.origin } : {}) },
     orderBy: { createdAt: "desc" },
     take: SPEED_REPORT_HISTORY_TAKE,
     select: {
@@ -172,15 +195,15 @@ export async function getSpeedReportRequestedAt(shopId: string): Promise<Date | 
   return row?.speedReportRequestedAt ?? null;
 }
 
-/**
- * Atomically claim the shop's "Run speed test now" slot: succeeds only when
- * the last claim is null or at least RUN_NOW_COOLDOWN_MS old (so exactly 24h
- * later is allowed). One conditional updateMany, so two concurrent clicks
- * cannot both win.
- */
-export async function claimSpeedReportRunNow(shopId: string, now: Date): Promise<boolean> {
+/** One conditional write: the 24h claim, plus any extra condition. */
+async function claimRunSlot(
+  shopId: string,
+  now: Date,
+  extraWhere: Prisma.ShopWhereInput,
+): Promise<boolean> {
   const { count } = await db.shop.updateMany({
     where: {
+      ...extraWhere,
       id: shopId,
       OR: [
         { speedReportRequestedAt: null },
@@ -190,6 +213,35 @@ export async function claimSpeedReportRunNow(shopId: string, now: Date): Promise
     data: { speedReportRequestedAt: now },
   });
   return count > 0;
+}
+
+/**
+ * Atomically claim the shop's "Run speed test now" slot: succeeds only when
+ * the last claim is null or at least RUN_NOW_COOLDOWN_MS old (so exactly 24h
+ * later is allowed). One conditional updateMany, so two concurrent clicks
+ * cannot both win.
+ */
+export async function claimSpeedReportRunNow(shopId: string, now: Date): Promise<boolean> {
+  return claimRunSlot(shopId, now, {});
+}
+
+/**
+ * Atomically claim the free speed test: the same 24h slot as Run now, AND the
+ * free test still unused (Shop.freeSpeedTestUsedAt null), in ONE conditional
+ * updateMany. Two concurrent clicks cannot both win, and a used test can never
+ * be claimed again.
+ */
+export async function claimFreeSpeedTest(shopId: string, now: Date): Promise<boolean> {
+  return claimRunSlot(shopId, now, { freeSpeedTestUsedAt: null });
+}
+
+/** When the shop used its free speed test up (null = unused / no shop). */
+export async function getFreeSpeedTestUsedAt(shopId: string): Promise<Date | null> {
+  const row = await db.shop.findUnique({
+    where: { id: shopId },
+    select: { freeSpeedTestUsedAt: true },
+  });
+  return row?.freeSpeedTestUsedAt ?? null;
 }
 
 /**

@@ -302,3 +302,21 @@ describe("getPlanFeatures speedReport (gc-wt3y)", () => {
     expect(getPlanFeatures(plan).speedReport).toBe(enabled);
   });
 });
+
+describe("getPlanFeatures freeSpeedTest (free speed test)", () => {
+  it.each([
+    ["free", true],
+    ["Standard", true],
+    ["Professional", false],
+    ["unknown", true], // an unknown plan resolves to Free
+  ])("%s -> %s", (plan, enabled) => {
+    expect(getPlanFeatures(plan).freeSpeedTest).toBe(enabled);
+  });
+
+  it("every plan has exactly one of the full report or the free test", () => {
+    for (const plan of [PLANS.FREE, PLANS.STANDARD, PLANS.PROFESSIONAL]) {
+      const f = getPlanFeatures(plan);
+      expect(f.speedReport !== f.freeSpeedTest).toBe(true);
+    }
+  });
+});

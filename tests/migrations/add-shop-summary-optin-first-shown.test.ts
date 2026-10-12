@@ -37,11 +37,15 @@ describe("add_shop_summary_optin_first_shown migration (gc-rxq0)", () => {
     expect(SCHEMA).toMatch(/model Shop \{[\s\S]*?\n\s+summaryOptInFirstShownAt\s+DateTime\?\n/);
   });
 
-  it("is the latest migration (applied last on deploy), after gc-xorg's decline column", () => {
+  it("sorts after gc-xorg's decline column (the free speed test column follows it)", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations"))
       .filter((d) => /^\d{14}_/.test(d))
       .sort();
-    expect(dirs.at(-1)).toBe(NAME);
-    expect(dirs.at(-2)).toBe("20261015120000_add_shop_summary_optin_declined");
+    const self = dirs.indexOf(NAME);
+    const previous = dirs.indexOf("20261015120000_add_shop_summary_optin_declined");
+    // Both must exist: a missing name (-1) must fail, not pass vacuously.
+    expect(self).toBeGreaterThanOrEqual(0);
+    expect(previous).toBeGreaterThanOrEqual(0);
+    expect(self).toBe(previous + 1);
   });
 });

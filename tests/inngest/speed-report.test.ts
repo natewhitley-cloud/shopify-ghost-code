@@ -424,6 +424,7 @@ describe("speed-report-run (worker)", () => {
     expect(svc.runPageSpeedAttempt).not.toHaveBeenCalled();
     expect(svc.precheckStorefrontPassword).toHaveBeenCalledWith({
       shopId: "s1",
+      origin: "SCHEDULED",
       primaryHost: "shop.example",
       storeHosts: ["shop.example", "shop.myshopify.com"],
     });
@@ -546,5 +547,125 @@ describe("speed-report-run (worker)", () => {
     expect(psiSteps(step)).toEqual(["psi-home-1", "psi-home-2", "psi-home-3", "psi-product-1"]);
     expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(4);
     expect(stepNames(step).at(-1)).toBe("finalize");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Free speed test (FREE_TEST origin): homepage only, whatever the targets say
+// ---------------------------------------------------------------------------
+
+describe("speed-report-run (worker): free speed test", () => {
+  const handler = getInngestHandler(speedReportRun);
+  const freeEvent = {
+    name: "speed-report/requested",
+    data: {
+      shopId: "s1",
+      origin: "FREE_TEST",
+      reportId: "rep-free",
+      runNowClaimedAt: "2026-10-11T11:00:00.000Z",
+      runNowPrevious: null,
+    },
+  };
+
+  it("asks for home-only targets and tests ONLY the homepage, 3 runs, every gate with the FREE_TEST origin", async () => {
+    // Even a targets result that (wrongly) carries a product URL is ignored.
+    const step = createMockInngestStep();
+    await handler({ event: freeEvent, step, logger, runId: "run-f" });
+    expect(svc.resolveSpeedTargets).toHaveBeenCalledWith(expect.anything(), { homeOnly: true });
+    expect(stepNames(step)).toEqual([
+      "prepare",
+      "resolve-urls",
+      "password-check",
+      "psi-home-1",
+      "psi-home-2",
+      "psi-home-3",
+      "finalize",
+    ]);
+    expect(svc.prepareSpeedReportRun).toHaveBeenCalledWith({
+      shopId: "s1",
+      origin: "FREE_TEST",
+      reportId: "rep-free",
+      runId: "run-f",
+    });
+    expect(svc.precheckStorefrontPassword.mock.calls[0][0]).toMatchObject({ origin: "FREE_TEST" });
+    expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(3);
+    for (const [input] of svc.runPageSpeedAttempt.mock.calls) {
+      expect(input).toMatchObject({ page: "home", pageUrl: HOME, origin: "FREE_TEST" });
+    }
+    expect(svc.resolvePublicProductTarget).not.toHaveBeenCalled();
+    const fin = svc.finalizeSpeedReport.mock.calls[0][0];
+    expect(fin).toMatchObject({ reportId: "rep-1", shopId: "s1", origin: "FREE_TEST" });
+    expect(fin.tested.map((t: { page: string }) => t.page)).toEqual(["home"]);
+  });
+
+  it("no read_products: never reads /products.json (no product fallback step)", async () => {
+    svc.resolveSpeedTargets.mockResolvedValue({
+      ok: true,
+      targets: {
+        homeUrl: HOME,
+        primaryHost: "shop.example",
+        storeHosts: ["shop.example", "shop.myshopify.com"],
+        product: { status: "NEEDS_PRODUCT_ACCESS" },
+      },
+    });
+    svc.resolvePublicProductTarget.mockResolvedValue({ status: "OK", url: PRODUCT });
+    const step = createMockInngestStep();
+    await handler({ event: freeEvent, step, logger });
+    expect(stepNames(step)).not.toContain("product-fallback");
+    expect(svc.resolvePublicProductTarget).not.toHaveBeenCalled();
+    expect(svc.runPageSpeedAttempt.mock.calls.every(([i]) => i.page === "home")).toBe(true);
+  });
+
+  it("refused at prepare (used up, not in plan): no URL lookup, no calls", async () => {
+    svc.prepareSpeedReportRun.mockResolvedValue({ proceed: false, outcome: "free_test_used" });
+    const step = createMockInngestStep();
+    expect(await handler({ event: freeEvent, step, logger })).toEqual({
+      outcome: "free_test_used",
+    });
+    expect(stepNames(step)).toEqual(["prepare"]);
+    expect(svc.resolveSpeedTargets).not.toHaveBeenCalled();
+    expect(svc.runPageSpeedAttempt).not.toHaveBeenCalled();
+  });
+
+  it("gets the same queue priority as a Run-now click", () => {
+    const c = created.find((f) => f.config.id === "speed-report-run")!;
+    expect((c.config.priority as { run: string }).run).toBe(
+      "event.data.origin == 'MANUAL' || event.data.origin == 'FREE_TEST' ? 600 : 0",
+    );
+  });
+
+  it("a cancelled free test is closed with its claim, so the slot is handed back", async () => {
+    const cancelled = getInngestHandler(speedReportCancelled);
+    await cancelled({
+      event: {
+        name: "inngest/function.cancelled",
+        data: { function_id: "ghost-code-speed-report-run", run_id: "run-c", event: freeEvent },
+      },
+      step: createMockInngestStep(),
+      logger,
+    });
+    expect(svc.closeAbandonedSpeedReport).toHaveBeenCalledWith(
+      {
+        shopId: "s1",
+        origin: "FREE_TEST",
+        runId: "run-c",
+        reportId: "rep-free",
+        runNowClaimedAt: "2026-10-11T11:00:00.000Z",
+        runNowPrevious: null,
+      },
+      "stuck",
+    );
+  });
+});
+
+describe("speed-report-weekly (coordinator): Professional only", () => {
+  it("only Professional shops are selected and only SCHEDULED events sent (never Free/Standard, never FREE_TEST)", async () => {
+    const handler = getInngestHandler(speedReportWeekly);
+    mockDb.shop.findMany.mockResolvedValue([{ id: "pro-1" }]);
+    await handler({ step: createMockInngestStep(), logger });
+    const where = mockDb.shop.findMany.mock.calls[0][0].where;
+    expect(where.plan).toBe("Professional");
+    const events = (inngest.send as ReturnType<typeof vi.fn>).mock.calls[0][0];
+    expect(events.map((e: { data: { origin: string } }) => e.data.origin)).toEqual(["SCHEDULED"]);
   });
 });

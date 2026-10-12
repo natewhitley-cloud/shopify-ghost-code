@@ -45,7 +45,13 @@
  *   - a 429 / 4xx / password page / exhausted budget / lost eligibility halts
  *     the rest of the run; a page that cannot load or a timed-out call halts
  *     only that page.
- *   - Manual "Run now" runs get queue priority over the Sunday batch.
+ *   - Manual "Run now" runs and free tests get queue priority over the
+ *     Sunday batch.
+ *
+ * Free speed test (FREE_TEST origin, plans without the report): the same
+ * worker, homepage only. No product lookup (Admin or /products.json), no
+ * product call; every gate re-checks the plan and that the free test is still
+ * unused. The weekly cron stays Professional-only.
  */
 
 import { inngest } from "../client";
@@ -108,9 +114,11 @@ export const speedReportRun = inngest.createFunction(
     name: "Store Speed Report: Run One Shop",
     retries: 1,
     concurrency: [{ limit: 1 }, { key: "event.data.shopId", limit: 1 }],
-    // Seconds of queue priority: a merchant waiting on "Run now" goes ahead of
-    // scheduled reports queued up to 10 minutes earlier.
-    priority: { run: "event.data.origin == 'MANUAL' ? 600 : 0" },
+    // Seconds of queue priority: a merchant waiting on "Run now" or a free
+    // test goes ahead of scheduled reports queued up to 10 minutes earlier.
+    priority: {
+      run: "event.data.origin == 'MANUAL' || event.data.origin == 'FREE_TEST' ? 600 : 0",
+    },
     timeouts: { start: "6h", finish: "55m" },
     // Retries exhausted: close the report instead of leaving it RUNNING.
     onFailure: async ({ event }) => {
@@ -122,8 +130,10 @@ export const speedReportRun = inngest.createFunction(
   { event: "speed-report/requested" },
   async ({ event, step, runId }) => {
     const svc = await import("../../app/services/speed-report.server");
-    const { SPEED_RUNS_PER_PAGE } = await import("../../app/lib/speed-report");
+    const { SPEED_REPORT_ORIGIN, SPEED_RUNS_PER_PAGE } = await import("../../app/lib/speed-report");
     const { shopId, origin, reportId } = event.data;
+    // A free test is homepage only, whatever the shop's plan is now.
+    const homeOnly = origin === SPEED_REPORT_ORIGIN.FREE_TEST;
 
     const prep = await step.run("prepare", () =>
       svc.prepareSpeedReportRun({ shopId, origin, reportId, runId }),
@@ -134,7 +144,7 @@ export const speedReportRun = inngest.createFunction(
       try {
         const { unauthenticated } = await import("../../app/shopify.server");
         const { admin } = await unauthenticated.admin(prep.shopDomain);
-        return await svc.resolveSpeedTargets(admin);
+        return await svc.resolveSpeedTargets(admin, { homeOnly });
       } catch {
         // No Admin session (offline token gone): not the merchant's address.
         return { ok: false as const, reason: "admin_unavailable" as const };
@@ -143,6 +153,7 @@ export const speedReportRun = inngest.createFunction(
 
     const finalizeBase = {
       reportId: prep.reportId,
+      shopId,
       shopDomain: prep.shopDomain,
       origin,
       startedAt: prep.startedAt,
@@ -163,13 +174,16 @@ export const speedReportRun = inngest.createFunction(
     const pages: Array<{ page: "home" | "product"; url: string }> = [
       { page: "home", url: targets.homeUrl },
     ];
-    if (targets.product.status === "OK") pages.push({ page: "product", url: targets.product.url });
+    if (!homeOnly && targets.product.status === "OK") {
+      pages.push({ page: "product", url: targets.product.url });
+    }
 
     // Zero-PageSpeed-cost check first: a password page is found without
     // spending (or reserving) a single call.
     const precheck = await step.run("password-check", () =>
       svc.precheckStorefrontPassword({
         shopId,
+        origin,
         primaryHost: targets.primaryHost,
         storeHosts: targets.storeHosts,
       }),
@@ -188,7 +202,7 @@ export const speedReportRun = inngest.createFunction(
 
     // No read_products: the product page from the public /products.json
     // (gc-9mbw), only now that the store is known not to be password-protected.
-    if (targets.product.status === "NEEDS_PRODUCT_ACCESS") {
+    if (!homeOnly && targets.product.status === "NEEDS_PRODUCT_ACCESS") {
       const product = await step.run("product-fallback", () =>
         svc.resolvePublicProductTarget({
           shopId,
@@ -214,6 +228,7 @@ export const speedReportRun = inngest.createFunction(
         const attempt = await step.run(`psi-${target.page}-${run}`, () =>
           svc.runPageSpeedAttempt({
             shopId,
+            origin,
             page: target.page,
             pageUrl: target.url,
             primaryHost: targets.primaryHost,

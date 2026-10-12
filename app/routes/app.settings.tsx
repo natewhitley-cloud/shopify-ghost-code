@@ -12,6 +12,7 @@ import {
 } from "../lib/optional-scopes";
 import { canReceiveAlerts } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
+import { FREE_SPEED_TEST_BULLET } from "../lib/speed-report";
 import {
   SUMMARY_CARD_HEADING,
   SUMMARY_COMING_SOON,
@@ -80,6 +81,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       // gc-2wnf: Professional's email can also report (and be sent for) a
       // store speed change, but only while the speed report is live.
       speedInSummary: isSpeedReportLive() && features.speedReport === true,
+    },
+    // Free speed test: the Free and Standard tiles list it while the speed
+    // report is live, straight from the plan matrix (narrowing the feature to
+    // Free drops it from the Standard tile too).
+    freeSpeedTestTiles: {
+      free: isSpeedReportLive() && getPlanFeatures(PLANS.FREE).freeSpeedTest === true,
+      standard: isSpeedReportLive() && getPlanFeatures(PLANS.STANDARD).freeSpeedTest === true,
     },
   };
 };
@@ -327,7 +335,8 @@ export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: 
 // ---------------------------------------------------------------------------
 
 export default function Settings() {
-  const { shop, features, pricingPlansUrl, trialEligible, alerts } = useLoaderData<typeof loader>();
+  const { shop, features, pricingPlansUrl, trialEligible, alerts, freeSpeedTestTiles } =
+    useLoaderData<typeof loader>();
 
   const isFree = shop.plan === PLANS.FREE;
   const isStandard = shop.plan === PLANS.STANDARD;
@@ -338,6 +347,7 @@ export default function Settings() {
   const trialBullet = trialEligible ? (
     <s-list-item>{`${FREE_TRIAL_DAYS}-day free trial`}</s-list-item>
   ) : null;
+  const freeSpeedTestBullet = <s-list-item>{FREE_SPEED_TEST_BULLET}</s-list-item>;
 
   function planButton(label: string, variant: "primary" | "secondary" = "primary") {
     return (
@@ -429,6 +439,7 @@ export default function Settings() {
                 <s-list-item>Findings grouped by impact, with counts</s-list-item>
                 <s-list-item>Up to 5 findings shown in full</s-list-item>
                 <s-list-item>Single theme scanning</s-list-item>
+                {freeSpeedTestTiles.free && freeSpeedTestBullet}
               </s-unordered-list>
             </div>
           </div>
@@ -444,6 +455,7 @@ export default function Settings() {
             <div className="plan-tile__features">
               <s-unordered-list>
                 <s-list-item>All features in Free</s-list-item>
+                {freeSpeedTestTiles.standard && freeSpeedTestBullet}
                 <s-list-item>Full finding details with code</s-list-item>
                 <s-list-item>1 manual scan per week</s-list-item>
                 <s-list-item>Monthly automatic scan</s-list-item>

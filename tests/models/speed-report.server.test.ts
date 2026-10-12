@@ -16,16 +16,19 @@ const mockDb = vi.hoisted(() => ({
   opsEvent: { count: vi.fn() },
   shop: { findUnique: vi.fn(), updateMany: vi.fn() },
   pageSpeedDailyUsage: { updateMany: vi.fn(), create: vi.fn() },
+  $transaction: vi.fn(),
 }));
 
 vi.mock("../../app/db.server", () => ({ default: mockDb }));
 
 import { RUN_NOW_COOLDOWN_MS } from "../../app/lib/speed-report";
 import {
+  claimFreeSpeedTest,
   claimSpeedReportRunNow,
   createSpeedReport,
   failAbandonedSpeedReport,
   finishSpeedReport,
+  getFreeSpeedTestUsedAt,
   hasRecentSpeedReportEvent,
   startManualSpeedReport,
   startSpeedReportForRun,
@@ -250,5 +253,112 @@ describe("reservePageSpeedCall (global daily budget)", () => {
     await expect(reservePageSpeedCall(0, NOW)).resolves.toBe(false);
     expect(mockDb.pageSpeedDailyUsage.updateMany).not.toHaveBeenCalled();
     expect(mockDb.pageSpeedDailyUsage.create).not.toHaveBeenCalled();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Free speed test
+// ---------------------------------------------------------------------------
+
+describe("free speed test", () => {
+  const RESULT = {
+    status: "COMPLETED" as const,
+    failureReason: null,
+    pages: [],
+    psiCalls: 3,
+  };
+
+  it("getRecentSpeedReports can be narrowed to one origin", async () => {
+    mockDb.speedReport.findMany.mockResolvedValue([]);
+    await getRecentSpeedReports("s1", { origin: "FREE_TEST" });
+    expect(mockDb.speedReport.findMany.mock.calls[0][0].where).toEqual({
+      shopId: "s1",
+      origin: "FREE_TEST",
+    });
+  });
+
+  it("claimFreeSpeedTest: one conditional write, the 24h slot AND the test unused", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 1 });
+    await expect(claimFreeSpeedTest("s1", NOW)).resolves.toBe(true);
+    expect(mockDb.shop.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.shop.updateMany).toHaveBeenCalledWith({
+      where: {
+        freeSpeedTestUsedAt: null,
+        id: "s1",
+        OR: [
+          { speedReportRequestedAt: null },
+          { speedReportRequestedAt: { lte: new Date(NOW.getTime() - RUN_NOW_COOLDOWN_MS) } },
+        ],
+      },
+      data: { speedReportRequestedAt: NOW },
+    });
+  });
+
+  it("claimFreeSpeedTest loses when the conditional write matches nothing (used, or within 24h)", async () => {
+    mockDb.shop.updateMany.mockResolvedValue({ count: 0 });
+    await expect(claimFreeSpeedTest("s1", NOW)).resolves.toBe(false);
+  });
+
+  it("two concurrent claims against one shop row: exactly one wins", async () => {
+    // A tiny in-memory row honouring the conditional where (as Postgres does
+    // per row): the second write sees the first one's stamp.
+    const row = { speedReportRequestedAt: null as Date | null, freeSpeedTestUsedAt: null };
+    mockDb.shop.updateMany.mockImplementation(
+      async ({
+        where,
+        data,
+      }: {
+        where: Record<string, unknown>;
+        data: { speedReportRequestedAt: Date };
+      }) => {
+        await Promise.resolve();
+        const cutoff = (
+          (where.OR as Array<{ speedReportRequestedAt: { lte: Date } | null }>)[1]
+            .speedReportRequestedAt as { lte: Date }
+        ).lte;
+        const slotFree =
+          row.speedReportRequestedAt === null || row.speedReportRequestedAt <= cutoff;
+        const unused = !("freeSpeedTestUsedAt" in where) || row.freeSpeedTestUsedAt === null;
+        if (!slotFree || !unused) return { count: 0 };
+        row.speedReportRequestedAt = data.speedReportRequestedAt;
+        return { count: 1 };
+      },
+    );
+    const results = await Promise.all([
+      claimFreeSpeedTest("s1", NOW),
+      claimFreeSpeedTest("s1", NOW),
+    ]);
+    expect(results.filter(Boolean)).toHaveLength(1);
+  });
+
+  it("finishSpeedReport without a consume: a plain update, no transaction, no shop write", async () => {
+    await finishSpeedReport("r1", RESULT);
+    expect(mockDb.$transaction).not.toHaveBeenCalled();
+    expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
+    expect(mockDb.speedReport.update).toHaveBeenCalledTimes(1);
+  });
+
+  it("finishSpeedReport consuming the free test: report + conditional stamp in ONE transaction", async () => {
+    mockDb.speedReport.update.mockReturnValue("UPDATE");
+    mockDb.shop.updateMany.mockReturnValue("STAMP");
+    mockDb.$transaction.mockResolvedValue([{ id: "r1" }, { count: 1 }]);
+    await expect(finishSpeedReport("r1", RESULT, { consumeFreeTestOf: "s1" })).resolves.toEqual({
+      id: "r1",
+    });
+    expect(mockDb.$transaction).toHaveBeenCalledWith(["UPDATE", "STAMP"]);
+    const stamp = mockDb.shop.updateMany.mock.calls[0][0];
+    expect(stamp.where).toEqual({ id: "s1", freeSpeedTestUsedAt: null });
+    // The stamp is the report's own completedAt.
+    expect(stamp.data.freeSpeedTestUsedAt).toEqual(
+      mockDb.speedReport.update.mock.calls[0][0].data.completedAt,
+    );
+  });
+
+  it("getFreeSpeedTestUsedAt: the stamp, or null for a missing shop", async () => {
+    const at = new Date("2026-10-10T00:00:00Z");
+    mockDb.shop.findUnique.mockResolvedValueOnce({ freeSpeedTestUsedAt: at });
+    await expect(getFreeSpeedTestUsedAt("s1")).resolves.toEqual(at);
+    mockDb.shop.findUnique.mockResolvedValueOnce(null);
+    await expect(getFreeSpeedTestUsedAt("nope")).resolves.toBeNull();
   });
 });

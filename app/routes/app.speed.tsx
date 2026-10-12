@@ -1,7 +1,14 @@
 /**
  * Store speed (gc-wt3y): the weekly Google PageSpeed report for the homepage
- * and one product page, with the cost broken down by app. Professional only;
- * Free and Standard see a locked teaser with the plan upgrade button.
+ * and one product page, with the cost broken down by app. Professional only.
+ *
+ * Free speed test: a plan without the report but with
+ * PlanFeatures.freeSpeedTest (Free and Standard) gets "Run your free speed
+ * test" once ever, homepage only. Its result is the homepage score and core
+ * timings plus ONE line about the costliest app, and the page's one upgrade
+ * ask. The loader sends nothing else of the report (no per-app table, other
+ * third parties, first-party totals, product page or history). A plan with
+ * neither sees the locked teaser.
  *
  * DARK: while SPEED_REPORT_LIVE_ENABLED is off the loader and action 404
  * (the nav entry in app.tsx is hidden too).
@@ -17,10 +24,19 @@ import { buildPricingPlansUrl, getPlanFeatures } from "../lib/billing.server";
 import { PLANS } from "../lib/plans";
 import {
   appCostHeadline,
+  buildFreeSpeedTestView,
   buildSpeedReportView,
+  costliestAppLine,
   formatBytes,
   formatSeconds,
   formatSpeedDelta,
+  FREE_TEST_BUTTON,
+  FREE_TEST_INTRO,
+  FREE_TEST_NO_APP,
+  FREE_TEST_NOT_USED,
+  FREE_TEST_RESULT_HEADING,
+  FREE_TEST_UPGRADE_BODY,
+  FREE_TEST_UPGRADE_HEADING,
   NEEDS_PRODUCT_ACCESS_MESSAGE,
   NO_PRODUCT_MESSAGE,
   PASSWORD_PROTECTED_MESSAGE,
@@ -29,7 +45,10 @@ import {
   SPEED_INTRO,
   SPEED_METRIC_LABELS,
   SPEED_PAGE_LABELS,
+  SPEED_REPORT_ORIGIN,
   SPEED_REPORT_STATUS,
+  SPEED_RUNNING_MESSAGE,
+  SPEED_RUNNING_TIMED_OUT_MESSAGE,
   SPEED_TEASER_BODY,
   SPEED_TEASER_HEADING,
   speedFailureMessage,
@@ -37,6 +56,8 @@ import {
   speedScoreTone,
 } from "../lib/speed-report";
 import type {
+  FreeSpeedTestResult,
+  FreeSpeedTestView,
   SpeedCostRow,
   SpeedPageResult,
   SpeedReportSummaryView,
@@ -46,11 +67,15 @@ import { upgradeCtaLabel } from "../lib/trial-cta";
 import { recordUpgradeClick } from "../lib/upgrade-preview";
 import { useScanPolling } from "../lib/use-scan-polling";
 import { getShopMetadata } from "../models/shop.server";
-import { getRecentSpeedReports, getSpeedReportRequestedAt } from "../models/speed-report.server";
+import {
+  getFreeSpeedTestUsedAt,
+  getRecentSpeedReports,
+  getSpeedReportRequestedAt,
+} from "../models/speed-report.server";
 import { recordNudgeStageOnce } from "../services/nudge-stage.server";
 import { NUDGE_KEYS } from "../services/nudge-telemetry.server";
 import { isSpeedReportLive } from "../services/speed-report-config.server";
-import { requestSpeedReportRunNow } from "../services/speed-report.server";
+import { requestFreeSpeedTest, requestSpeedReportRunNow } from "../services/speed-report.server";
 import { getTrialEligibility } from "../services/trial-eligibility.server";
 import { authenticate } from "../shopify.server";
 import {
@@ -72,8 +97,16 @@ import {
 // Loader
 // ---------------------------------------------------------------------------
 
+type UpgradeAsk = { pricingPlansUrl: string; trialEligible: boolean };
+
 export type SpeedLoaderData =
-  | { access: "locked"; pricingPlansUrl: string; trialEligible: boolean }
+  | ({ access: "locked" } & UpgradeAsk)
+  | ({
+      access: "free";
+      freeTest: FreeSpeedTestView;
+      /** When the free test can next be tried (24h slot); null = now. */
+      runAvailableAt: string | null;
+    } & UpgradeAsk)
   | ({ access: "pro"; runNowAvailableAt: string | null } & SpeedReportView);
 
 export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoaderData> => {
@@ -83,18 +116,36 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
   const shop = await getShopMetadata(session.shop);
   if (!shop) throw new Response("Shop not found", { status: 404 });
 
-  if (!getPlanFeatures(shop.plan).speedReport) {
-    // Teaser only: no report data is read for a plan without the feature.
-    // gc-iirv: the teaser's upgrade ask joins the nudge funnel. `shown` once
-    // per merchant: the stored stamp skips the claim query on later loads; the
-    // atomic claim dedupes concurrent first loads. Never throws.
+  const features = getPlanFeatures(shop.plan);
+  if (!features.speedReport) {
+    // gc-iirv: the page's upgrade ask (the locked teaser, or the free test's
+    // ask) joins the nudge funnel. `shown` once per merchant: the stored stamp
+    // skips the claim query on later loads; the atomic claim dedupes
+    // concurrent first loads. Never throws.
     if (shop.speedTeaserShownAt === null) {
       await recordNudgeStageOnce(NUDGE_KEYS.SPEED_TEASER, "shown", session.shop);
     }
-    return {
-      access: "locked",
+    const ask: UpgradeAsk = {
       pricingPlansUrl: buildPricingPlansUrl(session.shop),
       trialEligible: await getTrialEligibility(shop),
+    };
+    // Teaser only: no report data is read for a plan with neither.
+    if (!features.freeSpeedTest) return { access: "locked", ...ask };
+
+    // Free test: ONLY FREE_TEST reports are read (a downgraded shop's
+    // Professional history stays hidden), and only the stripped view leaves
+    // the server.
+    const now = new Date();
+    const [rows, usedAt, requestedAt] = await Promise.all([
+      getRecentSpeedReports(shop.id, { origin: SPEED_REPORT_ORIGIN.FREE_TEST }),
+      getFreeSpeedTestUsedAt(shop.id),
+      getSpeedReportRequestedAt(shop.id),
+    ]);
+    return {
+      access: "free",
+      freeTest: buildFreeSpeedTestView(rows, usedAt, now),
+      runAvailableAt: runNowAvailableAt(requestedAt, now)?.toISOString() ?? null,
+      ...ask,
     };
   }
 
@@ -121,13 +172,21 @@ export const action = async ({ request }: ActionFunctionArgs): Promise<SpeedActi
   if (!isSpeedReportLive()) throw new Response("Not found", { status: 404 });
 
   const formData = await request.formData();
-  if (formData.get("intent") !== "run-now") return { ok: false, error: "Unknown request." };
+  const intent = formData.get("intent");
+  if (intent !== "run-now" && intent !== "free-test") {
+    return { ok: false, error: "Unknown request." };
+  }
 
-  // Session shop only: the form never carries a shop id.
+  // Session shop only: the form never carries a shop id. Each service checks
+  // the plan itself: Run now is Professional only, the free test is for a
+  // plan without the report and only while unused.
   const shop = await getShopMetadata(session.shop);
   if (!shop) return { ok: false, error: "Shop not found. Please reinstall the app." };
 
-  const result = await requestSpeedReportRunNow(shop, new Date());
+  const result =
+    intent === "free-test"
+      ? await requestFreeSpeedTest(shop, new Date())
+      : await requestSpeedReportRunNow(shop, new Date());
   if (result.ok) return { ok: true };
   return {
     ok: false,
@@ -301,6 +360,16 @@ export function SpeedPageSection({
   );
 }
 
+function RunningBanner({ pollingTimedOut }: { pollingTimedOut: boolean }) {
+  return (
+    <s-banner tone="info">
+      <s-paragraph>
+        {pollingTimedOut ? SPEED_RUNNING_TIMED_OUT_MESSAGE : SPEED_RUNNING_MESSAGE}
+      </s-paragraph>
+    </s-banner>
+  );
+}
+
 export function StatusBanner({
   latest,
   canRunNow,
@@ -321,15 +390,7 @@ export function StatusBanner({
   }
   switch (latest.status) {
     case SPEED_REPORT_STATUS.RUNNING:
-      return (
-        <s-banner tone="info">
-          <s-paragraph>
-            {pollingTimedOut
-              ? "Still running. Refresh the page in a few minutes to see the results."
-              : "Speed test running. It takes a few minutes; results appear here when it finishes."}
-          </s-paragraph>
-        </s-banner>
-      );
+      return <RunningBanner pollingTimedOut={pollingTimedOut} />;
     case SPEED_REPORT_STATUS.UNAVAILABLE_PASSWORD:
       return (
         <s-banner tone="warning">
@@ -361,7 +422,15 @@ export function StatusBanner({
   }
 }
 
-function RunNowControl({ availableAt }: { availableAt: string | null }) {
+function RunNowControl({
+  availableAt,
+  intent = "run-now",
+  label = "Run speed test now",
+}: {
+  availableAt: string | null;
+  intent?: "run-now" | "free-test";
+  label?: string;
+}) {
   const fetcher = useFetcher<SpeedActionData>();
   const submitting = fetcher.state !== "idle";
   const result = fetcher.data;
@@ -370,14 +439,14 @@ function RunNowControl({ availableAt }: { availableAt: string | null }) {
   return (
     <s-stack direction="block" gap="small-200">
       <fetcher.Form method="post">
-        <input type="hidden" name="intent" value="run-now" />
+        <input type="hidden" name="intent" value={intent} />
         <s-button
           type="submit"
           variant="primary"
           {...(nextAt ? { disabled: true } : {})}
           {...(submitting ? { loading: true } : {})}
         >
-          Run speed test now
+          {label}
         </s-button>
       </fetcher.Form>
       {nextAt && (
@@ -393,14 +462,18 @@ function RunNowControl({ availableAt }: { availableAt: string | null }) {
 export function LockedTeaser({
   pricingPlansUrl,
   trialEligible,
+  heading = SPEED_TEASER_HEADING,
+  body = SPEED_TEASER_BODY,
 }: {
   pricingPlansUrl: string;
   trialEligible: boolean;
+  heading?: string;
+  body?: string;
 }) {
   return (
     <div style={{ ...sectionCard, marginBottom: 0 }}>
-      <h2 style={sectionHeader}>{SPEED_TEASER_HEADING}</h2>
-      <s-paragraph>{SPEED_TEASER_BODY}</s-paragraph>
+      <h2 style={sectionHeader}>{heading}</h2>
+      <s-paragraph>{body}</s-paragraph>
       <div style={{ marginTop: "16px" }}>
         {/* Same proven upgrade link as the Settings plan tiles, plus the
             best-effort click ping (gc-iirv). */}
@@ -419,9 +492,108 @@ export function LockedTeaser({
   );
 }
 
+/** Why the last try did not use the free test up (it can be run again). */
+function FreeAttemptBanner({
+  attempt,
+}: {
+  attempt: NonNullable<FreeSpeedTestView["lastAttempt"]>;
+}) {
+  if (attempt.status === SPEED_REPORT_STATUS.UNAVAILABLE_PASSWORD) {
+    return (
+      <s-banner tone="warning">
+        <s-paragraph>{PASSWORD_PROTECTED_MESSAGE}</s-paragraph>
+      </s-banner>
+    );
+  }
+  const code =
+    attempt.status === SPEED_REPORT_STATUS.SKIPPED_BUDGET ? "budget" : attempt.failureReason;
+  return (
+    <s-banner tone="warning">
+      <s-paragraph>
+        We couldn&apos;t test your store on <FormattedDate value={attempt.createdAt} />.{" "}
+        {speedFailureMessage(code)} {FREE_TEST_NOT_USED}
+      </s-paragraph>
+    </s-banner>
+  );
+}
+
+export function FreeTestResult({ result }: { result: FreeSpeedTestResult }) {
+  const m = result.metrics;
+  const tone = speedScoreTone(m.score);
+  return (
+    <div style={{ ...sectionCard, marginBottom: 0 }}>
+      <h2 style={sectionHeader}>{FREE_TEST_RESULT_HEADING}</h2>
+      <div style={{ ...textSubduedSm, marginTop: "-8px", marginBottom: "12px" }}>
+        {SPEED_PAGE_LABELS.home}, tested <FormattedDate value={result.createdAt} includeTime />
+      </div>
+      <div className="speed-metrics">
+        <MetricTile
+          label={SPEED_METRIC_LABELS.score}
+          value={`${m.score} / 100`}
+          delta={null}
+          color={tone ? TONE_COLOR[tone] : undefined}
+        />
+        <MetricTile label={SPEED_METRIC_LABELS.lcp} value={formatSeconds(m.lcpMs)} delta={null} />
+        <MetricTile label={SPEED_METRIC_LABELS.tbt} value={formatSeconds(m.tbtMs)} delta={null} />
+        <MetricTile
+          label={SPEED_METRIC_LABELS.weight}
+          value={formatBytes(m.totalBytes)}
+          delta={null}
+        />
+        <MetricTile
+          label={SPEED_METRIC_LABELS.requests}
+          value={m.requestCount === null ? "Not available" : String(m.requestCount)}
+          delta={null}
+        />
+      </div>
+      <div style={{ marginTop: "20px" }}>
+        <s-paragraph>
+          {result.costliestApp ? costliestAppLine(result.costliestApp) : FREE_TEST_NO_APP}
+        </s-paragraph>
+      </div>
+      <div style={{ ...textSubduedSm, marginTop: "12px" }}>{SPEED_CAVEAT}</div>
+    </div>
+  );
+}
+
+export function FreeSpeedTest({
+  freeTest,
+  runAvailableAt,
+  pollingTimedOut,
+}: {
+  freeTest: FreeSpeedTestView;
+  runAvailableAt: string | null;
+  pollingTimedOut: boolean;
+}) {
+  if (freeTest.state === "used") {
+    // Read-only: no further runs. A used stamp without its report (should not
+    // happen) still shows no run control.
+    return freeTest.result ? <FreeTestResult result={freeTest.result} /> : null;
+  }
+  const running = freeTest.state === "running";
+  return (
+    <>
+      <div style={{ ...sectionCard, marginBottom: 0 }}>
+        <s-stack direction="block" gap="base">
+          <s-paragraph>{FREE_TEST_INTRO}</s-paragraph>
+          <RunNowControl
+            availableAt={running ? null : runAvailableAt}
+            intent="free-test"
+            label={FREE_TEST_BUTTON}
+          />
+        </s-stack>
+      </div>
+      {running && <RunningBanner pollingTimedOut={pollingTimedOut} />}
+      {!running && freeTest.lastAttempt && <FreeAttemptBanner attempt={freeTest.lastAttempt} />}
+    </>
+  );
+}
+
 export default function StoreSpeed() {
   const data = useLoaderData<typeof loader>();
-  const running = data.access === "pro" && data.latest?.status === SPEED_REPORT_STATUS.RUNNING;
+  const running =
+    (data.access === "pro" && data.latest?.status === SPEED_REPORT_STATUS.RUNNING) ||
+    (data.access === "free" && data.freeTest.state === "running");
   // Reuse the scan page's capped revalidation poll while a run is in progress.
   const { pollingTimedOut } = useScanPolling(running ? "IN_PROGRESS" : null);
 
@@ -442,6 +614,21 @@ export default function StoreSpeed() {
         `}</style>
         {data.access === "locked" ? (
           <LockedTeaser pricingPlansUrl={data.pricingPlansUrl} trialEligible={data.trialEligible} />
+        ) : data.access === "free" ? (
+          <>
+            <FreeSpeedTest
+              freeTest={data.freeTest}
+              runAvailableAt={data.runAvailableAt}
+              pollingTimedOut={pollingTimedOut}
+            />
+            {/* The page's one upgrade ask. */}
+            <LockedTeaser
+              pricingPlansUrl={data.pricingPlansUrl}
+              trialEligible={data.trialEligible}
+              heading={FREE_TEST_UPGRADE_HEADING}
+              body={FREE_TEST_UPGRADE_BODY}
+            />
+          </>
         ) : (
           <>
             <div style={{ ...sectionCard, marginBottom: 0 }}>

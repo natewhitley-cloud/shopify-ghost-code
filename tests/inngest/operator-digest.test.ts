@@ -3858,6 +3858,47 @@ describe("SPEED REPORTS section", () => {
     expect(section).not.toContain("x.example");
   });
 
+  it("free speed tests: counted on their own (not as scheduled), with how many used the test up", () => {
+    const homeOnly = [homeOk];
+    const text = render([
+      row({ domain: "a.myshopify.com" }),
+      row({ domain: "f1.myshopify.com", origin: "FREE_TEST", pages: homeOnly, psiCalls: 3 }),
+      row({
+        domain: "f2.myshopify.com",
+        origin: "FREE_TEST",
+        status: "UNAVAILABLE_PASSWORD",
+        pages: [{ page: "home", status: "PASSWORD", url: null, runsAttempted: 0, runsOk: 0 }],
+        psiCalls: 0,
+      }),
+      row({
+        domain: "f3.myshopify.com",
+        origin: "FREE_TEST",
+        status: "FAILED",
+        failureReason: "timeout",
+        pages: null,
+      }),
+    ]);
+    expect(text).toContain("  Runs: 4 (scheduled 1, run now 0, free test 3)");
+    expect(text).toContain("  Free tests: started 3, used up 1 (completed with a homepage score)");
+    expect(text).toContain("    f1.myshopify.com -- free test COMPLETED");
+    expect(text).toContain("    f3.myshopify.com -- free test FAILED (timeout)");
+  });
+
+  it("no free tests: the Runs line and section are unchanged (no free-test line)", () => {
+    const text = render([row({})]);
+    expect(text).toContain("  Runs: 1 (scheduled 1, run now 0)");
+    expect(text).not.toContain("Free tests");
+  });
+
+  it("an internal store's free test stays out of the free-test counts", () => {
+    const text = render([
+      row({ domain: "a.myshopify.com" }),
+      row({ domain: "dev-store.myshopify.com", origin: "FREE_TEST", pages: [homeOk] }),
+    ]);
+    expect(text).not.toContain("free test");
+    expect(text).toContain("  internal/dev: 1 runs");
+  });
+
   it("the digest body places the section before CRON HEALTH; absent data renders the empty state", () => {
     const body = buildDigestBody(makeData());
     const i = body.indexOf("SPEED REPORTS (last 24h)\n  No speed runs in the last 24h");

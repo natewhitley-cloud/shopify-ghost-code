@@ -2,8 +2,10 @@
  * Tests for app/routes/app.speed.tsx (gc-wt3y Store speed page).
  *
  *   - DARK: loader and action 404 while SPEED_REPORT_LIVE_ENABLED is off.
- *   - Free / Standard: a locked teaser with the plan upgrade button; no report
- *     data is read.
+ *   - Free / Standard: the free speed test (homepage score + costliest app,
+ *     once ever) plus one upgrade ask; the loader strips every Pro-only field.
+ *   - A plan with neither (freeSpeedTest narrowed off): the locked teaser; no
+ *     report data is read.
  *   - Professional: the report view + Run-now availability.
  *   - Action: delegates to requestSpeedReportRunNow for the SESSION shop.
  *   - Rendering of every status state with the exact merchant copy.
@@ -20,10 +22,17 @@ vi.mock("../../app/models/shop.server", () => ({ getShopMetadata: vi.fn() }));
 vi.mock("../../app/models/speed-report.server", () => ({
   getRecentSpeedReports: vi.fn(),
   getSpeedReportRequestedAt: vi.fn(),
+  getFreeSpeedTestUsedAt: vi.fn(),
 }));
 vi.mock("../../app/services/speed-report.server", () => ({
   requestSpeedReportRunNow: vi.fn(),
+  requestFreeSpeedTest: vi.fn(),
 }));
+// The real plan matrix by default; one test narrows the free test to Free.
+vi.mock("../../app/lib/billing.server", async (importActual) => {
+  const actual = await importActual<typeof import("../../app/lib/billing.server")>();
+  return { ...actual, getPlanFeatures: vi.fn(actual.getPlanFeatures) };
+});
 vi.mock("../../app/services/trial-eligibility.server", () => ({
   getTrialEligibility: vi.fn(),
 }));
@@ -31,16 +40,21 @@ vi.mock("../../app/services/nudge-stage.server", () => ({
   recordNudgeStageOnce: vi.fn(),
 }));
 
+import * as billing from "../../app/lib/billing.server";
 import type { SpeedPageResult } from "../../app/lib/speed-report";
 import { getShopMetadata } from "../../app/models/shop.server";
 import {
+  getFreeSpeedTestUsedAt,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
 } from "../../app/models/speed-report.server";
 import StoreSpeed, { action, LockedTeaser, loader, StatusBanner } from "../../app/routes/app.speed";
 import type { SpeedLoaderData } from "../../app/routes/app.speed";
 import { recordNudgeStageOnce } from "../../app/services/nudge-stage.server";
-import { requestSpeedReportRunNow } from "../../app/services/speed-report.server";
+import {
+  requestFreeSpeedTest,
+  requestSpeedReportRunNow,
+} from "../../app/services/speed-report.server";
 import { getTrialEligibility } from "../../app/services/trial-eligibility.server";
 import { authenticate } from "../../app/shopify.server";
 
@@ -49,6 +63,9 @@ const mockShop = getShopMetadata as ReturnType<typeof vi.fn>;
 const mockReports = getRecentSpeedReports as ReturnType<typeof vi.fn>;
 const mockRequestedAt = getSpeedReportRequestedAt as ReturnType<typeof vi.fn>;
 const mockRunNow = requestSpeedReportRunNow as ReturnType<typeof vi.fn>;
+const mockFreeTest = requestFreeSpeedTest as ReturnType<typeof vi.fn>;
+const mockUsedAt = getFreeSpeedTestUsedAt as ReturnType<typeof vi.fn>;
+const mockFeatures = billing.getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockTrial = getTrialEligibility as ReturnType<typeof vi.fn>;
 const mockNudge = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
 
@@ -90,8 +107,13 @@ async function expect404(p: Promise<unknown>) {
   expect((thrown as Response).status).toBe(404);
 }
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.resetAllMocks();
+  const actual = await vi.importActual<typeof import("../../app/lib/billing.server")>(
+    "../../app/lib/billing.server",
+  );
+  mockFeatures.mockImplementation(actual.getPlanFeatures);
+  mockUsedAt.mockResolvedValue(null);
   process.env.SPEED_REPORT_LIVE_ENABLED = "true";
   mockAuth.mockResolvedValue({ session: { shop: DOMAIN } });
   mockShop.mockResolvedValue(PRO);
@@ -116,18 +138,29 @@ describe("loader", () => {
     expect(mockReports).not.toHaveBeenCalled();
   });
 
-  it.each(["free", "Standard"])("plan %s: locked teaser, no report data read", async (plan) => {
+  it("a plan with neither the report nor the free test (narrowed to Free): locked teaser, no report data read", async () => {
+    const plan = "Standard";
+    const actual = await vi.importActual<typeof import("../../app/lib/billing.server")>(
+      "../../app/lib/billing.server",
+    );
+    // The one-line narrowing: Standard's freeSpeedTest set to false.
+    mockFeatures.mockImplementation((p: string) =>
+      p === "Standard"
+        ? { ...actual.getPlanFeatures(p), freeSpeedTest: false }
+        : actual.getPlanFeatures(p),
+    );
     mockShop.mockResolvedValue({ ...PRO, plan });
-    mockTrial.mockResolvedValue(plan === "free");
+    mockTrial.mockResolvedValue(false);
     const data = await loader(loaderArgs());
     expect(data).toEqual({
       access: "locked",
       pricingPlansUrl:
         "https://admin.shopify.com/store/paw-naturals/charges/ghost-code/pricing_plans",
-      trialEligible: plan === "free",
+      trialEligible: false,
     });
     expect(mockReports).not.toHaveBeenCalled();
     expect(mockRequestedAt).not.toHaveBeenCalled();
+    expect(mockUsedAt).not.toHaveBeenCalled();
   });
 
   it("Professional: report view + run-now availability", async () => {
@@ -193,11 +226,12 @@ describe("loader: speed_teaser nudge", () => {
     expect(mockNudge).not.toHaveBeenCalled();
   });
 
-  it("a failed claim still renders the teaser (recordNudgeStageOnce never throws; false)", async () => {
+  it("a failed claim still renders the free test and its ask (recordNudgeStageOnce never throws; false)", async () => {
     mockShop.mockResolvedValue({ ...PRO, plan: "free" });
     mockNudge.mockResolvedValue(false);
+    mockReports.mockResolvedValue([]);
     const data = await loader(loaderArgs());
-    expect(data.access).toBe("locked");
+    expect(data.access).toBe("free");
   });
 });
 
@@ -569,5 +603,385 @@ describe("rendering", () => {
     const html = render(pro({ latest, lastResults: latest }));
     expect(html).toContain("No known app added measurable load to this page.");
     expect(html).not.toContain("Other third-party code");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Free speed test (Free and Standard): loader, action, rendering
+// ---------------------------------------------------------------------------
+
+/** A stored report row (Date fields, as Prisma returns them). */
+function row(
+  origin: string,
+  status: string,
+  pages: SpeedPageResult[] | null,
+  extra: Partial<{
+    id: string;
+    createdAt: Date;
+    startedAt: Date | null;
+    failureReason: string;
+  }> = {},
+) {
+  const createdAt = extra.createdAt ?? new Date("2026-10-11T08:12:00.000Z");
+  return {
+    id: extra.id ?? `${origin}-${status}`,
+    origin,
+    status,
+    failureReason: extra.failureReason ?? null,
+    pages,
+    createdAt,
+    startedAt: extra.startedAt === undefined ? createdAt : extra.startedAt,
+    completedAt: status === "RUNNING" ? null : createdAt,
+  };
+}
+
+const PRODUCT_PAGE: SpeedPageResult = {
+  ...HOME_PAGE,
+  page: "product",
+  url: "https://paw-naturals.example/products/duck-treats",
+};
+
+/** Every Pro-only field and value that must never reach a non-Pro client. */
+const PRO_ONLY = [
+  "apps",
+  "otherThirdParty",
+  "firstParty",
+  "unusedPct",
+  "pages",
+  "latest",
+  "lastResults",
+  "previousResults",
+  "runNowAvailableAt",
+  "Recharge",
+  "fonts.gstatic.com",
+  "duck-treats",
+  "product",
+  "paw-naturals.example",
+  "SCHEDULED",
+  "MANUAL",
+];
+
+describe("loader: free speed test", () => {
+  beforeEach(() => {
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+  });
+
+  it.each(["free", "Standard"])(
+    "%s, unused, nothing run yet: available, reading only FREE_TEST reports",
+    async (plan) => {
+      mockShop.mockResolvedValue({ ...PRO, plan });
+      mockTrial.mockResolvedValue(plan === "free");
+      const data = await loader(loaderArgs());
+      expect(data).toEqual({
+        access: "free",
+        freeTest: { state: "available", result: null, lastAttempt: null },
+        runAvailableAt: null,
+        pricingPlansUrl:
+          "https://admin.shopify.com/store/paw-naturals/charges/ghost-code/pricing_plans",
+        trialEligible: plan === "free",
+      });
+      expect(mockReports).toHaveBeenCalledWith("shop-1", { origin: "FREE_TEST" });
+      expect(mockUsedAt).toHaveBeenCalledWith("shop-1");
+    },
+  );
+
+  it("used: the stripped result only; no Pro field or value is in the loader data", async () => {
+    mockUsedAt.mockResolvedValue(new Date("2026-10-11T08:20:00.000Z"));
+    // The stored report carries everything a Pro report would (and a product
+    // page that should never be there): the loader must strip it all.
+    mockReports.mockResolvedValue([row("FREE_TEST", "COMPLETED", [HOME_PAGE, PRODUCT_PAGE])]);
+    const data = await loader(loaderArgs());
+    expect(data).toEqual({
+      access: "free",
+      freeTest: {
+        state: "used",
+        result: {
+          reportId: "FREE_TEST-COMPLETED",
+          createdAt: "2026-10-11T08:12:00.000Z",
+          metrics: {
+            score: 28,
+            lcpMs: 14212,
+            tbtMs: 9034,
+            totalBytes: 8123456,
+            requestCount: 661,
+          },
+          costliestApp: { name: "Klaviyo", mainThreadMs: 4123, transferBytes: 1851000 },
+        },
+        lastAttempt: null,
+      },
+      runAvailableAt: null,
+      pricingPlansUrl:
+        "https://admin.shopify.com/store/paw-naturals/charges/ghost-code/pricing_plans",
+      trialEligible: false,
+    });
+    const json = JSON.stringify(data);
+    for (const leak of PRO_ONLY) expect(json).not.toContain(leak);
+  });
+
+  it("a downgraded shop's Professional history is never read or sent", async () => {
+    // Simulates the DB: the loader asks for FREE_TEST only.
+    const all = [
+      row("MANUAL", "COMPLETED", [HOME_PAGE, PRODUCT_PAGE], { id: "pro-1" }),
+      row("SCHEDULED", "COMPLETED", [HOME_PAGE], { id: "pro-2" }),
+    ];
+    mockReports.mockImplementation(async (_id: string, opts?: { origin?: string }) =>
+      opts?.origin ? all.filter((r) => r.origin === opts.origin) : all,
+    );
+    const data = await loader(loaderArgs());
+    expect(data).toMatchObject({ access: "free", freeTest: { state: "available", result: null } });
+    const json = JSON.stringify(data);
+    expect(json).not.toContain("pro-1");
+    expect(json).not.toContain("pro-2");
+    for (const leak of PRO_ONLY) expect(json).not.toContain(leak);
+  });
+
+  it("a run in flight: running (and no failure banner data)", async () => {
+    mockReports.mockResolvedValue([
+      row("FREE_TEST", "RUNNING", null, { createdAt: new Date(Date.now() - 60_000) }),
+    ]);
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "free" }>;
+    expect(data.freeTest).toEqual({ state: "running", result: null, lastAttempt: null });
+  });
+
+  it("a failed try leaves it available, with the latest attempt and the 24h wait", async () => {
+    const tried = new Date(Date.now() - 2 * 3600_000);
+    mockRequestedAt.mockResolvedValue(tried);
+    mockReports.mockResolvedValue([
+      row("FREE_TEST", "FAILED", null, { failureReason: "timeout", createdAt: tried }),
+    ]);
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "free" }>;
+    expect(data.freeTest).toEqual({
+      state: "available",
+      result: null,
+      lastAttempt: { status: "FAILED", failureReason: "timeout", createdAt: tried.toISOString() },
+    });
+    expect(data.runAvailableAt).toBe(new Date(tried.getTime() + 24 * 3600_000).toISOString());
+  });
+
+  it("records the upgrade ask's `shown` (speed_teaser funnel) once per merchant", async () => {
+    await loader(loaderArgs());
+    expect(mockNudge).toHaveBeenCalledWith("speed_teaser", "shown", DOMAIN);
+  });
+});
+
+describe("loader: upgrade after the free test", () => {
+  it("Professional: the free report is in the normal history like any other report", async () => {
+    const older = new Date(Date.now() - 8 * 24 * 3600_000);
+    const newer = new Date(Date.now() - 60_000);
+    mockReports.mockResolvedValue([
+      row("SCHEDULED", "COMPLETED", [HOME_PAGE, PRODUCT_PAGE], { id: "weekly", createdAt: newer }),
+      row("FREE_TEST", "COMPLETED", [HOME_PAGE], { id: "free-1", createdAt: older }),
+    ]);
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "pro" }>;
+    expect(data.access).toBe("pro");
+    // Pro reads every origin (no filter).
+    expect(mockReports).toHaveBeenCalledWith("shop-1");
+    expect(data.lastResults!.id).toBe("weekly");
+    expect(data.previousResults).toMatchObject({ id: "free-1", origin: "FREE_TEST" });
+    expect(mockUsedAt).not.toHaveBeenCalled();
+  });
+});
+
+describe("action: free speed test", () => {
+  it("intent free-test starts the free test for the session shop (never Run now)", async () => {
+    const shop = { ...PRO, plan: "free" };
+    mockShop.mockResolvedValue(shop);
+    mockFreeTest.mockResolvedValue({ ok: true, reportId: "rep-f" });
+    await expect(
+      action(actionArgs({ intent: "free-test", shopId: "someone-else", page: "product" })),
+    ).resolves.toEqual({ ok: true });
+    expect(mockFreeTest).toHaveBeenCalledWith(shop, expect.any(Date));
+    expect(mockRunNow).not.toHaveBeenCalled();
+  });
+
+  it("passes the free test's refusal through", async () => {
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    mockFreeTest.mockResolvedValue({
+      ok: false,
+      error: "You've already used your free speed test.",
+    });
+    await expect(action(actionArgs({ intent: "free-test" }))).resolves.toEqual({
+      ok: false,
+      error: "You've already used your free speed test.",
+    });
+  });
+
+  it("a forged run-now POST from a Free shop goes to the Professional-only service (which refuses)", async () => {
+    mockShop.mockResolvedValue({ ...PRO, plan: "free" });
+    mockRunNow.mockResolvedValue({
+      ok: false,
+      error: "Store speed reports are part of the Professional plan.",
+    });
+    await expect(action(actionArgs({ intent: "run-now" }))).resolves.toEqual({
+      ok: false,
+      error: "Store speed reports are part of the Professional plan.",
+    });
+    expect(mockFreeTest).not.toHaveBeenCalled();
+  });
+
+  it("404s while dark", async () => {
+    delete process.env.SPEED_REPORT_LIVE_ENABLED;
+    await expect404(action(actionArgs({ intent: "free-test" })));
+    expect(mockFreeTest).not.toHaveBeenCalled();
+  });
+});
+
+describe("rendering: free speed test", () => {
+  const ASK = {
+    pricingPlansUrl: "https://admin.shopify.com/store/x/charges/ghost-code/pricing_plans",
+    trialEligible: false,
+  };
+
+  function free(
+    freeTest: Extract<SpeedLoaderData, { access: "free" }>["freeTest"],
+    runAvailableAt: string | null = null,
+  ): SpeedLoaderData {
+    return { access: "free", freeTest, runAvailableAt, ...ASK };
+  }
+
+  const RESULT = {
+    reportId: "rep-f",
+    createdAt: "2026-10-11T08:12:00.000Z",
+    metrics: { score: 28, lcpMs: 14212, tbtMs: 9034, totalBytes: 8123456, requestCount: 661 },
+    costliestApp: { name: "Klaviyo", mainThreadMs: 4123, transferBytes: 1851000 },
+  };
+
+  function upgradeLinks(html: string): number {
+    return (html.match(/<a [^>]*pricing_plans[^>]*>/g) ?? []).length;
+  }
+
+  it("available: the free test action, its intro, and ONE upgrade ask to Professional", () => {
+    const html = render(free({ state: "available", result: null, lastAttempt: null }));
+    expect(html).toContain("Run your free speed test");
+    expect(html).toContain('name="intent" value="free-test"');
+    expect(html).toContain("which app slows it down the most");
+    expect(html).toContain("Test every week and see the cost of every app");
+    expect(html).toContain("weekly speed report for your homepage and a product page");
+    expect(html).toContain("Upgrade to Professional");
+    expect(upgradeLinks(html)).toBe(1);
+    expect(html).not.toContain("Run speed test now");
+    expect(html).not.toContain('value="run-now"');
+    expect(html).not.toMatch(/<s-button[^>]*disabled/);
+    expect(html).not.toContain("—");
+  });
+
+  it("available within 24h of a try: the button is disabled with the next time", () => {
+    const html = render(
+      free({ state: "available", result: null, lastAttempt: null }, "2026-10-12T10:00:00.000Z"),
+    );
+    expect(html).toMatch(/<s-button[^>]*disabled/);
+    expect(html).toContain("Next test available");
+  });
+
+  it("running", () => {
+    const html = render(free({ state: "running", result: null, lastAttempt: null }));
+    expect(html).toContain("Speed test running. It takes a few minutes");
+    expect(upgradeLinks(html)).toBe(1);
+  });
+
+  it("a failed try: says it was not used up and can be run again", () => {
+    const html = render(
+      free({
+        state: "available",
+        result: null,
+        lastAttempt: { status: "FAILED", failureReason: "timeout", createdAt: RESULT.createdAt },
+      }),
+    );
+    expect(html).toContain("We couldn&#x27;t test your store on");
+    expect(html).toContain("The speed test took too long to finish.");
+    expect(html).toContain("Your free test wasn&#x27;t used, so you can run it again.");
+    expect(html).toContain("Run your free speed test");
+  });
+
+  it("a budget skip and a password page read as such", () => {
+    let html = render(
+      free({
+        state: "available",
+        result: null,
+        lastAttempt: {
+          status: "SKIPPED_BUDGET",
+          failureReason: "budget",
+          createdAt: RESULT.createdAt,
+        },
+      }),
+    );
+    expect(html).toContain("Speed tests are paused for today.");
+    expect(html).toContain("Your free test wasn&#x27;t used");
+    html = render(
+      free({
+        state: "available",
+        result: null,
+        lastAttempt: {
+          status: "UNAVAILABLE_PASSWORD",
+          failureReason: null,
+          createdAt: RESULT.createdAt,
+        },
+      }),
+    );
+    expect(html).toContain("Your storefront is password protected");
+  });
+
+  it("used: score, core timings and ONE costliest-app line (the email's wording), read-only, dated", () => {
+    const html = render(free({ state: "used", result: RESULT, lastAttempt: null }));
+    expect(html).toContain("Your free speed test");
+    expect(html).toContain("Homepage, tested");
+    expect(html).toContain("28 / 100");
+    expect(html).toContain("Time to show the main content");
+    expect(html).toContain("14 s");
+    expect(html).toContain("9.0 s");
+    expect(html).toContain("8.1 MB");
+    expect(html).toContain("661");
+    expect(html).toContain("Klaviyo used 4.1 s of processing time and 1.9 MB on your homepage.");
+    // Not the Pro view.
+    expect(html).not.toContain("Apps slowing your store");
+    expect(html).not.toContain("<table");
+    expect(html).not.toContain("Other third-party code");
+    expect(html).not.toContain("Product page");
+    expect(html).not.toContain("last week");
+    // No further runs.
+    expect(html).not.toContain("Run your free speed test");
+    expect(html).not.toContain("Run speed test now");
+    expect(html).not.toContain('name="intent"');
+    expect(upgradeLinks(html)).toBe(1);
+  });
+
+  it("used, no app with measurable load", () => {
+    const html = render(
+      free({ state: "used", result: { ...RESULT, costliestApp: null }, lastAttempt: null }),
+    );
+    expect(html).toContain("No known app added measurable load to your homepage.");
+  });
+
+  it("the free page's upgrade link records the speed_teaser click", () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+    try {
+      const el = LockedTeaser({
+        ...ASK,
+        heading: "Test every week and see the cost of every app",
+        body: "x",
+      });
+      const html = renderToStaticMarkup(el);
+      expect(html).toContain("Test every week and see the cost of every app");
+      type El = { type: unknown; props: { onClick?: () => void; children?: unknown } };
+      const find = (n: unknown): El | null => {
+        if (!n || typeof n !== "object") return null;
+        if (Array.isArray(n)) {
+          for (const c of n) {
+            const hit = find(c);
+            if (hit) return hit;
+          }
+          return null;
+        }
+        const e = n as El;
+        return e.type === "a" ? e : find(e.props?.children);
+      };
+      find(el)!.props.onClick!();
+      expect(String((fetchMock.mock.calls[0] as [string, RequestInit])[1].body)).toBe(
+        "src=speed_teaser",
+      );
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 });
