@@ -285,7 +285,7 @@ export const SIZE_SKIP_STILL_SCANNED_FINDING_TYPES = new Set([
 /**
  * FindingTypes whose `filename` is a REAL theme file path editable in the
  * Shopify theme code editor (e.g. `sections/foo.liquid`, `assets/bar.js`,
- * `config/settings_data.json`). Only these get an "Open in theme editor"
+ * `config/settings_data.json`). Only these get an "Open in code editor"
  * deep-link on the scan-detail findings table.
  *
  * Basis — VERIFIED against the detectors:
@@ -321,17 +321,17 @@ const THEME_FILE_FINDING_TYPES = new Set([
   "JSON_LD_CONFLICT",
   "JSON_LD_PRICE_CONFLICT",
   // JSON_LD_INVALID — attributed to the theme file whose static JSON-LD block
-  // failed to parse, so it gets an "Open in theme editor" deep-link.
+  // failed to parse, so it gets an "Open in code editor" deep-link.
   "JSON_LD_INVALID",
   // MALICIOUS_SCRIPT — anchored to the theme file carrying the injected line, so
-  // it gets an "Open in theme editor" deep-link.
+  // it gets an "Open in code editor" deep-link.
   "MALICIOUS_SCRIPT",
   "GHOST_LAYOUT",
   "ORPHAN_ASSET",
   "SETTINGS_DRIFT",
   "DANGLING_REFERENCE",
   // CHECKOUT_SUNSET — attributed to `layout/checkout.liquid`, a real, editable
-  // theme file, so it gets an "Open in theme editor" deep-link.
+  // theme file, so it gets an "Open in code editor" deep-link.
   "CHECKOUT_SUNSET",
   // DUPLICATE_TRACKER / OVERLAPPING_CHAT_WIDGET — each anchored to the first-seen
   // theme file where the tracker/widget appears, so both get an "Open in theme
@@ -392,7 +392,7 @@ export function isStorefrontFinding(findingType: string): boolean {
 
 /**
  * Returns true if the finding's `filename` is a theme file editable in the
- * Shopify theme code editor, so the row can offer an "Open in theme editor"
+ * Shopify theme code editor, so the row can offer an "Open in code editor"
  * deep-link.
  *
  * Unknown/unclassified types default to FALSE: it is safer to omit a link for an

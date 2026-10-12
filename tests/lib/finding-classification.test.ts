@@ -193,7 +193,7 @@ describe("getFindingConfidence", () => {
 
 describe("isThemeFileFinding", () => {
   // Types attributed to a real theme file path (scan-engine + JSON-LD price +
-  // dangling reference) — these get an "Open in theme editor" link.
+  // dangling reference) — these get an "Open in code editor" link.
   const THEME_FILE_TYPES = [
     "GHOST_SCRIPT",
     "GHOST_STYLE",

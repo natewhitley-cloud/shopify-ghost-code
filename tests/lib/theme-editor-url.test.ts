@@ -43,15 +43,15 @@ describe("buildThemeEditorUrl", () => {
   const SHOP = "my-store.myshopify.com";
   const GID = "gid://shopify/OnlineStoreTheme/123456789";
 
-  it("builds the editor URL from a domain, GID, and theme file path", () => {
+  it("builds the code editor URL from a domain, GID, and theme file path", () => {
     expect(buildThemeEditorUrl(SHOP, GID, "sections/foo.liquid")).toBe(
-      "https://admin.shopify.com/store/my-store/themes/123456789/editor?key=sections%2Ffoo.liquid",
+      "https://admin.shopify.com/store/my-store/themes/123456789?key=sections%2Ffoo.liquid",
     );
   });
 
   it("accepts an already-numeric theme id", () => {
     expect(buildThemeEditorUrl(SHOP, "123456789", "assets/bar.js")).toBe(
-      "https://admin.shopify.com/store/my-store/themes/123456789/editor?key=assets%2Fbar.js",
+      "https://admin.shopify.com/store/my-store/themes/123456789?key=assets%2Fbar.js",
     );
   });
 
@@ -63,7 +63,7 @@ describe("buildThemeEditorUrl", () => {
 
   it("deep-links an OS 2.0 theme block file (blocks/, gc-zfl)", () => {
     expect(buildThemeEditorUrl(SHOP, GID, "blocks/group.liquid")).toBe(
-      "https://admin.shopify.com/store/my-store/themes/123456789/editor?key=blocks%2Fgroup.liquid",
+      "https://admin.shopify.com/store/my-store/themes/123456789?key=blocks%2Fgroup.liquid",
     );
   });
 
@@ -72,14 +72,34 @@ describe("buildThemeEditorUrl", () => {
     expect(url).toContain("key=config%2Fsettings_data.json");
   });
 
+  // `/themes/{id}/editor` is the VISUAL customizer, which ignores `key`; the
+  // code editor is `/themes/{id}?key=` (verified on a dev store 2026-10-12).
+  it.each([
+    ["layout/theme.liquid", "layout%2Ftheme.liquid"],
+    ["sections/header group.liquid", "sections%2Fheader%20group.liquid"],
+    ["templates/product.alt.json", "templates%2Fproduct.alt.json"],
+    ["snippets/a&b=c?d#e.liquid", "snippets%2Fa%26b%3Dc%3Fd%23e.liquid"],
+  ])("opens the code editor, not the visual customizer, for %s", (filename, encoded) => {
+    const url = buildThemeEditorUrl(SHOP, GID, filename);
+    expect(url).toBe(`https://admin.shopify.com/store/my-store/themes/123456789?key=${encoded}`);
+    expect(url).not.toContain("/editor");
+    expect(new URL(url!).pathname).toMatch(/^\/store\/my-store\/themes\/\d+$/);
+    // The key round-trips to the exact filename (one query param, no fragment).
+    expect([...new URL(url!).searchParams.entries()]).toEqual([["key", filename]]);
+    expect(new URL(url!).hash).toBe("");
+  });
+
   it("returns null when the theme id is null / undefined / malformed", () => {
     expect(buildThemeEditorUrl(SHOP, null, "sections/foo.liquid")).toBeNull();
     expect(buildThemeEditorUrl(SHOP, undefined, "sections/foo.liquid")).toBeNull();
     expect(buildThemeEditorUrl(SHOP, "gid://shopify/Product/1", "sections/foo.liquid")).toBeNull();
+    expect(buildThemeEditorUrl(SHOP, "", "sections/foo.liquid")).toBeNull();
+    expect(buildThemeEditorUrl(SHOP, "gid://shopify/OnlineStoreTheme/abc", "x.liquid")).toBeNull();
   });
 
   it("returns null when the shop domain is blank", () => {
     expect(buildThemeEditorUrl("", GID, "sections/foo.liquid")).toBeNull();
+    expect(buildThemeEditorUrl(".myshopify.com", GID, "sections/foo.liquid")).toBeNull();
   });
 
   it("returns null when the filename is blank", () => {

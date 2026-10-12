@@ -3628,36 +3628,39 @@ describe("FindingRow — list item that cannot overflow", () => {
     ).not.toContain('id="finding-');
   });
 
-  it("links a theme-file finding to the theme editor, top-level, and only with a shop domain", () => {
+  it("links a theme-file finding to the theme code editor, top-level, and only with a shop domain", () => {
     const html = renderFindingItem(FINDING_ONE, PAID);
     // A real primary Polaris button; `href` (not `url`) is the link attribute.
     const link = html.match(
-      /<s-button variant="primary" href="([^"]+)" target="_top">Open in theme editor<\/s-button>/,
+      /<s-button variant="primary" href="([^"]+)" target="_top">Open in code editor<\/s-button>/,
     );
     expect(link?.[1]).toContain("test-shop");
     expect(link?.[1]).toContain("123456789");
     expect(link?.[1]).toContain("layout%2Ftheme.liquid");
+    // The code editor URL, never the visual customizer (`/themes/{id}/editor`).
+    expect(link?.[1]).toMatch(/\/themes\/123456789\?key=layout%2Ftheme\.liquid$/);
+    expect(link?.[1]).not.toContain("/editor");
     expect(html).not.toMatch(/<s-button[^>]* url=/);
     // The action exists once: the old text link in the location line is gone.
-    expect(html.match(/Open in theme editor/g)).toHaveLength(1);
+    expect(html.match(/Open in code editor/g)).toHaveLength(1);
     expect(html.match(/variant="primary"/g)).toHaveLength(1);
     expect(html).not.toMatch(/<a [^>]*target="_top"/);
     // It is the first action, ahead of the secondary copy button.
     expect(html).toMatch(
-      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="primary"[^>]*>Open in theme editor<\/s-button><s-button variant="secondary"/,
+      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="primary"[^>]*>Open in code editor<\/s-button><s-button variant="secondary"/,
     );
     // No shop domain: no button and no dead link; the copy button is the only action.
     const noDomain = renderFindingItem(FINDING_ONE, { scanId: "scan-1" });
-    expect(noDomain).not.toContain("Open in theme editor");
+    expect(noDomain).not.toContain("Open in code editor");
     expect(noDomain).not.toMatch(/variant="primary"|href=""|target="_top"/);
     // Same on the Free preview and in the security alert (no scanId).
     const free = renderFindingItem(FINDING_ONE, {
       shopDomain: PAID.shopDomain,
       themeId: PAID.themeId,
     });
-    expect(free.match(/Open in theme editor/g)).toHaveLength(1);
+    expect(free.match(/Open in code editor/g)).toHaveLength(1);
     expect(free).toMatch(
-      /<s-button variant="primary" href="[^"]+" target="_top">Open in theme editor<\/s-button>/,
+      /<s-button variant="primary" href="[^"]+" target="_top">Open in code editor<\/s-button>/,
     );
   });
 
@@ -3671,7 +3674,7 @@ describe("FindingRow — list item that cannot overflow", () => {
       },
       PAID,
     );
-    expect(html).not.toMatch(/variant="primary"|Open in theme editor|target="_top"/);
+    expect(html).not.toMatch(/variant="primary"|Open in code editor|target="_top"/);
     expect(html).not.toMatch(/<s-button[^>]* href=/);
     // The only link in the card is none at all (ignore controls have no link).
     expect(html).not.toContain("<a ");
@@ -3698,7 +3701,7 @@ describe("FindingRow — list item that cannot overflow", () => {
     expect(html.match(/variant="primary"/g)).toHaveLength(1);
     expect(html.split(`>${label}<`)).toHaveLength(2);
     expect(html).not.toMatch(/<a [^>]*target="_top"/);
-    expect(html).not.toContain("Open in theme editor");
+    expect(html).not.toContain("Open in code editor");
     expect(html).toContain("<span>Page: /pages/old-promo</span>");
     expect(html).not.toMatch(/<code[^>]*>pages\/old-promo/);
   });
@@ -3799,7 +3802,7 @@ describe("FindingRow — list item that cannot overflow", () => {
       /<\/s-button><div style="[^"]*"><span style="[^"]*">Ignored<\/span>\. Excluded from finding counts\. <a[^>]*href="\/app\/ignored"[^>]*>Manage ignored findings<\/a><\/div><\/div><\/li><\/ul>$/,
     );
     // The card keeps its actions.
-    expect(ignored).toContain(">Open in theme editor</s-button>");
+    expect(ignored).toContain(">Open in code editor</s-button>");
     expect(ignored).toContain(">Copy removal steps</s-button>");
   });
 
@@ -3846,7 +3849,7 @@ describe("FindingRow — list item that cannot overflow", () => {
     expect(html).toMatch(/<div style="[^"]*flex-wrap:wrap[^"]*"><span style="[^"]*">NEW<\/span>/);
     expect(html).toMatch(/<div style="[^"]*flex-wrap:wrap[^"]*"><s-badge tone="success">/);
     expect(html).toMatch(
-      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="primary"[^>]*>Open in theme editor/,
+      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="primary"[^>]*>Open in code editor/,
     );
     expect(html).toMatch(/<form[^>]*style="[^"]*flex-wrap:wrap/);
     // The Ignore disclosure may shrink inside the action row.

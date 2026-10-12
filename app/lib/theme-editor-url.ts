@@ -6,7 +6,15 @@
  * theme GID, and a theme file path, it produces the Shopify admin theme code
  * editor URL that opens that exact file:
  *
- *   https://admin.shopify.com/store/{storeHandle}/themes/{numericThemeId}/editor?key={filename}
+ *   https://admin.shopify.com/store/{storeHandle}/themes/{numericThemeId}?key={filename}
+ *
+ * The two theme surfaces differ by one path segment (verified on a dev store
+ * 2026-10-12):
+ *   - `/themes/{id}?key=`        is the CODE editor, with the file loaded.
+ *   - `/themes/{id}/editor?key=` is the VISUAL customizer, which ignores `key`,
+ *     so the merchant lands on the section editor and cannot reach the file.
+ * This module must never emit the `/editor` segment. There is no verified
+ * line-number parameter, so the link opens the file, not a line.
  *
  * Returns `null` for any input it cannot turn into a valid URL (missing/malformed
  * theme id, blank shop handle, or blank filename) so the caller can simply skip
@@ -47,6 +55,8 @@ export function storeHandleFromDomain(shopDomain: string): string {
  * Build the theme code editor deep-link for a single theme file. Returns null
  * when the theme id is missing/malformed, the shop domain is blank, or the
  * filename is blank — the caller renders nothing in that case.
+ *
+ * Historical name: "theme editor" here means the theme CODE editor.
  */
 export function buildThemeEditorUrl(
   shopDomain: string,
@@ -59,7 +69,7 @@ export function buildThemeEditorUrl(
   const storeHandle = storeHandleFromDomain(shopDomain);
   if (!storeHandle || !filename) return null;
 
-  return `https://admin.shopify.com/store/${storeHandle}/themes/${numericThemeId}/editor?key=${encodeURIComponent(
+  return `https://admin.shopify.com/store/${storeHandle}/themes/${numericThemeId}?key=${encodeURIComponent(
     filename,
   )}`;
 }

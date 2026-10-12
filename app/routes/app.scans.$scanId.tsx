@@ -887,7 +887,7 @@ export function FindingRow({
       <div style={findingActions}>
         {themeEditorUrl && (
           <s-button variant="primary" href={themeEditorUrl} target="_top">
-            Open in theme editor
+            Open in code editor
           </s-button>
         )}
         {adminResourceUrl && (
@@ -1469,7 +1469,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       id: scan.id,
       themeName: scan.themeName,
       // Theme GID (e.g. `gid://shopify/OnlineStoreTheme/123`) — powers the
-      // "Open in theme editor" link on theme-file findings (gc-3on).
+      // "Open in code editor" link on theme-file findings (gc-3on).
       themeId: scan.themeId,
       status: scan.status,
       startedAt: scan.startedAt,
