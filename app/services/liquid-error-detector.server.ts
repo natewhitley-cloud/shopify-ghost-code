@@ -74,6 +74,8 @@ export const LIQUID_ERROR_FINDING_FILENAME = "storefront/homepage";
 
 /** The stored error text is cut to this many characters. */
 export const MAX_LIQUID_ERROR_TEXT_CHARS = 200;
+/** The stored snippet (identity line + error text) is cut to this, like every finding's. */
+export const MAX_LIQUID_ERROR_SNIPPET_CHARS = 300;
 /** At most this many distinct errors are kept per page (in page order). */
 export const MAX_LIQUID_ERRORS = 10;
 /** At most this many matches are examined per page (bounds the work). */
@@ -83,6 +85,12 @@ export const MAX_LIQUID_ERROR_MATCHES = 200;
 export interface RenderedLiquidError {
   /** The error as rendered, decoded and whitespace-collapsed, <= 200 chars. */
   text: string;
+  /**
+   * The message alone (no "Liquid error (... line N): " prefix), <= 200 chars.
+   * Kept apart from `text` so a finding's identity never depends on the line
+   * number, not even through where a long error is cut.
+   */
+  message: string;
   /** "syntax" for "Liquid syntax error", else "error". */
   kind: "error" | "syntax";
   /** Theme file Liquid names, without ".liquid" (e.g. "layout/theme"), or null. */
@@ -290,6 +298,7 @@ export function extractRenderedLiquidErrors(html: string): RenderedLiquidError[]
       const text = cleanText(html.slice(at, msgStart)) + " " + message;
       found.set(key, {
         text: text.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS),
+        message: message.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS),
         kind,
         template,
         missingSnippet: missing ? missing[1] : null,
@@ -318,10 +327,9 @@ function templateFile(template: string): string {
  * plus "new".
  */
 function identityLine(error: RenderedLiquidError): string {
-  const message = error.text.replace(/^Liquid (?:syntax )?error(?: \([^)]*\))?: /, "");
   const label = error.kind === "syntax" ? "Liquid syntax error" : "Liquid error";
   const where = error.template ? ` in ${error.template}` : "";
-  return `${label}${where}: ${message}`.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS);
+  return `${label}${where}: ${error.message}`.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS);
 }
 
 /** Merchant copy for one error. Consequence first, no em dashes (house style). */
@@ -357,9 +365,11 @@ export function detectLiquidErrors(errors: readonly RenderedLiquidError[]): Crea
       filename: LIQUID_ERROR_FINDING_FILENAME,
       lineNumber: 1,
       // Line 1 = the stable identity (fingerprinted, no line number); line 2 =
-      // the error exactly as shoppers see it. Both are bounded; nothing else
-      // from the page is kept.
-      codeSnippet: `${identityLine(error)}\n${error.text}`,
+      // the error exactly as shoppers see it. Cut to the same 300 characters
+      // as every other finding's snippet (the privacy policy's stated limit);
+      // line 1 is at most 200, so the identity always survives the cut.
+      // Nothing else from the page is kept.
+      codeSnippet: `${identityLine(error)}\n${error.text}`.slice(0, MAX_LIQUID_ERROR_SNIPPET_CHARS),
       findingType: FindingType.LIQUID_ERROR_RENDERED,
       severity: Severity.HIGH,
       appName: appName ?? undefined,

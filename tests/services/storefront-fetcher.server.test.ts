@@ -489,6 +489,7 @@ describe("fetchStorefrontScriptTags", () => {
         liquidErrors: [
           {
             text: ERROR,
+            message: "Could not find asset snippets/klaviyo-form.liquid",
             kind: "error",
             template: "layout/theme",
             missingSnippet: "klaviyo-form",

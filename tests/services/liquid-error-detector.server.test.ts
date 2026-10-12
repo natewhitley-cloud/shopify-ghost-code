@@ -11,6 +11,7 @@ import {
   extractRenderedLiquidErrors,
   LIQUID_ERROR_FINDING_FILENAME,
   MAX_LIQUID_ERROR_MATCHES,
+  MAX_LIQUID_ERROR_SNIPPET_CHARS,
   MAX_LIQUID_ERROR_TEXT_CHARS,
   MAX_LIQUID_ERRORS,
   PROSE_LEAD_WORDS,
@@ -51,6 +52,7 @@ describe("extractRenderedLiquidErrors: what Shopify prints", () => {
       [
         {
           text: MISSING,
+          message: "Could not find asset snippets/preloaderapp.liquid",
           kind: "error",
           template: "layout/theme",
           missingSnippet: "preloaderapp",
@@ -64,6 +66,7 @@ describe("extractRenderedLiquidErrors: what Shopify prints", () => {
     expect(extractRenderedLiquidErrors(html)).toEqual([
       {
         text: "Liquid error: Could not find asset snippets/wlm-head.liquid",
+        message: "Could not find asset snippets/wlm-head.liquid",
         kind: "error",
         template: null,
         missingSnippet: "wlm-head",
@@ -88,6 +91,7 @@ describe("extractRenderedLiquidErrors: what Shopify prints", () => {
     expect(extractRenderedLiquidErrors(html)).toEqual([
       {
         text: "Liquid error (snippets/price line 42): comparison of String with 0 failed",
+        message: "comparison of String with 0 failed",
         kind: "error",
         template: "snippets/price",
         missingSnippet: null,
@@ -108,6 +112,7 @@ describe("extractRenderedLiquidErrors: what Shopify prints", () => {
     expect(extractRenderedLiquidErrors(html)).toEqual([
       {
         text: "Liquid syntax error (sections/featured-app line 12): Unknown tag 'endschema'",
+        message: "Unknown tag 'endschema'",
         kind: "syntax",
         template: "sections/featured-app",
         missingSnippet: null,
@@ -409,6 +414,7 @@ describe("extractRenderedLiquidErrors: dedupe, caps and bounds", () => {
       expect(result).toEqual([
         {
           text: "Liquid error (sections/s line 1): boom",
+          message: "boom",
           kind: "error",
           template: "sections/s",
           missingSnippet: null,
@@ -440,6 +446,7 @@ describe("detectLiquidErrors", () => {
     template: string | null = "layout/theme",
   ): RenderedLiquidError => ({
     text: `Liquid error (${template ?? "x"} line 3): Could not find asset snippets/${snippet}.liquid`,
+    message: `Could not find asset snippets/${snippet}.liquid`,
     kind: "error",
     template,
     missingSnippet: snippet,
@@ -483,6 +490,7 @@ describe("detectLiquidErrors", () => {
     const [f] = detectLiquidErrors([
       {
         text: "Liquid error (snippets/klaviyo-form line 8): undefined method",
+        message: "undefined method",
         kind: "error",
         template: "snippets/klaviyo-form",
         missingSnippet: null,
@@ -498,6 +506,7 @@ describe("detectLiquidErrors", () => {
     const [f] = detectLiquidErrors([
       {
         text: "Liquid syntax error (sections/hero line 12): Unknown tag 'endschema'",
+        message: "Unknown tag 'endschema'",
         kind: "syntax",
         template: "sections/hero",
         missingSnippet: null,
@@ -552,6 +561,23 @@ describe("detectLiquidErrors", () => {
     const [a, b] = detectLiquidErrors([missing("one"), missing("two")]);
     expect(fingerprintFinding(a.filename, a.findingType, a.codeSnippet, 1)).not.toBe(
       fingerprintFinding(b.filename, b.findingType, b.codeSnippet, 1),
+    );
+  });
+
+  it(`the stored snippet never exceeds ${MAX_LIQUID_ERROR_SNIPPET_CHARS} characters, and its identity line survives`, () => {
+    const long = `Liquid error (sections/hero line 5): ${"x".repeat(5000)}`;
+    const [error] = extractRenderedLiquidErrors(page(long));
+    const [f] = detectLiquidErrors([error]);
+    expect(f.codeSnippet).toHaveLength(MAX_LIQUID_ERROR_SNIPPET_CHARS);
+    const [identity] = f.codeSnippet.split("\n");
+    expect(identity).toHaveLength(MAX_LIQUID_ERROR_TEXT_CHARS);
+    expect(identity.startsWith("Liquid error in sections/hero: xxx")).toBe(true);
+    // The same long error at another line number is still the same finding.
+    const [moved] = detectLiquidErrors(
+      extractRenderedLiquidErrors(page(long.replace("line 5", "line 77"))),
+    );
+    expect(fingerprintFinding(f.filename, f.findingType, f.codeSnippet, 1)).toBe(
+      fingerprintFinding(moved.filename, moved.findingType, moved.codeSnippet, 1),
     );
   });
 
