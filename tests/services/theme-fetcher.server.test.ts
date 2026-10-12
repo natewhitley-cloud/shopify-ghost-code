@@ -502,3 +502,100 @@ describe("fetchAllThemes", () => {
     expect(result.map((t) => t.name)).toEqual(["Dawn", "Aurora", "Craft", "Zebra"]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-wr81: files returned without a text body are dropped from the result, but
+// their NAMES are reported, so a caller can tell "exists" from "missing".
+// ---------------------------------------------------------------------------
+
+describe("fetchThemeFiles: onFileWithoutText (gc-wr81)", () => {
+  type Node = { filename: string; body?: { content?: string | null } | null };
+  const respond = (nodes: Node[], hasNextPage = false, endCursor: string | null = null) =>
+    makeThemeFilesResponse(nodes as Parameters<typeof makeThemeFilesResponse>[0], {
+      hasNextPage,
+      endCursor,
+    });
+
+  it("reports every file whose body is not text, and returns the rest unchanged", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      respond([
+        { filename: "layout/theme.liquid", body: { content: "html" } },
+        // A base64 or URL body: the text fragment selects nothing.
+        { filename: "snippets/huge.liquid", body: {} },
+        { filename: "snippets/null-content.liquid", body: { content: null } },
+        { filename: "snippets/null-body.liquid", body: null },
+        { filename: "snippets/no-body.liquid" },
+        { filename: "assets/logo.png", body: {} },
+      ]),
+    );
+    const reported: string[] = [];
+
+    const files = await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+      onFileWithoutText: (filename) => reported.push(filename),
+    });
+
+    expect(files).toEqual([{ filename: "layout/theme.liquid", content: "html" }]);
+    expect(reported).toEqual([
+      "snippets/huge.liquid",
+      "snippets/null-content.liquid",
+      "snippets/null-body.liquid",
+      "snippets/no-body.liquid",
+      "assets/logo.png",
+    ]);
+  });
+
+  it("a file whose text is EMPTY is a text file: returned, not reported", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValue(respond([{ filename: "snippets/empty.liquid", body: { content: "" } }]));
+    const onFileWithoutText = vi.fn();
+
+    const files = await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+      onFileWithoutText,
+    });
+
+    expect(files).toEqual([{ filename: "snippets/empty.liquid", content: "" }]);
+    expect(onFileWithoutText).not.toHaveBeenCalled();
+  });
+
+  it("reports across pages", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(respond([{ filename: "snippets/a.liquid", body: {} }], true, "c1"))
+      .mockResolvedValueOnce(respond([{ filename: "snippets/b.liquid", body: {} }]));
+    const reported: string[] = [];
+
+    await fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+      onFileWithoutText: (filename) => reported.push(filename),
+    });
+
+    expect(reported).toEqual(["snippets/a.liquid", "snippets/b.liquid"]);
+  });
+
+  it("is optional: without it, text-less files are skipped as before", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      respond([
+        { filename: "snippets/huge.liquid", body: {} },
+        { filename: "layout/theme.liquid", body: { content: "html" } },
+      ]),
+    );
+    await expect(fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1")).resolves.toEqual([
+      { filename: "layout/theme.liquid", content: "html" },
+    ]);
+  });
+
+  it("text-less files do not count toward the total text ceiling", async () => {
+    const graphql = vi.fn().mockResolvedValue(
+      respond([
+        { filename: "snippets/huge.liquid", body: {} },
+        { filename: "layout/theme.liquid", body: { content: "aaaa" } },
+      ]),
+    );
+    await expect(
+      fetchThemeFiles(makeAdmin(graphql), "gid://shopify/Theme/1", undefined, {
+        maxTotalBytes: 4,
+        onFileWithoutText: () => {},
+      }),
+    ).resolves.toHaveLength(1);
+  });
+});

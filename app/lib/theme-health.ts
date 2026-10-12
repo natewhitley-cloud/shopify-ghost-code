@@ -257,7 +257,7 @@ const GAP_ORDER: ReadonlyArray<Gap> = [
 const GAP_COPY: Record<Gap, string> = {
   unreachable:
     "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.",
-  not_run: "Not checked on your last scan. Run a new scan.",
+  not_run: "Not checked on your last scan. Run a new scan to try again.",
   permission: "Needs a permission you haven't allowed yet. You can allow it in Settings.",
   plan: "Checked in full on Standard and Professional.",
   unpublished: "Only checked on your published theme.",
@@ -265,7 +265,7 @@ const GAP_COPY: Record<Gap, string> = {
 };
 
 /** `not_run` when only PART of the row was not run. */
-const PARTLY_NOT_RUN = "Partly checked on your last scan. Run a new scan.";
+const PARTLY_NOT_RUN = "Partly checked on your last scan. Run a new scan to try again.";
 
 /** What the plan leaves out of a row, named (the two plan-gated checks). */
 const PLAN_GAP_COPY: Partial<Record<HealthCategoryKey, string>> = {
@@ -620,7 +620,9 @@ export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] 
     const none = { count: 0, href: null };
     if (!reason) {
       rows.push({ ...base, ...none, status: "clean", statusLabel: "Clean", detail: null });
-    } else if (gaps.length === covered.length) {
+    } else if (gaps.filter((g) => g !== "capped").length === covered.length) {
+      // A capped check RAN (a size cap left part unchecked), so it never makes
+      // the row "Not checked": a row with only capped checks is partial.
       rows.push({
         ...base,
         ...none,

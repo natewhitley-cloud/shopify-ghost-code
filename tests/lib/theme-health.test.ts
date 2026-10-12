@@ -460,7 +460,7 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
   describe("a scan that did not run a check that is on now (HIGH audit finding)", () => {
     const without = (...types: string[]) =>
       new Set(ALL_TYPES.filter((t) => !types.includes(t)) as string[]);
-    const NOT_RUN = "Not checked on your last scan. Run a new scan.";
+    const NOT_RUN = "Not checked on your last scan. Run a new scan to try again.";
 
     it("the scan's live set lacks Liquid errors (a pre-deploy scan): NOT clean, with what to do", () => {
       const rows = buildThemeHealthChecklist(
@@ -510,7 +510,7 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
       expect(rowOf(rows, "snippets-sections")).toMatchObject({
         status: "partial",
         statusLabel: "None found",
-        detail: "Partly checked on your last scan. Run a new scan.",
+        detail: "Partly checked on your last scan. Run a new scan to try again.",
       });
     });
 
@@ -1041,8 +1041,8 @@ describe("gap reason copy: fits one check or several, and ends with the action",
     expect(everyGapSentence().sort()).toEqual(
       [
         "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.",
-        "Not checked on your last scan. Run a new scan.",
-        "Partly checked on your last scan. Run a new scan.",
+        "Not checked on your last scan. Run a new scan to try again.",
+        "Partly checked on your last scan. Run a new scan to try again.",
         "Needs a permission you haven't allowed yet. You can allow it in Settings.",
         "Broken links are checked on Standard and Professional.",
         "Old checkout code is checked on Standard and Professional.",
@@ -1384,9 +1384,105 @@ describe("groupGapsByReason", () => {
     );
     expect(groupGapsByReason(groupHealthRows(rows).gaps)).toEqual([
       {
-        reason: "Not checked on your last scan. Run a new scan.",
+        reason: "Not checked on your last scan. Run a new scan to try again.",
         labels: HEALTH_CATEGORIES.map((c) => c.label),
       },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-wr81
+// ---------------------------------------------------------------------------
+
+describe("gc-wr81: 'Run a new scan' does not promise a result", () => {
+  const without = (...types: string[]) =>
+    new Set(ALL_TYPES.filter((t) => !types.includes(t)) as string[]);
+
+  it("a check that did not run: the exact sentence", () => {
+    const rows = buildThemeHealthChecklist(
+      input({ coverage: { ...FULL_COVERAGE, liveTypes: without("LIQUID_ERROR_RENDERED") } }),
+    );
+    expect(rowOf(rows, "liquid-errors")!.detail).toBe(
+      "Not checked on your last scan. Run a new scan to try again.",
+    );
+  });
+
+  it("part of a row did not run: the exact sentence", () => {
+    const rows = buildThemeHealthChecklist(
+      input({ coverage: { ...FULL_COVERAGE, liveTypes: without("SETTINGS_DRIFT") } }),
+    );
+    expect(rowOf(rows, "snippets-sections")!.detail).toBe(
+      "Partly checked on your last scan. Run a new scan to try again.",
+    );
+  });
+
+  it("no gap sentence ends on a bare 'Run a new scan.', and none has a dash", () => {
+    const coverages: Array<Partial<HealthCoverageInput>> = [
+      { liveTypes: null },
+      { liveTypes: without("SETTINGS_DRIFT") },
+      { liveTypes: without("LIQUID_ERROR_RENDERED") },
+      { cappedCategories: ["LIQUID_ERROR_RENDERED"] },
+    ];
+    for (const coverage of coverages) {
+      const rows = buildThemeHealthChecklist(
+        input({ coverage: { ...FULL_COVERAGE, ...coverage } }),
+      );
+      for (const row of groupHealthRows(rows).gaps) {
+        expect(row.detail, row.key).not.toMatch(/Run a new scan\.$/);
+        expect(row.detail, row.key).not.toMatch(/[—–]/);
+      }
+    }
+  });
+});
+
+describe("gc-wr81: the Liquid error check cut short by its size cap", () => {
+  const capped = { ...FULL_COVERAGE, cappedCategories: ["LIQUID_ERROR_RENDERED"] };
+
+  it("coverageForType: capped when the check ran", () => {
+    expect(coverageForType("LIQUID_ERROR_RENDERED", capped)).toBe("capped");
+  });
+
+  it("unreachable wins over capped", () => {
+    expect(
+      coverageForType("LIQUID_ERROR_RENDERED", {
+        ...capped,
+        unreachableCategories: ["LIQUID_ERROR_RENDERED"],
+      }),
+    ).toBe("unreachable");
+  });
+
+  it("not run wins over capped (the scan's live set lacks the type)", () => {
+    expect(
+      coverageForType("LIQUID_ERROR_RENDERED", {
+        ...capped,
+        liveTypes: new Set(ALL_TYPES.filter((t) => t !== "LIQUID_ERROR_RENDERED") as string[]),
+      }),
+    ).toBe("not_run");
+  });
+
+  it("the row never reads Clean, is listed with the gaps, and gives the cap as the reason", () => {
+    const rows = buildThemeHealthChecklist(input({ coverage: capped }));
+    const row = rowOf(rows, "liquid-errors")!;
+    expect(row.status).not.toBe("clean");
+    expect(row.statusLabel).not.toBe("Clean");
+    // The check ran, so the row is partial, never "Not checked".
+    expect(row).toMatchObject({ status: "partial", statusLabel: "None found" });
+    expect(row.detail).toBe(
+      "Your store has more of these than one scan checks, so part wasn't checked.",
+    );
+    expect(row).toMatchObject({ count: 0, href: null });
+    const groups = groupHealthRows(rows);
+    expect(groups.gaps.map((r) => r.key)).toContain("liquid-errors");
+    expect(groups.clean.map((r) => r.key)).not.toContain("liquid-errors");
+    // Its neighbours are unaffected.
+    expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "clean" });
+  });
+
+  it("an error found inside the cut still shows as an issue", () => {
+    const rows = buildThemeHealthChecklist(
+      input({ coverage: capped, typeCounts: { LIQUID_ERROR_RENDERED: 1 } }),
+    );
+    expect(rowOf(rows, "liquid-errors")).toMatchObject({ status: "issues", count: 1 });
   });
 });

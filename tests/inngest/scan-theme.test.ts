@@ -669,7 +669,13 @@ describe("scanTheme — happy path", () => {
       where: { id: SHOP_ID },
     });
     expect(mockUnauthenticated.admin).toHaveBeenCalledWith(MOCK_SHOP.domain);
-    expect(mockFetchThemeFiles).toHaveBeenCalledWith(MOCK_ADMIN, THEME_ID, MOCK_SHOP.domain);
+    expect(mockFetchThemeFiles).toHaveBeenCalledWith(
+      MOCK_ADMIN,
+      THEME_ID,
+      MOCK_SHOP.domain,
+      // gc-wr81: the scan also asks for the names of files returned without text.
+      { onFileWithoutText: expect.any(Function) },
+    );
   });
 
   it("passes fetched files to the scan engine", async () => {
@@ -4496,8 +4502,8 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       fetchSpy.mockResolvedValue(new Response(storefrontHtml(null), { status: 200 }));
       const { results } = await run();
       expect(results["fetch-and-scan"]).toHaveProperty("missingSnippetRenders", [
-        { snippet: "klaviyo-form", renderedIn: ["layout/theme"], more: false },
-        { snippet: "preloaderapp", renderedIn: ["sections/hero"], more: false },
+        { snippet: "klaviyo-form", renderedIn: ["layout/theme"] },
+        { snippet: "preloaderapp", renderedIn: ["sections/hero"] },
       ]);
       // The theme files were fetched once; nothing new was asked of the Admin API.
       expect(mockFetchThemeFiles).toHaveBeenCalledTimes(1);
@@ -4953,6 +4959,227 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       );
       await expect(run()).rejects.toThrow("db connection reset");
       expect(mockFinalizeScan).not.toHaveBeenCalled();
+    });
+
+    // -----------------------------------------------------------------------
+    // gc-wr81: more missing snippets than the index keeps -> capped, not clean
+    // -----------------------------------------------------------------------
+    describe("more missing snippets than the index keeps (gc-wr81)", () => {
+      /** A theme whose layout renders `count` snippets it does not contain. */
+      const themeMissing = (count: number) => [
+        {
+          filename: "layout/theme.liquid",
+          content: Array.from(
+            { length: count },
+            (_, i) => `{% render 'gone-${String(i).padStart(3, "0")}' %}`,
+          ).join("\n"),
+        },
+      ];
+      const cleanPage = () => new Response(storefrontHtml(null), { status: 200 });
+      type FetchAndScanOutput = {
+        missingSnippetRenders: unknown[];
+        missingSnippetsCapped: boolean;
+      };
+
+      it("exactly 50: the whole index crosses the boundary and nothing is capped", async () => {
+        live(themeMissing(50));
+        fetchSpy.mockResolvedValue(cleanPage());
+        const { results } = await run();
+        const output = results["fetch-and-scan"] as FetchAndScanOutput;
+        expect(output.missingSnippetRenders).toHaveLength(50);
+        expect(output.missingSnippetsCapped).toBe(false);
+        const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+        expect(finalizeArgs.cappedCategories).toEqual([]);
+        expect(finalizeArgs.liveFindingTypes).toContain(FindingType.LIQUID_ERROR_RENDERED);
+      });
+
+      it("51: LIQUID_ERROR_RENDERED reaches cappedCategories; still COMPLETED, still live, never skipped", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(cleanPage());
+        const { results, result } = await run();
+        const output = results["fetch-and-scan"] as FetchAndScanOutput;
+        expect(output.missingSnippetRenders).toHaveLength(50);
+        expect(output.missingSnippetsCapped).toBe(true);
+        expect(results["storefront-script-tags"]).toMatchObject({ liquidAudited: true });
+        const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+        expect(finalizeArgs.cappedCategories).toEqual([FindingType.LIQUID_ERROR_RENDERED]);
+        expect(finalizeArgs.skippedCategories).toEqual([]);
+        expect(finalizeArgs).not.toHaveProperty("unreachableCategories");
+        expect(finalizeArgs.liveFindingTypes).toContain(FindingType.LIQUID_ERROR_RENDERED);
+        expect(finalizeArgs.status).toBe("COMPLETED");
+        expect(result.status).toBe("COMPLETED");
+      });
+
+      it("51: an error naming a snippet past the cut is not a finding, and the scan says capped", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(
+          new Response(
+            errorPage(
+              "Liquid error (layout/theme line 51): Could not find asset snippets/gone-050.liquid",
+            ),
+            { status: 200 },
+          ),
+        );
+        await run();
+        expect(liquidPersistCalls()).toHaveLength(0);
+        expect(mockFinalizeScan.mock.calls[0][1].cappedCategories).toEqual([
+          FindingType.LIQUID_ERROR_RENDERED,
+        ]);
+      });
+
+      it("51: an error inside the cut is still a finding (capped does not hide results)", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(
+          new Response(
+            errorPage(
+              "Liquid error (layout/theme line 1): Could not find asset snippets/gone-000.liquid",
+            ),
+            { status: 200 },
+          ),
+        );
+        await run();
+        expect(liquidPersistCalls()).toHaveLength(1);
+        expect(mockFinalizeScan.mock.calls[0][1].cappedCategories).toEqual([
+          FindingType.LIQUID_ERROR_RENDERED,
+        ]);
+      });
+
+      it("51: a prior Liquid error is not reported fixed by a capped scan", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(cleanPage());
+        mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+        mockDb.finding.findMany.mockResolvedValue([]);
+        mockDb.scan.findUnique.mockResolvedValue({
+          status: "IN_PROGRESS",
+          createdAt: new Date("2026-10-20T00:00:00Z"),
+        });
+        mockGetPreviousScanForTheme.mockResolvedValue({
+          ...BASELINE_COVERAGE,
+          liveFindingTypes: Object.values(FindingType),
+          id: "prev",
+          findingCount: 1,
+          findings: [STORED_ERROR],
+        });
+        await run();
+        expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(0);
+      });
+
+      it("51 + an unreadable storefront: unreachable wins, not capped", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(
+          new Response("<body class='template-password'></body>", { status: 200 }),
+        );
+        const { results } = await run();
+        expect((results["fetch-and-scan"] as FetchAndScanOutput).missingSnippetsCapped).toBe(true);
+        const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+        expect(finalizeArgs.unreachableCategories).toEqual(STOREFRONT_TYPES);
+        expect(finalizeArgs.cappedCategories).toEqual([]);
+      });
+
+      it("51 + the check failed: not run, not capped", async () => {
+        live(themeMissing(51));
+        mockDetectLiquidErrors.mockImplementationOnce(() => {
+          throw new Error("boom");
+        });
+        fetchSpy.mockResolvedValue(cleanPage());
+        const { results } = await run();
+        expect(results["storefront-script-tags"]).toMatchObject({ liquidAudited: false });
+        const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+        expect(finalizeArgs.cappedCategories).toEqual([]);
+        expect(finalizeArgs.liveFindingTypes).not.toContain(FindingType.LIQUID_ERROR_RENDERED);
+      });
+
+      it("51 + an unpublished theme: the check did not run, not capped", async () => {
+        process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+        MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse("UNPUBLISHED"));
+        mockFetchThemeFiles.mockResolvedValue(themeMissing(51));
+        await run();
+        expect(fetchSpy).not.toHaveBeenCalled();
+        expect(mockFinalizeScan.mock.calls[0][1].cappedCategories).toEqual([]);
+      });
+
+      it("51 + flag off: no index, no capped key in the step output, not capped", async () => {
+        mockFetchThemeFiles.mockResolvedValue(themeMissing(51));
+        const { results } = await run();
+        expect(results["fetch-and-scan"]).not.toHaveProperty("missingSnippetRenders");
+        expect(results["fetch-and-scan"]).not.toHaveProperty("missingSnippetsCapped");
+        expect(mockFinalizeScan.mock.calls[0][1].cappedCategories).toEqual([]);
+      });
+
+      it("a run whose fetch-and-scan was memoized before the capped key existed: not capped", async () => {
+        live(themeMissing(51));
+        fetchSpy.mockResolvedValue(cleanPage());
+        const base = createMockInngestStep();
+        const step = {
+          ...base,
+          run: vi.fn(async (name: string, fn: () => unknown) => {
+            const out = (await fn()) as Record<string, unknown>;
+            if (name !== "fetch-and-scan") return out;
+            const legacy = { ...out };
+            delete legacy.missingSnippetsCapped;
+            return legacy;
+          }),
+        };
+        await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+        expect(mockFinalizeScan.mock.calls[0][1].cappedCategories).toEqual([]);
+      });
+    });
+
+    // -----------------------------------------------------------------------
+    // gc-wr81: a snippet the theme has, but whose body is not text, EXISTS
+    // -----------------------------------------------------------------------
+    describe("a snippet that exists without a text body is not missing (gc-wr81)", () => {
+      type FetchOptions = { onFileWithoutText?: (filename: string) => void };
+      /** fetchThemeFiles returning BROKEN_THEME and reporting `names` as text-less. */
+      const fetchReporting =
+        (names: string[]) =>
+        async (_admin: unknown, _themeId: unknown, _domain: unknown, options?: FetchOptions) => {
+          for (const name of names) options?.onFileWithoutText?.(name);
+          return BROKEN_THEME;
+        };
+
+      it("the scan asks the fetcher for the names of files it returns no text for", async () => {
+        live();
+        fetchSpy.mockResolvedValue(new Response(storefrontHtml(null), { status: 200 }));
+        await run();
+        expect(mockFetchThemeFiles).toHaveBeenCalledWith(MOCK_ADMIN, THEME_ID, MOCK_SHOP.domain, {
+          onFileWithoutText: expect.any(Function),
+        });
+      });
+
+      it("such a snippet is left out of the index and its error is not a finding", async () => {
+        live();
+        mockFetchThemeFiles.mockImplementation(
+          fetchReporting(["assets/logo.png", "snippets/klaviyo-form.liquid"]),
+        );
+        fetchSpy.mockResolvedValue(new Response(errorPage(ERROR, OTHER), { status: 200 }));
+        const { results } = await run();
+        expect(results["fetch-and-scan"]).toHaveProperty("missingSnippetRenders", [
+          { snippet: "preloaderapp", renderedIn: ["sections/hero"] },
+        ]);
+        // Only the snippet that is really missing is reported.
+        const rows = liquidPersistCalls().flatMap((c) => c[1] as Array<{ codeSnippet: string }>);
+        expect(rows).toHaveLength(1);
+        expect(rows[0].codeSnippet).toContain("preloaderapp");
+        expect(JSON.stringify(rows)).not.toContain("klaviyo-form");
+      });
+
+      it("control: with no such file reported, both errors are findings", async () => {
+        live();
+        mockFetchThemeFiles.mockImplementation(fetchReporting(["assets/logo.png"]));
+        fetchSpy.mockResolvedValue(new Response(errorPage(ERROR, OTHER), { status: 200 }));
+        await run();
+        const rows = liquidPersistCalls().flatMap((c) => c[1] as unknown[]);
+        expect(rows).toHaveLength(2);
+      });
+
+      it("the names never cross the step boundary", async () => {
+        live();
+        mockFetchThemeFiles.mockImplementation(fetchReporting(["snippets/klaviyo-form.liquid"]));
+        fetchSpy.mockResolvedValue(new Response(storefrontHtml(null), { status: 200 }));
+        const { results } = await run();
+        expect(JSON.stringify(results["fetch-and-scan"])).not.toContain("klaviyo-form");
+      });
     });
   });
 });

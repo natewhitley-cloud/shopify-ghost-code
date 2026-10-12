@@ -4,10 +4,11 @@
 // ---------------------------------------------------------------------------
 //
 // PURE, side-effect-free. No Admin API, DB, or network access. Three parts:
-//   - buildMissingSnippetIndex(files): runs in the scan's fetch-and-scan step,
-//     where the theme files are in memory. Lists the snippets the theme
-//     RENDERS but does NOT CONTAIN, with the files that render them. Small and
-//     bounded, so it can cross the step boundary (theme files cannot).
+//   - buildMissingSnippetIndex(files, otherFilenames): runs in the scan's
+//     fetch-and-scan step, where the theme files are in memory. Lists the
+//     snippets the theme RENDERS but does NOT CONTAIN, with the files that
+//     render them. Small and bounded, so it can cross the step boundary (theme
+//     files cannot).
 //   - extractRenderedLiquidErrors(html): runs INSIDE the storefront fetcher on
 //     the homepage HTML it already holds. Returns only parsed parts (template,
 //     line, snippet name). The HTML never leaves the fetcher.
@@ -24,8 +25,12 @@
 //          Liquid error: Could not find asset snippets/<name>.liquid
 //   2. `snippets/<name>.liquid` does NOT exist in the scanned (published) theme;
 //   3. a theme file renders it (`{% render 'name' %}`, `{% include "name" %}`,
-//      `{%- render 'name' -%}`, or `render 'name'` inside `{% liquid %}`);
-//   4. when the error names a file, THAT file is one that renders it.
+//      `{%- render 'name' -%}`, or `render 'name'` inside `{% liquid %}`) in
+//      Liquid that RUNS: a render inside a comment, `{% raw %}`, `{% schema %}`
+//      or `{% doc %}` never executes, so it cannot print the error and does
+//      not count (blankNonExecutingLiquid);
+//   4. when the error names a file, THAT file is one the index lists as
+//      rendering it.
 // With 2-4 true, Shopify does print that error wherever the file is rendered,
 // so the page text is confirmed by the theme rather than believed.
 //
@@ -72,9 +77,13 @@ export const MAX_LIQUID_ERROR_MATCHES = 200;
 /** Same cap as every other finding's snippet (the privacy policy's stated limit). */
 export const MAX_LIQUID_ERROR_SNIPPET_CHARS = 300;
 
-/** Missing snippets kept in the index, and rendering files kept per snippet. */
+/**
+ * Missing snippets kept in the index, and rendering files kept per snippet.
+ * Worst case across the step boundary: 50 snippets x 50 paths of at most ~130
+ * characters, about 350 KB (see the step-output budget in scan-theme.ts).
+ */
 export const MAX_MISSING_SNIPPETS = 50;
-export const MAX_RENDERING_FILES = 10;
+export const MAX_RENDERING_FILES = 50;
 /** A theme file longer than this is not searched for render tags (bounded work). */
 export const MAX_RENDER_SCAN_FILE_CHARS = 1_000_000;
 
@@ -93,8 +102,18 @@ export interface MissingSnippetRender {
   snippet: string;
   /** Theme files (without ".liquid") that render it, sorted, at most MAX_RENDERING_FILES. */
   renderedIn: string[];
-  /** True when more files render it than `renderedIn` lists. */
-  more: boolean;
+}
+
+/** What buildMissingSnippetIndex returns. */
+export interface MissingSnippetIndex {
+  /** At most MAX_MISSING_SNIPPETS entries, sorted by snippet name. */
+  renders: MissingSnippetRender[];
+  /**
+   * True when the theme has more missing snippets than `renders` lists, so a
+   * real error naming one past the cut would go unconfirmed. The scan records
+   * the check as capped (partly checked), never as clean.
+   */
+  capped: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -135,17 +154,192 @@ const LIQUID_FILE_RE =
 const RENDER_TAG_RE =
   /(?:\{%-?[ \t\r\n]{0,200}|^[ \t]{0,200})(?:render|include)[ \t\r\n]{1,200}["']([A-Za-z0-9._-]{1,100})["']/gim;
 
+// --- Liquid that never runs ---
+
+/** What a blanked range is replaced with (see blankNonExecutingLiquid). */
+export const BLANKED_LIQUID = "#";
+
+/** Blocks whose body is not parsed: the FIRST closing tag ends them. */
+const RAW_BLOCK_END: Readonly<Record<string, string>> = {
+  raw: "endraw",
+  schema: "endschema",
+  doc: "enddoc",
+};
+
+/** No tag name read here is longer (the longest is "endcomment"). */
+const MAX_TAG_NAME_CHARS = 16;
+
+function isLiquidSpace(code: number): boolean {
+  return code === 32 || code === 9 || code === 10 || code === 13;
+}
+
+function isWordChar(code: number): boolean {
+  return (
+    (code >= 97 && code <= 122) || // a-z
+    (code >= 65 && code <= 90) || // A-Z
+    (code >= 48 && code <= 57) || // 0-9
+    code === 95 // _
+  );
+}
+
+/** The word starting at `from` (not past `to`), cut at MAX_TAG_NAME_CHARS + 1. */
+function wordAt(content: string, from: number, to: number): string {
+  let end = from;
+  while (end < to && end - from <= MAX_TAG_NAME_CHARS && isWordChar(content.charCodeAt(end))) end++;
+  return content.slice(from, end);
+}
+
+type LiquidTag = {
+  /** The tag's name ("comment", "render"...), "#" for an inline comment, or "". */
+  name: string;
+  /** Index of the tag's `{%`. */
+  start: number;
+  /** Index just past the name. */
+  nameEnd: number;
+  /** Index just past the tag's `%}`. */
+  end: number;
+};
+
+/**
+ * The first `{% ... %}` tag at or after `from`, as Liquid's tokenizer cuts it
+ * (from `{%` to the first `%}`), or null when no complete tag is left. Names
+ * are case-sensitive, as in Liquid. Callers always resume at `end`, and a
+ * missing `%}` ends the walk for good, so a whole file is one forward pass.
+ */
+function nextLiquidTag(content: string, from: number): LiquidTag | null {
+  const start = content.indexOf("{%", from);
+  if (start === -1) return null;
+  const close = content.indexOf("%}", start + 2);
+  if (close === -1) return null;
+  let at = start + 2;
+  if (at < close && content[at] === "-") at++;
+  while (at < close && isLiquidSpace(content.charCodeAt(at))) at++;
+  if (at < close && content[at] === "#") {
+    return { name: "#", start, nameEnd: at + 1, end: close + 2 };
+  }
+  const name = wordAt(content, at, close);
+  return { name, start, nameEnd: at + name.length, end: close + 2 };
+}
+
+/**
+ * Index just past the tag that closes the block whose opening tag ended at
+ * `from`, or the end of the file when it is never closed. `nests` is the
+ * `comment` rule of current Liquid: a `comment` inside it must be closed
+ * first, and an `endcomment` inside a `raw` block inside it does not count.
+ */
+function endOfLiquidBlock(content: string, from: number, endName: string, nests: boolean): number {
+  let depth = 1;
+  let pos = from;
+  for (;;) {
+    const tag = nextLiquidTag(content, pos);
+    if (!tag) return content.length;
+    pos = tag.end;
+    if (tag.name === endName) {
+      if (--depth === 0) return pos;
+    } else if (nests && tag.name === "comment") depth++;
+    else if (nests && tag.name === "raw") pos = endOfLiquidBlock(content, pos, "endraw", false);
+  }
+}
+
+/**
+ * Inside one `{% liquid %}` tag (`from`..`to`), where each line is a
+ * statement: call `blank` for every line from a bare `comment` statement to
+ * its `endcomment` (nesting respected). One never closed runs to the end of
+ * the tag. The line ends are found by a walk bounded at `to`, never by a
+ * search that could run to the end of the file once per tag.
+ */
+function blankLiquidTagCommentLines(
+  content: string,
+  from: number,
+  to: number,
+  blank: (start: number, end: number) => void,
+): void {
+  let depth = 0;
+  let lineStart = from;
+  while (lineStart < to) {
+    let lineEnd = lineStart;
+    while (lineEnd < to && content.charCodeAt(lineEnd) !== 10) lineEnd++;
+    let at = lineStart;
+    while (at < lineEnd && isLiquidSpace(content.charCodeAt(at))) at++;
+    const statement = wordAt(content, at, lineEnd);
+    if (statement === "comment") depth++;
+    if (depth > 0) blank(lineStart, lineEnd);
+    if (statement === "endcomment" && depth > 0) depth--;
+    lineStart = lineEnd + 1;
+  }
+}
+
+/**
+ * `content` with the Liquid that never executes taken out, so a render tag
+ * inside it cannot corroborate an error:
+ *   - `{% comment %}...{% endcomment %}` (nested comments respected);
+ *   - `{% raw %}`, `{% schema %}` and `{% doc %}` blocks, each ended by its
+ *     FIRST closing tag;
+ *   - an inline comment tag, `{% # ... %}`;
+ *   - inside `{% liquid %}`, the lines from a bare `comment` statement to its
+ *     `endcomment`. (A `# ...` line there needs nothing: it does not start
+ *     with `render`, so RENDER_TAG_RE never reads it.)
+ * With or without the `-` whitespace control, and with any whitespace inside
+ * the tag. A block that is never closed is blanked to the end of the file, for
+ * all four block types alike: Liquid would reject such a file rather than run
+ * what follows.
+ *
+ * Each range is replaced by ONE BLANKED_LIQUID character, not removed and not
+ * turned into whitespace: the text on either side is never joined into a tag
+ * that was not there, and what follows a comment does not become the start of
+ * a line (RENDER_TAG_RE reads a line-leading `render 'x'` as a statement).
+ *
+ * Linear: one forward pass over the tags (nextLiquidTag), no regex.
+ */
+export function blankNonExecutingLiquid(content: string): string {
+  const kept: string[] = [];
+  let keptFrom = 0;
+  const blank = (start: number, end: number): void => {
+    kept.push(content.slice(keptFrom, start), BLANKED_LIQUID);
+    keptFrom = end;
+  };
+
+  let pos = 0;
+  for (;;) {
+    const tag = nextLiquidTag(content, pos);
+    if (!tag) break;
+    pos = tag.end;
+    if (tag.name === "#") blank(tag.start, tag.end);
+    else if (tag.name === "liquid") {
+      blankLiquidTagCommentLines(content, tag.nameEnd, tag.end - 2, blank);
+    } else if (tag.name === "comment") {
+      pos = endOfLiquidBlock(content, tag.end, "endcomment", true);
+      blank(tag.start, pos);
+    } else if (Object.hasOwn(RAW_BLOCK_END, tag.name)) {
+      pos = endOfLiquidBlock(content, tag.end, RAW_BLOCK_END[tag.name], false);
+      blank(tag.start, pos);
+    }
+  }
+  return keptFrom === 0 ? content : kept.join("") + content.slice(keptFrom);
+}
+
 /**
  * The snippets a theme renders but does not contain, with the files that
  * render them. Deterministic (sorted) and bounded: at most
- * MAX_MISSING_SNIPPETS snippets, each with at most MAX_RENDERING_FILES files.
- * A render inside a Liquid comment is counted too: it only makes the index a
- * little wider, and the page must still print the error.
+ * MAX_MISSING_SNIPPETS snippets (`capped` says when there were more), each
+ * with at most MAX_RENDERING_FILES files. Only a render in Liquid that runs is
+ * counted (blankNonExecutingLiquid).
+ *
+ * `otherFilenames`: theme files that exist but are not in `files` because
+ * their body was not returned as text (theme-fetcher drops those). A snippet
+ * among them EXISTS, so it is never listed as missing.
  */
-export function buildMissingSnippetIndex(files: readonly ThemeFileLike[]): MissingSnippetRender[] {
+export function buildMissingSnippetIndex(
+  files: readonly ThemeFileLike[],
+  otherFilenames: readonly string[] = [],
+): MissingSnippetIndex {
   const existing = new Set<string>();
   for (const file of files) {
     const snippet = SNIPPET_FILE_RE.exec(file.filename);
+    if (snippet) existing.add(snippet[1]);
+  }
+  for (const filename of otherFilenames) {
+    const snippet = SNIPPET_FILE_RE.exec(filename);
     if (snippet) existing.add(snippet[1]);
   }
 
@@ -154,7 +348,7 @@ export function buildMissingSnippetIndex(files: readonly ThemeFileLike[]): Missi
     if (!LIQUID_FILE_RE.test(file.filename)) continue;
     if (file.content.length > MAX_RENDER_SCAN_FILE_CHARS) continue;
     const path = file.filename.slice(0, -".liquid".length);
-    for (const match of file.content.matchAll(RENDER_TAG_RE)) {
+    for (const match of blankNonExecutingLiquid(file.content).matchAll(RENDER_TAG_RE)) {
       const name = match[1].endsWith(".liquid") ? match[1].slice(0, -".liquid".length) : match[1];
       if (name.length === 0 || existing.has(name)) continue;
       let paths = renderedIn.get(name);
@@ -163,17 +357,14 @@ export function buildMissingSnippetIndex(files: readonly ThemeFileLike[]): Missi
     }
   }
 
-  return [...renderedIn.entries()]
+  const renders = [...renderedIn.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, MAX_MISSING_SNIPPETS)
-    .map(([snippet, paths]) => {
-      const sorted = [...paths].sort();
-      return {
-        snippet,
-        renderedIn: sorted.slice(0, MAX_RENDERING_FILES),
-        more: sorted.length > MAX_RENDERING_FILES,
-      };
-    });
+    .map(([snippet, paths]) => ({
+      snippet,
+      renderedIn: [...paths].sort().slice(0, MAX_RENDERING_FILES),
+    }));
+  return { renders, capped: renderedIn.size > MAX_MISSING_SNIPPETS };
 }
 
 // ---------------------------------------------------------------------------
@@ -417,10 +608,10 @@ function corroboratingFile(
   const entry = missing.get(error.snippet);
   if (!entry || entry.renderedIn.length === 0) return null;
   if (error.template === null) return entry.renderedIn[0];
-  // (4): the file the error names is one that renders it. When the list of
-  // rendering files was cut short, the named file may be past the cut.
-  if (entry.renderedIn.includes(error.template)) return error.template;
-  return entry.more ? error.template : null;
+  // (4): the file the error names must be one the index lists. A name that is
+  // not listed is dropped even when more than MAX_RENDERING_FILES files render
+  // the snippet: accepting it there would accept any template name at all.
+  return entry.renderedIn.includes(error.template) ? error.template : null;
 }
 
 /**

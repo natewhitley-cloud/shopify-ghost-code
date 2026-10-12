@@ -5344,3 +5344,22 @@ describe("app-removal context on the scan page (gc-frda)", () => {
     });
   });
 });
+
+// gc-wr81: the Liquid error check can now be capped (more missing snippets
+// than the index keeps), so the size-cap notice must name it.
+describe("cappedCategoriesNotice: the Liquid error check (gc-wr81)", () => {
+  it("names the check with its label, never the raw type", () => {
+    const text = cappedCategoriesNotice(["LIQUID_ERROR_RENDERED"]);
+    expect(text).toBe(
+      "One check was limited this scan: Liquid errors on your homepage. Your theme has more references than GhostCode checks in a single scan, so these results cover the ones we checked. Anything we didn't check keeps its status from your previous scan.",
+    );
+    expect(text).not.toContain("LIQUID_ERROR_RENDERED");
+    expect(text).not.toMatch(/[—–]/);
+  });
+
+  it("alongside another capped check", () => {
+    expect(cappedCategoriesNotice(["DANGLING_REFERENCE", "LIQUID_ERROR_RENDERED"])).toMatch(
+      /^Some checks were limited this scan: Broken links, Liquid errors on your homepage\. /,
+    );
+  });
+});

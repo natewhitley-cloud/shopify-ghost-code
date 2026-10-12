@@ -81,7 +81,7 @@ const row = (overrides: Partial<HealthRow>): HealthRow => ({
 
 const UNREACHABLE =
   "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.";
-const NOT_RUN = "Not checked on your last scan. Run a new scan.";
+const NOT_RUN = "Not checked on your last scan. Run a new scan to try again.";
 const PLAN_GAP = "Old checkout code is checked on Standard and Professional.";
 const VINTAGE =
   "Debut 17.14.0 by Shopify is a vintage theme, not Online Store 2.0. It can't use app blocks, so an app that adds something to a page has to write its code into your theme files, and that code stays there when you remove the app. App embeds still work on it.";

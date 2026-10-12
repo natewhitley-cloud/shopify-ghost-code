@@ -145,7 +145,7 @@ describe("loadThemeHealth", () => {
   });
 
   describe("a check that is on now but that the scan did not run is never Clean (HIGH audit finding)", () => {
-    const NOT_RUN = "Not checked on your last scan. Run a new scan.";
+    const NOT_RUN = "Not checked on your last scan. Run a new scan to try again.";
 
     it("a scan from before the Liquid error check: its row says Not checked, run a new scan", async () => {
       const liveFindingTypes = ALL_TYPES.filter((t) => t !== "LIQUID_ERROR_RENDERED");

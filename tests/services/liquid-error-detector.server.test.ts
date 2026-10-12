@@ -15,7 +15,10 @@ import { join } from "node:path";
 import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect, vi } from "vitest";
 
+import { CORE_STEP_OUTPUT_BUDGET_BYTES } from "../../app/lib/scan-limits";
 import {
+  BLANKED_LIQUID,
+  blankNonExecutingLiquid,
   buildMissingSnippetIndex,
   detectLiquidErrors,
   extractRenderedLiquidErrors,
@@ -74,7 +77,10 @@ function themeRendering(snippet: string, renderer = "layout/theme.liquid") {
 
 /** Run the whole detector: page + theme files -> findings. */
 function findingsFor(html: string, files: ReturnType<typeof themeRendering>) {
-  return detectLiquidErrors(extractRenderedLiquidErrors(html), buildMissingSnippetIndex(files));
+  return detectLiquidErrors(
+    extractRenderedLiquidErrors(html),
+    buildMissingSnippetIndex(files).renders,
+  );
 }
 
 // ---------------------------------------------------------------------------
@@ -96,9 +102,9 @@ describe("buildMissingSnippetIndex: snippets the theme renders but does not cont
     ["{% RENDER 'foo' %}"],
     ["{% render 'foo.liquid' %}"],
   ])("%s", (tag) => {
-    expect(buildMissingSnippetIndex([file("sections/header.liquid", `<div>${tag}</div>`)])).toEqual(
-      [{ snippet: "foo", renderedIn: ["sections/header"], more: false }],
-    );
+    expect(
+      buildMissingSnippetIndex([file("sections/header.liquid", `<div>${tag}</div>`)]).renders,
+    ).toEqual([{ snippet: "foo", renderedIn: ["sections/header"] }]);
   });
 
   it("a snippet that exists is not listed", () => {
@@ -106,8 +112,8 @@ describe("buildMissingSnippetIndex: snippets the theme renders but does not cont
       buildMissingSnippetIndex([
         file("layout/theme.liquid", "{% render 'foo' %}{% render 'bar' %}"),
         file("snippets/foo.liquid", "hi"),
-      ]),
-    ).toEqual([{ snippet: "bar", renderedIn: ["layout/theme"], more: false }]);
+      ]).renders,
+    ).toEqual([{ snippet: "bar", renderedIn: ["layout/theme"] }]);
   });
 
   it("lists every file that renders it, sorted, across the Liquid folders", () => {
@@ -116,12 +122,11 @@ describe("buildMissingSnippetIndex: snippets the theme renders but does not cont
       file("snippets/menu.liquid", "{% render 'foo' %}"),
       file("layout/theme.liquid", "{% render 'foo' %}{% render 'foo' %}"),
       file("blocks/group.liquid", "{% render 'foo' %}"),
-    ]);
+    ]).renders;
     expect(index).toEqual([
       {
         snippet: "foo",
         renderedIn: ["blocks/group", "layout/theme", "snippets/menu", "templates/customers/login"],
-        more: false,
       },
     ]);
   });
@@ -136,12 +141,12 @@ describe("buildMissingSnippetIndex: snippets the theme renders but does not cont
     ["an asset", [file("assets/app.js", "var t = \"{% render 'foo' %}\";")]],
     ["a config file", [file("config/settings_data.json", "{% render 'foo' %}")]],
   ])("%s: nothing", (_name, files) => {
-    expect(buildMissingSnippetIndex(files)).toEqual([]);
+    expect(buildMissingSnippetIndex(files).renders).toEqual([]);
   });
 
   it("a file over the size cap is not searched (bounded work)", () => {
     const big = `${" ".repeat(MAX_RENDER_SCAN_FILE_CHARS)}{% render 'foo' %}`;
-    expect(buildMissingSnippetIndex([file("layout/theme.liquid", big)])).toEqual([]);
+    expect(buildMissingSnippetIndex([file("layout/theme.liquid", big)]).renders).toEqual([]);
   });
 
   it(`keeps at most ${MAX_MISSING_SNIPPETS} snippets (sorted) and ${MAX_RENDERING_FILES} files each`, () => {
@@ -149,21 +154,21 @@ describe("buildMissingSnippetIndex: snippets the theme renders but does not cont
       { length: 80 },
       (_, i) => `{% render 's${String(i).padStart(2, "0")}' %}`,
     );
-    const index = buildMissingSnippetIndex([file("layout/theme.liquid", many.join("\n"))]);
+    const index = buildMissingSnippetIndex([file("layout/theme.liquid", many.join("\n"))]).renders;
     expect(index).toHaveLength(MAX_MISSING_SNIPPETS);
     expect(index[0].snippet).toBe("s00");
     expect(index.at(-1)!.snippet).toBe("s49");
 
-    const renderers = Array.from({ length: 15 }, (_, i) =>
+    const renderers = Array.from({ length: 60 }, (_, i) =>
       file(`sections/s${String(i).padStart(2, "0")}.liquid`, "{% render 'foo' %}"),
     );
-    const [entry] = buildMissingSnippetIndex(renderers);
+    const [entry] = buildMissingSnippetIndex(renderers).renders;
     expect(entry.renderedIn).toHaveLength(MAX_RENDERING_FILES);
-    expect(entry.more).toBe(true);
     // Small enough to cross an Inngest step boundary many times over.
     expect(
       JSON.stringify(
-        buildMissingSnippetIndex([...renderers, file("layout/theme.liquid", many.join("\n"))]),
+        buildMissingSnippetIndex([...renderers, file("layout/theme.liquid", many.join("\n"))])
+          .renders,
       ).length,
     ).toBeLessThan(20_000);
   });
@@ -172,7 +177,7 @@ describe("buildMissingSnippetIndex: snippets the theme renders but does not cont
     const content = `{%${" ".repeat(5000)}`.repeat(150);
     const calls = vi.fn();
     const started = Date.now();
-    expect(buildMissingSnippetIndex([file("layout/theme.liquid", content)])).toEqual([]);
+    expect(buildMissingSnippetIndex([file("layout/theme.liquid", content)]).renders).toEqual([]);
     calls(Date.now() - started);
     // A wide budget on purpose (about 10 ms; unbounded backtracking takes minutes).
     expect(calls.mock.calls[0][0]).toBeLessThan(15_000);
@@ -487,7 +492,6 @@ describe("detectLiquidErrors: the page and the theme must agree", () => {
   const entry = (overrides: Partial<MissingSnippetRender> = {}): MissingSnippetRender => ({
     snippet: "preloaderapp",
     renderedIn: ["layout/theme"],
-    more: false,
     ...overrides,
   });
 
@@ -528,18 +532,21 @@ describe("detectLiquidErrors: the page and the theme must agree", () => {
     expect(found[0].description).toContain("sections/footer.liquid renders the snippet");
   });
 
-  it("a cut-short list of rendering files does not reject the named file", () => {
+  // gc-wr81 reversed this: a list cut short used to accept ANY template name.
+  it("a named file that is not in the list is dropped, however many files render the snippet", () => {
     expect(
       detectLiquidErrors(
         [error({ template: "sections/zz-last" })],
-        [entry({ renderedIn: ["sections/a"], more: true })],
+        [entry({ renderedIn: ["sections/a"] })],
       ),
-    ).toHaveLength(1);
+    ).toEqual([]);
+    // More renderers than the index keeps: the list is full, the name is not in it.
+    const full = Array.from(
+      { length: MAX_RENDERING_FILES },
+      (_, i) => `sections/s${String(i).padStart(2, "0")}`,
+    );
     expect(
-      detectLiquidErrors(
-        [error({ template: "sections/zz-last" })],
-        [entry({ renderedIn: ["sections/a"], more: false })],
-      ),
+      detectLiquidErrors([error({ template: "sections/zz-last" })], [entry({ renderedIn: full })]),
     ).toEqual([]);
   });
 
@@ -890,5 +897,424 @@ describe("audit sets: blind.json and adversarial.json", () => {
       /Could not find asset snippets\//.test(c.html),
     );
     expect(missingSnippetTrue.map((c) => c.id).sort()).toEqual([...READABLE_TRUE, "A27"].sort());
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-wr81: tighter corroboration
+// ---------------------------------------------------------------------------
+
+describe("blankNonExecutingLiquid: Liquid that never runs is taken out (gc-wr81)", () => {
+  const B = BLANKED_LIQUID;
+  const R = "{% render 'foo' %}";
+
+  it.each([
+    ["a comment block", `a{% comment %}${R}{% endcomment %}b`, `a${B}b`],
+    [
+      "a comment block with whitespace control",
+      `a{%- comment -%}${R}{%- endcomment -%}b`,
+      `a${B}b`,
+    ],
+    ["no whitespace inside the tags", `a{%comment%}${R}{%endcomment%}b`, `a${B}b`],
+    [
+      "newlines and tabs inside the tags",
+      `a{%-\n\t comment \n-%}${R}{%  \r\n endcomment\t%}b`,
+      `a${B}b`,
+    ],
+    ["a raw block", `a{% raw %}${R}{% endraw %}b`, `a${B}b`],
+    ["a raw block with whitespace control", `a{%- raw -%}${R}{%- endraw -%}b`, `a${B}b`],
+    ["a schema block", `a{% schema %}{"name":"${R}"}{% endschema %}b`, `a${B}b`],
+    ["a schema block with whitespace control", `a{%- schema -%}${R}{%- endschema -%}b`, `a${B}b`],
+    ["a doc block", `a{% doc %}\n  @example ${R}\n{% enddoc %}b`, `a${B}b`],
+    ["a doc block with whitespace control", `a{%- doc -%}${R}{%- enddoc -%}b`, `a${B}b`],
+    ["an inline comment", `a{% # render 'foo' %}b`, `a${B}b`],
+    ["an inline comment with whitespace control", `a{%- # render 'foo' -%}b`, `a${B}b`],
+    ["an inline comment with no space", `a{%#render 'foo'%}b`, `a${B}b`],
+    ["a multi-line inline comment", `a{%\n  # first line\n  # render 'foo'\n%}b`, `a${B}b`],
+  ])("%s", (_name, content, expected) => {
+    expect(blankNonExecutingLiquid(content)).toBe(expected);
+  });
+
+  it("only the inline comment tag itself is blanked, not what follows it", () => {
+    expect(blankNonExecutingLiquid(`{% # note %}${R}`)).toBe(`${B}${R}`);
+  });
+
+  it("nested comments: the outer one ends at ITS endcomment", () => {
+    const content = `a{% comment %}x{% comment %}y{% endcomment %}${R}{% endcomment %}b${R}`;
+    expect(blankNonExecutingLiquid(content)).toBe(`a${B}b${R}`);
+  });
+
+  it("an endcomment inside a raw block inside a comment does not close the comment", () => {
+    const content = `a{% comment %}{% raw %}{% endcomment %}{% endraw %}${R}{% endcomment %}b`;
+    expect(blankNonExecutingLiquid(content)).toBe(`a${B}b`);
+  });
+
+  it("raw does not nest: it ends at the first endraw", () => {
+    const content = `a{% raw %}{% raw %}x{% endraw %}${R}{% endraw %}`;
+    // The second endraw closes nothing and is left as it is.
+    expect(blankNonExecutingLiquid(content)).toBe(`a${B}${R}{% endraw %}`);
+  });
+
+  it("a comment tag inside raw / schema / doc does not open a comment", () => {
+    for (const [open, close] of [
+      ["raw", "endraw"],
+      ["schema", "endschema"],
+      ["doc", "enddoc"],
+    ]) {
+      const content = `{% ${open} %}{% comment %}{% ${close} %}${R}`;
+      expect(blankNonExecutingLiquid(content), open).toBe(`${B}${R}`);
+    }
+  });
+
+  it.each([["comment"], ["raw"], ["schema"], ["doc"]])(
+    "an unclosed %s block is blanked to the end of the file",
+    (name) => {
+      expect(blankNonExecutingLiquid(`a{% ${name} %}x${R}\n${R}`)).toBe(`a${B}`);
+    },
+  );
+
+  it("a nested comment closed only once is still open: blanked to the end", () => {
+    const content = `a{% comment %}{% comment %}{% endcomment %}${R}`;
+    expect(blankNonExecutingLiquid(content)).toBe(`a${B}`);
+  });
+
+  it("a render AFTER a closed block is kept, and does not become a line start", () => {
+    expect(blankNonExecutingLiquid(`{% comment %}x{% endcomment %}${R}`)).toBe(`${B}${R}`);
+    // Not whitespace: `render 'foo'` after a comment is page text, not a statement.
+    const text = blankNonExecutingLiquid("{% comment %}x{% endcomment %}render 'foo'");
+    expect(text).toBe(`${B}render 'foo'`);
+    expect(/\s/.test(B)).toBe(false);
+  });
+
+  it("several blocks in one file, with executing renders between them", () => {
+    const content = `${R}{% comment %}a{% endcomment %}${R}{% raw %}b{% endraw %}${R}{% # c %}${R}`;
+    expect(blankNonExecutingLiquid(content)).toBe(`${R}${B}${R}${B}${R}${B}${R}`);
+  });
+
+  it.each([
+    ["no Liquid at all", "<div>hello</div>"],
+    ["the empty string", ""],
+    ["only executing tags", `{% if a %}${R}{% endif %}{{ b }}`],
+    ["tag names are case-sensitive, as in Liquid", `{% Comment %}${R}{% endcomment %}`],
+    ["a longer word is another tag", `{% comments %}${R}{% rawx %}${R}{% schema_x %}${R}`],
+    ["an output tag is not a tag", `{{ comment }}${R}`],
+    ["a tag that is never closed", `${R}{% comment`],
+    ["a lone endcomment", `{% endcomment %}${R}`],
+  ])("%s: unchanged", (_name, content) => {
+    expect(blankNonExecutingLiquid(content)).toBe(content);
+  });
+
+  describe("inside {% liquid %}", () => {
+    it("the lines from a bare comment statement to its endcomment are blanked", () => {
+      const content =
+        "{% liquid\n  assign a = 1\n  comment\n    render 'foo'\n  endcomment\n  render 'bar'\n%}";
+      expect(blankNonExecutingLiquid(content)).toBe(
+        `{% liquid\n  assign a = 1\n${B}\n${B}\n${B}\n  render 'bar'\n%}`,
+      );
+    });
+
+    it("nested bare comments, with whitespace control on the tag", () => {
+      const content =
+        "{%- liquid\ncomment\ncomment\nendcomment\nrender 'foo'\nendcomment\nrender 'bar'\n-%}";
+      expect(blankNonExecutingLiquid(content)).toBe(
+        `{%- liquid\n${B}\n${B}\n${B}\n${B}\n${B}\nrender 'bar'\n-%}`,
+      );
+    });
+
+    it("a bare comment never closed runs to the end of the tag, not past it", () => {
+      const content = `{% liquid\n  comment\n  render 'foo'\n%}${R}`;
+      expect(blankNonExecutingLiquid(content)).toBe(`{% liquid\n${B}\n${B}\n%}${R}`);
+    });
+
+    it("a word that only starts with comment, or a lone endcomment, changes nothing", () => {
+      const content = "{% liquid\n  commentary = 1\n  endcomment\n  render 'foo'\n%}";
+      expect(blankNonExecutingLiquid(content)).toBe(content);
+    });
+
+    it("a bare comment line OUTSIDE a liquid tag is page text", () => {
+      const content = "<p>\ncomment\nrender 'foo'\nendcomment\n</p>";
+      expect(blankNonExecutingLiquid(content)).toBe(content);
+    });
+  });
+
+  describe("hostile input finishes fast (one forward pass)", () => {
+    // Same bound as the other timing tests in this file: about 10 ms each
+    // here, minutes if any of these were quadratic.
+    const BUDGET_MS = 15_000;
+    const fill = (chunk: string) =>
+      chunk.repeat(Math.ceil(MAX_RENDER_SCAN_FILE_CHARS / chunk.length));
+    it.each([
+      ["tags that are never closed", fill("{% comment ")],
+      ["comments that are never closed", fill("{% comment %}")],
+      ["a comment full of raw blocks that are never closed", `{% comment %}${fill("{% raw %}")}`],
+      ["one-line liquid tags in a file with no newline", fill("{% liquid comment %}")],
+      ["open tags and a single close at the very end", `${fill("{% ")}%}`],
+      ["whitespace floods inside tags", fill(`{%${" ".repeat(5000)}%}`)],
+      ["very long tag names", fill(`{% ${"a".repeat(5000)} %}`)],
+      ["closed comments, each with a render", fill(`{% comment %}${R}{% endcomment %}`)],
+      ["inline comments", fill("{%#%}")],
+    ])("%s", (_name, content) => {
+      const started = Date.now();
+      blankNonExecutingLiquid(content);
+      expect(Date.now() - started).toBeLessThan(BUDGET_MS);
+    });
+
+    it("and the index built over such a file is empty", () => {
+      const content = fill(`{% comment %}${R}{% endcomment %}`).slice(
+        0,
+        MAX_RENDER_SCAN_FILE_CHARS,
+      );
+      const started = Date.now();
+      expect(buildMissingSnippetIndex([file("layout/theme.liquid", content)]).renders).toEqual([]);
+      expect(Date.now() - started).toBeLessThan(BUDGET_MS);
+    });
+  });
+});
+
+describe("buildMissingSnippetIndex: a render in Liquid that never runs does not count (gc-wr81)", () => {
+  it.each([
+    ["{% comment %}{% render 'foo' %}{% endcomment %}"],
+    ["{%- comment -%}{%- render 'foo' -%}{%- endcomment -%}"],
+    ["{% comment %}{% comment %}x{% endcomment %}{% render 'foo' %}{% endcomment %}"],
+    ["{% comment %}{% render 'foo' %}"],
+    ["{% raw %}{% render 'foo' %}{% endraw %}"],
+    ["{%- raw -%}{% include 'foo' %}{%- endraw -%}"],
+    ['{% schema %}{"name":"t","info":"{% render \'foo\' %}"}{% endschema %}'],
+    ["{% doc %}\n  @example\n  {% render 'foo' %}\n{% enddoc %}"],
+    ["{% liquid\n  comment\n    render 'foo'\n  endcomment\n%}"],
+    // These two already read as nothing before gc-wr81; pinned so they stay so.
+    ["{% # render 'foo' %}"],
+    ["{% liquid\n  # render 'foo'\n%}"],
+    ["{% comment %}x{% endcomment %}render 'foo'"],
+  ])("%s: nothing", (content) => {
+    expect(buildMissingSnippetIndex([file("sections/header.liquid", content)]).renders).toEqual([]);
+  });
+
+  it.each([
+    ["after a closed comment", "{% comment %}old{% endcomment %}{% render 'foo' %}"],
+    ["after a closed raw block", "{% raw %}{{ x }}{% endraw %}\n{% render 'foo' %}"],
+    ["before a schema block", "{% render 'foo' %}{% schema %}{}{% endschema %}"],
+    ["after an inline comment", "{% # why %}{% render 'foo' %}"],
+    ["between two comments", "{% comment %}a{% endcomment %}{% render 'foo' %}{% comment %}b"],
+    [
+      "a statement after a closed bare comment",
+      "{% liquid\n  comment\n  endcomment\n  render 'foo'\n%}",
+    ],
+  ])("a render that runs is still counted: %s", (_name, content) => {
+    expect(buildMissingSnippetIndex([file("sections/header.liquid", content)]).renders).toEqual([
+      { snippet: "foo", renderedIn: ["sections/header"] },
+    ]);
+  });
+
+  it("a file that renders it only in a comment is not listed beside one that runs it", () => {
+    const index = buildMissingSnippetIndex([
+      file("sections/a.liquid", "{% comment %}{% render 'foo' %}{% endcomment %}"),
+      file("sections/b.liquid", "{% render 'foo' %}"),
+    ]);
+    expect(index.renders).toEqual([{ snippet: "foo", renderedIn: ["sections/b"] }]);
+  });
+
+  it("end to end: an error whose only render is commented out is not a finding", () => {
+    const html = page(MISSING);
+    expect(
+      findingsFor(html, [
+        file("layout/theme.liquid", "{% comment %}{% render 'preloaderapp' %}{% endcomment %}"),
+      ]),
+    ).toEqual([]);
+    expect(findingsFor(html, themeRendering("preloaderapp"))).toHaveLength(1);
+  });
+});
+
+describe("corroboration: a named template must be in the list (gc-wr81)", () => {
+  const error = (template: string | null): RenderedLiquidError => ({
+    template,
+    line: template === null ? null : 3,
+    snippet: "foo",
+  });
+  const renderers = (count: number) =>
+    Array.from({ length: count }, (_, i) =>
+      file(`sections/s${String(i).padStart(3, "0")}.liquid`, "{% render 'foo' %}"),
+    );
+
+  it(`keeps up to ${MAX_RENDERING_FILES} rendering files per snippet`, () => {
+    expect(MAX_RENDERING_FILES).toBe(50);
+    expect(buildMissingSnippetIndex(renderers(50)).renders[0].renderedIn).toHaveLength(50);
+    expect(buildMissingSnippetIndex(renderers(51)).renders[0].renderedIn).toHaveLength(50);
+  });
+
+  it("an index entry carries no 'more' marker", () => {
+    expect(Object.keys(buildMissingSnippetIndex(renderers(51)).renders[0]).sort()).toEqual([
+      "renderedIn",
+      "snippet",
+    ]);
+  });
+
+  it.each([[10], [11], [25], [49]])(
+    "a template at position %i of the list is found (it was cut at 10 before)",
+    (position) => {
+      const { renders } = buildMissingSnippetIndex(renderers(50));
+      const template = `sections/s${String(position).padStart(3, "0")}`;
+      expect(renders[0].renderedIn[position]).toBe(template);
+      const found = detectLiquidErrors([error(template)], renders);
+      expect(found).toHaveLength(1);
+      expect(found[0].description).toContain(`${template}.liquid renders the snippet`);
+    },
+  );
+
+  it("a template the theme does not have is dropped: fewer renderers than the cap", () => {
+    const { renders } = buildMissingSnippetIndex(renderers(3));
+    expect(detectLiquidErrors([error("sections/not-a-renderer")], renders)).toEqual([]);
+  });
+
+  it("a template the theme does not have is dropped: MORE renderers than the cap", () => {
+    const { renders } = buildMissingSnippetIndex(renderers(80));
+    expect(detectLiquidErrors([error("sections/not-a-renderer")], renders)).toEqual([]);
+    expect(detectLiquidErrors([error("anything/at-all")], renders)).toEqual([]);
+    // A real renderer past the cut is dropped too (a missed error is acceptable).
+    expect(detectLiquidErrors([error("sections/s079")], renders)).toEqual([]);
+    // One inside the list still confirms.
+    expect(detectLiquidErrors([error("sections/s049")], renders)).toHaveLength(1);
+  });
+
+  it("an error with NO template name is unchanged: any renderer confirms it", () => {
+    for (const count of [1, 50, 80]) {
+      const { renders } = buildMissingSnippetIndex(renderers(count));
+      const found = detectLiquidErrors([error(null)], renders);
+      expect(found, String(count)).toHaveLength(1);
+      expect(found[0].description).toContain("sections/s000.liquid renders the snippet");
+    }
+  });
+
+  it("the worst-case index stays far below the step-output budget", () => {
+    // 50 snippets, each rendered by 60 files with the longest path the index reads.
+    const longest = (i: number) =>
+      `sections/${"p".repeat(117)}${String(i).padStart(3, "0")}.liquid`;
+    const tags = Array.from(
+      { length: 60 },
+      (_, i) => `{% render '${"n".repeat(98)}${String(i).padStart(2, "0")}' %}`,
+    ).join("\n");
+    const files = Array.from({ length: 60 }, (_, i) => file(longest(i), tags));
+    const index = buildMissingSnippetIndex(files);
+    expect(index.renders).toHaveLength(MAX_MISSING_SNIPPETS);
+    expect(index.renders.every((r) => r.renderedIn.length === MAX_RENDERING_FILES)).toBe(true);
+    expect(Buffer.byteLength(JSON.stringify(index.renders), "utf8")).toBeLessThan(
+      CORE_STEP_OUTPUT_BUDGET_BYTES / 6,
+    );
+  });
+});
+
+describe("buildMissingSnippetIndex: more missing snippets than it keeps (gc-wr81)", () => {
+  const rendering = (count: number) => [
+    file(
+      "layout/theme.liquid",
+      Array.from({ length: count }, (_, i) => `{% render 's${String(i).padStart(3, "0")}' %}`).join(
+        "\n",
+      ),
+    ),
+  ];
+
+  it.each([
+    [0, false, 0],
+    [1, false, 1],
+    [MAX_MISSING_SNIPPETS - 1, false, MAX_MISSING_SNIPPETS - 1],
+    [MAX_MISSING_SNIPPETS, false, MAX_MISSING_SNIPPETS],
+    [MAX_MISSING_SNIPPETS + 1, true, MAX_MISSING_SNIPPETS],
+    [200, true, MAX_MISSING_SNIPPETS],
+  ])("%i missing snippets: capped %s, %i kept", (count, capped, kept) => {
+    const index = buildMissingSnippetIndex(rendering(count));
+    expect(index.capped).toBe(capped);
+    expect(index.renders).toHaveLength(kept);
+  });
+
+  it("the cap is exactly 50", () => {
+    expect(MAX_MISSING_SNIPPETS).toBe(50);
+  });
+
+  it("only MISSING snippets count toward the cap", () => {
+    const files = [...rendering(MAX_MISSING_SNIPPETS + 1), file("snippets/s000.liquid", "ok")];
+    const index = buildMissingSnippetIndex(files);
+    expect(index.capped).toBe(false);
+    expect(index.renders).toHaveLength(MAX_MISSING_SNIPPETS);
+  });
+
+  it("renders in Liquid that never runs do not count toward the cap", () => {
+    const [theme] = rendering(MAX_MISSING_SNIPPETS + 30);
+    const commented = file(theme.filename, `{% comment %}${theme.content}{% endcomment %}`);
+    expect(buildMissingSnippetIndex([commented])).toEqual({ renders: [], capped: false });
+  });
+
+  it("the snippet past the cut is the one that goes unconfirmed (why the scan says capped)", () => {
+    const index = buildMissingSnippetIndex(rendering(MAX_MISSING_SNIPPETS + 1));
+    const past = { template: "layout/theme", line: 1, snippet: "s050" };
+    expect(detectLiquidErrors([past], index.renders)).toEqual([]);
+    expect(detectLiquidErrors([{ ...past, snippet: "s049" }], index.renders)).toHaveLength(1);
+  });
+});
+
+describe("buildMissingSnippetIndex: a snippet with no text body EXISTS (gc-wr81)", () => {
+  const theme = [file("layout/theme.liquid", "{% render 'foo' %}{% render 'bar' %}")];
+
+  it("without the second argument, a snippet absent from `files` reads as missing", () => {
+    expect(buildMissingSnippetIndex(theme).renders.map((r) => r.snippet)).toEqual(["bar", "foo"]);
+  });
+
+  it("a snippet named only in otherFilenames is not missing", () => {
+    expect(buildMissingSnippetIndex(theme, ["snippets/foo.liquid"]).renders).toEqual([
+      { snippet: "bar", renderedIn: ["layout/theme"] },
+    ]);
+    expect(buildMissingSnippetIndex(theme, ["snippets/foo.liquid", "snippets/bar.liquid"])).toEqual(
+      { renders: [], capped: false },
+    );
+  });
+
+  it("a snippet whose text is empty exists too", () => {
+    expect(
+      buildMissingSnippetIndex([...theme, file("snippets/foo.liquid", "")]).renders.map(
+        (r) => r.snippet,
+      ),
+    ).toEqual(["bar"]);
+  });
+
+  it("a snippet over the render-scan size cap exists (it is only not searched)", () => {
+    const big = file("snippets/foo.liquid", " ".repeat(MAX_RENDER_SCAN_FILE_CHARS + 1));
+    expect(buildMissingSnippetIndex([...theme, big]).renders.map((r) => r.snippet)).toEqual([
+      "bar",
+    ]);
+  });
+
+  it.each([
+    ["an asset of the same name", ["assets/foo.liquid", "assets/foo.png"]],
+    ["a section of the same name", ["sections/foo.liquid"]],
+    ["a snippet of another name", ["snippets/foo-2.liquid"]],
+    ["a snippet in a subfolder", ["snippets/sub/foo.liquid"]],
+    ["not a Liquid file", ["snippets/foo.json", "snippets/foo"]],
+    ["an empty list", []],
+  ])("%s does not make the snippet exist", (_name, others) => {
+    expect(buildMissingSnippetIndex(theme, others).renders.map((r) => r.snippet)).toEqual([
+      "bar",
+      "foo",
+    ]);
+  });
+
+  it("existing snippets with no text do not count toward the cap", () => {
+    const tags = Array.from(
+      { length: 51 },
+      (_, i) => `{% render 's${String(i).padStart(2, "0")}' %}`,
+    );
+    const files = [file("layout/theme.liquid", tags.join("\n"))];
+    expect(buildMissingSnippetIndex(files).capped).toBe(true);
+    expect(buildMissingSnippetIndex(files, ["snippets/s00.liquid"]).capped).toBe(false);
+  });
+
+  it("end to end: the error is not a finding when the snippet exists without text", () => {
+    const html = page(MISSING);
+    const files = themeRendering("preloaderapp");
+    const run = (others: string[]) =>
+      detectLiquidErrors(
+        extractRenderedLiquidErrors(html),
+        buildMissingSnippetIndex(files, others).renders,
+      );
+    expect(run([])).toHaveLength(1);
+    expect(run(["snippets/preloaderapp.liquid"])).toEqual([]);
   });
 });

@@ -641,7 +641,13 @@ describe("Scan pipeline — Part B: Inngest scan-theme function (process → com
     it("fetches theme files using the admin client for the correct theme", async () => {
       await runScanThemeFn();
 
-      expect(mockFetchThemeFiles).toHaveBeenCalledWith(expect.anything(), THEME_ID, SHOP_DOMAIN);
+      expect(mockFetchThemeFiles).toHaveBeenCalledWith(
+        expect.anything(),
+        THEME_ID,
+        SHOP_DOMAIN,
+        // gc-wr81: the scan also asks for the names of files returned without text.
+        { onFileWithoutText: expect.any(Function) },
+      );
     });
 
     it("passes the fetched files to the scan engine", async () => {

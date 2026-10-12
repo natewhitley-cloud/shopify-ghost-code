@@ -200,7 +200,10 @@ export class ThemeTooLargeError extends Error {
  * Fetch every text file in a theme, handling cursor-based pagination.
  *
  * - Uses `first: 250` per page (maximum allowed).
- * - Skips files whose body has no text content (binary assets, etc.).
+ * - Skips files whose body has no text content (binary assets, or any file
+ *   Shopify returns as base64 or by URL instead of as text). Their names are
+ *   reported to `onFileWithoutText`, for a caller that needs to know the file
+ *   EXISTS even though its text is not here.
  * - Backs off automatically when the rate-limit headroom falls below 100 pts.
  *
  * @param admin    Shopify admin API context (from authenticate.admin or offline token).
@@ -212,12 +215,15 @@ export async function fetchThemeFiles(
   admin: AdminApiContext,
   themeId: string,
   shopDomain?: string,
-  { maxTotalBytes = MAX_THEME_TOTAL_TEXT_BYTES }: { maxTotalBytes?: number } = {},
+  {
+    maxTotalBytes = MAX_THEME_TOTAL_TEXT_BYTES,
+    onFileWithoutText,
+  }: { maxTotalBytes?: number; onFileWithoutText?: (filename: string) => void } = {},
 ): Promise<ThemeFile[]> {
   const PAGE_SIZE = 250;
   let totalBytes = 0;
 
-  type ThemeFileNode = { filename: string; body?: { content?: string } };
+  type ThemeFileNode = { filename: string; body?: { content?: string | null } | null };
 
   return paginateConnection<ThemeFileNode, ThemeFile>({
     admin,
@@ -250,7 +256,10 @@ export async function fetchThemeFiles(
     },
     // body is a union type; only OnlineStoreThemeFileBodyText has content.
     mapNode: (node) => {
-      if (typeof node.body?.content !== "string") return [];
+      if (typeof node.body?.content !== "string") {
+        onFileWithoutText?.(node.filename);
+        return [];
+      }
       totalBytes += node.body.content.length;
       // Throwing here aborts pagination before the next page is requested.
       if (totalBytes > maxTotalBytes) {

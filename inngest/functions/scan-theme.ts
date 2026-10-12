@@ -961,6 +961,7 @@ export const scanTheme = inngest.createFunction(
         scannableTextBytes,
         enabledEmbedApps,
         missingSnippetRenders,
+        missingSnippetsCapped,
         appsWithEnabledEmbed,
         themeInfo,
       } = await step.run("fetch-and-scan", async () => {
@@ -977,8 +978,14 @@ export const scanTheme = inngest.createFunction(
         const { logger } = await import("../../app/lib/logger.server");
         const themeFetchStart = Date.now();
         let files: Awaited<ReturnType<typeof fetchThemeFiles>>;
+        // Theme files that exist but are not in `files` (their body was not
+        // returned as text). Names only, and only for this step: the Liquid
+        // error check must not take such a snippet for a missing one (gc-wr81).
+        const filenamesWithoutText: string[] = [];
         try {
-          files = await fetchThemeFiles(admin, themeId, shop.domain);
+          files = await fetchThemeFiles(admin, themeId, shop.domain, {
+            onFileWithoutText: (filename) => filenamesWithoutText.push(filename),
+          });
         } catch (err) {
           // gc-8s2: an over-ceiling theme is deterministic, so a retry would only
           // refetch up to the cap again. Fail the scan once; the outer catch
@@ -1195,6 +1202,10 @@ export const scanTheme = inngest.createFunction(
 
         // Signature names of apps with an ENABLED theme app embed (small).
         const embedApps = [...enabledAppEmbedApps(files)].sort();
+        // Built only while the storefront audit is live (see the keys below).
+        const missingSnippets = isScriptTagSunsetLive()
+          ? buildMissingSnippetIndex(files, filenamesWithoutText)
+          : null;
         const output = {
           findingCount: themeFindings.length,
           fileCount: files.length,
@@ -1242,10 +1253,17 @@ export const scanTheme = inngest.createFunction(
           // Snippets this theme renders but does not contain, with the files
           // that render them (gc-i6du): what confirms a missing-snippet Liquid
           // error read from the homepage in the storefront step below. Small
-          // and bounded (at most 50 snippets x 10 files). Like the key above,
-          // present ONLY while the storefront audit is live.
-          ...(isScriptTagSunsetLive()
-            ? { missingSnippetRenders: buildMissingSnippetIndex(files) }
+          // and bounded: at most 50 snippets x 50 files of at most ~130
+          // characters each, about 350 KB against the 3 MB budget below.
+          // `missingSnippetsCapped` = the theme has more missing snippets than
+          // the 50 listed, so the check is recorded as capped (gc-wr81). Like
+          // the key above, both are present ONLY while the storefront audit
+          // is live.
+          ...(missingSnippets
+            ? {
+                missingSnippetRenders: missingSnippets.renders,
+                missingSnippetsCapped: missingSnippets.capped,
+              }
             : {}),
           // App-removal detection (gc-frda) records this as the scan's embed
           // live hooks. null = settings_data.json not observed (missing,
@@ -1985,6 +2003,14 @@ export const scanTheme = inngest.createFunction(
         // gc-747u: the bulk-redirect tally outgrew its step-boundary budget, so
         // bulk patterns were not checked this scan.
         [redirectResult.capped, FindingType.GHOST_REDIRECT],
+        // gc-wr81: the theme has more missing snippets than the index keeps, so
+        // an error naming one past the cut could not be confirmed. Only when
+        // the Liquid check actually ran: an unreadable storefront is recorded
+        // as unreachable (below), a failed or dark check as not run.
+        [
+          missingSnippetsCapped === true && scriptTagResult.liquidAudited === true,
+          FindingType.LIQUID_ERROR_RENDERED,
+        ],
       ]);
 
       // Categories whose check could not run because the public storefront could

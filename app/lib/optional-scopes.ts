@@ -89,7 +89,10 @@ export function optionalScopeUnlocks(scope: OptionalScope, brokenLinksIncluded: 
  *   - DANGLING_REFERENCE                             → read_products + read_content (either unlocks part)
  *   - SCRIPT_TAG_SUNSET, LIQUID_ERROR_RENDERED      → none: never scope-skipped, only
  *                                                      `unreachableCategories` (storefront
- *                                                      unreadable); listed for its label
+ *                                                      unreadable) and, for
+ *                                                      LIQUID_ERROR_RENDERED, also
+ *                                                      `cappedCategories` (gc-wr81);
+ *                                                      listed for its label
  *
  * The `optional-scopes.test.ts` drift guard reads the scan engine and asserts
  * every category it can emit into `skippedCategories`, `cappedCategories`

@@ -221,3 +221,27 @@ describe("optionalScopeUnlocks (plan-aware copy)", () => {
     }
   });
 });
+
+// gc-wr81: the Liquid error check can be cut short by a size cap (more missing
+// snippets than its index keeps), so the scan engine emits it into
+// `cappedCategories` and the size-cap notice needs its label.
+describe("LIQUID_ERROR_RENDERED as a capped category (gc-wr81)", () => {
+  it("the scan engine's cappedCategories builder emits it", () => {
+    const src = readFileSync(
+      fileURLToPath(new URL("../../inngest/functions/scan-theme.ts", import.meta.url)),
+      "utf8",
+    );
+    const block = src.match(
+      /const cappedCategories:\s*string\[\]\s*=\s*flaggedCategories\(\[([\s\S]*?)\]\);/,
+    );
+    expect(block).not.toBeNull();
+    expect(block![1]).toContain("FindingType.LIQUID_ERROR_RENDERED");
+  });
+
+  it("is labeled with the check's name, and names no scope (it is never a permission gap)", () => {
+    expect(skippedCategoryLabels(["LIQUID_ERROR_RENDERED"])).toEqual([
+      "Liquid errors on your homepage",
+    ]);
+    expect(SKIPPABLE_CATEGORY_INFO.LIQUID_ERROR_RENDERED.scopes).toEqual([]);
+  });
+});

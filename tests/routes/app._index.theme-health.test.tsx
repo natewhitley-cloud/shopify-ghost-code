@@ -211,7 +211,7 @@ function sectionOf(html: string): string {
 
 const UNREACHABLE =
   "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.";
-const NOT_RUN = "Not checked on your last scan. Run a new scan.";
+const NOT_RUN = "Not checked on your last scan. Run a new scan to try again.";
 const MALICIOUS_UNCHECKED = "Some checks couldn't run, including the check for malicious code.";
 const LIBRARY =
   "Your store has 3 themes. Shopify allows 20 (more on Plus). In their last scans: Old Debut: 14 findings.";
