@@ -14,6 +14,7 @@ import {
   type HealthCategoryKey,
   type HealthCoverageInput,
   healthCostLine,
+  partitionHealthRows,
   type HealthRow,
   MAX_NAMED_UNPUBLISHED_THEMES,
   THEME_LIBRARY_LIMIT,
@@ -844,5 +845,71 @@ describe("the checklist is a plain list", () => {
     for (const row of free) {
       if (row.href) expect(row.href).toBe("/app/scans/scan-1");
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// End to end: the real checklist through the real fold
+// ---------------------------------------------------------------------------
+
+describe("buildThemeHealthChecklist -> partitionHealthRows", () => {
+  const t = (id: string, role: string) => ({
+    id,
+    name: `Theme ${id}`,
+    role,
+    lastScanFindingCount: null,
+  });
+  const THEMES = [t("1", "MAIN"), t("2", "UNPUBLISHED")];
+  const CATEGORY_KEYS = HEALTH_CATEGORIES.map((c) => c.key as string);
+
+  it("a fully checked scan with no findings: every category but malicious folds", () => {
+    const rows = buildThemeHealthChecklist(input({ themes: THEMES }));
+    const { visible, folded } = partitionHealthRows(rows);
+
+    expect(folded.map((r) => r.key)).toEqual(CATEGORY_KEYS.filter((k) => k !== "malicious"));
+    for (const row of folded) expect(row.status, row.key).toBe("clean");
+    expect(visible.map((r) => r.key)).toEqual(["malicious", "theme", "unpublished-themes"]);
+    expect([...visible, ...folded]).toHaveLength(rows.length);
+  });
+
+  const without = (...types: string[]) =>
+    new Set(ALL_TYPES.filter((t) => !types.includes(t)) as string[]);
+
+  it.each<[string, Partial<HealthCoverageInput>, string[]]>([
+    ["a size cap", { cappedCategories: ["GHOST_REDIRECT"] }, ["store-data"]],
+    [
+      "storefront unreadable",
+      { unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"] },
+      ["liquid-errors", "script-tag-deadline"],
+    ],
+    [
+      "a check the scan did not run",
+      { liveTypes: without("LIQUID_ERROR_RENDERED") },
+      ["liquid-errors"],
+    ],
+    ["a missing permission", { skippedCategories: ["GHOST_TRANSLATION"] }, ["store-data"]],
+    ["no live set recorded (legacy)", { liveTypes: null }, CATEGORY_KEYS],
+  ])("%s: nothing but a clean row folds", (_name, coverage, unchecked) => {
+    const rows = buildThemeHealthChecklist(
+      input({ themes: THEMES, coverage: { ...FULL_COVERAGE, ...coverage } }),
+    );
+    const { visible, folded } = partitionHealthRows(rows);
+
+    for (const row of folded) {
+      expect(row.status, row.key).toBe("clean");
+      expect(row.detail, row.key).toBeNull();
+    }
+    // The rows the gap touches are not clean, and each one stays visible.
+    for (const key of unchecked) {
+      const row = rowOf(rows, key as HealthRow["key"])!;
+      expect(row.status, key).not.toBe("clean");
+      expect(visible, key).toContain(row);
+      expect(folded.map((r) => r.key)).not.toContain(key);
+    }
+    // Every row that is not clean is visible, with its reason.
+    for (const row of rows.filter((r) => r.status !== "clean")) {
+      expect(visible, row.key).toContain(row);
+    }
+    expect([...visible, ...folded]).toHaveLength(rows.length);
   });
 });

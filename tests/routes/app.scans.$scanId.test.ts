@@ -2491,6 +2491,11 @@ describe("app.scans.$scanId loader", () => {
         /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><s-heading>Preview: Top 5 Findings/,
       );
       expect(html).not.toMatch(/Ignore this finding|Ignore all from|name="findingId"/);
+      // The summary above it is a white card too, not an <s-card> on the grey page.
+      expect(html).toMatch(
+        /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><s-heading>\d+ findings detected<\/s-heading>/,
+      );
+      expect(html).not.toMatch(/<s-card><s-stack[^>]*><s-heading>\d+ findings detected/);
       // The block sits above the preview list.
       expect(html.indexOf("Start here")).toBeLessThan(html.indexOf("Preview: Top 5 Findings"));
     });
@@ -2516,6 +2521,15 @@ describe("app.scans.$scanId loader", () => {
       expect(html).toMatch(
         /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><div style="[^"]*"><h2 class="scan-section-title">Findings<\/h2>/,
       );
+      // The items' vertical padding is a stylesheet rule, declared before the
+      // edge rules that zero it on the first and last item.
+      const base = html.indexOf(".findings-list > li { padding: 16px 0; }");
+      const first = html.indexOf(".findings-list > li:first-child { padding-top: 0; }");
+      const last = html.indexOf(".findings-list > li:last-child { padding-bottom: 0; }");
+      expect(base).toBeGreaterThan(-1);
+      expect(first).toBeGreaterThan(base);
+      expect(last).toBeGreaterThan(base);
+      expect(html).not.toContain("!important");
       // Paid rows carry the ignore controls.
       expect(html.match(/>Ignore this finding</g)).toHaveLength(MANY.length);
       expect(html.indexOf("Start here")).toBeLessThan(html.indexOf(">Findings</h2>"));
@@ -3396,6 +3410,23 @@ describe("FindingRow — list item that cannot overflow", () => {
     expect(html).not.toContain("findings-table");
   });
 
+  it("shows no line for a finding that is not in a file (stored with line 0)", () => {
+    const page = { ...FINDING_ONE, findingType: "GHOST_PAGE", filename: "page:old-landing" };
+    for (const lineNumber of [0, null, undefined]) {
+      const html = renderFindingItem({ ...page, lineNumber }, PAID);
+      expect(html, String(lineNumber)).not.toMatch(/Line/);
+    }
+    // A real line still shows.
+    expect(renderFindingItem({ ...page, lineNumber: 7 }, PAID)).toContain("<span>Line 7</span>");
+  });
+
+  it("the item carries no inline padding, so the list's edge rules apply", () => {
+    const html = renderFindingItem(TRACKER, PAID);
+    const itemStyle = html.match(/^<ul><li [^>]*?style="([^"]*)"/)?.[1];
+    expect(itemStyle).toBeTruthy();
+    expect(itemStyle).not.toContain("padding");
+  });
+
   it("renders type, app, file, line, severity, snippet and removal text, each labelled in text", () => {
     const html = renderFindingItem(TRACKER, PAID);
     // Type and app are the title; the app and severity are named for screen readers.
@@ -3517,7 +3548,8 @@ describe("FindingRow — list item that cannot overflow", () => {
     expect(renderFindingItem({ ...FINDING_ONE, id: undefined }, PAID)).not.toContain("<form");
     // Already ignored: the note and the manage link, not the buttons.
     const ignored = renderFindingItem({ ...FINDING_ONE, isIgnored: true }, PAID);
-    expect(ignored).toContain(">Ignored</span>");
+    expect(ignored).toContain(">Ignored</span>. Excluded from finding counts. ");
+    expect(ignored).not.toContain("\u2014");
     expect(ignored).toContain('href="/app/ignored"');
     expect(ignored).not.toContain("Ignore this finding");
   });

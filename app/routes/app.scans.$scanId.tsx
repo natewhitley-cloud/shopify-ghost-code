@@ -585,7 +585,7 @@ function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
   if (finding.isIgnored) {
     return (
       <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
-        <span style={{ fontWeight: 600, color: COLOR_SUCCESS }}>Ignored</span> — excluded from
+        <span style={{ fontWeight: 600, color: COLOR_SUCCESS }}>Ignored</span>. Excluded from
         finding counts. <Link to="/app/ignored">Manage ignored findings</Link>
       </div>
     );
@@ -792,7 +792,7 @@ export function FindingRow({
             <code style={findingWrap}>{finding.filename}</code>
           )}
         </span>
-        <span>Line {finding.lineNumber}</span>
+        {finding.lineNumber > 0 && <span>Line {finding.lineNumber}</span>}
         {themeEditorUrl && (
           <a href={themeEditorUrl} target="_top" rel="noreferrer">
             Open in theme editor
@@ -872,7 +872,6 @@ const findingItem: React.CSSProperties = {
   display: "flex",
   flexDirection: "column",
   gap: "8px",
-  padding: "16px 0",
 };
 
 const findingTitleRow: React.CSSProperties = {
@@ -939,10 +938,12 @@ const findingActions: React.CSSProperties = {
 };
 
 // Dividers and edge padding depend on an item's position, so they live here
-// rather than in the inline item style.
+// rather than in the inline item style. The base vertical padding lives here
+// too: an inline padding would beat the edge rules below.
 const FINDINGS_LIST_STYLES = `
   .findings-list { list-style: none; margin: 0; padding: 0; min-width: 0; }
   .findings-list > li + li { border-top: 1px solid ${TABLE_BORDER_LIGHT}; }
+  .findings-list > li { padding: 16px 0; }
   .findings-list > li:first-child { padding-top: 0; }
   .findings-list > li:last-child { padding-bottom: 0; }
 `;
@@ -951,7 +952,11 @@ const FINDINGS_LIST_STYLES = `
 function FindingsTable({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <style>{FINDINGS_LIST_STYLES}</style>
+      {/* Set as raw HTML: as a text child, React's server render escapes the
+          ">" in the child selectors, and a <style> does not decode "&gt;", so
+          those rules would not apply until the page hydrates. The string is a
+          constant. */}
+      <style dangerouslySetInnerHTML={{ __html: FINDINGS_LIST_STYLES }} />
       <ul className="findings-list">{children}</ul>
     </>
   );
@@ -2610,7 +2615,7 @@ export default function ScanDetail() {
             /* Free tier with findings: summary + up to 5 preview rows + upgrade prompt */
             <>
               {/* Summary header: total count + category breakdown */}
-              <s-card>
+              <div style={{ ...sectionCard, marginBottom: 0 }}>
                 <s-stack direction="block" gap="base">
                   <s-heading>
                     {freeScope
@@ -2632,7 +2637,7 @@ export default function ScanDetail() {
                       ))}
                   </s-stack>
                 </s-stack>
-              </s-card>
+              </div>
 
               {/* Preview rows (gc-97k.10), shown as a short findings list. None when
                 every finding is a plan-withheld type (a downgraded shop's Broken
