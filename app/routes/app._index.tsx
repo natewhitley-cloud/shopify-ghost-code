@@ -59,6 +59,7 @@ import {
   summaryNoticeLead,
   summaryOptInBody,
 } from "../lib/summary-email-copy";
+import { maliciousHealthRow } from "../lib/theme-health";
 import type { HealthRow } from "../lib/theme-health";
 import { toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
@@ -201,6 +202,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       summaryNotice: null as SummaryNotice | null,
       summaryOptIn: null as SummaryOptInPrompt | null,
       themeHealth: [] as HealthRow[],
+      maliciousHealth: null as HealthRow | null,
     };
   }
 
@@ -564,6 +566,18 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // The theme list is already loaded for Standard and Professional (the
   // picker); Free reads it here, through the same 60s cache, and a failed read
   // only drops the unpublished-themes row.
+  //
+  // Known malicious code is the exception to "ignore-filtered counts": its
+  // count is what the scan FOUND, ignored findings included (the scan page's
+  // security alert lists them regardless of ignores too), so an ignored
+  // malicious finding can never read "Clean" here. It comes from `typeCounts`,
+  // the unfiltered per-type groupBy already loaded above for a successful
+  // latest scan: no extra query. The critical line is built from that count
+  // alone, outside loadThemeHealth, so it shows even when the checklist
+  // fails or has no rows. Same on every plan.
+  const maliciousCount = typeCounts?.MALICIOUS_SCRIPT ?? 0;
+  const maliciousHealth: HealthRow | null =
+    hasResults && latestSuccessful ? maliciousHealthRow(latestSuccessful.id, maliciousCount) : null;
   let themeHealth: HealthRow[] = [];
   if (hasResults && latestSuccessful && latestTypeCounts) {
     const themesForHealth: ThemeSummary[] | null = shouldFetchThemes
@@ -580,7 +594,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     themeHealth = await loadThemeHealth({
       shop,
       scan: latestSuccessful,
-      typeCounts: latestTypeCounts,
+      typeCounts: { ...latestTypeCounts, MALICIOUS_SCRIPT: maliciousCount },
       mainThemeId: mainTheme?.id ?? null,
       themes: themesForHealth,
       now,
@@ -629,6 +643,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     summaryNotice,
     summaryOptIn,
     themeHealth,
+    maliciousHealth,
   };
 };
 
@@ -1051,6 +1066,7 @@ export default function Dashboard() {
     summaryNotice,
     summaryOptIn,
     themeHealth,
+    maliciousHealth,
   } = useLoaderData<typeof loader>();
   const fetcher = useFetcher<typeof action>();
   const dismissFetcher = useFetcher<typeof action>();
@@ -1849,7 +1865,9 @@ export default function Dashboard() {
 
             {/* Theme health (gc-i6du): what the scan checked and found, by
               category. A plain list: no score, no percentage. */}
-            {hasResults && latestScan && <ThemeHealthChecklist rows={themeHealth} />}
+            {hasResults && latestScan && (
+              <ThemeHealthChecklist rows={themeHealth} malicious={maliciousHealth} />
+            )}
 
             {/* Findings Trend — feature-flagged, paid plans only */}
             <HealthScoreTrendChart

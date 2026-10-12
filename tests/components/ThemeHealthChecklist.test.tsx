@@ -19,9 +19,9 @@ import {
 import { groupHealthRows, HEALTH_CATEGORIES } from "../../app/lib/theme-health";
 import type { HealthRow } from "../../app/lib/theme-health";
 
-function render(rows?: HealthRow[]): string {
+function render(rows?: HealthRow[], malicious?: HealthRow | null): string {
   const Stub = createRoutesStub([
-    { path: "/app", Component: () => <ThemeHealthChecklist rows={rows} /> },
+    { path: "/app", Component: () => <ThemeHealthChecklist rows={rows} malicious={malicious} /> },
   ]);
   return renderToStaticMarkup(<Stub initialEntries={["/app"]} />);
 }
@@ -728,5 +728,31 @@ describe("ThemeHealthChecklist", () => {
     const html = render(MIXED);
     expect(html).not.toMatch(/%|\bscore\b|\bgrade\b|out of|\b\d+ of \d+\b/i);
     expect(html).not.toContain("—");
+  });
+});
+
+// Reviewer L1 + L3: the malicious line can be passed on its own, built from
+// the scan's count, and wins over whatever the rows say.
+describe("ThemeHealthChecklist: malicious line passed independently of the rows", () => {
+  it("renders the critical line alone when there are no rows", () => {
+    const html = render([], MALICIOUS_ISSUES);
+    expect(html).toContain('<section aria-labelledby="theme-health-heading"');
+    expect(html).toContain('<s-badge tone="critical">2 issues</s-badge>');
+    expect(html).toContain(">Known malicious code</strong>");
+    expect(html).toContain(MALICIOUS_DETAIL);
+    expect(html).toContain('href="/app/scans/scan-1"');
+    expect(html).not.toContain("<dl");
+  });
+
+  it("does not name malicious under Clean when the rows say clean but the line is passed", () => {
+    const html = render([MALICIOUS, THEME_OS2], MALICIOUS_ISSUES);
+    expect(html).toContain('<s-badge tone="critical">2 issues</s-badge>');
+    expect(html).not.toContain(">Clean</dt>");
+    expect(html.match(/Known malicious code/g)).toHaveLength(2); // label + link aria-label
+  });
+
+  it("null or omitted: nothing changes", () => {
+    expect(render([MALICIOUS, THEME_OS2], null)).toBe(render([MALICIOUS, THEME_OS2]));
+    expect(render([], null)).toBe("");
   });
 });

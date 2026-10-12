@@ -531,9 +531,37 @@ function unpublishedThemesRow(themes: readonly ThemeInventoryItem[] | null): Hea
   };
 }
 
+/**
+ * Home's critical "known malicious code" line: the malicious category's row for
+ * a scan in which `count` MALICIOUS_SCRIPT findings were found, or null when
+ * there are none. `count` is what the scan FOUND, ignored findings included
+ * (the same rule as the scan page's security alert): ignoring a malicious
+ * finding does not take the code out of the theme. Built on its own, from the
+ * count alone, so Home can show it even when the checklist rows are missing.
+ * The same row buildThemeHealthChecklist emits for that count, on every plan.
+ */
+export function maliciousHealthRow(scanId: string, count: number): HealthRow | null {
+  if (count <= 0) return null;
+  const category = HEALTH_CATEGORIES.find((c) => c.key === "malicious")!;
+  const counts: TypeCounts = { MALICIOUS_SCRIPT: count };
+  return {
+    key: category.key,
+    label: category.label,
+    checks: category.checks,
+    status: "issues",
+    statusLabel: issuesLabel(count),
+    count,
+    detail: healthCostLine(category.key, counts, { scriptTagsStopped: false }),
+    href: findingsHref(scanId, category.key, counts, false),
+  };
+}
+
 export interface ThemeHealthInput {
   scanId: string;
-  /** The scan's (ignore-filtered) finding counts per type. */
+  /**
+   * The scan's (ignore-filtered) finding counts per type. MALICIOUS_SCRIPT is
+   * the exception: callers pass what the scan found, ignored findings included.
+   */
   typeCounts: TypeCounts;
   coverage: HealthCoverageInput;
   /** True when the plan shows the full finding list (Standard, Professional). */
@@ -630,7 +658,8 @@ export interface HealthRowGroups {
   /**
    * The malicious-code row, ONLY when it has findings (status "issues"); null
    * otherwise. Security findings are never hidden: Home has no other place
-   * that names known malicious code on its own.
+   * that names known malicious code on its own. The row passed to
+   * groupHealthRows wins over the one in `rows`.
    */
   malicious: HealthRow | null;
 }
@@ -647,15 +676,22 @@ export interface HealthRowGroups {
  * status is exactly "clean"; "partial" and "not_checked" go to `gaps`, never
  * to `clean`. The theme and unpublished-themes rows are facts, not checks, so
  * they are never in `clean` or `gaps` whatever their status.
+ *
+ * `malicious` is the scan's malicious row built independently of `rows` (see
+ * maliciousHealthRow). When given it IS the malicious group, even with no rows
+ * at all, and known malicious code is then never named under `clean`.
  */
-export function groupHealthRows(rows: readonly HealthRow[]): HealthRowGroups {
+export function groupHealthRows(
+  rows: readonly HealthRow[],
+  malicious: HealthRow | null = null,
+): HealthRowGroups {
   const groups: HealthRowGroups = {
     theme: null,
     unpublished: null,
     clean: [],
     gaps: [],
     hasPartial: false,
-    malicious: null,
+    malicious,
   };
   for (const row of rows) {
     if (row.key === "theme") groups.theme = row;
@@ -663,8 +699,9 @@ export function groupHealthRows(rows: readonly HealthRow[]): HealthRowGroups {
     else if (!CATEGORY_KEYS.has(row.key)) continue;
     else if (row.status === "clean") groups.clean.push(row);
     else if (row.status === "partial" || row.status === "not_checked") groups.gaps.push(row);
-    else if (row.key === "malicious" && row.status === "issues") groups.malicious = row;
+    else if (row.key === "malicious" && row.status === "issues") groups.malicious ??= row;
   }
+  if (groups.malicious) groups.clean = groups.clean.filter((row) => row.key !== "malicious");
   groups.hasPartial = groups.gaps.some((row) => row.status === "partial");
   return groups;
 }

@@ -117,8 +117,9 @@ function Group({
  * A check that FOUND something is not here at all: its findings are in the
  * lanes, and repeating them would duplicate the card above. The exception is
  * known malicious code with findings, shown first as a critical line (see
- * MaliciousLine). groupHealthRows decides the groups; only a row whose status
- * is exactly "clean" is named under Clean.
+ * MaliciousLine). Home passes that line as `malicious`, built from the scan's
+ * count alone, so it shows even when `rows` is empty. groupHealthRows decides
+ * the groups; only a row whose status is exactly "clean" is named under Clean.
  *
  * Deliberately names only: NO score, grade, percentage, count of clean checks
  * or "x of y" summary (the 0-100 health score was removed in gc-k2ub).
@@ -129,8 +130,17 @@ function Group({
  * Accessibility: a labelled region with a real heading and a description
  * list. Not a live region: Home revalidates every 3s while a scan runs.
  */
-export function ThemeHealthChecklist({ rows = [] }: { rows?: readonly HealthRow[] }) {
-  const { theme, unpublished, clean, gaps, hasPartial, malicious } = groupHealthRows(rows);
+export function ThemeHealthChecklist({
+  rows = [],
+  malicious: maliciousRow = null,
+}: {
+  rows?: readonly HealthRow[];
+  malicious?: HealthRow | null;
+}) {
+  const { theme, unpublished, clean, gaps, hasPartial, malicious } = groupHealthRows(
+    rows,
+    maliciousRow,
+  );
   const themeText = theme ? themeLine(theme) : null;
   const unpublishedText = unpublished?.detail ?? null;
   const hasTheme = Boolean(themeText) || Boolean(unpublishedText);

@@ -107,6 +107,7 @@ import {
 } from "../../app/models/scan.server";
 import { getOrCreateShopMetadata } from "../../app/models/shop.server";
 import Dashboard, { loader } from "../../app/routes/app._index";
+import { getFilteredFindingSummaryAndKept } from "../../app/services/finding-aggregation.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
@@ -116,6 +117,7 @@ const mockAuth = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetOrCreate = getOrCreateShopMetadata as ReturnType<typeof vi.fn>;
 const mockScans = getScansForShop as ReturnType<typeof vi.fn>;
 const mockTypeCounts = getTypeCountsForScan as ReturnType<typeof vi.fn>;
+const mockFiltered = getFilteredFindingSummaryAndKept as ReturnType<typeof vi.fn>;
 const mockFetchAllThemes = fetchAllThemes as ReturnType<typeof vi.fn>;
 const mockThemeCounts = getLatestScanFindingCountsByTheme as ReturnType<typeof vi.fn>;
 
@@ -651,6 +653,153 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       expect(html).not.toMatch(/health score|out of 100|\/ ?100/i);
     },
   );
+
+  // Reviewer L1 + L3: Home's malicious line is driven by what the scan FOUND
+  // (ignored findings included, like the scan page's security alert), and is
+  // built outside loadThemeHealth so a checklist failure cannot drop it.
+  describe("known malicious code: ignores and checklist failures", () => {
+    const MALICIOUS_DETAIL_2 =
+      "2 pieces of code from a known malicious source are in your theme. It can steal shopper data or send your customers to other sites.";
+
+    /** The shop has ignores; `kept` of the scan's malicious findings are NOT ignored. */
+    function ignoreMalicious(found: number, kept: number) {
+      // Unfiltered groupBy: what the scan found.
+      mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, MALICIOUS_SCRIPT: found });
+      (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+        fingerprints: new Set(["fp-malicious"]),
+        appNames: new Set(),
+      });
+      // Ignore-filtered summary, as getFilteredFindingSummaryAndKept returns it:
+      // ignored findings are not counted in byType.
+      mockFiltered.mockResolvedValue({
+        summary: {
+          total: 7 + kept,
+          bySeverity: { HIGH: 3 + kept, MEDIUM: 3, LOW: 1 },
+          byType: { ...TYPE_COUNTS, MALICIOUS_SCRIPT: kept },
+        },
+        keptFindings: [],
+      });
+    }
+
+    function expectCriticalLine(section: string, statusLabel: string, detail: string) {
+      expect(section).toContain(`<s-badge tone="critical">${statusLabel}</s-badge>`);
+      expect(section).toContain(">Known malicious code</strong>");
+      expect(section).toContain(detail);
+      expect(section).toMatch(
+        /<a aria-label="View findings: Known malicious code" href="\/app\/scans\/scan-1"[^>]*>View findings<\/a>/,
+      );
+      // First in the section: before the groups, when there are any.
+      if (section.includes("<dl")) {
+        expect(section.indexOf("<s-badge")).toBeLessThan(section.indexOf("<dl"));
+      }
+    }
+
+    it.each(["free", "Standard", "Professional"])(
+      "%s: every malicious finding ignored -> the critical line still renders, and Clean does not name it",
+      async (plan) => {
+        setPlan(plan);
+        ignoreMalicious(2, 0);
+        const data = await runLoader();
+        expect(data.maliciousHealth).toMatchObject({
+          key: "malicious",
+          status: "issues",
+          statusLabel: "2 issues",
+          count: 2,
+          detail: MALICIOUS_DETAIL_2,
+          href: "/app/scans/scan-1",
+        });
+        // The checklist row agrees: never "Clean" for a scan that found some.
+        expect(rowOf(data.themeHealth, "malicious")).toEqual(data.maliciousHealth);
+        // Every OTHER row still uses the ignore-filtered counts.
+        expect(rowOf(data.themeHealth, "scripts-styles")!.statusLabel).toBe("4 issues");
+        const section = sectionOf(renderDashboard(data));
+        expectCriticalLine(section, "2 issues", MALICIOUS_DETAIL_2);
+        expect(cleanLine(section)).not.toBeNull();
+        expect(cleanLine(section)).not.toContain("Known malicious code");
+        expect(section.match(/Known malicious code/g)).toHaveLength(2); // label + link aria-label
+        // The wording never claims the ignored findings are gone or ignored.
+        expect(section).not.toMatch(/ignored/i);
+      },
+    );
+
+    it("some malicious findings ignored -> the count is what the scan found, not what is left", async () => {
+      setPlan("Standard");
+      ignoreMalicious(2, 1);
+      const data = await runLoader();
+      expect(data.maliciousHealth).toMatchObject({ count: 2, statusLabel: "2 issues" });
+      expectCriticalLine(sectionOf(renderDashboard(data)), "2 issues", MALICIOUS_DETAIL_2);
+    });
+
+    it.each(["free", "Professional"])(
+      "%s: the checklist fails with a malicious finding -> the critical line still renders, alone",
+      async (plan) => {
+        setPlan(plan);
+        mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, MALICIOUS_SCRIPT: 1 });
+        const hostile = {
+          architecture: "os2",
+          get name(): string {
+            throw new TypeError("boom");
+          },
+        };
+        mockScans.mockResolvedValue({
+          items: [{ ...SCAN, themeInfo: hostile }],
+          hasNextPage: false,
+        });
+        const data = await runLoader();
+        expect(data.themeHealth).toEqual([]);
+        expect(logger.warn).toHaveBeenCalledWith(
+          "theme health: checklist unavailable",
+          expect.objectContaining({ errorName: "TypeError" }),
+        );
+        expect(data.maliciousHealth).toMatchObject({ count: 1, statusLabel: "1 issue" });
+        const section = sectionOf(renderDashboard(data));
+        expectCriticalLine(
+          section,
+          "1 issue",
+          "1 piece of code from a known malicious source is in your theme. It can steal shopper data or send your customers to other sites.",
+        );
+        expect(groupLabels(section)).toEqual([]);
+      },
+    );
+
+    it.each(["free", "Standard", "Professional"])(
+      "%s: no malicious findings -> no critical line, and Clean may name it",
+      async (plan) => {
+        setPlan(plan);
+        const data = await runLoader();
+        expect(data.maliciousHealth).toBeNull();
+        const section = sectionOf(renderDashboard(data));
+        expect(section).not.toContain("<s-badge");
+        expect(section).not.toContain("View findings");
+        expect(cleanLine(section)).toContain("Known malicious code");
+      },
+    );
+
+    it("ignores on other findings only: malicious stays Clean and there is no critical line", async () => {
+      ignoreMalicious(0, 0);
+      const data = await runLoader();
+      expect(data.maliciousHealth).toBeNull();
+      expect(cleanLine(sectionOf(renderDashboard(data)))).toContain("Known malicious code");
+    });
+
+    it("adds no finding query: the count comes from the per-type counts already loaded", async () => {
+      mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, MALICIOUS_SCRIPT: 3 });
+      const data = await runLoader();
+      expect(data.maliciousHealth).toMatchObject({ count: 3 });
+      expect(mockTypeCounts).toHaveBeenCalledTimes(1);
+      expect(mockTypeCounts).toHaveBeenCalledWith("scan-1");
+    });
+
+    it("no successful latest scan: no malicious line and no per-type count query", async () => {
+      mockScans.mockResolvedValue({
+        items: [{ ...SCAN, status: "FAILED", completedAt: null }],
+        hasNextPage: false,
+      });
+      const data = await runLoader();
+      expect(data.maliciousHealth).toBeNull();
+      expect(mockTypeCounts).not.toHaveBeenCalled();
+    });
+  });
 
   it("no em dashes in the section", async () => {
     const html = renderDashboard(await runLoader());

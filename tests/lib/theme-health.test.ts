@@ -15,6 +15,7 @@ import {
   type HealthCoverageInput,
   groupHealthRows,
   healthCostLine,
+  maliciousHealthRow,
   type HealthRow,
   MAX_NAMED_UNPUBLISHED_THEMES,
   THEME_LIBRARY_LIMIT,
@@ -953,5 +954,46 @@ describe("buildThemeHealthChecklist -> groupHealthRows", () => {
     expect(groups.unpublished).toBeNull();
     expect(keys(groups.gaps)).not.toContain("theme");
     expect(keys(groups.clean)).toEqual(CATEGORY_KEYS);
+  });
+});
+
+describe("maliciousHealthRow + groupHealthRows(rows, malicious)", () => {
+  const CATEGORY_KEYS = HEALTH_CATEGORIES.map((c) => c.key as string);
+  const keys = (rows: readonly HealthRow[]) => rows.map((r) => r.key as string);
+
+  it("is null for no findings and the builder's own malicious row otherwise, on every plan", () => {
+    expect(maliciousHealthRow("scan-1", 0)).toBeNull();
+    expect(maliciousHealthRow("scan-1", -1)).toBeNull();
+    for (const count of [1, 2, 7]) {
+      for (const fullList of [false, true]) {
+        const rows = buildThemeHealthChecklist(
+          input({ typeCounts: { MALICIOUS_SCRIPT: count }, fullList }),
+        );
+        expect(maliciousHealthRow("scan-1", count)).toEqual(rowOf(rows, "malicious"));
+      }
+    }
+  });
+
+  it("the given malicious row is the malicious group even with no rows at all", () => {
+    const malicious = maliciousHealthRow("scan-1", 2)!;
+    const groups = groupHealthRows([], malicious);
+    expect(groups.malicious).toBe(malicious);
+    expect(groups.clean).toEqual([]);
+  });
+
+  it("never names malicious under clean when a malicious row is given, and keeps the other clean rows", () => {
+    // Rows built from counts that excluded the (ignored) malicious findings.
+    const rows = buildThemeHealthChecklist(input());
+    expect(keys(groupHealthRows(rows).clean)).toContain("malicious");
+    const malicious = maliciousHealthRow("scan-1", 1)!;
+    const groups = groupHealthRows(rows, malicious);
+    expect(groups.malicious).toBe(malicious);
+    expect(keys(groups.clean)).toEqual(CATEGORY_KEYS.filter((k) => k !== "malicious"));
+  });
+
+  it("no malicious row given: behaves exactly as before", () => {
+    const rows = buildThemeHealthChecklist(input());
+    expect(groupHealthRows(rows, null)).toEqual(groupHealthRows(rows));
+    expect(groupHealthRows(rows).malicious).toBeNull();
   });
 });

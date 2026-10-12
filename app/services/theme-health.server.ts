@@ -47,7 +47,10 @@ const LOG_FN = "theme-health";
 export type LoadThemeHealthInput = {
   shop: { id: string; plan: string };
   scan: ThemeHealthScan;
-  /** The scan's (ignore-filtered) finding counts per type. */
+  /**
+   * The scan's (ignore-filtered) finding counts per type. MALICIOUS_SCRIPT is
+   * the exception: pass what the scan found, ignored findings included.
+   */
   typeCounts: Partial<Record<FindingType, number>>;
   /** The published theme's id; null = not known. */
   mainThemeId: string | null;
