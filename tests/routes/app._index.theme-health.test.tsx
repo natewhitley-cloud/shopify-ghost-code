@@ -621,7 +621,26 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       expect(groupLabels(section)).toEqual(["Theme"]);
       expect(section).toContain("Debut 17.14.0 by Shopify is a vintage theme");
       expect(section).toContain("Your store has 3 themes.");
-      expect(section).not.toMatch(/malicious/i);
+      // Known malicious code is the one check with findings that still shows,
+      // as a critical line with its count and a link (security is never hidden).
+      const maliciousRow = data.themeHealth.find((r) => r.key === "malicious")!;
+      expect(maliciousRow.status).toBe("issues");
+      expect(maliciousRow.count).toBeGreaterThan(0);
+      expect(section).toContain(`<s-badge tone="critical">${maliciousRow.statusLabel}</s-badge>`);
+      expect(section).toContain(">Known malicious code</strong>");
+      expect(section).toContain(maliciousRow.detail!);
+      expect(section).toMatch(
+        /<a aria-label="View findings: Known malicious code" href="\/app\/scans\/[^"]+"[^>]*>View findings<\/a>/,
+      );
+      // It is the ONLY check with findings in the section: one badge, one link,
+      // and no other category's label.
+      expect(section.match(/<s-badge/g)).toHaveLength(1);
+      expect(section.match(/<a /g)).toHaveLength(1);
+      for (const other of data.themeHealth.filter(
+        (r) => r.status === "issues" && r.key !== "malicious" && r.key !== "theme",
+      )) {
+        expect(section, other.key).not.toContain(other.label);
+      }
       for (const banned of ["/ 100", "/100", "out of 100", "%", "score", "grade"]) {
         expect(section.toLowerCase(), `the checklist must not contain "${banned}"`).not.toContain(
           banned,

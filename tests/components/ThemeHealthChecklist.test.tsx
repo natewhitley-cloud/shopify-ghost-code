@@ -104,6 +104,18 @@ const MALICIOUS = row({
   label: "Known malicious code",
   checks: "Malicious checks.",
 });
+const MALICIOUS_DETAIL =
+  "2 pieces of code from a known malicious source are in your theme. It can steal shopper data or send your customers to other sites.";
+const MALICIOUS_ISSUES = row({
+  key: "malicious",
+  label: "Known malicious code",
+  checks: "Malicious checks.",
+  status: "issues",
+  statusLabel: "2 issues",
+  count: 2,
+  detail: MALICIOUS_DETAIL,
+  href: "/app/scans/scan-1",
+});
 const LIQUID_NOT_CHECKED = row({
   key: "liquid-errors",
   label: "Liquid errors on your homepage",
@@ -174,6 +186,8 @@ describe("groupHealthRows", () => {
     expect(groups.clean).toEqual([MALICIOUS, TRACKING, STORE_DATA]);
     expect(groups.gaps).toEqual([LIQUID_NOT_CHECKED, SNIPPETS_PARTIAL]);
     expect(groups.hasPartial).toBe(true);
+    // Malicious code is clean here, so it is not the critical line.
+    expect(groups.malicious).toBeNull();
   });
 
   it("no rows: every group is empty", () => {
@@ -183,6 +197,7 @@ describe("groupHealthRows", () => {
       clean: [],
       gaps: [],
       hasPartial: false,
+      malicious: null,
     });
   });
 
@@ -205,7 +220,7 @@ describe("groupHealthRows", () => {
     },
   );
 
-  it("issues rows (the lanes' duplicates) are in no group, malicious included", () => {
+  it("issues rows (the lanes' duplicates) are in no group, except malicious code", () => {
     const rows = HEALTH_CATEGORIES.map((c) =>
       row({ key: c.key, label: c.label, status: "issues", statusLabel: "2 issues", count: 2 }),
     );
@@ -215,7 +230,36 @@ describe("groupHealthRows", () => {
       clean: [],
       gaps: [],
       hasPartial: false,
+      malicious: rows.find((r) => r.key === "malicious"),
     });
+    // Without the malicious row, a set of issues rows is in no group at all.
+    expect(groupHealthRows(rows.filter((r) => r.key !== "malicious"))).toEqual({
+      theme: null,
+      unpublished: null,
+      clean: [],
+      gaps: [],
+      hasPartial: false,
+      malicious: null,
+    });
+  });
+
+  it("malicious is set ONLY for the malicious row with status issues", () => {
+    expect(groupHealthRows([MALICIOUS_ISSUES, TRACKING]).malicious).toBe(MALICIOUS_ISSUES);
+    // It is not also clean or a gap.
+    expect(groupHealthRows([MALICIOUS_ISSUES, TRACKING]).clean).toEqual([TRACKING]);
+    expect(groupHealthRows([MALICIOUS_ISSUES, TRACKING]).gaps).toEqual([]);
+    for (const status of ["clean", "partial", "not_checked", "info"] as const) {
+      expect(groupHealthRows([{ ...MALICIOUS_ISSUES, status }]).malicious, status).toBeNull();
+    }
+    // Any other category with issues is never the critical line.
+    for (const c of HEALTH_CATEGORIES.filter((c) => c.key !== "malicious")) {
+      const other = row({ key: c.key, label: c.label, status: "issues", statusLabel: "1 issue" });
+      expect(groupHealthRows([other]).malicious, c.key).toBeNull();
+    }
+    // Nor the theme or unpublished rows.
+    expect(groupHealthRows([THEME_VINTAGE, { ...UNPUBLISHED, status: "issues" }]).malicious).toBe(
+      null,
+    );
   });
 
   it("an info row in a finding category is in no group", () => {
@@ -276,9 +320,6 @@ describe("ThemeHealthChecklist", () => {
 
   it("renders nothing when every group is empty (only checks that found something)", () => {
     expect(render([SHOPPER_ISSUES, SCRIPTS_ISSUES])).toBe("");
-    expect(
-      render([{ ...MALICIOUS, status: "issues", statusLabel: "1 issue", count: 1 } as HealthRow]),
-    ).toBe("");
     // A theme row and an unpublished row with nothing to say add no group either.
     expect(
       render([
@@ -506,24 +547,120 @@ describe("ThemeHealthChecklist", () => {
       const text = html.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'");
       expect(text.match(/\d+/g)).toEqual(["15", "2", "0", "2", "0", "3", "20"]);
     });
+  });
 
-    it("malicious code with findings is not rendered here either", () => {
-      const html = render([
-        row({
-          key: "malicious",
-          label: "Known malicious code",
-          status: "issues",
-          statusLabel: "1 issue",
-          count: 1,
-          detail: "1 piece of code from a known malicious source is in your theme.",
-          href: "/app/scans/scan-1",
-        }),
-        TRACKING,
-        THEME_OS2,
-      ]);
-      expect(html).not.toMatch(/malicious/i);
-      expect(html).not.toContain("1 issue");
+  // Security findings are never hidden: Home has no malicious-code alert of its
+  // own, so this is the one check with findings that the section still shows.
+  describe("known malicious code with findings", () => {
+    /** The critical line: everything between the intro and the list (or the section end). */
+    const criticalLine = (html: string) =>
+      html.match(/<\/p>(<div[\s\S]*?<\/div><\/div>)(?:<dl|<\/section>)/)?.[1] ?? null;
+
+    const WITH_OTHERS = [
+      MALICIOUS_ISSUES,
+      SHOPPER_ISSUES,
+      SCRIPTS_ISSUES,
+      LIQUID_NOT_CHECKED,
+      TRACKING,
+      THEME_OS2,
+    ];
+
+    it("is a critical line with its count, label, cost sentence and a link to the findings", () => {
+      const html = render(WITH_OTHERS);
+      const line = criticalLine(html)!;
+      expect(line).toBeTruthy();
+      expect(line).toContain('<s-badge tone="critical">2 issues</s-badge>');
+      expect(line).toMatch(
+        /<strong style="[^"]*color:#202223[^"]*font-weight:600[^"]*">Known malicious code<\/strong>/,
+      );
+      expect(line).toContain(MALICIOUS_DETAIL);
+      expect(line).toMatch(
+        /<a aria-label="View findings: Known malicious code" href="\/app\/scans\/scan-1"[^>]*>View findings<\/a>/,
+      );
+      // One badge, one link, in the whole section.
+      expect(html.match(/<s-badge/g)).toHaveLength(1);
+      expect(html.match(/<a /g)).toHaveLength(1);
+    });
+
+    it("the link's accessible name contains its visible text", () => {
+      const html = render(WITH_OTHERS);
+      const [, name, text] = html.match(/<a aria-label="([^"]*)"[^>]*>([^<]*)<\/a>/)!;
+      expect(text).toBe("View findings");
+      expect(name).toContain(text);
+    });
+
+    it("sits at the top of the section, above every group", () => {
+      const html = render(WITH_OTHERS);
+      expect(html.indexOf("Known malicious code")).toBeGreaterThan(
+        html.indexOf(THEME_HEALTH_INTRO),
+      );
+      expect(html.indexOf("Known malicious code")).toBeLessThan(html.indexOf("<dl"));
+      expect(groupLabels(html)).toEqual(["Theme", "Clean", "Not checked"]);
+    });
+
+    it("the other checks that found something stay absent", () => {
+      const html = render(WITH_OTHERS);
+      for (const gone of [
+        "Broken links and leftover app text",
+        "6 issues",
+        "6 pieces of leftover app text.",
+        "Leftover scripts and styles",
+        "12 issues",
+        "12 extra requests",
+        "?type=GHOST_SCRIPT",
+      ]) {
+        expect(html, `"${gone}" must not be rendered`).not.toContain(gone);
+      }
+      // Malicious code is not also named as clean.
       expect(cleanLine(html)).toBe("Tracking still running");
+    });
+
+    it("the section still renders when it is the only thing to show", () => {
+      const html = render([MALICIOUS_ISSUES, SHOPPER_ISSUES, SCRIPTS_ISSUES]);
+      expect(html).toContain('<section aria-labelledby="theme-health-heading"');
+      expect(html).toContain(THEME_HEALTH_HEADING);
+      expect(criticalLine(html)).toContain('<s-badge tone="critical">2 issues</s-badge>');
+      expect(html).toContain("Known malicious code");
+      // No empty list, and no group.
+      expect(html).not.toContain("<dl");
+      expect(groupLabels(html)).toEqual([]);
+      expect(html).not.toContain("6 issues");
+      // On its own row too.
+      expect(render([MALICIOUS_ISSUES])).toContain("Known malicious code");
+    });
+
+    it("shows no link without an href and no sentence without a detail", () => {
+      const html = render([{ ...MALICIOUS_ISSUES, href: null, detail: null }]);
+      expect(html).toContain('<s-badge tone="critical">2 issues</s-badge>');
+      expect(html).toContain("Known malicious code");
+      expect(html).not.toContain("<a");
+      expect(html).not.toContain("View findings");
+    });
+
+    it("clean malicious code is only on the Clean line: no critical line, badge or link", () => {
+      const html = render([MALICIOUS, TRACKING, THEME_OS2]);
+      expect(cleanLine(html)).toBe("Known malicious code, Tracking still running");
+      expect(html.match(/Known malicious code/g)).toHaveLength(1);
+      expect(html).not.toContain("<s-badge");
+      expect(html).not.toContain("<a");
+      expect(html).not.toContain("View findings");
+    });
+
+    it.each(["partial", "not_checked"] as const)(
+      "malicious code that was %s is a gap, not the critical line",
+      (status) => {
+        const html = render([{ ...MALICIOUS_ISSUES, status, statusLabel: "x", href: null }]);
+        expect(html).not.toContain("<s-badge");
+        expect(html).not.toContain("View findings");
+      },
+    );
+
+    it("cannot overflow a narrow screen and has no em dash", () => {
+      const html = render(WITH_OTHERS);
+      const line = criticalLine(html)!;
+      expect(line).toMatch(/^<div style="[^"]*"><div style="display:flex;flex-wrap:wrap/);
+      expect(line).not.toMatch(/[; "]width:\d|min-width:[1-9]|white-space:nowrap/);
+      expect(line).not.toContain("\u2014");
     });
   });
 

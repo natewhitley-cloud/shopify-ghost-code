@@ -627,6 +627,12 @@ export interface HealthRowGroups {
   gaps: HealthRow[];
   /** True when any gap is "partial": part of it ran and found nothing. */
   hasPartial: boolean;
+  /**
+   * The malicious-code row, ONLY when it has findings (status "issues"); null
+   * otherwise. Security findings are never hidden: Home has no other place
+   * that names known malicious code on its own.
+   */
+  malicious: HealthRow | null;
 }
 
 /**
@@ -635,7 +641,9 @@ export interface HealthRowGroups {
  * that did not (fully) run. Each group keeps the rows' existing order.
  *
  * A finding category with status "issues" is in NO group: the lanes above the
- * section already show those findings. A category is in `clean` ONLY when its
+ * section already show those findings. The one exception is malicious code
+ * with findings, which is `malicious` (the lanes only count it among other
+ * findings, and a security finding is never hidden). A category is in `clean` ONLY when its
  * status is exactly "clean"; "partial" and "not_checked" go to `gaps`, never
  * to `clean`. The theme and unpublished-themes rows are facts, not checks, so
  * they are never in `clean` or `gaps` whatever their status.
@@ -647,6 +655,7 @@ export function groupHealthRows(rows: readonly HealthRow[]): HealthRowGroups {
     clean: [],
     gaps: [],
     hasPartial: false,
+    malicious: null,
   };
   for (const row of rows) {
     if (row.key === "theme") groups.theme = row;
@@ -654,6 +663,7 @@ export function groupHealthRows(rows: readonly HealthRow[]): HealthRowGroups {
     else if (!CATEGORY_KEYS.has(row.key)) continue;
     else if (row.status === "clean") groups.clean.push(row);
     else if (row.status === "partial" || row.status === "not_checked") groups.gaps.push(row);
+    else if (row.key === "malicious" && row.status === "issues") groups.malicious = row;
   }
   groups.hasPartial = groups.gaps.some((row) => row.status === "partial");
   return groups;
