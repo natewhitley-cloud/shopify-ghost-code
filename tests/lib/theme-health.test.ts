@@ -13,6 +13,7 @@ import {
   HEALTH_CATEGORY_OF,
   type HealthCategoryKey,
   type HealthCoverageInput,
+  groupGapsByReason,
   groupHealthRows,
   healthCostLine,
   maliciousHealthRow,
@@ -20,6 +21,7 @@ import {
   MAX_NAMED_UNPUBLISHED_THEMES,
   THEME_LIBRARY_LIMIT,
   type ThemeHealthInput,
+  themeHealthVerdict,
   themeTitle,
   typesForHealthCategory,
 } from "../../app/lib/theme-health";
@@ -439,7 +441,7 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
       }),
     );
     const reason =
-      "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.";
+      "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.";
     expect(rowOf(rows, "liquid-errors")).toMatchObject({
       status: "not_checked",
       statusLabel: "Not checked",
@@ -458,7 +460,7 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
   describe("a scan that did not run a check that is on now (HIGH audit finding)", () => {
     const without = (...types: string[]) =>
       new Set(ALL_TYPES.filter((t) => !types.includes(t)) as string[]);
-    const NOT_RUN = "This wasn't checked on your last scan. Run a new scan.";
+    const NOT_RUN = "Not checked on your last scan. Run a new scan.";
 
     it("the scan's live set lacks Liquid errors (a pre-deploy scan): NOT clean, with what to do", () => {
       const rows = buildThemeHealthChecklist(
@@ -508,7 +510,7 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
       expect(rowOf(rows, "snippets-sections")).toMatchObject({
         status: "partial",
         statusLabel: "None found",
-        detail: "Part of this wasn't checked on your last scan. Run a new scan.",
+        detail: "Partly checked on your last scan. Run a new scan.",
       });
     });
 
@@ -551,8 +553,7 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
     expect(rowOf(rows, "store-data")).toMatchObject({
       status: "not_checked",
       statusLabel: "Not checked",
-      detail:
-        "Part of this needs a permission you haven't allowed yet. You can allow it in Settings.",
+      detail: "Needs a permission you haven't allowed yet. You can allow it in Settings.",
     });
   });
 
@@ -583,12 +584,22 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
     });
   });
 
+  it("any other plan-gated check: the generic sentence, with no 'this' (it sits under several names)", () => {
+    const rows = buildThemeHealthChecklist(
+      input({ coverage: { ...FULL_COVERAGE, planWithheld: ["DUPLICATE_TRACKER"] } }),
+    );
+    expect(rowOf(rows, "tracking")).toMatchObject({
+      status: "partial",
+      detail: "Checked in full on Standard and Professional.",
+    });
+  });
+
   it("a size cap: None found, with the cap as the reason", () => {
     const rows = buildThemeHealthChecklist(
       input({ coverage: { ...FULL_COVERAGE, cappedCategories: ["GHOST_REDIRECT"] } }),
     );
     expect(rowOf(rows, "store-data")!.detail).toBe(
-      "Your store has more of these than one scan checks, so part of this wasn't checked.",
+      "Your store has more of these than one scan checks, so part wasn't checked.",
     );
   });
 
@@ -603,12 +614,12 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
     );
     expect(rowOf(rows, "liquid-errors")).toMatchObject({
       status: "not_checked",
-      detail: "This is only checked on your published theme.",
+      detail: "Only checked on your published theme.",
     });
     // APP_EMBED_OFF is a theme-file check and did run.
     expect(rowOf(rows, "script-tag-deadline")).toMatchObject({
       status: "partial",
-      detail: "This is only checked on your published theme.",
+      detail: "Only checked on your published theme.",
     });
   });
 
@@ -995,5 +1006,300 @@ describe("maliciousHealthRow + groupHealthRows(rows, malicious)", () => {
     const rows = buildThemeHealthChecklist(input());
     expect(groupHealthRows(rows, null)).toEqual(groupHealthRows(rows));
     expect(groupHealthRows(rows).malicious).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Home's verdict line and action box
+// ---------------------------------------------------------------------------
+
+describe("gap reason copy: fits one check or several, and ends with the action", () => {
+  const without = (...types: string[]) =>
+    new Set(ALL_TYPES.filter((t) => !types.includes(t)) as string[]);
+
+  /** Every gap sentence the builder can emit, from a real build of each gap. */
+  const everyGapSentence = (): string[] => {
+    const coverages: Array<Partial<HealthCoverageInput>> = [
+      { unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"] },
+      { liveTypes: null },
+      { liveTypes: without("SETTINGS_DRIFT") },
+      { skippedCategories: ["GHOST_TRANSLATION"] },
+      { planWithheld: ["DANGLING_REFERENCE", "CHECKOUT_SUNSET", "DUPLICATE_TRACKER"] },
+      { liveTypes: without("LIQUID_ERROR_RENDERED"), isPublishedTheme: false },
+      { cappedCategories: ["GHOST_REDIRECT"] },
+    ];
+    const sentences = coverages.flatMap((coverage) =>
+      groupHealthRows(
+        buildThemeHealthChecklist(input({ coverage: { ...FULL_COVERAGE, ...coverage } })),
+      ).gaps.map((row) => row.detail!),
+    );
+    return [...new Set(sentences)];
+  };
+
+  it("the exact sentences", () => {
+    expect(everyGapSentence().sort()).toEqual(
+      [
+        "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.",
+        "Not checked on your last scan. Run a new scan.",
+        "Partly checked on your last scan. Run a new scan.",
+        "Needs a permission you haven't allowed yet. You can allow it in Settings.",
+        "Broken links are checked on Standard and Professional.",
+        "Old checkout code is checked on Standard and Professional.",
+        "Checked in full on Standard and Professional.",
+        "Only checked on your published theme.",
+        "Your store has more of these than one scan checks, so part wasn't checked.",
+      ].sort(),
+    );
+  });
+
+  it("no sentence points at one row ('this'), and none has an em dash or a digit", () => {
+    for (const sentence of everyGapSentence()) {
+      expect(sentence, sentence).not.toMatch(/\bthis\b/i);
+      expect(sentence, sentence).not.toMatch(/\u2014|\d/);
+    }
+  });
+});
+
+describe("themeHealthVerdict", () => {
+  const cat = (key: HealthRow["key"], status: HealthRow["status"]): HealthRow => ({
+    key,
+    label: HEALTH_CATEGORIES.find((c) => c.key === key)?.label ?? String(key),
+    checks: "",
+    status,
+    statusLabel: status,
+    count: status === "issues" ? 2 : 0,
+    detail: status === "clean" ? null : "Why.",
+    href: null,
+  });
+  const verdict = (rows: HealthRow[], malicious: HealthRow | null = null) =>
+    themeHealthVerdict(groupHealthRows(rows, malicious));
+
+  const CLEAN = "Nothing malicious found.";
+  const UNCHECKED = "Some checks couldn't run, including the check for malicious code.";
+  const GAPS = "Nothing malicious found. Some checks couldn't run.";
+  const PARTIAL = "Nothing malicious found. Some checks only partly ran.";
+
+  it("malicious clean and no gaps: green, 'Nothing malicious found.'", () => {
+    expect(verdict([cat("malicious", "clean"), cat("tracking", "clean")])).toEqual({
+      tone: "ok",
+      text: CLEAN,
+    });
+    // Checks that found something are the lanes' job: they do not change it.
+    expect(verdict([cat("malicious", "clean"), cat("tracking", "issues")])).toEqual({
+      tone: "ok",
+      text: CLEAN,
+    });
+  });
+
+  it("malicious clean and a check that did not run: amber, 'couldn't run'", () => {
+    expect(verdict([cat("malicious", "clean"), cat("liquid-errors", "not_checked")])).toEqual({
+      tone: "warn",
+      text: GAPS,
+    });
+    // A mix of not checked and partly checked is still "couldn't run".
+    expect(
+      verdict([
+        cat("malicious", "clean"),
+        cat("liquid-errors", "not_checked"),
+        cat("script-tag-deadline", "partial"),
+      ]),
+    ).toEqual({ tone: "warn", text: GAPS });
+  });
+
+  it("malicious clean and every gap partial: amber, 'only partly ran'", () => {
+    expect(
+      verdict([
+        cat("malicious", "clean"),
+        cat("shopper-visible", "partial"),
+        cat("snippets-sections", "partial"),
+      ]),
+    ).toEqual({ tone: "warn", text: PARTIAL });
+  });
+
+  // THE false-all-clear guard: only a malicious row that is exactly "clean"
+  // may be described as "nothing malicious found".
+  it.each(["not_checked", "partial"] as const)(
+    "malicious %s: amber, names the malicious check, never says nothing malicious was found",
+    (status) => {
+      for (const others of [
+        [],
+        [cat("tracking", "clean")],
+        [cat("tracking", "clean"), cat("store-data", "partial")],
+      ]) {
+        const result = verdict([cat("malicious", status), ...others])!;
+        expect(result).toEqual({ tone: "warn", text: UNCHECKED });
+        expect(result.text).not.toMatch(/nothing malicious/i);
+      }
+    },
+  );
+
+  it("no malicious row at all (legacy): amber, names the malicious check", () => {
+    for (const rows of [
+      [],
+      [cat("tracking", "clean")],
+      [cat("tracking", "clean"), cat("store-data", "clean"), cat("theme", "clean")],
+      [cat("liquid-errors", "partial")],
+    ]) {
+      const result = verdict(rows)!;
+      expect(result).toEqual({ tone: "warn", text: UNCHECKED });
+      expect(result.text).not.toMatch(/nothing malicious/i);
+    }
+  });
+
+  it("a malicious row with any other status is not 'nothing malicious found' either", () => {
+    expect(verdict([cat("malicious", "info"), cat("tracking", "clean")])).toEqual({
+      tone: "warn",
+      text: UNCHECKED,
+    });
+  });
+
+  it("null when the malicious line is showing, from the rows or passed on its own", () => {
+    expect(verdict([cat("malicious", "issues"), cat("tracking", "clean")])).toBeNull();
+    const line = maliciousHealthRow("scan-1", 2);
+    // The rows say clean (ignored findings), the line says found: no verdict.
+    expect(verdict([cat("malicious", "clean"), cat("tracking", "clean")], line)).toBeNull();
+    expect(verdict([cat("malicious", "not_checked")], line)).toBeNull();
+    expect(verdict([], line)).toBeNull();
+  });
+
+  it("is green ONLY for malicious clean with no gap, over every pair of statuses", () => {
+    const statuses = ["clean", "partial", "not_checked", "issues", "info"] as const;
+    for (const malicious of statuses) {
+      for (const other of statuses) {
+        const result = verdict([cat("malicious", malicious), cat("tracking", other)]);
+        const where = `${malicious}/${other}`;
+        if (malicious === "issues") {
+          expect(result, where).toBeNull();
+          continue;
+        }
+        const gap = other === "partial" || other === "not_checked";
+        expect(result!.tone, where).toBe(malicious === "clean" && !gap ? "ok" : "warn");
+        expect(/nothing malicious/i.test(result!.text), where).toBe(malicious === "clean");
+      }
+    }
+  });
+
+  it("never contains a digit, a score word, 'x of y' or an em dash", () => {
+    for (const text of [CLEAN, UNCHECKED, GAPS, PARTIAL]) {
+      expect(text).not.toMatch(/\d|%|\bscore\b|\bgrade\b|\bof\b.*\bchecks\b|\u2014/i);
+    }
+    // And those four are every sentence it can return.
+    const statuses = ["clean", "partial", "not_checked", "issues", "info"] as const;
+    const seen = new Set<string>();
+    for (const a of statuses) {
+      for (const b of statuses) {
+        for (const c of statuses) {
+          const result = verdict([cat("malicious", a), cat("tracking", b), cat("seo-ai", c)]);
+          if (result) seen.add(result.text);
+        }
+      }
+    }
+    expect([...seen].sort()).toEqual([CLEAN, UNCHECKED, GAPS, PARTIAL].sort());
+  });
+
+  describe("with the real builder", () => {
+    const real = (overrides: Partial<ThemeHealthInput>, count = 0) => {
+      const rows = buildThemeHealthChecklist(input(overrides));
+      return themeHealthVerdict(groupHealthRows(rows, maliciousHealthRow("scan-1", count)));
+    };
+
+    it("full coverage, no findings: green", () => {
+      expect(real({})).toEqual({ tone: "ok", text: CLEAN });
+    });
+
+    it("storefront unreadable: amber, nothing malicious found, some checks couldn't run", () => {
+      expect(
+        real({
+          coverage: {
+            ...FULL_COVERAGE,
+            unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"],
+          },
+        }),
+      ).toEqual({ tone: "warn", text: GAPS });
+    });
+
+    it("Free plan gaps (both partial): amber, 'only partly ran'", () => {
+      expect(
+        real({
+          coverage: { ...FULL_COVERAGE, planWithheld: ["DANGLING_REFERENCE", "CHECKOUT_SUNSET"] },
+        }),
+      ).toEqual({ tone: "warn", text: PARTIAL });
+    });
+
+    it("a legacy scan (no live set): amber, names the malicious check", () => {
+      expect(real({ coverage: { ...FULL_COVERAGE, liveTypes: null } })).toEqual({
+        tone: "warn",
+        text: UNCHECKED,
+      });
+    });
+
+    it("malicious findings, kept or ignored: no verdict", () => {
+      expect(real({ typeCounts: { MALICIOUS_SCRIPT: 2 } }, 2)).toBeNull();
+      // Every malicious finding ignored: the rows were built without them.
+      expect(real({}, 2)).toBeNull();
+    });
+  });
+});
+
+describe("groupGapsByReason", () => {
+  const gap = (label: string, detail: string | null): HealthRow => ({
+    key: "tracking",
+    label,
+    checks: "",
+    status: "not_checked",
+    statusLabel: "Not checked",
+    count: 0,
+    detail,
+    href: null,
+  });
+
+  it("no gaps: no groups", () => {
+    expect(groupGapsByReason([])).toEqual([]);
+  });
+
+  it("rows that share a reason are one group, with every name in row order", () => {
+    expect(groupGapsByReason([gap("A", "Why."), gap("B", "Why."), gap("C", "Why.")])).toEqual([
+      { reason: "Why.", labels: ["A", "B", "C"] },
+    ]);
+  });
+
+  it("different reasons are separate groups, in the order each first appears", () => {
+    expect(
+      groupGapsByReason([gap("A", "One."), gap("B", "Two."), gap("C", "One."), gap("D", null)]),
+    ).toEqual([
+      { reason: "One.", labels: ["A", "C"] },
+      { reason: "Two.", labels: ["B"] },
+      { reason: null, labels: ["D"] },
+    ]);
+  });
+
+  it("the real builder, storefront unreadable: both checks under the one reason", () => {
+    const rows = buildThemeHealthChecklist(
+      input({
+        coverage: {
+          ...FULL_COVERAGE,
+          unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"],
+        },
+      }),
+    );
+    expect(groupGapsByReason(groupHealthRows(rows).gaps)).toEqual([
+      {
+        reason:
+          "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.",
+        labels: ["Liquid errors on your homepage", "Script tag deadline"],
+      },
+    ]);
+  });
+
+  it("the real builder, a legacy scan: all nine checks under the one reason", () => {
+    const rows = buildThemeHealthChecklist(
+      input({ coverage: { ...FULL_COVERAGE, liveTypes: null } }),
+    );
+    expect(groupGapsByReason(groupHealthRows(rows).gaps)).toEqual([
+      {
+        reason: "Not checked on your last scan. Run a new scan.",
+        labels: HEALTH_CATEGORIES.map((c) => c.label),
+      },
+    ]);
   });
 });

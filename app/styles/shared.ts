@@ -163,8 +163,12 @@ export const CRIT_BG = "#fef6f6";
 export const WARN_BD = "#fdf0cd";
 export const WARN_BG = "#fffcf2";
 export const WARN_TEXT = "#916a00";
+/** Darker warning ink for 13px text ON the WARN_BD tint (6.8:1; WARN_TEXT is 4.3:1 there). */
+export const WARN_TEXT_STRONG = "#6b4e00";
 export const SUCCESS_BD = "#c8e6c1";
 export const SUCCESS_BG = "#f1f8ef";
+/** Darker success ink for 13px text ON the BG_BADGE_SUCCESS tint (6.5:1; COLOR_SUCCESS is 3.8:1 there). */
+export const SUCCESS_TEXT_STRONG = "#14602c";
 export const INFO_BD = "#b4d5fe";
 export const INFO_BG = "#f5f8ff";
 /** Info border, one step lighter than INFO_BD — used for the low-severity

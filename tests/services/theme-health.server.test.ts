@@ -140,13 +140,12 @@ describe("loadThemeHealth", () => {
     expect(rowOf(rows, "script-tag-deadline")).toMatchObject({ status: "partial" });
     expect(rowOf(rows, "store-data")).toMatchObject({
       status: "partial",
-      detail:
-        "Part of this needs a permission you haven't allowed yet. You can allow it in Settings.",
+      detail: "Needs a permission you haven't allowed yet. You can allow it in Settings.",
     });
   });
 
   describe("a check that is on now but that the scan did not run is never Clean (HIGH audit finding)", () => {
-    const NOT_RUN = "This wasn't checked on your last scan. Run a new scan.";
+    const NOT_RUN = "Not checked on your last scan. Run a new scan.";
 
     it("a scan from before the Liquid error check: its row says Not checked, run a new scan", async () => {
       const liveFindingTypes = ALL_TYPES.filter((t) => t !== "LIQUID_ERROR_RENDERED");
@@ -192,7 +191,7 @@ describe("loadThemeHealth", () => {
       const rows = await load({ scan: { ...SCAN, themeId: "t2", liveFindingTypes } });
       expect(rowOf(rows, "liquid-errors")).toMatchObject({
         status: "not_checked",
-        detail: "This is only checked on your published theme.",
+        detail: "Only checked on your published theme.",
       });
     });
 

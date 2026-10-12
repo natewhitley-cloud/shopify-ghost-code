@@ -1,47 +1,144 @@
 import { Link } from "react-router";
 
-import { groupHealthRows } from "../lib/theme-health";
-import type { HealthRow } from "../lib/theme-health";
 import {
+  groupGapsByReason,
+  groupHealthRows,
+  themeHealthVerdict,
+  HEALTH_CATEGORIES,
+} from "../lib/theme-health";
+import type { HealthRow, HealthVerdictTone } from "../lib/theme-health";
+import {
+  BG_BADGE_SUCCESS,
+  COLOR_CRITICAL,
+  COLOR_SUCCESS,
+  COLOR_WARNING,
   CRIT_BD,
   CRIT_BG,
   sectionCard,
   sectionHeader,
+  SUCCESS_TEXT_STRONG,
   TEXT_PRIMARY,
   textSubduedSm,
+  visuallyHidden,
+  WARN_BD,
+  WARN_BG,
+  WARN_TEXT_STRONG,
 } from "../styles/shared";
 
 export const THEME_HEALTH_HEADING = "Theme health";
 export const THEME_HEALTH_INTRO = "What your last scan checked, beyond the findings above.";
 
-const GROUP_LABEL_THEME = "Theme";
-const GROUP_LABEL_CLEAN = "Clean";
-const GROUP_LABEL_NOT_CHECKED = "Not checked";
-/** Used when any gap is partial: part of that check ran and found nothing. */
-const GROUP_LABEL_NOT_FULLY_CHECKED = "Not fully checked";
 const MALICIOUS_LINK_LABEL = "View findings";
+const TICK = "\u2713";
 
 const primaryLine: React.CSSProperties = {
   fontSize: "14px",
   color: TEXT_PRIMARY,
   wordBreak: "break-word",
 };
-const secondaryLine: React.CSSProperties = {
-  ...textSubduedSm,
-  marginTop: "2px",
-  wordBreak: "break-word",
+const subduedLine: React.CSSProperties = { ...textSubduedSm, wordBreak: "break-word" };
+
+/** The blocks under the intro: one column, evenly spaced, free to shrink. */
+const body: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "12px",
+  minWidth: 0,
 };
 
+const verdictLine: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: "8px",
+  margin: 0,
+  fontSize: "15px",
+  fontWeight: 600,
+  lineHeight: "20px",
+  color: TEXT_PRIMARY,
+};
+const DOT_COLOR: Record<HealthVerdictTone, string> = { ok: COLOR_SUCCESS, warn: COLOR_WARNING };
+
+const chipList: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  gap: "6px",
+  margin: 0,
+  padding: 0,
+  listStyle: "none",
+  minWidth: 0,
+};
+const chip: React.CSSProperties = {
+  position: "relative",
+  display: "inline-flex",
+  alignItems: "center",
+  gap: "6px",
+  padding: "4px 10px",
+  borderRadius: "999px",
+  fontSize: "13px",
+  fontWeight: 500,
+  minWidth: 0,
+  wordBreak: "break-word",
+};
+const chipOk: React.CSSProperties = {
+  ...chip,
+  background: BG_BADGE_SUCCESS,
+  color: SUCCESS_TEXT_STRONG,
+};
+const chipWarn: React.CSSProperties = { ...chip, background: WARN_BD, color: WARN_TEXT_STRONG };
+
+const actionBox: React.CSSProperties = {
+  display: "flex",
+  flexDirection: "column",
+  gap: "10px",
+  minWidth: 0,
+  padding: "12px 14px",
+  border: `1px solid ${WARN_BD}`,
+  borderLeft: `5px solid ${COLOR_WARNING}`,
+  borderRadius: "8px",
+  background: WARN_BG,
+};
+
+const CATEGORY_ORDER = new Map<string, number>(HEALTH_CATEGORIES.map((c, i) => [c.key, i]));
+
 /**
- * The theme row as one line: "Dawn 15.2.0 by Shopify · Online Store 2.0" for a
- * detected (or undetected) type. A vintage theme and a theme that was not
- * checked already carry a full sentence in `detail`, shown as it is.
+ * How one check shows as a chip. Green ONLY for a status of exactly "clean":
+ * a check that did not run, or only partly ran, is amber and never described
+ * as clean. The glyph is decorative; the hidden prefix says the same in words.
  */
-function themeLine(row: HealthRow): string | null {
-  if (row.status === "clean" || row.status === "info") {
-    return [row.detail, row.statusLabel].filter(Boolean).join(" · ");
+function chipOf(row: HealthRow): { style: React.CSSProperties; glyph: string; prefix: string } {
+  if (row.status === "clean") return { style: chipOk, glyph: TICK, prefix: "Clean: " };
+  return {
+    style: chipWarn,
+    glyph: "!",
+    prefix: row.status === "partial" ? "Partly checked: " : "Not checked: ",
+  };
+}
+
+/**
+ * The theme facts, as the lines to show. A detected (or undetected) type is
+ * ONE subdued line: "Dawn 15.2.0 by Shopify · Online Store 2.0 · Your store
+ * has 3 themes...". A vintage theme and a theme that was not checked already
+ * carry a full sentence in `detail`, shown as it is (vintage in primary ink:
+ * it is the one theme fact with a consequence), with the theme library on its
+ * own line under it.
+ */
+function themeFacts(
+  theme: HealthRow | null,
+  unpublished: string | null,
+): Array<{ text: string; style: React.CSSProperties }> {
+  if (theme && (theme.status === "clean" || theme.status === "info")) {
+    const text = [theme.detail, theme.statusLabel, unpublished].filter(Boolean).join(" · ");
+    return text ? [{ text, style: subduedLine }] : [];
   }
-  return row.detail;
+  const facts = [];
+  if (theme?.detail) {
+    facts.push({
+      text: theme.detail,
+      style: theme.status === "issues" ? primaryLine : subduedLine,
+    });
+  }
+  if (unpublished) facts.push({ text: unpublished, style: subduedLine });
+  return facts;
 }
 
 /**
@@ -57,6 +154,7 @@ function MaliciousLine({ row }: { row: HealthRow }) {
         marginBottom: "12px",
         padding: "12px",
         border: `1px solid ${CRIT_BD}`,
+        borderLeft: `5px solid ${COLOR_CRITICAL}`,
         borderRadius: "8px",
         background: CRIT_BG,
       }}
@@ -76,59 +174,36 @@ function MaliciousLine({ row }: { row: HealthRow }) {
 }
 
 /**
- * One labelled group: the label on the left, its content on the right. The
- * content wraps under the label when the two do not fit side by side, so a
- * narrow screen stacks them with no overflow.
- */
-function Group({
-  label,
-  first,
-  children,
-}: {
-  label: string;
-  first: boolean;
-  children: React.ReactNode;
-}) {
-  return (
-    <div
-      style={{
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "2px 16px",
-        ...(first ? {} : { marginTop: "12px" }),
-      }}
-    >
-      <dt style={{ ...textSubduedSm, fontWeight: 600, flex: "0 0 120px", lineHeight: "20px" }}>
-        {label}
-      </dt>
-      <dd style={{ margin: 0, flex: "1 1 240px", minWidth: 0, lineHeight: "20px" }}>{children}</dd>
-    </div>
-  );
-}
-
-/**
- * Theme health on Home (gc-i6du): a slim strip of what the last scan checked
- * that the consequence lanes above it cannot show. Three labelled groups, each
- * left out when it is empty (and the whole section when all three are):
+ * Theme health on Home (gc-i6du): what the last scan checked that the
+ * consequence lanes above it cannot show, leading with what it means.
+ * Top to bottom, each part left out when it has nothing to say (and the whole
+ * section when none has):
+ *   - Known malicious code with findings: a critical line (see MaliciousLine).
+ *     Home passes it as `malicious`, built from the scan's count alone, so it
+ *     shows even when `rows` is empty. When it shows it IS the verdict.
+ *   - Verdict: a dot and one sentence (themeHealthVerdict). It says nothing
+ *     malicious was found ONLY when the malicious check ran in full and found
+ *     nothing.
+ *   - Chips: one per check that is clean (green) or did not fully run (amber).
+ *     A check that FOUND something has no chip: its findings are in the lanes,
+ *     and repeating them would duplicate the card above.
+ *   - Action box: why the amber checks did not run and what to do, each
+ *     distinct reason stated once under the names it applies to. No button:
+ *     Home has its own scan control, and its one upgrade ask.
  *   - Theme: the theme's name, version and type, and the theme library.
- *   - Clean: the NAMES of the checks that ran in full and found nothing.
- *   - Not checked / Not fully checked: each check that did not (fully) run,
- *     with the reason.
- * A check that FOUND something is not here at all: its findings are in the
- * lanes, and repeating them would duplicate the card above. The exception is
- * known malicious code with findings, shown first as a critical line (see
- * MaliciousLine). Home passes that line as `malicious`, built from the scan's
- * count alone, so it shows even when `rows` is empty. groupHealthRows decides
- * the groups; only a row whose status is exactly "clean" is named under Clean.
+ * groupHealthRows decides the groups; only a row whose status is exactly
+ * "clean" is ever green.
  *
- * Deliberately names only: NO score, grade, percentage, count of clean checks
- * or "x of y" summary (the 0-100 health score was removed in gc-k2ub).
+ * Deliberately names only: NO score, grade, percentage, count of checks or
+ * "x of y" summary (the 0-100 health score was removed in gc-k2ub).
  *
  * The rows carry counts and fixed copy only (app/lib/theme-health.ts), so the
  * same markup is safe on every plan.
  *
- * Accessibility: a labelled region with a real heading and a description
- * list. Not a live region: Home revalidates every 3s while a scan runs.
+ * Accessibility: a labelled region with a real heading. The dot and the chip
+ * glyphs are decorative; the verdict sentence and each chip's hidden prefix
+ * carry the meaning. Not a live region: Home revalidates every 3s while a
+ * scan runs.
  */
 export function ThemeHealthChecklist({
   rows = [],
@@ -137,15 +212,16 @@ export function ThemeHealthChecklist({
   rows?: readonly HealthRow[];
   malicious?: HealthRow | null;
 }) {
-  const { theme, unpublished, clean, gaps, hasPartial, malicious } = groupHealthRows(
-    rows,
-    maliciousRow,
+  const groups = groupHealthRows(rows, maliciousRow);
+  const { theme, unpublished, clean, gaps, malicious } = groups;
+  const facts = themeFacts(theme, unpublished?.detail ?? null);
+  const chips = [...clean, ...gaps].sort(
+    (a, b) => (CATEGORY_ORDER.get(a.key) ?? 0) - (CATEGORY_ORDER.get(b.key) ?? 0),
   );
-  const themeText = theme ? themeLine(theme) : null;
-  const unpublishedText = unpublished?.detail ?? null;
-  const hasTheme = Boolean(themeText) || Boolean(unpublishedText);
-  const hasGroups = hasTheme || clean.length > 0 || gaps.length > 0;
-  if (!hasGroups && !malicious) return null;
+  const hasBody = facts.length > 0 || chips.length > 0;
+  if (!hasBody && !malicious) return null;
+  const verdict = themeHealthVerdict(groups);
+  const reasons = groupGapsByReason(gaps);
   return (
     <section aria-labelledby="theme-health-heading" style={{ ...sectionCard, marginBottom: 0 }}>
       <h2 id="theme-health-heading" style={{ ...sectionHeader, margin: 0 }}>
@@ -153,37 +229,60 @@ export function ThemeHealthChecklist({
       </h2>
       <p style={{ ...textSubduedSm, margin: "4px 0 12px" }}>{THEME_HEALTH_INTRO}</p>
       {malicious && <MaliciousLine row={malicious} />}
-      {hasGroups && (
-        <dl style={{ margin: 0 }}>
-          {hasTheme && (
-            <Group label={GROUP_LABEL_THEME} first>
-              {themeText && <div style={primaryLine}>{themeText}</div>}
-              {unpublishedText && (
-                <div style={themeText ? secondaryLine : { ...secondaryLine, marginTop: 0 }}>
-                  {unpublishedText}
-                </div>
-              )}
-            </Group>
+      {hasBody && (
+        <div style={body}>
+          {verdict && (
+            <p style={verdictLine}>
+              <span
+                aria-hidden="true"
+                style={{
+                  flex: "none",
+                  width: "10px",
+                  height: "10px",
+                  marginTop: "5px",
+                  borderRadius: "5px",
+                  background: DOT_COLOR[verdict.tone],
+                }}
+              />
+              <span style={{ minWidth: 0, wordBreak: "break-word" }}>{verdict.text}</span>
+            </p>
           )}
-          {clean.length > 0 && (
-            <Group label={GROUP_LABEL_CLEAN} first={!hasTheme}>
-              <div style={primaryLine}>{clean.map((row) => row.label).join(", ")}</div>
-            </Group>
+          {chips.length > 0 && (
+            <ul style={chipList}>
+              {chips.map((row) => {
+                const { style, glyph, prefix } = chipOf(row);
+                return (
+                  <li key={row.key} style={style}>
+                    <span aria-hidden="true" style={{ fontWeight: 700 }}>
+                      {glyph}
+                    </span>
+                    <span style={{ minWidth: 0 }}>
+                      <span style={visuallyHidden}>{prefix}</span>
+                      {row.label}
+                    </span>
+                  </li>
+                );
+              })}
+            </ul>
           )}
-          {gaps.length > 0 && (
-            <Group
-              label={hasPartial ? GROUP_LABEL_NOT_FULLY_CHECKED : GROUP_LABEL_NOT_CHECKED}
-              first={!hasTheme && clean.length === 0}
-            >
-              {gaps.map((row, i) => (
-                <div key={row.key} style={i > 0 ? { marginTop: "8px" } : undefined}>
-                  <div style={primaryLine}>{row.label}</div>
-                  {row.detail && <div style={secondaryLine}>{row.detail}</div>}
+          {reasons.length > 0 && (
+            <div style={actionBox}>
+              {reasons.map(({ reason, labels }) => (
+                <div key={reason ?? ""} style={{ minWidth: 0 }}>
+                  <strong style={{ ...primaryLine, display: "block", fontWeight: 600 }}>
+                    {labels.join(", ")}
+                  </strong>
+                  {reason && <span style={subduedLine}>{reason}</span>}
                 </div>
               ))}
-            </Group>
+            </div>
           )}
-        </dl>
+          {facts.map((fact) => (
+            <div key={fact.text} style={fact.style}>
+              {fact.text}
+            </div>
+          ))}
+        </div>
       )}
     </section>
   );

@@ -112,6 +112,15 @@ import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
 import { authenticate } from "../../app/shopify.server";
+import {
+  actionOf,
+  BODY,
+  chipLines,
+  chipsOf,
+  greenLabels,
+  themeText,
+  verdictOf,
+} from "../test-utils/theme-health-html";
 
 const mockAuth = authenticate.admin as ReturnType<typeof vi.fn>;
 const mockGetOrCreate = getOrCreateShopMetadata as ReturnType<typeof vi.fn>;
@@ -195,24 +204,16 @@ const rowOf = (rows: HealthRow[], key: string) => rows.find((r) => r.key === key
 /** The theme health section of a rendered Home, or "" when it is absent. */
 function sectionOf(html: string): string {
   const start = html.indexOf('<section aria-labelledby="theme-health-heading"');
-  return start === -1 ? "" : html.slice(start, html.indexOf("</section>", start));
+  if (start === -1) return "";
+  return html.slice(start, html.indexOf("</section>", start) + "</section>".length);
 }
 
-/** The content of the group labelled `label` in the section, or null when absent. */
-function groupOf(section: string, label: string): string | null {
-  return section.match(new RegExp(`<dt[^>]*>${label}</dt><dd[^>]*>([\\s\\S]*?)</dd>`))?.[1] ?? null;
-}
-
-/** Every group label in the section, in order. */
-function groupLabels(section: string): string[] {
-  return [...section.matchAll(/<dt[^>]*>([^<]*)<\/dt>/g)].map((m) => m[1]);
-}
-
-/** The Clean line as text, or null when there is no Clean group. */
-function cleanLine(section: string): string | null {
-  const group = groupOf(section, "Clean");
-  return group === null ? null : group.replace(/<[^>]+>/g, "");
-}
+const UNREACHABLE =
+  "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.";
+const NOT_RUN = "Not checked on your last scan. Run a new scan.";
+const MALICIOUS_UNCHECKED = "Some checks couldn't run, including the check for malicious code.";
+const LIBRARY =
+  "Your store has 3 themes. Shopify allows 20 (more on Plus). In their last scans: Old Debut: 14 findings.";
 
 const FLAGS = [
   "SCRIPT_TAG_SUNSET_LIVE_ENABLED",
@@ -380,27 +381,34 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
     const { themeHealth } = data;
     expect(rowOf(themeHealth, "liquid-errors")).toMatchObject({
       statusLabel: "Not checked",
-      detail:
-        "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.",
+      detail: UNREACHABLE,
     });
-    // As the merchant sees it: not on the Clean line, and listed with its reason.
+    // As the merchant sees it: neither storefront check is a green chip.
     const section = sectionOf(renderDashboard(data));
-    const clean = cleanLine(section);
-    expect(clean).toBe(
-      "Known malicious code, Broken links and leftover app text, Leftover snippets and sections, SEO and AI tags, Tracking still running, Store data left behind",
-    );
-    expect(clean).not.toContain("Liquid errors on your homepage");
-    expect(clean).not.toContain("Script tag deadline");
-    // The script tag row is partial (one of its two checks ran), so the group
-    // is "Not fully checked", never "Not checked" and never Clean.
-    expect(groupLabels(section)).toEqual(["Theme", "Clean", "Not fully checked"]);
-    const gaps = groupOf(section, "Not fully checked")!;
-    expect(gaps).toMatch(
-      /Liquid errors on your homepage<\/div><div[^>]*>Your storefront homepage couldn&#x27;t be read, for example because it has a password, so this wasn&#x27;t checked\.<\/div>/,
-    );
-    expect(gaps).toMatch(
-      /Script tag deadline<\/div><div[^>]*>Your storefront homepage couldn&#x27;t be read/,
-    );
+    const green = greenLabels(section);
+    expect(green).toEqual([
+      "Known malicious code",
+      "Broken links and leftover app text",
+      "Leftover snippets and sections",
+      "SEO and AI tags",
+      "Tracking still running",
+      "Store data left behind",
+    ]);
+    expect(green).not.toContain("Liquid errors on your homepage");
+    expect(green).not.toContain("Script tag deadline");
+    // The Liquid row did not run; the script tag row is partial (one of its
+    // two checks ran). Both are amber, said in words, never green.
+    expect(chipLines(section)).toContain("warn Not checked: Liquid errors on your homepage");
+    expect(chipLines(section)).toContain("warn Partly checked: Script tag deadline");
+    expect(verdictOf(section)).toEqual({
+      tone: "warn",
+      text: "Nothing malicious found. Some checks couldn't run.",
+    });
+    // Both under the ONE reason, which is stated once.
+    expect(actionOf(section)!.entries).toEqual([
+      { names: "Liquid errors on your homepage, Script tag deadline", reason: UNREACHABLE },
+    ]);
+    expect(section.split("We couldn&#x27;t read your storefront homepage")).toHaveLength(2);
   });
 
   describe("a scan that did not run a check that is on now (HIGH audit finding)", () => {
@@ -418,18 +426,22 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
       expect(rowOf(data.themeHealth, "liquid-errors")).toMatchObject({
         status: "not_checked",
         statusLabel: "Not checked",
-        detail: "This wasn't checked on your last scan. Run a new scan.",
+        detail: NOT_RUN,
       });
       const section = sectionOf(renderDashboard(data));
-      // Under "Not checked", with its label directly above the reason.
-      expect(groupLabels(section)).toEqual(["Theme", "Clean", "Not checked"]);
-      expect(groupOf(section, "Not checked")).toMatch(
-        /^<div><div[^>]*>Liquid errors on your homepage<\/div><div[^>]*>This wasn&#x27;t checked on your last scan\. Run a new scan\.<\/div><\/div>$/,
-      );
-      // And it is not named on the Clean line, which is there and names others.
-      const clean = cleanLine(section);
-      expect(clean).toContain("Known malicious code");
-      expect(clean).not.toContain("Liquid errors on your homepage");
+      // An amber "Not checked" chip, and its name directly above the reason.
+      expect(chipLines(section)).toContain("warn Not checked: Liquid errors on your homepage");
+      expect(actionOf(section)!.entries).toEqual([
+        { names: "Liquid errors on your homepage", reason: NOT_RUN },
+      ]);
+      // And it is not a green chip, though there are green chips and they name others.
+      const green = greenLabels(section);
+      expect(green).toContain("Known malicious code");
+      expect(green).not.toContain("Liquid errors on your homepage");
+      expect(verdictOf(section)).toEqual({
+        tone: "warn",
+        text: "Nothing malicious found. Some checks couldn't run.",
+      });
     });
 
     it("a scan that recorded nothing about what it ran: no category reads Clean", async () => {
@@ -444,17 +456,25 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
       for (const row of categories) expect(row.status, row.key).toBe("not_checked");
     });
 
-    it("a scan that recorded nothing about what it ran: Home has no Clean line at all", async () => {
+    it("a scan that recorded nothing about what it ran: Home has no green chip and no all-clear at all", async () => {
       preDeploy(null);
       mockTypeCounts.mockResolvedValue({});
       setPlan("Professional");
       const section = sectionOf(renderDashboard(await runLoader()));
-      expect(groupLabels(section)).toEqual(["Theme", "Not checked"]);
-      expect(cleanLine(section)).toBeNull();
-      const gaps = groupOf(section, "Not checked")!;
-      expect(
-        gaps.match(/This wasn&#x27;t checked on your last scan\. Run a new scan\./g),
-      ).toHaveLength(9);
+      expect(greenLabels(section)).toEqual([]);
+      const chips = chipsOf(section);
+      expect(chips).toHaveLength(9);
+      for (const chip of chips) {
+        expect(chip, chip.label).toMatchObject({ tone: "warn", prefix: "Not checked: " });
+      }
+      // The malicious check did not run either: the verdict says so, and never
+      // says nothing malicious was found.
+      expect(verdictOf(section)).toEqual({ tone: "warn", text: MALICIOUS_UNCHECKED });
+      expect(section).not.toMatch(/nothing malicious/i);
+      // All nine checks under the one reason, stated once.
+      const { entries } = actionOf(section)!;
+      expect(entries).toEqual([{ names: chips.map((c) => c.label).join(", "), reason: NOT_RUN }]);
+      expect(section.split(NOT_RUN)).toHaveLength(2);
     });
 
     it("the check is off for everyone now: its row is simply not there", async () => {
@@ -506,15 +526,15 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
       status: "issues",
       statusLabel: "Vintage theme",
     });
-    // The lanes do not carry this, so the sentence shows in the Theme group.
-    expect(groupOf(sectionOf(renderDashboard(data)), "Theme")).toContain(
-      "Debut 17.14.0 by Shopify is a vintage theme, not Online Store 2.0. It can&#x27;t use app blocks,",
+    // The lanes do not carry this, so the sentence shows as the theme line.
+    expect(themeText(sectionOf(renderDashboard(data)))[0]).toContain(
+      "Debut 17.14.0 by Shopify is a vintage theme, not Online Store 2.0. It can't use app blocks,",
     );
   });
 });
 
 describe("Home render: theme health checklist (gc-i6du)", () => {
-  it("renders the section after the lanes: the theme, the clean checks and the gaps", async () => {
+  it("renders the section after the lanes: the verdict, the chips, the gaps and the theme line", async () => {
     const html = renderDashboard(await runLoader());
     expect(html).toContain(`>${THEME_HEALTH_HEADING}</h2>`);
     expect(html.indexOf("What it&#x27;s costing you")).toBeGreaterThan(-1);
@@ -526,25 +546,42 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     );
     const section = sectionOf(html);
     expect(section).toContain("What your last scan checked, beyond the findings above.");
-    // Free: two rows are partial (a plan-gated check each), so "Not fully checked".
-    expect(groupLabels(section)).toEqual(["Theme", "Clean", "Not fully checked"]);
-    expect(groupOf(section, "Theme")).toMatch(
-      /^<div[^>]*>Dawn 15\.2\.0 by Shopify · Online Store 2\.0<\/div><div[^>]*>Your store has 3 themes\. Shopify allows 20 \(more on Plus\)\. In their last scans: Old Debut: 14 findings\.<\/div>$/,
+    // Free: two rows are partial (a plan-gated check each), so "only partly ran".
+    expect(verdictOf(section)).toEqual({
+      tone: "warn",
+      text: "Nothing malicious found. Some checks only partly ran.",
+    });
+    expect(section.indexOf("Nothing malicious found.")).toBeLessThan(section.indexOf("<ul"));
+    expect(section.indexOf("<ul")).toBeLessThan(section.indexOf("Broken links are checked"));
+    expect(section.indexOf("Broken links are checked")).toBeLessThan(
+      section.indexOf("Dawn 15.2.0"),
     );
+    expect(themeText(section)).toEqual([`Dawn 15.2.0 by Shopify · Online Store 2.0 · ${LIBRARY}`]);
   });
 
-  it("names only the clean checks under Clean, lists the gaps with their reasons, and leaves out every check that found something", async () => {
+  it("only the clean checks are green chips, the gaps are amber with their reasons, and every check that found something is left out", async () => {
     const section = sectionOf(renderDashboard(await runLoader()));
-    // Malicious code is clean here and is named, first. No digit, no count.
-    const clean = cleanLine(section);
-    expect(clean).toBe(
-      "Known malicious code, SEO and AI tags, Store data left behind, Script tag deadline",
-    );
-    expect(clean).not.toMatch(/\d/);
+    // Malicious code is clean here and is a green chip, first. No digit, no count.
+    expect(chipLines(section)).toEqual([
+      "ok Clean: Known malicious code",
+      "warn Partly checked: Broken links and leftover app text",
+      "warn Partly checked: Leftover snippets and sections",
+      "ok Clean: SEO and AI tags",
+      "ok Clean: Store data left behind",
+      "ok Clean: Script tag deadline",
+    ]);
+    expect(chipLines(section).join(" ")).not.toMatch(/\d/);
     // Free: the two partly checked rows, each with its reason, in order.
-    expect(groupOf(section, "Not fully checked")).toMatch(
-      /^<div><div[^>]*>Broken links and leftover app text<\/div><div[^>]*>Broken links are checked on Standard and Professional\.<\/div><\/div><div[^>]*><div[^>]*>Leftover snippets and sections<\/div><div[^>]*>Old checkout code is checked on Standard and Professional\.<\/div><\/div>$/,
-    );
+    expect(actionOf(section)!.entries).toEqual([
+      {
+        names: "Broken links and leftover app text",
+        reason: "Broken links are checked on Standard and Professional.",
+      },
+      {
+        names: "Leftover snippets and sections",
+        reason: "Old checkout code is checked on Standard and Professional.",
+      },
+    ]);
     // The three checks with findings are the lanes' job: no label, count or cost.
     for (const gone of [
       "Liquid errors on your homepage",
@@ -558,18 +595,28 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     ]) {
       expect(section, `"${gone}" must not be in the section`).not.toContain(gone);
     }
-    // Quiet text: no badge, link, fold or row list.
-    expect(section).not.toMatch(/<s-badge|<a |View findings|<details|<summary|<li |<h3/);
+    // No badge, link, button or fold.
+    expect(section).not.toMatch(
+      /<s-badge|<a |View findings|<details|<summary|<button|<s-button|<h3/,
+    );
   });
 
   it.each(["Standard", "Professional"])(
-    "%s: nothing is partly checked, so there is no gap group and the Clean line grows",
+    "%s: nothing is partly checked, so the verdict is green, there is no action box and more chips are green",
     async (plan) => {
       setPlan(plan);
       const section = sectionOf(renderDashboard(await runLoader()));
-      expect(groupLabels(section)).toEqual(["Theme", "Clean"]);
-      expect(cleanLine(section)).toBe(
-        "Known malicious code, Broken links and leftover app text, Leftover snippets and sections, SEO and AI tags, Store data left behind, Script tag deadline",
+      expect(verdictOf(section)).toEqual({ tone: "ok", text: "Nothing malicious found." });
+      expect(actionOf(section)).toBeNull();
+      expect(chipLines(section)).toEqual(
+        [
+          "Known malicious code",
+          "Broken links and leftover app text",
+          "Leftover snippets and sections",
+          "SEO and AI tags",
+          "Store data left behind",
+          "Script tag deadline",
+        ].map((label) => `ok Clean: ${label}`),
       );
     },
   );
@@ -619,10 +666,15 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       expect(data.themeHealth).toHaveLength(11);
       expect(data.themeHealth.filter((r) => r.status === "issues")).toHaveLength(10);
       // Rendered: every category found something, so only the theme facts show
-      // (the vintage sentence and the theme library). No Clean line, no gaps.
-      expect(groupLabels(section)).toEqual(["Theme"]);
-      expect(section).toContain("Debut 17.14.0 by Shopify is a vintage theme");
-      expect(section).toContain("Your store has 3 themes.");
+      // (the vintage sentence and the theme library). No chip, no action box,
+      // and no verdict line: the malicious line below is the verdict.
+      expect(chipsOf(section)).toEqual([]);
+      expect(actionOf(section)).toBeNull();
+      expect(verdictOf(section)).toBeNull();
+      expect(themeText(section)).toEqual([
+        expect.stringContaining("Debut 17.14.0 by Shopify is a vintage theme"),
+        LIBRARY,
+      ]);
       // Known malicious code is the one check with findings that still shows,
       // as a critical line with its count and a link (security is never hidden).
       const maliciousRow = data.themeHealth.find((r) => r.key === "malicious")!;
@@ -688,14 +740,18 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       expect(section).toMatch(
         /<a aria-label="View findings: Known malicious code" href="\/app\/scans\/scan-1"[^>]*>View findings<\/a>/,
       );
-      // First in the section: before the groups, when there are any.
-      if (section.includes("<dl")) {
-        expect(section.indexOf("<s-badge")).toBeLessThan(section.indexOf("<dl"));
+      // First in the section: before the chips and the rest, when there are any.
+      if (section.includes(BODY)) {
+        expect(section.indexOf("<s-badge")).toBeLessThan(section.indexOf(BODY));
       }
+      // The red line is the verdict: never a second one, never an all-clear.
+      expect(verdictOf(section)).toBeNull();
+      expect(section).not.toMatch(/nothing malicious/i);
+      expect(chipsOf(section).map((c) => c.label)).not.toContain("Known malicious code");
     }
 
     it.each(["free", "Standard", "Professional"])(
-      "%s: every malicious finding ignored -> the critical line still renders, and Clean does not name it",
+      "%s: every malicious finding ignored -> the critical line still renders, and no green chip names it",
       async (plan) => {
         setPlan(plan);
         ignoreMalicious(2, 0);
@@ -714,8 +770,8 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
         expect(rowOf(data.themeHealth, "scripts-styles")!.statusLabel).toBe("4 issues");
         const section = sectionOf(renderDashboard(data));
         expectCriticalLine(section, "2 issues", MALICIOUS_DETAIL_2);
-        expect(cleanLine(section)).not.toBeNull();
-        expect(cleanLine(section)).not.toContain("Known malicious code");
+        expect(greenLabels(section).length).toBeGreaterThan(0);
+        expect(greenLabels(section)).not.toContain("Known malicious code");
         expect(section.match(/Known malicious code/g)).toHaveLength(2); // label + link aria-label
         // The wording never claims the ignored findings are gone or ignored.
         expect(section).not.toMatch(/ignored/i);
@@ -758,12 +814,13 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
           "1 issue",
           "1 piece of code from a known malicious source is in your theme. It can steal shopper data or send your customers to other sites.",
         );
-        expect(groupLabels(section)).toEqual([]);
+        expect(section).not.toContain(BODY);
+        expect(chipsOf(section)).toEqual([]);
       },
     );
 
     it.each(["free", "Standard", "Professional"])(
-      "%s: no malicious findings -> no critical line, and Clean may name it",
+      "%s: no malicious findings -> no critical line, a green chip names it and the verdict says so",
       async (plan) => {
         setPlan(plan);
         const data = await runLoader();
@@ -771,7 +828,8 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
         const section = sectionOf(renderDashboard(data));
         expect(section).not.toContain("<s-badge");
         expect(section).not.toContain("View findings");
-        expect(cleanLine(section)).toContain("Known malicious code");
+        expect(greenLabels(section)).toContain("Known malicious code");
+        expect(verdictOf(section)!.text).toMatch(/^Nothing malicious found\./);
       },
     );
 
@@ -779,7 +837,7 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       ignoreMalicious(0, 0);
       const data = await runLoader();
       expect(data.maliciousHealth).toBeNull();
-      expect(cleanLine(sectionOf(renderDashboard(data)))).toContain("Known malicious code");
+      expect(greenLabels(sectionOf(renderDashboard(data)))).toContain("Known malicious code");
     });
 
     // Reviewer LOW-4: lane counts leave out ignored findings, so with every

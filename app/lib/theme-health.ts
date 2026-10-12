@@ -249,19 +249,23 @@ const GAP_ORDER: ReadonlyArray<Gap> = [
   "capped",
 ];
 
+/**
+ * Why a row was not (fully) checked. Home states each sentence ONCE, under the
+ * names of every check it applies to, so the wording fits one check or several
+ * and ends with what to do where there is something to do.
+ */
 const GAP_COPY: Record<Gap, string> = {
   unreachable:
-    "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.",
-  not_run: "This wasn't checked on your last scan. Run a new scan.",
-  permission:
-    "Part of this needs a permission you haven't allowed yet. You can allow it in Settings.",
-  plan: "Part of this is checked on Standard and Professional.",
-  unpublished: "This is only checked on your published theme.",
-  capped: "Your store has more of these than one scan checks, so part of this wasn't checked.",
+    "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.",
+  not_run: "Not checked on your last scan. Run a new scan.",
+  permission: "Needs a permission you haven't allowed yet. You can allow it in Settings.",
+  plan: "Checked in full on Standard and Professional.",
+  unpublished: "Only checked on your published theme.",
+  capped: "Your store has more of these than one scan checks, so part wasn't checked.",
 };
 
 /** `not_run` when only PART of the row was not run. */
-const PARTLY_NOT_RUN = "Part of this wasn't checked on your last scan. Run a new scan.";
+const PARTLY_NOT_RUN = "Partly checked on your last scan. Run a new scan.";
 
 /** What the plan leaves out of a row, named (the two plan-gated checks). */
 const PLAN_GAP_COPY: Partial<Record<HealthCategoryKey, string>> = {
@@ -703,5 +707,67 @@ export function groupHealthRows(
   }
   if (groups.malicious) groups.clean = groups.clean.filter((row) => row.key !== "malicious");
   groups.hasPartial = groups.gaps.some((row) => row.status === "partial");
+  return groups;
+}
+
+// ---------------------------------------------------------------------------
+// Home's verdict line and action box
+// ---------------------------------------------------------------------------
+
+/** "ok" = nothing malicious found and every check ran; "warn" = a check did not. */
+export type HealthVerdictTone = "ok" | "warn";
+
+export interface HealthVerdict {
+  tone: HealthVerdictTone;
+  /** One short sentence. Never a digit, a count, a score or "x of y". */
+  text: string;
+}
+
+const VERDICT_CLEAN = "Nothing malicious found.";
+const VERDICT_MALICIOUS_UNCHECKED =
+  "Some checks couldn't run, including the check for malicious code.";
+const VERDICT_GAPS = "Nothing malicious found. Some checks couldn't run.";
+const VERDICT_PARTIAL_GAPS = "Nothing malicious found. Some checks only partly ran.";
+
+/**
+ * The one-sentence verdict at the top of Home's theme health section, or null
+ * when the critical malicious line is showing (that line IS the verdict).
+ *
+ * "Nothing malicious found" is said ONLY when the malicious row's status is
+ * exactly "clean" (it is in `groups.clean`, which groupHealthRows also empties
+ * of malicious whenever the critical line shows). A malicious row that was not
+ * checked, only partly checked, or is missing altogether (a legacy scan) gets
+ * the sentence that names the malicious check as one that could not run.
+ */
+export function themeHealthVerdict(groups: HealthRowGroups): HealthVerdict | null {
+  if (groups.malicious) return null;
+  const maliciousClean = groups.clean.some(
+    (row) => row.key === "malicious" && row.status === "clean",
+  );
+  if (!maliciousClean) return { tone: "warn", text: VERDICT_MALICIOUS_UNCHECKED };
+  if (groups.gaps.length === 0) return { tone: "ok", text: VERDICT_CLEAN };
+  const allPartial = groups.gaps.every((row) => row.status === "partial");
+  return { tone: "warn", text: allPartial ? VERDICT_PARTIAL_GAPS : VERDICT_GAPS };
+}
+
+/** The checks that share one reason for not (fully) running. */
+export interface GapReasonGroup {
+  /** The reason sentence (a gap row's `detail`); null when the rows carry none. */
+  reason: string | null;
+  /** The labels of the checks it applies to, in row order. */
+  labels: string[];
+}
+
+/**
+ * Gap rows grouped by their reason, so a reason shared by several checks is
+ * stated once. Groups are in the order each reason first appears.
+ */
+export function groupGapsByReason(gaps: readonly HealthRow[]): GapReasonGroup[] {
+  const groups: GapReasonGroup[] = [];
+  for (const row of gaps) {
+    const existing = groups.find((group) => group.reason === row.detail);
+    if (existing) existing.labels.push(row.label);
+    else groups.push({ reason: row.detail, labels: [row.label] });
+  }
   return groups;
 }
