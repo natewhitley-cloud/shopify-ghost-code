@@ -372,7 +372,7 @@ describe("detectLiquidErrors", () => {
     });
     expect(f.appName).toBeUndefined();
     expect(f.codeSnippet.split("\n")).toEqual([
-      "liquid-error: layout/theme: Could not find asset snippets/preloaderapp.liquid",
+      "Liquid error in layout/theme: Could not find asset snippets/preloaderapp.liquid",
       "Liquid error (layout/theme line 3): Could not find asset snippets/preloaderapp.liquid",
     ]);
     expect(f.description).toBe(
@@ -418,18 +418,27 @@ describe("detectLiquidErrors", () => {
     ]);
     expect(f.appName).toBeUndefined();
     expect(f.codeSnippet.split("\n")[0]).toBe(
-      "liquid-syntax-error: sections/hero: Unknown tag 'endschema'",
+      "Liquid syntax error in sections/hero: Unknown tag 'endschema'",
     );
     expect(f.description).toBe(
       "Shoppers see a Liquid error on your homepage. Shopify prints it where a piece of theme code failed. The line is in sections/hero.liquid.",
     );
   });
 
+  it("the first snippet line (what the scan page shows) reads as the error, without a line number", () => {
+    const [f] = detectLiquidErrors([missing("preloaderapp")]);
+    const first = f.codeSnippet.split("\n")[0];
+    expect(first).toBe(
+      "Liquid error in layout/theme: Could not find asset snippets/preloaderapp.liquid",
+    );
+    expect(first).not.toMatch(/line \d/);
+  });
+
   it("no template: the copy does not invent a file", () => {
     const [f] = detectLiquidErrors([missing("wlm-head", null)]);
     expect(f.description).not.toContain("The line is in");
     expect(f.codeSnippet.split("\n")[0]).toBe(
-      "liquid-error: page: Could not find asset snippets/wlm-head.liquid",
+      "Liquid error: Could not find asset snippets/wlm-head.liquid",
     );
   });
 

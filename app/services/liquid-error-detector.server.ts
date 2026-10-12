@@ -297,15 +297,17 @@ function templateFile(template: string): string {
 
 /**
  * The finding's stable identity, stored as line 1 of `codeSnippet` (the differ
- * fingerprints only the first snippet line for `lineNumber: 1`). Built from the
- * kind, the template and the message WITHOUT the line number, so editing the
- * file above the broken line does not turn one error into "fixed" plus "new".
+ * fingerprints only the first snippet line for `lineNumber: 1`, and the scan
+ * page shows the start of the snippet). It reads as the error WITHOUT its line
+ * number ("Liquid error in layout/theme: Could not find asset ..."), so
+ * editing the file above the broken line does not turn one error into "fixed"
+ * plus "new".
  */
 function identityLine(error: RenderedLiquidError): string {
-  const where = error.template ?? "page";
   const message = error.text.replace(/^Liquid (?:syntax )?error(?: \([^)]*\))?: /, "");
-  const label = error.kind === "syntax" ? "liquid-syntax-error" : "liquid-error";
-  return `${label}: ${where}: ${message}`.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS);
+  const label = error.kind === "syntax" ? "Liquid syntax error" : "Liquid error";
+  const where = error.template ? ` in ${error.template}` : "";
+  return `${label}${where}: ${message}`.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS);
 }
 
 /** Merchant copy for one error. Consequence first, no em dashes (house style). */
@@ -340,8 +342,9 @@ export function detectLiquidErrors(errors: readonly RenderedLiquidError[]): Crea
     return {
       filename: LIQUID_ERROR_FINDING_FILENAME,
       lineNumber: 1,
-      // Line 1 = the stable identity (fingerprinted); line 2 = the error as
-      // shoppers see it. Both are bounded; nothing else from the page is kept.
+      // Line 1 = the stable identity (fingerprinted, no line number); line 2 =
+      // the error exactly as shoppers see it. Both are bounded; nothing else
+      // from the page is kept.
       codeSnippet: `${identityLine(error)}\n${error.text}`,
       findingType: FindingType.LIQUID_ERROR_RENDERED,
       severity: Severity.HIGH,

@@ -412,7 +412,7 @@ describe("LIQUID_ERROR_RENDERED is exempt from APP-level ignores (gc-i6du)", () 
     filename: "storefront/homepage",
     findingType: "LIQUID_ERROR_RENDERED",
     codeSnippet:
-      "liquid-error: layout/theme: Could not find asset snippets/klaviyo-form.liquid\nLiquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
+      "Liquid error in layout/theme: Could not find asset snippets/klaviyo-form.liquid\nLiquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
     lineNumber: 1,
     appName: "Klaviyo",
   };

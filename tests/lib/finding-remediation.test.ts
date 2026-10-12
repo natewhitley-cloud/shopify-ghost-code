@@ -320,7 +320,7 @@ describe("LIQUID_ERROR_RENDERED guidance (gc-i6du: read from the homepage, fixed
     filename: "storefront/homepage",
     lineNumber: 1,
     codeSnippet:
-      "liquid-error: layout/theme: Could not find asset snippets/klaviyo-form.liquid\nLiquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
+      "Liquid error in layout/theme: Could not find asset snippets/klaviyo-form.liquid\nLiquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
   };
 
   it("tells the merchant where to fix it: the file and line the error names", () => {
@@ -340,16 +340,13 @@ describe("LIQUID_ERROR_RENDERED guidance (gc-i6du: read from the homepage, fixed
       "Liquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
       `How: ${getFindingRemediation("LIQUID_ERROR_RENDERED")}`,
     ]);
-    expect(text).not.toContain("liquid-error: layout/theme");
+    expect(text).not.toContain("Liquid error in layout/theme");
     expect(text).not.toContain("script tags");
     expect(text).not.toContain("Remove this code");
   });
 
   it("a row with only the identity line still yields a location and the how-to", () => {
-    const text = buildRemovalInstructions(
-      { ...finding, codeSnippet: "liquid-error: page: x" },
-      "L",
-    );
+    const text = buildRemovalInstructions({ ...finding, codeSnippet: "Liquid error: x" }, "L");
     expect(text).not.toContain("Error shown:");
     expect(text).toContain("How: ");
   });

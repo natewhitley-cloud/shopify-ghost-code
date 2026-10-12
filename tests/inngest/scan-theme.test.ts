@@ -4446,7 +4446,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     const STORED_ERROR = {
       filename: "storefront/homepage",
       findingType: FindingType.LIQUID_ERROR_RENDERED,
-      codeSnippet: `liquid-error: layout/theme: Could not find asset snippets/klaviyo-form.liquid\n${ERROR}`,
+      codeSnippet: `Liquid error in layout/theme: Could not find asset snippets/klaviyo-form.liquid\n${ERROR}`,
       lineNumber: 1,
       severity: Severity.HIGH,
       appName: "Klaviyo",

@@ -745,6 +745,37 @@ describe("app.scans.$scanId loader", () => {
       expect(mockGetFindingsPageForScan).not.toHaveBeenCalled();
     });
 
+    it("Liquid errors follow the normal Free gate: counted, but a locked one's text never leaves the server (gc-i6du)", async () => {
+      const error = (id: string, snippet: string, minute: number) =>
+        row(id, "LIQUID_ERROR_RENDERED", "HIGH", minute, {
+          filename: "storefront/homepage",
+          lineNumber: 1,
+          appName: null,
+          codeSnippet: `Liquid error in layout/theme: Could not find asset snippets/${snippet}.liquid\nLiquid error (layout/theme line 9): Could not find asset snippets/${snippet}.liquid`,
+          description: `Shoppers see a Liquid error on your homepage. Your theme tries to load the snippet "${snippet}".`,
+        });
+      // total 3 -> shown 1 (never more than half): two stay locked.
+      scanWith([
+        error("e-1", "shown-snippet", 0),
+        error("e-2", "locked-snippet-a", 1),
+        error("e-3", "locked-snippet-b", 2),
+      ]);
+
+      const result = (await loader(makeLoaderArgs("scan-1"))) as PreviewRows & {
+        findings: unknown[];
+        findingSummary: { byType: Record<string, number> };
+      };
+
+      // Unlike malicious code, a Liquid error is not shown in full on every plan.
+      expect(result.findings).toHaveLength(0);
+      expect(result.previewFindings.map((f) => f.id)).toEqual(["e-1"]);
+      expect(result.findingSummary.byType.LIQUID_ERROR_RENDERED).toBe(3);
+      const json = JSON.stringify(result);
+      expect(json).toContain("shown-snippet");
+      expect(json).not.toContain("locked-snippet-a");
+      expect(json).not.toContain("locked-snippet-b");
+    });
+
     // Formula: shown = max(1, min(5, floor(total / 2))), 0 when total is 0.
     it.each([
       [0, 0],
