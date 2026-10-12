@@ -275,6 +275,107 @@ export interface RemovalInstructionFinding {
 }
 
 /**
+ * Theme-file FindingTypes whose stored `codeSnippet` is ALWAYS the output of
+ * `buildSnippet(content, lineNumber)` (scan-engine.server.ts) for the SAME
+ * `lineNumber` stored on the row: the finding's line plus up to one line before
+ * and one after, capped at 300 characters. That snippet is CONTEXT, so it must
+ * never be labelled as code to remove.
+ *
+ * Basis: VERIFIED against every detector that emits the type. Deliberately
+ * excluded theme-file types, whose snippet is built some other way:
+ *   - MALICIOUS_SCRIPT: usually a 300-char window of the flagged line itself,
+ *     with buildSnippet only as a fallback, and the row cannot tell which.
+ *   - GHOST_LAYOUT: the first 300 characters of the file (lineNumber is a
+ *     synthetic 1).
+ *   - SETTINGS_DRIFT / APP_EMBED_OFF / GHOST_APP_EMBED: a re-serialized JSON
+ *     entry from config/settings_data.json (synthetic lineNumber 1).
+ *   - ORPHAN_ASSET: no snippet at all.
+ * A type not listed here (including any future one) gets the neutral
+ * "Code found:" label and no "finding is this line" claim. A test pins the
+ * split so a new theme-file type forces a decision.
+ */
+export const LINE_CONTEXT_SNIPPET_TYPES: ReadonlySet<string> = new Set([
+  "GHOST_SCRIPT",
+  "GHOST_STYLE",
+  "GHOST_SNIPPET",
+  "GHOST_SECTION",
+  "GHOST_HREFLANG",
+  "GHOST_TEXT",
+  "GHOST_PIXEL",
+  "GHOST_ROBOTS",
+  "GHOST_CANONICAL",
+  "GHOST_TITLE",
+  "GHOST_OG",
+  "GHOST_PRECONNECT",
+  "GHOST_FONT",
+  "GHOST_AJAX",
+  "DUPLICATE_META",
+  "DUPLICATE_LIBRARY",
+  "DUPLICATE_TRACKER",
+  "OVERLAPPING_CHAT_WIDGET",
+  "GHOST_JSON_LD",
+  "JSON_LD_CONFLICT",
+  "JSON_LD_PRICE_CONFLICT",
+  "JSON_LD_INVALID",
+  "DANGLING_REFERENCE",
+  "CHECKOUT_SUNSET",
+]);
+
+/** Mirrors the cap in `buildSnippet` (scan-engine.server.ts). */
+const SNIPPET_CAP = 300;
+
+/**
+ * Recovers the finding's own line from a `buildSnippet(content, lineNumber)`
+ * context snippet, or returns null when that cannot be done with certainty.
+ *
+ * PRECONDITION: `codeSnippet` is exactly what buildSnippet returned for
+ * `lineNumber` (pass the raw stored value, not a trimmed copy: a blank line
+ * before the finding is a real, leading "\n"). buildSnippet joins
+ * [line N-1 (if N >= 2), line N, line N+1 (if any)] with "\n" and cuts the
+ * result at 300 characters, so the finding's line is part 1 when N >= 2 and
+ * part 0 when N is 1.
+ *
+ * Returns null, never a guess, when:
+ *   - `lineNumber` is not a positive integer;
+ *   - the part is missing (the cap cut the snippet inside the line before);
+ *   - the part is the LAST one and the snippet is at the cap: the cut may have
+ *     landed inside the finding's line, and a snippet cannot show whether it
+ *     did. (When another part follows, the line's own "\n" survived, so the
+ *     line is whole.)
+ *   - the line is blank, or still holds a carriage return or Unicode line
+ *     separator after trimming (a file with CR-only line endings is one "line"
+ *     here but several on screen).
+ *
+ * The result is trimmed, which also drops the "\r" of a CRLF line ending.
+ */
+export function matchedLineFromContextSnippet(
+  codeSnippet: string,
+  lineNumber: number,
+): string | null {
+  if (!Number.isInteger(lineNumber) || lineNumber < 1) return null;
+  const parts = codeSnippet.split("\n");
+  const index = lineNumber >= 2 ? 1 : 0;
+  if (index >= parts.length) return null;
+  if (index === parts.length - 1 && codeSnippet.length >= SNIPPET_CAP) return null;
+  const line = parts[index].trim();
+  if (line.length === 0 || /[\r\u2028\u2029]/.test(line)) return null;
+  return line;
+}
+
+/**
+ * The finding's own line, for a finding whose snippet is line context
+ * (LINE_CONTEXT_SNIPPET_TYPES); null for every other finding and whenever the
+ * line cannot be derived with certainty. Shared by the copied instructions and
+ * the finding card's snippet box so the two never disagree.
+ */
+export function findingMatchedLine(
+  finding: Pick<RemovalInstructionFinding, "findingType" | "lineNumber" | "codeSnippet">,
+): string | null {
+  if (!LINE_CONTEXT_SNIPPET_TYPES.has(finding.findingType)) return null;
+  return matchedLineFromContextSnippet(finding.codeSnippet, finding.lineNumber);
+}
+
+/**
  * Composes a precise, self-contained, copy-pasteable removal instruction for
  * THIS specific finding — assembled at render time from data already on the row
  * (no new model/data). The generic per-type `howTo` is combined with the
@@ -284,25 +385,35 @@ export interface RemovalInstructionFinding {
  * `typeLabel` is the human FindingType label (the same one the row's type column
  * shows) — passed in so this module need not duplicate the label map.
  *
- * Shape for a theme-file finding:
+ * The stored snippet is never labelled as code to remove: for most theme-file
+ * findings it is the finding's line PLUS its neighbours (see
+ * LINE_CONTEXT_SNIPPET_TYPES), and the neighbours may be code the store needs.
+ *
+ * Shape for a theme-file finding with a line-context snippet:
  *   Ghost Code finding: <typeLabel>
  *   File: <filename>  (line <lineNumber>)
- *   Remove this code:
+ *   The finding is this line:
+ *   <the finding's own line, trimmed>
+ *   Code at line <lineNumber>, shown with the line before and after:
  *   <full codeSnippet>
  *   How: <howTo>
+ * The "finding is this line" pair is omitted when the line cannot be derived
+ * with certainty (see matchedLineFromContextSnippet). The context block is
+ * omitted when the snippet is nothing but that one line (a one-line file).
  *
  * Graceful degradation:
  *   - Storefront findings (SCRIPT_TAG_SUNSET): no file and nothing the merchant
- *     can delete, so a "Location:" line and the URLs replace "Remove this code".
+ *     can delete, so a "Location:" line and the URLs replace the code block.
  *   - LIQUID_ERROR_RENDERED: read from the homepage, so a "Location:" line and
  *     the error as shown (which names the file and line) replace them.
  *   - Admin-resource findings (product / page / redirect / metafield /
  *     translation): the `filename` is a synthetic locator and there is no theme
- *     snippet to delete, so the line reference and the "Remove this code" block
- *     are omitted in favour of a plain-language "Location:" line and the `howTo`,
- *     which already points at the correct Admin surface.
- *   - Theme-file findings with no meaningful line (cross-file passes report
- *     lineNumber 0) or an empty snippet omit just those parts.
+ *     snippet to delete, so the line reference and the code block are omitted in
+ *     favour of a plain-language "Location:" line and the `howTo`, which already
+ *     points at the correct Admin surface.
+ *   - Other theme-file findings (snippet built some other way, or no real
+ *     line): the snippet goes under a neutral "Code found:" label.
+ *   - An empty snippet omits the code block.
  *
  * This is a pure function — no DOM, no clipboard, no side effects. The caller is
  * responsible for copying the returned string.
@@ -339,7 +450,18 @@ export function buildRemovalInstructions(
     );
     const snippet = finding.codeSnippet.trim();
     if (snippet.length > 0) {
-      lines.push("Remove this code:", snippet);
+      if (LINE_CONTEXT_SNIPPET_TYPES.has(finding.findingType) && finding.lineNumber > 0) {
+        const matched = matchedLineFromContextSnippet(finding.codeSnippet, finding.lineNumber);
+        if (matched !== null) lines.push("The finding is this line:", matched);
+        if (snippet !== matched) {
+          lines.push(
+            `Code at line ${finding.lineNumber}, shown with the line before and after:`,
+            snippet,
+          );
+        }
+      } else {
+        lines.push("Code found:", snippet);
+      }
     }
   }
 

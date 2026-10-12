@@ -3450,6 +3450,50 @@ describe("FindingRow — removal guidance + copy button", () => {
     expect(html).toContain("&lt;script");
   });
 
+  // The stored snippet is the finding's line plus its neighbours. The box must
+  // lead with the finding's own line, not the line above it (owner report,
+  // 2026-10-12: the box showed the comment line above the Klaviyo script tag).
+  const CONTEXT_SNIPPET = [
+    "<!-- Orphaned: Klaviyo tracking (app uninstalled 2025-11) -->",
+    '    <script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=XXXXXX" async></script>',
+    '    <link rel="stylesheet" href="https://a.klaviyo.com/media/css/onsite/onsite.css" />',
+  ].join("\n");
+  const snippetBoxText = (html: string) =>
+    (html.match(/<code style="[^"]*">([^<]*)<\/code><button[^>]*aria-label="Copy code snippet"/) ??
+      [])[1];
+
+  it("the snippet box shows the finding's own line first, still cut at 80 characters", () => {
+    const html = renderRow({ ...FINDING_ONE, lineNumber: 33, codeSnippet: CONTEXT_SNIPPET });
+    const matched =
+      '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=XXXXXX" async></script>';
+    const shown = snippetBoxText(html)
+      ?.replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">")
+      .replace(/&quot;/g, '"');
+    expect(shown).toBe(`${matched.slice(0, 80)}…`);
+    expect(shown).not.toContain("Orphaned");
+  });
+
+  it("the snippet box is unchanged when the finding's line cannot be derived", () => {
+    // SETTINGS_DRIFT stores a JSON entry, not line context: no derivation.
+    const html = renderRow({
+      ...FINDING_ONE,
+      findingType: "SETTINGS_DRIFT",
+      lineNumber: 1,
+      codeSnippet: "first line\nsecond line",
+    });
+    expect(snippetBoxText(html)).toBe("first line\nsecond line");
+    // A line-context type whose snippet has no second part (FINDING_ONE, line 42).
+    expect(snippetBoxText(renderRow(FINDING_ONE))).toBe(
+      "&lt;script src=&quot;https://cdn.someapp.com/tracker.js&quot;&gt;&lt;/script&gt;",
+    );
+    // And an underivable long snippet keeps its 80-character cut.
+    const long = "x".repeat(300);
+    expect(snippetBoxText(renderRow({ ...FINDING_ONE, codeSnippet: long }))).toBe(
+      `${"x".repeat(80)}…`,
+    );
+  });
+
   it("says a signature-matched finding (GHOST_SCRIPT) matched a known app signature", () => {
     const html = renderRow(FINDING_ONE);
     expect(html).toMatch(/<span style="[^"]*">Matched a known app signature\.<\/span>/);

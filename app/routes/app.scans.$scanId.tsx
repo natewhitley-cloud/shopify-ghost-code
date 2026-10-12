@@ -36,6 +36,7 @@ import {
 import type { LaneKey } from "../lib/finding-consequence";
 import {
   buildRemovalInstructions,
+  findingMatchedLine,
   getFindingImpact,
   getFindingRemediation,
 } from "../lib/finding-remediation";
@@ -812,6 +813,11 @@ export function FindingRow({
   const typeLabel =
     FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ");
   const impact = getFindingImpact(finding.findingType);
+  // The stored snippet is the finding's line plus its neighbours. Preview the
+  // finding's own line when it can be derived for certain, so the box does not
+  // lead with the line above it; otherwise the snippet as stored. The Copy
+  // button still copies the full snippet.
+  const snippetPreview = findingMatchedLine(finding) ?? finding.codeSnippet;
   return (
     <li id={anchor && finding.id ? findingAnchorId(finding.id) : undefined} style={findingItem}>
       {/* Title: what it is and whose it is, then the NEW / TRACKING / VISUAL
@@ -864,9 +870,7 @@ export function FindingRow({
 
       <div style={findingSnippet}>
         <code style={findingSnippetCode}>
-          {finding.codeSnippet.length > 80
-            ? `${finding.codeSnippet.slice(0, 80)}…`
-            : finding.codeSnippet}
+          {snippetPreview.length > 80 ? `${snippetPreview.slice(0, 80)}…` : snippetPreview}
         </code>
         <CopyButton text={finding.codeSnippet} />
       </div>
