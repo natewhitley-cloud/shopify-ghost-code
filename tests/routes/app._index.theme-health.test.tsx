@@ -782,6 +782,70 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       expect(cleanLine(sectionOf(renderDashboard(data)))).toContain("Known malicious code");
     });
 
+    // Reviewer LOW-4: lane counts leave out ignored findings, so with every
+    // malicious finding ignored and nothing else found the lanes card used to
+    // say the theme was clean right above the critical line.
+    describe("the all-clear card", () => {
+      const ALL_CLEAR = ["You&#x27;re all clear", "Your theme is clean"];
+
+      /** A scan whose only findings are `found` malicious ones, `kept` of them not ignored. */
+      function onlyMalicious(found: number, kept: number) {
+        mockTypeCounts.mockResolvedValue(found > 0 ? { MALICIOUS_SCRIPT: found } : {});
+        (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+          fingerprints: new Set(["fp-malicious"]),
+          appNames: new Set(),
+        });
+        mockFiltered.mockResolvedValue({
+          summary: {
+            total: kept,
+            bySeverity: { HIGH: kept, MEDIUM: 0, LOW: 0 },
+            byType: kept > 0 ? { MALICIOUS_SCRIPT: kept } : {},
+          },
+          keptFindings: [],
+        });
+      }
+
+      it.each(["free", "Standard", "Professional"])(
+        "%s: every malicious finding ignored and nothing else found -> no all-clear text, critical line present",
+        async (plan) => {
+          setPlan(plan);
+          onlyMalicious(2, 0);
+          const data = await runLoader();
+          expect(data.laneSummary).toEqual([]);
+          expect(data.maliciousHealth).toMatchObject({ count: 2, statusLabel: "2 issues" });
+          const html = renderDashboard(data);
+          for (const text of ALL_CLEAR) expect(html, text).not.toContain(text);
+          expect(html).not.toMatch(/all clear|is clean/i);
+          expect(html).not.toContain("What it&#x27;s costing you");
+          expectCriticalLine(sectionOf(html), "2 issues", MALICIOUS_DETAIL_2);
+        },
+      );
+
+      it("a malicious finding that is NOT ignored keeps its lane, with no all-clear text", async () => {
+        onlyMalicious(2, 2);
+        const data = await runLoader();
+        expect(data.laneSummary).not.toEqual([]);
+        const html = renderDashboard(data);
+        for (const text of ALL_CLEAR) expect(html, text).not.toContain(text);
+        expect(html).toContain("What it&#x27;s costing you");
+        expectCriticalLine(sectionOf(html), "2 issues", MALICIOUS_DETAIL_2);
+      });
+
+      it.each(["free", "Standard", "Professional"])(
+        "%s: no malicious findings and nothing else found -> the all-clear text still renders",
+        async (plan) => {
+          setPlan(plan);
+          onlyMalicious(0, 0);
+          const data = await runLoader();
+          expect(data.laneSummary).toEqual([]);
+          expect(data.maliciousHealth).toBeNull();
+          const html = renderDashboard(data);
+          for (const text of ALL_CLEAR) expect(html, text).toContain(text);
+          expect(sectionOf(html)).not.toContain("<s-badge");
+        },
+      );
+    });
+
     it("adds no finding query: the count comes from the per-type counts already loaded", async () => {
       mockTypeCounts.mockResolvedValue({ ...TYPE_COUNTS, MALICIOUS_SCRIPT: 3 });
       const data = await runLoader();

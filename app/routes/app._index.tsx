@@ -1776,8 +1776,11 @@ export default function Dashboard() {
               <TopFindings findings={topFindings} newlyInactiveApps={newlyInactiveApps} />
             )}
 
-            {/* Consequence lanes — "what it's costing you", worst-first */}
-            {hasResults && latestScan && (
+            {/* Consequence lanes — "what it's costing you", worst-first. Lane
+              counts leave out ignored findings, so with no lanes this card says
+              the theme is clean. It is left out when the scan found known
+              malicious code (ignored or not): Theme health below says so. */}
+            {hasResults && latestScan && !(laneSummary.length === 0 && maliciousHealth) && (
               <div style={{ ...sectionCard, marginBottom: 0 }}>
                 <s-stack direction="block" gap="base">
                   <div>
