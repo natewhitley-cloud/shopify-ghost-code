@@ -14,6 +14,9 @@ export const SOFT_LAUNCH_FLAGS: Partial<Record<FindingType, string>> = {
   // Also gates the storefront request itself (isScriptTagSunsetLive below):
   // flag off = no storefront fetch, no category, no finding (dark).
   [FindingType.SCRIPT_TAG_SUNSET]: "SCRIPT_TAG_SUNSET_LIVE_ENABLED",
+  // Read from the SAME single homepage request (gc-i6du), so it shares that
+  // request's flag: flag off = no request, no category, no finding, not live.
+  [FindingType.LIQUID_ERROR_RENDERED]: "SCRIPT_TAG_SUNSET_LIVE_ENABLED",
 };
 
 /**

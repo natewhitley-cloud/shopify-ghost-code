@@ -221,6 +221,14 @@ describe("presentation helpers", () => {
     expect(
       findingLocation({ ...c("t", "SCRIPT_TAG_SUNSET", "MEDIUM"), filename: "x", lineNumber: 0 }),
     ).toBe("Your storefront's script tags");
+    // gc-i6du: a Liquid error is read from the homepage, not from script tags.
+    expect(
+      findingLocation({
+        ...c("l", "LIQUID_ERROR_RENDERED", "HIGH"),
+        filename: "storefront/homepage",
+        lineNumber: 1,
+      }),
+    ).toBe("Your storefront homepage");
   });
 
   it("href: full list filters to the type; Free and malicious anchor on the unfiltered page", () => {

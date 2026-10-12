@@ -41,8 +41,8 @@ const AGENTIC_IMPACT_TYPES = [
 describe("getFindingRemediation — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 36 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(37);
+  it("has 38 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(38);
   });
 
   it.each(ALL_TYPES)("returns a non-empty blurb for %s", (type) => {
@@ -311,5 +311,46 @@ describe("SCRIPT_TAG_SUNSET guidance (storefront, merchant cannot delete)", () =
     expect(text).not.toContain("Remove this code");
     expect(text).not.toContain("File:");
     expect(text).toContain(`How: ${getFindingRemediation("SCRIPT_TAG_SUNSET")}`);
+  });
+});
+
+describe("LIQUID_ERROR_RENDERED guidance (gc-i6du: read from the homepage, fixed in the theme)", () => {
+  const finding = {
+    findingType: "LIQUID_ERROR_RENDERED",
+    filename: "storefront/homepage",
+    lineNumber: 1,
+    codeSnippet:
+      "liquid-error: layout/theme: Could not find asset snippets/klaviyo-form.liquid\nLiquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
+  };
+
+  it("tells the merchant where to fix it: the file and line the error names", () => {
+    const howTo = getFindingRemediation("LIQUID_ERROR_RENDERED");
+    expect(howTo).toContain("Open the theme file the error names");
+    expect(howTo).toContain("delete the render line");
+    expect(howTo).toContain("Duplicate your live theme first");
+    expect(howTo).not.toContain("\u2014");
+  });
+
+  it("the copyable instruction shows the error as shoppers see it, not the internal identity line", () => {
+    const text = buildRemovalInstructions(finding, "Liquid Errors Shoppers See");
+    expect(text.split("\n")).toEqual([
+      "Ghost Code finding: Liquid Errors Shoppers See",
+      "Location: your storefront homepage (shoppers can read this error)",
+      "Error shown:",
+      "Liquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
+      `How: ${getFindingRemediation("LIQUID_ERROR_RENDERED")}`,
+    ]);
+    expect(text).not.toContain("liquid-error: layout/theme");
+    expect(text).not.toContain("script tags");
+    expect(text).not.toContain("Remove this code");
+  });
+
+  it("a row with only the identity line still yields a location and the how-to", () => {
+    const text = buildRemovalInstructions(
+      { ...finding, codeSnippet: "liquid-error: page: x" },
+      "L",
+    );
+    expect(text).not.toContain("Error shown:");
+    expect(text).toContain("How: ");
   });
 });

@@ -87,7 +87,7 @@ export function optionalScopeUnlocks(scope: OptionalScope, brokenLinksIncluded: 
  *   - GHOST_PAGE                                     → read_content                 (hasContentScope)
  *   - GHOST_REDIRECT                                 → read_online_store_navigation (hasNavigationScope)
  *   - DANGLING_REFERENCE                             → read_products + read_content (either unlocks part)
- *   - SCRIPT_TAG_SUNSET                              → none: never scope-skipped, only
+ *   - SCRIPT_TAG_SUNSET, LIQUID_ERROR_RENDERED      → none: never scope-skipped, only
  *                                                      `unreachableCategories` (storefront
  *                                                      unreadable); listed for its label
  *
@@ -107,6 +107,7 @@ export const SKIPPABLE_CATEGORY_INFO: Record<string, { label: string; scopes: Op
   GHOST_REDIRECT: { label: "URL redirects", scopes: ["read_online_store_navigation"] },
   DANGLING_REFERENCE: { label: "Broken links", scopes: ["read_products", "read_content"] },
   SCRIPT_TAG_SUNSET: { label: "Script tag sunset", scopes: [] },
+  LIQUID_ERROR_RENDERED: { label: "Liquid errors shoppers see", scopes: [] },
 };
 
 /**

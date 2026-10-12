@@ -149,12 +149,19 @@ describe("SKIPPABLE_CATEGORY_INFO mapping", () => {
     const scopeless = Object.entries(SKIPPABLE_CATEGORY_INFO)
       .filter(([, info]) => info.scopes.length === 0)
       .map(([category]) => category);
-    expect(scopeless).toEqual(["SCRIPT_TAG_SUNSET"]);
+    expect(scopeless).toEqual(["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"]);
     for (const category of scopeless) expect(scopeSkippable.has(category)).toBe(false);
   });
 
   it('labels SCRIPT_TAG_SUNSET "Script tag sunset"', () => {
     expect(skippedCategoryLabels(["SCRIPT_TAG_SUNSET"])).toEqual(["Script tag sunset"]);
+  });
+
+  it("labels the Liquid error check for the unreachable-storefront notice (gc-i6du)", () => {
+    expect(skippedCategoryLabels(["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"])).toEqual([
+      "Script tag sunset",
+      "Liquid errors shoppers see",
+    ]);
   });
 
   // Drift guard: every FindingType the scan engine can push into

@@ -393,6 +393,7 @@ describe("fetchStorefrontScriptTags", () => {
       status: "ok",
       host: PRIMARY,
       urls: parseScriptTagUrls(page(REAL_BLOCK)),
+      liquidErrors: [],
     });
     expect(admin.graphql).toHaveBeenCalledTimes(1);
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -467,7 +468,101 @@ describe("fetchStorefrontScriptTags", () => {
 
   it("returns ok with zero URLs for a Shopify page with no asyncLoad block", async () => {
     fetchImpl.mockResolvedValue(html(page("")));
-    expect(await run()).toEqual({ status: "ok", host: PRIMARY, urls: [] });
+    expect(await run()).toEqual({ status: "ok", host: PRIMARY, urls: [], liquidErrors: [] });
+  });
+
+  describe("rendered Liquid errors (gc-i6du): same request, in memory only", () => {
+    const ERROR =
+      "Liquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid";
+    /** A homepage with a ScriptTag block in the head and `body` in the body. */
+    const pageWithBody = (body: string) =>
+      `<!doctype html><html><head>${SHOPIFY_MARKERS}${REAL_BLOCK}</head><body class="template-index"><main>${body}</main></body></html>`;
+
+    it("returns the errors with the ScriptTag URLs from ONE request (no second fetch, no extra Admin call)", async () => {
+      fetchImpl.mockResolvedValue(html(pageWithBody(`<div>${ERROR}</div>`)));
+      const admin = makeAdmin();
+      const result = await run(admin);
+      expect(result).toEqual({
+        status: "ok",
+        host: PRIMARY,
+        urls: parseScriptTagUrls(page(REAL_BLOCK)),
+        liquidErrors: [
+          {
+            text: ERROR,
+            kind: "error",
+            template: "layout/theme",
+            missingSnippet: "klaviyo-form",
+          },
+        ],
+      });
+      expect(fetchImpl).toHaveBeenCalledTimes(1);
+      expect(admin.graphql).toHaveBeenCalledTimes(1);
+    });
+
+    it("the result never carries page HTML or other page text", async () => {
+      fetchImpl.mockResolvedValue(
+        html(pageWithBody(`<p>Hello Jane Doe</p><div>${ERROR}</div><p>Order 1042</p>`)),
+      );
+      const serialized = JSON.stringify(await run());
+      for (const leak of ["Jane", "1042", "<div", "<main", "template-index"]) {
+        expect(serialized).not.toContain(leak);
+      }
+    });
+
+    it("a clean page: an empty list (audited, nothing found)", async () => {
+      fetchImpl.mockResolvedValue(html(pageWithBody("<h1>Paw Naturals</h1>")));
+      expect(await run()).toMatchObject({ status: "ok", liquidErrors: [] });
+    });
+
+    it("flag off: no request, and no error list at all", async () => {
+      delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
+      const result = await run();
+      expect(result).toEqual({ status: "disabled" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it("an unpublished theme: no request, no error list", async () => {
+      const result = await run(makeAdmin(undefined, "UNPUBLISHED"));
+      expect(result).toEqual({ status: "not_published" });
+      expect(fetchImpl).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        "a password page that shows an error",
+        () => html(`<html><body class="template-password">${ERROR}</body></html>`),
+        "password",
+      ],
+      ["a 503 that shows an error", () => html(`<p>${ERROR}</p>`, 503), "http_status"],
+      [
+        "a page that is not a Shopify storefront",
+        () => html(`<html><body>${ERROR}</body></html>`),
+        "not_shopify",
+      ],
+      [
+        "a ScriptTag block that cannot be parsed",
+        () =>
+          html(
+            `<!doctype html><html><head>${SHOPIFY_MARKERS}${asyncLoadWith("[1, 2]")}</head><body>${ERROR}</body></html>`,
+          ),
+        "parse_failed",
+      ],
+    ])("%s: unreachable, never a list of errors", async (_name, response, reason) => {
+      fetchImpl.mockResolvedValue(response());
+      const result = await run();
+      expect(result).toEqual({ status: "unreachable", reason });
+      expect(result).not.toHaveProperty("liquidErrors");
+    });
+
+    it("logs the count only, never the error text or a snippet name", async () => {
+      fetchImpl.mockResolvedValue(html(pageWithBody(`<div>${ERROR}</div>`)));
+      await run();
+      const logged = JSON.stringify((logger.info as ReturnType<typeof vi.fn>).mock.calls);
+      expect(logged).toContain('"liquidErrorCount":1');
+      expect(logged).not.toContain("Liquid error");
+      expect(logged).not.toContain("klaviyo-form");
+      expect(logged).not.toContain("layout/theme");
+    });
   });
 
   describe("unreachable", () => {
@@ -659,7 +754,7 @@ describe("fetchStorefrontScriptTags", () => {
         .mockResolvedValueOnce(redirect(`https://${PRIMARY}/b`))
         .mockResolvedValueOnce(redirect(`https://${MYSHOPIFY}/`))
         .mockResolvedValueOnce(html(page("")));
-      expect(await run()).toEqual({ status: "ok", host: PRIMARY, urls: [] });
+      expect(await run()).toEqual({ status: "ok", host: PRIMARY, urls: [], liquidErrors: [] });
     });
   });
 

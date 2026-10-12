@@ -31,6 +31,16 @@ describe("soft-launch flags", () => {
     },
   );
 
+  it("LIQUID_ERROR_RENDERED shares the storefront request's flag (gc-i6du): dark and live together", () => {
+    expect(SOFT_LAUNCH_FLAGS[FindingType.LIQUID_ERROR_RENDERED]).toBe(FLAG);
+    expect(isSoftLaunchLive(FindingType.LIQUID_ERROR_RENDERED)).toBe(false);
+    process.env[FLAG] = "1";
+    expect(isSoftLaunchLive(FindingType.LIQUID_ERROR_RENDERED)).toBe(false);
+    process.env[FLAG] = "true";
+    expect(isSoftLaunchLive(FindingType.LIQUID_ERROR_RENDERED)).toBe(true);
+    expect(isScriptTagSunsetLive()).toBe(true);
+  });
+
   it('enables SCRIPT_TAG_SUNSET for "true", through the same helper', () => {
     process.env[FLAG] = "true";
     expect(isSoftLaunchLive(FindingType.SCRIPT_TAG_SUNSET)).toBe(true);

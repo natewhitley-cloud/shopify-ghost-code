@@ -38,7 +38,7 @@ describe("add_script_tag_sunset migration", () => {
     expect(SCHEMA).toMatch(
       /model Scan \{[\s\S]*?\n\s+unreachableCategories\s+String\[\]\s+@default\(\[\]\)\n/,
     );
-    expect(SCHEMA).toMatch(/enum FindingType \{[\s\S]*?\n\s+SCRIPT_TAG_SUNSET\n\}/);
+    expect(SCHEMA).toMatch(/enum FindingType \{[^}]*?\n\s+SCRIPT_TAG_SUNSET\n/);
   });
 
   it("sorts after the previous latest migration", () => {

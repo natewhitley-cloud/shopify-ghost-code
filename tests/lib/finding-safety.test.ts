@@ -26,8 +26,8 @@ import {
 describe("REMOVAL_SAFETY — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 36 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(37);
+  it("has 38 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(38);
   });
 
   it("maps every FindingType enum member explicitly (exhaustiveness)", () => {

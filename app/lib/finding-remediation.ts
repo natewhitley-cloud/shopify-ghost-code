@@ -227,6 +227,13 @@ const REMEDIATION: Record<string, Remediation> = {
       "Contact the app's support and ask whether it has moved off script tags to an app embed before Shopify stops running script tags on March 1, 2027. You can check for its embed in Online Store > Themes > Customize > Theme settings > App embeds, and turn it on there if the app tells you to. Script tags don't appear in your admin or theme code, so there is nothing for you to delete: the app's developer has to make the move.",
   },
 
+  // ---- Liquid errors printed on the storefront (gc-i6du) ----
+  // Read from the homepage, but fixed in the theme file the error names.
+  LIQUID_ERROR_RENDERED: {
+    howTo:
+      "Open the theme file the error names in the theme code editor (Online Store, Themes, Edit code) and go to the line number it gives. If that line renders a snippet that no longer exists, delete the render line: the snippet is gone, so the line only prints the error. For any other error, ask your theme developer or whoever last edited that file to fix the line. Duplicate your live theme first (Online Store, Themes, Actions, Duplicate).",
+  },
+
   // ---- Theme settings ----
   SETTINGS_DRIFT: {
     howTo:
@@ -287,6 +294,8 @@ export interface RemovalInstructionFinding {
  * Graceful degradation:
  *   - Storefront findings (SCRIPT_TAG_SUNSET): no file and nothing the merchant
  *     can delete, so a "Location:" line and the URLs replace "Remove this code".
+ *   - LIQUID_ERROR_RENDERED: read from the homepage, so a "Location:" line and
+ *     the error as shown (which names the file and line) replace them.
  *   - Admin-resource findings (product / page / redirect / metafield /
  *     translation): the `filename` is a synthetic locator and there is no theme
  *     snippet to delete, so the line reference and the "Remove this code" block
@@ -309,6 +318,13 @@ export function buildRemovalInstructions(
     // Admin resources are edited in the Shopify Admin, not deleted as theme code:
     // show a human location label and lean on howTo (no line/snippet block).
     lines.push(`Location: ${adminResourceLocatorLabel(finding.findingType, finding.filename)}`);
+  } else if (finding.findingType === "LIQUID_ERROR_RENDERED") {
+    // Read from the public homepage (gc-i6du). The stored snippet's first line
+    // is an internal identity; the error as shoppers see it follows, and names
+    // the theme file and line to fix.
+    lines.push("Location: your storefront homepage (shoppers can read this error)");
+    const shown = finding.codeSnippet.split("\n").slice(1).join("\n").trim();
+    if (shown.length > 0) lines.push("Error shown:", shown);
   } else if (isStorefrontFinding(finding.findingType)) {
     // Read from the public storefront (script tags): there is no file to edit
     // and nothing the merchant can remove, so list the URLs for the vendor.

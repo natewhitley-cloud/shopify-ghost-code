@@ -164,6 +164,7 @@ export function findingLocation(
   if (isAdminResourceFinding(finding.findingType)) {
     return adminResourceLocatorLabel(finding.findingType, finding.filename);
   }
+  if (finding.findingType === "LIQUID_ERROR_RENDERED") return "Your storefront homepage";
   if (isStorefrontFinding(finding.findingType)) {
     return "Your storefront's script tags";
   }

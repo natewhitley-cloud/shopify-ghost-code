@@ -77,6 +77,7 @@ export function createZeroTypeCounts(): Record<FindingType, number> {
     [FindingType.APP_EMBED_OFF]: 0,
     [FindingType.GHOST_APP_EMBED]: 0,
     [FindingType.SCRIPT_TAG_SUNSET]: 0,
+    [FindingType.LIQUID_ERROR_RENDERED]: 0,
   };
 }
 

@@ -166,7 +166,7 @@ describe("getFindingConfidence", () => {
   // ---------------------------------------------------------------------------
   it("classifies every FindingType enum member in exactly one tier (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(37);
+    expect(allTypes).toHaveLength(38);
 
     for (const type of allTypes) {
       const inSignature = CONFIDENCE_TYPE_SETS.signature.has(type);
@@ -183,7 +183,7 @@ describe("getFindingConfidence", () => {
     const heuristic = [...CONFIDENCE_TYPE_SETS.heuristic];
     const overlap = signature.filter((t) => CONFIDENCE_TYPE_SETS.heuristic.has(t));
     expect(overlap).toEqual([]);
-    expect(signature.length + heuristic.length).toBe(37);
+    expect(signature.length + heuristic.length).toBe(38);
   });
 });
 
@@ -258,7 +258,7 @@ describe("isThemeFileFinding", () => {
   // fails here, forcing a deliberate theme-file / Admin-resource / storefront call.
   it("classifies every FindingType enum member in exactly one set (drift guard)", () => {
     const allTypes = Object.values(FindingType);
-    expect(allTypes).toHaveLength(37);
+    expect(allTypes).toHaveLength(38);
 
     for (const type of allTypes) {
       const memberships = [
@@ -280,7 +280,7 @@ describe("isThemeFileFinding", () => {
       ...THEME_FILE_TYPE_SETS.storefront,
     ];
     expect(new Set(all).size).toBe(all.length);
-    expect(all.length).toBe(37);
+    expect(all.length).toBe(38);
   });
 
   it("classifies SCRIPT_TAG_SUNSET as storefront only (no editor or admin link)", () => {
@@ -289,6 +289,15 @@ describe("isThemeFileFinding", () => {
     expect(isAdminResourceFinding("SCRIPT_TAG_SUNSET")).toBe(false);
     expect(isStorefrontFinding("GHOST_SCRIPT")).toBe(false);
     expect(isStorefrontFinding("")).toBe(false);
+  });
+
+  it("classifies LIQUID_ERROR_RENDERED as storefront only, shopper-visible and heuristic (gc-i6du)", () => {
+    expect(isStorefrontFinding("LIQUID_ERROR_RENDERED")).toBe(true);
+    expect(isThemeFileFinding("LIQUID_ERROR_RENDERED")).toBe(false);
+    expect(isAdminResourceFinding("LIQUID_ERROR_RENDERED")).toBe(false);
+    expect(hasVisualImpact("LIQUID_ERROR_RENDERED")).toBe(true);
+    // An app is named only when a missing snippet matches a signature.
+    expect(getFindingConfidence("LIQUID_ERROR_RENDERED")).toBe("heuristic");
   });
 });
 

@@ -464,6 +464,13 @@ model Scan {
   // differ never resolves a prior finding past it, and the scan page discloses
   // "checked N of M". NULL = legacy scan (walked the Free caps, recorded nothing).
   walkCoverage      Json?
+  // Theme health (gc-i6du): what the scanned theme says about itself, read from
+  // config/settings_schema.json's theme_info entry and the theme's template
+  // files (already in the scan's file set; no extra API call), as
+  // { name, version, author, architecture: "os2" | "vintage" | "unknown" }
+  // (app/lib/theme-info.ts). Strings are bounded. NULL = legacy scan, or a run
+  // memoized before the field.
+  themeInfo         Json?
   findings          Finding[]
   unknownScripts    UnknownScript[]
   scanDomains       ScanDomain[]
@@ -748,6 +755,14 @@ enum FindingType {
   // soft-launched behind SCRIPT_TAG_SUNSET_LIVE_ENABLED, which also gates the
   // storefront request itself (flag off = no request at all).
   SCRIPT_TAG_SUNSET
+  // Emitted by the shopper-visible Liquid error check (liquid-error-detector.server.ts,
+  // gc-i6du): the PUBLIC storefront homepage, read by the same single request as
+  // SCRIPT_TAG_SUNSET, shows a rendered Liquid error as page text (e.g. "Liquid
+  // error (layout/theme line 309): Could not find asset snippets/x.liquid").
+  // One finding per distinct error; only the error text (bounded) and the missing
+  // snippet name are stored, never page HTML. Published theme only; gated by
+  // SCRIPT_TAG_SUNSET_LIVE_ENABLED like the request itself.
+  LIQUID_ERROR_RENDERED
 }
 
 enum SubmissionStatus {

@@ -1,5 +1,9 @@
 /**
- * Storefront ScriptTag fetcher (SCRIPT_TAG_SUNSET audit).
+ * Storefront ScriptTag fetcher (SCRIPT_TAG_SUNSET audit), which also reads the
+ * rendered Liquid errors shoppers can see on that same page
+ * (LIQUID_ERROR_RENDERED, gc-i6du): same single request, same flag, no extra
+ * call. The homepage HTML never leaves this module: only the ScriptTag URLs
+ * and the small bounded error records (liquid-error-detector) are returned.
  *
  * The ONLY place the scanner reads a shop's public storefront, and it is DARK:
  * while SCRIPT_TAG_SUNSET_LIVE_ENABLED is not "true" it returns `disabled`
@@ -40,7 +44,8 @@
  * Published theme only: the storefront renders only the MAIN theme, so a scan
  * of any other theme returns `not_published` without a request.
  *
- * Logging: host + outcome only. Never the query string, a ScriptTag URL, or HTML.
+ * Logging: host + outcome + counts only. Never the query string, a ScriptTag
+ * URL, an error's text, or HTML.
  */
 
 import dns from "node:dns";
@@ -48,6 +53,10 @@ import { BlockList, isIP } from "node:net";
 
 import { Agent, fetch as undiciFetch } from "undici";
 
+import {
+  extractRenderedLiquidErrors,
+  type RenderedLiquidError,
+} from "./liquid-error-detector.server";
 import { isScriptTagSunsetLive } from "./soft-launch-flags.server";
 import { logger } from "../lib/logger.server";
 import type { AdminApiContext } from "../types/shopify";
@@ -77,8 +86,12 @@ export type StorefrontScriptTagResult =
   | { status: "disabled" }
   /** The scanned theme is not the published (MAIN) one: no request was made. */
   | { status: "not_published" }
-  /** The storefront was read; `urls` are the raw ScriptTag URLs (may be empty). */
-  | { status: "ok"; host: string; urls: string[] }
+  /**
+   * The storefront was read. `urls` are the raw ScriptTag URLs (may be empty);
+   * `liquidErrors` are the rendered Liquid errors shoppers can see on the page
+   * (may be empty; at most MAX_LIQUID_ERRORS small records, never HTML).
+   */
+  | { status: "ok"; host: string; urls: string[]; liquidErrors: RenderedLiquidError[] }
   | { status: "unreachable"; reason: StorefrontUnreachableReason };
 
 // ---------------------------------------------------------------------------
@@ -663,7 +676,12 @@ export function readStorefrontHomepage(
 }
 
 /**
- * Read the shop's public homepage and extract its ScriptTag URLs.
+ * Read the shop's public homepage and extract its ScriptTag URLs and the
+ * Liquid errors rendered on it.
+ *
+ * Both come from the ONE page read, so they are available together or not at
+ * all: any `unreachable` result (including a ScriptTag block that could not be
+ * parsed) means neither was checked.
  *
  * Never throws: every failure (Admin error, network, timeout, unexpected HTML)
  * is `unreachable`, so the caller can record the category as un-audited.
@@ -724,6 +742,9 @@ export async function fetchStorefrontScriptTags(
   }
   const urls = parseScriptTagUrls(html);
   if (urls === null) return unreachable("parse_failed", shopId, domains.primaryHost);
+  // Same page, already in memory (gc-i6du): the error text is extracted here
+  // so the HTML never crosses this function's boundary.
+  const liquidErrors = extractRenderedLiquidErrors(html);
 
   logger.info("storefront script tags read", {
     function: "storefront-fetcher",
@@ -731,6 +752,7 @@ export async function fetchStorefrontScriptTags(
     shopId,
     host: domains.primaryHost,
     scriptTagCount: urls.length,
+    liquidErrorCount: liquidErrors.length,
   });
-  return { status: "ok", host: domains.primaryHost, urls };
+  return { status: "ok", host: domains.primaryHost, urls, liquidErrors };
 }

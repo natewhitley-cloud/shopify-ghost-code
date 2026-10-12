@@ -406,3 +406,35 @@ describe("SCRIPT_TAG_SUNSET is exempt from APP-level ignores (M5)", () => {
     expect(isFindingIgnored(tag, ignores)).toBe(true);
   });
 });
+
+describe("LIQUID_ERROR_RENDERED is exempt from APP-level ignores (gc-i6du)", () => {
+  const error = {
+    filename: "storefront/homepage",
+    findingType: "LIQUID_ERROR_RENDERED",
+    codeSnippet:
+      "liquid-error: layout/theme: Could not find asset snippets/klaviyo-form.liquid\nLiquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
+    lineNumber: 1,
+    appName: "Klaviyo",
+  };
+  const snippet = { ...error, filename: "layout/theme.liquid", findingType: "GHOST_SNIPPET" };
+
+  it("an app ignore hides the app's leftover code but not the error shoppers can read", () => {
+    const ignores = { fingerprints: new Set<string>(), appNames: new Set(["Klaviyo"]) };
+    expect(isFindingIgnored(error, ignores)).toBe(false);
+    expect(isFindingIgnored(snippet, ignores)).toBe(true);
+    expect(filterIgnoredFindings([error, snippet], ignores).kept).toEqual([error]);
+  });
+
+  it("an instance ignore still hides it, and survives a line-number change", () => {
+    const fp = fingerprintFinding(
+      error.filename,
+      error.findingType,
+      error.codeSnippet,
+      error.lineNumber,
+    );
+    const ignores = { fingerprints: new Set([fp]), appNames: new Set<string>() };
+    expect(isFindingIgnored(error, ignores)).toBe(true);
+    const moved = { ...error, codeSnippet: error.codeSnippet.replace("line 309", "line 400") };
+    expect(isFindingIgnored(moved, ignores)).toBe(true);
+  });
+});

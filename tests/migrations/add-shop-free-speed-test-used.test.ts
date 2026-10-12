@@ -36,11 +36,13 @@ describe("add_shop_free_speed_test_used migration (free speed test)", () => {
     expect(SCHEMA).toMatch(/model Shop \{[\s\S]*?\n\s+freeSpeedTestUsedAt\s+DateTime\?\n/);
   });
 
-  it("is the latest migration (applied last on deploy), after gc-rxq0's first-shown column", () => {
+  it("sorts right after gc-rxq0's first-shown column and before theme health", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations"))
       .filter((d) => /^\d{14}_/.test(d))
       .sort();
-    expect(dirs.at(-1)).toBe(NAME);
-    expect(dirs.at(-2)).toBe("20261016120000_add_shop_summary_optin_first_shown");
+    const self = dirs.indexOf(NAME);
+    expect(self).toBeGreaterThan(0);
+    expect(dirs[self - 1]).toBe("20261016120000_add_shop_summary_optin_first_shown");
+    expect(dirs[self + 1]).toBe("20261018120000_add_theme_health");
   });
 });

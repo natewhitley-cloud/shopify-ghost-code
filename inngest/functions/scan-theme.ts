@@ -29,11 +29,14 @@
  *                                  cap truncated them (gc-11f).
  *   8b. storefront-script-tags   — DARK (SCRIPT_TAG_SUNSET_LIVE_ENABLED): reads
  *                                  the public storefront homepage for other
- *                                  apps' ScriptTags. Flag off = the step does not
- *                                  exist (no request, no category, no finding).
- *                                  An unreadable storefront records the category
- *                                  in `unreachableCategories`; it never fails
- *                                  the scan.
+ *                                  apps' ScriptTags and, from that same page,
+ *                                  the Liquid errors shoppers can see
+ *                                  (LIQUID_ERROR_RENDERED, gc-i6du). Flag off =
+ *                                  the step does not exist (no request, no
+ *                                  category, no finding). An unreadable
+ *                                  storefront records both categories in
+ *                                  `unreachableCategories`; it never fails the
+ *                                  scan.
  *   9. finalize-scan             — sets the terminal status to COMPLETED. The
  *                                  core theme audit ran, so success is COMPLETED
  *                                  even when optional categories were skipped for
@@ -864,6 +867,15 @@ function applySoftLaunchFlags<T extends { findingType: FindingType }>(
   const liveFindingTypes = Object.values(FindingType).filter((t) => isLive.get(t));
   return { kept, suppressedDetectorHits, liveFindingTypes };
 }
+
+/**
+ * The finding types the storefront step owns: both are read from the ONE
+ * public homepage request, so they are audited (or not) together.
+ */
+const STOREFRONT_STEP_TYPES: ReadonlySet<string> = new Set([
+  FindingType.SCRIPT_TAG_SUNSET,
+  FindingType.LIQUID_ERROR_RENDERED,
+]);
 
 const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> = {
   product: { segment: "products", label: "product" },
@@ -1786,10 +1798,20 @@ export const scanTheme = inngest.createFunction(
       // outside that guard: a DB failure throws so Inngest retries the step,
       // and the retry starts by clearing this scan's SCRIPT_TAG_SUNSET rows, so
       // it never duplicates or leaves stale rows.
+      //
+      // Shopper-visible Liquid errors (LIQUID_ERROR_RENDERED, gc-i6du) ride on
+      // this step: the fetcher reads them from the SAME page in memory and
+      // hands back only small bounded records (never HTML). Everything above
+      // applies to them unchanged: same flag, published theme only, both
+      // categories unreachable together, both dropped from the live set when
+      // nothing was checked, and the same clear-then-persist retry rule.
       const scriptTagResult: {
         findingCount: number;
         unreachable: boolean;
         audited: boolean;
+        // LIQUID_ERROR_RENDERED rows persisted (gc-i6du). Absent for a run
+        // memoized before the field: read as 0.
+        liquidErrorCount?: number;
         // App names loading through a storefront ScriptTag (gc-frda live hook).
         // Present only when the storefront was read and no detector cap hit;
         // absent = not observed (also for a run memoized before the field).
@@ -1828,8 +1850,11 @@ export const scanTheme = inngest.createFunction(
             await db.finding.deleteMany({
               where: { scanId, findingType: FindingType.SCRIPT_TAG_SUNSET },
             });
+            await db.finding.deleteMany({
+              where: { scanId, findingType: FindingType.LIQUID_ERROR_RENDERED },
+            });
             if (storefront.status === "unreachable") {
-              return { findingCount: 0, unreachable: true, audited: true };
+              return { findingCount: 0, unreachable: true, audited: true, liquidErrorCount: 0 };
             }
 
             const { detectScriptTagSunset } =
@@ -1850,10 +1875,25 @@ export const scanTheme = inngest.createFunction(
               event: "script_tag_sunset_findings",
               logMessage: "script tag sunset findings persisted",
             });
+            // Liquid errors shoppers can see on the same page (gc-i6du).
+            const { detectLiquidErrors } =
+              await import("../../app/services/liquid-error-detector.server");
+            const liquidErrorFindings = detectLiquidErrors(storefront.liquidErrors).filter((f) =>
+              isSoftLaunchLive(f.findingType),
+            );
+            await persistAuditFindings({
+              scanId,
+              shopId,
+              findingType: FindingType.LIQUID_ERROR_RENDERED,
+              findings: liquidErrorFindings,
+              event: "liquid_error_findings",
+              logMessage: "rendered liquid error findings persisted",
+            });
             return {
               findingCount: findings.length,
               unreachable: false,
               audited: true,
+              liquidErrorCount: liquidErrorFindings.length,
               ...(scriptTagApps ? { scriptTagApps } : {}),
             };
           })
@@ -1869,7 +1909,8 @@ export const scanTheme = inngest.createFunction(
         redirectResult.findingCount +
         jsonLdPriceResult.findingCount +
         danglingRefResult.findingCount +
-        scriptTagResult.findingCount;
+        scriptTagResult.findingCount +
+        (scriptTagResult.liquidErrorCount ?? 0);
 
       // Collect the optional categories that were skipped because their scope
       // was not granted. Each entry maps 1:1 to a FindingType so the differ can
@@ -1912,6 +1953,8 @@ export const scanTheme = inngest.createFunction(
       // the permissions banner and never PARTIAL. Always empty while dark.
       const unreachableCategories: string[] = flaggedCategories([
         [scriptTagResult.unreachable, FindingType.SCRIPT_TAG_SUNSET],
+        // Read from the same page (gc-i6du): unreadable together.
+        [scriptTagResult.unreachable, FindingType.LIQUID_ERROR_RENDERED],
       ]);
 
       // Walks that hit their cap this scan (gc-1bd). Surfaced in scan_signal for
@@ -1961,14 +2004,14 @@ export const scanTheme = inngest.createFunction(
       const finalStatus = ScanStatus.COMPLETED;
 
       // The scan's live set (gc-rvo0), from the fetch-and-scan flag reads, minus
-      // SCRIPT_TAG_SUNSET when its step did not actually check anything (flag
-      // flipped off mid-run, unpublished theme, no shop): the differ then treats
-      // the type as un-audited, so its prior findings are neither resolved nor
-      // new. A no-op while dark (the type is not live then). NULL (undefined)
+      // the storefront step's types (SCRIPT_TAG_SUNSET, LIQUID_ERROR_RENDERED)
+      // when that step did not actually check anything (flag flipped off
+      // mid-run, unpublished theme, no shop): the differ then treats the types
+      // as un-audited, so their prior findings are neither resolved nor new. A no-op while dark (the type is not live then). NULL (undefined)
       // for an in-flight run memoized before the field existed.
       const finalLiveFindingTypes = Array.isArray(persistedLiveFindingTypes)
         ? persistedLiveFindingTypes.filter(
-            (t) => t !== FindingType.SCRIPT_TAG_SUNSET || scriptTagResult.audited,
+            (t) => !STOREFRONT_STEP_TYPES.has(t) || scriptTagResult.audited,
           )
         : undefined;
       // What THIS scan audited, for every diff below (finalize + summary email).

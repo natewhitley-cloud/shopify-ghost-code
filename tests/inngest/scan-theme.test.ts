@@ -3391,6 +3391,8 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     FindingType.APP_EMBED_OFF,
     FindingType.GHOST_APP_EMBED,
     FindingType.SCRIPT_TAG_SUNSET,
+    // Read from the same homepage request, so behind the same flag (gc-i6du).
+    FindingType.LIQUID_ERROR_RENDERED,
   ];
   const live = async () => {
     await runScanTheme();
@@ -3419,10 +3421,11 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     expect(types).not.toContain(FindingType.SETTINGS_DRIFT);
   });
 
-  it("SCRIPT_TAG_SUNSET_LIVE_ENABLED=true adds only SCRIPT_TAG_SUNSET", async () => {
+  it("SCRIPT_TAG_SUNSET_LIVE_ENABLED=true adds only the two storefront types", async () => {
     process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
     const types = await live();
     expect(types).toContain(FindingType.SCRIPT_TAG_SUNSET);
+    expect(types).toContain(FindingType.LIQUID_ERROR_RENDERED);
     expect(types).not.toContain(FindingType.APP_EMBED_OFF);
     expect(types).not.toContain(FindingType.SETTINGS_DRIFT);
   });
@@ -4001,12 +4004,15 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     };
   }
 
-  function storefrontHtml(urls: string[] | null): string {
+  // Both checks read the one homepage request, so they are unreachable together.
+  const STOREFRONT_TYPES = [FindingType.SCRIPT_TAG_SUNSET, FindingType.LIQUID_ERROR_RENDERED];
+
+  function storefrontHtml(urls: string[] | null, body = ""): string {
     const block =
       urls === null
         ? ""
         : `<script>(function() {\n  var isLoaded = false;\n  function asyncLoad() {\n    if (isLoaded) return;\n    isLoaded = true;\n    var urls = ${JSON.stringify(urls).replace(/\//g, "\\/")};\n    for (var i = 0; i < urls.length; i++) {}\n  };\n  if(window.attachEvent) { window.attachEvent('onload', asyncLoad); } else { window.addEventListener('load', asyncLoad, false); }\n})();</script>`;
-    return `<html><head><script>var Shopify = Shopify || {};\nShopify.shop = "${MYSHOPIFY}";</script>${block}</head><body></body></html>`;
+    return `<html><head><script>var Shopify = Shopify || {};\nShopify.shop = "${MYSHOPIFY}";</script>${block}</head><body>${body}</body></html>`;
   }
 
   /** Run the scan, capturing each step's return value by name. */
@@ -4074,10 +4080,11 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       findingCount: 0,
       unreachable: true,
       audited: true,
+      liquidErrorCount: 0,
     });
     const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
     expect(finalizeArgs.status).toBe("COMPLETED");
-    expect(finalizeArgs.unreachableCategories).toEqual([FindingType.SCRIPT_TAG_SUNSET]);
+    expect(finalizeArgs.unreachableCategories).toEqual(STOREFRONT_TYPES);
     // gc-frda: an unreadable storefront is "not observed", never "no tags".
     expect(finalizeArgs.liveAppHooks.scriptTagApps).toBeNull();
     // Not a scope problem: never in skippedCategories (permissions banner).
@@ -4127,6 +4134,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       findingCount: 2,
       unreachable: false,
       audited: true,
+      liquidErrorCount: 0,
       // gc-frda live hooks: the signature apps seen loading via ScriptTag.
       scriptTagApps: ["Klaviyo", "Rise.ai"],
     });
@@ -4149,6 +4157,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       findingCount: 0,
       unreachable: false,
       audited: true,
+      liquidErrorCount: 0,
       // Observed and empty: no app loads through a ScriptTag (gc-frda).
       scriptTagApps: [],
     });
@@ -4174,9 +4183,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
 
     expect(calls).toContain("storefront-script-tags");
     expect(fetchSpy).not.toHaveBeenCalled();
-    expect(mockFinalizeScan.mock.calls[0][1].unreachableCategories).toEqual([
-      FindingType.SCRIPT_TAG_SUNSET,
-    ]);
+    expect(mockFinalizeScan.mock.calls[0][1].unreachableCategories).toEqual(STOREFRONT_TYPES);
     expect(result.status).toBe("COMPLETED");
   });
 
@@ -4404,6 +4411,325 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     await run();
 
     expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // LIQUID_ERROR_RENDERED (gc-i6du): Liquid errors shoppers can see, read from
+  // the SAME homepage request by the same step, under the same gates.
+  // -------------------------------------------------------------------------
+  describe("shopper-visible Liquid errors (LIQUID_ERROR_RENDERED, gc-i6du)", () => {
+    const ERROR =
+      "Liquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid";
+    const OTHER = "Liquid error (sections/hero line 4): Could not find asset snippets/preloaderapp";
+    const errorPage = (...errors: string[]) =>
+      storefrontHtml(
+        null,
+        `<main><p>Hello Jane Doe</p>${errors.map((e) => `<div>${e}</div>`).join("")}</main>`,
+      );
+
+    const liquidPersistCalls = () =>
+      mockCreateFindings.mock.calls.filter((c) =>
+        (c[1] as Array<{ findingType: string }>).some(
+          (f) => f.findingType === FindingType.LIQUID_ERROR_RENDERED,
+        ),
+      );
+
+    /** A LIQUID_ERROR_RENDERED row as the detector stores it for ERROR. */
+    const STORED_ERROR = {
+      filename: "storefront/homepage",
+      findingType: FindingType.LIQUID_ERROR_RENDERED,
+      codeSnippet: `liquid-error: layout/theme: Could not find asset snippets/klaviyo-form.liquid\n${ERROR}`,
+      lineNumber: 1,
+      severity: Severity.HIGH,
+      appName: "Klaviyo",
+      description: "x",
+    };
+
+    function live() {
+      process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+      MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+    }
+
+    it("flag on + an error on the homepage: one finding per distinct error, attributed, counted", async () => {
+      live();
+      fetchSpy.mockResolvedValue(new Response(errorPage(ERROR, OTHER, ERROR), { status: 200 }));
+
+      const { results, result } = await run();
+
+      // ONE storefront request serves both checks.
+      expect(fetchSpy).toHaveBeenCalledTimes(1);
+      const calls = liquidPersistCalls();
+      expect(calls).toHaveLength(1);
+      expect(calls[0][0]).toBe(SCAN_ID);
+      const rows = calls[0][1] as Array<Record<string, unknown>>;
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({
+        filename: "storefront/homepage",
+        lineNumber: 1,
+        findingType: FindingType.LIQUID_ERROR_RENDERED,
+        severity: Severity.HIGH,
+        appName: "Klaviyo",
+        codeSnippet: STORED_ERROR.codeSnippet,
+      });
+      expect(rows[1].appName).toBeUndefined();
+      expect(results["storefront-script-tags"]).toEqual({
+        findingCount: 0,
+        unreachable: false,
+        audited: true,
+        liquidErrorCount: 2,
+        scriptTagApps: [],
+      });
+      expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
+      const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+      expect(finalizeArgs.findingCount).toBe(MOCK_FINDINGS.length + 2);
+      expect(finalizeArgs).not.toHaveProperty("unreachableCategories");
+      expect(finalizeArgs.liveFindingTypes).toContain(FindingType.LIQUID_ERROR_RENDERED);
+    });
+
+    it("stores the error text only: no page HTML and no other page text", async () => {
+      live();
+      fetchSpy.mockResolvedValue(new Response(errorPage(ERROR), { status: 200 }));
+      const { results } = await run();
+      const stored = JSON.stringify([liquidPersistCalls(), results["storefront-script-tags"]]);
+      for (const leak of ["Jane", "<div", "<main", "<html", "Shopify.shop"]) {
+        expect(stored).not.toContain(leak);
+      }
+    });
+
+    it("flag on + a clean homepage: audited, no rows, the type is live", async () => {
+      live();
+      fetchSpy.mockResolvedValue(
+        new Response(storefrontHtml(null, "<h1>Shop</h1>"), { status: 200 }),
+      );
+      const { results } = await run();
+      expect(liquidPersistCalls()).toHaveLength(0);
+      expect(results["storefront-script-tags"]).toMatchObject({
+        audited: true,
+        liquidErrorCount: 0,
+      });
+      expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).toContain(
+        FindingType.LIQUID_ERROR_RENDERED,
+      );
+    });
+
+    it("flag off: no request, no finding, nothing stored, and the type is not live", async () => {
+      const { names } = await run();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(names).not.toContain("storefront-script-tags");
+      expect(liquidPersistCalls()).toHaveLength(0);
+      const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+      expect(finalizeArgs.liveFindingTypes).not.toContain(FindingType.LIQUID_ERROR_RENDERED);
+      expect(finalizeArgs).not.toHaveProperty("unreachableCategories");
+      expect(mockDb.finding.deleteMany).not.toHaveBeenCalledWith({
+        where: { scanId: SCAN_ID, findingType: FindingType.LIQUID_ERROR_RENDERED },
+      });
+    });
+
+    it("flag off: a prior Liquid error is neither resolved nor carried (type not live)", async () => {
+      mockDb.scan.findUnique.mockResolvedValue({
+        status: "IN_PROGRESS",
+        createdAt: new Date("2026-10-20T00:00:00Z"),
+      });
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
+        liveFindingTypes: Object.values(FindingType),
+        id: "prev",
+        findingCount: 1,
+        findings: [STORED_ERROR],
+      });
+      await run();
+      expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(0);
+    });
+
+    it("a password page that prints an error: un-audited, nothing stored, never 'fixed'", async () => {
+      live();
+      fetchSpy.mockResolvedValue(
+        new Response(`<body class='template-password'>${ERROR}</body>`, { status: 200 }),
+      );
+      mockDb.scan.findUnique.mockResolvedValue({
+        status: "IN_PROGRESS",
+        createdAt: new Date("2026-10-20T00:00:00Z"),
+      });
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
+        liveFindingTypes: Object.values(FindingType),
+        id: "prev",
+        findingCount: 1,
+        findings: [STORED_ERROR],
+      });
+
+      const { results, result } = await run();
+
+      expect(liquidPersistCalls()).toHaveLength(0);
+      expect(results["storefront-script-tags"]).toEqual({
+        findingCount: 0,
+        unreachable: true,
+        audited: true,
+        liquidErrorCount: 0,
+      });
+      const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+      expect(finalizeArgs.unreachableCategories).toEqual(STOREFRONT_TYPES);
+      // The prior error was not re-checked, so it is not reported fixed.
+      expect(finalizeArgs.resolvedFindingCount).toBe(0);
+      expect(finalizeArgs.skippedCategories).toEqual([]);
+      expect(result.status).toBe("COMPLETED");
+    });
+
+    it.each([
+      ["a 503", () => new Response(`<p>${ERROR}</p>`, { status: 503 })],
+      [
+        "a page that is not a Shopify storefront",
+        () => new Response(`<p>${ERROR}</p>`, { status: 200 }),
+      ],
+    ])(
+      "%s: both storefront categories are un-audited and nothing is stored",
+      async (_n, response) => {
+        live();
+        fetchSpy.mockImplementation(async () => response());
+        await run();
+        expect(liquidPersistCalls()).toHaveLength(0);
+        expect(mockFinalizeScan.mock.calls[0][1].unreachableCategories).toEqual(STOREFRONT_TYPES);
+      },
+    );
+
+    it("an unpublished theme: no request, no finding, no category, type not live", async () => {
+      process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+      MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse("UNPUBLISHED"));
+      const { results } = await run();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(liquidPersistCalls()).toHaveLength(0);
+      expect(results["storefront-script-tags"]).toEqual({
+        findingCount: 0,
+        unreachable: false,
+        audited: false,
+      });
+      const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+      expect(finalizeArgs).not.toHaveProperty("unreachableCategories");
+      expect(finalizeArgs.liveFindingTypes).not.toContain(FindingType.LIQUID_ERROR_RENDERED);
+      expect(mockDb.finding.deleteMany).not.toHaveBeenCalledWith({
+        where: { scanId: SCAN_ID, findingType: FindingType.LIQUID_ERROR_RENDERED },
+      });
+    });
+
+    describe("baseline rule: never 'new' when the previous scan did not check it", () => {
+      /** Finalize with ONE current Liquid error against the given baseline. */
+      async function finalizeAgainst(baseline: Record<string, unknown>) {
+        live();
+        fetchSpy.mockResolvedValue(new Response(errorPage(ERROR), { status: 200 }));
+        mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+        mockDb.finding.findMany.mockResolvedValue([STORED_ERROR]);
+        mockDb.scan.findUnique.mockResolvedValue({
+          status: "IN_PROGRESS",
+          createdAt: new Date("2026-10-20T00:00:00Z"),
+        });
+        mockGetPreviousScanForTheme.mockResolvedValue({
+          ...BASELINE_COVERAGE,
+          id: "prev",
+          findingCount: 0,
+          findings: [],
+          ...baseline,
+        });
+        await run();
+        return mockFinalizeScan.mock.calls[0][1];
+      }
+      const WITHOUT = Object.values(FindingType).filter(
+        (t) => t !== FindingType.LIQUID_ERROR_RENDERED,
+      );
+
+      it("the baseline predates the check (type absent from its live set): not new", async () => {
+        const args = await finalizeAgainst({ liveFindingTypes: WITHOUT });
+        expect(args.newFindingCount).toBe(0);
+      });
+
+      it("the baseline could not read the storefront: not new", async () => {
+        const args = await finalizeAgainst({
+          liveFindingTypes: Object.values(FindingType),
+          unreachableCategories: STOREFRONT_TYPES,
+        });
+        expect(args.newFindingCount).toBe(0);
+      });
+
+      it("the baseline checked it and it was clean: new", async () => {
+        const args = await finalizeAgainst({ liveFindingTypes: Object.values(FindingType) });
+        expect(args.newFindingCount).toBe(1);
+      });
+
+      it("the baseline had the same error at another line number: unchanged, not new", async () => {
+        const args = await finalizeAgainst({
+          liveFindingTypes: Object.values(FindingType),
+          findingCount: 1,
+          findings: [
+            {
+              ...STORED_ERROR,
+              codeSnippet: STORED_ERROR.codeSnippet.replace("line 309", "line 12"),
+            },
+          ],
+        });
+        expect(args).toMatchObject({
+          newFindingCount: 0,
+          resolvedFindingCount: 0,
+          persistedFindingCount: 1,
+        });
+      });
+    });
+
+    it("a clean homepage after an error: the prior error is reported fixed", async () => {
+      live();
+      fetchSpy.mockResolvedValue(new Response(storefrontHtml(null), { status: 200 }));
+      mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+      mockDb.finding.findMany.mockResolvedValue([]);
+      mockDb.scan.findUnique.mockResolvedValue({
+        status: "IN_PROGRESS",
+        createdAt: new Date("2026-10-20T00:00:00Z"),
+      });
+      mockGetPreviousScanForTheme.mockResolvedValue({
+        ...BASELINE_COVERAGE,
+        liveFindingTypes: Object.values(FindingType),
+        id: "prev",
+        findingCount: 1,
+        findings: [STORED_ERROR],
+      });
+      await run();
+      expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(1);
+    });
+
+    it("a retried step clears the earlier attempt's rows before re-persisting", async () => {
+      live();
+      fetchSpy.mockImplementation(async () => new Response(errorPage(ERROR), { status: 200 }));
+      const base = createMockInngestStep();
+      const step = {
+        ...base,
+        run: vi.fn(async (name: string, fn: () => unknown) => {
+          if (name === "storefront-script-tags") await fn();
+          return fn();
+        }),
+      };
+      await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+
+      const clears = mockDb.finding.deleteMany.mock.calls.filter(
+        (c) =>
+          (c[0] as { where: { findingType?: string } }).where.findingType ===
+          FindingType.LIQUID_ERROR_RENDERED,
+      );
+      // Each attempt: one up-front clear + persistAuditFindings' own guard.
+      expect(clears).toHaveLength(4);
+      expect(liquidPersistCalls()).toHaveLength(2);
+    });
+
+    it("a persistence failure rethrows (Inngest retries), never 'unreachable'", async () => {
+      live();
+      fetchSpy.mockImplementation(async () => new Response(errorPage(ERROR), { status: 200 }));
+      mockCreateFindings.mockImplementation(
+        async (_scanId: string, rows: Array<{ findingType: string }>) => {
+          if (rows.some((r) => r.findingType === FindingType.LIQUID_ERROR_RENDERED)) {
+            throw new Error("db connection reset");
+          }
+          return { count: rows.length };
+        },
+      );
+      await expect(run()).rejects.toThrow("db connection reset");
+      expect(mockFinalizeScan).not.toHaveBeenCalled();
+    });
   });
 });
 

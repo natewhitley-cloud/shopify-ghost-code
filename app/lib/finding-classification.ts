@@ -17,6 +17,8 @@ const VISUAL_FINDING_TYPES = new Set([
   "GHOST_PAGE",
   "GHOST_LAYOUT",
   "GHOST_FONT",
+  // A Liquid error printed as page text on the live homepage (gc-i6du).
+  "LIQUID_ERROR_RENDERED",
 ]);
 
 /**
@@ -152,6 +154,10 @@ const HEURISTIC_FINDING_TYPES = new Set([
   // known app, otherwise by bare hostname with no app named, so it is not a
   // guaranteed positive known-app detection.
   "SCRIPT_TAG_SUNSET",
+  // LIQUID_ERROR_RENDERED (gc-i6du) — the error itself is observed directly on
+  // the storefront, but an app is named only when a missing snippet matches a
+  // signature, so (like JSON_LD_INVALID) it has no guaranteed app attribution.
+  "LIQUID_ERROR_RENDERED",
 ]);
 
 /**
@@ -371,8 +377,11 @@ const ADMIN_RESOURCE_FINDING_TYPES = new Set([
  * get NEITHER a theme-editor nor an Admin-resource link, and their removal
  * instructions never say "remove this code" (the merchant cannot).
  *   - SCRIPT_TAG_SUNSET → `storefront/script-tags` (script-tag-sunset-detector)
+ *   - LIQUID_ERROR_RENDERED → `storefront/homepage` (liquid-error-detector,
+ *     gc-i6du). Unlike script tags the merchant CAN fix it (in the theme file the
+ *     error names), so its instructions point at that file, not at a vendor.
  */
-const STOREFRONT_FINDING_TYPES = new Set(["SCRIPT_TAG_SUNSET"]);
+const STOREFRONT_FINDING_TYPES = new Set(["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"]);
 
 /** True for findings read from the public storefront (no link of either kind). */
 export function isStorefrontFinding(findingType: string): boolean {
