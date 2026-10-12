@@ -669,3 +669,34 @@ describe("speed-report-weekly (coordinator): Professional only", () => {
     expect(events.map((e: { data: { origin: string } }) => e.data.origin)).toEqual(["SCHEDULED"]);
   });
 });
+
+describe("speed-report-run (worker): calls are recorded on the run's report (gc-au2l)", () => {
+  const handler = getInngestHandler(speedReportRun);
+
+  it("SCHEDULED: every attempt gets the report id prepare returned", async () => {
+    const event = { name: "speed-report/requested", data: { shopId: "s1", origin: "SCHEDULED" } };
+    await handler({ event, step: createMockInngestStep(), logger });
+    expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(6);
+    for (const [input] of svc.runPageSpeedAttempt.mock.calls) {
+      expect(input).toMatchObject({ shopId: "s1", origin: "SCHEDULED", reportId: "rep-1" });
+    }
+  });
+
+  it("FREE_TEST: every attempt gets the report id prepare returned", async () => {
+    svc.prepareSpeedReportRun.mockResolvedValue({
+      proceed: true,
+      reportId: "rep-free",
+      shopDomain: "shop.myshopify.com",
+      startedAt: "2026-10-11T08:10:00.000Z",
+    });
+    const event = {
+      name: "speed-report/requested",
+      data: { shopId: "s1", origin: "FREE_TEST", reportId: "rep-free" },
+    };
+    await handler({ event, step: createMockInngestStep(), logger });
+    expect(svc.runPageSpeedAttempt).toHaveBeenCalledTimes(3);
+    for (const [input] of svc.runPageSpeedAttempt.mock.calls) {
+      expect(input).toMatchObject({ origin: "FREE_TEST", page: "home", reportId: "rep-free" });
+    }
+  });
+});

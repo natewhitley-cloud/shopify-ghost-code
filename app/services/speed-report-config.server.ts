@@ -11,6 +11,8 @@
  * else: never log it, never put it in an error, an OpsEvent or a step output.
  */
 
+import { FREE_SPEED_TEST_DAILY_CALL_CEILING } from "../lib/speed-report";
+
 /** Whether the speed report is live (flag exactly "true"). */
 export function isSpeedReportLive(): boolean {
   return process.env.SPEED_REPORT_LIVE_ENABLED === "true";
@@ -37,4 +39,18 @@ export function getDailyCallBudget(): number {
   const raw = process.env.PAGESPEED_DAILY_CALL_BUDGET?.trim();
   if (!raw || !/^\d+$/.test(raw)) return DEFAULT_PAGESPEED_DAILY_CALL_BUDGET;
   return Number.parseInt(raw, 10);
+}
+
+/**
+ * The daily call count at which free speed tests stop, for a given budget
+ * (gc-au2l): FREE_SPEED_TEST_DAILY_CALL_CEILING at the default budget or
+ * above, and the same share of a lower budget (rounded down), so a lowered
+ * PAGESPEED_DAILY_CALL_BUDGET never lets free tests use up what paying shops'
+ * reports need. Pure.
+ */
+export function freeSpeedTestDailyCallCeiling(budget: number): number {
+  return Math.min(
+    FREE_SPEED_TEST_DAILY_CALL_CEILING,
+    Math.floor((budget * FREE_SPEED_TEST_DAILY_CALL_CEILING) / DEFAULT_PAGESPEED_DAILY_CALL_BUDGET),
+  );
 }

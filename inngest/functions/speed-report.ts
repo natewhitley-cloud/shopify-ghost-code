@@ -229,6 +229,7 @@ export const speedReportRun = inngest.createFunction(
         const attempt = await step.run(`psi-${target.page}-${run}`, () =>
           svc.runPageSpeedAttempt({
             shopId,
+            reportId: prep.reportId,
             origin,
             page: target.page,
             pageUrl: target.url,

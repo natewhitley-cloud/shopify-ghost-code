@@ -72,6 +72,17 @@ export async function startManualSpeedReport(
   return count > 0;
 }
 
+/** A dead or cancelled run, and the MANUAL / FREE_TEST report id when it has one. */
+type AbandonedRunTarget = { shopId: string; runId: string; reportId?: string };
+
+/** The shop's report for that run: by the run that owned it, or the report id. */
+function abandonedRunWhere(target: AbandonedRunTarget) {
+  return {
+    shopId: target.shopId,
+    OR: [{ runId: target.runId }, ...(target.reportId ? [{ id: target.reportId }] : [])],
+  };
+}
+
 /**
  * Close the report a dead or cancelled run left RUNNING (gc-wt3y #2/#3): by
  * the run that owned it, or the MANUAL report id when the run never started.
@@ -79,19 +90,42 @@ export async function startManualSpeedReport(
  * rewritten. Tolerates a missing row (shop redacted): returns the count.
  */
 export async function failAbandonedSpeedReport(
-  target: { shopId: string; runId: string; reportId?: string },
+  target: AbandonedRunTarget,
   failureReason: SpeedFailureCode,
   now: Date,
 ): Promise<number> {
+  const { shopId, OR } = abandonedRunWhere(target);
   const { count } = await db.speedReport.updateMany({
-    where: {
-      shopId: target.shopId,
-      status: SPEED_REPORT_STATUS.RUNNING,
-      OR: [{ runId: target.runId }, ...(target.reportId ? [{ id: target.reportId }] : [])],
-    },
+    where: { shopId, status: SPEED_REPORT_STATUS.RUNNING, OR },
     data: { status: SPEED_REPORT_STATUS.FAILED, failureReason, completedAt: now },
   });
   return count;
+}
+
+/**
+ * The PageSpeed calls a dead or cancelled run spent before it stopped
+ * (gc-au2l), read from the same report failAbandonedSpeedReport closes.
+ * Tolerates a missing row (shop redacted): 0.
+ */
+export async function getAbandonedSpeedReportCalls(target: AbandonedRunTarget): Promise<number> {
+  const { _sum } = await db.speedReport.aggregate({
+    where: abandonedRunWhere(target),
+    _sum: { psiCalls: true },
+  });
+  return _sum.psiCalls ?? 0;
+}
+
+/**
+ * Count ONE PageSpeed call on the report, as it happens (gc-au2l): called
+ * after the call is reserved and before it is sent, so a run that dies later
+ * still shows what it spent. One atomic increment. Tolerates a missing row
+ * (shop redacted): nothing is written and nothing throws.
+ */
+export async function recordSpeedReportCall(reportId: string): Promise<void> {
+  await db.speedReport.updateMany({
+    where: { id: reportId },
+    data: { psiCalls: { increment: 1 } },
+  });
 }
 
 /**
@@ -100,6 +134,13 @@ export async function failAbandonedSpeedReport(
  * the SAME transaction, conditional on it still being null: a report that
  * used the test up never exists without the stamp, and a retried write never
  * moves the stamp.
+ *
+ * `psiCalls` is NEVER LOWERED (gc-au2l). The row already counts each call as
+ * it happened (recordSpeedReportCall), and a replayed step can make that count
+ * higher than the caller's, which only knows the attempts whose results were
+ * recorded. The higher number is what was spent, so the caller's count is a
+ * conditional write of its own (only when the row holds less), in the same
+ * transaction as the rest.
  */
 export async function finishSpeedReport(
   reportId: string,
@@ -119,14 +160,21 @@ export async function finishSpeedReport(
       failureReason: result.failureReason,
       pages:
         result.pages === null ? Prisma.DbNull : (result.pages as unknown as Prisma.InputJsonValue),
-      psiCalls: result.psiCalls,
       completedAt,
     },
     select: { id: true, createdAt: true, completedAt: true },
   });
-  if (!opts.consumeFreeTestOf) return update;
+  const raiseCalls = db.speedReport.updateMany({
+    where: { id: reportId, psiCalls: { lt: result.psiCalls } },
+    data: { psiCalls: result.psiCalls },
+  });
+  if (!opts.consumeFreeTestOf) {
+    const [row] = await db.$transaction([update, raiseCalls]);
+    return row;
+  }
   const [row] = await db.$transaction([
     update,
+    raiseCalls,
     db.shop.updateMany({
       where: { id: opts.consumeFreeTestOf, freeSpeedTestUsedAt: null },
       data: { freeSpeedTestUsedAt: completedAt },
@@ -239,10 +287,12 @@ export async function claimFreeSpeedTest(shopId: string, now: Date): Promise<boo
 /**
  * How many of the shop's free-test attempts count toward
  * FREE_SPEED_TEST_MAX_ATTEMPTS: FREE_TEST reports that made at least one
- * PageSpeed call and were not stopped by the daily ceiling. `psiCalls` is
- * written only by a run that finished its own report, so a dispatch failure,
- * a dead or stuck worker, a missing key, an ineligible run and a password page
- * (all 0 calls) never count.
+ * PageSpeed call and were not stopped by the daily ceiling. `psiCalls` counts
+ * each call as it happens (recordSpeedReportCall), so a run whose worker died
+ * or got stuck AFTER calling Google counts too (its row is closed FAILED with
+ * the calls it spent, gc-au2l). A dispatch failure, a worker that died or got
+ * stuck before its first call, a missing key, an ineligible run and a
+ * password page (all 0 calls) never count.
  */
 export async function countFreeSpeedTestAttempts(shopId: string): Promise<number> {
   return db.speedReport.count({

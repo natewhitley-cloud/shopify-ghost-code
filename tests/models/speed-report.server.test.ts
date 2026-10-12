@@ -13,6 +13,7 @@ const mockDb = vi.hoisted(() => ({
     upsert: vi.fn(),
     updateMany: vi.fn(),
     count: vi.fn(),
+    aggregate: vi.fn(),
   },
   opsEvent: { count: vi.fn() },
   shop: { findUnique: vi.fn(), updateMany: vi.fn() },
@@ -30,8 +31,10 @@ import {
   createSpeedReport,
   failAbandonedSpeedReport,
   finishSpeedReport,
+  getAbandonedSpeedReportCalls,
   getFreeSpeedTestUsedAt,
   hasRecentSpeedReportEvent,
+  recordSpeedReportCall,
   startManualSpeedReport,
   startSpeedReportForRun,
   getRecentSpeedReports,
@@ -46,6 +49,8 @@ const NOW = new Date("2026-10-11T23:59:59.999Z");
 
 beforeEach(() => {
   vi.resetAllMocks();
+  // finishSpeedReport always writes through one transaction (gc-au2l).
+  mockDb.$transaction.mockResolvedValue([]);
 });
 
 describe("reports", () => {
@@ -69,9 +74,16 @@ describe("reports", () => {
     });
     const arg = mockDb.speedReport.update.mock.calls[0][0];
     expect(arg.where).toEqual({ id: "r1" });
-    expect(arg.data).toMatchObject({ status: "COMPLETED", failureReason: null, psiCalls: 3 });
+    expect(arg.data).toMatchObject({ status: "COMPLETED", failureReason: null });
     expect(arg.data.pages).toHaveLength(1);
     expect(arg.data.completedAt).toBeInstanceOf(Date);
+    // The calls are a raise-only write of their own (gc-au2l), never part of
+    // the plain update, which could lower the count recorded call by call.
+    expect(arg.data).not.toHaveProperty("psiCalls");
+    expect(mockDb.speedReport.updateMany).toHaveBeenCalledWith({
+      where: { id: "r1", psiCalls: { lt: 3 } },
+      data: { psiCalls: 3 },
+    });
   });
 
   it("finishSpeedReport stores DbNull (not JSON null) when there are no pages", async () => {
@@ -333,21 +345,25 @@ describe("free speed test", () => {
     expect(results.filter(Boolean)).toHaveLength(1);
   });
 
-  it("finishSpeedReport without a consume: a plain update, no transaction, no shop write", async () => {
-    await finishSpeedReport("r1", RESULT);
-    expect(mockDb.$transaction).not.toHaveBeenCalled();
+  it("finishSpeedReport without a consume: the update and the raise-only calls write, no shop write", async () => {
+    mockDb.speedReport.update.mockReturnValue("UPDATE");
+    mockDb.speedReport.updateMany.mockReturnValue("RAISE");
+    mockDb.$transaction.mockResolvedValue([{ id: "r1" }, { count: 1 }]);
+    await expect(finishSpeedReport("r1", RESULT)).resolves.toEqual({ id: "r1" });
+    expect(mockDb.$transaction).toHaveBeenCalledWith(["UPDATE", "RAISE"]);
     expect(mockDb.shop.updateMany).not.toHaveBeenCalled();
     expect(mockDb.speedReport.update).toHaveBeenCalledTimes(1);
   });
 
   it("finishSpeedReport consuming the free test: report + conditional stamp in ONE transaction", async () => {
     mockDb.speedReport.update.mockReturnValue("UPDATE");
+    mockDb.speedReport.updateMany.mockReturnValue("RAISE");
     mockDb.shop.updateMany.mockReturnValue("STAMP");
-    mockDb.$transaction.mockResolvedValue([{ id: "r1" }, { count: 1 }]);
+    mockDb.$transaction.mockResolvedValue([{ id: "r1" }, { count: 1 }, { count: 1 }]);
     await expect(finishSpeedReport("r1", RESULT, { consumeFreeTestOf: "s1" })).resolves.toEqual({
       id: "r1",
     });
-    expect(mockDb.$transaction).toHaveBeenCalledWith(["UPDATE", "STAMP"]);
+    expect(mockDb.$transaction).toHaveBeenCalledWith(["UPDATE", "RAISE", "STAMP"]);
     const stamp = mockDb.shop.updateMany.mock.calls[0][0];
     expect(stamp.where).toEqual({ id: "s1", freeSpeedTestUsedAt: null });
     // The stamp is the report's own completedAt.
@@ -367,9 +383,10 @@ describe("free speed test", () => {
   it("countFreeSpeedTestAttempts: only FREE_TEST reports that reached Google and were not stopped by the daily ceiling", async () => {
     mockDb.speedReport.count.mockResolvedValueOnce(3);
     await expect(countFreeSpeedTestAttempts("s1")).resolves.toBe(3);
-    // psiCalls > 0 excludes every platform fault (dispatch_failed, a dead or
-    // stuck worker, not_configured, not_eligible) and a password page, which
-    // all finish with 0 calls; SKIPPED_BUDGET excludes the daily ceiling.
+    // psiCalls > 0 excludes every run that never reached Google
+    // (dispatch_failed, a worker that died or got stuck before its first
+    // call, not_configured, not_eligible) and a password page, which all end
+    // with 0 calls; SKIPPED_BUDGET excludes the daily ceiling.
     expect(mockDb.speedReport.count).toHaveBeenCalledWith({
       where: {
         shopId: "s1",
@@ -378,5 +395,167 @@ describe("free speed test", () => {
         status: { not: "SKIPPED_BUDGET" },
       },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Calls recorded as they happen (gc-au2l)
+// ---------------------------------------------------------------------------
+
+describe("calls recorded as they happen (gc-au2l)", () => {
+  type Row = { id: string; shopId: string; origin: string; status: string; psiCalls: number };
+
+  /**
+   * One in-memory SpeedReport row behind the mocked Prisma calls, honouring
+   * the conditions the model sends (as Postgres does per row). A write is
+   * applied when it is awaited or run by $transaction, never when it is built.
+   */
+  function useRow(row: Row) {
+    const write = (apply: () => unknown) => ({
+      run: apply,
+      then: (resolve: (v: unknown) => unknown) => resolve(apply()),
+    });
+    mockDb.speedReport.update.mockImplementation(
+      ({ data }: { data: Partial<Row> & Record<string, unknown> }) =>
+        write(() => Object.assign(row, data)),
+    );
+    mockDb.speedReport.updateMany.mockImplementation(
+      ({
+        where,
+        data,
+      }: {
+        where: { id?: string; status?: string; psiCalls?: { lt: number } };
+        data: { psiCalls?: number | { increment: number }; status?: string };
+      }) =>
+        write(() => {
+          if (where.id !== undefined && where.id !== row.id) return { count: 0 };
+          if (where.status !== undefined && where.status !== row.status) return { count: 0 };
+          if (where.psiCalls && !(row.psiCalls < where.psiCalls.lt)) return { count: 0 };
+          if (typeof data.psiCalls === "number") row.psiCalls = data.psiCalls;
+          else if (data.psiCalls) row.psiCalls += data.psiCalls.increment;
+          if (data.status) row.status = data.status;
+          return { count: 1 };
+        }),
+    );
+    mockDb.$transaction.mockImplementation(async (ops: Array<{ run: () => unknown }>) =>
+      ops.map((op) => op.run()),
+    );
+    mockDb.speedReport.count.mockImplementation(
+      async ({
+        where,
+      }: {
+        where: {
+          shopId: string;
+          origin: string;
+          psiCalls: { gt: number };
+          status: { not: string };
+        };
+      }) =>
+        row.shopId === where.shopId &&
+        row.origin === where.origin &&
+        row.psiCalls > where.psiCalls.gt &&
+        row.status !== where.status.not
+          ? 1
+          : 0,
+    );
+  }
+
+  const freeRow = (): Row => ({
+    id: "r1",
+    shopId: "s1",
+    origin: "FREE_TEST",
+    status: "RUNNING",
+    psiCalls: 0,
+  });
+
+  it("recordSpeedReportCall adds exactly one call to the report, in one atomic increment", async () => {
+    mockDb.speedReport.updateMany.mockResolvedValue({ count: 1 });
+    await expect(recordSpeedReportCall("r1")).resolves.toBeUndefined();
+    expect(mockDb.speedReport.updateMany).toHaveBeenCalledTimes(1);
+    expect(mockDb.speedReport.updateMany).toHaveBeenCalledWith({
+      where: { id: "r1" },
+      data: { psiCalls: { increment: 1 } },
+    });
+  });
+
+  it("recordSpeedReportCall tolerates a missing row (shop redacted): no throw", async () => {
+    mockDb.speedReport.updateMany.mockResolvedValue({ count: 0 });
+    await expect(recordSpeedReportCall("gone")).resolves.toBeUndefined();
+  });
+
+  it.each([
+    // [recorded call by call, counted by finalize, stored afterwards]
+    [3, 2, 3], // a replayed step: the higher number is what was spent
+    [1, 1, 1],
+    [6, 6, 6],
+    [2, 0, 2], // never lowered to 0 either
+    [0, 2, 2], // a row with nothing recorded still gets the finalize count
+    [0, 0, 0],
+  ])(
+    "finishSpeedReport never lowers psiCalls: recorded %i, finalize counts %i -> %i",
+    async (recorded, counted, stored) => {
+      const row = { ...freeRow(), psiCalls: recorded };
+      useRow(row);
+      await finishSpeedReport("r1", {
+        status: "FAILED",
+        failureReason: "timeout",
+        pages: [],
+        psiCalls: counted,
+      });
+      expect(row.psiCalls).toBe(stored);
+      expect(row.status).toBe("FAILED");
+    },
+  );
+
+  it("finishSpeedReport consuming the free test never lowers psiCalls either", async () => {
+    const row = { ...freeRow(), psiCalls: 4 };
+    useRow(row);
+    mockDb.shop.updateMany.mockReturnValue({ run: () => ({ count: 1 }) });
+    await finishSpeedReport(
+      "r1",
+      { status: "COMPLETED", failureReason: null, pages: [], psiCalls: 3 },
+      { consumeFreeTestOf: "s1" },
+    );
+    expect(row.psiCalls).toBe(4);
+    expect(row.status).toBe("COMPLETED");
+  });
+
+  it("an abandoned FREE_TEST run that made a call counts toward the attempt cap", async () => {
+    const row = freeRow();
+    useRow(row);
+    await recordSpeedReportCall("r1");
+    // The worker died after the call: the run never finished its own report.
+    await failAbandonedSpeedReport({ shopId: "s1", runId: "run-1", reportId: "r1" }, "stuck", NOW);
+    expect(row).toMatchObject({ status: "FAILED", psiCalls: 1 });
+    await expect(countFreeSpeedTestAttempts("s1")).resolves.toBe(1);
+  });
+
+  it("an abandoned FREE_TEST run that made no call does not count", async () => {
+    const row = freeRow();
+    useRow(row);
+    await failAbandonedSpeedReport(
+      { shopId: "s1", runId: "run-1", reportId: "r1" },
+      "worker_failed",
+      NOW,
+    );
+    expect(row).toMatchObject({ status: "FAILED", psiCalls: 0 });
+    await expect(countFreeSpeedTestAttempts("s1")).resolves.toBe(0);
+  });
+
+  it("getAbandonedSpeedReportCalls sums the calls of the run's report, by run or report id", async () => {
+    mockDb.speedReport.aggregate.mockResolvedValue({ _sum: { psiCalls: 2 } });
+    await expect(
+      getAbandonedSpeedReportCalls({ shopId: "s1", runId: "run-1", reportId: "r9" }),
+    ).resolves.toBe(2);
+    expect(mockDb.speedReport.aggregate).toHaveBeenCalledWith({
+      where: { shopId: "s1", OR: [{ runId: "run-1" }, { id: "r9" }] },
+      _sum: { psiCalls: true },
+    });
+  });
+
+  it("getAbandonedSpeedReportCalls tolerates a missing row (0) and needs no report id", async () => {
+    mockDb.speedReport.aggregate.mockResolvedValue({ _sum: { psiCalls: null } });
+    await expect(getAbandonedSpeedReportCalls({ shopId: "s1", runId: "run-1" })).resolves.toBe(0);
+    expect(mockDb.speedReport.aggregate.mock.calls[0][0].where.OR).toEqual([{ runId: "run-1" }]);
   });
 });

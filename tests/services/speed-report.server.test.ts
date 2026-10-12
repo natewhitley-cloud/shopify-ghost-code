@@ -18,9 +18,11 @@ const mockModel = vi.hoisted(() => ({
   startSpeedReportForRun: vi.fn(),
   startManualSpeedReport: vi.fn(),
   failAbandonedSpeedReport: vi.fn(),
+  getAbandonedSpeedReportCalls: vi.fn(),
   hasRecentSpeedReportEvent: vi.fn(),
   finishSpeedReport: vi.fn(),
   reservePageSpeedCall: vi.fn(),
+  recordSpeedReportCall: vi.fn(),
   claimSpeedReportRunNow: vi.fn(),
   claimFreeSpeedTest: vi.fn(),
   getFreeSpeedTestUsedAt: vi.fn(),
@@ -43,6 +45,7 @@ vi.mock("../../inngest/client", () => ({ inngest: { send: mockSend } }));
 import { logger } from "../../app/lib/logger.server";
 import type { PageSpeedFetch } from "../../app/services/pagespeed-client.server";
 import type { SpeedRunSummary } from "../../app/services/speed-attribution.server";
+import { freeSpeedTestDailyCallCeiling } from "../../app/services/speed-report-config.server";
 import {
   attemptCalledGoogle,
   attemptHaltsPage,
@@ -112,6 +115,7 @@ beforeEach(() => {
   delete process.env.PAGESPEED_DAILY_CALL_BUDGET;
   mockDb.shop.findUnique.mockResolvedValue(PRO);
   mockModel.reservePageSpeedCall.mockResolvedValue(true);
+  mockModel.getAbandonedSpeedReportCalls.mockResolvedValue(0);
   mockModel.createSpeedReport.mockResolvedValue({ id: "rep-1", createdAt: NOW });
   mockModel.startSpeedReportForRun.mockResolvedValue({ id: "rep-1" });
   mockModel.startManualSpeedReport.mockResolvedValue(true);
@@ -814,6 +818,7 @@ describe("product fallback without read_products (gc-9mbw)", () => {
 function attemptInput(fetchImpl: PageSpeedFetch) {
   return {
     shopId: SHOP_ID,
+    reportId: "rep-1",
     page: "home" as const,
     pageUrl: HOME,
     primaryHost: STORE_HOST,
@@ -868,14 +873,15 @@ describe("runPageSpeedAttempt", () => {
     expect(mockModel.reservePageSpeedCall).toHaveBeenLastCalledWith(5000, NOW);
   });
 
-  it("FREE_TEST never reserves above a budget set lower than the free ceiling", async () => {
+  it("FREE_TEST keeps its share of a budget set lower than the free ceiling (never the whole budget)", async () => {
     process.env.PAGESPEED_DAILY_CALL_BUDGET = "40";
     mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free", freeSpeedTestUsedAt: null });
     await runPageSpeedAttempt({
       ...attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))),
       origin: "FREE_TEST",
     });
-    expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(40, NOW);
+    // 600 of the default 5000 is 12%: 12% of 40, rounded down (gc-au2l).
+    expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(4, NOW);
   });
 
   it("FREE_TEST at the free ceiling: a budget attempt, and Google is never called", async () => {
@@ -2185,4 +2191,245 @@ describe("requestFreeSpeedTest", () => {
       expect(mockSend).not.toHaveBeenCalled();
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// Calls recorded on the report as they happen (gc-au2l)
+// ---------------------------------------------------------------------------
+
+describe("runPageSpeedAttempt records each call on the report (gc-au2l)", () => {
+  const FREE = { ...PRO, plan: "free", freeSpeedTestUsedAt: null };
+
+  function trackOrder(): string[] {
+    const order: string[] = [];
+    mockModel.reservePageSpeedCall.mockImplementation(async () => {
+      order.push("reserve");
+      return true;
+    });
+    mockModel.recordSpeedReportCall.mockImplementation(async () => {
+      order.push("record");
+    });
+    return order;
+  }
+
+  it("records the call on the run's report after the budget and BEFORE Google is called", async () => {
+    const order = trackOrder();
+    const fetchImpl = vi.fn(async () => {
+      order.push("fetch");
+      return json(200, buildPageSpeedResponse());
+    }) as unknown as PageSpeedFetch;
+    const a = await runPageSpeedAttempt({ ...attemptInput(fetchImpl), reportId: "rep-42" });
+    expect(a.kind).toBe("ok");
+    expect(order).toEqual(["reserve", "record", "fetch"]);
+    expect(mockModel.recordSpeedReportCall).toHaveBeenCalledTimes(1);
+    expect(mockModel.recordSpeedReportCall).toHaveBeenCalledWith("rep-42");
+  });
+
+  it("the call is already recorded when Google fails (the fetch throws)", async () => {
+    const order = trackOrder();
+    const fetchImpl = vi.fn(async () => {
+      order.push("fetch");
+      throw new Error("socket hang up");
+    }) as unknown as PageSpeedFetch;
+    const a = await runPageSpeedAttempt(attemptInput(fetchImpl));
+    expect(a.kind).toBe("error");
+    expect(order).toEqual(["reserve", "record", "fetch"]);
+    expect(mockModel.recordSpeedReportCall).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    [200, () => buildPageSpeedResponse(), "ok"],
+    [429, () => buildPageSpeedError(429, "Quota exceeded"), "error"],
+    [500, () => buildPageSpeedError(500, "Backend error"), "error"],
+  ])("every attempt that reaches Google records one call (HTTP %i)", async (status, body, kind) => {
+    const a = await runPageSpeedAttempt(attemptInput(fetchReturning(() => json(status, body()))));
+    expect(a.kind).toBe(kind);
+    expect(attemptCalledGoogle(a)).toBe(true);
+    expect(mockModel.recordSpeedReportCall).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ["the flag is off", () => delete process.env.SPEED_REPORT_LIVE_ENABLED, {}, "not_eligible"],
+    [
+      "the shop is no longer on Professional",
+      () => mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free" }),
+      {},
+      "not_eligible",
+    ],
+    [
+      "the shop uninstalled",
+      () => mockDb.shop.findUnique.mockResolvedValue({ ...PRO, uninstalledAt: NOW }),
+      {},
+      "not_eligible",
+    ],
+    ["the key is missing", () => delete process.env.PAGESPEED_API_KEY, {}, "not_configured"],
+    [
+      "the target is off the primary domain",
+      () => {},
+      { pageUrl: "https://evil.example/" },
+      "bad_target",
+    ],
+    [
+      "the budget reservation fails",
+      () => mockModel.reservePageSpeedCall.mockResolvedValue(false),
+      {},
+      "budget",
+    ],
+    [
+      "a FREE_TEST run asks for the product page",
+      () => mockDb.shop.findUnique.mockResolvedValue(FREE),
+      { origin: "FREE_TEST" as const, page: "product" as const },
+      "not_eligible",
+    ],
+  ])("no call is recorded when %s", async (_label, arrange, extra, kind) => {
+    arrange();
+    const fetchImpl = vi.fn() as unknown as PageSpeedFetch;
+    const a = await runPageSpeedAttempt({ ...attemptInput(fetchImpl), ...extra });
+    expect(a).toEqual({ kind });
+    expect(attemptCalledGoogle(a)).toBe(false);
+    expect(mockModel.recordSpeedReportCall).not.toHaveBeenCalled();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it("a DB error while recording throws BEFORE Google is called (the step retry sends nothing twice)", async () => {
+    mockModel.recordSpeedReportCall.mockRejectedValue(new Error("db down"));
+    const fetchImpl = vi.fn() as unknown as PageSpeedFetch;
+    await expect(runPageSpeedAttempt(attemptInput(fetchImpl))).rejects.toThrow("db down");
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it.each(["SCHEDULED", "MANUAL", undefined] as const)(
+    "a Professional run (origin %s) behaves as before, plus one recorded call",
+    async (origin) => {
+      const order = trackOrder();
+      const fetchImpl = vi.fn(async () => {
+        order.push("fetch");
+        return json(200, buildPageSpeedResponse());
+      }) as unknown as PageSpeedFetch;
+      const a = await runPageSpeedAttempt({ ...attemptInput(fetchImpl), origin });
+      expect(a.kind).toBe("ok");
+      if (a.kind === "ok") expect(a.run.metrics.score).toBe(28);
+      expect(order).toEqual(["reserve", "record", "fetch"]);
+      // The full budget, not the free ceiling.
+      expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(5000, NOW);
+      expect(mockModel.recordSpeedReportCall).toHaveBeenCalledWith("rep-1");
+    },
+  );
+
+  it("a FREE_TEST homepage call is recorded on its report too", async () => {
+    mockDb.shop.findUnique.mockResolvedValue(FREE);
+    const a = await runPageSpeedAttempt({
+      ...attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))),
+      origin: "FREE_TEST",
+      reportId: "rep-f",
+    });
+    expect(a.kind).toBe("ok");
+    expect(mockModel.recordSpeedReportCall).toHaveBeenCalledWith("rep-f");
+  });
+});
+
+describe("closeAbandonedSpeedReport reports the calls the run spent (gc-au2l)", () => {
+  const freeRun = {
+    shopId: SHOP_ID,
+    origin: "FREE_TEST" as const,
+    runId: "run-f",
+    reportId: "rep-f",
+    runNowClaimedAt: "2026-10-11T11:00:00.000Z",
+    runNowPrevious: null,
+  };
+
+  it("the ops event carries the row's real call count", async () => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(1);
+    mockModel.getAbandonedSpeedReportCalls.mockResolvedValue(2);
+    await closeAbandonedSpeedReport(freeRun, "stuck", NOW);
+    expect(mockModel.getAbandonedSpeedReportCalls).toHaveBeenCalledWith({
+      shopId: SHOP_ID,
+      runId: "run-f",
+      reportId: "rep-f",
+    });
+    expect(mockRecordOpsEvent).toHaveBeenCalledWith({
+      eventType: "speed_report",
+      key: DOMAIN,
+      metadata: { status: "FAILED", origin: "FREE_TEST", calls: 2, durationMs: 0, reason: "stuck" },
+    });
+  });
+
+  it("a SCHEDULED run reads its calls by run id alone", async () => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(1);
+    mockModel.getAbandonedSpeedReportCalls.mockResolvedValue(5);
+    await closeAbandonedSpeedReport(
+      { shopId: SHOP_ID, origin: "SCHEDULED", runId: "run-1" },
+      "worker_failed",
+      NOW,
+    );
+    expect(mockModel.getAbandonedSpeedReportCalls).toHaveBeenCalledWith({
+      shopId: SHOP_ID,
+      runId: "run-1",
+    });
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({ calls: 5 });
+  });
+
+  it("a run that died before any call still reports 0", async () => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(1);
+    await closeAbandonedSpeedReport(freeRun, "worker_failed", NOW);
+    expect(mockRecordOpsEvent.mock.calls[0][0].metadata).toMatchObject({ calls: 0 });
+  });
+
+  it("no RUNNING row was closed (missing row tolerated): nothing is read, no ops event", async () => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(0);
+    await closeAbandonedSpeedReport(freeRun, "stuck", NOW);
+    expect(mockModel.getAbandonedSpeedReportCalls).not.toHaveBeenCalled();
+    expect(mockRecordOpsEvent).not.toHaveBeenCalled();
+  });
+
+  it("a free run that made calls STILL hands its 24h slot back: the attempt cap is the bound", async () => {
+    mockModel.failAbandonedSpeedReport.mockResolvedValue(1);
+    mockModel.getAbandonedSpeedReportCalls.mockResolvedValue(3);
+    await closeAbandonedSpeedReport(freeRun, "stuck", NOW);
+    expect(mockModel.releaseSpeedReportRunNow).toHaveBeenCalledWith(
+      SHOP_ID,
+      new Date("2026-10-11T11:00:00.000Z"),
+      null,
+    );
+  });
+});
+
+describe("free speed test daily ceiling scales with the budget (gc-au2l LOW-6)", () => {
+  it.each([
+    [5000, 600],
+    [10000, 600],
+    [25000, 600],
+    [500, 60],
+    [40, 4],
+    [8, 0],
+    [0, 0],
+  ])("freeSpeedTestDailyCallCeiling(%i) = %i", (budget, ceiling) => {
+    expect(freeSpeedTestDailyCallCeiling(budget)).toBe(ceiling);
+  });
+
+  it.each([
+    ["500", 60],
+    ["10000", 600],
+    ["0", 0],
+  ])(
+    "a FREE_TEST call with PAGESPEED_DAILY_CALL_BUDGET=%s reserves against %i",
+    async (env, ceiling) => {
+      process.env.PAGESPEED_DAILY_CALL_BUDGET = env;
+      mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free", freeSpeedTestUsedAt: null });
+      await runPageSpeedAttempt({
+        ...attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))),
+        origin: "FREE_TEST",
+      });
+      expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(ceiling, NOW);
+    },
+  );
+
+  it("a paid call still reserves against the whole lowered budget", async () => {
+    process.env.PAGESPEED_DAILY_CALL_BUDGET = "500";
+    await runPageSpeedAttempt({
+      ...attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))),
+      origin: "MANUAL",
+    });
+    expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(500, NOW);
+  });
 });

@@ -36,6 +36,7 @@ import {
   type SpeedRunSummary,
 } from "./speed-attribution.server";
 import {
+  freeSpeedTestDailyCallCeiling,
   getDailyCallBudget,
   getPageSpeedApiKey,
   isSpeedReportLive,
@@ -57,7 +58,6 @@ import { type GraphQLResponseError, isAccessDeniedError } from "../lib/scope-che
 import {
   buildSpeedReportView,
   computeSpeedReportStatus,
-  FREE_SPEED_TEST_DAILY_CALL_CEILING,
   FREE_SPEED_TEST_MAX_ATTEMPTS,
   FREE_TEST_EXHAUSTED,
   freeSpeedTestConsumed,
@@ -80,10 +80,12 @@ import {
   createSpeedReport,
   failAbandonedSpeedReport,
   finishSpeedReport,
+  getAbandonedSpeedReportCalls,
   getFreeSpeedTestUsedAt,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
   hasRecentSpeedReportEvent,
+  recordSpeedReportCall,
   releaseSpeedReportRunNow,
   reservePageSpeedCall,
   startManualSpeedReport,
@@ -276,21 +278,25 @@ export function abandonedRunFromEvent(original: unknown, runId: unknown): Abando
  * cancelled by its start/finish timeout: `stuck`) must not leave its report
  * RUNNING forever (gc-wt3y #2/#3). Closes the RUNNING row as FAILED (missing
  * row tolerated), hands a MANUAL or FREE_TEST run's 24h slot back (a FREE_TEST
- * run that died is not used up: the merchant may try again), and records the
+ * run that died is not used up: the merchant may try again, and what bounds
+ * the retries is FREE_SPEED_TEST_MAX_ATTEMPTS, because the closed row keeps
+ * the calls it spent and so counts as an attempt), and records the
  * speed_report ops event ONLY when a row was actually closed and the shop
  * still exists: a redacted shop gets no new row keyed on its domain. `calls`
- * is 0 in that event: calls made before the failure are not tracked per run.
+ * in that event is the row's psiCalls: the calls the run made before it
+ * stopped, counted one by one as they happened (gc-au2l).
  */
 export async function closeAbandonedSpeedReport(
   run: AbandonedRun,
   reason: Extract<SpeedFailureCode, "worker_failed" | "stuck">,
   now: Date = new Date(),
 ): Promise<void> {
-  const closed = await failAbandonedSpeedReport(
-    { shopId: run.shopId, runId: run.runId, ...(run.reportId ? { reportId: run.reportId } : {}) },
-    reason,
-    now,
-  );
+  const target = {
+    shopId: run.shopId,
+    runId: run.runId,
+    ...(run.reportId ? { reportId: run.reportId } : {}),
+  };
+  const closed = await failAbandonedSpeedReport(target, reason, now);
   if (run.origin !== SPEED_REPORT_ORIGIN.SCHEDULED && run.runNowClaimedAt) {
     await releaseSpeedReportRunNow(
       run.shopId,
@@ -304,7 +310,7 @@ export async function closeAbandonedSpeedReport(
       await recordSpeedReportEvent(shop.domain, {
         status: SPEED_REPORT_STATUS.FAILED,
         origin: run.origin,
-        calls: 0,
+        calls: await getAbandonedSpeedReportCalls(target),
         durationMs: 0,
         reason,
       });
@@ -764,17 +770,23 @@ export function attemptHaltsPage(a: SpeedAttempt): boolean {
 /**
  * One PageSpeed run of one page. Re-checks the gate (for the run's origin) and
  * the key, validates the target, reserves the call against today's budget,
- * then calls Google. A FREE_TEST run never tests the product page: such an
- * attempt is refused before anything is reserved or called. NEVER
- * THROWS for a Google-side failure (those are `error` attempts), so a Google
- * error does not make Inngest retry the step and repeat the call. A call can
+ * counts it on the run's report (SpeedReport.psiCalls, gc-au2l), then calls
+ * Google. The count is written BEFORE the call, so a run whose worker dies
+ * mid-call still shows what it spent. A FREE_TEST run never tests the product
+ * page: such an attempt is refused before anything is reserved, counted or
+ * called. NEVER THROWS for a Google-side failure (those are `error`
+ * attempts), so a Google error does not make Inngest retry the step and
+ * repeat the call. A call can
  * still repeat if the worker dies after it but before the step's result is
  * recorded: at most once (the function has retries: 1), and the repeat
- * reserves its own budget. A DB error before the call (gate/budget) may throw
- * and is retried by the step, which is safe because nothing was sent yet.
+ * reserves its own budget and is counted on the report again. A DB error
+ * before the call (gate/budget/count) may throw and is retried by the step,
+ * which is safe because nothing was sent yet.
  */
 export async function runPageSpeedAttempt(input: {
   shopId: string;
+  /** The run's report: each call is counted on it as it happens. */
+  reportId: string;
   /** The run's origin, for the gate (absent = a Professional run). */
   origin?: SpeedReportOrigin;
   page: SpeedPageKey;
@@ -798,7 +810,7 @@ export async function runPageSpeedAttempt(input: {
   // they stop early and paying shops keep the rest of the budget.
   const budget =
     input.origin === SPEED_REPORT_ORIGIN.FREE_TEST
-      ? Math.min(getDailyCallBudget(), FREE_SPEED_TEST_DAILY_CALL_CEILING)
+      ? freeSpeedTestDailyCallCeiling(getDailyCallBudget())
       : getDailyCallBudget();
   const reserved = await reservePageSpeedCall(budget, now());
   if (!reserved) {
@@ -809,6 +821,7 @@ export async function runPageSpeedAttempt(input: {
     });
     return { kind: "budget" };
   }
+  await recordSpeedReportCall(input.reportId);
 
   const started = Date.now();
   const result = await callPageSpeed(input.pageUrl, { apiKey, fetchImpl: input.fetchImpl });
@@ -1082,7 +1095,8 @@ export async function requestFreeSpeedTest(
   if (await getFreeSpeedTestUsedAt(shop.id)) return { ok: false, error: FREE_TEST_ERRORS.used };
   // Per-shop attempt cap: an attempt that reached Google without a result
   // leaves the test unused, so a store Google cannot test would otherwise
-  // retry forever. Platform faults are not counted. Checked before the claim;
+  // retry forever. A run that never called Google is not counted; one whose
+  // worker died after a call is (gc-au2l). Checked before the claim;
   // the claim's 24h slot serializes starts, so two requests cannot both pass
   // at the cap.
   if ((await countFreeSpeedTestAttempts(shop.id)) >= FREE_SPEED_TEST_MAX_ATTEMPTS) {

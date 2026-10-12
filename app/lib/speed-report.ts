@@ -456,18 +456,22 @@ export const FREE_TEST_NOT_USED = "Your free test wasn't used, so you can run it
  * How many free-test attempts a shop gets in total. Only an attempt that
  * actually REACHED GOOGLE counts (a FREE_TEST report with at least one
  * PageSpeed call that was not stopped by the daily ceiling): a timeout, a
- * page Google could not load. A platform fault never burns an attempt: a
- * dispatch failure, a dead or stuck worker, a missing key, the daily ceiling,
- * and a password page (found by our own pre-check, before any call) all leave
- * the count alone. Without the cap a store Google cannot test could spend
- * PageSpeed calls every day forever. The attempt that reaches the cap still
- * uses the test up if it COMPLETES.
+ * page Google could not load, or a run whose worker died or got stuck after
+ * it had called Google (calls are counted as they happen, gc-au2l). A run
+ * that never called Google never burns an attempt: a dispatch failure, a
+ * worker that died or got stuck before its first call, a missing key, the
+ * daily ceiling, and a password page (found by our own pre-check, before any
+ * call) all leave the count alone. Without the cap a store Google cannot test
+ * could spend PageSpeed calls every day forever. The attempt that reaches the
+ * cap still uses the test up if it COMPLETES.
  */
 export const FREE_SPEED_TEST_MAX_ATTEMPTS = 5;
 /**
  * Free tests stop for the day once the SHARED daily PageSpeed call counter
  * reaches this, so they can never use up the budget paying shops' reports need
- * (PAGESPEED_DAILY_CALL_BUDGET, default 5000: paid keeps the rest).
+ * (PAGESPEED_DAILY_CALL_BUDGET, default 5000: paid keeps the rest). A budget
+ * set below the default lowers this in proportion
+ * (freeSpeedTestDailyCallCeiling).
  */
 export const FREE_SPEED_TEST_DAILY_CALL_CEILING = 600;
 /** Shown when a free test was stopped by the daily ceiling. */
