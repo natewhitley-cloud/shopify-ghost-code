@@ -341,7 +341,9 @@ describe("extractRenderedLiquidErrors: where a match is read", () => {
     // copy and using those offsets on the original string lands 30 characters
     // late here: inside the second script, whose string then reads as page text.
     expect("İ".toLowerCase()).toHaveLength(2);
-    const html = `<p>${"İ".repeat(30)}</p><script>var a = 1;</script><script>var e = "x";\n${MISSING}\n</script><p>ok</p>`;
+    // Verified against the previous extractor: it landed inside the second
+    // script, took the ">" of "1 > 0" as the end of a tag and read this error.
+    const html = `<p>${"İ".repeat(30)}</p><script>var a = 1;</script><script>var pad = 1234567890123456; if (1 > 0) { go(); }\n${MISSING}\n</script><p>ok</p>`;
     expect(extractRenderedLiquidErrors(html)).toEqual([]);
     // The same page with the error as real text after the scripts is read.
     expect(
