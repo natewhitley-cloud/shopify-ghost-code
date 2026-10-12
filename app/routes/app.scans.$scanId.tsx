@@ -143,7 +143,6 @@ import {
   hairline,
   htmlTableCss,
   sectionCard,
-  TABLE_BORDER_LIGHT,
   TEXT_DISABLED,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
@@ -565,18 +564,24 @@ interface FindingLike {
 }
 
 /**
- * Per-finding suppression control (E2.3), rendered under the finding only
- * in the paid findings list (gated by `FindingRow`'s `scanId` prop — the
- * free-tier preview row does not get it). Each control owns its own fetcher so
- * rows submit independently.
+ * Per-finding suppression control (E2.3), rendered at the end of the finding's
+ * action row only in the paid findings list (gated by `FindingRow`'s `scanId`
+ * prop — the free-tier preview row does not get it). Each control owns its own
+ * fetcher so rows submit independently.
+ *
+ * Ignoring is the rare action, so it is tucked into a closed native
+ * `<details>` ("Ignore"); opening it shows the reason field and the two submit
+ * buttons across the card. The submit buttons stay native `<button>`s: a
+ * name/value submit through an `s-button`'s shadow DOM is not reliable.
  *
  * Posts to the scan-detail `action` (bare fetcher.Form → current route). The
  * fingerprint is computed server-side from the finding id, so only the id (plus
  * an optional reason and, for the app-level rule, the appName) is sent.
  *
  * Already-ignored findings render a suppressed-state note with a link to the
- * management view instead of a dead "Ignore" button — after a successful ignore
- * the loader revalidates, `finding.isIgnored` flips true, and this branch shows.
+ * management view in place of the disclosure (never inside it) — after a
+ * successful ignore the loader revalidates, `finding.isIgnored` flips true, and
+ * this branch shows.
  */
 function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
   const fetcher = useFetcher<{ success?: boolean; error?: string }>();
@@ -584,7 +589,7 @@ function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
 
   if (finding.isIgnored) {
     return (
-      <div style={{ fontSize: "12px", color: TEXT_SUBDUED }}>
+      <div style={findingIgnoredNote}>
         <span style={{ fontWeight: 600, color: COLOR_SUCCESS }}>Ignored</span>. Excluded from
         finding counts. <Link to="/app/ignored">Manage ignored findings</Link>
       </div>
@@ -592,83 +597,79 @@ function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
   }
 
   const ignoreButtonStyle: React.CSSProperties = {
-    padding: "4px 8px",
+    minHeight: "32px",
+    padding: "6px 12px",
     border: `1px solid ${BORDER_STRONG}`,
-    borderRadius: "4px",
-    fontSize: "12px",
-    background: BG_SURFACE,
-    color: TEXT_SUBDUED,
+    borderRadius: "8px",
+    fontSize: "13px",
+    fontWeight: 500,
+    background: BG_WHITE,
+    color: TEXT_PRIMARY,
     cursor: submitting ? "default" : "pointer",
     maxWidth: "100%",
   };
 
   return (
-    <fetcher.Form
-      method="post"
-      style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: "6px" }}
-    >
-      <input type="hidden" name="findingId" value={finding.id} />
-      <input type="hidden" name="appName" value={finding.appName ?? ""} />
-      <input
-        type="text"
-        name="reason"
-        placeholder="Reason (optional)"
-        maxLength={500}
-        aria-label="Reason for ignoring (optional)"
-        style={{
-          padding: "4px 8px",
-          border: `1px solid ${BORDER_STRONG}`,
-          borderRadius: "4px",
-          fontSize: "12px",
-          width: "160px",
-          maxWidth: "100%",
-        }}
-      />
-      <button
-        type="submit"
-        name="intent"
-        value="ignore-instance"
-        disabled={submitting}
-        style={ignoreButtonStyle}
-      >
-        {submitting ? "…" : "Ignore this finding"}
-      </button>
-      {finding.appName && (
+    <details className="finding-ignore" style={findingIgnore}>
+      <summary style={findingIgnoreSummary}>Ignore</summary>
+      <fetcher.Form method="post" style={findingIgnoreForm}>
+        <input type="hidden" name="findingId" value={finding.id} />
+        <input type="hidden" name="appName" value={finding.appName ?? ""} />
+        <input
+          type="text"
+          name="reason"
+          placeholder="Reason (optional)"
+          maxLength={500}
+          aria-label="Reason for ignoring (optional)"
+          style={{
+            minHeight: "32px",
+            boxSizing: "border-box",
+            padding: "6px 10px",
+            border: `1px solid ${BORDER_STRONG}`,
+            borderRadius: "8px",
+            fontSize: "13px",
+            background: BG_WHITE,
+            color: TEXT_PRIMARY,
+            flex: "1 1 200px",
+            minWidth: 0,
+            maxWidth: "100%",
+          }}
+        />
         <button
           type="submit"
           name="intent"
-          value="ignore-app"
+          value="ignore-instance"
           disabled={submitting}
           style={ignoreButtonStyle}
         >
-          Ignore all from {finding.appName}
+          {submitting ? "…" : "Ignore this finding"}
         </button>
-      )}
-      {fetcher.data?.error && (
-        <span style={{ color: COLOR_CRITICAL, fontSize: "12px" }}>{fetcher.data.error}</span>
-      )}
-    </fetcher.Form>
+        {finding.appName && (
+          <button
+            type="submit"
+            name="intent"
+            value="ignore-app"
+            disabled={submitting}
+            style={ignoreButtonStyle}
+          >
+            Ignore all from {finding.appName}
+          </button>
+        )}
+        {fetcher.data?.error && (
+          <span style={{ color: COLOR_CRITICAL, fontSize: "13px" }}>{fetcher.data.error}</span>
+        )}
+      </fetcher.Form>
+    </details>
   );
 }
 
 /**
- * Copy-to-clipboard button for a finding's full code snippet.
- *
- * Uses the iframe-safe copyToClipboard helper (async Clipboard API with an
- * execCommand fallback) and shows a brief "Copied" confirmation. Each button
- * owns its own confirmation state so rows are independent.
+ * Copy `text` to the clipboard with the iframe-safe copyToClipboard helper
+ * (async Clipboard API with an execCommand fallback). `copied` is true for a
+ * moment after a successful copy; a failed copy shows a toast. Each caller owns
+ * its own confirmation state so rows are independent.
  */
-export function CopyButton({
-  text,
-  label = "Copy",
-  copiedLabel = "Copied",
-  ariaLabel = "Copy code snippet",
-}: {
-  text: string;
-  label?: string;
-  copiedLabel?: string;
-  ariaLabel?: string;
-}) {
+function useCopy(text: string): { copied: boolean; handleCopy: () => Promise<void> } {
   const [copied, setCopied] = useState(false);
   const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -691,11 +692,21 @@ export function CopyButton({
     timeoutRef.current = setTimeout(() => setCopied(false), 1500);
   };
 
+  return { copied, handleCopy };
+}
+
+/**
+ * Small copy-to-clipboard button for a finding's full code snippet, with a
+ * brief "Copied" confirmation.
+ */
+export function CopyButton({ text }: { text: string }) {
+  const { copied, handleCopy } = useCopy(text);
+
   return (
     <button
       type="button"
       onClick={handleCopy}
-      aria-label={ariaLabel}
+      aria-label="Copy code snippet"
       style={{
         flexShrink: 0,
         padding: "2px 8px",
@@ -708,10 +719,35 @@ export function CopyButton({
         whiteSpace: "nowrap",
       }}
     >
-      {copied ? copiedLabel : label}
+      {copied ? "Copied" : "Copy"}
     </button>
   );
 }
+
+/**
+ * The card's "Copy removal steps" action: a normal-size secondary Polaris
+ * button with the same copy behaviour as CopyButton. Not a form control, so an
+ * `s-button` is safe here (unlike the ignore submit buttons).
+ */
+function CopyRemovalStepsButton({ text }: { text: string }) {
+  const { copied, handleCopy } = useCopy(text);
+
+  return (
+    <s-button
+      variant="secondary"
+      onClick={handleCopy}
+      accessibilityLabel="Copy removal instructions for this finding"
+    >
+      {copied ? "Copied" : "Copy removal steps"}
+    </s-button>
+  );
+}
+
+/** What the old confidence chip and its tooltip said, as one plain sentence. */
+const CONFIDENCE_SENTENCES = {
+  signature: "Matched a known app signature.",
+  heuristic: "Inferred from the code, not a known app match. Review before removing.",
+} as const;
 
 export function FindingRow({
   finding,
@@ -759,9 +795,10 @@ export function FindingRow({
   const impact = getFindingImpact(finding.findingType);
   return (
     <li id={anchor && finding.id ? findingAnchorId(finding.id) : undefined} style={findingItem}>
-      {/* Title: what it is and whose it is, with the severity on the right. The
-          old table's column headers gave screen readers "App" and "Severity"
-          for free; the hidden labels keep that context. */}
+      {/* Title: what it is and whose it is, then the NEW / TRACKING / VISUAL
+          chips, with the severity last on the right. The old table's column
+          headers gave screen readers "App" and "Severity" for free; the hidden
+          labels keep that context. */}
       <div style={findingTitleRow}>
         <h3 style={findingTitle}>
           {typeLabel}
@@ -773,55 +810,37 @@ export function FindingRow({
             </>
           )}
         </h3>
-        <div style={{ flexShrink: 0 }}>
-          <span style={visuallyHidden}>Severity: </span>
-          <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
+        <div style={findingBadges}>
+          {isNew && <span style={styles.newBadge}>NEW</span>}
+          {finding.isTracker && <span style={styles.trackerBadge}>TRACKING</span>}
+          {isVisual && <span style={styles.visualBadge}>VISUAL</span>}
+          <span>
+            <span style={visuallyHidden}>Severity: </span>
+            <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
+          </span>
         </div>
       </div>
 
-      {/* Location: file (or the Admin resource), line, and the deep link. */}
+      {/* Location: file (or the Admin resource) and line, as plain text. The
+          deep link is the primary button in the action row below. */}
       <div style={findingLocation}>
-        <span style={findingWrap}>
-          <span style={visuallyHidden}>File: </span>
-          {isAdminResourceFinding(finding.findingType) ? (
-            // Admin-resource findings carry a synthetic locator with an embedded GID
-            // (developer plumbing), so show a human label instead of the raw path.
-            <span>{adminResourceLocatorLabel(finding.findingType, finding.filename)}</span>
-          ) : (
-            // Theme-file findings: the filename is a real, editable theme path — show it verbatim.
-            <code style={findingWrap}>{finding.filename}</code>
-          )}
-        </span>
-        {finding.lineNumber > 0 && <span>Line {finding.lineNumber}</span>}
-        {themeEditorUrl && (
-          <a href={themeEditorUrl} target="_top" rel="noreferrer">
-            Open in theme editor
-          </a>
+        <span style={visuallyHidden}>File: </span>
+        {isAdminResourceFinding(finding.findingType) ? (
+          // Admin-resource findings carry a synthetic locator with an embedded GID
+          // (developer plumbing), so show a human label instead of the raw path.
+          <span>{adminResourceLocatorLabel(finding.findingType, finding.filename)}</span>
+        ) : (
+          // Theme-file findings: the filename is a real, editable theme path — show it verbatim.
+          <code style={findingWrap}>{finding.filename}</code>
         )}
-        {adminResourceUrl && (
-          <a href={adminResourceUrl} target="_top" rel="noreferrer">
-            {adminResourceLinkLabel(finding.findingType)}
-          </a>
-        )}
+        {finding.lineNumber > 0 && `, line ${finding.lineNumber}`}
       </div>
 
-      <div style={findingBadges}>
-        {isNew && <span style={styles.newBadge}>NEW</span>}
-        {finding.isTracker && <span style={styles.trackerBadge}>TRACKING</span>}
-        {isVisual && <span style={styles.visualBadge}>VISUAL</span>}
-        {confidence === "signature" ? (
-          <span style={styles.signatureBadge} title="Matched against a known app signature">
-            High confidence
-          </span>
-        ) : (
-          <span
-            style={styles.heuristicBadge}
-            title="Structurally inferred, not a known app-signature match. Review before removing."
-          >
-            Heuristic
-          </span>
-        )}
+      {/* How freely the merchant can act (one coloured badge), and how the
+          finding was detected (a plain sentence, not a second chip). */}
+      <div style={findingSafetyRow}>
         <s-badge tone={safetyTone(safety)}>{REMOVAL_SAFETY_LABELS[safety]}</s-badge>
+        <span style={findingConfidence}>{CONFIDENCE_SENTENCES[confidence]}</span>
       </div>
 
       <div style={findingSnippet}>
@@ -834,25 +853,30 @@ export function FindingRow({
       </div>
       {impact && (
         <div style={findingNote}>
-          <strong style={findingNoteLabel}>Why it matters: </strong>
+          <strong style={findingNoteLabel}>Why it matters</strong>
           {impact}
         </div>
       )}
       <div style={findingNote}>
-        <strong style={findingNoteLabel}>How to remove: </strong>
+        <strong style={findingNoteLabel}>How to remove</strong>
         {getFindingRemediation(finding.findingType)}
       </div>
-      {/* Copy a precise, self-contained removal instruction for THIS finding
-          (file + line + full snippet + how-to) to the clipboard. Detection-only:
-          this never writes to the theme, it just hands the merchant something
-          exact to act on. */}
+      {/* Actions, in order: open the place to fix it (primary, when the finding
+          has one), copy a precise, self-contained removal instruction for THIS
+          finding (file + line + full snippet + how-to), then Ignore, tucked
+          away on the right. Detection-only: nothing here writes to the theme. */}
       <div style={findingActions}>
-        <CopyButton
-          text={buildRemovalInstructions(finding, typeLabel)}
-          label="Copy removal instructions"
-          copiedLabel="Copied instructions"
-          ariaLabel="Copy removal instructions for this finding"
-        />
+        {themeEditorUrl && (
+          <s-button variant="primary" href={themeEditorUrl} target="_top">
+            Open in theme editor
+          </s-button>
+        )}
+        {adminResourceUrl && (
+          <s-button variant="primary" href={adminResourceUrl} target="_top">
+            {adminResourceLinkLabel(finding.findingType)}
+          </s-button>
+        )}
+        <CopyRemovalStepsButton text={buildRemovalInstructions(finding, typeLabel)} />
         {/* Suppression control — only in the paid findings list (scanId set)
             and only when the finding has a stable id to fingerprint from. */}
         {scanId && finding.id && <FindingIgnoreControls finding={finding} />}
@@ -863,40 +887,38 @@ export function FindingRow({
 
 // Finding item styles. The findings used to be a six-column table with fixed
 // column widths, which was wider than the page at embedded-admin widths. Each
-// finding is now a block whose content wraps: no fixed widths, every flex child
+// finding is now a card whose content wraps: no fixed widths, every flex child
 // may shrink (`minWidth: 0`), and long paths and code break anywhere.
 const findingWrap: React.CSSProperties = { minWidth: 0, overflowWrap: "anywhere" };
 
+// One finding, one card: its own border, corners and padding, so findings read
+// as separate things inside the white section card and inside the malicious
+// code banner. The gap between cards is the list's (FINDINGS_LIST_STYLES).
 const findingItem: React.CSSProperties = {
   ...findingWrap,
   display: "flex",
   flexDirection: "column",
   gap: "8px",
+  padding: "16px",
+  border: `1px solid ${BORDER_STRONG}`,
+  borderRadius: "10px",
+  background: BG_WHITE,
 };
 
 const findingTitleRow: React.CSSProperties = {
   display: "flex",
-  alignItems: "flex-start",
-  justifyContent: "space-between",
-  gap: "12px",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "6px 12px",
 };
 
 const findingTitle: React.CSSProperties = {
   ...findingWrap,
+  flex: "1 1 auto",
   margin: 0,
   fontSize: "15px",
   fontWeight: 600,
   color: TEXT_PRIMARY,
-};
-
-const findingLocation: React.CSSProperties = {
-  ...findingWrap,
-  display: "flex",
-  flexWrap: "wrap",
-  alignItems: "baseline",
-  gap: "2px 12px",
-  fontSize: "13px",
-  color: TEXT_SUBDUED,
 };
 
 const findingBadges: React.CSSProperties = {
@@ -904,6 +926,26 @@ const findingBadges: React.CSSProperties = {
   flexWrap: "wrap",
   alignItems: "center",
   gap: "6px",
+  marginLeft: "auto",
+};
+
+const findingLocation: React.CSSProperties = {
+  ...findingWrap,
+  fontSize: "13px",
+  color: TEXT_SUBDUED,
+};
+
+const findingSafetyRow: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "4px 8px",
+};
+
+const findingConfidence: React.CSSProperties = {
+  ...findingWrap,
+  fontSize: "13px",
+  color: TEXT_SUBDUED,
 };
 
 const findingSnippet: React.CSSProperties = {
@@ -923,38 +965,74 @@ const findingSnippetCode: React.CSSProperties = {
 
 const findingNote: React.CSSProperties = {
   ...findingWrap,
-  fontSize: "13px",
-  color: TEXT_SUBDUED,
-  lineHeight: 1.4,
+  fontSize: "14px",
+  color: TEXT_PRIMARY,
+  lineHeight: 1.45,
 };
 
-const findingNoteLabel: React.CSSProperties = { color: TEXT_PRIMARY, fontWeight: 600 };
+// A small bold label on its own line, with the note's text beneath it.
+const findingNoteLabel: React.CSSProperties = {
+  display: "block",
+  fontSize: "12px",
+  fontWeight: 600,
+  color: TEXT_SUBDUED,
+};
 
 const findingActions: React.CSSProperties = {
   display: "flex",
   flexWrap: "wrap",
   alignItems: "center",
   gap: "8px",
+  marginTop: "4px",
 };
 
-// Dividers and edge padding depend on an item's position, so they live here
-// rather than in the inline item style. The base vertical padding lives here
-// too: an inline padding would beat the edge rules below.
+// The Ignore disclosure sits at the right end of the action row. Open, it takes
+// the whole row (FINDINGS_LIST_STYLES) so its form spans the card.
+const findingIgnore: React.CSSProperties = { minWidth: 0, marginLeft: "auto" };
+
+// A quiet text control that still reads as clickable: link colour, pointer,
+// and the browser's own disclosure marker (the summary keeps its default
+// display, so the marker shows).
+const findingIgnoreSummary: React.CSSProperties = {
+  marginLeft: "auto",
+  padding: "6px 4px",
+  fontSize: "13px",
+  fontWeight: 500,
+  color: COLOR_INFO,
+  cursor: "pointer",
+};
+
+const findingIgnoreForm: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "8px",
+  marginTop: "8px",
+};
+
+const findingIgnoredNote: React.CSSProperties = {
+  ...findingWrap,
+  marginLeft: "auto",
+  fontSize: "13px",
+  color: TEXT_SUBDUED,
+};
+
+// The list is a column of cards with a real gap between them. An open Ignore
+// disclosure takes a full row of its card's action row, with its summary kept
+// at the right end.
 const FINDINGS_LIST_STYLES = `
-  .findings-list { list-style: none; margin: 0; padding: 0; min-width: 0; }
-  .findings-list > li + li { border-top: 1px solid ${TABLE_BORDER_LIGHT}; }
-  .findings-list > li { padding: 16px 0; }
-  .findings-list > li:first-child { padding-top: 0; }
-  .findings-list > li:last-child { padding-bottom: 0; }
+  .findings-list { list-style: none; margin: 0; padding: 0; min-width: 0; display: flex; flex-direction: column; gap: 12px; }
+  .findings-list .finding-ignore[open] { flex: 1 1 100%; }
+  .findings-list .finding-ignore > summary { width: fit-content; }
 `;
 
-/** The list of findings: a real list, one `FindingRow` item per finding. */
+/** The list of findings: a real list, one `FindingRow` card per finding. */
 function FindingsTable({ children }: { children: React.ReactNode }) {
   return (
     <>
       {/* Set as raw HTML: as a text child, React's server render escapes the
-          ">" in the child selectors, and a <style> does not decode "&gt;", so
-          those rules would not apply until the page hydrates. The string is a
+          ">" in the child selector, and a <style> does not decode "&gt;", so
+          that rule would not apply until the page hydrates. The string is a
           constant. */}
       <style dangerouslySetInnerHTML={{ __html: FINDINGS_LIST_STYLES }} />
       <ul className="findings-list">{children}</ul>

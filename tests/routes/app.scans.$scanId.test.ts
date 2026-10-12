@@ -146,9 +146,10 @@ vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { adminResourceLinkLabel } from "../../app/lib/admin-resource-url";
 import { getPlanFeatures } from "../../app/lib/billing.server";
 import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/finding-consequence";
-import { getFindingImpact } from "../../app/lib/finding-remediation";
+import { getFindingImpact, getFindingRemediation } from "../../app/lib/finding-remediation";
 import { REMOVAL_SAFETY_LABELS } from "../../app/lib/finding-safety";
 import { comparePreviewCandidates, pickFreePreviewFindings } from "../../app/lib/free-preview";
 import { logger } from "../../app/lib/logger.server";
@@ -220,6 +221,7 @@ import { PREVIEW_READ_BUCKETS } from "../../app/services/free-preview.server";
 import { fingerprintFinding } from "../../app/services/scan-differ.server";
 import { recordUpgradePreviewStageOnce } from "../../app/services/upgrade-preview-nudge.server";
 import { authenticate } from "../../app/shopify.server";
+import { styles } from "../../app/styles/shared";
 
 // ---------------------------------------------------------------------------
 // Typed mock helpers
@@ -2491,6 +2493,18 @@ describe("app.scans.$scanId loader", () => {
         /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><s-heading>Preview: Top 5 Findings/,
       );
       expect(html).not.toMatch(/Ignore this finding|Ignore all from|name="findingId"/);
+      // Nor the Ignore disclosure, its reason field or a form: not in the
+      // preview cards and not in the security alert's cards.
+      expect(html).not.toMatch(
+        /<details|<summary|class="finding-ignore"|name="reason"|name="intent"/,
+      );
+      // Every finding on the page is its own bordered card.
+      const freeCards = [...html.matchAll(/<li id="finding-[^"]+" style="([^"]*)"/g)];
+      // The malicious finding in the security alert, plus the five preview rows.
+      expect(freeCards).toHaveLength(6);
+      for (const [, style] of freeCards) {
+        expect(style).toMatch(/padding:16px;border:1px solid #c9cccf;border-radius:10px/);
+      }
       // The summary above it is a white card too, not an <s-card> on the grey page.
       expect(html).toMatch(
         /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><s-heading>\d+ findings detected<\/s-heading>/,
@@ -2521,18 +2535,74 @@ describe("app.scans.$scanId loader", () => {
       expect(html).toMatch(
         /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><div style="[^"]*"><h2 class="scan-section-title">Findings<\/h2>/,
       );
-      // The items' vertical padding is a stylesheet rule, declared before the
-      // edge rules that zero it on the first and last item.
-      const base = html.indexOf(".findings-list > li { padding: 16px 0; }");
-      const first = html.indexOf(".findings-list > li:first-child { padding-top: 0; }");
-      const last = html.indexOf(".findings-list > li:last-child { padding-bottom: 0; }");
-      expect(base).toBeGreaterThan(-1);
-      expect(first).toBeGreaterThan(base);
-      expect(last).toBeGreaterThan(base);
+      // The list's stylesheet is real CSS in the server render: the ">" of its
+      // child selector is not escaped (a <style> does not decode "&gt;", so an
+      // escaped rule would not apply until the page hydrates).
+      const css = html.match(/<style>([^<]*\.findings-list[^<]*)<\/style>/)?.[1] ?? "";
+      expect(css).toContain(".findings-list .finding-ignore > summary { width: fit-content; }");
+      expect(css).not.toMatch(/&gt;|&lt;|&amp;|&quot;/);
+      // The cards are separated by a real gap, not by dividers: the divider and
+      // the first/last edge-padding rules are gone.
+      expect(css).toMatch(
+        /\.findings-list \{[^}]*display: flex; flex-direction: column; gap: 12px;[^}]*\}/,
+      );
+      expect(css).not.toMatch(/border-top|first-child|last-child|li \+ li|padding: 16px 0/);
+      // An open Ignore disclosure takes a full row of the card.
+      expect(css).toContain(".findings-list .finding-ignore[open] { flex: 1 1 100%; }");
       expect(html).not.toContain("!important");
-      // Paid rows carry the ignore controls.
+      // Every finding is its own bordered card.
+      const cards = [...html.matchAll(/<li id="finding-[^"]+" style="([^"]*)"/g)];
+      expect(cards).toHaveLength(MANY.length);
+      for (const [, style] of cards) {
+        expect(style).toMatch(/padding:16px;border:1px solid #c9cccf;border-radius:10px/);
+      }
+      // Paid rows carry the ignore controls, each inside its own closed disclosure.
       expect(html.match(/>Ignore this finding</g)).toHaveLength(MANY.length);
+      expect(html.match(/<details class="finding-ignore"/g)).toHaveLength(MANY.length);
+      expect(html).not.toMatch(/<details[^>]* open/);
       expect(html.indexOf("Start here")).toBeLessThan(html.indexOf(">Findings</h2>"));
+    });
+
+    it("a paid page with malicious code: the alert's cards have no ignore controls, the list's do", async () => {
+      mockCanViewFindingDetails.mockReturnValue(true);
+      const mal = row("mal", "MALICIOUS_SCRIPT", "HIGH", 20);
+      const rows = [...MANY, mal];
+      scanWith(rows);
+      mockGetFindingsPageForScan.mockResolvedValue({
+        items: rows,
+        hasNextPage: false,
+        nextCursor: null,
+      });
+
+      const html = await renderPage();
+
+      // The security alert, on every plan, with the finding as a card in it.
+      const start = html.indexOf('<s-banner tone="critical"');
+      const banner = html.slice(start, html.indexOf("</s-banner>", start));
+      expect(start).toBeGreaterThan(-1);
+      expect(banner).toMatch(
+        /<ul class="findings-list"><li id="finding-mal" style="[^"]*padding:16px;border:1px solid #c9cccf;border-radius:10px;background:#ffffff"/,
+      );
+      expect(banner.match(/<li id="finding-/g)).toHaveLength(1);
+      // No ignore controls inside the alert: no disclosure, no form, no field.
+      expect(banner).not.toMatch(
+        /<details|<summary|<form|name="reason"|name="intent"|name="findingId"|Ignore/,
+      );
+      // Its copy action is still there.
+      expect(banner).toContain(
+        '<s-button variant="secondary" accessibilityLabel="Copy removal instructions for this finding">Copy removal steps</s-button></div></li></ul>',
+      );
+      // The list below carries one closed disclosure per row, the malicious row included.
+      const list = html.slice(html.indexOf("</s-banner>", start));
+      expect(list.match(/<details class="finding-ignore"/g)).toHaveLength(rows.length);
+      expect(html.match(/<details/g)).toHaveLength(rows.length);
+      expect(html).not.toMatch(/<details[^>]* open/);
+      // Every finding is anchored exactly once (the malicious one in the alert).
+      for (const r of rows) {
+        expect(html.match(new RegExp(`id="finding-${r.id}"`, "g")), r.id).toHaveLength(1);
+      }
+      // One copy action per rendered card: the alert's and each list row's.
+      expect(html.match(/>Copy removal steps</g)).toHaveLength(rows.length + 1);
     });
 
     it("a clean scan renders no block", async () => {
@@ -3356,7 +3426,7 @@ describe("FindingRow — removal guidance + copy button", () => {
   it("renders the per-type remediation guidance for the finding", () => {
     const html = renderRow(FINDING_ONE);
     // GHOST_SCRIPT guidance mentions removing the script tag from the theme.
-    expect(html).toContain("How to remove:");
+    expect(html).toContain(">How to remove</strong>");
     expect(html.toLowerCase()).toContain("script tag");
     expect(html.toLowerCase()).toContain("theme");
   });
@@ -3379,16 +3449,32 @@ describe("FindingRow — removal guidance + copy button", () => {
     expect(html).toContain("&lt;script");
   });
 
-  it('renders a "High confidence" badge for a signature-matched finding (GHOST_SCRIPT)', () => {
+  it("says a signature-matched finding (GHOST_SCRIPT) matched a known app signature", () => {
     const html = renderRow(FINDING_ONE);
-    expect(html).toContain("High confidence");
-    expect(html).not.toContain(">Heuristic<");
+    expect(html).toMatch(/<span style="[^"]*">Matched a known app signature\.<\/span>/);
+    expect(html).not.toContain("Inferred from the code");
   });
 
-  it('renders a "Heuristic" badge for a structurally-inferred finding (SETTINGS_DRIFT)', () => {
+  it("says a structurally-inferred finding (SETTINGS_DRIFT) is inferred and needs a review", () => {
     const html = renderRow({ ...FINDING_ONE, findingType: "SETTINGS_DRIFT" });
-    expect(html).toContain(">Heuristic<");
-    expect(html).not.toContain("High confidence");
+    expect(html).toMatch(
+      /<span style="[^"]*">Inferred from the code, not a known app match\. Review before removing\.<\/span>/,
+    );
+    expect(html).not.toContain("Matched a known app signature");
+  });
+
+  it("the confidence is a sentence, not a chip: no High confidence / Heuristic markup remains", () => {
+    for (const findingType of ["GHOST_SCRIPT", "SETTINGS_DRIFT"]) {
+      const html = renderRow({ ...FINDING_ONE, findingType });
+      expect(html).not.toMatch(/High confidence|Heuristic|title="/i);
+      // The sentence is plain subdued text beside the removal-safety badge.
+      expect(html).toMatch(
+        /<s-badge tone="[^"]*">[^<]+<\/s-badge><span style="min-width:0;overflow-wrap:anywhere;font-size:13px;color:#6d7175">[^<]+<\/span><\/div>/,
+      );
+    }
+    // The chip styles are gone from the shared tokens too.
+    expect(Object.keys(styles)).not.toContain("signatureBadge");
+    expect(Object.keys(styles)).not.toContain("heuristicBadge");
   });
 });
 
@@ -3414,17 +3500,30 @@ describe("FindingRow — list item that cannot overflow", () => {
     const page = { ...FINDING_ONE, findingType: "GHOST_PAGE", filename: "page:old-landing" };
     for (const lineNumber of [0, null, undefined]) {
       const html = renderFindingItem({ ...page, lineNumber }, PAID);
-      expect(html, String(lineNumber)).not.toMatch(/Line/);
+      expect(html, String(lineNumber)).not.toMatch(/, line|\bLine \d/);
+      // The location is the resource label alone.
+      expect(html, String(lineNumber)).toContain("<span>page:old-landing</span></div>");
     }
-    // A real line still shows.
-    expect(renderFindingItem({ ...page, lineNumber: 7 }, PAID)).toContain("<span>Line 7</span>");
+    // A real line still shows, after the location.
+    expect(renderFindingItem({ ...page, lineNumber: 7 }, PAID)).toContain(
+      "<span>page:old-landing</span>, line 7</div>",
+    );
   });
 
-  it("the item carries no inline padding, so the list's edge rules apply", () => {
-    const html = renderFindingItem(TRACKER, PAID);
-    const itemStyle = html.match(/^<ul><li [^>]*?style="([^"]*)"/)?.[1];
-    expect(itemStyle).toBeTruthy();
-    expect(itemStyle).not.toContain("padding");
+  it("the item is its own card: a border, rounded corners, padding and a white surface", () => {
+    // On every usage: paid list, Free preview and the security alert (no scanId).
+    for (const props of [PAID, { shopDomain: PAID.shopDomain, anchor: true }, {}]) {
+      const html = renderFindingItem(TRACKER, props);
+      const itemStyle = html.match(/^<ul><li [^>]*?style="([^"]*)"/)?.[1];
+      expect(itemStyle).toBeTruthy();
+      expect(itemStyle).toContain("padding:16px");
+      // Existing tokens: BORDER_STRONG and BG_WHITE.
+      expect(itemStyle).toContain("border:1px solid #c9cccf");
+      expect(itemStyle).toContain("border-radius:10px");
+      expect(itemStyle).toContain("background:#ffffff");
+      // No divider on the item itself; the gap between cards is the list's.
+      expect(itemStyle).not.toMatch(/border-top|border-bottom|margin/);
+    }
   });
 
   it("renders type, app, file, line, severity, snippet and removal text, each labelled in text", () => {
@@ -3437,20 +3536,29 @@ describe("FindingRow — list item that cannot overflow", () => {
       /<span style="[^"]*clip:[^"]*">Severity: <\/span><s-badge tone="critical">HIGH<\/s-badge>/,
     );
     // Location: the file and the line, both in text.
-    expect(html).toMatch(/File: <\/span><code[^>]*>layout\/theme\.liquid<\/code>/);
-    expect(html).toContain("<span>Line 42</span>");
+    expect(html).toMatch(
+      /<span style="[^"]*clip:[^"]*">File: <\/span><code[^>]*>layout\/theme\.liquid<\/code>, line 42<\/div>/,
+    );
     // Snippet with its copy button, the guidance and the removal-instructions copy.
     expect(html).toMatch(/<code[^>]*>&lt;script src=&quot;https:\/\/cdn\.someapp\.com/);
     expect(html).toContain('aria-label="Copy code snippet"');
     // GHOST_SCRIPT has no separate impact line; a type that has one shows it.
-    expect(html).not.toContain("Why it matters: ");
+    expect(html).not.toContain("Why it matters");
     const impact = getFindingImpact("GHOST_CANONICAL");
     expect(impact).toBeTruthy();
     const withImpact = renderFindingItem({ ...TRACKER, findingType: "GHOST_CANONICAL" }, PAID);
-    expect(withImpact.replace(/&#x27;/g, "'")).toContain(`Why it matters: </strong>${impact}`);
-    expect(html).toContain("How to remove: ");
-    expect(html).toContain('aria-label="Copy removal instructions for this finding"');
-    expect(html).toContain(">Copy removal instructions<");
+    expect(withImpact.replace(/&#x27;/g, "'")).toContain(`>Why it matters</strong>${impact}`);
+    expect(html.replace(/&#x27;/g, "'")).toContain(
+      `>How to remove</strong>${getFindingRemediation("GHOST_SCRIPT")}`,
+    );
+    // The labels are small and bold on their own line; the text is 14px primary ink.
+    expect(html).toMatch(
+      /<div style="[^"]*font-size:14px;color:#202223[^"]*"><strong style="display:block;font-size:12px;font-weight:600;[^"]*">How to remove<\/strong>/,
+    );
+    // The removal-steps copy: a normal-size secondary Polaris button with its label.
+    expect(html).toContain(
+      '<s-button variant="secondary" accessibilityLabel="Copy removal instructions for this finding">Copy removal steps</s-button>',
+    );
   });
 
   it("a finding with no app names only its type (no dash placeholder)", () => {
@@ -3460,7 +3568,7 @@ describe("FindingRow — list item that cannot overflow", () => {
     expect(html).not.toContain("Ignore all from");
   });
 
-  it("keeps every badge: severity tone, NEW, TRACKING, VISUAL, confidence and removal safety", () => {
+  it("keeps every badge: severity tone, NEW, TRACKING, VISUAL and removal safety, with the confidence in text", () => {
     const html = renderFindingItem(
       { ...TRACKER, severity: "MEDIUM", isVisual: true },
       { ...PAID, isNew: true },
@@ -3469,10 +3577,17 @@ describe("FindingRow — list item that cannot overflow", () => {
     expect(html).toMatch(/<span style="[^"]*">NEW<\/span>/);
     expect(html).toMatch(/<span style="[^"]*">TRACKING<\/span>/);
     expect(html).toMatch(/<span style="[^"]*">VISUAL<\/span>/);
+    // The chips sit on the title line, after the title, with the severity last.
     expect(html).toMatch(
-      /<span style="[^"]*" title="Matched against a known app signature">High confidence<\/span>/,
+      /<\/h3><div style="[^"]*flex-wrap:wrap[^"]*margin-left:auto[^"]*"><span style="[^"]*">NEW<\/span><span style="[^"]*">TRACKING<\/span><span style="[^"]*">VISUAL<\/span><span><span style="[^"]*">Severity: <\/span><s-badge tone="warning">MEDIUM<\/s-badge><\/span><\/div><\/div>/,
     );
-    expect(html).toContain('<s-badge tone="success">Likely safe, confirm app removed</s-badge>');
+    // The removal-safety badge is the one coloured badge on its own line, with
+    // the confidence beside it as a sentence.
+    expect(html).toContain(
+      '<s-badge tone="success">Likely safe, confirm app removed</s-badge><span style="min-width:0;overflow-wrap:anywhere;font-size:13px;color:#6d7175">Matched a known app signature.</span>',
+    );
+    // Exactly two Polaris badges per card: severity and removal safety.
+    expect(html.match(/<s-badge/g)).toHaveLength(2);
 
     const plain = renderFindingItem({ ...FINDING_ONE, severity: "LOW", isVisual: false }, PAID);
     expect(plain).toContain('<s-badge tone="info">LOW</s-badge>');
@@ -3480,7 +3595,7 @@ describe("FindingRow — list item that cannot overflow", () => {
 
     const drift = renderFindingItem({ ...FINDING_ONE, findingType: "SETTINGS_DRIFT" }, PAID);
     expect(drift).toContain(
-      'title="Structurally inferred, not a known app-signature match. Review before removing."',
+      ">Inferred from the code, not a known app match. Review before removing.</span>",
     );
     expect(drift).toContain('<s-badge tone="neutral">Leave in place</s-badge>');
     expect(renderFindingItem({ ...FINDING_ONE, findingType: "GHOST_PIXEL" }, PAID)).toContain(
@@ -3494,6 +3609,12 @@ describe("FindingRow — list item that cannot overflow", () => {
     expect(
       renderFindingItem(TRACKER, { shopDomain: PAID.shopDomain, themeId: PAID.themeId }),
     ).not.toContain("—");
+    // With the ignore controls, and in the ignored state, too.
+    expect(renderFindingItem(TRACKER, PAID)).not.toContain("\u2014");
+    expect(renderFindingItem({ ...TRACKER, isIgnored: true }, PAID)).not.toContain("\u2014");
+    expect(renderFindingItem({ ...TRACKER, findingType: "SETTINGS_DRIFT" }, PAID)).not.toContain(
+      "\u2014",
+    );
   });
 
   it("the anchor id is on the item, and only when asked for", () => {
@@ -3508,14 +3629,55 @@ describe("FindingRow — list item that cannot overflow", () => {
 
   it("links a theme-file finding to the theme editor, top-level, and only with a shop domain", () => {
     const html = renderFindingItem(FINDING_ONE, PAID);
+    // A real primary Polaris button; `href` (not `url`) is the link attribute.
     const link = html.match(
-      /<a href="([^"]+)" target="_top" rel="noreferrer">Open in theme editor<\/a>/,
+      /<s-button variant="primary" href="([^"]+)" target="_top">Open in theme editor<\/s-button>/,
     );
     expect(link?.[1]).toContain("test-shop");
     expect(link?.[1]).toContain("123456789");
     expect(link?.[1]).toContain("layout%2Ftheme.liquid");
-    expect(renderFindingItem(FINDING_ONE, { scanId: "scan-1" })).not.toContain(
-      "Open in theme editor",
+    expect(html).not.toMatch(/<s-button[^>]* url=/);
+    // The action exists once: the old text link in the location line is gone.
+    expect(html.match(/Open in theme editor/g)).toHaveLength(1);
+    expect(html.match(/variant="primary"/g)).toHaveLength(1);
+    expect(html).not.toMatch(/<a [^>]*target="_top"/);
+    // It is the first action, ahead of the secondary copy button.
+    expect(html).toMatch(
+      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="primary"[^>]*>Open in theme editor<\/s-button><s-button variant="secondary"/,
+    );
+    // No shop domain: no button and no dead link; the copy button is the only action.
+    const noDomain = renderFindingItem(FINDING_ONE, { scanId: "scan-1" });
+    expect(noDomain).not.toContain("Open in theme editor");
+    expect(noDomain).not.toMatch(/variant="primary"|href=""|target="_top"/);
+    // Same on the Free preview and in the security alert (no scanId).
+    const free = renderFindingItem(FINDING_ONE, {
+      shopDomain: PAID.shopDomain,
+      themeId: PAID.themeId,
+    });
+    expect(free.match(/Open in theme editor/g)).toHaveLength(1);
+    expect(free).toMatch(
+      /<s-button variant="primary" href="[^"]+" target="_top">Open in theme editor<\/s-button>/,
+    );
+  });
+
+  it("a finding with neither link (a storefront finding) has no primary button and no dead link", () => {
+    const html = renderFindingItem(
+      {
+        ...FINDING_ONE,
+        findingType: "SCRIPT_TAG_SUNSET",
+        filename: "https://cdn.someapp.com/tracker.js",
+        lineNumber: 0,
+      },
+      PAID,
+    );
+    expect(html).not.toMatch(/variant="primary"|Open in theme editor|target="_top"/);
+    expect(html).not.toMatch(/<s-button[^>]* href=/);
+    // The only link in the card is none at all (ignore controls have no link).
+    expect(html).not.toContain("<a ");
+    // The copy button is the only Polaris button, and it stays secondary.
+    expect(html.match(/<s-button/g)).toHaveLength(1);
+    expect(html).toMatch(
+      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="secondary" accessibilityLabel="Copy removal instructions for this finding">Copy removal steps<\/s-button>/,
     );
   });
 
@@ -3524,7 +3686,17 @@ describe("FindingRow — list item that cannot overflow", () => {
       { ...FINDING_ONE, findingType: "GHOST_PAGE", filename: "pages/old-promo" },
       PAID,
     );
-    expect(html).toMatch(/<a href="[^"]+" target="_top" rel="noreferrer">[^<]+<\/a>/);
+    const label = adminResourceLinkLabel("GHOST_PAGE");
+    expect(label).toBeTruthy();
+    const link = html.match(
+      /<s-button variant="primary" href="([^"]+)" target="_top">([^<]+)<\/s-button>/,
+    );
+    expect(link?.[1]).toContain("test-shop");
+    expect(link?.[2]).toBe(label);
+    // Once, as the primary button: no text link is left in the location line.
+    expect(html.match(/variant="primary"/g)).toHaveLength(1);
+    expect(html.split(`>${label}<`)).toHaveLength(2);
+    expect(html).not.toMatch(/<a [^>]*target="_top"/);
     expect(html).not.toContain("Open in theme editor");
     expect(html).toContain("<span>Page: /pages/old-promo</span>");
     expect(html).not.toMatch(/<code[^>]*>pages\/old-promo/);
@@ -3533,25 +3705,101 @@ describe("FindingRow — list item that cannot overflow", () => {
   it("ignore controls appear only in the paid list (scanId) for a finding with an id", () => {
     const paid = renderFindingItem(FINDING_ONE, PAID);
     expect(paid).toContain('<input type="hidden" name="findingId" value="f-1"/>');
-    expect(paid).toContain('aria-label="Reason for ignoring (optional)"');
+    expect(paid).toContain('<input type="hidden" name="appName" value="SomeApp"/>');
+    expect(paid).toMatch(
+      /<input type="text" name="reason" placeholder="Reason \(optional\)" maxLength="500" aria-label="Reason for ignoring \(optional\)"/,
+    );
     expect(paid).toMatch(
       /<button type="submit" name="intent" value="ignore-instance"[^>]*>Ignore this finding<\/button>/,
     );
     expect(paid).toMatch(
       /<button type="submit" name="intent" value="ignore-app"[^>]*>Ignore all from SomeApp<\/button>/,
     );
+    // The submit buttons are native buttons in a POST form, never s-button
+    // (a name/value submit through its shadow DOM is not reliable).
+    expect(paid).toMatch(/<form[^>]*method="post"/);
+    expect(paid).not.toMatch(/<s-button[^>]*(type="submit"|name="intent")/);
+    expect(paid.match(/<button type="submit"/g)).toHaveLength(2);
+    expect(paid).not.toMatch(/<button type="submit"[^>]*disabled/);
 
     // Free preview and the security alert pass no scanId.
     const free = renderFindingItem(FINDING_ONE, { shopDomain: PAID.shopDomain, anchor: true });
-    expect(free).not.toMatch(/Ignore this finding|Ignore all from|name="reason"|<form/);
+    expect(free).not.toMatch(
+      /Ignore|name="reason"|name="findingId"|name="intent"|<form|<details|<summary/,
+    );
     // No stable id to fingerprint from.
-    expect(renderFindingItem({ ...FINDING_ONE, id: undefined }, PAID)).not.toContain("<form");
+    const noId = renderFindingItem({ ...FINDING_ONE, id: undefined }, PAID);
+    expect(noId).not.toMatch(/<form|<details|<summary|Ignore/);
     // Already ignored: the note and the manage link, not the buttons.
     const ignored = renderFindingItem({ ...FINDING_ONE, isIgnored: true }, PAID);
     expect(ignored).toContain(">Ignored</span>. Excluded from finding counts. ");
     expect(ignored).not.toContain("\u2014");
     expect(ignored).toContain('href="/app/ignored"');
     expect(ignored).not.toContain("Ignore this finding");
+  });
+
+  it("the ignore controls are tucked inside a closed <details> whose summary reads Ignore", () => {
+    const paid = renderFindingItem(FINDING_ONE, PAID);
+    const details = paid.match(/<details([^>]*)>([\s\S]*?)<\/details>/);
+    expect(details).toBeTruthy();
+    // Closed until the merchant opens it.
+    expect(details![1]).not.toMatch(/\bopen\b/);
+    expect(details![1]).toContain('class="finding-ignore"');
+    expect(paid.match(/<details/g)).toHaveLength(1);
+    const inner = details![2];
+    const summary = inner.match(/^<summary style="([^"]*)">([^<]*)<\/summary>/);
+    expect(summary?.[2]).toBe("Ignore");
+    // It looks clickable: a pointer and the link colour (the summary keeps its
+    // default display, so the browser's disclosure marker shows too).
+    expect(summary?.[1]).toContain("cursor:pointer");
+    expect(summary?.[1]).toContain("color:#2c6ecb");
+    expect(summary?.[1]).not.toMatch(/display:|list-style/);
+    // Everything the ignore action needs is inside the disclosure, and nowhere else.
+    for (const part of [
+      "<form",
+      'name="findingId"',
+      'name="appName"',
+      'name="reason"',
+      'value="ignore-instance"',
+      'value="ignore-app"',
+    ]) {
+      expect(inner, part).toContain(part);
+      expect(paid.replace(details![0], ""), part).not.toContain(part);
+    }
+    // It is the last thing in the action row, after the two buttons, pushed right.
+    expect(paid).toMatch(
+      /<\/s-button><details class="finding-ignore" style="[^"]*margin-left:auto[^"]*">[\s\S]*<\/details><\/div><\/li><\/ul>$/,
+    );
+  });
+
+  it("the opened ignore controls are normal-size, obviously-button controls", () => {
+    const paid = renderFindingItem(FINDING_ONE, PAID);
+    const buttons = [...paid.matchAll(/<button type="submit"[^>]*style="([^"]*)"/g)].map(
+      (m) => m[1],
+    );
+    expect(buttons).toHaveLength(2);
+    for (const style of buttons) {
+      expect(style).toContain("min-height:32px");
+      expect(style).toContain("border:1px solid #c9cccf");
+      expect(style).toContain("background:#ffffff");
+      expect(style).toContain("font-size:13px");
+      expect(style).toContain("cursor:pointer");
+    }
+    const reason = paid.match(/<input type="text" name="reason"[^>]*style="([^"]*)"/)?.[1];
+    expect(reason).toContain("min-height:32px");
+    expect(reason).toContain("font-size:13px");
+  });
+
+  it("the ignored state shows in place of the disclosure, outside any <details>", () => {
+    const ignored = renderFindingItem({ ...FINDING_ONE, isIgnored: true }, PAID);
+    expect(ignored).not.toMatch(/<details|<summary|<form|name="intent"|name="reason"/);
+    // In the action row, after the buttons, where the disclosure would be.
+    expect(ignored).toMatch(
+      /<\/s-button><div style="[^"]*"><span style="[^"]*">Ignored<\/span>\. Excluded from finding counts\. <a[^>]*href="\/app\/ignored"[^>]*>Manage ignored findings<\/a><\/div><\/div><\/li><\/ul>$/,
+    );
+    // The card keeps its actions.
+    expect(ignored).toContain(">Open in theme editor</s-button>");
+    expect(ignored).toContain(">Copy removal steps</s-button>");
   });
 
   it("nothing in the item can force its width: no fixed or minimum widths, no nowrap text", () => {
@@ -3569,11 +3817,16 @@ describe("FindingRow — list item that cannot overflow", () => {
       if (/position:absolute/.test(style)) continue;
       expect(style, `${tag} must not set a min-width above 0`).not.toMatch(/min-width:(?!0)/);
       const width = style.match(/(?:^|;)width:([^;]+)/)?.[1];
-      // The only fixed widths are the reason input, capped to its container...
-      if (width) expect(style, `${tag} width ${width} must be capped`).toContain("max-width:100%");
-      // ...and the only nowrap text is the two short Copy button labels.
+      // No element has a fixed width (the reason input grows from a flex basis)...
+      expect(width, `${tag} must not set a width`).toBeUndefined();
+      // ...and the only nowrap text is the short snippet Copy button label.
       if (/white-space:nowrap/.test(style)) expect(tag).toBe("button");
     }
+    expect(html.match(/<button[^>]*white-space:nowrap/g)).toHaveLength(1);
+    // The reason input may shrink to nothing and never exceeds its container.
+    expect(html).toMatch(
+      /<input type="text" name="reason"[^>]*style="[^"]*flex:1 1 200px;min-width:0;max-width:100%/,
+    );
     // The item, its title, the location line, the file path, the snippet and
     // the notes all wrap anywhere and may shrink inside their flex rows.
     const wraps = (re: RegExp) =>
@@ -3582,13 +3835,21 @@ describe("FindingRow — list item that cannot overflow", () => {
     wraps(/<h3 style="([^"]*)"/);
     wraps(/<code style="([^"]*)">sections\//);
     wraps(/<code style="([^"]*)">&lt;script/);
-    wraps(/<div style="([^"]*)"><strong[^>]*>How to remove: /);
-    // The rows that hold several things wrap onto further lines.
+    wraps(/<div style="([^"]*)"><strong[^>]*>How to remove</);
+    // The location line and the confidence sentence too.
+    wraps(/<div style="([^"]*)"><span style="[^"]*">File: /);
+    wraps(/<span style="([^"]*)">Matched a known app signature\./);
+    // The rows that hold several things wrap onto further lines: the title
+    // line, its chips, the safety line, the action row and the ignore form.
+    expect(html).toMatch(/<li [^>]*><div style="[^"]*flex-wrap:wrap[^"]*"><h3/);
     expect(html).toMatch(/<div style="[^"]*flex-wrap:wrap[^"]*"><span style="[^"]*">NEW<\/span>/);
+    expect(html).toMatch(/<div style="[^"]*flex-wrap:wrap[^"]*"><s-badge tone="success">/);
     expect(html).toMatch(
-      /<div style="[^"]*flex-wrap:wrap[^"]*"><button[^>]*aria-label="Copy removal instructions/,
+      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="primary"[^>]*>Open in theme editor/,
     );
     expect(html).toMatch(/<form[^>]*style="[^"]*flex-wrap:wrap/);
+    // The Ignore disclosure may shrink inside the action row.
+    expect(html).toMatch(/<details class="finding-ignore" style="min-width:0;/);
     // The ignore buttons are allowed to wrap their label (long app names).
     expect(html).toMatch(
       /<button type="submit" name="intent" value="ignore-app"[^>]*style="[^"]*max-width:100%/,
