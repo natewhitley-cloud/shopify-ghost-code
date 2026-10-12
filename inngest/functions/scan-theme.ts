@@ -81,6 +81,7 @@ import {
   WALK_STEP_TIME_BUDGET_MS,
 } from "../../app/lib/scan-limits";
 import type { GrantedOptionalScopes } from "../../app/lib/scope-check.server";
+import { readThemeInfo } from "../../app/lib/theme-info";
 import {
   type ScanWalkCoverage,
   WALK_FINDING_TYPES,
@@ -967,6 +968,7 @@ export const scanTheme = inngest.createFunction(
         scannableTextBytes,
         enabledEmbedApps,
         appsWithEnabledEmbed,
+        themeInfo,
       } = await step.run("fetch-and-scan", async () => {
         const db = (await import("../../app/db.server")).default;
         const shop = await db.shop.findUnique({ where: { id: shopId } });
@@ -1247,6 +1249,10 @@ export const scanTheme = inngest.createFunction(
           // live hooks. null = settings_data.json not observed (missing,
           // unparseable, or no `current` object), never [] (observedEmbedApps).
           appsWithEnabledEmbed: observedEmbedApps(files),
+          // Theme health (gc-i6du): the theme's name / version / author and
+          // whether it is Online Store 2.0, from files already in memory. Four
+          // short bounded values; recorded on the scan by finalize-scan.
+          themeInfo: readThemeInfo(files),
         };
 
         // Defensive step-output budget (gc-4ce). The caps keep the worst case
@@ -2107,6 +2113,9 @@ export const scanTheme = inngest.createFunction(
           // What the capped walks covered (gc-747u): the differ's record windows
           // and the scan page's "checked N of M" notice.
           walkCoverage,
+          // Theme health (gc-i6du). Absent for a run memoized before the
+          // field: the column stays NULL.
+          ...(themeInfo ? { themeInfo } : {}),
         });
 
         // App-removal detection (gc-frda). Never fails or retries the scan: the

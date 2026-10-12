@@ -4,6 +4,7 @@ import db from "../db.server";
 import { logger } from "../lib/logger.server";
 import { SCAN_SOURCES } from "../lib/scan-source";
 import type { ScanRequestSource } from "../lib/scan-source";
+import type { ThemeInfo } from "../lib/theme-info";
 import type { ScanWalkCoverage } from "../lib/walk-coverage";
 
 /**
@@ -205,6 +206,38 @@ export async function getScansForShop(
   return { items, hasNextPage };
 }
 
+/** How many recent scans the per-theme lookup reads at most. */
+export const THEME_SCAN_LOOKBACK = 200;
+
+/**
+ * The finding count of each given theme's LATEST successful scan (theme
+ * health, gc-i6du: leftovers in unpublished themes). One indexed read of the
+ * shop's most recent successful scans of those themes (newest first, at most
+ * THEME_SCAN_LOOKBACK rows, three small columns); a theme never scanned, or
+ * scanned only before that window, is absent from the map.
+ */
+export async function getLatestScanFindingCountsByTheme(
+  shopId: string,
+  themeIds: readonly string[],
+): Promise<Map<string, number>> {
+  const counts = new Map<string, number>();
+  if (themeIds.length === 0) return counts;
+  const rows = await db.scan.findMany({
+    where: {
+      shopId,
+      themeId: { in: [...themeIds] },
+      status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL] },
+    },
+    orderBy: { createdAt: "desc" },
+    take: THEME_SCAN_LOOKBACK,
+    select: { themeId: true, findingCount: true },
+  });
+  for (const row of rows) {
+    if (!counts.has(row.themeId)) counts.set(row.themeId, row.findingCount);
+  }
+  return counts;
+}
+
 /**
  * Return the distinct theme names this shop has ever scanned, sorted A→Z.
  *
@@ -372,6 +405,9 @@ export async function finalizeScan(
     // What the capped product / redirect walks covered (gc-747u); written only
     // when supplied (NULL = legacy scan).
     walkCoverage?: ScanWalkCoverage;
+    // The theme's name / version / author / architecture (gc-i6du); written
+    // only when supplied (NULL = legacy scan).
+    themeInfo?: ThemeInfo;
   },
 ): Promise<FinalizeScanResult> {
   const result = await db.scan.updateMany({
@@ -402,6 +438,7 @@ export async function finalizeScan(
         : {}),
       ...(args.liveAppHooks !== undefined ? { liveAppHooks: args.liveAppHooks } : {}),
       ...(args.walkCoverage !== undefined ? { walkCoverage: args.walkCoverage } : {}),
+      ...(args.themeInfo !== undefined ? { themeInfo: { ...args.themeInfo } } : {}),
     },
   });
 

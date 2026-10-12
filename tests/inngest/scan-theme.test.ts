@@ -686,6 +686,7 @@ describe("scanTheme — happy path", () => {
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
       walkCoverage: expect.any(Object),
+      themeInfo: expect.any(Object),
     });
   });
 
@@ -717,6 +718,7 @@ describe("scanTheme — happy path", () => {
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
       walkCoverage: expect.any(Object),
+      themeInfo: expect.any(Object),
     });
   });
 
@@ -1222,6 +1224,7 @@ describe("scanTheme — optional audit steps", () => {
         appSignatureFingerprints: expect.any(Object),
         liveAppHooks: expect.any(Object),
         walkCoverage: expect.any(Object),
+        themeInfo: expect.any(Object),
       });
 
       expect(result).toEqual({
@@ -1511,6 +1514,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
       walkCoverage: expect.any(Object),
+      themeInfo: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1662,6 +1666,7 @@ describe("scanTheme — live-price JSON-LD audit (gc-47c.10)", () => {
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
       walkCoverage: expect.any(Object),
+      themeInfo: expect.any(Object),
     });
     expect(result.status).toBe("COMPLETED");
   });
@@ -1713,6 +1718,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
       walkCoverage: expect.any(Object),
+      themeInfo: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -1743,6 +1749,7 @@ describe("scanTheme — dangling-reference audit (gc-m4h.5)", () => {
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
       walkCoverage: expect.any(Object),
+      themeInfo: expect.any(Object),
     });
     expect(result.findingCount).toBe(MOCK_FINDINGS.length);
   });
@@ -2460,6 +2467,7 @@ describe("scanTheme — zero-file sanity guard (LOG-5)", () => {
       appSignatureFingerprints: expect.any(Object),
       liveAppHooks: expect.any(Object),
       walkCoverage: expect.any(Object),
+      themeInfo: expect.any(Object),
     });
     expect(mockUpdateScanStatus).not.toHaveBeenCalledWith(SCAN_ID, "FAILED");
   });
@@ -4730,6 +4738,95 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       await expect(run()).rejects.toThrow("db connection reset");
       expect(mockFinalizeScan).not.toHaveBeenCalled();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Theme health (gc-i6du): the theme's name / version / author and whether it is
+// Online Store 2.0, read from the files the scan already fetched.
+// ---------------------------------------------------------------------------
+
+describe("scanTheme - theme info recorded at finalize (gc-i6du)", () => {
+  const SCHEMA = {
+    filename: "config/settings_schema.json",
+    content: JSON.stringify([
+      {
+        name: "theme_info",
+        theme_name: "Debut",
+        theme_version: "17.14.0",
+        theme_author: "Shopify",
+      },
+    ]),
+  };
+
+  it("a vintage theme: recorded from the fetched files, with no extra API call", async () => {
+    mockFetchThemeFiles.mockResolvedValue([
+      ...MOCK_FILES,
+      SCHEMA,
+      { filename: "templates/index.liquid", content: "{{ content_for_index }}" },
+    ]);
+
+    await runScanTheme();
+
+    expect(mockFinalizeScan.mock.calls[0][1].themeInfo).toEqual({
+      name: "Debut",
+      version: "17.14.0",
+      author: "Shopify",
+      architecture: "vintage",
+    });
+    // The theme files are fetched once, and nothing else is asked of the
+    // Admin API for it (the storefront audit is dark here).
+    expect(mockFetchThemeFiles).toHaveBeenCalledTimes(1);
+    expect(MOCK_ADMIN.graphql).not.toHaveBeenCalled();
+  });
+
+  it("an Online Store 2.0 theme", async () => {
+    mockFetchThemeFiles.mockResolvedValue([
+      ...MOCK_FILES,
+      SCHEMA,
+      { filename: "templates/index.json", content: "{}" },
+    ]);
+    await runScanTheme();
+    expect(mockFinalizeScan.mock.calls[0][1].themeInfo).toMatchObject({ architecture: "os2" });
+  });
+
+  it("no settings_schema.json and no templates: nulls and 'unknown', the scan still completes", async () => {
+    const result = await runScanTheme();
+    expect(mockFinalizeScan.mock.calls[0][1].themeInfo).toEqual({
+      name: null,
+      version: null,
+      author: null,
+      architecture: "unknown",
+    });
+    expect(result.status).toBe("COMPLETED");
+  });
+
+  it("a run memoized before the field existed writes no themeInfo (column stays NULL)", async () => {
+    const base = createMockInngestStep();
+    const step = {
+      ...base,
+      run: vi.fn(async (name: string, fn: () => unknown) => {
+        const out = (await fn()) as Record<string, unknown>;
+        if (name === "fetch-and-scan") {
+          const legacy = { ...out };
+          delete legacy.themeInfo;
+          return legacy;
+        }
+        return out;
+      }),
+    };
+    await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+    expect(mockFinalizeScan.mock.calls[0][1]).not.toHaveProperty("themeInfo");
+  });
+
+  it("is a vintage theme a finding? No: the finding count is unchanged", async () => {
+    mockFetchThemeFiles.mockResolvedValue([
+      ...MOCK_FILES,
+      { filename: "templates/index.liquid", content: "" },
+    ]);
+    const result = await runScanTheme();
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+    expect(mockFinalizeScan.mock.calls[0][1].findingCount).toBe(MOCK_FINDINGS.length);
   });
 });
 

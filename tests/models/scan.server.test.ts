@@ -68,6 +68,8 @@ import {
   getScanById,
   getScansForShop,
   getDistinctThemesForShop,
+  getLatestScanFindingCountsByTheme,
+  THEME_SCAN_LOOKBACK,
   updateScanStatus,
   markScanStarted,
   getPreviousScanForTheme,
@@ -682,6 +684,51 @@ describe("getScansForShop", () => {
 });
 
 // ---------------------------------------------------------------------------
+// getLatestScanFindingCountsByTheme (theme health, gc-i6du)
+// ---------------------------------------------------------------------------
+
+describe("getLatestScanFindingCountsByTheme", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("no theme ids: an empty map and no query", async () => {
+    await expect(getLatestScanFindingCountsByTheme(SHOP_ID, [])).resolves.toEqual(new Map());
+    expect(mockDb.scan.findMany).not.toHaveBeenCalled();
+  });
+
+  it("reads this shop's successful scans of those themes, newest first, bounded and narrow", async () => {
+    mockDb.scan.findMany.mockResolvedValue([]);
+    await getLatestScanFindingCountsByTheme(SHOP_ID, ["t1", "t2"]);
+    expect(mockDb.scan.findMany).toHaveBeenCalledWith({
+      where: {
+        shopId: SHOP_ID,
+        themeId: { in: ["t1", "t2"] },
+        status: { in: [ScanStatus.COMPLETED, ScanStatus.PARTIAL] },
+      },
+      orderBy: { createdAt: "desc" },
+      take: THEME_SCAN_LOOKBACK,
+      select: { themeId: true, findingCount: true },
+    });
+  });
+
+  it("keeps each theme's NEWEST scan; a theme with no scan is absent", async () => {
+    // Newest first, as the query orders them.
+    mockDb.scan.findMany.mockResolvedValue([
+      { themeId: "t1", findingCount: 3 },
+      { themeId: "t2", findingCount: 0 },
+      { themeId: "t1", findingCount: 40 },
+    ]);
+    const counts = await getLatestScanFindingCountsByTheme(SHOP_ID, ["t1", "t2", "t3"]);
+    expect([...counts]).toEqual([
+      ["t1", 3],
+      ["t2", 0],
+    ]);
+    expect(counts.has("t3")).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // getDistinctThemesForShop
 // ---------------------------------------------------------------------------
 
@@ -1268,6 +1315,22 @@ describe("finalizeScan", () => {
     expect(mockDb.scan.updateMany.mock.calls[1][0].data.appSignatureFingerprints).toEqual({
       Klaviyo: "ab",
     });
+  });
+
+  it("writes themeInfo only when supplied (gc-i6du; NULL = legacy scan)", async () => {
+    mockDb.scan.updateMany.mockResolvedValue({ count: 1 });
+
+    await finalizeScan("scan-1", FINALIZE_ARGS);
+    expect(mockDb.scan.updateMany.mock.calls[0][0].data).not.toHaveProperty("themeInfo");
+
+    const themeInfo = {
+      name: "Dawn",
+      version: "15.2.0",
+      author: "Shopify",
+      architecture: "os2" as const,
+    };
+    await finalizeScan("scan-1", { ...FINALIZE_ARGS, themeInfo });
+    expect(mockDb.scan.updateMany.mock.calls[1][0].data.themeInfo).toEqual(themeInfo);
   });
 
   it("writes unreachableCategories only when supplied (column defaults to [])", async () => {
