@@ -5,6 +5,11 @@ import { FindingType, Severity } from "@prisma/client";
 import { describe, it, expect } from "vitest";
 
 import {
+  KNOWN_MALICIOUS_DOMAINS,
+  maliciousDescription,
+  matchMaliciousDomain,
+} from "../../app/data/malicious-domains.server";
+import {
   CORE_STEP_OUTPUT_BUDGET_BYTES,
   JSONLD_PRICE_CANDIDATE_CAP,
 } from "../../app/lib/scan-limits";
@@ -6946,6 +6951,222 @@ describe("detectMaliciousScripts", () => {
     ]);
     expect(findingsOfType(findings, FindingType.MALICIOUS_SCRIPT)).toHaveLength(1);
     expect(unknownScripts.some((u) => u.url.includes("jsdeliver.cloud"))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// KNOWN_MALICIOUS_DOMAINS list + per-domain description wording
+// ---------------------------------------------------------------------------
+
+describe("KNOWN_MALICIOUS_DOMAINS", () => {
+  const NEW_DOMAINS = ["polyfill.io", "googie-anaiytics.com", "wp54trk.com", "shinedezign.tk"];
+
+  // Hosts that must stay OFF the list: the legitimate polyfill replacements,
+  // lookalike-shaped neighbours, the real hosts the listed ones imitate, and
+  // the "considered and excluded" domains from the data file header.
+  const NEVER_MATCH = [
+    "cdnjs.cloudflare.com",
+    "polyfill-fastly.io",
+    "polyfill-fastly.net",
+    "notpolyfill.io",
+    "polyfill.io.example.com",
+    "polyfill.com",
+    "shinedezign.com",
+    "google-analytics.com",
+    "www.googletagmanager.com",
+    "bootcss.com",
+    "bootcdn.net",
+    "staticfile.net",
+    "staticfile.org",
+    "unionadjs.com",
+    "jsdelivr.net",
+    "cdn.jsdelivr.net",
+  ];
+
+  const SHARED_HOSTS = [
+    "azurefd.net",
+    "cloudfront.net",
+    "amazonaws.com",
+    "github.io",
+    "pages.dev",
+    "workers.dev",
+    "netlify.app",
+    "jsdelivr.net",
+    "unpkg.com",
+    "googletagmanager.com",
+    "cdn.shopify.com",
+    "cloudflare.com",
+  ];
+
+  it("lists exactly the six vetted domains", () => {
+    expect(KNOWN_MALICIOUS_DOMAINS.map((d) => d.domain)).toEqual([
+      "jsdeliver.cloud",
+      "cb28utrk.com",
+      ...NEW_DOMAINS,
+    ]);
+  });
+
+  it.each(NEW_DOMAINS)(
+    "%s matches at the apex, on www./cdn. subdomains, with a trailing dot, and case-insensitively",
+    (domain) => {
+      for (const host of [
+        domain,
+        `www.${domain}`,
+        `cdn.${domain}`,
+        `${domain}.`,
+        `cdn.${domain}.`,
+        domain.toUpperCase(),
+        `WWW.${domain.toUpperCase()}`,
+      ]) {
+        expect(matchMaliciousDomain(host)?.domain, host).toBe(domain);
+      }
+    },
+  );
+
+  it.each(NEVER_MATCH)("never matches %s", (host) => {
+    expect(matchMaliciousDomain(host)).toBeNull();
+    expect(matchMaliciousDomain(`${host}.`)).toBeNull();
+    expect(matchMaliciousDomain(host.toUpperCase())).toBeNull();
+    expect(
+      detectMaliciousScripts({
+        filename: "layout/theme.liquid",
+        content: `<script src="https://${host}/x.js"></script>`,
+      }),
+    ).toHaveLength(0);
+  });
+
+  it("every domain is a bare lower-case hostname (no scheme, path, port or stray dots)", () => {
+    for (const { domain } of KNOWN_MALICIOUS_DOMAINS) {
+      expect(domain, domain).toBe(domain.toLowerCase());
+      expect(domain, domain).toMatch(/^[a-z0-9-]+(?:\.[a-z0-9-]+)+$/);
+    }
+    expect(new Set(KNOWN_MALICIOUS_DOMAINS.map((d) => d.domain)).size).toBe(
+      KNOWN_MALICIOUS_DOMAINS.length,
+    );
+  });
+
+  it("no entry is a shared multi-tenant host or a suffix of one", () => {
+    for (const { domain } of KNOWN_MALICIOUS_DOMAINS) {
+      for (const shared of SHARED_HOSTS) {
+        // An entry equal to (or a parent of) a shared host would flag every
+        // tenant on it; matchMaliciousDomain(shared) covers both.
+        expect(shared === domain || shared.endsWith(`.${domain}`), `${domain} vs ${shared}`).toBe(
+          false,
+        );
+      }
+    }
+    for (const shared of SHARED_HOSTS) {
+      expect(matchMaliciousDomain(shared), shared).toBeNull();
+      expect(matchMaliciousDomain(`tenant.${shared}`), shared).toBeNull();
+    }
+  });
+
+  it("every entry has a non-empty note and an em-dash-free description", () => {
+    for (const entry of KNOWN_MALICIOUS_DOMAINS) {
+      expect(entry.note.trim(), entry.domain).not.toBe("");
+      expect(entry.note, entry.domain).toBe(entry.note.trim());
+      if (entry.advice !== undefined) expect(entry.advice.trim(), entry.domain).not.toBe("");
+      const description = maliciousDescription(entry);
+      expect(description, entry.domain).not.toMatch(/[–—]/);
+      expect(description, entry.domain).toContain(entry.domain);
+      // House style: finding descriptions carry no trailing period.
+      expect(description, entry.domain).not.toMatch(/\.$/);
+    }
+  });
+
+  it("pins the exact merchant-facing description of every listed domain", () => {
+    expect(
+      Object.fromEntries(KNOWN_MALICIOUS_DOMAINS.map((d) => [d.domain, maliciousDescription(d)])),
+    ).toEqual({
+      // The two pre-existing entries: byte-for-byte unchanged.
+      "jsdeliver.cloud":
+        "References known-malicious domain jsdeliver.cloud (lookalike of the jsDelivr CDN), likely injected code. Your theme may be compromised",
+      "cb28utrk.com":
+        "References known-malicious domain cb28utrk.com (hijacked tracking domain serving a card skimmer), likely injected code. Your theme may be compromised",
+      // Added in good faith by a theme/app developer: never "injected" or "compromised".
+      "polyfill.io":
+        "References polyfill.io (sold in 2024 and then served malicious redirects). It is no longer under trusted control. Remove this reference; modern browsers do not need it",
+      "googie-anaiytics.com":
+        "References known-malicious domain googie-anaiytics.com (fake Google Analytics domain that delivered malicious redirects), likely injected code. Your theme may be compromised",
+      "wp54trk.com":
+        "References known-malicious domain wp54trk.com (tracking domain reported redirecting shoppers to scam sites), likely injected code. Your theme may be compromised",
+      "shinedezign.tk":
+        "References shinedezign.tk (script host Shopify staff tied to redirects to random sites). Remove this reference",
+    });
+  });
+
+  it("the detector emits the pre-existing domains' descriptions unchanged", () => {
+    const findings = detectMaliciousScripts({
+      filename: "layout/theme.liquid",
+      content: [
+        '<script src="https://shopify.jsdeliver.cloud/config.js" async></script>',
+        '<script src="https://www.cb28utrk.com/scripts/shopify/click.js"></script>',
+      ].join("\n"),
+    });
+    expect(findings.map((f) => f.description)).toEqual([
+      "References known-malicious domain jsdeliver.cloud (lookalike of the jsDelivr CDN), likely injected code. Your theme may be compromised",
+      "References known-malicious domain cb28utrk.com (hijacked tracking domain serving a card skimmer), likely injected code. Your theme may be compromised",
+    ]);
+  });
+
+  it("flags a hard-coded cdn.polyfill.io script once, HIGH, with the polyfill-specific wording", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<head>",
+        '<script src="https://cdn.polyfill.io/v3/polyfill.min.js?features=default"></script>',
+        "</head>",
+      ].join("\n"),
+    };
+    const expected = {
+      filename: "layout/theme.liquid",
+      lineNumber: 2,
+      findingType: FindingType.MALICIOUS_SCRIPT,
+      severity: Severity.HIGH,
+      description:
+        "References polyfill.io (sold in 2024 and then served malicious redirects). It is no longer under trusted control. Remove this reference; modern browsers do not need it",
+    };
+    const direct = detectMaliciousScripts(file);
+    expect(direct).toHaveLength(1);
+    expect(direct[0]).toMatchObject(expected);
+    expect(direct[0].codeSnippet).toContain("cdn.polyfill.io/v3/polyfill.min.js");
+
+    // End to end through the full scan: still exactly one, same wording.
+    const scanned = findingsOfType(scanThemeFiles([file]).findings, FindingType.MALICIOUS_SCRIPT);
+    expect(scanned).toHaveLength(1);
+    expect(scanned[0]).toMatchObject(expected);
+  });
+
+  it("does NOT flag the same file once it uses the cdnjs polyfill replacement", () => {
+    const file: ThemeFile = {
+      filename: "layout/theme.liquid",
+      content: [
+        "<head>",
+        '<script src="https://cdnjs.cloudflare.com/polyfill/v3/polyfill.min.js?features=default"></script>',
+        "</head>",
+      ].join("\n"),
+    };
+    expect(detectMaliciousScripts(file)).toHaveLength(0);
+    expect(
+      findingsOfType(scanThemeFiles([file]).findings, FindingType.MALICIOUS_SCRIPT),
+    ).toHaveLength(0);
+  });
+
+  it("flags each of the other new domains from a realistic reference", () => {
+    const urls: Array<[string, string]> = [
+      ["googie-anaiytics.com", "https://www.googie-anaiytics.com/ga.js"],
+      ["wp54trk.com", "https://www.wp54trk.com/scripts/shopify/click.js"],
+      ["shinedezign.tk", "//shinedezign.tk/preorder/js/preorder.js"],
+    ];
+    for (const [domain, url] of urls) {
+      const findings = detectMaliciousScripts({
+        filename: "layout/theme.liquid",
+        content: `<script src="${url}"></script>`,
+      });
+      expect(findings, domain).toHaveLength(1);
+      expect(findings[0].severity).toBe(Severity.HIGH);
+      expect(findings[0].description).toContain(domain);
+    }
   });
 });
 

@@ -152,6 +152,14 @@ describe("getFindingRemediation — accuracy", () => {
     expect(blurb).not.toContain("this script line");
   });
 
+  it("MALICIOUS_SCRIPT never asserts how the code arrived (false for a good-faith reference like polyfill.io)", () => {
+    const blurb = getFindingImpact("MALICIOUS_SCRIPT");
+    expect(blurb).toContain(
+      "it can arrive through a rogue app, a compromised staff account, or older theme or app code that points at a domain that later changed hands.",
+    );
+    expect(blurb).not.toMatch(/usually arrives|was injected|is compromised/i);
+  });
+
   it("APP_EMBED_OFF keeps conditional wording and never asserts install state (gc-fed)", () => {
     const blurb = getFindingRemediation("APP_EMBED_OFF");
     expect(blurb).toContain("If you still use this app");

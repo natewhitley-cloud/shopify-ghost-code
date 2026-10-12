@@ -76,7 +76,7 @@ import {
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
-import { matchMaliciousDomain } from "../data/malicious-domains.server";
+import { maliciousDescription, matchMaliciousDomain } from "../data/malicious-domains.server";
 import { isBenignLibrary, parseLibrary } from "../lib/library-matcher.server";
 import { MAX_FINDINGS_PER_FILE_PER_TYPE } from "../lib/scan-limits";
 import { hostnameFromUrl } from "../lib/url.server";
@@ -1748,7 +1748,7 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
         findingType: FindingType.MALICIOUS_SCRIPT,
         severity: Severity.HIGH,
         appName: undefined,
-        description: `References known-malicious domain ${hit.domain} (${hit.note}), likely injected code. Your theme may be compromised`,
+        description: maliciousDescription(hit),
       });
     }
   });
