@@ -109,9 +109,11 @@ export interface MissingSnippetIndex {
   /** At most MAX_MISSING_SNIPPETS entries, sorted by snippet name. */
   renders: MissingSnippetRender[];
   /**
-   * True when the theme has more missing snippets than `renders` lists, so a
-   * real error naming one past the cut would go unconfirmed. The scan records
-   * the check as capped (partly checked), never as clean.
+   * True when the theme has more missing snippets than `renders` lists, or a
+   * listed snippet has more rendering files than its `renderedIn` keeps, so a
+   * real error naming a snippet or a file past either cut would go
+   * unconfirmed. The scan records the check as capped (partly checked), never
+   * as clean.
    */
   capped: boolean;
 }
@@ -357,14 +359,20 @@ export function buildMissingSnippetIndex(
     }
   }
 
-  const renders = [...renderedIn.entries()]
+  const kept = [...renderedIn.entries()]
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-    .slice(0, MAX_MISSING_SNIPPETS)
-    .map(([snippet, paths]) => ({
-      snippet,
-      renderedIn: [...paths].sort().slice(0, MAX_RENDERING_FILES),
-    }));
-  return { renders, capped: renderedIn.size > MAX_MISSING_SNIPPETS };
+    .slice(0, MAX_MISSING_SNIPPETS);
+  const renders = kept.map(([snippet, paths]) => ({
+    snippet,
+    renderedIn: [...paths].sort().slice(0, MAX_RENDERING_FILES),
+  }));
+  // Either cut can hide what would confirm a real error: a snippet past the
+  // first, or (corroboratingFile needs the named file listed) a rendering file
+  // past the second.
+  const capped =
+    renderedIn.size > MAX_MISSING_SNIPPETS ||
+    kept.some(([, paths]) => paths.size > MAX_RENDERING_FILES);
+  return { renders, capped };
 }
 
 // ---------------------------------------------------------------------------

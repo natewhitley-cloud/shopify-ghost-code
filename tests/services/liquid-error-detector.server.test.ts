@@ -1142,6 +1142,15 @@ describe("corroboration: a named template must be in the list (gc-wr81)", () => 
     expect(buildMissingSnippetIndex(renderers(51)).renders[0].renderedIn).toHaveLength(50);
   });
 
+  it("a snippet with more rendering files than the list keeps marks the index capped", () => {
+    // A real error naming the file past the cut is dropped, so the check must
+    // read partly checked, never clean.
+    expect(buildMissingSnippetIndex(renderers(50)).capped).toBe(false);
+    const index = buildMissingSnippetIndex(renderers(51));
+    expect(index.capped).toBe(true);
+    expect(detectLiquidErrors([error("sections/s050")], index.renders)).toEqual([]);
+  });
+
   it("an index entry carries no 'more' marker", () => {
     expect(Object.keys(buildMissingSnippetIndex(renderers(51)).renders[0]).sort()).toEqual([
       "renderedIn",
