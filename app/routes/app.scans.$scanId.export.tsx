@@ -141,7 +141,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       status: 200,
       headers: {
         "Content-Type": "application/pdf",
-        "Content-Disposition": `attachment; filename="ghost-code-scan-${scan.id}.pdf"`,
+        "Content-Disposition": `attachment; filename="ghostcode-scan-${scan.id}.pdf"`,
       },
     });
   }
@@ -170,7 +170,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       status: 200,
       headers: {
         "Content-Type": "application/json",
-        "Content-Disposition": `attachment; filename="ghost-code-scan-${scan.id}.json"`,
+        "Content-Disposition": `attachment; filename="ghostcode-scan-${scan.id}.json"`,
       },
     });
   }
@@ -202,7 +202,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     status: 200,
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="ghost-code-scan-${scan.id}.csv"`,
+      "Content-Disposition": `attachment; filename="ghostcode-scan-${scan.id}.csv"`,
     },
   });
 };

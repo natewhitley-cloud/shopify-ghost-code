@@ -3899,7 +3899,7 @@ describe("detectGhostTitle — SVG titles are not document titles", () => {
     const findings = detectGhostTitle(file);
     expect(findings).toHaveLength(1);
     expect(findings[0].lineNumber).toBe(3);
-    expect(findings[0].description).toContain("Duplicate title tag — also found on line 1");
+    expect(findings[0].description).toContain("Duplicate title tag, also found on line 1");
   });
 
   it("STILL flags a title after an unclosed <svg> (malformed markup is not an SVG element)", () => {
@@ -6960,6 +6960,8 @@ describe("detectMaliciousScripts", () => {
 
 describe("KNOWN_MALICIOUS_DOMAINS", () => {
   const NEW_DOMAINS = ["polyfill.io", "googie-anaiytics.com", "wp54trk.com", "shinedezign.tk"];
+  // Fake checkout hosts from the 2026-10-10 compromised-app checkout hijack (gc-mhlh).
+  const CHECKOUT_HIJACK_DOMAINS = ["biliing.top", "checkout-confirm.top", "order-confirm.top"];
 
   // Hosts that must stay OFF the list: the legitimate polyfill replacements,
   // lookalike-shaped neighbours, the real hosts the listed ones imitate, and
@@ -6981,6 +6983,15 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     "unionadjs.com",
     "jsdelivr.net",
     "cdn.jsdelivr.net",
+    // Correctly spelled or other-TLD neighbours of the checkout hijack hosts.
+    "billing.top",
+    "biliing.com",
+    "notbiliing.top",
+    "biliing.top.example.com",
+    "checkout-confirm.com",
+    "order-confirm.com",
+    "confirm.top",
+    "checkout.shopify.com",
   ];
 
   const SHARED_HOSTS = [
@@ -6998,15 +7009,35 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
     "cloudflare.com",
   ];
 
-  it("lists exactly the six vetted domains", () => {
+  it("lists exactly the nine vetted domains", () => {
     expect(KNOWN_MALICIOUS_DOMAINS.map((d) => d.domain)).toEqual([
       "jsdeliver.cloud",
       "cb28utrk.com",
       ...NEW_DOMAINS,
+      ...CHECKOUT_HIJACK_DOMAINS,
     ]);
   });
 
-  it.each(NEW_DOMAINS)(
+  it.each(CHECKOUT_HIJACK_DOMAINS)(
+    "%s is reported when theme code redirects to it, not only when it is a script src",
+    (domain) => {
+      const findings = detectMaliciousScripts({
+        filename: "layout/theme.liquid",
+        content: `<script>window.location.href = "https://www.${domain}/check-out/";</script>`,
+      });
+      expect(findings).toHaveLength(1);
+      expect(findings[0].description).toContain(domain);
+      // Attacker-injected: a commented-out reference is still reported.
+      expect(
+        detectMaliciousScripts({
+          filename: "layout/theme.liquid",
+          content: `<!-- <a href="https://${domain}/check-out/">Checkout</a> -->`,
+        }),
+      ).toHaveLength(1);
+    },
+  );
+
+  it.each([...NEW_DOMAINS, ...CHECKOUT_HIJACK_DOMAINS])(
     "%s matches at the apex, on www./cdn. subdomains, with a trailing dot, and case-insensitively",
     (domain) => {
       for (const host of [
@@ -7092,6 +7123,12 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
         "References known-malicious domain wp54trk.com (tracking domain reported redirecting shoppers to scam sites), likely injected code. Your theme may be compromised",
       "shinedezign.tk":
         "References shinedezign.tk (script host Shopify staff tied to redirects to random sites). Remove this reference",
+      "biliing.top":
+        "References known-malicious domain biliing.top (fake checkout domain from a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
+      "checkout-confirm.top":
+        "References known-malicious domain checkout-confirm.top (fake checkout domain from a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
+      "order-confirm.top":
+        "References known-malicious domain order-confirm.top (fake checkout domain from a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
     });
   });
 

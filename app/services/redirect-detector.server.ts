@@ -78,7 +78,7 @@ export function detectAppPatternRedirects(redirects: RedirectData[]): CreateFind
       findingType: FindingType.GHOST_REDIRECT,
       severity,
       appName: match.appName,
-      description: `URL redirect from "${redirect.path}" to "${redirect.target}" — likely created by ${match.appName}`,
+      description: `URL redirect from "${redirect.path}" to "${redirect.target}", likely created by ${match.appName}`,
     });
   }
   return findings;
@@ -126,7 +126,7 @@ export function bulkRedirectFindings(groups: BulkRedirectGroups): CreateFindingI
       findingType: FindingType.GHOST_REDIRECT,
       severity,
       appName: undefined,
-      description: `${group.count} bulk redirects under "${prefix}" — may be left by an uninstalled SEO or URL management app`,
+      description: `${group.count} bulk redirects under "${prefix}", may be left by an uninstalled SEO or URL management app`,
     });
   }
   return findings;

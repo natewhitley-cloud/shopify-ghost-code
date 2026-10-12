@@ -141,7 +141,7 @@ export function detectPersistentDiscounts(products: ProductPriceData[]): CreateF
       findingType: FindingType.GHOST_PRICE,
       severity,
       appName: evidence.appName,
-      description: `Product "${product.title}" has ${affectedVariants.length} variant(s) with persistent compare-at pricing${variantCountNote}, corroborated by a leftover ${evidence.appName} metafield "${evidence.namespace}.${evidence.key}" — likely an orphaned discount from an uninstalled app`,
+      description: `Product "${product.title}" has ${affectedVariants.length} variant(s) with persistent compare-at pricing${variantCountNote}, corroborated by a leftover ${evidence.appName} metafield "${evidence.namespace}.${evidence.key}". Likely an orphaned discount from an uninstalled app`,
     });
   }
 

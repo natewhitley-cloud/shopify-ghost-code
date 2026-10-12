@@ -61,7 +61,7 @@ export function detectTranslationContent(audit: TranslationAuditResult): CreateF
       appName: undefined,
       description:
         `Translation content found for ${summary.localeName} (${summary.locale}) on ` +
-        `${summary.resourceType.toLowerCase()} resources — ${summary.translatedCount} ` +
+        `${summary.resourceType.toLowerCase()} resources: ${summary.translatedCount} ` +
         `${entryLabel}${outdatedNote}. Review and confirm this belongs to a translation app ` +
         `you still use; remove it if it was left behind by an app you no longer have installed.`,
     });

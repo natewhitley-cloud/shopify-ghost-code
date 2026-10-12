@@ -1998,7 +1998,7 @@ export default function ScanDetail() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `ghost-code-scan-${scan.id}.${ext}`;
+    a.download = `ghostcode-scan-${scan.id}.${ext}`;
     document.body.appendChild(a);
     a.click();
     a.remove();

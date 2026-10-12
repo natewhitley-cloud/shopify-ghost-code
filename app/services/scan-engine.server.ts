@@ -1304,7 +1304,7 @@ export function detectDuplicateMetaTags(
       findingType: FindingType.DUPLICATE_META,
       severity,
       appName: appName ?? undefined,
-      description: `Duplicate meta tag '${attrValue}' — also found on line ${firstLine}`,
+      description: `Duplicate meta tag '${attrValue}', also found on line ${firstLine}`,
     });
   }
 
@@ -1396,7 +1396,7 @@ export function detectGhostJsonLd(file: ThemeFile): CreateFindingInput[] {
         findingType: FindingType.GHOST_JSON_LD,
         severity,
         appName: undefined,
-        description: `Orphaned JSON-LD schema with app-only @type "${typeName}" — likely left by an uninstalled app`,
+        description: `Orphaned JSON-LD schema with app-only @type "${typeName}", likely left by an uninstalled app`,
       });
       continue;
     }
@@ -2791,7 +2791,7 @@ export function detectGhostRobots(
         findingType: FindingType.GHOST_ROBOTS,
         severity,
         appName,
-        description: `Orphaned meta robots directive "${contentValue}" — may block search engine indexing`,
+        description: `Orphaned meta robots directive "${contentValue}", may block search engine indexing`,
       });
       // Early exit (gc-ypk): emission is in line order, so the first `limit`
       // findings are the first `limit` by line.
@@ -3513,7 +3513,7 @@ export function detectOverlappingChatWidgets(files: ThemeFile[]): CreateFindingI
       codeSnippet,
       findingType: FindingType.OVERLAPPING_CHAT_WIDGET,
       severity,
-      description: `${bestSeen.size} chat widgets are loaded at once: ${detail} — shoppers may see conflicting chat bubbles.`,
+      description: `${bestSeen.size} chat widgets are loaded at once: ${detail}. Shoppers may see conflicting chat bubbles.`,
     },
   ];
 }
@@ -3634,8 +3634,8 @@ export function detectSettingsDrift(
     const severity = classifySeverity(FindingType.SETTINGS_DRIFT, codeSnippet);
 
     const description = appName
-      ? `Stale settings_data.json reference to "${sectionType}" section from ${appName} — section file no longer exists`
-      : `Stale settings_data.json reference to "${sectionType}" section — section file no longer exists (may be from an uninstalled app or a manually removed section)`;
+      ? `Stale settings_data.json reference to "${sectionType}" section from ${appName}, section file no longer exists`
+      : `Stale settings_data.json reference to "${sectionType}" section, section file no longer exists (may be from an uninstalled app or a manually removed section)`;
 
     findings.push({
       filename: settingsFile.filename,
@@ -4017,7 +4017,7 @@ export function detectGhostLayouts(files: ThemeFile[]): CreateFindingInput[] {
 
     const description = appName
       ? `Orphaned layout file from ${appName}`
-      : "Orphaned app layout file — likely left by an uninstalled page builder";
+      : "Orphaned app layout file, likely left by an uninstalled page builder";
 
     findings.push({
       filename: file.filename,
@@ -4190,7 +4190,7 @@ export function detectGhostCanonical(
         findingType: FindingType.GHOST_CANONICAL,
         severity,
         appName,
-        description: "Empty canonical href — may cause search engines to index wrong URL variant",
+        description: "Empty canonical href, may cause search engines to index wrong URL variant",
       });
       reportedLines.add(lineNumber);
       continue;
@@ -4254,7 +4254,7 @@ export function detectGhostCanonical(
         findingType: FindingType.GHOST_CANONICAL,
         severity,
         appName,
-        description: `Duplicate canonical tag — also found on line ${firstLine}`,
+        description: `Duplicate canonical tag, also found on line ${firstLine}`,
       });
       duplicates++;
     }
@@ -4628,7 +4628,7 @@ export function detectGhostTitle(
     if (/^\s*$/.test(innerContent) && isLayoutFile) {
       const appName = appNameAt(lineNumber, codeSnippet);
       const description =
-        "Empty title tag — search engines will display the URL instead of a descriptive title";
+        "Empty title tag: search engines will display the URL instead of a descriptive title";
       const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
       findings.push({
         filename: file.filename,
@@ -4699,7 +4699,7 @@ export function detectGhostTitle(
       const { lineNumber } = allTitles[i];
       const codeSnippet = buildSnippet(file.content, lineNumber);
       const appName = appNameAt(lineNumber, codeSnippet);
-      const description = `Duplicate title tag — also found on line ${firstLine}`;
+      const description = `Duplicate title tag, also found on line ${firstLine}`;
       const severity = classifySeverity(FindingType.GHOST_TITLE, codeSnippet, description);
 
       findings.push({
@@ -4875,7 +4875,7 @@ export function detectGhostOg(
     // Check 1: Empty or whitespace-only content on high-value properties
     if (/^\s*$/.test(contentValue) && HIGH_VALUE_OG_PROPERTIES.has(property)) {
       const appName = identifyAppFromCode(codeSnippet) ?? undefined;
-      const description = `Empty ${property} meta tag — social platforms will use fallback or show nothing`;
+      const description = `Empty ${property} meta tag: social platforms will use fallback or show nothing`;
       const severity = classifySeverity(FindingType.GHOST_OG, codeSnippet, description);
       findings.push({
         filename: file.filename,
