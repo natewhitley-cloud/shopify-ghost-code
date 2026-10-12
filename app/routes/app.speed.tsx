@@ -31,11 +31,14 @@ import {
   formatSeconds,
   formatSpeedDelta,
   FREE_TEST_BUTTON,
+  FREE_TEST_EXHAUSTED,
+  FREE_TEST_EXHAUSTED_SUPPORT,
   FREE_TEST_INTRO,
   FREE_TEST_NO_APP,
   FREE_TEST_NOT_USED,
   FREE_TEST_RESULT_HEADING,
   FREE_TEST_UPGRADE_BODY,
+  FREE_TEST_SUPPORT_EMAIL,
   FREE_TEST_UPGRADE_HEADING,
   NEEDS_PRODUCT_ACCESS_MESSAGE,
   NO_PRODUCT_MESSAGE,
@@ -68,6 +71,7 @@ import { recordUpgradeClick } from "../lib/upgrade-preview";
 import { useScanPolling } from "../lib/use-scan-polling";
 import { getShopMetadata } from "../models/shop.server";
 import {
+  countFreeSpeedTestRuns,
   getFreeSpeedTestUsedAt,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
@@ -136,14 +140,15 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
     // Professional history stays hidden), and only the stripped view leaves
     // the server.
     const now = new Date();
-    const [rows, usedAt, requestedAt] = await Promise.all([
+    const [rows, usedAt, requestedAt, attempts] = await Promise.all([
       getRecentSpeedReports(shop.id, { origin: SPEED_REPORT_ORIGIN.FREE_TEST }),
       getFreeSpeedTestUsedAt(shop.id),
       getSpeedReportRequestedAt(shop.id),
+      countFreeSpeedTestRuns(shop.id),
     ]);
     return {
       access: "free",
-      freeTest: buildFreeSpeedTestView(rows, usedAt, now),
+      freeTest: buildFreeSpeedTestView(rows, usedAt, now, attempts),
       runAvailableAt: runNowAvailableAt(requestedAt, now)?.toISOString() ?? null,
       ...ask,
     };
@@ -569,6 +574,19 @@ export function FreeSpeedTest({
     // Read-only: no further runs. A used stamp without its report (should not
     // happen) still shows no run control.
     return freeTest.result ? <FreeTestResult result={freeTest.result} /> : null;
+  }
+  if (freeTest.state === "exhausted") {
+    // The retry cap was reached without a result: no run control (the action
+    // refuses too). The page's upgrade ask still renders below.
+    return (
+      <s-banner tone="warning">
+        <s-paragraph>{FREE_TEST_EXHAUSTED}</s-paragraph>
+        <s-paragraph>
+          {FREE_TEST_EXHAUSTED_SUPPORT}{" "}
+          <a href={`mailto:${FREE_TEST_SUPPORT_EMAIL}`}>{FREE_TEST_SUPPORT_EMAIL}</a>.
+        </s-paragraph>
+      </s-banner>
+    );
   }
   const running = freeTest.state === "running";
   return (

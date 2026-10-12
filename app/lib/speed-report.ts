@@ -452,6 +452,21 @@ export const FREE_TEST_BUTTON = "Run your free speed test";
 /** The Free and Standard plan-tile bullet (max 40 chars, Managed Pricing card limit). */
 export const FREE_SPEED_TEST_BULLET = "One free homepage speed test";
 export const FREE_TEST_NOT_USED = "Your free test wasn't used, so you can run it again.";
+/**
+ * How many free-test runs a shop may START in total (its FREE_TEST report
+ * rows, whatever their outcome). A run that does not use the test up (password
+ * page, the store didn't load, a Google failure) leaves it unused, so without
+ * a cap a store that never loads could retry forever and spend PageSpeed calls
+ * each day. The run that reaches the cap still uses the test up if it
+ * COMPLETES.
+ */
+export const FREE_SPEED_TEST_MAX_ATTEMPTS = 5;
+/** The support address shown when the free test cannot be run any more. */
+export const FREE_TEST_SUPPORT_EMAIL = "support@alpenglowsoftware.com";
+export const FREE_TEST_EXHAUSTED = `The free speed test couldn't complete for this store after ${FREE_SPEED_TEST_MAX_ATTEMPTS} tries, so it can't be run again. This usually means the store has a password page or the homepage didn't load.`;
+/** Follows FREE_TEST_EXHAUSTED on the page, before the support address. */
+export const FREE_TEST_EXHAUSTED_SUPPORT =
+  "If your store is open to visitors and you think this is wrong, email us at";
 export const FREE_TEST_RESULT_HEADING = "Your free speed test";
 export const FREE_TEST_NO_APP = "No known app added measurable load to your homepage.";
 export const FREE_TEST_UPGRADE_HEADING = "Test every week and see the cost of every app";
@@ -588,8 +603,11 @@ export type FreeSpeedTestResult = {
 };
 
 export type FreeSpeedTestView = {
-  /** available: the test can be run; running: one is in progress; used: done. */
-  state: "available" | "running" | "used";
+  /**
+   * available: the test can be run; running: one is in progress; used: done;
+   * exhausted: FREE_SPEED_TEST_MAX_ATTEMPTS runs started and none used it up.
+   */
+  state: "available" | "running" | "used" | "exhausted";
   /** The result that used the test up (state "used"). */
   result: FreeSpeedTestResult | null;
   /** The latest attempt that did NOT use the test up (state "available"). */
@@ -619,16 +637,18 @@ export function freeSpeedTestResultOf(row: SpeedReportRowLike): FreeSpeedTestRes
 }
 
 /**
- * The free test's state from the shop's FREE_TEST reports (newest first) and
- * Shop.freeSpeedTestUsedAt. Used = the stamp is set (the result shown is the
- * newest report that used it up). Otherwise a RUNNING report (not abandoned)
- * means running, else available, with the latest attempt to explain why it can
- * be run again.
+ * The free test's state from the shop's FREE_TEST reports (newest first),
+ * Shop.freeSpeedTestUsedAt and how many FREE_TEST runs the shop has started in
+ * total (`attempts`). Used = the stamp is set (the result shown is the newest
+ * report that used it up). Otherwise a RUNNING report (not abandoned) means
+ * running; else `attempts` at FREE_SPEED_TEST_MAX_ATTEMPTS means exhausted;
+ * else available, with the latest attempt to explain why it can be run again.
  */
 export function buildFreeSpeedTestView(
   rows: SpeedReportRowLike[],
   usedAt: Date | null,
   now: Date,
+  attempts: number,
 ): FreeSpeedTestView {
   if (usedAt) {
     let result: FreeSpeedTestResult | null = null;
@@ -641,6 +661,9 @@ export function buildFreeSpeedTestView(
   const latest = rows[0] ? toSummaryView(rows[0], now) : null;
   if (latest?.status === SPEED_REPORT_STATUS.RUNNING) {
     return { state: "running", result: null, lastAttempt: null };
+  }
+  if (attempts >= FREE_SPEED_TEST_MAX_ATTEMPTS) {
+    return { state: "exhausted", result: null, lastAttempt: null };
   }
   return {
     state: "available",

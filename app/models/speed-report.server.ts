@@ -9,6 +9,7 @@ import db from "../db.server";
 import { OPS_EVENT_TYPES } from "./ops-event.server";
 import {
   RUN_NOW_COOLDOWN_MS,
+  SPEED_REPORT_ORIGIN,
   SPEED_REPORT_STATUS,
   type SpeedFailureCode,
   type SpeedPageResult,
@@ -233,6 +234,14 @@ export async function claimSpeedReportRunNow(shopId: string, now: Date): Promise
  */
 export async function claimFreeSpeedTest(shopId: string, now: Date): Promise<boolean> {
   return claimRunSlot(shopId, now, { freeSpeedTestUsedAt: null });
+}
+
+/**
+ * How many free-test runs the shop has started: its FREE_TEST report rows,
+ * whatever their outcome (the cap is FREE_SPEED_TEST_MAX_ATTEMPTS).
+ */
+export async function countFreeSpeedTestRuns(shopId: string): Promise<number> {
+  return db.speedReport.count({ where: { shopId, origin: SPEED_REPORT_ORIGIN.FREE_TEST } });
 }
 
 /** When the shop used its free speed test up (null = unused / no shop). */

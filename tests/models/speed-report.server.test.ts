@@ -12,6 +12,7 @@ const mockDb = vi.hoisted(() => ({
     findMany: vi.fn(),
     upsert: vi.fn(),
     updateMany: vi.fn(),
+    count: vi.fn(),
   },
   opsEvent: { count: vi.fn() },
   shop: { findUnique: vi.fn(), updateMany: vi.fn() },
@@ -25,6 +26,7 @@ import { RUN_NOW_COOLDOWN_MS } from "../../app/lib/speed-report";
 import {
   claimFreeSpeedTest,
   claimSpeedReportRunNow,
+  countFreeSpeedTestRuns,
   createSpeedReport,
   failAbandonedSpeedReport,
   finishSpeedReport,
@@ -360,5 +362,13 @@ describe("free speed test", () => {
     await expect(getFreeSpeedTestUsedAt("s1")).resolves.toEqual(at);
     mockDb.shop.findUnique.mockResolvedValueOnce(null);
     await expect(getFreeSpeedTestUsedAt("nope")).resolves.toBeNull();
+  });
+
+  it("countFreeSpeedTestRuns: counts this shop's FREE_TEST rows of any status (no new column)", async () => {
+    mockDb.speedReport.count.mockResolvedValueOnce(3);
+    await expect(countFreeSpeedTestRuns("s1")).resolves.toBe(3);
+    expect(mockDb.speedReport.count).toHaveBeenCalledWith({
+      where: { shopId: "s1", origin: "FREE_TEST" },
+    });
   });
 });

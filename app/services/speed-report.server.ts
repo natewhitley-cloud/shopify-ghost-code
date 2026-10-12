@@ -57,6 +57,8 @@ import { type GraphQLResponseError, isAccessDeniedError } from "../lib/scope-che
 import {
   buildSpeedReportView,
   computeSpeedReportStatus,
+  FREE_SPEED_TEST_MAX_ATTEMPTS,
+  FREE_TEST_EXHAUSTED,
   freeSpeedTestConsumed,
   isSpeedReportOrigin,
   runNowAvailableAt,
@@ -73,6 +75,7 @@ import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
 import {
   claimFreeSpeedTest,
   claimSpeedReportRunNow,
+  countFreeSpeedTestRuns,
   createSpeedReport,
   failAbandonedSpeedReport,
   finishSpeedReport,
@@ -1021,6 +1024,7 @@ export const FREE_TEST_ERRORS = {
   notInPlan: "The free speed test isn't part of your plan.",
   used: "You've already used your free speed test.",
   cooldown: "You can try the free speed test once a day.",
+  exhausted: FREE_TEST_EXHAUSTED,
 } as const;
 
 export type RunNowResult =
@@ -1069,6 +1073,13 @@ export async function requestFreeSpeedTest(
     return { ok: false, error: FREE_TEST_ERRORS.notInPlan };
   }
   if (await getFreeSpeedTestUsedAt(shop.id)) return { ok: false, error: FREE_TEST_ERRORS.used };
+  // Per-shop retry cap: a run that does not use the test up leaves it unused,
+  // so a store that never loads would otherwise retry forever. Checked before
+  // the claim; the claim's 24h slot serializes starts, so two requests cannot
+  // both pass at the cap.
+  if ((await countFreeSpeedTestRuns(shop.id)) >= FREE_SPEED_TEST_MAX_ATTEMPTS) {
+    return { ok: false, error: FREE_TEST_ERRORS.exhausted };
+  }
   return startMerchantSpeedRun(shop, now, SPEED_REPORT_ORIGIN.FREE_TEST);
 }
 

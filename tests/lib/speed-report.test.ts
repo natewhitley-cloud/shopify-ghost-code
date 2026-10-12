@@ -530,6 +530,7 @@ describe("free speed test helpers", () => {
       ],
       new Date(),
       NOW,
+      2,
     );
     expect(v.state).toBe("used");
     expect(v.result!.reportId).toBe("used");
@@ -537,7 +538,7 @@ describe("free speed test helpers", () => {
   });
 
   it("view: used stamp but no matching report: used, no result (never offers a run)", () => {
-    expect(speed.buildFreeSpeedTestView([], new Date(), NOW)).toEqual({
+    expect(speed.buildFreeSpeedTestView([], new Date(), NOW, 1)).toEqual({
       state: "used",
       result: null,
       lastAttempt: null,
@@ -545,7 +546,7 @@ describe("free speed test helpers", () => {
   });
 
   it("view: unused and nothing run: available", () => {
-    expect(speed.buildFreeSpeedTestView([], null, NOW)).toEqual({
+    expect(speed.buildFreeSpeedTestView([], null, NOW, 0)).toEqual({
       state: "available",
       result: null,
       lastAttempt: null,
@@ -554,18 +555,63 @@ describe("free speed test helpers", () => {
 
   it("view: a RUNNING row is running; an abandoned one reads as a failed try (stuck)", () => {
     const fresh = freeRow("RUNNING", null, { createdAt: new Date(NOW.getTime() - 60_000) });
-    expect(speed.buildFreeSpeedTestView([fresh], null, NOW).state).toBe("running");
+    expect(speed.buildFreeSpeedTestView([fresh], null, NOW, 1).state).toBe("running");
     const stale = freeRow("RUNNING", null, {
       createdAt: new Date(NOW.getTime() - SPEED_REPORT_STUCK_MS - 60_000),
     });
-    const v = speed.buildFreeSpeedTestView([stale], null, NOW);
+    const v = speed.buildFreeSpeedTestView([stale], null, NOW, 1);
     expect(v.state).toBe("available");
     expect(v.lastAttempt).toMatchObject({ status: "FAILED", failureReason: "stuck" });
   });
 
   it("view: a COMPLETED row without the used stamp never shows a result (the stamp is the truth)", () => {
-    const v = speed.buildFreeSpeedTestView([freeRow("COMPLETED", [okPage()])], null, NOW);
+    const v = speed.buildFreeSpeedTestView([freeRow("COMPLETED", [okPage()])], null, NOW, 1);
     expect(v.state).toBe("available");
     expect(v.result).toBeNull();
+  });
+
+  describe("retry cap (FREE_SPEED_TEST_MAX_ATTEMPTS)", () => {
+    const failed = () => freeRow("FAILED", null);
+
+    it("is 5", () => {
+      expect(speed.FREE_SPEED_TEST_MAX_ATTEMPTS).toBe(5);
+    });
+
+    it("one under the cap: still available, with the last try explained", () => {
+      const v = speed.buildFreeSpeedTestView([failed()], null, NOW, 4);
+      expect(v.state).toBe("available");
+      expect(v.lastAttempt).not.toBeNull();
+    });
+
+    it("at the cap with no result: exhausted, no run offered and no attempt detail", () => {
+      expect(speed.buildFreeSpeedTestView([failed()], null, NOW, 5)).toEqual({
+        state: "exhausted",
+        result: null,
+        lastAttempt: null,
+      });
+      expect(speed.buildFreeSpeedTestView([failed()], null, NOW, 9).state).toBe("exhausted");
+    });
+
+    it("at the cap but the last run used the test up: used (a COMPLETED 5th run still counts)", () => {
+      const v = speed.buildFreeSpeedTestView(
+        [freeRow("COMPLETED", [okPage({ apps: APPS })], { id: "fifth" })],
+        new Date(),
+        NOW,
+        5,
+      );
+      expect(v.state).toBe("used");
+      expect(v.result!.reportId).toBe("fifth");
+    });
+
+    it("at the cap while the 5th run is still RUNNING: running, not exhausted", () => {
+      const fresh = freeRow("RUNNING", null, { createdAt: new Date(NOW.getTime() - 60_000) });
+      expect(speed.buildFreeSpeedTestView([fresh], null, NOW, 5).state).toBe("running");
+    });
+
+    it("the exhausted copy names the cap and the likely cause, in plain words", () => {
+      expect(speed.FREE_TEST_EXHAUSTED).toContain("after 5 tries");
+      expect(speed.FREE_TEST_EXHAUSTED).toMatch(/password page/);
+      expect(speed.FREE_TEST_EXHAUSTED).not.toMatch(/\u2014/);
+    });
   });
 });

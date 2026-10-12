@@ -23,6 +23,7 @@ vi.mock("../../app/models/speed-report.server", () => ({
   getRecentSpeedReports: vi.fn(),
   getSpeedReportRequestedAt: vi.fn(),
   getFreeSpeedTestUsedAt: vi.fn(),
+  countFreeSpeedTestRuns: vi.fn(),
 }));
 vi.mock("../../app/services/speed-report.server", () => ({
   requestSpeedReportRunNow: vi.fn(),
@@ -44,6 +45,7 @@ import * as billing from "../../app/lib/billing.server";
 import type { SpeedPageResult } from "../../app/lib/speed-report";
 import { getShopMetadata } from "../../app/models/shop.server";
 import {
+  countFreeSpeedTestRuns,
   getFreeSpeedTestUsedAt,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
@@ -65,6 +67,7 @@ const mockRequestedAt = getSpeedReportRequestedAt as ReturnType<typeof vi.fn>;
 const mockRunNow = requestSpeedReportRunNow as ReturnType<typeof vi.fn>;
 const mockFreeTest = requestFreeSpeedTest as ReturnType<typeof vi.fn>;
 const mockUsedAt = getFreeSpeedTestUsedAt as ReturnType<typeof vi.fn>;
+const mockRunCount = countFreeSpeedTestRuns as ReturnType<typeof vi.fn>;
 const mockFeatures = billing.getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockTrial = getTrialEligibility as ReturnType<typeof vi.fn>;
 const mockNudge = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
@@ -758,6 +761,21 @@ describe("loader: free speed test", () => {
     expect(data.runAvailableAt).toBe(new Date(tried.getTime() + 24 * 3600_000).toISOString());
   });
 
+  it("5 failed runs and no result: exhausted (the run count is read per shop)", async () => {
+    mockRunCount.mockResolvedValue(5);
+    mockReports.mockResolvedValue([row("FREE_TEST", "UNAVAILABLE_PASSWORD", null)]);
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "free" }>;
+    expect(mockRunCount).toHaveBeenCalledWith("shop-1");
+    expect(data.freeTest).toEqual({ state: "exhausted", result: null, lastAttempt: null });
+  });
+
+  it("4 failed runs: still available", async () => {
+    mockRunCount.mockResolvedValue(4);
+    mockReports.mockResolvedValue([row("FREE_TEST", "FAILED", null)]);
+    const data = (await loader(loaderArgs())) as Extract<SpeedLoaderData, { access: "free" }>;
+    expect(data.freeTest.state).toBe("available");
+  });
+
   it("records the upgrade ask's `shown` (speed_teaser funnel) once per merchant", async () => {
     await loader(loaderArgs());
     expect(mockNudge).toHaveBeenCalledWith("speed_teaser", "shown", DOMAIN);
@@ -871,6 +889,17 @@ describe("rendering: free speed test", () => {
     );
     expect(html).toMatch(/<s-button[^>]*disabled/);
     expect(html).toContain("Next test available");
+  });
+
+  it("exhausted: says the test couldn't complete, offers support and the upgrade, no run control", () => {
+    const html = render(free({ state: "exhausted", result: null, lastAttempt: null }));
+    expect(html).toContain("couldn&#x27;t complete for this store after 5 tries");
+    expect(html).toContain("password page or the homepage didn&#x27;t load");
+    expect(html).toContain('href="mailto:support@alpenglowsoftware.com"');
+    expect(html).not.toContain("Run your free speed test");
+    expect(html).not.toContain('value="free-test"');
+    expect(upgradeLinks(html)).toBe(1);
+    expect(html).not.toContain("—");
   });
 
   it("running", () => {
