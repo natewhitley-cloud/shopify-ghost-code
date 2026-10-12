@@ -27,15 +27,15 @@ Updated from market research (2026-03-22). Source data: `~/shopify/strategy/mark
 
 **What it covers.** The existing findings, grouped the way a merchant thinks about a theme (malicious code, errors shoppers can see, leftover scripts and styles, leftover snippets and sections, SEO and AI tags, tracking still running, store data left behind, the script tag deadline), plus three things added for it:
 
-- **Liquid errors shoppers can see.** The classic uninstall leftover ("Liquid error: Could not find asset snippets/app.liquid") printed on the live homepage. It is the most searched symptom in our own community research, and the one a merchant can verify with their own eyes.
-- **Theme type and version.** A vintage (non Online Store 2.0) theme is flagged, because apps cannot use app blocks or app embeds on it and so write straight into theme files: the mechanism behind most leftovers.
+- **Liquid errors on your homepage.** The classic uninstall leftover ("Liquid error: Could not find asset snippets/app.liquid") printed on the live homepage. It is the most searched symptom in our own community research. We report it only when the theme itself confirms it (the snippet is gone and a theme file still renders it), because a wrong "your store is broken" costs more trust than a missed one.
+- **Theme type and version.** A vintage (non Online Store 2.0) theme is flagged, because it cannot use app blocks (app embeds still work), so an app that adds something to a page writes straight into theme files: the mechanism behind most leftovers.
 - **Unpublished themes.** How many sit in the library against Shopify's 20-theme limit, and what the last scan of each found.
 
 **Rules that keep it honest.**
 
 - **No score, ever.** If a number is wanted, it is a count of a real thing.
 - **Read-only.** We never edit the theme. Every row ends in where to look and how to fix it yourself.
-- **Never "Clean" about something we did not check.** A password-protected storefront, a missing permission or a plan-gated check reads "Not checked" or "None found", with the reason.
+- **Never "Clean" about something we did not check.** A password-protected storefront, a missing permission, a plan-gated check, or a scan that is older than a check reads "Not checked" or "None found", with the reason.
 - **Same list on every plan.** Counts are free; file, line and fix stay behind the existing preview gate.
 
 **Listing language to test:** "Theme health check: see what old apps left in your theme and what it costs you. No score, just the list." Keywords: theme health, theme checker, theme audit, liquid error.
