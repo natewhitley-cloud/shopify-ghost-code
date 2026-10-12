@@ -90,6 +90,7 @@ vi.mock("../../inngest/client", () => ({
 }));
 
 import { THEME_HEALTH_HEADING } from "../../app/components/ThemeHealthChecklist";
+import { logger } from "../../app/lib/logger.server";
 import {
   canUseMultipleThemes,
   canUseScanDiffing,
@@ -298,6 +299,11 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
     expect(rowOf(themeHealth, "unpublished-themes")).toBeUndefined();
     expect(rowOf(themeHealth, "theme")).toBeDefined();
     expect(mockThemeCounts).not.toHaveBeenCalled();
+    // Logged by error name only (a message can echo values), never swallowed silently.
+    expect(logger.warn).toHaveBeenCalledWith("theme health: theme list unavailable", {
+      shop: DOMAIN,
+      errorName: "Error",
+    });
   });
 
   it.each(["PENDING", "IN_PROGRESS", "FAILED"])(

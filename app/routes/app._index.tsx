@@ -45,6 +45,7 @@ import {
 } from "../lib/plan-gating.server";
 import { PLANS } from "../lib/plans";
 import { HOME_DEFERRED_PROMPTS, HOME_PROMPTS, promptClaimNeeded } from "../lib/prompt-cap";
+import { safeErrorFields } from "../lib/safe-error";
 import { homeScanStartPayload, parseScanSource } from "../lib/scan-source";
 import { isScanStaleAfterThemeChange } from "../lib/stale-results";
 import {
@@ -567,7 +568,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (hasResults && latestSuccessful && latestTypeCounts) {
     const themesForHealth: ThemeSummary[] | null = shouldFetchThemes
       ? allThemes
-      : await getCachedAllThemes(admin, session.shop).catch(() => null);
+      : await getCachedAllThemes(admin, session.shop).catch((err) => {
+          logger.warn("theme health: theme list unavailable", {
+            shop: session.shop,
+            ...safeErrorFields(err),
+          });
+          return null;
+        });
     themeHealth = await loadThemeHealth({
       shop,
       scan: latestSuccessful,

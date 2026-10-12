@@ -61,6 +61,7 @@
 import { FindingType, type Prisma, ScanOrigin, ScanStatus } from "@prisma/client";
 import { NonRetriableError } from "inngest";
 
+import { isStorefrontFinding } from "../../app/lib/finding-classification";
 import {
   type PaginateStats,
   type QueryCostStats,
@@ -868,15 +869,6 @@ function applySoftLaunchFlags<T extends { findingType: FindingType }>(
   const liveFindingTypes = Object.values(FindingType).filter((t) => isLive.get(t));
   return { kept, suppressedDetectorHits, liveFindingTypes };
 }
-
-/**
- * The finding types the storefront step owns: both are read from the ONE
- * public homepage request, so they are audited (or not) together.
- */
-const STOREFRONT_STEP_TYPES: ReadonlySet<string> = new Set([
-  FindingType.SCRIPT_TAG_SUNSET,
-  FindingType.LIQUID_ERROR_RENDERED,
-]);
 
 const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> = {
   product: { segment: "products", label: "product" },
@@ -2010,14 +2002,16 @@ export const scanTheme = inngest.createFunction(
       const finalStatus = ScanStatus.COMPLETED;
 
       // The scan's live set (gc-rvo0), from the fetch-and-scan flag reads, minus
-      // the storefront step's types (SCRIPT_TAG_SUNSET, LIQUID_ERROR_RENDERED)
-      // when that step did not actually check anything (flag flipped off
-      // mid-run, unpublished theme, no shop): the differ then treats the types
-      // as un-audited, so their prior findings are neither resolved nor new. A no-op while dark (the type is not live then). NULL (undefined)
-      // for an in-flight run memoized before the field existed.
+      // the storefront findings (isStorefrontFinding: SCRIPT_TAG_SUNSET and
+      // LIQUID_ERROR_RENDERED, both read by the one storefront step) when that
+      // step did not actually check anything (flag flipped off mid-run,
+      // unpublished theme, no shop): the differ then treats the types as
+      // un-audited, so their prior findings are neither resolved nor new. A
+      // no-op while dark (the types are not live then). NULL (undefined) for
+      // an in-flight run memoized before the field existed.
       const finalLiveFindingTypes = Array.isArray(persistedLiveFindingTypes)
         ? persistedLiveFindingTypes.filter(
-            (t) => !STOREFRONT_STEP_TYPES.has(t) || scriptTagResult.audited,
+            (t) => !isStorefrontFinding(t) || scriptTagResult.audited,
           )
         : undefined;
       // What THIS scan audited, for every diff below (finalize + summary email).

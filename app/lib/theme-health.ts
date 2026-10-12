@@ -26,6 +26,7 @@
 
 import type { FindingType } from "@prisma/client";
 
+import { isStorefrontFinding } from "./finding-classification";
 import type { ThemeInfo } from "./theme-info";
 
 // ---------------------------------------------------------------------------
@@ -183,12 +184,6 @@ export type TypeCoverage =
   | "plan"
   | "dark";
 
-/** The storefront step's types: only ever checked on the published theme. */
-const STOREFRONT_TYPES: ReadonlySet<string> = new Set([
-  "SCRIPT_TAG_SUNSET",
-  "LIQUID_ERROR_RENDERED",
-]);
-
 /** What a scan recorded about its own coverage (the Scan row's columns). */
 export interface HealthCoverageInput {
   skippedCategories: readonly string[];
@@ -208,10 +203,10 @@ export function coverageForType(type: FindingType, scan: HealthCoverageInput): T
   if (scan.unreachableCategories.includes(type)) return "unreachable";
   if (scan.skippedCategories.includes(type)) return "permission";
   if (scan.liveTypes !== null && !scan.liveTypes.has(type)) {
-    // The storefront step drops its types from the live set when it did not
-    // run. On another theme that is expected; on the published theme it means
+    // The storefront step (storefront findings: script tags, Liquid errors)
+    // drops its types from the live set when it did not run. On another theme that is expected; on the published theme it means
     // the check is off.
-    return STOREFRONT_TYPES.has(type) && scan.isPublishedTheme === false ? "unpublished" : "dark";
+    return isStorefrontFinding(type) && scan.isPublishedTheme === false ? "unpublished" : "dark";
   }
   if (scan.cappedCategories.includes(type)) return "capped";
   return "checked";
