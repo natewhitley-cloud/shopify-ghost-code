@@ -55,10 +55,10 @@ describe("GET /unsubscribe/:token", () => {
     const html = await res.text();
 
     expect(res.status).toBe(200);
-    expect(html).toContain("Turn off Ghost Code summary emails for this store?");
+    expect(html).toContain("Turn off GhostCode summary emails for this store?");
     // gc-ol95: summary wording, never the retired per-change alert promise.
     expect(html).toContain(
-      "You will stop receiving the summary email Ghost Code sends after scheduled scans.",
+      "You will stop receiving the summary email GhostCode sends after scheduled scans.",
     );
     expect(html).toContain("Turn off summary emails</button>");
     expect(html).not.toMatch(/monitoring|rescan finds/i);
@@ -66,7 +66,7 @@ describe("GET /unsubscribe/:token", () => {
     expect(html).toContain('<form method="post" action="/unsubscribe">');
     expect(html).toContain('name="token"');
     expect(html).toContain("<noscript>");
-    expect(html).toContain("Ghost Code > Settings");
+    expect(html).toContain("GhostCode > Settings");
     expect(mockDisable).not.toHaveBeenCalled();
     expectPrivateHeaders(res);
   });
@@ -91,7 +91,7 @@ describe("POST /unsubscribe/:token", () => {
     expect(res.status).toBe(200);
     expect(mockDisable).toHaveBeenCalledExactlyOnceWith(TOKEN);
     expect(html).toContain("Summary emails are off");
-    expect(html).toContain("You can turn them back on in Ghost Code > Settings.");
+    expect(html).toContain("You can turn them back on in GhostCode > Settings.");
     expectPrivateHeaders(res);
   });
 

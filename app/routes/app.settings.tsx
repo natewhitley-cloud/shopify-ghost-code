@@ -529,9 +529,9 @@ export default function Settings() {
         <div style={{ marginTop: "16px" }} />
         <s-card>
           <s-stack direction="block" gap="base">
-            <s-heading>About Ghost Code</s-heading>
+            <s-heading>About GhostCode</s-heading>
             <s-paragraph>
-              Ghost Code scans your Shopify themes for leftover code from uninstalled apps. This
+              GhostCode scans your Shopify themes for leftover code from uninstalled apps. This
               orphaned code can slow down your store, break functionality, and create security
               risks.
             </s-paragraph>

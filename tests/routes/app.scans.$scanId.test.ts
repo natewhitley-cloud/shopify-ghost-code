@@ -4546,7 +4546,7 @@ describe("ScanCoverageNotices", () => {
     const html = renderNotices({ unreachableCategories: ["SCRIPT_TAG_SUNSET"] });
     expect(html).toContain('tone="info"');
     expect(html).toContain(
-      "One check couldn&#x27;t run this scan: Script tag sunset. Ghost Code couldn&#x27;t read your storefront&#x27;s public homepage (for example, because it&#x27;s password-protected). Anything we didn&#x27;t check keeps its status from your previous scan.",
+      "One check couldn&#x27;t run this scan: Script tag sunset. GhostCode couldn&#x27;t read your storefront&#x27;s public homepage (for example, because it&#x27;s password-protected). Anything we didn&#x27;t check keeps its status from your previous scan.",
     );
     expect(html).not.toContain('tone="warning"');
     expect(html.toLowerCase()).not.toContain("permission");
@@ -4690,7 +4690,7 @@ describe("cappedCategoriesNotice", () => {
   it("uses plural wording and lists every label for several capped checks", () => {
     const text = cappedCategoriesNotice(["JSON_LD_PRICE_CONFLICT", "DANGLING_REFERENCE"]);
     expect(text).toBe(
-      "Some checks were limited this scan: Structured-data prices, Broken links. Your theme has more references than Ghost Code checks in a single scan, so these results cover the ones we checked. Anything we didn't check keeps its status from your previous scan.",
+      "Some checks were limited this scan: Structured-data prices, Broken links. Your theme has more references than GhostCode checks in a single scan, so these results cover the ones we checked. Anything we didn't check keeps its status from your previous scan.",
     );
   });
 
@@ -4717,7 +4717,7 @@ describe("cappedCategoriesNotice", () => {
 describe("unreachableCategoriesNotice", () => {
   it("uses the exact singular copy for the script-tag check", () => {
     expect(unreachableCategoriesNotice(["SCRIPT_TAG_SUNSET"])).toBe(
-      "One check couldn't run this scan: Script tag sunset. Ghost Code couldn't read your storefront's public homepage (for example, because it's password-protected). Anything we didn't check keeps its status from your previous scan.",
+      "One check couldn't run this scan: Script tag sunset. GhostCode couldn't read your storefront's public homepage (for example, because it's password-protected). Anything we didn't check keeps its status from your previous scan.",
     );
   });
 

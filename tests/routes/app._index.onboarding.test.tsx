@@ -230,7 +230,7 @@ describe("gc-bj4: what the old `!shop` minimal data renders", () => {
       findingTrend: null,
     });
 
-    expect(html).not.toContain("Welcome to Ghost Code");
+    expect(html).not.toContain("Welcome to GhostCode");
     expect(html).not.toContain("Start First Scan");
     // The dashboard shell renders instead, with its scan button disabled.
     expect(html).toContain("Scan Actions");
@@ -250,7 +250,7 @@ describe("gc-bj4: brand-new install always sees onboarding", () => {
     expect(data.shop).toEqual(NEW_SHOP);
 
     const html = renderDashboard(data);
-    expect(html).toContain("Welcome to Ghost Code");
+    expect(html).toContain("Welcome to GhostCode");
     expect(html).toMatch(/<s-button[^>]*>Start First Scan<\/s-button>/);
     expect(html).not.toMatch(/<s-button[^>]*disabled[^>]*>Start First Scan/);
   });

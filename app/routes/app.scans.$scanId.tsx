@@ -412,7 +412,7 @@ export function cappedCategoriesNotice(categories: readonly string[]): string {
   const labels = skippedCategoryLabels(categories);
   const lead =
     labels.length === 1 ? "One check was limited this scan" : "Some checks were limited this scan";
-  return `${lead}: ${labels.join(", ")}. Your theme has more references than Ghost Code checks in a single scan, so these results cover the ones we checked. Anything we didn't check keeps its status from your previous scan.`;
+  return `${lead}: ${labels.join(", ")}. Your theme has more references than GhostCode checks in a single scan, so these results cover the ones we checked. Anything we didn't check keeps its status from your previous scan.`;
 }
 
 /**
@@ -424,7 +424,7 @@ export function unreachableCategoriesNotice(categories: readonly string[]): stri
   const labels = skippedCategoryLabels(categories);
   const lead =
     labels.length === 1 ? "One check couldn't run this scan" : "Some checks couldn't run this scan";
-  return `${lead}: ${labels.join(", ")}. Ghost Code couldn't read your storefront's public homepage (for example, because it's password-protected). Anything we didn't check keeps its status from your previous scan.`;
+  return `${lead}: ${labels.join(", ")}. GhostCode couldn't read your storefront's public homepage (for example, because it's password-protected). Anything we didn't check keeps its status from your previous scan.`;
 }
 
 /**
@@ -494,8 +494,8 @@ export function ScanCoverageNotices({
         <div>
           <s-banner tone="warning">
             This scan skipped {skippedCategories.length}{" "}
-            {skippedCategories.length !== 1 ? "checks" : "check"} because Ghost Code didn&apos;t
-            have the required permissions when it ran:{" "}
+            {skippedCategories.length !== 1 ? "checks" : "check"} because GhostCode didn&apos;t have
+            the required permissions when it ran:{" "}
             {skippedCategoryLabels(skippedCategories).join(", ")}. Grant access on the{" "}
             <Link to="/app/settings">Settings</Link> page, then run a new scan to include{" "}
             {skippedCategories.length !== 1 ? "them" : "it"}.

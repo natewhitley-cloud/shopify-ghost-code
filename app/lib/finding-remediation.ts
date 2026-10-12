@@ -390,7 +390,7 @@ export function findingMatchedLine(
  * LINE_CONTEXT_SNIPPET_TYPES), and the neighbours may be code the store needs.
  *
  * Shape for a theme-file finding with a line-context snippet:
- *   Ghost Code finding: <typeLabel>
+ *   GhostCode finding: <typeLabel>
  *   File: <filename>  (line <lineNumber>)
  *   The finding is this line:
  *   <the finding's own line, trimmed>
@@ -422,7 +422,7 @@ export function buildRemovalInstructions(
   finding: RemovalInstructionFinding,
   typeLabel: string,
 ): string {
-  const lines: string[] = [`Ghost Code finding: ${typeLabel}`];
+  const lines: string[] = [`GhostCode finding: ${typeLabel}`];
   const howTo = getFindingRemediation(finding.findingType);
 
   if (isAdminResourceFinding(finding.findingType)) {

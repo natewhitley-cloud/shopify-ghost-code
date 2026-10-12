@@ -219,7 +219,7 @@ describe("app.ignored zero-scans CTA (gc-vg4)", () => {
     expect(data).toEqual({ ignores: [], hasAnyScans: false });
     const html = renderPage(data);
     expect(html).toContain("No suppressed findings");
-    expect(html).toContain("Ghost Code hasn&#x27;t scanned your theme yet.");
+    expect(html).toContain("GhostCode hasn&#x27;t scanned your theme yet.");
     expect(html).toMatch(
       /<a href="\/app"[^>]*><s-button variant="primary">Run your first scan<\/s-button><\/a>/,
     );

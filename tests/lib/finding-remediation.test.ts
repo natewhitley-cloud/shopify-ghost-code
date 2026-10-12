@@ -271,7 +271,7 @@ describe("buildRemovalInstructions", () => {
 
     expect(out).toBe(
       [
-        "Ghost Code finding: Scripts",
+        "GhostCode finding: Scripts",
         "File: layout/theme.liquid  (line 33)",
         "The finding is this line:",
         KLAVIYO_LINE,
@@ -298,7 +298,7 @@ describe("buildRemovalInstructions", () => {
     );
     expect(out).toBe(
       [
-        "Ghost Code finding: Scripts",
+        "GhostCode finding: Scripts",
         "File: layout/theme.liquid  (line 1)",
         "The finding is this line:",
         '<script src="https://cdn.example-app.com/loader.js"></script>',
@@ -322,7 +322,7 @@ describe("buildRemovalInstructions", () => {
     );
     expect(out).toBe(
       [
-        "Ghost Code finding: Scripts",
+        "GhostCode finding: Scripts",
         "File: snippets/x.liquid  (line 1)",
         "The finding is this line:",
         line,
@@ -345,7 +345,7 @@ describe("buildRemovalInstructions", () => {
     );
     expect(out).toBe(
       [
-        "Ghost Code finding: Scripts",
+        "GhostCode finding: Scripts",
         "File: layout/theme.liquid  (line 42)",
         "Code at line 42, shown with the line before and after:",
         snippet,
@@ -396,7 +396,7 @@ describe("buildRemovalInstructions", () => {
       const out = buildRemovalInstructions({ findingType, filename, lineNumber, codeSnippet }, "T");
       expect(out).toBe(
         [
-          "Ghost Code finding: T",
+          "GhostCode finding: T",
           `File: ${filename}  (line ${lineNumber})`,
           "Code found:",
           codeSnippet,
@@ -418,7 +418,7 @@ describe("buildRemovalInstructions", () => {
     );
     expect(out).toBe(
       [
-        "Ghost Code finding: Scripts",
+        "GhostCode finding: Scripts",
         "File: layout/theme.liquid",
         "Code found:",
         "<script></script>",
@@ -472,12 +472,12 @@ describe("buildRemovalInstructions", () => {
       "Compare-at Prices",
     );
 
-    expect(out).toContain("Ghost Code finding: Compare-at Prices");
+    expect(out).toContain("GhostCode finding: Compare-at Prices");
     // No theme line reference and no code block for Admin resources: a
     // plain-language location + the Admin-surface howTo (unchanged, exact).
     expect(out).toBe(
       [
-        "Ghost Code finding: Compare-at Prices",
+        "GhostCode finding: Compare-at Prices",
         "Location: Product",
         `How: ${getFindingRemediation("GHOST_PRICE")}`,
       ].join("\n"),
@@ -499,7 +499,7 @@ describe("buildRemovalInstructions", () => {
     // Empty snippet → no code block at all.
     expect(out).toBe(
       [
-        "Ghost Code finding: Orphan Assets",
+        "GhostCode finding: Orphan Assets",
         "File: assets/orphan.js",
         `How: ${getFindingRemediation("ORPHAN_ASSET")}`,
       ].join("\n"),
@@ -693,7 +693,7 @@ describe("SCRIPT_TAG_SUNSET guidance (storefront, merchant cannot delete)", () =
     const text = buildRemovalInstructions(finding, "Script Tag Sunset");
     expect(text).toBe(
       [
-        "Ghost Code finding: Script Tag Sunset",
+        "GhostCode finding: Script Tag Sunset",
         "Location: your storefront's script tags (not in your theme code)",
         "Script tag URLs:",
         "https://cdn.example.com/a.js",
@@ -728,7 +728,7 @@ describe("LIQUID_ERROR_RENDERED guidance (gc-i6du: read from the homepage, fixed
   it("the copyable instruction shows the error as shoppers see it, not the internal identity line", () => {
     const text = buildRemovalInstructions(finding, "Liquid Errors on Your Homepage");
     expect(text.split("\n")).toEqual([
-      "Ghost Code finding: Liquid Errors on Your Homepage",
+      "GhostCode finding: Liquid Errors on Your Homepage",
       "Location: your storefront homepage (it can be inside a menu or a hidden section)",
       "Error shown:",
       "Liquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",

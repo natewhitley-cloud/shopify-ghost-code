@@ -415,7 +415,7 @@ describe("ScanHistory empty states (gc-vg4)", () => {
     const html = renderPage(await loader(makeLoaderArgs()));
 
     expect(html).toContain("No scans yet");
-    expect(html).toContain("Ghost Code hasn&#x27;t scanned your theme yet.");
+    expect(html).toContain("GhostCode hasn&#x27;t scanned your theme yet.");
     expect(html).toMatch(
       /<a href="\/app"[^>]*><s-button variant="primary">Run your first scan<\/s-button><\/a>/,
     );

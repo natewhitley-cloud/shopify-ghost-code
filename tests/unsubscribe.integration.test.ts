@@ -88,7 +88,7 @@ describe("unsubscribe route through the real request handler", () => {
     const res = await handler(new Request(URL_));
 
     expect(res.status).toBe(200);
-    expect(await res.text()).toContain("Turn off Ghost Code summary emails");
+    expect(await res.text()).toContain("Turn off GhostCode summary emails");
     expect(res.headers.get("Cache-Control")).toBe("no-store");
     expect(res.headers.get("X-Robots-Tag")).toBe("noindex");
     expect(mockDisable).not.toHaveBeenCalled();

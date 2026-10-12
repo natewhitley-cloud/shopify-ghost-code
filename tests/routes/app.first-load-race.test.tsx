@@ -209,7 +209,7 @@ describe("gc-bj4: parent + child loaders racing on a brand-new install", () => {
         hydrationData={{ loaderData: { dashboard: dashboardData } }}
       />,
     );
-    expect(html).toContain("Welcome to Ghost Code");
+    expect(html).toContain("Welcome to GhostCode");
     expect(html).toMatch(/<s-button[^>]*>Start First Scan<\/s-button>/);
     expect(html).not.toMatch(/<s-button[^>]*disabled[^>]*>Start First Scan/);
 

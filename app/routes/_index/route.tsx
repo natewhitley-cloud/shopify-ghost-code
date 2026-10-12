@@ -20,7 +20,7 @@ export default function App() {
   return (
     <div className={styles.index}>
       <div className={styles.content}>
-        <h1 className={styles.heading}>Ghost Code</h1>
+        <h1 className={styles.heading}>GhostCode</h1>
         <p className={styles.text}>
           Find and remove leftover code from uninstalled Shopify apps — before it slows down your
           store.
@@ -39,7 +39,7 @@ export default function App() {
         )}
         <ul className={styles.list}>
           <li>
-            <strong>Scan your live theme.</strong> Ghost Code inspects every file in your published
+            <strong>Scan your live theme.</strong> GhostCode inspects every file in your published
             theme for code left behind by apps you&apos;ve already removed.
           </li>
           <li>

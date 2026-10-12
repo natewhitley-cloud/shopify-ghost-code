@@ -200,7 +200,7 @@ export function ScanReportDocument({ scan, findings, exportedAt }: ScanReportInp
     <Document>
       <Page size="A4" style={styles.page}>
         <View>
-          <Text style={styles.title}>Ghost Code — Scan Report</Text>
+          <Text style={styles.title}>GhostCode: Scan Report</Text>
           <Text style={styles.metaLine}>Theme: {scan.themeName}</Text>
           <Text style={styles.metaLine}>Scan date: {formatDate(scan.createdAt)}</Text>
           <Text style={styles.totalLine}>
@@ -232,19 +232,19 @@ export function ScanReportDocument({ scan, findings, exportedAt }: ScanReportInp
 
         {overflow > 0 ? (
           <Text style={styles.summaryLine}>
-            +{overflow} more findings — see full results in Ghost Code.
+            +{overflow} more findings. See full results in GhostCode.
           </Text>
         ) : null}
 
         {hasUnsupported ? (
           <Text style={styles.degradeNote}>
             Some characters (e.g. CJK, Arabic, emoji) can&apos;t be shown in this PDF — view full
-            details in Ghost Code.
+            details in GhostCode.
           </Text>
         ) : null}
 
         <Text style={styles.footer} fixed>
-          Ghost Code · Scan {scan.id} · Exported {formatDate(exportedAt)}
+          GhostCode · Scan {scan.id} · Exported {formatDate(exportedAt)}
         </Text>
       </Page>
     </Document>

@@ -886,8 +886,8 @@ export function HomeScanInProgress({
       <s-spinner accessibilityLabel="Scanning theme" size="large" />
       <s-heading>Scanning your theme...</s-heading>
       <div className="scan-progress-text">
-        Ghost Code is analyzing your theme files for orphaned code. Results will appear here when
-        the scan is complete.
+        GhostCode is analyzing your theme files for orphaned code. Results will appear here when the
+        scan is complete.
       </div>
       <div style={{ marginTop: "12px" }}>
         <ScanProgress createdAt={createdAt} findingCount={findingCount} />
@@ -1218,7 +1218,7 @@ export default function Dashboard() {
   const showOnboarding = !!shop && !latestScan;
 
   return (
-    <s-page heading="Ghost Code Scanner">
+    <s-page heading="GhostCode Scanner">
       <div style={hairline} />
       <div style={groundStyle}>
         {/* Error banner — only rendered when the action returns an error */}
@@ -1383,16 +1383,16 @@ export default function Dashboard() {
           /* Onboarding card — shown on first install before any scan has run */
           <s-card>
             <s-stack direction="block" gap="large">
-              <s-heading>Welcome to Ghost Code</s-heading>
+              <s-heading>Welcome to GhostCode</s-heading>
               <s-paragraph>
-                <strong>Ghost Code finds and removes leftover code from uninstalled apps.</strong>{" "}
+                <strong>GhostCode finds and removes leftover code from uninstalled apps.</strong>{" "}
                 Over time, apps you&apos;ve removed leave behind scripts, stylesheets, and snippets
-                in your theme — slowing your store and cluttering your code. Ghost Code scans your
+                in your theme — slowing your store and cluttering your code. GhostCode scans your
                 theme and flags everything that can be safely removed.
               </s-paragraph>
               {mainTheme ? (
                 <s-paragraph>
-                  Your active theme is <strong>{mainTheme.name}</strong>. Ghost Code will scan that
+                  Your active theme is <strong>{mainTheme.name}</strong>. GhostCode will scan that
                   theme for ghost code left behind by uninstalled apps.
                 </s-paragraph>
               ) : (

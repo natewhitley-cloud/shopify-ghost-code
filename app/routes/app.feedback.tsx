@@ -82,7 +82,7 @@ const CSAT_OPTIONS = [
 const TEXT_QUESTIONS = [
   { name: "valuable", label: "What's most valuable?" },
   { name: "improvement", label: "What should we improve?" },
-  { name: "wtp", label: "What would make Ghost Code worth paying for?" },
+  { name: "wtp", label: "What would make GhostCode worth paying for?" },
 ] as const;
 
 const fieldStyle: React.CSSProperties = {
@@ -151,7 +151,7 @@ export default function FeedbackPage() {
             <s-paragraph>A few quick questions. Only the rating is required.</s-paragraph>
 
             <fieldset style={{ border: "none", margin: 0, padding: 0 }}>
-              <legend style={labelStyle}>How satisfied are you with Ghost Code?</legend>
+              <legend style={labelStyle}>How satisfied are you with GhostCode?</legend>
               <div style={{ display: "flex", flexWrap: "wrap", gap: "8px 16px" }}>
                 {CSAT_OPTIONS.map((o) => (
                   <label key={o.value} style={{ fontSize: "14px", color: TEXT_PRIMARY }}>

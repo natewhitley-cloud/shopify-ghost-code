@@ -73,7 +73,7 @@ export const APP_STORE_REVIEW_URL = `https://apps.shopify.com/${APP_HANDLE}#moda
 export const FEEDBACK_NUDGE_HREF = "/app/feedback?src=nudge";
 
 export const FEEDBACK_NUDGE_COPY = {
-  heading: "How is Ghost Code working for you?",
+  heading: "How is GhostCode working for you?",
   body: "Tell us what is working and what is not. It takes about two minutes, and we read every response.",
   cta: "Share feedback",
   dismiss: "Not now",

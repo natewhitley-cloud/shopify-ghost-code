@@ -13,7 +13,7 @@ import { Link } from "react-router";
 export function RunFirstScanCta() {
   return (
     <s-stack direction="block" gap="base">
-      <s-paragraph>Ghost Code hasn&apos;t scanned your theme yet.</s-paragraph>
+      <s-paragraph>GhostCode hasn&apos;t scanned your theme yet.</s-paragraph>
       <Link to="/app">
         <s-button variant="primary">Run your first scan</s-button>
       </Link>
