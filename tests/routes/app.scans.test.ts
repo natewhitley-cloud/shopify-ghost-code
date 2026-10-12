@@ -40,6 +40,12 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
   getIgnoredFindingsForShop: vi.fn(),
 }));
 
+// gc-j8xq: what each listed scan FOUND of known malicious code, one grouped
+// query for the page, read only when the shop has active suppressions.
+vi.mock("../../app/models/finding.server", () => ({
+  getMaliciousCountsForScans: vi.fn(),
+}));
+
 // gc-qrf: the Findings column recomputes each scan's total via
 // getFilteredFindingSummary only when the shop has active suppressions.
 vi.mock("../../app/services/finding-aggregation.server", () => ({
@@ -56,6 +62,7 @@ vi.mock("../../app/lib/format", () => ({
 // Imports (after mocks)
 // ---------------------------------------------------------------------------
 
+import { getMaliciousCountsForScans } from "../../app/models/finding.server";
 import { getIgnoredFindingsForShop } from "../../app/models/ignored-finding.server";
 import { getScansForShop, getDistinctThemesForShop } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
@@ -73,6 +80,7 @@ const mockGetScansForShop = getScansForShop as ReturnType<typeof vi.fn>;
 const mockGetDistinctThemesForShop = getDistinctThemesForShop as ReturnType<typeof vi.fn>;
 const mockGetIgnoredFindings = getIgnoredFindingsForShop as ReturnType<typeof vi.fn>;
 const mockGetFilteredFindingSummary = getFilteredFindingSummary as ReturnType<typeof vi.fn>;
+const mockGetMaliciousCounts = getMaliciousCountsForScans as ReturnType<typeof vi.fn>;
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -131,6 +139,8 @@ beforeEach(() => {
     fingerprints: new Set<string>(),
     appNames: new Set<string>(),
   });
+  // Default: no listed scan found known malicious code.
+  mockGetMaliciousCounts.mockResolvedValue(new Map<string, number>());
 });
 
 // ---------------------------------------------------------------------------
@@ -382,6 +392,80 @@ describe("app.scans loader", () => {
         fingerprints: new Set<string>(),
         appNames: new Set(["Acme Reviews"]),
       });
+    });
+
+    // gc-j8xq audit: known malicious code counts regardless of ignores, so a
+    // scan whose only findings are ignored malicious ones never reads 0.
+    it("counts ignored malicious findings: a scan with only those does not read 0", async () => {
+      const scans = [makeScan("scan-1")];
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set(["deadbeef"]),
+        appNames: new Set<string>(),
+      });
+      // Both malicious findings are ignored: nothing is left after ignores.
+      mockGetFilteredFindingSummary.mockResolvedValue({
+        total: 0,
+        bySeverity: { HIGH: 0, MEDIUM: 0, LOW: 0 },
+        byType: { MALICIOUS_SCRIPT: 0 },
+      });
+      mockGetMaliciousCounts.mockResolvedValue(new Map([["scan-1", 2]]));
+
+      const result = (await loader(makeLoaderArgs())) as {
+        scans: Array<{ id: string; displayFindingCount: number }>;
+      };
+
+      expect(result.scans[0].displayFindingCount).toBe(2);
+    });
+
+    it("adds only the IGNORED malicious findings, never one the filtered total already holds", async () => {
+      const scans = [makeScan("scan-1"), makeScan("scan-2")];
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set(["deadbeef"]),
+        appNames: new Set<string>(),
+      });
+      // scan-1: 4 left after ignores, 1 of them malicious; it found 3 malicious
+      // (2 ignored) -> 4 + 2. scan-2: 5 left, found no malicious code -> 5.
+      mockGetFilteredFindingSummary.mockImplementation(async (scanId: string) =>
+        scanId === "scan-1"
+          ? {
+              total: 4,
+              bySeverity: { HIGH: 1, MEDIUM: 2, LOW: 1 },
+              byType: { MALICIOUS_SCRIPT: 1 },
+            }
+          : { total: 5, bySeverity: { HIGH: 0, MEDIUM: 5, LOW: 0 }, byType: {} },
+      );
+      mockGetMaliciousCounts.mockResolvedValue(new Map([["scan-1", 3]]));
+
+      const result = (await loader(makeLoaderArgs())) as {
+        scans: Array<{ id: string; displayFindingCount: number }>;
+      };
+
+      expect(result.scans.map((s) => s.displayFindingCount)).toEqual([6, 5]);
+    });
+
+    it("reads the malicious counts in ONE grouped query for the page, and never without ignores", async () => {
+      const scans = [makeScan("scan-1"), makeScan("scan-2"), makeScan("scan-3")];
+      mockGetScansForShop.mockResolvedValue({ items: scans, hasNextPage: false });
+
+      // No ignores: the lean denormalized path, no extra query.
+      await loader(makeLoaderArgs());
+      expect(mockGetMaliciousCounts).not.toHaveBeenCalled();
+
+      mockGetIgnoredFindings.mockResolvedValue({
+        fingerprints: new Set<string>(),
+        appNames: new Set(["Acme Reviews"]),
+      });
+      mockGetFilteredFindingSummary.mockResolvedValue({
+        total: 1,
+        bySeverity: { HIGH: 0, MEDIUM: 1, LOW: 0 },
+        byType: {},
+      });
+
+      await loader(makeLoaderArgs());
+      expect(mockGetMaliciousCounts).toHaveBeenCalledOnce();
+      expect(mockGetMaliciousCounts).toHaveBeenCalledWith(["scan-1", "scan-2", "scan-3"]);
     });
   });
 });

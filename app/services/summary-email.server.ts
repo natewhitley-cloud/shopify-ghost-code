@@ -29,7 +29,7 @@
  * NEVER THROWS: a failed email must never fail or retry a scan.
  */
 
-import { filterIgnoredFindings } from "./finding-aggregation.server";
+import { filterIgnoredExceptMalicious, filterIgnoredFindings } from "./finding-aggregation.server";
 import {
   ALERT_WINDOW_TOLERANCE,
   buildBodyUnsubscribeUrl,
@@ -80,7 +80,10 @@ export type SummaryApp = { appName: string; leftoverCount: number };
 export type SummaryChanges = {
   newCount: number;
   fixedCount: number;
-  /** Non-ignored findings in the current scan ("Still in your theme"). */
+  /**
+   * Findings in the current scan ("Still in your theme"): the non-ignored
+   * ones, plus known malicious code the merchant ignored (gc-j8xq).
+   */
   openCount: number;
   inactiveApps: SummaryApp[];
   cleanedApps: SummaryApp[];
@@ -153,6 +156,11 @@ type BaselineScan = ScanCoverage & { findings: DiffableFinding[]; liveFindingTyp
  * neither new nor fixed (scanDiffOptions), and only types live in BOTH scans
  * count (restrictToLiveInBoth), so a permission grant or a newly live detector
  * cannot produce "new". A scan without a recorded live set cannot be judged.
+ *
+ * The one exception is `openCount` (gc-j8xq): known malicious code shows
+ * regardless of ignores, so an ignored MALICIOUS_SCRIPT finding still counts
+ * as in the theme and the email never reads "Still in your theme: 0" over it.
+ * New and fixed are unchanged: an ignored finding is never either.
  */
 export function computeFindingChanges(args: {
   currentFindings: DiffableFinding[];
@@ -178,7 +186,7 @@ export function computeFindingChanges(args: {
     ok: true,
     newCount: restrictToLiveInBoth(diff.newFindings, baselineLive, currentLive).length,
     fixedCount: restrictToLiveInBoth(diff.resolvedFindings, baselineLive, currentLive).length,
-    openCount: current.length,
+    openCount: filterIgnoredExceptMalicious(args.currentFindings, args.ignores).shown.length,
   };
 }
 

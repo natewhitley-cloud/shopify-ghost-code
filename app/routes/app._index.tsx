@@ -420,10 +420,11 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // successful previous scan to compare against.
   //
   // Both totals are counted the way the tile counts (gc-j8xq), so the line
-  // under the tile never contradicts its number. Only when the latest scan has
-  // ignored malicious findings does the previous scan need its own unfiltered
-  // malicious count: one lean per-type groupBy, in that state alone. Otherwise
-  // the comparison is the ignore-filtered one it always was.
+  // under the tile never contradicts its number, nor the number the previous
+  // scan's tile showed. Whenever the shop has ignores, the previous scan needs
+  // its own unfiltered malicious count (it may hold ignored malicious findings
+  // even when the latest scan has none): one lean per-type groupBy. A shop
+  // with no ignores has nothing to add back, so it runs no extra query.
   let findingTrend: {
     direction: "improving" | "declining" | "stable";
     previousTotal: number;
@@ -431,14 +432,13 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   if (findingsTile && previousScan && isSuccessfulScan(previousScan.status)) {
     const currentTotal = findingsTile.total;
     const previousFilteredTotal = sumSeverity(severityForScan(previousScan.id));
-    const previousTotal =
-      currentTotal > latestFilteredTotal
-        ? buildFindingsTile({
-            filteredTotal: previousFilteredTotal,
-            maliciousFound: (await getTypeCountsForScan(previousScan.id)).MALICIOUS_SCRIPT ?? 0,
-            maliciousKept: filteredMaliciousByScanId?.get(previousScan.id) ?? 0,
-          }).total
-        : previousFilteredTotal;
+    const previousTotal = hasIgnores
+      ? buildFindingsTile({
+          filteredTotal: previousFilteredTotal,
+          maliciousFound: (await getTypeCountsForScan(previousScan.id)).MALICIOUS_SCRIPT ?? 0,
+          maliciousKept: filteredMaliciousByScanId?.get(previousScan.id) ?? 0,
+        }).total
+      : previousFilteredTotal;
     const direction =
       currentTotal < previousTotal
         ? "improving"

@@ -193,6 +193,30 @@ export async function getSeverityCountsForScans(
 }
 
 /**
+ * Batch MALICIOUS_SCRIPT counts: how many known-malicious findings each scan
+ * FOUND (ignored ones included), for many scans in a SINGLE groupBy query.
+ * Feeds the scan history Findings column, which counts malicious findings
+ * regardless of ignores (gc-j8xq), without one query per listed scan.
+ *
+ * Only scans with at least one such finding are in the Map: read a missing id
+ * as 0. Returns an empty Map (without querying) when scanIds is empty.
+ */
+export async function getMaliciousCountsForScans(scanIds: string[]): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  if (scanIds.length === 0) return result;
+
+  const rows = await db.finding.groupBy({
+    by: ["scanId"],
+    where: { scanId: { in: scanIds }, findingType: FindingType.MALICIOUS_SCRIPT },
+    _count: { scanId: true },
+  });
+  for (const row of rows) {
+    result.set(row.scanId, row._count.scanId);
+  }
+  return result;
+}
+
+/**
  * Per-type finding counts for a SINGLE scan: return a fully zero-seeded
  * Record<FindingType, number> from one groupBy query. This is the lean,
  * type-axis counterpart to getSeverityCountsForScans for callers (e.g. the

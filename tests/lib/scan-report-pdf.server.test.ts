@@ -261,4 +261,59 @@ describe("ScanReportDocument: ignored malicious findings (gc-j8xq)", () => {
     });
     expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
   });
+
+  // gc-j8xq audit: the render cap (250) must never cut known malicious code
+  // while other findings are shown, so it sorts first, before severity.
+  describe("render cap", () => {
+    const CAP = 250;
+    const many = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({ ...FINDING, filename: `sections/s${i}.liquid` }));
+    const headers = (text: string) =>
+      text.split("\n").filter((line) => /^(HIGH|MEDIUM|LOW) · /.test(line));
+
+    it("keeps malicious findings that sort after more than the cap of other findings", () => {
+      // 300 HIGH findings first in input order, then the malicious ones, one
+      // of them a lower severity than everything ahead of it.
+      const findings = [
+        ...many(300),
+        { ...MALICIOUS, filename: "snippets/bad-a.liquid" },
+        { ...MALICIOUS, filename: "snippets/bad-b.liquid", severity: "MEDIUM" as const },
+        { ...MALICIOUS, filename: "snippets/bad-c.liquid", ignoredByMerchant: true },
+      ];
+      const text = reportText(ScanReportDocument({ ...base, findings }));
+
+      expect(text).toContain("snippets/bad-a.liquid:42");
+      expect(text).toContain("snippets/bad-b.liquid:42");
+      expect(text).toContain("snippets/bad-c.liquid:42");
+      expect(text).toContain(`HIGH · MALICIOUS SCRIPT${MARKER}\n`);
+      // The header, the severity summary and the overflow line still add up:
+      // 303 found, 250 shown (3 malicious + 247 others), 53 more.
+      expect(text).toContain("303 findings\n");
+      expect(text).toContain("302 High · 1 Medium · 0 Low");
+      expect(text).toContain(`+${303 - CAP} more findings.`);
+      expect(text.split("HIGH · GHOST SCRIPT\n")).toHaveLength(CAP - 3 + 1);
+    });
+
+    it("lists malicious findings first, then everything else by severity as before", () => {
+      const text = reportText(
+        ScanReportDocument({
+          ...base,
+          findings: [
+            { ...FINDING, severity: "LOW" as const },
+            { ...FINDING, severity: "MEDIUM" as const },
+            FINDING,
+            { ...MALICIOUS, severity: "MEDIUM" as const },
+            MALICIOUS,
+          ],
+        }),
+      );
+      expect(headers(text)).toEqual([
+        "HIGH · MALICIOUS SCRIPT",
+        "MEDIUM · MALICIOUS SCRIPT",
+        "HIGH · GHOST SCRIPT",
+        "MEDIUM · GHOST SCRIPT",
+        "LOW · GHOST SCRIPT",
+      ]);
+    });
+  });
 });

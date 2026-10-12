@@ -588,6 +588,28 @@ describe("computeFindingChanges", () => {
     expect(r).toEqual({ ok: true, newCount: 0, fixedCount: 0, openCount: 0 });
   });
 
+  // gc-j8xq audit: known malicious code shows regardless of ignores, so the
+  // email never reads "Still in your theme: 0" over an ignored one.
+  it("an ignored malicious finding still counts as open, and as neither new nor fixed", () => {
+    const malicious = f("m.liquid", FindingType.MALICIOUS_SCRIPT);
+    const r = run({
+      // Not in the baseline: it would be "new" if ignores did not apply to new.
+      currentFindings: [f("a.liquid"), f("b.liquid"), malicious],
+      ignores: { fingerprints: new Set(), appNames: new Set(["X"]) },
+    });
+    expect(r).toEqual({ ok: true, newCount: 0, fixedCount: 0, openCount: 1 });
+  });
+
+  it("a malicious finding that is NOT ignored is counted once in open", () => {
+    const malicious = f("m.liquid", FindingType.MALICIOUS_SCRIPT, "Other");
+    const r = run({
+      currentFindings: [f("a.liquid"), malicious],
+      baseline: { ...NO_GAPS, findings: [f("a.liquid"), malicious], liveFindingTypes: ALL },
+      ignores: { fingerprints: new Set(), appNames: new Set(["X"]) },
+    });
+    expect(r).toEqual({ ok: true, newCount: 0, fixedCount: 0, openCount: 1 });
+  });
+
   it("an unversioned baseline or current scan cannot be judged", () => {
     expect(run({ baseline: { ...NO_GAPS, findings: [], liveFindingTypes: null } })).toEqual({
       ok: false,

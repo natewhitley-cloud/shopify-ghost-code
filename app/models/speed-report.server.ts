@@ -293,6 +293,13 @@ export async function claimFreeSpeedTest(shopId: string, now: Date): Promise<boo
  * the calls it spent, gc-au2l). A dispatch failure, a worker that died or got
  * stuck before its first call, a missing key, an ineligible run and a
  * password page (all 0 calls) never count.
+ *
+ * A report still RUNNING counts from its first call. It is deliberately NOT
+ * left out here: a run whose close handler never ran stays RUNNING for good
+ * (the page reads it as failed by age, effectiveSpeedReportStatus), and
+ * leaving RUNNING rows out would let such a run retry without limit. The
+ * caller that must tell "running" from "exhausted" checks for a live run
+ * itself (requestFreeSpeedTest, buildFreeSpeedTestView).
  */
 export async function countFreeSpeedTestAttempts(shopId: string): Promise<number> {
   return db.speedReport.count({

@@ -5,9 +5,11 @@ import { Link, useLoaderData } from "react-router";
 import { FormattedDate } from "../components/FormattedDate";
 import { readValue } from "../components/polaris-events";
 import { RunFirstScanCta } from "../components/RunFirstScanCta";
+import { buildFindingsTile } from "../lib/findings-tile";
 import { statusTone, statusLabel } from "../lib/format";
 import type { ScanStatus } from "../lib/format";
 import { useFilterSearchParams } from "../lib/use-filter-search-params";
+import { getMaliciousCountsForScans } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScansForShop, getDistinctThemesForShop } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
@@ -91,17 +93,33 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // recompute each displayed scan's total through the ignore-filtered aggregate,
   // bounded to this page (PAGE_SIZE). Shops with NO suppressions keep the lean
   // denormalized count (zero extra queries) — mirrors the guard in app._index.tsx.
+  //
+  // The exception (gc-j8xq): known malicious code (MALICIOUS_SCRIPT) counts
+  // regardless of ignores, so a scan whose only findings are ignored malicious
+  // ones never reads 0. Same arithmetic as the Home tile (buildFindingsTile);
+  // what each scan FOUND comes from one grouped query for the whole page.
   const hasIgnores = ignores.fingerprints.size > 0 || ignores.appNames.size > 0;
-  const filteredTotalByScanId: Map<string, number> | null = hasIgnores
-    ? new Map(
-        await Promise.all(
-          scans.map(
-            async (scan) =>
-              [scan.id, (await getFilteredFindingSummary(scan.id, ignores)).total] as const,
-          ),
+  let filteredTotalByScanId: Map<string, number> | null = null;
+  if (hasIgnores) {
+    const [summaries, maliciousFoundByScanId] = await Promise.all([
+      Promise.all(
+        scans.map(
+          async (scan) => [scan.id, await getFilteredFindingSummary(scan.id, ignores)] as const,
         ),
-      )
-    : null;
+      ),
+      getMaliciousCountsForScans(scans.map((scan) => scan.id)),
+    ]);
+    filteredTotalByScanId = new Map(
+      summaries.map(([id, summary]) => [
+        id,
+        buildFindingsTile({
+          filteredTotal: summary.total,
+          maliciousFound: maliciousFoundByScanId.get(id) ?? 0,
+          maliciousKept: summary.byType?.MALICIOUS_SCRIPT ?? 0,
+        }).total,
+      ]),
+    );
+  }
 
   const scansWithCounts = scans.map((scan) => ({
     ...scan,

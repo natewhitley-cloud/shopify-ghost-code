@@ -59,6 +59,7 @@ import {
   getFindingsForScan,
   getFindingsPageForScan,
   getFindingSummary,
+  getMaliciousCountsForScans,
   getSeverityCountsForScans,
   getTypeCountsForScan,
   getTypeSeverityCountsForScan,
@@ -461,6 +462,51 @@ describe("saveThemeFindings", () => {
 
     const updateCallArg = mockDb.scan.update.mock.calls[0][0];
     expect(updateCallArg.data.findingCount).toBe(3);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// getMaliciousCountsForScans (gc-j8xq audit)
+// ---------------------------------------------------------------------------
+
+describe("getMaliciousCountsForScans", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns an empty Map without querying when scanIds is empty", async () => {
+    const result = await getMaliciousCountsForScans([]);
+
+    expect(result.size).toBe(0);
+    expect(mockDb.finding.groupBy).not.toHaveBeenCalled();
+  });
+
+  it("issues a single groupBy over [scanId] scoped to the ids and to MALICIOUS_SCRIPT", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([]);
+
+    await getMaliciousCountsForScans(["scan-a", "scan-b"]);
+
+    expect(mockDb.finding.groupBy).toHaveBeenCalledOnce();
+    expect(mockDb.finding.groupBy).toHaveBeenCalledWith({
+      by: ["scanId"],
+      where: { scanId: { in: ["scan-a", "scan-b"] }, findingType: FindingType.MALICIOUS_SCRIPT },
+      _count: { scanId: true },
+    });
+  });
+
+  it("maps each scan to its count and leaves out a scan with none", async () => {
+    mockDb.finding.groupBy.mockResolvedValue([{ scanId: "scan-a", _count: { scanId: 2 } }]);
+
+    const result = await getMaliciousCountsForScans(["scan-a", "scan-b"]);
+
+    expect(result.get("scan-a")).toBe(2);
+    expect(result.has("scan-b")).toBe(false);
+  });
+
+  it("propagates a database error", async () => {
+    mockDb.finding.groupBy.mockRejectedValue(new Error("Malicious count failed"));
+
+    await expect(getMaliciousCountsForScans(["scan-a"])).rejects.toThrow("Malicious count failed");
   });
 });
 

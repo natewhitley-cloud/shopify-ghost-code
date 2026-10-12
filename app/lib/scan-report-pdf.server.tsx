@@ -181,9 +181,13 @@ export function hasUnsupportedGlyphs(text: string): boolean {
 }
 
 export function ScanReportDocument({ scan, findings, exportedAt }: ScanReportInput) {
-  // Sort a COPY — never rely on input order.
+  // Sort a COPY — never rely on input order. Known malicious code sorts first,
+  // before severity (gc-j8xq), so the cap below can never cut it while any
+  // other finding is shown.
   const sorted = [...findings].sort(
-    (a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
+    (a, b) =>
+      Number(b.findingType === "MALICIOUS_SCRIPT") - Number(a.findingType === "MALICIOUS_SCRIPT") ||
+      SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity],
   );
 
   const counts = { HIGH: 0, MEDIUM: 0, LOW: 0 };

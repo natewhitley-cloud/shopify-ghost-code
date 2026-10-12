@@ -1100,6 +1100,14 @@ export async function requestFreeSpeedTest(
   // the claim's 24h slot serializes starts, so two requests cannot both pass
   // at the cap.
   if ((await countFreeSpeedTestAttempts(shop.id)) >= FREE_SPEED_TEST_MAX_ATTEMPTS) {
+    // The last allowed attempt counts from its first call, while it is still
+    // running: a second submit then gets "already running" (as the page
+    // shows), not "exhausted". The count itself is left alone, so a run that
+    // dies after a call always counts, closed or not (gc-au2l).
+    const { latest } = buildSpeedReportView(await getRecentSpeedReports(shop.id), now);
+    if (latest?.status === SPEED_REPORT_STATUS.RUNNING) {
+      return { ok: false, error: RUN_NOW_ERRORS.running };
+    }
     return { ok: false, error: FREE_TEST_ERRORS.exhausted };
   }
   return startMerchantSpeedRun(shop, now, SPEED_REPORT_ORIGIN.FREE_TEST);

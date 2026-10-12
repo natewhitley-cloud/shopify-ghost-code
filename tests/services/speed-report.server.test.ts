@@ -2044,6 +2044,43 @@ describe("requestFreeSpeedTest", () => {
       },
     );
 
+    // gc-au2l audit: calls are counted as they happen, so the 5th attempt is
+    // a counted attempt while it is still running.
+    describe("the last allowed attempt is still running", () => {
+      const running = (ageMs: number) => ({
+        id: "r5",
+        origin: "FREE_TEST",
+        status: "RUNNING",
+        failureReason: null,
+        pages: null,
+        createdAt: new Date(NOW.getTime() - ageMs),
+        startedAt: new Date(NOW.getTime() - ageMs),
+        completedAt: null,
+      });
+
+      it("a second submit gets 'already running', not 'exhausted', and starts nothing", async () => {
+        mockModel.countFreeSpeedTestAttempts.mockResolvedValue(5);
+        mockModel.getRecentSpeedReports.mockResolvedValue([running(60_000)]);
+        await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
+          ok: false,
+          error: RUN_NOW_ERRORS.running,
+        });
+        expect(mockModel.claimFreeSpeedTest).not.toHaveBeenCalled();
+        expect(mockModel.createSpeedReport).not.toHaveBeenCalled();
+        expect(mockSend).not.toHaveBeenCalled();
+      });
+
+      it("an abandoned run (RUNNING past the stuck threshold) still reads exhausted", async () => {
+        mockModel.countFreeSpeedTestAttempts.mockResolvedValue(5);
+        mockModel.getRecentSpeedReports.mockResolvedValue([running(2 * 3_600_000)]);
+        await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
+          ok: false,
+          error: FREE_TEST_ERRORS.exhausted,
+        });
+        expect(mockModel.claimFreeSpeedTest).not.toHaveBeenCalled();
+      });
+    });
+
     it("already used beats exhausted (the used message wins)", async () => {
       mockModel.getFreeSpeedTestUsedAt.mockResolvedValue(USED_AT);
       mockModel.countFreeSpeedTestAttempts.mockResolvedValue(5);

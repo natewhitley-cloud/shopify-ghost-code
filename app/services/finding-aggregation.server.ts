@@ -132,7 +132,8 @@ export function filterIgnoredFindings<T extends IgnorableFinding>(
  * Pure: no DB, no mutation of the input. With no suppressions it returns the
  * input array as `shown` without fingerprinting anything.
  *
- * Used by the scan export (CSV, JSON, PDF). The diff, the summary email and
+ * Used by the scan export (CSV, JSON, PDF) and by the summary email's "Still
+ * in your theme" count. The diff, the summary email's new and fixed counts and
  * the lane counts keep using `filterIgnoredFindings`.
  */
 export function filterIgnoredExceptMalicious<T extends IgnorableFinding>(

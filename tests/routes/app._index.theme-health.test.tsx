@@ -1144,15 +1144,44 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
       expect(tileOf(renderDashboard(data)).delta).toBe("▲ 2 more than last scan");
     });
 
-    it("no ignored malicious code on the latest scan: the previous scan's types are not read", async () => {
+    // gc-j8xq audit: the previous scan is read whenever the shop has ignores,
+    // not only when the LATEST scan has ignored malicious code (see the
+    // counterexample below).
+    it("a shop with ignores: the previous scan's types are read, once", async () => {
       scans({
         "scan-1": { found: { GHOST_SCRIPT: 3 }, kept: { GHOST_SCRIPT: 2 } },
         "scan-0": { found: { GHOST_SCRIPT: 5 }, kept: { GHOST_SCRIPT: 4 } },
       });
       const data = await runLoader();
       expect(data.findingTrend).toEqual({ direction: "improving", previousTotal: 4 });
+      expect(mockTypeCounts).toHaveBeenCalledTimes(2);
+      expect(mockTypeCounts).toHaveBeenCalledWith("scan-1");
+      expect(mockTypeCounts).toHaveBeenCalledWith("scan-0");
+    });
+
+    it("a shop with no ignores: the previous scan's types are not read", async () => {
+      scans(
+        {
+          "scan-1": { found: { MALICIOUS_SCRIPT: 1, GHOST_SCRIPT: 2 }, kept: {} },
+          "scan-0": { found: { MALICIOUS_SCRIPT: 1, GHOST_SCRIPT: 4 }, kept: {} },
+        },
+        false,
+      );
+      const data = await runLoader();
+      expect(data.findingTrend).toEqual({ direction: "improving", previousTotal: 5 });
       expect(mockTypeCounts).toHaveBeenCalledTimes(1);
       expect(mockTypeCounts).toHaveBeenCalledWith("scan-1");
+    });
+
+    it("ignored malicious code only on the PREVIOUS scan: 4 before (1 ignored malicious + 3), 3 now -> 1 fewer", async () => {
+      scans({
+        "scan-1": { found: { GHOST_SCRIPT: 3 }, kept: { GHOST_SCRIPT: 3 } },
+        "scan-0": { found: { MALICIOUS_SCRIPT: 1, GHOST_SCRIPT: 3 }, kept: { GHOST_SCRIPT: 3 } },
+      });
+      const data = await runLoader();
+      expect(data.findingsTile).toEqual({ total: 3, tone: "warning" });
+      expect(data.findingTrend).toEqual({ direction: "improving", previousTotal: 4 });
+      expect(tileOf(renderDashboard(data)).delta).toBe("▼ 1 fewer than last scan");
     });
   });
 });
