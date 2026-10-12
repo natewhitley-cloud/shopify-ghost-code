@@ -31,9 +31,21 @@ function rowTone(row: HealthRow): BadgeTone {
 
 /**
  * One row: the label (the link to its findings when there are any), ONE
- * secondary line, and the status badge on the right.
+ * secondary line, and the status badge on the right. The line is the row's
+ * cost or gap (`cost`: 14px primary, so it reads as the finding) or what the
+ * row checks (subdued helper text).
  */
-function Row({ row, line, first }: { row: HealthRow; line: string; first: boolean }) {
+function Row({
+  row,
+  line,
+  cost = false,
+  first,
+}: {
+  row: HealthRow;
+  line: string;
+  cost?: boolean;
+  first: boolean;
+}) {
   return (
     <li
       style={{
@@ -55,7 +67,15 @@ function Row({ row, line, first }: { row: HealthRow; line: string; first: boolea
             row.label
           )}
         </h3>
-        <div style={{ ...textSubduedSm, marginTop: "2px", wordBreak: "break-word" }}>{line}</div>
+        <div
+          style={{
+            ...(cost ? { fontSize: "14px", color: TEXT_PRIMARY } : textSubduedSm),
+            marginTop: "2px",
+            wordBreak: "break-word",
+          }}
+        >
+          {line}
+        </div>
       </div>
       <div style={{ flexShrink: 0 }}>
         <s-badge tone={rowTone(row)}>{row.statusLabel}</s-badge>
@@ -95,7 +115,13 @@ export function ThemeHealthChecklist({ rows = [] }: { rows?: readonly HealthRow[
       {visible.length > 0 && (
         <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
           {visible.map((row, i) => (
-            <Row key={row.key} row={row} line={row.detail ?? row.checks} first={i === 0} />
+            <Row
+              key={row.key}
+              row={row}
+              line={row.detail ?? row.checks}
+              cost={row.detail != null}
+              first={i === 0}
+            />
           ))}
         </ul>
       )}

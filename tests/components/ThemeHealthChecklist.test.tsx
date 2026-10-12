@@ -216,6 +216,31 @@ describe("ThemeHealthChecklist", () => {
     expect(malicious).toContain(CHECKS);
   });
 
+  it("the cost line is 14px primary; what a row checks stays subdued, in and out of the fold", () => {
+    /** The inline style of the element whose text is exactly `text`. */
+    const styleOf = (html: string, text: string) =>
+      html.match(new RegExp(`<div style="([^"]*)">${text.replace(/\./g, "\\.")}</div>`))?.[1];
+    const PRIMARY = /color:#202223;font-size:14px|font-size:14px;color:#202223/;
+    const SUBDUED = /color:#6d7175;font-size:13px/;
+
+    const html = render(MIXED);
+    // Detail lines (the cost or the gap) keep the emphasis.
+    expect(styleOf(html, "6 pieces of leftover app text.")).toMatch(PRIMARY);
+    expect(styleOf(html, "6 pieces of leftover app text.")).not.toMatch(/#6d7175/);
+    expect(styleOf(html, "Dawn by Shopify")).toMatch(PRIMARY);
+    // A visible row with no detail falls back to what it checks: subdued.
+    expect(styleOf(html, "Malicious checks.")).toMatch(SUBDUED);
+    // Every row inside the Clean fold is a description: subdued.
+    const fold = foldOf(html);
+    expect(styleOf(fold, "Tracking checks.")).toMatch(SUBDUED);
+    expect(styleOf(fold, "Store data checks.")).toMatch(SUBDUED);
+    expect(fold).not.toMatch(/font-size:14px/);
+
+    // A folded row never gets the emphasis, even if it carries a detail.
+    const folded = foldOf(render([row({ detail: "Not a real builder output." })]));
+    expect(styleOf(folded, CHECKS)).toMatch(SUBDUED);
+  });
+
   it("malicious code is critical; every other issue is a caution", () => {
     const html = render([
       row({
