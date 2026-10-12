@@ -190,6 +190,28 @@ function setPlan(plan: string) {
 
 const rowOf = (rows: HealthRow[], key: string) => rows.find((r) => r.key === key);
 
+/** The theme health section of a rendered Home, or "" when it is absent. */
+function sectionOf(html: string): string {
+  const start = html.indexOf('<section aria-labelledby="theme-health-heading"');
+  return start === -1 ? "" : html.slice(start, html.indexOf("</section>", start));
+}
+
+/** The content of the group labelled `label` in the section, or null when absent. */
+function groupOf(section: string, label: string): string | null {
+  return section.match(new RegExp(`<dt[^>]*>${label}</dt><dd[^>]*>([\\s\\S]*?)</dd>`))?.[1] ?? null;
+}
+
+/** Every group label in the section, in order. */
+function groupLabels(section: string): string[] {
+  return [...section.matchAll(/<dt[^>]*>([^<]*)<\/dt>/g)].map((m) => m[1]);
+}
+
+/** The Clean line as text, or null when there is no Clean group. */
+function cleanLine(section: string): string | null {
+  const group = groupOf(section, "Clean");
+  return group === null ? null : group.replace(/<[^>]+>/g, "");
+}
+
 const FLAGS = [
   "SCRIPT_TAG_SUNSET_LIVE_ENABLED",
   "SETTINGS_DRIFT_LIVE_ENABLED",
@@ -352,12 +374,31 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
     });
     mockTypeCounts.mockResolvedValue({ GHOST_SCRIPT: 1 });
     setPlan("Standard");
-    const { themeHealth } = await runLoader();
+    const data = await runLoader();
+    const { themeHealth } = data;
     expect(rowOf(themeHealth, "liquid-errors")).toMatchObject({
       statusLabel: "Not checked",
       detail:
         "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.",
     });
+    // As the merchant sees it: not on the Clean line, and listed with its reason.
+    const section = sectionOf(renderDashboard(data));
+    const clean = cleanLine(section);
+    expect(clean).toBe(
+      "Known malicious code, Broken links and leftover app text, Leftover snippets and sections, SEO and AI tags, Tracking still running, Store data left behind",
+    );
+    expect(clean).not.toContain("Liquid errors on your homepage");
+    expect(clean).not.toContain("Script tag deadline");
+    // The script tag row is partial (one of its two checks ran), so the group
+    // is "Not fully checked", never "Not checked" and never Clean.
+    expect(groupLabels(section)).toEqual(["Theme", "Clean", "Not fully checked"]);
+    const gaps = groupOf(section, "Not fully checked")!;
+    expect(gaps).toMatch(
+      /Liquid errors on your homepage<\/div><div[^>]*>Your storefront homepage couldn&#x27;t be read, for example because it has a password, so this wasn&#x27;t checked\.<\/div>/,
+    );
+    expect(gaps).toMatch(
+      /Script tag deadline<\/div><div[^>]*>Your storefront homepage couldn&#x27;t be read/,
+    );
   });
 
   describe("a scan that did not run a check that is on now (HIGH audit finding)", () => {
@@ -377,15 +418,16 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
         statusLabel: "Not checked",
         detail: "This wasn't checked on your last scan. Run a new scan.",
       });
-      const html = renderDashboard(data);
-      expect(html).toMatch(
-        /Liquid errors on your homepage<\/h3>(?:(?!<\/li>)[\s\S])*<s-badge tone="neutral">Not checked<\/s-badge>/,
+      const section = sectionOf(renderDashboard(data));
+      // Under "Not checked", with its label directly above the reason.
+      expect(groupLabels(section)).toEqual(["Theme", "Clean", "Not checked"]);
+      expect(groupOf(section, "Not checked")).toMatch(
+        /^<div><div[^>]*>Liquid errors on your homepage<\/div><div[^>]*>This wasn&#x27;t checked on your last scan\. Run a new scan\.<\/div><\/div>$/,
       );
-      expect(html).toContain("This wasn&#x27;t checked on your last scan. Run a new scan.");
-      // And it is not folded into the "Clean:" group.
-      const fold = html.slice(html.indexOf("<details"), html.indexOf("</details>"));
-      expect(fold).toContain("<summary");
-      expect(fold).not.toContain("Liquid errors on your homepage");
+      // And it is not named on the Clean line, which is there and names others.
+      const clean = cleanLine(section);
+      expect(clean).toContain("Known malicious code");
+      expect(clean).not.toContain("Liquid errors on your homepage");
     });
 
     it("a scan that recorded nothing about what it ran: no category reads Clean", async () => {
@@ -398,6 +440,19 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
       );
       expect(categories.length).toBe(9);
       for (const row of categories) expect(row.status, row.key).toBe("not_checked");
+    });
+
+    it("a scan that recorded nothing about what it ran: Home has no Clean line at all", async () => {
+      preDeploy(null);
+      mockTypeCounts.mockResolvedValue({});
+      setPlan("Professional");
+      const section = sectionOf(renderDashboard(await runLoader()));
+      expect(groupLabels(section)).toEqual(["Theme", "Not checked"]);
+      expect(cleanLine(section)).toBeNull();
+      const gaps = groupOf(section, "Not checked")!;
+      expect(
+        gaps.match(/This wasn&#x27;t checked on your last scan\. Run a new scan\./g),
+      ).toHaveLength(9);
     });
 
     it("the check is off for everyone now: its row is simply not there", async () => {
@@ -444,16 +499,20 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
       ],
       hasNextPage: false,
     });
-    const { themeHealth } = await runLoader();
-    expect(rowOf(themeHealth, "theme")).toMatchObject({
+    const data = await runLoader();
+    expect(rowOf(data.themeHealth, "theme")).toMatchObject({
       status: "issues",
       statusLabel: "Vintage theme",
     });
+    // The lanes do not carry this, so the sentence shows in the Theme group.
+    expect(groupOf(sectionOf(renderDashboard(data)), "Theme")).toContain(
+      "Debut 17.14.0 by Shopify is a vintage theme, not Online Store 2.0. It can&#x27;t use app blocks,",
+    );
   });
 });
 
 describe("Home render: theme health checklist (gc-i6du)", () => {
-  it("renders the section after the lanes, with each row's status and cost", async () => {
+  it("renders the section after the lanes: the theme, the clean checks and the gaps", async () => {
     const html = renderDashboard(await runLoader());
     expect(html).toContain(`>${THEME_HEALTH_HEADING}</h2>`);
     expect(html.indexOf("What it&#x27;s costing you")).toBeGreaterThan(-1);
@@ -463,42 +522,55 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     expect(html.indexOf(`>${THEME_HEALTH_HEADING}</h2>`)).toBeLessThan(
       html.indexOf("Scan Actions"),
     );
-    expect(html).toContain('<s-badge tone="caution">4 issues</s-badge>');
-    expect(html).toContain('<s-badge tone="success">Clean</s-badge>');
-    expect(html).toContain("Your homepage prints 1 Liquid error because your theme renders");
-    expect(html).toContain("Dawn 15.2.0 by Shopify");
-    expect(html).toContain("2 unpublished");
+    const section = sectionOf(html);
+    expect(section).toContain("What your last scan checked, beyond the findings above.");
+    // Free: two rows are partial (a plan-gated check each), so "Not fully checked".
+    expect(groupLabels(section)).toEqual(["Theme", "Clean", "Not fully checked"]);
+    expect(groupOf(section, "Theme")).toMatch(
+      /^<div[^>]*>Dawn 15\.2\.0 by Shopify · Online Store 2\.0<\/div><div[^>]*>Your store has 3 themes\. Shopify allows 20 \(more on Plus\)\. In their last scans: Old Debut: 14 findings\.<\/div>$/,
+    );
   });
 
-  it("folds only the clean checks into a closed group that names them, after the visible rows", async () => {
-    const html = renderDashboard(await runLoader());
-    const start = html.indexOf('<section aria-labelledby="theme-health-heading"');
-    const section = html.slice(start, html.indexOf("</section>", start));
-    expect(section).toMatch(
-      /<details[^>]*><summary[^>]*>Clean: SEO and AI tags, Store data left behind, Script tag deadline<\/summary>/,
+  it("names only the clean checks under Clean, lists the gaps with their reasons, and leaves out every check that found something", async () => {
+    const section = sectionOf(renderDashboard(await runLoader()));
+    // Malicious code is clean here and is named, first. No digit, no count.
+    const clean = cleanLine(section);
+    expect(clean).toBe(
+      "Known malicious code, SEO and AI tags, Store data left behind, Script tag deadline",
     );
-    expect(section).not.toMatch(/<details[^>]*\bopen\b/);
-    const visible = section.slice(0, section.indexOf("<details"));
-    const fold = section.slice(section.indexOf("<details"));
-    // Free: eight rows stay in full (malicious is clean and still shown first).
-    expect(visible.match(/<h3[^>]*>(?:<a[^>]*>)?([^<]+)/g)).toHaveLength(8);
-    expect(visible).toMatch(
-      /Known malicious code<\/h3>(?:(?!<\/li>)[\s\S])*<s-badge tone="success">Clean<\/s-badge>/,
+    expect(clean).not.toMatch(/\d/);
+    // Free: the two partly checked rows, each with its reason, in order.
+    expect(groupOf(section, "Not fully checked")).toMatch(
+      /^<div><div[^>]*>Broken links and leftover app text<\/div><div[^>]*>Broken links are checked on Standard and Professional\.<\/div><\/div><div[^>]*><div[^>]*>Leftover snippets and sections<\/div><div[^>]*>Old checkout code is checked on Standard and Professional\.<\/div><\/div>$/,
     );
-    expect(visible).toContain("Online Store 2.0");
-    // The fold holds Clean badges only: no issue, gap or fact is hidden in it.
-    expect(fold.match(/<li /g)).toHaveLength(3);
-    expect([...fold.matchAll(/<s-badge tone="([a-z]+)">([^<]*)</g)].map((m) => m[2])).toEqual([
-      "Clean",
-      "Clean",
-      "Clean",
-    ]);
-    // A row with findings links from its label; there is no separate link line.
-    expect(section).toMatch(
-      /<a[^>]*aria-label="View findings: Leftover scripts and styles"[^>]*>Leftover scripts and styles<\/a><\/h3>/,
-    );
-    expect(section).not.toContain(">View findings<");
+    // The three checks with findings are the lanes' job: no label, count or cost.
+    for (const gone of [
+      "Liquid errors on your homepage",
+      "Your homepage prints",
+      "Leftover scripts and styles",
+      "extra requests",
+      "Tracking still running",
+      "tracking pixel",
+      "issue",
+      "None found",
+    ]) {
+      expect(section, `"${gone}" must not be in the section`).not.toContain(gone);
+    }
+    // Quiet text: no badge, link, fold or row list.
+    expect(section).not.toMatch(/<s-badge|<a |View findings|<details|<summary|<li |<h3/);
   });
+
+  it.each(["Standard", "Professional"])(
+    "%s: nothing is partly checked, so there is no gap group and the Clean line grows",
+    async (plan) => {
+      setPlan(plan);
+      const section = sectionOf(renderDashboard(await runLoader()));
+      expect(groupLabels(section)).toEqual(["Theme", "Clean"]);
+      expect(cleanLine(section)).toBe(
+        "Known malicious code, Broken links and leftover app text, Leftover snippets and sections, SEO and AI tags, Store data left behind, Script tag deadline",
+      );
+    },
+  );
 
   it("has ONE 'Theme health' heading and no score, grade or percentage anywhere on Home", async () => {
     const html = renderDashboard(await runLoader());
@@ -538,13 +610,18 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
         ],
         hasNextPage: false,
       });
-      const html = renderDashboard(await runLoader());
-      const start = html.indexOf('<section aria-labelledby="theme-health-heading"');
-      expect(start).toBeGreaterThan(-1);
-      const section = html.slice(start, html.indexOf("</section>", start));
-      // Really rendered, not mocked: all eleven rows are there.
-      expect(section.match(/<li /g)).toHaveLength(11);
-      expect(section).toContain("Vintage theme");
+      const data = await runLoader();
+      const html = renderDashboard(data);
+      const section = sectionOf(html);
+      // Really built, not mocked: all eleven rows, nine of them with findings.
+      expect(data.themeHealth).toHaveLength(11);
+      expect(data.themeHealth.filter((r) => r.status === "issues")).toHaveLength(10);
+      // Rendered: every category found something, so only the theme facts show
+      // (the vintage sentence and the theme library). No Clean line, no gaps.
+      expect(groupLabels(section)).toEqual(["Theme"]);
+      expect(section).toContain("Debut 17.14.0 by Shopify is a vintage theme");
+      expect(section).toContain("Your store has 3 themes.");
+      expect(section).not.toMatch(/malicious/i);
       for (const banned of ["/ 100", "/100", "out of 100", "%", "score", "grade"]) {
         expect(section.toLowerCase(), `the checklist must not contain "${banned}"`).not.toContain(
           banned,

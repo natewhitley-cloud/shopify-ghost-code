@@ -13,8 +13,8 @@ import {
   HEALTH_CATEGORY_OF,
   type HealthCategoryKey,
   type HealthCoverageInput,
+  groupHealthRows,
   healthCostLine,
-  partitionHealthRows,
   type HealthRow,
   MAX_NAMED_UNPUBLISHED_THEMES,
   THEME_LIBRARY_LIMIT,
@@ -849,10 +849,10 @@ describe("the checklist is a plain list", () => {
 });
 
 // ---------------------------------------------------------------------------
-// End to end: the real checklist through the real fold
+// End to end: the real checklist through the real grouping
 // ---------------------------------------------------------------------------
 
-describe("buildThemeHealthChecklist -> partitionHealthRows", () => {
+describe("buildThemeHealthChecklist -> groupHealthRows", () => {
   const t = (id: string, role: string) => ({
     id,
     name: `Theme ${id}`,
@@ -861,55 +861,97 @@ describe("buildThemeHealthChecklist -> partitionHealthRows", () => {
   });
   const THEMES = [t("1", "MAIN"), t("2", "UNPUBLISHED")];
   const CATEGORY_KEYS = HEALTH_CATEGORIES.map((c) => c.key as string);
+  const keys = (rows: readonly HealthRow[]) => rows.map((r) => r.key as string);
 
-  it("a fully checked scan with no findings: every category but malicious folds", () => {
+  it("a fully checked scan with no findings: all nine categories are clean, malicious included", () => {
     const rows = buildThemeHealthChecklist(input({ themes: THEMES }));
-    const { visible, folded } = partitionHealthRows(rows);
+    const { theme, unpublished, clean, gaps, hasPartial } = groupHealthRows(rows);
 
-    expect(folded.map((r) => r.key)).toEqual(CATEGORY_KEYS.filter((k) => k !== "malicious"));
-    for (const row of folded) expect(row.status, row.key).toBe("clean");
-    expect(visible.map((r) => r.key)).toEqual(["malicious", "theme", "unpublished-themes"]);
-    expect([...visible, ...folded]).toHaveLength(rows.length);
+    expect(keys(clean)).toEqual(CATEGORY_KEYS);
+    for (const row of clean) expect(row.status, row.key).toBe("clean");
+    expect(clean.map((r) => r.label).join(", ")).not.toMatch(/\d/);
+    expect(gaps).toEqual([]);
+    expect(hasPartial).toBe(false);
+    expect(theme).toBe(rowOf(rows, "theme"));
+    expect(theme).toMatchObject({
+      detail: "Dawn 15.2.0 by Shopify",
+      statusLabel: "Online Store 2.0",
+    });
+    expect(unpublished).toBe(rowOf(rows, "unpublished-themes"));
+    // Every row is in exactly one group.
+    expect(clean.length + gaps.length + 2).toBe(rows.length);
   });
 
   const without = (...types: string[]) =>
     new Set(ALL_TYPES.filter((t) => !types.includes(t)) as string[]);
 
-  it.each<[string, Partial<HealthCoverageInput>, string[]]>([
-    ["a size cap", { cappedCategories: ["GHOST_REDIRECT"] }, ["store-data"]],
+  it.each<[string, Partial<HealthCoverageInput>, string[], boolean]>([
+    ["a size cap", { cappedCategories: ["GHOST_REDIRECT"] }, ["store-data"], true],
     [
       "storefront unreadable",
       { unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"] },
       ["liquid-errors", "script-tag-deadline"],
+      true,
     ],
     [
       "a check the scan did not run",
       { liveTypes: without("LIQUID_ERROR_RENDERED") },
       ["liquid-errors"],
+      false,
     ],
-    ["a missing permission", { skippedCategories: ["GHOST_TRANSLATION"] }, ["store-data"]],
-    ["no live set recorded (legacy)", { liveTypes: null }, CATEGORY_KEYS],
-  ])("%s: nothing but a clean row folds", (_name, coverage, unchecked) => {
+    ["a missing permission", { skippedCategories: ["GHOST_TRANSLATION"] }, ["store-data"], true],
+    ["no live set recorded (legacy)", { liveTypes: null }, CATEGORY_KEYS, false],
+  ])("%s: every name under Clean is a clean row", (_name, coverage, unchecked, partial) => {
     const rows = buildThemeHealthChecklist(
       input({ themes: THEMES, coverage: { ...FULL_COVERAGE, ...coverage } }),
     );
-    const { visible, folded } = partitionHealthRows(rows);
+    const { theme, unpublished, clean, gaps, hasPartial } = groupHealthRows(rows);
 
-    for (const row of folded) {
+    for (const row of clean) {
       expect(row.status, row.key).toBe("clean");
       expect(row.detail, row.key).toBeNull();
     }
-    // The rows the gap touches are not clean, and each one stays visible.
+    // The rows the gap touches are not clean: each is a gap, with its reason.
     for (const key of unchecked) {
       const row = rowOf(rows, key as HealthRow["key"])!;
       expect(row.status, key).not.toBe("clean");
-      expect(visible, key).toContain(row);
-      expect(folded.map((r) => r.key)).not.toContain(key);
+      expect(gaps, key).toContain(row);
+      expect(row.detail, key).toEqual(expect.any(String));
+      expect(keys(clean)).not.toContain(key);
     }
-    // Every row that is not clean is visible, with its reason.
-    for (const row of rows.filter((r) => r.status !== "clean")) {
-      expect(visible, row.key).toContain(row);
-    }
-    expect([...visible, ...folded]).toHaveLength(rows.length);
+    // No findings here, so the gaps are exactly the categories that are not clean.
+    expect(gaps).toEqual(rows.filter((r) => CATEGORY_KEYS.includes(r.key) && r.status !== "clean"));
+    expect(keys(gaps)).toEqual(unchecked);
+    for (const row of gaps) expect(["partial", "not_checked"], row.key).toContain(row.status);
+    expect(hasPartial).toBe(partial);
+    expect(hasPartial).toBe(gaps.some((r) => r.status === "partial"));
+    expect(theme).toBe(rowOf(rows, "theme"));
+    expect(unpublished).toBe(rowOf(rows, "unpublished-themes"));
+    expect(clean.length + gaps.length + 2).toBe(rows.length);
+  });
+
+  it("findings in every category: nothing is clean or a gap; the vintage theme fact stays", () => {
+    const rows = buildThemeHealthChecklist(
+      input({
+        typeCounts: Object.fromEntries(ALL_TYPES.map((type, i) => [type, i + 1])),
+        themeInfo: { ...DAWN, architecture: "vintage" },
+        themes: THEMES,
+      }),
+    );
+    const groups = groupHealthRows(rows);
+    expect(groups.clean).toEqual([]);
+    expect(groups.gaps).toEqual([]);
+    expect(groups.hasPartial).toBe(false);
+    expect(groups.theme).toMatchObject({ status: "issues", statusLabel: "Vintage theme" });
+    expect(groups.unpublished).toBe(rowOf(rows, "unpublished-themes"));
+  });
+
+  it("a legacy scan with no theme info: the theme row is the theme, not a gap", () => {
+    const rows = buildThemeHealthChecklist(input({ themeInfo: null }));
+    const groups = groupHealthRows(rows);
+    expect(groups.theme).toMatchObject({ key: "theme", status: "not_checked" });
+    expect(groups.unpublished).toBeNull();
+    expect(keys(groups.gaps)).not.toContain("theme");
+    expect(keys(groups.clean)).toEqual(CATEGORY_KEYS);
   });
 });

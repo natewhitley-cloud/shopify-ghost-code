@@ -613,26 +613,48 @@ export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] 
   return rows;
 }
 
-/** The clean finding categories the checklist folds away. Never "malicious". */
-const FOLDABLE_KEYS: ReadonlySet<string> = new Set(
-  HEALTH_CATEGORIES.map((c) => c.key).filter((key) => key !== "malicious"),
-);
+const CATEGORY_KEYS: ReadonlySet<string> = new Set(HEALTH_CATEGORIES.map((c) => c.key));
+
+/** The checklist's rows as Home groups them. See groupHealthRows. */
+export interface HealthRowGroups {
+  /** The theme's type and version row, or null when it is absent. */
+  theme: HealthRow | null;
+  /** The unpublished themes row, or null when it is absent. */
+  unpublished: HealthRow | null;
+  /** Finding categories whose status is exactly "clean", in their order. */
+  clean: HealthRow[];
+  /** Finding categories that were not checked or only partly checked. */
+  gaps: HealthRow[];
+  /** True when any gap is "partial": part of it ran and found nothing. */
+  hasPartial: boolean;
+}
 
 /**
- * Split the checklist into the rows shown in full and the rows folded into
- * the "Clean:" group, each in its existing order. A row folds ONLY when it is
- * a finding category other than malicious code AND its status is "clean":
- * anything found, partly checked or not checked stays visible, and so do the
- * theme and unpublished-themes rows whatever their status.
+ * Group the checklist for Home, which shows only what the consequence lanes
+ * cannot: the theme facts, the checks that came back clean, and the checks
+ * that did not (fully) run. Each group keeps the rows' existing order.
+ *
+ * A finding category with status "issues" is in NO group: the lanes above the
+ * section already show those findings. A category is in `clean` ONLY when its
+ * status is exactly "clean"; "partial" and "not_checked" go to `gaps`, never
+ * to `clean`. The theme and unpublished-themes rows are facts, not checks, so
+ * they are never in `clean` or `gaps` whatever their status.
  */
-export function partitionHealthRows(rows: readonly HealthRow[]): {
-  visible: HealthRow[];
-  folded: HealthRow[];
-} {
-  const visible: HealthRow[] = [];
-  const folded: HealthRow[] = [];
+export function groupHealthRows(rows: readonly HealthRow[]): HealthRowGroups {
+  const groups: HealthRowGroups = {
+    theme: null,
+    unpublished: null,
+    clean: [],
+    gaps: [],
+    hasPartial: false,
+  };
   for (const row of rows) {
-    (row.status === "clean" && FOLDABLE_KEYS.has(row.key) ? folded : visible).push(row);
+    if (row.key === "theme") groups.theme = row;
+    else if (row.key === "unpublished-themes") groups.unpublished = row;
+    else if (!CATEGORY_KEYS.has(row.key)) continue;
+    else if (row.status === "clean") groups.clean.push(row);
+    else if (row.status === "partial" || row.status === "not_checked") groups.gaps.push(row);
   }
-  return { visible, folded };
+  groups.hasPartial = groups.gaps.some((row) => row.status === "partial");
+  return groups;
 }

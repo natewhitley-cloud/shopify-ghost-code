@@ -1,144 +1,134 @@
-import { Link } from "react-router";
-
-import { partitionHealthRows } from "../lib/theme-health";
-import type { HealthRow, HealthStatus } from "../lib/theme-health";
-import {
-  sectionCard,
-  sectionHeader,
-  TABLE_BORDER_LIGHT,
-  TEXT_PRIMARY,
-  textSubduedSm,
-} from "../styles/shared";
+import { groupHealthRows } from "../lib/theme-health";
+import type { HealthRow } from "../lib/theme-health";
+import { sectionCard, sectionHeader, TEXT_PRIMARY, textSubduedSm } from "../styles/shared";
 
 export const THEME_HEALTH_HEADING = "Theme health";
-export const THEME_HEALTH_INTRO =
-  "What your last scan checked in your theme, and what each check found.";
+export const THEME_HEALTH_INTRO = "What your last scan checked, beyond the findings above.";
 
-type BadgeTone = "success" | "caution" | "critical" | "info" | "neutral";
+const GROUP_LABEL_THEME = "Theme";
+const GROUP_LABEL_CLEAN = "Clean";
+const GROUP_LABEL_NOT_CHECKED = "Not checked";
+/** Used when any gap is partial: part of that check ran and found nothing. */
+const GROUP_LABEL_NOT_FULLY_CHECKED = "Not fully checked";
 
-const STATUS_TONE: Record<HealthStatus, BadgeTone> = {
-  issues: "caution",
-  clean: "success",
-  partial: "neutral",
-  not_checked: "neutral",
-  info: "info",
+const primaryLine: React.CSSProperties = {
+  fontSize: "14px",
+  color: TEXT_PRIMARY,
+  wordBreak: "break-word",
+};
+const secondaryLine: React.CSSProperties = {
+  ...textSubduedSm,
+  marginTop: "2px",
+  wordBreak: "break-word",
 };
 
-/** Malicious code is the one row whose findings are critical, not a caution. */
-function rowTone(row: HealthRow): BadgeTone {
-  return row.key === "malicious" && row.status === "issues" ? "critical" : STATUS_TONE[row.status];
+/**
+ * The theme row as one line: "Dawn 15.2.0 by Shopify · Online Store 2.0" for a
+ * detected (or undetected) type. A vintage theme and a theme that was not
+ * checked already carry a full sentence in `detail`, shown as it is.
+ */
+function themeLine(row: HealthRow): string | null {
+  if (row.status === "clean" || row.status === "info") {
+    return [row.detail, row.statusLabel].filter(Boolean).join(" · ");
+  }
+  return row.detail;
 }
 
 /**
- * One row: the label (the link to its findings when there are any), ONE
- * secondary line, and the status badge on the right. The line is the row's
- * cost or gap (`cost`: 14px primary, so it reads as the finding) or what the
- * row checks (subdued helper text).
+ * One labelled group: the label on the left, its content on the right. The
+ * content wraps under the label when the two do not fit side by side, so a
+ * narrow screen stacks them with no overflow.
  */
-function Row({
-  row,
-  line,
-  cost = false,
+function Group({
+  label,
   first,
+  children,
 }: {
-  row: HealthRow;
-  line: string;
-  cost?: boolean;
+  label: string;
   first: boolean;
+  children: React.ReactNode;
 }) {
   return (
-    <li
+    <div
       style={{
         display: "flex",
-        alignItems: "flex-start",
-        justifyContent: "space-between",
-        gap: "16px",
-        padding: "8px 0",
-        ...(first ? {} : { borderTop: `1px solid ${TABLE_BORDER_LIGHT}` }),
+        flexWrap: "wrap",
+        gap: "2px 16px",
+        ...(first ? {} : { marginTop: "12px" }),
       }}
     >
-      <div style={{ minWidth: 0 }}>
-        <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 600, color: TEXT_PRIMARY }}>
-          {row.href ? (
-            <Link to={row.href} aria-label={`View findings: ${row.label}`}>
-              {row.label}
-            </Link>
-          ) : (
-            row.label
-          )}
-        </h3>
-        <div
-          style={{
-            ...(cost ? { fontSize: "14px", color: TEXT_PRIMARY } : textSubduedSm),
-            marginTop: "2px",
-            wordBreak: "break-word",
-          }}
-        >
-          {line}
-        </div>
-      </div>
-      <div style={{ flexShrink: 0 }}>
-        <s-badge tone={rowTone(row)}>{row.statusLabel}</s-badge>
-      </div>
-    </li>
+      <dt style={{ ...textSubduedSm, fontWeight: 600, flex: "0 0 120px", lineHeight: "20px" }}>
+        {label}
+      </dt>
+      <dd style={{ margin: 0, flex: "1 1 240px", minWidth: 0, lineHeight: "20px" }}>{children}</dd>
+    </div>
   );
 }
 
 /**
- * Theme health checklist (gc-i6du): a compact row per check that needs a look
- * (anything found, partly checked or not checked), plus malicious code, the
- * theme's type and version and the unpublished themes, which always show. Each
- * row has one secondary line: its cost or gap when there is one, otherwise
- * what it checks. The other clean checks fold into a closed "Clean:" group
- * that NAMES them and opens to show what each one covered
- * (partitionHealthRows decides; a row that is not clean never folds).
- * Deliberately a plain list: NO score, grade, percentage, count of clean
- * checks or "x of y" summary (the 0-100 health score was removed in gc-k2ub).
+ * Theme health on Home (gc-i6du): a slim strip of what the last scan checked
+ * that the consequence lanes above it cannot show. Three labelled groups, each
+ * left out when it is empty (and the whole section when all three are):
+ *   - Theme: the theme's name, version and type, and the theme library.
+ *   - Clean: the NAMES of the checks that ran in full and found nothing.
+ *   - Not checked / Not fully checked: each check that did not (fully) run,
+ *     with the reason.
+ * A check that FOUND something is not here at all: its findings are in the
+ * lanes, and repeating them would duplicate the card above. groupHealthRows
+ * decides the groups; only a row whose status is exactly "clean" is named
+ * under Clean.
+ *
+ * Deliberately names only: NO score, grade, percentage, count of clean checks
+ * or "x of y" summary (the 0-100 health score was removed in gc-k2ub).
  *
  * The rows carry counts and fixed copy only (app/lib/theme-health.ts), so the
- * same markup is safe on every plan; findings open on the scan page, where the
- * plan's own gating applies.
+ * same markup is safe on every plan.
  *
- * Accessibility: a labelled region with a real heading and lists; the fold is
- * a native details element, so it needs no script. Not a live region: Home
- * revalidates every 3s while a scan runs.
+ * Accessibility: a labelled region with a real heading and a description
+ * list. Not a live region: Home revalidates every 3s while a scan runs.
  */
 export function ThemeHealthChecklist({ rows = [] }: { rows?: readonly HealthRow[] }) {
-  if (rows.length === 0) return null;
-  const { visible, folded } = partitionHealthRows(rows);
+  const { theme, unpublished, clean, gaps, hasPartial } = groupHealthRows(rows);
+  const themeText = theme ? themeLine(theme) : null;
+  const unpublishedText = unpublished?.detail ?? null;
+  const hasTheme = Boolean(themeText) || Boolean(unpublishedText);
+  if (!hasTheme && clean.length === 0 && gaps.length === 0) return null;
   return (
     <section aria-labelledby="theme-health-heading" style={{ ...sectionCard, marginBottom: 0 }}>
       <h2 id="theme-health-heading" style={{ ...sectionHeader, margin: 0 }}>
         {THEME_HEALTH_HEADING}
       </h2>
-      <p style={{ ...textSubduedSm, margin: "4px 0 8px" }}>{THEME_HEALTH_INTRO}</p>
-      {visible.length > 0 && (
-        <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-          {visible.map((row, i) => (
-            <Row
-              key={row.key}
-              row={row}
-              line={row.detail ?? row.checks}
-              cost={row.detail != null}
-              first={i === 0}
-            />
-          ))}
-        </ul>
-      )}
-      {folded.length > 0 && (
-        <details
-          style={visible.length > 0 ? { borderTop: `1px solid ${TABLE_BORDER_LIGHT}` } : undefined}
-        >
-          <summary style={{ ...textSubduedSm, padding: "8px 0", cursor: "pointer" }}>
-            {`Clean: ${folded.map((row) => row.label).join(", ")}`}
-          </summary>
-          <ul style={{ listStyle: "none", margin: 0, padding: 0 }}>
-            {folded.map((row, i) => (
-              <Row key={row.key} row={row} line={row.checks} first={i === 0} />
+      <p style={{ ...textSubduedSm, margin: "4px 0 12px" }}>{THEME_HEALTH_INTRO}</p>
+      <dl style={{ margin: 0 }}>
+        {hasTheme && (
+          <Group label={GROUP_LABEL_THEME} first>
+            {themeText && <div style={primaryLine}>{themeText}</div>}
+            {unpublishedText && (
+              <div style={themeText ? secondaryLine : { ...secondaryLine, marginTop: 0 }}>
+                {unpublishedText}
+              </div>
+            )}
+          </Group>
+        )}
+        {clean.length > 0 && (
+          <Group label={GROUP_LABEL_CLEAN} first={!hasTheme}>
+            <div style={primaryLine}>{clean.map((row) => row.label).join(", ")}</div>
+          </Group>
+        )}
+        {gaps.length > 0 && (
+          <Group
+            label={hasPartial ? GROUP_LABEL_NOT_FULLY_CHECKED : GROUP_LABEL_NOT_CHECKED}
+            first={!hasTheme && clean.length === 0}
+          >
+            {gaps.map((row, i) => (
+              <div key={row.key} style={i > 0 ? { marginTop: "8px" } : undefined}>
+                <div style={primaryLine}>{row.label}</div>
+                {row.detail && <div style={secondaryLine}>{row.detail}</div>}
+              </div>
             ))}
-          </ul>
-        </details>
-      )}
+          </Group>
+        )}
+      </dl>
     </section>
   );
 }
