@@ -256,7 +256,7 @@ const GAP_ORDER: ReadonlyArray<Gap> = [
  */
 const GAP_COPY: Record<Gap, string> = {
   unreachable:
-    "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.",
+    "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.",
   not_run: "Not checked on your last scan. Run a new scan.",
   permission: "Needs a permission you haven't allowed yet. You can allow it in Settings.",
   plan: "Checked in full on Standard and Professional.",
@@ -657,8 +657,13 @@ export interface HealthRowGroups {
   clean: HealthRow[];
   /** Finding categories that were not checked or only partly checked. */
   gaps: HealthRow[];
-  /** True when any gap is "partial": part of it ran and found nothing. */
-  hasPartial: boolean;
+  /**
+   * True when a finding category other than malicious code found something
+   * (status "issues"). Those rows are in no group (the lanes show them), but
+   * the verdict's dot must not be green over them. The theme row's "issues"
+   * (a vintage theme) does not count: it is a theme fact, not a finding.
+   */
+  hasIssues: boolean;
   /**
    * The malicious-code row, ONLY when it has findings (status "issues"); null
    * otherwise. Security findings are never hidden: Home has no other place
@@ -694,7 +699,7 @@ export function groupHealthRows(
     unpublished: null,
     clean: [],
     gaps: [],
-    hasPartial: false,
+    hasIssues: false,
     malicious,
   };
   for (const row of rows) {
@@ -703,10 +708,11 @@ export function groupHealthRows(
     else if (!CATEGORY_KEYS.has(row.key)) continue;
     else if (row.status === "clean") groups.clean.push(row);
     else if (row.status === "partial" || row.status === "not_checked") groups.gaps.push(row);
-    else if (row.key === "malicious" && row.status === "issues") groups.malicious ??= row;
+    else if (row.status !== "issues") continue;
+    else if (row.key === "malicious") groups.malicious ??= row;
+    else groups.hasIssues = true;
   }
   if (groups.malicious) groups.clean = groups.clean.filter((row) => row.key !== "malicious");
-  groups.hasPartial = groups.gaps.some((row) => row.status === "partial");
   return groups;
 }
 
@@ -714,8 +720,15 @@ export function groupHealthRows(
 // Home's verdict line and action box
 // ---------------------------------------------------------------------------
 
-/** "ok" = nothing malicious found and every check ran; "warn" = a check did not. */
-export type HealthVerdictTone = "ok" | "warn";
+/**
+ * The verdict dot's colour. With no known malicious code found:
+ *   - "ok" (green):     every check ran in full and no check found anything.
+ *   - "neutral" (grey): every check ran in full, but another check found
+ *                       something (those findings are in Home's lanes).
+ *   - "warn" (amber):   a check did not (fully) run. Also the tone when the
+ *                       malicious check itself did not run in full.
+ */
+export type HealthVerdictTone = "ok" | "neutral" | "warn";
 
 export interface HealthVerdict {
   tone: HealthVerdictTone;
@@ -723,21 +736,27 @@ export interface HealthVerdict {
   text: string;
 }
 
-const VERDICT_CLEAN = "Nothing malicious found.";
+const VERDICT_CLEAN = "No known malicious code found.";
 const VERDICT_MALICIOUS_UNCHECKED =
   "Some checks couldn't run, including the check for malicious code.";
-const VERDICT_GAPS = "Nothing malicious found. Some checks couldn't run.";
-const VERDICT_PARTIAL_GAPS = "Nothing malicious found. Some checks only partly ran.";
+const VERDICT_GAPS = "No known malicious code found. Some checks couldn't run.";
+const VERDICT_PARTIAL_GAPS = "No known malicious code found. Some checks only partly ran.";
 
 /**
  * The one-sentence verdict at the top of Home's theme health section, or null
  * when the critical malicious line is showing (that line IS the verdict).
  *
- * "Nothing malicious found" is said ONLY when the malicious row's status is
- * exactly "clean" (it is in `groups.clean`, which groupHealthRows also empties
- * of malicious whenever the critical line shows). A malicious row that was not
- * checked, only partly checked, or is missing altogether (a legacy scan) gets
- * the sentence that names the malicious check as one that could not run.
+ * "No known malicious code found" is said ONLY when the malicious row's status
+ * is exactly "clean" (it is in `groups.clean`, which groupHealthRows also
+ * empties of malicious whenever the critical line shows). "Known" because the
+ * check matches a list of known malicious sources: it cannot rule out code
+ * nobody has listed yet. A malicious row that was not checked, only partly
+ * checked, or is missing altogether (a legacy scan) gets the sentence that
+ * names the malicious check as one that could not run.
+ *
+ * With no gap the sentence is the same whether or not other checks found
+ * something; only the dot differs (see HealthVerdictTone), so a green dot
+ * never sits under lanes that list findings.
  */
 export function themeHealthVerdict(groups: HealthRowGroups): HealthVerdict | null {
   if (groups.malicious) return null;
@@ -745,7 +764,9 @@ export function themeHealthVerdict(groups: HealthRowGroups): HealthVerdict | nul
     (row) => row.key === "malicious" && row.status === "clean",
   );
   if (!maliciousClean) return { tone: "warn", text: VERDICT_MALICIOUS_UNCHECKED };
-  if (groups.gaps.length === 0) return { tone: "ok", text: VERDICT_CLEAN };
+  if (groups.gaps.length === 0) {
+    return { tone: groups.hasIssues ? "neutral" : "ok", text: VERDICT_CLEAN };
+  }
   const allPartial = groups.gaps.every((row) => row.status === "partial");
   return { tone: "warn", text: allPartial ? VERDICT_PARTIAL_GAPS : VERDICT_GAPS };
 }

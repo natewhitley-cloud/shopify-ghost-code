@@ -29,6 +29,7 @@ import {
   COLOR_CRITICAL,
   COLOR_SUCCESS,
   COLOR_WARNING,
+  LANE_GREY_FILL,
   SUCCESS_TEXT_STRONG,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
@@ -47,6 +48,7 @@ import {
   HIDDEN,
   OK_CHIP,
   PRIMARY,
+  someChipsOf,
   SUBDUED,
   themeLines,
   themeText,
@@ -61,6 +63,10 @@ function render(rows?: HealthRow[], malicious?: HealthRow | null): string {
   return renderToStaticMarkup(<Stub initialEntries={["/app"]} />);
 }
 
+/** The verdict dot's background, read from the dot itself (not via verdictOf's tones). */
+const dotColor = (html: string) =>
+  html.match(/<span aria-hidden="true" style="[^"]*border-radius:5px;background:([^";]+)"/)?.[1];
+
 const row = (overrides: Partial<HealthRow>): HealthRow => ({
   key: "scripts-styles",
   label: "Leftover scripts and styles",
@@ -74,7 +80,7 @@ const row = (overrides: Partial<HealthRow>): HealthRow => ({
 });
 
 const UNREACHABLE =
-  "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.";
+  "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.";
 const NOT_RUN = "Not checked on your last scan. Run a new scan.";
 const PLAN_GAP = "Old checkout code is checked on Standard and Professional.";
 const VINTAGE =
@@ -203,7 +209,8 @@ describe("groupHealthRows", () => {
     expect(groups.unpublished).toBe(UNPUBLISHED);
     expect(groups.clean).toEqual([MALICIOUS, TRACKING, STORE_DATA]);
     expect(groups.gaps).toEqual([LIQUID_NOT_CHECKED, SNIPPETS_PARTIAL]);
-    expect(groups.hasPartial).toBe(true);
+    // Two categories found something: they are in no group, but they are noted.
+    expect(groups.hasIssues).toBe(true);
     // Malicious code is clean here, so it is not the critical line.
     expect(groups.malicious).toBeNull();
   });
@@ -214,7 +221,7 @@ describe("groupHealthRows", () => {
       unpublished: null,
       clean: [],
       gaps: [],
-      hasPartial: false,
+      hasIssues: false,
       malicious: null,
     });
   });
@@ -226,7 +233,7 @@ describe("groupHealthRows", () => {
     expect(groups.clean).toHaveLength(9);
     expect(groups.clean[0].key).toBe("malicious");
     expect(groups.gaps).toEqual([]);
-    expect(groups.hasPartial).toBe(false);
+    expect(groups.hasIssues).toBe(false);
   });
 
   // THE false-Clean guard: only a status of exactly "clean" is ever clean.
@@ -247,7 +254,7 @@ describe("groupHealthRows", () => {
       unpublished: null,
       clean: [],
       gaps: [],
-      hasPartial: false,
+      hasIssues: true,
       malicious: rows.find((r) => r.key === "malicious"),
     });
     // Without the malicious row, a set of issues rows is in no group at all.
@@ -256,7 +263,7 @@ describe("groupHealthRows", () => {
       unpublished: null,
       clean: [],
       gaps: [],
-      hasPartial: false,
+      hasIssues: true,
       malicious: null,
     });
   });
@@ -286,16 +293,48 @@ describe("groupHealthRows", () => {
     expect(groups.gaps).toEqual([]);
   });
 
-  it("gaps hold not_checked and partial rows; hasPartial is true only when one is partial", () => {
-    const notChecked = groupHealthRows([LIQUID_NOT_CHECKED, TRACKING]);
-    expect(notChecked.gaps).toEqual([LIQUID_NOT_CHECKED]);
-    expect(notChecked.hasPartial).toBe(false);
+  it("gaps hold not_checked and partial rows, each with its own status", () => {
+    expect(groupHealthRows([LIQUID_NOT_CHECKED, TRACKING]).gaps).toEqual([LIQUID_NOT_CHECKED]);
+    expect(groupHealthRows([SNIPPETS_PARTIAL, TRACKING]).gaps).toEqual([SNIPPETS_PARTIAL]);
+    expect(groupHealthRows([TRACKING]).gaps).toEqual([]);
+  });
 
-    const partial = groupHealthRows([SNIPPETS_PARTIAL, TRACKING]);
-    expect(partial.gaps).toEqual([SNIPPETS_PARTIAL]);
-    expect(partial.hasPartial).toBe(true);
+  describe("hasIssues", () => {
+    it.each(HEALTH_CATEGORIES.filter((c) => c.key !== "malicious").map((c) => [c.key, c]))(
+      "is true when %s found something, alone or among clean rows and gaps",
+      (_key, c) => {
+        const found = row({ key: c.key, label: c.label, status: "issues", statusLabel: "1 issue" });
+        expect(groupHealthRows([found]).hasIssues).toBe(true);
+        expect(groupHealthRows([MALICIOUS, found, LIQUID_NOT_CHECKED]).hasIssues).toBe(true);
+      },
+    );
 
-    expect(groupHealthRows([TRACKING]).hasPartial).toBe(false);
+    it.each(["clean", "partial", "not_checked", "info"] as const)(
+      "is false when every category is %s",
+      (status) => {
+        const rows = HEALTH_CATEGORIES.map((c) => row({ key: c.key, label: c.label, status }));
+        expect(groupHealthRows(rows).hasIssues).toBe(false);
+      },
+    );
+
+    it("malicious code with findings is the critical line, not 'issues' for the dot", () => {
+      expect(groupHealthRows([MALICIOUS_ISSUES, TRACKING]).hasIssues).toBe(false);
+      expect(groupHealthRows([MALICIOUS, TRACKING], MALICIOUS_ISSUES).hasIssues).toBe(false);
+      // Passed on its own while the rows also say issues: still only the line.
+      expect(groupHealthRows([MALICIOUS_ISSUES], MALICIOUS_ISSUES).hasIssues).toBe(false);
+      // Another category's findings count whether or not the line shows.
+      expect(groupHealthRows([MALICIOUS_ISSUES, SHOPPER_ISSUES]).hasIssues).toBe(true);
+    });
+
+    it("a vintage theme (the theme row's 'issues') is a theme fact, not a finding", () => {
+      expect(groupHealthRows([MALICIOUS, TRACKING, THEME_VINTAGE]).hasIssues).toBe(false);
+      expect(groupHealthRows([{ ...UNPUBLISHED, status: "issues" }]).hasIssues).toBe(false);
+    });
+
+    it("a row with an unknown key never counts", () => {
+      const stray = { ...SHOPPER_ISSUES, key: "something-else" } as unknown as HealthRow;
+      expect(groupHealthRows([stray]).hasIssues).toBe(false);
+    });
   });
 
   it.each([
@@ -309,7 +348,7 @@ describe("groupHealthRows", () => {
     expect(groups.unpublished).toBe(UNPUBLISHED);
     expect(groups.clean).toEqual([TRACKING]);
     expect(groups.gaps).toEqual([]);
-    expect(groups.hasPartial).toBe(false);
+    expect(groups.hasIssues).toBe(false);
   });
 
   it("the unpublished row is never clean or a gap, whatever its status", () => {
@@ -369,7 +408,7 @@ describe("ThemeHealthChecklist", () => {
     const html = render(MIXED);
     const order = [
       html.indexOf(THEME_HEALTH_INTRO),
-      html.indexOf(esc("Nothing malicious found. Some checks couldn't run.")),
+      html.indexOf(esc("No known malicious code found. Some checks couldn't run.")),
       html.indexOf("<ul"),
       html.indexOf(ACTION_ACCENT),
       html.indexOf("Dawn 15.2.0 by Shopify"),
@@ -378,7 +417,7 @@ describe("ThemeHealthChecklist", () => {
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
-  it("has no badge, link, button or fold when nothing malicious was found", () => {
+  it("has no badge, link, button or fold when no known malicious code was found", () => {
     const html = render(MIXED);
     expect(html).not.toMatch(/<s-badge|<a |<button|<s-button|<details|<summary|<h3/);
     expect(html).not.toContain("View findings");
@@ -395,30 +434,70 @@ describe("ThemeHealthChecklist", () => {
       expect(verdictOf(html)!.text.length).toBeGreaterThan(0);
     });
 
-    it("malicious clean, a check not run: amber, nothing malicious found, some couldn't run", () => {
+    it("malicious clean, a check not run: amber, no known malicious code found, some couldn't run", () => {
       expect(verdictOf(render(MIXED))).toEqual({
         tone: "warn",
-        text: "Nothing malicious found. Some checks couldn't run.",
+        text: "No known malicious code found. Some checks couldn't run.",
       });
     });
 
     it("malicious clean, every gap partial: amber, 'only partly ran'", () => {
       expect(verdictOf(render([MALICIOUS, SNIPPETS_PARTIAL, TRACKING]))).toEqual({
         tone: "warn",
-        text: "Nothing malicious found. Some checks only partly ran.",
+        text: "No known malicious code found. Some checks only partly ran.",
       });
     });
 
-    it("malicious clean and no gaps: green, 'Nothing malicious found.'", () => {
-      expect(verdictOf(render([MALICIOUS, TRACKING, SHOPPER_ISSUES, THEME_OS2]))).toEqual({
-        tone: "ok",
-        text: "Nothing malicious found.",
-      });
+    it("malicious clean, no gaps, nothing found anywhere: green dot", () => {
+      const html = render([MALICIOUS, TRACKING, THEME_OS2]);
+      expect(verdictOf(html)).toEqual({ tone: "ok", text: "No known malicious code found." });
+      expect(dotColor(html)).toBe(COLOR_SUCCESS);
+    });
+
+    // The dot must not be green under lanes that list findings.
+    it("malicious clean, no gaps, another check found something: grey dot, the same sentence", () => {
+      for (const rows of [
+        [MALICIOUS, TRACKING, SHOPPER_ISSUES, THEME_OS2],
+        [MALICIOUS, SHOPPER_ISSUES, SCRIPTS_ISSUES],
+      ]) {
+        const html = render(rows);
+        expect(verdictOf(html)).toEqual({
+          tone: "neutral",
+          text: "No known malicious code found.",
+        });
+        expect(dotColor(html)).toBe(LANE_GREY_FILL);
+        expect(html).not.toContain(`background:${COLOR_SUCCESS}`);
+        expect(html).not.toContain(`background:${COLOR_WARNING}`);
+      }
+    });
+
+    it("a gap wins over findings: amber dot, whether or not another check found something", () => {
+      for (const rows of [
+        [MALICIOUS, LIQUID_NOT_CHECKED, TRACKING],
+        [MALICIOUS, LIQUID_NOT_CHECKED, SHOPPER_ISSUES],
+      ]) {
+        const html = render(rows);
+        expect(verdictOf(html)).toEqual({
+          tone: "warn",
+          text: "No known malicious code found. Some checks couldn't run.",
+        });
+        expect(dotColor(html)).toBe(COLOR_WARNING);
+      }
+    });
+
+    it("a vintage theme alone does not grey the dot: it is a theme fact, not a finding", () => {
+      const html = render([MALICIOUS, TRACKING, THEME_VINTAGE]);
+      expect(verdictOf(html)).toEqual({ tone: "ok", text: "No known malicious code found." });
+      expect(dotColor(html)).toBe(COLOR_SUCCESS);
+    });
+
+    it("the three dots are three different colours, each a shared token", () => {
+      expect(new Set([COLOR_SUCCESS, LANE_GREY_FILL, COLOR_WARNING]).size).toBe(3);
     });
 
     // THE false-all-clear guard, as rendered.
     it.each(["not_checked", "partial"] as const)(
-      "malicious %s: amber, names the malicious check, never says nothing malicious was found",
+      "malicious %s: amber, names the malicious check, never says no known malicious code was found",
       (status) => {
         const html = render([
           { ...MALICIOUS, status, statusLabel: "x", detail: NOT_RUN },
@@ -430,7 +509,8 @@ describe("ThemeHealthChecklist", () => {
           tone: "warn",
           text: "Some checks couldn't run, including the check for malicious code.",
         });
-        expect(html).not.toMatch(/nothing malicious/i);
+        expect(html).not.toMatch(/no known malicious code found/i);
+        expect(dotColor(html)).toBe(COLOR_WARNING);
         expect(html).not.toContain(`background:${COLOR_SUCCESS}`);
       },
     );
@@ -441,7 +521,7 @@ describe("ThemeHealthChecklist", () => {
         tone: "warn",
         text: "Some checks couldn't run, including the check for malicious code.",
       });
-      expect(html).not.toMatch(/nothing malicious/i);
+      expect(html).not.toMatch(/no known malicious code found/i);
     });
 
     it("never has a digit, a count or a score, whatever the rows", () => {
@@ -811,7 +891,7 @@ describe("ThemeHealthChecklist", () => {
       expect(name).toContain(text);
     });
 
-    it("IS the verdict: no verdict line, no dot, and never 'nothing malicious found'", () => {
+    it("IS the verdict: no verdict line, no dot, and never 'no known malicious code found'", () => {
       for (const rows of [
         WITH_OTHERS,
         [MALICIOUS_ISSUES, TRACKING, STORE_DATA, THEME_OS2],
@@ -820,7 +900,7 @@ describe("ThemeHealthChecklist", () => {
         const html = render(rows);
         expect(verdictOf(html)).toBeNull();
         expect(html.match(/<p /g)).toHaveLength(1); // the intro only
-        expect(html).not.toMatch(/nothing malicious|couldn&#x27;t run, including/i);
+        expect(html).not.toMatch(/no known malicious code found|couldn&#x27;t run, including/i);
         expect(html).not.toContain("border-radius:5px");
       }
     });
@@ -951,13 +1031,49 @@ describe("ThemeHealthChecklist", () => {
 
     it("full coverage, zero findings: green verdict, every chip green, no action box", () => {
       const html = render(build());
-      expect(verdictOf(html)).toEqual({ tone: "ok", text: "Nothing malicious found." });
+      expect(verdictOf(html)).toEqual({ tone: "ok", text: "No known malicious code found." });
       expect(chipLines(html)).toEqual(ALL_LABELS.map((label) => `ok Clean: ${label}`));
       expect(actionOf(html)).toBeNull();
       expect(html).not.toContain(WARN_BD);
       expect(themeText(html)).toEqual([
         `Dawn 15.2.0 by Shopify · Online Store 2.0 · ${UNPUBLISHED_TEXT}`,
       ]);
+    });
+
+    it("full coverage, findings in two categories: grey dot, the same sentence, the rest green chips", () => {
+      const rows = build({ typeCounts: { GHOST_SCRIPT: 12, GHOST_PIXEL: 2 } });
+      expect(rows.filter((r) => r.status === "issues").map((r) => r.key)).toEqual([
+        "scripts-styles",
+        "tracking",
+      ]);
+      const html = render(rows);
+      expect(verdictOf(html)).toEqual({ tone: "neutral", text: "No known malicious code found." });
+      expect(dotColor(html)).toBe(LANE_GREY_FILL);
+      expect(html).not.toContain(`background:${COLOR_SUCCESS}`);
+      // Every check ran: no amber anywhere, and the two with findings have no chip.
+      expect(actionOf(html)).toBeNull();
+      expect(html).not.toContain(COLOR_WARNING);
+      expect(chipLines(html)).toEqual(
+        ALL_LABELS.filter(
+          (l) => l !== "Leftover scripts and styles" && l !== "Tracking still running",
+        ).map((l) => `ok Clean: ${l}`),
+      );
+    });
+
+    it("full coverage, a vintage theme and no findings: the dot stays green", () => {
+      const html = render(
+        build({
+          themeInfo: {
+            name: "Debut",
+            version: "17.14.0",
+            author: "Shopify",
+            architecture: "vintage",
+          },
+        }),
+      );
+      expect(verdictOf(html)).toEqual({ tone: "ok", text: "No known malicious code found." });
+      expect(dotColor(html)).toBe(COLOR_SUCCESS);
+      expect(themeText(html)[0]).toBe(VINTAGE);
     });
 
     it("unreachable storefront: amber verdict; both storefront checks amber under ONE reason, never green", () => {
@@ -972,7 +1088,7 @@ describe("ThemeHealthChecklist", () => {
       );
       expect(verdictOf(html)).toEqual({
         tone: "warn",
-        text: "Nothing malicious found. Some checks couldn't run.",
+        text: "No known malicious code found. Some checks couldn't run.",
       });
       expect(chipLines(html)).toEqual([
         "ok Clean: Known malicious code",
@@ -1008,7 +1124,7 @@ describe("ThemeHealthChecklist", () => {
         tone: "warn",
         text: "Some checks couldn't run, including the check for malicious code.",
       });
-      expect(html).not.toMatch(/nothing malicious/i);
+      expect(html).not.toMatch(/no known malicious code found/i);
       expect(chipLines(html)).toEqual(ALL_LABELS.map((label) => `warn Not checked: ${label}`));
       expect(greenLabels(html)).toEqual([]);
       expect(html).not.toContain(BG_BADGE_SUCCESS);
@@ -1031,7 +1147,7 @@ describe("ThemeHealthChecklist", () => {
       );
       expect(verdictOf(html)).toEqual({
         tone: "warn",
-        text: "Nothing malicious found. Some checks only partly ran.",
+        text: "No known malicious code found. Some checks only partly ran.",
       });
       expect(chipLines(html)).toEqual(
         ALL_LABELS.map((label) =>
@@ -1066,7 +1182,7 @@ describe("ThemeHealthChecklist", () => {
         expect(html).toContain('<s-badge tone="critical">2 issues</s-badge>');
         expect(html).toContain(MALICIOUS_DETAIL);
         expect(verdictOf(html)).toBeNull();
-        expect(html).not.toMatch(/nothing malicious/i);
+        expect(html).not.toMatch(/no known malicious code found/i);
         expect(chipLines(html)).toEqual(
           ALL_LABELS.filter((l) => l !== "Known malicious code").map((l) => `ok Clean: ${l}`),
         );
@@ -1108,7 +1224,9 @@ describe("ThemeHealthChecklist", () => {
       // box and its entries may all shrink below their content.
       expect(page).toContain(BODY);
       expect(page).toMatch(/<ul style="display:flex;flex-wrap:wrap;[^"]*min-width:0"/);
-      for (const [, style] of page.matchAll(/<li style="([^"]*)"/g)) {
+      const chipStyles = [...page.matchAll(/<li style="([^"]*)"/g)].map((m) => m[1]);
+      expect(chipStyles).toHaveLength(someChipsOf(page).length);
+      for (const style of chipStyles) {
         expect(style).toContain("min-width:0");
         expect(style).toContain("word-break:break-word");
       }
@@ -1196,12 +1314,12 @@ describe("ThemeHealthChecklist: malicious line passed independently of the rows"
     expect(verdictOf(html)).toBeNull();
   });
 
-  it("no green malicious chip and no 'nothing malicious' when the rows say clean but the line is passed", () => {
+  it("no green malicious chip and no 'no known malicious code found' when the rows say clean but the line is passed", () => {
     const html = render([MALICIOUS, TRACKING, THEME_OS2], MALICIOUS_ISSUES);
     expect(html).toContain('<s-badge tone="critical">2 issues</s-badge>');
     expect(chipLines(html)).toEqual(["ok Clean: Tracking still running"]);
     expect(verdictOf(html)).toBeNull();
-    expect(html).not.toMatch(/nothing malicious/i);
+    expect(html).not.toMatch(/no known malicious code found/i);
     expect(html.match(/Known malicious code/g)).toHaveLength(2); // label + link aria-label
   });
 

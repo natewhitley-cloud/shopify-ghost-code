@@ -112,6 +112,7 @@ import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
 import { authenticate } from "../../app/shopify.server";
+import { COLOR_SUCCESS, COLOR_WARNING, LANE_GREY_FILL } from "../../app/styles/shared";
 import {
   actionOf,
   BODY,
@@ -209,7 +210,7 @@ function sectionOf(html: string): string {
 }
 
 const UNREACHABLE =
-  "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.";
+  "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.";
 const NOT_RUN = "Not checked on your last scan. Run a new scan.";
 const MALICIOUS_UNCHECKED = "Some checks couldn't run, including the check for malicious code.";
 const LIBRARY =
@@ -402,7 +403,7 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
     expect(chipLines(section)).toContain("warn Partly checked: Script tag deadline");
     expect(verdictOf(section)).toEqual({
       tone: "warn",
-      text: "Nothing malicious found. Some checks couldn't run.",
+      text: "No known malicious code found. Some checks couldn't run.",
     });
     // Both under the ONE reason, which is stated once.
     expect(actionOf(section)!.entries).toEqual([
@@ -440,7 +441,7 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
       expect(green).not.toContain("Liquid errors on your homepage");
       expect(verdictOf(section)).toEqual({
         tone: "warn",
-        text: "Nothing malicious found. Some checks couldn't run.",
+        text: "No known malicious code found. Some checks couldn't run.",
       });
     });
 
@@ -468,9 +469,9 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
         expect(chip, chip.label).toMatchObject({ tone: "warn", prefix: "Not checked: " });
       }
       // The malicious check did not run either: the verdict says so, and never
-      // says nothing malicious was found.
+      // says no known malicious code was found.
       expect(verdictOf(section)).toEqual({ tone: "warn", text: MALICIOUS_UNCHECKED });
-      expect(section).not.toMatch(/nothing malicious/i);
+      expect(section).not.toMatch(/no known malicious code found/i);
       // All nine checks under the one reason, stated once.
       const { entries } = actionOf(section)!;
       expect(entries).toEqual([{ names: chips.map((c) => c.label).join(", "), reason: NOT_RUN }]);
@@ -549,9 +550,9 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     // Free: two rows are partial (a plan-gated check each), so "only partly ran".
     expect(verdictOf(section)).toEqual({
       tone: "warn",
-      text: "Nothing malicious found. Some checks only partly ran.",
+      text: "No known malicious code found. Some checks only partly ran.",
     });
-    expect(section.indexOf("Nothing malicious found.")).toBeLessThan(section.indexOf("<ul"));
+    expect(section.indexOf("No known malicious code found.")).toBeLessThan(section.indexOf("<ul"));
     expect(section.indexOf("<ul")).toBeLessThan(section.indexOf("Broken links are checked"));
     expect(section.indexOf("Broken links are checked")).toBeLessThan(
       section.indexOf("Dawn 15.2.0"),
@@ -602,11 +603,23 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
   });
 
   it.each(["Standard", "Professional"])(
-    "%s: nothing is partly checked, so the verdict is green, there is no action box and more chips are green",
+    "%s: every check ran and three found something, so the dot is grey (not green), with no action box and more green chips",
     async (plan) => {
       setPlan(plan);
-      const section = sectionOf(renderDashboard(await runLoader()));
-      expect(verdictOf(section)).toEqual({ tone: "ok", text: "Nothing malicious found." });
+      const data = await runLoader();
+      // The lanes above the section list these findings: a green dot would overclaim.
+      expect(data.themeHealth.filter((r) => r.status === "issues").map((r) => r.key)).toEqual([
+        "liquid-errors",
+        "scripts-styles",
+        "tracking",
+      ]);
+      const section = sectionOf(renderDashboard(data));
+      expect(verdictOf(section)).toEqual({
+        tone: "neutral",
+        text: "No known malicious code found.",
+      });
+      expect(section).toContain(`border-radius:5px;background:${LANE_GREY_FILL}`);
+      expect(section).not.toContain(`background:${COLOR_SUCCESS}`);
       expect(actionOf(section)).toBeNull();
       expect(chipLines(section)).toEqual(
         [
@@ -746,8 +759,10 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
       }
       // The red line is the verdict: never a second one, never an all-clear.
       expect(verdictOf(section)).toBeNull();
-      expect(section).not.toMatch(/nothing malicious/i);
+      expect(section).not.toMatch(/no known malicious code found/i);
       expect(chipsOf(section).map((c) => c.label)).not.toContain("Known malicious code");
+      // The same, read from the text alone: no chip prefix sits before its name.
+      expect(section).not.toMatch(/(?:Clean|checked): <\/span>Known malicious code/);
     }
 
     it.each(["free", "Standard", "Professional"])(
@@ -829,7 +844,7 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
         expect(section).not.toContain("<s-badge");
         expect(section).not.toContain("View findings");
         expect(greenLabels(section)).toContain("Known malicious code");
-        expect(verdictOf(section)!.text).toMatch(/^Nothing malicious found\./);
+        expect(verdictOf(section)!.text).toMatch(/^No known malicious code found\./);
       },
     );
 
@@ -899,7 +914,21 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
           expect(data.maliciousHealth).toBeNull();
           const html = renderDashboard(data);
           for (const text of ALL_CLEAR) expect(html, text).toContain(text);
-          expect(sectionOf(html)).not.toContain("<s-badge");
+          const section = sectionOf(html);
+          expect(section).not.toContain("<s-badge");
+          // Nothing found anywhere: the dot is green once every check ran in
+          // full (Free's two plan-gated checks keep it amber).
+          expect(verdictOf(section)).toEqual(
+            plan === "free"
+              ? {
+                  tone: "warn",
+                  text: "No known malicious code found. Some checks only partly ran.",
+                }
+              : { tone: "ok", text: "No known malicious code found." },
+          );
+          expect(section).toContain(
+            `border-radius:5px;background:${plan === "free" ? COLOR_WARNING : COLOR_SUCCESS}`,
+          );
         },
       );
     });

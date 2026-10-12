@@ -441,7 +441,7 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
       }),
     );
     const reason =
-      "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.";
+      "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.";
     expect(rowOf(rows, "liquid-errors")).toMatchObject({
       status: "not_checked",
       statusLabel: "Not checked",
@@ -877,13 +877,13 @@ describe("buildThemeHealthChecklist -> groupHealthRows", () => {
 
   it("a fully checked scan with no findings: all nine categories are clean, malicious included", () => {
     const rows = buildThemeHealthChecklist(input({ themes: THEMES }));
-    const { theme, unpublished, clean, gaps, hasPartial } = groupHealthRows(rows);
+    const { theme, unpublished, clean, gaps, hasIssues } = groupHealthRows(rows);
 
     expect(keys(clean)).toEqual(CATEGORY_KEYS);
     for (const row of clean) expect(row.status, row.key).toBe("clean");
     expect(clean.map((r) => r.label).join(", ")).not.toMatch(/\d/);
     expect(gaps).toEqual([]);
-    expect(hasPartial).toBe(false);
+    expect(hasIssues).toBe(false);
     expect(theme).toBe(rowOf(rows, "theme"));
     expect(theme).toMatchObject({
       detail: "Dawn 15.2.0 by Shopify",
@@ -917,7 +917,7 @@ describe("buildThemeHealthChecklist -> groupHealthRows", () => {
     const rows = buildThemeHealthChecklist(
       input({ themes: THEMES, coverage: { ...FULL_COVERAGE, ...coverage } }),
     );
-    const { theme, unpublished, clean, gaps, hasPartial } = groupHealthRows(rows);
+    const { theme, unpublished, clean, gaps, hasIssues } = groupHealthRows(rows);
 
     for (const row of clean) {
       expect(row.status, row.key).toBe("clean");
@@ -935,8 +935,9 @@ describe("buildThemeHealthChecklist -> groupHealthRows", () => {
     expect(gaps).toEqual(rows.filter((r) => CATEGORY_KEYS.includes(r.key) && r.status !== "clean"));
     expect(keys(gaps)).toEqual(unchecked);
     for (const row of gaps) expect(["partial", "not_checked"], row.key).toContain(row.status);
-    expect(hasPartial).toBe(partial);
-    expect(hasPartial).toBe(gaps.some((r) => r.status === "partial"));
+    expect(gaps.some((r) => r.status === "partial")).toBe(partial);
+    // A gap is not a finding.
+    expect(hasIssues).toBe(false);
     expect(theme).toBe(rowOf(rows, "theme"));
     expect(unpublished).toBe(rowOf(rows, "unpublished-themes"));
     expect(clean.length + gaps.length + 2).toBe(rows.length);
@@ -953,7 +954,7 @@ describe("buildThemeHealthChecklist -> groupHealthRows", () => {
     const groups = groupHealthRows(rows);
     expect(groups.clean).toEqual([]);
     expect(groups.gaps).toEqual([]);
-    expect(groups.hasPartial).toBe(false);
+    expect(groups.hasIssues).toBe(true);
     expect(groups.theme).toMatchObject({ status: "issues", statusLabel: "Vintage theme" });
     expect(groups.unpublished).toBe(rowOf(rows, "unpublished-themes"));
   });
@@ -1039,7 +1040,7 @@ describe("gap reason copy: fits one check or several, and ends with the action",
   it("the exact sentences", () => {
     expect(everyGapSentence().sort()).toEqual(
       [
-        "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.",
+        "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.",
         "Not checked on your last scan. Run a new scan.",
         "Partly checked on your last scan. Run a new scan.",
         "Needs a permission you haven't allowed yet. You can allow it in Settings.",
@@ -1074,19 +1075,64 @@ describe("themeHealthVerdict", () => {
   const verdict = (rows: HealthRow[], malicious: HealthRow | null = null) =>
     themeHealthVerdict(groupHealthRows(rows, malicious));
 
-  const CLEAN = "Nothing malicious found.";
+  const CLEAN = "No known malicious code found.";
   const UNCHECKED = "Some checks couldn't run, including the check for malicious code.";
-  const GAPS = "Nothing malicious found. Some checks couldn't run.";
-  const PARTIAL = "Nothing malicious found. Some checks only partly ran.";
+  const GAPS = "No known malicious code found. Some checks couldn't run.";
+  const PARTIAL = "No known malicious code found. Some checks only partly ran.";
 
-  it("malicious clean and no gaps: green, 'Nothing malicious found.'", () => {
+  it("malicious clean, no gaps, nothing found: green, 'No known malicious code found.'", () => {
     expect(verdict([cat("malicious", "clean"), cat("tracking", "clean")])).toEqual({
       tone: "ok",
       text: CLEAN,
     });
-    // Checks that found something are the lanes' job: they do not change it.
+    expect(verdict([cat("malicious", "clean")])).toEqual({ tone: "ok", text: CLEAN });
+  });
+
+  // The dot must not be green under lanes that list findings.
+  it("malicious clean, no gaps, another check found something: neutral, the same sentence", () => {
     expect(verdict([cat("malicious", "clean"), cat("tracking", "issues")])).toEqual({
+      tone: "neutral",
+      text: CLEAN,
+    });
+    expect(
+      verdict([
+        cat("malicious", "clean"),
+        cat("tracking", "issues"),
+        cat("seo-ai", "issues"),
+        cat("store-data", "clean"),
+      ]),
+    ).toEqual({ tone: "neutral", text: CLEAN });
+  });
+
+  it("a gap wins over findings: amber, with the gap's sentence", () => {
+    expect(
+      verdict([cat("malicious", "clean"), cat("tracking", "issues"), cat("seo-ai", "not_checked")]),
+    ).toEqual({ tone: "warn", text: GAPS });
+    expect(
+      verdict([cat("malicious", "clean"), cat("tracking", "issues"), cat("seo-ai", "partial")]),
+    ).toEqual({ tone: "warn", text: PARTIAL });
+    // The malicious check not run: amber too, whatever else was found.
+    expect(verdict([cat("malicious", "not_checked"), cat("tracking", "issues")])).toEqual({
+      tone: "warn",
+      text: UNCHECKED,
+    });
+  });
+
+  it("a vintage theme (the theme row's 'issues') is a theme fact: the dot stays green", () => {
+    expect(
+      verdict([cat("malicious", "clean"), cat("tracking", "clean"), cat("theme", "issues")]),
+    ).toEqual({ tone: "ok", text: CLEAN });
+    expect(verdict([cat("malicious", "clean"), cat("unpublished-themes", "issues")])).toEqual({
       tone: "ok",
+      text: CLEAN,
+    });
+  });
+
+  it("reads hasIssues from the groups it is given", () => {
+    const groups = groupHealthRows([cat("malicious", "clean"), cat("tracking", "clean")]);
+    expect(themeHealthVerdict(groups)!.tone).toBe("ok");
+    expect(themeHealthVerdict({ ...groups, hasIssues: true })).toEqual({
+      tone: "neutral",
       text: CLEAN,
     });
   });
@@ -1117,9 +1163,9 @@ describe("themeHealthVerdict", () => {
   });
 
   // THE false-all-clear guard: only a malicious row that is exactly "clean"
-  // may be described as "nothing malicious found".
+  // may be described as "no known malicious code found".
   it.each(["not_checked", "partial"] as const)(
-    "malicious %s: amber, names the malicious check, never says nothing malicious was found",
+    "malicious %s: amber, names the malicious check, never says no known malicious code was found",
     (status) => {
       for (const others of [
         [],
@@ -1128,7 +1174,7 @@ describe("themeHealthVerdict", () => {
       ]) {
         const result = verdict([cat("malicious", status), ...others])!;
         expect(result).toEqual({ tone: "warn", text: UNCHECKED });
-        expect(result.text).not.toMatch(/nothing malicious/i);
+        expect(result.text).not.toMatch(/no known malicious code found/i);
       }
     },
   );
@@ -1142,11 +1188,11 @@ describe("themeHealthVerdict", () => {
     ]) {
       const result = verdict(rows)!;
       expect(result).toEqual({ tone: "warn", text: UNCHECKED });
-      expect(result.text).not.toMatch(/nothing malicious/i);
+      expect(result.text).not.toMatch(/no known malicious code found/i);
     }
   });
 
-  it("a malicious row with any other status is not 'nothing malicious found' either", () => {
+  it("a malicious row with any other status is not 'no known malicious code found' either", () => {
     expect(verdict([cat("malicious", "info"), cat("tracking", "clean")])).toEqual({
       tone: "warn",
       text: UNCHECKED,
@@ -1162,21 +1208,36 @@ describe("themeHealthVerdict", () => {
     expect(verdict([], line)).toBeNull();
   });
 
-  it("is green ONLY for malicious clean with no gap, over every pair of statuses", () => {
+  it("is green ONLY for malicious clean with no gap and no findings, over every triple of statuses", () => {
     const statuses = ["clean", "partial", "not_checked", "issues", "info"] as const;
+    const seen = new Set<string>();
     for (const malicious of statuses) {
-      for (const other of statuses) {
-        const result = verdict([cat("malicious", malicious), cat("tracking", other)]);
-        const where = `${malicious}/${other}`;
-        if (malicious === "issues") {
-          expect(result, where).toBeNull();
-          continue;
+      for (const a of statuses) {
+        for (const b of statuses) {
+          const result = verdict([
+            cat("malicious", malicious),
+            cat("tracking", a),
+            cat("seo-ai", b),
+          ]);
+          const where = `${malicious}/${a}/${b}`;
+          if (malicious === "issues") {
+            expect(result, where).toBeNull();
+            continue;
+          }
+          const others: string[] = [a, b];
+          const gap = others.includes("partial") || others.includes("not_checked");
+          const expected =
+            malicious !== "clean" || gap ? "warn" : others.includes("issues") ? "neutral" : "ok";
+          expect(result!.tone, where).toBe(expected);
+          expect(/no known malicious code found/i.test(result!.text), where).toBe(
+            malicious === "clean",
+          );
+          seen.add(result!.tone);
         }
-        const gap = other === "partial" || other === "not_checked";
-        expect(result!.tone, where).toBe(malicious === "clean" && !gap ? "ok" : "warn");
-        expect(/nothing malicious/i.test(result!.text), where).toBe(malicious === "clean");
       }
     }
+    // Not vacuous: every tone was reached.
+    expect([...seen].sort()).toEqual(["neutral", "ok", "warn"]);
   });
 
   it("never contains a digit, a score word, 'x of y' or an em dash", () => {
@@ -1207,7 +1268,33 @@ describe("themeHealthVerdict", () => {
       expect(real({})).toEqual({ tone: "ok", text: CLEAN });
     });
 
-    it("storefront unreadable: amber, nothing malicious found, some checks couldn't run", () => {
+    it("full coverage, findings in two categories: neutral, the same sentence", () => {
+      expect(real({ typeCounts: { GHOST_SCRIPT: 12, GHOST_PIXEL: 2 } })).toEqual({
+        tone: "neutral",
+        text: CLEAN,
+      });
+    });
+
+    it("full coverage, a vintage theme, no findings: still green", () => {
+      expect(real({ themeInfo: { ...DAWN, architecture: "vintage" } })).toEqual({
+        tone: "ok",
+        text: CLEAN,
+      });
+    });
+
+    it("findings AND an unreadable storefront: amber (the gap wins)", () => {
+      expect(
+        real({
+          typeCounts: { GHOST_SCRIPT: 12 },
+          coverage: {
+            ...FULL_COVERAGE,
+            unreachableCategories: ["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"],
+          },
+        }),
+      ).toEqual({ tone: "warn", text: GAPS });
+    });
+
+    it("storefront unreadable: amber, no known malicious code found, some checks couldn't run", () => {
       expect(
         real({
           coverage: {
@@ -1285,7 +1372,7 @@ describe("groupGapsByReason", () => {
     expect(groupGapsByReason(groupHealthRows(rows).gaps)).toEqual([
       {
         reason:
-          "We couldn't read your storefront homepage, for example because it has a password. Remove the password, then run a new scan.",
+          "We couldn't read your storefront homepage, for example because it has a password. Run a new scan once the homepage can be read.",
         labels: ["Liquid errors on your homepage", "Script tag deadline"],
       },
     ]);

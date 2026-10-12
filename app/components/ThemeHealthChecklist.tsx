@@ -14,6 +14,7 @@ import {
   COLOR_WARNING,
   CRIT_BD,
   CRIT_BG,
+  LANE_GREY_FILL,
   sectionCard,
   sectionHeader,
   SUCCESS_TEXT_STRONG,
@@ -56,7 +57,11 @@ const verdictLine: React.CSSProperties = {
   lineHeight: "20px",
   color: TEXT_PRIMARY,
 };
-const DOT_COLOR: Record<HealthVerdictTone, string> = { ok: COLOR_SUCCESS, warn: COLOR_WARNING };
+const DOT_COLOR: Record<HealthVerdictTone, string> = {
+  ok: COLOR_SUCCESS,
+  neutral: LANE_GREY_FILL,
+  warn: COLOR_WARNING,
+};
 
 const chipList: React.CSSProperties = {
   display: "flex",
@@ -181,9 +186,10 @@ function MaliciousLine({ row }: { row: HealthRow }) {
  *   - Known malicious code with findings: a critical line (see MaliciousLine).
  *     Home passes it as `malicious`, built from the scan's count alone, so it
  *     shows even when `rows` is empty. When it shows it IS the verdict.
- *   - Verdict: a dot and one sentence (themeHealthVerdict). It says nothing
- *     malicious was found ONLY when the malicious check ran in full and found
- *     nothing.
+ *   - Verdict: a dot and one sentence (themeHealthVerdict). It says no known
+ *     malicious code was found ONLY when the malicious check ran in full and
+ *     found nothing. The dot is green only when, as well, every check ran in
+ *     full and none found anything; grey when another check found something.
  *   - Chips: one per check that is clean (green) or did not fully run (amber).
  *     A check that FOUND something has no chip: its findings are in the lanes,
  *     and repeating them would duplicate the card above.
