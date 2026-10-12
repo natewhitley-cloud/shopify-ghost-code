@@ -147,7 +147,7 @@ export const REMOVAL_SAFETY_LABELS: Record<RemovalSafety, string> = {
   // app can match. This keeps the badge consistent with the per-type howTo copy
   // ("once you have confirmed the app is uninstalled"). Final wording pending
   // operator review.
-  "safe-to-remove": "Likely safe — confirm app removed",
+  "safe-to-remove": "Likely safe, confirm app removed",
   "verify-first": "Verify first",
   "leave-alone": "Leave in place",
 };

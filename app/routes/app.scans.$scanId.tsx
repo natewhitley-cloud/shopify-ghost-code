@@ -126,7 +126,6 @@ import { dismissUpgradeReturn, markUpgradeReturnShown } from "../services/upgrad
 import { authenticate } from "../shopify.server";
 import {
   BG_BADGE_SUCCESS,
-  BG_HOVER,
   BG_SURFACE,
   BG_WHITE,
   BORDER_DEFAULT,
@@ -144,10 +143,12 @@ import {
   hairline,
   htmlTableCss,
   sectionCard,
+  TABLE_BORDER_LIGHT,
   TEXT_DISABLED,
   TEXT_PRIMARY,
   TEXT_SUBDUED,
   styles,
+  visuallyHidden,
 } from "../styles/shared";
 
 // ---------------------------------------------------------------------------
@@ -547,7 +548,7 @@ const filterLabelStyle: React.CSSProperties = {
 };
 
 // ---------------------------------------------------------------------------
-// Shared finding table components
+// Shared finding list components
 // ---------------------------------------------------------------------------
 
 interface FindingLike {
@@ -564,8 +565,8 @@ interface FindingLike {
 }
 
 /**
- * Per-finding suppression control (E2.3), rendered inside the snippet cell only
- * in the paid findings table (gated by `FindingRow`'s `scanId` prop — the
+ * Per-finding suppression control (E2.3), rendered under the finding only
+ * in the paid findings list (gated by `FindingRow`'s `scanId` prop — the
  * free-tier preview row does not get it). Each control owns its own fetcher so
  * rows submit independently.
  *
@@ -598,7 +599,7 @@ function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
     background: BG_SURFACE,
     color: TEXT_SUBDUED,
     cursor: submitting ? "default" : "pointer",
-    whiteSpace: "nowrap",
+    maxWidth: "100%",
   };
 
   return (
@@ -620,6 +621,7 @@ function FindingIgnoreControls({ finding }: { finding: FindingLike }) {
           borderRadius: "4px",
           fontSize: "12px",
           width: "160px",
+          maxWidth: "100%",
         }}
       />
       <button
@@ -752,150 +754,205 @@ export function FindingRow({
     shopDomain && isAdminResourceFinding(finding.findingType)
       ? buildAdminResourceUrl(shopDomain, finding.findingType, finding.filename)
       : null;
+  const typeLabel =
+    FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ");
+  const impact = getFindingImpact(finding.findingType);
   return (
-    <tr id={anchor && finding.id ? findingAnchorId(finding.id) : undefined}>
-      <td>
-        <div style={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: "6px" }}>
-          <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
-          {isNew && <span style={styles.newBadge}>NEW</span>}
-          {finding.isTracker && <span style={styles.trackerBadge}>TRACKING</span>}
-          {isVisual && <span style={styles.visualBadge}>VISUAL</span>}
-          {confidence === "signature" ? (
-            <span style={styles.signatureBadge} title="Matched against a known app signature">
-              High confidence
-            </span>
-          ) : (
-            <span
-              style={styles.heuristicBadge}
-              title="Structurally inferred, not a known app-signature match. Review before removing."
-            >
-              Heuristic
-            </span>
+    <li id={anchor && finding.id ? findingAnchorId(finding.id) : undefined} style={findingItem}>
+      {/* Title: what it is and whose it is, with the severity on the right. The
+          old table's column headers gave screen readers "App" and "Severity"
+          for free; the hidden labels keep that context. */}
+      <div style={findingTitleRow}>
+        <h3 style={findingTitle}>
+          {typeLabel}
+          {finding.appName && (
+            <>
+              <span aria-hidden="true"> · </span>
+              <span style={visuallyHidden}>, app: </span>
+              {finding.appName}
+            </>
           )}
-          <s-badge tone={safetyTone(safety)}>{REMOVAL_SAFETY_LABELS[safety]}</s-badge>
+        </h3>
+        <div style={{ flexShrink: 0 }}>
+          <span style={visuallyHidden}>Severity: </span>
+          <s-badge tone={severityTone(finding.severity)}>{finding.severity}</s-badge>
         </div>
-      </td>
-      <td>{FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ")}</td>
-      <td>
-        {isAdminResourceFinding(finding.findingType) ? (
-          // Admin-resource rows carry a synthetic locator with an embedded GID
-          // (developer plumbing), so show a human label instead of the raw path.
-          <span style={{ fontSize: "12px" }}>
-            {adminResourceLocatorLabel(finding.findingType, finding.filename)}
-          </span>
-        ) : (
-          // Theme-file rows: the filename is a real, editable theme path — show it verbatim.
-          <code style={{ fontSize: "12px" }}>{finding.filename}</code>
-        )}
+      </div>
+
+      {/* Location: file (or the Admin resource), line, and the deep link. */}
+      <div style={findingLocation}>
+        <span style={findingWrap}>
+          <span style={visuallyHidden}>File: </span>
+          {isAdminResourceFinding(finding.findingType) ? (
+            // Admin-resource findings carry a synthetic locator with an embedded GID
+            // (developer plumbing), so show a human label instead of the raw path.
+            <span>{adminResourceLocatorLabel(finding.findingType, finding.filename)}</span>
+          ) : (
+            // Theme-file findings: the filename is a real, editable theme path — show it verbatim.
+            <code style={findingWrap}>{finding.filename}</code>
+          )}
+        </span>
+        <span>Line {finding.lineNumber}</span>
         {themeEditorUrl && (
-          <div style={{ marginTop: "4px" }}>
-            <a href={themeEditorUrl} target="_top" rel="noreferrer" style={{ fontSize: "12px" }}>
-              Open in theme editor
-            </a>
-          </div>
+          <a href={themeEditorUrl} target="_top" rel="noreferrer">
+            Open in theme editor
+          </a>
         )}
         {adminResourceUrl && (
-          <div style={{ marginTop: "4px" }}>
-            <a href={adminResourceUrl} target="_top" rel="noreferrer" style={{ fontSize: "12px" }}>
-              {adminResourceLinkLabel(finding.findingType)}
-            </a>
-          </div>
+          <a href={adminResourceUrl} target="_top" rel="noreferrer">
+            {adminResourceLinkLabel(finding.findingType)}
+          </a>
         )}
-      </td>
-      <td style={{ textAlign: "center" }}>{finding.lineNumber}</td>
-      <td>{finding.appName ?? "—"}</td>
-      <td>
-        <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
-          <div style={{ display: "flex", alignItems: "flex-start", gap: "8px" }}>
-            <code style={{ fontSize: "12px", wordBreak: "break-word", flex: 1 }}>
-              {finding.codeSnippet.length > 80
-                ? `${finding.codeSnippet.slice(0, 80)}…`
-                : finding.codeSnippet}
-            </code>
-            <CopyButton text={finding.codeSnippet} />
-          </div>
-          {getFindingImpact(finding.findingType) && (
-            <div
-              style={{
-                fontSize: "12px",
-                color: TEXT_SUBDUED,
-                lineHeight: 1.4,
-              }}
-            >
-              <strong style={{ color: TEXT_PRIMARY, fontWeight: 600 }}>Why it matters: </strong>
-              {getFindingImpact(finding.findingType)}
-            </div>
-          )}
-          <div
-            style={{
-              fontSize: "12px",
-              color: TEXT_SUBDUED,
-              lineHeight: 1.4,
-            }}
+      </div>
+
+      <div style={findingBadges}>
+        {isNew && <span style={styles.newBadge}>NEW</span>}
+        {finding.isTracker && <span style={styles.trackerBadge}>TRACKING</span>}
+        {isVisual && <span style={styles.visualBadge}>VISUAL</span>}
+        {confidence === "signature" ? (
+          <span style={styles.signatureBadge} title="Matched against a known app signature">
+            High confidence
+          </span>
+        ) : (
+          <span
+            style={styles.heuristicBadge}
+            title="Structurally inferred, not a known app-signature match. Review before removing."
           >
-            <strong style={{ color: TEXT_PRIMARY, fontWeight: 600 }}>How to remove: </strong>
-            {getFindingRemediation(finding.findingType)}
-          </div>
-          {/* Copy a precise, self-contained removal instruction for THIS finding
-            (file + line + full snippet + how-to) to the clipboard. Detection-only:
-            this never writes to the theme, it just hands the merchant something
-            exact to act on. */}
-          <div>
-            <CopyButton
-              text={buildRemovalInstructions(
-                finding,
-                FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " "),
-              )}
-              label="Copy removal instructions"
-              copiedLabel="Copied instructions"
-              ariaLabel="Copy removal instructions for this finding"
-            />
-          </div>
-          {/* Suppression control — only in the paid findings table (scanId set)
-            and only when the finding has a stable id to fingerprint from. */}
-          {scanId && finding.id && <FindingIgnoreControls finding={finding} />}
+            Heuristic
+          </span>
+        )}
+        <s-badge tone={safetyTone(safety)}>{REMOVAL_SAFETY_LABELS[safety]}</s-badge>
+      </div>
+
+      <div style={findingSnippet}>
+        <code style={findingSnippetCode}>
+          {finding.codeSnippet.length > 80
+            ? `${finding.codeSnippet.slice(0, 80)}…`
+            : finding.codeSnippet}
+        </code>
+        <CopyButton text={finding.codeSnippet} />
+      </div>
+      {impact && (
+        <div style={findingNote}>
+          <strong style={findingNoteLabel}>Why it matters: </strong>
+          {impact}
         </div>
-      </td>
-    </tr>
+      )}
+      <div style={findingNote}>
+        <strong style={findingNoteLabel}>How to remove: </strong>
+        {getFindingRemediation(finding.findingType)}
+      </div>
+      {/* Copy a precise, self-contained removal instruction for THIS finding
+          (file + line + full snippet + how-to) to the clipboard. Detection-only:
+          this never writes to the theme, it just hands the merchant something
+          exact to act on. */}
+      <div style={findingActions}>
+        <CopyButton
+          text={buildRemovalInstructions(finding, typeLabel)}
+          label="Copy removal instructions"
+          copiedLabel="Copied instructions"
+          ariaLabel="Copy removal instructions for this finding"
+        />
+        {/* Suppression control — only in the paid findings list (scanId set)
+            and only when the finding has a stable id to fingerprint from. */}
+        {scanId && finding.id && <FindingIgnoreControls finding={finding} />}
+      </div>
+    </li>
   );
 }
 
-const FINDINGS_TABLE_STYLES = `
-  ${htmlTableCss("findings-table")}
-  .findings-table thead th {
-    white-space: nowrap;
-    position: sticky;
-    top: 0;
-    border-bottom: 2px solid ${BORDER_STRONG};
-  }
-  .findings-table tbody tr:hover {
-    background: ${BG_HOVER};
-  }
-  .findings-table td:nth-child(1) { width: 80px; }
-  .findings-table td:nth-child(2) { width: 100px; white-space: nowrap; }
-  .findings-table td:nth-child(3) { width: 200px; }
-  .findings-table td:nth-child(4) { width: 50px; text-align: center; }
-  .findings-table td:nth-child(5) { width: 100px; }
-  .findings-table td:nth-child(6) { max-width: 520px; }
+// Finding item styles. The findings used to be a six-column table with fixed
+// column widths, which was wider than the page at embedded-admin widths. Each
+// finding is now a block whose content wraps: no fixed widths, every flex child
+// may shrink (`minWidth: 0`), and long paths and code break anywhere.
+const findingWrap: React.CSSProperties = { minWidth: 0, overflowWrap: "anywhere" };
+
+const findingItem: React.CSSProperties = {
+  ...findingWrap,
+  display: "flex",
+  flexDirection: "column",
+  gap: "8px",
+  padding: "16px 0",
+};
+
+const findingTitleRow: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  justifyContent: "space-between",
+  gap: "12px",
+};
+
+const findingTitle: React.CSSProperties = {
+  ...findingWrap,
+  margin: 0,
+  fontSize: "15px",
+  fontWeight: 600,
+  color: TEXT_PRIMARY,
+};
+
+const findingLocation: React.CSSProperties = {
+  ...findingWrap,
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "baseline",
+  gap: "2px 12px",
+  fontSize: "13px",
+  color: TEXT_SUBDUED,
+};
+
+const findingBadges: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "6px",
+};
+
+const findingSnippet: React.CSSProperties = {
+  display: "flex",
+  alignItems: "flex-start",
+  gap: "8px",
+  padding: "8px 10px",
+  borderRadius: "8px",
+  background: BG_SURFACE,
+};
+
+const findingSnippetCode: React.CSSProperties = {
+  ...findingWrap,
+  flex: 1,
+  fontSize: "12px",
+};
+
+const findingNote: React.CSSProperties = {
+  ...findingWrap,
+  fontSize: "13px",
+  color: TEXT_SUBDUED,
+  lineHeight: 1.4,
+};
+
+const findingNoteLabel: React.CSSProperties = { color: TEXT_PRIMARY, fontWeight: 600 };
+
+const findingActions: React.CSSProperties = {
+  display: "flex",
+  flexWrap: "wrap",
+  alignItems: "center",
+  gap: "8px",
+};
+
+// Dividers and edge padding depend on an item's position, so they live here
+// rather than in the inline item style.
+const FINDINGS_LIST_STYLES = `
+  .findings-list { list-style: none; margin: 0; padding: 0; min-width: 0; }
+  .findings-list > li + li { border-top: 1px solid ${TABLE_BORDER_LIGHT}; }
+  .findings-list > li:first-child { padding-top: 0; }
+  .findings-list > li:last-child { padding-bottom: 0; }
 `;
 
+/** The list of findings: a real list, one `FindingRow` item per finding. */
 function FindingsTable({ children }: { children: React.ReactNode }) {
   return (
     <>
-      <style>{FINDINGS_TABLE_STYLES}</style>
-      <table className="findings-table">
-        <thead>
-          <tr>
-            <th>Severity</th>
-            <th>Type</th>
-            <th>File</th>
-            <th>Line</th>
-            <th>App</th>
-            <th>Snippet</th>
-          </tr>
-        </thead>
-        <tbody>{children}</tbody>
-      </table>
+      <style>{FINDINGS_LIST_STYLES}</style>
+      <ul className="findings-list">{children}</ul>
     </>
   );
 }
@@ -2356,15 +2413,17 @@ export default function ScanDetail() {
             </div>
           )}
 
-        {/* Findings detail table — only shown for completed scans */}
+        {/* Findings detail list — only shown for completed scans */}
         {isCompleted &&
           (canViewDetails ? (
             <div>
-              <s-card>
+              <div style={{ ...sectionCard, marginBottom: 0 }}>
                 <s-stack direction="block" gap="base">
                   <div
                     style={{
                       display: "flex",
+                      flexWrap: "wrap",
+                      gap: "8px",
                       justifyContent: "space-between",
                       alignItems: "center",
                     }}
@@ -2538,7 +2597,7 @@ export default function ScanDetail() {
                     </>
                   )}
                 </s-stack>
-              </s-card>
+              </div>
             </div>
           ) : previewFindings.length === 0 && !upgradePreview && !upgradeReturn ? (
             /* Free tier, no findings beyond any malicious ones (shown above) */
@@ -2575,11 +2634,11 @@ export default function ScanDetail() {
                 </s-stack>
               </s-card>
 
-              {/* Preview rows (gc-97k.10), shown as a mini data table. None when
+              {/* Preview rows (gc-97k.10), shown as a short findings list. None when
                 every finding is a plan-withheld type (a downgraded shop's Broken
                 links), and then the card holds only the teaser. */}
               {(previewFindings.length > 0 || upgradePreview) && (
-                <s-card>
+                <div style={{ ...sectionCard, marginBottom: 0 }}>
                   <s-stack direction="block" gap="base">
                     {previewFindings.length > 0 && (
                       <>
@@ -2608,7 +2667,7 @@ export default function ScanDetail() {
                       />
                     )}
                   </s-stack>
-                </s-card>
+                </div>
               )}
             </>
           ))}

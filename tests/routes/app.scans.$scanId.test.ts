@@ -148,6 +148,8 @@ vi.mock("../../app/services/upgrade-preview-nudge.server", () => ({
 
 import { getPlanFeatures } from "../../app/lib/billing.server";
 import { laneLabelForLane, soWhatForLane, typesForLane } from "../../app/lib/finding-consequence";
+import { getFindingImpact } from "../../app/lib/finding-remediation";
+import { REMOVAL_SAFETY_LABELS } from "../../app/lib/finding-safety";
 import { comparePreviewCandidates, pickFreePreviewFindings } from "../../app/lib/free-preview";
 import { logger } from "../../app/lib/logger.server";
 import {
@@ -2479,6 +2481,16 @@ describe("app.scans.$scanId loader", () => {
       );
       expect(hrefs).toEqual(["finding-mal", "finding-script-1", "finding-snippet"]);
       for (const id of hrefs) expect(html.match(new RegExp(`id="${id}"`, "g"))).toHaveLength(1);
+      // Each anchor is a finding list item (the security alert and the preview).
+      for (const id of hrefs) expect(html).toContain(`<li id="${id}" `);
+      expect(html.match(/<ul class="findings-list">/g)).toHaveLength(2);
+      expect(html).not.toContain("findings-table");
+      expect(html).not.toContain("<table");
+      // The preview sits in a white card like Home's; Free gets no ignore controls.
+      expect(html).toMatch(
+        /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><s-heading>Preview: Top 5 Findings/,
+      );
+      expect(html).not.toMatch(/Ignore this finding|Ignore all from|name="findingId"/);
       // The block sits above the preview list.
       expect(html.indexOf("Start here")).toBeLessThan(html.indexOf("Preview: Top 5 Findings"));
     });
@@ -2495,7 +2507,17 @@ describe("app.scans.$scanId loader", () => {
       const html = await renderPage();
 
       expect(html).toContain('href="/app/scans/scan-1?type=GHOST_SCRIPT#finding-script-1"');
-      expect(html).toContain('id="finding-script-1"');
+      expect(html).toContain('<li id="finding-script-1" ');
+      // One list of findings in a white card like Home's, and no findings table.
+      expect(html.match(/<ul class="findings-list">/g)).toHaveLength(1);
+      expect(html.match(/<li id="finding-/g)).toHaveLength(MANY.length);
+      expect(html).not.toContain("findings-table");
+      expect(html).not.toMatch(/<th>(Severity|Type|File|Line|App|Snippet)<\/th>/);
+      expect(html).toMatch(
+        /<div style="background:#ffffff;border-radius:12px;padding:20px;margin-bottom:0;box-shadow:[^"]*"><s-stack direction="block" gap="base"><div style="[^"]*"><h2 class="scan-section-title">Findings<\/h2>/,
+      );
+      // Paid rows carry the ignore controls.
+      expect(html.match(/>Ignore this finding</g)).toHaveLength(MANY.length);
       expect(html.indexOf("Start here")).toBeLessThan(html.indexOf(">Findings</h2>"));
     });
 
@@ -3298,20 +3320,24 @@ describe("nextFindingsFilterParams", () => {
 // FindingRow rendering — removal guidance + copy-to-clipboard (gc-06e.11)
 //
 // Rendered to static markup so we can assert the remediation blurb and the
-// copy control both appear. The row is wrapped in a table to keep the markup
-// valid (a bare <tr> would warn about DOM nesting).
+// copy control both appear. A finding is a list item, so it is wrapped in a
+// list to keep the markup valid. With a scanId the item renders the ignore
+// controls, whose fetcher needs a router.
 // ---------------------------------------------------------------------------
 
+function renderFindingItem(finding: Record<string, unknown>, props: Record<string, unknown> = {}) {
+  const Stub = createRoutesStub([
+    {
+      path: "/app/scans/:scanId",
+      Component: () =>
+        createElement("ul", null, createElement(FindingRow, { finding, ...props } as never)),
+    },
+  ]);
+  return renderToStaticMarkup(createElement(Stub, { initialEntries: ["/app/scans/scan-1"] }));
+}
+
 describe("FindingRow — removal guidance + copy button", () => {
-  function renderRow(finding: Record<string, unknown>) {
-    return renderToStaticMarkup(
-      createElement(
-        "table",
-        null,
-        createElement("tbody", null, createElement(FindingRow, { finding } as never)),
-      ),
-    );
-  }
+  const renderRow = (finding: Record<string, unknown>) => renderFindingItem(finding);
 
   it("renders the per-type remediation guidance for the finding", () => {
     const html = renderRow(FINDING_ONE);
@@ -3349,6 +3375,192 @@ describe("FindingRow — removal guidance + copy button", () => {
     const html = renderRow({ ...FINDING_ONE, findingType: "SETTINGS_DRIFT" });
     expect(html).toContain(">Heuristic<");
     expect(html).not.toContain("High confidence");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FindingRow as a list item — the findings used to be a six-column table that
+// was wider than the page. Each finding is now a block whose content wraps.
+// There is no layout engine here, so these assert the structural guarantees
+// the layout relies on, not pixels.
+// ---------------------------------------------------------------------------
+
+describe("FindingRow — list item that cannot overflow", () => {
+  const PAID = { scanId: "scan-1", shopDomain: "test-shop.myshopify.com", themeId: "123456789" };
+  const TRACKER = { ...FINDING_ONE, isTracker: true };
+
+  it("is a list item, not a table row", () => {
+    const html = renderFindingItem(TRACKER, PAID);
+    expect(html).toMatch(/^<ul><li /);
+    expect(html).not.toMatch(/<table|<thead|<tbody|<tr|<td|<th/);
+    expect(html).not.toContain("findings-table");
+  });
+
+  it("renders type, app, file, line, severity, snippet and removal text, each labelled in text", () => {
+    const html = renderFindingItem(TRACKER, PAID);
+    // Type and app are the title; the app and severity are named for screen readers.
+    const title = html.match(/<h3[^>]*>([\s\S]*?)<\/h3>/)?.[1] ?? "";
+    expect(title.replace(/<[^>]+>/g, "")).toBe("Scripts · , app: SomeApp");
+    expect(title).toContain('<span aria-hidden="true"> · </span>');
+    expect(html).toMatch(
+      /<span style="[^"]*clip:[^"]*">Severity: <\/span><s-badge tone="critical">HIGH<\/s-badge>/,
+    );
+    // Location: the file and the line, both in text.
+    expect(html).toMatch(/File: <\/span><code[^>]*>layout\/theme\.liquid<\/code>/);
+    expect(html).toContain("<span>Line 42</span>");
+    // Snippet with its copy button, the guidance and the removal-instructions copy.
+    expect(html).toMatch(/<code[^>]*>&lt;script src=&quot;https:\/\/cdn\.someapp\.com/);
+    expect(html).toContain('aria-label="Copy code snippet"');
+    // GHOST_SCRIPT has no separate impact line; a type that has one shows it.
+    expect(html).not.toContain("Why it matters: ");
+    const impact = getFindingImpact("GHOST_CANONICAL");
+    expect(impact).toBeTruthy();
+    const withImpact = renderFindingItem({ ...TRACKER, findingType: "GHOST_CANONICAL" }, PAID);
+    expect(withImpact.replace(/&#x27;/g, "'")).toContain(`Why it matters: </strong>${impact}`);
+    expect(html).toContain("How to remove: ");
+    expect(html).toContain('aria-label="Copy removal instructions for this finding"');
+    expect(html).toContain(">Copy removal instructions<");
+  });
+
+  it("a finding with no app names only its type (no dash placeholder)", () => {
+    const html = renderFindingItem({ ...FINDING_ONE, appName: null }, PAID);
+    expect(html).toMatch(/<h3[^>]*>Scripts<\/h3>/);
+    expect(html).not.toContain("app: ");
+    expect(html).not.toContain("Ignore all from");
+  });
+
+  it("keeps every badge: severity tone, NEW, TRACKING, VISUAL, confidence and removal safety", () => {
+    const html = renderFindingItem(
+      { ...TRACKER, severity: "MEDIUM", isVisual: true },
+      { ...PAID, isNew: true },
+    );
+    expect(html).toContain('<s-badge tone="warning">MEDIUM</s-badge>');
+    expect(html).toMatch(/<span style="[^"]*">NEW<\/span>/);
+    expect(html).toMatch(/<span style="[^"]*">TRACKING<\/span>/);
+    expect(html).toMatch(/<span style="[^"]*">VISUAL<\/span>/);
+    expect(html).toMatch(
+      /<span style="[^"]*" title="Matched against a known app signature">High confidence<\/span>/,
+    );
+    expect(html).toContain('<s-badge tone="success">Likely safe, confirm app removed</s-badge>');
+
+    const plain = renderFindingItem({ ...FINDING_ONE, severity: "LOW", isVisual: false }, PAID);
+    expect(plain).toContain('<s-badge tone="info">LOW</s-badge>');
+    expect(plain).not.toMatch(/>NEW<|>TRACKING<|>VISUAL</);
+
+    const drift = renderFindingItem({ ...FINDING_ONE, findingType: "SETTINGS_DRIFT" }, PAID);
+    expect(drift).toContain(
+      'title="Structurally inferred, not a known app-signature match. Review before removing."',
+    );
+    expect(drift).toContain('<s-badge tone="neutral">Leave in place</s-badge>');
+    expect(renderFindingItem({ ...FINDING_ONE, findingType: "GHOST_PIXEL" }, PAID)).toContain(
+      '<s-badge tone="caution">Verify first</s-badge>',
+    );
+  });
+
+  it("the safety label and the item have no em dash", () => {
+    for (const label of Object.values(REMOVAL_SAFETY_LABELS)) expect(label).not.toContain("—");
+    // No ignore controls here: this is the markup every plan sees.
+    expect(
+      renderFindingItem(TRACKER, { shopDomain: PAID.shopDomain, themeId: PAID.themeId }),
+    ).not.toContain("—");
+  });
+
+  it("the anchor id is on the item, and only when asked for", () => {
+    expect(renderFindingItem(FINDING_ONE, { ...PAID, anchor: true })).toMatch(
+      /^<ul><li id="finding-f-1" /,
+    );
+    expect(renderFindingItem(FINDING_ONE, PAID)).not.toContain('id="finding-');
+    expect(
+      renderFindingItem({ ...FINDING_ONE, id: undefined }, { ...PAID, anchor: true }),
+    ).not.toContain('id="finding-');
+  });
+
+  it("links a theme-file finding to the theme editor, top-level, and only with a shop domain", () => {
+    const html = renderFindingItem(FINDING_ONE, PAID);
+    const link = html.match(
+      /<a href="([^"]+)" target="_top" rel="noreferrer">Open in theme editor<\/a>/,
+    );
+    expect(link?.[1]).toContain("test-shop");
+    expect(link?.[1]).toContain("123456789");
+    expect(link?.[1]).toContain("layout%2Ftheme.liquid");
+    expect(renderFindingItem(FINDING_ONE, { scanId: "scan-1" })).not.toContain(
+      "Open in theme editor",
+    );
+  });
+
+  it("links an Admin-resource finding to its resource and shows a label, not the raw locator", () => {
+    const html = renderFindingItem(
+      { ...FINDING_ONE, findingType: "GHOST_PAGE", filename: "pages/old-promo" },
+      PAID,
+    );
+    expect(html).toMatch(/<a href="[^"]+" target="_top" rel="noreferrer">[^<]+<\/a>/);
+    expect(html).not.toContain("Open in theme editor");
+    expect(html).toContain("<span>Page: /pages/old-promo</span>");
+    expect(html).not.toMatch(/<code[^>]*>pages\/old-promo/);
+  });
+
+  it("ignore controls appear only in the paid list (scanId) for a finding with an id", () => {
+    const paid = renderFindingItem(FINDING_ONE, PAID);
+    expect(paid).toContain('<input type="hidden" name="findingId" value="f-1"/>');
+    expect(paid).toContain('aria-label="Reason for ignoring (optional)"');
+    expect(paid).toMatch(
+      /<button type="submit" name="intent" value="ignore-instance"[^>]*>Ignore this finding<\/button>/,
+    );
+    expect(paid).toMatch(
+      /<button type="submit" name="intent" value="ignore-app"[^>]*>Ignore all from SomeApp<\/button>/,
+    );
+
+    // Free preview and the security alert pass no scanId.
+    const free = renderFindingItem(FINDING_ONE, { shopDomain: PAID.shopDomain, anchor: true });
+    expect(free).not.toMatch(/Ignore this finding|Ignore all from|name="reason"|<form/);
+    // No stable id to fingerprint from.
+    expect(renderFindingItem({ ...FINDING_ONE, id: undefined }, PAID)).not.toContain("<form");
+    // Already ignored: the note and the manage link, not the buttons.
+    const ignored = renderFindingItem({ ...FINDING_ONE, isIgnored: true }, PAID);
+    expect(ignored).toContain(">Ignored</span>");
+    expect(ignored).toContain('href="/app/ignored"');
+    expect(ignored).not.toContain("Ignore this finding");
+  });
+
+  it("nothing in the item can force its width: no fixed or minimum widths, no nowrap text", () => {
+    const html = renderFindingItem(
+      { ...TRACKER, isVisual: true, filename: `sections/${"a".repeat(300)}.liquid` },
+      { ...PAID, isNew: true, anchor: true },
+    );
+    const styleAttrs = [...html.matchAll(/<(\w+)[^>]*? style="([^"]*)"/g)].map((m) => ({
+      tag: m[1],
+      style: m[2],
+    }));
+    expect(styleAttrs.length).toBeGreaterThan(10);
+    for (const { tag, style } of styleAttrs) {
+      // Screen-reader-only labels are 1px and out of flow; they cannot widen anything.
+      if (/position:absolute/.test(style)) continue;
+      expect(style, `${tag} must not set a min-width above 0`).not.toMatch(/min-width:(?!0)/);
+      const width = style.match(/(?:^|;)width:([^;]+)/)?.[1];
+      // The only fixed widths are the reason input, capped to its container...
+      if (width) expect(style, `${tag} width ${width} must be capped`).toContain("max-width:100%");
+      // ...and the only nowrap text is the two short Copy button labels.
+      if (/white-space:nowrap/.test(style)) expect(tag).toBe("button");
+    }
+    // The item, its title, the location line, the file path, the snippet and
+    // the notes all wrap anywhere and may shrink inside their flex rows.
+    const wraps = (re: RegExp) =>
+      expect(html.match(re)?.[1]).toMatch(/min-width:0;overflow-wrap:anywhere/);
+    wraps(/<li id="finding-f-1" style="([^"]*)"/);
+    wraps(/<h3 style="([^"]*)"/);
+    wraps(/<code style="([^"]*)">sections\//);
+    wraps(/<code style="([^"]*)">&lt;script/);
+    wraps(/<div style="([^"]*)"><strong[^>]*>How to remove: /);
+    // The rows that hold several things wrap onto further lines.
+    expect(html).toMatch(/<div style="[^"]*flex-wrap:wrap[^"]*"><span style="[^"]*">NEW<\/span>/);
+    expect(html).toMatch(
+      /<div style="[^"]*flex-wrap:wrap[^"]*"><button[^>]*aria-label="Copy removal instructions/,
+    );
+    expect(html).toMatch(/<form[^>]*style="[^"]*flex-wrap:wrap/);
+    // The ignore buttons are allowed to wrap their label (long app names).
+    expect(html).toMatch(
+      /<button type="submit" name="intent" value="ignore-app"[^>]*style="[^"]*max-width:100%/,
+    );
   });
 });
 

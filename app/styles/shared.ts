@@ -457,26 +457,19 @@ export const styles = {
 } as const;
 
 // ---------------------------------------------------------------------------
-// CSS string helpers (for <style> blocks and FINDINGS_TABLE_STYLES constants)
+// CSS string helpers (for <style> blocks)
 // ---------------------------------------------------------------------------
 
 /**
  * Generates compact HTML-table CSS for the given class name.
  *
- * Covers the common base used by the findings table, app-impact-map table,
- * and unknown-scripts table: dimensions, th/td borders and padding, header
- * background, and even-row striping.
- *
- * The findings table extends this with sticky positioning, a stronger header
- * bottom border, hover styling, and per-column widths — add those rules after
- * calling this helper.
+ * Covers the common base used by the app-impact-map table and the
+ * unknown-scripts table: dimensions, th/td borders and padding, header
+ * background, and even-row striping. Add table-specific rules after calling
+ * this helper.
  *
  * Usage:
- *   const FINDINGS_TABLE_STYLES = `
- *     ${htmlTableCss("findings-table")}
- *     .findings-table thead th { position: sticky; top: 0; border-bottom: 2px solid ${BORDER_STRONG}; }
- *     ...
- *   `;
+ *   <style>{htmlTableCss("app-map-table")}</style>
  */
 export function htmlTableCss(className: string): string {
   return `
