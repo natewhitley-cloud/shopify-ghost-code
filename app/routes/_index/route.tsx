@@ -47,8 +47,8 @@ export default function App() {
             file and line so you know exactly what to review.
           </li>
           <li>
-            <strong>Stay clean automatically.</strong> Professional plan shops get a scan every
-            week, plus an instant rescan whenever a theme is published, so leftover code never
+            <strong>Stay on top of it automatically.</strong> Professional plan shops get a scan
+            every week, plus an instant rescan whenever a theme is published, so leftover code never
             accumulates unnoticed.
           </li>
         </ul>
