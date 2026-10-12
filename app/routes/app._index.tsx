@@ -1393,7 +1393,7 @@ export default function Dashboard() {
               {mainTheme ? (
                 <s-paragraph>
                   Your active theme is <strong>{mainTheme.name}</strong>. GhostCode will scan that
-                  theme for ghost code left behind by uninstalled apps.
+                  theme for leftover code from uninstalled apps.
                 </s-paragraph>
               ) : (
                 <s-paragraph>

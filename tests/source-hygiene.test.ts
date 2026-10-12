@@ -37,29 +37,40 @@ describe("source hygiene", () => {
 
 /**
  * Brand-name guard: the product is "GhostCode" (one word) everywhere a merchant
- * sees it. Fails if the two-word form (capital G, capital C) comes back.
+ * sees it. Fails if the two-word form (capital G, capital C) comes back, or if
+ * the two words are used in any letter case as a plain phrase for what the
+ * scanner finds: merchant copy says "leftover code" for that.
  *
  * Scope: every non-comment line of the .ts/.tsx files under app/ (routes,
  * components, lib, and the services that build emails and the PDF), which
  * covers string literals and JSX text alike.
  * Not checked: comment lines (starting with `//`, `*`, `/*` or `{/*`), which
- * merchants never see; lower-case "ghost code", the common noun for leftover
- * code; and inngest/, whose only use is an Inngest function's internal name.
+ * merchants never see; a phrase split across two lines; and inngest/, whose
+ * only use is an Inngest function's internal name.
  * A trailing comment on a code line IS checked: reword it.
  */
+function appCodeLinesMatching(pattern: RegExp): string[] {
+  return sourceFiles(join(REPO_ROOT, "app"))
+    .filter((path) => /\.tsx?$/.test(path))
+    .flatMap((path) =>
+      readFileSync(path, "utf8")
+        .split("\n")
+        .map((line, i) => ({ line, where: `${path.slice(REPO_ROOT.length)}:${i + 1}` }))
+        .filter(({ line }) => !/^\s*(?:\/\/|\*|\/\*|\{\/\*)/.test(line))
+        .filter(({ line }) => pattern.test(line))
+        .map(({ where }) => where),
+    );
+}
+
 describe("brand name", () => {
   it('merchant copy under app/ says "GhostCode", never the two-word form', () => {
-    const twoWords = ["Ghost", "Code"].join(" ");
-    const offenders = sourceFiles(join(REPO_ROOT, "app"))
-      .filter((path) => /\.tsx?$/.test(path))
-      .flatMap((path) =>
-        readFileSync(path, "utf8")
-          .split("\n")
-          .map((line, i) => ({ line, where: `${path.slice(REPO_ROOT.length)}:${i + 1}` }))
-          .filter(({ line }) => !/^\s*(?:\/\/|\*|\/\*|\{\/\*)/.test(line))
-          .filter(({ line }) => line.includes(twoWords))
-          .map(({ where }) => where),
-      );
-    expect(offenders).toEqual([]);
+    expect(appCodeLinesMatching(/Ghost Code/)).toEqual([]);
+  });
+
+  it('merchant copy under app/ says "leftover code", never the two words as a plain phrase', () => {
+    expect(
+      appCodeLinesMatching(/ghost\s+code/i),
+      'Write "leftover code" (or "GhostCode" for the product name) on these lines',
+    ).toEqual([]);
   });
 });

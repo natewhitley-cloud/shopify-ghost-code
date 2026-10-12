@@ -2672,7 +2672,7 @@ export default function ScanDetail() {
                     findingSummary.total > 0 ? (
                       <s-paragraph>No findings match these filters.</s-paragraph>
                     ) : (
-                      <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+                      <s-paragraph>No leftover code detected in this scan.</s-paragraph>
                     )
                   ) : (
                     <>
@@ -2712,7 +2712,7 @@ export default function ScanDetail() {
             /* Free tier, no findings beyond any malicious ones (shown above) */
             maliciousFindings.length === 0 && (
               <s-card>
-                <s-paragraph>No ghost code detected in this scan.</s-paragraph>
+                <s-paragraph>No leftover code detected in this scan.</s-paragraph>
               </s-card>
             )
           ) : (

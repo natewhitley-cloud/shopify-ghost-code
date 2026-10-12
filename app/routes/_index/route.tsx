@@ -48,7 +48,7 @@ export default function App() {
           </li>
           <li>
             <strong>Stay clean automatically.</strong> Professional plan shops get a scan every
-            week, plus an instant rescan whenever a theme is published, so ghost code never
+            week, plus an instant rescan whenever a theme is published, so leftover code never
             accumulates unnoticed.
           </li>
         </ul>

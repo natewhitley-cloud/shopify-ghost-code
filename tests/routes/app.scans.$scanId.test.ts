@@ -2614,7 +2614,7 @@ describe("app.scans.$scanId loader", () => {
       const html = await renderPage();
 
       expect(html).not.toContain("Start here");
-      expect(html).toContain("No ghost code detected in this scan.");
+      expect(html).toContain("No leftover code detected in this scan.");
     });
 
     it("a downgraded Free shop never sees old plan-gated findings in full (preview or top 3)", async () => {
@@ -2651,7 +2651,7 @@ describe("app.scans.$scanId loader", () => {
       const html = await renderPage();
 
       expect(html).not.toContain("top-findings-heading");
-      expect(html).not.toContain("No ghost code detected");
+      expect(html).not.toContain("No leftover code detected");
       expect(html).not.toContain("<table");
       expect(html).toContain("1 more finding on Standard");
     });
