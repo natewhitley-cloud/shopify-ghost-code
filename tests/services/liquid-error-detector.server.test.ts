@@ -4,7 +4,7 @@
  * LIQUID_ERROR_RENDERED findings. Pure: no network, no DB.
  */
 import { FindingType, Severity } from "@prisma/client";
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 
 import {
   detectLiquidErrors,
@@ -283,6 +283,19 @@ Liquid syntax error (line 3): Unknown tag</pre>
     ]);
   });
 
+  it("custom elements named like skipped ones are still read (code-block is not code)", () => {
+    const html = page(
+      `<code-block><div>${MISSING}</div></code-block>
+       <template-list>Liquid error (sections/list line 2): Could not find asset snippets/list-item.liquid</template-list>
+       <predictive-search>Liquid error (sections/search line 5): Could not find asset snippets/search-form.liquid</predictive-search>`,
+    );
+    expect(extractRenderedLiquidErrors(html).map((e) => e.missingSnippet)).toEqual([
+      "preloaderapp",
+      "list-item",
+      "search-form",
+    ]);
+  });
+
   it("'a < b' in text does not swallow what follows", () => {
     const html = page(`<p>1 < 2 then ${MISSING}</p>`);
     expect(extractRenderedLiquidErrors(html)).toHaveLength(1);
@@ -338,12 +351,86 @@ describe("extractRenderedLiquidErrors: dedupe, caps and bounds", () => {
     expect(e.text).toHaveLength(MAX_LIQUID_ERROR_TEXT_CHARS);
   });
 
+  // Linearity is asserted on WORK DONE (how often the page is searched), not on
+  // wall-clock time, so these cannot flake on a loaded machine.
+  describe("one forward pass over the page", () => {
+    /** Run `fn` counting String.indexOf calls by needle, with their receivers' lengths. */
+    function countSearches<T>(fn: () => T): { result: T; calls: Array<[string, number]> } {
+      const calls: Array<[string, number]> = [];
+      const original = String.prototype.indexOf;
+      const spy = vi.spyOn(String.prototype, "indexOf").mockImplementation(function (
+        this: string,
+        ...args: [string, number?]
+      ) {
+        calls.push([args[0], this.length]);
+        return original.apply(this, args);
+      });
+      try {
+        return { result: fn(), calls };
+      } finally {
+        spy.mockRestore();
+      }
+    }
+
+    it("many text runs before a single late match: the page is not searched once per run", () => {
+      // 5,000 short text runs, then one real error at the very end. Searching
+      // for the next "Liquid " from every run rescans to the end each time
+      // (quadratic), and the fetch timeout cannot interrupt a synchronous scan.
+      const html = page(`${"<i>a</i>".repeat(5000)}<div>${MISSING}</div>`);
+      const { result, calls } = countSearches(() => extractRenderedLiquidErrors(html));
+      expect(result).toHaveLength(1);
+      const needleSearches = calls.filter(([needle]) => needle === "Liquid ").length;
+      expect(needleSearches).toBeLessThanOrEqual(3);
+    });
+
+    it("many text runs and no match at all: one search, and the page is not walked", () => {
+      const html = page("<i>a</i>".repeat(5000));
+      const { result, calls } = countSearches(() => extractRenderedLiquidErrors(html));
+      expect(result).toEqual([]);
+      expect(calls).toEqual([["Liquid ", html.length]]);
+    });
+
+    it("matches inside skipped content are passed without a search per text run", () => {
+      // "Liquid " appears only inside scripts, between thousands of text runs.
+      const html = page(
+        `<script>var a = "Liquid one";</script>${"<i>a</i>".repeat(5000)}<script>var b = "Liquid two";</script>`,
+      );
+      const { result, calls } = countSearches(() => extractRenderedLiquidErrors(html));
+      expect(result).toEqual([]);
+      expect(calls.filter(([needle]) => needle === "Liquid ").length).toBeLessThanOrEqual(4);
+    });
+
+    it("a message's line break is looked for in its own bounded window, never across the page", () => {
+      // A one-line page: no newline anywhere, many matches.
+      const item = `<p>Liquid error (sections/s line 1): boom</p><b>${"x".repeat(2000)}</b>`;
+      const html = item.repeat(50);
+      expect(html).not.toContain("\n");
+      const { result, calls } = countSearches(() => extractRenderedLiquidErrors(html));
+      expect(result).toEqual([
+        {
+          text: "Liquid error (sections/s line 1): boom",
+          kind: "error",
+          template: "sections/s",
+          missingSnippet: null,
+        },
+      ]);
+      const newlineSearches = calls.filter(([needle]) => needle === "\n");
+      expect(newlineSearches.length).toBeGreaterThan(0);
+      for (const [, receiverLength] of newlineSearches) {
+        expect(receiverLength).toBeLessThanOrEqual(MAX_LIQUID_ERROR_TEXT_CHARS * 2);
+      }
+    });
+  });
+
   it("a 2 MB page of lookalikes finishes quickly (linear walk)", () => {
     const chunk = `<div class="a" data-x='>'>Liquid <b>error</b> <form action="/cart"><script>Liquid error (x/y line 1): z</script>`;
     const html = page(chunk.repeat(Math.ceil(2_000_000 / chunk.length)));
+    // A wide budget on purpose: the linear walk takes about 0.1 s here and a
+    // quadratic one would take minutes, so 15 s separates them even when the
+    // machine is heavily loaded. The tests above pin the work done exactly.
     const started = Date.now();
     expect(extractRenderedLiquidErrors(html)).toEqual([]);
-    expect(Date.now() - started).toBeLessThan(2000);
+    expect(Date.now() - started).toBeLessThan(15_000);
   });
 });
 

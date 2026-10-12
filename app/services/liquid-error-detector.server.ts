@@ -91,6 +91,9 @@ export interface RenderedLiquidError {
   missingSnippet: string | null;
 }
 
+/** Every rendered error starts with this (case-sensitive, as Liquid prints it). */
+const NEEDLE = "Liquid ";
+
 /** Elements whose content is never visible page text (see the header). */
 const SKIPPED_ELEMENTS = new Set([
   "script",
@@ -169,10 +172,14 @@ function endOfTag(html: string, lt: number): number {
   return html.length;
 }
 
-/** The lower-cased element name of the tag at `lt` ("" for a closing tag etc.). */
+/**
+ * The lower-cased element name of the tag at `lt` ("" for a closing tag etc.).
+ * Hyphens and colons are part of the name, so a custom element such as
+ * `<code-block>` or `<template-list>` is not mistaken for `<code>` / `<template>`.
+ */
 function openingTagName(html: string, lt: number): string {
   let end = lt + 1;
-  while (end < html.length && end - lt <= 12 && /[a-zA-Z0-9]/.test(html[end])) end++;
+  while (end < html.length && end - lt <= 16 && /[a-zA-Z0-9:-]/.test(html[end])) end++;
   return html.slice(lt + 1, end).toLowerCase();
 }
 
@@ -225,16 +232,22 @@ function forEachVisibleText(html: string, onText: (start: number, end: number) =
  */
 export function extractRenderedLiquidErrors(html: string): RenderedLiquidError[] {
   const found = new Map<string, RenderedLiquidError>();
+  // ONE forward cursor over the page's "Liquid " occurrences. Searching from
+  // each text run instead would rescan up to the next occurrence once per run
+  // (quadratic on a page with many runs and a late or missing match), and the
+  // fetch timeout cannot interrupt a synchronous scan. -1 = none left.
+  let nextAt = html.indexOf(NEEDLE);
+  if (nextAt === -1) return [];
   let examined = 0;
   let done = false;
 
   forEachVisibleText(html, (start, end) => {
-    if (done) return;
-    let from = start;
-    for (;;) {
-      const at = html.indexOf("Liquid ", from);
-      if (at === -1 || at >= end) return;
-      from = at + 7;
+    if (done || nextAt === -1) return;
+    // Occurrences inside skipped content (scripts, tags, comments) are passed.
+    if (nextAt < start) nextAt = html.indexOf(NEEDLE, start);
+    while (nextAt !== -1 && nextAt < end) {
+      const at = nextAt;
+      nextAt = html.indexOf(NEEDLE, at + NEEDLE.length);
       if (++examined > MAX_LIQUID_ERROR_MATCHES) {
         done = true;
         return;
@@ -251,14 +264,15 @@ export function extractRenderedLiquidErrors(html: string): RenderedLiquidError[]
 
       // The message runs to the end of this text run or line, bounded. Twice
       // the stored cap is read so entity decoding cannot shorten it below it.
+      // The newline is looked for inside that bounded window only (a search
+      // of the whole page per match would not be linear on a one-line page).
       const msgStart = ERROR_HEAD_RE.lastIndex;
-      const newline = html.indexOf("\n", msgStart);
-      const msgEnd = Math.min(
-        end,
-        newline === -1 ? end : newline,
-        msgStart + MAX_LIQUID_ERROR_TEXT_CHARS * 2,
+      const window = html.slice(
+        msgStart,
+        Math.min(end, msgStart + MAX_LIQUID_ERROR_TEXT_CHARS * 2),
       );
-      const rawMessage = cleanText(html.slice(msgStart, msgEnd));
+      const newline = window.indexOf("\n");
+      const rawMessage = cleanText(newline === -1 ? window : window.slice(0, newline));
       if (rawMessage.length === 0) continue;
 
       const kind = head[1] ? "syntax" : "error";
