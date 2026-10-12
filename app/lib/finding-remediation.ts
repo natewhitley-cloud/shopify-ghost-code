@@ -131,9 +131,9 @@ const REMEDIATION: Record<string, Remediation> = {
   },
   MALICIOUS_SCRIPT: {
     impact:
-      "This line loads code from a domain known to be used in attacks on Shopify stores. Code like this can steal shopper data, inject spam, or redirect customers, and it can arrive through a rogue app, a compromised staff account, or older theme or app code that points at a domain that later changed hands.",
+      "This line references a domain known or credibly reported to serve malicious code. Code like this can steal shopper data, inject spam, or redirect customers, and it can arrive through a rogue app, a compromised staff account, or older theme or app code that points at a domain that later changed hands.",
     howTo:
-      "Duplicate your theme as a backup, then remove the reference on the flagged line in the theme code editor. In a JSON template or section, it is usually inside a Custom Liquid block or app block setting; edit or remove that block. For config/settings_data.json, make the change in the theme editor (Customize) instead of editing the JSON by hand. In minified JavaScript, remove only the malicious reference, not the whole line. Search the rest of the theme for the same domain and remove every copy. Next, review your installed apps and remove any you do not recognize, check staff accounts and collaborator access, and change your admin passwords. If you bought the theme from an unofficial source, reinstall a clean copy from the Theme Store or the developer.",
+      "Duplicate your theme as a backup, then remove the reference on the flagged line in the theme code editor. In a JSON template or section, it is usually inside a Custom Liquid block or app block setting; edit or remove that block. For config/settings_data.json, make the change in the theme editor (Customize) instead of editing the JSON by hand. In minified JavaScript, remove only the malicious reference, not the whole line. Search the rest of the theme for the same domain and remove every copy. If you did not add this code yourself, review your installed apps and remove any you do not recognize, check staff accounts and collaborator access, and change your admin passwords; and if you bought the theme from an unofficial source, reinstall a clean copy from the Theme Store or the developer.",
   },
   DUPLICATE_META: {
     impact:

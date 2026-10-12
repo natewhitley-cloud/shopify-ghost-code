@@ -725,20 +725,39 @@ export function CopyButton({ text }: { text: string }) {
 }
 
 /**
+ * Visible text and accessible name of the "Copy removal steps" button. The
+ * accessible name follows the state: while the button reads "Copied" its name
+ * is "Copied" too, so a screen reader never announces a label that the visible
+ * text contradicts.
+ */
+export function copyRemovalStepsLabels(copied: boolean): {
+  text: string;
+  accessibilityLabel: string;
+} {
+  return copied
+    ? { text: "Copied", accessibilityLabel: "Copied" }
+    : {
+        text: "Copy removal steps",
+        accessibilityLabel: "Copy removal steps for this finding",
+      };
+}
+
+/**
  * The card's "Copy removal steps" action: a normal-size secondary Polaris
  * button with the same copy behaviour as CopyButton. Not a form control, so an
  * `s-button` is safe here (unlike the ignore submit buttons).
  */
 function CopyRemovalStepsButton({ text }: { text: string }) {
   const { copied, handleCopy } = useCopy(text);
+  const labels = copyRemovalStepsLabels(copied);
 
   return (
     <s-button
       variant="secondary"
       onClick={handleCopy}
-      accessibilityLabel="Copy removal steps for this finding"
+      accessibilityLabel={labels.accessibilityLabel}
     >
-      {copied ? "Copied" : "Copy removal steps"}
+      {labels.text}
     </s-button>
   );
 }
@@ -2164,13 +2183,16 @@ export default function ScanDetail() {
         {/* Security alert: every known-malicious script, in full, on ALL plans
             (free included). Never paywalled; see the loader comment. */}
         {maliciousFindings.length > 0 && (
-          <s-banner tone="critical" heading="Malicious code found in your theme">
+          <s-banner
+            tone="critical"
+            heading="Code from a known malicious source found in your theme"
+          >
             <s-stack direction="block" gap="base">
               <s-text>
                 {maliciousFindings.length === 1
                   ? "1 line in your theme references"
                   : `${maliciousFindings.length} lines in your theme reference`}{" "}
-                a domain known to be used in attacks on Shopify stores. Remove{" "}
+                a domain known or credibly reported to serve malicious code. Remove{" "}
                 {maliciousFindings.length === 1 ? "it" : "them"} as soon as possible and follow the
                 steps under each finding. This is shown on every plan.
               </s-text>

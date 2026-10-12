@@ -160,6 +160,28 @@ describe("getFindingRemediation — accuracy", () => {
     expect(blurb).not.toMatch(/usually arrives|was injected|is compromised/i);
   });
 
+  it("MALICIOUS_SCRIPT impact says 'references', and 'known or credibly reported', for every list entry", () => {
+    expect(getFindingImpact("MALICIOUS_SCRIPT")).toBe(
+      "This line references a domain known or credibly reported to serve malicious code. Code like this can steal shopper data, inject spam, or redirect customers, and it can arrive through a rogue app, a compromised staff account, or older theme or app code that points at a domain that later changed hands.",
+    );
+  });
+
+  it("MALICIOUS_SCRIPT how-to: remove the reference first and unconditionally, account steps only if the merchant did not add the code", () => {
+    const howTo = getFindingRemediation("MALICIOUS_SCRIPT");
+    expect(howTo).toBe(
+      "Duplicate your theme as a backup, then remove the reference on the flagged line in the theme code editor. In a JSON template or section, it is usually inside a Custom Liquid block or app block setting; edit or remove that block. For config/settings_data.json, make the change in the theme editor (Customize) instead of editing the JSON by hand. In minified JavaScript, remove only the malicious reference, not the whole line. Search the rest of the theme for the same domain and remove every copy. If you did not add this code yourself, review your installed apps and remove any you do not recognize, check staff accounts and collaborator access, and change your admin passwords; and if you bought the theme from an unofficial source, reinstall a clean copy from the Theme Store or the developer.",
+    );
+    const condition = howTo.indexOf("If you did not add this code yourself,");
+    // Unconditional: everything about removing the reference comes first.
+    expect(howTo.indexOf("remove the reference on the flagged line")).toBeLessThan(condition);
+    expect(howTo.indexOf("remove every copy")).toBeLessThan(condition);
+    // Conditional: every account, app, password and reinstall step comes after.
+    for (const step of ["installed apps", "staff accounts", "admin passwords", "reinstall"]) {
+      expect(howTo.indexOf(step), step).toBeGreaterThan(condition);
+    }
+    expect(howTo).not.toMatch(/[–—]/);
+  });
+
   it("APP_EMBED_OFF keeps conditional wording and never asserts install state (gc-fed)", () => {
     const blurb = getFindingRemediation("APP_EMBED_OFF");
     expect(blurb).toContain("If you still use this app");

@@ -205,6 +205,7 @@ import ScanDetail, {
   cappedCategoriesNotice,
   unreachableCategoriesNotice,
   CopyButton,
+  copyRemovalStepsLabels,
   FindingRow,
   freePreviewHeading,
   loader,
@@ -3871,6 +3872,28 @@ describe("CopyButton", () => {
   });
 });
 
+// Reviewer L4: the "Copy removal steps" button's accessible name follows its
+// state. (The static render above pins the idle state in the markup.)
+describe("copyRemovalStepsLabels", () => {
+  it("idle: the visible text and a name that says what is copied", () => {
+    expect(copyRemovalStepsLabels(false)).toEqual({
+      text: "Copy removal steps",
+      accessibilityLabel: "Copy removal steps for this finding",
+    });
+  });
+
+  it("copied: the accessible name is 'Copied', matching the visible text", () => {
+    expect(copyRemovalStepsLabels(true)).toEqual({ text: "Copied", accessibilityLabel: "Copied" });
+  });
+
+  it("the accessible name always contains the visible text (WCAG 2.5.3 label in name)", () => {
+    for (const copied of [false, true]) {
+      const { text, accessibilityLabel } = copyRemovalStepsLabels(copied);
+      expect(accessibilityLabel).toContain(text);
+    }
+  });
+});
+
 describe("freePreviewHeading (gc-97k.10)", () => {
   it("keeps the single-row heading for one preview row", () => {
     expect(freePreviewHeading(1)).toBe("Preview: Highest Severity Finding");
@@ -5218,7 +5241,16 @@ describe("app-removal context on the scan page (gc-frda)", () => {
       expect(data.previewFindings.map((f) => f.findingType)).not.toContain("MALICIOUS_SCRIPT");
       expect(data.upgradePreview?.hiddenCount).toBe(2);
       const html = await renderPage();
-      expect(html).toContain("Malicious code found in your theme");
+      // Critical, and worded for every list entry (polyfill.io was added in
+      // good faith: "attacks on Shopify stores" would be wrong for it).
+      expect(html).toContain(
+        '<s-banner tone="critical" heading="Code from a known malicious source found in your theme">',
+      );
+      expect(html.replace(/<!-- -->/g, "")).toContain(
+        "1 line in your theme references a domain known or credibly reported to serve malicious code. Remove it as soon as possible and follow the steps under each finding. This is shown on every plan.",
+      );
+      expect(html).not.toContain("Malicious code found in your theme");
+      expect(html).not.toContain("known to be used in attacks");
       expect(html).toContain('id="finding-y-mal"');
     });
 
