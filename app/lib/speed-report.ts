@@ -479,7 +479,7 @@ export const FREE_TEST_PAUSED_TODAY =
   "Free speed tests are paused for today. Your free test wasn't used and this try doesn't count. You can run it again tomorrow.";
 /** The support address shown when the free test cannot be run any more. */
 export const FREE_TEST_SUPPORT_EMAIL = "support@alpenglowsoftware.com";
-export const FREE_TEST_EXHAUSTED = `The free speed test couldn't complete for this store after ${FREE_SPEED_TEST_MAX_ATTEMPTS} tries, so it can't be run again. Each time, Google's test timed out or couldn't load your homepage.`;
+export const FREE_TEST_EXHAUSTED = `The free speed test couldn't complete for this store after ${FREE_SPEED_TEST_MAX_ATTEMPTS} tries, so it can't be run again. Each time, the test timed out or couldn't load your homepage.`;
 /** Follows FREE_TEST_EXHAUSTED on the page, before the support address. */
 export const FREE_TEST_EXHAUSTED_SUPPORT =
   "If your store is open to visitors and you think this is wrong, email us at";

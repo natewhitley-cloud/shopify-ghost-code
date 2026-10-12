@@ -610,7 +610,7 @@ describe("free speed test helpers", () => {
 
     it("the exhausted copy is true for what counts: a timeout or a page Google could not load", () => {
       expect(speed.FREE_TEST_EXHAUSTED).toBe(
-        "The free speed test couldn't complete for this store after 5 tries, so it can't be run again. Each time, Google's test timed out or couldn't load your homepage.",
+        "The free speed test couldn't complete for this store after 5 tries, so it can't be run again. Each time, the test timed out or couldn't load your homepage.",
       );
       // A password page never reaches Google, so it never counts and is not blamed.
       expect(speed.FREE_TEST_EXHAUSTED).not.toMatch(/password/);
