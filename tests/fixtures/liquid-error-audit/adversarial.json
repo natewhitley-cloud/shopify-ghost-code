@@ -1,0 +1,170 @@
+[
+ {
+  "id": "A01",
+  "expected": false,
+  "label": "prose, error wrapped in <strong> (tag resets the run)",
+  "html": "<p>If you ever see the message <strong>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</strong> on your store, a snippet is missing.</p>"
+ },
+ {
+  "id": "A02",
+  "expected": false,
+  "label": "prose, 3 lead words (below the 4-word bar)",
+  "html": "<p>You may see Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid after removing an app.</p>"
+ },
+ {
+  "id": "A03",
+  "expected": false,
+  "label": "blog card title 'How to fix Liquid error ...'",
+  "html": "<h3 class=\"card__heading\"><a href=\"/blogs/news/fix\">How to fix Liquid error (line 12): Nesting too deep</a></h3>"
+ },
+ {
+  "id": "A04",
+  "expected": false,
+  "label": "prose wrapped by a newline right before the error",
+  "html": "<p>After uninstalling the app our client's storefront suddenly started to show\nLiquid error (layout/theme line 309): Could not find asset snippets/x.liquid in the footer.</p>"
+ },
+ {
+  "id": "A05",
+  "expected": false,
+  "label": "non-Latin prose (Russian) before the error: zero [A-Za-z] words",
+  "html": "<p>Если после удаления приложения вы видите на витрине сообщение Liquid error (layout/theme line 309): Could not find asset snippets/x.liquid, то сниппет удалён.</p>"
+ },
+ {
+  "id": "A06",
+  "expected": false,
+  "label": "numeric curly-quote entity &#8220; not in the quote list",
+  "html": "<p>See &#8220;Liquid error (line 3): Nesting too deep&#8221; ?</p>"
+ },
+ {
+  "id": "A07",
+  "expected": false,
+  "label": "quote then inline tag: \"<em>Liquid error",
+  "html": "<p>The dreaded \"<em>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</em>\" again.</p>"
+ },
+ {
+  "id": "A08",
+  "expected": false,
+  "label": "<q> element (browser draws the quotes)",
+  "html": "<p>Our guide to the message <q>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</q></p>"
+ },
+ {
+  "id": "A09",
+  "expected": false,
+  "label": "short label 'Example:' in a tutorial",
+  "html": "<p>Example: Liquid syntax error (snippets/x line 3): Unknown tag 'foo'</p>"
+ },
+ {
+  "id": "A10",
+  "expected": false,
+  "label": "one-letter words do not count: 'I had a Liquid error ...'",
+  "html": "<p>I had a Liquid error (line 4): divided by 0 on my site</p>"
+ },
+ {
+  "id": "A11",
+  "expected": false,
+  "label": "<code> closed early by </code-block> prefix match",
+  "html": "<code>x</code-block> Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</code>"
+ },
+ {
+  "id": "A12",
+  "expected": false,
+  "label": "nested <code> inside <code>",
+  "html": "<code><code>a</code>\nLiquid error (sections/header line 12): Could not find asset snippets/foo.liquid</code>"
+ },
+ {
+  "id": "A13",
+  "expected": false,
+  "label": "uppercase <CODE CLASS=x> ... </CODE >",
+  "html": "<CODE CLASS=x>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</CODE >"
+ },
+ {
+  "id": "A14",
+  "expected": false,
+  "label": "<script type=text/template> with </script > close",
+  "html": "<script type=text/template><div>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</div></script ><p>ok</p>"
+ },
+ {
+  "id": "A15",
+  "expected": false,
+  "label": "CDATA inside svg",
+  "html": "<svg><desc><![CDATA[Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid]]></desc></svg>"
+ },
+ {
+  "id": "A16",
+  "expected": false,
+  "label": "'>' inside single-quoted attribute value",
+  "html": "<div data-msg='a > b Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid' class=\"x\">ok</div>"
+ },
+ {
+  "id": "A17",
+  "expected": false,
+  "label": "custom element <code-block> in a tutorial (deliberately read as text)",
+  "html": "<code-block>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</code-block>"
+ },
+ {
+  "id": "A18",
+  "expected": false,
+  "label": "stray extra quote in a tag desyncs quote state into a JSON island",
+  "html": "<div class=\"hero\"\"></div><script type=\"application/json\">{\"a\":1,\"body\":\"<p>Liquid error (line 12): Nesting too deep<\\/p>\"}</script>"
+ },
+ {
+  "id": "A19",
+  "expected": false,
+  "label": "<option> text / select",
+  "html": "<select><option>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</option></select>"
+ },
+ {
+  "id": "A20",
+  "expected": false,
+  "label": "<iframe> fallback content",
+  "html": "<iframe src=\"/x\">Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</iframe>"
+ },
+ {
+  "id": "A21",
+  "expected": false,
+  "label": "visually-hidden span",
+  "html": "<span class=\"visually-hidden\">Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</span>"
+ },
+ {
+  "id": "A22",
+  "expected": false,
+  "label": "struck-through <del> example in changelog",
+  "html": "<li><del>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</del> fixed in v2</li>"
+ },
+ {
+  "id": "A23",
+  "expected": false,
+  "label": "script holding the string '</scr'+'ipt>' handled; error in later JSON",
+  "html": "<script>document.write('<scr'+'ipt src=x></scr'+'ipt>');var m=\"x\";</script><script type=\"application/json\">{\"t\":\"Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid\"}</script>"
+ },
+ {
+  "id": "A24",
+  "expected": true,
+  "label": "TRUE: app-embed block path shopify://apps/... (real Shopify form)",
+  "html": "<div class=\"shopify-block\">Liquid error (shopify://apps/judge-me/blocks/preview_badge/61ccd3b1 line 12): invalid url input</div>"
+ },
+ {
+  "id": "A25",
+  "expected": true,
+  "label": "TRUE: two-slash template path",
+  "html": "<div>Liquid error (templates/customers/login line 3): Could not find asset snippets/x.liquid</div>"
+ },
+ {
+  "id": "A26",
+  "expected": true,
+  "label": "TRUE: uppercase <DIV>, after <br>, very long line (300 KB) before it",
+  "html": "<DIV>word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word word "
+ },
+ {
+  "id": "A27",
+  "expected": true,
+  "label": "TRUE: error right after an unclosed <code> earlier on the page",
+  "html": "<p>Use <code>SAVE10 at checkout</p><footer>Liquid error (sections/header line 12): Could not find asset snippets/foo.liquid</footer>"
+ },
+ {
+  "id": "A28",
+  "expected": true,
+  "label": "TRUE: 4-word label before real error in same run",
+  "html": "<div class=\"bar\">Free shipping on orders over Liquid error (snippets/ship line 2): divided by 0</div>"
+ }
+]

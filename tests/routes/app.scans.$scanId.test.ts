@@ -752,7 +752,7 @@ describe("app.scans.$scanId loader", () => {
           lineNumber: 1,
           appName: null,
           codeSnippet: `Liquid error in layout/theme: Could not find asset snippets/${snippet}.liquid\nLiquid error (layout/theme line 9): Could not find asset snippets/${snippet}.liquid`,
-          description: `Shoppers see a Liquid error on your homepage. Your theme tries to load the snippet "${snippet}".`,
+          description: `Your homepage prints a Liquid error. layout/theme.liquid renders the snippet "${snippet}".`,
         });
       // total 3 -> shown 1 (never more than half): two stay locked.
       scanWith([

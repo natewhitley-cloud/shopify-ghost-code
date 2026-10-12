@@ -109,6 +109,7 @@ import {
   compareByFileThenLine,
   extractDanglingReferences,
 } from "../../app/services/dangling-reference-extractor.server";
+import { buildMissingSnippetIndex } from "../../app/services/liquid-error-detector.server";
 import type { BulkRedirectGroups } from "../../app/services/redirect-detector.server";
 import {
   enabledAppEmbedApps,
@@ -959,6 +960,7 @@ export const scanTheme = inngest.createFunction(
         largestFileBytes,
         scannableTextBytes,
         enabledEmbedApps,
+        missingSnippetRenders,
         appsWithEnabledEmbed,
         themeInfo,
       } = await step.run("fetch-and-scan", async () => {
@@ -1237,6 +1239,14 @@ export const scanTheme = inngest.createFunction(
           // schedules that audit step, so the decision is made once, here,
           // inside this memoized step.
           ...(isScriptTagSunsetLive() ? { enabledEmbedApps: embedApps } : {}),
+          // Snippets this theme renders but does not contain, with the files
+          // that render them (gc-i6du): what confirms a missing-snippet Liquid
+          // error read from the homepage in the storefront step below. Small
+          // and bounded (at most 50 snippets x 10 files). Like the key above,
+          // present ONLY while the storefront audit is live.
+          ...(isScriptTagSunsetLive()
+            ? { missingSnippetRenders: buildMissingSnippetIndex(files) }
+            : {}),
           // App-removal detection (gc-frda) records this as the scan's embed
           // live hooks. null = settings_data.json not observed (missing,
           // unparseable, or no `current` object), never [] (observedEmbedApps).
@@ -1797,12 +1807,13 @@ export const scanTheme = inngest.createFunction(
       // and the retry starts by clearing this scan's SCRIPT_TAG_SUNSET rows, so
       // it never duplicates or leaves stale rows.
       //
-      // Shopper-visible Liquid errors (LIQUID_ERROR_RENDERED, gc-i6du) ride on
-      // this step: the fetcher reads them from the SAME page in memory and
-      // hands back only small bounded records (never HTML). Everything above
-      // applies to them unchanged: same flag, published theme only, both
-      // categories unreachable together, both dropped from the live set when
-      // nothing was checked, and the same clear-then-persist retry rule.
+      // Homepage Liquid errors (LIQUID_ERROR_RENDERED, gc-i6du) ride on this
+      // step: the fetcher parses missing-snippet errors from the SAME page in
+      // memory and hands back only parsed parts (never HTML or page text), and
+      // a finding is kept only when the theme confirms it. Everything above
+      // applies unchanged: same flag, published theme only, both categories
+      // unreachable together, dropped from the live set when not checked, and
+      // the same clear-then-persist retry rule.
       const scriptTagResult: {
         findingCount: number;
         unreachable: boolean;
@@ -1810,6 +1821,13 @@ export const scanTheme = inngest.createFunction(
         // LIQUID_ERROR_RENDERED rows persisted (gc-i6du). Absent for a run
         // memoized before the field: read as 0.
         liquidErrorCount?: number;
+        // Set when the storefront was read: whether the Liquid error check
+        // actually ran (false: its parser or the corroboration failed, or the
+        // theme-side index was not available). false = the type is dropped
+        // from the scan's live set, so it is never "fixed" and never shown as
+        // clean. Absent when the storefront was unreachable (the category is
+        // recorded in unreachableCategories instead) or not checked at all.
+        liquidAudited?: boolean;
         // App names loading through a storefront ScriptTag (gc-frda live hook).
         // Present only when the storefront was read and no detector cap hit;
         // absent = not observed (also for a run memoized before the field).
@@ -1873,12 +1891,34 @@ export const scanTheme = inngest.createFunction(
               event: "script_tag_sunset_findings",
               logMessage: "script tag sunset findings persisted",
             });
-            // Liquid errors shoppers can see on the same page (gc-i6du).
-            const { detectLiquidErrors } =
-              await import("../../app/services/liquid-error-detector.server");
-            const liquidErrorFindings = detectLiquidErrors(storefront.liquidErrors).filter((f) =>
-              isSoftLaunchLive(f.findingType),
-            );
+            // Missing-snippet Liquid errors printed on the same page (gc-i6du),
+            // kept ONLY when the theme confirms them: the snippet is absent
+            // from the scanned theme and a theme file renders it
+            // (missingSnippetRenders, built in fetch-and-scan where the theme
+            // files were in memory). Isolated: a failure here is logged,
+            // yields no Liquid finding and marks the check as not run; it
+            // never touches the script-tag result or fails the scan.
+            let liquidErrorFindings: CreateFindingInput[] = [];
+            let liquidAudited = false;
+            if (storefront.liquidErrors !== null && Array.isArray(missingSnippetRenders)) {
+              try {
+                const { detectLiquidErrors } =
+                  await import("../../app/services/liquid-error-detector.server");
+                liquidErrorFindings = detectLiquidErrors(
+                  storefront.liquidErrors,
+                  missingSnippetRenders,
+                ).filter((f) => isSoftLaunchLive(f.findingType));
+                liquidAudited = true;
+              } catch (err) {
+                liquidErrorFindings = [];
+                logger.warn("liquid error check failed, recorded as not run", {
+                  function: "scan-theme",
+                  stepName: "storefront-script-tags",
+                  shopId,
+                  errorName: err instanceof Error ? err.name : typeof err,
+                });
+              }
+            }
             await persistAuditFindings({
               scanId,
               shopId,
@@ -1892,6 +1932,7 @@ export const scanTheme = inngest.createFunction(
               unreachable: false,
               audited: true,
               liquidErrorCount: liquidErrorFindings.length,
+              liquidAudited,
               ...(scriptTagApps ? { scriptTagApps } : {}),
             };
           })
@@ -2011,7 +2052,11 @@ export const scanTheme = inngest.createFunction(
       // an in-flight run memoized before the field existed.
       const finalLiveFindingTypes = Array.isArray(persistedLiveFindingTypes)
         ? persistedLiveFindingTypes.filter(
-            (t) => !isStorefrontFinding(t) || scriptTagResult.audited,
+            (t) =>
+              !isStorefrontFinding(t) ||
+              (scriptTagResult.audited &&
+                (t !== FindingType.LIQUID_ERROR_RENDERED ||
+                  scriptTagResult.liquidAudited !== false)),
           )
         : undefined;
       // What THIS scan audited, for every diff below (finalize + summary email).

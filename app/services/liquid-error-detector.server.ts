@@ -1,68 +1,55 @@
 // ---------------------------------------------------------------------------
-// Detector: LIQUID_ERROR_RENDERED — Liquid errors shoppers can read (gc-i6du)
+// Detector: LIQUID_ERROR_RENDERED — a missing-snippet Liquid error printed on
+// the homepage, CORROBORATED by the theme's own files (gc-i6du)
 // ---------------------------------------------------------------------------
 //
-// PURE, side-effect-free. Two halves:
+// PURE, side-effect-free. No Admin API, DB, or network access. Three parts:
+//   - buildMissingSnippetIndex(files): runs in the scan's fetch-and-scan step,
+//     where the theme files are in memory. Lists the snippets the theme
+//     RENDERS but does NOT CONTAIN, with the files that render them. Small and
+//     bounded, so it can cross the step boundary (theme files cannot).
 //   - extractRenderedLiquidErrors(html): runs INSIDE the storefront fetcher on
-//     the homepage HTML it already holds in memory, and returns only small
-//     bounded records (the error text, where Liquid says it came from, the
-//     missing snippet name). The HTML never leaves the fetcher.
-//   - detectLiquidErrors(errors): turns those records into findings and names
-//     the app when a missing snippet matches a signature.
-// No Admin API, DB, or network access.
+//     the homepage HTML it already holds. Returns only parsed parts (template,
+//     line, snippet name). The HTML never leaves the fetcher.
+//   - detectLiquidErrors(errors, index): a finding ONLY where both agree.
 //
-// What Shopify prints. Liquid renders a failed tag or filter IN PLACE as text,
-// built by Liquid::Error#to_s:
-//     Liquid error: <message>
-//     Liquid error (line 12): <message>
-//     Liquid error (sections/header line 12): <message>
-//     Liquid syntax error (snippets/price line 4): <message>
-// i.e. "Liquid error" or "Liquid syntax error", an optional "(<template> line
-// <n>)" where <template> is the theme file path WITHOUT ".liquid", then ": "
-// and the message. The classic app leftover is a `render` of a snippet the app
-// deleted on uninstall:
-//     Liquid error (layout/theme line 309): Could not find asset snippets/preloaderapp.liquid
-// (the exact strings merchants post in the Shopify community, see
-// docs/marketing-plan.md "Liquid error threads").
+// Why corroboration. Page text alone cannot be trusted: a blog excerpt, a
+// review, a tutorial or an FAQ can print the exact words of a Liquid error. A
+// blind test of a text-only detector scored 0.74 precision, which is not good
+// enough for a finding that tells a merchant their store is broken. So a
+// finding now needs ALL of:
+//   1. the homepage prints `Could not find asset snippets/<name>.liquid`, in
+//      the form Liquid::Error#to_s produces:
+//          Liquid error (sections/header line 12): Could not find asset snippets/<name>.liquid
+//          Liquid error: Could not find asset snippets/<name>.liquid
+//   2. `snippets/<name>.liquid` does NOT exist in the scanned (published) theme;
+//   3. a theme file renders it (`{% render 'name' %}`, `{% include "name" %}`,
+//      `{%- render 'name' -%}`, or `render 'name'` inside `{% liquid %}`);
+//   4. when the error names a file, THAT file is one that renders it.
+// With 2-4 true, Shopify does print that error wherever the file is rendered,
+// so the page text is confirmed by the theme rather than believed.
 //
-// Patterns chosen, and why (false positives matter more than recall here: a
-// wrong "your shoppers see an error" is worse than a missed one):
-//   A. LOCATED form, any message: `Liquid [syntax ]error (<template> line N): `
-//      or `(line N): `. The parenthesised location is Liquid's own; prose about
-//      Liquid does not contain it.
-//   B. BARE form, ONLY for a missing snippet:
-//      `Liquid error: Could not find asset snippets/<name>`. A bare
-//      "Liquid error: ..." with any other message is skipped: without the
-//      location it is indistinguishable from a sentence in a blog post or a
-//      product description.
-//   Both are case-sensitive ("Liquid" capitalised, as Liquid prints it).
+// Everything else is dropped silently, on purpose: every other Liquid error
+// (syntax errors, "divided by 0", memory limits, app-block errors under
+// shopify://apps/...) and every uncorroborated match. A missed error is
+// acceptable here; a false one is not.
 //
-// Where a match counts. Only VISIBLE TEXT is scanned: the page is walked once
-// and everything a shopper cannot read is skipped:
-//   - <script> and <style> bodies (JS strings, JSON blobs such as product or
-//     section data, CSS);
-//   - HTML comments;
-//   - tags themselves, quote-aware, so an error inside an attribute value
-//     (alt="Liquid error ...") is not text;
-//   - <code>, <pre>, <textarea>, <template>, <noscript>: where a tutorial or a
-//     blog post QUOTES an error, and content that is not rendered as page text.
-// Two more guards for writing ABOUT errors (a theme shop's blog excerpt on its
-// homepage) that sits in plain paragraph text:
-//   - a match directly preceded by a quotation mark is a quote;
-//   - a match preceded, on the same line of the same text run, by
-//     PROSE_LEAD_WORDS or more words is mid-sentence ("Merchants often report
-//     Liquid error (...)"). A rendered error replaces a tag, so it normally
-//     starts its text run or follows a short label ("Price: "). Cost: an error
-//     printed in the middle of a long sentence is missed.
+// What is kept. Nothing from the page is stored as-is. The finding's text is
+// REBUILT by us in a fixed shape from three parsed parts, each restricted to
+// [A-Za-z0-9._/-] and bounded: the template path, the line number (digits) and
+// the snippet name. No text that follows the error on the page can reach the
+// database, a log or a later reader (so no shopper text, and nothing a page
+// could plant for a model to read). Control, bidi and zero-width characters
+// are stripped as well, although the character classes already exclude them.
 //
-// Not detected, on purpose: "translation missing: en.some.key". Shopify prints
-// that for a locale key the theme lacks, which is almost always the theme's
-// own gap (a theme update, a custom section, a new language), not something an
-// app left behind, and a key name cannot be matched to an app signature. It
-// would be a theme-QA finding, outside "what old apps left behind".
+// Where a match is read. Only text nodes outside these are scanned: tags and
+// their attributes, comments, <script>, <style>, <textarea>, <title>, <iframe>,
+// <noscript>, <template>, <code>, <pre>, <samp>, <kbd>, <blockquote>, <q>,
+// <del>, <svg>, <select>, <option>. These are cheap extra guards (quoted
+// examples, non-rendered content); corroboration is the real one.
 //
-// Privacy: only the matched error text (decoded, whitespace-collapsed, at most
-// MAX_LIQUID_ERROR_TEXT_CHARS) is kept. No surrounding markup, no page text.
+// "On the homepage", not "shoppers see": the error is in the page, but it can
+// sit inside a closed menu, a drawer or a hidden element. The copy says so.
 
 import { FindingType, Severity } from "@prisma/client";
 
@@ -72,118 +59,195 @@ import type { CreateFindingInput } from "../models/finding.server";
 /** Synthetic locator for every LIQUID_ERROR_RENDERED finding (not a theme file). */
 export const LIQUID_ERROR_FINDING_FILENAME = "storefront/homepage";
 
-/** The stored error text is cut to this many characters. */
-export const MAX_LIQUID_ERROR_TEXT_CHARS = 200;
-/** The stored snippet (identity line + error text) is cut to this, like every finding's. */
-export const MAX_LIQUID_ERROR_SNIPPET_CHARS = 300;
-/** At most this many distinct errors are kept per page (in page order). */
+/** A snippet name longer than this is not read (no real snippet is). */
+export const MAX_SNIPPET_NAME_CHARS = 100;
+/** A template path longer than this is not read. */
+export const MAX_TEMPLATE_PATH_CHARS = 120;
+/** At most this many findings per scan. */
 export const MAX_LIQUID_ERRORS = 10;
-/** At most this many matches are examined per page (bounds the work). */
+/** At most this many distinct candidates are read from a page (before corroboration). */
+export const MAX_LIQUID_ERROR_CANDIDATES = 50;
+/** At most this many "Liquid error" occurrences are examined per page. */
 export const MAX_LIQUID_ERROR_MATCHES = 200;
+/** Same cap as every other finding's snippet (the privacy policy's stated limit). */
+export const MAX_LIQUID_ERROR_SNIPPET_CHARS = 300;
 
-/** One distinct Liquid error read from the homepage. Small and bounded. */
+/** Missing snippets kept in the index, and rendering files kept per snippet. */
+export const MAX_MISSING_SNIPPETS = 50;
+export const MAX_RENDERING_FILES = 10;
+/** A theme file longer than this is not searched for render tags (bounded work). */
+export const MAX_RENDER_SCAN_FILE_CHARS = 1_000_000;
+
+/** A missing-snippet error read from the homepage: parsed parts only. */
 export interface RenderedLiquidError {
-  /** The error as rendered, decoded and whitespace-collapsed, <= 200 chars. */
-  text: string;
-  /**
-   * The message alone (no "Liquid error (... line N): " prefix), <= 200 chars.
-   * Kept apart from `text` so a finding's identity never depends on the line
-   * number, not even through where a long error is cut.
-   */
-  message: string;
-  /** "syntax" for "Liquid syntax error", else "error". */
-  kind: "error" | "syntax";
-  /** Theme file Liquid names, without ".liquid" (e.g. "layout/theme"), or null. */
+  /** Theme file Liquid names, without ".liquid" (e.g. "sections/header"), or null. */
   template: string | null;
-  /** Snippet name from "Could not find asset snippets/<name>.liquid", or null. */
-  missingSnippet: string | null;
+  /** The line number Liquid gives, or null. */
+  line: number | null;
+  /** The snippet named in "Could not find asset snippets/<name>.liquid". */
+  snippet: string;
 }
 
-/** Every rendered error starts with this (case-sensitive, as Liquid prints it). */
-const NEEDLE = "Liquid ";
+/** A snippet the theme renders but does not contain. */
+export interface MissingSnippetRender {
+  snippet: string;
+  /** Theme files (without ".liquid") that render it, sorted, at most MAX_RENDERING_FILES. */
+  renderedIn: string[];
+  /** True when more files render it than `renderedIn` lists. */
+  more: boolean;
+}
 
-/** Elements whose content is never visible page text (see the header). */
-const SKIPPED_ELEMENTS = new Set([
-  "script",
-  "style",
+// ---------------------------------------------------------------------------
+// Text safety
+// ---------------------------------------------------------------------------
+
+/**
+ * Control characters (C0, DEL, C1), zero-width and directional marks, bidi
+ * overrides / isolates and the BOM. None can reach a stored string: a NUL
+ * would be rejected by Postgres, and the others can hide or reorder text.
+ */
+const UNSAFE_CHARS_RE =
+  // eslint-disable-next-line no-control-regex
+  /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
+/** Remove control, bidi and zero-width characters. */
+export function stripUnsafeChars(value: string): string {
+  return value.replace(UNSAFE_CHARS_RE, "");
+}
+
+// ---------------------------------------------------------------------------
+// Theme side: snippets rendered but missing
+// ---------------------------------------------------------------------------
+
+type ThemeFileLike = { filename: string; content: string };
+
+const SNIPPET_FILE_RE = /^snippets\/([A-Za-z0-9._-]{1,100})\.liquid$/;
+const LIQUID_FILE_RE =
+  /^(?:layout|templates|sections|snippets|blocks)\/[A-Za-z0-9._/-]{1,120}\.liquid$/;
+
+/**
+ * `{% render 'name' %}` / `{% include "name" %}` (with or without the `-`
+ * whitespace control), or a bare `render 'name'` at the start of a line (a
+ * statement inside `{% liquid %}`). Whitespace runs are bounded so a flood of
+ * spaces cannot make the search slow. The name is a literal in the restricted
+ * charset; a variable (`render snippet_name`) never matches.
+ */
+const RENDER_TAG_RE =
+  /(?:\{%-?[ \t\r\n]{0,200}|^[ \t]{0,200})(?:render|include)[ \t\r\n]{1,200}["']([A-Za-z0-9._-]{1,100})["']/gim;
+
+/**
+ * The snippets a theme renders but does not contain, with the files that
+ * render them. Deterministic (sorted) and bounded: at most
+ * MAX_MISSING_SNIPPETS snippets, each with at most MAX_RENDERING_FILES files.
+ * A render inside a Liquid comment is counted too: it only makes the index a
+ * little wider, and the page must still print the error.
+ */
+export function buildMissingSnippetIndex(files: readonly ThemeFileLike[]): MissingSnippetRender[] {
+  const existing = new Set<string>();
+  for (const file of files) {
+    const snippet = SNIPPET_FILE_RE.exec(file.filename);
+    if (snippet) existing.add(snippet[1]);
+  }
+
+  const renderedIn = new Map<string, Set<string>>();
+  for (const file of files) {
+    if (!LIQUID_FILE_RE.test(file.filename)) continue;
+    if (file.content.length > MAX_RENDER_SCAN_FILE_CHARS) continue;
+    const path = file.filename.slice(0, -".liquid".length);
+    for (const match of file.content.matchAll(RENDER_TAG_RE)) {
+      const name = match[1].endsWith(".liquid") ? match[1].slice(0, -".liquid".length) : match[1];
+      if (name.length === 0 || existing.has(name)) continue;
+      let paths = renderedIn.get(name);
+      if (!paths) renderedIn.set(name, (paths = new Set()));
+      paths.add(path);
+    }
+  }
+
+  return [...renderedIn.entries()]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .slice(0, MAX_MISSING_SNIPPETS)
+    .map(([snippet, paths]) => {
+      const sorted = [...paths].sort();
+      return {
+        snippet,
+        renderedIn: sorted.slice(0, MAX_RENDERING_FILES),
+        more: sorted.length > MAX_RENDERING_FILES,
+      };
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Page side: visible text walker
+// ---------------------------------------------------------------------------
+
+/**
+ * Elements whose content is raw text to the HTML parser: the FIRST closing tag
+ * ends them, whatever is inside (a `<script>` cannot nest).
+ */
+const RAW_TEXT_ELEMENTS = ["script", "style", "textarea", "title", "iframe", "noscript"];
+/**
+ * Elements skipped with their whole subtree, nesting respected (a `<code>`
+ * inside a `<code>` does not end the outer one).
+ */
+const NESTING_ELEMENTS = [
   "code",
   "pre",
-  "textarea",
+  "samp",
+  "kbd",
+  "blockquote",
+  "q",
+  "del",
+  "svg",
+  "select",
+  "option",
   "template",
-  "noscript",
+];
+
+/**
+ * Per skipped element: a case-insensitive search for its tags on the ORIGINAL
+ * string (never a lower-cased copy: 'İ' lower-cases to two code units, so
+ * offsets taken from one string are wrong in the other), with a tag-name
+ * boundary so `</code-block>` does not close `<code>`.
+ */
+type SkipRule = { tags: RegExp; nests: boolean };
+const SKIPPED: ReadonlyMap<string, SkipRule> = new Map<string, SkipRule>([
+  ...RAW_TEXT_ELEMENTS.map((name): [string, SkipRule] => [
+    name,
+    { tags: new RegExp(`<(/)${name}(?=[\\s>/])`, "gi"), nests: false },
+  ]),
+  ...NESTING_ELEMENTS.map((name): [string, SkipRule] => [
+    name,
+    { tags: new RegExp(`<(/?)${name}(?=[\\s>/])`, "gi"), nests: true },
+  ]),
 ]);
 
 /**
- * `Liquid error` / `Liquid syntax error`, then either a location in
- * parentheses (pattern A) or nothing (pattern B, restricted below), then `: `.
- * The location is `line N` or `<folder>/<file> line N`. Sticky: only ever
- * tried at an index where the literal "Liquid " was already found, so it never
- * scans. The message is read separately, by index.
+ * Index just past the `>` closing the tag that starts at `lt`. A quote only
+ * opens an attribute value right after `=` (as in an HTML parser), so a stray
+ * quote (`class="a""`) cannot swallow the tags that follow.
  */
-const ERROR_HEAD_RE =
-  /Liquid (syntax )?error(?: \((?:([a-z_]{1,20}\/[\w.-]{1,100}) )?line (\d{1,7})\))?: /y;
-
-/** The one message accepted without a location (pattern B), and the snippet it names. */
-const MISSING_SNIPPET_RE =
-  /^Could not find asset snippets\/([\w.-]{1,100}?)(?:\.liquid)?(?![\w.-])/;
-
-/** A quotation mark (raw or as an entity) right before the match = a quote. */
-const QUOTED_BEFORE_RE = /(?:["'`‘“«]|&quot;|&#0?34;|&#0?39;|&#x27;|&[lr][sd]quo;|&laquo;)$/i;
-
-const ENTITY_RE = /&(?:amp|lt|gt|quot|nbsp|#0?39|#x27|#0?34);/gi;
-const ENTITIES: Record<string, string> = {
-  "&amp;": "&",
-  "&lt;": "<",
-  "&gt;": ">",
-  "&quot;": '"',
-  "&nbsp;": " ",
-  "&#39;": "'",
-  "&#039;": "'",
-  "&#x27;": "'",
-  "&#34;": '"',
-  "&#034;": '"',
-};
-
-/** This many words before a match, on its own line, make it prose (see header). */
-export const PROSE_LEAD_WORDS = 4;
-/** How far back the prose check looks. */
-const PROSE_LEAD_CHARS = 200;
-
-/** True when `lead` (the text before a match) reads as the start of a sentence. */
-function isProseLead(lead: string): boolean {
-  const line = lead.slice(lead.lastIndexOf("\n") + 1);
-  let words = 0;
-  for (const token of line.split(/\s+/)) {
-    if (/[A-Za-z]{2,}/.test(token) && ++words >= PROSE_LEAD_WORDS) return true;
-  }
-  return false;
-}
-
-/** Decode the few entities an error message can carry; collapse whitespace. */
-function cleanText(raw: string): string {
-  return raw
-    .replace(ENTITY_RE, (m) => ENTITIES[m.toLowerCase()] ?? m)
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-/** Index just past the `>` closing the tag that starts at `lt`, quote-aware. */
 function endOfTag(html: string, lt: number): number {
   let quote = "";
+  let afterEquals = false;
   for (let i = lt + 1; i < html.length; i++) {
     const ch = html[i];
     if (quote) {
       if (ch === quote) quote = "";
-    } else if (ch === '"' || ch === "'") quote = ch;
-    else if (ch === ">") return i + 1;
+      continue;
+    }
+    if (ch === ">") return i + 1;
+    if (ch === "=") afterEquals = true;
+    else if (afterEquals && (ch === '"' || ch === "'")) {
+      quote = ch;
+      afterEquals = false;
+    } else if (ch !== " " && ch !== "\t" && ch !== "\n" && ch !== "\r") afterEquals = false;
   }
   return html.length;
 }
 
 /**
  * The lower-cased element name of the tag at `lt` ("" for a closing tag etc.).
- * Hyphens and colons are part of the name, so a custom element such as
- * `<code-block>` or `<template-list>` is not mistaken for `<code>` / `<template>`.
+ * Hyphens and colons are part of the name, so `<code-block>` is not `<code>`.
  */
 function openingTagName(html: string, lt: number): string {
   let end = lt + 1;
@@ -191,14 +255,24 @@ function openingTagName(html: string, lt: number): string {
   return html.slice(lt + 1, end).toLowerCase();
 }
 
+/** Index just past the end of the skipped element whose open tag ended at `from`. */
+function endOfSkippedElement(html: string, from: number, rule: SkipRule): number {
+  let depth = 1;
+  rule.tags.lastIndex = from;
+  for (;;) {
+    const tag = rule.tags.exec(html);
+    if (!tag) return html.length; // never closed: nothing after it is read
+    if (tag[1] === "/") {
+      if (--depth === 0) return endOfTag(html, tag.index);
+    } else if (rule.nests) depth++;
+  }
+}
+
 /**
- * Call `onText(start, end)` for every run of visible text in `html`, in order.
- * One forward pass: each character is visited a bounded number of times (the
- * close-tag search for a skipped element starts where the open tag ended and
- * the walk resumes after it), so it is linear in the page size.
+ * Call `onText(start, end)` for every run of readable text in `html`, in
+ * order. One forward pass: the walk always resumes past what it consumed.
  */
 function forEachVisibleText(html: string, onText: (start: number, end: number) => void): void {
-  const lower = html.toLowerCase();
   let pos = 0;
   while (pos < html.length) {
     const lt = html.indexOf("<", pos);
@@ -220,30 +294,47 @@ function forEachVisibleText(html: string, onText: (start: number, end: number) =
       continue;
     }
     const tagEnd = endOfTag(html, lt);
-    const name = openingTagName(html, lt);
-    if (SKIPPED_ELEMENTS.has(name)) {
-      const close = lower.indexOf(`</${name}`, tagEnd);
-      pos = close === -1 ? html.length : endOfTag(html, close);
-      continue;
-    }
-    pos = tagEnd;
+    const rule = SKIPPED.get(openingTagName(html, lt));
+    pos = rule ? endOfSkippedElement(html, tagEnd, rule) : tagEnd;
   }
 }
 
+// ---------------------------------------------------------------------------
+// Page side: missing-snippet errors
+// ---------------------------------------------------------------------------
+
+/** Every rendered error starts with this (case-sensitive, as Liquid prints it). */
+const NEEDLE = "Liquid error";
+
 /**
- * Read the rendered Liquid errors a shopper can see in `html`.
+ * The whole error, anchored (sticky) where NEEDLE was found:
+ *   Liquid error[ (<template> line <n>)]: Could not find asset snippets/<name>[.liquid]
+ * The template and the name are restricted to [A-Za-z0-9._/-] and bounded, so
+ * what is captured can only ever be a path, a number and a file name. The
+ * name must END the error: it is followed by whitespace, a tag or the end of
+ * the page, so a name with any other character in it is not read in part.
+ * An app-block path (shopify://apps/...) has a colon and so never matches.
+ */
+const MISSING_SNIPPET_ERROR_RE =
+  /Liquid error(?: \((?:([A-Za-z0-9._/-]{1,120}) )?line (\d{1,7})\))?: Could not find asset snippets\/([A-Za-z0-9._-]{1,100}?)(?:\.liquid)?(?=[ \t\r\n<]|$)/y;
+
+function withoutLiquidExtension(path: string): string {
+  return path.endsWith(".liquid") ? path.slice(0, -".liquid".length) : path;
+}
+
+/**
+ * Read the missing-snippet Liquid errors printed in `html`'s readable text.
  *
- * Returns at most MAX_LIQUID_ERRORS distinct errors, in page order. Two errors
- * are the same when their kind, template and message match: the line number is
- * NOT part of the identity, so the same broken line reported after an edit
- * moved it (or a snippet rendered twice) is one error.
+ * These are CANDIDATES: nothing here is a finding until detectLiquidErrors
+ * confirms it against the theme. At most MAX_LIQUID_ERROR_CANDIDATES distinct
+ * (template, snippet) pairs, in page order; the same pair at another line
+ * number is the same candidate (the first line number is kept).
  */
 export function extractRenderedLiquidErrors(html: string): RenderedLiquidError[] {
   const found = new Map<string, RenderedLiquidError>();
-  // ONE forward cursor over the page's "Liquid " occurrences. Searching from
-  // each text run instead would rescan up to the next occurrence once per run
-  // (quadratic on a page with many runs and a late or missing match), and the
-  // fetch timeout cannot interrupt a synchronous scan. -1 = none left.
+  // ONE forward cursor over the page's occurrences of NEEDLE. Searching from
+  // each text run instead would rescan the page once per run (quadratic), and
+  // the fetch timeout cannot interrupt a synchronous scan. -1 = none left.
   let nextAt = html.indexOf(NEEDLE);
   if (nextAt === -1) return [];
   let examined = 0;
@@ -260,50 +351,21 @@ export function extractRenderedLiquidErrors(html: string): RenderedLiquidError[]
         done = true;
         return;
       }
-      ERROR_HEAD_RE.lastIndex = at;
-      const head = ERROR_HEAD_RE.exec(html);
-      if (!head || ERROR_HEAD_RE.lastIndex > end) continue;
+      MISSING_SNIPPET_ERROR_RE.lastIndex = at;
+      const match = MISSING_SNIPPET_ERROR_RE.exec(html);
+      // The whole error must sit inside this one text run.
+      if (!match || MISSING_SNIPPET_ERROR_RE.lastIndex > end) continue;
 
-      // A sentence quoting the error ("you may see 'Liquid error ...'").
-      const before = html.slice(Math.max(start, at - 8), at).trimEnd();
-      if (QUOTED_BEFORE_RE.test(before)) continue;
-      // A sentence about the error ("Merchants often report Liquid error ...").
-      if (isProseLead(html.slice(Math.max(start, at - PROSE_LEAD_CHARS), at))) continue;
-
-      // The message runs to the end of this text run or line, bounded. Twice
-      // the stored cap is read so entity decoding cannot shorten it below it.
-      // The newline is looked for inside that bounded window only (a search
-      // of the whole page per match would not be linear on a one-line page).
-      const msgStart = ERROR_HEAD_RE.lastIndex;
-      const window = html.slice(
-        msgStart,
-        Math.min(end, msgStart + MAX_LIQUID_ERROR_TEXT_CHARS * 2),
-      );
-      const newline = window.indexOf("\n");
-      const rawMessage = cleanText(newline === -1 ? window : window.slice(0, newline));
-      if (rawMessage.length === 0) continue;
-
-      const kind = head[1] ? "syntax" : "error";
-      const template = head[2] ?? null;
-      const located = head[3] !== undefined;
-      const missing = kind === "error" ? MISSING_SNIPPET_RE.exec(rawMessage) : null;
-      // Pattern B: without a location, only the missing-snippet message counts.
-      if (!located && !missing) continue;
-      // A missing-snippet message ends at the snippet path: page text that
-      // follows it on the same line is not part of the error and is not kept.
-      const message = missing ? missing[0] : rawMessage;
-
-      const key = `${kind}|${template ?? ""}|${message}`;
+      const template = match[1] ? withoutLiquidExtension(match[1]) : null;
+      const snippet = match[3];
+      const key = `${template ?? ""}|${snippet}`;
       if (found.has(key)) continue;
-      const text = cleanText(html.slice(at, msgStart)) + " " + message;
       found.set(key, {
-        text: text.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS),
-        message: message.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS),
-        kind,
         template,
-        missingSnippet: missing ? missing[1] : null,
+        line: match[2] === undefined ? null : Number.parseInt(match[2], 10),
+        snippet,
       });
-      if (found.size >= MAX_LIQUID_ERRORS) {
+      if (found.size >= MAX_LIQUID_ERROR_CANDIDATES) {
         done = true;
         return;
       }
@@ -313,67 +375,86 @@ export function extractRenderedLiquidErrors(html: string): RenderedLiquidError[]
   return [...found.values()];
 }
 
-/** The theme file a template name points at, for copy ("layout/theme.liquid"). */
-function templateFile(template: string): string {
-  return /\.(?:liquid|json)$/.test(template) ? template : `${template}.liquid`;
+// ---------------------------------------------------------------------------
+// Findings: page and theme must agree
+// ---------------------------------------------------------------------------
+
+/** The error as Liquid prints it, rebuilt from the parsed parts (fixed shape). */
+export function liquidErrorText(error: RenderedLiquidError): string {
+  const location =
+    error.line === null ? "" : ` (${error.template ? `${error.template} ` : ""}line ${error.line})`;
+  return `Liquid error${location}: Could not find asset snippets/${error.snippet}.liquid`;
 }
 
 /**
  * The finding's stable identity, stored as line 1 of `codeSnippet` (the differ
  * fingerprints only the first snippet line for `lineNumber: 1`, and the scan
- * page shows the start of the snippet). It reads as the error WITHOUT its line
- * number ("Liquid error in layout/theme: Could not find asset ..."), so
- * editing the file above the broken line does not turn one error into "fixed"
- * plus "new".
+ * page shows the start of the snippet). No line number in it, so editing the
+ * file above the broken line does not turn one error into "fixed" plus "new".
  */
 function identityLine(error: RenderedLiquidError): string {
-  const label = error.kind === "syntax" ? "Liquid syntax error" : "Liquid error";
   const where = error.template ? ` in ${error.template}` : "";
-  return `${label}${where}: ${error.message}`.slice(0, MAX_LIQUID_ERROR_TEXT_CHARS);
+  return `Liquid error${where}: Could not find asset snippets/${error.snippet}.liquid`;
 }
 
-/** Merchant copy for one error. Consequence first, no em dashes (house style). */
-function describe(error: RenderedLiquidError, appName: string | null): string {
-  const where = error.template ? ` The line is in ${templateFile(error.template)}.` : "";
-  if (error.missingSnippet) {
-    const name = error.missingSnippet;
-    return appName
-      ? `Shoppers see a Liquid error on your homepage. Your theme still tries to load ${appName}'s snippet "${name}", which no longer exists, so Shopify prints the error where the snippet used to be.${where}`
-      : `Shoppers see a Liquid error on your homepage. Your theme tries to load the snippet "${name}", which no longer exists, so Shopify prints the error in its place. This often happens after an app that added the snippet is removed.${where}`;
-  }
-  return appName
-    ? `Shoppers see a Liquid error on your homepage. It comes from ${appName}'s code in your theme.${where}`
-    : `Shoppers see a Liquid error on your homepage. Shopify prints it where a piece of theme code failed.${where}`;
+/** Merchant copy. Consequence first, no em dashes (house style). */
+function describe(error: RenderedLiquidError, file: string, appName: string | null): string {
+  const what = appName
+    ? `${file}.liquid still renders ${appName}'s snippet "${error.snippet}", which no longer exists in your theme`
+    : `${file}.liquid renders the snippet "${error.snippet}", which no longer exists in your theme, usually because it was removed with an app`;
+  return `Your homepage prints a Liquid error. ${what}, so Shopify prints the error in its place. It can be inside a menu, a drawer or a hidden section, so you may not see it at first glance.`;
 }
 
 /**
- * Turn the errors read from the homepage into findings, one per error.
- *
- * App attribution uses the scanner's snippet-name matcher on the missing
- * snippet, or, for an error INSIDE a snippet, on that snippet's own name
- * ("snippets/klaviyo-form"). No match = no app named.
+ * Whether the theme confirms `error`, and the file to point the merchant at.
+ * Null = not confirmed (the candidate is dropped).
  */
-export function detectLiquidErrors(errors: readonly RenderedLiquidError[]): CreateFindingInput[] {
-  return errors.slice(0, MAX_LIQUID_ERRORS).map((error) => {
-    const ownSnippet = error.template?.startsWith("snippets/")
-      ? error.template.slice("snippets/".length)
-      : null;
-    const appName =
-      (error.missingSnippet ? identifyAppFromSnippetName(error.missingSnippet) : null) ??
-      (ownSnippet ? identifyAppFromSnippetName(ownSnippet) : null);
-    return {
+function corroboratingFile(
+  error: RenderedLiquidError,
+  missing: ReadonlyMap<string, MissingSnippetRender>,
+): string | null {
+  // (2) + (3): the snippet is absent from the theme and something renders it.
+  const entry = missing.get(error.snippet);
+  if (!entry || entry.renderedIn.length === 0) return null;
+  if (error.template === null) return entry.renderedIn[0];
+  // (4): the file the error names is one that renders it. When the list of
+  // rendering files was cut short, the named file may be past the cut.
+  if (entry.renderedIn.includes(error.template)) return error.template;
+  return entry.more ? error.template : null;
+}
+
+/**
+ * Findings for the page's missing-snippet errors that the theme confirms: one
+ * per (template, snippet), at most MAX_LIQUID_ERRORS. A candidate the theme
+ * does not confirm yields nothing. An app is named when the snippet matches a
+ * signature (the scanner's snippet-name matcher).
+ */
+export function detectLiquidErrors(
+  errors: readonly RenderedLiquidError[],
+  missingSnippets: readonly MissingSnippetRender[],
+): CreateFindingInput[] {
+  const missing = new Map(missingSnippets.map((entry) => [entry.snippet, entry]));
+  const findings: CreateFindingInput[] = [];
+  for (const error of errors) {
+    if (findings.length >= MAX_LIQUID_ERRORS) break;
+    const file = corroboratingFile(error, missing);
+    if (file === null) continue;
+    const appName = identifyAppFromSnippetName(error.snippet);
+    findings.push({
       filename: LIQUID_ERROR_FINDING_FILENAME,
       lineNumber: 1,
       // Line 1 = the stable identity (fingerprinted, no line number); line 2 =
-      // the error exactly as shoppers see it. Cut to the same 300 characters
-      // as every other finding's snippet (the privacy policy's stated limit);
-      // line 1 is at most 200, so the identity always survives the cut.
-      // Nothing else from the page is kept.
-      codeSnippet: `${identityLine(error)}\n${error.text}`.slice(0, MAX_LIQUID_ERROR_SNIPPET_CHARS),
+      // the error as Liquid prints it. Both are rebuilt from the parsed parts.
+      codeSnippet:
+        `${stripUnsafeChars(identityLine(error))}\n${stripUnsafeChars(liquidErrorText(error))}`.slice(
+          0,
+          MAX_LIQUID_ERROR_SNIPPET_CHARS,
+        ),
       findingType: FindingType.LIQUID_ERROR_RENDERED,
       severity: Severity.HIGH,
       appName: appName ?? undefined,
-      description: describe(error, appName),
-    };
-  });
+      description: stripUnsafeChars(describe(error, file, appName)),
+    });
+  }
+  return findings;
 }

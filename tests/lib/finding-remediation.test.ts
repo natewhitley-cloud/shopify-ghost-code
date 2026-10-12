@@ -327,15 +327,16 @@ describe("LIQUID_ERROR_RENDERED guidance (gc-i6du: read from the homepage, fixed
     const howTo = getFindingRemediation("LIQUID_ERROR_RENDERED");
     expect(howTo).toContain("Open the theme file the error names");
     expect(howTo).toContain("delete the render line");
+    expect(howTo).toContain("ask its support how to add it back");
     expect(howTo).toContain("Duplicate your live theme first");
     expect(howTo).not.toContain("\u2014");
   });
 
   it("the copyable instruction shows the error as shoppers see it, not the internal identity line", () => {
-    const text = buildRemovalInstructions(finding, "Liquid Errors Shoppers See");
+    const text = buildRemovalInstructions(finding, "Liquid Errors on Your Homepage");
     expect(text.split("\n")).toEqual([
-      "Ghost Code finding: Liquid Errors Shoppers See",
-      "Location: your storefront homepage (shoppers can read this error)",
+      "Ghost Code finding: Liquid Errors on Your Homepage",
+      "Location: your storefront homepage (it can be inside a menu or a hidden section)",
       "Error shown:",
       "Liquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid",
       `How: ${getFindingRemediation("LIQUID_ERROR_RENDERED")}`,

@@ -17,7 +17,8 @@ const VISUAL_FINDING_TYPES = new Set([
   "GHOST_PAGE",
   "GHOST_LAYOUT",
   "GHOST_FONT",
-  // A Liquid error printed as page text on the live homepage (gc-i6du).
+  // A Liquid error printed in the live homepage (gc-i6du). It can sit inside a
+  // closed menu or hidden element, but it is page content, not head code.
   "LIQUID_ERROR_RENDERED",
 ]);
 
@@ -154,9 +155,10 @@ const HEURISTIC_FINDING_TYPES = new Set([
   // known app, otherwise by bare hostname with no app named, so it is not a
   // guaranteed positive known-app detection.
   "SCRIPT_TAG_SUNSET",
-  // LIQUID_ERROR_RENDERED (gc-i6du) — the error itself is observed directly on
-  // the storefront, but an app is named only when a missing snippet matches a
-  // signature, so (like JSON_LD_INVALID) it has no guaranteed app attribution.
+  // LIQUID_ERROR_RENDERED (gc-i6du) — the error is read from the storefront and
+  // confirmed by the theme's files, but an app is named only when the missing
+  // snippet matches a signature, so (like JSON_LD_INVALID) it has no
+  // guaranteed app attribution.
   "LIQUID_ERROR_RENDERED",
 ]);
 

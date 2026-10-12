@@ -231,7 +231,7 @@ const REMEDIATION: Record<string, Remediation> = {
   // Read from the homepage, but fixed in the theme file the error names.
   LIQUID_ERROR_RENDERED: {
     howTo:
-      "Open the theme file the error names in the theme code editor (Online Store, Themes, Edit code) and go to the line number it gives. If that line renders a snippet that no longer exists, delete the render line: the snippet is gone, so the line only prints the error. For any other error, ask your theme developer or whoever last edited that file to fix the line. Duplicate your live theme first (Online Store, Themes, Actions, Duplicate).",
+      "Open the theme file the error names in the theme code editor (Online Store, Themes, Edit code) and go to the line number it gives. That line renders a snippet that no longer exists in your theme, so it only prints the error: delete the render line. If you still use the app the snippet belonged to, ask its support how to add it back instead. Duplicate your live theme first (Online Store, Themes, Actions, Duplicate).",
   },
 
   // ---- Theme settings ----
@@ -320,9 +320,9 @@ export function buildRemovalInstructions(
     lines.push(`Location: ${adminResourceLocatorLabel(finding.findingType, finding.filename)}`);
   } else if (finding.findingType === "LIQUID_ERROR_RENDERED") {
     // Read from the public homepage (gc-i6du). The stored snippet's first line
-    // is an internal identity; the error as shoppers see it follows, and names
-    // the theme file and line to fix.
-    lines.push("Location: your storefront homepage (shoppers can read this error)");
+    // is an internal identity; the error as Liquid prints it follows, and
+    // names the theme file and line to fix.
+    lines.push("Location: your storefront homepage (it can be inside a menu or a hidden section)");
     const shown = finding.codeSnippet.split("\n").slice(1).join("\n").trim();
     if (shown.length > 0) lines.push("Error shown:", shown);
   } else if (isStorefrontFinding(finding.findingType)) {

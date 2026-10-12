@@ -1,9 +1,9 @@
 /**
  * Storefront ScriptTag fetcher (SCRIPT_TAG_SUNSET audit), which also reads the
- * rendered Liquid errors shoppers can see on that same page
+ * missing-snippet Liquid errors printed on that same page
  * (LIQUID_ERROR_RENDERED, gc-i6du): same single request, same flag, no extra
  * call. The homepage HTML never leaves this module: only the ScriptTag URLs
- * and the small bounded error records (liquid-error-detector) are returned.
+ * and the parsed error parts (template, line, snippet name) are returned.
  *
  * The ONLY place the scanner reads a shop's public storefront, and it is DARK:
  * while SCRIPT_TAG_SUNSET_LIVE_ENABLED is not "true" it returns `disabled`
@@ -88,10 +88,12 @@ export type StorefrontScriptTagResult =
   | { status: "not_published" }
   /**
    * The storefront was read. `urls` are the raw ScriptTag URLs (may be empty);
-   * `liquidErrors` are the rendered Liquid errors shoppers can see on the page
-   * (may be empty; at most MAX_LIQUID_ERRORS small records, never HTML).
+   * `liquidErrors` are the missing-snippet Liquid errors printed on the page,
+   * as parsed parts only (template, line, snippet name; never HTML or page
+   * text). They are CANDIDATES until the theme confirms them
+   * (detectLiquidErrors). null = that read failed and was not checked.
    */
-  | { status: "ok"; host: string; urls: string[]; liquidErrors: RenderedLiquidError[] }
+  | { status: "ok"; host: string; urls: string[]; liquidErrors: RenderedLiquidError[] | null }
   | { status: "unreachable"; reason: StorefrontUnreachableReason };
 
 // ---------------------------------------------------------------------------
@@ -742,9 +744,23 @@ export async function fetchStorefrontScriptTags(
   }
   const urls = parseScriptTagUrls(html);
   if (urls === null) return unreachable("parse_failed", shopId, domains.primaryHost);
-  // Same page, already in memory (gc-i6du): the error text is extracted here
-  // so the HTML never crosses this function's boundary.
-  const liquidErrors = extractRenderedLiquidErrors(html);
+  // Same page, already in memory (gc-i6du): the missing-snippet errors are
+  // parsed here so the HTML never crosses this function's boundary. Isolated:
+  // a bug in that parser must never turn a readable storefront (and its
+  // script-tag audit) into "unreachable". null = Liquid errors not checked.
+  let liquidErrors: RenderedLiquidError[] | null;
+  try {
+    liquidErrors = extractRenderedLiquidErrors(html);
+  } catch (err) {
+    liquidErrors = null;
+    logger.warn("storefront liquid error read failed", {
+      function: "storefront-fetcher",
+      event: "storefront_liquid_errors_failed",
+      shopId,
+      host: domains.primaryHost,
+      errorName: err instanceof Error ? err.name : typeof err,
+    });
+  }
 
   logger.info("storefront script tags read", {
     function: "storefront-fetcher",
@@ -752,7 +768,8 @@ export async function fetchStorefrontScriptTags(
     shopId,
     host: domains.primaryHost,
     scriptTagCount: urls.length,
-    liquidErrorCount: liquidErrors.length,
+    // Candidates only (not yet confirmed against the theme); -1 = not checked.
+    liquidErrorCandidates: liquidErrors === null ? -1 : liquidErrors.length,
   });
   return { status: "ok", host: domains.primaryHost, urls, liquidErrors };
 }

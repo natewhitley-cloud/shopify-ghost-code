@@ -41,7 +41,7 @@ export const FINDING_TYPE_LABELS: Record<string, string> = {
   APP_EMBED_OFF: "App Embeds Turned Off",
   GHOST_APP_EMBED: "Leftover App Embeds",
   SCRIPT_TAG_SUNSET: "Script Tag Sunset",
-  LIQUID_ERROR_RENDERED: "Liquid Errors Shoppers See",
+  LIQUID_ERROR_RENDERED: "Liquid Errors on Your Homepage",
 };
 
 /** Label for a finding type, falling back to the enum name with spaces. */

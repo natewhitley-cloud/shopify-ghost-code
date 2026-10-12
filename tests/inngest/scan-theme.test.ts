@@ -69,6 +69,17 @@ vi.mock("../../app/services/scan-engine.server", () => ({
     ["templates/", "sections/", "snippets/", "layout/"].some((p) => filename.startsWith(p)),
 }));
 
+// The real Liquid error detector, wrapped so a test can make either half throw.
+vi.mock("../../app/services/liquid-error-detector.server", async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import("../../app/services/liquid-error-detector.server")>();
+  return {
+    ...real,
+    detectLiquidErrors: vi.fn(real.detectLiquidErrors),
+    extractRenderedLiquidErrors: vi.fn(real.extractRenderedLiquidErrors),
+  };
+});
+
 vi.mock("../../app/services/scan-pool.server", () => ({
   scanThemeFilesInPool: vi.fn(),
 }));
@@ -284,6 +295,10 @@ import { hasContentScope, fetchPages } from "../../app/services/content-fetcher.
 import { extractDanglingReferences } from "../../app/services/dangling-reference-extractor.server";
 import { resolveDanglingReferences } from "../../app/services/dangling-reference-resolver.server";
 import { auditStaticJsonLdPrices } from "../../app/services/jsonld-price-audit.server";
+import {
+  detectLiquidErrors,
+  extractRenderedLiquidErrors,
+} from "../../app/services/liquid-error-detector.server";
 import { getMerchantAlertConfigStatus } from "../../app/services/merchant-alert.server";
 import { detectOrphanedMetafields } from "../../app/services/metafield-detector.server";
 import { detectOrphanedPages } from "../../app/services/page-detector.server";
@@ -331,6 +346,8 @@ const mockDb = db as unknown as {
 };
 const mockUnauthenticated = unauthenticated as unknown as { admin: ReturnType<typeof vi.fn> };
 const mockFetchThemeFiles = fetchThemeFiles as ReturnType<typeof vi.fn>;
+const mockDetectLiquidErrors = detectLiquidErrors as ReturnType<typeof vi.fn>;
+const mockExtractLiquidErrors = extractRenderedLiquidErrors as ReturnType<typeof vi.fn>;
 const mockScanThemeFiles = scanThemeFilesInPool as ReturnType<typeof vi.fn>;
 const mockUpdateScanStatus = updateScanStatus as ReturnType<typeof vi.fn>;
 const mockMarkScanStarted = markScanStarted as ReturnType<typeof vi.fn>;
@@ -4054,6 +4071,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
     expect(names).not.toContain("storefront-script-tags");
     // fetch-and-scan's output carries no new key while dark.
     expect(results["fetch-and-scan"]).not.toHaveProperty("enabledEmbedApps");
+    expect(results["fetch-and-scan"]).not.toHaveProperty("missingSnippetRenders");
     // gc-frda reads the embed set on every scan (app-removal detection); it
     // travels under its own key, which never schedules this audit.
     expect(results["fetch-and-scan"]).toHaveProperty("appsWithEnabledEmbed", []);
@@ -4143,6 +4161,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       unreachable: false,
       audited: true,
       liquidErrorCount: 0,
+      liquidAudited: true,
       // gc-frda live hooks: the signature apps seen loading via ScriptTag.
       scriptTagApps: ["Klaviyo", "Rise.ai"],
     });
@@ -4166,6 +4185,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       unreachable: false,
       audited: true,
       liquidErrorCount: 0,
+      liquidAudited: true,
       // Observed and empty: no app loads through a ScriptTag (gc-frda).
       scriptTagApps: [],
     });
@@ -4425,15 +4445,26 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
   // LIQUID_ERROR_RENDERED (gc-i6du): Liquid errors shoppers can see, read from
   // the SAME homepage request by the same step, under the same gates.
   // -------------------------------------------------------------------------
-  describe("shopper-visible Liquid errors (LIQUID_ERROR_RENDERED, gc-i6du)", () => {
+  describe("homepage Liquid errors (LIQUID_ERROR_RENDERED, gc-i6du)", () => {
     const ERROR =
       "Liquid error (layout/theme line 309): Could not find asset snippets/klaviyo-form.liquid";
-    const OTHER = "Liquid error (sections/hero line 4): Could not find asset snippets/preloaderapp";
+    const OTHER =
+      "Liquid error (sections/hero line 4): Could not find asset snippets/preloaderapp.liquid";
     const errorPage = (...errors: string[]) =>
       storefrontHtml(
         null,
         `<main><p>Hello Jane Doe</p>${errors.map((e) => `<div>${e}</div>`).join("")}</main>`,
       );
+
+    /**
+     * A theme that CONFIRMS both errors: each named file renders the snippet,
+     * and neither snippet file exists.
+     */
+    const BROKEN_THEME = [
+      { filename: "layout/theme.liquid", content: "<html>{% render 'klaviyo-form' %}</html>" },
+      { filename: "sections/hero.liquid", content: "<div>{%- render 'preloaderapp' -%}</div>" },
+      { filename: "sections/header.liquid", content: "<header></header>" },
+    ];
 
     const liquidPersistCalls = () =>
       mockCreateFindings.mock.calls.filter((c) =>
@@ -4453,10 +4484,193 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       description: "x",
     };
 
-    function live() {
+    /** Flag on, published theme, and a theme that confirms the errors. */
+    function live(files: Array<{ filename: string; content: string }> = BROKEN_THEME) {
       process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
       MOCK_ADMIN.graphql.mockResolvedValue(shopDomainsResponse());
+      mockFetchThemeFiles.mockResolvedValue(files);
     }
+
+    it("the theme-side index crosses the step boundary: small, and only while live", async () => {
+      live();
+      fetchSpy.mockResolvedValue(new Response(storefrontHtml(null), { status: 200 }));
+      const { results } = await run();
+      expect(results["fetch-and-scan"]).toHaveProperty("missingSnippetRenders", [
+        { snippet: "klaviyo-form", renderedIn: ["layout/theme"], more: false },
+        { snippet: "preloaderapp", renderedIn: ["sections/hero"], more: false },
+      ]);
+      // The theme files were fetched once; nothing new was asked of the Admin API.
+      expect(mockFetchThemeFiles).toHaveBeenCalledTimes(1);
+    });
+
+    describe("an error on the homepage is a finding ONLY when the theme confirms it", () => {
+      it.each([
+        [
+          "the theme does not render the snippet",
+          [{ filename: "layout/theme.liquid", content: "<html></html>" }],
+        ],
+        [
+          "the snippet exists in the theme",
+          [...BROKEN_THEME, { filename: "snippets/klaviyo-form.liquid", content: "ok" }],
+        ],
+        [
+          "another file renders it, not the one the error names",
+          [{ filename: "sections/footer.liquid", content: "{% render 'klaviyo-form' %}" }],
+        ],
+        ["the theme is the default fixture (no render at all)", MOCK_FILES],
+      ])("%s: no finding, and the check still counts as run (clean)", async (_name, files) => {
+        live(files);
+        fetchSpy.mockResolvedValue(new Response(errorPage(ERROR), { status: 200 }));
+        const { results } = await run();
+        expect(liquidPersistCalls()).toHaveLength(0);
+        expect(results["storefront-script-tags"]).toMatchObject({
+          liquidErrorCount: 0,
+          liquidAudited: true,
+        });
+        expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).toContain(
+          FindingType.LIQUID_ERROR_RENDERED,
+        );
+      });
+
+      it("any other Liquid error on the page is dropped", async () => {
+        live();
+        fetchSpy.mockResolvedValue(
+          new Response(
+            errorPage(
+              "Liquid error (snippets/price line 8): divided by 0",
+              "Liquid syntax error (sections/hero line 2): Unknown tag 'x'",
+            ),
+            { status: 200 },
+          ),
+        );
+        await run();
+        expect(liquidPersistCalls()).toHaveLength(0);
+      });
+    });
+
+    describe("isolation: a failure in the Liquid check never touches the script-tag audit or the scan", () => {
+      const SCRIPT_URL = "https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=MEqSVx";
+
+      it("the corroboration throws: logged, zero Liquid findings, script tags persisted, scan COMPLETED", async () => {
+        live();
+        const warn = vi.spyOn(logger, "warn");
+        mockDetectLiquidErrors.mockImplementationOnce(() => {
+          throw new TypeError(`boom ${ERROR}`);
+        });
+        fetchSpy.mockResolvedValue(
+          new Response(storefrontHtml([SCRIPT_URL], `<div>${ERROR}</div>`), { status: 200 }),
+        );
+
+        const { results, result } = await run();
+
+        expect(results["storefront-script-tags"]).toEqual({
+          findingCount: 1,
+          unreachable: false,
+          audited: true,
+          liquidErrorCount: 0,
+          liquidAudited: false,
+          scriptTagApps: ["Klaviyo"],
+        });
+        expect(scriptTagPersistCall()).toBeDefined();
+        expect(liquidPersistCalls()).toHaveLength(0);
+        expect(result.status).toBe("COMPLETED");
+        const finalizeArgs = mockFinalizeScan.mock.calls[0][1];
+        expect(finalizeArgs.status).toBe("COMPLETED");
+        // Not run: neither unreachable nor live, so never "fixed" or "clean".
+        expect(finalizeArgs).not.toHaveProperty("unreachableCategories");
+        expect(finalizeArgs.liveFindingTypes).toContain(FindingType.SCRIPT_TAG_SUNSET);
+        expect(finalizeArgs.liveFindingTypes).not.toContain(FindingType.LIQUID_ERROR_RENDERED);
+        const call = warn.mock.calls.find((c) =>
+          String(c[0]).startsWith("liquid error check failed"),
+        );
+        // Name only: the message (which here echoes page text) is never logged.
+        expect(call?.[1]).toEqual({
+          function: "scan-theme",
+          stepName: "storefront-script-tags",
+          shopId: SHOP_ID,
+          errorName: "TypeError",
+        });
+        warn.mockRestore();
+      });
+
+      it("the page parser throws inside the fetcher: same outcome, storefront still 'read'", async () => {
+        live();
+        mockExtractLiquidErrors.mockImplementationOnce(() => {
+          throw new RangeError("boom");
+        });
+        fetchSpy.mockResolvedValue(
+          new Response(storefrontHtml([SCRIPT_URL], `<div>${ERROR}</div>`), { status: 200 }),
+        );
+
+        const { results, result } = await run();
+
+        expect(results["storefront-script-tags"]).toMatchObject({
+          findingCount: 1,
+          unreachable: false,
+          audited: true,
+          liquidErrorCount: 0,
+          liquidAudited: false,
+        });
+        expect(mockDetectLiquidErrors).not.toHaveBeenCalled();
+        expect(result.status).toBe("COMPLETED");
+        expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
+          FindingType.LIQUID_ERROR_RENDERED,
+        );
+      });
+
+      it("a run whose fetch-and-scan was memoized before the theme index existed: not run, never clean", async () => {
+        live();
+        fetchSpy.mockResolvedValue(new Response(errorPage(ERROR), { status: 200 }));
+        const results: Record<string, unknown> = {};
+        const base = createMockInngestStep();
+        const step = {
+          ...base,
+          run: vi.fn(async (name: string, fn: () => unknown) => {
+            const out = (await fn()) as Record<string, unknown>;
+            if (name === "fetch-and-scan") {
+              const legacy = { ...out };
+              delete legacy.missingSnippetRenders;
+              return legacy;
+            }
+            results[name] = out;
+            return out;
+          }),
+        };
+        await getInngestHandler(scanTheme)({ event: makeScanEvent(), step });
+
+        expect(results["storefront-script-tags"]).toMatchObject({
+          liquidErrorCount: 0,
+          liquidAudited: false,
+        });
+        expect(liquidPersistCalls()).toHaveLength(0);
+        expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).not.toContain(
+          FindingType.LIQUID_ERROR_RENDERED,
+        );
+      });
+
+      it("a prior Liquid error is not reported fixed by a scan whose check did not run", async () => {
+        live();
+        mockDetectLiquidErrors.mockImplementationOnce(() => {
+          throw new Error("boom");
+        });
+        fetchSpy.mockResolvedValue(new Response(storefrontHtml(null), { status: 200 }));
+        mockScanThemeFiles.mockReturnValue({ findings: [], unknownScripts: [] });
+        mockDb.finding.findMany.mockResolvedValue([]);
+        mockDb.scan.findUnique.mockResolvedValue({
+          status: "IN_PROGRESS",
+          createdAt: new Date("2026-10-20T00:00:00Z"),
+        });
+        mockGetPreviousScanForTheme.mockResolvedValue({
+          ...BASELINE_COVERAGE,
+          liveFindingTypes: Object.values(FindingType),
+          id: "prev",
+          findingCount: 1,
+          findings: [STORED_ERROR],
+        });
+        await run();
+        expect(mockFinalizeScan.mock.calls[0][1].resolvedFindingCount).toBe(0);
+      });
+    });
 
     it("flag on + an error on the homepage: one finding per distinct error, attributed, counted", async () => {
       live();
@@ -4485,6 +4699,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
         unreachable: false,
         audited: true,
         liquidErrorCount: 2,
+        liquidAudited: true,
         scriptTagApps: [],
       });
       expect(result.findingCount).toBe(MOCK_FINDINGS.length + 2);
@@ -4499,6 +4714,7 @@ describe("scanTheme - storefront script-tag audit (SCRIPT_TAG_SUNSET)", () => {
       fetchSpy.mockResolvedValue(new Response(errorPage(ERROR), { status: 200 }));
       const { results } = await run();
       const stored = JSON.stringify([liquidPersistCalls(), results["storefront-script-tags"]]);
+      expect(liquidPersistCalls()).toHaveLength(1);
       for (const leak of ["Jane", "<div", "<main", "<html", "Shopify.shop"]) {
         expect(stored).not.toContain(leak);
       }

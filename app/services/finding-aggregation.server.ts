@@ -63,7 +63,7 @@ export interface IgnorableFinding {
  * Types an APP-level ignore never hides (INSTANCE ignores still apply). An app
  * ignore means "this app's leftover code is fine"; SCRIPT_TAG_SUNSET is about a
  * LIVE app that will stop working on the storefront, and LIQUID_ERROR_RENDERED
- * (gc-i6du) is error text shoppers read on the homepage: different risks the
+ * (gc-i6du) is an error printed on the live homepage: different risks the
  * merchant has not dismissed by ignoring the app's code.
  */
 const APP_IGNORE_EXEMPT_TYPES: ReadonlySet<string> = new Set([

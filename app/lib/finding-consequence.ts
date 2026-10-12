@@ -388,9 +388,11 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "compounding",
     agentic: false,
   },
-  // LIQUID_ERROR_RENDERED (gc-i6du): a Liquid error printed as text on the live
-  // homepage. customers-see-it, act-now: shoppers read it today, and it looks
-  // broken. Not agentic: it does not change structured data or indexing rules.
+  // LIQUID_ERROR_RENDERED (gc-i6du): a missing-snippet Liquid error printed on
+  // the live homepage, confirmed by the theme's files. customers-see-it,
+  // act-now: it is in the page today (though it can sit inside a closed menu
+  // or a hidden section). Not agentic: it does not change structured data or
+  // indexing rules.
   LIQUID_ERROR_RENDERED: {
     primary: "customers-see-it",
     secondary: [],

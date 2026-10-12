@@ -96,8 +96,9 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   // lowers it to LOW per finding when the app also has an enabled app embed
   // (probably migrated), computed from theme data the classifier cannot see.
   [FindingType.SCRIPT_TAG_SUNSET]: Severity.HIGH,
-  // LIQUID_ERROR_RENDERED is HIGH: error text a shopper reads on the live
-  // homepage right now (gc-i6du), the most visible breakage the scan finds.
+  // LIQUID_ERROR_RENDERED is HIGH: a Liquid error printed on the live homepage
+  // (gc-i6du). HIGH only because a finding is emitted solely when the theme's
+  // own files confirm it (the snippet is absent and a file renders it).
   [FindingType.LIQUID_ERROR_RENDERED]: Severity.HIGH,
 };
 

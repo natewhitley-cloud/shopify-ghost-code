@@ -160,7 +160,7 @@ describe("SKIPPABLE_CATEGORY_INFO mapping", () => {
   it("labels the Liquid error check for the unreachable-storefront notice (gc-i6du)", () => {
     expect(skippedCategoryLabels(["SCRIPT_TAG_SUNSET", "LIQUID_ERROR_RENDERED"])).toEqual([
       "Script tag sunset",
-      "Liquid errors shoppers see",
+      "Liquid errors on your homepage",
     ]);
   });
 

@@ -82,8 +82,9 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   GHOST_PIXEL: "verify-first",
   // AJAX call to an app endpoint — dependent inline JS may break if removed.
   GHOST_AJAX: "verify-first",
-  // Shopper-visible Liquid error (gc-i6du) — a render of a deleted snippet is
-  // safe to delete, but any other error needs the line fixed, not removed.
+  // Homepage Liquid error (gc-i6du): a render of a snippet that no longer
+  // exists. Deleting the render line is the fix, but the merchant should first
+  // confirm the snippet is meant to be gone (not renamed or about to return).
   LIQUID_ERROR_RENDERED: "verify-first",
   // Font tied to an app CDN — the font may still be referenced elsewhere.
   GHOST_FONT: "verify-first",

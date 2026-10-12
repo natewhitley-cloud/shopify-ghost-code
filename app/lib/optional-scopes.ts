@@ -107,7 +107,7 @@ export const SKIPPABLE_CATEGORY_INFO: Record<string, { label: string; scopes: Op
   GHOST_REDIRECT: { label: "URL redirects", scopes: ["read_online_store_navigation"] },
   DANGLING_REFERENCE: { label: "Broken links", scopes: ["read_products", "read_content"] },
   SCRIPT_TAG_SUNSET: { label: "Script tag sunset", scopes: [] },
-  LIQUID_ERROR_RENDERED: { label: "Liquid errors shoppers see", scopes: [] },
+  LIQUID_ERROR_RENDERED: { label: "Liquid errors on your homepage", scopes: [] },
 };
 
 /**

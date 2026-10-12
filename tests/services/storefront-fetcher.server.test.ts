@@ -4,6 +4,7 @@ import { Agent, fetch as undiciFetch } from "undici";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 import { logger } from "../../app/lib/logger.server";
+import { extractRenderedLiquidErrors } from "../../app/services/liquid-error-detector.server";
 import {
   createGuardedLookup,
   fetchStorefrontScriptTags,
@@ -34,6 +35,15 @@ vi.mock("undici", async (importOriginal) => {
     }),
   };
 });
+
+// The real Liquid error parser, wrapped so one test can make it throw.
+vi.mock("../../app/services/liquid-error-detector.server", async (importOriginal) => {
+  const real =
+    await importOriginal<typeof import("../../app/services/liquid-error-detector.server")>();
+  return { ...real, extractRenderedLiquidErrors: vi.fn(real.extractRenderedLiquidErrors) };
+});
+
+const mockExtract = extractRenderedLiquidErrors as ReturnType<typeof vi.fn>;
 
 const SHOP_ID = "shop-1";
 const PRIMARY = "pawnaturals.com";
@@ -486,15 +496,8 @@ describe("fetchStorefrontScriptTags", () => {
         status: "ok",
         host: PRIMARY,
         urls: parseScriptTagUrls(page(REAL_BLOCK)),
-        liquidErrors: [
-          {
-            text: ERROR,
-            message: "Could not find asset snippets/klaviyo-form.liquid",
-            kind: "error",
-            template: "layout/theme",
-            missingSnippet: "klaviyo-form",
-          },
-        ],
+        // Parsed parts only: candidates until the theme confirms them.
+        liquidErrors: [{ template: "layout/theme", line: 309, snippet: "klaviyo-form" }],
       });
       expect(fetchImpl).toHaveBeenCalledTimes(1);
       expect(admin.graphql).toHaveBeenCalledTimes(1);
@@ -555,11 +558,41 @@ describe("fetchStorefrontScriptTags", () => {
       expect(result).not.toHaveProperty("liquidErrors");
     });
 
+    it("a bug in the Liquid parser never makes a readable storefront unreachable", async () => {
+      mockExtract.mockImplementationOnce(() => {
+        throw new RangeError(`boom while reading ${ERROR}`);
+      });
+      fetchImpl.mockResolvedValue(html(pageWithBody(`<div>${ERROR}</div>`)));
+      const result = await run();
+      // The script-tag audit is untouched; Liquid errors read as "not checked".
+      expect(result).toEqual({
+        status: "ok",
+        host: PRIMARY,
+        urls: parseScriptTagUrls(page(REAL_BLOCK)),
+        liquidErrors: null,
+      });
+      expect(logger.warn).toHaveBeenCalledWith("storefront liquid error read failed", {
+        function: "storefront-fetcher",
+        event: "storefront_liquid_errors_failed",
+        shopId: SHOP_ID,
+        host: PRIMARY,
+        errorName: "RangeError",
+      });
+      // The error's message (which can echo page text) is never logged.
+      const logged = JSON.stringify([
+        ...(logger.warn as ReturnType<typeof vi.fn>).mock.calls,
+        ...(logger.info as ReturnType<typeof vi.fn>).mock.calls,
+      ]);
+      expect(logged).not.toContain("boom");
+      expect(logged).not.toContain("klaviyo-form");
+      expect(logged).toContain('"liquidErrorCandidates":-1');
+    });
+
     it("logs the count only, never the error text or a snippet name", async () => {
       fetchImpl.mockResolvedValue(html(pageWithBody(`<div>${ERROR}</div>`)));
       await run();
       const logged = JSON.stringify((logger.info as ReturnType<typeof vi.fn>).mock.calls);
-      expect(logged).toContain('"liquidErrorCount":1');
+      expect(logged).toContain('"liquidErrorCandidates":1');
       expect(logged).not.toContain("Liquid error");
       expect(logged).not.toContain("klaviyo-form");
       expect(logged).not.toContain("layout/theme");
