@@ -113,6 +113,31 @@ export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<MaliciousDomain> = [
     advice: "Remove this reference",
     ignoreInComments: true,
   },
+  {
+    // Fake checkout host in the 2026-10-10 checkout hijack delivered through a
+    // compromised third-party app: shoppers were redirected to
+    // `www.biliing.top/check-out/`, which posted card details to
+    // `/api/submissions`. Source: romanzipp.com/blog/shopify-hit-with-phishing-attack
+    // (author reported it to URLhaus and Google Safe Browsing). Spelling is the
+    // attacker's (b-i-l-i-i-n-g); `billing.top` is a different domain and must
+    // not match. In that incident the payload was fetched at runtime by the
+    // app, not written to the theme, so this entry only catches the domain
+    // when it is pasted into theme code.
+    domain: "biliing.top",
+    note: "fake checkout domain from a 2026 card-phishing attack on Shopify stores",
+  },
+  {
+    // Listed next to biliing.top in the same attacker payload's redirect
+    // config (same source). Named in the config only: the write-up did not
+    // observe a page served from it.
+    domain: "checkout-confirm.top",
+    note: "fake checkout domain from a 2026 card-phishing attack on Shopify stores",
+  },
+  {
+    // Same payload config as checkout-confirm.top (same source, same limit).
+    domain: "order-confirm.top",
+    note: "fake checkout domain from a 2026 card-phishing attack on Shopify stores",
+  },
 ];
 
 /**
