@@ -382,6 +382,10 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
         /Liquid errors on your homepage<\/h3>(?:(?!<\/li>)[\s\S])*<s-badge tone="neutral">Not checked<\/s-badge>/,
       );
       expect(html).toContain("This wasn&#x27;t checked on your last scan. Run a new scan.");
+      // And it is not folded into the "Clean:" group.
+      const fold = html.slice(html.indexOf("<details"), html.indexOf("</details>"));
+      expect(fold).toContain("<summary");
+      expect(fold).not.toContain("Liquid errors on your homepage");
     });
 
     it("a scan that recorded nothing about what it ran: no category reads Clean", async () => {
@@ -464,6 +468,36 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     expect(html).toContain("Your homepage prints 1 Liquid error because your theme renders");
     expect(html).toContain("Dawn 15.2.0 by Shopify");
     expect(html).toContain("2 unpublished");
+  });
+
+  it("folds only the clean checks into a closed group that names them, after the visible rows", async () => {
+    const html = renderDashboard(await runLoader());
+    const start = html.indexOf('<section aria-labelledby="theme-health-heading"');
+    const section = html.slice(start, html.indexOf("</section>", start));
+    expect(section).toMatch(
+      /<details[^>]*><summary[^>]*>Clean: SEO and AI tags, Store data left behind, Script tag deadline<\/summary>/,
+    );
+    expect(section).not.toMatch(/<details[^>]*\bopen\b/);
+    const visible = section.slice(0, section.indexOf("<details"));
+    const fold = section.slice(section.indexOf("<details"));
+    // Free: eight rows stay in full (malicious is clean and still shown first).
+    expect(visible.match(/<h3[^>]*>(?:<a[^>]*>)?([^<]+)/g)).toHaveLength(8);
+    expect(visible).toMatch(
+      /Known malicious code<\/h3>(?:(?!<\/li>)[\s\S])*<s-badge tone="success">Clean<\/s-badge>/,
+    );
+    expect(visible).toContain("Online Store 2.0");
+    // The fold holds Clean badges only: no issue, gap or fact is hidden in it.
+    expect(fold.match(/<li /g)).toHaveLength(3);
+    expect([...fold.matchAll(/<s-badge tone="([a-z]+)">([^<]*)</g)].map((m) => m[2])).toEqual([
+      "Clean",
+      "Clean",
+      "Clean",
+    ]);
+    // A row with findings links from its label; there is no separate link line.
+    expect(section).toMatch(
+      /<a[^>]*aria-label="View findings: Leftover scripts and styles"[^>]*>Leftover scripts and styles<\/a><\/h3>/,
+    );
+    expect(section).not.toContain(">View findings<");
   });
 
   it("has ONE 'Theme health' heading and no score, grade or percentage anywhere on Home", async () => {

@@ -612,3 +612,27 @@ export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] 
   if (unpublished) rows.push(unpublished);
   return rows;
 }
+
+/** The clean finding categories the checklist folds away. Never "malicious". */
+const FOLDABLE_KEYS: ReadonlySet<string> = new Set(
+  HEALTH_CATEGORIES.map((c) => c.key).filter((key) => key !== "malicious"),
+);
+
+/**
+ * Split the checklist into the rows shown in full and the rows folded into
+ * the "Clean:" group, each in its existing order. A row folds ONLY when it is
+ * a finding category other than malicious code AND its status is "clean":
+ * anything found, partly checked or not checked stays visible, and so do the
+ * theme and unpublished-themes rows whatever their status.
+ */
+export function partitionHealthRows(rows: readonly HealthRow[]): {
+  visible: HealthRow[];
+  folded: HealthRow[];
+} {
+  const visible: HealthRow[] = [];
+  const folded: HealthRow[] = [];
+  for (const row of rows) {
+    (row.status === "clean" && FOLDABLE_KEYS.has(row.key) ? folded : visible).push(row);
+  }
+  return { visible, folded };
+}
