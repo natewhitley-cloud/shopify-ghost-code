@@ -36,6 +36,7 @@ import {
   FREE_TEST_INTRO,
   FREE_TEST_NO_APP,
   FREE_TEST_NOT_USED,
+  FREE_TEST_PAUSED_TODAY,
   FREE_TEST_RESULT_HEADING,
   FREE_TEST_UPGRADE_BODY,
   FREE_TEST_SUPPORT_EMAIL,
@@ -71,7 +72,7 @@ import { recordUpgradeClick } from "../lib/upgrade-preview";
 import { useScanPolling } from "../lib/use-scan-polling";
 import { getShopMetadata } from "../models/shop.server";
 import {
-  countFreeSpeedTestRuns,
+  countFreeSpeedTestAttempts,
   getFreeSpeedTestUsedAt,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
@@ -144,7 +145,7 @@ export const loader = async ({ request }: LoaderFunctionArgs): Promise<SpeedLoad
       getRecentSpeedReports(shop.id, { origin: SPEED_REPORT_ORIGIN.FREE_TEST }),
       getFreeSpeedTestUsedAt(shop.id),
       getSpeedReportRequestedAt(shop.id),
-      countFreeSpeedTestRuns(shop.id),
+      countFreeSpeedTestAttempts(shop.id),
     ]);
     return {
       access: "free",
@@ -510,8 +511,15 @@ function FreeAttemptBanner({
       </s-banner>
     );
   }
-  const code =
-    attempt.status === SPEED_REPORT_STATUS.SKIPPED_BUDGET ? "budget" : attempt.failureReason;
+  if (attempt.status === SPEED_REPORT_STATUS.SKIPPED_BUDGET) {
+    // The daily ceiling for free tests: not the store's fault, and not counted.
+    return (
+      <s-banner tone="info">
+        <s-paragraph>{FREE_TEST_PAUSED_TODAY}</s-paragraph>
+      </s-banner>
+    );
+  }
+  const code = attempt.failureReason;
   return (
     <s-banner tone="warning">
       <s-paragraph>

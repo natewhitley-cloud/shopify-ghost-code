@@ -608,10 +608,20 @@ describe("free speed test helpers", () => {
       expect(speed.buildFreeSpeedTestView([fresh], null, NOW, 5).state).toBe("running");
     });
 
-    it("the exhausted copy names the cap and the likely cause, in plain words", () => {
-      expect(speed.FREE_TEST_EXHAUSTED).toContain("after 5 tries");
-      expect(speed.FREE_TEST_EXHAUSTED).toMatch(/password page/);
+    it("the exhausted copy is true for what counts: a timeout or a page Google could not load", () => {
+      expect(speed.FREE_TEST_EXHAUSTED).toBe(
+        "The free speed test couldn't complete for this store after 5 tries, so it can't be run again. Each time, Google's test timed out or couldn't load your homepage.",
+      );
+      // A password page never reaches Google, so it never counts and is not blamed.
+      expect(speed.FREE_TEST_EXHAUSTED).not.toMatch(/password/);
       expect(speed.FREE_TEST_EXHAUSTED).not.toMatch(/\u2014/);
+    });
+
+    it("the free daily ceiling is 600 calls, and its copy says the try does not count", () => {
+      expect(speed.FREE_SPEED_TEST_DAILY_CALL_CEILING).toBe(600);
+      expect(speed.FREE_TEST_PAUSED_TODAY).toBe(
+        "Free speed tests are paused for today. Your free test wasn't used and this try doesn't count. You can run it again tomorrow.",
+      );
     });
   });
 });

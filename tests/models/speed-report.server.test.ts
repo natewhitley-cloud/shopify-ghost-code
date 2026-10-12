@@ -26,7 +26,7 @@ import { RUN_NOW_COOLDOWN_MS } from "../../app/lib/speed-report";
 import {
   claimFreeSpeedTest,
   claimSpeedReportRunNow,
-  countFreeSpeedTestRuns,
+  countFreeSpeedTestAttempts,
   createSpeedReport,
   failAbandonedSpeedReport,
   finishSpeedReport,
@@ -364,11 +364,19 @@ describe("free speed test", () => {
     await expect(getFreeSpeedTestUsedAt("nope")).resolves.toBeNull();
   });
 
-  it("countFreeSpeedTestRuns: counts this shop's FREE_TEST rows of any status (no new column)", async () => {
+  it("countFreeSpeedTestAttempts: only FREE_TEST reports that reached Google and were not stopped by the daily ceiling", async () => {
     mockDb.speedReport.count.mockResolvedValueOnce(3);
-    await expect(countFreeSpeedTestRuns("s1")).resolves.toBe(3);
+    await expect(countFreeSpeedTestAttempts("s1")).resolves.toBe(3);
+    // psiCalls > 0 excludes every platform fault (dispatch_failed, a dead or
+    // stuck worker, not_configured, not_eligible) and a password page, which
+    // all finish with 0 calls; SKIPPED_BUDGET excludes the daily ceiling.
     expect(mockDb.speedReport.count).toHaveBeenCalledWith({
-      where: { shopId: "s1", origin: "FREE_TEST" },
+      where: {
+        shopId: "s1",
+        origin: "FREE_TEST",
+        psiCalls: { gt: 0 },
+        status: { not: "SKIPPED_BUDGET" },
+      },
     });
   });
 });

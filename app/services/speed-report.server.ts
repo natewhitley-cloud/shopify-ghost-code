@@ -57,6 +57,7 @@ import { type GraphQLResponseError, isAccessDeniedError } from "../lib/scope-che
 import {
   buildSpeedReportView,
   computeSpeedReportStatus,
+  FREE_SPEED_TEST_DAILY_CALL_CEILING,
   FREE_SPEED_TEST_MAX_ATTEMPTS,
   FREE_TEST_EXHAUSTED,
   freeSpeedTestConsumed,
@@ -75,7 +76,7 @@ import { OPS_EVENT_TYPES, recordOpsEvent } from "../models/ops-event.server";
 import {
   claimFreeSpeedTest,
   claimSpeedReportRunNow,
-  countFreeSpeedTestRuns,
+  countFreeSpeedTestAttempts,
   createSpeedReport,
   failAbandonedSpeedReport,
   finishSpeedReport,
@@ -793,7 +794,13 @@ export async function runPageSpeedAttempt(input: {
   if (!isAllowedSpeedTarget(input.pageUrl, input.primaryHost)) return { kind: "bad_target" };
 
   const now = input.now ?? (() => new Date());
-  const reserved = await reservePageSpeedCall(getDailyCallBudget(), now());
+  // Free tests reserve against a lower ceiling on the SAME daily counter, so
+  // they stop early and paying shops keep the rest of the budget.
+  const budget =
+    input.origin === SPEED_REPORT_ORIGIN.FREE_TEST
+      ? Math.min(getDailyCallBudget(), FREE_SPEED_TEST_DAILY_CALL_CEILING)
+      : getDailyCallBudget();
+  const reserved = await reservePageSpeedCall(budget, now());
   if (!reserved) {
     logger.warn("pagespeed daily budget exhausted", {
       function: LOG_FN,
@@ -1073,11 +1080,12 @@ export async function requestFreeSpeedTest(
     return { ok: false, error: FREE_TEST_ERRORS.notInPlan };
   }
   if (await getFreeSpeedTestUsedAt(shop.id)) return { ok: false, error: FREE_TEST_ERRORS.used };
-  // Per-shop retry cap: a run that does not use the test up leaves it unused,
-  // so a store that never loads would otherwise retry forever. Checked before
-  // the claim; the claim's 24h slot serializes starts, so two requests cannot
-  // both pass at the cap.
-  if ((await countFreeSpeedTestRuns(shop.id)) >= FREE_SPEED_TEST_MAX_ATTEMPTS) {
+  // Per-shop attempt cap: an attempt that reached Google without a result
+  // leaves the test unused, so a store Google cannot test would otherwise
+  // retry forever. Platform faults are not counted. Checked before the claim;
+  // the claim's 24h slot serializes starts, so two requests cannot both pass
+  // at the cap.
+  if ((await countFreeSpeedTestAttempts(shop.id)) >= FREE_SPEED_TEST_MAX_ATTEMPTS) {
     return { ok: false, error: FREE_TEST_ERRORS.exhausted };
   }
   return startMerchantSpeedRun(shop, now, SPEED_REPORT_ORIGIN.FREE_TEST);

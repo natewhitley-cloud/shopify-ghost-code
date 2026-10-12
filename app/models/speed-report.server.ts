@@ -237,11 +237,22 @@ export async function claimFreeSpeedTest(shopId: string, now: Date): Promise<boo
 }
 
 /**
- * How many free-test runs the shop has started: its FREE_TEST report rows,
- * whatever their outcome (the cap is FREE_SPEED_TEST_MAX_ATTEMPTS).
+ * How many of the shop's free-test attempts count toward
+ * FREE_SPEED_TEST_MAX_ATTEMPTS: FREE_TEST reports that made at least one
+ * PageSpeed call and were not stopped by the daily ceiling. `psiCalls` is
+ * written only by a run that finished its own report, so a dispatch failure,
+ * a dead or stuck worker, a missing key, an ineligible run and a password page
+ * (all 0 calls) never count.
  */
-export async function countFreeSpeedTestRuns(shopId: string): Promise<number> {
-  return db.speedReport.count({ where: { shopId, origin: SPEED_REPORT_ORIGIN.FREE_TEST } });
+export async function countFreeSpeedTestAttempts(shopId: string): Promise<number> {
+  return db.speedReport.count({
+    where: {
+      shopId,
+      origin: SPEED_REPORT_ORIGIN.FREE_TEST,
+      psiCalls: { gt: 0 },
+      status: { not: SPEED_REPORT_STATUS.SKIPPED_BUDGET },
+    },
+  });
 }
 
 /** When the shop used its free speed test up (null = unused / no shop). */

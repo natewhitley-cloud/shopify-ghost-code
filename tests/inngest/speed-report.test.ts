@@ -627,11 +627,11 @@ describe("speed-report-run (worker): free speed test", () => {
     expect(svc.runPageSpeedAttempt).not.toHaveBeenCalled();
   });
 
-  it("gets the same queue priority as a Run-now click", () => {
+  it("gets NO queue priority: only a Professional Run-now click is boosted", () => {
     const c = created.find((f) => f.config.id === "speed-report-run")!;
-    expect((c.config.priority as { run: string }).run).toBe(
-      "event.data.origin == 'MANUAL' || event.data.origin == 'FREE_TEST' ? 600 : 0",
-    );
+    const expression = (c.config.priority as { run: string }).run;
+    expect(expression).toBe("event.data.origin == 'MANUAL' ? 600 : 0");
+    expect(expression).not.toContain("FREE_TEST");
   });
 
   it("a cancelled free test is closed with its claim, so the slot is handed back", async () => {

@@ -23,7 +23,7 @@ vi.mock("../../app/models/speed-report.server", () => ({
   getRecentSpeedReports: vi.fn(),
   getSpeedReportRequestedAt: vi.fn(),
   getFreeSpeedTestUsedAt: vi.fn(),
-  countFreeSpeedTestRuns: vi.fn(),
+  countFreeSpeedTestAttempts: vi.fn(),
 }));
 vi.mock("../../app/services/speed-report.server", () => ({
   requestSpeedReportRunNow: vi.fn(),
@@ -45,7 +45,7 @@ import * as billing from "../../app/lib/billing.server";
 import type { SpeedPageResult } from "../../app/lib/speed-report";
 import { getShopMetadata } from "../../app/models/shop.server";
 import {
-  countFreeSpeedTestRuns,
+  countFreeSpeedTestAttempts,
   getFreeSpeedTestUsedAt,
   getRecentSpeedReports,
   getSpeedReportRequestedAt,
@@ -67,7 +67,7 @@ const mockRequestedAt = getSpeedReportRequestedAt as ReturnType<typeof vi.fn>;
 const mockRunNow = requestSpeedReportRunNow as ReturnType<typeof vi.fn>;
 const mockFreeTest = requestFreeSpeedTest as ReturnType<typeof vi.fn>;
 const mockUsedAt = getFreeSpeedTestUsedAt as ReturnType<typeof vi.fn>;
-const mockRunCount = countFreeSpeedTestRuns as ReturnType<typeof vi.fn>;
+const mockRunCount = countFreeSpeedTestAttempts as ReturnType<typeof vi.fn>;
 const mockFeatures = billing.getPlanFeatures as ReturnType<typeof vi.fn>;
 const mockTrial = getTrialEligibility as ReturnType<typeof vi.fn>;
 const mockNudge = recordNudgeStageOnce as ReturnType<typeof vi.fn>;
@@ -894,7 +894,8 @@ describe("rendering: free speed test", () => {
   it("exhausted: says the test couldn't complete, offers support and the upgrade, no run control", () => {
     const html = render(free({ state: "exhausted", result: null, lastAttempt: null }));
     expect(html).toContain("couldn&#x27;t complete for this store after 5 tries");
-    expect(html).toContain("password page or the homepage didn&#x27;t load");
+    expect(html).toContain("timed out or couldn&#x27;t load your homepage");
+    expect(html).not.toContain("password");
     expect(html).toContain('href="mailto:support@alpenglowsoftware.com"');
     expect(html).not.toContain("Run your free speed test");
     expect(html).not.toContain('value="free-test"');
@@ -934,8 +935,12 @@ describe("rendering: free speed test", () => {
         },
       }),
     );
-    expect(html).toContain("Speed tests are paused for today.");
-    expect(html).toContain("Your free test wasn&#x27;t used");
+    // The free daily ceiling: paused for everyone, and this try is not counted.
+    expect(html).toContain(
+      "Free speed tests are paused for today. Your free test wasn&#x27;t used and this try doesn&#x27;t count. You can run it again tomorrow.",
+    );
+    expect(html).not.toContain("We couldn&#x27;t test your store on");
+    expect(html).toContain("Run your free speed test");
     html = render(
       free({
         state: "available",

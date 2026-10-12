@@ -45,8 +45,8 @@
  *   - a 429 / 4xx / password page / exhausted budget / lost eligibility halts
  *     the rest of the run; a page that cannot load or a timed-out call halts
  *     only that page.
- *   - Manual "Run now" runs and free tests get queue priority over the
- *     Sunday batch.
+ *   - Manual "Run now" runs get queue priority over the Sunday batch. Free
+ *     tests get none: they never jump ahead of a paying shop's report.
  *
  * Free speed test (FREE_TEST origin, plans without the report): the same
  * worker, homepage only. No product lookup (Admin or /products.json), no
@@ -114,10 +114,11 @@ export const speedReportRun = inngest.createFunction(
     name: "Store Speed Report: Run One Shop",
     retries: 1,
     concurrency: [{ limit: 1 }, { key: "event.data.shopId", limit: 1 }],
-    // Seconds of queue priority: a merchant waiting on "Run now" or a free
-    // test goes ahead of scheduled reports queued up to 10 minutes earlier.
+    // Seconds of queue priority: a Professional merchant waiting on "Run now"
+    // goes ahead of scheduled reports queued up to 10 minutes earlier. A free
+    // test (FREE_TEST) gets no boost, so it never delays a paying shop.
     priority: {
-      run: "event.data.origin == 'MANUAL' || event.data.origin == 'FREE_TEST' ? 600 : 0",
+      run: "event.data.origin == 'MANUAL' ? 600 : 0",
     },
     timeouts: { start: "6h", finish: "55m" },
     // Retries exhausted: close the report instead of leaving it RUNNING.

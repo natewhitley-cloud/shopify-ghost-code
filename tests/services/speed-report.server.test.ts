@@ -24,7 +24,7 @@ const mockModel = vi.hoisted(() => ({
   claimSpeedReportRunNow: vi.fn(),
   claimFreeSpeedTest: vi.fn(),
   getFreeSpeedTestUsedAt: vi.fn(),
-  countFreeSpeedTestRuns: vi.fn(),
+  countFreeSpeedTestAttempts: vi.fn(),
   releaseSpeedReportRunNow: vi.fn(),
   getRecentSpeedReports: vi.fn(),
   getSpeedReportRequestedAt: vi.fn(),
@@ -850,6 +850,42 @@ describe("runPageSpeedAttempt", () => {
       attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))),
     );
     expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(12, NOW);
+  });
+
+  it("FREE_TEST reserves against the lower free ceiling on the same counter (paid keeps the rest)", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free", freeSpeedTestUsedAt: null });
+    await runPageSpeedAttempt({
+      ...attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))),
+      origin: "FREE_TEST",
+    });
+    expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(600, NOW);
+    // A paid run on the same day still reserves against the full budget.
+    mockDb.shop.findUnique.mockResolvedValue(PRO);
+    await runPageSpeedAttempt({
+      ...attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))),
+      origin: "MANUAL",
+    });
+    expect(mockModel.reservePageSpeedCall).toHaveBeenLastCalledWith(5000, NOW);
+  });
+
+  it("FREE_TEST never reserves above a budget set lower than the free ceiling", async () => {
+    process.env.PAGESPEED_DAILY_CALL_BUDGET = "40";
+    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free", freeSpeedTestUsedAt: null });
+    await runPageSpeedAttempt({
+      ...attemptInput(fetchReturning(() => json(200, buildPageSpeedResponse()))),
+      origin: "FREE_TEST",
+    });
+    expect(mockModel.reservePageSpeedCall).toHaveBeenCalledWith(40, NOW);
+  });
+
+  it("FREE_TEST at the free ceiling: a budget attempt, and Google is never called", async () => {
+    mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free", freeSpeedTestUsedAt: null });
+    mockModel.reservePageSpeedCall.mockResolvedValue(false);
+    const fetchImpl = vi.fn() as unknown as PageSpeedFetch;
+    await expect(
+      runPageSpeedAttempt({ ...attemptInput(fetchImpl), origin: "FREE_TEST" }),
+    ).resolves.toEqual({ kind: "budget" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it("budget exhausted: no call at all", async () => {
@@ -1795,7 +1831,7 @@ describe("free speed test: used up ONLY by a COMPLETED report with a homepage sc
   }
 
   it("the 5th run (at the retry cap) still uses the test up when it COMPLETES: the cap never gates the worker", async () => {
-    mockModel.countFreeSpeedTestRuns.mockResolvedValue(5);
+    mockModel.countFreeSpeedTestAttempts.mockResolvedValue(5);
     mockDb.shop.findUnique.mockResolvedValue({ ...PRO, plan: "free", freeSpeedTestUsedAt: null });
     await expect(checkSpeedReportEligibility(SHOP_ID, "FREE_TEST")).resolves.toMatchObject({
       eligible: true,
@@ -1807,7 +1843,7 @@ describe("free speed test: used up ONLY by a COMPLETED report with a homepage sc
     });
     expect(r.status).toBe("COMPLETED");
     expect(consumed()).toBe(true);
-    expect(mockModel.countFreeSpeedTestRuns).not.toHaveBeenCalled();
+    expect(mockModel.countFreeSpeedTestAttempts).not.toHaveBeenCalled();
   });
 
   it("COMPLETED with a score: written with the consume (same transaction), homepage only", async () => {
@@ -1970,28 +2006,28 @@ describe("requestFreeSpeedTest", () => {
     mockModel.getRecentSpeedReports.mockResolvedValue([]);
     mockModel.getSpeedReportRequestedAt.mockResolvedValue(null);
     mockModel.getFreeSpeedTestUsedAt.mockResolvedValue(null);
-    mockModel.countFreeSpeedTestRuns.mockResolvedValue(0);
+    mockModel.countFreeSpeedTestAttempts.mockResolvedValue(0);
     mockModel.claimFreeSpeedTest.mockResolvedValue(true);
     mockModel.createSpeedReport.mockResolvedValue({ id: "rep-f", createdAt: NOW });
     mockSend.mockResolvedValue({ ids: ["e1"] });
   });
 
   describe("per-shop retry cap (FREE_SPEED_TEST_MAX_ATTEMPTS = 5)", () => {
-    it("4 runs so far: the 5th run is allowed (claim, row, event)", async () => {
-      mockModel.countFreeSpeedTestRuns.mockResolvedValue(4);
+    it("4 counted attempts so far: the 5th is allowed (claim, row, event)", async () => {
+      mockModel.countFreeSpeedTestAttempts.mockResolvedValue(4);
       await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
         ok: true,
         reportId: "rep-f",
       });
-      expect(mockModel.countFreeSpeedTestRuns).toHaveBeenCalledWith(SHOP_ID);
+      expect(mockModel.countFreeSpeedTestAttempts).toHaveBeenCalledWith(SHOP_ID);
       expect(mockModel.claimFreeSpeedTest).toHaveBeenCalledTimes(1);
       expect(mockSend).toHaveBeenCalledTimes(1);
     });
 
     it.each([5, 6, 40])(
-      "%i runs so far: the next is refused server-side before any claim, row or event",
+      "%i counted attempts so far: the next is refused server-side before any claim, row or event",
       async (n) => {
-        mockModel.countFreeSpeedTestRuns.mockResolvedValue(n);
+        mockModel.countFreeSpeedTestAttempts.mockResolvedValue(n);
         await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
           ok: false,
           error: FREE_TEST_ERRORS.exhausted,
@@ -2004,7 +2040,7 @@ describe("requestFreeSpeedTest", () => {
 
     it("already used beats exhausted (the used message wins)", async () => {
       mockModel.getFreeSpeedTestUsedAt.mockResolvedValue(USED_AT);
-      mockModel.countFreeSpeedTestRuns.mockResolvedValue(5);
+      mockModel.countFreeSpeedTestAttempts.mockResolvedValue(5);
       await expect(requestFreeSpeedTest(free, NOW)).resolves.toEqual({
         ok: false,
         error: FREE_TEST_ERRORS.used,

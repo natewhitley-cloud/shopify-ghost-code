@@ -453,17 +453,29 @@ export const FREE_TEST_BUTTON = "Run your free speed test";
 export const FREE_SPEED_TEST_BULLET = "One free homepage speed test";
 export const FREE_TEST_NOT_USED = "Your free test wasn't used, so you can run it again.";
 /**
- * How many free-test runs a shop may START in total (its FREE_TEST report
- * rows, whatever their outcome). A run that does not use the test up (password
- * page, the store didn't load, a Google failure) leaves it unused, so without
- * a cap a store that never loads could retry forever and spend PageSpeed calls
- * each day. The run that reaches the cap still uses the test up if it
- * COMPLETES.
+ * How many free-test attempts a shop gets in total. Only an attempt that
+ * actually REACHED GOOGLE counts (a FREE_TEST report with at least one
+ * PageSpeed call that was not stopped by the daily ceiling): a timeout, a
+ * page Google could not load. A platform fault never burns an attempt: a
+ * dispatch failure, a dead or stuck worker, a missing key, the daily ceiling,
+ * and a password page (found by our own pre-check, before any call) all leave
+ * the count alone. Without the cap a store Google cannot test could spend
+ * PageSpeed calls every day forever. The attempt that reaches the cap still
+ * uses the test up if it COMPLETES.
  */
 export const FREE_SPEED_TEST_MAX_ATTEMPTS = 5;
+/**
+ * Free tests stop for the day once the SHARED daily PageSpeed call counter
+ * reaches this, so they can never use up the budget paying shops' reports need
+ * (PAGESPEED_DAILY_CALL_BUDGET, default 5000: paid keeps the rest).
+ */
+export const FREE_SPEED_TEST_DAILY_CALL_CEILING = 600;
+/** Shown when a free test was stopped by the daily ceiling. */
+export const FREE_TEST_PAUSED_TODAY =
+  "Free speed tests are paused for today. Your free test wasn't used and this try doesn't count. You can run it again tomorrow.";
 /** The support address shown when the free test cannot be run any more. */
 export const FREE_TEST_SUPPORT_EMAIL = "support@alpenglowsoftware.com";
-export const FREE_TEST_EXHAUSTED = `The free speed test couldn't complete for this store after ${FREE_SPEED_TEST_MAX_ATTEMPTS} tries, so it can't be run again. This usually means the store has a password page or the homepage didn't load.`;
+export const FREE_TEST_EXHAUSTED = `The free speed test couldn't complete for this store after ${FREE_SPEED_TEST_MAX_ATTEMPTS} tries, so it can't be run again. Each time, Google's test timed out or couldn't load your homepage.`;
 /** Follows FREE_TEST_EXHAUSTED on the page, before the support address. */
 export const FREE_TEST_EXHAUSTED_SUPPORT =
   "If your store is open to visitors and you think this is wrong, email us at";
@@ -638,8 +650,8 @@ export function freeSpeedTestResultOf(row: SpeedReportRowLike): FreeSpeedTestRes
 
 /**
  * The free test's state from the shop's FREE_TEST reports (newest first),
- * Shop.freeSpeedTestUsedAt and how many FREE_TEST runs the shop has started in
- * total (`attempts`). Used = the stamp is set (the result shown is the newest
+ * Shop.freeSpeedTestUsedAt and how many of its attempts count toward the cap
+ * (`attempts`: those that reached Google, see FREE_SPEED_TEST_MAX_ATTEMPTS). Used = the stamp is set (the result shown is the newest
  * report that used it up). Otherwise a RUNNING report (not abandoned) means
  * running; else `attempts` at FREE_SPEED_TEST_MAX_ATTEMPTS means exhausted;
  * else available, with the latest attempt to explain why it can be run again.
