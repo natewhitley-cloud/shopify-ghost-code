@@ -22,7 +22,7 @@ export default function App() {
       <div className={styles.content}>
         <h1 className={styles.heading}>GhostCode</h1>
         <p className={styles.text}>
-          Find and remove leftover code from uninstalled Shopify apps — before it slows down your
+          Find and remove leftover code from uninstalled Shopify apps, before it slows down your
           store.
         </p>
         {showForm && (

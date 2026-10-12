@@ -77,7 +77,7 @@ describe("ScanReportDocument header (gc-k2ub)", () => {
   it("states 0 findings for a clean theme", () => {
     const text = reportText(ScanReportDocument({ ...base, findings: [] }));
     expect(text).toContain("0 findings\n");
-    expect(text).toContain("No findings — this theme is clean.");
+    expect(text).toContain("No findings. This theme is clean.");
   });
 });
 

@@ -214,7 +214,7 @@ export function ScanReportDocument({ scan, findings, exportedAt }: ScanReportInp
         <View style={styles.divider} />
 
         {sorted.length === 0 ? (
-          <Text style={styles.emptyState}>No findings — this theme is clean.</Text>
+          <Text style={styles.emptyState}>No findings. This theme is clean.</Text>
         ) : (
           visible.map((f, i) => (
             <View key={i} style={styles.finding} wrap={false}>
@@ -238,7 +238,7 @@ export function ScanReportDocument({ scan, findings, exportedAt }: ScanReportInp
 
         {hasUnsupported ? (
           <Text style={styles.degradeNote}>
-            Some characters (e.g. CJK, Arabic, emoji) can&apos;t be shown in this PDF — view full
+            Some characters (e.g. CJK, Arabic, emoji) can&apos;t be shown in this PDF. View full
             details in GhostCode.
           </Text>
         ) : null}

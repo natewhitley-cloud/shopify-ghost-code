@@ -1387,7 +1387,7 @@ export default function Dashboard() {
               <s-paragraph>
                 <strong>GhostCode finds and removes leftover code from uninstalled apps.</strong>{" "}
                 Over time, apps you&apos;ve removed leave behind scripts, stylesheets, and snippets
-                in your theme — slowing your store and cluttering your code. GhostCode scans your
+                in your theme, slowing your store and cluttering your code. GhostCode scans your
                 theme and flags everything that can be safely removed.
               </s-paragraph>
               {mainTheme ? (

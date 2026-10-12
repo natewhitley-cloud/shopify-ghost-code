@@ -1708,7 +1708,7 @@ function UnknownScriptRow({ script }: { script: UnknownScriptData }) {
       <td>
         {isSubmitted ? (
           <span style={{ color: COLOR_SUCCESS, fontWeight: 500 }}>
-            Submitted{submittedName ? ` — ${submittedName}` : ""} — thank you!
+            Submitted{submittedName ? `: ${submittedName}` : ""}. Thank you!
           </span>
         ) : (
           <fetcher.Form method="post" style={{ display: "flex", gap: "4px" }}>
@@ -2850,7 +2850,7 @@ export default function ScanDetail() {
                 <h2 className="scan-section-title">Unrecognized Scripts</h2>
                 <s-paragraph>
                   These external scripts were found in your theme but could not be matched to a
-                  known app. If you recognize which app left these behind, let us know — it helps
+                  known app. If you recognize which app left these behind, let us know. It helps
                   improve detection for everyone.
                 </s-paragraph>
                 <style>{`${htmlTableCss("unknown-scripts-table")}`}</style>
