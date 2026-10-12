@@ -5,6 +5,10 @@
  * It is purely presentational: the caller passes the (ignore-filtered) findings
  * in; this module does no DB access. It sorts findings
  * by severity and renders a clean, branded, shareable report.
+ *
+ * Known malicious code is passed in even when the merchant ignored it
+ * (gc-j8xq): the caller sets `ignoredByMerchant` and that finding's header
+ * says so.
  */
 
 import path from "node:path";
@@ -34,6 +38,8 @@ type ReportFinding = {
   appName: string | null;
   description: string;
   codeSnippet: string;
+  /** A malicious finding the merchant ignored: shown anyway, and marked. */
+  ignoredByMerchant?: boolean;
 };
 
 export type ScanReportInput = {
@@ -220,6 +226,7 @@ export function ScanReportDocument({ scan, findings, exportedAt }: ScanReportInp
             <View key={i} style={styles.finding} wrap={false}>
               <Text style={styles.findingHeader}>
                 {f.severity} · {humanizeType(f.findingType)}
+                {f.ignoredByMerchant ? " · Ignored by you" : ""}
               </Text>
               <Text style={styles.findingMeta}>
                 {f.filename}:{f.lineNumber} · App: {f.appName ?? "—"}

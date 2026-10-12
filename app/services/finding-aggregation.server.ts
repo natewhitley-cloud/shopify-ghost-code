@@ -122,6 +122,41 @@ export function filterIgnoredFindings<T extends IgnorableFinding>(
 }
 
 /**
+ * `filterIgnoredFindings`, except that known malicious code is never dropped
+ * (gc-j8xq). Product rule: a MALICIOUS_SCRIPT finding shows regardless of
+ * ignores, so ignoring one can never make a report read as clean. Every other
+ * ignored finding is dropped exactly as `filterIgnoredFindings` drops it.
+ *
+ * `shown` keeps the input order. `ignoredMalicious` holds the shown findings
+ * the merchant ignored (the same object references), so a report can say so.
+ * Pure: no DB, no mutation of the input. With no suppressions it returns the
+ * input array as `shown` without fingerprinting anything.
+ *
+ * Used by the scan export (CSV, JSON, PDF). The diff, the summary email and
+ * the lane counts keep using `filterIgnoredFindings`.
+ */
+export function filterIgnoredExceptMalicious<T extends IgnorableFinding>(
+  findings: T[],
+  ignores: ShopIgnores,
+): { shown: T[]; ignoredMalicious: ReadonlySet<T> } {
+  if (ignores.fingerprints.size === 0 && ignores.appNames.size === 0) {
+    return { shown: findings, ignoredMalicious: new Set() };
+  }
+
+  const shown: T[] = [];
+  const ignoredMalicious = new Set<T>();
+  for (const finding of findings) {
+    if (!isFindingIgnored(finding, ignores)) {
+      shown.push(finding);
+    } else if (finding.findingType === "MALICIOUS_SCRIPT") {
+      shown.push(finding);
+      ignoredMalicious.add(finding);
+    }
+  }
+  return { shown, ignoredMalicious };
+}
+
+/**
  * Aggregate a scan's findings with ignored findings excluded, in the same
  * `{ total, bySeverity, byType }` shape as `getFindingSummary`.
  *

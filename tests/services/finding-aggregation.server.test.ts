@@ -49,6 +49,7 @@ import { computeLaneSummary, type LaneKey } from "../../app/lib/finding-conseque
 import { getFindingsForScan, getFindingSummary } from "../../app/models/finding.server";
 import type { ShopIgnores } from "../../app/models/ignored-finding.server";
 import {
+  filterIgnoredExceptMalicious,
   filterIgnoredFindings,
   getFilteredFindingSummary,
   isFindingIgnored,
@@ -436,5 +437,85 @@ describe("LIQUID_ERROR_RENDERED is exempt from APP-level ignores (gc-i6du)", () 
     expect(isFindingIgnored(error, ignores)).toBe(true);
     const moved = { ...error, codeSnippet: error.codeSnippet.replace("line 309", "line 400") };
     expect(isFindingIgnored(moved, ignores)).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// filterIgnoredExceptMalicious (gc-j8xq): known malicious code shows regardless
+// of ignores, so an export can never read as clean because it was ignored.
+// ---------------------------------------------------------------------------
+
+describe("filterIgnoredExceptMalicious (gc-j8xq)", () => {
+  const malicious = (overrides: Partial<DiffableFinding> = {}) =>
+    makeFinding({ findingType: "MALICIOUS_SCRIPT", filename: "layout/theme.liquid", ...overrides });
+  const fpOf = (f: DiffableFinding) =>
+    fingerprintFinding(f.filename, f.findingType, f.codeSnippet, f.lineNumber);
+
+  it("returns the input untouched, with nothing marked, when the shop has no ignores", () => {
+    const findings = [malicious(), makeFinding({ filename: "b" })];
+    const result = filterIgnoredExceptMalicious(findings, NO_IGNORES);
+    expect(result.shown).toBe(findings);
+    expect(result.ignoredMalicious.size).toBe(0);
+  });
+
+  it("keeps an INSTANCE-ignored malicious finding and marks it", () => {
+    const bad = malicious({ codeSnippet: "evil()", lineNumber: 7 });
+    const result = filterIgnoredExceptMalicious([bad], {
+      fingerprints: new Set([fpOf(bad)]),
+      appNames: new Set(),
+    });
+    expect(result.shown).toEqual([bad]);
+    expect(result.ignoredMalicious.has(bad)).toBe(true);
+  });
+
+  it("keeps an APP-ignored malicious finding and marks it", () => {
+    const bad = malicious({ appName: "Klaviyo" });
+    const result = filterIgnoredExceptMalicious([bad], {
+      fingerprints: new Set(),
+      appNames: new Set(["Klaviyo"]),
+    });
+    expect(result.shown).toEqual([bad]);
+    expect(result.ignoredMalicious.has(bad)).toBe(true);
+  });
+
+  it("still drops every other ignored finding, and keeps the original order", () => {
+    const a = makeFinding({ filename: "a", appName: "Klaviyo" }); // ignored (app)
+    const b = malicious({ filename: "b", appName: "Klaviyo" }); // ignored, malicious: stays
+    const c = makeFinding({ filename: "c", appName: "Judge.me" }); // not ignored
+    const d = makeFinding({ filename: "d", codeSnippet: "s", lineNumber: 3 }); // ignored (instance)
+    const e = malicious({ filename: "e", codeSnippet: "other()" }); // malicious, not ignored
+    const ignores: ShopIgnores = {
+      fingerprints: new Set([fpOf(d)]),
+      appNames: new Set(["Klaviyo"]),
+    };
+
+    const result = filterIgnoredExceptMalicious([a, b, c, d, e], ignores);
+
+    expect(result.shown).toEqual([b, c, e]);
+    // Only the malicious finding the merchant ignored is marked.
+    expect([...result.ignoredMalicious]).toEqual([b]);
+    // Exactly filterIgnoredFindings' kept set plus the ignored malicious ones.
+    const { kept } = filterIgnoredFindings([a, b, c, d, e], ignores);
+    expect(result.shown.filter((f) => !result.ignoredMalicious.has(f))).toEqual(kept);
+  });
+
+  it("does not mutate the input", () => {
+    const findings = [malicious({ appName: "Klaviyo" }), makeFinding({ appName: "Klaviyo" })];
+    const copy = [...findings];
+    filterIgnoredExceptMalicious(findings, {
+      fingerprints: new Set(),
+      appNames: new Set(["Klaviyo"]),
+    });
+    expect(findings).toEqual(copy);
+  });
+
+  it("is empty only when nothing is left to show", () => {
+    const ignores: ShopIgnores = { fingerprints: new Set(), appNames: new Set(["Klaviyo"]) };
+    expect(
+      filterIgnoredExceptMalicious([makeFinding({ appName: "Klaviyo" })], ignores).shown,
+    ).toEqual([]);
+    expect(
+      filterIgnoredExceptMalicious([malicious({ appName: "Klaviyo" })], ignores).shown,
+    ).toHaveLength(1);
   });
 });

@@ -38,9 +38,18 @@ vi.mock("../../app/models/ignored-finding.server", () => ({
   getIgnoredFindingsForShop: vi.fn(),
 }));
 
-vi.mock("../../app/services/finding-aggregation.server", () => ({
-  filterIgnoredFindings: vi.fn(),
-}));
+// gc-j8xq: the export decides what to show through the REAL
+// filterIgnoredExceptMalicious (pure, no DB), so these tests exercise the
+// actual ignore rules. filterIgnoredFindings stays a mock for the older tests
+// below that still set it up; the route no longer calls it.
+vi.mock("../../app/services/finding-aggregation.server", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../app/services/finding-aggregation.server")>();
+  return {
+    filterIgnoredFindings: vi.fn(),
+    filterIgnoredExceptMalicious: actual.filterIgnoredExceptMalicious,
+  };
+});
 
 vi.mock("../../app/lib/plan-gating.server", () => ({
   canViewFindingDetails: vi.fn(),
@@ -648,4 +657,135 @@ describe("missing scanId param", () => {
 
     expect(response.status).toBe(400);
   });
+});
+
+// ---------------------------------------------------------------------------
+// gc-j8xq: known malicious code is exported regardless of ignores
+// ---------------------------------------------------------------------------
+
+describe("ignored malicious findings are still exported (gc-j8xq)", () => {
+  const MALICIOUS_IGNORED = {
+    id: "finding-m1",
+    scanId: "scan-abc",
+    severity: "HIGH",
+    findingType: "MALICIOUS_SCRIPT",
+    filename: "layout/theme.liquid",
+    lineNumber: 7,
+    appName: "Klaviyo", // APP-ignored below
+    codeSnippet: '<script src="https://evil.example/x.js"></script>',
+    description: "Loads from a known malicious source",
+    createdAt: new Date("2026-01-15T10:05:00Z"),
+  };
+  const MALICIOUS_NOT_IGNORED = {
+    ...MALICIOUS_IGNORED,
+    id: "finding-m2",
+    appName: null,
+    lineNumber: 99,
+    codeSnippet: '<script src="https://evil.example/y.js"></script>',
+  };
+  // FINDINGS[0] is Klaviyo's (ignored); FINDINGS[1] has no app (kept).
+  const ALL = [FINDINGS[0], MALICIOUS_IGNORED, FINDINGS[1], MALICIOUS_NOT_IGNORED];
+
+  function ignoreKlaviyo() {
+    mockGetIgnoredFindingsForShop.mockResolvedValue({
+      fingerprints: new Set<string>(),
+      appNames: new Set<string>(["Klaviyo"]),
+    });
+  }
+
+  describe("a scan whose only finding is an ignored malicious one", () => {
+    beforeEach(() => {
+      ignoreKlaviyo();
+      mockGetFindingsForScan.mockResolvedValue([MALICIOUS_IGNORED]);
+    });
+
+    it("CSV: the finding is a data row, not just the header", async () => {
+      const lines = (await (await callLoader("scan-abc", "csv")).text()).split("\r\n");
+      expect(lines).toHaveLength(2);
+      expect(lines[0]).toBe('"Severity","Type","File","Line","App","Code Snippet","Description"');
+      expect(lines[1]).toContain('"MALICIOUS_SCRIPT"');
+    });
+
+    it("JSON: the finding is in the findings array, in the unchanged shape", async () => {
+      const body = await (await callLoader("scan-abc", "json")).json();
+      expect(body.findings).toHaveLength(1);
+      expect(Object.keys(body.findings[0])).toEqual([
+        "severity",
+        "type",
+        "file",
+        "line",
+        "app",
+        "description",
+        "codeSnippet",
+      ]);
+      expect(body.findings[0].type).toBe("MALICIOUS_SCRIPT");
+    });
+
+    it("PDF: the renderer gets the finding, marked as ignored (never an empty list)", async () => {
+      await callLoader("scan-abc", "pdf");
+      const input = vi.mocked(renderScanReportPdf).mock.calls[0][0];
+      expect(input.findings).toHaveLength(1);
+      expect(input.findings[0]).toMatchObject({
+        findingType: "MALICIOUS_SCRIPT",
+        ignoredByMerchant: true,
+      });
+    });
+  });
+
+  describe("a mixed scan", () => {
+    beforeEach(() => {
+      ignoreKlaviyo();
+      mockGetFindingsForScan.mockResolvedValue(ALL);
+    });
+
+    it("CSV: drops the ignored non-malicious finding, keeps both malicious ones, in order", async () => {
+      const lines = (await (await callLoader("scan-abc", "csv")).text()).split("\r\n");
+      expect(lines).toHaveLength(4);
+      expect(lines.slice(1).map((l) => l.split(",")[1])).toEqual([
+        '"MALICIOUS_SCRIPT"',
+        '"GHOST_STYLE"',
+        '"MALICIOUS_SCRIPT"',
+      ]);
+      expect(lines.join("\n")).not.toContain("GHOST_SCRIPT");
+      // No new column, in the header or in any row.
+      expect(lines[0].split(",")).toHaveLength(7);
+      expect(lines.join("\n")).not.toMatch(/ignored/i);
+    });
+
+    it("JSON: drops the ignored non-malicious finding, keeps both malicious ones, in order", async () => {
+      const body = await (await callLoader("scan-abc", "json")).json();
+      expect(body.findings.map((f: { type: string }) => f.type)).toEqual([
+        "MALICIOUS_SCRIPT",
+        "GHOST_STYLE",
+        "MALICIOUS_SCRIPT",
+      ]);
+      expect(JSON.stringify(body)).not.toMatch(/ignored/i);
+    });
+
+    it("PDF: same three findings, and only the ignored malicious one is marked", async () => {
+      await callLoader("scan-abc", "pdf");
+      const { findings } = vi.mocked(renderScanReportPdf).mock.calls[0][0];
+      expect(findings.map((f) => [f.findingType, Boolean(f.ignoredByMerchant)])).toEqual([
+        ["MALICIOUS_SCRIPT", true],
+        ["GHOST_STYLE", false],
+        ["MALICIOUS_SCRIPT", false],
+      ]);
+    });
+  });
+
+  it.each(["csv", "json", "pdf"])(
+    "%s: with everything ignored and nothing malicious, the export is empty",
+    async (format) => {
+      ignoreKlaviyo();
+      mockGetFindingsForScan.mockResolvedValue([FINDINGS[0]]);
+      const response = await callLoader("scan-abc", format);
+      if (format === "csv") {
+        expect((await response.text()).split("\r\n")).toHaveLength(1);
+      } else if (format === "json") {
+        expect((await response.json()).findings).toEqual([]);
+      } else {
+        expect(vi.mocked(renderScanReportPdf).mock.calls[0][0].findings).toEqual([]);
+      }
+    },
+  );
 });

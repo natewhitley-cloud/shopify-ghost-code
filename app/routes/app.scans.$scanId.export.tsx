@@ -17,7 +17,7 @@ import { getFindingsForScan } from "../models/finding.server";
 import { getIgnoredFindingsForShop } from "../models/ignored-finding.server";
 import { getScanById } from "../models/scan.server";
 import { getShopMetadata } from "../models/shop.server";
-import { filterIgnoredFindings } from "../services/finding-aggregation.server";
+import { filterIgnoredExceptMalicious } from "../services/finding-aggregation.server";
 import { authenticate } from "../shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -114,9 +114,14 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
   // Step 6: Fetch findings, then drop the shop's suppressed (ignored) findings
   // so the export matches exactly what the merchant sees on the dashboard — a
   // shared report must not re-surface suppressed false-positives.
+  //
+  // The exception (gc-j8xq): known malicious code (MALICIOUS_SCRIPT) is never
+  // dropped, ignored or not, so an export can never read as clean because the
+  // finding was ignored. This is the ONE place that decides what all three
+  // formats show; the PDF also marks the malicious findings that were ignored.
   const findings = await getFindingsForScan(scanId);
   const ignores = await getIgnoredFindingsForShop(shop.id);
-  const { kept } = filterIgnoredFindings(findings, ignores);
+  const { shown, ignoredMalicious } = filterIgnoredExceptMalicious(findings, ignores);
 
   // Step 7: Serialise and return the response.
   if (format === "pdf") {
@@ -128,7 +133,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 
     const pdf = await renderScanReportPdf({
       scan: { id: scan.id, themeName: scan.themeName, createdAt: scan.createdAt },
-      findings: kept,
+      findings: shown.map((f) => (ignoredMalicious.has(f) ? { ...f, ignoredByMerchant: true } : f)),
       exportedAt: new Date().toISOString(),
     });
 
@@ -147,7 +152,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         scanId: scan.id,
         themeName: scan.themeName,
         exportedAt: new Date().toISOString(),
-        findings: kept.map((f) => ({
+        findings: shown.map((f) => ({
           severity: f.severity,
           type: f.findingType,
           file: f.filename,
@@ -180,7 +185,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     "Code Snippet",
     "Description",
   ]);
-  const dataRows = kept.map((f) =>
+  const dataRows = shown.map((f) =>
     toCsvRow([
       f.severity,
       f.findingType,

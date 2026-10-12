@@ -32,6 +32,7 @@ import {
   startHereLane,
 } from "../lib/finding-consequence";
 import type { LaneKey, LaneSummaryRow, UrgencyKey } from "../lib/finding-consequence";
+import { buildFindingsTile, type FindingsTile } from "../lib/findings-tile";
 import { isSuccessfulScan } from "../lib/format";
 import { logger } from "../lib/logger.server";
 import { mergeSearchParams } from "../lib/merge-search-params";
@@ -196,6 +197,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,
       findingTrend: null,
+      findingsTile: null as FindingsTile | null,
       topFindings: [] as TopFindingView[],
       removalBanner: null as RemovalBanner | null,
       newlyInactiveApps: [] as string[],
@@ -305,6 +307,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // set (latest + previous + the trend window) — never for scans outside it.
   const hasIgnores = ignores.fingerprints.size > 0 || ignores.appNames.size > 0;
   let filteredSeverityByScanId: Map<string, Record<Severity, number>> | null = null;
+  // Ignore-filtered MALICIOUS_SCRIPT count per scan (findings tile, gc-j8xq).
+  let filteredMaliciousByScanId: Map<string, number> | null = null;
   let latestTypeCounts = typeCounts;
   // The latest successful scan's kept (non-ignored) findings, which the
   // filtered summary had to read anyway: the "Start here" ranking reuses them
@@ -318,6 +322,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     );
     filteredSeverityByScanId = new Map(
       summaries.map(([id, { summary }]) => [id, summary.bySeverity]),
+    );
+    filteredMaliciousByScanId = new Map(
+      summaries.map(([id, { summary }]) => [id, summary.byType?.MALICIOUS_SCRIPT ?? 0]),
     );
     // The latest successful scan's ignore-filtered per-type counts feed the lanes.
     if (latestScan && isSuccessfulScan(latestScan.status)) {
@@ -389,18 +396,49 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // successful latest scan whose counts loaded.
   const hasResults = Boolean(latestScan && isSuccessfulScan(latestScan.status) && latestSeverity);
 
+  const sumSeverity = (r: Record<Severity, number>) => r.HIGH + r.MEDIUM + r.LOW;
+
+  // Findings tile (gc-j8xq): the ignore-filtered total PLUS the malicious
+  // findings the merchant ignored, and never green while the scan found any
+  // (see buildFindingsTile). `maliciousCount` is what the scan FOUND, from the
+  // unfiltered per-type groupBy already loaded; `latestTypeCounts` holds what
+  // is left after ignores (the same object when the shop has none), so the
+  // difference is exactly the ignored malicious findings. No extra query.
+  const maliciousCount = typeCounts?.MALICIOUS_SCRIPT ?? 0;
+  const latestFilteredTotal = latestSeverity ? sumSeverity(latestSeverity) : 0;
+  const findingsTile: FindingsTile | null = latestSeverity
+    ? buildFindingsTile({
+        filteredTotal: latestFilteredTotal,
+        maliciousFound: maliciousCount,
+        maliciousKept: latestTypeCounts?.MALICIOUS_SCRIPT ?? 0,
+      })
+    : null;
+
   // Finding-count trend: compare the latest scan's total finding count against
   // the previous successful scan's. Fewer findings = improving. Derived from the
   // severity counts already fetched — no extra query. null when there is no
   // successful previous scan to compare against.
-  const sumSeverity = (r: Record<Severity, number>) => r.HIGH + r.MEDIUM + r.LOW;
+  //
+  // Both totals are counted the way the tile counts (gc-j8xq), so the line
+  // under the tile never contradicts its number. Only when the latest scan has
+  // ignored malicious findings does the previous scan need its own unfiltered
+  // malicious count: one lean per-type groupBy, in that state alone. Otherwise
+  // the comparison is the ignore-filtered one it always was.
   let findingTrend: {
     direction: "improving" | "declining" | "stable";
     previousTotal: number;
   } | null = null;
-  if (latestSeverity && previousScan && isSuccessfulScan(previousScan.status)) {
-    const currentTotal = sumSeverity(latestSeverity);
-    const previousTotal = sumSeverity(severityForScan(previousScan.id));
+  if (findingsTile && previousScan && isSuccessfulScan(previousScan.status)) {
+    const currentTotal = findingsTile.total;
+    const previousFilteredTotal = sumSeverity(severityForScan(previousScan.id));
+    const previousTotal =
+      currentTotal > latestFilteredTotal
+        ? buildFindingsTile({
+            filteredTotal: previousFilteredTotal,
+            maliciousFound: (await getTypeCountsForScan(previousScan.id)).MALICIOUS_SCRIPT ?? 0,
+            maliciousKept: filteredMaliciousByScanId?.get(previousScan.id) ?? 0,
+          }).total
+        : previousFilteredTotal;
     const direction =
       currentTotal < previousTotal
         ? "improving"
@@ -572,10 +610,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
   // security alert lists them regardless of ignores too), so an ignored
   // malicious finding can never read "Clean" here. It comes from `typeCounts`,
   // the unfiltered per-type groupBy already loaded above for a successful
-  // latest scan: no extra query. The critical line is built from that count
-  // alone, outside loadThemeHealth, so it shows even when the checklist
-  // fails or has no rows. Same on every plan.
-  const maliciousCount = typeCounts?.MALICIOUS_SCRIPT ?? 0;
+  // latest scan (`maliciousCount`, above): no extra query. The critical line
+  // is built from that count alone, outside loadThemeHealth, so it shows even
+  // when the checklist fails or has no rows. Same on every plan.
   const maliciousHealth: HealthRow | null =
     hasResults && latestSuccessful ? maliciousHealthRow(latestSuccessful.id, maliciousCount) : null;
   let themeHealth: HealthRow[] = [];
@@ -637,6 +674,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     startHere,
     dominant,
     findingTrend,
+    findingsTile,
     topFindings,
     removalBanner,
     newlyInactiveApps,
@@ -1060,6 +1098,7 @@ export default function Dashboard() {
     startHere,
     dominant,
     findingTrend,
+    findingsTile,
     topFindings,
     removalBanner,
     newlyInactiveApps,
@@ -1202,6 +1241,13 @@ export default function Dashboard() {
     (findingSummary?.bySeverity?.HIGH ?? 0) +
     (findingSummary?.bySeverity?.MEDIUM ?? 0) +
     (findingSummary?.bySeverity?.LOW ?? 0);
+
+  // The findings tile's number and tone, from the loader (gc-j8xq): it counts
+  // known malicious code whether or not it was ignored, so it can be higher
+  // than `currentTotal`. Without loader data it is the plain total.
+  const tile: FindingsTile =
+    findingsTile ??
+    buildFindingsTile({ filteredTotal: currentTotal, maliciousFound: 0, maliciousKept: 0 });
 
   // Finding count for the dominant consequence lane — surfaced in the hero's
   // "most of the damage is in …" line so the merchant knows how many findings
@@ -1696,16 +1742,16 @@ export default function Dashboard() {
                           {/* Spacer to match the subtitle line height in the right column */}
                           <div style={{ height: "18px" }} />
                           <div
-                            className={`health-score-tile health-score-tile--${currentTotal === 0 ? "success" : "warning"}`}
+                            className={`health-score-tile health-score-tile--${tile.tone}`}
                             style={{ marginTop: "8px" }}
                           >
                             <div
-                              className={`health-score-number health-score-number--${currentTotal === 0 ? "success" : "warning"}`}
+                              className={`health-score-number health-score-number--${tile.tone}`}
                             >
-                              {currentTotal}
+                              {tile.total}
                             </div>
                             <div className="health-score-subtitle">
-                              {currentTotal === 1 ? "finding" : "findings"}
+                              {tile.total === 1 ? "finding" : "findings"}
                             </div>
                             {findingTrend && (
                               <div
@@ -1721,9 +1767,9 @@ export default function Dashboard() {
                                 }}
                               >
                                 {findingTrend.direction === "improving"
-                                  ? `▼ ${findingTrend.previousTotal - currentTotal} fewer than last scan`
+                                  ? `▼ ${findingTrend.previousTotal - tile.total} fewer than last scan`
                                   : findingTrend.direction === "declining"
-                                    ? `▲ ${currentTotal - findingTrend.previousTotal} more than last scan`
+                                    ? `▲ ${tile.total - findingTrend.previousTotal} more than last scan`
                                     : "No change from last scan"}
                               </div>
                             )}

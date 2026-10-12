@@ -199,3 +199,66 @@ describe("hasUnsupportedGlyphs", () => {
     expect(hasUnsupportedGlyphs("plain ASCII")).toBe(false);
   });
 });
+
+// gc-j8xq: known malicious code is exported even when the merchant ignored it,
+// and the PDF says so on that finding, so nobody wonders why it is back.
+describe("ScanReportDocument: ignored malicious findings (gc-j8xq)", () => {
+  const base = {
+    scan: { id: "scan-xyz", themeName: "Dawn", createdAt: new Date("2026-01-15T10:00:00Z") },
+    exportedAt: new Date("2026-01-16T09:00:00Z").toISOString(),
+  };
+  const MALICIOUS = {
+    ...FINDING,
+    findingType: "MALICIOUS_SCRIPT",
+    appName: null,
+    description: "Loads from a known malicious source",
+  };
+  const MARKER = " · Ignored by you";
+
+  it("marks an ignored malicious finding on its header line", () => {
+    const text = reportText(
+      ScanReportDocument({ ...base, findings: [{ ...MALICIOUS, ignoredByMerchant: true }] }),
+    );
+    expect(text).toContain("HIGH · MALICIOUS SCRIPT · Ignored by you\n");
+    expect(text).toContain("1 finding\n");
+    expect(text).toContain("1 High · 0 Medium · 0 Low");
+    expect(text).not.toContain("No findings. This theme is clean.");
+  });
+
+  it("puts the marker only on the ignored malicious finding", () => {
+    const text = reportText(
+      ScanReportDocument({
+        ...base,
+        findings: [
+          FINDING,
+          MALICIOUS,
+          { ...MALICIOUS, ignoredByMerchant: false },
+          { ...MALICIOUS, ignoredByMerchant: true },
+        ],
+      }),
+    );
+    expect(text.split(MARKER)).toHaveLength(2);
+    expect(text).toContain("HIGH · GHOST SCRIPT\n");
+    expect(text).toContain("HIGH · MALICIOUS SCRIPT\n");
+    expect(text).toContain(`HIGH · MALICIOUS SCRIPT${MARKER}\n`);
+  });
+
+  it("shows the clean line only when there is nothing at all to show", () => {
+    expect(reportText(ScanReportDocument({ ...base, findings: [] }))).toContain(
+      "No findings. This theme is clean.",
+    );
+    for (const findings of [[FINDING], [MALICIOUS], [{ ...MALICIOUS, ignoredByMerchant: true }]]) {
+      const text = reportText(ScanReportDocument({ ...base, findings }));
+      expect(text).not.toContain("This theme is clean");
+      expect(text).not.toContain("0 findings");
+    }
+  });
+
+  it("renders an ignored malicious finding to a valid PDF", async () => {
+    const buffer = await renderScanReportPdf({
+      ...base,
+      findings: [{ ...MALICIOUS, severity: "HIGH", ignoredByMerchant: true }],
+    });
+    expect(buffer.subarray(0, 5).toString("latin1")).toBe("%PDF-");
+  });
+});

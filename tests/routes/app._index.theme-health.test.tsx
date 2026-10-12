@@ -974,3 +974,185 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     expect(section).not.toMatch(/pricing_plans|<s-button|Upgrade|free trial/i);
   });
 });
+
+// gc-j8xq: the findings tile sat green at 0 right above the critical "Known
+// malicious code" line once every malicious finding was ignored. The tile now
+// counts known malicious code whether or not it was ignored, and is never
+// green while the scan found any.
+describe("Home findings tile: known malicious code counts regardless of ignores (gc-j8xq)", () => {
+  type Counts = Record<string, number>;
+  const sum = (c: Counts) => Object.values(c).reduce((a, b) => a + b, 0);
+  const PREV = { ...SCAN, id: "scan-0", createdAt: new Date("2026-10-11T10:00:00Z") };
+
+  /**
+   * Per scan id: `found` is what the scan stored per type; `kept` is what is
+   * left after the shop's ignores (null = the shop has no ignores at all).
+   */
+  function scans(state: Record<string, { found: Counts; kept: Counts }>, hasIgnores = true) {
+    (getSeverityCountsForScans as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Map(
+        Object.entries(state).map(([id, s]) => [id, { HIGH: sum(s.found), MEDIUM: 0, LOW: 0 }]),
+      ),
+    );
+    mockTypeCounts.mockImplementation(async (id: string) => state[id].found);
+    (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fingerprints: new Set(hasIgnores ? ["fp-ignored"] : []),
+      appNames: new Set(),
+    });
+    mockFiltered.mockImplementation(async (id: string) => ({
+      summary: {
+        total: sum(state[id].kept),
+        bySeverity: { HIGH: sum(state[id].kept), MEDIUM: 0, LOW: 0 },
+        byType: state[id].kept,
+      },
+      keptFindings: [],
+    }));
+  }
+
+  /** The tile as rendered: its tone classes, its number and its noun. */
+  function tileOf(html: string) {
+    const tile = html.match(/class="health-score-tile health-score-tile--(\w+)"/);
+    const number = html.match(/class="health-score-number health-score-number--(\w+)">(\d+)</);
+    const noun = html.match(/class="health-score-subtitle">([^<]*)</);
+    const delta = html.match(/class="health-score-delta"[^>]*>([^<]*)</);
+    return {
+      tileTone: tile?.[1],
+      numberTone: number?.[1],
+      total: Number(number?.[2]),
+      noun: noun?.[1],
+      delta: delta?.[1] ?? null,
+    };
+  }
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s (a): 2 malicious, both ignored, nothing else -> 2, not green",
+    async (plan) => {
+      setPlan(plan);
+      scans({ "scan-1": { found: { MALICIOUS_SCRIPT: 2 }, kept: {} } });
+      const data = await runLoader();
+      expect(data.findingsTile).toEqual({ total: 2, tone: "critical" });
+      const html = renderDashboard(data);
+      expect(tileOf(html)).toMatchObject({
+        tileTone: "critical",
+        numberTone: "critical",
+        total: 2,
+        noun: "findings",
+      });
+      // (The class names also sit in the page's <style> block: match attributes.)
+      expect(html).not.toMatch(/class="[^"]*health-score-(tile|number)--success/);
+      // The tile agrees with the critical line under it.
+      expect(data.maliciousHealth).toMatchObject({ count: 2 });
+    },
+  );
+
+  it("(b): 2 malicious (1 ignored) plus 3 others (1 ignored) -> 4, counted once each", async () => {
+    scans({
+      "scan-1": {
+        found: { MALICIOUS_SCRIPT: 2, GHOST_SCRIPT: 3 },
+        kept: { MALICIOUS_SCRIPT: 1, GHOST_SCRIPT: 2 },
+      },
+    });
+    const data = await runLoader();
+    expect(data.findingsTile).toEqual({ total: 4, tone: "critical" });
+    expect(tileOf(renderDashboard(data))).toMatchObject({ tileTone: "critical", total: 4 });
+  });
+
+  it("malicious findings that are not ignored are not counted twice", async () => {
+    scans({
+      "scan-1": {
+        found: { MALICIOUS_SCRIPT: 2, GHOST_SCRIPT: 3 },
+        kept: { MALICIOUS_SCRIPT: 2, GHOST_SCRIPT: 3 },
+      },
+    });
+    const data = await runLoader();
+    expect(data.findingsTile).toEqual({ total: 5, tone: "critical" });
+  });
+
+  it("malicious code with no ignores at all: the stored total, not green", async () => {
+    scans({ "scan-1": { found: { MALICIOUS_SCRIPT: 1 }, kept: {} } }, false);
+    const data = await runLoader();
+    expect(mockFiltered).not.toHaveBeenCalled();
+    expect(data.findingsTile).toEqual({ total: 1, tone: "critical" });
+    expect(tileOf(renderDashboard(data))).toMatchObject({
+      tileTone: "critical",
+      total: 1,
+      noun: "finding",
+    });
+  });
+
+  it("(c): no malicious, everything ignored -> 0 and green, as before", async () => {
+    scans({ "scan-1": { found: { GHOST_SCRIPT: 3 }, kept: {} } });
+    const data = await runLoader();
+    expect(data.findingsTile).toEqual({ total: 0, tone: "success" });
+    expect(tileOf(renderDashboard(data))).toMatchObject({
+      tileTone: "success",
+      numberTone: "success",
+      total: 0,
+    });
+  });
+
+  it("(d): no malicious, normal findings -> unchanged, with and without ignores", async () => {
+    // No ignores: the seeded scan's 7 findings.
+    let data = await runLoader();
+    expect(data.findingsTile).toEqual({ total: 7, tone: "warning" });
+    expect(tileOf(renderDashboard(data))).toMatchObject({
+      tileTone: "warning",
+      numberTone: "warning",
+      total: 7,
+    });
+
+    // With ignores: the ignore-filtered total.
+    scans({ "scan-1": { found: { GHOST_SCRIPT: 3, GHOST_PIXEL: 2 }, kept: { GHOST_SCRIPT: 2 } } });
+    data = await runLoader();
+    expect(data.findingsTile).toEqual({ total: 2, tone: "warning" });
+    expect(tileOf(renderDashboard(data))).toMatchObject({ tileTone: "warning", total: 2 });
+  });
+
+  describe("the change since the last scan, under the tile", () => {
+    beforeEach(() => {
+      mockScans.mockResolvedValue({ items: [SCAN, PREV], hasNextPage: false });
+    });
+
+    it("the same ignored malicious code in both scans reads as no change, not as more", async () => {
+      scans({
+        "scan-1": { found: { MALICIOUS_SCRIPT: 2 }, kept: {} },
+        "scan-0": { found: { MALICIOUS_SCRIPT: 2 }, kept: {} },
+      });
+      const data = await runLoader();
+      expect(data.findingsTile).toEqual({ total: 2, tone: "critical" });
+      expect(data.findingTrend).toEqual({ direction: "stable", previousTotal: 2 });
+      expect(tileOf(renderDashboard(data)).delta).toBe("No change from last scan");
+    });
+
+    it("counts both scans the same way: 5 before (2 ignored malicious + 3), 2 now -> 3 fewer", async () => {
+      scans({
+        "scan-1": { found: { MALICIOUS_SCRIPT: 2 }, kept: {} },
+        "scan-0": { found: { MALICIOUS_SCRIPT: 2, GHOST_SCRIPT: 3 }, kept: { GHOST_SCRIPT: 3 } },
+      });
+      const data = await runLoader();
+      expect(data.findingTrend).toEqual({ direction: "improving", previousTotal: 5 });
+      expect(tileOf(renderDashboard(data)).delta).toBe("▼ 3 fewer than last scan");
+    });
+
+    it("ignored malicious code that is new on this scan reads as more", async () => {
+      scans({
+        "scan-1": { found: { MALICIOUS_SCRIPT: 2 }, kept: {} },
+        "scan-0": { found: {}, kept: {} },
+      });
+      const data = await runLoader();
+      expect(data.findingTrend).toEqual({ direction: "declining", previousTotal: 0 });
+      expect(tileOf(renderDashboard(data)).delta).toBe("▲ 2 more than last scan");
+    });
+
+    it("no ignored malicious code on the latest scan: the previous scan's types are not read", async () => {
+      scans({
+        "scan-1": { found: { GHOST_SCRIPT: 3 }, kept: { GHOST_SCRIPT: 2 } },
+        "scan-0": { found: { GHOST_SCRIPT: 5 }, kept: { GHOST_SCRIPT: 4 } },
+      });
+      const data = await runLoader();
+      expect(data.findingTrend).toEqual({ direction: "improving", previousTotal: 4 });
+      expect(mockTypeCounts).toHaveBeenCalledTimes(1);
+      expect(mockTypeCounts).toHaveBeenCalledWith("scan-1");
+    });
+  });
+});
