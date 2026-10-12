@@ -736,7 +736,7 @@ function CopyRemovalStepsButton({ text }: { text: string }) {
     <s-button
       variant="secondary"
       onClick={handleCopy}
-      accessibilityLabel="Copy removal instructions for this finding"
+      accessibilityLabel="Copy removal steps for this finding"
     >
       {copied ? "Copied" : "Copy removal steps"}
     </s-button>

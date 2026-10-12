@@ -2590,7 +2590,7 @@ describe("app.scans.$scanId loader", () => {
       );
       // Its copy action is still there.
       expect(banner).toContain(
-        '<s-button variant="secondary" accessibilityLabel="Copy removal instructions for this finding">Copy removal steps</s-button></div></li></ul>',
+        '<s-button variant="secondary" accessibilityLabel="Copy removal steps for this finding">Copy removal steps</s-button></div></li></ul>',
       );
       // The list below carries one closed disclosure per row, the malicious row included.
       const list = html.slice(html.indexOf("</s-banner>", start));
@@ -3557,7 +3557,7 @@ describe("FindingRow — list item that cannot overflow", () => {
     );
     // The removal-steps copy: a normal-size secondary Polaris button with its label.
     expect(html).toContain(
-      '<s-button variant="secondary" accessibilityLabel="Copy removal instructions for this finding">Copy removal steps</s-button>',
+      '<s-button variant="secondary" accessibilityLabel="Copy removal steps for this finding">Copy removal steps</s-button>',
     );
   });
 
@@ -3677,7 +3677,7 @@ describe("FindingRow — list item that cannot overflow", () => {
     // The copy button is the only Polaris button, and it stays secondary.
     expect(html.match(/<s-button/g)).toHaveLength(1);
     expect(html).toMatch(
-      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="secondary" accessibilityLabel="Copy removal instructions for this finding">Copy removal steps<\/s-button>/,
+      /<div style="[^"]*flex-wrap:wrap[^"]*"><s-button variant="secondary" accessibilityLabel="Copy removal steps for this finding">Copy removal steps<\/s-button>/,
     );
   });
 
