@@ -575,6 +575,8 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
           });
           return null;
         });
+    // loadThemeHealth does not throw; the catch is a second guard so that a
+    // checklist failure can never take Home down with it.
     themeHealth = await loadThemeHealth({
       shop,
       scan: latestSuccessful,
@@ -582,6 +584,12 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       mainThemeId: mainTheme?.id ?? null,
       themes: themesForHealth,
       now,
+    }).catch((err) => {
+      logger.warn("theme health: checklist unavailable", {
+        shop: session.shop,
+        ...safeErrorFields(err),
+      });
+      return [] as HealthRow[];
     });
   }
 

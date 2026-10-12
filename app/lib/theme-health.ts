@@ -35,6 +35,7 @@ import type { ThemeInfo } from "./theme-info";
 
 export type HealthCategoryKey =
   | "malicious"
+  | "liquid-errors"
   | "shopper-visible"
   | "scripts-styles"
   | "snippets-sections"
@@ -58,9 +59,18 @@ export const HEALTH_CATEGORIES: ReadonlyArray<{
     checks: "Code that loads from sources known to steal data or redirect shoppers.",
   },
   {
+    // Its OWN row (not folded into the next one): it is checked from the
+    // storefront, so its status must never be masked by theme-file checks.
+    key: "liquid-errors",
+    label: "Liquid errors on your homepage",
+    checks:
+      "Errors your homepage prints because your theme renders a snippet that no longer exists.",
+  },
+  {
     key: "shopper-visible",
-    label: "Errors shoppers can see",
-    checks: "Liquid errors on your homepage, broken links, and leftover app text or widgets.",
+    label: "Broken links and leftover app text",
+    checks:
+      "Links to products, collections or pages that no longer exist, and app text or chat widgets left on your pages.",
   },
   {
     key: "scripts-styles",
@@ -103,7 +113,8 @@ export const HEALTH_CATEGORIES: ReadonlyArray<{
 export const HEALTH_CATEGORY_OF: Record<FindingType, HealthCategoryKey> = {
   MALICIOUS_SCRIPT: "malicious",
 
-  LIQUID_ERROR_RENDERED: "shopper-visible",
+  LIQUID_ERROR_RENDERED: "liquid-errors",
+
   GHOST_TEXT: "shopper-visible",
   DANGLING_REFERENCE: "shopper-visible",
   OVERLAPPING_CHAT_WIDGET: "shopper-visible",
@@ -171,9 +182,13 @@ export function typesForHealthCategory(category: HealthCategoryKey): FindingType
  *   - unpublished: a storefront check, and this scan was not the published theme.
  *   - plan:        the plan does not include the check (Broken links,
  *                  checkout.liquid on Free).
- *   - dark:        the check is not switched on for anyone (soft-launch flag).
- *                  A dark type is left out of its row entirely: the merchant
- *                  has never been offered it.
+ *   - not_run:     the check is switched on NOW, but this scan did not run it:
+ *                  the scan is older than the check (or than its flag), the
+ *                  check failed on that scan, or the scan never recorded what
+ *                  it ran. A new scan will run it.
+ *   - dark:        the check is not switched on for anyone right now
+ *                  (soft-launch flag). A dark type is left out of its row
+ *                  entirely: the merchant has never been offered it.
  */
 export type TypeCoverage =
   | "checked"
@@ -182,7 +197,11 @@ export type TypeCoverage =
   | "unreachable"
   | "unpublished"
   | "plan"
+  | "not_run"
   | "dark";
+
+/** A reason part of a row was not checked. */
+type Gap = Exclude<TypeCoverage, "checked" | "dark">;
 
 /** What a scan recorded about its own coverage (the Scan row's columns). */
 export interface HealthCoverageInput {
@@ -191,6 +210,12 @@ export interface HealthCoverageInput {
   unreachableCategories: readonly string[];
   /** Parsed `Scan.liveFindingTypes`; null = a legacy scan that never recorded it. */
   liveTypes: ReadonlySet<string> | null;
+  /**
+   * The finding types switched on RIGHT NOW (not suppressed by a soft-launch
+   * flag). A type absent from here is dark for everyone; a type here that the
+   * scan did not run is `not_run`, never "Clean".
+   */
+  liveNow: ReadonlySet<string>;
   /** Finding types the shop's PLAN does not run (findingTypesWithheldByPlan). */
   planWithheld: readonly string[];
   /** Whether the scanned theme is the published one (null = not known). */
@@ -202,28 +227,32 @@ export function coverageForType(type: FindingType, scan: HealthCoverageInput): T
   if (scan.planWithheld.includes(type)) return "plan";
   if (scan.unreachableCategories.includes(type)) return "unreachable";
   if (scan.skippedCategories.includes(type)) return "permission";
-  if (scan.liveTypes !== null && !scan.liveTypes.has(type)) {
-    // The storefront step (storefront findings: script tags, Liquid errors)
-    // drops its types from the live set when it did not run. On another theme that is expected; on the published theme it means
-    // the check is off.
-    return isStorefrontFinding(type) && scan.isPublishedTheme === false ? "unpublished" : "dark";
+  // Off for everyone now: nothing to promise, whatever the scan recorded.
+  if (!scan.liveNow.has(type)) return "dark";
+  if (scan.liveTypes === null || !scan.liveTypes.has(type)) {
+    // The check is on now, but this scan did not run it. For a storefront
+    // finding on another theme that is by design; otherwise the scan predates
+    // the check, the check failed on it, or it recorded nothing (legacy).
+    return isStorefrontFinding(type) && scan.isPublishedTheme === false ? "unpublished" : "not_run";
   }
   if (scan.cappedCategories.includes(type)) return "capped";
   return "checked";
 }
 
 /** Why part of a row was not checked, most useful to act on first. */
-const GAP_ORDER: ReadonlyArray<Exclude<TypeCoverage, "checked" | "dark">> = [
+const GAP_ORDER: ReadonlyArray<Gap> = [
   "unreachable",
+  "not_run",
   "permission",
   "plan",
   "unpublished",
   "capped",
 ];
 
-const GAP_COPY: Record<Exclude<TypeCoverage, "checked" | "dark">, string> = {
+const GAP_COPY: Record<Gap, string> = {
   unreachable:
     "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.",
+  not_run: "This wasn't checked on your last scan. Run a new scan.",
   permission:
     "Part of this needs a permission you haven't allowed yet. You can allow it in Settings.",
   plan: "Part of this is checked on Standard and Professional.",
@@ -231,18 +260,20 @@ const GAP_COPY: Record<Exclude<TypeCoverage, "checked" | "dark">, string> = {
   capped: "Your store has more of these than one scan checks, so part of this wasn't checked.",
 };
 
+/** `not_run` when only PART of the row was not run. */
+const PARTLY_NOT_RUN = "Part of this wasn't checked on your last scan. Run a new scan.";
+
 /** What the plan leaves out of a row, named (the two plan-gated checks). */
 const PLAN_GAP_COPY: Partial<Record<HealthCategoryKey, string>> = {
   "shopper-visible": "Broken links are checked on Standard and Professional.",
   "snippets-sections": "Old checkout code is checked on Standard and Professional.",
 };
 
-/** The line explaining a row's gap. */
-function gapLine(
-  reason: Exclude<TypeCoverage, "checked" | "dark">,
-  category: HealthCategoryKey,
-): string {
-  return reason === "plan" ? (PLAN_GAP_COPY[category] ?? GAP_COPY.plan) : GAP_COPY[reason];
+/** The line explaining a row's gap. `whole` = no check in the row ran. */
+function gapLine(reason: Gap, category: HealthCategoryKey, whole: boolean): string {
+  if (reason === "plan") return PLAN_GAP_COPY[category] ?? GAP_COPY.plan;
+  if (reason === "not_run" && !whole) return PARTLY_NOT_RUN;
+  return GAP_COPY[reason];
 }
 
 // ---------------------------------------------------------------------------
@@ -321,19 +352,18 @@ export function healthCostLine(
       const k = n("MALICIOUS_SCRIPT");
       return `${plural(k, "piece", "pieces")} of code from a known malicious source ${k === 1 ? "is" : "are"} in your theme. It can steal shopper data or send your customers to other sites.`;
     }
+    case "liquid-errors": {
+      const k = n("LIQUID_ERROR_RENDERED");
+      return `Your homepage prints ${plural(k, "Liquid error", "Liquid errors")} because your theme renders ${k === 1 ? "a snippet" : "snippets"} that no longer ${k === 1 ? "exists" : "exist"}. ${k === 1 ? "It" : "They"} can be inside a menu or a hidden section.`;
+    }
     case "shopper-visible": {
-      const errors = n("LIQUID_ERROR_RENDERED");
       const links = n("DANGLING_REFERENCE");
       const text = n("GHOST_TEXT");
       const chat = n("OVERLAPPING_CHAT_WIDGET");
-      if (errors > 0) {
-        parts.push(
-          `${plural(errors, "Liquid error", "Liquid errors")} shoppers can read on your homepage`,
-        );
-      }
       if (links > 0) parts.push(plural(links, "broken link", "broken links"));
-      if (text > 0)
+      if (text > 0) {
         parts.push(plural(text, "piece of leftover app text", "pieces of leftover app text"));
+      }
       if (chat > 0) parts.push("more than one chat widget loading at once");
       return sentence(parts);
     }
@@ -451,7 +481,10 @@ function themeRow(info: ThemeInfo | null, scanThemeName: string): HealthRow {
       ...none,
       status: "issues",
       statusLabel: "Vintage theme",
-      detail: `${title} is a vintage theme, not Online Store 2.0. Apps can't add app blocks or app embeds to it, so they write their code into your theme files, and it stays there when you remove them.`,
+      // Accurate to Shopify: a vintage theme CAN use app embed blocks (they
+      // load through the layout), but not app blocks, which need JSON
+      // templates (sections on every page).
+      detail: `${title} is a vintage theme, not Online Store 2.0. It can't use app blocks, so an app that adds something to a page has to write its code into your theme files, and that code stays there when you remove the app. App embeds still work on it.`,
     };
   }
   if (info.architecture === "os2") {
@@ -516,11 +549,13 @@ export interface ThemeHealthInput {
 }
 
 /**
- * The checklist's rows, in display order: the eight finding categories, then
+ * The checklist's rows, in display order: the nine finding categories, then
  * the theme's type and version, then the unpublished themes.
  *
- * A category whose every type is dark (not switched on for anyone) and that
- * has no findings is left out: nothing was promised there.
+ * A category whose every type is dark (not switched on for anyone right now)
+ * and that has no findings is left out: nothing was promised there. A check
+ * that IS on now but that this scan did not run reads "Not checked" (or "None
+ * found" when only part of the row was not run), never "Clean".
  */
 export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] {
   const rows: HealthRow[] = [];
@@ -548,10 +583,10 @@ export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] 
     }
     if (covered.length === 0) continue;
 
-    const gaps = covered.filter((c) => c !== "checked");
+    const gaps = covered.filter((c): c is Gap => c !== "checked");
     const reason = GAP_ORDER.find((g) => gaps.includes(g));
     const none = { count: 0, href: null };
-    if (gaps.length === 0) {
+    if (!reason) {
       rows.push({ ...base, ...none, status: "clean", statusLabel: "Clean", detail: null });
     } else if (gaps.length === covered.length) {
       rows.push({
@@ -559,7 +594,7 @@ export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] 
         ...none,
         status: "not_checked",
         statusLabel: "Not checked",
-        detail: reason ? gapLine(reason, category.key) : null,
+        detail: gapLine(reason, category.key, true),
       });
     } else {
       rows.push({
@@ -567,7 +602,7 @@ export function buildThemeHealthChecklist(input: ThemeHealthInput): HealthRow[] 
         ...none,
         status: "partial",
         statusLabel: "None found",
-        detail: reason ? gapLine(reason, category.key) : null,
+        detail: gapLine(reason, category.key, false),
       });
     }
   }

@@ -10,7 +10,7 @@ import { FindingType } from "@prisma/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import type { LoaderFunctionArgs } from "react-router";
 import { createRoutesStub } from "react-router";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../../app/shopify.server", () => ({
   authenticate: { admin: vi.fn() },
@@ -190,8 +190,21 @@ function setPlan(plan: string) {
 
 const rowOf = (rows: HealthRow[], key: string) => rows.find((r) => r.key === key);
 
+const FLAGS = [
+  "SCRIPT_TAG_SUNSET_LIVE_ENABLED",
+  "SETTINGS_DRIFT_LIVE_ENABLED",
+  "APP_EMBED_LIVE_ENABLED",
+] as const;
+
+afterEach(() => {
+  for (const flag of FLAGS) delete process.env[flag];
+});
+
 beforeEach(() => {
   vi.resetAllMocks();
+  // Every soft-launched check is switched on NOW (as in production for the
+  // storefront checks) unless a test turns one off.
+  for (const flag of FLAGS) process.env[flag] = "true";
   (getFullListTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([]);
   resetThemeCaches();
@@ -232,8 +245,9 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
       const { themeHealth } = await runLoader();
       expect(themeHealth.map((r) => [r.key, r.statusLabel])).toEqual([
         ["malicious", "Clean"],
+        ["liquid-errors", "1 issue"],
         // Free does not run the broken-link and old-checkout checks.
-        ["shopper-visible", "1 issue"],
+        ["shopper-visible", plan === "free" ? "None found" : "Clean"],
         ["scripts-styles", "4 issues"],
         ["snippets-sections", plan === "free" ? "None found" : "Clean"],
         ["seo-ai", "Clean"],
@@ -243,8 +257,8 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
         ["theme", "Online Store 2.0"],
         ["unpublished-themes", "2 unpublished"],
       ]);
-      expect(rowOf(themeHealth, "shopper-visible")!.detail).toBe(
-        "1 Liquid error shoppers can read on your homepage.",
+      expect(rowOf(themeHealth, "liquid-errors")!.detail).toBe(
+        "Your homepage prints 1 Liquid error because your theme renders a snippet that no longer exists. It can be inside a menu or a hidden section.",
       );
       expect(rowOf(themeHealth, "scripts-styles")!.detail).toBe(
         "4 extra requests to apps you removed, on every page that loads them.",
@@ -339,11 +353,76 @@ describe("Home loader: theme health checklist (gc-i6du)", () => {
     mockTypeCounts.mockResolvedValue({ GHOST_SCRIPT: 1 });
     setPlan("Standard");
     const { themeHealth } = await runLoader();
-    expect(rowOf(themeHealth, "shopper-visible")).toMatchObject({
-      statusLabel: "None found",
+    expect(rowOf(themeHealth, "liquid-errors")).toMatchObject({
+      statusLabel: "Not checked",
       detail:
         "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.",
     });
+  });
+
+  describe("a scan that did not run a check that is on now (HIGH audit finding)", () => {
+    const preDeploy = (liveFindingTypes: string[] | null) =>
+      mockScans.mockResolvedValue({
+        items: [{ ...SCAN, liveFindingTypes }],
+        hasNextPage: false,
+      });
+
+    it("a scan from before the Liquid error check: Home says Not checked and to run a new scan, never Clean", async () => {
+      preDeploy(SCAN.liveFindingTypes.filter((t) => t !== "LIQUID_ERROR_RENDERED"));
+      mockTypeCounts.mockResolvedValue({ GHOST_SCRIPT: 1 });
+      setPlan("Professional");
+      const data = await runLoader();
+      expect(rowOf(data.themeHealth, "liquid-errors")).toMatchObject({
+        status: "not_checked",
+        statusLabel: "Not checked",
+        detail: "This wasn't checked on your last scan. Run a new scan.",
+      });
+      const html = renderDashboard(data);
+      expect(html).toMatch(
+        /Liquid errors on your homepage<\/h3>(?:(?!<\/li>)[\s\S])*<s-badge tone="neutral">Not checked<\/s-badge>/,
+      );
+      expect(html).toContain("This wasn&#x27;t checked on your last scan. Run a new scan.");
+    });
+
+    it("a scan that recorded nothing about what it ran: no category reads Clean", async () => {
+      preDeploy(null);
+      mockTypeCounts.mockResolvedValue({});
+      setPlan("Professional");
+      const { themeHealth } = await runLoader();
+      const categories = themeHealth.filter(
+        (r) => r.key !== "theme" && r.key !== "unpublished-themes",
+      );
+      expect(categories.length).toBe(9);
+      for (const row of categories) expect(row.status, row.key).toBe("not_checked");
+    });
+
+    it("the check is off for everyone now: its row is simply not there", async () => {
+      delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
+      preDeploy(SCAN.liveFindingTypes.filter((t) => t !== "LIQUID_ERROR_RENDERED"));
+      mockTypeCounts.mockResolvedValue({});
+      const { themeHealth } = await runLoader();
+      expect(rowOf(themeHealth, "liquid-errors")).toBeUndefined();
+    });
+  });
+
+  it("a checklist failure never takes Home down: no section, the rest renders, one warning", async () => {
+    const hostile = {
+      architecture: "os2",
+      get name(): string {
+        throw new TypeError("boom");
+      },
+    };
+    mockScans.mockResolvedValue({ items: [{ ...SCAN, themeInfo: hostile }], hasNextPage: false });
+    const data = await runLoader();
+    expect(data.themeHealth).toEqual([]);
+    expect(logger.warn).toHaveBeenCalledWith(
+      "theme health: checklist unavailable",
+      expect.objectContaining({ errorName: "TypeError" }),
+    );
+    const html = renderDashboard(data);
+    expect(html).not.toContain("theme-health-heading");
+    expect(html).toContain('<h2 class="dashboard-section-title">Findings</h2>');
+    expect(html).toContain("Scan Actions");
   });
 
   it("a vintage theme is flagged", async () => {
@@ -382,7 +461,7 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     );
     expect(html).toContain('<s-badge tone="caution">4 issues</s-badge>');
     expect(html).toContain('<s-badge tone="success">Clean</s-badge>');
-    expect(html).toContain("1 Liquid error shoppers can read on your homepage.");
+    expect(html).toContain("Your homepage prints 1 Liquid error because your theme renders");
     expect(html).toContain("Dawn 15.2.0 by Shopify");
     expect(html).toContain("2 unpublished");
   });
@@ -401,6 +480,47 @@ describe("Home render: theme health checklist (gc-i6du)", () => {
     expect(section.length).toBeGreaterThan(0);
     expect(section).not.toMatch(/%|\bscore\b|\bgrade\b|\b\d+ of \d+\b/i);
   });
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: the REAL checklist, with findings in every category, shows no score of any kind",
+    async (plan) => {
+      setPlan(plan);
+      // A finding of every type, a vintage theme and unpublished themes: every
+      // row and every piece of cost copy is on the page.
+      mockTypeCounts.mockResolvedValue(
+        Object.fromEntries(Object.values(FindingType).map((t, i) => [t, i + 1])),
+      );
+      mockScans.mockResolvedValue({
+        items: [
+          {
+            ...SCAN,
+            themeInfo: {
+              name: "Debut",
+              version: "17.14.0",
+              author: "Shopify",
+              architecture: "vintage",
+            },
+          },
+        ],
+        hasNextPage: false,
+      });
+      const html = renderDashboard(await runLoader());
+      const start = html.indexOf('<section aria-labelledby="theme-health-heading"');
+      expect(start).toBeGreaterThan(-1);
+      const section = html.slice(start, html.indexOf("</section>", start));
+      // Really rendered, not mocked: all eleven rows are there.
+      expect(section.match(/<li /g)).toHaveLength(11);
+      expect(section).toContain("Vintage theme");
+      for (const banned of ["/ 100", "/100", "out of 100", "%", "score", "grade"]) {
+        expect(section.toLowerCase(), `the checklist must not contain "${banned}"`).not.toContain(
+          banned,
+        );
+      }
+      expect(section).not.toMatch(/\b\d+ of \d+\b/);
+      // And nowhere else on Home either (gc-k2ub).
+      expect(html).not.toMatch(/health score|out of 100|\/ ?100/i);
+    },
+  );
 
   it("no em dashes in the section", async () => {
     const html = renderDashboard(await runLoader());

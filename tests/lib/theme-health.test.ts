@@ -30,6 +30,7 @@ const FULL_COVERAGE: HealthCoverageInput = {
   cappedCategories: [],
   unreachableCategories: [],
   liveTypes: ALL_LIVE,
+  liveNow: ALL_LIVE,
   planWithheld: [],
   isPublishedTheme: true,
 };
@@ -92,12 +93,9 @@ describe("HEALTH_CATEGORY_OF: every FindingType lands in exactly one category", 
     );
     expect(placed).toEqual({
       malicious: ["MALICIOUS_SCRIPT"],
-      "shopper-visible": [
-        "DANGLING_REFERENCE",
-        "GHOST_TEXT",
-        "LIQUID_ERROR_RENDERED",
-        "OVERLAPPING_CHAT_WIDGET",
-      ],
+      // Its own row, so its status is never masked by theme-file checks.
+      "liquid-errors": ["LIQUID_ERROR_RENDERED"],
+      "shopper-visible": ["DANGLING_REFERENCE", "GHOST_TEXT", "OVERLAPPING_CHAT_WIDGET"],
       "scripts-styles": [
         "DUPLICATE_LIBRARY",
         "GHOST_AJAX",
@@ -176,37 +174,65 @@ describe("coverageForType", () => {
     expect(coverageForType(type, { ...FULL_COVERAGE, ...overrides })).toBe(expected);
   });
 
-  it("a type missing from the live set is dark (not switched on)", () => {
-    const liveTypes = new Set(ALL_TYPES.filter((t) => t !== "SETTINGS_DRIFT") as string[]);
-    expect(coverageForType("SETTINGS_DRIFT", { ...FULL_COVERAGE, liveTypes })).toBe("dark");
-    expect(coverageForType("GHOST_SCRIPT", { ...FULL_COVERAGE, liveTypes })).toBe("checked");
-  });
+  describe("a check that is on NOW but that the scan did not run is not_run, never checked", () => {
+    const without = (...types: string[]) =>
+      new Set(ALL_TYPES.filter((t) => !types.includes(t)) as string[]);
 
-  it("a storefront type missing from the live set on ANOTHER theme is 'unpublished'", () => {
-    const liveTypes = new Set(
-      ALL_TYPES.filter(
-        (t) => t !== "LIQUID_ERROR_RENDERED" && t !== "SCRIPT_TAG_SUNSET",
-      ) as string[],
-    );
-    const other = { ...FULL_COVERAGE, liveTypes, isPublishedTheme: false };
-    expect(coverageForType("LIQUID_ERROR_RENDERED", other)).toBe("unpublished");
-    expect(coverageForType("SCRIPT_TAG_SUNSET", other)).toBe("unpublished");
-    // On the published theme (or when unknown) the same gap means the check is off.
-    expect(coverageForType("LIQUID_ERROR_RENDERED", { ...other, isPublishedTheme: true })).toBe(
-      "dark",
-    );
-    expect(coverageForType("LIQUID_ERROR_RENDERED", { ...other, isPublishedTheme: null })).toBe(
-      "dark",
-    );
-    // A non-storefront type is never "unpublished".
-    const noDrift = new Set(ALL_TYPES.filter((t) => t !== "SETTINGS_DRIFT") as string[]);
-    expect(coverageForType("SETTINGS_DRIFT", { ...other, liveTypes: noDrift })).toBe("dark");
-  });
+    it("the scan's live set lacks the type (a scan from before the check shipped)", () => {
+      const scan = { ...FULL_COVERAGE, liveTypes: without("LIQUID_ERROR_RENDERED") };
+      expect(coverageForType("LIQUID_ERROR_RENDERED", scan)).toBe("not_run");
+      expect(coverageForType("GHOST_SCRIPT", scan)).toBe("checked");
+    });
 
-  it("a legacy scan with no recorded live set is read as checked", () => {
-    expect(coverageForType("LIQUID_ERROR_RENDERED", { ...FULL_COVERAGE, liveTypes: null })).toBe(
-      "checked",
-    );
+    it("the scan recorded no live set at all (legacy): every type is not_run", () => {
+      const scan = { ...FULL_COVERAGE, liveTypes: null };
+      expect(coverageForType("LIQUID_ERROR_RENDERED", scan)).toBe("not_run");
+      expect(coverageForType("SCRIPT_TAG_SUNSET", scan)).toBe("not_run");
+      expect(coverageForType("GHOST_SCRIPT", scan)).toBe("not_run");
+    });
+
+    it("the same rule for every type, not only Liquid errors", () => {
+      const scan = { ...FULL_COVERAGE, liveTypes: without("SETTINGS_DRIFT", "SCRIPT_TAG_SUNSET") };
+      expect(coverageForType("SETTINGS_DRIFT", scan)).toBe("not_run");
+      expect(coverageForType("SCRIPT_TAG_SUNSET", scan)).toBe("not_run");
+    });
+
+    it("a check that is OFF for everyone now stays dark, whatever the scan recorded", () => {
+      const off = {
+        ...FULL_COVERAGE,
+        liveNow: without("LIQUID_ERROR_RENDERED", "SCRIPT_TAG_SUNSET"),
+      };
+      // The scan ran it back when it was on, never ran it, or is legacy: dark.
+      expect(coverageForType("LIQUID_ERROR_RENDERED", off)).toBe("dark");
+      expect(
+        coverageForType("LIQUID_ERROR_RENDERED", {
+          ...off,
+          liveTypes: without("LIQUID_ERROR_RENDERED"),
+        }),
+      ).toBe("dark");
+      expect(coverageForType("SCRIPT_TAG_SUNSET", { ...off, liveTypes: null })).toBe("dark");
+    });
+
+    it("'unpublished' still wins for a storefront finding on a theme that is not published", () => {
+      const other = {
+        ...FULL_COVERAGE,
+        liveTypes: without("LIQUID_ERROR_RENDERED", "SCRIPT_TAG_SUNSET"),
+        isPublishedTheme: false,
+      };
+      expect(coverageForType("LIQUID_ERROR_RENDERED", other)).toBe("unpublished");
+      expect(coverageForType("SCRIPT_TAG_SUNSET", other)).toBe("unpublished");
+      // On the published theme, or when it is not known, it is simply not run.
+      expect(coverageForType("LIQUID_ERROR_RENDERED", { ...other, isPublishedTheme: true })).toBe(
+        "not_run",
+      );
+      expect(coverageForType("LIQUID_ERROR_RENDERED", { ...other, isPublishedTheme: null })).toBe(
+        "not_run",
+      );
+      // A theme-file type is never "unpublished".
+      expect(
+        coverageForType("SETTINGS_DRIFT", { ...other, liveTypes: without("SETTINGS_DRIFT") }),
+      ).toBe("not_run");
+    });
   });
 
   it("the plan wins over everything; unreachable and permission win over the live set", () => {
@@ -217,6 +243,9 @@ describe("coverageForType", () => {
       liveTypes: new Set<string>(),
     };
     expect(coverageForType("DANGLING_REFERENCE", base)).toBe("plan");
+    expect(coverageForType("DANGLING_REFERENCE", { ...base, liveNow: new Set<string>() })).toBe(
+      "plan",
+    );
     expect(
       coverageForType("SCRIPT_TAG_SUNSET", {
         ...FULL_COVERAGE,
@@ -234,9 +263,10 @@ describe("coverageForType", () => {
 describe("buildThemeHealthChecklist: a clean, fully checked scan", () => {
   const rows = buildThemeHealthChecklist(input());
 
-  it("lists the eight categories in order, then the theme row", () => {
+  it("lists the nine categories in order, then the theme row", () => {
     expect(rows.map((r) => r.key)).toEqual([
       "malicious",
+      "liquid-errors",
       "shopper-visible",
       "scripts-styles",
       "snippets-sections",
@@ -293,19 +323,19 @@ describe("buildThemeHealthChecklist: issues and their cost", () => {
       "2 pieces of code from a known malicious source are in your theme. It can steal shopper data or send your customers to other sites.",
     ],
     [
-      "shopper-visible",
-      {
-        LIQUID_ERROR_RENDERED: 2,
-        DANGLING_REFERENCE: 3,
-        GHOST_TEXT: 1,
-        OVERLAPPING_CHAT_WIDGET: 1,
-      },
-      "2 Liquid errors shoppers can read on your homepage, 3 broken links, 1 piece of leftover app text and more than one chat widget loading at once.",
+      "liquid-errors",
+      { LIQUID_ERROR_RENDERED: 1 },
+      "Your homepage prints 1 Liquid error because your theme renders a snippet that no longer exists. It can be inside a menu or a hidden section.",
+    ],
+    [
+      "liquid-errors",
+      { LIQUID_ERROR_RENDERED: 3 },
+      "Your homepage prints 3 Liquid errors because your theme renders snippets that no longer exist. They can be inside a menu or a hidden section.",
     ],
     [
       "shopper-visible",
-      { LIQUID_ERROR_RENDERED: 1 },
-      "1 Liquid error shoppers can read on your homepage.",
+      { DANGLING_REFERENCE: 3, GHOST_TEXT: 1, OVERLAPPING_CHAT_WIDGET: 1 },
+      "3 broken links, 1 piece of leftover app text and more than one chat widget loading at once.",
     ],
     [
       "shopper-visible",
@@ -397,7 +427,7 @@ describe("buildThemeHealthChecklist: issues and their cost", () => {
 });
 
 describe("buildThemeHealthChecklist: never 'Clean' about something nobody checked", () => {
-  it("storefront unreadable: the script tag row is Not checked, the shopper row is None found", () => {
+  it("storefront unreadable: the Liquid errors row is Not checked; the deadline row is None found", () => {
     const rows = buildThemeHealthChecklist(
       input({
         coverage: {
@@ -406,14 +436,105 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
         },
       }),
     );
-    expect(rowOf(rows, "shopper-visible")).toMatchObject({
+    const reason =
+      "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.";
+    expect(rowOf(rows, "liquid-errors")).toMatchObject({
+      status: "not_checked",
+      statusLabel: "Not checked",
+      detail: reason,
+    });
+    // APP_EMBED_OFF was still checked, so the deadline row is only partly unchecked.
+    expect(rowOf(rows, "script-tag-deadline")).toMatchObject({
       status: "partial",
       statusLabel: "None found",
-      detail:
-        "Your storefront homepage couldn't be read, for example because it has a password, so this wasn't checked.",
+      detail: reason,
     });
-    // APP_EMBED_OFF was still checked, so the deadline row is partial too.
-    expect(rowOf(rows, "script-tag-deadline")).toMatchObject({ status: "partial" });
+    // The theme-file row next to it is unaffected.
+    expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "clean" });
+  });
+
+  describe("a scan that did not run a check that is on now (HIGH audit finding)", () => {
+    const without = (...types: string[]) =>
+      new Set(ALL_TYPES.filter((t) => !types.includes(t)) as string[]);
+    const NOT_RUN = "This wasn't checked on your last scan. Run a new scan.";
+
+    it("the scan's live set lacks Liquid errors (a pre-deploy scan): NOT clean, with what to do", () => {
+      const rows = buildThemeHealthChecklist(
+        input({ coverage: { ...FULL_COVERAGE, liveTypes: without("LIQUID_ERROR_RENDERED") } }),
+      );
+      const row = rowOf(rows, "liquid-errors")!;
+      expect(row.status).not.toBe("clean");
+      expect(row).toMatchObject({
+        status: "not_checked",
+        statusLabel: "Not checked",
+        detail: NOT_RUN,
+        count: 0,
+        href: null,
+      });
+      // Its neighbour is not dragged down, and it does not mask this row.
+      expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "clean" });
+    });
+
+    it("the scan recorded no live set (legacy): no row is clean", () => {
+      const rows = buildThemeHealthChecklist(
+        input({ coverage: { ...FULL_COVERAGE, liveTypes: null } }),
+      );
+      const categories = rows.filter((r) => r.key !== "theme");
+      expect(categories).toHaveLength(9);
+      for (const row of categories) {
+        expect(row.status, row.key).toBe("not_checked");
+        expect(row.detail, row.key).toBe(NOT_RUN);
+      }
+    });
+
+    it("the same rule for the script tag deadline row", () => {
+      const rows = buildThemeHealthChecklist(
+        input({
+          coverage: { ...FULL_COVERAGE, liveTypes: without("SCRIPT_TAG_SUNSET", "APP_EMBED_OFF") },
+        }),
+      );
+      expect(rowOf(rows, "script-tag-deadline")).toMatchObject({
+        status: "not_checked",
+        detail: NOT_RUN,
+      });
+    });
+
+    it("only part of a row was not run: None found, and it says part", () => {
+      const rows = buildThemeHealthChecklist(
+        input({ coverage: { ...FULL_COVERAGE, liveTypes: without("SETTINGS_DRIFT") } }),
+      );
+      expect(rowOf(rows, "snippets-sections")).toMatchObject({
+        status: "partial",
+        statusLabel: "None found",
+        detail: "Part of this wasn't checked on your last scan. Run a new scan.",
+      });
+    });
+
+    it("the check is off for everyone NOW: dark, so the row is left out rather than 'Not checked'", () => {
+      const rows = buildThemeHealthChecklist(
+        input({
+          coverage: {
+            ...FULL_COVERAGE,
+            liveNow: without("LIQUID_ERROR_RENDERED"),
+            liveTypes: without("LIQUID_ERROR_RENDERED"),
+          },
+        }),
+      );
+      expect(rowOf(rows, "liquid-errors")).toBeUndefined();
+    });
+
+    it("findings recorded by the scan still show, even if the type is not in its live set", () => {
+      const rows = buildThemeHealthChecklist(
+        input({
+          typeCounts: { LIQUID_ERROR_RENDERED: 1 },
+          coverage: { ...FULL_COVERAGE, liveTypes: without("LIQUID_ERROR_RENDERED") },
+        }),
+      );
+      expect(rowOf(rows, "liquid-errors")).toMatchObject({
+        status: "issues",
+        statusLabel: "1 issue",
+      });
+    });
   });
 
   it("every type of a row un-checked: Not checked, with the reason", () => {
@@ -472,18 +593,18 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
   it("a scan of another theme: storefront checks say they only run on the published theme", () => {
     const liveTypes = new Set(
       ALL_TYPES.filter(
-        (t) => t !== "SCRIPT_TAG_SUNSET" && t !== "LIQUID_ERROR_RENDERED" && t !== "APP_EMBED_OFF",
+        (t) => t !== "SCRIPT_TAG_SUNSET" && t !== "LIQUID_ERROR_RENDERED",
       ) as string[],
     );
     const rows = buildThemeHealthChecklist(
       input({ coverage: { ...FULL_COVERAGE, liveTypes, isPublishedTheme: false } }),
     );
-    // APP_EMBED_OFF is dark here, so the row's only offered check did not run.
-    expect(rowOf(rows, "script-tag-deadline")).toMatchObject({
+    expect(rowOf(rows, "liquid-errors")).toMatchObject({
       status: "not_checked",
       detail: "This is only checked on your published theme.",
     });
-    expect(rowOf(rows, "shopper-visible")).toMatchObject({
+    // APP_EMBED_OFF is a theme-file check and did run.
+    expect(rowOf(rows, "script-tag-deadline")).toMatchObject({
       status: "partial",
       detail: "This is only checked on your published theme.",
     });
@@ -500,26 +621,28 @@ describe("buildThemeHealthChecklist: never 'Clean' about something nobody checke
   });
 });
 
-describe("buildThemeHealthChecklist: dark checks are left out", () => {
-  const withoutStorefront = new Set(
+describe("buildThemeHealthChecklist: checks that are off for everyone are left out", () => {
+  const offNow = new Set(
     ALL_TYPES.filter(
-      (t) => t !== "SCRIPT_TAG_SUNSET" && t !== "LIQUID_ERROR_RENDERED" && t !== "APP_EMBED_OFF",
+      (t) =>
+        t !== "SCRIPT_TAG_SUNSET" &&
+        t !== "LIQUID_ERROR_RENDERED" &&
+        t !== "APP_EMBED_OFF" &&
+        t !== "SETTINGS_DRIFT",
     ) as string[],
   );
+  const coverage = { ...FULL_COVERAGE, liveNow: offNow, liveTypes: offNow };
 
   it("a row whose every type is dark does not appear at all", () => {
-    const rows = buildThemeHealthChecklist(
-      input({ coverage: { ...FULL_COVERAGE, liveTypes: withoutStorefront } }),
-    );
+    const rows = buildThemeHealthChecklist(input({ coverage }));
     expect(rowOf(rows, "script-tag-deadline")).toBeUndefined();
+    expect(rowOf(rows, "liquid-errors")).toBeUndefined();
   });
 
   it("a dark type does not stop the rest of its row reading Clean", () => {
-    const rows = buildThemeHealthChecklist(
-      input({ coverage: { ...FULL_COVERAGE, liveTypes: withoutStorefront } }),
-    );
-    // LIQUID_ERROR_RENDERED is dark; the other shopper-visible checks ran.
-    expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "clean", detail: null });
+    const rows = buildThemeHealthChecklist(input({ coverage }));
+    // SETTINGS_DRIFT is dark; the other snippets-and-sections checks ran.
+    expect(rowOf(rows, "snippets-sections")).toMatchObject({ status: "clean", detail: null });
   });
 });
 
@@ -551,8 +674,9 @@ describe("theme type and version row", () => {
       status: "issues",
       statusLabel: "Vintage theme",
       count: 0,
+      // App embeds DO work on a vintage theme; app blocks do not.
       detail:
-        "Debut 17.14.0 is a vintage theme, not Online Store 2.0. Apps can't add app blocks or app embeds to it, so they write their code into your theme files, and it stays there when you remove them.",
+        "Debut 17.14.0 is a vintage theme, not Online Store 2.0. It can't use app blocks, so an app that adds something to a page has to write its code into your theme files, and that code stays there when you remove the app. App embeds still work on it.",
     });
   });
 

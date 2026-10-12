@@ -17,7 +17,7 @@
  * builds it, the Home loader parses the stored value, the checklist renders it.
  */
 
-/** Stored strings are cut to this many characters. */
+/** Stored strings are cut to this many characters (code points). */
 export const MAX_THEME_INFO_CHARS = 80;
 
 export const SETTINGS_SCHEMA_PATH = "config/settings_schema.json";
@@ -47,17 +47,26 @@ const LEADING_BLOCK_COMMENT_RE = /^\s*\/\*[\s\S]*?\*\//;
 const JSON_TEMPLATE_RE = /^templates\/.+\.json$/;
 const LIQUID_TEMPLATE_RE = /^templates\/.+\.liquid$/;
 
+/** Half of a surrogate pair on its own (not valid text; JSONB rejects it). */
+const LONE_SURROGATE_RE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g;
+
 /** A bounded, printable string, or null for anything else (or empty). */
 function cleanField(value: unknown): string | null {
   if (typeof value !== "string") return null;
-  // Control characters out, whitespace collapsed, then the length cap.
+  // Control characters out, whitespace collapsed, lone surrogates dropped,
+  // then the cap, counted in CODE POINTS so an emoji or other astral
+  // character at the boundary is kept whole or dropped, never cut in half.
+  // (The first slice only bounds the work on an absurdly long value: 4 code
+  // units per kept character is more than any character needs.)
   const cleaned = value
+    .slice(0, MAX_THEME_INFO_CHARS * 4)
     // eslint-disable-next-line no-control-regex
     .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(LONE_SURROGATE_RE, "")
     .replace(/\s+/g, " ")
-    .trim()
-    .slice(0, MAX_THEME_INFO_CHARS);
-  return cleaned.length > 0 ? cleaned : null;
+    .trim();
+  const bounded = Array.from(cleaned).slice(0, MAX_THEME_INFO_CHARS).join("").trim();
+  return bounded.length > 0 ? bounded : null;
 }
 
 /** The `theme_info` entry of settings_schema.json, or null when unreadable. */

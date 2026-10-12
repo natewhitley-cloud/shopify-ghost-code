@@ -7,13 +7,15 @@
  * scans, only when the store has unpublished themes. Everything else comes
  * from data the loader already holds. No speed-report data is read here: Home
  * stays decoupled from it (tests/integration/speed-report-decoupling).
- * Never throws: a failed lookup drops that one detail and the rest renders.
+ * Never throws: a failed lookup drops that one detail and the rest renders;
+ * any other failure yields no rows (and a warning), never an error.
  */
 
-import type { FindingType } from "@prisma/client";
+import { FindingType } from "@prisma/client";
 
 import { parseLiveFindingTypes } from "./scan-differ.server";
 import { SCRIPT_TAG_SUNSET_AT_MS } from "./script-tag-sunset-detector.server";
+import { isSoftLaunchLive } from "./soft-launch-flags.server";
 import type { ThemeSummary } from "./theme-fetcher.server";
 import { getPlanFeatures } from "../lib/billing.server";
 import { logger } from "../lib/logger.server";
@@ -41,7 +43,8 @@ export interface ThemeHealthScan {
 
 const LOG_FN = "theme-health";
 
-export async function loadThemeHealth(input: {
+/** What loadThemeHealth needs for one scan. */
+export type LoadThemeHealthInput = {
   shop: { id: string; plan: string };
   scan: ThemeHealthScan;
   /** The scan's (ignore-filtered) finding counts per type. */
@@ -51,7 +54,28 @@ export async function loadThemeHealth(input: {
   /** The store's themes; null = the list was not available. */
   themes: readonly ThemeSummary[] | null;
   now: Date;
-}): Promise<HealthRow[]> {
+};
+
+/**
+ * The checklist rows for Home. NEVER throws: any failure is logged by error
+ * name and yields no rows.
+ */
+export async function loadThemeHealth(input: LoadThemeHealthInput): Promise<HealthRow[]> {
+  try {
+    return await buildRows(input);
+  } catch (err) {
+    // The checklist is an extra on Home: a bug in it (a malformed stored
+    // value, a builder error) must never 500 the page. No rows = no section.
+    logger.warn("theme health: checklist unavailable", {
+      function: LOG_FN,
+      shopId: input.shop.id,
+      ...safeErrorFields(err),
+    });
+    return [];
+  }
+}
+
+async function buildRows(input: LoadThemeHealthInput): Promise<HealthRow[]> {
   const { shop, scan, typeCounts } = input;
   const features = getPlanFeatures(shop.plan);
 
@@ -86,6 +110,7 @@ export async function loadThemeHealth(input: {
       cappedCategories: scan.cappedCategories,
       unreachableCategories: scan.unreachableCategories,
       liveTypes: parseLiveFindingTypes(scan.liveFindingTypes),
+      liveNow: new Set<string>(Object.values(FindingType).filter(isSoftLaunchLive)),
       planWithheld: findingTypesWithheldByPlan(features),
       isPublishedTheme: input.mainThemeId === null ? null : scan.themeId === input.mainThemeId,
     },

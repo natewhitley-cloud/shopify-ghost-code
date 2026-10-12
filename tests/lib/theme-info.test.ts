@@ -96,6 +96,30 @@ describe("readThemeInfo: name, version, author", () => {
     expect(info.author).toBe("Out of the Sandbox");
   });
 
+  it("the cap counts code points: an emoji at the boundary is never cut in half", () => {
+    // 79 letters + one emoji (2 code units) + more: the 80th character is the emoji.
+    const name = `${"a".repeat(79)}\u{1F43E}tail`;
+    const info = readThemeInfo([
+      schema(JSON.stringify([{ name: "theme_info", theme_name: name }])),
+    ]);
+    expect(Array.from(info.name!)).toHaveLength(MAX_THEME_INFO_CHARS);
+    expect(info.name!.endsWith("\u{1F43E}")).toBe(true);
+    // Well-formed: no lone surrogate (which Postgres JSONB would reject).
+    expect(() => encodeURIComponent(info.name!)).not.toThrow();
+  });
+
+  it("80 emoji stay 80 emoji; lone surrogates in the source are dropped", () => {
+    const emoji = "\u{1F43E}".repeat(200);
+    const lone = `Dawn\uD83D copy \uDC3E!`;
+    const info = readThemeInfo([
+      schema(JSON.stringify([{ name: "theme_info", theme_name: emoji, theme_version: lone }])),
+    ]);
+    expect(Array.from(info.name!)).toHaveLength(MAX_THEME_INFO_CHARS);
+    expect(info.name).toBe("\u{1F43E}".repeat(MAX_THEME_INFO_CHARS));
+    expect(info.version).toBe("Dawn copy !");
+    expect(parseThemeInfo({ name: "x\uD83D", architecture: "os2" })!.name).toBe("x");
+  });
+
   it("markup in a field is kept as plain text (React escapes it on render)", () => {
     const content = JSON.stringify([{ name: "theme_info", theme_name: "<img src=x onerror=1>" }]);
     expect(readThemeInfo([schema(content)]).name).toBe("<img src=x onerror=1>");

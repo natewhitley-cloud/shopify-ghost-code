@@ -4,7 +4,7 @@
  * nothing touches a database or the network.
  */
 import { FindingType } from "@prisma/client";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 vi.mock("../../app/db.server", () => ({ default: {} }));
 vi.mock("../../app/lib/logger.server", () => ({
@@ -58,9 +58,21 @@ function load(overrides: Partial<Parameters<typeof loadThemeHealth>[0]> = {}) {
 const rowOf = (rows: Awaited<ReturnType<typeof load>>, key: string) =>
   rows.find((r) => r.key === key);
 
+const FLAGS = [
+  "SCRIPT_TAG_SUNSET_LIVE_ENABLED",
+  "SETTINGS_DRIFT_LIVE_ENABLED",
+  "APP_EMBED_LIVE_ENABLED",
+] as const;
+
 beforeEach(() => {
   vi.resetAllMocks();
   mockCounts.mockResolvedValue(new Map());
+  // Every soft-launched check is on NOW unless a test turns one off.
+  for (const flag of FLAGS) process.env[flag] = "true";
+});
+
+afterEach(() => {
+  for (const flag of FLAGS) delete process.env[flag];
 });
 
 describe("loadThemeHealth", () => {
@@ -68,6 +80,7 @@ describe("loadThemeHealth", () => {
     const rows = await load();
     expect(rows.map((r) => [r.key, r.statusLabel])).toEqual([
       ["malicious", "Clean"],
+      ["liquid-errors", "Clean"],
       ["shopper-visible", "Clean"],
       ["scripts-styles", "Clean"],
       ["snippets-sections", "Clean"],
@@ -115,7 +128,7 @@ describe("loadThemeHealth", () => {
     );
   });
 
-  it("reads coverage from the scan row: storefront unreadable, a permission missing, a cap", async () => {
+  it("reads coverage from the scan row: storefront unreadable, a permission missing", async () => {
     const rows = await load({
       scan: {
         ...SCAN,
@@ -123,7 +136,8 @@ describe("loadThemeHealth", () => {
         skippedCategories: ["GHOST_TRANSLATION"],
       },
     });
-    expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "partial" });
+    expect(rowOf(rows, "liquid-errors")).toMatchObject({ status: "not_checked" });
+    expect(rowOf(rows, "script-tag-deadline")).toMatchObject({ status: "partial" });
     expect(rowOf(rows, "store-data")).toMatchObject({
       status: "partial",
       detail:
@@ -131,36 +145,96 @@ describe("loadThemeHealth", () => {
     });
   });
 
-  it("the storefront flag is off (types absent from the live set): the deadline row is left out", async () => {
-    const liveFindingTypes = ALL_TYPES.filter(
-      (t) => t !== "SCRIPT_TAG_SUNSET" && t !== "LIQUID_ERROR_RENDERED" && t !== "APP_EMBED_OFF",
-    );
-    const rows = await load({ scan: { ...SCAN, liveFindingTypes } });
-    expect(rowOf(rows, "script-tag-deadline")).toBeUndefined();
-    expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "clean" });
-  });
+  describe("a check that is on now but that the scan did not run is never Clean (HIGH audit finding)", () => {
+    const NOT_RUN = "This wasn't checked on your last scan. Run a new scan.";
 
-  it("a scan of an unpublished theme: storefront checks say so instead of Clean", async () => {
-    const liveFindingTypes = ALL_TYPES.filter(
-      (t) => t !== "SCRIPT_TAG_SUNSET" && t !== "LIQUID_ERROR_RENDERED",
-    );
-    const rows = await load({ scan: { ...SCAN, themeId: "t2", liveFindingTypes } });
-    expect(rowOf(rows, "shopper-visible")).toMatchObject({
-      status: "partial",
-      detail: "This is only checked on your published theme.",
+    it("a scan from before the Liquid error check: its row says Not checked, run a new scan", async () => {
+      const liveFindingTypes = ALL_TYPES.filter((t) => t !== "LIQUID_ERROR_RENDERED");
+      const rows = await load({ scan: { ...SCAN, liveFindingTypes } });
+      const row = rowOf(rows, "liquid-errors")!;
+      expect(row.status).not.toBe("clean");
+      expect(row).toMatchObject({ statusLabel: "Not checked", detail: NOT_RUN });
+      expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "clean" });
+    });
+
+    it("a legacy scan that recorded no live set: no category is Clean", async () => {
+      const rows = await load({ scan: { ...SCAN, liveFindingTypes: null, themeInfo: null } });
+      const categories = rows.filter((r) => r.key !== "theme" && r.key !== "unpublished-themes");
+      expect(categories.length).toBeGreaterThan(0);
+      for (const row of categories) {
+        expect(row.status, row.key).toBe("not_checked");
+        expect(row.detail, row.key).toBe(NOT_RUN);
+      }
+      expect(rowOf(rows, "theme")).toMatchObject({ status: "not_checked" });
+    });
+
+    it("a malformed stored live set is read like a legacy scan (never as 'all checked')", async () => {
+      const rows = await load({ scan: { ...SCAN, liveFindingTypes: { nope: true } } });
+      expect(rowOf(rows, "malicious")).toMatchObject({ status: "not_checked" });
+    });
+
+    it("the storefront flag is OFF now: those checks are dark, and their rows are left out", async () => {
+      delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
+      delete process.env.APP_EMBED_LIVE_ENABLED;
+      const liveFindingTypes = ALL_TYPES.filter(
+        (t) => t !== "SCRIPT_TAG_SUNSET" && t !== "LIQUID_ERROR_RENDERED",
+      );
+      const rows = await load({ scan: { ...SCAN, liveFindingTypes } });
+      expect(rowOf(rows, "liquid-errors")).toBeUndefined();
+      expect(rowOf(rows, "script-tag-deadline")).toBeUndefined();
+      expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "clean" });
+    });
+
+    it("a scan of an unpublished theme: storefront checks say so instead of Clean or 'run a new scan'", async () => {
+      const liveFindingTypes = ALL_TYPES.filter(
+        (t) => t !== "SCRIPT_TAG_SUNSET" && t !== "LIQUID_ERROR_RENDERED",
+      );
+      const rows = await load({ scan: { ...SCAN, themeId: "t2", liveFindingTypes } });
+      expect(rowOf(rows, "liquid-errors")).toMatchObject({
+        status: "not_checked",
+        detail: "This is only checked on your published theme.",
+      });
+    });
+
+    it("the published theme is unknown: a storefront check the scan did not run reads 'run a new scan'", async () => {
+      const liveFindingTypes = ALL_TYPES.filter((t) => t !== "LIQUID_ERROR_RENDERED");
+      const rows = await load({ mainThemeId: null, scan: { ...SCAN, liveFindingTypes } });
+      expect(rowOf(rows, "liquid-errors")).toMatchObject({
+        status: "not_checked",
+        detail: NOT_RUN,
+      });
     });
   });
 
-  it("the published theme is unknown: nothing is called 'unpublished'", async () => {
-    const liveFindingTypes = ALL_TYPES.filter((t) => t !== "LIQUID_ERROR_RENDERED");
-    const rows = await load({ mainThemeId: null, scan: { ...SCAN, liveFindingTypes } });
-    expect(rowOf(rows, "shopper-visible")).toMatchObject({ status: "clean" });
-  });
+  describe("never throws (a checklist bug must not 500 Home)", () => {
+    it("a stored theme info that makes the builder throw: no rows, logged by name only", async () => {
+      const hostile = {
+        architecture: "os2",
+        get name(): string {
+          throw new TypeError("boom: secret value");
+        },
+      };
+      await expect(load({ scan: { ...SCAN, themeInfo: hostile } })).resolves.toEqual([]);
+      expect(logger.warn).toHaveBeenCalledWith("theme health: checklist unavailable", {
+        function: "theme-health",
+        shopId: "shop-1",
+        errorName: "TypeError",
+      });
+      expect(JSON.stringify((logger.warn as ReturnType<typeof vi.fn>).mock.calls)).not.toContain(
+        "secret value",
+      );
+    });
 
-  it("a legacy scan (no live set, no theme info) still renders", async () => {
-    const rows = await load({ scan: { ...SCAN, liveFindingTypes: null, themeInfo: null } });
-    expect(rowOf(rows, "theme")).toMatchObject({ status: "not_checked" });
-    expect(rowOf(rows, "malicious")).toMatchObject({ status: "clean" });
+    it("scan columns of the wrong shape: no rows, no throw", async () => {
+      const broken = { ...SCAN, skippedCategories: null as unknown as string[] };
+      await expect(load({ scan: broken })).resolves.toEqual([]);
+    });
+
+    it("a theme list of the wrong shape: no rows, no throw", async () => {
+      await expect(
+        load({ themes: [null] as unknown as Parameters<typeof loadThemeHealth>[0]["themes"] }),
+      ).resolves.toEqual([]);
+    });
   });
 
   it("a vintage theme is flagged from the stored theme info", async () => {
