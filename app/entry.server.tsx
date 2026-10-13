@@ -102,7 +102,9 @@ export default async function handleRequest(
           // also fires onError, but onShellError -> reject -> handleError will
           // record it — recording here too would double-count (inflating the
           // digest's api_error metric this exists to make accurate).
-          if (shellFlushed) {
+          // A client that went away mid-stream is not a server failure, the
+          // same rule handleError applies to aborted requests. (gc-sclx)
+          if (shellFlushed && !isClientDisconnect(error, request)) {
             recordServerError(error, requestPath(request));
           }
         },
@@ -113,6 +115,19 @@ export default async function handleRequest(
     // React has enough time to flush down the rejected boundary contents
     setTimeout(abort, streamTimeout + 1000);
   });
+}
+
+/**
+ * The client closed the connection before the streamed render finished. The
+ * adapter aborts `request.signal` when the response closes unfinished, and
+ * react-dom's pipe() aborts the render with exactly this Error when its
+ * destination closes early; there is no exported error class. The server's own
+ * render timeout (`setTimeout(abort)`) raises a different message and is still
+ * recorded.
+ */
+function isClientDisconnect(error: unknown, request: Request): boolean {
+  if (request.signal.aborted) return true;
+  return error instanceof Error && error.message === "The destination stream closed early.";
 }
 
 /**

@@ -316,6 +316,71 @@ describe("handleRequest wiring — exactly-once recording per error source", () 
     expect(mockRecordApiError).toHaveBeenCalledTimes(1);
   });
 
+  // gc-sclx: react-dom's pipe() aborts the render with exactly this Error when
+  // the destination closes before the render finishes, i.e. the client went
+  // away mid-stream (react-dom-server.node: a.on("close", ...)). Hardcoded copy,
+  // so it does not detect a React reword; the aborted-signal test below covers
+  // the same disconnect without relying on the message.
+  const CLIENT_DISCONNECT = "The destination stream closed early.";
+
+  it("client disconnect after the shell flushed is NOT recorded (gc-sclx)", async () => {
+    const { default: handleRequest } = await importEntry();
+
+    const pending = handleRequest(makeRenderRequest(), 200, new Headers(), {} as EntryContext);
+
+    const options = rdsCapture.options!;
+    options.onShellReady();
+    options.onError(new Error(CLIENT_DISCONNECT));
+
+    await pending;
+    expect(mockRecordApiError).not.toHaveBeenCalled();
+    // Still logged: only the durable digest count is suppressed.
+    expect(consoleErrorSpy).toHaveBeenCalledOnce();
+  });
+
+  it("post-shell error on an aborted request is NOT recorded (gc-sclx)", async () => {
+    const { default: handleRequest } = await importEntry();
+    const controller = new AbortController();
+    const request = new Request("https://example.com/app/scans", { signal: controller.signal });
+
+    const pending = handleRequest(request, 200, new Headers(), {} as EntryContext);
+
+    const options = rdsCapture.options!;
+    options.onShellReady();
+    controller.abort(); // the adapter aborts the request signal when the client closes
+    options.onError(new Error("any post-shell error"));
+
+    await pending;
+    expect(mockRecordApiError).not.toHaveBeenCalled();
+  });
+
+  it("an Error that only mentions the disconnect message is still recorded", async () => {
+    const { default: handleRequest } = await importEntry();
+
+    const pending = handleRequest(makeRenderRequest(), 200, new Headers(), {} as EntryContext);
+
+    const options = rdsCapture.options!;
+    options.onShellReady();
+    options.onError(new Error(`Wrapped: ${CLIENT_DISCONNECT}`));
+
+    await pending;
+    expect(mockRecordApiError).toHaveBeenCalledTimes(1);
+  });
+
+  it("the server's own render timeout abort is still recorded", async () => {
+    const { default: handleRequest } = await importEntry();
+
+    const pending = handleRequest(makeRenderRequest(), 200, new Headers(), {} as EntryContext);
+
+    const options = rdsCapture.options!;
+    options.onShellReady();
+    // react-dom's message when abort() is called with no reason (setTimeout(abort)).
+    options.onError(new Error("The render was aborted by the server without a reason."));
+
+    await pending;
+    expect(mockRecordApiError).toHaveBeenCalledTimes(1);
+  });
+
   it("loader/action error (into handleError only) records EXACTLY ONCE", async () => {
     const { handleError } = await importEntry();
 
