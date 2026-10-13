@@ -40,6 +40,24 @@ interface Remediation {
   howTo: string;
 }
 
+/**
+ * The affected-app advisory's checkout self-check (gc-14x5), one entry per
+ * step. The ONE source: the card renders it as an ordered list, and the type's
+ * `howTo` string (copy action, exports) is these steps numbered and joined.
+ */
+const ADVISORY_STEPS: readonly string[] = [
+  "Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button.",
+  "Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin.",
+  "Shop Pay, PayPal and similar buttons open their own sites. That is normal.",
+  "If the page asking for contact, shipping or card details is on any other address, do not enter card details. Contact Shopify Support and the app developer.",
+  "If you no longer use the app, remove its script line from the theme file shown here (duplicate your theme first). If you still use it, ask the developer whether this affects you.",
+];
+
+/** "1. First 2. Second ...": steps as the one-string how-to. */
+function numberedSteps(steps: readonly string[]): string {
+  return steps.map((step, i) => `${i + 1}. ${step}`).join(" ");
+}
+
 const REMEDIATION: Record<string, Remediation> = {
   // ---- Theme-file edits: injected scripts and network calls ----
   GHOST_SCRIPT: {
@@ -242,8 +260,7 @@ const REMEDIATION: Record<string, Remediation> = {
   APP_INCIDENT_ADVISORY: {
     impact:
       "Your theme loads a script from this app. A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected. This script loads whether or not the app is still installed.",
-    howTo:
-      "1. Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button. 2. Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin. 3. Shop Pay, PayPal and similar buttons open their own sites. That is normal. 4. If the page asking for contact, shipping or card details is on any other address, do not enter card details. Contact Shopify Support and the app developer. 5. If you no longer use the app, remove its script line from the theme file shown here (duplicate your theme first). If you still use it, ask the developer whether this affects you.",
+    howTo: numberedSteps(ADVISORY_STEPS),
   },
 
   // ---- Theme settings ----
@@ -278,7 +295,10 @@ export function getFindingImpact(findingType: string): string | null {
   return REMEDIATION[findingType]?.impact ?? null;
 }
 
-/** The finding card's per-type wording (scan page). See getFindingCardCopy. */
+/**
+ * The finding card's per-type presentation (scan page and "Start here").
+ * See getFindingCardCopy.
+ */
 export interface FindingCardCopy {
   /** The card's title line, or null for the default (the type label and app). */
   title: string | null;
@@ -286,65 +306,67 @@ export interface FindingCardCopy {
   confidence: string | null;
   /** The label over the how-to text. */
   stepsHeading: string;
+  /** The how-to as separate steps (rendered as an ordered list), or null to render the how-to string. */
+  steps: readonly string[] | null;
   /** The copy action's visible text and accessible name. */
   copyStepsLabel: string;
   copyStepsAccessibilityLabel: string;
   /** Text of the link to the finding's public source, or null when it has none. */
   reportLinkLabel: string | null;
+  /** Whether the card shows the removal-safety badge ("Verify first" and so on). */
+  showSafetyBadge: boolean;
+  /** Whether "Open in code editor" is the card's primary button. */
+  primaryEditorButton: boolean;
+  /** Whether the snippet box is cut to its first 80 characters. */
+  truncateSnippet: boolean;
+  /** The "Start here" row's link text. */
+  startHereLinkLabel: string;
 }
 
 const DEFAULT_CARD_COPY: FindingCardCopy = {
   title: null,
   confidence: null,
   stepsHeading: "How to remove",
+  steps: null,
   copyStepsLabel: "Copy removal steps",
   copyStepsAccessibilityLabel: "Copy removal steps for this finding",
   reportLinkLabel: null,
+  showSafetyBadge: true,
+  primaryEditorButton: true,
+  truncateSnippet: true,
+  startHereLinkLabel: "See how to fix",
 };
 
 /**
- * Types whose card must not use the default wording. An affected-app advisory
- * (gc-14x5) is not leftover code to remove and was not matched to "a known app
- * signature": its steps are a checkout self-check and its match is a script
- * address taken from a public incident report.
+ * Types whose card must not use the defaults. An affected-app advisory
+ * (gc-14x5) is a notice, not leftover code to remove, and was not matched to
+ * "a known app signature": its steps are a checkout self-check, its match is
+ * a script address taken from a public incident report, the "review before
+ * removing" badge does not apply, and nothing on it is a primary action.
+ *
+ * Per TYPE, not per list entry: the wording below is about a checkout
+ * phishing report. A second entry for a different kind of incident needs
+ * per-entry copy first.
  */
 const CARD_COPY_OVERRIDES: Record<string, FindingCardCopy> = {
   APP_INCIDENT_ADVISORY: {
     title: "An app in your theme was named in a checkout phishing report",
     confidence: "Matched a script address from a public incident report.",
     stepsHeading: "What to check",
+    steps: ADVISORY_STEPS,
     copyStepsLabel: "Copy steps",
     copyStepsAccessibilityLabel: "Copy steps for this finding",
     reportLinkLabel: "Read the report",
+    showSafetyBadge: false,
+    primaryEditorButton: false,
+    truncateSnippet: false,
+    startHereLinkLabel: "See what to check",
   },
 };
 
-/** The finding card's wording for a type: the defaults for every type but the overrides above. */
+/** The finding card's presentation for a type: the defaults for every type but the overrides above. */
 export function getFindingCardCopy(findingType: string): FindingCardCopy {
   return CARD_COPY_OVERRIDES[findingType] ?? DEFAULT_CARD_COPY;
-}
-
-/**
- * Split a how-to written as "1. First. 2. Second. 3. Third." into its steps,
- * without the numbers, so a card can render a real ordered list while the
- * string stays the one source of truth (the copy action and exports use it
- * whole). Returns null (render the string as is) unless the text starts with
- * "1. " and holds at least two steps numbered in order. A "2. " that is not
- * preceded by a space, or an out-of-order number, is part of a step's text.
- */
-export function splitNumberedSteps(howTo: string): string[] | null {
-  if (!howTo.startsWith("1. ")) return null;
-  const steps: string[] = [];
-  let rest = howTo.slice(3);
-  for (let n = 2; ; n += 1) {
-    const marker = ` ${n}. `;
-    const at = rest.indexOf(marker);
-    if (at === -1) break;
-    steps.push(rest.slice(0, at).trim());
-    rest = rest.slice(at + marker.length);
-  }
-  steps.push(rest.trim());
-  return steps.length >= 2 && steps.every((step) => step.length > 0) ? steps : null;
 }
 
 /** The subset of a finding row this helper needs to compose an instruction. */
@@ -353,6 +375,8 @@ export interface RemovalInstructionFinding {
   filename: string;
   lineNumber: number;
   codeSnippet: string;
+  /** The stored description. Only an affected-app advisory's is copied. */
+  description?: string;
 }
 
 /**
@@ -507,6 +531,11 @@ export function buildRemovalInstructions(
 ): string {
   const lines: string[] = [`GhostCode finding: ${typeLabel}`];
   const howTo = getFindingRemediation(finding.findingType);
+  // An affected-app advisory (gc-14x5): its description is the only thing
+  // that names the app, so whoever receives the copied text knows which app.
+  if (finding.findingType === "APP_INCIDENT_ADVISORY" && finding.description) {
+    lines.push(finding.description);
+  }
 
   if (isAdminResourceFinding(finding.findingType)) {
     // Admin resources are edited in the Shopify Admin, not deleted as theme code:

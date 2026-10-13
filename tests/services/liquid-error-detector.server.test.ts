@@ -1327,3 +1327,63 @@ describe("buildMissingSnippetIndex: a snippet with no text body EXISTS (gc-wr81)
     expect(run(["snippets/preloaderapp.liquid"])).toEqual([]);
   });
 });
+
+// gc-14x5: the length-preserving mode used by the affected-app advisory
+// detector, which needs offsets and line numbers on the ORIGINAL text.
+describe("blankNonExecutingLiquid({ keepLength: true })", () => {
+  const B = BLANKED_LIQUID;
+  const blank = (content: string) => blankNonExecutingLiquid(content, { keepLength: true });
+
+  it.each([
+    ["a comment block", `a{% comment %}x{% endcomment %}b`],
+    [
+      "a comment block over lines",
+      `a\n{%- comment -%}\n  <script src="//h.test/x.js">\n{%- endcomment -%}\nb`,
+    ],
+    ["a raw block", `a{% raw %}{{ x }}{% endraw %}b`],
+    ["a schema block", `a{% schema %}{"name":"x"}\n{% endschema %}b`],
+    ["a doc block", `a{% doc %}\n  @example\n{% enddoc %}b`],
+    ["an inline comment", `a{% # note %}b`],
+    ["a multi-line inline comment", `a{%\n  # one\n  # two\n%}b`],
+    [
+      "a comment statement inside {% liquid %}",
+      `{% liquid\n  comment\n    echo 'x'\n  endcomment\n  echo 'y'\n%}`,
+    ],
+    ["an unterminated comment", `a{% comment %}\nnever closed\nb`],
+    ["nothing to blank", `<p>{{ product.title }}</p>`],
+    ["an empty file", ``],
+  ])("%s: same length, same line breaks, same text outside the blanked range", (_name, content) => {
+    const out = blank(content);
+    expect(out).toHaveLength(content.length);
+    expect(out.split("\n").map((l) => l.length)).toEqual(content.split("\n").map((l) => l.length));
+    // Every character is either unchanged or the blank marker.
+    for (let i = 0; i < content.length; i += 1) {
+      expect(out[i] === content[i] || out[i] === B, `index ${i}`).toBe(true);
+    }
+  });
+
+  it("blanks exactly what the default mode removes", () => {
+    const content = `keep1{% comment %}gone{% endcomment %}keep2{% raw %}gone{% endraw %}keep3{% # gone %}keep4`;
+    const out = blank(content);
+    expect(out).not.toContain("gone");
+    for (const kept of ["keep1", "keep2", "keep3", "keep4"]) {
+      expect(out.indexOf(kept)).toBe(content.indexOf(kept));
+    }
+    // The default mode collapses each of those ranges to one marker.
+    expect(blankNonExecutingLiquid(content)).toBe(`keep1${B}keep2${B}keep3${B}keep4`);
+  });
+
+  it("newlines inside a blanked range survive, so line numbers after it are unchanged", () => {
+    const content = `{% comment %}\none\ntwo\n{% endcomment %}\nTARGET`;
+    const out = blank(content);
+    expect(out.split("\n")).toHaveLength(content.split("\n").length);
+    expect(out.split("\n").indexOf("TARGET")).toBe(4);
+  });
+
+  it("returns the input itself when there is nothing to blank, and the default mode is unchanged", () => {
+    const content = "<p>plain</p>";
+    expect(blank(content)).toBe(content);
+    expect(blankNonExecutingLiquid(content, {})).toBe(content);
+    expect(blankNonExecutingLiquid(`a{% # x %}b`)).toBe(`a${B}b`);
+  });
+});

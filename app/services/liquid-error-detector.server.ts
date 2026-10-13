@@ -291,13 +291,26 @@ function blankLiquidTagCommentLines(
  * that was not there, and what follows a comment does not become the start of
  * a line (RENDER_TAG_RE reads a line-leading `render 'x'` as a statement).
  *
+ * `keepLength` (gc-14x5) instead replaces every character of a range except
+ * its newlines with BLANKED_LIQUID, so the result has the same length and the
+ * same line breaks as `content`: a caller that reports a line number or cuts a
+ * snippet can use offsets from the blanked text on the original.
+ *
  * Linear: one forward pass over the tags (nextLiquidTag), no regex.
  */
-export function blankNonExecutingLiquid(content: string): string {
+export function blankNonExecutingLiquid(
+  content: string,
+  opts: { keepLength?: boolean } = {},
+): string {
   const kept: string[] = [];
   let keptFrom = 0;
   const blank = (start: number, end: number): void => {
-    kept.push(content.slice(keptFrom, start), BLANKED_LIQUID);
+    kept.push(
+      content.slice(keptFrom, start),
+      opts.keepLength
+        ? content.slice(start, end).replace(/[^\n]/g, BLANKED_LIQUID)
+        : BLANKED_LIQUID,
+    );
     keptFrom = end;
   };
 

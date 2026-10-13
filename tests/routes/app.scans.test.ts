@@ -527,3 +527,60 @@ describe("ScanHistory empty states (gc-vg4)", () => {
     expect(html).not.toContain("Run your first scan");
   });
 });
+
+// gc-14x5: an affected-app advisory in scan history's Findings column. It is
+// a normal finding there: counted while not ignored, gone once ignored, and
+// never added back the way ignored malicious code is.
+describe("app.scans loader: an affected-app advisory in the Findings column (gc-14x5)", () => {
+  const withIgnores = () =>
+    mockGetIgnoredFindings.mockResolvedValue({
+      fingerprints: new Set(["some-ignore"]),
+      appNames: new Set<string>(),
+    });
+  const count = async () =>
+    ((await loader(makeLoaderArgs())) as { scans: Array<{ displayFindingCount: number }> }).scans[0]
+      .displayFindingCount;
+
+  beforeEach(() => {
+    mockGetScansForShop.mockResolvedValue({ items: [makeScan("scan-1")], hasNextPage: false });
+  });
+
+  it("no ignores: the stored count (which includes the advisory)", async () => {
+    await expect(count()).resolves.toBe(3);
+    expect(mockGetFilteredFindingSummary).not.toHaveBeenCalled();
+  });
+
+  it("advisory not ignored: counted once in the filtered total", async () => {
+    withIgnores();
+    mockGetFilteredFindingSummary.mockResolvedValue({
+      total: 2,
+      bySeverity: { HIGH: 1, MEDIUM: 1, LOW: 0 },
+      byType: { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 1 },
+    });
+
+    await expect(count()).resolves.toBe(2);
+  });
+
+  it("advisory ignored and nothing else: 0, never added back", async () => {
+    withIgnores();
+    mockGetFilteredFindingSummary.mockResolvedValue({
+      total: 0,
+      bySeverity: { HIGH: 0, MEDIUM: 0, LOW: 0 },
+      byType: { APP_INCIDENT_ADVISORY: 0 },
+    });
+
+    await expect(count()).resolves.toBe(0);
+  });
+
+  it("control: an ignored MALICIOUS finding beside an ignored advisory IS added back (1, not 2)", async () => {
+    withIgnores();
+    mockGetMaliciousCounts.mockResolvedValue(new Map([["scan-1", 1]]));
+    mockGetFilteredFindingSummary.mockResolvedValue({
+      total: 0,
+      bySeverity: { HIGH: 0, MEDIUM: 0, LOW: 0 },
+      byType: { APP_INCIDENT_ADVISORY: 0, MALICIOUS_SCRIPT: 0 },
+    });
+
+    await expect(count()).resolves.toBe(1);
+  });
+});

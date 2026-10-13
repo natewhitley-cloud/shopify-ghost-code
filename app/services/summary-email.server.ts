@@ -161,6 +161,9 @@ type BaselineScan = ScanCoverage & { findings: DiffableFinding[]; liveFindingTyp
  * of ignores. An ignored MALICIOUS_SCRIPT finding counts in all three numbers
  * like any other finding, so the email never reads "Still in your theme: 0"
  * over it, and one that appears or goes away is reported as new or fixed.
+ *
+ * An affected-app advisory (gc-14x5) counts in NONE of the three numbers:
+ * advisories are shown in the app only.
  */
 export function computeFindingChanges(args: {
   currentFindings: DiffableFinding[];
@@ -176,10 +179,15 @@ export function computeFindingChanges(args: {
   const currentLive = parseLiveFindingTypes(args.currentLiveFindingTypes);
   if (!currentLive) return { ok: false, reason: "current_unversioned" };
 
-  const current = filterIgnoredExceptMalicious(args.currentFindings, args.ignores).shown;
+  // An affected-app advisory is in-app only (gc-14x5): it is left out of all
+  // three numbers, so it can never cause, change or appear in a summary email
+  // (a new advisory, a removed script, or an entry that expired).
+  const emailed = <T extends DiffableFinding>(findings: T[]): T[] =>
+    findings.filter((f) => f.findingType !== "APP_INCIDENT_ADVISORY");
+  const current = filterIgnoredExceptMalicious(emailed(args.currentFindings), args.ignores).shown;
   const diff = diffScans(
     current,
-    filterIgnoredExceptMalicious(args.baseline.findings, args.ignores).shown,
+    filterIgnoredExceptMalicious(emailed(args.baseline.findings), args.ignores).shown,
     scanDiffOptions(args.currentCoverage, args.baseline),
   );
   return {

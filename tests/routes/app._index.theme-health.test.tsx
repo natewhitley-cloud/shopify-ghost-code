@@ -108,6 +108,7 @@ import {
 import { getOrCreateShopMetadata } from "../../app/models/shop.server";
 import Dashboard, { loader } from "../../app/routes/app._index";
 import { getFilteredFindingSummaryAndKept } from "../../app/services/finding-aggregation.server";
+import { isSoftLaunchLive } from "../../app/services/soft-launch-flags.server";
 import { resetThemeCaches } from "../../app/services/theme-cache.server";
 import { fetchAllThemes, fetchMainTheme } from "../../app/services/theme-fetcher.server";
 import { getFreeTopFindings, getFullListTopFindings } from "../../app/services/top-findings.server";
@@ -1195,13 +1196,17 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
   const sum = (c: Counts) => Object.values(c).reduce((a, b) => a + b, 0);
   const ADVISORY_FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
 
-  // The check is live only while a list entry is unexpired, and these tests
-  // run on the real clock: they need the list to hold an active entry, which
-  // the review-date test (app-incident-advisory.server.test.ts) enforces.
+  // The check is live only while a list entry is unexpired, so the clock is
+  // pinned to a day on which the entry is active. (A day before any real run
+  // of this suite: the SHOP fixture's `installedAt` is the real clock, and a
+  // pinned date after it would make the shop look long installed.)
   beforeEach(() => {
     process.env[ADVISORY_FLAG] = "true";
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-11T12:00:00Z"));
   });
   afterEach(() => {
+    vi.useRealTimers();
     delete process.env[ADVISORY_FLAG];
   });
 
@@ -1255,7 +1260,9 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
     expect(data.maliciousHealth).toBeNull();
     const rows = data.themeHealth as HealthRow[];
     expect(rowOf(rows, "malicious")).toMatchObject({ status: "clean", count: 0 });
-    expect(rowOf(rows, "scripts-styles")).toMatchObject({ status: "issues", count: 1 });
+    // Round 3: the advisory is in no theme health row at all.
+    expect(rowOf(rows, "scripts-styles")).toMatchObject({ status: "clean", count: 0 });
+    expect(rows.every((r) => r.count === 0)).toBe(true);
     const section = sectionOf(renderDashboard(data));
     expect(section).not.toContain('<s-badge tone="critical">');
     expect(section).toContain("No known malicious code found.");
@@ -1389,14 +1396,18 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
       const block = html.slice(start, html.indexOf("</section>", start));
 
       expect(data.startHere).toBeNull();
-      expect(block).toContain(">App Security Advisories</h3>");
+      // Round 3: the card's headline, not the type label.
+      expect(block).toContain(">An app in your theme was named in a checkout phishing report</h3>");
+      expect(block).not.toContain("App Security Advisories");
       expect(block).toContain('<s-badge tone="critical">HIGH</s-badge>');
       expect(block).toContain("layout/theme.liquid, line 42");
       expect(block).toContain(
         "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
       );
-      expect(block).toContain('href="/app/scans/scan-1#finding-adv"');
-      expect(block).toContain("See how to fix");
+      expect(block).toMatch(
+        /<a aria-label="See what to check: An app in your theme was named in a checkout phishing report, layout\/theme\.liquid, line 42"[^>]*href="\/app\/scans\/scan-1#finding-adv"[^>]*>See what to check<\/a>/,
+      );
+      expect(block).not.toContain("See how to fix");
       expect(block).not.toMatch(/Still tracking you|removed app|leftover|malicious/i);
     });
 
@@ -1418,15 +1429,144 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
     });
   });
 
-  it("with the flag off (the production default) the check is dark: its row is left as it was", async () => {
+  it("FLIPPING THE FLAG changes nothing in theme health for a scan taken before the flip", async () => {
+    // The scan recorded its live set BEFORE the flip: the advisory type is not
+    // in it. Off, then on: the checklist must be identical, and the scripts
+    // row must not turn into "None found ... Run a new scan".
+    const liveBefore = Object.values(FindingType).filter((t) => t !== "APP_INCIDENT_ADVISORY");
+    mockScans.mockResolvedValue({
+      items: [{ ...SCAN, liveFindingTypes: liveBefore }],
+      hasNextPage: false,
+    });
+    scan({ GHOST_PIXEL: 1 });
+
     delete process.env[ADVISORY_FLAG];
-    scan({});
+    const off = await runLoader();
+    process.env[ADVISORY_FLAG] = "true";
+    const on = await runLoader();
 
-    const data = await runLoader();
-
-    expect(rowOf(data.themeHealth as HealthRow[], "scripts-styles")).toMatchObject({
+    // Non-vacuous: the flag really is read differently in the two loads.
+    expect(isSoftLaunchLive(FindingType.APP_INCIDENT_ADVISORY)).toBe(true);
+    expect(on.themeHealth).toEqual(off.themeHealth);
+    expect(rowOf(on.themeHealth as HealthRow[], "scripts-styles")).toMatchObject({
       status: "clean",
       statusLabel: "Clean",
+      detail: null,
     });
+    expect(sectionOf(renderDashboard(on))).toBe(sectionOf(renderDashboard(off)));
+    expect(sectionOf(renderDashboard(on))).not.toContain("Not checked on your last scan");
+  });
+
+  describe("top card: one line for advisories (round 3, B7)", () => {
+    const topCard = (html: string) => {
+      const start = html.indexOf('<div class="health-read">');
+      return start === -1 ? "" : html.slice(start, html.indexOf("</div></div></div>", start));
+    };
+    const LINK = (text: string) =>
+      new RegExp(`<a[^>]*href="/app/scans/scan-1#app-security-advisories"[^>]*>${text}</a>`);
+
+    it("an advisory alone: the card holds the one line, linked to the scan page's advisory section", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1 });
+
+      const data = await runLoader();
+      const card = topCard(renderDashboard(data));
+
+      expect((data as unknown as { advisoryCount: number }).advisoryCount).toBe(1);
+      expect(card).toMatch(LINK("1 app security advisory to review"));
+      // Nothing else in the read: no damage line, no leftover sentence.
+      expect(card).not.toContain("Most of the damage is in");
+      expect(card).not.toMatch(/leftover item/);
+    });
+
+    it("two advisories pluralise", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 2 });
+
+      expect(topCard(renderDashboard(await runLoader()))).toMatch(
+        LINK("2 app security advisories to review"),
+      );
+    });
+
+    it("beside other findings: after the leftover sentence, and the two account for the tile", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 });
+
+      const data = await runLoader();
+      const card = topCard(renderDashboard(data));
+
+      expect(data.findingsTile).toEqual({ total: 3, tone: "warning" });
+      expect(card).toMatch(/2 leftover items from apps you&#x27;ve uninstalled are/);
+      expect(card).toMatch(LINK("1 app security advisory to review"));
+      expect(card.indexOf("leftover items")).toBeLessThan(card.indexOf("app security advisory"));
+    });
+
+    it("an ignored advisory: no line", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1 }, {});
+
+      const data = await runLoader();
+
+      expect((data as unknown as { advisoryCount: number }).advisoryCount).toBe(0);
+      expect(renderDashboard(data)).not.toMatch(/app security advisor/);
+    });
+
+    it("no advisory: no line (unchanged card)", async () => {
+      scan({ GHOST_SCRIPT: 2 });
+
+      expect(renderDashboard(await runLoader())).not.toMatch(/app security advisor/);
+    });
+
+    // tile = leftover items + advisories + ignored malicious code added back.
+    it.each([
+      ["advisory only", { APP_INCIDENT_ADVISORY: 1 }, null, 0, 1, 1],
+      ["advisory + 2 scripts", { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 }, null, 2, 1, 3],
+      [
+        "2 advisories + pixel + 4 orphans",
+        { APP_INCIDENT_ADVISORY: 2, GHOST_PIXEL: 1, ORPHAN_ASSET: 4 },
+        null,
+        5,
+        2,
+        7,
+      ],
+      [
+        "advisory + ignored script",
+        { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 },
+        { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 1 },
+        1,
+        1,
+        2,
+      ],
+      [
+        "advisory + 2 ignored malicious",
+        { APP_INCIDENT_ADVISORY: 1, MALICIOUS_SCRIPT: 2 },
+        { APP_INCIDENT_ADVISORY: 1 },
+        0,
+        1,
+        3,
+      ],
+      [
+        "ignored advisory + script",
+        { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 1 },
+        { GHOST_SCRIPT: 1 },
+        1,
+        0,
+        1,
+      ],
+    ] as Array<[string, Counts, Counts | null, number, number, number]>)(
+      "tile arithmetic on Home, %s",
+      async (_label, found, kept, leftover, advisories, tileTotal) => {
+        scan(found, kept);
+
+        const data = (await runLoader()) as unknown as {
+          laneSummary: Array<{ count: number }>;
+          advisoryCount: number;
+          findingsTile: { total: number };
+        };
+
+        const laned = data.laneSummary.reduce((n, row) => n + row.count, 0);
+        expect(laned).toBe(leftover);
+        expect(data.advisoryCount).toBe(advisories);
+        expect(data.findingsTile.total).toBe(tileTotal);
+        const addBack = (found.MALICIOUS_SCRIPT ?? 0) - ((kept ?? found).MALICIOUS_SCRIPT ?? 0);
+        expect(data.findingsTile.total).toBe(laned + data.advisoryCount + addBack);
+      },
+    );
   });
 });

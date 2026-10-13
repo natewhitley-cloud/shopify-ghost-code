@@ -74,8 +74,8 @@ import {
   resolveAttribution,
 } from "./app-lookup.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
+import { blankNonExecutingLiquid } from "./liquid-error-detector.server";
 import { classifySeverity } from "./severity-classifier.server";
-import { isAdvisoryCheckLive } from "./soft-launch-flags.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import {
   activeAdvisories,
@@ -2233,29 +2233,91 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
 // Detector: APP_INCIDENT_ADVISORY (apps named in a public incident report)
 // ---------------------------------------------------------------------------
 
+// The `src` attribute of one extracted `<script ...>` tag: double-quoted,
+// single-quoted or unquoted, anywhere in the tag (the tag may span lines).
+// Run on a single tag, each alternative is delimited by its own quote or by
+// whitespace, so it is linear. `data-src` and the like do not match: the
+// attribute name must follow whitespace.
+const SCRIPT_TAG_SRC_RE = /\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
+
+// A quoted URL piped into Liquid's `script_tag` filter, which prints a
+// `<script src>` for it: `{{ 'https://host/x.js' | script_tag }}`. The URL
+// must be the value the filter is applied to (nothing between the closing
+// quote and the pipe but whitespace). Bounded, with disjoint delimiters.
+const LIQUID_SCRIPT_TAG_FILTER_RE =
+  /(["'])([^"'\s|]{1,2048})\1[ \t\r\n]{0,50}\|[ \t\r\n]{0,50}script_tag\b/gi;
+
+// The host of a URL value that STARTS with a scheme or `//` (after slashes are
+// decoded): the same host shape as URL_HOST_RE, anchored.
+const LEADING_URL_HOST_RE =
+  /^(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)/i;
+
+/** The host a script URL value loads from, or null when it is not an absolute URL. */
+function scriptUrlHost(value: string): string | null {
+  const url = value.trim().replace(ENCODED_SLASH_RE, "/");
+  return LEADING_URL_HOST_RE.exec(url)?.[1] ?? null;
+}
+
+/**
+ * Every script LOAD in a Liquid theme file, in file order: the host it loads
+ * from and where it sits (an offset into `file.content`).
+ *
+ * A load is one of exactly two forms (gc-14x5):
+ *   - a `<script ...>` tag whose `src` attribute is an absolute or
+ *     protocol-relative URL (any quoting, attributes in any order, the tag may
+ *     span lines, slashes may be encoded);
+ *   - a quoted URL piped into Liquid's `script_tag` filter.
+ * Nothing else is a load: a link, an image, a preconnect hint, a stylesheet,
+ * a CSS `url()`, a URL in a string or in prose.
+ *
+ * Only code that runs counts. Blanked first, length preserved so offsets map
+ * onto the original: Liquid that never executes (blankNonExecutingLiquid:
+ * `{% comment %}`, `{% # %}`, `{% raw %}`, `{% schema %}`, `{% doc %}`), then
+ * HTML comments and JS comments inside inline scripts (blankInertComments).
+ */
+function scriptLoadsInLiquidFile(file: ThemeFile): Array<{ host: string; offset: number }> {
+  const live = blankInertComments(
+    blankNonExecutingLiquid(file.content, { keepLength: true }),
+    file.filename,
+  );
+  const loads: Array<{ host: string; offset: number }> = [];
+  for (const { tag, offset } of extractTags(live, "<script")) {
+    // `<scripted ...>` is not a script tag (extractTags matches by prefix).
+    if (!/^<script[\s>/]/i.test(tag)) continue;
+    const src = SCRIPT_TAG_SRC_RE.exec(tag);
+    if (!src) continue;
+    const host = scriptUrlHost(src[1] ?? src[2] ?? src[3]);
+    if (host) loads.push({ host, offset: offset + src.index });
+  }
+  LIQUID_SCRIPT_TAG_FILTER_RE.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = LIQUID_SCRIPT_TAG_FILTER_RE.exec(live)) !== null) {
+    const host = scriptUrlHost(match[2]);
+    if (host) loads.push({ host, offset: match.index });
+  }
+  return loads.sort((a, b) => a.offset - b.offset);
+}
+
 /**
  * Emit at most ONE APP_INCIDENT_ADVISORY finding per entry of the curated
- * APP_INCIDENT_ADVISORIES list (gc-14x5) whose script host the theme's live
- * code references, anchored to the FIRST live reference: first file in scan
- * order, first line. Never one per line or per file.
+ * APP_INCIDENT_ADVISORIES list (gc-14x5) whose script the theme LOADS,
+ * anchored to the first load: first file in scan order, first position.
+ * Never one per line or per file.
  *
- * The finding states two facts (this app's code is in the theme, and a public
- * report names the app). It never claims the store was affected.
+ * The finding states two facts (the theme loads this app's code, and a public
+ * report names the app). It never claims the store was affected. "Loads" is
+ * meant literally, so precision comes first:
  *
- *   - Files: exactly the files the MALICIOUS_SCRIPT pass reads (scannable
- *     Liquid, plus isMaliciousScanOnlyFile: JSON templates and section groups,
- *     settings_data, asset JS, locales), oversized files included (the matching
- *     is linear). A file that does not contain a listed host at all is skipped
- *     before any parsing.
- *   - Host extraction is the malicious detector's (urlHostsOnLine): any
- *     absolute or protocol-relative URL, encoded slashes decoded, path-segment
- *     `//host` skipped. Host match is exact-or-subdomain.
- *   - A reference inside a comment does NOT count: Liquid comments in
- *     `.liquid` files (blankLiquidComments) and HTML / JS / CSS comments
- *     (blankInertComments, the malicious list's `ignoreInComments` path).
- *     Unlike an attacker's domain, this is a legitimate app's tag that a
- *     developer or merchant may have commented out. Where a file has no
- *     comment syntax (JSON), nothing is blanked and the reference counts.
+ *   - Files: only Liquid the storefront renders as HTML (isScannableFile:
+ *     `.liquid` under layout/, templates/, sections/, snippets/, blocks/),
+ *     oversized ones included (the matching is linear). Never JSON templates,
+ *     settings_data, locales or assets: a URL there is a string, not a load.
+ *     A file that does not contain a listed host at all is skipped before any
+ *     parsing.
+ *   - Reference forms: a `<script src>` tag or a `script_tag` filter on the
+ *     host, and nothing else (see scriptLoadsInLiquidFile, which also leaves
+ *     out comments and Liquid that never executes). Host match is
+ *     exact-or-subdomain.
  *   - An entry whose `reviewBy` date has passed (UTC, at `now`) emits nothing.
  *   - `appName` is deliberately NOT set: a finding with an app name is counted
  *     as that app's leftover code by app-removal detection (countedLeftovers)
@@ -2263,8 +2325,9 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
  *     advisory is neither. The app is named in the description.
  *   - Severity is ALWAYS HIGH, set directly (like MALICIOUS_SCRIPT).
  *
- * Theme-file only, NO scope gate, ALL plans. `now` and `advisories` are test
- * seams; production callers use the defaults.
+ * Theme-file only, NO scope gate, ALL plans. The scan worker persists it only
+ * for the PUBLISHED theme. `now` and `advisories` are test seams; production
+ * callers use the defaults.
  */
 export function detectAppIncidentAdvisories(
   files: ThemeFile[],
@@ -2277,41 +2340,37 @@ export function detectAppIncidentAdvisories(
 
   for (const file of files) {
     if (pending.length === 0) break;
-    if (!isScannableFile(file.filename) && !isMaliciousScanOnlyFile(file.filename)) continue;
+    if (!isScannableFile(file.filename)) continue;
     // Cheap gate: a URL on a listed host (or a subdomain) contains that host.
     const mentioned = pending.some((a) =>
       a.scriptHosts.some((host) => indexOfIgnoreCase(file.content, host) !== -1),
     );
     if (!mentioned) continue;
 
-    const originalLines = file.content.split("\n");
-    const liquidBlanked = file.filename.endsWith(".liquid")
-      ? blankLiquidComments(file.content)
-      : file.content;
-    const liveLines = blankInertComments(liquidBlanked, file.filename).split("\n");
-
-    for (let i = 0; i < liveLines.length && pending.length > 0; i++) {
-      for (const host of urlHostsOnLine(liveLines[i])) {
-        const match = matchAdvisoryScriptHost(host, pending);
-        if (!match) continue;
-        const lineNumber = i + 1;
-        found.set(match.advisory, {
-          filename: file.filename,
-          lineNumber,
-          codeSnippet: hostSnippet(
-            file,
-            lineNumber,
-            originalLines[i],
-            liveLines[i],
-            match.scriptHost,
-          ),
-          findingType: FindingType.APP_INCIDENT_ADVISORY,
-          severity: Severity.HIGH,
-          appName: undefined,
-          description: advisoryDescription(match),
-        });
-        pending = pending.filter((a) => a !== match.advisory);
-      }
+    for (const load of scriptLoadsInLiquidFile(file)) {
+      const match = matchAdvisoryScriptHost(load.host, pending);
+      if (!match) continue;
+      // Anchor to the line that holds the host (a tag can span lines). The
+      // snippet is a window of that line starting shortly before the host,
+      // the same window the malicious detector stores.
+      const hostAt = indexOfIgnoreCase(file.content, match.scriptHost, load.offset);
+      const at = hostAt === -1 ? load.offset : hostAt;
+      const lineNumber = lineNumberAtOffset(file.content, at);
+      const lineStart = file.content.lastIndexOf("\n", at - 1) + 1;
+      const nextBreak = file.content.indexOf("\n", at);
+      const lineEnd = nextBreak === -1 ? file.content.length : nextBreak;
+      const from = Math.max(lineStart, at - MALICIOUS_SNIPPET_LEAD);
+      found.set(match.advisory, {
+        filename: file.filename,
+        lineNumber,
+        codeSnippet: file.content.slice(from, Math.min(lineEnd, from + MALICIOUS_SNIPPET_MAX)),
+        findingType: FindingType.APP_INCIDENT_ADVISORY,
+        severity: Severity.HIGH,
+        appName: undefined,
+        description: advisoryDescription(match),
+      });
+      pending = pending.filter((a) => a !== match.advisory);
+      if (pending.length === 0) break;
     }
   }
 
@@ -2965,7 +3024,6 @@ export function identifyAppForExternalUrl(rawUrl: string): string | null {
 export function collectUnknownScripts(
   file: ThemeFile,
   benignSkips?: BenignSkipCounter,
-  liveAdvisories: ReadonlyArray<AppIncidentAdvisory> = [],
 ): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
   let settingGatedLines: Set<number> | null = null;
@@ -2986,9 +3044,6 @@ export function collectUnknownScripts(
       // Known-malicious hosts are reported as MALICIOUS_SCRIPT findings; never
       // route them into the flywheel, which asks the merchant to name the app.
       if (matchMaliciousDomain(hostname)) continue;
-      // A host reported as a LIVE affected-app advisory (gc-14x5) is already
-      // named to the merchant: never also ask "which app left this?".
-      if (matchAdvisoryScriptHost(hostname, liveAdvisories)) continue;
 
       // Drop benign public-CDN libraries / web fonts (not orphaned app code)
       if (isBenignLibrary(url)) {
@@ -3021,7 +3076,6 @@ export function collectUnknownScripts(
 export function collectUnknownStylesheets(
   file: ThemeFile,
   benignSkips?: BenignSkipCounter,
-  liveAdvisories: ReadonlyArray<AppIncidentAdvisory> = [],
 ): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
   let settingGatedLines: Set<number> | null = null;
@@ -3044,9 +3098,6 @@ export function collectUnknownStylesheets(
       // Known-malicious hosts are reported as MALICIOUS_SCRIPT findings; never
       // route them into the flywheel, which asks the merchant to name the app.
       if (matchMaliciousDomain(hostname)) continue;
-      // A host reported as a LIVE affected-app advisory (gc-14x5) is already
-      // named to the merchant: never also ask "which app left this?".
-      if (matchAdvisoryScriptHost(hostname, liveAdvisories)) continue;
 
       // Drop benign public-CDN libraries / web fonts (not orphaned app code)
       if (isBenignLibrary(url)) {
@@ -5593,11 +5644,6 @@ const EARLY_EXIT_LIMIT = MAX_FINDINGS_PER_FILE_PER_TYPE + 1;
 
 export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): ScanResult {
   let findings: CreateFindingInput[] = [];
-  // Advisory entries whose finding the merchant will actually see (gc-14x5):
-  // the check's flag is on and the entry has not passed its review date. Only
-  // their hosts are kept out of the unknown-script collectors; with the flag
-  // off or the entry expired, the host is collected exactly as before.
-  const liveAdvisories = isAdvisoryCheckLive(now) ? activeAdvisories(now) : [];
   const unknownScripts: UnknownExternalResource[] = [];
   const skippedFiles: SkippedFile[] = [];
   const staticProductCandidates: StaticProductCandidate[] = [];
@@ -5686,8 +5732,8 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
 
     // Collect unrecognized external resources (benign libraries are dropped and
     // counted into benignSkips rather than emitted).
-    unknownScripts.push(...collectUnknownScripts(file, benignSkips, liveAdvisories));
-    unknownScripts.push(...collectUnknownStylesheets(file, benignSkips, liveAdvisories));
+    unknownScripts.push(...collectUnknownScripts(file, benignSkips));
+    unknownScripts.push(...collectUnknownStylesheets(file, benignSkips));
 
     // Collect the full third-party domain graph (Feature 1). Unlike the unknown-
     // resource collectors this keeps EVERY non-Shopify host — matched-to-app,

@@ -64,22 +64,28 @@ const rowOf = (rows: HealthRow[], key: HealthRow["key"]) => rows.find((r) => r.k
 describe("HEALTH_CATEGORY_OF: every FindingType lands in exactly one category", () => {
   const CATEGORY_KEYS = HEALTH_CATEGORIES.map((c) => c.key);
 
-  it("maps every FindingType enum member (a new type must be placed here)", () => {
-    for (const type of ALL_TYPES) {
+  // gc-14x5: an affected-app advisory is deliberately in NO category (it is a
+  // notice, not something wrong in the theme). Every other type must be placed.
+  const HEALTH_TYPES = ALL_TYPES.filter(
+    (t): t is Exclude<FindingType, "APP_INCIDENT_ADVISORY"> => t !== "APP_INCIDENT_ADVISORY",
+  );
+
+  it("maps every FindingType enum member but the advisory (a new type must be placed here)", () => {
+    for (const type of HEALTH_TYPES) {
       expect(HEALTH_CATEGORY_OF[type], `${type} has no theme health category`).toBeDefined();
       expect(CATEGORY_KEYS, `${type} maps to an unknown category`).toContain(
         HEALTH_CATEGORY_OF[type],
       );
     }
     // And nothing but enum members: no stale key for a removed type.
-    expect(Object.keys(HEALTH_CATEGORY_OF).sort()).toEqual([...ALL_TYPES].sort());
+    expect(Object.keys(HEALTH_CATEGORY_OF).sort()).toEqual([...HEALTH_TYPES].sort());
   });
 
   it("the categories partition the enum: each type in one, none in two, none left out", () => {
     const seen: string[] = [];
     for (const key of CATEGORY_KEYS) seen.push(...typesForHealthCategory(key));
-    expect(seen).toHaveLength(ALL_TYPES.length);
-    expect(new Set(seen).size).toBe(ALL_TYPES.length);
+    expect(seen).toHaveLength(HEALTH_TYPES.length);
+    expect(new Set(seen).size).toBe(HEALTH_TYPES.length);
   });
 
   it("every category has at least one type, a label and a 'what this checks' line", () => {
@@ -101,8 +107,6 @@ describe("HEALTH_CATEGORY_OF: every FindingType lands in exactly one category", 
       "liquid-errors": ["LIQUID_ERROR_RENDERED"],
       "shopper-visible": ["DANGLING_REFERENCE", "GHOST_TEXT", "OVERLAPPING_CHAT_WIDGET"],
       "scripts-styles": [
-        // gc-14x5: no row of its own yet, and never "Known malicious code".
-        "APP_INCIDENT_ADVISORY",
         "DUPLICATE_LIBRARY",
         "GHOST_AJAX",
         "GHOST_FONT",
@@ -144,8 +148,8 @@ describe("HEALTH_CATEGORY_OF: every FindingType lands in exactly one category", 
     });
   });
 
-  it("a finding of ANY type is counted in exactly one row", () => {
-    for (const type of ALL_TYPES) {
+  it("a finding of ANY type (but the advisory, which is in no row) is counted in exactly one row", () => {
+    for (const type of HEALTH_TYPES) {
       const rows = buildThemeHealthChecklist(input({ typeCounts: { [type]: 2 } }));
       const counted = rows.filter((r) => r.count > 0);
       expect(

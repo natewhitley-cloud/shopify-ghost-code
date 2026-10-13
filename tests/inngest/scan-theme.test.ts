@@ -409,6 +409,29 @@ const MOCK_ADMIN = {
 // Global fetch spy: only the storefront script-tag audit may ever call fetch.
 const fetchSpy = vi.spyOn(globalThis, "fetch");
 
+/**
+ * Answer the worker's "which theme is published?" read (fetchMainTheme, used
+ * only while the advisory check is live, gc-14x5) with `themeId`.
+ */
+function publishTheme(themeId: string | null) {
+  MOCK_ADMIN.graphql.mockImplementation(async (query: string) =>
+    typeof query === "string" && query.includes("roles: MAIN")
+      ? {
+          json: async () => ({
+            data: {
+              themes: {
+                nodes: themeId
+                  ? [{ id: themeId, name: "Dawn", updatedAt: "2026-10-01T00:00:00Z" }]
+                  : [],
+              },
+            },
+          }),
+        }
+      : // Every other Admin query behaves as with the bare, reset mock.
+        undefined,
+  );
+}
+
 const MOCK_FILES = [
   { filename: "layout/theme.liquid", content: "<html></html>" },
   { filename: "sections/header.liquid", content: "<header></header>" },
@@ -3444,13 +3467,186 @@ describe("scanTheme — APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch (gc-14x5)
   const isAdvisory = (f: { findingType: string }) =>
     f.findingType === FindingType.APP_INCIDENT_ADVISORY;
 
-  // A day on which the list's entry is active (see isAdvisoryCheckLive).
+  // A day on which the list's entry is active (see isAdvisoryCheckLive), and
+  // the scanned theme is the published one unless a test says otherwise.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+    publishTheme(THEME_ID);
   });
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  describe("published theme only (round 3)", () => {
+    const live = () => mockFinalizeScan.mock.calls[0][1].liveFindingTypes as string[];
+    const saved = () => mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+
+    it("published theme, flag on: persisted and recorded as live (control)", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      arrange();
+
+      await runScanTheme();
+
+      expect(saved().filter(isAdvisory)).toHaveLength(1);
+      expect(live()).toContain(FindingType.APP_INCIDENT_ADVISORY);
+    });
+
+    it.each([
+      ["a draft theme (another theme is published)", "gid://shopify/Theme/OTHER"],
+      ["no published theme at all", null],
+    ])("%s: not persisted, counted as suppressed, type NOT live", async (_label, published) => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      publishTheme(published);
+      arrange();
+
+      const result = await runScanTheme();
+
+      expect(saved().some(isAdvisory)).toBe(false);
+      expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+      expect(live()).not.toContain(FindingType.APP_INCIDENT_ADVISORY);
+      // Every other type is still live, and the hit is still counted for ops.
+      expect(live()).toContain(FindingType.GHOST_SCRIPT);
+      const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+      expect(signal.metadata.detectorHits.APP_INCIDENT_ADVISORY).toBe(1);
+    });
+
+    it("the published-theme read fails: not persisted, type not live, and the scan still completes", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      MOCK_ADMIN.graphql.mockRejectedValue(new Error("admin down"));
+      arrange();
+
+      const result = await runScanTheme();
+
+      expect(saved().some(isAdvisory)).toBe(false);
+      expect(live()).not.toContain(FindingType.APP_INCIDENT_ADVISORY);
+      expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+      expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
+    });
+
+    it("flag off: the published-theme read is never made", async () => {
+      arrange();
+
+      await runScanTheme();
+
+      const queries = MOCK_ADMIN.graphql.mock.calls.map(([q]) => String(q));
+      expect(queries.some((q) => q.includes("roles: MAIN"))).toBe(false);
+    });
+
+    it("flag on: exactly one published-theme read per scan", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      arrange();
+
+      await runScanTheme();
+
+      const queries = MOCK_ADMIN.graphql.mock.calls.map(([q]) => String(q));
+      expect(queries.filter((q) => q.includes("roles: MAIN"))).toHaveLength(1);
+    });
+  });
+
+  // A11: the REAL scan engine behind the worker (the pool is the only thing
+  // replaced: it calls the real scanThemeFiles in-process).
+  describe("across the worker boundary with the real scan engine", () => {
+    const HOST = "productoption.hulkapps.com";
+    const THEME = [
+      {
+        filename: "layout/theme.liquid",
+        content: [
+          "<html><head>",
+          `<script src="https://${HOST}/hulkcode.js" defer></script>`,
+          `<link rel="stylesheet" href="https://${HOST}/hulk.css">`,
+          '<script src="https://cdn.unknown-vendor.test/a.js"></script>',
+          "</head><body>{{ content_for_layout }}</body></html>",
+        ].join("\n"),
+      },
+      { filename: "templates/index.json", content: '{"sections":{},"order":[]}' },
+    ];
+
+    beforeEach(async () => {
+      const real = await vi.importActual<typeof import("../../app/services/scan-engine.server")>(
+        "../../app/services/scan-engine.server",
+      );
+      mockFetchThemeFiles.mockResolvedValue(THEME);
+      mockScanThemeFiles.mockImplementation(async (files: typeof THEME) =>
+        real.scanThemeFiles(files),
+      );
+    });
+
+    const savedFindings = () =>
+      mockSaveThemeFindings.mock.calls[0][1] as Array<{
+        findingType: string;
+        filename: string;
+        lineNumber: number;
+        description: string;
+        appName?: string;
+      }>;
+    const unknownUrls = () =>
+      (mockCreateUnknownScripts.mock.calls[0][1] as Array<{ url: string }>).map((u) => u.url);
+
+    it("flag on, published theme: the advisory is stored once and its host is not an unrecognized script", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+
+      await runScanTheme();
+
+      const advisories = savedFindings().filter(isAdvisory);
+      expect(advisories).toHaveLength(1);
+      expect(advisories[0]).toMatchObject({
+        filename: "layout/theme.liquid",
+        lineNumber: 2,
+        severity: "HIGH",
+        description:
+          "Loads code from Hulk Product Options (productoption.hulkapps.com), an app named in a public report of shoppers being sent to a fake checkout page (10 October 2026)",
+      });
+      expect(advisories[0].appName).toBeUndefined();
+      expect(unknownUrls()).toEqual(["https://cdn.unknown-vendor.test/a.js"]);
+    });
+
+    it("flag off: nothing stored, and the host is listed as an unrecognized script exactly as before", async () => {
+      await runScanTheme();
+
+      expect(savedFindings().some(isAdvisory)).toBe(false);
+      expect(unknownUrls()).toEqual([
+        `https://${HOST}/hulkcode.js`,
+        "https://cdn.unknown-vendor.test/a.js",
+        `https://${HOST}/hulk.css`,
+      ]);
+    });
+
+    it("flag on, DRAFT theme: nothing stored and the host stays listed", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      publishTheme("gid://shopify/Theme/OTHER");
+
+      await runScanTheme();
+
+      expect(savedFindings().some(isAdvisory)).toBe(false);
+      expect(unknownUrls()).toContain(`https://${HOST}/hulkcode.js`);
+      expect(unknownUrls()).toHaveLength(3);
+    });
+
+    it("flag on, entry EXPIRED: nothing stored and the host stays listed", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      vi.setSystemTime(new Date("2027-01-09T00:00:00Z"));
+
+      await runScanTheme();
+
+      expect(savedFindings().some(isAdvisory)).toBe(false);
+      expect(unknownUrls()).toHaveLength(3);
+    });
+
+    it("flag on, host only MENTIONED (a stylesheet and a link, no script load): no advisory, nothing dropped", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      mockFetchThemeFiles.mockResolvedValue([
+        {
+          filename: "layout/theme.liquid",
+          content: `<link rel="stylesheet" href="https://${HOST}/hulk.css">\n<a href="https://${HOST}/">x</a>`,
+        },
+      ]);
+
+      await runScanTheme();
+
+      expect(savedFindings().some(isAdvisory)).toBe(false);
+      expect(unknownUrls()).toEqual([`https://${HOST}/hulk.css`]);
+    });
   });
 
   it("flag on but every list entry EXPIRED: not persisted, and the type is not recorded as live", async () => {
@@ -3545,11 +3741,12 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     await runScanTheme();
     return mockFinalizeScan.mock.calls[0][1].liveFindingTypes as string[];
   };
-  // gc-14x5: the advisory type is live only while a list entry is unexpired,
-  // so the clock is pinned to a day on which the entry is active.
+  // gc-14x5: the advisory type is live only while a list entry is unexpired
+  // and the scanned theme is the published one, so both are pinned.
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+    publishTheme(THEME_ID);
   });
   afterEach(() => {
     vi.useRealTimers();

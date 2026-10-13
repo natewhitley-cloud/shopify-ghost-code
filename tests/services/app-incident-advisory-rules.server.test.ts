@@ -63,8 +63,9 @@ import {
   scanDiffOptions,
   unauditedCategories,
 } from "../../app/services/scan-differ.server";
+import { detectAppIncidentAdvisories } from "../../app/services/scan-engine.server";
 import { isSoftLaunchLive } from "../../app/services/soft-launch-flags.server";
-import { computeFindingChanges } from "../../app/services/summary-email.server";
+import { computeFindingChanges, hasSummaryChanges } from "../../app/services/summary-email.server";
 import {
   getFreeTopFindings,
   getFullListTopFindings,
@@ -608,7 +609,7 @@ describe("honours ignores", () => {
 // Rule 5: the summary email's counts are the existing ones
 // ---------------------------------------------------------------------------
 
-describe("summary email counts (no advisory-specific behaviour)", () => {
+describe("summary email: an advisory is in-app only, in NONE of the three counts", () => {
   const coverage = (live: string[] = ALL_TYPES) => ({
     skippedCategories: [],
     cappedCategories: [],
@@ -629,44 +630,69 @@ describe("summary email counts (no advisory-specific behaviour)", () => {
       baseline: { ...coverage(baselineLive), findings: baseline },
       ignores,
     });
+  const ZERO = { ok: true, newCount: 0, fixedCount: 0, openCount: 0 };
+  /** Would this change send an email at all? (no app or speed news) */
+  const sends = (c: ReturnType<typeof changes>) =>
+    c.ok && hasSummaryChanges({ ...c, inactiveApps: [], cleanedApps: [], speed: null });
 
-  it("a new advisory counts as one new and one open finding", () => {
-    expect(changes([advisory()], [])).toEqual({
-      ok: true,
-      newCount: 1,
-      fixedCount: 0,
-      openCount: 1,
-    });
+  it.each([
+    ["a new advisory", [advisory()], []],
+    ["an unchanged advisory", [advisory("b")], [advisory("a")]],
+    ["the script removed (a real fix)", [], [advisory()]],
+    [
+      "the anchor moved to another file",
+      [advisory("b", { filename: "snippets/x.liquid" })],
+      [advisory("a")],
+    ],
+    [
+      "two advisories appearing",
+      [advisory("a"), advisory("b", { filename: "snippets/x.liquid" })],
+      [],
+    ],
+  ] as Array<[string, Row[], Row[]]>)(
+    "%s: all three counts are zero and no email is sent",
+    (_label, current, baseline) => {
+      const result = changes(current, baseline);
+      expect(result).toEqual(ZERO);
+      expect(sends(result)).toBe(false);
+    },
+  );
+
+  it("an advisory beside a real new finding: only the real one is counted", () => {
+    const script = f("s", "GHOST_SCRIPT");
+    const result = changes([advisory(), script], []);
+    expect(result).toEqual({ ok: true, newCount: 1, fixedCount: 0, openCount: 1 });
+    expect(sends(result)).toBe(true);
   });
 
-  it("an unchanged advisory is open, neither new nor fixed", () => {
-    expect(changes([advisory("b")], [advisory("a")])).toEqual({
-      ok: true,
-      newCount: 0,
-      fixedCount: 0,
-      openCount: 1,
-    });
-  });
-
-  it("a removed script counts as one fixed finding", () => {
-    expect(changes([], [advisory()])).toEqual({
+  it("an advisory beside a real fix and an unchanged finding: only those are counted", () => {
+    const fixed = f("gone", "GHOST_PIXEL");
+    const still = f("still", "GHOST_SNIPPET");
+    expect(changes([advisory("b"), still], [advisory("a"), fixed, still])).toEqual({
       ok: true,
       newCount: 0,
       fixedCount: 1,
-      openCount: 0,
+      openCount: 1,
     });
   });
 
-  it("an IGNORED advisory counts in none of the three numbers (unlike ignored malicious code)", () => {
-    const adv = advisory();
-    expect(changes([adv], [], ignoring(adv))).toEqual({
-      ok: true,
-      newCount: 0,
-      fixedCount: 0,
-      openCount: 0,
+  it("the multi-entry expiry case: one entry expires while another stays live -> still nothing in the email", () => {
+    // The type stays live (another entry is active), so the differ alone
+    // would call the expired entry's finding resolved. The email must not.
+    const expired = advisory("old", {
+      filename: "snippets/other.liquid",
+      description: "other entry",
     });
+    const result = changes([advisory("b")], [advisory("a"), expired]);
+    expect(result).toEqual(ZERO);
+    expect(sends(result)).toBe(false);
+  });
+
+  it("ignored or not makes no difference: it never counts (ignored malicious code still does)", () => {
+    const adv = advisory();
+    expect(changes([adv], [], ignoring(adv))).toEqual(ZERO);
     const mal = f("mal", "MALICIOUS_SCRIPT");
-    expect(changes([mal], [], ignoring(mal))).toEqual({
+    expect(changes([mal, adv], [], ignoring(mal, adv))).toEqual({
       ok: true,
       newCount: 1,
       fixedCount: 0,
@@ -674,14 +700,15 @@ describe("summary email counts (no advisory-specific behaviour)", () => {
     });
   });
 
-  it("the first scan after the detector goes live never reports the advisory as new", () => {
+  it("the first scan after the detector goes live: zero as well", () => {
     const before = ALL_TYPES.filter((t) => t !== ADVISORY);
-    expect(changes([advisory()], [], NO_IGNORES, before)).toEqual({
-      ok: true,
-      newCount: 0,
-      fixedCount: 0,
-      openCount: 1,
-    });
+    expect(changes([advisory()], [], NO_IGNORES, before)).toEqual(ZERO);
+  });
+
+  it("control: the same shapes with an ordinary finding DO count (the exclusion is this type only)", () => {
+    const script = f("s", "GHOST_SCRIPT");
+    expect(changes([script], [])).toEqual({ ok: true, newCount: 1, fixedCount: 0, openCount: 1 });
+    expect(changes([], [script])).toEqual({ ok: true, newCount: 0, fixedCount: 1, openCount: 0 });
   });
 });
 
@@ -730,10 +757,38 @@ describe("scan differ", () => {
     expect(diff).toEqual({ newFindings: [], resolvedFindings: [], unchangedCount: 1 });
   });
 
-  it("an edit above the line does not turn it into resolved + new (the fingerprint has no line number)", () => {
-    const moved = advisory("b", { lineNumber: 57 });
-    const diff = diffScans([moved], [advisory("a")], scanDiffOptions(coverage(), coverage()));
-    expect(diff).toEqual({ newFindings: [], resolvedFindings: [], unchangedCount: 1 });
+  it("an edit above the line does not turn it into resolved + new (the REAL detector, run on both versions of the file)", () => {
+    const NOW = new Date("2026-10-20T12:00:00Z");
+    const before = `<html>\n<head>\n  ${TAG}\n</head>`;
+    // Twelve lines added above the tag, and the tag re-indented.
+    const after = `<html>\n<head>\n${"  <meta name='x' content='y'>\n".repeat(12)}      ${TAG}\n</head>`;
+    const run = (content: string, id: string) =>
+      detectAppIncidentAdvisories([{ filename: "layout/theme.liquid", content }], NOW).map((d) => ({
+        ...advisory(id),
+        ...d,
+        appName: null,
+      }));
+    const [first] = run(before, "a");
+    const [second] = run(after, "b");
+
+    // The fixtures really differ where a line-keyed identity would break.
+    expect(first.lineNumber).toBe(3);
+    expect(second.lineNumber).toBe(15);
+    expect(second.codeSnippet).not.toBe(first.codeSnippet);
+
+    expect(diffScans([second], [first], scanDiffOptions(coverage(), coverage()))).toEqual({
+      newFindings: [],
+      resolvedFindings: [],
+      unchangedCount: 1,
+    });
+    // And an ignore of the first still covers the second.
+    expect(isFindingIgnored(second, ignoring(first))).toBe(true);
+
+    // Control: a change to the tag itself IS a different finding.
+    const [changed] = run(before.replace("hulkcode.js", "hulkcode.v2.js"), "c");
+    const diff = diffScans([changed], [first], scanDiffOptions(coverage(), coverage()));
+    expect(diff.newFindings).toHaveLength(1);
+    expect(diff.resolvedFindings).toHaveLength(1);
   });
 
   it("the anchor moving to another file reads as one resolved and one new (one finding per scan)", () => {

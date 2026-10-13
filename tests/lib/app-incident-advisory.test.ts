@@ -45,7 +45,6 @@ import {
   getFindingImpact,
   getFindingRemediation,
   LINE_CONTEXT_SNIPPET_TYPES,
-  splitNumberedSteps,
 } from "../../app/lib/finding-remediation";
 import { getRemovalSafety, REMOVAL_SAFETY_LABELS } from "../../app/lib/finding-safety";
 import { FINDING_TYPE_LABELS, findingTypeLabel } from "../../app/lib/finding-type-labels";
@@ -64,9 +63,11 @@ import {
   healthCostLine,
   maliciousHealthRow,
   themeHealthVerdict,
+  typesForHealthCategory,
   type HealthCoverageInput,
 } from "../../app/lib/theme-health";
 import {
+  advisoryNoticeLine,
   compareFindingClass,
   compareFindingImportance,
   findingCostLine,
@@ -359,8 +360,19 @@ describe("Start here presentation", () => {
         cost: "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
         href: "/app/scans/scan-1#finding-f1",
         appName: null,
+        // Round 3: the row carries the card's headline and its own link text.
+        title: "An app in your theme was named in a checkout phishing report",
+        linkLabel: "See what to check",
       },
     ]);
+  });
+
+  it("no other type's row gets a title or link text override", () => {
+    for (const type of ALL_TYPES.filter((t) => t !== ADVISORY)) {
+      const [view] = toTopFindingViews("scan-1", [{ ...finding, findingType: type }], true);
+      expect(view.title, type).toBeUndefined();
+      expect(view.linkLabel, type).toBeUndefined();
+    }
   });
 
   it("the cost line is NOT the privacy lane's 'a removed app is still collecting data' line", () => {
@@ -422,7 +434,7 @@ describe("Home findings tile: an advisory is a normal finding, never critical", 
   });
 });
 
-describe("theme health: no row of its own, and never 'Known malicious code'", () => {
+describe("theme health: an advisory is not in the checklist at all (round 3)", () => {
   const ALL_LIVE = new Set<string>(ALL_TYPES);
   const coverage: HealthCoverageInput = {
     skippedCategories: [],
@@ -449,9 +461,14 @@ describe("theme health: no row of its own, and never 'Known malicious code'", ()
       scriptTagsStopped: false,
     });
 
-  it("counts in the theme scripts row, not the malicious row", () => {
-    expect(HEALTH_CATEGORY_OF.APP_INCIDENT_ADVISORY).toBe("scripts-styles");
-    expect(HEALTH_CATEGORY_OF.APP_INCIDENT_ADVISORY).not.toBe("malicious");
+  it("is in no category: the map covers every other type and not this one", () => {
+    expect(Object.keys(HEALTH_CATEGORY_OF)).not.toContain(ADVISORY);
+    expect(Object.keys(HEALTH_CATEGORY_OF).sort()).toEqual(
+      ALL_TYPES.filter((t) => t !== ADVISORY).sort(),
+    );
+    for (const category of HEALTH_CATEGORIES) {
+      expect(typesForHealthCategory(category.key)).not.toContain(ADVISORY);
+    }
   });
 
   it("adds no category (still the nine rows)", () => {
@@ -468,57 +485,78 @@ describe("theme health: no row of its own, and never 'Known malicious code'", ()
     ]);
   });
 
-  it("an advisory alone: the malicious row stays Clean and its row reads 1 issue", () => {
-    const built = rows({ APP_INCIDENT_ADVISORY: 1 });
-    expect(built.find((r) => r.key === "malicious")).toMatchObject({
+  it("an advisory alone changes NOTHING: every row is what a clean scan shows", () => {
+    expect(rows({ APP_INCIDENT_ADVISORY: 1 })).toEqual(rows({}));
+    const built = rows({ APP_INCIDENT_ADVISORY: 3 });
+    expect(built.find((r) => r.key === "scripts-styles")).toMatchObject({
       status: "clean",
       statusLabel: "Clean",
       count: 0,
+      detail: null,
+      href: null,
     });
-    expect(built.find((r) => r.key === "scripts-styles")).toMatchObject({
-      status: "issues",
-      statusLabel: "1 issue",
-      count: 1,
-      detail: "1 script from an app named in a public security report.",
-      // The unfiltered page: the advisory is above the list, not a list filter.
-      href: "/app/scans/scan-1",
+    expect(built.find((r) => r.key === "malicious")).toMatchObject({ status: "clean", count: 0 });
+  });
+
+  it("beside real script findings it adds nothing to that row's count, cost line or link", () => {
+    const withAdvisory = rows({ APP_INCIDENT_ADVISORY: 2, GHOST_SCRIPT: 2 });
+    expect(withAdvisory).toEqual(rows({ GHOST_SCRIPT: 2 }));
+    expect(withAdvisory.find((r) => r.key === "scripts-styles")).toMatchObject({
+      count: 2,
+      statusLabel: "2 issues",
+      detail: "2 extra requests to apps you removed, on every page that loads them.",
+      href: "/app/scans/scan-1?type=GHOST_SCRIPT",
     });
   });
 
-  it("on Free the row links to the unfiltered scan page (where the advisories list is)", () => {
-    const built = rows({ APP_INCIDENT_ADVISORY: 1 }, {}, false);
-    expect(built.find((r) => r.key === "scripts-styles")?.href).toBe("/app/scans/scan-1");
-  });
-
-  it.each([
-    [1, "1 script from an app named in a public security report."],
-    [2, "2 scripts from apps named in a public security report."],
-  ])("cost line for %i advisory finding(s)", (count, line) => {
-    expect(
-      healthCostLine(
-        "scripts-styles",
-        { APP_INCIDENT_ADVISORY: count },
+  it("no cost line mentions it, in any category", () => {
+    for (const category of HEALTH_CATEGORIES) {
+      const line = healthCostLine(
+        category.key,
+        { APP_INCIDENT_ADVISORY: 4 },
         { scriptTagsStopped: false },
-      ),
-    ).toBe(line);
+      );
+      expect(line, category.key).not.toMatch(/public security report|advisor/i);
+    }
+    expect(
+      healthCostLine("scripts-styles", { APP_INCIDENT_ADVISORY: 4 }, { scriptTagsStopped: false }),
+    ).toBe("");
   });
 
-  it("joins the row's other costs, and never calls the app removed or the code malicious", () => {
-    const line = healthCostLine(
-      "scripts-styles",
-      { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 },
-      { scriptTagsStopped: false },
+  it("FLIPPING THE FLAG changes nothing for a scan taken before the flip", () => {
+    // Before the flip: the type is live nowhere. After: live NOW, but the
+    // scan being shown did not run it. The checklist must be identical, row
+    // for row (no "None found ... Run a new scan" on the scripts row).
+    const withoutType = new Set(ALL_TYPES.filter((t) => t !== ADVISORY) as string[]);
+    const beforeFlip = rows({ GHOST_PIXEL: 1 }, { liveNow: withoutType, liveTypes: withoutType });
+    const afterFlip = rows({ GHOST_PIXEL: 1 }, { liveNow: ALL_LIVE, liveTypes: withoutType });
+    expect(afterFlip).toEqual(beforeFlip);
+    expect(afterFlip.find((r) => r.key === "scripts-styles")).toMatchObject({
+      status: "clean",
+      statusLabel: "Clean",
+    });
+    // No finding category picked up a "not run" gap from the flip.
+    expect(afterFlip.filter((r) => r.detail?.includes("Not checked on your last scan"))).toEqual(
+      [],
     );
-    expect(line).toBe(
-      "2 extra requests to apps you removed, on every page that loads them and 1 script from an app named in a public security report.",
-    );
-    const alone = healthCostLine(
-      "scripts-styles",
-      { APP_INCIDENT_ADVISORY: 1 },
-      { scriptTagsStopped: false },
-    );
-    expect(alone).not.toMatch(/removed|leftover|malicious|compromised/i);
-    expect(alone).not.toMatch(/[—–]/);
+  });
+
+  it("nor does it change anything for a scan taken after the flip, or after expiry", () => {
+    const withoutType = new Set(ALL_TYPES.filter((t) => t !== ADVISORY) as string[]);
+    const base = rows({});
+    expect(rows({}, { liveNow: ALL_LIVE, liveTypes: ALL_LIVE })).toEqual(base);
+    expect(rows({}, { liveNow: withoutType, liveTypes: ALL_LIVE })).toEqual(base);
+  });
+
+  it("Home's critical malicious line is never built for an advisory, and the verdict is the clean one", () => {
+    expect(maliciousHealthRow("scan-1", 0)).toBeNull();
+    const groups = groupHealthRows(rows({ APP_INCIDENT_ADVISORY: 1 }), null);
+    expect(groups.malicious).toBeNull();
+    expect(groups.hasIssues).toBe(false);
+    expect(themeHealthVerdict(groups)).toEqual({
+      tone: "ok",
+      text: "No known malicious code found.",
+    });
   });
 
   it("the malicious cost line ignores advisories", () => {
@@ -532,43 +570,7 @@ describe("theme health: no row of its own, and never 'Known malicious code'", ()
       "1 piece of code from a known malicious source is in your theme. It can steal shopper data or send your customers to other sites.",
     );
   });
-
-  it("Home's critical malicious line is never built for an advisory", () => {
-    // Home passes the MALICIOUS_SCRIPT count only; an advisory-only scan has 0.
-    expect(maliciousHealthRow("scan-1", 0)).toBeNull();
-    const groups = groupHealthRows(rows({ APP_INCIDENT_ADVISORY: 1 }), null);
-    expect(groups.malicious).toBeNull();
-    expect(groups.hasIssues).toBe(true);
-    // The verdict stays the plain sentence, with a neutral (not green, not red) dot.
-    expect(themeHealthVerdict(groups)).toEqual({
-      tone: "neutral",
-      text: "No known malicious code found.",
-    });
-  });
-
-  it("while the check is dark (its flag off) its row is unchanged: Clean, nothing promised", () => {
-    const liveNow = new Set(ALL_TYPES.filter((t) => t !== ADVISORY) as string[]);
-    const liveTypes = new Set(liveNow);
-    const built = rows({}, { liveNow, liveTypes });
-    expect(built.find((r) => r.key === "scripts-styles")).toMatchObject({
-      status: "clean",
-      statusLabel: "Clean",
-    });
-  });
-
-  it("once the check is on, a scan that predates it reads 'None found', never 'Clean', for that row", () => {
-    const liveTypes = new Set(ALL_TYPES.filter((t) => t !== ADVISORY) as string[]);
-    const built = rows({}, { liveTypes });
-    expect(built.find((r) => r.key === "scripts-styles")).toMatchObject({
-      status: "partial",
-      statusLabel: "None found",
-    });
-  });
 });
-
-// ---------------------------------------------------------------------------
-// Classification and copy
-// ---------------------------------------------------------------------------
 
 describe("classification", () => {
   it("label is the owner's wording", () => {
@@ -729,7 +731,7 @@ describe("remediation copy (the owner's sentences, as written)", () => {
     expect(getFindingImpact(ADVISORY)).not.toBe(getFindingImpact("MALICIOUS_SCRIPT"));
   });
 
-  it("the copied instructions name the file, the line and the code found, then the steps", () => {
+  it("the copied text names the APP (its description line), then the file, line, code and steps", () => {
     const snippet = '<script src="https://productoption.hulkapps.com/hulkcode.js"></script>';
     const text = buildRemovalInstructions(
       {
@@ -737,18 +739,48 @@ describe("remediation copy (the owner's sentences, as written)", () => {
         filename: "layout/theme.liquid",
         lineNumber: 42,
         codeSnippet: snippet,
+        description:
+          "Loads code from Hulk Product Options (productoption.hulkapps.com), an app named in a public report of shoppers being sent to a fake checkout page (10 October 2026)",
       },
       "App Security Advisories",
     );
     expect(text).toBe(
       [
         "GhostCode finding: App Security Advisories",
+        "Loads code from Hulk Product Options (productoption.hulkapps.com), an app named in a public report of shoppers being sent to a fake checkout page (10 October 2026)",
         "File: layout/theme.liquid  (line 42)",
         "Code found:",
         snippet,
         `How: ${getFindingRemediation(ADVISORY)}`,
       ].join("\n"),
     );
+  });
+
+  it("without a stored description the copied text simply has no such line", () => {
+    const text = buildRemovalInstructions(
+      { findingType: ADVISORY, filename: "layout/theme.liquid", lineNumber: 1, codeSnippet: "x" },
+      "App Security Advisories",
+    );
+    expect(text.split("\n").slice(0, 2)).toEqual([
+      "GhostCode finding: App Security Advisories",
+      "File: layout/theme.liquid  (line 1)",
+    ]);
+  });
+
+  it("no other type's copied text carries its description (shared format unchanged)", () => {
+    for (const type of ["GHOST_SCRIPT", "MALICIOUS_SCRIPT", "SETTINGS_DRIFT", "GHOST_PAGE"]) {
+      const text = buildRemovalInstructions(
+        {
+          findingType: type,
+          filename: "layout/theme.liquid",
+          lineNumber: 3,
+          codeSnippet: "a\nb\nc",
+          description: "UNIQUE-DESCRIPTION",
+        },
+        "Label",
+      );
+      expect(text, type).not.toContain("UNIQUE-DESCRIPTION");
+    }
   });
 
   it("the snippet is a window of the line, so the card never derives a 'matched line' from it", () => {
@@ -764,84 +796,142 @@ describe("remediation copy (the owner's sentences, as written)", () => {
 // ---------------------------------------------------------------------------
 
 describe("getFindingCardCopy", () => {
-  it("an advisory: its own title, detection sentence, steps heading, copy label and report link", () => {
+  const DEFAULTS = {
+    title: null,
+    confidence: null,
+    stepsHeading: "How to remove",
+    steps: null,
+    copyStepsLabel: "Copy removal steps",
+    copyStepsAccessibilityLabel: "Copy removal steps for this finding",
+    reportLinkLabel: null,
+    showSafetyBadge: true,
+    primaryEditorButton: true,
+    truncateSnippet: true,
+    startHereLinkLabel: "See how to fix",
+  };
+
+  it("an advisory: its own headline, detection sentence, steps, labels, and the notice presentation", () => {
     expect(getFindingCardCopy(ADVISORY)).toEqual({
       title: "An app in your theme was named in a checkout phishing report",
       confidence: "Matched a script address from a public incident report.",
       stepsHeading: "What to check",
+      steps: [
+        "Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button.",
+        "Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin.",
+        "Shop Pay, PayPal and similar buttons open their own sites. That is normal.",
+        "If the page asking for contact, shipping or card details is on any other address, do not enter card details. Contact Shopify Support and the app developer.",
+        "If you no longer use the app, remove its script line from the theme file shown here (duplicate your theme first). If you still use it, ask the developer whether this affects you.",
+      ],
       copyStepsLabel: "Copy steps",
       copyStepsAccessibilityLabel: "Copy steps for this finding",
       reportLinkLabel: "Read the report",
+      showSafetyBadge: false,
+      primaryEditorButton: false,
+      truncateSnippet: false,
+      startHereLinkLabel: "See what to check",
     });
   });
 
   it.each([...ALL_TYPES.filter((t) => t !== ADVISORY), "SOME_FUTURE_TYPE", ""])(
-    "%s keeps the default card wording",
+    "%s keeps the default card presentation",
     (type) => {
-      expect(getFindingCardCopy(type)).toEqual({
-        title: null,
-        confidence: null,
-        stepsHeading: "How to remove",
-        copyStepsLabel: "Copy removal steps",
-        copyStepsAccessibilityLabel: "Copy removal steps for this finding",
-        reportLinkLabel: null,
-      });
+      expect(getFindingCardCopy(type)).toEqual(DEFAULTS);
     },
   );
 
   it("the advisory wording has no dashes and none of the words the card must not say", () => {
-    const text = Object.values(getFindingCardCopy(ADVISORY)).join(" ");
+    const { steps, ...rest } = getFindingCardCopy(ADVISORY);
+    const text = Object.values(rest)
+      .filter((v) => typeof v === "string")
+      .join(" ");
     expect(text).not.toMatch(/[—–]/);
-    expect(text).not.toMatch(/remove|removal|leftover|malicious|compromised|hijack|signature/i);
+    expect(text).not.toMatch(/remove|removal|leftover|malicious|compromised|hijack|signature|fix/i);
     expect(text).not.toMatch(/your (store|checkout) (is|was)/i);
+    expect((steps ?? []).join(" ")).not.toMatch(/[—–]/);
   });
 });
 
-describe("splitNumberedSteps", () => {
-  it("splits the advisory how-to into its five steps, numbers dropped, text untouched", () => {
-    expect(splitNumberedSteps(getFindingRemediation(ADVISORY))).toEqual([
-      "Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button.",
-      "Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin.",
-      "Shop Pay, PayPal and similar buttons open their own sites. That is normal.",
-      "If the page asking for contact, shipping or card details is on any other address, do not enter card details. Contact Shopify Support and the app developer.",
-      "If you no longer use the app, remove its script line from the theme file shown here (duplicate your theme first). If you still use it, ask the developer whether this affects you.",
-    ]);
+describe("the advisory steps: one source for the card's list and the how-to string", () => {
+  it("the how-to string is exactly the steps, numbered and joined", () => {
+    const steps = getFindingCardCopy(ADVISORY).steps!;
+    expect(steps).toHaveLength(5);
+    expect(getFindingRemediation(ADVISORY)).toBe(
+      steps.map((step, i) => `${i + 1}. ${step}`).join(" "),
+    );
   });
 
-  it("the string stays the source of truth: the steps rebuild it exactly", () => {
-    const howTo = getFindingRemediation(ADVISORY);
-    const steps = splitNumberedSteps(howTo)!;
-    expect(steps.map((step, i) => `${i + 1}. ${step}`).join(" ")).toBe(howTo);
+  it("no step is empty, starts with a number, or carries a line break", () => {
+    for (const step of getFindingCardCopy(ADVISORY).steps!) {
+      expect(step.trim()).toBe(step);
+      expect(step.length).toBeGreaterThan(0);
+      expect(step).not.toMatch(/^\d/);
+      expect(step).not.toMatch(/[\r\n]/);
+    }
   });
 
   it.each(ALL_TYPES.filter((t) => t !== ADVISORY))(
-    "%s: its how-to is not a numbered list, so its card renders the string as before",
+    "%s has no step list: its card renders its how-to string as before",
     (type) => {
-      expect(splitNumberedSteps(getFindingRemediation(type))).toBeNull();
+      expect(getFindingCardCopy(type).steps).toBeNull();
+      expect(getFindingRemediation(type)).not.toMatch(/^1\. /);
     },
   );
+});
 
+describe("Home's advisory line (advisoryNoticeLine)", () => {
   it.each([
-    ["", null],
-    ["Just one sentence.", null],
-    ["1. Only one step.", null],
-    ["2. Starts at two. 3. Then three.", null],
-    ["Intro first. 1. Then a step. 2. Another.", null],
-    ["1. First. 2. ", null],
-    ["1. First. 2. Second.", ["First.", "Second."]],
-    ["1. First.  2.  Second. ", ["First.", "Second."]],
-    ["1. A. 2. B. 3. C.", ["A.", "B.", "C."]],
-    // A number that is out of order is part of the step's text.
-    ["1. Wait 3. minutes. 2. Then go.", ["Wait 3. minutes.", "Then go."]],
-    ["1. Use v1.2. now. 2. Done.", ["Use v1.2. now.", "Done."]],
-    ["1. A. 2. B. 4. C.", ["A.", "B. 4. C."]],
-    ["1. Before March 1, 2027. 2. After.", ["Before March 1, 2027.", "After."]],
-  ])("splitNumberedSteps(%j)", (input, expected) => {
-    expect(splitNumberedSteps(input)).toEqual(expected);
+    [0, null],
+    [-1, null],
+    [1, "1 app security advisory to review"],
+    [2, "2 app security advisories to review"],
+    [11, "11 app security advisories to review"],
+  ])("advisoryNoticeLine(%i) is %j", (count, line) => {
+    expect(advisoryNoticeLine(count)).toBe(line);
   });
 
-  it("handles ten or more steps", () => {
-    const howTo = Array.from({ length: 12 }, (_, i) => `${i + 1}. Step ${i + 1}.`).join(" ");
-    expect(splitNumberedSteps(howTo)).toHaveLength(12);
+  // tile = leftover items (laned findings) + advisories + ignored malicious
+  // code added back. Each row: the scan's kept counts by type, the malicious
+  // findings found (ignored ones included), and the three parts of the tile.
+  it.each([
+    ["advisory only", { APP_INCIDENT_ADVISORY: 1 }, 0, { leftover: 0, advisories: 1, addBack: 0 }],
+    [
+      "advisory + scripts",
+      { APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 },
+      0,
+      { leftover: 2, advisories: 1, addBack: 0 },
+    ],
+    [
+      "two advisories + mixed lanes",
+      { APP_INCIDENT_ADVISORY: 2, GHOST_PIXEL: 1, ORPHAN_ASSET: 4 },
+      0,
+      { leftover: 5, advisories: 2, addBack: 0 },
+    ],
+    [
+      "advisory + kept malicious",
+      { APP_INCIDENT_ADVISORY: 1, MALICIOUS_SCRIPT: 1 },
+      1,
+      { leftover: 1, advisories: 1, addBack: 0 },
+    ],
+    [
+      "advisory + ignored malicious",
+      { APP_INCIDENT_ADVISORY: 1 },
+      2,
+      { leftover: 0, advisories: 1, addBack: 2 },
+    ],
+    ["no advisory", { GHOST_SCRIPT: 3 }, 0, { leftover: 3, advisories: 0, addBack: 0 }],
+    ["clean", {}, 0, { leftover: 0, advisories: 0, addBack: 0 }],
+  ] as const)("tile arithmetic, %s", (_label, kept, maliciousFound, parts) => {
+    const counts: Partial<Record<FindingType, number>> = kept;
+    const filteredTotal = Object.values(counts).reduce((a, b) => a + (b ?? 0), 0);
+    const leftover = computeLaneSummary(counts).reduce((n, row) => n + row.count, 0);
+    const advisories = counts.APP_INCIDENT_ADVISORY ?? 0;
+    const tile = buildFindingsTile({
+      filteredTotal,
+      maliciousFound,
+      maliciousKept: counts.MALICIOUS_SCRIPT ?? 0,
+    });
+    expect({ leftover, advisories, addBack: tile.total - filteredTotal }).toEqual(parts);
+    expect(tile.total).toBe(parts.leftover + parts.advisories + parts.addBack);
+    expect(advisoryNoticeLine(advisories) === null).toBe(parts.advisories === 0);
   });
 });

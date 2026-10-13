@@ -436,3 +436,119 @@ describe("app.scans.$scanId.diff loader", () => {
     expect((result as Response).status).toBe(404);
   });
 });
+
+// gc-14x5: an affected-app advisory in the in-app diff, with the REAL differ.
+describe("app.scans.$scanId.diff loader: an affected-app advisory (gc-14x5)", () => {
+  const ALL_TYPES = ["GHOST_SCRIPT", "GHOST_STYLE", "MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"];
+  const ADVISORY = {
+    id: "adv",
+    severity: "HIGH",
+    findingType: "APP_INCIDENT_ADVISORY",
+    filename: "layout/theme.liquid",
+    lineNumber: 42,
+    appName: null,
+    codeSnippet: '<script src="https://productoption.hulkapps.com/hulkcode.js"></script>',
+    description: "Loads code from Hulk Product Options",
+  };
+  const live = (types: string[]) => ({ liveFindingTypes: types });
+
+  beforeEach(async () => {
+    const real = await vi.importActual<typeof import("../../app/services/scan-differ.server")>(
+      "../../app/services/scan-differ.server",
+    );
+    mockDiffScans.mockImplementation(real.diffScans as never);
+    mockGetScanById.mockResolvedValue({ ...SCAN, ...live(ALL_TYPES) });
+  });
+
+  const load = async () =>
+    (await loader(makeLoaderArgs("scan-1"))) as {
+      scanDiff: {
+        newFindings: Array<{ findingType: string }>;
+        resolvedFindings: Array<{ findingType: string }>;
+        unchangedCount: number;
+      };
+    };
+
+  it("new: it is a new finding like any other", async () => {
+    mockGetFindingsForScan.mockResolvedValue([ADVISORY]);
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...PREVIOUS_SCAN,
+      ...live(ALL_TYPES),
+      findings: [],
+    });
+
+    const { scanDiff } = await load();
+
+    expect(scanDiff.newFindings.map((f) => f.findingType)).toEqual(["APP_INCIDENT_ADVISORY"]);
+    expect(scanDiff.resolvedFindings).toEqual([]);
+  });
+
+  it("the script removed: resolved", async () => {
+    mockGetFindingsForScan.mockResolvedValue([]);
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...PREVIOUS_SCAN,
+      ...live(ALL_TYPES),
+      findings: [ADVISORY],
+    });
+
+    expect((await load()).scanDiff.resolvedFindings.map((f) => f.findingType)).toEqual([
+      "APP_INCIDENT_ADVISORY",
+    ]);
+  });
+
+  it("the entry EXPIRED (the current scan did not record the type as live): no 'Fixed' row", async () => {
+    mockGetScanById.mockResolvedValue({
+      ...SCAN,
+      ...live(ALL_TYPES.filter((t) => t !== "APP_INCIDENT_ADVISORY")),
+    });
+    mockGetFindingsForScan.mockResolvedValue([]);
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...PREVIOUS_SCAN,
+      ...live(ALL_TYPES),
+      findings: [ADVISORY, PREV_FINDING],
+    });
+
+    const { scanDiff } = await load();
+
+    // The real fix beside it is still reported.
+    expect(scanDiff.resolvedFindings.map((f) => f.findingType)).toEqual(["GHOST_STYLE"]);
+  });
+
+  it("a draft-theme baseline (type not live there): the published scan's advisory is not 'new'", async () => {
+    mockGetFindingsForScan.mockResolvedValue([ADVISORY]);
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...PREVIOUS_SCAN,
+      ...live(ALL_TYPES.filter((t) => t !== "APP_INCIDENT_ADVISORY")),
+      findings: [],
+    });
+
+    expect((await load()).scanDiff.newFindings).toEqual([]);
+  });
+
+  it("an IGNORED advisory is in neither side of the diff", async () => {
+    const { fingerprintFinding } = await vi.importActual<
+      typeof import("../../app/services/scan-differ.server")
+    >("../../app/services/scan-differ.server");
+    mockGetIgnoredFindings.mockResolvedValue({
+      fingerprints: new Set([
+        fingerprintFinding(
+          ADVISORY.filename,
+          ADVISORY.findingType,
+          ADVISORY.codeSnippet,
+          ADVISORY.lineNumber,
+        ),
+      ]),
+      appNames: new Set(),
+    });
+    mockGetFindingsForScan.mockResolvedValue([ADVISORY]);
+    mockGetPreviousScanForTheme.mockResolvedValue({
+      ...PREVIOUS_SCAN,
+      ...live(ALL_TYPES),
+      findings: [],
+    });
+
+    const { scanDiff } = await load();
+
+    expect(scanDiff).toMatchObject({ newFindings: [], resolvedFindings: [], unchangedCount: 0 });
+  });
+});

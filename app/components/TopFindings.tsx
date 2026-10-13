@@ -55,7 +55,7 @@ export function TopFindings({
           <li key={f.id} style={i > 0 ? { marginTop: "12px" } : undefined}>
             <div style={{ display: "flex", alignItems: "center", gap: "8px", flexWrap: "wrap" }}>
               <h3 style={{ margin: 0, fontSize: "15px", fontWeight: 600, color: TEXT_PRIMARY }}>
-                {f.typeLabel}
+                {f.title ?? f.typeLabel}
               </h3>
               <s-badge tone={SEVERITY_TONE[f.severity]}>{f.severity}</s-badge>
               {f.appName !== null && inactive.has(f.appName) && (
@@ -67,8 +67,11 @@ export function TopFindings({
             </div>
             <div style={{ fontSize: "14px", color: TEXT_PRIMARY, marginTop: "4px" }}>{f.cost}</div>
             <div style={{ marginTop: "4px", fontSize: "13px" }}>
-              <Link to={f.href} aria-label={`See how to fix: ${f.typeLabel}, ${f.location}`}>
-                See how to fix
+              <Link
+                to={f.href}
+                aria-label={`${f.linkLabel ?? "See how to fix"}: ${f.title ?? f.typeLabel}, ${f.location}`}
+              >
+                {f.linkLabel ?? "See how to fix"}
               </Link>
             </div>
           </li>

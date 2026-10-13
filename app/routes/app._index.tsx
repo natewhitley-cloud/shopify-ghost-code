@@ -62,7 +62,7 @@ import {
 } from "../lib/summary-email-copy";
 import { maliciousHealthRow } from "../lib/theme-health";
 import type { HealthRow } from "../lib/theme-health";
-import { toTopFindingViews } from "../lib/top-findings";
+import { ADVISORY_SECTION_ID, advisoryNoticeLine, toTopFindingViews } from "../lib/top-findings";
 import type { TopFindingView } from "../lib/top-findings";
 import { useOptionalScopes } from "../lib/use-optional-scopes";
 import type { ScopeRequestOutcome } from "../lib/use-optional-scopes";
@@ -194,6 +194,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
       scansNeeded: 0,
       trendChartEnabled: false,
       laneSummary: [] as LaneSummaryRow[],
+      advisoryCount: 0,
       startHere: null as LaneKey | null,
       dominant: null as LaneKey | null,
       findingTrend: null,
@@ -361,6 +362,9 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     ? computeLaneSummary(latestTypeCounts)
     : [];
   const dominant: LaneKey | null = dominantLane(laneSummary);
+  // Non-ignored affected-app advisories in the latest scan (gc-14x5). They
+  // are in no lane, so the top card names them in one line of their own.
+  const advisoryCount = latestTypeCounts?.APP_INCIDENT_ADVISORY ?? 0;
 
   const findingSummary = latestSeverity ? { bySeverity: latestSeverity } : null;
 
@@ -680,6 +684,7 @@ export const loader = async ({ request }: LoaderFunctionArgs) => {
     scansNeeded,
     trendChartEnabled,
     laneSummary,
+    advisoryCount,
     startHere,
     dominant,
     findingTrend,
@@ -1104,6 +1109,7 @@ export default function Dashboard() {
     scansNeeded,
     trendChartEnabled,
     laneSummary,
+    advisoryCount,
     startHere,
     dominant,
     findingTrend,
@@ -1268,6 +1274,7 @@ export default function Dashboard() {
   // advisory, gc-14x5) is in the tile's total but is not a "leftover item"
   // and has no cost to list, so the lane copy counts lanes only.
   const laneTotal = laneSummary.reduce((sum, row) => sum + row.count, 0);
+  const advisoryLine = advisoryNoticeLine(advisoryCount);
 
   // Whether the plan's scan limit (weekly or monthly) has been reached.
   // isFirstScan overrides the limit — the first scan is always allowed on the free plan.
@@ -1815,6 +1822,17 @@ export default function Dashboard() {
                                 {laneTotal} leftover item{laneTotal === 1 ? "" : "s"} from apps
                                 you&apos;ve uninstalled {laneTotal === 1 ? "is" : "are"} still in
                                 your theme. See what each is costing you below.
+                              </div>
+                            )}
+                            {/* Affected-app advisories (gc-14x5): in no lane, so
+                                this line accounts for them in the tile's total
+                                and keeps the card from being empty when an
+                                advisory is the only finding. */}
+                            {advisoryLine && (
+                              <div className="health-read__lead">
+                                <Link to={`/app/scans/${latestScan.id}#${ADVISORY_SECTION_ID}`}>
+                                  {advisoryLine}
+                                </Link>
                               </div>
                             )}
                           </div>

@@ -101,6 +101,7 @@ import {
   updateScanStatus,
 } from "../../app/models/scan.server";
 import { createUnknownScripts } from "../../app/models/unknown-script.server";
+import { dropAdvisoryUnknownScripts } from "../../app/services/app-incident-advisory.server";
 import {
   CHECKOUT_LIQUID_PATH,
   detectCheckoutSunset,
@@ -119,11 +120,16 @@ import {
 } from "../../app/services/scan-engine.server";
 import { scanThemeFilesInPool } from "../../app/services/scan-pool.server";
 import {
+  isAdvisoryCheckLive,
   isScriptTagSunsetLive,
   isSoftLaunchLive,
 } from "../../app/services/soft-launch-flags.server";
 import type { StorefrontScriptTagResult } from "../../app/services/storefront-fetcher.server";
-import { fetchThemeFiles, ThemeTooLargeError } from "../../app/services/theme-fetcher.server";
+import {
+  fetchMainTheme,
+  fetchThemeFiles,
+  ThemeTooLargeError,
+} from "../../app/services/theme-fetcher.server";
 import type { AdminApiContext } from "../../app/types/shopify";
 import { inngest } from "../client";
 
@@ -853,13 +859,24 @@ async function runRedirectAuditChunk(opts: {
  * summary-email diff can ignore types the baseline scan could not have
  * contained (flag flipped on, or detector shipped, since). Plan/scope gating is
  * NOT part of it (skippedCategories/cappedCategories cover that).
+ *
+ * `advisoryApplies` (gc-14x5): an affected-app advisory is about shoppers and
+ * checkout, so it is only true of the PUBLISHED theme. When false (a draft
+ * theme, or the published theme could not be confirmed) the advisory type is
+ * treated as not live for this scan: nothing is persisted and the type is
+ * left out of the live set, so the differ never reports new or fixed across
+ * a draft / live pair of scans.
  */
 function applySoftLaunchFlags<T extends { findingType: FindingType }>(
   findings: readonly T[],
+  advisoryApplies: boolean,
 ): { kept: T[]; suppressedDetectorHits: Record<string, number>; liveFindingTypes: string[] } {
   const isLive = new Map<FindingType, boolean>();
   for (const type of Object.values(FindingType)) {
-    isLive.set(type, isSoftLaunchLive(type));
+    isLive.set(
+      type,
+      isSoftLaunchLive(type) && (type !== FindingType.APP_INCIDENT_ADVISORY || advisoryApplies),
+    );
   }
   const suppressedDetectorHits: Record<string, number> = {};
   const kept = findings.filter((f) => {
@@ -869,6 +886,34 @@ function applySoftLaunchFlags<T extends { findingType: FindingType }>(
   });
   const liveFindingTypes = Object.values(FindingType).filter((t) => isLive.get(t));
   return { kept, suppressedDetectorHits, liveFindingTypes };
+}
+
+/**
+ * Whether an affected-app advisory may be recorded for this scan (gc-14x5):
+ * the check is live AND the scanned theme is the shop's published (MAIN)
+ * theme. The theme read happens only while the check is live (one small
+ * Admin query per scan, none while it is dark). If the read fails or the shop
+ * has no published theme, the answer is no: an advisory is never shown on an
+ * unconfirmed theme, and the scan itself is unaffected.
+ */
+async function advisoryAppliesToTheme(
+  admin: Parameters<typeof fetchMainTheme>[0],
+  themeId: string,
+  shopId: string,
+): Promise<boolean> {
+  if (!isAdvisoryCheckLive()) return false;
+  try {
+    return (await fetchMainTheme(admin))?.id === themeId;
+  } catch (err) {
+    const { logger } = await import("../../app/lib/logger.server");
+    logger.warn("published theme read failed; advisory check recorded as not run", {
+      function: "scan-theme",
+      event: "advisory_published_theme_unknown",
+      shopId,
+      errorName: err instanceof Error ? err.name : typeof err,
+    });
+    return false;
+  }
 }
 
 const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> = {
@@ -1039,7 +1084,7 @@ export const scanTheme = inngest.createFunction(
         const themeScanStart = Date.now();
         const {
           findings,
-          unknownScripts,
+          unknownScripts: collectedUnknownScripts,
           skippedFiles,
           staticProductCandidates,
           benignLibrarySkips,
@@ -1072,7 +1117,15 @@ export const scanTheme = inngest.createFunction(
           kept: themeFindings,
           suppressedDetectorHits,
           liveFindingTypes: scanLiveFindingTypes,
-        } = applySoftLaunchFlags(allThemeFindings);
+        } = applySoftLaunchFlags(
+          allThemeFindings,
+          await advisoryAppliesToTheme(admin, themeId, shopId),
+        );
+        // No double report (gc-14x5): a host this scan reports as an advisory
+        // is not also listed as an unrecognized script. Only for advisories
+        // that are actually persisted, so with the check dark, on a draft
+        // theme or after expiry the rows are exactly as before.
+        const unknownScripts = dropAdvisoryUnknownScripts(collectedUnknownScripts, themeFindings);
 
         // The detector runs here on the main thread, not in the scan worker, so
         // it does not analyze a checkout.liquid over the per-file cap (gc-4yg);

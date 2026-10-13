@@ -26,7 +26,7 @@
 
 import type { FindingType } from "@prisma/client";
 
-import { isOwnSectionFindingType, isStorefrontFinding } from "./finding-classification";
+import { isStorefrontFinding } from "./finding-classification";
 import type { ThemeInfo } from "./theme-info";
 
 // ---------------------------------------------------------------------------
@@ -105,12 +105,21 @@ export const HEALTH_CATEGORIES: ReadonlyArray<{
 ];
 
 /**
+ * The finding types the checklist covers: every FindingType but an
+ * affected-app advisory (gc-14x5). An advisory is a notice about a public
+ * report, not something the scan found wrong in the theme, so it is in no
+ * row: it never counts under "Leftover scripts and styles", never changes a
+ * row's coverage when its flag is flipped, and has no cost line here.
+ */
+export type HealthFindingType = Exclude<FindingType, "APP_INCIDENT_ADVISORY">;
+
+/**
  * THE MAPPING: every FindingType to the ONE checklist category it counts in.
  * `Record<FindingType, ...>` makes the compiler enforce completeness; a test
  * also asserts it against the runtime enum and that every category is used.
  * No type is excluded: a finding the scan stores always shows up in a row.
  */
-export const HEALTH_CATEGORY_OF: Record<FindingType, HealthCategoryKey> = {
+export const HEALTH_CATEGORY_OF: Record<HealthFindingType, HealthCategoryKey> = {
   MALICIOUS_SCRIPT: "malicious",
 
   LIQUID_ERROR_RENDERED: "liquid-errors",
@@ -125,10 +134,6 @@ export const HEALTH_CATEGORY_OF: Record<FindingType, HealthCategoryKey> = {
   GHOST_FONT: "scripts-styles",
   GHOST_AJAX: "scripts-styles",
   DUPLICATE_LIBRARY: "scripts-styles",
-  // A script the theme loads from an app named in a public security incident
-  // report (gc-14x5). Owner decision: no row of its own yet, and it is NOT
-  // "known malicious code", so it counts with the other theme scripts.
-  APP_INCIDENT_ADVISORY: "scripts-styles",
 
   GHOST_SNIPPET: "snippets-sections",
   GHOST_SECTION: "snippets-sections",
@@ -166,8 +171,8 @@ export const HEALTH_CATEGORY_OF: Record<FindingType, HealthCategoryKey> = {
 };
 
 /** The finding types counted in `category`, in enum-map order. */
-export function typesForHealthCategory(category: HealthCategoryKey): FindingType[] {
-  return (Object.keys(HEALTH_CATEGORY_OF) as FindingType[]).filter(
+export function typesForHealthCategory(category: HealthCategoryKey): HealthFindingType[] {
+  return (Object.keys(HEALTH_CATEGORY_OF) as HealthFindingType[]).filter(
     (type) => HEALTH_CATEGORY_OF[type] === category,
   );
 }
@@ -379,7 +384,6 @@ export function healthCostLine(
       const requests = n("GHOST_SCRIPT", "GHOST_STYLE", "GHOST_FONT", "GHOST_AJAX");
       const hints = n("GHOST_PRECONNECT");
       const duplicates = n("DUPLICATE_LIBRARY");
-      const advisories = n("APP_INCIDENT_ADVISORY");
       if (requests > 0) {
         parts.push(
           `${plural(requests, "extra request", "extra requests")} to apps you removed, on every page that loads ${requests === 1 ? "it" : "them"}`,
@@ -389,15 +393,6 @@ export function healthCostLine(
       if (duplicates > 0) {
         parts.push(
           plural(duplicates, "library loaded more than once", "libraries loaded more than once"),
-        );
-      }
-      if (advisories > 0) {
-        parts.push(
-          plural(
-            advisories,
-            "script from an app named in a public security report",
-            "scripts from apps named in a public security report",
-          ),
         );
       }
       return sentence(parts);
@@ -464,14 +459,8 @@ function findingsHref(
   fullList: boolean,
 ): string {
   const present = typesForHealthCategory(category).filter((t) => (counts[t] ?? 0) > 0);
-  // Malicious findings live in the security alert on the unfiltered page, and
-  // an affected-app advisory in its own section there (it is not in the list).
-  if (
-    fullList &&
-    present.length === 1 &&
-    present[0] !== "MALICIOUS_SCRIPT" &&
-    !isOwnSectionFindingType(present[0])
-  ) {
+  // Malicious findings live in the security alert on the unfiltered page.
+  if (fullList && present.length === 1 && present[0] !== "MALICIOUS_SCRIPT") {
     return `/app/scans/${scanId}?type=${encodeURIComponent(present[0])}`;
   }
   return `/app/scans/${scanId}`;

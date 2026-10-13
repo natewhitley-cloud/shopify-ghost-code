@@ -268,3 +268,63 @@ describe("app.ignored zero-scans CTA (gc-vg4)", () => {
     expect(mockHasAnyScans).not.toHaveBeenCalled();
   });
 });
+
+// gc-14x5: an advisory a merchant dismissed (any plan, Free included) is an
+// ordinary INSTANCE ignore: it is listed here and can be un-ignored here, the
+// only place it can be once its card has left the scan page.
+describe("an ignored affected-app advisory on the Ignored Findings page (gc-14x5)", () => {
+  const FINGERPRINT = "3f9a1c2e";
+  const ROW = {
+    id: "ign-adv",
+    scope: "INSTANCE",
+    fingerprint: FINGERPRINT,
+    appName: null,
+    reason: "checked our checkout, all fine",
+    createdAt: new Date("2026-10-20T10:00:00Z"),
+  };
+
+  function renderPage(loaderData: unknown): string {
+    const Stub = createRoutesStub([
+      {
+        id: "ignored",
+        path: "/app/ignored",
+        Component: IgnoredFindings as never,
+        loader: () => loaderData,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/ignored"],
+        hydrationData: { loaderData: { ignored: loaderData } },
+      }),
+    );
+  }
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: listed as one specific finding, with its reason",
+    async (plan) => {
+      mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan });
+      mockListIgnoredFindings.mockResolvedValue([ROW]);
+
+      const data = await loader(makeLoaderArgs());
+      const html = renderPage(data);
+
+      expect(data.ignores).toEqual([{ ...ROW, createdAt: "2026-10-20T10:00:00.000Z" }]);
+      expect(html).toContain(">Finding</s-badge>");
+      expect(html).toContain(`#${FINGERPRINT}`);
+      expect(html).toContain("checked our checkout, all fine");
+      // An advisory carries no app, so it is never shown as an app rule.
+      expect(html).not.toContain("All findings from");
+    },
+  );
+
+  it("can be un-ignored, on Free as well (the advisory then shows again on the next load)", async () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+    mockDeleteIgnoredFindingForShop.mockResolvedValue({ count: 1 });
+
+    const result = await action(makeActionArgs({ intent: "unignore", id: "ign-adv" }));
+
+    expect(result).toEqual({ success: true });
+    expect(mockDeleteIgnoredFindingForShop).toHaveBeenCalledWith("ign-adv", SHOP.id);
+  });
+});

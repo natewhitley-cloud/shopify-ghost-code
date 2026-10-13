@@ -22,6 +22,10 @@
  * Every entry carries a `reviewBy` date (90 days after the incident). Once it
  * has passed the entry stops firing, and a test fails so a maintainer either
  * renews it (the incident is still open) or removes it.
+ *
+ * Operating it (turning it on, adding or renewing an entry, the kill switch,
+ * and the DELETE that is required before any rollback):
+ * docs/runbooks/app-incident-advisory.md
  */
 export type AppIncidentAdvisory = {
   /** The app's public name, as the merchant knows it. Merchant-facing. */

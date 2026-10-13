@@ -131,12 +131,12 @@ export const KNOWN_MALICIOUS_DOMAINS: ReadonlyArray<MaliciousDomain> = [
     // config (same source). Named in the config only: the write-up did not
     // observe a page served from it.
     domain: "checkout-confirm.top",
-    note: "fake checkout domain from a 2026 card-phishing attack on Shopify stores",
+    note: "domain set up for a 2026 card-phishing attack on Shopify stores",
   },
   {
     // Same payload config as checkout-confirm.top (same source, same limit).
     domain: "order-confirm.top",
-    note: "fake checkout domain from a 2026 card-phishing attack on Shopify stores",
+    note: "domain set up for a 2026 card-phishing attack on Shopify stores",
   },
 ];
 

@@ -40,6 +40,7 @@ import {
 } from "./finding-classification";
 import { CONSEQUENCE_MAP, LANES, soWhatForLane, URGENCY_RANK } from "./finding-consequence";
 import type { LaneKey } from "./finding-consequence";
+import { getFindingCardCopy } from "./finding-remediation";
 import { findingTypeLabel } from "./finding-type-labels";
 
 /** How many findings the "Start here" block shows at most. */
@@ -164,6 +165,10 @@ export type TopFindingView = {
   href: string;
   /** The attributed app, or null (gc-frda: the "New · {App}" badge). */
   appName: string | null;
+  /** The row's title when it is not the type label (an affected-app advisory). */
+  title?: string;
+  /** The row's link text when it is not "See how to fix". */
+  linkLabel?: string;
 };
 
 /** The finding fields toTopFindingView reads. */
@@ -208,6 +213,22 @@ export function findingLocation(
     : finding.filename;
 }
 
+/** DOM id of the scan page's advisory notice (the target of Home's advisory line). */
+export const ADVISORY_SECTION_ID = "app-security-advisories";
+
+/**
+ * Home's one line about the latest scan's non-ignored affected-app advisories
+ * (gc-14x5), or null when there are none: "1 app security advisory to review".
+ * It accounts for the part of the findings tile that is not a "leftover item":
+ * tile = leftover items + advisories (+ ignored malicious code, added back).
+ */
+export function advisoryNoticeLine(count: number): string | null {
+  if (count <= 0) return null;
+  return count === 1
+    ? "1 app security advisory to review"
+    : `${count} app security advisories to review`;
+}
+
 /** DOM id of a finding's row on the scan page (the "See how to fix" target). */
 export function findingAnchorId(id: string): string {
   return `finding-${id}`;
@@ -239,6 +260,12 @@ export function topFindingHref(
   return `/app/scans/${scanId}?type=${encodeURIComponent(finding.findingType)}${hash}`;
 }
 
+/** The row's title and link text, only for a type whose card copy overrides them. */
+function startHereOverrides(findingType: FindingType): Pick<TopFindingView, "title" | "linkLabel"> {
+  const copy = getFindingCardCopy(findingType);
+  return copy.title === null ? {} : { title: copy.title, linkLabel: copy.startHereLinkLabel };
+}
+
 /** Build the block's rows. `fullList` is true when the plan shows the full list. */
 export function toTopFindingViews(
   scanId: string,
@@ -246,6 +273,7 @@ export function toTopFindingViews(
   fullList: boolean,
 ): TopFindingView[] {
   return findings.map((f) => ({
+    ...startHereOverrides(f.findingType),
     id: f.id,
     severity: f.severity,
     lane: CONSEQUENCE_MAP[f.findingType].primary,

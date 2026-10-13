@@ -7126,9 +7126,9 @@ describe("KNOWN_MALICIOUS_DOMAINS", () => {
       "biliing.top":
         "References known-malicious domain biliing.top (fake checkout domain from a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
       "checkout-confirm.top":
-        "References known-malicious domain checkout-confirm.top (fake checkout domain from a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
+        "References known-malicious domain checkout-confirm.top (domain set up for a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
       "order-confirm.top":
-        "References known-malicious domain order-confirm.top (fake checkout domain from a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
+        "References known-malicious domain order-confirm.top (domain set up for a 2026 card-phishing attack on Shopify stores), likely injected code. Your theme may be compromised",
     });
   });
 

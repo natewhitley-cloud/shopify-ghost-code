@@ -42,7 +42,6 @@ import {
   getFindingCardCopy,
   getFindingImpact,
   getFindingRemediation,
-  splitNumberedSteps,
 } from "../lib/finding-remediation";
 import { getRemovalSafety, REMOVAL_SAFETY_LABELS } from "../lib/finding-safety";
 import type { RemovalSafety } from "../lib/finding-safety";
@@ -63,7 +62,7 @@ import { reviewAttemptNonce, useReviewRequestOnMount } from "../lib/review-reque
 import { SCAN_PAGE_RESCAN_PAYLOAD } from "../lib/scan-source";
 import { staleResultsUpgradeAsk } from "../lib/stale-results";
 import { buildThemeEditorUrl } from "../lib/theme-editor-url";
-import { findingAnchorId, toTopFindingViews } from "../lib/top-findings";
+import { ADVISORY_SECTION_ID, findingAnchorId, toTopFindingViews } from "../lib/top-findings";
 import { upgradeCtaLabel } from "../lib/trial-cta";
 import {
   buildUpgradePreview,
@@ -823,11 +822,9 @@ export function FindingRow({
   const typeLabel =
     FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ");
   const impact = getFindingImpact(finding.findingType);
-  // Per-type card wording (defaults for every type but an affected-app
-  // advisory) and, when the how-to is a numbered list, its steps.
+  // Per-type card presentation: the defaults for every type but an
+  // affected-app advisory (see getFindingCardCopy).
   const cardCopy = getFindingCardCopy(finding.findingType);
-  const howTo = getFindingRemediation(finding.findingType);
-  const steps = splitNumberedSteps(howTo);
   // The stored snippet is the finding's line plus its neighbours. Preview the
   // finding's own line when it can be derived for certain, so the box does not
   // lead with the line above it; otherwise the snippet as stored. The Copy
@@ -881,13 +878,29 @@ export function FindingRow({
           no appName on purpose, and the per-type copy below is static), so
           this card shows it. No other finding type renders its description. */}
       {finding.findingType === "APP_INCIDENT_ADVISORY" && finding.description && (
-        <div style={findingNote}>{finding.description}</div>
+        <div style={findingNote}>
+          {/* The report the sentence cites, right after it, in a new tab. A
+              plain anchor like the page's other links (react-router's Link
+              renders one); it carries `rel` because it leaves the admin. */}
+          {cardCopy.reportLinkLabel && finding.advisoryReportUrl ? (
+            <>
+              {`${finding.description}. `}
+              <a href={finding.advisoryReportUrl} target="_blank" rel="noopener noreferrer">
+                {cardCopy.reportLinkLabel}
+              </a>
+            </>
+          ) : (
+            finding.description
+          )}
+        </div>
       )}
 
       {/* How freely the merchant can act (one coloured badge), and how the
           finding was detected (a plain sentence, not a second chip). */}
       <div style={findingSafetyRow}>
-        <s-badge tone={safetyTone(safety)}>{REMOVAL_SAFETY_LABELS[safety]}</s-badge>
+        {cardCopy.showSafetyBadge && (
+          <s-badge tone={safetyTone(safety)}>{REMOVAL_SAFETY_LABELS[safety]}</s-badge>
+        )}
         <span style={findingConfidence}>
           {cardCopy.confidence ?? CONFIDENCE_SENTENCES[confidence]}
         </span>
@@ -895,7 +908,9 @@ export function FindingRow({
 
       <div style={findingSnippet}>
         <code style={findingSnippetCode}>
-          {snippetPreview.length > 80 ? `${snippetPreview.slice(0, 80)}…` : snippetPreview}
+          {cardCopy.truncateSnippet && snippetPreview.length > 80
+            ? `${snippetPreview.slice(0, 80)}…`
+            : snippetPreview}
         </code>
         <CopyButton text={finding.codeSnippet} />
       </div>
@@ -907,32 +922,27 @@ export function FindingRow({
       )}
       <div style={findingNote}>
         <strong style={findingNoteLabel}>{cardCopy.stepsHeading}</strong>
-        {steps ? (
+        {cardCopy.steps ? (
           <ol style={findingSteps}>
-            {steps.map((step) => (
+            {cardCopy.steps.map((step) => (
               <li key={step}>{step}</li>
             ))}
           </ol>
         ) : (
-          howTo
+          getFindingRemediation(finding.findingType)
         )}
       </div>
-      {/* The finding's public source, in a new tab (gc-14x5). A plain anchor:
-          it needs `rel`, and it is a link, not an action. */}
-      {cardCopy.reportLinkLabel && finding.advisoryReportUrl && (
-        <div style={findingNote}>
-          <a href={finding.advisoryReportUrl} target="_blank" rel="noopener noreferrer">
-            {cardCopy.reportLinkLabel}
-          </a>
-        </div>
-      )}
       {/* Actions, in order: open the place to fix it (primary, when the finding
           has one), copy a precise, self-contained removal instruction for THIS
           finding (file + line + full snippet + how-to), then Ignore, tucked
           away on the right. Detection-only: nothing here writes to the theme. */}
       <div style={findingActions}>
         {themeEditorUrl && (
-          <s-button variant="primary" href={themeEditorUrl} target="_top">
+          <s-button
+            variant={cardCopy.primaryEditorButton ? "primary" : "secondary"}
+            href={themeEditorUrl}
+            target="_top"
+          >
             Open in code editor
           </s-button>
         )}
@@ -1649,8 +1659,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
 //   - "dismiss-upgrade-return": "Not now" on the Free return-visit banner
 //     (gc-97k.9); always the SESSION shop.
 //   - default (no intent): merchant feedback on unknown scripts (unchanged).
-// E2 is a trust/accuracy feature available to ALL plans — no plan gate here.
+// Ignoring (E2) needs a plan that shows the full findings list. The one
+// exception on Free is an affected-app advisory (see canIgnoreAnyFinding).
 // ---------------------------------------------------------------------------
+
+/** The action's answer to an ignore a Free shop may not make. */
+const IGNORE_NEEDS_PAID_PLAN = "Ignoring findings is available on Standard and Professional.";
 
 /** Trim a reason form field to a stored value (undefined when blank). */
 const MAX_REASON_LENGTH = 500;
@@ -1667,6 +1681,10 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   const formData = await request.formData();
   const intent = formData.get("intent");
+  // Ignoring is part of the full findings list (Standard and Professional).
+  // A plan without it (Free) may ignore ONLY a finding shown in its own
+  // section with the Ignore control (an affected-app advisory, gc-14x5).
+  const canIgnoreAnyFinding = canViewFindingDetails(shop.plan);
 
   // gc-97k.9: "Not now" on the return-visit upgrade banner.
   if (intent === "dismiss-upgrade-return") {
@@ -1688,6 +1706,9 @@ export const action = async ({ request }: ActionFunctionArgs) => {
     // null, so we never fingerprint or suppress across tenants.
     const finding = await getFindingByIdForShop(findingId, shop.id);
     if (!finding) return { error: "Finding not found" };
+    if (!canIgnoreAnyFinding && !isOwnSectionFindingType(finding.findingType)) {
+      return { error: IGNORE_NEEDS_PAID_PLAN };
+    }
 
     const fingerprint = fingerprintFinding(
       finding.filename,
@@ -1701,6 +1722,7 @@ export const action = async ({ request }: ActionFunctionArgs) => {
 
   // E2.3 — suppress every finding attributed to an app.
   if (intent === "ignore-app") {
+    if (!canIgnoreAnyFinding) return { error: IGNORE_NEEDS_PAID_PLAN };
     const appName = (formData.get("appName") as string)?.trim();
     if (!appName) return { error: "App is required" };
     if (appName.length > 200) return { error: "App name is too long" };
@@ -2384,7 +2406,9 @@ export default function ScanDetail() {
                 <div className="scan-tile__big-number scan-tile__big-number--neutral">
                   {totalFindings}
                 </div>
-                <div className="scan-tile__subtitle">findings detected</div>
+                <div className="scan-tile__subtitle">
+                  {totalFindings === 1 ? "finding detected" : "findings detected"}
+                </div>
                 {scanDiff && (totalNew > 0 || totalResolved > 0) && (
                   <div
                     className={`scan-tile__diff ${
@@ -2602,15 +2626,16 @@ export default function ScanDetail() {
             </div>
           )}
 
-        {/* Affected-app advisories (gc-14x5): their own section above the
-          findings list on EVERY plan, each as a full card, never repeated in
-          the list. Never paywalled. The Ignore control is on every plan here,
-          Free included (the one finding a Free merchant can dismiss): after
-          checking, a merchant must be able to put the advisory away. */}
+        {/* Affected-app advisories (gc-14x5): a NOTICE above the findings list
+          on EVERY plan, in the same banner component as the security alert
+          but in the warning tone (it is not known malicious code). Each
+          advisory is a full card inside it, never repeated in the list.
+          Never paywalled. The Ignore control is on every plan here, Free
+          included: after checking, a merchant must be able to put it away.
+          The id is the target of Home's "advisories to review" link. */}
         {isCompleted && alwaysShownFindings.length > 0 && (
-          <div style={{ ...sectionCard, marginBottom: 0 }}>
-            <s-stack direction="block" gap="base">
-              <s-heading>{FINDING_TYPE_LABELS.APP_INCIDENT_ADVISORY}</s-heading>
+          <div id={ADVISORY_SECTION_ID}>
+            <s-banner tone="warning" heading={FINDING_TYPE_LABELS.APP_INCIDENT_ADVISORY}>
               <FindingsTable>
                 {alwaysShownFindings.map((finding) => (
                   <FindingRow
@@ -2623,7 +2648,7 @@ export default function ScanDetail() {
                   />
                 ))}
               </FindingsTable>
-            </s-stack>
+            </s-banner>
           </div>
         )}
 
@@ -2833,7 +2858,7 @@ export default function ScanDetail() {
                   <s-heading>
                     {freeScope
                       ? scopedFindingsHeading(freeScope.appName, freeScope.total)
-                      : `${findingSummary.total} findings detected`}
+                      : `${findingSummary.total} ${findingSummary.total === 1 ? "finding" : "findings"} detected`}
                   </s-heading>
                   <s-stack direction="inline" gap="base">
                     {(

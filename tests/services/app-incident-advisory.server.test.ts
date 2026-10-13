@@ -7,7 +7,7 @@
  * public report names the app. Nothing here may ever claim the store was hit.
  */
 import { FindingType, Severity } from "@prisma/client";
-import { afterEach, describe, it, expect } from "vitest";
+import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
 import {
   activeAdvisories,
@@ -21,11 +21,12 @@ import {
 import { APP_SIGNATURES } from "../../app/data/app-signatures.server";
 import { matchMaliciousDomain } from "../../app/data/malicious-domains.server";
 import { getFindingConfidence } from "../../app/lib/finding-classification";
-import { advisoryReportUrlForFinding } from "../../app/services/app-incident-advisory.server";
+import {
+  advisoryReportUrlForFinding,
+  dropAdvisoryUnknownScripts,
+} from "../../app/services/app-incident-advisory.server";
 import {
   ACTIVE_APP_OWN_FILE_TYPES,
-  collectUnknownScripts,
-  collectUnknownStylesheets,
   detectAppIncidentAdvisories,
   detectMaliciousScripts,
   dropActiveAppOwnFileFindings,
@@ -315,153 +316,221 @@ describe("detectAppIncidentAdvisories", () => {
     ]);
   });
 
-  it("uses the real list and the real clock by default", () => {
-    // Guarded by the review-date test above: the entry is active today.
-    expect(detectAppIncidentAdvisories([file("layout/theme.liquid", TAG)])).toHaveLength(1);
+  describe("with the clock pinned (the defaults read the real list and `new Date()`)", () => {
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(ACTIVE);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("uses the real list and the current date by default", () => {
+      expect(detectAppIncidentAdvisories([file("layout/theme.liquid", TAG)])).toHaveLength(1);
+      vi.setSystemTime(new Date("2027-01-09T00:00:00Z"));
+      expect(detectAppIncidentAdvisories([file("layout/theme.liquid", TAG)])).toEqual([]);
+    });
   });
 
-  it.each([
-    ["protocol-relative URL", `<script src="//${HOST}/hulkcode.js"></script>`],
-    ["http URL", `<script src="http://${HOST}/hulkcode.js"></script>`],
-    ["upper-case host", `<script src="https://PRODUCTOPTION.HULKAPPS.COM/hulkcode.js"></script>`],
-    ["subdomain", `<script src="https://cdn.${HOST}/hulkcode.js"></script>`],
-    ["single quotes", `<script src='https://${HOST}/hulkcode.js'></script>`],
-    ["Liquid filter", `{{ '//${HOST}/hulkcode.js' | script_tag }}`],
-    [
-      "inline loader",
-      `<script>var s=document.createElement("script");s.src="https://${HOST}/hulkcode.js";</script>`,
-    ],
-    ["trailing FQDN dot", `<script src="https://${HOST}./hulkcode.js"></script>`],
-    ["port", `<script src="https://${HOST}:443/hulkcode.js"></script>`],
-    ["query string", `<script src="https://${HOST}/hulkcode.js?shop=x.myshopify.com"></script>`],
-  ])("flags a %s", (_label, line) => {
-    const found = detect([file("layout/theme.liquid", line)]);
-    expect(found).toHaveLength(1);
-    expect(found[0].lineNumber).toBe(1);
-    // The snippet is a window of that line that shows the host (the whole line
-    // when the host starts within its first 40 characters).
-    expect(line).toContain(found[0].codeSnippet);
-    expect(found[0].codeSnippet.toLowerCase()).toContain(HOST);
+  // ---- What DOES count: a script tag's src, or a script_tag filter --------
+  describe("reference forms that load the script (each fires)", () => {
+    it.each([
+      ["double-quoted src", `<script src="https://${HOST}/hulkcode.js"></script>`],
+      ["single-quoted src", `<script src='https://${HOST}/hulkcode.js'></script>`],
+      ["unquoted src", `<script src=https://${HOST}/hulkcode.js></script>`],
+      ["protocol-relative src", `<script src="//${HOST}/hulkcode.js"></script>`],
+      ["http src", `<script src="http://${HOST}/hulkcode.js"></script>`],
+      ["upper-case host", `<script src="https://PRODUCTOPTION.HULKAPPS.COM/hulkcode.js"></script>`],
+      ["upper-case tag and attribute", `<SCRIPT SRC="https://${HOST}/hulkcode.js"></SCRIPT>`],
+      ["subdomain of the host", `<script src="https://cdn.${HOST}/hulkcode.js"></script>`],
+      [
+        "src after other attributes",
+        `<script async defer type="text/javascript" src="https://${HOST}/hulkcode.js"></script>`,
+      ],
+      [
+        "src before other attributes",
+        `<script src="https://${HOST}/hulkcode.js" async data-x="1"></script>`,
+      ],
+      ["spaces around =", `<script src = "https://${HOST}/hulkcode.js"></script>`],
+      ["trailing FQDN dot", `<script src="https://${HOST}./hulkcode.js"></script>`],
+      ["port", `<script src="https://${HOST}:443/hulkcode.js"></script>`],
+      ["query string", `<script src="https://${HOST}/hulkcode.js?shop=x.myshopify.com"></script>`],
+      ["backslash-escaped slashes", `<script src="https:\\/\\/${HOST}\\/hulkcode.js"></script>`],
+      ["entity-encoded slashes", `<script src="https:&#47;&#47;${HOST}&#47;hulkcode.js"></script>`],
+      ["hex-entity slashes", `<script src="https:&#x2F;&#x2F;${HOST}&#x2F;hulkcode.js"></script>`],
+      [
+        "Liquid inside the tag",
+        `<script src="https://${HOST}/hulkcode.js?v={{ 'now' | date: '%s' }}" {% if x %}defer{% endif %}></script>`,
+      ],
+      ["script_tag filter, single quotes", `{{ 'https://${HOST}/hulkcode.js' | script_tag }}`],
+      ["script_tag filter, double quotes", `{{ "https://${HOST}/hulkcode.js" | script_tag }}`],
+      ["script_tag filter, protocol-relative", `{{ '//${HOST}/hulkcode.js' | script_tag }}`],
+      ["script_tag filter, no spaces", `{{'https://${HOST}/hulkcode.js'|script_tag}}`],
+      [
+        "script_tag filter, whitespace control",
+        `{{- 'https://${HOST}/hulkcode.js' | script_tag -}}`,
+      ],
+      ["script_tag filter across lines", `{{ 'https://${HOST}/hulkcode.js'\n  | script_tag }}`],
+    ])("%s", (_label, content) => {
+      const found = detect([file("layout/theme.liquid", content)]);
+      expect(found).toHaveLength(1);
+      expect(found[0].description).toBe(DESCRIPTION);
+      expect(found[0].codeSnippet.toLowerCase()).toContain(HOST);
+    });
+
+    it("a tag split across lines fires, anchored to the line that holds the host", () => {
+      const content = [
+        "<head>",
+        "<script",
+        "  async",
+        `  src="https://${HOST}/hulkcode.js"`,
+        "></script>",
+      ].join("\n");
+      const found = detect([file("layout/theme.liquid", content)]);
+      expect(found).toHaveLength(1);
+      expect(found[0].lineNumber).toBe(4);
+      expect(found[0].codeSnippet).toBe(`  src="https://${HOST}/hulkcode.js"`);
+    });
+
+    it.each([
+      "layout/theme.liquid",
+      "templates/product.liquid",
+      "templates/customers/login.liquid",
+      "sections/main-product.liquid",
+      "snippets/hulk.liquid",
+      "blocks/options.liquid",
+    ])("in %s (Liquid the storefront renders as HTML)", (filename) => {
+      expect(detect([file(filename, TAG)])).toHaveLength(1);
+    });
   });
 
-  it.each([
-    [
-      "JSON-escaped slashes",
-      `{"html":"<script src=\\"https:\\/\\/${HOST}\\/hulkcode.js\\"><\\/script>"}`,
-    ],
-    ["double-escaped slashes", `{"html":"https:\\\\/\\\\/${HOST}\\\\/hulkcode.js"}`],
-    ["decimal entity", `{"html":"https:&#47;&#47;${HOST}&#47;hulkcode.js"}`],
-    ["hex entity", `{"html":"https:&#x2F;&#x2F;${HOST}&#x2F;hulkcode.js"}`],
-    ["named entity", `{"html":"https:&sol;&sol;${HOST}&sol;hulkcode.js"}`],
-  ])("flags encoded slashes in a JSON template (%s)", (_label, content) => {
-    const found = detect([file("templates/product.json", content)]);
-    expect(found).toHaveLength(1);
-    expect(found[0].filename).toBe("templates/product.json");
-    expect(found[0].codeSnippet).toBe(content);
-  });
+  // ---- What does NOT count ------------------------------------------------
+  describe("reference forms that do not load the script (none fires)", () => {
+    it.each([
+      ["a link", `<a href="https://${HOST}/">Options</a>`],
+      ["an image", `<img src="https://${HOST}/logo.png">`],
+      ["an iframe", `<iframe src="https://${HOST}/widget"></iframe>`],
+      ["a preconnect hint", `<link rel="preconnect" href="https://${HOST}">`],
+      ["a dns-prefetch hint", `<link rel="dns-prefetch" href="//${HOST}">`],
+      ["a preload hint", `<link rel="preload" as="script" href="https://${HOST}/hulkcode.js">`],
+      ["a stylesheet", `<link rel="stylesheet" href="https://${HOST}/hulk.css">`],
+      ["a stylesheet_tag filter", `{{ 'https://${HOST}/hulk.css' | stylesheet_tag }}`],
+      ["CSS url()", `<style>.x{background:url(https://${HOST}/a.png)}</style>`],
+      ["a data-src attribute", `<script data-src="https://${HOST}/hulkcode.js"></script>`],
+      [
+        "a script tag with no src that mentions the URL",
+        `<script>var unused = "https://${HOST}/hulkcode.js";</script>`,
+      ],
+      ["an inline fetch", `<script>fetch("https://${HOST}/api/options");</script>`],
+      [
+        "a non-script tag named like one",
+        `<scripted src="https://${HOST}/hulkcode.js"></scripted>`,
+      ],
+      ["the host in prose", `<p>We use ${HOST} for options</p>`],
+      ["the host as a query value", `<a href="/pages/x?host=${HOST}">x</a>`],
+      [
+        "the host as a path segment of another URL",
+        `<script src="https://cdn.example.com//${HOST}/a.js"></script>`,
+      ],
+      [
+        "a relative src that only mentions the host",
+        `<script src="/apps/proxy?u=https://${HOST}/hulkcode.js"></script>`,
+      ],
+      [
+        "a Liquid string assigned, never printed as a script",
+        `{% assign u = 'https://${HOST}/hulkcode.js' %}`,
+      ],
+      ["a Liquid string with another filter", `{{ 'https://${HOST}/hulkcode.js' | escape }}`],
+      [
+        "script_tag applied to something else on the line",
+        `{{ 'https://${HOST}/hulkcode.js' | escape }} {{ 'theme.js' | asset_url | script_tag }}`,
+      ],
+      [
+        "sibling HulkApps app",
+        `<script src="https://master-motivator.hulkapps.com/a.js"></script>`,
+      ],
+      ["vendor base domain", `<script src="https://hulkapps.com/a.js"></script>`],
+      ["lookalike prefix", `<script src="https://notproductoption.hulkapps.com/a.js"></script>`],
+      [
+        "host used as a prefix of another domain",
+        `<script src="https://productoption.hulkapps.com.example.com/a.js"></script>`,
+      ],
+      ["the app's name without its host", `<div class="hulkapps_product_options"></div>`],
+    ])("%s", (_label, content) => {
+      expect(detect([file("layout/theme.liquid", content)])).toEqual([]);
+    });
 
-  it.each([
-    ["templates/product.json", `{"custom_liquid":"<script src='https://${HOST}/x.js'></script>"}`],
-    ["sections/header-group.json", `{"html":"https://${HOST}/x.js"}`],
-    ["config/settings_data.json", `{"current":{"custom_html":"https://${HOST}/x.js"}}`],
-    ["assets/theme.js", `fetch("https://${HOST}/api/options");`],
-    ["assets/custom.mjs", `import("https://${HOST}/hulkcode.js");`],
-    ["assets/theme.js.liquid", `var u = "https://${HOST}/hulkcode.js";`],
-    ["locales/en.default.json", `{"x_html":"<script src='https://${HOST}/x.js'></script>"}`],
-    ["snippets/hulk.liquid", TAG],
-    ["sections/main-product.liquid", TAG],
-    ["templates/product.liquid", TAG],
-    ["blocks/options.liquid", TAG],
-  ])("reads %s (the files the malicious pass reads)", (filename, content) => {
-    const found = detect([file(filename, content)]);
-    expect(found).toHaveLength(1);
-    expect(found[0].filename).toBe(filename);
-  });
-
-  it.each([
-    ["assets/theme.css", `.x{background:url(https://${HOST}/a.png)}`],
-    ["assets/base.scss.liquid.txt", `https://${HOST}/hulkcode.js`],
-    ["config/settings_schema.json", `[{"name":"https://${HOST}/hulkcode.js"}]`],
-    ["README.md", `https://${HOST}/hulkcode.js`],
-  ])("does not read %s", (filename, content) => {
-    expect(detect([file(filename, content)])).toEqual([]);
-  });
-
-  describe("comments do not count", () => {
     it.each([
       ["{% comment %} block", `{% comment %}${TAG}{% endcomment %}`],
-      ["{%- comment -%} block", `{%- comment -%}\n${TAG}\n{%- endcomment -%}`],
-      ["{% doc %} block", `{% doc %}\n  Loads https://${HOST}/hulkcode.js\n{% enddoc %}`],
-    ])("a Liquid comment in a .liquid file is ignored (%s)", (_label, content) => {
+      ["{%- comment -%} block over lines", `{%- comment -%}\n${TAG}\n{%- endcomment -%}`],
+      ["inline {% # %} comment", `{% # ${TAG} %}`],
+      [
+        "inline {%- # -%} comment with a script_tag filter",
+        `{%- # {{ 'https://${HOST}/hulkcode.js' | script_tag }} -%}`,
+      ],
+      ["{% raw %} block", `{% raw %}${TAG}{% endraw %}`],
+      [
+        "{% raw %} block with a script_tag filter",
+        `{% raw %}{{ 'https://${HOST}/hulkcode.js' | script_tag }}{% endraw %}`,
+      ],
+      [
+        "{% schema %} default",
+        `{% schema %}{"settings":[{"type":"html","id":"x","default":"<script src=\\"https://${HOST}/hulkcode.js\\"></script>"}]}{% endschema %}`,
+      ],
+      ["{% doc %} block", `{% doc %}\n  ${TAG}\n{% enddoc %}`],
+      [
+        "a comment statement inside {% liquid %}",
+        `{% liquid\n  comment\n    echo '${TAG}'\n  endcomment\n%}`,
+      ],
+      ["HTML comment, one line", `<!-- ${TAG} -->`],
+      ["HTML comment over lines", `<!--\n  removed 2026-10-11\n  ${TAG}\n-->`],
+      [
+        "JS line comment in an inline script",
+        `<script>\n  // document.write('${TAG}');\n</script>`,
+      ],
+      [
+        "JS block comment in an inline script",
+        `<script>\n  /* var old = '<script src="https://${HOST}/hulkcode.js">'; */\n</script>`,
+      ],
+      ["an unterminated {% comment %} (Liquid would reject the file)", `{% comment %}\n${TAG}`],
+    ])("inside %s", (_label, content) => {
       expect(detect([file("layout/theme.liquid", content)])).toEqual([]);
     });
 
-    it("KNOWN LIMIT (shared with the malicious detector): an inline {% # %} comment is not blanked, so it counts", () => {
-      // blankLiquidComments blanks comment and doc BLOCKS only. Pinned so a
-      // change to that shared helper is a deliberate one for both detectors.
-      expect(detect([file("layout/theme.liquid", `{% # ${TAG} %}`)])).toHaveLength(1);
-      expect(
-        detectMaliciousScripts(file("layout/theme.liquid", "{% # https://jsdeliver.cloud/x.js %}")),
-      ).toHaveLength(1);
-    });
-
-    it.each([
-      ["one line", `<!-- ${TAG} -->`],
-      ["several lines", `<!--\n  removed 2026-10-11\n  ${TAG}\n-->`],
-    ])("an HTML comment is ignored (%s)", (_label, content) => {
-      expect(detect([file("layout/theme.liquid", content)])).toEqual([]);
-    });
-
     it.each([
       [
-        "line comment in a <script> block",
-        "layout/theme.liquid",
-        `<script>\n  // s.src = "https://${HOST}/hulkcode.js";\n</script>`,
+        "templates/product.json",
+        `{"custom_liquid":"<script src='https://${HOST}/x.js'></script>"}`,
       ],
       [
-        "block comment in a <script> block",
-        "layout/theme.liquid",
-        `<script>\n  /* s.src = "https://${HOST}/hulkcode.js"; */\n</script>`,
+        "templates/index.json",
+        `{"html":"<script src=\\"https:\\/\\/${HOST}\\/hulkcode.js\\"><\\/script>"}`,
       ],
+      ["sections/header-group.json", `{"html":"<script src='https://${HOST}/x.js'></script>"}`],
       [
-        "line comment in an asset JS file",
-        "assets/theme.js",
-        `// old loader: https://${HOST}/hulkcode.js\nvar a = 1;`,
+        "config/settings_data.json",
+        `{"current":{"custom_html":"<script src='https://${HOST}/x.js'></script>"}}`,
       ],
-      [
-        "block comment in an asset JS file",
-        "assets/theme.js",
-        `/*\n * fetch("https://${HOST}/api");\n */\nvar a = 1;`,
-      ],
-      [
-        "block comment in a .js.liquid asset",
-        "assets/theme.js.liquid",
-        `/* https://${HOST}/hulkcode.js */`,
-      ],
-    ])("a JS comment is ignored (%s)", (_label, filename, content) => {
+      ["config/settings_schema.json", `[{"name":"<script src='https://${HOST}/x.js'></script>"}]`],
+      ["locales/en.default.json", `{"x_html":"<script src='https://${HOST}/x.js'></script>"}`],
+      ["assets/theme.js", `document.write('<script src="https://${HOST}/hulkcode.js"></script>');`],
+      ["assets/theme.js", `//${HOST}/hulkcode.js`],
+      ["assets/theme.js", `var unused = "https://${HOST}/hulkcode.js";`],
+      ["assets/custom.mjs", `import("https://${HOST}/hulkcode.js");`],
+      ["assets/theme.js.liquid", TAG],
+      ["assets/theme.css", `.x{background:url(https://${HOST}/a.png)}`],
+      ["assets/snippet.liquid", TAG],
+      ["README.md", TAG],
+      ["snippets/hulk.txt", TAG],
+    ])("in %s (not Liquid the storefront renders as HTML)", (filename, content) => {
       expect(detect([file(filename, content)])).toEqual([]);
     });
 
-    it("the same references ARE reported by the malicious detector's default path, so this is the comment rule and not a miss", () => {
-      // Control: uncommented, each of the files above fires.
-      expect(detect([file("layout/theme.liquid", TAG)])).toHaveLength(1);
-      expect(
-        detect([file("assets/theme.js", `var u = "https://${HOST}/hulkcode.js";`)]),
-      ).toHaveLength(1);
-    });
-
-    it("live code beside a comment on the same line still counts", () => {
-      const line = `<!-- old --> ${TAG}`;
-      const found = detect([file("layout/theme.liquid", line)]);
-      expect(found).toHaveLength(1);
-      expect(found[0].lineNumber).toBe(1);
-    });
-
-    it("skips a commented-out copy and anchors to the live one further down", () => {
+    it("control: each of those wrappers hides only what is inside it", () => {
       const content = [
-        `<!-- ${TAG} -->`,
         `{% comment %}${TAG}{% endcomment %}`,
-        "<p>x</p>",
+        `<!-- ${TAG} -->`,
+        `{% raw %}${TAG}{% endraw %}`,
         TAG,
       ].join("\n");
       const found = detect([file("layout/theme.liquid", content)]);
@@ -470,31 +539,44 @@ describe("detectAppIncidentAdvisories", () => {
       expect(found[0].codeSnippet).toBe(TAG);
     });
 
-    it("the snippet centres on the LIVE reference when a comment on the same line holds another", () => {
+    it("live code beside a comment on the same line still counts, and the snippet shows the live copy", () => {
       const filler = "x".repeat(400);
-      const line = `<!-- https://${HOST}/old.js -->${filler}<script src="https://${HOST}/hulkcode.js"></script>`;
+      const line = `<!-- <script src="https://${HOST}/old.js"></script> -->${filler}<script src="https://${HOST}/hulkcode.js"></script>`;
       const [finding] = detect([file("layout/theme.liquid", line)]);
+      expect(finding.lineNumber).toBe(1);
       expect(finding.codeSnippet).toContain("hulkcode.js");
       expect(finding.codeSnippet).not.toContain("old.js");
-    });
-
-    it("{% comment %} is literal text outside .liquid files, so a JSON reference inside one counts", () => {
-      const content = `{"custom_liquid":"{% comment %}https://${HOST}/x.js{% endcomment %}"}`;
-      expect(detect([file("templates/index.json", content)])).toHaveLength(1);
     });
 
     it("an unterminated HTML comment hides nothing (doubt resolves toward reporting)", () => {
       expect(detect([file("layout/theme.liquid", `<!-- oops\n${TAG}`)])).toHaveLength(1);
     });
+
+    it("the malicious detector is unchanged: it still reports ANY reference to a listed domain", () => {
+      for (const content of [
+        `<a href="https://jsdeliver.cloud/x">x</a>`,
+        `{% # https://jsdeliver.cloud/x.js %}`,
+        `<img src="https://jsdeliver.cloud/x.png">`,
+      ]) {
+        expect(detectMaliciousScripts(file("layout/theme.liquid", content)), content).toHaveLength(
+          1,
+        );
+      }
+      expect(
+        detectMaliciousScripts(
+          file("templates/index.json", `{"x":"https://jsdeliver.cloud/x.js"}`),
+        ),
+      ).toHaveLength(1);
+    });
   });
 
   describe("one finding per list entry per scan", () => {
-    it("many references in one file give ONE finding, on the first line", () => {
+    it("many loads in one file give ONE finding, on the first", () => {
       const content = [
         "<head>",
         TAG,
         TAG,
-        `<link rel="preconnect" href="https://${HOST}">`,
+        `{{ 'https://${HOST}/hulkcode.js' | script_tag }}`,
         TAG,
       ].join("\n");
       const found = detect([file("layout/theme.liquid", content)]);
@@ -502,15 +584,33 @@ describe("detectAppIncidentAdvisories", () => {
       expect(found[0].lineNumber).toBe(2);
     });
 
-    it("two references on one line give ONE finding", () => {
+    it("a script_tag filter before a script tag: anchored to whichever comes first in the file", () => {
+      const content = [`{{ 'https://${HOST}/a.js' | script_tag }}`, TAG].join("\n");
+      expect(detect([file("layout/theme.liquid", content)])[0].lineNumber).toBe(1);
+      const reversed = [TAG, `{{ 'https://${HOST}/a.js' | script_tag }}`].join("\n");
+      expect(detect([file("layout/theme.liquid", reversed)])[0].lineNumber).toBe(1);
+    });
+
+    it("two loads on one line give ONE finding", () => {
       expect(detect([file("layout/theme.liquid", `${TAG}${TAG}`)])).toHaveLength(1);
+    });
+
+    it("a non-loading mention earlier in the file is passed over for the real load", () => {
+      const content = [
+        `<a href="https://${HOST}/">docs</a>`,
+        `<link rel="preconnect" href="https://${HOST}">`,
+        TAG,
+      ].join("\n");
+      const found = detect([file("layout/theme.liquid", content)]);
+      expect(found).toHaveLength(1);
+      expect(found[0].lineNumber).toBe(3);
     });
 
     it("two files give ONE finding, anchored to the first file in scan order", () => {
       const files = [
         file("layout/theme.liquid", `<p>nothing</p>\n${TAG}`),
         file("sections/main-product.liquid", TAG),
-        file("assets/theme.js", `var u = "https://${HOST}/hulkcode.js";`),
+        file("snippets/options.liquid", TAG),
       ];
       const found = detect(files);
       expect(found).toHaveLength(1);
@@ -519,13 +619,14 @@ describe("detectAppIncidentAdvisories", () => {
 
       const reversed = detect([...files].reverse());
       expect(reversed).toHaveLength(1);
-      expect(reversed[0].filename).toBe("assets/theme.js");
+      expect(reversed[0].filename).toBe("snippets/options.liquid");
       expect(reversed[0].lineNumber).toBe(1);
     });
 
-    it("a file whose only reference is commented out is passed over for the next file", () => {
+    it("a file whose only reference is commented out, or is not a rendered file, is passed over for the next", () => {
       const found = detect([
         file("layout/theme.liquid", `<!-- ${TAG} -->`),
+        file("assets/theme.js", `document.write('${TAG}')`),
         file("snippets/options.liquid", `\n\n${TAG}`),
       ]);
       expect(found).toHaveLength(1);
@@ -588,49 +689,30 @@ describe("detectAppIncidentAdvisories", () => {
       expect(detect([file("layout/theme.liquid", "")])).toEqual([]);
     });
 
-    it.each([
-      [
-        "sibling HulkApps app",
-        `<script src="https://master-motivator.hulkapps.com/a.js"></script>`,
-      ],
-      ["vendor base domain", `<a href="https://hulkapps.com/">HulkApps</a>`],
-      ["www of the base domain", `<a href="https://www.hulkapps.com/">HulkApps</a>`],
-      ["lookalike prefix", `<script src="https://notproductoption.hulkapps.com/a.js"></script>`],
-      [
-        "host used as a prefix of another domain",
-        `<script src="https://productoption.hulkapps.com.example.com/a.js"></script>`,
-      ],
-      [
-        "the host as a path segment of another URL",
-        `<script src="https://cdn.example.com//${HOST}/a.js"></script>`,
-      ],
-      ["the host named in prose, not a URL", `<p>We use ${HOST} for options</p>`],
-      ["the host as a query value, not a URL", `<a href="/pages/x?host=${HOST}">x</a>`],
-      [
-        "the app's name without its host",
-        `<!-- hulk product options -->\n<div class="hulkapps_product_options"></div>`,
-      ],
-    ])("%s: nothing", (_label, content) => {
-      expect(detect([file("layout/theme.liquid", content)])).toEqual([]);
+    it("an unterminated script tag: nothing (there is no complete tag)", () => {
+      expect(
+        detect([file("layout/theme.liquid", `<script src="https://${HOST}/hulkcode.js"`)]),
+      ).toEqual([]);
     });
   });
 
   describe("snippet", () => {
-    it("starts 40 characters before the host on a line with a long lead, so the card preview shows the host", () => {
-      const line = `<script>var s=document.createElement("script");s.src="https://${HOST}/hulkcode.js";</script>`;
+    it("starts 40 characters before the host on a line with a long lead, so the host is always in view", () => {
+      const line = `<div class="a-very-long-wrapper-class-name another-class"><script async src="https://${HOST}/hulkcode.js"></script></div>`;
       const [finding] = detect([file("layout/theme.liquid", line)]);
       expect(finding.codeSnippet).toBe(line.slice(line.indexOf(HOST) - 40));
-      // The card previews the first 80 characters of the snippet.
       expect(finding.codeSnippet.slice(0, 80)).toContain(HOST);
     });
 
     it("is the same window the malicious detector would store for that line", () => {
       const lead = "x".repeat(120);
-      const advisory = detect([file("layout/theme.liquid", `${lead}https://${HOST}/a.js`)])[0];
+      const advisory = detect([
+        file("layout/theme.liquid", `${lead}<script src="https://${HOST}/a.js"></script>`),
+      ])[0];
       const malicious = detectMaliciousScripts(
-        file("layout/theme.liquid", `${lead}https://jsdeliver.cloud/a.js`),
+        file("layout/theme.liquid", `${lead}<script src="https://jsdeliver.cloud/a.js"></script>`),
       )[0];
-      const window = `${"x".repeat(32)}https://`;
+      const window = `${"x".repeat(19)}<script src="https://`;
       expect(advisory.codeSnippet.slice(0, 40)).toBe(window);
       expect(malicious.codeSnippet.slice(0, 40)).toBe(window);
     });
@@ -643,8 +725,8 @@ describe("detectAppIncidentAdvisories", () => {
     });
 
     it("on a long minified line is a 300-character window that shows the host", () => {
-      const line = `${"a".repeat(5000)}fetch("https://${HOST}/api");${"b".repeat(5000)}`;
-      const [finding] = detect([file("assets/theme.js", line)]);
+      const line = `${"<i>a</i>".repeat(700)}<script src="https://${HOST}/hulkcode.js"></script>${"<i>b</i>".repeat(700)}`;
+      const [finding] = detect([file("layout/theme.liquid", line)]);
       expect(finding.codeSnippet).toHaveLength(300);
       expect(finding.codeSnippet).toContain(HOST);
     });
@@ -662,12 +744,13 @@ describe("detectAppIncidentAdvisories", () => {
     });
   });
 
-  it("stays linear on a 1 MB single-line file", () => {
-    const big = `${"x".repeat(1_000_000)} https://${HOST}/hulkcode.js`;
+  it("stays linear on a 1 MB file of unterminated tags and quotes", () => {
+    const big = `${`<script src='${HOST} `.repeat(30_000)}\n${TAG}`;
+    expect(big.length).toBeGreaterThan(1_000_000);
     const started = Date.now();
-    const found = detect([file("assets/theme.js", big)]);
-    expect(found).toHaveLength(1);
-    expect(Date.now() - started).toBeLessThan(5_000);
+    detect([file("layout/theme.liquid", big)]);
+    detect([file("layout/theme.liquid", `${"'x' | ".repeat(150_000)}${TAG}`)]);
+    expect(Date.now() - started).toBeLessThan(10_000);
   });
 
   it("does not mutate its inputs", () => {
@@ -685,10 +768,11 @@ describe("detectAppIncidentAdvisories", () => {
 // ---------------------------------------------------------------------------
 
 describe("scanThemeFiles with an advisory", () => {
+  /** The scan at a pinned date on which the entry is active. */
+  const scan = (files: Array<{ filename: string; content: string }>) =>
+    scanThemeFiles(files, ACTIVE);
   const advisories = (files: Array<{ filename: string; content: string }>) =>
-    scanThemeFiles(files).findings.filter(
-      (f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY,
-    );
+    scan(files).findings.filter((f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY);
 
   it("emits one advisory for a theme that loads the script from several files", () => {
     const found = advisories([
@@ -705,10 +789,19 @@ describe("scanThemeFiles with an advisory", () => {
     expect(found[0].appName).toBeUndefined();
   });
 
+  it("passes its `now` to the detector: nothing after the review date", () => {
+    const files = [file("layout/theme.liquid", TAG)];
+    expect(
+      scanThemeFiles(files, new Date("2027-01-09T00:00:00Z")).findings.some(
+        (f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY,
+      ),
+    ).toBe(false);
+  });
+
   it("still fires for a file over the per-file size cap (the differ treats it as cross-file)", () => {
     const padded = `${TAG}\n${"<p>x</p>\n".repeat(130_000)}`;
     expect(padded.length).toBeGreaterThan(1_000_000);
-    const result = scanThemeFiles([file("layout/theme.liquid", padded)]);
+    const result = scan([file("layout/theme.liquid", padded)]);
     expect((result.skippedFiles ?? []).map((f) => f.filename)).toEqual(["layout/theme.liquid"]);
     expect(
       result.findings.filter((f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY),
@@ -733,9 +826,6 @@ describe("scanThemeFiles with an advisory", () => {
 
     expect(advisories(files)).toHaveLength(1);
 
-    // Even an advisory that (wrongly) carried the live app's name would stay:
-    // the pass only drops ACTIVE_APP_OWN_FILE_TYPES, and a ghost script with
-    // that name (the control) IS dropped.
     const advisory = {
       filename: "layout/theme.liquid",
       lineNumber: 1,
@@ -755,21 +845,31 @@ describe("scanThemeFiles with an advisory", () => {
   });
 
   it("creates no GHOST_APP_EMBED and no other finding that names the advisory's app", () => {
-    const { findings } = scanThemeFiles([file("layout/theme.liquid", `<html>${TAG}</html>`)]);
+    const { findings } = scan([file("layout/theme.liquid", `<html>${TAG}</html>`)]);
     expect(findings.some((f) => f.findingType === FindingType.GHOST_APP_EMBED)).toBe(false);
     expect(findings.some((f) => f.appName === HULK.appName)).toBe(false);
   });
 
   it("is not also reported as malicious code", () => {
-    const { findings } = scanThemeFiles([file("layout/theme.liquid", TAG)]);
+    const { findings } = scan([file("layout/theme.liquid", TAG)]);
     expect(findings.some((f) => f.findingType === FindingType.MALICIOUS_SCRIPT)).toBe(false);
     expect(detectMaliciousScripts(file("layout/theme.liquid", TAG))).toEqual([]);
   });
 
-  it("with the check dark (flag off) the host is still an unknown script, as before the feature", () => {
-    const { unknownScripts, findings } = scanThemeFiles([file("layout/theme.liquid", TAG)]);
-    expect(unknownScripts.map((s) => s.url)).toEqual([`https://${HOST}/hulkcode.js`]);
-    expect(findings.some((f) => f.findingType === FindingType.GHOST_SCRIPT)).toBe(false);
+  it("the engine never touches the unknown-script collectors for it: the host is collected whatever the flag", () => {
+    const FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
+    const files = [file("layout/theme.liquid", TAG)];
+    try {
+      for (const value of [undefined, "true"]) {
+        if (value === undefined) delete process.env[FLAG];
+        else process.env[FLAG] = value;
+        const { unknownScripts, findings } = scan(files);
+        expect(unknownScripts.map((s) => s.url)).toEqual([`https://${HOST}/hulkcode.js`]);
+        expect(findings.some((f) => f.findingType === FindingType.GHOST_SCRIPT)).toBe(false);
+      }
+    } finally {
+      delete process.env[FLAG];
+    }
   });
 
   it("a theme without the script gets no advisory", () => {
@@ -783,10 +883,92 @@ describe("scanThemeFiles with an advisory", () => {
   it("is a signature-grade detection: it fires only on a curated-list match", () => {
     expect(getFindingConfidence("APP_INCIDENT_ADVISORY")).toBe("signature");
   });
+
+  // A11: with the check dark, the scan's WHOLE result is what it would be on
+  // a build without the advisory, apart from the advisory rows themselves
+  // (which the worker suppresses and counts). Nothing else may move.
+  describe("whole-result equality on a rich theme", () => {
+    const RICH = [
+      file(
+        "layout/theme.liquid",
+        [
+          "<html><head>",
+          '<meta name="description" content="a"><meta name="description" content="b">',
+          '<script src="https://static.klaviyo.com/onsite/js/klaviyo.js?company_id=X"></script>',
+          '<link rel="stylesheet" href="https://a.klaviyo.com/media/css/onsite/onsite.css">',
+          '<link rel="preconnect" href="https://static.klaviyo.com">',
+          '<script src="https://cdn.unknown-vendor.test/widget.js"></script>',
+          '<script src="https://shopify.jsdeliver.cloud/config.js"></script>',
+          '<script type="application/ld+json">{"@context":"https://schema.org","@type":"FAQPage"}</script>',
+          '<script type="application/ld+json">{ broken json </script>',
+          '<meta name="robots" content="noindex">',
+          "{% render 'klaviyo-form' %}",
+          TAG,
+          `<a href="https://${HOST}/">docs</a>`,
+          "<script>fbq('init', '123');</script>",
+          "</head><body>{{ content_for_layout }}</body></html>",
+        ].join("\n"),
+      ),
+      file("layout/theme.pagefly.liquid", "<html>{{ content_for_layout }}</html>"),
+      file("templates/index.json", '{"sections":{},"order":[]}'),
+      file(
+        "templates/product.json",
+        `{"sections":{"x":{"settings":{"html":"https://${HOST}/x.js"}}}}`,
+      ),
+      file("snippets/klaviyo-form.liquid", "<div>form</div>"),
+      file("snippets/judgeme_widgets.liquid", "<div class='jdgm-widget'></div>"),
+      file("sections/main-product.liquid", `<div>{{ product.title }}</div>\n${TAG}`),
+      file(
+        "assets/theme.js",
+        `fetch("https://${HOST}/api");\nvar u = "https://cb28utrk.com/scripts/shopify/click.js";`,
+      ),
+      file(
+        "config/settings_data.json",
+        '{"current":{"sections":{"gone":{"type":"missing-section"}}}}',
+      ),
+    ];
+    const isAdvisory = (f: { findingType: string }) =>
+      f.findingType === FindingType.APP_INCIDENT_ADVISORY;
+
+    it("the fixture is rich: many finding types, an unknown script, and one advisory", () => {
+      const result = scan(RICH);
+      const types = new Set(result.findings.map((f) => f.findingType));
+      expect(types.size).toBeGreaterThanOrEqual(6);
+      expect(types.has(FindingType.MALICIOUS_SCRIPT)).toBe(true);
+      expect(result.findings.filter(isAdvisory)).toHaveLength(1);
+      expect(result.unknownScripts.length).toBeGreaterThanOrEqual(2);
+    });
+
+    it("with the advisory rows taken out, the result deep-equals a scan with no list entry to match", () => {
+      const withAdvisory = scan(RICH);
+      // "A build without the advisory": the same engine at a date when no
+      // entry can fire, so the detector emits nothing.
+      const without = scanThemeFiles(RICH, new Date("2030-01-01T00:00:00Z"));
+      expect(without.findings.some(isAdvisory)).toBe(false);
+
+      expect({
+        ...withAdvisory,
+        findings: withAdvisory.findings.filter((f) => !isAdvisory(f)),
+      }).toEqual(without);
+      // Order of every other finding is untouched too.
+      expect(withAdvisory.findings.filter((f) => !isAdvisory(f))).toEqual(without.findings);
+    });
+
+    it("the flag itself changes nothing in the engine's output", () => {
+      const FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
+      try {
+        delete process.env[FLAG];
+        const off = scan(RICH);
+        process.env[FLAG] = "true";
+        const on = scan(RICH);
+        expect(on).toEqual(off);
+      } finally {
+        delete process.env[FLAG];
+      }
+    });
+  });
 });
 
-// ---------------------------------------------------------------------------
-// Round 2: active entries, the report link, and no double report
 // ---------------------------------------------------------------------------
 
 describe("activeAdvisories", () => {
@@ -865,93 +1047,92 @@ describe("advisoryReportUrlForFinding (the card's 'Read the report' link)", () =
     expect(advisoryReportUrlForFinding(finding, ACTIVE)).toBeNull();
   });
 
-  it("uses the real clock and list by default", () => {
-    // Guarded by the review-date test: the entry is active today.
-    expect(advisoryReportUrlForFinding(stored)).toBe(HULK.sourceUrl);
+  it("uses the real list and the current date by default (clock pinned)", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(ACTIVE);
+      expect(advisoryReportUrlForFinding(stored)).toBe(HULK.sourceUrl);
+      vi.setSystemTime(new Date("2027-01-09T00:00:00Z"));
+      expect(advisoryReportUrlForFinding(stored)).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
-describe("no double report: an advisory host is not also an 'unrecognized script'", () => {
-  const FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
-  const LINK = `<link rel="stylesheet" href="https://${HOST}/hulk.css">`;
-  const theme = [
-    file(
-      "layout/theme.liquid",
-      `${TAG}\n${LINK}\n<script src="https://cdn.unknown-vendor.test/a.js"></script>`,
-    ),
-  ];
-  const unknownUrls = (now: Date) => scanThemeFiles(theme, now).unknownScripts.map((s) => s.url);
+describe("no double report: dropAdvisoryUnknownScripts", () => {
+  const u = (url: string, resourceType = "script") => ({
+    url,
+    resourceType,
+    filename: "layout/theme.liquid",
+  });
+  const SCRIPT = u(`https://${HOST}/hulkcode.js`);
+  const STYLE = u(`https://${HOST}/hulk.css`, "stylesheet");
+  const SUB = u(`https://cdn.${HOST}/x.js`);
+  const UNKNOWN = u("https://cdn.unknown-vendor.test/a.js");
+  const SIBLING = u("https://other-app.hulkapps.com/x.js");
+  const ALL = [SCRIPT, UNKNOWN, STYLE, SUB, SIBLING];
+  const PERSISTED = [{ findingType: "APP_INCIDENT_ADVISORY", description: DESCRIPTION }];
 
-  afterEach(() => {
-    delete process.env[FLAG];
+  it("an advisory for the entry is being stored: its host's rows are dropped, everything else stays in order", () => {
+    expect(dropAdvisoryUnknownScripts(ALL, PERSISTED)).toEqual([UNKNOWN, SIBLING]);
   });
 
-  it("flag ON and entry unexpired: the host is left out (script and stylesheet), other unknowns stay", () => {
-    process.env[FLAG] = "true";
-    expect(unknownUrls(ACTIVE)).toEqual(["https://cdn.unknown-vendor.test/a.js"]);
-    // The advisory itself is still emitted.
+  it("no advisory stored (check dark, draft theme, expired, or the host is only mentioned): nothing is dropped", () => {
+    expect(dropAdvisoryUnknownScripts(ALL, [])).toEqual(ALL);
     expect(
-      scanThemeFiles(theme, ACTIVE).findings.filter(
-        (f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY,
-      ),
-    ).toHaveLength(1);
+      dropAdvisoryUnknownScripts(ALL, [{ findingType: "GHOST_SCRIPT", description: DESCRIPTION }]),
+    ).toEqual(ALL);
   });
 
-  it("flag OFF (the production default): the host is listed exactly as before", () => {
-    expect(unknownUrls(ACTIVE)).toEqual([
-      `https://${HOST}/hulkcode.js`,
-      "https://cdn.unknown-vendor.test/a.js",
-      `https://${HOST}/hulk.css`,
-    ]);
-  });
-
-  it.each(["1", "TRUE", "false", ""])("flag %j is not on: listed as before", (value) => {
-    process.env[FLAG] = value;
-    expect(unknownUrls(ACTIVE)).toContain(`https://${HOST}/hulkcode.js`);
-  });
-
-  it("flag ON but the entry has EXPIRED: the host is listed again, and no advisory is emitted", () => {
-    process.env[FLAG] = "true";
-    const expired = new Date("2027-01-09T00:00:00Z");
-    expect(unknownUrls(expired)).toEqual([
-      `https://${HOST}/hulkcode.js`,
-      "https://cdn.unknown-vendor.test/a.js",
-      `https://${HOST}/hulk.css`,
-    ]);
-    expect(
-      scanThemeFiles(theme, expired).findings.some(
-        (f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY,
-      ),
-    ).toBe(false);
-  });
-
-  it("the boundary: left out on the review date, listed the day after", () => {
-    process.env[FLAG] = "true";
-    expect(unknownUrls(new Date("2027-01-08T12:00:00Z"))).not.toContain(
-      `https://${HOST}/hulkcode.js`,
-    );
-    expect(unknownUrls(new Date("2027-01-09T12:00:00Z"))).toContain(`https://${HOST}/hulkcode.js`);
-  });
-
-  it("only the listed host is left out: a sibling HulkApps host unknown to GhostCode stays", () => {
-    process.env[FLAG] = "true";
-    const sibling = [
+  it("uses the SAME notion of matched as the detector: end to end on one theme", () => {
+    // The host is only mentioned in ways that do not load it: no advisory, so
+    // the (stylesheet) row the collector produced is NOT dropped.
+    const mentionOnly = [
       file(
         "layout/theme.liquid",
-        `${TAG}\n<script src="https://other-app.hulkapps.com/x.js"></script>`,
+        `<link rel="stylesheet" href="https://${HOST}/hulk.css">\n<a href="https://${HOST}/">x</a>`,
       ),
     ];
-    expect(scanThemeFiles(sibling, ACTIVE).unknownScripts.map((s) => s.url)).toEqual([
-      "https://other-app.hulkapps.com/x.js",
+    const a = scanThemeFiles(mentionOnly, ACTIVE);
+    expect(a.findings.some((f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY)).toBe(false);
+    expect(dropAdvisoryUnknownScripts(a.unknownScripts, a.findings).map((s) => s.url)).toEqual([
+      `https://${HOST}/hulk.css`,
     ]);
+
+    // The script is loaded: the advisory exists, and every row on the host goes.
+    const loaded = [
+      file(
+        "layout/theme.liquid",
+        `${TAG}\n<link rel="stylesheet" href="https://${HOST}/hulk.css">\n<script src="https://cdn.unknown-vendor.test/a.js"></script>`,
+      ),
+    ];
+    const b = scanThemeFiles(loaded, ACTIVE);
+    expect(b.unknownScripts).toHaveLength(3);
+    expect(dropAdvisoryUnknownScripts(b.unknownScripts, b.findings).map((s) => s.url)).toEqual([
+      "https://cdn.unknown-vendor.test/a.js",
+    ]);
+
+    // After the review date the engine emits no advisory: nothing is dropped.
+    const c = scanThemeFiles(loaded, new Date("2027-01-09T00:00:00Z"));
+    expect(dropAdvisoryUnknownScripts(c.unknownScripts, c.findings)).toHaveLength(3);
   });
 
-  it("the collectors themselves skip nothing unless told which entries are live", () => {
-    const f = file("layout/theme.liquid", `${TAG}\n${LINK}`);
-    expect(collectUnknownScripts(f)).toHaveLength(1);
-    expect(collectUnknownStylesheets(f)).toHaveLength(1);
-    expect(collectUnknownScripts(f, undefined, [HULK])).toEqual([]);
-    expect(collectUnknownStylesheets(f, undefined, [HULK])).toEqual([]);
-    expect(collectUnknownScripts(f, undefined, [OTHER])).toHaveLength(1);
+  it("only the entry that is reported is dropped", () => {
+    const other = u("https://widgets.example-reviews.test/w.js");
+    expect(dropAdvisoryUnknownScripts([SCRIPT, other], PERSISTED, [HULK, OTHER])).toEqual([other]);
+  });
+
+  it("a finding whose entry is no longer on the list drops nothing", () => {
+    expect(dropAdvisoryUnknownScripts(ALL, PERSISTED, [])).toEqual(ALL);
+    expect(dropAdvisoryUnknownScripts(ALL, PERSISTED, [OTHER])).toEqual(ALL);
+  });
+
+  it("keeps a row whose URL has no parseable host, and never mutates its input", () => {
+    const odd = u("not a url");
+    const input = [SCRIPT, odd];
+    expect(dropAdvisoryUnknownScripts(input, PERSISTED)).toEqual([odd]);
+    expect(input).toEqual([SCRIPT, odd]);
+    expect(dropAdvisoryUnknownScripts([], PERSISTED)).toEqual([]);
   });
 });
