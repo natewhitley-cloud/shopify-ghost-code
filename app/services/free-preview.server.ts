@@ -30,7 +30,7 @@ import type { FindingType } from "@prisma/client";
 import type { FindingRow } from "./finding-aggregation.server";
 import {
   isNeverPaywalledFindingType,
-  NEVER_PAYWALLED_FINDING_TYPES,
+  OWN_SECTION_FINDING_TYPES,
 } from "../lib/finding-classification";
 import { CONSEQUENCE_MAP } from "../lib/finding-consequence";
 import { freePreviewCount, pickFreePreviewFindings } from "../lib/free-preview";
@@ -48,6 +48,7 @@ export const PREVIEW_READ_BUCKETS: FindingType[][] = (() => {
   for (const type of Object.keys(CONSEQUENCE_MAP) as FindingType[]) {
     if (isNeverPaywalledFindingType(type)) continue;
     const { primary, urgency } = CONSEQUENCE_MAP[type];
+    if (primary === null) continue; // no lane: never a preview row
     const key = `${primary}|${urgency}`;
     buckets.set(key, [...(buckets.get(key) ?? []), type]);
   }
@@ -103,25 +104,22 @@ export async function getFreePreviewFindings(
 }
 
 /**
- * The never-paywalled findings a Free shop sees in full OUTSIDE the security
- * alert (gc-14x5): every non-ignored finding of a NEVER_PAYWALLED_FINDING_TYPES
- * type other than MALICIOUS_SCRIPT (today: affected-app advisories), most
- * important first. Malicious code is not here because the scan page's security
- * alert already shows every malicious finding, ignored or not.
+ * The findings the scan page shows in their own section above the findings
+ * list, on EVERY plan (gc-14x5): every non-ignored finding of an
+ * OWN_SECTION_FINDING_TYPES type (today: affected-app advisories), most
+ * important first. They are never paywalled, so Free sees them in full.
  *
  * Unlike malicious code these HONOUR IGNORES: `keptFindings` non-null means
  * the shop has ignores and these are the kept rows (no query). Null means it
  * has none, so every stored row counts: one read per type the summary says is
  * present (at most one finding per advisory list entry, so the read is tiny).
  */
-export async function getFreeAlwaysShownFindings(
+export async function getOwnSectionFindings(
   scanId: string,
   byType: Partial<Record<FindingType, number>>,
   keptFindings: readonly FindingRow[] | null,
 ): Promise<FindingRow[]> {
-  const types: FindingType[] = NEVER_PAYWALLED_FINDING_TYPES.filter(
-    (type) => type !== "MALICIOUS_SCRIPT",
-  );
+  const types: readonly FindingType[] = OWN_SECTION_FINDING_TYPES;
   let rows: FindingRow[];
   if (keptFindings !== null) {
     rows = keptFindings.filter((f) => types.includes(f.findingType));

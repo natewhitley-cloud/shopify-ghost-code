@@ -48,7 +48,9 @@ describe("CONSEQUENCE_MAP exhaustiveness", () => {
     for (const type of allTypes) {
       const entry = CONSEQUENCE_MAP[type];
       expect(entry, `${type} must have a CONSEQUENCE_MAP entry`).toBeDefined();
-      expect(ALL_LANES).toContain(entry.primary);
+      // gc-14x5: exactly one type has NO lane (an affected-app advisory).
+      if (type === "APP_INCIDENT_ADVISORY") expect(entry.primary).toBeNull();
+      else expect(ALL_LANES).toContain(entry.primary);
       for (const sec of entry.secondary) {
         expect(ALL_LANES).toContain(sec);
       }
@@ -193,7 +195,7 @@ describe("laneLabelForLane", () => {
 // ---------------------------------------------------------------------------
 
 describe("typesForLane partition", () => {
-  it("primary lanes partition all 39 types with no type in two lanes", () => {
+  it("primary lanes partition the 38 laned types with no type in two lanes (the advisory has none)", () => {
     const seen = new Set<FindingType>();
     let total = 0;
 
@@ -207,10 +209,15 @@ describe("typesForLane partition", () => {
       total += types.length;
     }
 
-    expect(total).toBe(39);
-    expect(seen.size).toBe(39);
-    // Union equals the full enum set.
-    expect([...seen].sort()).toEqual(Object.values(FindingType).sort());
+    expect(total).toBe(38);
+    expect(seen.size).toBe(38);
+    // Union equals the full enum set minus the one type with no lane (gc-14x5).
+    expect([...seen].sort()).toEqual(
+      Object.values(FindingType)
+        .filter((t) => t !== "APP_INCIDENT_ADVISORY")
+        .sort(),
+    );
+    expect(laneForType("APP_INCIDENT_ADVISORY")).toBeNull();
   });
 });
 

@@ -248,6 +248,7 @@ const SCAN_PAGE_DATA = {
   trialEligible: false,
   reviewRequestNonce: null,
   maliciousFindings: [],
+  alwaysShownFindings: [],
   findingSummary: { total: 0, bySeverity: { HIGH: 0, MEDIUM: 0, LOW: 0 }, byType: {} },
   canViewDetails: true,
   canUseDiffing: false,

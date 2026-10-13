@@ -858,6 +858,81 @@ describe("getFindingsPageForScan", () => {
     );
   });
 
+  // gc-14x5: types shown in their own section are never in the list.
+  describe("excludeFindingTypes", () => {
+    const EXCLUDED = [FindingType.APP_INCIDENT_ADVISORY];
+
+    it("no type filter: excluded with notIn", async () => {
+      mockDb.finding.findMany.mockResolvedValue([]);
+
+      await getFindingsPageForScan(SCAN_ID, { limit: PAGE_SIZE, excludeFindingTypes: EXCLUDED });
+
+      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({
+        scanId: SCAN_ID,
+        findingType: { notIn: ["APP_INCIDENT_ADVISORY"] },
+      });
+    });
+
+    it("a lane's type set: excluded types are dropped from the set", async () => {
+      mockDb.finding.findMany.mockResolvedValue([]);
+
+      await getFindingsPageForScan(SCAN_ID, {
+        limit: PAGE_SIZE,
+        findingTypes: [FindingType.GHOST_PIXEL, FindingType.APP_INCIDENT_ADVISORY],
+        excludeFindingTypes: EXCLUDED,
+      });
+
+      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({
+        scanId: SCAN_ID,
+        findingType: { in: ["GHOST_PIXEL"] },
+      });
+    });
+
+    it("a single type filter is applied as given (the caller validates it)", async () => {
+      mockDb.finding.findMany.mockResolvedValue([]);
+
+      await getFindingsPageForScan(SCAN_ID, {
+        limit: PAGE_SIZE,
+        findingType: FindingType.GHOST_SCRIPT,
+        excludeFindingTypes: EXCLUDED,
+      });
+
+      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({
+        scanId: SCAN_ID,
+        findingType: FindingType.GHOST_SCRIPT,
+      });
+    });
+
+    it("severity and app filters still apply beside it", async () => {
+      mockDb.finding.findMany.mockResolvedValue([]);
+
+      await getFindingsPageForScan(SCAN_ID, {
+        limit: PAGE_SIZE,
+        severity: "HIGH",
+        appName: "Klaviyo",
+        excludeFindingTypes: EXCLUDED,
+      });
+
+      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({
+        scanId: SCAN_ID,
+        severity: "HIGH",
+        appName: "Klaviyo",
+        findingType: { notIn: ["APP_INCIDENT_ADVISORY"] },
+      });
+    });
+
+    it.each([[undefined], [[]]])("absent or empty (%j): the query is unchanged", async (value) => {
+      mockDb.finding.findMany.mockResolvedValue([]);
+
+      await getFindingsPageForScan(SCAN_ID, {
+        limit: PAGE_SIZE,
+        excludeFindingTypes: value as FindingType[] | undefined,
+      });
+
+      expect(mockDb.finding.findMany.mock.calls[0][0].where).toEqual({ scanId: SCAN_ID });
+    });
+  });
+
   it("omits the type filter when findingTypes is an empty array", async () => {
     mockDb.finding.findMany.mockResolvedValue([]);
 

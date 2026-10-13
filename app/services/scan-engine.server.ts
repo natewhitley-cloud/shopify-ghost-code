@@ -75,11 +75,12 @@ import {
 } from "./app-lookup.server";
 import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
+import { isAdvisoryCheckLive } from "./soft-launch-flags.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import {
+  activeAdvisories,
   advisoryDescription,
   APP_INCIDENT_ADVISORIES,
-  isAdvisoryActive,
   matchAdvisoryScriptHost,
   type AppIncidentAdvisory,
 } from "../data/app-incident-advisories.server";
@@ -2271,7 +2272,7 @@ export function detectAppIncidentAdvisories(
   advisories: ReadonlyArray<AppIncidentAdvisory> = APP_INCIDENT_ADVISORIES,
 ): CreateFindingInput[] {
   // Entries still to find. Shrinks as each one gets its single finding.
-  let pending = advisories.filter((a) => isAdvisoryActive(a, now));
+  let pending = activeAdvisories(now, advisories);
   const found = new Map<AppIncidentAdvisory, CreateFindingInput>();
 
   for (const file of files) {
@@ -2964,6 +2965,7 @@ export function identifyAppForExternalUrl(rawUrl: string): string | null {
 export function collectUnknownScripts(
   file: ThemeFile,
   benignSkips?: BenignSkipCounter,
+  liveAdvisories: ReadonlyArray<AppIncidentAdvisory> = [],
 ): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
   let settingGatedLines: Set<number> | null = null;
@@ -2984,6 +2986,9 @@ export function collectUnknownScripts(
       // Known-malicious hosts are reported as MALICIOUS_SCRIPT findings; never
       // route them into the flywheel, which asks the merchant to name the app.
       if (matchMaliciousDomain(hostname)) continue;
+      // A host reported as a LIVE affected-app advisory (gc-14x5) is already
+      // named to the merchant: never also ask "which app left this?".
+      if (matchAdvisoryScriptHost(hostname, liveAdvisories)) continue;
 
       // Drop benign public-CDN libraries / web fonts (not orphaned app code)
       if (isBenignLibrary(url)) {
@@ -3016,6 +3021,7 @@ export function collectUnknownScripts(
 export function collectUnknownStylesheets(
   file: ThemeFile,
   benignSkips?: BenignSkipCounter,
+  liveAdvisories: ReadonlyArray<AppIncidentAdvisory> = [],
 ): UnknownExternalResource[] {
   const unknowns: UnknownExternalResource[] = [];
   let settingGatedLines: Set<number> | null = null;
@@ -3038,6 +3044,9 @@ export function collectUnknownStylesheets(
       // Known-malicious hosts are reported as MALICIOUS_SCRIPT findings; never
       // route them into the flywheel, which asks the merchant to name the app.
       if (matchMaliciousDomain(hostname)) continue;
+      // A host reported as a LIVE affected-app advisory (gc-14x5) is already
+      // named to the merchant: never also ask "which app left this?".
+      if (matchAdvisoryScriptHost(hostname, liveAdvisories)) continue;
 
       // Drop benign public-CDN libraries / web fonts (not orphaned app code)
       if (isBenignLibrary(url)) {
@@ -5582,8 +5591,13 @@ function firstFindingsByLine(findings: CreateFindingInput[], n: number): CreateF
  */
 const EARLY_EXIT_LIMIT = MAX_FINDINGS_PER_FILE_PER_TYPE + 1;
 
-export function scanThemeFiles(files: ThemeFile[]): ScanResult {
+export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): ScanResult {
   let findings: CreateFindingInput[] = [];
+  // Advisory entries whose finding the merchant will actually see (gc-14x5):
+  // the check's flag is on and the entry has not passed its review date. Only
+  // their hosts are kept out of the unknown-script collectors; with the flag
+  // off or the entry expired, the host is collected exactly as before.
+  const liveAdvisories = isAdvisoryCheckLive(now) ? activeAdvisories(now) : [];
   const unknownScripts: UnknownExternalResource[] = [];
   const skippedFiles: SkippedFile[] = [];
   const staticProductCandidates: StaticProductCandidate[] = [];
@@ -5672,8 +5686,8 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
 
     // Collect unrecognized external resources (benign libraries are dropped and
     // counted into benignSkips rather than emitted).
-    unknownScripts.push(...collectUnknownScripts(file, benignSkips));
-    unknownScripts.push(...collectUnknownStylesheets(file, benignSkips));
+    unknownScripts.push(...collectUnknownScripts(file, benignSkips, liveAdvisories));
+    unknownScripts.push(...collectUnknownStylesheets(file, benignSkips, liveAdvisories));
 
     // Collect the full third-party domain graph (Feature 1). Unlike the unknown-
     // resource collectors this keeps EVERY non-Shopify host — matched-to-app,
@@ -5742,7 +5756,7 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // Pass 5 (cont.): affected-app advisories (gc-14x5). Cross-file: at most one
   // finding per curated list entry, anchored to the first live reference
   // (see CROSS_FILE_FINDING_TYPES in finding-classification).
-  findings.push(...detectAppIncidentAdvisories(files));
+  findings.push(...detectAppIncidentAdvisories(files, now));
 
   // Pass 5b: drop an active app's findings in its own files (gc-clt4). Runs
   // before Pass 6 so dropped findings cannot corroborate GHOST_APP_EMBED.

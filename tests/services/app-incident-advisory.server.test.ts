@@ -7,9 +7,10 @@
  * public report names the app. Nothing here may ever claim the store was hit.
  */
 import { FindingType, Severity } from "@prisma/client";
-import { describe, it, expect } from "vitest";
+import { afterEach, describe, it, expect } from "vitest";
 
 import {
+  activeAdvisories,
   advisoryDescription,
   APP_INCIDENT_ADVISORIES,
   formatAdvisoryDate,
@@ -20,8 +21,11 @@ import {
 import { APP_SIGNATURES } from "../../app/data/app-signatures.server";
 import { matchMaliciousDomain } from "../../app/data/malicious-domains.server";
 import { getFindingConfidence } from "../../app/lib/finding-classification";
+import { advisoryReportUrlForFinding } from "../../app/services/app-incident-advisory.server";
 import {
   ACTIVE_APP_OWN_FILE_TYPES,
+  collectUnknownScripts,
+  collectUnknownStylesheets,
   detectAppIncidentAdvisories,
   detectMaliciousScripts,
   dropActiveAppOwnFileFindings,
@@ -762,7 +766,7 @@ describe("scanThemeFiles with an advisory", () => {
     expect(detectMaliciousScripts(file("layout/theme.liquid", TAG))).toEqual([]);
   });
 
-  it("leaves the existing detectors' treatment of the host unchanged (still an unknown script)", () => {
+  it("with the check dark (flag off) the host is still an unknown script, as before the feature", () => {
     const { unknownScripts, findings } = scanThemeFiles([file("layout/theme.liquid", TAG)]);
     expect(unknownScripts.map((s) => s.url)).toEqual([`https://${HOST}/hulkcode.js`]);
     expect(findings.some((f) => f.findingType === FindingType.GHOST_SCRIPT)).toBe(false);
@@ -778,5 +782,176 @@ describe("scanThemeFiles with an advisory", () => {
 
   it("is a signature-grade detection: it fires only on a curated-list match", () => {
     expect(getFindingConfidence("APP_INCIDENT_ADVISORY")).toBe("signature");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 2: active entries, the report link, and no double report
+// ---------------------------------------------------------------------------
+
+describe("activeAdvisories", () => {
+  it("is the entries that have not passed their review date, in list order", () => {
+    expect(activeAdvisories(new Date("2026-10-20T00:00:00Z"), [HULK, OTHER])).toEqual([
+      HULK,
+      OTHER,
+    ]);
+    expect(activeAdvisories(new Date("2026-12-01T00:00:00Z"), [HULK, OTHER])).toEqual([HULK]);
+    expect(activeAdvisories(new Date("2027-01-09T00:00:00Z"), [HULK, OTHER])).toEqual([]);
+  });
+
+  it("uses the real list by default and never mutates it", () => {
+    expect(activeAdvisories(ACTIVE)).toEqual([...APP_INCIDENT_ADVISORIES]);
+    expect(activeAdvisories(new Date("2030-01-01T00:00:00Z"))).toEqual([]);
+    expect(APP_INCIDENT_ADVISORIES).toHaveLength(1);
+  });
+});
+
+describe("advisoryReportUrlForFinding (the card's 'Read the report' link)", () => {
+  const stored = { findingType: "APP_INCIDENT_ADVISORY", description: DESCRIPTION };
+
+  it("resolves a stored finding to its entry's public report", () => {
+    expect(advisoryReportUrlForFinding(stored, ACTIVE)).toBe(
+      "https://romanzipp.com/blog/shopify-hit-with-phishing-attack",
+    );
+  });
+
+  it("resolves the finding the detector actually emits (round trip)", () => {
+    const [finding] = detect([file("layout/theme.liquid", TAG)]);
+    expect(advisoryReportUrlForFinding(finding, ACTIVE)).toBe(HULK.sourceUrl);
+  });
+
+  it("picks the right entry among several, by any of its script hosts", () => {
+    const [finding] = detect(
+      [file("layout/theme.liquid", `<script src="https://legacy.example-reviews.test/w.js">`)],
+      ACTIVE,
+      [HULK, OTHER],
+    );
+    expect(advisoryReportUrlForFinding(finding, ACTIVE, [HULK, OTHER])).toBe(OTHER.sourceUrl);
+    expect(advisoryReportUrlForFinding(stored, ACTIVE, [OTHER, HULK])).toBe(HULK.sourceUrl);
+  });
+
+  it("no link once the entry has passed its review date", () => {
+    expect(advisoryReportUrlForFinding(stored, new Date("2027-01-08T23:59:59Z"))).toBe(
+      HULK.sourceUrl,
+    );
+    expect(advisoryReportUrlForFinding(stored, new Date("2027-01-09T00:00:00Z"))).toBeNull();
+  });
+
+  it("no link when the entry was removed from the list", () => {
+    expect(advisoryReportUrlForFinding(stored, ACTIVE, [])).toBeNull();
+    expect(advisoryReportUrlForFinding(stored, ACTIVE, [OTHER])).toBeNull();
+  });
+
+  it("no link when the entry was reworded since the scan (it can no longer be matched for certain)", () => {
+    const reworded = { ...HULK, summary: "named in a different report" };
+    expect(advisoryReportUrlForFinding(stored, ACTIVE, [reworded])).toBeNull();
+  });
+
+  it.each([
+    [
+      "another finding type with the same text",
+      { findingType: "MALICIOUS_SCRIPT", description: DESCRIPTION },
+    ],
+    ["an empty description", { findingType: "APP_INCIDENT_ADVISORY", description: "" }],
+    [
+      "a near miss (trailing period)",
+      { findingType: "APP_INCIDENT_ADVISORY", description: `${DESCRIPTION}.` },
+    ],
+    [
+      "a different case",
+      { findingType: "APP_INCIDENT_ADVISORY", description: DESCRIPTION.toLowerCase() },
+    ],
+  ])("no link for %s", (_label, finding) => {
+    expect(advisoryReportUrlForFinding(finding, ACTIVE)).toBeNull();
+  });
+
+  it("uses the real clock and list by default", () => {
+    // Guarded by the review-date test: the entry is active today.
+    expect(advisoryReportUrlForFinding(stored)).toBe(HULK.sourceUrl);
+  });
+});
+
+describe("no double report: an advisory host is not also an 'unrecognized script'", () => {
+  const FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
+  const LINK = `<link rel="stylesheet" href="https://${HOST}/hulk.css">`;
+  const theme = [
+    file(
+      "layout/theme.liquid",
+      `${TAG}\n${LINK}\n<script src="https://cdn.unknown-vendor.test/a.js"></script>`,
+    ),
+  ];
+  const unknownUrls = (now: Date) => scanThemeFiles(theme, now).unknownScripts.map((s) => s.url);
+
+  afterEach(() => {
+    delete process.env[FLAG];
+  });
+
+  it("flag ON and entry unexpired: the host is left out (script and stylesheet), other unknowns stay", () => {
+    process.env[FLAG] = "true";
+    expect(unknownUrls(ACTIVE)).toEqual(["https://cdn.unknown-vendor.test/a.js"]);
+    // The advisory itself is still emitted.
+    expect(
+      scanThemeFiles(theme, ACTIVE).findings.filter(
+        (f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY,
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("flag OFF (the production default): the host is listed exactly as before", () => {
+    expect(unknownUrls(ACTIVE)).toEqual([
+      `https://${HOST}/hulkcode.js`,
+      "https://cdn.unknown-vendor.test/a.js",
+      `https://${HOST}/hulk.css`,
+    ]);
+  });
+
+  it.each(["1", "TRUE", "false", ""])("flag %j is not on: listed as before", (value) => {
+    process.env[FLAG] = value;
+    expect(unknownUrls(ACTIVE)).toContain(`https://${HOST}/hulkcode.js`);
+  });
+
+  it("flag ON but the entry has EXPIRED: the host is listed again, and no advisory is emitted", () => {
+    process.env[FLAG] = "true";
+    const expired = new Date("2027-01-09T00:00:00Z");
+    expect(unknownUrls(expired)).toEqual([
+      `https://${HOST}/hulkcode.js`,
+      "https://cdn.unknown-vendor.test/a.js",
+      `https://${HOST}/hulk.css`,
+    ]);
+    expect(
+      scanThemeFiles(theme, expired).findings.some(
+        (f) => f.findingType === FindingType.APP_INCIDENT_ADVISORY,
+      ),
+    ).toBe(false);
+  });
+
+  it("the boundary: left out on the review date, listed the day after", () => {
+    process.env[FLAG] = "true";
+    expect(unknownUrls(new Date("2027-01-08T12:00:00Z"))).not.toContain(
+      `https://${HOST}/hulkcode.js`,
+    );
+    expect(unknownUrls(new Date("2027-01-09T12:00:00Z"))).toContain(`https://${HOST}/hulkcode.js`);
+  });
+
+  it("only the listed host is left out: a sibling HulkApps host unknown to GhostCode stays", () => {
+    process.env[FLAG] = "true";
+    const sibling = [
+      file(
+        "layout/theme.liquid",
+        `${TAG}\n<script src="https://other-app.hulkapps.com/x.js"></script>`,
+      ),
+    ];
+    expect(scanThemeFiles(sibling, ACTIVE).unknownScripts.map((s) => s.url)).toEqual([
+      "https://other-app.hulkapps.com/x.js",
+    ]);
+  });
+
+  it("the collectors themselves skip nothing unless told which entries are live", () => {
+    const f = file("layout/theme.liquid", `${TAG}\n${LINK}`);
+    expect(collectUnknownScripts(f)).toHaveLength(1);
+    expect(collectUnknownStylesheets(f)).toHaveLength(1);
+    expect(collectUnknownScripts(f, undefined, [HULK])).toEqual([]);
+    expect(collectUnknownStylesheets(f, undefined, [HULK])).toEqual([]);
+    expect(collectUnknownScripts(f, undefined, [OTHER])).toHaveLength(1);
   });
 });

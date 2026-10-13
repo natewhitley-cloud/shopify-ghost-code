@@ -112,7 +112,9 @@ export const LANES: ReadonlyArray<{
 /**
  * Exhaustive map from every FindingType to its consequence metadata:
  *   - primary:   the lane this finding is counted and filtered under (Slice 3's
- *                `?lane=` deep link matches on primary only).
+ *                `?lane=` deep link matches on primary only), or `null` for a
+ *                type that belongs in NO lane (see APP_INCIDENT_ADVISORY): it
+ *                is in no lane's count, filter or copy.
  *   - secondary: additional lanes the finding also touches, for richer detail
  *                copy. NOT used for counting or filtering.
  *   - urgency:   how soon the merchant should act.
@@ -125,7 +127,7 @@ export const LANES: ReadonlyArray<{
  */
 export const CONSEQUENCE_MAP: Record<
   FindingType,
-  { primary: LaneKey; secondary: LaneKey[]; urgency: UrgencyKey; agentic: boolean }
+  { primary: LaneKey | null; secondary: LaneKey[]; urgency: UrgencyKey; agentic: boolean }
 > = {
   GHOST_SCRIPT: {
     primary: "speed",
@@ -399,14 +401,17 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "act-now",
     agentic: false,
   },
-  // APP_INCIDENT_ADVISORY (gc-14x5): the theme loads code from an app named in
-  // a public security incident report. Same act-now lane as MALICIOUS_SCRIPT
-  // (owner decision: shopper data is what is at stake). The lane's own default
-  // "so what" line talks about a REMOVED app, which is not what an advisory
-  // says, so "Start here" gives it its own cost line (findingCostLine).
+  // APP_INCIDENT_ADVISORY (gc-14x5): NO LANE. The theme loads code from an app
+  // named in a public security incident report. That is not a cost the scan
+  // can state (nothing is known about this store), and no lane's copy is true
+  // of it ("a removed app is still collecting data", "shoppers can see this").
+  // So it counts in no lane on Home, never drives "most of the damage is in",
+  // and matches no `?lane=` filter. It still counts in the findings total and
+  // is shown in its own section on the scan page. act-now only orders it
+  // among its own kind in the "Start here" ranking.
   APP_INCIDENT_ADVISORY: {
-    primary: "privacy",
-    secondary: ["customers-see-it"],
+    primary: null,
+    secondary: [],
     urgency: "act-now",
     agentic: false,
   },
@@ -416,8 +421,8 @@ export const CONSEQUENCE_MAP: Record<
 // Helpers
 // ---------------------------------------------------------------------------
 
-/** Returns the PRIMARY consequence lane for a finding type. */
-export function laneForType(type: FindingType): LaneKey {
+/** The PRIMARY consequence lane for a finding type, or null when it has no lane. */
+export function laneForType(type: FindingType): LaneKey | null {
   return CONSEQUENCE_MAP[type].primary;
 }
 

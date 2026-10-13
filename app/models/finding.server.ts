@@ -352,6 +352,11 @@ export async function getFindingByIdForShop(findingId: string, shopId: string) {
  *     the `?lane=` deep link, which maps one lane to multiple finding types.
  * severity and appName are always ANDed independently of the type filter.
  *
+ * `excludeFindingTypes` (gc-14x5) are types that never appear in the list
+ * (shown in their own section instead). They are dropped from a `findingTypes`
+ * set and, with no type filter at all, excluded with `notIn`. A single
+ * `findingType` is the caller's to validate: it is applied as given.
+ *
  * @returns { items, hasNextPage, nextCursor } where nextCursor is the last
  *   item's id, or null when there is no further page.
  */
@@ -364,6 +369,7 @@ export async function getFindingsPageForScan(
     findingType?: string;
     findingTypes?: FindingType[];
     appName?: string;
+    excludeFindingTypes?: readonly FindingType[];
   },
 ): Promise<{
   items: Awaited<ReturnType<typeof db.finding.findMany>>;
@@ -371,6 +377,7 @@ export async function getFindingsPageForScan(
   nextCursor: string | null;
 }> {
   const { limit, cursor, severity, findingType, findingTypes, appName } = options;
+  const excluded = options.excludeFindingTypes ?? [];
 
   const rows = await db.finding.findMany({
     where: {
@@ -381,8 +388,10 @@ export async function getFindingsPageForScan(
       ...(findingType
         ? { findingType: findingType as FindingType }
         : findingTypes && findingTypes.length > 0
-          ? { findingType: { in: findingTypes } }
-          : {}),
+          ? { findingType: { in: findingTypes.filter((t) => !excluded.includes(t)) } }
+          : excluded.length > 0
+            ? { findingType: { notIn: [...excluded] } }
+            : {}),
       ...(appName ? { appName } : {}),
     },
     // Severity enum declared HIGH, MEDIUM, LOW — ascending = HIGH first.

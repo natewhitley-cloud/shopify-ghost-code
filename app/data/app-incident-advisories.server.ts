@@ -83,6 +83,14 @@ export function isAdvisoryActive(advisory: AppIncidentAdvisory, now: Date): bool
   return now.toISOString().slice(0, 10) <= advisory.reviewBy;
 }
 
+/** The entries of `advisories` that may fire at `now` (see isAdvisoryActive). */
+export function activeAdvisories(
+  now: Date,
+  advisories: ReadonlyArray<AppIncidentAdvisory> = APP_INCIDENT_ADVISORIES,
+): AppIncidentAdvisory[] {
+  return advisories.filter((advisory) => isAdvisoryActive(advisory, now));
+}
+
 /** A hostname's match: the list entry and which of its `scriptHosts` matched. */
 export type AdvisoryHostMatch = { advisory: AppIncidentAdvisory; scriptHost: string };
 

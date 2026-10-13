@@ -1195,6 +1195,9 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
   const sum = (c: Counts) => Object.values(c).reduce((a, b) => a + b, 0);
   const ADVISORY_FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
 
+  // The check is live only while a list entry is unexpired, and these tests
+  // run on the real clock: they need the list to hold an active entry, which
+  // the review-date test (app-incident-advisory.server.test.ts) enforces.
   beforeEach(() => {
     process.env[ADVISORY_FLAG] = "true";
   });
@@ -1278,21 +1281,141 @@ describe("Home: an affected-app advisory is a normal finding, not malicious code
     expect(data.maliciousHealth).toMatchObject({ count: 1 });
   });
 
-  it("counts in the same lane as malicious code, as one finding", async () => {
-    scan({ APP_INCIDENT_ADVISORY: 1 });
-
-    const data = (await runLoader()) as unknown as {
-      laneSummary: Array<{ lane: string; label: string; count: number; urgency: string }>;
+  describe("no consequence lane (round 2)", () => {
+    type LaneData = {
+      laneSummary: Array<{ lane: string; label: string; count: number }>;
+      dominant: string | null;
+      startHere: string | null;
+      findingsTile: { total: number; tone: string };
     };
 
-    expect(data.laneSummary).toEqual([
-      expect.objectContaining({
-        lane: "privacy",
-        label: "Still tracking you",
-        count: 1,
-        urgency: "act-now",
-      }),
-    ]);
+    it("an advisory alone: no lane rows, no dominant lane, no start-here lane; the tile still counts it", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1 });
+
+      const data = (await runLoader()) as unknown as LaneData;
+
+      expect(data.laneSummary).toEqual([]);
+      expect(data.dominant).toBeNull();
+      expect(data.startHere).toBeNull();
+      expect(data.findingsTile).toEqual({ total: 1, tone: "warning" });
+    });
+
+    it("an advisory alone renders no lanes card, no 'all clear', and none of the lane copy", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1 });
+
+      const html = renderDashboard(await runLoader());
+
+      expect(html).not.toContain("You&#x27;re all clear");
+      expect(html).not.toContain("No leftover code found. Your theme is clean.");
+      expect(html).not.toContain("What it&#x27;s costing you");
+      expect(html).not.toContain("Most of the damage is in");
+      expect(html).not.toContain("Still tracking you");
+      expect(html).not.toContain("A removed app is still collecting");
+      expect(html).not.toMatch(/leftover items? from apps you/);
+    });
+
+    it("an advisory beside other findings: the lanes count only the others", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 });
+
+      const data = (await runLoader()) as unknown as LaneData;
+
+      expect(data.laneSummary).toEqual([
+        expect.objectContaining({ lane: "speed", label: "Speed", count: 2 }),
+      ]);
+      expect(data.dominant).toBe("speed");
+      // The tile counts all three.
+      expect(data.findingsTile).toEqual({ total: 3, tone: "warning" });
+
+      const html = renderDashboard(data);
+      expect(html).toContain("What it&#x27;s costing you");
+      // "leftover items" counts the laned findings only: 2, not 3.
+      expect(html).toMatch(/2 leftover items from apps you&#x27;ve uninstalled are/);
+      expect(html).not.toMatch(/3 leftover items/);
+      expect(html).toContain("(2 findings)");
+      expect(html).not.toContain("Still tracking you");
+    });
+
+    it("an advisory beside one privacy-lane finding does not inflate that lane", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1, GHOST_PIXEL: 1 });
+
+      const data = (await runLoader()) as unknown as LaneData;
+
+      expect(data.laneSummary).toEqual([expect.objectContaining({ lane: "privacy", count: 1 })]);
+      expect(renderDashboard(data)).toMatch(/1 leftover item from apps you&#x27;ve uninstalled is/);
+    });
+
+    const ADVISORY_ROW = {
+      id: "adv",
+      scanId: "scan-1",
+      findingType: "APP_INCIDENT_ADVISORY",
+      severity: "HIGH",
+      filename: "layout/theme.liquid",
+      lineNumber: 42,
+      appName: null,
+      codeSnippet: '<script src="https://productoption.hulkapps.com/hulkcode.js"></script>',
+      description: "Loads code from Hulk Product Options",
+      createdAt: new Date("2026-10-12T10:00:00Z"),
+    };
+
+    it("Start here leads with the advisory; the lanes' own 'start here' chip falls back to the lane ranking", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1, GHOST_SCRIPT: 2 });
+      (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([ADVISORY_ROW]);
+
+      const data = (await runLoader()) as unknown as LaneData & {
+        topFindings: Array<{ id: string; lane: string | null; cost: string; href: string }>;
+      };
+
+      expect(data.topFindings).toEqual([
+        expect.objectContaining({
+          id: "adv",
+          lane: null,
+          typeLabel: "App Security Advisories",
+          location: "layout/theme.liquid, line 42",
+          cost: "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
+          href: "/app/scans/scan-1#finding-adv",
+        }),
+      ]);
+      // The advisory has no lane, so the chip goes to the most urgent real lane.
+      expect(data.startHere).toBe("speed");
+    });
+
+    it("the Start here row renders its label, location, cost line and link, and no lane wording", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1 });
+      (getFreeTopFindings as ReturnType<typeof vi.fn>).mockResolvedValue([ADVISORY_ROW]);
+
+      const data = (await runLoader()) as unknown as LaneData;
+      const html = renderDashboard(data);
+      const start = html.indexOf('<section aria-labelledby="top-findings-heading"');
+      const block = html.slice(start, html.indexOf("</section>", start));
+
+      expect(data.startHere).toBeNull();
+      expect(block).toContain(">App Security Advisories</h3>");
+      expect(block).toContain('<s-badge tone="critical">HIGH</s-badge>');
+      expect(block).toContain("layout/theme.liquid, line 42");
+      expect(block).toContain(
+        "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
+      );
+      expect(block).toContain('href="/app/scans/scan-1#finding-adv"');
+      expect(block).toContain("See how to fix");
+      expect(block).not.toMatch(/Still tracking you|removed app|leftover|malicious/i);
+    });
+
+    it("control: a truly clean scan still says all clear", async () => {
+      scan({});
+
+      const html = renderDashboard(await runLoader());
+
+      expect(html).toContain("You&#x27;re all clear");
+      expect(html).toContain("No leftover code found. Your theme is clean.");
+    });
+
+    it("an ignored advisory alone is a clean scan again: all clear", async () => {
+      scan({ APP_INCIDENT_ADVISORY: 1 }, {});
+
+      const html = renderDashboard(await runLoader());
+
+      expect(html).toContain("You&#x27;re all clear");
+    });
   });
 
   it("with the flag off (the production default) the check is dark: its row is left as it was", async () => {

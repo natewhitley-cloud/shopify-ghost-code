@@ -3444,6 +3444,42 @@ describe("scanTheme — APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch (gc-14x5)
   const isAdvisory = (f: { findingType: string }) =>
     f.findingType === FindingType.APP_INCIDENT_ADVISORY;
 
+  // A day on which the list's entry is active (see isAdvisoryCheckLive).
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("flag on but every list entry EXPIRED: not persisted, and the type is not recorded as live", async () => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+    vi.setSystemTime(new Date("2027-01-09T00:00:00Z"));
+    arrange();
+
+    await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some(isAdvisory)).toBe(false);
+    const live = mockFinalizeScan.mock.calls[0][1].liveFindingTypes as string[];
+    expect(live).not.toContain(FindingType.APP_INCIDENT_ADVISORY);
+    // Nothing else leaves the live set.
+    expect(live).toContain(FindingType.GHOST_SCRIPT);
+    expect(live).toContain(FindingType.MALICIOUS_SCRIPT);
+  });
+
+  it("flag on, entry active: the type IS recorded as live", async () => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+    arrange();
+
+    await runScanTheme();
+
+    expect(mockFinalizeScan.mock.calls[0][1].liveFindingTypes).toContain(
+      FindingType.APP_INCIDENT_ADVISORY,
+    );
+  });
+
   it("flag unset (the production default): detected and counted, never persisted", async () => {
     arrange();
 
@@ -3509,6 +3545,15 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     await runScanTheme();
     return mockFinalizeScan.mock.calls[0][1].liveFindingTypes as string[];
   };
+  // gc-14x5: the advisory type is live only while a list entry is unexpired,
+  // so the clock is pinned to a day on which the entry is active.
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   it("flags off: every FindingType except the soft-launched ones", async () => {
     const types = await live();

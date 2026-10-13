@@ -26,7 +26,7 @@
 
 import type { FindingType } from "@prisma/client";
 
-import { isStorefrontFinding } from "./finding-classification";
+import { isOwnSectionFindingType, isStorefrontFinding } from "./finding-classification";
 import type { ThemeInfo } from "./theme-info";
 
 // ---------------------------------------------------------------------------
@@ -464,8 +464,14 @@ function findingsHref(
   fullList: boolean,
 ): string {
   const present = typesForHealthCategory(category).filter((t) => (counts[t] ?? 0) > 0);
-  // Malicious findings live in the security alert on the unfiltered page.
-  if (fullList && present.length === 1 && present[0] !== "MALICIOUS_SCRIPT") {
+  // Malicious findings live in the security alert on the unfiltered page, and
+  // an affected-app advisory in its own section there (it is not in the list).
+  if (
+    fullList &&
+    present.length === 1 &&
+    present[0] !== "MALICIOUS_SCRIPT" &&
+    !isOwnSectionFindingType(present[0])
+  ) {
     return `/app/scans/${scanId}?type=${encodeURIComponent(present[0])}`;
   }
   return `/app/scans/${scanId}`;

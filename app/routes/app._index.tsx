@@ -1264,6 +1264,10 @@ export default function Dashboard() {
   const dominantCount = dominant
     ? (laneSummary.find((row) => row.lane === dominant)?.count ?? 0)
     : 0;
+  // Findings counted in a lane. A finding with no lane (an affected-app
+  // advisory, gc-14x5) is in the tile's total but is not a "leftover item"
+  // and has no cost to list, so the lane copy counts lanes only.
+  const laneTotal = laneSummary.reduce((sum, row) => sum + row.count, 0);
 
   // Whether the plan's scan limit (weekly or monthly) has been reached.
   // isFirstScan overrides the limit — the first scan is always allowed on the free plan.
@@ -1808,9 +1812,9 @@ export default function Dashboard() {
                             )}
                             {laneSummary.length > 0 && (
                               <div className="health-read__lead">
-                                {currentTotal} leftover item{currentTotal === 1 ? "" : "s"} from
-                                apps you&apos;ve uninstalled {currentTotal === 1 ? "is" : "are"}{" "}
-                                still in your theme. See what each is costing you below.
+                                {laneTotal} leftover item{laneTotal === 1 ? "" : "s"} from apps
+                                you&apos;ve uninstalled {laneTotal === 1 ? "is" : "are"} still in
+                                your theme. See what each is costing you below.
                               </div>
                             )}
                           </div>
@@ -1834,92 +1838,100 @@ export default function Dashboard() {
             {/* Consequence lanes — "what it's costing you", worst-first. Lane
               counts leave out ignored findings, so with no lanes this card says
               the theme is clean. It is left out when the scan found known
-              malicious code (ignored or not): Theme health below says so. */}
-            {hasResults && latestScan && !(laneSummary.length === 0 && maliciousHealth) && (
-              <div style={{ ...sectionCard, marginBottom: 0 }}>
-                <s-stack direction="block" gap="base">
-                  <div>
-                    <h2 className="dashboard-section-title">
-                      {laneSummary.length === 0 ? "You're all clear" : "What it's costing you"}
-                    </h2>
-                    {laneSummary.length > 0 && (
-                      <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
-                        Grouped by consequence. Start with the flagged lane.
-                      </div>
-                    )}
-                  </div>
-                  {laneSummary.length === 0 ? (
-                    <div style={{ fontSize: "14px", color: COLOR_SUCCESS }}>
-                      No leftover code found. Your theme is clean.
+              malicious code (ignored or not): Theme health below says so. It
+              is also left out when the only findings have no lane (an
+              affected-app advisory): "You're all clear" would be false, and
+              "Start here" above already shows it. */}
+            {hasResults &&
+              latestScan &&
+              !(laneSummary.length === 0 && (maliciousHealth || currentTotal > 0)) && (
+                <div style={{ ...sectionCard, marginBottom: 0 }}>
+                  <s-stack direction="block" gap="base">
+                    <div>
+                      <h2 className="dashboard-section-title">
+                        {laneSummary.length === 0 ? "You're all clear" : "What it's costing you"}
+                      </h2>
+                      {laneSummary.length > 0 && (
+                        <div style={{ fontSize: "13px", color: TEXT_SUBDUED, marginTop: "2px" }}>
+                          Grouped by consequence. Start with the flagged lane.
+                        </div>
+                      )}
                     </div>
-                  ) : (
-                    <>
-                      <div className="lanes">
-                        {orderedLanes.map((row) => {
-                          const chip = URGENCY_CHIP[row.urgency];
-                          const isStart = row.lane === startHere;
-                          const c = LANE_COLOR[row.lane];
-                          return (
-                            <Link
-                              key={row.lane}
-                              to={`/app/scans/${latestScanId}?${mergeSearchParams(searchParams, { lane: row.lane })}`}
-                              aria-label={`Review ${row.count} ${row.label} finding${row.count === 1 ? "" : "s"}. ${chip.label}${isStart ? ", start here" : ""}`}
-                              className={`lane${isStart ? " start" : ""}`}
-                              style={{
-                                background: c.tint,
-                                border: `1px solid ${c.bd}`,
-                                borderLeft: `${isStart ? 6 : 5}px solid ${c.fill}`,
-                                ...(isStart
-                                  ? {
-                                      boxShadow: `0 0 0 1px ${c.bd}, 0 2px 8px rgba(0,0,0,0.06)`,
-                                    }
-                                  : {}),
-                              }}
-                            >
-                              <div className="lane__count" style={{ color: c.ink }}>
-                                {row.count}
-                              </div>
-                              <div className="lane__body">
-                                <div className="lane__label-row">
-                                  <span className="lane__label">{row.label}</span>
-                                  {isStart && (
-                                    <span className="lane__chip lane__chip--start">Start here</span>
-                                  )}
-                                  {row.hasAgentic && (
-                                    <span className="lane__chip lane__chip--agentic">
-                                      AI agents
-                                    </span>
-                                  )}
-                                  <span
-                                    className="lane__chip"
-                                    style={{
-                                      background: chip.bg,
-                                      color: chip.text,
-                                      ...(chip.border
-                                        ? { border: `1px solid ${chip.border}` }
-                                        : {}),
-                                    }}
-                                  >
-                                    {chip.label}
-                                  </span>
+                    {laneSummary.length === 0 ? (
+                      <div style={{ fontSize: "14px", color: COLOR_SUCCESS }}>
+                        No leftover code found. Your theme is clean.
+                      </div>
+                    ) : (
+                      <>
+                        <div className="lanes">
+                          {orderedLanes.map((row) => {
+                            const chip = URGENCY_CHIP[row.urgency];
+                            const isStart = row.lane === startHere;
+                            const c = LANE_COLOR[row.lane];
+                            return (
+                              <Link
+                                key={row.lane}
+                                to={`/app/scans/${latestScanId}?${mergeSearchParams(searchParams, { lane: row.lane })}`}
+                                aria-label={`Review ${row.count} ${row.label} finding${row.count === 1 ? "" : "s"}. ${chip.label}${isStart ? ", start here" : ""}`}
+                                className={`lane${isStart ? " start" : ""}`}
+                                style={{
+                                  background: c.tint,
+                                  border: `1px solid ${c.bd}`,
+                                  borderLeft: `${isStart ? 6 : 5}px solid ${c.fill}`,
+                                  ...(isStart
+                                    ? {
+                                        boxShadow: `0 0 0 1px ${c.bd}, 0 2px 8px rgba(0,0,0,0.06)`,
+                                      }
+                                    : {}),
+                                }}
+                              >
+                                <div className="lane__count" style={{ color: c.ink }}>
+                                  {row.count}
                                 </div>
-                                <div className="lane__sowhat">{soWhatForLane(row.lane)}</div>
-                              </div>
-                              <div className="lane__review" style={{ color: c.ink }}>
-                                Review →
-                              </div>
-                            </Link>
-                          );
-                        })}
-                      </div>
-                      <div className="lanes-footer">
-                        ✓ Then re-scan to confirm it&apos;s gone. Each fix drops your finding count.
-                      </div>
-                    </>
-                  )}
-                </s-stack>
-              </div>
-            )}
+                                <div className="lane__body">
+                                  <div className="lane__label-row">
+                                    <span className="lane__label">{row.label}</span>
+                                    {isStart && (
+                                      <span className="lane__chip lane__chip--start">
+                                        Start here
+                                      </span>
+                                    )}
+                                    {row.hasAgentic && (
+                                      <span className="lane__chip lane__chip--agentic">
+                                        AI agents
+                                      </span>
+                                    )}
+                                    <span
+                                      className="lane__chip"
+                                      style={{
+                                        background: chip.bg,
+                                        color: chip.text,
+                                        ...(chip.border
+                                          ? { border: `1px solid ${chip.border}` }
+                                          : {}),
+                                      }}
+                                    >
+                                      {chip.label}
+                                    </span>
+                                  </div>
+                                  <div className="lane__sowhat">{soWhatForLane(row.lane)}</div>
+                                </div>
+                                <div className="lane__review" style={{ color: c.ink }}>
+                                  Review →
+                                </div>
+                              </Link>
+                            );
+                          })}
+                        </div>
+                        <div className="lanes-footer">
+                          ✓ Then re-scan to confirm it&apos;s gone. Each fix drops your finding
+                          count.
+                        </div>
+                      </>
+                    )}
+                  </s-stack>
+                </div>
+              )}
 
             {/* Theme health (gc-i6du): what the scan checked and found, by
               category. A plain list: no score, no percentage. */}

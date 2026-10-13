@@ -82,6 +82,9 @@ export function pickFreePreviewFindings<T extends PreviewCandidate>(
   for (const c of candidates) {
     if (isNeverPaywalledFindingType(c.findingType)) continue;
     const lane = laneForType(c.findingType);
+    // A type with no lane is never a preview row (today only the advisory,
+    // already dropped above as never paywalled).
+    if (lane === null) continue;
     const rows = byLane.get(lane) ?? [];
     rows.push(c);
     byLane.set(lane, rows);

@@ -475,3 +475,25 @@ const NEVER_PAYWALLED_FINDING_TYPE_SET: ReadonlySet<string> = new Set(
 export function isNeverPaywalledFindingType(findingType: string): boolean {
   return NEVER_PAYWALLED_FINDING_TYPE_SET.has(findingType);
 }
+
+// ---------------------------------------------------------------------------
+// Findings shown in their own section, never in the findings list (gc-14x5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Finding types the scan page shows in their OWN section above the findings
+ * list, on every plan, and never repeats inside the list, its type filter or
+ * its lane filter. Today: affected-app advisories. They honour ignores (an
+ * ignored one is not shown there).
+ *
+ * MALICIOUS_SCRIPT is not here: it has the critical security alert, which
+ * shows it regardless of ignores, and it also stays in the paid list.
+ */
+export const OWN_SECTION_FINDING_TYPES = ["APP_INCIDENT_ADVISORY"] as const;
+
+const OWN_SECTION_FINDING_TYPE_SET: ReadonlySet<string> = new Set(OWN_SECTION_FINDING_TYPES);
+
+/** True for a type shown in its own section and never in the findings list. */
+export function isOwnSectionFindingType(findingType: string): boolean {
+  return OWN_SECTION_FINDING_TYPE_SET.has(findingType);
+}

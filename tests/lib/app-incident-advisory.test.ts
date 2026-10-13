@@ -21,23 +21,31 @@ import {
   hasVisualImpact,
   isAdminResourceFinding,
   isNeverPaywalledFindingType,
+  isOwnSectionFindingType,
   isStorefrontFinding,
   isThemeFileFinding,
   NEVER_PAYWALLED_FINDING_TYPES,
+  OWN_SECTION_FINDING_TYPES,
   SIZE_SKIP_STILL_SCANNED_FINDING_TYPES,
 } from "../../app/lib/finding-classification";
 import {
   computeLaneSummary,
   CONSEQUENCE_MAP,
+  dominantLane,
   laneForType,
+  LANES,
+  soWhatForLane,
+  startHereLane,
   typesForLane,
 } from "../../app/lib/finding-consequence";
 import {
   buildRemovalInstructions,
   findingMatchedLine,
+  getFindingCardCopy,
   getFindingImpact,
   getFindingRemediation,
   LINE_CONTEXT_SNIPPET_TYPES,
+  splitNumberedSteps,
 } from "../../app/lib/finding-remediation";
 import { getRemovalSafety, REMOVAL_SAFETY_LABELS } from "../../app/lib/finding-safety";
 import { FINDING_TYPE_LABELS, findingTypeLabel } from "../../app/lib/finding-type-labels";
@@ -151,7 +159,7 @@ describe("never paywalled: the Free preview picker (free-preview.ts)", () => {
   });
 
   it("drops both never-paywalled types and keeps the rest of the lane", () => {
-    // GHOST_PIXEL shares the advisory's and malicious code's lane (privacy).
+    // GHOST_PIXEL shares malicious code's lane (privacy); the advisory has none.
     const picked = pickFreePreviewFindings(
       [c("mal", "MALICIOUS_SCRIPT"), c("adv", ADVISORY), c("pixel", "GHOST_PIXEL", "LOW")],
       5,
@@ -340,16 +348,16 @@ describe("Start here presentation", () => {
     appName: null,
   };
 
-  it("builds the row: label, location, the advisory's own cost line, privacy lane", () => {
+  it("builds the row: label, location, the advisory's own cost line, NO lane", () => {
     expect(toTopFindingViews("scan-1", [finding], true)).toEqual([
       {
         id: "f1",
         severity: "HIGH",
-        lane: "privacy",
+        lane: null,
         typeLabel: "App Security Advisories",
         location: "layout/theme.liquid, line 42",
         cost: "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
-        href: "/app/scans/scan-1?type=APP_INCIDENT_ADVISORY#finding-f1",
+        href: "/app/scans/scan-1#finding-f1",
         appName: null,
       },
     ]);
@@ -369,9 +377,13 @@ describe("Start here presentation", () => {
     expect(line).not.toMatch(/[—–]/);
   });
 
-  it("links to the full list filtered to the type on a full-list plan (the row is anchored there)", () => {
+  it("links to its card on the unfiltered page on a full-list plan too (it is above the list, not in it)", () => {
     expect(topFindingHref("scan-1", { id: "f1", findingType: ADVISORY }, true)).toBe(
-      "/app/scans/scan-1?type=APP_INCIDENT_ADVISORY#finding-f1",
+      "/app/scans/scan-1#finding-f1",
+    );
+    // Control: any other type still links into the type-filtered list.
+    expect(topFindingHref("scan-1", { id: "f2", findingType: "GHOST_SCRIPT" }, true)).toBe(
+      "/app/scans/scan-1?type=GHOST_SCRIPT#finding-f2",
     );
   });
 
@@ -468,7 +480,8 @@ describe("theme health: no row of its own, and never 'Known malicious code'", ()
       statusLabel: "1 issue",
       count: 1,
       detail: "1 script from an app named in a public security report.",
-      href: "/app/scans/scan-1?type=APP_INCIDENT_ADVISORY",
+      // The unfiltered page: the advisory is above the list, not a list filter.
+      href: "/app/scans/scan-1",
     });
   });
 
@@ -580,29 +593,88 @@ describe("classification", () => {
     expect(SIZE_SKIP_STILL_SCANNED_FINDING_TYPES.has(ADVISORY)).toBe(false);
   });
 
-  it("sits in the same act-now lane as MALICIOUS_SCRIPT (owner decision)", () => {
-    expect(CONSEQUENCE_MAP.APP_INCIDENT_ADVISORY).toEqual({
-      primary: "privacy",
-      secondary: ["customers-see-it"],
-      urgency: "act-now",
-      agentic: false,
+  describe("NO consequence lane (owner decision: an advisory is not a cost)", () => {
+    it("maps to no lane at all", () => {
+      expect(CONSEQUENCE_MAP.APP_INCIDENT_ADVISORY).toEqual({
+        primary: null,
+        secondary: [],
+        urgency: "act-now",
+        agentic: false,
+      });
+      expect(laneForType(ADVISORY)).toBeNull();
     });
-    expect(CONSEQUENCE_MAP.APP_INCIDENT_ADVISORY).toEqual(CONSEQUENCE_MAP.MALICIOUS_SCRIPT);
-    expect(laneForType(ADVISORY)).toBe(laneForType("MALICIOUS_SCRIPT"));
-    expect(typesForLane("privacy")).toContain(ADVISORY);
+
+    it("it is the ONLY type without a lane", () => {
+      const unlaned = ALL_TYPES.filter((t) => CONSEQUENCE_MAP[t].primary === null);
+      expect(unlaned).toEqual([ADVISORY]);
+    });
+
+    it.each(LANES.map((l) => l.key))(
+      "is not in the %s lane's types (so no ?lane= filter matches it)",
+      (lane) => {
+        expect(typesForLane(lane)).not.toContain(ADVISORY);
+      },
+    );
+
+    it("an advisory-only scan has NO lane rows, no dominant lane and no start-here lane", () => {
+      const summary = computeLaneSummary({ APP_INCIDENT_ADVISORY: 1 });
+      expect(summary).toEqual([]);
+      expect(dominantLane(summary)).toBeNull();
+      expect(startHereLane(summary)).toBeNull();
+    });
+
+    it("beside other findings it adds nothing to any lane's count, urgency or the dominant lane", () => {
+      const others = { GHOST_PIXEL: 2, ORPHAN_ASSET: 3 } as const;
+      const withAdvisory = computeLaneSummary({ ...others, APP_INCIDENT_ADVISORY: 5 });
+      expect(withAdvisory).toEqual(computeLaneSummary(others));
+      expect(withAdvisory.reduce((n, row) => n + row.count, 0)).toBe(5);
+      expect(dominantLane(withAdvisory)).toBe("housekeeping");
+      expect(startHereLane(withAdvisory)).toBe("privacy");
+    });
+
+    it("never carries any lane's label or 'so what' copy", () => {
+      expect(findingCostLine(ADVISORY)).not.toBe(soWhatForLane("privacy"));
+      for (const lane of LANES) {
+        expect(findingCostLine(ADVISORY)).not.toBe(lane.soWhat);
+        expect(findingCostLine(ADVISORY)).not.toContain(lane.label);
+      }
+    });
+
+    it("malicious code keeps its lane (unchanged)", () => {
+      expect(laneForType("MALICIOUS_SCRIPT")).toBe("privacy");
+      expect(computeLaneSummary({ MALICIOUS_SCRIPT: 1, APP_INCIDENT_ADVISORY: 1 })).toEqual([
+        expect.objectContaining({ lane: "privacy", count: 1 }),
+      ]);
+    });
+
+    it("two advisories of one severity are the same class (the tie-break orders them)", () => {
+      expect(
+        compareFindingClass(
+          { findingType: ADVISORY, severity: "HIGH" },
+          { findingType: ADVISORY, severity: "HIGH" },
+        ),
+      ).toBe(0);
+    });
   });
 
-  it("counts as one finding in its lane on Home", () => {
-    expect(computeLaneSummary({ APP_INCIDENT_ADVISORY: 1 })).toEqual([
-      {
-        lane: "privacy",
-        label: "Still tracking you",
-        count: 1,
-        urgency: "act-now",
-        hasAgentic: false,
-        order: 3,
-      },
-    ]);
+  describe("shown in its own section, never in the findings list", () => {
+    it("is the one own-section type", () => {
+      expect([...OWN_SECTION_FINDING_TYPES]).toEqual(["APP_INCIDENT_ADVISORY"]);
+      expect(isOwnSectionFindingType(ADVISORY)).toBe(true);
+    });
+
+    it("no other type is, malicious code included (it has the security alert and stays in the list)", () => {
+      for (const type of ALL_TYPES.filter((t) => t !== ADVISORY)) {
+        expect(isOwnSectionFindingType(type), type).toBe(false);
+      }
+      expect(isOwnSectionFindingType("")).toBe(false);
+    });
+
+    it("every own-section type is never paywalled", () => {
+      for (const type of OWN_SECTION_FINDING_TYPES) {
+        expect(isNeverPaywalledFindingType(type)).toBe(true);
+      }
+    });
   });
 
   it("is 'Verify first', never 'safe to remove': the script may belong to an app still in use", () => {
@@ -684,5 +756,92 @@ describe("remediation copy (the owner's sentences, as written)", () => {
     expect(
       findingMatchedLine({ findingType: ADVISORY, lineNumber: 2, codeSnippet: "a\nb\nc" }),
     ).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Card wording (round 2): this type only
+// ---------------------------------------------------------------------------
+
+describe("getFindingCardCopy", () => {
+  it("an advisory: its own title, detection sentence, steps heading, copy label and report link", () => {
+    expect(getFindingCardCopy(ADVISORY)).toEqual({
+      title: "An app in your theme was named in a checkout phishing report",
+      confidence: "Matched a script address from a public incident report.",
+      stepsHeading: "What to check",
+      copyStepsLabel: "Copy steps",
+      copyStepsAccessibilityLabel: "Copy steps for this finding",
+      reportLinkLabel: "Read the report",
+    });
+  });
+
+  it.each([...ALL_TYPES.filter((t) => t !== ADVISORY), "SOME_FUTURE_TYPE", ""])(
+    "%s keeps the default card wording",
+    (type) => {
+      expect(getFindingCardCopy(type)).toEqual({
+        title: null,
+        confidence: null,
+        stepsHeading: "How to remove",
+        copyStepsLabel: "Copy removal steps",
+        copyStepsAccessibilityLabel: "Copy removal steps for this finding",
+        reportLinkLabel: null,
+      });
+    },
+  );
+
+  it("the advisory wording has no dashes and none of the words the card must not say", () => {
+    const text = Object.values(getFindingCardCopy(ADVISORY)).join(" ");
+    expect(text).not.toMatch(/[—–]/);
+    expect(text).not.toMatch(/remove|removal|leftover|malicious|compromised|hijack|signature/i);
+    expect(text).not.toMatch(/your (store|checkout) (is|was)/i);
+  });
+});
+
+describe("splitNumberedSteps", () => {
+  it("splits the advisory how-to into its five steps, numbers dropped, text untouched", () => {
+    expect(splitNumberedSteps(getFindingRemediation(ADVISORY))).toEqual([
+      "Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button.",
+      "Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin.",
+      "Shop Pay, PayPal and similar buttons open their own sites. That is normal.",
+      "If the page asking for contact, shipping or card details is on any other address, do not enter card details. Contact Shopify Support and the app developer.",
+      "If you no longer use the app, remove its script line from the theme file shown here (duplicate your theme first). If you still use it, ask the developer whether this affects you.",
+    ]);
+  });
+
+  it("the string stays the source of truth: the steps rebuild it exactly", () => {
+    const howTo = getFindingRemediation(ADVISORY);
+    const steps = splitNumberedSteps(howTo)!;
+    expect(steps.map((step, i) => `${i + 1}. ${step}`).join(" ")).toBe(howTo);
+  });
+
+  it.each(ALL_TYPES.filter((t) => t !== ADVISORY))(
+    "%s: its how-to is not a numbered list, so its card renders the string as before",
+    (type) => {
+      expect(splitNumberedSteps(getFindingRemediation(type))).toBeNull();
+    },
+  );
+
+  it.each([
+    ["", null],
+    ["Just one sentence.", null],
+    ["1. Only one step.", null],
+    ["2. Starts at two. 3. Then three.", null],
+    ["Intro first. 1. Then a step. 2. Another.", null],
+    ["1. First. 2. ", null],
+    ["1. First. 2. Second.", ["First.", "Second."]],
+    ["1. First.  2.  Second. ", ["First.", "Second."]],
+    ["1. A. 2. B. 3. C.", ["A.", "B.", "C."]],
+    // A number that is out of order is part of the step's text.
+    ["1. Wait 3. minutes. 2. Then go.", ["Wait 3. minutes.", "Then go."]],
+    ["1. Use v1.2. now. 2. Done.", ["Use v1.2. now.", "Done."]],
+    ["1. A. 2. B. 4. C.", ["A.", "B. 4. C."]],
+    ["1. Before March 1, 2027. 2. After.", ["Before March 1, 2027.", "After."]],
+  ])("splitNumberedSteps(%j)", (input, expected) => {
+    expect(splitNumberedSteps(input)).toEqual(expected);
+  });
+
+  it("handles ten or more steps", () => {
+    const howTo = Array.from({ length: 12 }, (_, i) => `${i + 1}. Step ${i + 1}.`).join(" ");
+    expect(splitNumberedSteps(howTo)).toHaveLength(12);
   });
 });

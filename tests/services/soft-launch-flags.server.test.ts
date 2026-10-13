@@ -1,7 +1,8 @@
 import { FindingType } from "@prisma/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
+  isAdvisoryCheckLive,
   isScriptTagSunsetLive,
   isSoftLaunchLive,
   SOFT_LAUNCH_FLAGS,
@@ -43,8 +44,52 @@ describe("soft-launch flags", () => {
 
   describe("APP_INCIDENT_ADVISORY (gc-14x5)", () => {
     const ADVISORY_FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
+    // A day on which the list's entry is active, so these tests do not start
+    // failing when it reaches its review date (the review-date test does that).
+    beforeEach(() => {
+      vi.useFakeTimers({ toFake: ["Date"] });
+      vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+    });
     afterEach(() => {
+      vi.useRealTimers();
       delete process.env[ADVISORY_FLAG];
+    });
+
+    describe("expiry: live needs an unexpired list entry as well as the flag", () => {
+      it.each([
+        ["the day before the review date", "2027-01-07T12:00:00Z", true],
+        ["on the review date", "2027-01-08T23:59:59Z", true],
+        ["the day after", "2027-01-09T00:00:00Z", false],
+        ["long after", "2028-06-01T00:00:00Z", false],
+      ])("flag on, %s: live is %s", (_label, iso, expected) => {
+        process.env[ADVISORY_FLAG] = "true";
+        expect(isAdvisoryCheckLive(new Date(iso))).toBe(expected);
+        vi.setSystemTime(new Date(iso));
+        expect(isAdvisoryCheckLive()).toBe(expected);
+        expect(isSoftLaunchLive(FindingType.APP_INCIDENT_ADVISORY)).toBe(expected);
+      });
+
+      it("flag off: never live, expired or not", () => {
+        expect(isAdvisoryCheckLive(new Date("2026-10-20T00:00:00Z"))).toBe(false);
+        expect(isAdvisoryCheckLive(new Date("2027-06-01T00:00:00Z"))).toBe(false);
+      });
+
+      it("after expiry the type drops out of the live set; no other type does", () => {
+        process.env[ADVISORY_FLAG] = "true";
+        const live = () => Object.values(FindingType).filter((t) => isSoftLaunchLive(t));
+        const before = live();
+        vi.setSystemTime(new Date("2027-01-09T00:00:00Z"));
+        const after = live();
+        expect(before).toContain(FindingType.APP_INCIDENT_ADVISORY);
+        expect(after).toEqual(before.filter((t) => t !== FindingType.APP_INCIDENT_ADVISORY));
+      });
+
+      it("is safe as a filter callback (the array index is not read as a clock)", () => {
+        process.env[ADVISORY_FLAG] = "true";
+        expect(
+          [FindingType.GHOST_SCRIPT, FindingType.APP_INCIDENT_ADVISORY].filter(isSoftLaunchLive),
+        ).toEqual([FindingType.GHOST_SCRIPT, FindingType.APP_INCIDENT_ADVISORY]);
+      });
     });
 
     it("has its own flag, shared with no other type", () => {

@@ -278,6 +278,75 @@ export function getFindingImpact(findingType: string): string | null {
   return REMEDIATION[findingType]?.impact ?? null;
 }
 
+/** The finding card's per-type wording (scan page). See getFindingCardCopy. */
+export interface FindingCardCopy {
+  /** The card's title line, or null for the default (the type label and app). */
+  title: string | null;
+  /** How it was detected, or null for the default confidence-tier sentence. */
+  confidence: string | null;
+  /** The label over the how-to text. */
+  stepsHeading: string;
+  /** The copy action's visible text and accessible name. */
+  copyStepsLabel: string;
+  copyStepsAccessibilityLabel: string;
+  /** Text of the link to the finding's public source, or null when it has none. */
+  reportLinkLabel: string | null;
+}
+
+const DEFAULT_CARD_COPY: FindingCardCopy = {
+  title: null,
+  confidence: null,
+  stepsHeading: "How to remove",
+  copyStepsLabel: "Copy removal steps",
+  copyStepsAccessibilityLabel: "Copy removal steps for this finding",
+  reportLinkLabel: null,
+};
+
+/**
+ * Types whose card must not use the default wording. An affected-app advisory
+ * (gc-14x5) is not leftover code to remove and was not matched to "a known app
+ * signature": its steps are a checkout self-check and its match is a script
+ * address taken from a public incident report.
+ */
+const CARD_COPY_OVERRIDES: Record<string, FindingCardCopy> = {
+  APP_INCIDENT_ADVISORY: {
+    title: "An app in your theme was named in a checkout phishing report",
+    confidence: "Matched a script address from a public incident report.",
+    stepsHeading: "What to check",
+    copyStepsLabel: "Copy steps",
+    copyStepsAccessibilityLabel: "Copy steps for this finding",
+    reportLinkLabel: "Read the report",
+  },
+};
+
+/** The finding card's wording for a type: the defaults for every type but the overrides above. */
+export function getFindingCardCopy(findingType: string): FindingCardCopy {
+  return CARD_COPY_OVERRIDES[findingType] ?? DEFAULT_CARD_COPY;
+}
+
+/**
+ * Split a how-to written as "1. First. 2. Second. 3. Third." into its steps,
+ * without the numbers, so a card can render a real ordered list while the
+ * string stays the one source of truth (the copy action and exports use it
+ * whole). Returns null (render the string as is) unless the text starts with
+ * "1. " and holds at least two steps numbered in order. A "2. " that is not
+ * preceded by a space, or an out-of-order number, is part of a step's text.
+ */
+export function splitNumberedSteps(howTo: string): string[] | null {
+  if (!howTo.startsWith("1. ")) return null;
+  const steps: string[] = [];
+  let rest = howTo.slice(3);
+  for (let n = 2; ; n += 1) {
+    const marker = ` ${n}. `;
+    const at = rest.indexOf(marker);
+    if (at === -1) break;
+    steps.push(rest.slice(0, at).trim());
+    rest = rest.slice(at + marker.length);
+  }
+  steps.push(rest.trim());
+  return steps.length >= 2 && steps.every((step) => step.length > 0) ? steps : null;
+}
+
 /** The subset of a finding row this helper needs to compose an instruction. */
 export interface RemovalInstructionFinding {
   findingType: string;

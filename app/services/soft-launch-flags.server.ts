@@ -1,5 +1,7 @@
 import { FindingType } from "@prisma/client";
 
+import { activeAdvisories } from "../data/app-incident-advisories.server";
+
 /**
  * Soft-launched finding types (spec 5.6): detected on every scan but persisted
  * only when the mapped env var === "true". Never-in-prod detectors go here until
@@ -28,8 +30,26 @@ export const SOFT_LAUNCH_FLAGS: Partial<Record<FindingType, string>> = {
  * shared by the scan worker's persistence filter and the storefront step gate.
  */
 export function isSoftLaunchLive(type: FindingType): boolean {
+  if (type === FindingType.APP_INCIDENT_ADVISORY) return isAdvisoryCheckLive();
   const flag = SOFT_LAUNCH_FLAGS[type];
   return !flag || process.env[flag] === "true";
+}
+
+/**
+ * Whether the affected-app advisory check is live at `now` (gc-14x5): its
+ * flag is on AND at least one list entry has not passed its review date.
+ *
+ * The second half is what keeps an EXPIRED advisory from reading as "fixed".
+ * When the last entry expires the detector emits nothing, and a scan taken
+ * then records the type as not live, so the differ and the summary email
+ * treat the type as un-audited: the old finding is neither fixed nor (once an
+ * entry is renewed) new. Theme health likewise promises nothing for it.
+ * Limit: with several entries, one expiring while another is still active
+ * leaves the type live, so that one finding does read as resolved.
+ */
+export function isAdvisoryCheckLive(now: Date = new Date()): boolean {
+  const flag = SOFT_LAUNCH_FLAGS[FindingType.APP_INCIDENT_ADVISORY];
+  return process.env[flag!] === "true" && activeAdvisories(now).length > 0;
 }
 
 /**

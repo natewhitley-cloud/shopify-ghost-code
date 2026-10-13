@@ -24,7 +24,9 @@ import {
   getFindingConfidence,
   hasVisualImpact,
   isAdminResourceFinding,
+  isOwnSectionFindingType,
   isThemeFileFinding,
+  OWN_SECTION_FINDING_TYPES,
 } from "../lib/finding-classification";
 import {
   isLaneKey,
@@ -37,8 +39,10 @@ import type { LaneKey } from "../lib/finding-consequence";
 import {
   buildRemovalInstructions,
   findingMatchedLine,
+  getFindingCardCopy,
   getFindingImpact,
   getFindingRemediation,
+  splitNumberedSteps,
 } from "../lib/finding-remediation";
 import { getRemovalSafety, REMOVAL_SAFETY_LABELS } from "../lib/finding-safety";
 import type { RemovalSafety } from "../lib/finding-safety";
@@ -101,6 +105,7 @@ import {
   getUnknownScriptsForScan,
   submitSignatureSuggestion,
 } from "../models/unknown-script.server";
+import { advisoryReportUrlForFinding } from "../services/app-incident-advisory.server";
 import { isTrackerApp } from "../services/app-lookup.server";
 import { appLeftoverFindings } from "../services/app-removal.server";
 import {
@@ -108,10 +113,7 @@ import {
   isFindingIgnored,
 } from "../services/finding-aggregation.server";
 import type { FindingRow as FindingRecord } from "../services/finding-aggregation.server";
-import {
-  getFreeAlwaysShownFindings,
-  getFreePreviewFindings,
-} from "../services/free-preview.server";
+import { getFreePreviewFindings, getOwnSectionFindings } from "../services/free-preview.server";
 import {
   recordJourneyMilestoneOnce,
   recordScanResultsViewOnce,
@@ -564,6 +566,8 @@ interface FindingLike {
   codeSnippet: string;
   /** The stored description. Rendered only for an affected-app advisory. */
   description?: string;
+  /** An advisory's public report (loader-resolved); null or absent = no link. */
+  advisoryReportUrl?: string | null;
   isTracker?: boolean;
   isVisual?: boolean;
   isIgnored?: boolean;
@@ -736,16 +740,17 @@ export function CopyButton({ text }: { text: string }) {
  * is "Copied" too, so a screen reader never announces a label that the visible
  * text contradicts.
  */
-export function copyRemovalStepsLabels(copied: boolean): {
+export function copyRemovalStepsLabels(
+  copied: boolean,
+  findingType = "",
+): {
   text: string;
   accessibilityLabel: string;
 } {
+  const copy = getFindingCardCopy(findingType);
   return copied
     ? { text: "Copied", accessibilityLabel: "Copied" }
-    : {
-        text: "Copy removal steps",
-        accessibilityLabel: "Copy removal steps for this finding",
-      };
+    : { text: copy.copyStepsLabel, accessibilityLabel: copy.copyStepsAccessibilityLabel };
 }
 
 /**
@@ -753,9 +758,9 @@ export function copyRemovalStepsLabels(copied: boolean): {
  * button with the same copy behaviour as CopyButton. Not a form control, so an
  * `s-button` is safe here (unlike the ignore submit buttons).
  */
-function CopyRemovalStepsButton({ text }: { text: string }) {
+function CopyRemovalStepsButton({ text, findingType }: { text: string; findingType: string }) {
   const { copied, handleCopy } = useCopy(text);
-  const labels = copyRemovalStepsLabels(copied);
+  const labels = copyRemovalStepsLabels(copied, findingType);
 
   return (
     <s-button
@@ -818,6 +823,11 @@ export function FindingRow({
   const typeLabel =
     FINDING_TYPE_LABELS[finding.findingType] ?? finding.findingType.replace(/_/g, " ");
   const impact = getFindingImpact(finding.findingType);
+  // Per-type card wording (defaults for every type but an affected-app
+  // advisory) and, when the how-to is a numbered list, its steps.
+  const cardCopy = getFindingCardCopy(finding.findingType);
+  const howTo = getFindingRemediation(finding.findingType);
+  const steps = splitNumberedSteps(howTo);
   // The stored snippet is the finding's line plus its neighbours. Preview the
   // finding's own line when it can be derived for certain, so the box does not
   // lead with the line above it; otherwise the snippet as stored. The Copy
@@ -831,7 +841,7 @@ export function FindingRow({
           labels keep that context. */}
       <div style={findingTitleRow}>
         <h3 style={findingTitle}>
-          {typeLabel}
+          {cardCopy.title ?? typeLabel}
           {finding.appName && (
             <>
               <span aria-hidden="true"> · </span>
@@ -878,7 +888,9 @@ export function FindingRow({
           finding was detected (a plain sentence, not a second chip). */}
       <div style={findingSafetyRow}>
         <s-badge tone={safetyTone(safety)}>{REMOVAL_SAFETY_LABELS[safety]}</s-badge>
-        <span style={findingConfidence}>{CONFIDENCE_SENTENCES[confidence]}</span>
+        <span style={findingConfidence}>
+          {cardCopy.confidence ?? CONFIDENCE_SENTENCES[confidence]}
+        </span>
       </div>
 
       <div style={findingSnippet}>
@@ -894,9 +906,26 @@ export function FindingRow({
         </div>
       )}
       <div style={findingNote}>
-        <strong style={findingNoteLabel}>How to remove</strong>
-        {getFindingRemediation(finding.findingType)}
+        <strong style={findingNoteLabel}>{cardCopy.stepsHeading}</strong>
+        {steps ? (
+          <ol style={findingSteps}>
+            {steps.map((step) => (
+              <li key={step}>{step}</li>
+            ))}
+          </ol>
+        ) : (
+          howTo
+        )}
       </div>
+      {/* The finding's public source, in a new tab (gc-14x5). A plain anchor:
+          it needs `rel`, and it is a link, not an action. */}
+      {cardCopy.reportLinkLabel && finding.advisoryReportUrl && (
+        <div style={findingNote}>
+          <a href={finding.advisoryReportUrl} target="_blank" rel="noopener noreferrer">
+            {cardCopy.reportLinkLabel}
+          </a>
+        </div>
+      )}
       {/* Actions, in order: open the place to fix it (primary, when the finding
           has one), copy a precise, self-contained removal instruction for THIS
           finding (file + line + full snippet + how-to), then Ignore, tucked
@@ -912,7 +941,10 @@ export function FindingRow({
             {adminResourceLinkLabel(finding.findingType)}
           </s-button>
         )}
-        <CopyRemovalStepsButton text={buildRemovalInstructions(finding, typeLabel)} />
+        <CopyRemovalStepsButton
+          text={buildRemovalInstructions(finding, typeLabel)}
+          findingType={finding.findingType}
+        />
         {/* Suppression control — only in the paid findings list (scanId set)
             and only when the finding has a stable id to fingerprint from. */}
         {scanId && finding.id && <FindingIgnoreControls finding={finding} />}
@@ -1004,6 +1036,12 @@ const findingNote: React.CSSProperties = {
   fontSize: "14px",
   color: TEXT_PRIMARY,
   lineHeight: 1.45,
+};
+
+// The numbered steps of a how-to (only when it is written as a numbered list).
+const findingSteps: React.CSSProperties = {
+  margin: "4px 0 0",
+  paddingLeft: "20px",
 };
 
 // A small bold label on its own line, with the note's text beneath it.
@@ -1173,7 +1211,12 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
       : undefined;
 
   const rawType = url.searchParams.get("type") || undefined;
-  const findingType = rawType && rawType in FINDING_TYPE_LABELS ? rawType : undefined;
+  // A type shown in its own section (an affected-app advisory) is never in the
+  // list, so it is not a list filter either: treated as "no filter".
+  const findingType =
+    rawType && rawType in FINDING_TYPE_LABELS && !isOwnSectionFindingType(rawType)
+      ? rawType
+      : undefined;
 
   const appName = url.searchParams.get("app") || undefined;
 
@@ -1234,6 +1277,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
           findingType,
           findingTypes: laneTypes,
           appName,
+          // gc-14x5: shown in their own section above the list, never in it.
+          excludeFindingTypes: OWN_SECTION_FINDING_TYPES,
         })
       : Promise.resolve({ items: [], hasNextPage: false, nextCursor: null }),
     // App Impact Map data: lean attribution query (all scans, no pagination).
@@ -1327,17 +1372,17 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
 
-  // Affected-app advisories (gc-14x5): never paywalled, so Free sees every
-  // non-ignored one in full, in its own list above the preview rows (they
-  // never take a preview slot and are never counted as hidden). Unlike
-  // malicious code they honour ignores. Paid plans see them in the findings
-  // list like any other finding, so this is Free only. No query for a shop
-  // with ignores (the summary's kept rows) or a scan with none; otherwise one
-  // small read (at most one finding per advisory list entry).
-  const alwaysShownFindings =
-    scanSuccessful && !canViewDetails
-      ? await getFreeAlwaysShownFindings(scanId, findingSummary.byType, keptFindings)
-      : [];
+  // Affected-app advisories (gc-14x5): shown in their own section above the
+  // findings list on EVERY plan and never inside the list (the page query
+  // above excludes them). Never paywalled: they take no Free preview slot and
+  // are never counted as hidden. Unlike malicious code they honour ignores.
+  // No query for a shop with ignores (the summary's kept rows) or a scan with
+  // none; otherwise one small read (at most one finding per list entry).
+  // Each carries its public report's URL, resolved here because the list is
+  // server-only (null when the entry was removed or has expired: no link).
+  const alwaysShownFindings = (
+    scanSuccessful ? await getOwnSectionFindings(scanId, findingSummary.byType, keptFindings) : []
+  ).map((f) => ({ ...f, advisoryReportUrl: advisoryReportUrlForFinding(f, now) }));
 
   // "Start here" block (gc-bn0x): the scan's top 3 findings, on the
   // unfiltered results view of a successful scan only (a filtered list is
@@ -1565,7 +1610,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     reviewRequestNonce:
       pagePrompt === "review_popup" ? reviewAttemptNonce(shop.reviewPopupLastAttemptAt) : null,
     maliciousFindings: enrichedMaliciousFindings,
-    // gc-14x5: Free's never-paywalled advisories, non-ignored (empty on paid).
+    // gc-14x5: the scan's non-ignored advisories, shown above the list on every plan.
     alwaysShownFindings,
     findingSummary,
     canViewDetails,
@@ -1577,7 +1622,11 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     unknownScripts,
     appAttributionData,
     // Findings-table filter options + active values (controlled selects).
-    filterOptions,
+    // Types shown in their own section are not in the list, so not a filter.
+    filterOptions: {
+      ...filterOptions,
+      types: filterOptions.types.filter((type) => !isOwnSectionFindingType(type)),
+    },
     filters: {
       severity: severity ?? "",
       type: findingType ?? "",
@@ -1974,6 +2023,8 @@ export default function ScanDetail() {
     : null;
 
   const totalFindings = summary.HIGH + summary.MEDIUM + summary.LOW;
+  // Findings the LIST can hold: everything but the advisories shown above it.
+  const listTotal = findingSummary.total - alwaysShownFindings.length;
   const totalNew = scanDiff ? scanDiff.newFindings.length : 0;
   const totalResolved = scanDiff ? scanDiff.resolvedFindings.length : 0;
 
@@ -2551,11 +2602,12 @@ export default function ScanDetail() {
             </div>
           )}
 
-        {/* Affected-app advisories (gc-14x5), Free only: never paywalled, so
-          every non-ignored one is shown in full above the preview rows. Like
-          every finding card on Free it has no Ignore control (FindingRow gets
-          no scanId). Paid plans see them in the findings list below. */}
-        {isCompleted && !canViewDetails && alwaysShownFindings.length > 0 && (
+        {/* Affected-app advisories (gc-14x5): their own section above the
+          findings list on EVERY plan, each as a full card, never repeated in
+          the list. Never paywalled. The Ignore control is on every plan here,
+          Free included (the one finding a Free merchant can dismiss): after
+          checking, a merchant must be able to put the advisory away. */}
+        {isCompleted && alwaysShownFindings.length > 0 && (
           <div style={{ ...sectionCard, marginBottom: 0 }}>
             <s-stack direction="block" gap="base">
               <s-heading>{FINDING_TYPE_LABELS.APP_INCIDENT_ADVISORY}</s-heading>
@@ -2564,6 +2616,7 @@ export default function ScanDetail() {
                   <FindingRow
                     key={finding.id}
                     finding={finding}
+                    scanId={scan.id}
                     shopDomain={shopDomain}
                     themeId={scan.themeId}
                     anchor
@@ -2634,7 +2687,7 @@ export default function ScanDetail() {
                     filter (a paid + successful view). Stays visible even when
                     the active filters match zero rows so the merchant can
                     adjust or clear them. */}
-                  {findingSummary.total > 0 && (
+                  {listTotal > 0 && (
                     <div style={styles.filterBar}>
                       <div style={{ minWidth: "180px" }}>
                         <div style={filterLabelStyle}>Impact</div>
@@ -2721,8 +2774,11 @@ export default function ScanDetail() {
                     </s-banner>
                   )}
                   {findings.length === 0 ? (
-                    findingSummary.total > 0 ? (
+                    listTotal > 0 ? (
                       <s-paragraph>No findings match these filters.</s-paragraph>
+                    ) : alwaysShownFindings.length > 0 ? (
+                      // Only advisories (shown above): the list itself is empty.
+                      <s-paragraph>No other findings in this scan.</s-paragraph>
                     ) : (
                       <s-paragraph>No leftover code detected in this scan.</s-paragraph>
                     )

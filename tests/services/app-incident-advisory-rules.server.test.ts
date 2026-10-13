@@ -15,7 +15,7 @@
  */
 import { FindingType } from "@prisma/client";
 import type { Severity } from "@prisma/client";
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { afterEach, describe, it, expect, vi, beforeEach } from "vitest";
 
 vi.mock("../../app/models/finding.server", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../app/models/finding.server")>();
@@ -53,7 +53,7 @@ import {
   isFindingIgnored,
 } from "../../app/services/finding-aggregation.server";
 import {
-  getFreeAlwaysShownFindings,
+  getOwnSectionFindings,
   getFreePreviewFindings,
   PREVIEW_READ_BUCKETS,
 } from "../../app/services/free-preview.server";
@@ -63,6 +63,7 @@ import {
   scanDiffOptions,
   unauditedCategories,
 } from "../../app/services/scan-differ.server";
+import { isSoftLaunchLive } from "../../app/services/soft-launch-flags.server";
 import { computeFindingChanges } from "../../app/services/summary-email.server";
 import {
   getFreeTopFindings,
@@ -245,12 +246,12 @@ describe("never paywalled: the Free preview read (free-preview.server.ts)", () =
   });
 });
 
-describe("never paywalled: the Free always-shown list (getFreeAlwaysShownFindings)", () => {
+describe("never paywalled: the Free always-shown list (getOwnSectionFindings)", () => {
   it("no ignores: reads every advisory of the scan, in full", async () => {
     const rows = [advisory(), f("s1", "GHOST_SCRIPT"), f("m", "MALICIOUS_SCRIPT")];
     serveScan(rows);
 
-    const shown = await getFreeAlwaysShownFindings("scan-1", byTypeOf(rows), null);
+    const shown = await getOwnSectionFindings("scan-1", byTypeOf(rows), null);
 
     expect(shown).toEqual([advisory()]);
     expect(shown[0]).toMatchObject({
@@ -267,22 +268,20 @@ describe("never paywalled: the Free always-shown list (getFreeAlwaysShownFinding
     const rows = [f("m1", "MALICIOUS_SCRIPT"), f("m2", "MALICIOUS_SCRIPT")];
     serveScan(rows);
 
-    await expect(getFreeAlwaysShownFindings("scan-1", byTypeOf(rows), null)).resolves.toEqual([]);
+    await expect(getOwnSectionFindings("scan-1", byTypeOf(rows), null)).resolves.toEqual([]);
     expect(mockAll).not.toHaveBeenCalled();
-    await expect(
-      getFreeAlwaysShownFindings("scan-1", byTypeOf(rows), rows as never),
-    ).resolves.toEqual([]);
+    await expect(getOwnSectionFindings("scan-1", byTypeOf(rows), rows as never)).resolves.toEqual(
+      [],
+    );
   });
 
   it("a scan without advisories issues no query", async () => {
     serveScan([f("s1", "GHOST_SCRIPT")]);
 
-    await expect(getFreeAlwaysShownFindings("scan-1", { GHOST_SCRIPT: 1 }, null)).resolves.toEqual(
-      [],
-    );
-    await expect(getFreeAlwaysShownFindings("scan-1", {}, null)).resolves.toEqual([]);
+    await expect(getOwnSectionFindings("scan-1", { GHOST_SCRIPT: 1 }, null)).resolves.toEqual([]);
+    await expect(getOwnSectionFindings("scan-1", {}, null)).resolves.toEqual([]);
     await expect(
-      getFreeAlwaysShownFindings("scan-1", { APP_INCIDENT_ADVISORY: 0 }, null),
+      getOwnSectionFindings("scan-1", { APP_INCIDENT_ADVISORY: 0 }, null),
     ).resolves.toEqual([]);
     expect(mockAll).not.toHaveBeenCalled();
   });
@@ -290,7 +289,7 @@ describe("never paywalled: the Free always-shown list (getFreeAlwaysShownFinding
   it("with ignores: picks from the kept rows and issues no query", async () => {
     const kept = [f("s1", "GHOST_SCRIPT"), advisory(), f("m", "MALICIOUS_SCRIPT")];
 
-    const shown = await getFreeAlwaysShownFindings("scan-1", byTypeOf(kept), kept as never);
+    const shown = await getOwnSectionFindings("scan-1", byTypeOf(kept), kept as never);
 
     expect(ids(shown)).toEqual(["adv"]);
     expect(mockAll).not.toHaveBeenCalled();
@@ -301,7 +300,7 @@ describe("never paywalled: the Free always-shown list (getFreeAlwaysShownFinding
     const all = [adv, f("s1", "GHOST_SCRIPT")];
     const { kept } = filterIgnoredFindings(all, ignoring(adv));
 
-    const shown = await getFreeAlwaysShownFindings("scan-1", byTypeOf(kept), kept as never);
+    const shown = await getOwnSectionFindings("scan-1", byTypeOf(kept), kept as never);
 
     expect(shown).toEqual([]);
     expect(mockAll).not.toHaveBeenCalled();
@@ -315,7 +314,7 @@ describe("never paywalled: the Free always-shown list (getFreeAlwaysShownFinding
     ];
     serveScan(rows);
 
-    expect(ids(await getFreeAlwaysShownFindings("scan-1", byTypeOf(rows), null))).toEqual([
+    expect(ids(await getOwnSectionFindings("scan-1", byTypeOf(rows), null))).toEqual([
       "z",
       "a",
       "b",
@@ -325,7 +324,7 @@ describe("never paywalled: the Free always-shown list (getFreeAlwaysShownFinding
   it("propagates a read failure", async () => {
     mockAll.mockRejectedValue(new Error("db down"));
     await expect(
-      getFreeAlwaysShownFindings("scan-1", { APP_INCIDENT_ADVISORY: 1 }, null),
+      getOwnSectionFindings("scan-1", { APP_INCIDENT_ADVISORY: 1 }, null),
     ).rejects.toThrow("db down");
   });
 });
@@ -844,5 +843,102 @@ describe("app-removal detection never counts an advisory", () => {
     for (const name of ["Hulk Product Options", LIVE_APP]) {
       expect(appLeftoverFindings(name, [advisory()], current, null, NO_IGNORES)).toEqual([]);
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 2, expiry: an entry passing its review date is NOT a fix
+// ---------------------------------------------------------------------------
+
+describe("expiry is never reported as fixed", () => {
+  const FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
+  const BEFORE = new Date("2026-12-20T12:00:00Z");
+  const AFTER = new Date("2027-01-15T12:00:00Z");
+
+  beforeEach(() => {
+    process.env[FLAG] = "true";
+    vi.useFakeTimers({ toFake: ["Date"] });
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    delete process.env[FLAG];
+  });
+
+  /** The live set a scan taken at `when` records (what the worker stores). */
+  const liveAt = (when: Date): string[] => {
+    vi.setSystemTime(when);
+    return Object.values(FindingType).filter((t) => isSoftLaunchLive(t));
+  };
+  const coverage = (live: string[]) => ({
+    skippedCategories: [] as string[],
+    cappedCategories: [] as string[],
+    unreachableCategories: [] as string[],
+    skippedFiles: [] as string[],
+    liveFindingTypes: live as unknown,
+  });
+
+  it("the scan after expiry does not record the type as live; the one before does", () => {
+    expect(liveAt(BEFORE)).toContain(ADVISORY);
+    expect(liveAt(AFTER)).not.toContain(ADVISORY);
+  });
+
+  it("in-app diff: baseline with the advisory, current scan after expiry -> no resolved row, nothing new", () => {
+    const baseline = coverage(liveAt(BEFORE));
+    const current = coverage(liveAt(AFTER));
+
+    const diff = diffScans([], [advisory()], scanDiffOptions(current, baseline));
+
+    expect(diff.resolvedFindings).toEqual([]);
+    expect(diff.newFindings).toEqual([]);
+    expect(diff.unchangedCount).toBe(0);
+  });
+
+  it("summary email: fixedCount 0 for the same pair of scans", () => {
+    const baselineLive = liveAt(BEFORE);
+    const currentLive = liveAt(AFTER);
+
+    expect(
+      computeFindingChanges({
+        currentFindings: [],
+        currentCoverage: coverage(currentLive),
+        currentLiveFindingTypes: currentLive,
+        baseline: { ...coverage(baselineLive), findings: [advisory()] },
+        ignores: NO_IGNORES,
+      }),
+    ).toEqual({ ok: true, newCount: 0, fixedCount: 0, openCount: 0 });
+  });
+
+  it("a real fix beside it is still counted (only the advisory type is skipped)", () => {
+    const baselineLive = liveAt(BEFORE);
+    const currentLive = liveAt(AFTER);
+    const script = f("s", "GHOST_SCRIPT");
+
+    expect(
+      computeFindingChanges({
+        currentFindings: [],
+        currentCoverage: coverage(currentLive),
+        currentLiveFindingTypes: currentLive,
+        baseline: { ...coverage(baselineLive), findings: [advisory(), script] },
+        ignores: NO_IGNORES,
+      }),
+    ).toEqual({ ok: true, newCount: 0, fixedCount: 1, openCount: 0 });
+  });
+
+  it("control: the script removed BEFORE expiry is a real fix and is reported", () => {
+    const live = liveAt(BEFORE);
+    const diff = diffScans([], [advisory()], scanDiffOptions(coverage(live), coverage(live)));
+    expect(diff.resolvedFindings).toHaveLength(1);
+  });
+
+  it("an entry renewed after it expired does not come back as new (the expired scan never looked)", () => {
+    const expiredScan = coverage(liveAt(AFTER));
+    // Renewal = the type is live again on the next scan.
+    const renewed = coverage(liveAt(BEFORE));
+    const diff = diffScans([advisory()], [], scanDiffOptions(renewed, expiredScan));
+    expect(diff.newFindings).toEqual([]);
+  });
+
+  it("an advisory is never counted as an app leftover across the expiry either", () => {
+    expect(unauditedCategories(coverage(liveAt(AFTER)))).toContain(ADVISORY);
   });
 });

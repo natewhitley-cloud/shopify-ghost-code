@@ -152,7 +152,7 @@ export async function getFullListTopFindings(
  * are never withheld.
  *
  * `loaded.alwaysShown` is the caller's non-ignored never-paywalled rows other
- * than malicious (getFreeAlwaysShownFindings).
+ * than malicious (getOwnSectionFindings).
  */
 export async function getFreeTopFindings(
   scanId: string,

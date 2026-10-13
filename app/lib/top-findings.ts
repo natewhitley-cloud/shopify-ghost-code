@@ -33,7 +33,11 @@
 import type { FindingType, Severity } from "@prisma/client";
 
 import { adminResourceLocatorLabel } from "./admin-resource-url";
-import { isAdminResourceFinding, isStorefrontFinding } from "./finding-classification";
+import {
+  isAdminResourceFinding,
+  isOwnSectionFindingType,
+  isStorefrontFinding,
+} from "./finding-classification";
 import { CONSEQUENCE_MAP, LANES, soWhatForLane, URGENCY_RANK } from "./finding-consequence";
 import type { LaneKey } from "./finding-consequence";
 import { findingTypeLabel } from "./finding-type-labels";
@@ -52,6 +56,11 @@ export type RankableFinding = {
 const SEVERITY_RANK: Record<Severity, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 
 const LANE_ORDER: Record<string, number> = Object.fromEntries(LANES.map((l, i) => [l.key, i]));
+
+/** A lane's display position; a type with no lane sorts ahead of every lane. */
+function laneOrder(lane: LaneKey | null): number {
+  return lane === null ? -1 : LANE_ORDER[lane];
+}
 
 /** securityRank of a finding that is not one of the security types. */
 export const SECURITY_RANK_OTHER = 2;
@@ -86,7 +95,7 @@ export function compareFindingClass(
     securityRank(a.findingType) - securityRank(b.findingType) ||
     SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
     URGENCY_RANK[ca.urgency] - URGENCY_RANK[cb.urgency] ||
-    LANE_ORDER[ca.primary] - LANE_ORDER[cb.primary]
+    laneOrder(ca.primary) - laneOrder(cb.primary)
   );
 }
 
@@ -141,8 +150,11 @@ export function pickTopFindings<T extends RankableFinding>(
 export type TopFindingView = {
   id: string;
   severity: Severity;
-  /** Primary consequence lane (Home's lane "Start here" chip follows the first row). */
-  lane: LaneKey;
+  /**
+   * Primary consequence lane (Home's lane "Start here" chip follows the first
+   * row), or null for a finding that is in no lane (an affected-app advisory).
+   */
+  lane: LaneKey | null;
   typeLabel: string;
   /** Where it lives: a theme file (and line), an admin resource, or the storefront. */
   location: string;
@@ -165,9 +177,9 @@ export type TopFindingSource = RankableFinding & {
  * One plain line on what a finding costs: its primary lane's "so what" copy
  * (finding-consequence LANES). Malicious code gets its own line, since the
  * privacy lane's "a removed app is still collecting data" undersells an attack.
- * An affected-app advisory gets its own too (gc-14x5): that lane line would
- * claim the app is removed and collecting data, neither of which is known. Its
- * line is the report's own claim, a sentence from the type's remediation copy.
+ * An affected-app advisory has no lane (gc-14x5): its line is the report's own
+ * claim, a sentence from the type's remediation copy. Any other type without
+ * a lane would get an empty line.
  */
 export function findingCostLine(findingType: FindingType): string {
   if (findingType === "MALICIOUS_SCRIPT") {
@@ -176,7 +188,8 @@ export function findingCostLine(findingType: FindingType): string {
   if (findingType === "APP_INCIDENT_ADVISORY") {
     return "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.";
   }
-  return soWhatForLane(CONSEQUENCE_MAP[findingType].primary);
+  const lane = CONSEQUENCE_MAP[findingType].primary;
+  return lane === null ? "" : soWhatForLane(lane);
 }
 
 /** Merchant-facing location: theme file (with line), admin resource, or storefront. */
@@ -203,6 +216,8 @@ export function findingAnchorId(id: string): string {
 /**
  * Where a top finding links on the scan page:
  *   - Malicious: its row in the security alert (every plan).
+ *   - Affected-app advisory: its card in the advisories section above the
+ *     list (every plan; it is not in the list).
  *   - Free (`fullList` false): its preview row, on the same unfiltered page.
  *   - Standard / Professional: the full list filtered to its type, so the row
  *     is on the first page unless 50+ findings of that type rank above it by
@@ -214,7 +229,11 @@ export function topFindingHref(
   fullList: boolean,
 ): string {
   const hash = `#${findingAnchorId(finding.id)}`;
-  if (!fullList || finding.findingType === "MALICIOUS_SCRIPT") {
+  if (
+    !fullList ||
+    finding.findingType === "MALICIOUS_SCRIPT" ||
+    isOwnSectionFindingType(finding.findingType)
+  ) {
     return `/app/scans/${scanId}${hash}`;
   }
   return `/app/scans/${scanId}?type=${encodeURIComponent(finding.findingType)}${hash}`;
