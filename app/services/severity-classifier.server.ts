@@ -100,6 +100,11 @@ const DEFAULT_SEVERITY: Record<FindingType, Severity> = {
   // (gc-i6du). HIGH only because a finding is emitted solely when the theme's
   // own files confirm it (the snippet is absent and a file renders it).
   [FindingType.LIQUID_ERROR_RENDERED]: Severity.HIGH,
+  // APP_INCIDENT_ADVISORY is HIGH (gc-14x5): the theme loads code from an app
+  // named in a public security incident report, and the merchant should check
+  // their checkout today. The detector sets HIGH directly (like
+  // MALICIOUS_SCRIPT); this entry keeps the exhaustive map honest.
+  [FindingType.APP_INCIDENT_ADVISORY]: Severity.HIGH,
 };
 
 // ---------------------------------------------------------------------------

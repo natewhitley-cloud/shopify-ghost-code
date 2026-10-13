@@ -1749,8 +1749,16 @@ describe("getLatestSuccessfulScanNonMaliciousCount", () => {
         completedAt: { not: null },
       },
       orderBy: { completedAt: "desc" },
+      // gc-14x5: every never-paywalled type is excluded (malicious code and
+      // affected-app advisories), not only MALICIOUS_SCRIPT.
       select: {
-        _count: { select: { findings: { where: { findingType: { not: "MALICIOUS_SCRIPT" } } } } },
+        _count: {
+          select: {
+            findings: {
+              where: { findingType: { notIn: ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"] } },
+            },
+          },
+        },
       },
     });
   });

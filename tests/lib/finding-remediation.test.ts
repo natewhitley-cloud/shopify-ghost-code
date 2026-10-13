@@ -46,8 +46,8 @@ const AGENTIC_IMPACT_TYPES = [
 describe("getFindingRemediation — coverage", () => {
   const ALL_TYPES = Object.values(FindingType);
 
-  it("has 38 finding types (guards against silent enum drift)", () => {
-    expect(ALL_TYPES).toHaveLength(38);
+  it("has 39 finding types (guards against silent enum drift)", () => {
+    expect(ALL_TYPES).toHaveLength(39);
   });
 
   it.each(ALL_TYPES)("returns a non-empty blurb for %s", (type) => {
@@ -435,6 +435,8 @@ describe("buildRemovalInstructions", () => {
       .sort();
     expect(notLineContext).toEqual([
       "APP_EMBED_OFF",
+      // A window of the flagged line itself, like MALICIOUS_SCRIPT (gc-14x5).
+      "APP_INCIDENT_ADVISORY",
       "GHOST_APP_EMBED",
       "GHOST_LAYOUT",
       "MALICIOUS_SCRIPT",

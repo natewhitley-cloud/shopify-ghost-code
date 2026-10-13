@@ -1,6 +1,7 @@
 import { FindingType, Severity } from "@prisma/client";
 
 import db from "../db.server";
+import { isNeverPaywalledFindingType } from "../lib/finding-classification";
 
 /**
  * Shape of a finding before it has a DB id.
@@ -78,6 +79,7 @@ export function createZeroTypeCounts(): Record<FindingType, number> {
     [FindingType.GHOST_APP_EMBED]: 0,
     [FindingType.SCRIPT_TAG_SUNSET]: 0,
     [FindingType.LIQUID_ERROR_RENDERED]: 0,
+    [FindingType.APP_INCIDENT_ADVISORY]: 0,
   };
 }
 
@@ -249,9 +251,10 @@ export async function getTypeCountsForScan(scanId: string): Promise<Record<Findi
  * id as a unique tiebreaker so the order is total and deterministic.
  *
  * Feeds the Free preview picker (gc-97k.10), one call per consequence lane, so
- * the read is bounded by `take` however large the scan is. MALICIOUS_SCRIPT is
- * always excluded here: every such finding is shown in full on all plans via
- * the scan page's security alert, so it must never occupy a preview slot.
+ * the read is bounded by `take` however large the scan is. The never-paywalled
+ * types (NEVER_PAYWALLED_FINDING_TYPES: malicious code, affected-app
+ * advisories) are always excluded here: every such finding is shown in full
+ * on all plans by the scan page, so it must never occupy a preview slot.
  */
 export async function getTopFindingsOfTypes(
   scanId: string,
@@ -261,7 +264,7 @@ export async function getTopFindingsOfTypes(
   return db.finding.findMany({
     where: {
       scanId,
-      findingType: { in: findingTypes.filter((t) => t !== FindingType.MALICIOUS_SCRIPT) },
+      findingType: { in: findingTypes.filter((t) => !isNeverPaywalledFindingType(t)) },
     },
     orderBy: [{ severity: "asc" }, { createdAt: "asc" }, { id: "asc" }],
     take,

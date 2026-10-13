@@ -77,6 +77,13 @@ import { analyzeFileReferences } from "./file-reference-analyzer.server";
 import { classifySeverity } from "./severity-classifier.server";
 import { AI_CRAWLER_USER_AGENTS } from "../data/ai-crawlers.server";
 import {
+  advisoryDescription,
+  APP_INCIDENT_ADVISORIES,
+  isAdvisoryActive,
+  matchAdvisoryScriptHost,
+  type AppIncidentAdvisory,
+} from "../data/app-incident-advisories.server";
+import {
   maliciousDescription,
   matchMaliciousDomain,
   type MaliciousDomain,
@@ -2092,13 +2099,14 @@ export function blankInertComments(content: string, filename: string): string {
 }
 
 /**
- * The distinct list entries that a line references by URL host, in order of
- * first appearance. Decodes encoded slashes first. A protocol-relative `//host`
- * that is a path segment of another URL (see isUrlPathChar) is not a reference.
+ * Every URL host on a line, in order of appearance (repeats included). Decodes
+ * encoded slashes first. A protocol-relative `//host` that is a path segment of
+ * another URL (see isUrlPathChar) is not a reference. Shared by the
+ * MALICIOUS_SCRIPT and APP_INCIDENT_ADVISORY detectors.
  */
-function maliciousHitsOnLine(line: string): MaliciousDomain[] {
+function urlHostsOnLine(line: string): string[] {
   const text = line.replace(ENCODED_SLASH_RE, "/");
-  const hits: MaliciousDomain[] = [];
+  const hosts: string[] = [];
   URL_HOST_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
   while ((match = URL_HOST_RE.exec(text)) !== null) {
@@ -2109,10 +2117,42 @@ function maliciousHitsOnLine(line: string): MaliciousDomain[] {
     ) {
       continue;
     }
-    const hit = matchMaliciousDomain(match[1]);
+    hosts.push(match[1]);
+  }
+  return hosts;
+}
+
+/**
+ * The distinct list entries that a line references by URL host, in order of
+ * first appearance (see urlHostsOnLine for what counts as a reference).
+ */
+function maliciousHitsOnLine(line: string): MaliciousDomain[] {
+  const hits: MaliciousDomain[] = [];
+  for (const host of urlHostsOnLine(line)) {
+    const hit = matchMaliciousDomain(host);
     if (hit && !hits.includes(hit)) hits.push(hit);
   }
   return hits;
+}
+
+/**
+ * The stored snippet for a finding anchored to a host on one line: a window of
+ * the ORIGINAL line centred on the first LIVE occurrence of `host`. `liveText`
+ * is the same line with comments blanked (same length, undecoded), so the
+ * window never centres on a commented-out copy. Falls back to the line's
+ * context if the host is not literally on the line (today a matched host always is).
+ */
+function hostSnippet(
+  file: ThemeFile,
+  lineNumber: number,
+  original: string,
+  liveText: string,
+  host: string,
+): string {
+  const at = indexOfIgnoreCase(liveText, host);
+  if (at === -1) return buildSnippet(file.content, lineNumber);
+  const from = Math.max(0, at - MALICIOUS_SNIPPET_LEAD);
+  return original.slice(from, from + MALICIOUS_SNIPPET_MAX);
 }
 
 /**
@@ -2171,18 +2211,12 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
       }
 
       const lineNumber = i + 1;
-      const original = originalLines[i];
-      // Search the blanked (same length as original) but undecoded line so the
-      // snippet centres on the first LIVE occurrence, not one in a comment.
-      const at = indexOfIgnoreCase(liveText, hit.domain);
-      const from = Math.max(0, at - MALICIOUS_SNIPPET_LEAD);
       findings.push({
         filename: file.filename,
         lineNumber,
-        codeSnippet:
-          at === -1
-            ? buildSnippet(file.content, lineNumber)
-            : original.slice(from, from + MALICIOUS_SNIPPET_MAX),
+        // The blanked (same length as original) but undecoded line, so the
+        // snippet centres on the first LIVE occurrence, not one in a comment.
+        codeSnippet: hostSnippet(file, lineNumber, originalLines[i], liveText, hit.domain),
         findingType: FindingType.MALICIOUS_SCRIPT,
         severity: Severity.HIGH,
         appName: undefined,
@@ -2192,6 +2226,96 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
   });
 
   return findings;
+}
+
+// ---------------------------------------------------------------------------
+// Detector: APP_INCIDENT_ADVISORY (apps named in a public incident report)
+// ---------------------------------------------------------------------------
+
+/**
+ * Emit at most ONE APP_INCIDENT_ADVISORY finding per entry of the curated
+ * APP_INCIDENT_ADVISORIES list (gc-14x5) whose script host the theme's live
+ * code references, anchored to the FIRST live reference: first file in scan
+ * order, first line. Never one per line or per file.
+ *
+ * The finding states two facts (this app's code is in the theme, and a public
+ * report names the app). It never claims the store was affected.
+ *
+ *   - Files: exactly the files the MALICIOUS_SCRIPT pass reads (scannable
+ *     Liquid, plus isMaliciousScanOnlyFile: JSON templates and section groups,
+ *     settings_data, asset JS, locales), oversized files included (the matching
+ *     is linear). A file that does not contain a listed host at all is skipped
+ *     before any parsing.
+ *   - Host extraction is the malicious detector's (urlHostsOnLine): any
+ *     absolute or protocol-relative URL, encoded slashes decoded, path-segment
+ *     `//host` skipped. Host match is exact-or-subdomain.
+ *   - A reference inside a comment does NOT count: Liquid comments in
+ *     `.liquid` files (blankLiquidComments) and HTML / JS / CSS comments
+ *     (blankInertComments, the malicious list's `ignoreInComments` path).
+ *     Unlike an attacker's domain, this is a legitimate app's tag that a
+ *     developer or merchant may have commented out. Where a file has no
+ *     comment syntax (JSON), nothing is blanked and the reference counts.
+ *   - An entry whose `reviewBy` date has passed (UTC, at `now`) emits nothing.
+ *   - `appName` is deliberately NOT set: a finding with an app name is counted
+ *     as that app's leftover code by app-removal detection (countedLeftovers)
+ *     and listed in the scan page's App Impact Map ("see what it left"). An
+ *     advisory is neither. The app is named in the description.
+ *   - Severity is ALWAYS HIGH, set directly (like MALICIOUS_SCRIPT).
+ *
+ * Theme-file only, NO scope gate, ALL plans. `now` and `advisories` are test
+ * seams; production callers use the defaults.
+ */
+export function detectAppIncidentAdvisories(
+  files: ThemeFile[],
+  now: Date = new Date(),
+  advisories: ReadonlyArray<AppIncidentAdvisory> = APP_INCIDENT_ADVISORIES,
+): CreateFindingInput[] {
+  // Entries still to find. Shrinks as each one gets its single finding.
+  let pending = advisories.filter((a) => isAdvisoryActive(a, now));
+  const found = new Map<AppIncidentAdvisory, CreateFindingInput>();
+
+  for (const file of files) {
+    if (pending.length === 0) break;
+    if (!isScannableFile(file.filename) && !isMaliciousScanOnlyFile(file.filename)) continue;
+    // Cheap gate: a URL on a listed host (or a subdomain) contains that host.
+    const mentioned = pending.some((a) =>
+      a.scriptHosts.some((host) => indexOfIgnoreCase(file.content, host) !== -1),
+    );
+    if (!mentioned) continue;
+
+    const originalLines = file.content.split("\n");
+    const liquidBlanked = file.filename.endsWith(".liquid")
+      ? blankLiquidComments(file.content)
+      : file.content;
+    const liveLines = blankInertComments(liquidBlanked, file.filename).split("\n");
+
+    for (let i = 0; i < liveLines.length && pending.length > 0; i++) {
+      for (const host of urlHostsOnLine(liveLines[i])) {
+        const match = matchAdvisoryScriptHost(host, pending);
+        if (!match) continue;
+        const lineNumber = i + 1;
+        found.set(match.advisory, {
+          filename: file.filename,
+          lineNumber,
+          codeSnippet: hostSnippet(
+            file,
+            lineNumber,
+            originalLines[i],
+            liveLines[i],
+            match.scriptHost,
+          ),
+          findingType: FindingType.APP_INCIDENT_ADVISORY,
+          severity: Severity.HIGH,
+          appName: undefined,
+          description: advisoryDescription(match),
+        });
+        pending = pending.filter((a) => a !== match.advisory);
+      }
+    }
+  }
+
+  // List order, so the output does not depend on which entry was seen first.
+  return advisories.flatMap((a) => found.get(a) ?? []);
 }
 
 // ---------------------------------------------------------------------------
@@ -5436,6 +5560,8 @@ export function detectGhostAjax(file: ThemeFile): CreateFindingInput[] {
  *     configured with two or more distinct IDs (DUPLICATE_TRACKER) and any two
  *     or more distinct chat-widget platforms present at once
  *     (OVERLAPPING_CHAT_WIDGET).
+ *     Also emits at most one APP_INCIDENT_ADVISORY per curated list entry
+ *     whose script host the theme's live code references (gc-14x5).
  *
  * Returns all findings (all passes) ready for createFindings().
  */
@@ -5612,6 +5738,11 @@ export function scanThemeFiles(files: ThemeFile[]): ScanResult {
   // file (see CROSS_FILE_FINDING_TYPES in finding-classification).
   findings.push(...detectDuplicateTrackers(files));
   findings.push(...detectOverlappingChatWidgets(files));
+
+  // Pass 5 (cont.): affected-app advisories (gc-14x5). Cross-file: at most one
+  // finding per curated list entry, anchored to the first live reference
+  // (see CROSS_FILE_FINDING_TYPES in finding-classification).
+  findings.push(...detectAppIncidentAdvisories(files));
 
   // Pass 5b: drop an active app's findings in its own files (gc-clt4). Runs
   // before Pass 6 so dropped findings cannot corroborate GHOST_APP_EMBED.

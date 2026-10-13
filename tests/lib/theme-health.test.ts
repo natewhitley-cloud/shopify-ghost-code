@@ -101,6 +101,8 @@ describe("HEALTH_CATEGORY_OF: every FindingType lands in exactly one category", 
       "liquid-errors": ["LIQUID_ERROR_RENDERED"],
       "shopper-visible": ["DANGLING_REFERENCE", "GHOST_TEXT", "OVERLAPPING_CHAT_WIDGET"],
       "scripts-styles": [
+        // gc-14x5: no row of its own yet, and never "Known malicious code".
+        "APP_INCIDENT_ADVISORY",
         "DUPLICATE_LIBRARY",
         "GHOST_AJAX",
         "GHOST_FONT",

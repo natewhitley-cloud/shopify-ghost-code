@@ -1185,3 +1185,125 @@ describe("Home findings tile: known malicious code counts regardless of ignores 
     });
   });
 });
+
+// gc-14x5: an affected-app advisory is NOT known malicious code. On Home it is
+// a normal finding: it never turns the findings tile critical, never raises the
+// critical "Known malicious code" line, honours ignores (nothing is added
+// back), and counts in its lane like any other finding.
+describe("Home: an affected-app advisory is a normal finding, not malicious code (gc-14x5)", () => {
+  type Counts = Record<string, number>;
+  const sum = (c: Counts) => Object.values(c).reduce((a, b) => a + b, 0);
+  const ADVISORY_FLAG = "APP_INCIDENT_ADVISORY_LIVE_ENABLED";
+
+  beforeEach(() => {
+    process.env[ADVISORY_FLAG] = "true";
+  });
+  afterEach(() => {
+    delete process.env[ADVISORY_FLAG];
+  });
+
+  /** `found` = what the scan stored; `kept` = after ignores (null = no ignores). */
+  function scan(found: Counts, kept: Counts | null = null) {
+    (getSeverityCountsForScans as ReturnType<typeof vi.fn>).mockResolvedValue(
+      new Map([["scan-1", { HIGH: sum(found), MEDIUM: 0, LOW: 0 }]]),
+    );
+    mockTypeCounts.mockResolvedValue(found);
+    (getIgnoredFindingsForShop as ReturnType<typeof vi.fn>).mockResolvedValue({
+      fingerprints: new Set(kept ? ["fp-ignored"] : []),
+      appNames: new Set(),
+    });
+    mockFiltered.mockImplementation(async () => ({
+      summary: {
+        total: sum(kept ?? found),
+        bySeverity: { HIGH: sum(kept ?? found), MEDIUM: 0, LOW: 0 },
+        byType: kept ?? found,
+      },
+      keptFindings: [],
+      ignoredMalicious: 0,
+    }));
+  }
+
+  function tileOf(html: string) {
+    const tile = html.match(/class="health-score-tile health-score-tile--(\w+)"/);
+    const number = html.match(/class="health-score-number health-score-number--(\w+)">(\d+)</);
+    return { tileTone: tile?.[1], numberTone: number?.[1], total: Number(number?.[2]) };
+  }
+
+  it.each(["free", "Standard", "Professional"])(
+    "%s: an advisory alone is a warning tile counting 1, never critical",
+    async (plan) => {
+      setPlan(plan);
+      scan({ APP_INCIDENT_ADVISORY: 1 });
+
+      const data = await runLoader();
+
+      expect(data.findingsTile).toEqual({ total: 1, tone: "warning" });
+      const html = renderDashboard(data);
+      expect(tileOf(html)).toEqual({ tileTone: "warning", numberTone: "warning", total: 1 });
+      expect(html).not.toMatch(/class="[^"]*health-score-(tile|number)--critical/);
+    },
+  );
+
+  it("never raises the critical 'Known malicious code' line", async () => {
+    scan({ APP_INCIDENT_ADVISORY: 1 });
+
+    const data = await runLoader();
+
+    expect(data.maliciousHealth).toBeNull();
+    const rows = data.themeHealth as HealthRow[];
+    expect(rowOf(rows, "malicious")).toMatchObject({ status: "clean", count: 0 });
+    expect(rowOf(rows, "scripts-styles")).toMatchObject({ status: "issues", count: 1 });
+    const section = sectionOf(renderDashboard(data));
+    expect(section).not.toContain('<s-badge tone="critical">');
+    expect(section).toContain("No known malicious code found.");
+  });
+
+  it("an ignored advisory leaves a green zero: nothing is added back, unlike ignored malicious code", async () => {
+    scan({ APP_INCIDENT_ADVISORY: 1 }, {});
+
+    const data = await runLoader();
+
+    expect(data.findingsTile).toEqual({ total: 0, tone: "success" });
+    expect(tileOf(renderDashboard(data))).toMatchObject({ tileTone: "success", total: 0 });
+    expect(data.maliciousHealth).toBeNull();
+  });
+
+  it("control: ignored malicious code beside it is still added back and critical", async () => {
+    scan({ APP_INCIDENT_ADVISORY: 1, MALICIOUS_SCRIPT: 1 }, {});
+
+    const data = await runLoader();
+
+    // Only the malicious finding is added back: 1, not 2.
+    expect(data.findingsTile).toEqual({ total: 1, tone: "critical" });
+    expect(data.maliciousHealth).toMatchObject({ count: 1 });
+  });
+
+  it("counts in the same lane as malicious code, as one finding", async () => {
+    scan({ APP_INCIDENT_ADVISORY: 1 });
+
+    const data = (await runLoader()) as unknown as {
+      laneSummary: Array<{ lane: string; label: string; count: number; urgency: string }>;
+    };
+
+    expect(data.laneSummary).toEqual([
+      expect.objectContaining({
+        lane: "privacy",
+        label: "Still tracking you",
+        count: 1,
+        urgency: "act-now",
+      }),
+    ]);
+  });
+
+  it("with the flag off (the production default) the check is dark: its row is left as it was", async () => {
+    delete process.env[ADVISORY_FLAG];
+    scan({});
+
+    const data = await runLoader();
+
+    expect(rowOf(data.themeHealth as HealthRow[], "scripts-styles")).toMatchObject({
+      status: "clean",
+      statusLabel: "Clean",
+    });
+  });
+});

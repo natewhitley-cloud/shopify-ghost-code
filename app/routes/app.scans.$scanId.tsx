@@ -108,7 +108,10 @@ import {
   isFindingIgnored,
 } from "../services/finding-aggregation.server";
 import type { FindingRow as FindingRecord } from "../services/finding-aggregation.server";
-import { getFreePreviewFindings } from "../services/free-preview.server";
+import {
+  getFreeAlwaysShownFindings,
+  getFreePreviewFindings,
+} from "../services/free-preview.server";
 import {
   recordJourneyMilestoneOnce,
   recordScanResultsViewOnce,
@@ -559,6 +562,8 @@ interface FindingLike {
   lineNumber: number;
   appName: string | null;
   codeSnippet: string;
+  /** The stored description. Rendered only for an affected-app advisory. */
+  description?: string;
   isTracker?: boolean;
   isVisual?: boolean;
   isIgnored?: boolean;
@@ -860,6 +865,14 @@ export function FindingRow({
         )}
         {finding.lineNumber > 0 && `, line ${finding.lineNumber}`}
       </div>
+
+      {/* Affected-app advisory (gc-14x5): the stored description is the only
+          place that names the app and the report's date (the finding carries
+          no appName on purpose, and the per-type copy below is static), so
+          this card shows it. No other finding type renders its description. */}
+      {finding.findingType === "APP_INCIDENT_ADVISORY" && finding.description && (
+        <div style={findingNote}>{finding.description}</div>
+      )}
 
       {/* How freely the merchant can act (one coloured badge), and how the
           finding was detected (a plain sentence, not a second chip). */}
@@ -1314,12 +1327,24 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     isTracker: f.appName ? isTrackerApp(f.appName) : false,
   }));
 
+  // Affected-app advisories (gc-14x5): never paywalled, so Free sees every
+  // non-ignored one in full, in its own list above the preview rows (they
+  // never take a preview slot and are never counted as hidden). Unlike
+  // malicious code they honour ignores. Paid plans see them in the findings
+  // list like any other finding, so this is Free only. No query for a shop
+  // with ignores (the summary's kept rows) or a scan with none; otherwise one
+  // small read (at most one finding per advisory list entry).
+  const alwaysShownFindings =
+    scanSuccessful && !canViewDetails
+      ? await getFreeAlwaysShownFindings(scanId, findingSummary.byType, keptFindings)
+      : [];
+
   // "Start here" block (gc-bn0x): the scan's top 3 findings, on the
   // unfiltered results view of a successful scan only (a filtered list is
   // already narrowed, and the block's own links filter by type). Free ranks
-  // ONLY the preview rows and the non-ignored malicious rows, both already
-  // loaded above and both shown in full on Free, so it adds no query and can
-  // never surface a hidden finding. Full-list plans rank the whole scan: no
+  // ONLY the preview rows, the non-ignored malicious rows and the non-ignored
+  // advisories, all already loaded above and all shown in full on Free, so it
+  // adds no query and can never surface a hidden finding. Full-list plans rank the whole scan: no
   // query for a shop with ignores (the summary's kept rows), else one
   // (type, severity) groupBy plus at most a few `take <= 3` reads.
   const unfiltered = !severity && !findingType && !appName && !lane;
@@ -1330,6 +1355,7 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
         : await getFreeTopFindings(scanId, findingSummary.byType, keptFindings, withheldTypes, {
             preview: rawPreviewFindings,
             malicious: enrichedMaliciousFindings.filter((f) => !f.isIgnored),
+            alwaysShown: alwaysShownFindings,
           })
       : [];
   const topFindings = toTopFindingViews(scanId, topFindingRows, canViewDetails);
@@ -1539,6 +1565,8 @@ export const loader = async ({ request, params }: LoaderFunctionArgs) => {
     reviewRequestNonce:
       pagePrompt === "review_popup" ? reviewAttemptNonce(shop.reviewPopupLastAttemptAt) : null,
     maliciousFindings: enrichedMaliciousFindings,
+    // gc-14x5: Free's never-paywalled advisories, non-ignored (empty on paid).
+    alwaysShownFindings,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -1794,6 +1822,7 @@ export default function ScanDetail() {
     coverageUpgrade,
     reviewRequestNonce,
     maliciousFindings,
+    alwaysShownFindings,
     findingSummary,
     canViewDetails,
     canUseDiffing,
@@ -2522,6 +2551,29 @@ export default function ScanDetail() {
             </div>
           )}
 
+        {/* Affected-app advisories (gc-14x5), Free only: never paywalled, so
+          every non-ignored one is shown in full above the preview rows. Like
+          every finding card on Free it has no Ignore control (FindingRow gets
+          no scanId). Paid plans see them in the findings list below. */}
+        {isCompleted && !canViewDetails && alwaysShownFindings.length > 0 && (
+          <div style={{ ...sectionCard, marginBottom: 0 }}>
+            <s-stack direction="block" gap="base">
+              <s-heading>{FINDING_TYPE_LABELS.APP_INCIDENT_ADVISORY}</s-heading>
+              <FindingsTable>
+                {alwaysShownFindings.map((finding) => (
+                  <FindingRow
+                    key={finding.id}
+                    finding={finding}
+                    shopDomain={shopDomain}
+                    themeId={scan.themeId}
+                    anchor
+                  />
+                ))}
+              </FindingsTable>
+            </s-stack>
+          </div>
+        )}
+
         {/* Findings detail list — only shown for completed scans */}
         {isCompleted &&
           (canViewDetails ? (
@@ -2709,8 +2761,9 @@ export default function ScanDetail() {
               </div>
             </div>
           ) : previewFindings.length === 0 && !upgradePreview && !upgradeReturn ? (
-            /* Free tier, no findings beyond any malicious ones (shown above) */
-            maliciousFindings.length === 0 && (
+            /* Free tier, no findings beyond any malicious ones or advisories (shown above) */
+            maliciousFindings.length === 0 &&
+            alwaysShownFindings.length === 0 && (
               <s-card>
                 <s-paragraph>No leftover code detected in this scan.</s-paragraph>
               </s-card>

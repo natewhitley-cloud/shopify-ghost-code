@@ -74,6 +74,7 @@ import { getScanById } from "../../app/models/scan.server";
 import { getShopMetadata } from "../../app/models/shop.server";
 import { loader } from "../../app/routes/app.scans.$scanId.export";
 import { filterIgnoredFindings } from "../../app/services/finding-aggregation.server";
+import { fingerprintFinding } from "../../app/services/scan-differ.server";
 import { authenticate } from "../../app/shopify.server";
 
 // ---------------------------------------------------------------------------
@@ -788,4 +789,119 @@ describe("ignored malicious findings are still exported (gc-j8xq)", () => {
       }
     },
   );
+});
+
+// ---------------------------------------------------------------------------
+// gc-14x5: an affected-app advisory is exported like any other finding, and
+// (unlike malicious code) an ignored one is dropped
+// ---------------------------------------------------------------------------
+
+describe("affected-app advisory in the export (gc-14x5)", () => {
+  const ADVISORY = {
+    id: "finding-adv",
+    scanId: "scan-abc",
+    severity: "HIGH",
+    findingType: "APP_INCIDENT_ADVISORY",
+    filename: "layout/theme.liquid",
+    lineNumber: 42,
+    appName: null,
+    codeSnippet: '<script src="https://productoption.hulkapps.com/hulkcode.js"></script>',
+    description:
+      "Loads code from Hulk Product Options (productoption.hulkapps.com), an app named in a public report of shoppers being sent to a fake checkout page (10 October 2026)",
+    createdAt: new Date("2026-10-12T10:05:00Z"),
+  };
+
+  function ignoreAdvisory() {
+    mockGetIgnoredFindingsForShop.mockResolvedValue({
+      fingerprints: new Set<string>([
+        fingerprintFinding(
+          ADVISORY.filename,
+          ADVISORY.findingType,
+          ADVISORY.codeSnippet,
+          ADVISORY.lineNumber,
+        ),
+      ]),
+      appNames: new Set<string>(),
+    });
+  }
+
+  it("CSV: one row with its type, file, line, an empty app, the snippet and the description", async () => {
+    mockGetFindingsForScan.mockResolvedValue([ADVISORY]);
+
+    const lines = (await (await callLoader("scan-abc", "csv")).text()).split("\r\n");
+
+    expect(lines).toHaveLength(2);
+    expect(lines[1]).toBe(
+      [
+        '"HIGH"',
+        '"APP_INCIDENT_ADVISORY"',
+        '"layout/theme.liquid"',
+        '"42"',
+        '""',
+        '"<script src=""https://productoption.hulkapps.com/hulkcode.js""></script>"',
+        `"${ADVISORY.description}"`,
+      ].join(","),
+    );
+  });
+
+  it("JSON: in the findings array, with a null app and the description", async () => {
+    mockGetFindingsForScan.mockResolvedValue([ADVISORY]);
+
+    const body = await (await callLoader("scan-abc", "json")).json();
+
+    expect(body.findings).toEqual([
+      {
+        severity: "HIGH",
+        type: "APP_INCIDENT_ADVISORY",
+        file: "layout/theme.liquid",
+        line: 42,
+        app: null,
+        description: ADVISORY.description,
+        codeSnippet: ADVISORY.codeSnippet,
+      },
+    ]);
+  });
+
+  it("PDF: handed to the renderer, never marked 'ignored by you'", async () => {
+    mockGetFindingsForScan.mockResolvedValue([ADVISORY]);
+
+    await callLoader("scan-abc", "pdf");
+
+    const { findings } = vi.mocked(renderScanReportPdf).mock.calls[0][0];
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({ findingType: "APP_INCIDENT_ADVISORY" });
+    expect(findings[0].ignoredByMerchant).toBeUndefined();
+  });
+
+  it.each(["csv", "json", "pdf"])(
+    "%s: HONOURS IGNORES, an ignored advisory is dropped (it is not malicious code)",
+    async (format) => {
+      ignoreAdvisory();
+      mockGetFindingsForScan.mockResolvedValue([ADVISORY, FINDINGS[1]]);
+
+      const response = await callLoader("scan-abc", format);
+
+      if (format === "csv") {
+        const text = await response.text();
+        expect(text.split("\r\n")).toHaveLength(2);
+        expect(text).not.toContain("APP_INCIDENT_ADVISORY");
+      } else if (format === "json") {
+        const types = (await response.json()).findings.map((f: { type: string }) => f.type);
+        expect(types).toEqual([FINDINGS[1].findingType]);
+      } else {
+        const { findings } = vi.mocked(renderScanReportPdf).mock.calls[0][0];
+        expect(findings.map((f) => f.findingType)).toEqual([FINDINGS[1].findingType]);
+      }
+    },
+  );
+
+  it("Free: export stays a paid feature for every type (403), exactly as for malicious code", async () => {
+    mockCanViewFindingDetails.mockReturnValue(false);
+    mockGetFindingsForScan.mockResolvedValue([ADVISORY]);
+
+    for (const format of ["csv", "json", "pdf"]) {
+      expect((await callLoader("scan-abc", format)).status).toBe(403);
+    }
+    expect(mockGetFindingsForScan).not.toHaveBeenCalled();
+  });
 });

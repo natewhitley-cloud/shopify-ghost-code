@@ -5,12 +5,14 @@
  * Pure and UI-free (like finding-consequence.ts) so the loader, the component
  * and tests share one computation.
  *
- * HARD RULE: MALICIOUS_SCRIPT findings are never paywalled. They are shown in
- * full on every plan by the scan page's security alert, so they are excluded
- * from both the hidden count and the breakdown here.
+ * HARD RULE: never-paywalled findings (NEVER_PAYWALLED_FINDING_TYPES: known
+ * malicious code and affected-app advisories) are shown in full on every plan
+ * by the scan page, so they are excluded from both the hidden count and the
+ * breakdown here.
  */
 import type { FindingType } from "@prisma/client";
 
+import { NEVER_PAYWALLED_FINDING_TYPES } from "./finding-classification";
 import { computeLaneSummary } from "./finding-consequence";
 import { PLANS } from "./plans";
 import { FREE_TRIAL_DAYS, upgradeCtaLabel } from "./trial-cta";
@@ -83,7 +85,7 @@ export const UPGRADE_PREVIEW_OTHER_LABEL = "Other";
 export type UpgradePreviewGroup = { label: string; count: number };
 
 export type UpgradePreview = {
-  /** Findings hidden from this Free shop (excludes the preview rows and all malicious). */
+  /** Findings hidden from this Free shop (excludes the preview rows and every never-paywalled type). */
   hiddenCount: number;
   /** Per-lane counts, largest first; sums to hiddenCount. */
   groups: UpgradePreviewGroup[];
@@ -103,7 +105,8 @@ export function buildUpgradePreview(
   byType: Partial<Record<FindingType, number>>,
   previewFindingTypes: readonly FindingType[],
 ): UpgradePreview | null {
-  const hidden: Partial<Record<FindingType, number>> = { ...byType, MALICIOUS_SCRIPT: 0 };
+  const hidden: Partial<Record<FindingType, number>> = { ...byType };
+  for (const type of NEVER_PAYWALLED_FINDING_TYPES) hidden[type] = 0;
   for (const type of previewFindingTypes) {
     const count = hidden[type] ?? 0;
     if (count > 0) hidden[type] = count - 1;

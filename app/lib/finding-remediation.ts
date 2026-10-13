@@ -234,6 +234,18 @@ const REMEDIATION: Record<string, Remediation> = {
       "Open the theme file the error names in the theme code editor (Online Store, Themes, Edit code) and go to the line number it gives. That line renders a snippet that no longer exists in your theme, so it only prints the error: delete the render line. If you still use the app the snippet belonged to, ask its support how to add it back instead. Duplicate your live theme first (Online Store, Themes, Actions, Duplicate).",
   },
 
+  // ---- App named in a public security incident report (gc-14x5) ----
+  // Facts only: the app's code is in the theme and a public report names the
+  // app. Never says the store was affected. The steps are a checkout self-check
+  // first, removal last. Static per type: the finding's stored description
+  // names the app and the date.
+  APP_INCIDENT_ADVISORY: {
+    impact:
+      "Your theme loads a script from this app. A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store. GhostCode reads theme files and cannot see code an app loads while a shopper is browsing, so we cannot tell you whether your store was affected. This script loads whether or not the app is still installed.",
+    howTo:
+      "1. Open your store in a private (incognito) window, add a product to the cart and click the ordinary Checkout button. 2. Read the address bar before typing anything. It should start with a domain listed under Settings, Domains in your Shopify admin. 3. Shop Pay, PayPal and similar buttons open their own sites. That is normal. 4. If the page asking for contact, shipping or card details is on any other address, do not enter card details. Contact Shopify Support and the app developer. 5. If you no longer use the app, remove its script line from the theme file shown here (duplicate your theme first). If you still use it, ask the developer whether this affects you.",
+  },
+
   // ---- Theme settings ----
   SETTINGS_DRIFT: {
     howTo:
@@ -290,6 +302,8 @@ export interface RemovalInstructionFinding {
  *   - SETTINGS_DRIFT / APP_EMBED_OFF / GHOST_APP_EMBED: a re-serialized JSON
  *     entry from config/settings_data.json (synthetic lineNumber 1).
  *   - ORPHAN_ASSET: no snippet at all.
+ *   - APP_INCIDENT_ADVISORY: a 300-char window of the flagged line itself (the
+ *     same window as MALICIOUS_SCRIPT).
  * A type not listed here (including any future one) gets the neutral
  * "Code found:" label and no "finding is this line" claim. A test pins the
  * split so a new theme-file type forces a decision.

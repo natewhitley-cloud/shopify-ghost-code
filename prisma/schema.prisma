@@ -763,6 +763,15 @@ enum FindingType {
   // snippet name are stored, never page HTML. Published theme only; gated by
   // SCRIPT_TAG_SUNSET_LIVE_ENABLED like the request itself.
   LIQUID_ERROR_RENDERED
+  // Emitted by the affected-app advisory detector (detectAppIncidentAdvisories in
+  // scan-engine.server.ts, gc-14x5): live theme code loads from a host of an app
+  // on the curated APP_INCIDENT_ADVISORIES list (app/data/app-incident-advisories.server.ts),
+  // i.e. an app named in a public security incident report. At most ONE finding
+  // per list entry per scan. It states that the app's code is in the theme and
+  // that the report exists, never that the store was affected. Always HIGH, all
+  // plans, never paywalled, honours ignores. Soft-launched behind
+  // APP_INCIDENT_ADVISORY_LIVE_ENABLED.
+  APP_INCIDENT_ADVISORY
 }
 
 enum SubmissionStatus {

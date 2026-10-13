@@ -532,13 +532,13 @@ describe("getTypeCountsForScan", () => {
     });
   });
 
-  it("returns a fully zero-seeded record covering all 38 FindingType members", async () => {
+  it("returns a fully zero-seeded record covering all 39 FindingType members", async () => {
     mockDb.finding.groupBy.mockResolvedValue([]);
 
     const result = await getTypeCountsForScan(SCAN_ID);
 
     const keys = Object.keys(result);
-    expect(keys).toHaveLength(38);
+    expect(keys).toHaveLength(39);
     // Every enum member present and defaulted to 0.
     for (const type of Object.values(FindingType)) {
       expect(result[type]).toBe(0);
@@ -612,6 +612,29 @@ describe("getTopFindingsOfTypes", () => {
     expect(mockDb.finding.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { scanId: SCAN_ID, findingType: { in: ["GHOST_PIXEL"] } },
+      }),
+    );
+  });
+
+  // gc-14x5: an affected-app advisory is never paywalled either (shown in full
+  // on every plan by the scan page), so it never takes a preview slot.
+  it("never queries APP_INCIDENT_ADVISORY, even when the caller includes it", async () => {
+    mockDb.finding.findMany.mockResolvedValue([]);
+
+    await getTopFindingsOfTypes(
+      SCAN_ID,
+      [
+        FindingType.APP_INCIDENT_ADVISORY,
+        FindingType.GHOST_PIXEL,
+        FindingType.MALICIOUS_SCRIPT,
+        FindingType.GHOST_SCRIPT,
+      ],
+      3,
+    );
+
+    expect(mockDb.finding.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { scanId: SCAN_ID, findingType: { in: ["GHOST_PIXEL", "GHOST_SCRIPT"] } },
       }),
     );
   });

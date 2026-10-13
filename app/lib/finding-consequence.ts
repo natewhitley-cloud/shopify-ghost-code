@@ -399,6 +399,17 @@ export const CONSEQUENCE_MAP: Record<
     urgency: "act-now",
     agentic: false,
   },
+  // APP_INCIDENT_ADVISORY (gc-14x5): the theme loads code from an app named in
+  // a public security incident report. Same act-now lane as MALICIOUS_SCRIPT
+  // (owner decision: shopper data is what is at stake). The lane's own default
+  // "so what" line talks about a REMOVED app, which is not what an advisory
+  // says, so "Start here" gives it its own cost line (findingCostLine).
+  APP_INCIDENT_ADVISORY: {
+    primary: "privacy",
+    secondary: ["customers-see-it"],
+    urgency: "act-now",
+    agentic: false,
+  },
 };
 
 // ---------------------------------------------------------------------------

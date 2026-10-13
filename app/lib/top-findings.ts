@@ -8,7 +8,9 @@
  * app/services/top-findings.server.ts.
  *
  * Ranking (compareFindingImportance), most important first:
- *   1. MALICIOUS_SCRIPT before everything else.
+ *   1. MALICIOUS_SCRIPT before everything else, then APP_INCIDENT_ADVISORY
+ *      (gc-14x5: an app named in a public security incident report) before
+ *      every other finding.
  *   2. Severity: HIGH > MEDIUM > LOW.
  *   3. Consequence urgency: act-now > compounding > whenever (URGENCY_RANK of
  *      the type's CONSEQUENCE_MAP entry).
@@ -20,12 +22,13 @@
  * type of the SAME severity (the "comparable importance" bar) is still
  * available; the best such finding takes the slot instead. A lower-severity
  * finding never displaces a higher one, so 3 HIGH scripts still beat a LOW
- * finding of another type. MALICIOUS_SCRIPT is exempt: security findings are
- * never displaced and always shown first.
+ * finding of another type. The two security types of step 1 are exempt:
+ * security findings are never displaced and always shown first.
  *
  * Plan safety is the CALLER's job: pass only findings the plan already shows
- * in full (on Free: the free-preview rows plus the always-visible malicious
- * ones). Ignored findings must be excluded before they get here.
+ * in full (on Free: the free-preview rows plus the never-paywalled ones, see
+ * NEVER_PAYWALLED_FINDING_TYPES). Ignored findings must be excluded before
+ * they get here.
  */
 import type { FindingType, Severity } from "@prisma/client";
 
@@ -50,9 +53,22 @@ const SEVERITY_RANK: Record<Severity, number> = { HIGH: 0, MEDIUM: 1, LOW: 2 };
 
 const LANE_ORDER: Record<string, number> = Object.fromEntries(LANES.map((l, i) => [l.key, i]));
 
-/** 0 for a malicious finding, 1 otherwise (malicious sorts first). */
-function maliciousRank(type: FindingType): number {
-  return type === "MALICIOUS_SCRIPT" ? 0 : 1;
+/** securityRank of a finding that is not one of the security types. */
+export const SECURITY_RANK_OTHER = 2;
+
+/**
+ * Step 1 of the ranking: 0 for known malicious code, 1 for an affected-app
+ * advisory, SECURITY_RANK_OTHER for every other finding.
+ */
+export function securityRank(type: FindingType): number {
+  if (type === "MALICIOUS_SCRIPT") return 0;
+  if (type === "APP_INCIDENT_ADVISORY") return 1;
+  return SECURITY_RANK_OTHER;
+}
+
+/** True for the security types that are ranked first and never displaced. */
+function isSecurityType(type: FindingType): boolean {
+  return securityRank(type) < SECURITY_RANK_OTHER;
 }
 
 /**
@@ -67,7 +83,7 @@ export function compareFindingClass(
   const ca = CONSEQUENCE_MAP[a.findingType];
   const cb = CONSEQUENCE_MAP[b.findingType];
   return (
-    maliciousRank(a.findingType) - maliciousRank(b.findingType) ||
+    securityRank(a.findingType) - securityRank(b.findingType) ||
     SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity] ||
     URGENCY_RANK[ca.urgency] - URGENCY_RANK[cb.urgency] ||
     LANE_ORDER[ca.primary] - LANE_ORDER[cb.primary]
@@ -101,10 +117,10 @@ export function pickTopFindings<T extends RankableFinding>(
   while (picked.length < max && remaining.length > 0) {
     let index = 0;
     const best = remaining[0];
-    if (best.findingType !== "MALICIOUS_SCRIPT" && pickedTypes.has(best.findingType)) {
+    if (!isSecurityType(best.findingType) && pickedTypes.has(best.findingType)) {
       const alternative = remaining.findIndex(
         (c) =>
-          c.findingType !== "MALICIOUS_SCRIPT" &&
+          !isSecurityType(c.findingType) &&
           !pickedTypes.has(c.findingType) &&
           c.severity === best.severity,
       );
@@ -149,10 +165,16 @@ export type TopFindingSource = RankableFinding & {
  * One plain line on what a finding costs: its primary lane's "so what" copy
  * (finding-consequence LANES). Malicious code gets its own line, since the
  * privacy lane's "a removed app is still collecting data" undersells an attack.
+ * An affected-app advisory gets its own too (gc-14x5): that lane line would
+ * claim the app is removed and collecting data, neither of which is known. Its
+ * line is the report's own claim, a sentence from the type's remediation copy.
  */
 export function findingCostLine(findingType: FindingType): string {
   if (findingType === "MALICIOUS_SCRIPT") {
     return "This code can steal shopper data or send your customers to other sites.";
+  }
+  if (findingType === "APP_INCIDENT_ADVISORY") {
+    return "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.";
   }
   return soWhatForLane(CONSEQUENCE_MAP[findingType].primary);
 }

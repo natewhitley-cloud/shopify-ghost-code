@@ -559,6 +559,7 @@ beforeEach(() => {
   delete process.env.DANGLING_REFERENCE_LIVE_ENABLED;
   delete process.env.SETTINGS_DRIFT_LIVE_ENABLED;
   delete process.env.APP_EMBED_LIVE_ENABLED;
+  delete process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED;
   // Storefront script-tag audit: dark unless a test enables it. The real
   // fetcher runs; the global fetch is stubbed so no test can reach the network.
   delete process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED;
@@ -3413,6 +3414,83 @@ describe("scanTheme — APP_EMBED_LIVE_ENABLED soft-launch (gc-fed)", () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch flag (gc-14x5)
+// ---------------------------------------------------------------------------
+
+describe("scanTheme — APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch (gc-14x5)", () => {
+  const ADVISORY_FINDING = {
+    filename: "layout/theme.liquid",
+    lineNumber: 12,
+    codeSnippet: '<script src="https://productoption.hulkapps.com/hulkcode.js"></script>',
+    findingType: FindingType.APP_INCIDENT_ADVISORY,
+    severity: Severity.HIGH,
+    description: "advisory finding",
+  };
+
+  function arrange() {
+    mockScanThemeFiles.mockReturnValue({
+      findings: [...MOCK_FINDINGS, ADVISORY_FINDING],
+      unknownScripts: [],
+    });
+    mockDb.finding.groupBy.mockImplementation(async () => {
+      const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+      const counts: Record<string, number> = {};
+      for (const f of saved) counts[f.findingType] = (counts[f.findingType] ?? 0) + 1;
+      return Object.entries(counts).map(([findingType, _count]) => ({ findingType, _count }));
+    });
+  }
+
+  const isAdvisory = (f: { findingType: string }) =>
+    f.findingType === FindingType.APP_INCIDENT_ADVISORY;
+
+  it("flag unset (the production default): detected and counted, never persisted", async () => {
+    arrange();
+
+    const result = await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some(isAdvisory)).toBe(false);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length);
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata.detectorHits.APP_INCIDENT_ADVISORY).toBe(1);
+  });
+
+  it.each(["1", "TRUE", "yes", ""])('flag %j is not "true": still dark', async (value) => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = value;
+    arrange();
+
+    await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some(isAdvisory)).toBe(false);
+  });
+
+  it('flag "true": persisted and counted once (no double count)', async () => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+    arrange();
+
+    const result = await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.filter(isAdvisory)).toHaveLength(1);
+    expect(result.findingCount).toBe(MOCK_FINDINGS.length + 1);
+    const signal = mockRecordOpsEvent.mock.calls.at(-1)?.[0];
+    expect(signal.metadata.detectorHits.APP_INCIDENT_ADVISORY).toBe(1);
+  });
+
+  it("the flags are independent: other soft-launch flags do not enable advisories", async () => {
+    process.env.SETTINGS_DRIFT_LIVE_ENABLED = "true";
+    process.env.APP_EMBED_LIVE_ENABLED = "true";
+    arrange();
+
+    await runScanTheme();
+
+    const saved = mockSaveThemeFindings.mock.calls[0][1] as Array<{ findingType: string }>;
+    expect(saved.some(isAdvisory)).toBe(false);
+  });
+});
+
 // gc-rvo0 - liveFindingTypes recorded at finalize
 // ---------------------------------------------------------------------------
 
@@ -3424,6 +3502,8 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     FindingType.SCRIPT_TAG_SUNSET,
     // Read from the same homepage request, so behind the same flag (gc-i6du).
     FindingType.LIQUID_ERROR_RENDERED,
+    // Affected-app advisory: dark until its first output is reviewed (gc-14x5).
+    FindingType.APP_INCIDENT_ADVISORY,
   ];
   const live = async () => {
     await runScanTheme();
@@ -3461,10 +3541,20 @@ describe("scanTheme - liveFindingTypes written at finalize (gc-rvo0)", () => {
     expect(types).not.toContain(FindingType.SETTINGS_DRIFT);
   });
 
+  it("APP_INCIDENT_ADVISORY_LIVE_ENABLED=true adds only the advisory type (gc-14x5)", async () => {
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+    const types = await live();
+    expect(types).toContain(FindingType.APP_INCIDENT_ADVISORY);
+    expect(types).not.toContain(FindingType.APP_EMBED_OFF);
+    expect(types).not.toContain(FindingType.SETTINGS_DRIFT);
+    expect(types).not.toContain(FindingType.SCRIPT_TAG_SUNSET);
+  });
+
   it("all flags on: the full enum", async () => {
     process.env.SETTINGS_DRIFT_LIVE_ENABLED = "true";
     process.env.APP_EMBED_LIVE_ENABLED = "true";
     process.env.SCRIPT_TAG_SUNSET_LIVE_ENABLED = "true";
+    process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
     expect(await live()).toEqual(Object.values(FindingType));
   });
 

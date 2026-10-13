@@ -1,6 +1,7 @@
 import { Prisma, ScanOrigin, ScanStatus } from "@prisma/client";
 
 import db from "../db.server";
+import { NEVER_PAYWALLED_FINDING_TYPES } from "../lib/finding-classification";
 import { logger } from "../lib/logger.server";
 import { SCAN_SOURCES } from "../lib/scan-source";
 import type { ScanRequestSource } from "../lib/scan-source";
@@ -693,8 +694,9 @@ export async function getFirstSuccessfulScanCompletedAt(shopId: string): Promise
  * PARTIAL) scan, or null when it has none: ONE indexed query (the latest scan
  * plus a filtered relation _count over Finding's scanId index), no finding rows
  * loaded. Drives the return banner's "latest results have hidden findings"
- * rule (gc-97k.9, app/lib/upgrade-return.ts). MALICIOUS_SCRIPT is excluded
- * because it is never paywalled; ignores are not subtracted (see
+ * rule (gc-97k.9, app/lib/upgrade-return.ts). The never-paywalled types
+ * (NEVER_PAYWALLED_FINDING_TYPES: malicious code, affected-app advisories) are
+ * excluded because they are never hidden; ignores are not subtracted (see
  * UpgradeReturnState.latestScanNonMaliciousCount).
  */
 export async function getLatestSuccessfulScanNonMaliciousCount(
@@ -708,7 +710,11 @@ export async function getLatestSuccessfulScanNonMaliciousCount(
     },
     orderBy: { completedAt: "desc" },
     select: {
-      _count: { select: { findings: { where: { findingType: { not: "MALICIOUS_SCRIPT" } } } } },
+      _count: {
+        select: {
+          findings: { where: { findingType: { notIn: [...NEVER_PAYWALLED_FINDING_TYPES] } } },
+        },
+      },
     },
   });
   return row === null ? null : row._count.findings;

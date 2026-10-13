@@ -125,6 +125,10 @@ export const HEALTH_CATEGORY_OF: Record<FindingType, HealthCategoryKey> = {
   GHOST_FONT: "scripts-styles",
   GHOST_AJAX: "scripts-styles",
   DUPLICATE_LIBRARY: "scripts-styles",
+  // A script the theme loads from an app named in a public security incident
+  // report (gc-14x5). Owner decision: no row of its own yet, and it is NOT
+  // "known malicious code", so it counts with the other theme scripts.
+  APP_INCIDENT_ADVISORY: "scripts-styles",
 
   GHOST_SNIPPET: "snippets-sections",
   GHOST_SECTION: "snippets-sections",
@@ -375,6 +379,7 @@ export function healthCostLine(
       const requests = n("GHOST_SCRIPT", "GHOST_STYLE", "GHOST_FONT", "GHOST_AJAX");
       const hints = n("GHOST_PRECONNECT");
       const duplicates = n("DUPLICATE_LIBRARY");
+      const advisories = n("APP_INCIDENT_ADVISORY");
       if (requests > 0) {
         parts.push(
           `${plural(requests, "extra request", "extra requests")} to apps you removed, on every page that loads ${requests === 1 ? "it" : "them"}`,
@@ -384,6 +389,15 @@ export function healthCostLine(
       if (duplicates > 0) {
         parts.push(
           plural(duplicates, "library loaded more than once", "libraries loaded more than once"),
+        );
+      }
+      if (advisories > 0) {
+        parts.push(
+          plural(
+            advisories,
+            "script from an app named in a public security report",
+            "scripts from apps named in a public security report",
+          ),
         );
       }
       return sentence(parts);

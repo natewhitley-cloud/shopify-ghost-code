@@ -6,10 +6,12 @@
  * bounded DB read that feeds pickFreePreviewFindings lives in
  * app/services/free-preview.server.ts.
  *
- * HARD RULE: MALICIOUS_SCRIPT findings are never paywalled. They are shown in
- * full on every plan by the scan page's security alert, so they are neither
- * counted in the formula's total nor ever picked as a preview row here.
+ * HARD RULE: never-paywalled findings (NEVER_PAYWALLED_FINDING_TYPES: known
+ * malicious code and affected-app advisories) are shown in full on every plan
+ * by the scan page (the security alert, and the advisories list), so they are
+ * neither counted in the formula's total nor ever picked as a preview row here.
  */
+import { isNeverPaywalledFindingType } from "./finding-classification";
 import { LANES, laneForType } from "./finding-consequence";
 import type { LaneKey } from "./finding-consequence";
 import { compareFindingImportance } from "./top-findings";
@@ -21,7 +23,8 @@ export const FREE_PREVIEW_MAX = 5;
 /**
  * shown = max(1, min(5, floor(total / 2))), and 0 when total is 0.
  *
- * `total` counts the scan's non-malicious, non-ignored findings. At most half
+ * `total` counts the scan's non-ignored findings that can be paywalled (never
+ * malicious code or an affected-app advisory). At most half
  * are ever shown (never all of them from 2 up), but always at least one when
  * there is anything to show.
  */
@@ -68,7 +71,7 @@ export const comparePreviewCandidates = compareFindingImportance;
  * row one. The diversity rule of pickTopFindings is NOT applied here: one per
  * lane already spreads the rows, and the lane guarantee wins.
  *
- * MALICIOUS_SCRIPT candidates are dropped defensively (see the file header).
+ * Never-paywalled candidates are dropped defensively (see the file header).
  * Returns fewer than `count` only when there are fewer candidates.
  */
 export function pickFreePreviewFindings<T extends PreviewCandidate>(
@@ -77,7 +80,7 @@ export function pickFreePreviewFindings<T extends PreviewCandidate>(
 ): T[] {
   const byLane = new Map<LaneKey, T[]>();
   for (const c of candidates) {
-    if (c.findingType === "MALICIOUS_SCRIPT") continue;
+    if (isNeverPaywalledFindingType(c.findingType)) continue;
     const lane = laneForType(c.findingType);
     const rows = byLane.get(lane) ?? [];
     rows.push(c);

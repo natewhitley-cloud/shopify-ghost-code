@@ -222,13 +222,14 @@ describe("getFreeTopFindings", () => {
       serveScan(rows);
       const byType = byTypeOf(rows);
       const preview = await getFreePreviewFindings("scan-1", byType, null, []);
-      const visible = new Set([
-        ...ids(preview),
-        ...ids(rows.filter((r) => r.findingType === "MALICIOUS_SCRIPT")),
-      ]);
+      // gc-14x5: the random pool holds every type, so it now includes
+      // APP_INCIDENT_ADVISORY, which Free also sees in full (never paywalled).
+      const shownInFull = (r: Row) =>
+        r.findingType === "MALICIOUS_SCRIPT" || r.findingType === "APP_INCIDENT_ADVISORY";
+      const visible = new Set([...ids(preview), ...ids(rows.filter(shownInFull))]);
       const top = await getFreeTopFindings("scan-1", byType, null, []);
       for (const id of ids(top)) expect(visible.has(id)).toBe(true);
-      const nonMalicious = rows.filter((r) => r.findingType !== "MALICIOUS_SCRIPT").length;
+      const nonMalicious = rows.filter((r) => !shownInFull(r)).length;
       const malicious = rows.length - nonMalicious;
       expect(top.length).toBe(Math.min(3, freePreviewCount(nonMalicious) + malicious));
     }

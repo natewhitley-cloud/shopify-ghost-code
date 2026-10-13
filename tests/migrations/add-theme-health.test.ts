@@ -37,14 +37,16 @@ describe("add_theme_health migration (gc-i6du)", () => {
 
   it("matches the Prisma schema", () => {
     expect(SCHEMA).toMatch(/model Scan \{[\s\S]*?\n\s+themeInfo\s+Json\?\n/);
-    expect(SCHEMA).toMatch(/enum FindingType \{[\s\S]*?\n\s+LIQUID_ERROR_RENDERED\n\}/);
+    expect(SCHEMA).toMatch(/enum FindingType \{[^}]*?\n\s+LIQUID_ERROR_RENDERED\n/);
   });
 
-  it("is the latest migration (applied last on deploy), after the free speed test column", () => {
+  it("sorts right after the free speed test column and before the advisory type", () => {
     const dirs = readdirSync(join(ROOT, "prisma/migrations"))
       .filter((d) => /^\d{14}_/.test(d))
       .sort();
-    expect(dirs.at(-1)).toBe(NAME);
-    expect(dirs.at(-2)).toBe("20261017120000_add_shop_free_speed_test_used");
+    const self = dirs.indexOf(NAME);
+    expect(self).toBeGreaterThan(0);
+    expect(dirs[self - 1]).toBe("20261017120000_add_shop_free_speed_test_used");
+    expect(dirs[self + 1]).toBe("20261019120000_add_app_incident_advisory_finding_type");
   });
 });

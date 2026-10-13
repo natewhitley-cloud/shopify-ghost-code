@@ -124,8 +124,10 @@ describe("getFreePreviewFindings", () => {
 
   it("buckets partition every non-malicious type by (primary lane, urgency)", () => {
     const all = PREVIEW_READ_BUCKETS.flat();
+    // gc-14x5: an affected-app advisory is never paywalled either, so it has
+    // no preview bucket (it is shown in full outside the preview).
     const expected = (Object.keys(CONSEQUENCE_MAP) as FindingType[]).filter(
-      (t) => t !== "MALICIOUS_SCRIPT",
+      (t) => t !== "MALICIOUS_SCRIPT" && t !== "APP_INCIDENT_ADVISORY",
     );
     expect([...all].sort()).toEqual([...expected].sort());
     for (const bucket of PREVIEW_READ_BUCKETS) {

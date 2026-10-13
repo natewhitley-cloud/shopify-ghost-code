@@ -193,4 +193,10 @@ describe("classifySeverity", () => {
       '{% comment %}<link rel="stylesheet" media="print" href="//cdn.x.com/a.css">{% endcomment %}';
     expect(classifySeverity(FindingType.GHOST_STYLE, snippet)).toBe(Severity.LOW);
   });
+  // gc-14x5: the detector sets HIGH directly; the map entry must agree so any
+  // other caller gets the same answer.
+  it("returns HIGH for APP_INCIDENT_ADVISORY by default", () => {
+    const snippet = '<script src="https://productoption.hulkapps.com/hulkcode.js"></script>';
+    expect(classifySeverity(FindingType.APP_INCIDENT_ADVISORY, snippet)).toBe(Severity.HIGH);
+  });
 });

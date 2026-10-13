@@ -28,19 +28,25 @@
 import type { FindingType } from "@prisma/client";
 
 import type { FindingRow } from "./finding-aggregation.server";
+import {
+  isNeverPaywalledFindingType,
+  NEVER_PAYWALLED_FINDING_TYPES,
+} from "../lib/finding-classification";
 import { CONSEQUENCE_MAP } from "../lib/finding-consequence";
 import { freePreviewCount, pickFreePreviewFindings } from "../lib/free-preview";
-import { getTopFindingsOfTypes } from "../models/finding.server";
+import { compareFindingImportance } from "../lib/top-findings";
+import { getFindingsForScan, getTopFindingsOfTypes } from "../models/finding.server";
 
 /**
- * Non-malicious finding types grouped by (primary lane, urgency): the unit of
- * the bounded read (see the file header). Derived from CONSEQUENCE_MAP, so a
- * remapped type moves buckets on its own.
+ * The finding types that can be paywalled (every type but the never-paywalled
+ * ones) grouped by (primary lane, urgency): the unit of the bounded read (see
+ * the file header). Derived from CONSEQUENCE_MAP, so a remapped type moves
+ * buckets on its own.
  */
 export const PREVIEW_READ_BUCKETS: FindingType[][] = (() => {
   const buckets = new Map<string, FindingType[]>();
   for (const type of Object.keys(CONSEQUENCE_MAP) as FindingType[]) {
-    if (type === "MALICIOUS_SCRIPT") continue;
+    if (isNeverPaywalledFindingType(type)) continue;
     const { primary, urgency } = CONSEQUENCE_MAP[type];
     const key = `${primary}|${urgency}`;
     buckets.set(key, [...(buckets.get(key) ?? []), type]);
@@ -52,7 +58,8 @@ export const PREVIEW_READ_BUCKETS: FindingType[][] = (() => {
  * The Free view's preview rows for a successful scan, best first.
  *
  * `byType` is the page's (ignore-filtered) summary aggregate; the formula's
- * total is its non-malicious sum, so malicious findings never raise the count.
+ * total is its sum without the never-paywalled types, so malicious findings
+ * and affected-app advisories never raise the count.
  *
  * `keptFindings` is the `keptFindings` of getFilteredFindingSummaryAndKept:
  * the scan's non-ignored findings when the shop HAS ignores (picked from
@@ -72,7 +79,7 @@ export async function getFreePreviewFindings(
   withheld: readonly FindingType[],
 ) {
   const total = (Object.entries(byType) as [FindingType, number][])
-    .filter(([type]) => type !== "MALICIOUS_SCRIPT")
+    .filter(([type]) => !isNeverPaywalledFindingType(type))
     .reduce((sum, [, n]) => sum + n, 0);
   const count = freePreviewCount(total);
   if (count === 0) return [];
@@ -93,4 +100,36 @@ export async function getFreePreviewFindings(
     bucketsWithFindings.map((types) => getTopFindingsOfTypes(scanId, types, count)),
   );
   return pickFreePreviewFindings(perBucket.flat(), count);
+}
+
+/**
+ * The never-paywalled findings a Free shop sees in full OUTSIDE the security
+ * alert (gc-14x5): every non-ignored finding of a NEVER_PAYWALLED_FINDING_TYPES
+ * type other than MALICIOUS_SCRIPT (today: affected-app advisories), most
+ * important first. Malicious code is not here because the scan page's security
+ * alert already shows every malicious finding, ignored or not.
+ *
+ * Unlike malicious code these HONOUR IGNORES: `keptFindings` non-null means
+ * the shop has ignores and these are the kept rows (no query). Null means it
+ * has none, so every stored row counts: one read per type the summary says is
+ * present (at most one finding per advisory list entry, so the read is tiny).
+ */
+export async function getFreeAlwaysShownFindings(
+  scanId: string,
+  byType: Partial<Record<FindingType, number>>,
+  keptFindings: readonly FindingRow[] | null,
+): Promise<FindingRow[]> {
+  const types: FindingType[] = NEVER_PAYWALLED_FINDING_TYPES.filter(
+    (type) => type !== "MALICIOUS_SCRIPT",
+  );
+  let rows: FindingRow[];
+  if (keptFindings !== null) {
+    rows = keptFindings.filter((f) => types.includes(f.findingType));
+  } else {
+    const present = types.filter((type) => (byType[type] ?? 0) > 0);
+    rows = (
+      await Promise.all(present.map((findingType) => getFindingsForScan(scanId, { findingType })))
+    ).flat();
+  }
+  return [...rows].sort(compareFindingImportance);
 }

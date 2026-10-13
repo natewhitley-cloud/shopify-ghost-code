@@ -86,6 +86,10 @@ const REMOVAL_SAFETY: Record<string, RemovalSafety> = {
   // exists. Deleting the render line is the fix, but the merchant should first
   // confirm the snippet is meant to be gone (not renamed or about to return).
   LIQUID_ERROR_RENDERED: "verify-first",
+  // Affected-app advisory (gc-14x5): the script belongs to a legitimate app that
+  // may still be installed and in use, so removing it can break product options
+  // on live products. Check before removing; never "safe-to-remove".
+  APP_INCIDENT_ADVISORY: "verify-first",
   // Font tied to an app CDN — the font may still be referenced elsewhere.
   GHOST_FONT: "verify-first",
   // Section reference — may still be placed in the theme customizer; shopper-visible.

@@ -5363,3 +5363,510 @@ describe("cappedCategoriesNotice: the Liquid error check (gc-wr81)", () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// gc-14x5: affected-app advisory (APP_INCIDENT_ADVISORY) on the scan page.
+// Never paywalled (Free sees it in full, outside the preview and the hidden
+// count), honours ignores, ranks under malicious code, and is NOT presented as
+// malicious code (no critical alert).
+// ---------------------------------------------------------------------------
+describe("affected-app advisory on the scan page (gc-14x5)", () => {
+  const ADVISORY_DESCRIPTION =
+    "Loads code from Hulk Product Options (productoption.hulkapps.com), an app named in a public report of shoppers being sent to a fake checkout page (10 October 2026)";
+  const ADVISORY_SNIPPET = '<script src="https://productoption.hulkapps.com/hulkcode.js"></script>';
+
+  function row(
+    id: string,
+    findingType: string,
+    severity: "HIGH" | "MEDIUM" | "LOW" = "HIGH",
+    minute = 0,
+    extra: Partial<typeof FINDING_ONE> = {},
+  ) {
+    return {
+      ...FINDING_ONE,
+      id,
+      findingType,
+      severity,
+      createdAt: new Date(Date.UTC(2026, 9, 12, 10, minute)),
+      ...extra,
+    };
+  }
+
+  const ADVISORY = row("adv", "APP_INCIDENT_ADVISORY", "HIGH", 30, {
+    filename: "layout/theme.liquid",
+    lineNumber: 42,
+    appName: null,
+    codeSnippet: ADVISORY_SNIPPET,
+    description: ADVISORY_DESCRIPTION,
+  });
+  const SCRIPTS = [0, 1, 2, 3].map((i) => row(`script-${i}`, "GHOST_SCRIPT", "HIGH", i));
+
+  /** Back every finding read with one in-memory scan. */
+  function scanWith(rows: Array<typeof FINDING_ONE>) {
+    const byType: Record<string, number> = {};
+    const bySeverity = { HIGH: 0, MEDIUM: 0, LOW: 0 } as Record<string, number>;
+    const groups = new Map<string, { findingType: string; severity: string; count: number }>();
+    for (const r of rows) {
+      byType[r.findingType] = (byType[r.findingType] ?? 0) + 1;
+      bySeverity[r.severity] += 1;
+      const k = `${r.findingType}|${r.severity}`;
+      const g = groups.get(k) ?? { findingType: r.findingType, severity: r.severity, count: 0 };
+      g.count += 1;
+      groups.set(k, g);
+    }
+    mockGetFindingSummary.mockResolvedValue({ total: rows.length, bySeverity, byType });
+    mockGetTypeSeverityCounts.mockResolvedValue([...groups.values()]);
+    // The real model never returns a never-paywalled type from this read.
+    mockGetTopFindingsOfTypes.mockImplementation(
+      async (_scanId: string, types: string[], take: number) =>
+        rows
+          .filter(
+            (r) =>
+              types.includes(r.findingType) &&
+              r.findingType !== "MALICIOUS_SCRIPT" &&
+              r.findingType !== "APP_INCIDENT_ADVISORY",
+          )
+          .sort((a, b) => comparePreviewCandidates(a as never, b as never))
+          .slice(0, take),
+    );
+    mockGetTopFindingsInGroup.mockImplementation(
+      async (_s: string, type: string, severity: string | null, take: number) =>
+        rows
+          .filter((r) => r.findingType === type && (severity === null || r.severity === severity))
+          .sort((a, b) => comparePreviewCandidates(a as never, b as never))
+          .slice(0, take),
+    );
+    mockGetFindingsForScan.mockImplementation(
+      async (_id: string, filters?: { findingType?: string }) =>
+        filters?.findingType ? rows.filter((r) => r.findingType === filters.findingType) : rows,
+    );
+    mockGetFindingsPageForScan.mockResolvedValue({
+      items: rows,
+      hasNextPage: false,
+      nextCursor: null,
+    });
+  }
+
+  const free = () => {
+    mockGetShopMetadata.mockResolvedValue({ ...SHOP, plan: "free" });
+    mockCanViewFindingDetails.mockReturnValue(false);
+  };
+  const ignore = (finding: typeof FINDING_ONE) =>
+    mockGetIgnoredFindings.mockResolvedValue({
+      fingerprints: new Set([
+        fingerprintFinding(
+          finding.filename,
+          finding.findingType,
+          finding.codeSnippet,
+          finding.lineNumber,
+        ),
+      ]),
+      appNames: new Set<string>(),
+    });
+
+  type Data = {
+    alwaysShownFindings: Array<typeof FINDING_ONE>;
+    previewFindings: Array<{ id: string }>;
+    maliciousFindings: Array<{ id: string }>;
+    findings: Array<{ id: string; isIgnored: boolean }>;
+    topFindings: Array<{ id: string; href: string; typeLabel: string; cost: string }>;
+    upgradePreview: { hiddenCount: number; groups: Array<{ label: string; count: number }> } | null;
+    upgradeReturn: { hiddenCount: number } | null;
+    findingSummary: { total: number; byType: Record<string, number> };
+  };
+  const load = async (query = "") =>
+    (await loader(
+      makeLoaderArgs("scan-1", `https://test-shop.myshopify.com/app/scans/scan-1${query}`),
+    )) as unknown as Data;
+
+  async function renderPage(): Promise<string> {
+    const data = await loader(makeLoaderArgs("scan-1"));
+    const Stub = createRoutesStub([
+      {
+        id: "scan",
+        path: "/app/scans/:scanId",
+        Component: ScanDetail as never,
+        loader: () => data,
+      },
+    ]);
+    return renderToStaticMarkup(
+      createElement(Stub, {
+        initialEntries: ["/app/scans/scan-1"],
+        hydrationData: { loaderData: { scan: data } },
+      }),
+    );
+  }
+
+  /** The one finding card with this id, as rendered. */
+  const card = (html: string, id: string) => {
+    const start = html.indexOf(`<li id="finding-${id}"`);
+    return start === -1 ? "" : html.slice(start, html.indexOf("</li>", start));
+  };
+
+  describe("Free: never paywalled", () => {
+    beforeEach(free);
+
+    it("returns the advisory in full, outside the preview rows", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const data = await load();
+
+      expect(data.alwaysShownFindings).toHaveLength(1);
+      expect(data.alwaysShownFindings[0]).toMatchObject({
+        id: "adv",
+        findingType: "APP_INCIDENT_ADVISORY",
+        severity: "HIGH",
+        filename: "layout/theme.liquid",
+        lineNumber: 42,
+        codeSnippet: ADVISORY_SNIPPET,
+        description: ADVISORY_DESCRIPTION,
+        appName: null,
+      });
+      expect(data.previewFindings.map((f) => f.id)).not.toContain("adv");
+      expect(mockGetFindingsForScan).toHaveBeenCalledWith("scan-1", {
+        findingType: "APP_INCIDENT_ADVISORY",
+      });
+    });
+
+    it("hidden-count maths: 4 scripts + 1 advisory shows 2 preview rows and hides 2 (the advisory is in neither)", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const data = await load();
+
+      expect(data.previewFindings).toHaveLength(2);
+      const ask = data.upgradePreview ?? data.upgradeReturn;
+      expect(ask?.hiddenCount).toBe(2);
+      // The advisory still counts as a finding in the scan's totals.
+      expect(data.findingSummary.total).toBe(5);
+      expect(data.findingSummary.byType.APP_INCIDENT_ADVISORY).toBe(1);
+    });
+
+    it("the same scan without the advisory previews and hides exactly the same rows", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+      const withAdvisory = await load();
+      scanWith(SCRIPTS);
+      const without = await load();
+
+      expect(withAdvisory.previewFindings.map((f) => f.id)).toEqual(
+        without.previewFindings.map((f) => f.id),
+      );
+      expect((withAdvisory.upgradePreview ?? withAdvisory.upgradeReturn)?.hiddenCount).toBe(
+        (without.upgradePreview ?? without.upgradeReturn)?.hiddenCount,
+      );
+      expect(without.alwaysShownFindings).toEqual([]);
+    });
+
+    it("an advisory alone: shown in full, nothing previewed, nothing hidden, no upgrade ask", async () => {
+      scanWith([ADVISORY]);
+
+      const data = await load();
+
+      expect(data.alwaysShownFindings.map((f) => f.id)).toEqual(["adv"]);
+      expect(data.previewFindings).toEqual([]);
+      expect(data.upgradePreview).toBeNull();
+      expect(data.upgradeReturn).toBeNull();
+      expect(mockGetTopFindingsOfTypes).not.toHaveBeenCalled();
+    });
+
+    it("Start here is eligible on Free: the advisory leads and links to its row on this page", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const { topFindings } = await load();
+
+      expect(topFindings[0]).toMatchObject({
+        id: "adv",
+        typeLabel: "App Security Advisories",
+        href: "/app/scans/scan-1#finding-adv",
+        cost: "A public report describes this app delivering code that sent shoppers to a fake checkout page on at least one store.",
+      });
+      expect(topFindings).toHaveLength(3);
+    });
+
+    it("ranks below malicious code and above every preview row", async () => {
+      const mal = row("mal", "MALICIOUS_SCRIPT", "LOW", 59);
+      scanWith([...SCRIPTS, ADVISORY, mal]);
+
+      const { topFindings, maliciousFindings } = await load();
+
+      expect(topFindings.map((f) => f.id)).toEqual(["mal", "adv", "script-0"]);
+      expect(maliciousFindings.map((f) => f.id)).toEqual(["mal"]);
+    });
+
+    it("HONOURS IGNORES: an ignored advisory is not shown, not ranked and not counted", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+      ignore(ADVISORY);
+
+      const data = await load();
+
+      expect(data.alwaysShownFindings).toEqual([]);
+      expect(data.topFindings.map((f) => f.id)).not.toContain("adv");
+      expect(data.findingSummary.total).toBe(4);
+      expect(data.findingSummary.byType.APP_INCIDENT_ADVISORY).toBe(0);
+      // And it is never added back the way ignored malicious code is.
+      expect(data.maliciousFindings).toEqual([]);
+    });
+
+    it("with other findings ignored the advisory is still shown (from the kept rows, no extra read)", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+      ignore(SCRIPTS[0]);
+
+      const data = await load();
+
+      expect(data.alwaysShownFindings.map((f) => f.id)).toEqual(["adv"]);
+      expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1", {
+        findingType: "APP_INCIDENT_ADVISORY",
+      });
+    });
+
+    it("a scan without an advisory issues no advisory read", async () => {
+      scanWith(SCRIPTS);
+
+      const data = await load();
+
+      expect(data.alwaysShownFindings).toEqual([]);
+      expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1", {
+        findingType: "APP_INCIDENT_ADVISORY",
+      });
+    });
+
+    it.each(["FAILED", "IN_PROGRESS", "PENDING"])("a %s scan shows none", async (status) => {
+      scanWith([ADVISORY]);
+      mockGetScanById.mockResolvedValue({ ...SCAN, status });
+
+      expect((await load()).alwaysShownFindings).toEqual([]);
+    });
+
+    it("is still shown on a lane or app deep link (it is never hidden on Free)", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      expect((await load("?lane=speed")).alwaysShownFindings.map((f) => f.id)).toEqual(["adv"]);
+      expect((await load("?app=SomeApp")).alwaysShownFindings.map((f) => f.id)).toEqual(["adv"]);
+    });
+
+    it("renders the advisory as its own full card, with no critical alert", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const html = await renderPage();
+
+      // Its own list, headed by the type label, above the preview rows.
+      expect(html).toContain("<s-heading>App Security Advisories</s-heading>");
+      expect(html.indexOf("<s-heading>App Security Advisories</s-heading>")).toBeLessThan(
+        html.indexOf("Preview: Top 2 Findings"),
+      );
+      const advisory = card(html, "adv");
+      expect(advisory).toContain(ADVISORY_DESCRIPTION);
+      expect(advisory).toContain("layout/theme.liquid");
+      expect(advisory).toContain(", line 42");
+      expect(advisory).toContain("productoption.hulkapps.com/hulkcode.js");
+      expect(advisory).toContain(">Why it matters</strong>");
+      expect(advisory).toContain("we cannot tell you whether your store was affected");
+      expect(advisory).toContain("1. Open your store in a private (incognito) window");
+      expect(advisory).toContain(">Verify first</s-badge>");
+      // Exactly one anchor: the Start here link's target.
+      expect(html.match(/id="finding-adv"/g)).toHaveLength(1);
+      expect(html).toContain('href="/app/scans/scan-1#finding-adv"');
+      // Not malicious code: no critical security alert on the page.
+      expect(html).not.toContain('<s-banner tone="critical"');
+      expect(html).not.toContain("known malicious source");
+      // Free cards carry no ignore controls (unchanged Free rule).
+      expect(html).not.toMatch(/<details|name="findingId"|Ignore this finding/);
+      // The summary counts it as a finding.
+      expect(html).toContain("5 findings detected");
+      expect(html).toContain("App Security Advisories: 1");
+    });
+
+    it("an advisory alone never reads 'No leftover code detected'", async () => {
+      scanWith([ADVISORY]);
+
+      const html = await renderPage();
+
+      expect(card(html, "adv")).toContain(ADVISORY_DESCRIPTION);
+      expect(html).not.toContain("No leftover code detected in this scan.");
+      expect(html).not.toContain('<s-banner tone="critical"');
+      // Nothing is hidden, so there is no upgrade ask on the page.
+      expect(html).not.toMatch(/more findings? on Standard/);
+    });
+
+    it("an ignored advisory alone leaves the clean state", async () => {
+      scanWith([ADVISORY]);
+      ignore(ADVISORY);
+
+      const html = await renderPage();
+
+      expect(html).not.toContain('id="finding-adv"');
+      expect(html).toContain("No leftover code detected in this scan.");
+    });
+  });
+
+  describe("paid plans: a normal finding in the list", () => {
+    beforeEach(() => {
+      mockCanViewFindingDetails.mockReturnValue(true);
+    });
+
+    it("no separate list and no advisory read: it is in the findings page like any other row", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const data = await load();
+
+      expect(data.alwaysShownFindings).toEqual([]);
+      expect(data.findings.map((f) => f.id)).toContain("adv");
+      expect(mockGetFindingsForScan).not.toHaveBeenCalledWith("scan-1", {
+        findingType: "APP_INCIDENT_ADVISORY",
+      });
+    });
+
+    it("Start here: the advisory leads, linked into the list filtered to its type", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const { topFindings } = await load();
+
+      expect(topFindings[0]).toMatchObject({
+        id: "adv",
+        href: "/app/scans/scan-1?type=APP_INCIDENT_ADVISORY#finding-adv",
+      });
+    });
+
+    it("ranks below malicious code and above every other finding", async () => {
+      const mal = row("mal", "MALICIOUS_SCRIPT", "MEDIUM", 59);
+      scanWith([...SCRIPTS, ADVISORY, mal]);
+
+      expect((await load()).topFindings.map((f) => f.id)).toEqual(["mal", "adv", "script-0"]);
+    });
+
+    it("the type filter accepts it", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      await load("?type=APP_INCIDENT_ADVISORY");
+
+      expect(mockGetFindingsPageForScan).toHaveBeenCalledWith(
+        "scan-1",
+        expect.objectContaining({ findingType: "APP_INCIDENT_ADVISORY" }),
+      );
+    });
+
+    it("the privacy lane filter includes it (same lane as malicious code)", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      await load("?lane=privacy");
+
+      const { findingTypes } = mockGetFindingsPageForScan.mock.calls[0][1] as {
+        findingTypes: string[];
+      };
+      expect(findingTypes).toContain("APP_INCIDENT_ADVISORY");
+      expect(findingTypes).toContain("MALICIOUS_SCRIPT");
+    });
+
+    it("HONOURS IGNORES: an ignored advisory leaves the counts and Start here, and its row says Ignored", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+      ignore(ADVISORY);
+
+      const data = await load();
+
+      expect(data.findingSummary.total).toBe(4);
+      expect(data.topFindings.map((f) => f.id)).not.toContain("adv");
+      expect(data.findings.find((f) => f.id === "adv")?.isIgnored).toBe(true);
+      expect(data.maliciousFindings).toEqual([]);
+
+      const html = await renderPage();
+      expect(card(html, "adv")).toContain(">Ignored</span>");
+      expect(html).not.toContain('<s-banner tone="critical"');
+    });
+
+    it("renders in the list with the Ignore control, its description, and no critical alert", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+
+      const html = await renderPage();
+
+      const advisory = card(html, "adv");
+      expect(advisory).toContain("App Security Advisories");
+      expect(advisory).toContain(ADVISORY_DESCRIPTION);
+      expect(advisory).toContain(">Ignore this finding<");
+      // No app name on the finding: no "Ignore all from ..." and no app in the title.
+      expect(advisory).not.toContain("Ignore all from");
+      expect(advisory).not.toContain(", app: ");
+      expect(html.match(/id="finding-adv"/g)).toHaveLength(1);
+      expect(html).not.toContain('<s-banner tone="critical"');
+      // One list (no separate advisories list on a paid page).
+      expect(html.match(/<ul class="findings-list">/g)).toHaveLength(1);
+      expect(html).not.toContain("<s-heading>App Security Advisories</s-heading>");
+    });
+
+    it("is not listed in the App Impact Map (it carries no app name)", async () => {
+      scanWith([...SCRIPTS, ADVISORY]);
+      // The real attribution read selects rows with a non-null appName only.
+      mockGetAppAttributionForScan.mockResolvedValue(
+        SCRIPTS.map((s) => ({
+          appName: s.appName as string,
+          filename: s.filename,
+          findingType: s.findingType,
+        })),
+      );
+
+      const html = await renderPage();
+
+      const map = html.slice(html.indexOf("App Impact Map"));
+      expect(map).toContain("SomeApp");
+      expect(map).not.toContain("Hulk Product Options");
+    });
+  });
+
+  describe("the finding card's wording for an advisory", () => {
+    const html = () => renderFindingItem(ADVISORY, { scanId: "scan-1" });
+
+    it("shows the stored description (the only place the app is named)", () => {
+      expect(html()).toContain(ADVISORY_DESCRIPTION);
+    });
+
+    it("no other finding type renders its description on the card", () => {
+      const other = renderFindingItem({ ...FINDING_ONE, description: "UNIQUE-DESCRIPTION-TEXT" });
+      expect(other).not.toContain("UNIQUE-DESCRIPTION-TEXT");
+      const mal = renderFindingItem({
+        ...FINDING_ONE,
+        findingType: "MALICIOUS_SCRIPT",
+        description: "UNIQUE-DESCRIPTION-TEXT",
+      });
+      expect(mal).not.toContain("UNIQUE-DESCRIPTION-TEXT");
+    });
+
+    it("an advisory without a description renders no empty line", () => {
+      const without = renderFindingItem({ ...ADVISORY, description: "" });
+      expect(without).toContain("App Security Advisories");
+      expect(without).not.toContain("Loads code from");
+    });
+
+    it("never says malicious, compromised, hijacked, leftover or safe to remove", () => {
+      const text = html();
+      expect(text).not.toMatch(/malicious|compromised|hijack|infected|skimmer/i);
+      expect(text).not.toMatch(/leftover|left behind|uninstalled/i);
+      expect(text).not.toMatch(/likely safe|safe to remove/i);
+      expect(text).not.toMatch(/[—–]/);
+      expect(text).not.toMatch(/TRACKING|VISUAL/);
+    });
+
+    it("carries the HIGH badge, 'Verify first' and the curated-match sentence", () => {
+      const text = html();
+      expect(text).toContain('<s-badge tone="critical">HIGH</s-badge>');
+      expect(text).toContain(`>${REMOVAL_SAFETY_LABELS["verify-first"]}</s-badge>`);
+      expect(text).toContain("Matched a known app signature.");
+    });
+
+    it("links to the theme file in the code editor (it is a theme-file finding)", () => {
+      const text = renderFindingItem(ADVISORY, {
+        scanId: "scan-1",
+        shopDomain: "test-shop.myshopify.com",
+        themeId: "123456789",
+      });
+      expect(text).toMatch(
+        /<s-button variant="primary" href="[^"]*layout(%2F|\/)theme\.liquid[^"]*" target="_top">Open in code editor<\/s-button>/,
+      );
+    });
+
+    it("carries the owner's why and steps under the card's existing labels", () => {
+      const text = html();
+      expect(text).toContain(">Why it matters</strong>");
+      expect(text).toContain(getFindingImpact("APP_INCIDENT_ADVISORY"));
+      expect(text).toContain(">How to remove</strong>");
+      expect(text).toContain(getFindingRemediation("APP_INCIDENT_ADVISORY"));
+    });
+  });
+});

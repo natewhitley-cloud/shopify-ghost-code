@@ -151,13 +151,18 @@ describe("loadShopPromptState", () => {
     expect(mockDb.scan.findFirst).toHaveBeenCalledTimes(2);
     expect(state.firstSuccessfulScanAt).toEqual(first);
     expect(state.latestScanNonMaliciousCount).toBe(7);
-    // The count query: latest successful scan, malicious excluded, no rows loaded.
+    // The count query: latest successful scan, the never-paywalled types
+    // excluded (malicious code and, gc-14x5, affected-app advisories), no rows loaded.
     expect(mockDb.scan.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         orderBy: { completedAt: "desc" },
         select: {
           _count: {
-            select: { findings: { where: { findingType: { not: "MALICIOUS_SCRIPT" } } } },
+            select: {
+              findings: {
+                where: { findingType: { notIn: ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"] } },
+              },
+            },
           },
         },
       }),

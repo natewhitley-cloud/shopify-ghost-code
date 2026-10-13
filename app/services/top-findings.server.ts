@@ -5,7 +5,8 @@
  * Plan safety: a plan that shows every finding in full (Standard and
  * Professional) ranks over the whole scan. Free ranks ONLY over what Free
  * already shows in full: its preview rows (app/lib/free-preview.ts) plus the
- * malicious findings, which are shown in full on every plan. So a Free shop's
+ * never-paywalled findings (NEVER_PAYWALLED_FINDING_TYPES: malicious code and
+ * affected-app advisories), which are shown in full on every plan. So a Free shop's
  * top 3 are always a subset of what its scan page shows, and the block can
  * never reveal a hidden finding.
  *
@@ -26,7 +27,17 @@ import type { FindingType, Severity } from "@prisma/client";
 
 import type { FindingRow } from "./finding-aggregation.server";
 import { getFreePreviewFindings } from "./free-preview.server";
-import { compareFindingClass, pickTopFindings, TOP_FINDINGS_MAX } from "../lib/top-findings";
+import {
+  isNeverPaywalledFindingType,
+  NEVER_PAYWALLED_FINDING_TYPES,
+} from "../lib/finding-classification";
+import {
+  compareFindingClass,
+  pickTopFindings,
+  SECURITY_RANK_OTHER,
+  securityRank,
+  TOP_FINDINGS_MAX,
+} from "../lib/top-findings";
 import { getTopFindingsInGroup, getTypeSeverityCountsForScan } from "../models/finding.server";
 
 /** One (findingType, severity) group's row count. */
@@ -35,10 +46,17 @@ export type GroupCount = { findingType: FindingType; severity: Severity; count: 
 /** One bounded read: the first `take` rows of a (findingType, severity) group. */
 export type GroupRead = { findingType: FindingType; severity: Severity; take: number };
 
-const LEVELS = ["MALICIOUS", "HIGH", "MEDIUM", "LOW"] as const;
+const LEVELS = ["MALICIOUS", "ADVISORY", "HIGH", "MEDIUM", "LOW"] as const;
+/** The levels of the ranking's security types, by securityRank. */
+const SECURITY_LEVELS = ["MALICIOUS", "ADVISORY"] as const;
 
 function levelOf(g: GroupCount): (typeof LEVELS)[number] {
-  return g.findingType === "MALICIOUS_SCRIPT" ? "MALICIOUS" : g.severity;
+  const rank = securityRank(g.findingType);
+  return rank < SECURITY_RANK_OTHER ? SECURITY_LEVELS[rank] : g.severity;
+}
+
+function isSecurityLevel(level: (typeof LEVELS)[number]): boolean {
+  return (SECURITY_LEVELS as readonly string[]).includes(level);
 }
 
 /**
@@ -47,7 +65,7 @@ function levelOf(g: GroupCount): (typeof LEVELS)[number] {
  *
  * Why it is exact:
  *   - pickTopFindings never lets a lower level displace a higher one
- *     (malicious, then HIGH, MEDIUM, LOW), so how many picks come from each
+ *     (malicious, then advisories, then HIGH, MEDIUM, LOW), so how many picks come from each
  *     level depends only on the counts: drain the levels in order.
  *   - Inside one group every row has the same class, so the group's rows are
  *     picked in its own (createdAt, id) order: its first `p` rows suffice when
@@ -57,8 +75,8 @@ function levelOf(g: GroupCount): (typeof LEVELS)[number] {
  *     of a not-yet-picked type; at most 2 types are picked before any slot, so
  *     the best classes holding 3 distinct types always contain it. Reading
  *     every group of those classes (a prefix in class order) therefore
- *     contains every row the pick can take. Malicious rows are never swapped,
- *     so their level only needs `p` rows.
+ *     contains every row the pick can take. Malicious and advisory rows are
+ *     never swapped, so their levels only need `p` rows.
  *
  * tests/services/top-findings.server.test.ts checks this against a brute
  * force pick over randomized scans.
@@ -82,7 +100,7 @@ export function planTopFindingReads(
     let rows = 0;
     const types = new Set<FindingType>();
     for (let i = 0; i < groups.length; ) {
-      const enough = rows >= picks && (level === "MALICIOUS" || types.size >= max);
+      const enough = rows >= picks && (isSecurityLevel(level) || types.size >= max);
       if (enough) break;
       // Take the whole class (every group tied with groups[i]) at once.
       let j = i;
@@ -123,35 +141,49 @@ export async function getFullListTopFindings(
 
 /**
  * The scan's top findings for a Free shop: ranked only over the Free preview
- * rows and the scan's non-ignored malicious findings (both shown in full on
- * Free). Pass `loaded` when the caller already read both (the scan page);
- * otherwise they are read here, bounded (see the file header).
+ * rows and the scan's non-ignored never-paywalled findings (malicious code and
+ * affected-app advisories; all shown in full on Free). Pass `loaded` when the
+ * caller already read them (the scan page); otherwise they are read here,
+ * bounded (see the file header).
  *
  * `byType` is the ignore-filtered summary aggregate the preview formula uses;
  * `withheld` is findingTypesWithheldByPlan (never shown in full on this plan,
- * so never in the preview and never in the top 3). Malicious findings are
- * never withheld.
+ * so never in the preview and never in the top 3). Never-paywalled findings
+ * are never withheld.
+ *
+ * `loaded.alwaysShown` is the caller's non-ignored never-paywalled rows other
+ * than malicious (getFreeAlwaysShownFindings).
  */
 export async function getFreeTopFindings(
   scanId: string,
   byType: Partial<Record<FindingType, number>>,
   keptFindings: readonly FindingRow[] | null,
   withheld: readonly FindingType[],
-  loaded?: { preview: readonly FindingRow[]; malicious: readonly FindingRow[] },
+  loaded?: {
+    preview: readonly FindingRow[];
+    malicious: readonly FindingRow[];
+    alwaysShown?: readonly FindingRow[];
+  },
 ): Promise<FindingRow[]> {
-  if (loaded) return pickTopFindings([...loaded.malicious, ...loaded.preview]);
+  if (loaded) {
+    return pickTopFindings([...loaded.malicious, ...(loaded.alwaysShown ?? []), ...loaded.preview]);
+  }
 
-  const malicious = async (): Promise<FindingRow[]> => {
+  // At most TOP_FINDINGS_MAX rows of each never-paywalled type can be picked.
+  const neverPaywalled = async (): Promise<FindingRow[]> => {
     if (keptFindings !== null) {
-      return keptFindings.filter((f) => f.findingType === "MALICIOUS_SCRIPT");
+      return keptFindings.filter((f) => isNeverPaywalledFindingType(f.findingType));
     }
-    if ((byType.MALICIOUS_SCRIPT ?? 0) === 0) return [];
-    return getTopFindingsInGroup(scanId, "MALICIOUS_SCRIPT", null, TOP_FINDINGS_MAX);
+    const present = NEVER_PAYWALLED_FINDING_TYPES.filter((type) => (byType[type] ?? 0) > 0);
+    const rows = await Promise.all(
+      present.map((type) => getTopFindingsInGroup(scanId, type, null, TOP_FINDINGS_MAX)),
+    );
+    return rows.flat();
   };
 
-  const [preview, maliciousRows] = await Promise.all([
+  const [preview, neverPaywalledRows] = await Promise.all([
     getFreePreviewFindings(scanId, byType, keptFindings, withheld),
-    malicious(),
+    neverPaywalled(),
   ]);
-  return pickTopFindings([...maliciousRows, ...preview]);
+  return pickTopFindings([...neverPaywalledRows, ...preview]);
 }

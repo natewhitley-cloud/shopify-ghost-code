@@ -194,6 +194,10 @@ const SIGNATURE_FINDING_TYPES = new Set([
   // MALICIOUS_SCRIPT — emits only on a positive match against the curated
   // KNOWN_MALICIOUS_DOMAINS list (a signature match, just not an app one).
   "MALICIOUS_SCRIPT",
+  // APP_INCIDENT_ADVISORY (gc-14x5): emits only on a positive match of a theme
+  // URL host against the curated APP_INCIDENT_ADVISORIES list, whose match keys
+  // are verified hosts of one named app.
+  "APP_INCIDENT_ADVISORY",
 ]);
 
 /**
@@ -233,6 +237,9 @@ export const CONFIDENCE_TYPE_SETS = {
  *   - DUPLICATE_LIBRARY, DUPLICATE_TRACKER, OVERLAPPING_CHAT_WIDGET — Pass 5.
  *     detectDuplicateLibraries deliberately includes size-skipped files
  *     (gc-tus.11) so its findings stay diffable here.
+ *   - APP_INCIDENT_ADVISORY: Pass 5 (detectAppIncidentAdvisories, gc-14x5), one
+ *     finding per curated list entry, anchored to the first live reference in
+ *     ANY file, size-skipped files included.
  *
  * These passes run over every file regardless of the per-file size cap
  * (MAX_SCANNABLE_FILE_BYTES). The oversized-file guard in Pass 1 only skips the
@@ -258,6 +265,7 @@ export const CROSS_FILE_FINDING_TYPES = new Set([
   "DUPLICATE_LIBRARY",
   "DUPLICATE_TRACKER",
   "OVERLAPPING_CHAT_WIDGET",
+  "APP_INCIDENT_ADVISORY",
 ]);
 
 /**
@@ -342,6 +350,9 @@ const THEME_FILE_FINDING_TYPES = new Set([
   // config/settings_data.json, a real, editable theme file, like SETTINGS_DRIFT.
   "APP_EMBED_OFF",
   "GHOST_APP_EMBED",
+  // APP_INCIDENT_ADVISORY (gc-14x5): anchored to the theme file and line that
+  // loads the named app's code, so it gets an "Open in code editor" deep-link.
+  "APP_INCIDENT_ADVISORY",
 ]);
 
 /**
@@ -431,3 +442,36 @@ export const THEME_FILE_TYPE_SETS = {
   adminResource: ADMIN_RESOURCE_FINDING_TYPES,
   storefront: STOREFRONT_FINDING_TYPES,
 } as const;
+
+// ---------------------------------------------------------------------------
+// Never-paywalled finding types (gc-14x5)
+// ---------------------------------------------------------------------------
+
+/**
+ * Finding types that are NEVER paywalled: shown in full on every plan, Free
+ * included. A security finding is a shopper-safety issue, never an upsell.
+ *
+ *   - MALICIOUS_SCRIPT:      known malicious code (the scan page's security
+ *                             alert shows every one on every plan).
+ *   - APP_INCIDENT_ADVISORY: code from an app named in a public security
+ *                             incident report (gc-14x5).
+ *
+ * This is the ONE list behind every PLAN-GATING exemption: the Free preview
+ * (never takes a preview slot, never raises the preview count), the upgrade
+ * teaser and return banner (never counted as hidden), and Free's "Start here"
+ * (always eligible). Adding a type here exempts it at all of those sites.
+ *
+ * It is NOT the "shows regardless of ignores" rule. That one is malicious-only
+ * (filterIgnoredExceptMalicious, the findings tile, the trend chart, the
+ * summary email): an advisory honours ignores like any other finding.
+ */
+export const NEVER_PAYWALLED_FINDING_TYPES = ["MALICIOUS_SCRIPT", "APP_INCIDENT_ADVISORY"] as const;
+
+const NEVER_PAYWALLED_FINDING_TYPE_SET: ReadonlySet<string> = new Set(
+  NEVER_PAYWALLED_FINDING_TYPES,
+);
+
+/** True for a finding type that is shown in full on every plan. Pure, client-safe. */
+export function isNeverPaywalledFindingType(findingType: string): boolean {
+  return NEVER_PAYWALLED_FINDING_TYPE_SET.has(findingType);
+}

@@ -17,6 +17,9 @@ export const SOFT_LAUNCH_FLAGS: Partial<Record<FindingType, string>> = {
   // Read from the SAME single homepage request (gc-i6du), so it shares that
   // request's flag: flag off = no request, no category, no finding, not live.
   [FindingType.LIQUID_ERROR_RENDERED]: "SCRIPT_TAG_SUNSET_LIVE_ENABLED",
+  // Affected-app advisory (gc-14x5): never in prod before, and it names a
+  // real vendor, so it stays dark until its first output has been reviewed.
+  [FindingType.APP_INCIDENT_ADVISORY]: "APP_INCIDENT_ADVISORY_LIVE_ENABLED",
 };
 
 /**
