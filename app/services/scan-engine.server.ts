@@ -1715,6 +1715,7 @@ const CC_PERCENT = 37;
 const CC_SQUOTE = 39;
 const CC_RPAREN = 41;
 const CC_STAR = 42;
+const CC_COMMA = 44;
 const CC_DOT = 46;
 const CC_SLASH = 47;
 const CC_COLON = 58;
@@ -2237,15 +2238,39 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
 // `<script src>` for it: `{{ 'https://host/x.js' | script_tag }}`. The URL
 // must be the value the filter is applied to (nothing between the closing
 // quote and the pipe but whitespace). Bounded, with disjoint delimiters.
+// The regex cannot see what comes BEFORE the opening quote: the caller drops a
+// match that is an argument of an earlier filter (isFilterArgument).
 const LIQUID_SCRIPT_TAG_FILTER_RE =
   /(["'])([^"'\s|]{1,2048})\1[ \t\r\n]{0,50}\|[ \t\r\n]{0,50}script_tag\b/gi;
 
 // The host of a URL value that STARTS with a scheme or `//` (after slashes are
 // decoded): the same host shape as URL_HOST_RE, anchored. The host must END
 // there (end of value, or `/`, `:`, `?`, `#`): `host.com%2eevil.com` is some
-// other host, not `host.com`.
+// other host, not `host.com`. The userinfo before `@` cannot hold a character
+// that already ended the authority (`?`, `#`, or `\`, which a browser reads as
+// `/`): in `//evil.com#@host.com` the host is `evil.com`.
 const LEADING_URL_HOST_RE =
-  /^(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)(?![^/:?#])/i;
+  /^(?:https?:)?\/\/(?:[^\s/@"'<>?#\\]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)(?![^/:?#])/i;
+
+// How far back isFilterArgument looks past whitespace before the quote.
+const FILTER_ARGUMENT_LOOKBACK = 50;
+
+/**
+ * Whether the quoted string opening at `quoteAt` is an ARGUMENT of an earlier
+ * filter (`| append: 'url'`, `| replace: 'a', 'url'`): the first thing before
+ * it, past whitespace, is `:` or `,`. A following `| script_tag` then applies
+ * to that filter's result, not to this string. More whitespace than the
+ * lookback counts as an argument too (doubt resolves toward not reporting).
+ */
+function isFilterArgument(text: string, quoteAt: number): boolean {
+  const stop = Math.max(0, quoteAt - FILTER_ARGUMENT_LOOKBACK);
+  for (let i = quoteAt - 1; i >= stop; i--) {
+    const c = text.charCodeAt(i);
+    if (isAsciiSpace(c)) continue;
+    return c === CC_COLON || c === CC_COMMA;
+  }
+  return quoteAt > FILTER_ARGUMENT_LOOKBACK;
+}
 
 /** The host a script URL value loads from, or null when it is not an absolute URL. */
 function scriptUrlHost(value: string): string | null {
@@ -2260,12 +2285,14 @@ const COMMENT_OR_OPAQUE_ELEMENT_RE =
 
 /**
  * One `<script ...>` opening tag starting at `start`: where it ends and its
- * `src` attribute (value and offset), or null when the tag never closes.
+ * `src` attribute (value and offset), or null when the tag never closes
+ * (no `>`, or an attribute quote that is never closed).
  *
  * A small attribute walk, not a regex over the tag, so that `src=` INSIDE
  * another attribute's quoted value is not the tag's src, and a `>` inside a
  * quoted value does not end the tag. The first `src` wins, as in HTML. A
- * quote that never closes falls back to the first `>`. Linear.
+ * quote that never closes leaves no complete tag (a browser reads the value to
+ * the end of the file), so the caller hides the rest of the file. Linear.
  */
 function parseScriptOpenTag(
   text: string,
@@ -2296,15 +2323,7 @@ function parseScriptOpenTag(
     const quote = text[i];
     if (quote === '"' || quote === "'") {
       const close = text.indexOf(quote, i + 1);
-      if (close === -1) {
-        // Unclosed quote: the tag ends at the first `>`, as far as we can tell.
-        const gt = text.indexOf(">", i);
-        if (gt === -1) return null;
-        if (name === "src" && src === null) {
-          src = { value: text.slice(i + 1, gt), offset: valueStart };
-        }
-        return { end: gt + 1, src };
-      }
+      if (close === -1) return null;
       value = text.slice(i + 1, close);
       i = close + 1;
     } else {
@@ -2323,7 +2342,8 @@ function parseScriptOpenTag(
  *   - a `<script ...>` tag whose `src` attribute is an absolute or
  *     protocol-relative URL (any quoting, attributes in any order, the tag may
  *     span lines, slashes may be encoded);
- *   - a quoted URL piped into Liquid's `script_tag` filter.
+ *   - a quoted URL piped into Liquid's `script_tag` filter (the URL the
+ *     filter is applied to, not an argument of an earlier filter).
  * Nothing else is a load: a link, an image, a preconnect hint, a stylesheet,
  * a CSS `url()`, a URL in a string or in prose.
  *
@@ -2347,7 +2367,11 @@ function parseScriptOpenTag(
  *     - a script tag inside Liquid that never outputs: `{% if false %}`, an
  *       unused `{% capture %}`;
  *     - a script tag written inside another tag's attribute value;
- *     - a script tag inside an outer `<template>` after a nested one closed.
+ *     - a script tag inside an outer `<template>` after a nested one closed;
+ *     - a script tag written as text inside `{% javascript %}` or
+ *       `{% stylesheet %}`, or inside a Liquid string that is never output;
+ *     - a script tag with a `type` the browser does not run, or inside `<svg>`;
+ *     - a JavaScript slash escape (`\u002f`) written literally in a `src`.
  *   False negatives (loads, but not reported):
  *     - a script tag printed from `{% raw %}` (it is blanked with the block);
  *     - a `>` inside Liquid within the tag, before `src` (ends the tag early);
@@ -2356,7 +2380,8 @@ function parseScriptOpenTag(
  *     - a script created by an inline script (`createElement`,
  *       `document.write`), or loaded from asset JS;
  *     - anything after a `<!--` that is not really a comment (inside an
- *       attribute value or a Liquid string) and is never followed by `-->`.
+ *       attribute value or a Liquid string) and is never followed by `-->`;
+ *     - anything after an empty comment written `<!-->`, up to the next `-->`.
  */
 function scriptLoadsInLiquidFile(file: ThemeFile): Array<{ host: string; offset: number }> {
   const text = blankNonExecutingLiquid(file.content, { keepLength: true });
@@ -2419,6 +2444,7 @@ function scriptLoadsInLiquidFile(file: ThemeFile): Array<{ host: string; offset:
   while ((match = LIQUID_SCRIPT_TAG_FILTER_RE.exec(text)) !== null) {
     while (h < hidden.length && hidden[h][1] <= match.index) h++;
     if (h < hidden.length && hidden[h][0] <= match.index) continue;
+    if (isFilterArgument(text, match.index)) continue;
     const host = scriptUrlHost(match[2]);
     if (host) loads.push({ host, offset: match.index });
   }

@@ -29,8 +29,8 @@ only, every plan, no email.
    - only in an unpublished copy of the theme: scan that copy and expect none;
    - mentioned but not loaded (a link, a stylesheet): expect none, and the
      stylesheet still listed under "Unrecognized Scripts".
-   Then ignore the advisory on a Free dev store and confirm it leaves the
-   scan page and Home.
+     Then ignore the advisory on a Free dev store and confirm it leaves the
+     scan page and Home.
 4. Set `APP_INCIDENT_ADVISORY_LIVE_ENABLED=true` (exactly `true`) in
    production. From the next scan of a published theme the finding is stored
    and shown. Scans taken before the flag never report it as "new".
@@ -144,7 +144,12 @@ False positives (an advisory is shown although the script does not load):
 - the tag sits inside Liquid that never outputs it: `{% if false %}`, or a
   `{% capture %}` that is never printed;
 - the tag is text inside another tag's attribute value;
-- the tag sits in an outer `<template>` after a nested `<template>` closed.
+- the tag sits in an outer `<template>` after a nested `<template>` closed;
+- the tag is text inside a `{% javascript %}` or `{% stylesheet %}` block, or
+  inside a Liquid string that is never output (`{% assign old = '<script ...>' %}`);
+- the tag has a `type` the browser does not run (`text/template`,
+  `application/json`), or sits inside `<svg>`;
+- the `src` holds a JavaScript slash escape written literally (`https:\u002f\u002f...`).
 
 False negatives (the script loads but no advisory is shown):
 
@@ -157,8 +162,10 @@ False negatives (the script loads but no advisory is shown):
   `document.write`) or loaded from asset JS;
 - the tag follows a `<!--` that is not really a comment (in an attribute
   value or a Liquid string) and no `-->` comes after it;
-- the tag follows a comment, tag or element that is never closed: the rest of
-  that file is not read;
+- the tag follows a comment, tag or element that is never closed, or a tag
+  with an attribute quote that is never closed: the rest of that file is not
+  read;
+- the tag follows an empty comment written `<!-->`: nothing is read until the
+  next `-->`;
 - the script is injected by the app at runtime (a theme app embed or a
   ScriptTag): theme files do not hold it. The embed handle is not matched yet.
-

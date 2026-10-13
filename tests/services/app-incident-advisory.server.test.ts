@@ -956,6 +956,60 @@ describe("small precision gaps closed (round 4)", () => {
   });
 });
 
+describe("small precision gaps closed (round 5, independent review of 757b451)", () => {
+  it.each([
+    `https://evil.com#@${HOST}/x.js`,
+    `https://evil.com?@${HOST}/x.js`,
+    `https://evil.com\\@${HOST}/x.js`,
+    `//evil.com#@${HOST}/x.js`,
+  ])("a listed host after `@` is not the host when the authority already ended: %s", (url) => {
+    expect(detect([file("layout/theme.liquid", `<script src="${url}"></script>`)])).toEqual([]);
+    expect(detect([file("layout/theme.liquid", `{{ '${url}' | script_tag }}`)])).toEqual([]);
+  });
+
+  it("control: real userinfo before the listed host still matches", () => {
+    expect(
+      detect([file("layout/theme.liquid", `<script src="https://user:pw@${HOST}/x.js"></script>`)]),
+    ).toHaveLength(1);
+  });
+
+  it("a src quote that never closes: nothing, and the rest of the file is not read", () => {
+    expect(
+      detect([
+        file("layout/theme.liquid", `<script src="https://${HOST}/x.js></script>\n<p>hi</p>`),
+      ]),
+    ).toEqual([]);
+    expect(
+      detect([
+        file(
+          "layout/theme.liquid",
+          `<script data-x="oops></script>\n<script src=https://${HOST}/x.js></script>`,
+        ),
+      ]),
+    ).toEqual([]);
+  });
+
+  it.each([
+    `{{ 'x' | append: 'https://${HOST}/x.js' | script_tag }}`,
+    `{{ 'a' | replace: 'b', 'https://${HOST}/x.js' | script_tag }}`,
+    `{{ 'a' | replace: 'b' ,\n  "https://${HOST}/x.js" | script_tag }}`,
+  ])(
+    "a URL that is an ARGUMENT of an earlier filter is not what script_tag prints: %s",
+    (content) => {
+      expect(detect([file("layout/theme.liquid", content)])).toEqual([]);
+    },
+  );
+
+  it.each([
+    `{{ 'https://${HOST}/x.js' | script_tag }}`,
+    `{{- "https://${HOST}/x.js" | script_tag -}}`,
+    `{{'https://${HOST}/x.js'|script_tag}}`,
+    `{% echo 'https://${HOST}/x.js' | script_tag %}`,
+  ])("control: a URL that script_tag is applied to still fires: %s", (content) => {
+    expect(detect([file("layout/theme.liquid", content)])).toHaveLength(1);
+  });
+});
+
 // The limits the detector accepts. Each test PINS current behaviour so a
 // change is deliberate; the runbook and the detector's doc comment list them.
 describe("known limits (accepted, pinned)", () => {
@@ -978,6 +1032,27 @@ describe("known limits (accepted, pinned)", () => {
 
     it("a script tag in an outer <template> after a nested <template> closed", () => {
       expect(fires(`<template><template></template>${TAG}</template>`)).toBe(true);
+    });
+
+    it("a script tag written as text inside {% javascript %} or {% stylesheet %}", () => {
+      expect(fires(`{% javascript %}\n// old: ${TAG}\n{% endjavascript %}`)).toBe(true);
+      expect(fires(`{% stylesheet %}\n/* ${TAG} */\n{% endstylesheet %}`)).toBe(true);
+    });
+
+    it("a script tag inside a Liquid string that is never output", () => {
+      expect(fires(`{% assign old = '${TAG}' %}`)).toBe(true);
+    });
+
+    it("a script tag with a type the browser does not run", () => {
+      expect(fires(`<script type="text/template" src="https://${HOST}/x.js"></script>`)).toBe(true);
+    });
+
+    it("a script tag inside <svg> (an SVG script loads from href, not src)", () => {
+      expect(fires(`<svg><script src="https://${HOST}/x.js"></script></svg>`)).toBe(true);
+    });
+
+    it("a JavaScript slash escape written literally in a src attribute", () => {
+      expect(fires(`<script src="https:\\u002f\\u002f${HOST}/x.js"></script>`)).toBe(true);
     });
   });
 
@@ -1018,6 +1093,10 @@ describe("known limits (accepted, pinned)", () => {
 
     it("anything after a `<!--` that sits in an attribute value and is never followed by -->", () => {
       expect(fires(`<div data-marker="<!--"></div>\n${TAG}`)).toBe(false);
+    });
+
+    it("a script tag after an empty comment written `<!-->` (read as open until the next -->)", () => {
+      expect(fires(`<!-->\n${TAG}\n<!-- x -->`)).toBe(false);
     });
   });
 });
