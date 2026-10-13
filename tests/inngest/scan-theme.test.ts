@@ -3511,7 +3511,33 @@ describe("scanTheme — APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch (gc-14x5)
       expect(signal.metadata.detectorHits.APP_INCIDENT_ADVISORY).toBe(1);
     });
 
-    it("the published-theme read fails: not persisted, type not live, and the scan still completes", async () => {
+    it("the published-theme read fails ONCE: retried, and the advisory is persisted", async () => {
+      process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
+      let mainThemeReads = 0;
+      MOCK_ADMIN.graphql.mockImplementation(async (query: string) => {
+        if (typeof query !== "string" || !query.includes("roles: MAIN")) return undefined;
+        mainThemeReads += 1;
+        if (mainThemeReads === 1) throw new Error("throttled");
+        return {
+          json: async () => ({
+            data: {
+              themes: {
+                nodes: [{ id: THEME_ID, name: "Dawn", updatedAt: "2026-10-01T00:00:00Z" }],
+              },
+            },
+          }),
+        };
+      });
+      arrange();
+
+      await runScanTheme();
+
+      expect(mainThemeReads).toBe(2);
+      expect(saved().filter(isAdvisory)).toHaveLength(1);
+      expect(live()).toContain(FindingType.APP_INCIDENT_ADVISORY);
+    });
+
+    it("the published-theme read fails TWICE: one retry only, then not persisted, type not live, scan completes", async () => {
       process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
       MOCK_ADMIN.graphql.mockRejectedValue(new Error("admin down"));
       arrange();
@@ -3522,6 +3548,10 @@ describe("scanTheme — APP_INCIDENT_ADVISORY_LIVE_ENABLED soft-launch (gc-14x5)
       expect(live()).not.toContain(FindingType.APP_INCIDENT_ADVISORY);
       expect(result.findingCount).toBe(MOCK_FINDINGS.length);
       expect(mockFinalizeScan).toHaveBeenCalledTimes(1);
+      const reads = MOCK_ADMIN.graphql.mock.calls.filter(([q]) =>
+        String(q).includes("roles: MAIN"),
+      );
+      expect(reads).toHaveLength(2);
     });
 
     it("flag off: the published-theme read is never made", async () => {

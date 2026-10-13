@@ -892,9 +892,11 @@ function applySoftLaunchFlags<T extends { findingType: FindingType }>(
  * Whether an affected-app advisory may be recorded for this scan (gc-14x5):
  * the check is live AND the scanned theme is the shop's published (MAIN)
  * theme. The theme read happens only while the check is live (one small
- * Admin query per scan, none while it is dark). If the read fails or the shop
- * has no published theme, the answer is no: an advisory is never shown on an
- * unconfirmed theme, and the scan itself is unaffected.
+ * Admin query per scan, none while it is dark). If the read fails twice (it is
+ * retried once) or the shop has no published theme, the answer is no: an
+ * advisory is never shown on an unconfirmed theme, and the scan itself is
+ * unaffected. The advisory is then absent for that one scan and the type is
+ * not live for it, so nothing reads as fixed; it returns on the next scan.
  */
 async function advisoryAppliesToTheme(
   admin: Parameters<typeof fetchMainTheme>[0],
@@ -902,18 +904,24 @@ async function advisoryAppliesToTheme(
   shopId: string,
 ): Promise<boolean> {
   if (!isAdvisoryCheckLive()) return false;
-  try {
-    return (await fetchMainTheme(admin))?.id === themeId;
-  } catch (err) {
-    const { logger } = await import("../../app/lib/logger.server");
-    logger.warn("published theme read failed; advisory check recorded as not run", {
-      function: "scan-theme",
-      event: "advisory_published_theme_unknown",
-      shopId,
-      errorName: err instanceof Error ? err.name : typeof err,
-    });
-    return false;
+  // One retry: the helper swallows the error (the scan must not fail over
+  // this), so the step's own Inngest retries never see it. A single throttle
+  // or network blip should not cost the merchant the advisory for this scan.
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    try {
+      return (await fetchMainTheme(admin))?.id === themeId;
+    } catch (err) {
+      if (attempt === 1) continue;
+      const { logger } = await import("../../app/lib/logger.server");
+      logger.warn("published theme read failed twice; advisory check recorded as not run", {
+        function: "scan-theme",
+        event: "advisory_published_theme_unknown",
+        shopId,
+        errorName: err instanceof Error ? err.name : typeof err,
+      });
+    }
   }
+  return false;
 }
 
 const DANGLING_SUBTYPE_META: Record<string, { segment: string; label: string }> = {

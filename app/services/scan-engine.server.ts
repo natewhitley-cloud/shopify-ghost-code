@@ -2233,13 +2233,6 @@ export function detectMaliciousScripts(file: ThemeFile): CreateFindingInput[] {
 // Detector: APP_INCIDENT_ADVISORY (apps named in a public incident report)
 // ---------------------------------------------------------------------------
 
-// The `src` attribute of one extracted `<script ...>` tag: double-quoted,
-// single-quoted or unquoted, anywhere in the tag (the tag may span lines).
-// Run on a single tag, each alternative is delimited by its own quote or by
-// whitespace, so it is linear. `data-src` and the like do not match: the
-// attribute name must follow whitespace.
-const SCRIPT_TAG_SRC_RE = /\ssrc\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))/i;
-
 // A quoted URL piped into Liquid's `script_tag` filter, which prints a
 // `<script src>` for it: `{{ 'https://host/x.js' | script_tag }}`. The URL
 // must be the value the filter is applied to (nothing between the closing
@@ -2248,14 +2241,78 @@ const LIQUID_SCRIPT_TAG_FILTER_RE =
   /(["'])([^"'\s|]{1,2048})\1[ \t\r\n]{0,50}\|[ \t\r\n]{0,50}script_tag\b/gi;
 
 // The host of a URL value that STARTS with a scheme or `//` (after slashes are
-// decoded): the same host shape as URL_HOST_RE, anchored.
+// decoded): the same host shape as URL_HOST_RE, anchored. The host must END
+// there (end of value, or `/`, `:`, `?`, `#`): `host.com%2eevil.com` is some
+// other host, not `host.com`.
 const LEADING_URL_HOST_RE =
-  /^(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)/i;
+  /^(?:https?:)?\/\/(?:[^\s/@"'<>]+@)?([a-z0-9_-]+(?:\.[a-z0-9_-]+)+\.?)(?![^/:?#])/i;
 
 /** The host a script URL value loads from, or null when it is not an absolute URL. */
 function scriptUrlHost(value: string): string | null {
   const url = value.trim().replace(ENCODED_SLASH_RE, "/");
   return LEADING_URL_HOST_RE.exec(url)?.[1] ?? null;
+}
+
+// `<!--`, or the opening of an element whose BODY is not markup: a script, or
+// an element whose content the browser does not run or render as tags.
+const COMMENT_OR_OPAQUE_ELEMENT_RE =
+  /<!--|<(script|noscript|template|textarea|style|title|xmp|iframe|noembed|noframes)(?=[\s>/])/gi;
+
+/**
+ * One `<script ...>` opening tag starting at `start`: where it ends and its
+ * `src` attribute (value and offset), or null when the tag never closes.
+ *
+ * A small attribute walk, not a regex over the tag, so that `src=` INSIDE
+ * another attribute's quoted value is not the tag's src, and a `>` inside a
+ * quoted value does not end the tag. The first `src` wins, as in HTML. A
+ * quote that never closes falls back to the first `>`. Linear.
+ */
+function parseScriptOpenTag(
+  text: string,
+  start: number,
+): { end: number; src: { value: string; offset: number } | null } | null {
+  const n = text.length;
+  let src: { value: string; offset: number } | null = null;
+  let i = start + "<script".length;
+  for (;;) {
+    while (i < n && (isAsciiSpace(text.charCodeAt(i)) || text.charCodeAt(i) === CC_SLASH)) i++;
+    if (i >= n) return null;
+    if (text.charCodeAt(i) === CC_GT) return { end: i + 1, src };
+
+    const nameStart = i;
+    while (i < n) {
+      const c = text.charCodeAt(i);
+      if (isAsciiSpace(c) || c === CC_EQ || c === CC_GT) break;
+      i++;
+    }
+    const name = text.slice(nameStart, i).toLowerCase();
+    while (i < n && isAsciiSpace(text.charCodeAt(i))) i++;
+    if (text.charCodeAt(i) !== CC_EQ) continue; // an attribute with no value
+    i++;
+    while (i < n && isAsciiSpace(text.charCodeAt(i))) i++;
+
+    const valueStart = i;
+    let value: string;
+    const quote = text[i];
+    if (quote === '"' || quote === "'") {
+      const close = text.indexOf(quote, i + 1);
+      if (close === -1) {
+        // Unclosed quote: the tag ends at the first `>`, as far as we can tell.
+        const gt = text.indexOf(">", i);
+        if (gt === -1) return null;
+        if (name === "src" && src === null) {
+          src = { value: text.slice(i + 1, gt), offset: valueStart };
+        }
+        return { end: gt + 1, src };
+      }
+      value = text.slice(i + 1, close);
+      i = close + 1;
+    } else {
+      while (i < n && !isAsciiSpace(text.charCodeAt(i)) && text.charCodeAt(i) !== CC_GT) i++;
+      value = text.slice(valueStart, i);
+    }
+    if (name === "src" && src === null) src = { value, offset: valueStart };
+  }
 }
 
 /**
@@ -2270,28 +2327,98 @@ function scriptUrlHost(value: string): string | null {
  * Nothing else is a load: a link, an image, a preconnect hint, a stylesheet,
  * a CSS `url()`, a URL in a string or in prose.
  *
- * Only code that runs counts. Blanked first, length preserved so offsets map
- * onto the original: Liquid that never executes (blankNonExecutingLiquid:
- * `{% comment %}`, `{% # %}`, `{% raw %}`, `{% schema %}`, `{% doc %}`), then
- * HTML comments and JS comments inside inline scripts (blankInertComments).
+ * Only markup that runs counts, and EVERY doubt resolves toward NOT reporting
+ * (the opposite of the malicious detector, which is why this does not use
+ * blankInertComments: that helper stops blanking at anything it does not
+ * model, which here would report a commented-out tag as a load).
+ *   1. Liquid that never executes is blanked, length preserved
+ *      (blankNonExecutingLiquid: `{% comment %}`, `{% # %}`, `{% raw %}`,
+ *      `{% schema %}`, `{% doc %}`).
+ *   2. One forward walk over what is left skips: HTML comments (`<!--` to
+ *      `-->`), and the BODY of script, noscript, template, textarea, style,
+ *      title, xmp, iframe, noembed and noframes elements (up to the element's
+ *      closing tag). A script's body is code or data, never markup, so a
+ *      `<!--` or a `<script` written inside it is neither a comment nor a tag.
+ *      Whatever is never closed (a comment, a tag, an element) hides the rest
+ *      of the file.
+ *
+ * KNOWN LIMITS, accepted and pinned by tests (also in the runbook):
+ *   False positives (reported, though the script does not load):
+ *     - a script tag inside Liquid that never outputs: `{% if false %}`, an
+ *       unused `{% capture %}`;
+ *     - a script tag written inside another tag's attribute value;
+ *     - a script tag inside an outer `<template>` after a nested one closed.
+ *   False negatives (loads, but not reported):
+ *     - a script tag printed from `{% raw %}` (it is blanked with the block);
+ *     - a `>` inside Liquid within the tag, before `src` (ends the tag early);
+ *     - a URL built by filters before `script_tag` (`append`), or held in a
+ *       variable; a `src` made of Liquid output;
+ *     - a script created by an inline script (`createElement`,
+ *       `document.write`), or loaded from asset JS;
+ *     - anything after a `<!--` that is not really a comment (inside an
+ *       attribute value or a Liquid string) and is never followed by `-->`.
  */
 function scriptLoadsInLiquidFile(file: ThemeFile): Array<{ host: string; offset: number }> {
-  const live = blankInertComments(
-    blankNonExecutingLiquid(file.content, { keepLength: true }),
-    file.filename,
-  );
+  const text = blankNonExecutingLiquid(file.content, { keepLength: true });
   const loads: Array<{ host: string; offset: number }> = [];
-  for (const { tag, offset } of extractTags(live, "<script")) {
-    // `<scripted ...>` is not a script tag (extractTags matches by prefix).
-    if (!/^<script[\s>/]/i.test(tag)) continue;
-    const src = SCRIPT_TAG_SRC_RE.exec(tag);
-    if (!src) continue;
-    const host = scriptUrlHost(src[1] ?? src[2] ?? src[3]);
-    if (host) loads.push({ host, offset: offset + src.index });
+  // Ranges that are not live markup, in order: comments and opaque bodies.
+  const hidden: Array<[number, number]> = [];
+  const hideToEnd = (from: number): void => {
+    hidden.push([from, text.length]);
+  };
+
+  COMMENT_OR_OPAQUE_ELEMENT_RE.lastIndex = 0;
+  let found: RegExpExecArray | null;
+  while ((found = COMMENT_OR_OPAQUE_ELEMENT_RE.exec(text)) !== null) {
+    const at = found.index;
+    let resume: number;
+    if (found[1] === undefined) {
+      // An HTML comment, to its `-->`.
+      const close = text.indexOf("-->", at + 4);
+      if (close === -1) {
+        hideToEnd(at);
+        break;
+      }
+      resume = close + 3;
+      hidden.push([at, resume]);
+    } else {
+      const element = found[1].toLowerCase();
+      let bodyStart: number;
+      if (element === "script") {
+        const tag = parseScriptOpenTag(text, at);
+        if (!tag) {
+          hideToEnd(at);
+          break;
+        }
+        const host = tag.src ? scriptUrlHost(tag.src.value) : null;
+        if (host && tag.src) loads.push({ host, offset: tag.src.offset });
+        bodyStart = tag.end;
+      } else {
+        const gt = text.indexOf(">", at);
+        if (gt === -1) {
+          hideToEnd(at);
+          break;
+        }
+        bodyStart = gt + 1;
+      }
+      const close = indexOfIgnoreCase(text, `</${element}`, bodyStart);
+      if (close === -1) {
+        hideToEnd(bodyStart);
+        break;
+      }
+      hidden.push([bodyStart, close]);
+      resume = close;
+    }
+    COMMENT_OR_OPAQUE_ELEMENT_RE.lastIndex = resume;
   }
+
+  // script_tag filters, outside the hidden ranges (both lists are in order).
+  let h = 0;
   LIQUID_SCRIPT_TAG_FILTER_RE.lastIndex = 0;
   let match: RegExpExecArray | null;
-  while ((match = LIQUID_SCRIPT_TAG_FILTER_RE.exec(live)) !== null) {
+  while ((match = LIQUID_SCRIPT_TAG_FILTER_RE.exec(text)) !== null) {
+    while (h < hidden.length && hidden[h][1] <= match.index) h++;
+    if (h < hidden.length && hidden[h][0] <= match.index) continue;
     const host = scriptUrlHost(match[2]);
     if (host) loads.push({ host, offset: match.index });
   }
@@ -2316,7 +2443,8 @@ function scriptLoadsInLiquidFile(file: ThemeFile): Array<{ host: string; offset:
  *     parsing.
  *   - Reference forms: a `<script src>` tag or a `script_tag` filter on the
  *     host, and nothing else (see scriptLoadsInLiquidFile, which also leaves
- *     out comments and Liquid that never executes). Host match is
+ *     out comments, Liquid that never executes and the bodies of elements
+ *     that are not markup, and lists the known limits). Host match is
  *     exact-or-subdomain.
  *   - An entry whose `reviewBy` date has passed (UTC, at `now`) emits nothing.
  *   - `appName` is deliberately NOT set: a finding with an app name is counted

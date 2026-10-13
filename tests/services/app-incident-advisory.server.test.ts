@@ -548,10 +548,6 @@ describe("detectAppIncidentAdvisories", () => {
       expect(finding.codeSnippet).not.toContain("old.js");
     });
 
-    it("an unterminated HTML comment hides nothing (doubt resolves toward reporting)", () => {
-      expect(detect([file("layout/theme.liquid", `<!-- oops\n${TAG}`)])).toHaveLength(1);
-    });
-
     it("the malicious detector is unchanged: it still reports ANY reference to a listed domain", () => {
       for (const content of [
         `<a href="https://jsdeliver.cloud/x">x</a>`,
@@ -760,6 +756,269 @@ describe("detectAppIncidentAdvisories", () => {
     detect(files, ACTIVE, list);
     expect(JSON.stringify(files)).toBe(before);
     expect(list).toEqual([HULK, OTHER]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Round 4: every doubt resolves toward NOT reporting
+// ---------------------------------------------------------------------------
+
+describe("a commented-out script tag is never a load, whatever comes before it", () => {
+  const COMMENTED = `<!-- <script src='https://${HOST}/hulkcode.js'></script> -->`;
+  /** Each construct used to make the comment scanner give up for the rest of the file. */
+  const BEFORE: Array<[string, string]> = [
+    [
+      'a <script type="text/template"> containing an HTML comment',
+      `<script type="text/template"><!-- tpl --><div>{{ x }}</div></script>`,
+    ],
+    ["a JS string containing <!--", `<script>var marker = "<!--";</script>`],
+    [
+      "a JSON-LD value containing <!--",
+      `<script type="application/ld+json">{"description":"see <!-- note"}</script>`,
+    ],
+    ["a legacy <script><!-- ... //--></script>", `<script><!--\nvar legacy = 1;\n//--></script>`],
+    ["an unterminated {{", `<p>{{ product.title </p>`],
+    ["a stray quote in a tag", `<img alt="a "quoted" name"" src="/x.png">`],
+    ["a bare <![CDATA[", `<![CDATA[ data`],
+  ];
+
+  it.each(BEFORE)("after %s: the commented-out tag does not fire", (_label, construct) => {
+    expect(detect([file("layout/theme.liquid", `${construct}\n${COMMENTED}`)])).toEqual([]);
+  });
+
+  it.each(BEFORE)("control, after %s: a real script tag STILL fires", (_label, construct) => {
+    const found = detect([file("layout/theme.liquid", `${construct}\n${TAG}`)]);
+    expect(found).toHaveLength(1);
+    expect(found[0].lineNumber).toBe(construct.split("\n").length + 1);
+    expect(found[0].codeSnippet).toBe(TAG);
+  });
+
+  it.each(BEFORE)(
+    "control, after %s: commented copy first, real tag after it -> anchored to the real one",
+    (_label, construct) => {
+      const found = detect([file("layout/theme.liquid", `${construct}\n${COMMENTED}\n${TAG}`)]);
+      expect(found).toHaveLength(1);
+      expect(found[0].lineNumber).toBe(construct.split("\n").length + 2);
+    },
+  );
+
+  it("inside a script block: a //-commented document.write after a template literal with ${ does not fire", () => {
+    const content = [
+      "<script>",
+      "  const greeting = `hello ${name}`;",
+      `  // document.write('<script src="https://${HOST}/hulkcode.js">');`,
+      "</script>",
+    ].join("\n");
+    expect(detect([file("layout/theme.liquid", content)])).toEqual([]);
+    // Control: a real tag after that block still fires.
+    expect(detect([file("layout/theme.liquid", `${content}\n${TAG}`)])).toHaveLength(1);
+  });
+
+  it("an unterminated HTML comment hides the rest of the file (was: reported)", () => {
+    expect(detect([file("layout/theme.liquid", `<!-- oops\n${TAG}`)])).toEqual([]);
+    // The next file is still read.
+    expect(
+      detect([file("layout/theme.liquid", `<!-- oops\n${TAG}`), file("snippets/a.liquid", TAG)]),
+    ).toMatchObject([{ filename: "snippets/a.liquid" }]);
+  });
+
+  it("a script_tag filter inside an HTML comment does not fire either", () => {
+    const filter = `{{ 'https://${HOST}/hulkcode.js' | script_tag }}`;
+    expect(detect([file("layout/theme.liquid", `<!-- ${filter} -->`)])).toEqual([]);
+    expect(detect([file("layout/theme.liquid", `<!-- x -->\n${filter}`)])).toHaveLength(1);
+  });
+
+  it("the malicious detector keeps failing toward reporting (unchanged)", () => {
+    const content = `<script>var marker = "<!--";</script>\n<!-- <script src="https://cdn.polyfill.io/v3/polyfill.min.js"></script> -->`;
+    expect(detectMaliciousScripts(file("layout/theme.liquid", content))).toHaveLength(1);
+  });
+});
+
+describe("small precision gaps closed (round 4)", () => {
+  it("`src=` inside another attribute's quoted value is not the tag's src", () => {
+    expect(
+      detect([
+        file(
+          "layout/theme.liquid",
+          `<script data-x="a src=https://${HOST}/x.js" src="/local.js"></script>`,
+        ),
+      ]),
+    ).toEqual([]);
+    expect(
+      detect([
+        file("layout/theme.liquid", `<script data-x='src="https://${HOST}/x.js"'></script>`),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("control: the real src still wins beside such an attribute, and the first src is the one used", () => {
+    expect(
+      detect([
+        file(
+          "layout/theme.liquid",
+          `<script data-x="src=/local.js" src="https://${HOST}/x.js"></script>`,
+        ),
+      ]),
+    ).toHaveLength(1);
+    // HTML keeps the FIRST src attribute.
+    expect(
+      detect([
+        file("layout/theme.liquid", `<script src="/local.js" src="https://${HOST}/x.js"></script>`),
+      ]),
+    ).toEqual([]);
+  });
+
+  it("a `>` inside a quoted attribute value does not end the tag", () => {
+    expect(
+      detect([
+        file(
+          "layout/theme.liquid",
+          `<script data-note="a > b" src="https://${HOST}/x.js"></script>`,
+        ),
+      ]),
+    ).toHaveLength(1);
+  });
+
+  it.each([
+    `https://${HOST}%2eevil.com/x.js`,
+    `https://${HOST}%2Eevil.com/x.js`,
+    `//${HOST}%2eevil.com/x.js`,
+    `https://${HOST}evil.com/x.js`,
+    `https://${HOST}@evil.com/x.js`,
+  ])("a host that only STARTS like the listed one does not match: %s", (url) => {
+    expect(detect([file("layout/theme.liquid", `<script src="${url}"></script>`)])).toEqual([]);
+    expect(detect([file("layout/theme.liquid", `{{ '${url}' | script_tag }}`)])).toEqual([]);
+  });
+
+  it.each([
+    `https://${HOST}`,
+    `https://${HOST}/`,
+    `https://${HOST}:8443/x.js`,
+    `https://${HOST}?v=1`,
+    `https://${HOST}#frag`,
+    `https://user@${HOST}/x.js`,
+  ])("control: the host followed by a URL delimiter still matches: %s", (url) => {
+    expect(detect([file("layout/theme.liquid", `<script src="${url}"></script>`)])).toHaveLength(1);
+  });
+
+  it.each([
+    ["<noscript>", `<noscript>${TAG}</noscript>`],
+    ["<template>", `<template id="t">${TAG}</template>`],
+    ["<textarea>", `<textarea>${TAG}</textarea>`],
+    ['the body of <script type="text/template">', `<script type="text/template">${TAG}</script>`],
+    ["the body of an inline <script>", `<script>var html = '${TAG}';</script>`],
+    ["<style>", `<style>/* ${TAG} */</style>`],
+    ["<xmp>", `<xmp>${TAG}</xmp>`],
+  ])("a script tag inside %s does not fire", (_label, content) => {
+    expect(detect([file("layout/theme.liquid", content)])).toEqual([]);
+  });
+
+  it.each([
+    ["<noscript>", `<noscript><img src="/px.gif"></noscript>`],
+    ["<template>", `<template id="t"><p>x</p></template>`],
+    ["<textarea>", `<textarea>hello</textarea>`],
+    ['<script type="text/template">', `<script type="text/template"><p>x</p></script>`],
+    ["<style>", `<style>.a{}</style>`],
+    ["upper-case <NOSCRIPT>", `<NOSCRIPT>x</NOSCRIPT>`],
+  ])("control: a real script tag AFTER a closed %s still fires", (_label, before) => {
+    expect(detect([file("layout/theme.liquid", `${before}\n${TAG}`)])).toHaveLength(1);
+  });
+
+  it("an element that is never closed hides the rest of the file", () => {
+    expect(detect([file("layout/theme.liquid", `<noscript>\n${TAG}`)])).toEqual([]);
+    expect(detect([file("layout/theme.liquid", `<script>var a = 1;\n${TAG}`)])).toEqual([]);
+  });
+
+  it("a script tag whose own body is never closed still counts (the tag itself is complete)", () => {
+    expect(
+      detect([file("layout/theme.liquid", `<script src="https://${HOST}/x.js">`)]),
+    ).toHaveLength(1);
+  });
+
+  it("`<script/src=...>` is a script tag with a src (HTML treats `/` as a separator)", () => {
+    expect(
+      detect([file("layout/theme.liquid", `<script/src="https://${HOST}/x.js"></script>`)]),
+    ).toHaveLength(1);
+  });
+
+  it("stays linear on hostile input (unclosed quotes, tags and comments by the thousand)", () => {
+    const started = Date.now();
+    for (const unit of [
+      `<script data-x="`,
+      `<script src='${HOST} `,
+      `<!-- `,
+      `<noscript `,
+      `<script a=b c `,
+    ]) {
+      detect([file("layout/theme.liquid", `${unit.repeat(40_000)}\n${TAG}`)]);
+    }
+    expect(Date.now() - started).toBeLessThan(10_000);
+  });
+});
+
+// The limits the detector accepts. Each test PINS current behaviour so a
+// change is deliberate; the runbook and the detector's doc comment list them.
+describe("known limits (accepted, pinned)", () => {
+  const fires = (content: string) => detect([file("layout/theme.liquid", content)]).length === 1;
+
+  describe("false positives: reported, though the script does not load", () => {
+    it("a script tag inside {% if false %}", () => {
+      expect(fires(`{% if false %}${TAG}{% endif %}`)).toBe(true);
+    });
+
+    it("a script tag inside a {% capture %} that is never output", () => {
+      expect(fires(`{% capture unused %}${TAG}{% endcapture %}`)).toBe(true);
+    });
+
+    it("a script tag written inside another tag's attribute value", () => {
+      expect(fires(`<div data-html='<script src="https://${HOST}/x.js"></script>'></div>`)).toBe(
+        true,
+      );
+    });
+
+    it("a script tag in an outer <template> after a nested <template> closed", () => {
+      expect(fires(`<template><template></template>${TAG}</template>`)).toBe(true);
+    });
+  });
+
+  describe("false negatives: loads, but not reported", () => {
+    it("a script tag printed from {% raw %}", () => {
+      expect(fires(`{% raw %}${TAG}{% endraw %}`)).toBe(false);
+    });
+
+    it("a `>` inside Liquid within the tag, before src", () => {
+      expect(
+        fires(`<script {% if a > b %}defer{% endif %} src="https://${HOST}/x.js"></script>`),
+      ).toBe(false);
+    });
+
+    it("a URL built with `append` before script_tag", () => {
+      expect(fires(`{{ 'https://${HOST}/' | append: 'hulkcode.js' | script_tag }}`)).toBe(false);
+    });
+
+    it("a URL held in a variable, then script_tag", () => {
+      expect(fires(`{% assign u = 'https://${HOST}/hulkcode.js' %}{{ u | script_tag }}`)).toBe(
+        false,
+      );
+    });
+
+    it("a script created by an inline script (createElement)", () => {
+      expect(
+        fires(
+          `<script>var s=document.createElement("script");s.src="https://${HOST}/x.js";document.head.appendChild(s);</script>`,
+        ),
+      ).toBe(false);
+    });
+
+    it("a script written by an inline script (document.write)", () => {
+      expect(
+        fires(`<script>document.write('<script src="https://${HOST}/x.js"><\\/script>');</script>`),
+      ).toBe(false);
+    });
+
+    it("anything after a `<!--` that sits in an attribute value and is never followed by -->", () => {
+      expect(fires(`<div data-marker="<!--"></div>\n${TAG}`)).toBe(false);
+    });
   });
 });
 
