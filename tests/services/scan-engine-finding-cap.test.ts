@@ -88,8 +88,8 @@ const DENSE_CASES: Array<[FindingType, string, Detector]> = [
     '<link rel="stylesheet" href="https://static.klaviyo.com/x.css">\n',
     detectGhostStyles,
   ],
-  [FindingType.GHOST_SNIPPET, "{% render 'klaviyo-form' %}\n", detectGhostSnippets],
-  [FindingType.GHOST_SECTION, "{% section 'shogun-head' %}\n", detectGhostSections],
+  [FindingType.GHOST_SNIPPET, "{% render 'klaviyo-form' %}\n", (file) => detectGhostSnippets(file)],
+  [FindingType.GHOST_SECTION, "{% section 'shogun-head' %}\n", (file) => detectGhostSections(file)],
   [
     FindingType.GHOST_HREFLANG,
     '<link rel="alternate" hreflang="fr" href="https://fr.example.com/products" />\n',

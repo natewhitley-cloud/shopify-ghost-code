@@ -38,6 +38,15 @@ export type AppSignature = {
    * App Store handles. Only seed handles verified on a real theme (gc-fed).
    */
   embedHandles?: string[];
+  /**
+   * Snippet / section names generic enough that themes ship their own file by
+   * that name (e.g. a theme's built-in `back-in-stock` block). They name this
+   * app only when some theme file also matches `corroborationPatterns`; without
+   * that, they match nothing (gc-c4k).
+   */
+  corroboratedSnippetNames?: string[];
+  /** App-specific evidence that unlocks `corroboratedSnippetNames`. */
+  corroborationPatterns?: RegExp[];
   isTracker?: boolean;
 };
 
@@ -963,7 +972,12 @@ export const APP_SIGNATURES: AppSignature[] = [
     appName: "Back in Stock (Appikon)",
     cdnDomains: ["cdn.appikon.com"],
     scriptPatterns: [/appikon\.com/, /BackInStock/, /window\.BackInStock\b/],
-    snippetNames: ["back-in-stock", "bis-notification"],
+    snippetNames: ["bis-notification"],
+    // Themes ship their own back-in-stock snippet (paw-naturals' Avone theme
+    // renders one behind a block setting with no Appikon on the storefront), so
+    // that name counts only when the theme also mentions Appikon (gc-c4k).
+    corroboratedSnippetNames: ["back-in-stock"],
+    corroborationPatterns: [/appikon/i],
     cssPatterns: [/appikon/, /back-in-stock/],
   },
 

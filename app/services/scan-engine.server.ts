@@ -66,6 +66,7 @@ import {
   identifyAppFromUrl,
   identifyAppFromCode,
   identifyAppFromSnippetName,
+  findCorroboratedApps,
   identifyAppFromEmbedHandle,
   identifyAppFromFilename,
   identifyAppFromHrefLang,
@@ -951,7 +952,14 @@ const RENDER_RE = /\{%-?\s*(?:render|include)\s+["']([^"']+)["']/gi;
 // Does NOT overlap with RENDER_RE because RENDER_RE requires a preceding {%.
 const RENDER_LIQUID_BLOCK_RE = /^[ \t]*(?:render|include)\s+["']([^"']+)["']/gim;
 
-export function detectGhostSnippets(file: ThemeFile): CreateFindingInput[] {
+/**
+ * `corroboratedApps` gates generic snippet names (gc-c4k). scanThemeFiles
+ * passes the theme-wide set; the default looks at this file alone.
+ */
+export function detectGhostSnippets(
+  file: ThemeFile,
+  corroboratedApps: ReadonlySet<string> = findCorroboratedApps([file]),
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Precompute lines inside Liquid comment blocks so bare `render 'app-snippet'`
@@ -967,7 +975,7 @@ export function detectGhostSnippets(file: ThemeFile): CreateFindingInput[] {
     if (commentSkipLines.has(lineNumber)) return; // inside {% comment %} block
     if (alwaysFalseSkipLines.has(lineNumber)) return; // inside always-false conditional
 
-    const appName = identifyAppFromSnippetName(snippetName);
+    const appName = identifyAppFromSnippetName(snippetName, corroboratedApps);
     if (!appName) return;
 
     const codeSnippet = buildSnippet(file.content, lineNumber);
@@ -1017,7 +1025,11 @@ export function detectGhostSnippets(file: ThemeFile): CreateFindingInput[] {
 // Matches {% section 'name' %} or {% section "name" %}
 const SECTION_RE = /\{%-?\s*section\s+["']([^"']+)["']/gi;
 
-export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
+/** `corroboratedApps`: as in detectGhostSnippets (gc-c4k). */
+export function detectGhostSections(
+  file: ThemeFile,
+  corroboratedApps: ReadonlySet<string> = findCorroboratedApps([file]),
+): CreateFindingInput[] {
   const findings: CreateFindingInput[] = [];
 
   // Precompute lines to skip from a single lines() pass, then run SECTION_RE
@@ -1045,7 +1057,7 @@ export function detectGhostSections(file: ThemeFile): CreateFindingInput[] {
     if (conditionalLines.has(lineNumber)) continue; // theme-native conditional logic
 
     const sectionName = match[1];
-    const appName = identifyAppFromSnippetName(sectionName);
+    const appName = identifyAppFromSnippetName(sectionName, corroboratedApps);
     if (!appName) continue;
 
     const codeSnippet = buildSnippet(file.content, lineNumber);
@@ -3921,6 +3933,7 @@ export function parseSettingsData(content: string): Record<string, unknown> | nu
 export function detectSettingsDrift(
   files: ThemeFile[],
   limit = Number.POSITIVE_INFINITY,
+  corroboratedApps: ReadonlySet<string> = findCorroboratedApps(files),
 ): CreateFindingInput[] {
   const settingsFile = files.find((f) => f.filename === "config/settings_data.json");
   if (!settingsFile) return [];
@@ -3967,7 +3980,7 @@ export function detectSettingsDrift(
     const codeSnippet = entryJson.slice(0, 300);
 
     // Try app attribution via snippet name lookup
-    const appName = identifyAppFromSnippetName(sectionType);
+    const appName = identifyAppFromSnippetName(sectionType, corroboratedApps);
 
     const severity = classifySeverity(FindingType.SETTINGS_DRIFT, codeSnippet);
 
@@ -5833,6 +5846,9 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
     return firstFindingsByLine(detected, MAX_FINDINGS_PER_FILE_PER_TYPE);
   };
 
+  // Apps whose generic snippet names may be attributed in this theme (gc-c4k).
+  const corroboratedApps = findCorroboratedApps(files);
+
   // Pass 1: per-file ghost code detection
   for (const file of files) {
     const scannable = isScannableFile(file.filename);
@@ -5866,8 +5882,8 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
 
     findings.push(...capped(detectGhostScripts(file)));
     findings.push(...capped(detectGhostStyles(file)));
-    findings.push(...capped(detectGhostSnippets(file)));
-    findings.push(...capped(detectGhostSections(file)));
+    findings.push(...capped(detectGhostSnippets(file, corroboratedApps)));
+    findings.push(...capped(detectGhostSections(file, corroboratedApps)));
     findings.push(...capped(detectGhostHrefLang(file)));
     findings.push(...capped(detectDuplicateMetaTags(file, EARLY_EXIT_LIMIT)));
     findings.push(...capped(detectGhostJsonLd(file)));
@@ -5914,7 +5930,7 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
     // and attempt app attribution. Stock theme snippets (icon-cart, icon-zoom, etc.)
     // won't match any known app and are filtered out — they aren't ghost code.
     const baseName = orphan.filename.replace(/^snippets\//, "").replace(/\.liquid$/, "");
-    const appName = identifyAppFromSnippetName(baseName);
+    const appName = identifyAppFromSnippetName(baseName, corroboratedApps);
     if (!appName) continue;
 
     const severity = classifySeverity(FindingType.ORPHAN_ASSET, "");
@@ -5934,7 +5950,7 @@ export function scanThemeFiles(files: ThemeFile[], now: Date = new Date()): Scan
   // all attributed to that one file), so it takes the same cap. The other
   // cross-file passes emit at most one finding per theme file (orphan, layout)
   // or per catalog entry (duplicate library / tracker / chat widget).
-  findings.push(...capped(detectSettingsDrift(files, EARLY_EXIT_LIMIT)));
+  findings.push(...capped(detectSettingsDrift(files, EARLY_EXIT_LIMIT, corroboratedApps)));
 
   // Pass 3 (cont.): app embeds turned off in settings_data.json (gc-fed). Same
   // single file as SETTINGS_DRIFT, so the same per-file cap applies.

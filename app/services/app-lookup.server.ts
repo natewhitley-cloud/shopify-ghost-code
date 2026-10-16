@@ -137,9 +137,15 @@ export function identifyAppFromTextFragment(text: string): string | null {
 /**
  * Identify an app from a Liquid snippet or section name (case-insensitive).
  *
- * Checks each signature's snippetNames list for an exact match.
+ * Checks each signature's snippetNames list for an exact match. A signature's
+ * corroboratedSnippetNames match only when its appName is in
+ * `corroboratedApps` (see findCorroboratedApps); callers without theme-wide
+ * context pass nothing, so those generic names never match (gc-c4k).
  */
-export function identifyAppFromSnippetName(snippetName: string): string | null {
+export function identifyAppFromSnippetName(
+  snippetName: string,
+  corroboratedApps: ReadonlySet<string> = new Set(),
+): string | null {
   const lower = snippetName.toLowerCase();
   for (const sig of APP_SIGNATURES) {
     for (const name of sig.snippetNames) {
@@ -147,8 +153,31 @@ export function identifyAppFromSnippetName(snippetName: string): string | null {
         return sig.appName;
       }
     }
+    if (!corroboratedApps.has(sig.appName)) continue;
+    for (const name of sig.corroboratedSnippetNames ?? []) {
+      if (name.toLowerCase() === lower) {
+        return sig.appName;
+      }
+    }
   }
   return null;
+}
+
+/**
+ * The apps whose corroborationPatterns match at least one of the theme's files,
+ * i.e. the apps whose generic corroboratedSnippetNames may be attributed in
+ * this theme (gc-c4k).
+ */
+export function findCorroboratedApps(files: ReadonlyArray<{ content: string }>): Set<string> {
+  const apps = new Set<string>();
+  for (const sig of APP_SIGNATURES) {
+    const patterns = sig.corroborationPatterns ?? [];
+    if (patterns.length === 0) continue;
+    if (files.some((file) => patterns.some((pattern) => pattern.test(file.content)))) {
+      apps.add(sig.appName);
+    }
+  }
+  return apps;
 }
 
 /**
