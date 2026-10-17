@@ -176,7 +176,7 @@ export default function AdminMetrics() {
       {/* Action bar */}
       <div style={{ marginBottom: "24px", display: "flex", gap: "12px", alignItems: "center" }}>
         <fetcher.Form method="post">
-          <s-button variant="primary" disabled={isRefreshing} type="submit">
+          <s-button variant="primary" disabled={isRefreshing ? true : undefined} type="submit">
             {isRefreshing ? "Refreshing…" : "Refresh Now"}
           </s-button>
         </fetcher.Form>

@@ -191,7 +191,7 @@ export default function AdminSubmissions() {
         <div style={{ marginTop: "16px", display: "flex", alignItems: "center", gap: "12px" }}>
           <fetcher.Form method="post">
             <input type="hidden" name="intent" value="rejectBenign" />
-            <s-button disabled={isBusy} type="submit">
+            <s-button disabled={isBusy ? true : undefined} type="submit">
               Reject benign-library submissions
             </s-button>
           </fetcher.Form>
@@ -245,7 +245,11 @@ export default function AdminSubmissions() {
                       <fetcher.Form method="post">
                         <input type="hidden" name="intent" value="acceptDomain" />
                         <input type="hidden" name="domain" value={group.domain} />
-                        <s-button variant="primary" disabled={isBusy} type="submit">
+                        <s-button
+                          variant="primary"
+                          disabled={isBusy ? true : undefined}
+                          type="submit"
+                        >
                           Accept domain
                         </s-button>
                       </fetcher.Form>
@@ -298,7 +302,11 @@ export default function AdminSubmissions() {
                           <input type="hidden" name="intent" value="updateStatus" />
                           <input type="hidden" name="submissionId" value={sub.id} />
                           <input type="hidden" name="status" value="ACCEPTED" />
-                          <s-button variant="primary" disabled={isBusy} type="submit">
+                          <s-button
+                            variant="primary"
+                            disabled={isBusy ? true : undefined}
+                            type="submit"
+                          >
                             Approve
                           </s-button>
                         </fetcher.Form>
@@ -306,7 +314,7 @@ export default function AdminSubmissions() {
                           <input type="hidden" name="intent" value="updateStatus" />
                           <input type="hidden" name="submissionId" value={sub.id} />
                           <input type="hidden" name="status" value="REJECTED" />
-                          <s-button disabled={isBusy} type="submit">
+                          <s-button disabled={isBusy ? true : undefined} type="submit">
                             Reject
                           </s-button>
                         </fetcher.Form>

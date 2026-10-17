@@ -311,7 +311,11 @@ export function PermissionsCard({ brokenLinksIncluded }: { brokenLinksIncluded: 
                 </s-banner>
               ) : (
                 <div>
-                  <s-button variant="primary" onClick={requestMissing} disabled={requesting}>
+                  <s-button
+                    variant="primary"
+                    onClick={requestMissing}
+                    disabled={requesting ? true : undefined}
+                  >
                     {requesting ? "Requesting…" : "Grant access"}
                   </s-button>
                 </div>
