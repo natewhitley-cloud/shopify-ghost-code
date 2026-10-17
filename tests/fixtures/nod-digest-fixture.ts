@@ -188,6 +188,27 @@ const opsEvents: Row[] = [
   },
   { eventType: "function_failure", key: "operator-digest", message: "x", createdAt: ago(3 * D) },
   {
+    eventType: "function_failure",
+    key: "scan-theme",
+    message: "x",
+    metadata: { shop: "renamed-dev.myshopify.com" },
+    createdAt: ago(3 * D),
+  },
+  {
+    eventType: "function_failure",
+    key: "scan-theme",
+    message: "x",
+    metadata: { shop: "app-review-abc123.myshopify.com" },
+    createdAt: ago(3 * D),
+  },
+  {
+    eventType: "api_error",
+    key: "oops.some-merchant.myshopify.com",
+    message: "x",
+    metadata: { level: "error" },
+    createdAt: ago(2 * D),
+  },
+  {
     eventType: "client_error",
     key: "free-merchant.myshopify.com",
     message: "TypeError at free-merchant.myshopify.com",

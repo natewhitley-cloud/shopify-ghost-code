@@ -89,8 +89,9 @@ export interface NodDigest {
 
 const SERIES_DAYS = 30;
 const MAX_ERROR_CODES = 50;
-// Error codes become output strings: keep them to a short, lowercase,
-// domain-free alphabet (a "." is replaced, so a stray domain cannot survive).
+// Error codes become output strings: keep them to a short, lowercase
+// [a-z0-9_-] alphabet. This is NOT identity protection by itself (a domain would
+// become foo_myshopify_com), so any code containing "myshopify" is replaced.
 const CODE_MAX_LEN = 60;
 
 const NUDGE_STAGE_BY_EVENT_TYPE: Record<string, "shown" | "clicked" | "dismissed" | "converted"> = {
@@ -119,7 +120,7 @@ function planLabel(plan: string): string {
 
 function sanitizeCode(prefix: string, raw: unknown): string {
   const body =
-    typeof raw === "string" && raw.length > 0
+    typeof raw === "string" && raw.length > 0 && !/myshopify/i.test(raw)
       ? raw
           .toLowerCase()
           .replace(/[^a-z0-9_-]/g, "_")
@@ -333,6 +334,8 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
     } else if (e.eventType === OPS_EVENT_TYPES.FUNCTION_FAILURE) {
       code = sanitizeCode("job_", e.key);
       category = "job";
+      // notifications.server stamps metadata.shop (a domain) when the failing run had one.
+      shopDomain = metaString(e.metadata, "shop");
     } else {
       code = sanitizeCode("client_", metaString(e.metadata, "kind"));
       category = "other";

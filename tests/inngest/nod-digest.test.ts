@@ -30,6 +30,7 @@ vi.mock("../../inngest/client", () => ({
 }));
 
 import { buildNodDigest } from "../../inngest/lib/nod-digest";
+import { validateDigest } from "../fixtures/nod-contract.js";
 import { NOW, makeFakeDb, type FakeDb } from "../fixtures/nod-digest-fixture";
 
 beforeEach(() => {
@@ -144,11 +145,19 @@ describe("buildNodDigest", () => {
 
   it("aggregates errors by code with categories, skipping degraded, warn and excluded shops", async () => {
     const { errors } = await buildNodDigest(NOW);
-    expect(errors.count7d).toBe(4);
+    expect(errors.count7d).toBe(5);
     expect(errors.count24h).toBe(2);
     expect(errors.byCode).toEqual([
       {
         code: "api_graphql_throttled",
+        category: "api",
+        count24h: 0,
+        count7d: 1,
+        lastAt: new Date(NOW.getTime() - 2 * 86_400_000).toISOString(),
+      },
+      {
+        // key contained a myshopify domain: replaced, never echoed
+        code: "api_unknown",
         category: "api",
         count24h: 0,
         count7d: 1,
@@ -217,6 +226,15 @@ describe("buildNodDigest", () => {
     expect(json).not.toMatch(/-merchant|renamed-dev|app-review|nw-dev/i);
     expect(json).not.toContain("boom");
     expect(json).not.toContain("TypeError");
+  });
+
+  it("drops function_failure rows attributed to internal or app-review shops", async () => {
+    const { errors } = await buildNodDigest(NOW);
+    expect(errors.byCode.map((c) => c.code)).not.toContain("job_scan-theme");
+  });
+
+  it("produces a payload that passes the NOD contract validator", async () => {
+    expect(validateDigest(await buildNodDigest(NOW))).toEqual([]);
   });
 
   it("is read-only: only findMany is ever called on the DB", async () => {
