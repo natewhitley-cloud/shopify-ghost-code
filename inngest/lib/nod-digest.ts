@@ -48,8 +48,15 @@ import {
 
 export type NodErrorCategory = "api" | "webhook" | "job" | "other";
 
+export type NodValueKey =
+  | "apps_cleaned"
+  | "leftovers_removed"
+  | "malicious_shops"
+  | "findings_resolved"
+  | "scans";
+
 export interface NodValueRow {
-  key: string;
+  key: NodValueKey;
   label: string;
   d1: number;
   d7: number;
@@ -118,8 +125,9 @@ export interface NodDigest {
     plan: string;
     installedAt: string;
     lastActiveAt?: string;
-    actions7d: { scans: number; apps_cleaned: number };
-    actions30d: { scans: number; apps_cleaned: number };
+    /** One entry per value[].key (NOD shows a missing key as 0), this shop only. */
+    actions7d: Record<NodValueKey, number>;
+    actions30d: Record<NodValueKey, number>;
   }>;
 }
 
@@ -172,11 +180,17 @@ function metaString(metadata: unknown, field: string): string | undefined {
 }
 
 // apps_cleaned / leftovers_removed. A row goes CLEANED when a later scan of the
-// SAME theme finds none of the app's leftovers (app/services/app-removal.server.ts),
-// so a theme switch cannot clean it, but a scanner update that stops attributing
-// the findings, or the merchant ignoring each one, can.
-const CLEANED_CAVEAT =
-  "Also counts apps whose leftovers a scanner update stopped flagging or the merchant ignored item by item";
+// SAME theme finds none of the app's non-ignored leftovers
+// (nextRemovalState, app/services/app-removal.server.ts), so a theme switch
+// cannot clean it, but a scanner update that stops attributing the findings
+// can. An app whose leftovers were ALL ignored stays REMOVED; one whose
+// leftovers were partly ignored and partly deleted goes CLEANED keeping its
+// last leftoverCount, which can include the ignored items. Rows are per theme:
+// one app cleaned from two themes is two rows.
+const APPS_CLEANED_CAVEAT =
+  "Also counts apps whose leftovers a scanner update stopped flagging or the merchant partly ignored; an app cleaned from two themes counts twice";
+const LEFTOVERS_CAVEAT =
+  "May include items the merchant ignored rather than removed, or a scanner update stopped flagging; counted once per theme scanned";
 
 const utcDay = (d: Date): string => d.toISOString().slice(0, 10);
 
@@ -295,22 +309,21 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
             completedAt: { gte: d30 },
             shopId: { in: nonExcludedIds },
           },
-          select: { completedAt: true, resolvedFindingCount: true },
+          select: { id: true, shopId: true, completedAt: true, resolvedFindingCount: true },
         });
-  const malicious =
-    nonExcludedIds.length === 0
+  // Malicious findings on those same scans, looked up by scanId (@@index([scanId])).
+  const doneScanById = new Map(doneScans.map((s) => [s.id, s]));
+  const maliciousFindings =
+    doneScans.length === 0
       ? []
       : await db.finding.findMany({
           where: {
+            scanId: { in: [...doneScanById.keys()] },
             findingType: FindingType.MALICIOUS_SCRIPT,
-            scan: {
-              status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
-              completedAt: { gte: d30 },
-              shopId: { in: nonExcludedIds },
-            },
           },
-          select: { scan: { select: { shopId: true, completedAt: true } } },
+          select: { scanId: true },
         });
+  const malicious = maliciousFindings.map((f) => doneScanById.get(f.scanId)!);
   const scans =
     activeIds.size === 0
       ? []
@@ -319,53 +332,89 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
           select: { shopId: true, createdAt: true },
         });
 
-  const windows = <T>(rows: T[], at: (r: T) => Date, sum: (rs: T[]) => number) => {
-    const since = (from: Date) => sum(rows.filter((r) => at(r) >= from));
-    return { d1: since(d1), d7: since(d7), d30: sum(rows) };
+  // One definition per value row, reused for the per-merchant actions so the
+  // merchant table has exactly the value[] keys and the same counting rules.
+  const metric = <T>(
+    key: NodValueKey,
+    label: string,
+    caveat: string,
+    rows: T[],
+    at: (r: T) => Date,
+    shopOf: (r: T) => string,
+    sum: (rs: T[]) => number,
+  ) => {
+    const byShop = new Map<string, T[]>();
+    for (const r of rows) byShop.set(shopOf(r), [...(byShop.get(shopOf(r)) ?? []), r]);
+    return {
+      key,
+      label,
+      caveat,
+      total: (from: Date, shopId?: string) =>
+        sum(
+          (shopId === undefined ? rows : (byShop.get(shopId) ?? [])).filter((r) => at(r) >= from),
+        ),
+    };
   };
   const count = <T>(rs: T[]) => rs.length;
-  const value: NodValueRow[] = [
-    {
-      key: "apps_cleaned",
-      label: "Apps cleaned up",
-      ...windows(cleaned, cleanedAt, count),
-      caveat: CLEANED_CAVEAT,
-    },
-    {
-      key: "leftovers_removed",
-      label: "Leftover items removed",
-      ...windows(cleaned, cleanedAt, (rs) => rs.reduce((n, r) => n + r.leftoverCount, 0)),
-      caveat: CLEANED_CAVEAT,
-    },
-    {
-      key: "malicious_shops",
-      label: "Shops warned about a malicious script",
-      ...windows(
-        malicious,
-        (f) => f.scan.completedAt as Date,
-        (fs) => new Set(fs.map((f) => f.scan.shopId)).size,
-      ),
-      caveat: "Detection only: does not confirm the merchant saw it",
-    },
-    {
-      key: "findings_resolved",
-      label: "Findings resolved",
-      ...windows(
-        doneScans,
-        (s) => s.completedAt as Date,
-        (ss) => ss.reduce((n, s) => n + s.resolvedFindingCount, 0),
-      ),
-      // Same note as the operator digest's resolution rollup.
-      caveat: "Also counts findings a scanner update stopped flagging",
-    },
-    {
-      // Activity, not an outcome: every scan of an active install, any status.
-      key: "scans",
-      label: "Scans run",
-      ...windows(scans, (s) => s.createdAt, count),
-      caveat: "Includes scheduled and theme-publish automatic scans, and failed scans",
-    },
+  const metrics = [
+    metric(
+      "apps_cleaned",
+      "Apps cleaned up",
+      APPS_CLEANED_CAVEAT,
+      cleaned,
+      cleanedAt,
+      (r) => r.shopId,
+      count,
+    ),
+    metric(
+      "leftovers_removed",
+      "Leftover items removed",
+      LEFTOVERS_CAVEAT,
+      cleaned,
+      cleanedAt,
+      (r) => r.shopId,
+      (rs) => rs.reduce((n, r) => n + r.leftoverCount, 0),
+    ),
+    metric(
+      "malicious_shops",
+      "Shops warned about a malicious script",
+      // Distinct shops per window, but a later scan that re-finds the same
+      // script puts the shop in that day's window again.
+      "Detection only: does not confirm the merchant saw it. Includes shops warned again about the same script on a later scan",
+      malicious,
+      (s) => s.completedAt as Date,
+      (s) => s.shopId,
+      (ss) => new Set(ss.map((s) => s.shopId)).size,
+    ),
+    metric(
+      "findings_resolved",
+      "Findings resolved",
+      // resolvedFindingCount is a gross diff against the theme's previous scan.
+      "Also counts findings a scanner update stopped flagging, and a finding that disappears and comes back counts each time it disappears",
+      doneScans,
+      (s) => s.completedAt as Date,
+      (s) => s.shopId,
+      (ss) => ss.reduce((n, s) => n + s.resolvedFindingCount, 0),
+    ),
+    // Activity, not an outcome: every scan of an active install, any status.
+    metric(
+      "scans",
+      "Scans run",
+      "Includes scheduled and theme-publish automatic scans, and failed scans",
+      scans,
+      (s) => s.createdAt,
+      (s) => s.shopId,
+      count,
+    ),
   ];
+  const value: NodValueRow[] = metrics.map((m) => ({
+    key: m.key,
+    label: m.label,
+    d1: m.total(d1),
+    d7: m.total(d7),
+    d30: m.total(d30),
+    caveat: m.caveat,
+  }));
 
   // ---- Engagement: page_visit (domain-keyed, 14d retention) + scans ----
   const visits = await db.opsEvent.findMany({
@@ -509,20 +558,15 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
 
   // ---- Merchants: active installs, Shop.id only ----
   const lastScanAt = new Map<string, Date>();
-  const scans7d = new Map<string, number>();
-  const scans30d = new Map<string, number>();
   for (const s of scans) {
-    scans30d.set(s.shopId, (scans30d.get(s.shopId) ?? 0) + 1);
-    if (s.createdAt >= d7) scans7d.set(s.shopId, (scans7d.get(s.shopId) ?? 0) + 1);
     const prev = lastScanAt.get(s.shopId);
     if (!prev || s.createdAt > prev) lastScanAt.set(s.shopId, s.createdAt);
   }
-  const cleaned7d = new Map<string, number>();
-  const cleaned30d = new Map<string, number>();
-  for (const r of cleaned) {
-    cleaned30d.set(r.shopId, (cleaned30d.get(r.shopId) ?? 0) + 1);
-    if (cleanedAt(r) >= d7) cleaned7d.set(r.shopId, (cleaned7d.get(r.shopId) ?? 0) + 1);
-  }
+  const actions = (shopId: string, from: Date) =>
+    Object.fromEntries(metrics.map((m) => [m.key, m.total(from, shopId)])) as Record<
+      NodValueKey,
+      number
+    >;
   const lastVisitAt = new Map<string, Date>();
   for (const v of activeVisits) {
     const prev = lastVisitAt.get(v.id);
@@ -540,8 +584,8 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
       plan: planLabel(a.plan),
       installedAt: shop.installedAt.toISOString(),
       ...(last ? { lastActiveAt: last.toISOString() } : {}),
-      actions7d: { scans: scans7d.get(a.id) ?? 0, apps_cleaned: cleaned7d.get(a.id) ?? 0 },
-      actions30d: { scans: scans30d.get(a.id) ?? 0, apps_cleaned: cleaned30d.get(a.id) ?? 0 },
+      actions7d: actions(a.id, d7),
+      actions30d: actions(a.id, d30),
     };
   });
 

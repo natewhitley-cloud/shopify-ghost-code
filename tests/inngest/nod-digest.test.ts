@@ -38,11 +38,43 @@ import {
   SHOP_DOMAINS,
   ago,
   makeFakeDb,
+  shops,
   type FakeDb,
   type Row,
 } from "../fixtures/nod-digest-fixture";
 
 const iso = (d: Date) => d.toISOString();
+const VALUE_KEYS = [
+  "apps_cleaned",
+  "leftovers_removed",
+  "malicious_shops",
+  "findings_resolved",
+  "scans",
+] as const;
+const zeroActions = Object.fromEntries(VALUE_KEYS.map((k) => [k, 0]));
+
+// The malicious_shops numbers as the previous query computed them: findings
+// filtered THROUGH the scan relation. The loader now looks findings up by
+// scanId; this reference proves the result did not change.
+async function maliciousViaScanRelation(nonExcludedIds: string[]) {
+  const finding = fake.db.finding as {
+    findMany: (a: unknown) => Promise<Array<{ scan: { shopId: string; completedAt: Date } }>>;
+  };
+  const rows = await finding.findMany({
+    where: {
+      findingType: "MALICIOUS_SCRIPT",
+      scan: {
+        status: { in: ["COMPLETED", "PARTIAL"] },
+        completedAt: { gte: ago(30 * D) },
+        shopId: { in: nonExcludedIds },
+      },
+    },
+    select: { scan: { select: { shopId: true, completedAt: true } } },
+  });
+  const since = (from: Date) =>
+    new Set(rows.filter((f) => f.scan.completedAt >= from).map((f) => f.scan.shopId)).size;
+  return { d1: since(ago(1 * D)), d7: since(ago(7 * D)), d30: since(ago(30 * D)) };
+}
 const valueRow = (d: Awaited<ReturnType<typeof buildNodDigest>>, key: string) =>
   d.value.find((v) => v.key === key)!;
 
@@ -215,12 +247,17 @@ describe("buildNodDigest", () => {
   it("attaches a one-line caveat of at most 200 characters to every value row", async () => {
     const { value } = await buildNodDigest(NOW);
     const caveats = Object.fromEntries(value.map((v) => [v.key, v.caveat]));
-    expect(caveats.apps_cleaned).toMatch(/scanner update/);
-    expect(caveats.leftovers_removed).toBe(caveats.apps_cleaned);
-    expect(caveats.malicious_shops).toBe("Detection only: does not confirm the merchant saw it");
-    expect(caveats.findings_resolved).toBe(
-      "Also counts findings a scanner update stopped flagging",
-    );
+    expect(caveats).toEqual({
+      apps_cleaned:
+        "Also counts apps whose leftovers a scanner update stopped flagging or the merchant partly ignored; an app cleaned from two themes counts twice",
+      leftovers_removed:
+        "May include items the merchant ignored rather than removed, or a scanner update stopped flagging; counted once per theme scanned",
+      malicious_shops:
+        "Detection only: does not confirm the merchant saw it. Includes shops warned again about the same script on a later scan",
+      findings_resolved:
+        "Also counts findings a scanner update stopped flagging, and a finding that disappears and comes back counts each time it disappears",
+      scans: "Includes scheduled and theme-publish automatic scans, and failed scans",
+    });
     for (const v of value) {
       expect(v.caveat!.length).toBeGreaterThan(0);
       expect(v.caveat!.length).toBeLessThanOrEqual(200);
@@ -266,8 +303,23 @@ describe("buildNodDigest", () => {
     // sc1 (1d + 1ms) is in d7 not d1; sc4 (30d) is in d30.
     expect(valueRow(d, "malicious_shops")).toMatchObject({ d1: 0, d7: 1, d30: 1 });
     expect(valueRow(d, "scans")).toMatchObject({ d1: 0, d7: 0, d30: 0 });
-    expect(d.merchants[0].actions7d).toEqual({ scans: 0, apps_cleaned: 3 });
-    expect(d.merchants[0].actions30d).toEqual({ scans: 0, apps_cleaned: 5 });
+    expect(d.merchants[0].actions7d).toEqual({
+      scans: 0,
+      apps_cleaned: 3,
+      leftovers_removed: 30,
+      malicious_shops: 1,
+      findings_resolved: 3,
+    });
+    expect(d.merchants[0].actions30d).toEqual({
+      scans: 0,
+      apps_cleaned: 5,
+      leftovers_removed: 50,
+      malicious_shops: 1,
+      findings_resolved: 5,
+    });
+    expect(valueRow(d, "malicious_shops")).toMatchObject(
+      await maliciousViaScanRelation(["shop_edge"]),
+    );
     expect(validateDigest(d)).toEqual([]);
   });
 
@@ -366,16 +418,76 @@ describe("buildNodDigest", () => {
     }
     const free = merchants.find((m) => m.id === "shop_free")!;
     expect(free.plan).toBe("Free");
-    expect(free.actions7d).toEqual({ scans: 2, apps_cleaned: 1 });
-    expect(free.actions30d).toEqual({ scans: 2, apps_cleaned: 1 });
+    // free: sc_free1 (2 resolved, two malicious findings = 1 shop) + sc_free2, ar_free (3).
+    const freeActions = {
+      scans: 2,
+      apps_cleaned: 1,
+      leftovers_removed: 3,
+      malicious_shops: 1,
+      findings_resolved: 2,
+    };
+    expect(free.actions7d).toEqual(freeActions);
+    expect(free.actions30d).toEqual(freeActions);
     const std = merchants.find((m) => m.id === "shop_std")!;
-    expect(std.actions7d).toEqual({ scans: 0, apps_cleaned: 0 });
-    expect(std.actions30d).toEqual({ scans: 1, apps_cleaned: 1 });
+    expect(std.actions7d).toEqual(zeroActions);
+    expect(std.actions30d).toEqual({
+      scans: 1,
+      apps_cleaned: 1,
+      leftovers_removed: 5,
+      malicious_shops: 0, // f7 is not malicious
+      findings_resolved: 4,
+    });
     expect(free.lastActiveAt).toBe(new Date(NOW.getTime() - 2 * 3_600_000).toISOString());
     const pro = merchants.find((m) => m.id === "shop_pro")!;
     expect(pro.lastActiveAt).toBeUndefined();
     // pro's cleanup was 40d ago; REMOVED / REINSTALLED rows never count.
-    expect(pro.actions30d).toEqual({ scans: 0, apps_cleaned: 0 });
+    expect(pro.actions30d).toEqual(zeroActions);
+  });
+
+  it("gives every merchant exactly the value[] keys, summing to value[] when all shops are active", async () => {
+    // Drop the uninstalled shop so the outcome rows and merchants[] cover the same shops.
+    fake = makeFakeDb({ shop: shops.filter((s) => s.id !== "shop_gone") });
+    const d = await buildNodDigest(NOW);
+    const keys = d.value.map((v) => v.key).sort();
+    expect(keys).toEqual([...VALUE_KEYS].sort());
+    for (const m of d.merchants) {
+      expect(Object.keys(m.actions7d).sort()).toEqual(keys);
+      expect(Object.keys(m.actions30d).sort()).toEqual(keys);
+    }
+    for (const v of d.value) {
+      const sum = (w: "actions7d" | "actions30d") =>
+        d.merchants.reduce((n, m) => n + m[w][v.key], 0);
+      expect({ key: v.key, d7: sum("actions7d"), d30: sum("actions30d") }).toEqual({
+        key: v.key,
+        d7: v.d7,
+        d30: v.d30,
+      });
+    }
+    expect(valueRow(d, "malicious_shops").d30).toBe(1); // non-vacuous: shop_free
+    expect(validateDigest(d)).toEqual([]);
+  });
+
+  it("looks malicious findings up by scanId on the window's successful scans", async () => {
+    const d = await buildNodDigest(NOW);
+    const findingQueries = fake.findManyArgs.filter((c) => c.model === "finding");
+    expect(findingQueries).toHaveLength(1);
+    const where = findingQueries[0].args!.where!;
+    expect(Object.keys(where).sort()).toEqual(["findingType", "scanId"]);
+    expect(where.findingType).toBe("MALICIOUS_SCRIPT");
+    // sc_free1, sc_free2, sc_std, sc_gone: successful, in the window, non-excluded.
+    expect(((where.scanId as { in: string[] }).in ?? []).sort()).toEqual(
+      ["sc_free1", "sc_free2", "sc_gone", "sc_std"].sort(),
+    );
+    expect(valueRow(d, "malicious_shops")).toMatchObject(
+      await maliciousViaScanRelation(["shop_free", "shop_std", "shop_pro", "shop_gone"]),
+    );
+  });
+
+  it("skips the finding query when the window has no successful scans", async () => {
+    fake = makeFakeDb({ shop: [EDGE_SHOP], scan: [] });
+    const d = await buildNodDigest(NOW);
+    expect(fake.findManyArgs.some((c) => c.model === "finding")).toBe(false);
+    expect(valueRow(d, "malicious_shops")).toMatchObject({ d1: 0, d7: 0, d30: 0 });
   });
 
   it("never leaks a domain, store name or error message anywhere in the payload", async () => {

@@ -13,7 +13,7 @@ export const D = 24 * H;
 
 export type Row = Record<string, unknown>;
 
-const shops: Row[] = [
+export const shops: Row[] = [
   {
     id: "shop_free",
     domain: "free-merchant.myshopify.com",
@@ -359,12 +359,15 @@ export interface FakeDb {
   /** Every property access other than `<model>.findMany` / `<model>.groupBy`. Must stay empty. */
   touched: string[];
   findManyCalls: string[];
+  /** The args of every findMany, in call order. */
+  findManyArgs: Array<{ model: string; args?: { where?: Row; select?: Record<string, unknown> } }>;
   groupByCalls: string[];
 }
 
 export function makeFakeDb(overrides?: Partial<Tables>): FakeDb {
   const touched: string[] = [];
   const findManyCalls: string[] = [];
+  const findManyArgs: FakeDb["findManyArgs"] = [];
   const groupByCalls: string[] = [];
   const tables: Tables = {
     shop: shops,
@@ -382,6 +385,7 @@ export function makeFakeDb(overrides?: Partial<Tables>): FakeDb {
           if (prop === "findMany") {
             return async (args?: { where?: Row; select?: Record<string, unknown> }) => {
               findManyCalls.push(model);
+              findManyArgs.push({ model, args });
               return tables[model]
                 .filter((r) => matches(r, args?.where, model, tables))
                 .map((r) => project(r, args?.select, model, tables));
@@ -413,5 +417,5 @@ export function makeFakeDb(overrides?: Partial<Tables>): FakeDb {
       },
     },
   );
-  return { db: db as Record<string, unknown>, touched, findManyCalls, groupByCalls };
+  return { db: db as Record<string, unknown>, touched, findManyCalls, findManyArgs, groupByCalls };
 }
