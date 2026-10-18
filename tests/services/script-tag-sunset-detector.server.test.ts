@@ -334,15 +334,16 @@ describe("detectScriptTagSunset", () => {
 
     it("keeps the same fingerprint when a vendor bumps a script version", () => {
       const [v1] = detectScriptTagSunset(
-        ["https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js"],
+        ["https://d1liekpayvooaz.cloudfront.net/apps/customizery/customizery_2.js"],
         NO_EMBEDS,
         BEFORE,
       );
       const [v2] = detectScriptTagSunset(
-        ["https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_3.js"],
+        ["https://d1liekpayvooaz.cloudfront.net/apps/customizery/customizery_3.js"],
         NO_EMBEDS,
         BEFORE,
       );
+      expect(v1.appName).toBeUndefined();
       expect(v2.codeSnippet).not.toBe(v1.codeSnippet);
       expect(fp(v2)).toBe(fp(v1));
     });
