@@ -1,9 +1,10 @@
 /**
  * NOD digest loader (contract v1, ~/ventures/nod/docs/spec/digest-contract.md).
  *
- * Builds the payload for GET /ops/digest.json. READ-ONLY and DB-ONLY: it only
- * calls findMany on Shop / Scan / OpsEvent, writes nothing (no digest_snapshot,
- * no OpsEvent) and calls no Shopify API. It deliberately does NOT call the
+ * Builds the payload for GET /ops/digest.json. READ-ONLY and DB-ONLY (NOD
+ * ADR-006): it only calls findMany / groupBy on Shop / Scan / Finding /
+ * AppRemoval / OpsEvent, writes nothing (no digest_snapshot, no OpsEvent) and
+ * calls no Shopify API. It deliberately does NOT call the
  * operator-digest Inngest handler (which writes a snapshot row); it reuses that
  * module's exported pure helpers so the NOD numbers and the digest email agree.
  *
@@ -12,9 +13,18 @@
  * and for domain-keyed OpsEvent streams the isInternal domains are merged into
  * the exclude set (gc-zeh).
  *
- * Merchant rows carry Shop.id only (ADR-004): a domain never appears in output.
+ * value[] leads with outcomes (NOD ADR-010): apps cleaned up and their
+ * leftover items (AppRemoval CLEANED), shops warned about a malicious script,
+ * findings resolved; then scans run (activity). Rows that can overstate carry a
+ * caveat. `journey` gives each non-excluded shop still in the DB (uninstalled
+ * ones included) its all-time first scan, first results view and first
+ * confirmed cleanup; NOD keeps that history after the shop is deleted.
+ *
+ * Merchant and journey rows carry Shop.id only (ADR-004): a domain never appears in output.
  * Free-text columns (OpsEvent.message) are never selected.
  */
+
+import { AppRemovalState, FindingType } from "@prisma/client";
 
 import db from "../../app/db.server";
 import { PLAN_AMOUNTS, PLANS } from "../../app/lib/billing.server";
@@ -25,6 +35,7 @@ import {
   parseExcludeShops,
 } from "../../app/lib/store-exclusion";
 import { OPS_EVENT_TYPES } from "../../app/models/ops-event.server";
+import { SUCCESSFUL_SCAN_STATUSES } from "../../app/models/scan.server";
 import { NUDGE_KEYS } from "../../app/services/nudge-telemetry.server";
 import {
   DAY_MS,
@@ -36,6 +47,30 @@ import {
 } from "../functions/operator-digest";
 
 export type NodErrorCategory = "api" | "webhook" | "job" | "other";
+
+export interface NodValueRow {
+  key: string;
+  label: string;
+  d1: number;
+  d7: number;
+  d30: number;
+  /** One line, <= 200 chars: why this row can overstate (NOD ADR-010). */
+  caveat?: string;
+}
+
+export type NodJourneyStage = "first_scan" | "first_results" | "first_cleanup";
+
+export interface NodJourney {
+  stages: Array<{ key: NodJourneyStage; label: string }>;
+  valueStage: NodJourneyStage;
+  merchants: Array<{
+    id: string;
+    installedAt: string;
+    uninstalledAt?: string;
+    plan: string;
+    reached: Partial<Record<NodJourneyStage, string>>;
+  }>;
+}
 
 export interface NodDigest {
   contractVersion: 1;
@@ -55,7 +90,7 @@ export interface NodDigest {
     mrrCents: number;
     plans: Array<{ plan: string; installs: number; mrrCents: number }>;
   };
-  value: Array<{ key: string; label: string; d1: number; d7: number; d30: number }>;
+  value: NodValueRow[];
   engagement: { activeMerchants7d: number; returningMerchants7d: number; visits7d: number };
   nudges: Array<{
     key: string;
@@ -77,13 +112,14 @@ export interface NodDigest {
     }>;
   };
   series: { days: string[]; installed: number[]; uninstalled: number[]; value: number[] };
+  journey: NodJourney;
   merchants: Array<{
     id: string;
     plan: string;
     installedAt: string;
     lastActiveAt?: string;
-    actions7d: { scans: number };
-    actions30d: { scans: number };
+    actions7d: { scans: number; apps_cleaned: number };
+    actions30d: { scans: number; apps_cleaned: number };
   }>;
 }
 
@@ -135,6 +171,13 @@ function metaString(metadata: unknown, field: string): string | undefined {
   return typeof v === "string" ? v : undefined;
 }
 
+// apps_cleaned / leftovers_removed. A row goes CLEANED when a later scan of the
+// SAME theme finds none of the app's leftovers (app/services/app-removal.server.ts),
+// so a theme switch cannot clean it, but a scanner update that stops attributing
+// the findings, or the merchant ignoring each one, can.
+const CLEANED_CAVEAT =
+  "Also counts apps whose leftovers a scanner update stopped flagging or the merchant ignored item by item";
+
 const utcDay = (d: Date): string => d.toISOString().slice(0, 10);
 
 export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest> {
@@ -156,6 +199,7 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
       uninstalledAt: true,
       isInternal: true,
       lastSeenAt: true,
+      firstResultsViewedAt: true,
     },
   });
 
@@ -223,7 +267,50 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
     throw new Error("nod-digest: MRR plan sum disagrees with computeMrr");
   }
 
-  // ---- Value: scans run, active installs only (as the digest scopes SCANS) ----
+  // ---- Value: outcomes first (NOD ADR-010), then scans run ----
+  // Outcome rows cover every non-excluded shop still in the DB, uninstalled
+  // ones included, so value delivered before an uninstall still counts. Each
+  // row comes from ONE query filtered in memory, so d1 <= d7 <= d30 holds by
+  // construction.
+  const nonExcludedIds = nonExcluded.map((s) => s.id);
+  const cleaned =
+    nonExcludedIds.length === 0
+      ? []
+      : await db.appRemoval.findMany({
+          where: {
+            state: AppRemovalState.CLEANED,
+            stateChangedAt: { gte: d30 },
+            shopId: { in: nonExcludedIds },
+          },
+          select: { shopId: true, stateChangedAt: true, leftoverCount: true },
+        });
+  const cleanedAt = (r: (typeof cleaned)[number]) => r.stateChangedAt as Date;
+  // Successful scans completed in the window (resolved findings, malicious warnings).
+  const doneScans =
+    nonExcludedIds.length === 0
+      ? []
+      : await db.scan.findMany({
+          where: {
+            status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+            completedAt: { gte: d30 },
+            shopId: { in: nonExcludedIds },
+          },
+          select: { completedAt: true, resolvedFindingCount: true },
+        });
+  const malicious =
+    nonExcludedIds.length === 0
+      ? []
+      : await db.finding.findMany({
+          where: {
+            findingType: FindingType.MALICIOUS_SCRIPT,
+            scan: {
+              status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+              completedAt: { gte: d30 },
+              shopId: { in: nonExcludedIds },
+            },
+          },
+          select: { scan: { select: { shopId: true, completedAt: true } } },
+        });
   const scans =
     activeIds.size === 0
       ? []
@@ -231,14 +318,52 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
           where: { createdAt: { gte: d30 }, shopId: { in: [...activeIds] } },
           select: { shopId: true, createdAt: true },
         });
-  const scansIn = (since: Date) => scans.filter((s) => s.createdAt >= since).length;
-  const value = [
+
+  const windows = <T>(rows: T[], at: (r: T) => Date, sum: (rs: T[]) => number) => {
+    const since = (from: Date) => sum(rows.filter((r) => at(r) >= from));
+    return { d1: since(d1), d7: since(d7), d30: sum(rows) };
+  };
+  const count = <T>(rs: T[]) => rs.length;
+  const value: NodValueRow[] = [
     {
+      key: "apps_cleaned",
+      label: "Apps cleaned up",
+      ...windows(cleaned, cleanedAt, count),
+      caveat: CLEANED_CAVEAT,
+    },
+    {
+      key: "leftovers_removed",
+      label: "Leftover items removed",
+      ...windows(cleaned, cleanedAt, (rs) => rs.reduce((n, r) => n + r.leftoverCount, 0)),
+      caveat: CLEANED_CAVEAT,
+    },
+    {
+      key: "malicious_shops",
+      label: "Shops warned about a malicious script",
+      ...windows(
+        malicious,
+        (f) => f.scan.completedAt as Date,
+        (fs) => new Set(fs.map((f) => f.scan.shopId)).size,
+      ),
+      caveat: "Detection only: does not confirm the merchant saw it",
+    },
+    {
+      key: "findings_resolved",
+      label: "Findings resolved",
+      ...windows(
+        doneScans,
+        (s) => s.completedAt as Date,
+        (ss) => ss.reduce((n, s) => n + s.resolvedFindingCount, 0),
+      ),
+      // Same note as the operator digest's resolution rollup.
+      caveat: "Also counts findings a scanner update stopped flagging",
+    },
+    {
+      // Activity, not an outcome: every scan of an active install, any status.
       key: "scans",
       label: "Scans run",
-      d1: scansIn(d1),
-      d7: scansIn(d7),
-      d30: scans.length,
+      ...windows(scans, (s) => s.createdAt, count),
+      caveat: "Includes scheduled and theme-publish automatic scans, and failed scans",
     },
   ];
 
@@ -379,7 +504,7 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
     days,
     installed: bucket(nonExcluded.filter((s) => s.installedAt >= d30).map((s) => s.installedAt)),
     uninstalled: bucket(uninstallsKept.map((e) => e.createdAt)),
-    value: bucket(scans.map((s) => s.createdAt)),
+    value: bucket(cleaned.map(cleanedAt)), // value[0]: apps cleaned up per day
   };
 
   // ---- Merchants: active installs, Shop.id only ----
@@ -391,6 +516,12 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
     if (s.createdAt >= d7) scans7d.set(s.shopId, (scans7d.get(s.shopId) ?? 0) + 1);
     const prev = lastScanAt.get(s.shopId);
     if (!prev || s.createdAt > prev) lastScanAt.set(s.shopId, s.createdAt);
+  }
+  const cleaned7d = new Map<string, number>();
+  const cleaned30d = new Map<string, number>();
+  for (const r of cleaned) {
+    cleaned30d.set(r.shopId, (cleaned30d.get(r.shopId) ?? 0) + 1);
+    if (cleanedAt(r) >= d7) cleaned7d.set(r.shopId, (cleaned7d.get(r.shopId) ?? 0) + 1);
   }
   const lastVisitAt = new Map<string, Date>();
   for (const v of activeVisits) {
@@ -409,10 +540,65 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
       plan: planLabel(a.plan),
       installedAt: shop.installedAt.toISOString(),
       ...(last ? { lastActiveAt: last.toISOString() } : {}),
-      actions7d: { scans: scans7d.get(a.id) ?? 0 },
-      actions30d: { scans: scans30d.get(a.id) ?? 0 },
+      actions7d: { scans: scans7d.get(a.id) ?? 0, apps_cleaned: cleaned7d.get(a.id) ?? 0 },
+      actions30d: { scans: scans30d.get(a.id) ?? 0, apps_cleaned: cleaned30d.get(a.id) ?? 0 },
     };
   });
+
+  // ---- Journey (NOD ADR-010): all-time first times, one row per non-excluded shop ----
+  // Uninstalled-but-not-yet-deleted shops are included (with uninstalledAt) so
+  // NOD sees them before shop/redact deletes the row. Caveats:
+  //   - first_results: Shop.firstResultsViewedAt is only tracked for shops whose
+  //     first successful scan completed on/after RESULTS_VIEW_TRACKED_SINCE
+  //     (app/lib/journey-stage.ts); earlier shops may lack it though they viewed.
+  //   - first_cleanup: only CLEANED rows count. A REMOVED row that turns
+  //     REINSTALLED never gets a cleanup time; CLEANED itself is terminal (only
+  //     REMOVED rows are re-evaluated), so a recorded cleanup time is never lost.
+  //   - Shop.installedAt keeps the first install across a reinstall.
+  const [firstScans, firstCleanups] =
+    nonExcludedIds.length === 0
+      ? [[], []]
+      : await Promise.all([
+          db.scan.groupBy({
+            by: ["shopId"],
+            where: {
+              status: { in: [...SUCCESSFUL_SCAN_STATUSES] },
+              shopId: { in: nonExcludedIds },
+            },
+            _min: { completedAt: true },
+          }),
+          db.appRemoval.groupBy({
+            by: ["shopId"],
+            where: { state: AppRemovalState.CLEANED, shopId: { in: nonExcludedIds } },
+            _min: { stateChangedAt: true },
+          }),
+        ]);
+  const firstScanAt = new Map(firstScans.map((g) => [g.shopId, g._min.completedAt]));
+  const firstCleanupAt = new Map(firstCleanups.map((g) => [g.shopId, g._min.stateChangedAt]));
+  const journey: NodJourney = {
+    stages: [
+      { key: "first_scan", label: "First scan done" },
+      { key: "first_results", label: "Saw first results" },
+      { key: "first_cleanup", label: "Cleanup confirmed" },
+    ],
+    valueStage: "first_cleanup",
+    merchants: nonExcluded.map((s) => {
+      const reached: Record<string, string> = {};
+      const stamps: Array<[string, Date | null | undefined]> = [
+        ["first_scan", firstScanAt.get(s.id)],
+        ["first_results", s.firstResultsViewedAt],
+        ["first_cleanup", firstCleanupAt.get(s.id)],
+      ];
+      for (const [key, at] of stamps) if (at) reached[key] = at.toISOString();
+      return {
+        id: s.id,
+        installedAt: s.installedAt.toISOString(),
+        ...(s.uninstalledAt ? { uninstalledAt: s.uninstalledAt.toISOString() } : {}),
+        plan: planLabel(s.plan),
+        reached,
+      };
+    }),
+  };
 
   return {
     contractVersion: 1,
@@ -426,6 +612,7 @@ export async function buildNodDigest(now: Date = new Date()): Promise<NodDigest>
     nudges,
     errors,
     series,
+    journey,
     merchants,
   };
 }

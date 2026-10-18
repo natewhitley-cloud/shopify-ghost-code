@@ -8,8 +8,13 @@ export const ERROR_CATEGORIES = ["api", "webhook", "token", "encryption", "job",
 const MERCHANT_KEYS = ["id", "plan", "installedAt", "lastActiveAt", "actions7d", "actions30d"];
 const TOP_KEYS = [
   "contractVersion", "app", "generatedAt", "lifecycle", "installs", "revenue",
-  "value", "engagement", "nudges", "errors", "series", "merchants",
+  "value", "engagement", "nudges", "errors", "series", "journey", "merchants",
 ];
+// Object built-ins: as keys they would shadow or replace prototype properties when stage times are merged.
+const RESERVED_KEYS = ["__proto__", "constructor", "prototype", "hasOwnProperty", "toString", "valueOf"];
+const JOURNEY_MERCHANT_KEYS = ["id", "installedAt", "uninstalledAt", "plan", "reached"];
+// ADR-004: an ID that looks like a domain or email leaks identity.
+const opaqueId = (id) => typeof id === "string" && id.length > 0 && !/[@.]/.test(id.replace(/^gid:\/\/shopify\/Shop\//, ""));
 
 const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
 const isCount = (v) => Number.isInteger(v) && v >= 0;
@@ -92,7 +97,9 @@ export function validateDigest(d) {
     if (!Array.isArray(d.value)) errs.push("value must be an array");
     else d.value.forEach((v, i) => {
       if (!isObj(v)) return errs.push(`value[${i}] must be an object`);
-      noExtra(v, `value[${i}]`, ["key", "label", "d1", "d7", "d30"]);
+      noExtra(v, `value[${i}]`, ["key", "label", "d1", "d7", "d30", "caveat"]);
+      if (v.caveat !== undefined) req(typeof v.caveat === "string" && v.caveat.trim().length > 0 && v.caveat.length <= 200 && !/[\r\n]/.test(v.caveat),
+        `value[${i}].caveat must be one non-empty line of at most 200 characters`);
       req(typeof v.key === "string" && KEY_RE.test(v.key), `value[${i}].key must match ${KEY_RE}`);
       req(typeof v.label === "string" && v.label.length > 0, `value[${i}].label is required`);
       counts(v, `value[${i}]`, ["d1", "d7", "d30"]);
@@ -165,6 +172,43 @@ export function validateDigest(d) {
     }
   }
 
+  if (d.journey !== undefined) {
+    const j = d.journey;
+    if (!isObj(j)) errs.push("journey must be an object");
+    else {
+      noExtra(j, "journey", ["stages", "valueStage", "merchants"]);
+      const stageKeys = new Set();
+      if (!Array.isArray(j.stages) || j.stages.length < 1 || j.stages.length > 6) errs.push("journey.stages must be an array of 1 to 6 stages");
+      else j.stages.forEach((st, i) => {
+        if (!isObj(st)) return errs.push(`journey.stages[${i}] must be an object`);
+        noExtra(st, `journey.stages[${i}]`, ["key", "label"]);
+        req(typeof st.key === "string" && KEY_RE.test(st.key) && !RESERVED_KEYS.includes(st.key), `journey.stages[${i}].key must match ${KEY_RE} and not be a reserved name`);
+        req(typeof st.label === "string" && st.label.length > 0 && st.label.length <= 60, `journey.stages[${i}].label must be 1 to 60 characters`);
+        if (stageKeys.has(st.key)) errs.push(`journey stage "${st.key}" is duplicated`);
+        stageKeys.add(st.key);
+      });
+      req(stageKeys.has(j.valueStage), "journey.valueStage must be one of journey.stages[].key");
+      const ids = new Set();
+      if (!Array.isArray(j.merchants)) errs.push("journey.merchants must be an array");
+      else j.merchants.forEach((m, i) => {
+        const p = `journey.merchants[${i}]`;
+        if (!isObj(m)) return errs.push(`${p} must be an object`);
+        noExtra(m, p, JOURNEY_MERCHANT_KEYS);
+        req(opaqueId(m.id), `${p}.id must be an opaque non-empty string (no domain or email)`);
+        if (ids.has(m.id)) errs.push(`${p}.id is duplicated`);
+        ids.add(m.id);
+        req(isIso(m.installedAt), `${p}.installedAt must be a timestamp`);
+        if (m.uninstalledAt !== undefined) req(isIso(m.uninstalledAt), `${p}.uninstalledAt must be a timestamp`);
+        if (m.plan !== undefined) req(typeof m.plan === "string" && m.plan.length <= 60, `${p}.plan must be a string of at most 60 characters`);
+        if (!isObj(m.reached)) errs.push(`${p}.reached must be an object`);
+        else for (const [k, v] of Object.entries(m.reached)) {
+          req(stageKeys.has(k), `${p}.reached.${k} is not a journey stage`);
+          req(isIso(v), `${p}.reached.${k} must be a timestamp`);
+        }
+      });
+    }
+  }
+
   if (d.merchants !== undefined) {
     if (!Array.isArray(d.merchants)) errs.push("merchants must be an array");
     else d.merchants.forEach((m, i) => {
@@ -172,8 +216,7 @@ export function validateDigest(d) {
       if (!isObj(m)) return errs.push(`${p} must be an object`);
       noExtra(m, p, MERCHANT_KEYS);
       req(typeof m.id === "string" && m.id.length > 0, `${p}.id is required`);
-      // ADR-004: an ID that looks like a domain or email leaks identity.
-      if (typeof m.id === "string") req(!/[@.]/.test(m.id.replace(/^gid:\/\/shopify\/Shop\//, "")), `${p}.id must be opaque (no domain or email)`);
+      if (typeof m.id === "string" && m.id.length > 0) req(opaqueId(m.id), `${p}.id must be opaque (no domain or email)`);
       req(typeof m.plan === "string", `${p}.plan is required`);
       req(isIso(m.installedAt), `${p}.installedAt must be a timestamp`);
       if (m.lastActiveAt !== undefined) req(isIso(m.lastActiveAt), `${p}.lastActiveAt must be a timestamp`);
