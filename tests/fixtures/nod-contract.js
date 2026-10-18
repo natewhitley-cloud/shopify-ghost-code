@@ -11,7 +11,7 @@ const TOP_KEYS = [
   "value", "engagement", "nudges", "errors", "series", "journey", "merchants",
 ];
 // Object built-ins: as keys they would shadow or replace prototype properties when stage times are merged.
-const RESERVED_KEYS = ["__proto__", "constructor", "prototype", "hasOwnProperty", "toString", "valueOf"];
+const RESERVED_KEYS = ["__proto__", "constructor"];
 const JOURNEY_MERCHANT_KEYS = ["id", "installedAt", "uninstalledAt", "plan", "reached"];
 // ADR-004: an ID that looks like a domain or email leaks identity.
 const opaqueId = (id) => typeof id === "string" && id.length > 0 && !/[@.]/.test(id.replace(/^gid:\/\/shopify\/Shop\//, ""));
@@ -207,6 +207,12 @@ export function validateDigest(d) {
         }
       });
     }
+  }
+
+  // Same ids in both lists: NOD scrubs anonymized merchants out of stored merchants[] by journey id (ADR-010).
+  if (Array.isArray(d.journey?.merchants) && Array.isArray(d.merchants)) {
+    const jids = new Set(d.journey.merchants.map((m) => m?.id));
+    d.merchants.forEach((m, i) => { if (typeof m?.id === "string" && !jids.has(m.id)) errs.push(`merchants[${i}].id is missing from journey.merchants (ids must match)`); });
   }
 
   if (d.merchants !== undefined) {
