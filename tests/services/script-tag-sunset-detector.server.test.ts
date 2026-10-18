@@ -123,7 +123,7 @@ describe("detectScriptTagSunset", () => {
       "Klaviyo",
       "PushOwl",
       "Rise.ai",
-      null,
+      "Selly",
       null,
     ]);
   });
@@ -159,8 +159,8 @@ describe("detectScriptTagSunset", () => {
   it("groups unmatched URLs by hostname and names the host, not an app", () => {
     const findings = detectScriptTagSunset(
       [
-        "https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js",
-        "https://d5zu2f4xvqanl.cloudfront.net/42/fe/other.js",
+        "https://d1liekpayvooaz.cloudfront.net/apps/customizery/customizery.js",
+        "https://d1liekpayvooaz.cloudfront.net/apps/customizery/other.js",
         "https://widgets.unknown-vendor.io/w.js",
       ],
       NO_EMBEDS,
@@ -170,12 +170,12 @@ describe("detectScriptTagSunset", () => {
     const cloudfront = findings.find((f) => f.codeSnippet.includes("cloudfront"));
     expect(cloudfront?.appName).toBeUndefined();
     expect(cloudfront?.codeSnippet.split("\n")).toEqual([
-      "script-tags: host d5zu2f4xvqanl.cloudfront.net",
-      "https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js",
-      "https://d5zu2f4xvqanl.cloudfront.net/42/fe/other.js",
+      "script-tags: host d1liekpayvooaz.cloudfront.net",
+      "https://d1liekpayvooaz.cloudfront.net/apps/customizery/customizery.js",
+      "https://d1liekpayvooaz.cloudfront.net/apps/customizery/other.js",
     ]);
     expect(cloudfront?.description).toMatch(
-      /^A script from d5zu2f4xvqanl\.cloudfront\.net, added by one of your apps, is loaded through a script tag\./,
+      /^A script from d1liekpayvooaz\.cloudfront\.net, added by one of your apps, is loaded through a script tag\./,
     );
     expect(cloudfront?.description).toContain(
       "If you know which app this is, ask its support whether it has moved to an app embed.",
@@ -453,6 +453,20 @@ describe("detectScriptTagSunset", () => {
       );
       expect(f.appName).toBe("Ryviu");
       expect(f.severity).toBe(Severity.LOW);
+    });
+
+    it("Selly's cloudfront loader is LOW with Selly's embed enabled, as on pawnaturals.com (gc-9ae6)", () => {
+      // pawnaturals.com 2026-10-18: the enabled selly-promotion-pricing embed
+      // loads this same loader, so the ScriptTag is redundant.
+      const findings = detectScriptTagSunset(PAW_URLS, new Set(["Klaviyo", "Selly"]), BEFORE);
+      const selly = findings.find((f) => f.appName === "Selly");
+      expect(selly?.severity).toBe(Severity.LOW);
+      expect(selly?.codeSnippet.split("\n")).toEqual([
+        "script-tags: Selly",
+        "https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js",
+      ]);
+      expect(selly?.description).toContain("Selly also has an app embed turned on in your theme");
+      expect(findings.filter((f) => f.appName === undefined)).toHaveLength(1);
     });
 
     it("groups Rise.ai's two ScriptTag hosts into one Rise.ai finding", () => {

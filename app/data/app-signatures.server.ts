@@ -1249,4 +1249,16 @@ export const APP_SIGNATURES: AppSignature[] = [
     snippetNames: [],
     cssPatterns: [],
   },
+  {
+    // https://apps.shopify.com/selly (Treedify, whose only listed app this is).
+    // Selly's enabled embed on pawnaturals.com (2026-10-18) loads the same
+    // d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js its ScriptTag does.
+    // That one CloudFront distribution only, never cloudfront.net at large.
+    appName: "Selly",
+    cdnDomains: ["d5zu2f4xvqanl.cloudfront.net"],
+    scriptPatterns: [],
+    snippetNames: [],
+    cssPatterns: [],
+    embedHandles: ["selly-promotion-pricing"],
+  },
 ];

@@ -985,6 +985,11 @@ describe("identifyAppFromEmbedHandle", () => {
     expect(identifyAppFromEmbedHandle("PageFly-Page-Builder")).toBe("PageFly");
   });
 
+  it("identifies Selly from its verified embed handle (gc-9ae6)", () => {
+    expect(identifyAppFromEmbedHandle("selly-promotion-pricing")).toBe("Selly");
+    expect(identifyAppFromEmbedHandle("selly")).toBeNull();
+  });
+
   it("returns null for the App Store handle (embed handle differs) and unknowns", () => {
     expect(identifyAppFromEmbedHandle("pagefly")).toBeNull();
     expect(identifyAppFromEmbedHandle("totally-unknown-app")).toBeNull();
@@ -1005,6 +1010,7 @@ describe("ScriptTag app signatures (exact hosts)", () => {
     ["https://trust.conversionbear.com/a.js?shop=s.myshopify.com", "Conversion Bear Trust Badges"],
     ["https://instagrid.instasell.co.in/_/pd/index.js", "Instafeed (Instasell)"],
     ["https://master-motivator.hulkapps.com/assets/mha-dao-bar.css", "HulkApps Free Shipping Bar"],
+    ["https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js", "Selly"],
   ])("attributes %s to %s", (url, app) => {
     expect(identifyAppFromUrl(url)).toBe(app);
   });
@@ -1026,8 +1032,13 @@ describe("ScriptTag app signatures (exact hosts)", () => {
     // Candidates deliberately NOT added (vendor or listing unconfirmed).
     ["https://www.magisto.com/media/shopify/magisto.js"],
     ["https://d1liekpayvooaz.cloudfront.net/apps/customizery/customizery.js"],
-    ["https://d5zu2f4xvqanl.cloudfront.net/42/fe/loader_2.js"],
     ["https://app.shoplytics.de/scripts/abc"],
+    // Selly's host is one CloudFront distribution, not cloudfront.net at large.
+    ["https://cloudfront.net/42/fe/loader_2.js"],
+    ["https://d5zu2f4xvqanl0.cloudfront.net/42/fe/loader_2.js"],
+    ["https://d5zu2f4xvqanl.cloudfront.net.evil.io/42/fe/loader_2.js"],
+    // Loader fallback host, never seen as a ScriptTag (not added).
+    ["https://doratree.com/1/api/2/x.js"],
   ])("does not attribute %s", (url) => {
     expect(identifyAppFromUrl(url)).toBeNull();
   });

@@ -549,6 +549,16 @@ describe("enabledAppEmbedApps", () => {
     expect([...enabledAppEmbedApps([settings])].sort()).toEqual(["Judge.me", "Ryviu"]);
   });
 
+  it("recognizes Selly's embed handle as seen on pawnaturals.com (gc-9ae6)", () => {
+    const settings = settingsWith({
+      "1": {
+        type: "shopify://apps/selly-promotion-pricing/blocks/app-embed-block/351afe80-738d-4417-9b66-e345ff249052",
+        disabled: false,
+      },
+    });
+    expect([...enabledAppEmbedApps([settings])]).toEqual(["Selly"]);
+  });
+
   it("treats an entry with no disabled flag as enabled", () => {
     const settings = settingsWith({ "1": { type: KLAVIYO_TYPE } });
     expect([...enabledAppEmbedApps([settings])]).toEqual(["Klaviyo"]);
