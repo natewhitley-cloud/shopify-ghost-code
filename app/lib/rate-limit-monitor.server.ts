@@ -21,6 +21,8 @@
  *   <  5% remaining  →  logger.error (rate-limit-critical)
  */
 
+import { GraphqlQueryError } from "@shopify/shopify-api";
+
 import { logger } from "./logger.server";
 import { recordApiError } from "../models/ops-event.server";
 
@@ -106,6 +108,34 @@ export function isThrottledError(error: GraphQLErrorLike | null | undefined): bo
     return true;
   }
   return typeof error.message === "string" && /throttled/i.test(error.message);
+}
+
+/**
+ * The GraphQL response a thrown `GraphqlQueryError` carries (gc-psew), in the
+ * same `{ errors, data, extensions }` shape `response.json()` would have had,
+ * or null for any other error.
+ *
+ * `admin.graphql` never resolves a body with GraphQL errors: @shopify/shopify-api
+ * `GraphqlClient.request` (lib/clients/admin/graphql/client.mjs) calls
+ * `throwFailedRequest` (lib/clients/common.mjs) on ANY of them, which throws a
+ * `GraphqlQueryError` whose `.body` is `{ data?, extensions?, errors: {
+ * graphQLErrors } }`, and the shopify-app-react-router wrapper rethrows it
+ * unchanged. So a THROTTLED page (and its `extensions.cost.throttleStatus`) is
+ * only visible on the thrown error.
+ */
+export function thrownGraphqlResponse(
+  err: unknown,
+): { errors: GraphQLErrorLike[]; data?: unknown; extensions?: unknown } | null {
+  if (!(err instanceof GraphqlQueryError)) return null;
+  const body = err.body as
+    | { data?: unknown; extensions?: unknown; errors?: { graphQLErrors?: unknown } }
+    | undefined;
+  const graphQLErrors = body?.errors?.graphQLErrors;
+  return {
+    errors: Array.isArray(graphQLErrors) ? (graphQLErrors as GraphQLErrorLike[]) : [],
+    data: body?.data,
+    extensions: body?.extensions,
+  };
 }
 
 /**

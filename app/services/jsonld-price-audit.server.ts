@@ -259,7 +259,9 @@ const MAX_THROTTLE_RETRIES = 5;
 class ProductScopeRevokedError extends Error {}
 
 /** Structured GraphQL errors carried on a thrown GraphqlQueryError. */
-type ThrownWithBody = { body?: { errors?: { graphQLErrors?: GraphQLResponseError[] } } };
+type ThrownWithBody = {
+  body?: { errors?: { graphQLErrors?: GraphQLResponseError[] }; extensions?: unknown };
+};
 
 /**
  * Run one lookup, resilient to THROTTLED and scope revocation.
@@ -300,7 +302,9 @@ async function runQuery<T>(
       if (thrownErrors.some(isThrottledError)) {
         throttleRetries += 1;
         if (throttleRetries > MAX_THROTTLE_RETRIES) throw err;
-        await checkRateLimit(undefined);
+        // gc-psew: size the backoff from the thrown body's throttleStatus;
+        // `undefined` here made checkRateLimit a no-op (instant retries).
+        await checkRateLimit((err as ThrownWithBody)?.body?.extensions);
         continue;
       }
       throw err;

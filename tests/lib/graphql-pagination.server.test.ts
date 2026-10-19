@@ -12,6 +12,7 @@
  *   - getConnection may throw for a missing parent (theme-files style)
  */
 
+import { GraphqlQueryError } from "@shopify/shopify-api";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 // ---------------------------------------------------------------------------
@@ -31,6 +32,7 @@ import {
   type GraphQLConnection,
   type PaginateStats,
 } from "../../app/lib/graphql-pagination.server";
+import { graphqlQueryError, throttledGraphqlError } from "../fixtures/graphql-query-error";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -406,6 +408,135 @@ describe("paginateConnection THROTTLED resume", () => {
     // pages, so neither throttle exhausted the budget.
     expect(result).toEqual([{ id: "a" }, { id: "b" }]);
     expect(graphql).toHaveBeenCalledTimes(4);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-psew: the real client THROWS a GraphqlQueryError on THROTTLED; it never
+// resolves a body with `errors`. The retry must fire on the thrown error.
+// ---------------------------------------------------------------------------
+
+describe("paginateConnection THROTTLED thrown as GraphqlQueryError (gc-psew)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("retries the SAME cursor when admin.graphql throws a THROTTLED GraphqlQueryError", async () => {
+    const thrown = throttledGraphqlError();
+    expect(thrown).toBeInstanceOf(GraphqlQueryError);
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: true, endCursor: "c1" }))
+      .mockRejectedValueOnce(thrown)
+      .mockResolvedValueOnce(page([{ id: "b" }], { hasNextPage: false, endCursor: null }));
+
+    const promise = paginateConnection(baseOptions(graphql));
+    await vi.runAllTimersAsync();
+    const result = await promise;
+
+    expect(result).toEqual([{ id: "a" }, { id: "b" }]);
+    expect(graphql).toHaveBeenCalledTimes(3);
+    expect(graphql.mock.calls[1][1].variables.after).toBe("c1");
+    expect(graphql.mock.calls[2][1].variables.after).toBe("c1");
+  });
+
+  it("backs off using the thrown error's throttleStatus before retrying", async () => {
+    // 0 of 100 points needed, restoring at 100/s -> ~1 s backoff.
+    const graphql = vi
+      .fn()
+      .mockRejectedValueOnce(
+        throttledGraphqlError({ currentlyAvailable: 0, maximumAvailable: 2000, restoreRate: 100 }),
+      )
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: false, endCursor: null }));
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    const promise = paginateConnection({ ...baseOptions(graphql), stats });
+    await vi.advanceTimersByTimeAsync(500);
+    expect(graphql).toHaveBeenCalledTimes(1); // still sleeping
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(graphql).toHaveBeenCalledTimes(2);
+    expect(stats.throttleSleepMs).toBeGreaterThanOrEqual(1000);
+  });
+
+  it("gives up after the retry budget when every attempt throws THROTTLED", async () => {
+    mockRecordApiError.mockClear();
+    const graphql = vi.fn().mockImplementation(() => Promise.reject(throttledGraphqlError()));
+
+    const promise = paginateConnection({ ...baseOptions(graphql), maxThrottleRetries: 2 });
+    const assertion = expect(promise).rejects.toThrow("still THROTTLED after 2 retries");
+    await vi.runAllTimersAsync();
+    await assertion;
+
+    expect(graphql).toHaveBeenCalledTimes(3);
+    expect(mockRecordApiError).toHaveBeenCalledWith(
+      expect.objectContaining({ code: "graphql_throttled_exhausted" }),
+    );
+  });
+
+  it("stops at the deadline with throttleStopped when a thrown THROTTLED backoff would cross it", async () => {
+    const graphql = vi
+      .fn()
+      .mockResolvedValueOnce(page([{ id: "a" }], { hasNextPage: true, endCursor: "c1" }))
+      .mockRejectedValueOnce(
+        throttledGraphqlError({ currentlyAvailable: 0, maximumAvailable: 2000, restoreRate: 10 }),
+      );
+    const stats: PaginateStats = {
+      pageCount: 0,
+      nodeCount: 0,
+      truncated: false,
+      throttleSleepMs: 0,
+    };
+
+    const result = await paginateConnection({
+      ...baseOptions(graphql),
+      stats,
+      deadline: Date.now() + 5_000, // backoff needs ~10 s
+    });
+
+    expect(result).toEqual([{ id: "a" }]);
+    expect(stats.throttleStopped).toBe(true);
+    expect(stats.hasMore).toBe(true);
+    expect(stats.endCursor).toBe("c1");
+  });
+
+  it("rethrows a non-THROTTLED GraphqlQueryError unchanged, with no retry and no OpsEvent", async () => {
+    mockRecordApiError.mockClear();
+    const thrown = graphqlQueryError([
+      { message: "Access denied", extensions: { code: "ACCESS_DENIED" } },
+    ]);
+    const graphql = vi.fn().mockRejectedValue(thrown);
+
+    await expect(paginateConnection(baseOptions(graphql))).rejects.toBe(thrown);
+    expect(graphql).toHaveBeenCalledTimes(1);
+    expect(mockRecordApiError).not.toHaveBeenCalled();
+  });
+
+  it("rethrows a non-GraphQL error (network/HTTP) unchanged", async () => {
+    const thrown = new Error("socket hang up");
+    const graphql = vi.fn().mockRejectedValue(thrown);
+
+    await expect(paginateConnection(baseOptions(graphql))).rejects.toBe(thrown);
+    expect(graphql).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not treat a hand-rolled object with a THROTTLED body as retryable", async () => {
+    // Only the real client error class is unwrapped; anything else propagates.
+    const fake = { body: { errors: { graphQLErrors: [{ extensions: { code: "THROTTLED" } }] } } };
+    const graphql = vi.fn().mockRejectedValue(fake);
+
+    await expect(paginateConnection(baseOptions(graphql))).rejects.toBe(fake);
+    expect(graphql).toHaveBeenCalledTimes(1);
   });
 });
 

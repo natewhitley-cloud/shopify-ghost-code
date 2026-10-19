@@ -24,6 +24,7 @@ import {
   parseRequestedQueryCost,
   rateLimitSleepMs,
   throttleSnapshot,
+  thrownGraphqlResponse,
   type ThrottleSnapshot,
   waitForThrottleSnapshot,
 } from "./rate-limit-monitor.server";
@@ -231,15 +232,26 @@ export async function paginateConnection<TNode, TResult>(
     const first = maxNodes !== undefined ? Math.min(pageSize, maxNodes - totalNodes) : pageSize;
     if (maxNodes !== undefined && first <= 0) break;
 
-    const response = await admin.graphql(query, {
-      variables: {
-        ...variables,
-        first,
-        ...(cursor !== null ? { after: cursor } : {}),
-      },
-    });
-
-    const json = (await response.json()) as GraphQLResponseJson;
+    let json: GraphQLResponseJson;
+    try {
+      const response = await admin.graphql(query, {
+        variables: {
+          ...variables,
+          first,
+          ...(cursor !== null ? { after: cursor } : {}),
+        },
+      });
+      json = (await response.json()) as GraphQLResponseJson;
+    } catch (err) {
+      // gc-psew: the real client THROWS a GraphqlQueryError on any GraphQL
+      // error, so a THROTTLED page arrives here, never in `json.errors`. Unwrap
+      // it into the same shape and fall through to the same-cursor retry below.
+      // Every other error (non-THROTTLED GraphQL, HTTP, network) is rethrown
+      // unchanged, exactly as before.
+      const thrown = thrownGraphqlResponse(err);
+      if (!thrown?.errors.some(isThrottledError)) throw err;
+      json = thrown as GraphQLResponseJson;
+    }
     if (stats) stats.throttle = throttleSnapshot(json.extensions) ?? stats.throttle ?? null;
 
     if (json.errors?.length) {

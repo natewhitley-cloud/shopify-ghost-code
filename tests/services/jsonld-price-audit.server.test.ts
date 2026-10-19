@@ -23,6 +23,7 @@ import {
 } from "../../app/services/jsonld-price-audit.server";
 import type { StaticProductCandidate } from "../../app/services/scan-engine.server";
 import type { AdminApiContext } from "../../app/types/shopify";
+import { throttledGraphqlError } from "../fixtures/graphql-query-error";
 
 // ---------------------------------------------------------------------------
 // Fixtures
@@ -385,6 +386,44 @@ describe("auditStaticJsonLdPrices", () => {
   // FIX 2 — THROTTLED resilience: a single lookup that throttles once then
   // succeeds must retry the SAME lookup, not fail the whole audit.
   // -------------------------------------------------------------------------
+  it("backs off on the thrown GraphqlQueryError's throttleStatus before retrying (gc-psew)", async () => {
+    vi.useFakeTimers();
+    try {
+      let handleCalls = 0;
+      const graphql = vi.fn(async (query: string) => {
+        if (query.includes("shop {")) {
+          return { json: async () => ({ data: { shop: { currencyCode: "USD" } } }) };
+        }
+        handleCalls += 1;
+        // 0 of 100 points, restoring 100/s: ~1 s backoff.
+        if (handleCalls === 1) throw throttledGraphqlError();
+        return {
+          json: async () => ({
+            data: productByHandleResponse([
+              { price: "29.99", compareAtPrice: null, availableForSale: true },
+            ]),
+          }),
+        };
+      });
+      const admin = { graphql } as unknown as AdminApiContext;
+
+      const promise = auditStaticJsonLdPrices(
+        admin,
+        [candidate({ handle: "widget", sku: undefined, staticPrice: "19.99" })],
+        SHOP_ID,
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      expect(handleCalls).toBe(1); // still backing off, not retried instantly
+      await vi.runAllTimersAsync();
+      const { findings } = await promise;
+
+      expect(handleCalls).toBe(2);
+      expect(findings).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("backs off and retries a single lookup that returns THROTTLED then succeeds", async () => {
     let handleCalls = 0;
     const graphql = vi.fn(async (query: string) => {

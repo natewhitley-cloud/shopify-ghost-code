@@ -45,8 +45,10 @@ import {
   checkThrottleStatusFromExtensions,
   isThrottledError,
   parseThrottleStatus,
+  thrownGraphqlResponse,
   type ThrottleStatus,
 } from "../../app/lib/rate-limit-monitor.server";
+import { graphqlQueryError, throttledGraphqlError } from "../fixtures/graphql-query-error";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -695,5 +697,42 @@ describe("throttle snapshot across a step boundary (gc-747u audit #3)", () => {
     const started = Date.now();
     await waitForThrottleSnapshot(snap);
     expect(Date.now()).toBe(started);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// gc-psew: unwrap the GraphQL response a thrown GraphqlQueryError carries
+// ---------------------------------------------------------------------------
+
+describe("thrownGraphqlResponse (gc-psew)", () => {
+  it("returns the THROTTLED errors and throttle extensions of a real GraphqlQueryError", () => {
+    const thrown = thrownGraphqlResponse(
+      throttledGraphqlError({ currentlyAvailable: 5, maximumAvailable: 2000, restoreRate: 100 }),
+    );
+    expect(thrown?.errors.some(isThrottledError)).toBe(true);
+    expect(parseThrottleStatus(thrown?.extensions)).toEqual({
+      currentlyAvailable: 5,
+      maximumAvailable: 2000,
+      restoreRate: 100,
+    });
+  });
+
+  it("returns a non-THROTTLED error list for other GraphQL errors", () => {
+    const thrown = thrownGraphqlResponse(
+      graphqlQueryError([{ message: "Access denied", extensions: { code: "ACCESS_DENIED" } }]),
+    );
+    expect(thrown?.errors).toHaveLength(1);
+    expect(thrown?.errors.some(isThrottledError)).toBe(false);
+    expect(thrown?.extensions).toBeUndefined();
+  });
+
+  it("returns null for anything that is not a GraphqlQueryError", () => {
+    expect(thrownGraphqlResponse(new Error("socket hang up"))).toBeNull();
+    expect(thrownGraphqlResponse(null)).toBeNull();
+    expect(
+      thrownGraphqlResponse({
+        body: { errors: { graphQLErrors: [{ extensions: { code: "THROTTLED" } }] } },
+      }),
+    ).toBeNull();
   });
 });

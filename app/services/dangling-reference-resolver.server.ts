@@ -168,7 +168,9 @@ type GraphQLJson<T> = {
 };
 
 /** Structured GraphQL errors carried on a thrown GraphqlQueryError. */
-type ThrownWithBody = { body?: { errors?: { graphQLErrors?: GraphQLResponseError[] } } };
+type ThrownWithBody = {
+  body?: { errors?: { graphQLErrors?: GraphQLResponseError[] }; extensions?: unknown };
+};
 
 /**
  * Raised when a scope is revoked mid-scan (an ACCESS_DENIED arrives on a lookup
@@ -208,7 +210,9 @@ async function runQuery<T>(
       if (thrownErrors.some(isThrottledError)) {
         throttleRetries += 1;
         if (throttleRetries > MAX_THROTTLE_RETRIES) throw err;
-        await checkRateLimit(undefined);
+        // gc-psew: size the backoff from the thrown body's throttleStatus;
+        // `undefined` here made checkRateLimit a no-op (instant retries).
+        await checkRateLimit((err as ThrownWithBody)?.body?.extensions);
         continue;
       }
       throw err;

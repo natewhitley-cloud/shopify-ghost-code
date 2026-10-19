@@ -22,6 +22,7 @@ import {
 } from "../../app/services/dangling-reference-extractor.server";
 import { resolveDanglingReferences } from "../../app/services/dangling-reference-resolver.server";
 import type { AdminApiContext } from "../../app/types/shopify";
+import { throttledGraphqlError } from "../fixtures/graphql-query-error";
 
 const SHOP_ID = "shop_1";
 
@@ -503,6 +504,39 @@ describe("resolveDanglingReferences — error resilience", () => {
     expect(calls).toBe(2); // throttled once, retried once
     expect(result.missing).toEqual([]);
     expect(result.truncated).toBe(false);
+  });
+
+  it("backs off on the thrown GraphqlQueryError's throttleStatus before retrying (gc-psew)", async () => {
+    vi.useFakeTimers();
+    try {
+      let calls = 0;
+      const graphql = vi.fn(async (query: string) => {
+        if (query.includes("products(first: 1)")) {
+          return envelope({ products: { nodes: [{ id: "1" }] } });
+        }
+        calls += 1;
+        // 0 of 100 points, restoring 100/s: ~1 s backoff.
+        if (calls === 1) throw throttledGraphqlError();
+        return envelope({ products: { nodes: [{ handle: "widget" }] } });
+      });
+      const admin = { graphql } as unknown as AdminApiContext;
+
+      const promise = resolveDanglingReferences(
+        admin,
+        [distinct("product", "widget")],
+        SHOP_ID,
+        null,
+      );
+      await vi.advanceTimersByTimeAsync(500);
+      expect(calls).toBe(1); // still backing off, not retried instantly
+      await vi.runAllTimersAsync();
+      const result = await promise;
+
+      expect(calls).toBe(2);
+      expect(result.missing).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("propagates an unexpected GraphQL error so the Inngest step retries", async () => {
