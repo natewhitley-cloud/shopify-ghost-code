@@ -5418,10 +5418,11 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
 
   // The report link depends on the list entry being unexpired: pin the clock
   // to a day on which it is, so only the review-date reminder test ever
-  // depends on the real date.
+  // depends on the real date. Detector calls take ACTIVE explicitly too.
+  const ACTIVE = new Date("2026-10-20T12:00:00Z");
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ["Date"] });
-    vi.setSystemTime(new Date("2026-10-20T12:00:00Z"));
+    vi.setSystemTime(ACTIVE);
     // Stored advisories are shown only while their flag is on (gc-5nok).
     process.env.APP_INCIDENT_ADVISORY_LIVE_ENABLED = "true";
   });
@@ -5715,7 +5716,7 @@ describe("affected-app advisory on the scan page (gc-14x5)", () => {
           },
         }),
       };
-      const [swym, selleasy] = detectAppIncidentAdvisories([settings], new Date()).map((f, i) =>
+      const [swym, selleasy] = detectAppIncidentAdvisories([settings], ACTIVE).map((f, i) =>
         row(i === 0 ? "adv-swym" : "adv-sell", "APP_INCIDENT_ADVISORY", "HIGH", 30 + i, {
           filename: f.filename,
           lineNumber: f.lineNumber,
